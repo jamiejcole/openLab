@@ -135,6 +135,15 @@ final class Rig {
         store = WorkspaceStore(client: client)
     }
 
+    /// A client that never connects (`Rig.offline`).
+    fileprivate init(offlineDoc: ModelID) {
+        engine = nil
+        client = EngineClient(
+            transport: WebSocketTransport(), infoProvider: { .failure(.missing) }, scheduler: scheduler,
+            handshakeScheduler: handshakeScheduler, requestScheduler: requestScheduler, workspace: offlineDoc)
+        store = WorkspaceStore(client: client)
+    }
+
     func connect() async -> Bool {
         client.start()
         return await eventually { self.client.state == .connected }
@@ -324,6 +333,20 @@ private final class EngineTestObserver: NSObject, XCTestObservation {
 }
 
 extension Rig {
+    /// No engine at all: a store that has received a `welcome` with `snapshot` (default: the golden
+    /// welcome the Rust tests write, engine/fixtures/protocol/server/welcome.json), for logic that
+    /// only reads and applies what the engine sends. Its client never connects: anything it sends
+    /// fails with `notConnected`.
+    static func offline(_ snapshot: JSONValue? = nil) throws -> Rig {
+        let snap = try snapshot ?? XCTUnwrap(Fixtures.json("server", "welcome")["snapshot"])
+        let rig = Rig(offlineDoc: "1")
+        let welcome: JSONValue = .object([
+            "type": .string("welcome"), "protocol_version": .int(Int64(protocolVersion)), "snapshot": snap,
+        ])
+        XCTAssertEqual(rig.store.receive(try ServerMessage.decode(try welcome.text())), .applied)
+        return rig
+    }
+
     /// A client + store bound to a fresh copy of the test show `show` on the class's real engine
     /// (nil `show`: the app connection), connected, with manual reconnect and request schedulers.
     static func open(_ show: String? = "Demo") async throws -> Rig {
@@ -393,5 +416,107 @@ private final class LateConnection: EngineConnection {
             if late { await transport.wait() }
             throw error
         }
+    }
+}
+
+/// Snapshots for the engine-free tests (`Rig.offline`): the test shows' workspaces as the engine
+/// sends them (the wire's `workspace` is the show file's), and builders for cues and large lists.
+enum TestSnapshots {
+    static let mainList: ModelID = "00000000-0000-0000-0000-000000000001"
+    // The demo show's cues (mac/TestShows/Demo/Demo.openlab).
+    static let intro: ModelID = "00000000-0000-0000-0000-00000000000a"
+    static let fade: ModelID = "00000000-0000-0000-0000-00000000000b"
+    static let group: ModelID = "00000000-0000-0000-0000-000000000020"
+    static let door: ModelID = "00000000-0000-0000-0000-000000000021"
+    static let rain: ModelID = "00000000-0000-0000-0000-000000000022"
+    static let radio: ModelID = "00000000-0000-0000-0000-000000000023"
+
+    private final class Anchor {}
+
+    /// The test show `name` as a just-opened workspace: nothing running, no problems known yet (the
+    /// engine adds those; a test that needs them sends a `runtime` change).
+    static func show(_ name: String = "Demo") throws -> JSONValue {
+        let url = try XCTUnwrap(
+            Bundle(for: Anchor.self).url(forResource: "TestShows", withExtension: nil)?.appendingPathComponent(
+                "\(name)/\(name).openlab"))
+        let file = try XCTUnwrap(JSONValue.parse(try String(contentsOf: url, encoding: .utf8)))
+        var s = emptySnapshot(name: name)
+        s.set("workspace", try XCTUnwrap(file["workspace"]))
+        return s
+    }
+
+    /// A cue as the engine sends it (`kind` is the object under `kind`).
+    static func cueJSON(
+        id: String, number: String?, name: String, kind: JSONValue, color: String = "none", flagged: Bool = false,
+        armed: Bool = true, preWait: Double = 0, postWait: Double = 0, continueMode: String = "do_not_continue"
+    ) -> JSONValue {
+        .object([
+            "id": .string(id), "number": number.map(JSONValue.string) ?? .null, "name": .string(name),
+            "notes": .string(""), "color": .string(color), "flagged": .bool(flagged), "armed": .bool(armed),
+            "pre_wait": .double(preWait), "post_wait": .double(postWait), "continue_mode": .string(continueMode),
+            "kind": kind,
+        ])
+    }
+
+    /// An audio cue's `kind` with every field the engine sends, so message sizes are realistic.
+    static func audioKind(_ media: String) -> JSONValue {
+        let fade = JSONValue.object(["duration": .double(0), "curve": .string("linear")])
+        let output = JSONValue.object(["db": .double(0), "mute": .bool(false)])
+        return .object([
+            "type": .string("audio"), "media": .string(media),
+            "patch": .string("00000000-0000-0000-0000-000000000001"), "start_time": .double(0), "end_time": .null,
+            "fade_in": fade, "fade_out": fade, "slices": .array([]), "last_slice_play_count": .int(1),
+            "levels": .object([
+                "master_db": .double(0), "outputs": .array([output, output]), "crosspoints": .array([]),
+                "gangs": .array([]),
+            ]),
+            "preload": .bool(false),
+        ])
+    }
+
+    static func groupKind(_ children: [JSONValue]) -> JSONValue {
+        .object([
+            "type": .string("group"), "mode": .object(["type": .string("timeline")]), "children": .array(children),
+        ])
+    }
+
+    static func emptySnapshot(name: String, workspaceID: String = "00000000-0000-0000-0000-000000000001") -> JSONValue {
+        JSONValue.parse(
+            """
+            {"revision":1,"runtime_seq":0,
+             "document":{"path":null,"dirty":false,"can_undo":false,"can_redo":false},
+             "workspace":{"id":"\(workspaceID)","name":"\(name)","settings":{},"patches":[],"network_patches":[],
+               "cue_lists":[{"id":"00000000-0000-0000-0000-000000000001","name":"Main","cues":[]}]},
+             "cue_states":[],"problems":[],"group_warnings":[],"playheads":[],"previewing":[],"warnings":[]}
+            """) ?? .null
+    }
+
+    /// `count` cues in all: flat cues with a group of ten children after every thirty top-level cues.
+    static func bigSnapshot(cues count: Int) -> JSONValue {
+        var s = emptySnapshot(name: "Big")
+        var top: [JSONValue] = []
+        var made = 0
+        func next(_ name: String) -> JSONValue {
+            made += 1
+            return cueJSON(
+                id: String(format: "00000000-0000-0000-0001-%012d", made), number: "\(made)", name: "\(name) \(made)",
+                kind: audioKind("media/\(made).wav"), color: made % 7 == 0 ? "red" : "none", flagged: made % 11 == 0,
+                postWait: made % 5 == 0 ? 1.5 : 0)
+        }
+        while made < count {
+            if top.count % 31 == 30 && made + 11 <= count {
+                let kids = (0..<10).map { _ in next("Child") }
+                made += 1
+                top.append(
+                    cueJSON(
+                        id: String(format: "00000000-0000-0000-0001-%012d", made), number: "\(made)",
+                        name: "Group \(made)", kind: groupKind(kids)))
+            } else {
+                top.append(next("Cue"))
+            }
+        }
+        s["workspace"]?.set(
+            "cue_lists", .array([.object(["id": .string(mainList.raw), "name": .string("Main"), "cues": .array(top)])]))
+        return s
     }
 }
