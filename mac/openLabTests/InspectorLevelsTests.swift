@@ -51,7 +51,8 @@ final class InspectorLevelsTests: XCTestCase {
     }
 
     private func kindOf(_ command: JSONValue?) -> JSONValue? {
-        guard command?["type"]?.stringValue == "set_cue_property", command?["property"]?["type"]?.stringValue == "kind_fields"
+        guard command?["type"]?.stringValue == "set_cue_property",
+            command?["property"]?["type"]?.stringValue == "kind_fields"
         else { return nil }
         return normalised(command?["property"]?["value"])
     }
@@ -378,7 +379,8 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(Set(lastKindFields?.keys.map { $0 } ?? []), ["curve"], "only the edited field is sent")
         await assertEventually("both edits are in the model") {
             let kind = self.modelKind(Self.fade)
-            return kind?["curve"] == .string(FadeSettingsPanel.curves[1]) && kind?["stop_target_when_done"] == .bool(false)
+            return kind?["curve"] == .string(FadeSettingsPanel.curves[1])
+                && kind?["stop_target_when_done"] == .bool(false)
         }
     }
 
