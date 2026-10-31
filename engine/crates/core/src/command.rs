@@ -739,6 +739,7 @@ mod tests {
             WorkspaceId(Uuid::from_u128(1)),
             list(1),
             PatchId(Uuid::from_u128(1)),
+            NetworkPatchId(Uuid::from_u128(1)),
         )
     }
 

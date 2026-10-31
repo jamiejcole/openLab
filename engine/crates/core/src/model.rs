@@ -59,10 +59,17 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// A new, empty workspace (WS-02): one empty cue list and one stereo patch, the defaults of
-    /// docs/file-format.md section 4.2. The ids come from the caller because core draws no
-    /// randomness.
-    pub fn new_empty(id: WorkspaceId, list: CueListId, patch: PatchId) -> Self {
+    /// A new, empty workspace (WS-02): one empty cue list, one stereo patch and one network patch
+    /// that sends OSC to this computer over UDP (QLab 5 manual p. 111: a new workspace starts with
+    /// a network patch set up to send to itself), the defaults of docs/file-format.md section 4.
+    /// The ids come from the caller because core draws no randomness. Only new workspaces get
+    /// the network patch; a loaded file keeps the patches it has.
+    pub fn new_empty(
+        id: WorkspaceId,
+        list: CueListId,
+        patch: PatchId,
+        network: NetworkPatchId,
+    ) -> Self {
         let output = PatchOutput {
             level_db: 0.0,
             mute: false,
@@ -87,7 +94,13 @@ impl Workspace {
                 master_db: 0.0,
                 outputs: vec![output; 2],
             }],
-            network_patches: Vec::new(),
+            network_patches: vec![NetworkPatch {
+                id: network,
+                name: "Network 1".to_owned(),
+                host: "127.0.0.1".to_owned(),
+                port: 53000,
+                protocol: NetworkProtocol::Udp,
+            }],
             cue_lists: vec![CueList {
                 id: list,
                 name: "Main Cue List".to_owned(),

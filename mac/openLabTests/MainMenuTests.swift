@@ -38,12 +38,12 @@ final class MainMenuTests: XCTestCase {
         let kinds = MainMenu.make().cues.items.compactMap { $0.representedObject as? String }
         XCTAssertEqual(
             kinds,
-            ["group", "audio", "fade", "start", "stop", "pause", "load", "reset", "devamp"]
+            ["group", "audio", "fade", "network", "start", "stop", "pause", "load", "reset", "devamp"]
                 + ["goto", "arm", "disarm", "wait", "memo"])
         let toolbar = CueToolbarView.kinds.flatMap { $0 }.compactMap { $0 }
         XCTAssertEqual(Set(kinds), Set(toolbar.map(\.rawValue)), "every toolbar button has a menu item")
         let separators = MainMenu.make().cues.items.enumerated().filter { $0.element.isSeparatorItem }.map(\.offset)
-        XCTAssertEqual(separators, [2, 4, 14])
+        XCTAssertEqual(separators, [2, 4, 15])
     }
 
     func testRenumberAndDeleteNumbersAreInTheToolsMenu() {

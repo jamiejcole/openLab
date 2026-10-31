@@ -36,6 +36,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
     let masthead = MastheadView()
     let cueToolbar = CueToolbarView()
+    let findBar = FindBarView()
+    /// Find (ED-09): the typed search, what it found and the bar's state (`WorkspaceWindowController+Find`).
+    var find = FindState()
     let cueList: CueListViewController
     let editor: CueEditor
     let inspector: InspectorViewController
@@ -135,6 +138,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
                 self?.syncMasthead()
             }
         }
+        wireFind()
         masthead.onCommitNotes = { [weak self] id, text in Task { await self?.editor.setNotes(of: id, text: text) } }
         sidebar.shownProvider = { [weak self] in self?.cueList.listID }
         sidebar.onSelectList = { [weak self] id in
@@ -248,6 +252,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     private func applyShowMode(_ on: Bool) {
         guard on != isShowMode else { return }
+        // Find is off in Show Mode (QLab): the bar gives the row back before the mode hides it.
+        if on { closeFind() }
         isShowMode = on
         inspector.isLocked = on
         masthead.isLocked = on
@@ -454,7 +460,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     private func show(_ area: LayoutArea, _ visible: Bool) {
         switch area {
-        case .toolbar: cueToolbar.isHidden = !visible
+        case .toolbar:
+            // While Find holds the row, the toggle only decides what comes back when it closes.
+            if find.isOpen { find.toolbarWasHidden = !visible } else { cueToolbar.isHidden = !visible }
         case .masthead: masthead.isHidden = !visible
         case .inspector: inspector.view.isHidden = !visible
         case .sidebar: sidebar.view.isHidden = !visible
@@ -465,7 +473,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     func isVisible(_ area: LayoutArea) -> Bool {
         switch area {
-        case .toolbar: return !cueToolbar.isHidden
+        case .toolbar: return find.isOpen ? !find.toolbarWasHidden : !cueToolbar.isHidden
         case .masthead: return !masthead.isHidden
         case .inspector: return !inspector.view.isHidden
         case .sidebar: return !sidebar.view.isHidden
@@ -492,17 +500,19 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         sidebarWidth.priority = NSLayoutConstraint.Priority(300)
         sidebarWidth.isActive = true
 
-        let stack = NSStackView(views: [masthead, cueToolbar, horizontalSplit, footer])
+        findBar.isHidden = true
+        let stack = NSStackView(views: [masthead, cueToolbar, findBar, horizontalSplit, footer])
         stack.orientation = .vertical
         stack.spacing = 0
         stack.distribution = .fill
-        for v in [masthead, cueToolbar, horizontalSplit, footer] {
+        for v in [masthead, cueToolbar, findBar, horizontalSplit, footer] {
             v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
         // These views have no intrinsic height; without explicit heights the stack stretches them.
         cueToolbar.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        findBar.heightAnchor.constraint(equalToConstant: 36).isActive = true
         footer.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        for v in [masthead, cueToolbar, footer] {
+        for v in [masthead, cueToolbar, findBar, footer] {
             v.setContentHuggingPriority(.required, for: .vertical)
             v.setContentCompressionResistancePriority(.required, for: .vertical)
         }

@@ -142,6 +142,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if let text = anyText { return text.paste(sender) }
         Task { await editor?.paste() }
     }
+    /// Edit > Find (ED-09); Show Mode greys all three (`validateMenuItem`).
+    @MainActor @objc func showFind(_ sender: Any?) { appController.frontController?.toggleFind() }
+    @MainActor @objc func findNextCue(_ sender: Any?) { appController.frontController?.findNext(forward: true) }
+    @MainActor @objc func findPreviousCue(_ sender: Any?) { appController.frontController?.findNext(forward: false) }
     @MainActor @objc func renumberCues(_ sender: Any?) { appController.frontController?.promptRenumber() }
     @MainActor @objc func moveCuesUp(_ sender: Any?) { Task { await editor?.moveSelection(by: -1) } }
     @MainActor @objc func moveCuesDown(_ sender: Any?) { Task { await editor?.moveSelection(by: 1) } }
@@ -233,6 +237,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(revealTargetFile(_:))?:
             return appController.frontController?.cueList.canRevealSelectedTarget ?? false
         case #selector(closeAllWorkspaces(_:))?: return !appController.allWindows.isEmpty
+        case #selector(showFind(_:))?, #selector(findNextCue(_:))?, #selector(findPreviousCue(_:))?:
+            return canEditFront  // off in Show Mode, as in QLab
         case #selector(newCue(_:))?, #selector(renumberCues(_:))?, #selector(moveCuesUp(_:))?,
             #selector(moveCuesDown(_:))?, #selector(relinkMedia(_:))?:
             return canEditFront
