@@ -176,6 +176,8 @@ M5.6b additions (`PROTOCOL_VERSION` stayed 2): the cue properties `duration` (`{
 
 M5.4d additions (`PROTOCOL_VERSION` stayed 2): the snapshot's optional `media_durations` and the `media_duration` runtime change (fixtures `server/snapshot.json`, `server/runtime_media_duration.json`). A client ignores a runtime change `type` it does not know (the Swift client logs it), so an older client is unaffected.
 
+The app's Timing & Loops tab sends an Audio cue's trims, slice markers (`slices`, each `{time, play_count}`), `last_slice_play_count` and integrated fades (`fade_in`, `fade_out`) as its `kind` cue property, the rest of the kind unchanged (fixture `client/command_set_audio_timing.json`; no new message or field).
+
 ### Media durations
 
 What an audio cue's file gives it to play, for the cue list's Duration column (CL-02): derived from the media probe and the cue's trims and slices, never saved (no show-file field). In seconds, rounded down to the millisecond. `file`: the whole file. `trimmed`: from the start trim to the end trim, every slice once. `duration`: the cue's action, `trimmed` with every slice's play count; absent when a slice loops until devamped (QLab 5 counts a cue's duration as the time its action takes, not counting pre-wait: manual pp. 94-95 and 124). Each field is absent when it is not known: all three while the file is not probed, is missing or cannot be played; `trimmed` and `duration` when the trims and slices cannot be played (`bad_plan`). A `media_duration` change with only `cue` means "not known now": the client drops what it held, so a missing file, another file (a relink) or a cue removed never leaves a stale length.
