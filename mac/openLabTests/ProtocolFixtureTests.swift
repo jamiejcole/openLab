@@ -78,12 +78,14 @@ final class ProtocolFixtureTests: XCTestCase {
                 ClientMessage.self, from: Data(try Fixtures.text("client", "request_set_output_device").utf8))
         else { return XCTFail("set_output_device") }
         XCTAssertEqual(device, "Scarlett 2i2")
-        guard case .result(_, .ok(let devices)) = try ServerMessage.decode(try Fixtures.text("server", "result_devices")),
+        let devicesText = try Fixtures.text("server", "result_devices")
+        guard case .result(_, .ok(let devices)) = try ServerMessage.decode(devicesText),
             case .devices(let list, let selected)? = devices.data
         else { return XCTFail("devices") }
         XCTAssertEqual(list.map(\.name), ["Scarlett 2i2"])
         XCTAssertEqual(selected, "Scarlett 2i2")
-        guard case .result(_, .ok(let ok)) = try ServerMessage.decode(try Fixtures.text("server", "result_patch_mappings")),
+        let mappingsText = try Fixtures.text("server", "result_patch_mappings")
+        guard case .result(_, .ok(let ok)) = try ServerMessage.decode(mappingsText),
             case .patchMappings(let entries)? = ok.data
         else { return XCTFail("patch_mappings") }
         XCTAssertEqual(entries.count, 2)

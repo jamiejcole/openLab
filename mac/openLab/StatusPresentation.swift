@@ -71,7 +71,8 @@ struct StatusPresentation: Equatable {
     private static func details(_ s: SystemStatus, _ problems: [(Level, String)]) -> [String] {
         var out = problems.map(\.1)
         let d = s.device
-        out.append(String(format: loc("status.detail.device"), d.name ?? loc("status.detail.none"), deviceStateText(d.state)))
+        let deviceName = d.name ?? loc("status.detail.none")
+        out.append(String(format: loc("status.detail.device"), deviceName, deviceStateText(d.state)))
         var format = String(format: loc("status.detail.format"), Int(d.sampleRate), Int(d.channels))
         if let b = d.blockFrames { format += "  " + String(format: loc("status.detail.block"), Int(b)) }
         if let l = d.latencyMs { format += "  " + String(format: loc("status.detail.latency"), l) }

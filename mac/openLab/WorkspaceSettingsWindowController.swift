@@ -241,7 +241,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             patchDevicePopup.removeAllItems()
             patchDevicePopup.isEnabled = false
             channelPopups = []
-            channelsStack.views.forEach { $0.removeFromSuperview() }
+            for v in channelsStack.views { v.removeFromSuperview() }
             patchProblemLabel.stringValue = ""
             return
         }
@@ -263,7 +263,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         patchDevicePopup.selectItem(at: current ?? 0)
         patchDevicePopup.isEnabled = model.loaded
 
-        channelsStack.views.forEach { $0.removeFromSuperview() }
+        for v in channelsStack.views { v.removeFromSuperview() }
         channelPopups = []
         if let mapping = row.mapping {
             let count = model.channelCount(of: mapping.device)
