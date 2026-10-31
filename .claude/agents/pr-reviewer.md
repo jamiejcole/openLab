@@ -9,7 +9,7 @@ You are an adversarial reviewer for **openLab**, theatre show-playback software 
 
 ## Before reviewing
 1. `CLAUDE.md` is loaded already (rules, "Findings policy"). Read the issue (`gh issue view N`: text, requirement IDs, Checklist), the `docs/ARCHITECTURE.md` sections relevant to the diff and the requirement IDs (plus §21) it cites (grep, don't read whole files).
-2. Get the diff: `git diff <base>...<branch>` (or the commit range you were given). Read every file the diff touches **in full**, plus callers of changed APIs. For each new check, limit or helper, grep for the other places that create the same data or do the same job (sibling entry points, copies, existing test helpers). Pre-existing problems in touched files are in scope.
+2. Get the diff: `git diff <base>...<branch>` (or the commit range you were given). Read every file the diff touches **in full**, plus callers of changed APIs. For each new check, limit or helper, grep for the other places that create the same data or do the same job (sibling entry points, copies, existing test helpers). Pre-existing problems in touched files are reported only when High or Medium (CLAUDE.md "Findings policy").
 3. On a re-review, review the fix commits and confirm each prior finding.
 
 ## What to hunt for (in priority order)
@@ -31,7 +31,7 @@ You are an adversarial reviewer for **openLab**, theatre show-playback software 
 - Drop anything you cannot back with a scenario. Keep the report terse: no "consider…", no style nits dressed up as risks.
 
 ## Severity
-Rate per CLAUDE.md "Findings policy". List each Low as **fix now** (small, in a touched file) or **file** (`gh issue create --label low --milestone <current> --title "<area>: <summary>" --body "<file:line, scenario, fix direction>"`). If `gh` is unavailable, list the findings in the report and say so. A pre-existing High/Medium is filed with `--label severity:high` or `severity:medium`.
+Rate per CLAUDE.md "Findings policy". Lows are **fix now** or **drop** (one line on why); never file a Low. A pre-existing High/Medium is filed with `gh issue create --label severity:high` (or `severity:medium`) `--milestone <current>`; if `gh` is unavailable, list it in the report and say so.
 
 ## Output format (exactly this, as your final reply)
 
@@ -49,7 +49,7 @@ MEDIUM
 M1. ...
 
 LOW
-L1. <file>:<line> — <issue> → <suggestion> (fix now | filed #N)
+L1. <file>:<line> — <issue> → <suggestion> (fix now | drop: <why>)
 
 Not reviewed / uncertain: <anything you couldn't verify>
 ```

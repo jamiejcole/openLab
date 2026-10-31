@@ -14,7 +14,7 @@ How to use: tasks are ticked by whoever completes them, only when implemented **
 **Dependency order:** M0 → (M1 → M2) in parallel with M3 → M4 → M5 → M6. M5.1–M5.2 may start once the protocol (M4.1) is defined.
 
 
-Low and low-medium review findings are GitHub issues labelled `low`, not PROGRESS lines. Niche QLab-parity features are deferred to v0.0.2 (section at the end).
+Low and low-medium review findings were GitHub issues labelled `low`, not PROGRESS lines (policy until 2026-10-31; Lows are no longer filed). Niche QLab-parity features are deferred to v0.0.2 (section at the end).
 
 ## In flight (orchestrator handoff — updated 2026-10-27)
 If the session was cut off, resume with the `orchestrate` skill (up to 3 Opus and 1–2 Sonnet agents in parallel; every batch lands through a PR into `main` that only the orchestrator merges, after CI is green).
