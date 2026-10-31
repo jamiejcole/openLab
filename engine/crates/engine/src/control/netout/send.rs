@@ -99,6 +99,11 @@ impl NetOut {
                 // Ends when the control thread drops the link (a destination that changed, or
                 // shutdown), after sending what is queued.
                 while let Ok(job) = rx.recv() {
+                    // Counts the job off even if the transport panics and the worker unwinds.
+                    let _done = JobDone {
+                        pending: &busy,
+                        outstanding: &outstanding,
+                    };
                     let outcome = if disabled.load(Ordering::SeqCst) {
                         Ok(())
                     } else if transport.now_ms().saturating_sub(job.queued_ms) > MAX_MESSAGE_AGE_MS
@@ -122,8 +127,6 @@ impl NetOut {
                             },
                         ));
                     }
-                    busy.fetch_sub(1, Ordering::SeqCst);
-                    outstanding.fetch_sub(1, Ordering::SeqCst);
                 }
             })?;
         Ok(Link {
@@ -132,5 +135,18 @@ impl NetOut {
             cache,
             pending,
         })
+    }
+}
+
+/// Counts one job off a link's `pending` and the engine's `outstanding` when dropped.
+struct JobDone<'a> {
+    pending: &'a AtomicUsize,
+    outstanding: &'a AtomicUsize,
+}
+
+impl Drop for JobDone<'_> {
+    fn drop(&mut self) {
+        self.pending.fetch_sub(1, Ordering::SeqCst);
+        self.outstanding.fetch_sub(1, Ordering::SeqCst);
     }
 }

@@ -719,3 +719,32 @@ fn stuck_senders_are_neither_evicted_nor_forgotten() {
     );
     assert!(net.retiring.is_empty());
 }
+
+/// A transport that panics while sending unwinds its worker; the link must not stay counted as
+/// busy (it could then never be evicted) and the drain count must still reach zero.
+#[test]
+fn a_panicking_worker_still_counts_its_job_off() {
+    struct Boom;
+    impl Transport for Boom {
+        fn send(&self, _: &Destination, _: &[SocketAddr], _: &[u8]) -> Result<(), String> {
+            panic!("transport fault");
+        }
+        fn resolve(&self, _: &str, _: u16) -> Result<Vec<SocketAddr>, String> {
+            Ok(vec![])
+        }
+    }
+    let (tx, _rx) = crossbeam_channel::unbounded();
+    let mut net = NetOut::new(NetTransport(Arc::new(Boom)), tx, 1000);
+    let p = patch(1, "10.0.0.1");
+    assert_eq!(
+        net.send(&p, CueId(Uuid::nil()), vec![1]),
+        SendOutcome::Queued
+    );
+    crate::spin::spin_until("the job was never counted off", || {
+        net.outstanding.load(Ordering::SeqCst) == 0
+            && net
+                .links
+                .values()
+                .all(|l| l.pending.load(Ordering::SeqCst) == 0)
+    });
+}
