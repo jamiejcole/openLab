@@ -1827,6 +1827,29 @@ fn a_waveform_request_out_of_range_is_bad_request() {
     assert!(wave(0.0, 1e300, 1).is_ok());
 }
 
+/// Test support: an `advance` beyond `MAX_ADVANCE_FRAMES` is refused at decode (a stepped
+/// engine would otherwise render for as long as a hostile peer asks).
+#[test]
+fn an_advance_beyond_the_limit_is_bad_request() {
+    let advance = |frames: u64| {
+        // Past `encode_client`, as a hostile peer would write it.
+        let text = serde_json::to_string(&ClientMessage::Request {
+            id: rid(1),
+            request: Request::Advance { frames },
+        })
+        .unwrap();
+        decode_client(&text)
+    };
+    assert_eq!(
+        advance(MAX_ADVANCE_FRAMES + 1),
+        Err(ProtocolError::OutOfRange {
+            field: "request.frames"
+        })
+    );
+    assert!(advance(MAX_ADVANCE_FRAMES).is_ok());
+    assert!(advance(0).is_ok());
+}
+
 #[test]
 fn a_batch_is_refused_whole_unless_well_formed() {
     let batch = |actions: Vec<TransportAction>| {
