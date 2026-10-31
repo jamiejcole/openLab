@@ -10,6 +10,9 @@ IDs (e.g. AUD-07, NFR-02):
 ## Tests
 `PREPUSH PASS <sha>` line (the sha must be the PR head; `scripts/prepush.sh --check` verifies it):
 
+## Flows
+Acceptance flows passing on the real engine: n/n (tests: …), or "none: simple change"
+
 ## Review
 R1: H n fixed · M n fixed · M downgraded by the user: <quote + link, or none> · Lows fixed n · Lows dropped: <one line each, or none>
 Pre-existing findings filed: #… (or none)

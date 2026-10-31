@@ -26,6 +26,7 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 - `gh pr list` and `gh run list --branch main --limit 3`. A red `main` (or an open `ci-red` issue) is the top priority.
 
 ## 1. Pick work
+- A feature issue without acceptance flows gets them first (CLAUDE.md "Tests"): a separate `general-purpose` agent (never the batch's implementer) writes them from `~/qlab-ref` behaviour pages (not only the layout map), cites pages, and adds them as the issue's Checklist.
 - First count open `low` + `severity:*` issues (`gh issue list --state open --limit 1000 --label low --json number --jq length`, same for each `severity:*` label). Above 30, the batch is only those issues (CLAUDE.md "Findings policy").
 - Pick from the current milestone's open task issues, skipping issues blocked by an open issue (`gh api repos/jamiejcole/openLab/issues/N/dependencies/blocked_by`). Prefer finishing a milestone over starting several, and show-safety issues first. Model from the `model:*` label, size from `size:*`.
 - Batch 1–4 closely related issues per implementer (same files, same concepts). Split unrelated areas into separate implementers. An issue's text may say what to batch it with.
@@ -38,6 +39,7 @@ Use `subagent_type: "implementer"`. The brief must be self-contained (it starts 
 Issues: #N (<ID>: title), …
 Requirements: <IDs> (+ any §21 scope limits that apply)
 Goal: <what done looks like, in behaviour terms>
+Flows: <the issue's acceptance flows (state → action → what the user sees); written before this brief, not by the implementer>
 Design decisions: <anything decided that isn't in ARCHITECTURE.md or the issue; specific types/APIs where consistency matters>
 Boundaries: <files/crates it may touch; what NOT to do>
 Must-have tests: <the behaviours that must be proven, esp. edge cases and failure paths>
@@ -72,7 +74,7 @@ Review traffic stays local (implementer report files, reviewer replies, `SendMes
 ## 6. Track
 - The PR's `Closes #N` closes the issues.
 - Tick a requirement in `REQUIREMENTS.md` when no open issue lists it and every part within the release scope (§21) is implemented and tested. Check with an exact match, not GitHub search (it splits IDs at the hyphen): `gh issue list --state open --limit 500 --json number,body --jq '.[] | select(.body | test("\\bAUD-19\\b")) | .number'` prints nothing. The full v0.0.1 sweep is M6.4.
-- Work found during a batch → a new issue (labels `task`, `area:*`, `size:*`, `model:*`, milestone, a Checklist of its requirement IDs).
+- Work found during a batch → a new issue (labels `task`, `area:*`, `size:*`, `model:*`, milestone; a feature issue's Checklist is acceptance flows written by the flows agent, any other issue's is its requirement IDs).
 - Decisions that change architecture go into `docs/ARCHITECTURE.md` in the same commit. A lesson every agent needs becomes a CI or repo check where possible, else one line in `CLAUDE.md`. A user policy decision goes into `CLAUDE.md` in the same session (through a reviewed PR); memory records only that the user decided it and when. Keep `docs/handoff/orchestrator-state.md` current at the end of a session.
 
 ## 7. Talk to the user
@@ -88,9 +90,10 @@ Review traffic stays local (implementer report files, reviewer replies, `SendMes
 
 ## 8. Milestone end
 1. Cleanup batch: every open `low` / `severity:*` issue in the milestone is fixed or re-milestoned with a reason. Audits below file only Highs and Mediums.
-2. Whole-repo audit: 4 parallel reviewers (Opus: core+audio, engine service, app; Sonnet: CI/docs/instructions), each reading its area's files in full (not a diff) against CLAUDE.md. A second agent verifies each High/Medium before it is filed.
-3. Update the policy-health line in `docs/handoff/orchestrator-state.md`: open `low` + `severity:*` count, `low` issues closed, Mediums fixed in the last reviews, claims the repo did not back.
-4. Then the user check-in (section 7).
+2. Flow audit: run the core-flows set against the real engine, and have one agent use the built app through the milestone's flows and compare with QLab 5. `.claude/rehearsal-notes.md` "Works" lists only flows that passed.
+3. Whole-repo audit: 4 parallel reviewers (Opus: core+audio, engine service, app; Sonnet: CI/docs/instructions), each reading its area's files in full (not a diff) against CLAUDE.md. A second agent verifies each High/Medium before it is filed.
+4. Update the policy-health line in `docs/handoff/orchestrator-state.md`: open `low` + `severity:*` count, `low` issues closed, Mediums fixed in the last reviews, claims the repo did not back.
+5. Then the user check-in (section 7).
 
 ## Standing decisions
 Rules live in `CLAUDE.md`, design in `docs/ARCHITECTURE.md`, scope in `REQUIREMENTS.md` §21. Orchestrator-only: no self-hosted CI runner (user decision 2026-10-28); `main` requires CI Result green and the branch up to date with `main` (2026-10-30).
