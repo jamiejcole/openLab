@@ -931,13 +931,9 @@ final class SystemEngineProcessesTests: XCTestCase {
     /// and once it has exited it does not.
     @MainActor
     func testALiveProcessNamedOpenLabEngineIsAnEngine() throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let program = dir.appendingPathComponent(SystemEngineProcesses.engineName)
-        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: program)
+        let sleep = try Data(contentsOf: URL(fileURLWithPath: "/bin/sleep"))
         let child = Process()
-        child.executableURL = program
+        child.executableURL = try Self.keptProgram(SystemEngineProcesses.engineName, sleep)
         child.arguments = ["30"]
         try child.run()
         defer { if child.isRunning { child.terminate() } }
@@ -946,6 +942,79 @@ final class SystemEngineProcessesTests: XCTestCase {
         child.terminate()
         child.waitUntilExit()
         XCTAssertFalse(p.isEngine(child.processIdentifier), "gone once it exited")
+    }
+
+    /// A test program at a fixed path, made once and never removed (#484). The first exec of a
+    /// new executable is held by the kernel until Gatekeeper (syspolicyd) has checked it, and
+    /// checks run one at a time. A program deleted while it is checked has crashed syspolicyd
+    /// (macOS 26.7: `SecStaticCode` reading a vanished Mach-O), and an exec queued behind that
+    /// check was then never let run, so a child that should have exited at once hung the test
+    /// run. A program kept at one path is checked once, and never vanishes under the check.
+    private static func keptProgram(_ name: String, _ contents: Data) throws -> URL {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("openLabTests-programs", isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(name)
+        if fm.isExecutableFile(atPath: url.path), fm.contents(atPath: url.path) == contents { return url }
+        // Renamed into place: a copy another test run is executing keeps its own file.
+        let temp = dir.appendingPathComponent(".\(name).\(UUID().uuidString)")
+        try contents.write(to: temp)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temp.path)
+        guard rename(temp.path, url.path) == 0 else {
+            let code = POSIXErrorCode(rawValue: errno) ?? .EIO
+            try? fm.removeItem(at: temp)
+            throw POSIXError(code)
+        }
+        return url
+    }
+
+    /// Reaps the child `pid`, waiting at most `timeout` seconds. The blocking `waitpid` runs on its
+    /// own thread so a child that never ends fails this test (with its process state) instead of
+    /// hanging the whole test run; such a child is killed so the thread is freed. The status, or nil.
+    @MainActor @discardableResult
+    private func reap(
+        _ pid: pid_t, timeout: TimeInterval = 10, _ what: String = "", file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> Int32? {
+        final class Box: @unchecked Sendable {
+            var result: pid_t = 0
+            var status: Int32 = 0
+            var error: Int32 = 0
+        }
+        let box = Box()
+        let reaped = XCTestExpectation(description: "child \(pid) exited")
+        Thread.detachNewThread {
+            var status: Int32 = 0
+            var r: pid_t
+            repeat { r = waitpid(pid, &status, 0) } while r < 0 && errno == EINTR
+            box.result = r
+            box.status = status
+            box.error = r < 0 ? errno : 0
+            reaped.fulfill()
+        }
+        if XCTWaiter().wait(for: [reaped], timeout: timeout) != .completed {
+            let state = Self.processState(pid)
+            kill(pid, SIGKILL)
+            _ = XCTWaiter().wait(for: [reaped], timeout: 10)
+            XCTFail("child \(pid) \(what) did not exit within \(timeout) s; it was \(state)", file: file, line: line)
+            return nil
+        }
+        guard box.result == pid else {
+            XCTFail("waitpid(\(pid)) \(what) returned \(box.result), errno \(box.error)", file: file, line: line)
+            return nil
+        }
+        return box.status
+    }
+
+    /// What the kernel says `pid` is doing: its status (run, sleep, stop, zombie), flags and program.
+    @MainActor
+    private static func processState(_ pid: pid_t) -> String {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return "gone (errno \(errno))" }
+        let name = SystemEngineProcesses.executableName(of: pid) ?? "?"
+        return "status \(info.pbi_status) flags 0x\(String(info.pbi_flags, radix: 16)) pgid \(info.pbi_pgid) "
+            + "ppid \(info.pbi_ppid) program \(name)"
     }
 
     private func scratchDirectory() throws -> URL {
@@ -960,29 +1029,25 @@ final class SystemEngineProcessesTests: XCTestCase {
     @MainActor
     func testWhatTheEnginePrintsOnStderrIsReadBack() throws {
         let dir = try scratchDirectory()
-        let program = dir.appendingPathComponent("engine.sh")
-        try "#!/bin/sh\necho 'no audio device'\necho 'second line' >&2\necho 'no audio device' >&2\n"
-            .write(to: program, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: program.path)
+        let program = try Self.keptProgram(
+            "stderr-lines.sh",
+            Data("#!/bin/sh\necho 'no audio device'\necho 'second line' >&2\necho 'no audio device' >&2\n".utf8))
         let log = dir.appendingPathComponent("logs/engine-stderr.log")
         let p = SystemEngineProcesses(
             executable: program, bundleID: "x", infoURL: dir.appendingPathComponent("engine.json"), stderrURL: log,
             watchStderr: false)
-        let pid = try p.spawnEngine()
-        var status: Int32 = 0
-        XCTAssertEqual(waitpid(pid, &status, 0), pid)
+        XCTAssertEqual(reap(try p.spawnEngine()), 0, "it ran and exited 0")
         XCTAssertEqual(p.stderrTail.read(), ["second line", "no audio device"], "stdout is not read")
         XCTAssertEqual(p.stderrTail.read(), [], "each line once")
     }
 
     /// A stderr log the app cannot open (read-only, a directory) costs the engine its log, never
-    /// its start: the engine is spawned with /dev/null instead.
+    /// its start: the engine is spawned with /dev/null instead. The program is `true` (a system
+    /// program, which Gatekeeper never holds: see `keptProgram`), so it runs and exits 0.
     @MainActor
     func testAnUnusableStderrLogDoesNotStopTheEngineStarting() throws {
         let dir = try scratchDirectory()
-        let program = dir.appendingPathComponent("engine.sh")
-        try "#!/bin/sh\nexit 0\n".write(to: program, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: program.path)
+        let program = URL(fileURLWithPath: "/usr/bin/true")
         let readOnly = dir.appendingPathComponent("readonly.log")
         try Data("old\n".utf8).write(to: readOnly)
         try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: readOnly.path)
@@ -992,10 +1057,26 @@ final class SystemEngineProcessesTests: XCTestCase {
             let p = SystemEngineProcesses(
                 executable: program, bundleID: "x", infoURL: dir.appendingPathComponent("engine.json"),
                 stderrURL: log, watchStderr: false)
-            let pid = try p.spawnEngine()
-            var status: Int32 = 0
-            XCTAssertEqual(waitpid(pid, &status, 0), pid, log.lastPathComponent)
+            XCTAssertEqual(reap(try p.spawnEngine(), log.lastPathComponent), 0, log.lastPathComponent)
         }
+    }
+
+    /// A child that never exits fails the wait within its bound, saying what the child was
+    /// doing, and is killed and reaped, instead of hanging every later test (#484: a blocking
+    /// `waitpid` held the whole mac test run for an hour).
+    @MainActor
+    func testAChildThatNeverExitsFailsTheWaitInsteadOfHangingTheRun() throws {
+        var pid: pid_t = 0
+        let argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sleep"), strdup("600"), nil]
+        defer { for a in argv { free(a) } }
+        XCTAssertEqual(posix_spawn(&pid, "/bin/sleep", nil, nil, argv, nil), 0)
+        XCTExpectFailure("the child is still sleeping when the wait ends") {
+            XCTAssertNil(reap(pid, timeout: 0.5))
+        }
+        let alive = kill(pid, 0)
+        let error = errno
+        XCTAssertEqual(alive, -1, "killed and reaped: no such process")
+        XCTAssertEqual(error, ESRCH)
     }
 
     private final class Lines: @unchecked Sendable {
