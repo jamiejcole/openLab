@@ -1179,7 +1179,8 @@ struct Run {
     held_in_playlist: BTreeSet<CueId>,
     /// Cues moved out of a group by a model edit, with that group: a group goes on waiting on a
     /// run that started in it wherever the cue is moved, so it can run with none of its own
-    /// children busy while such a cue is.
+    /// children busy while such a cue is. Dropped when that run ends, or when the group ends,
+    /// is stopped or starts a new run (it lets go of them then).
     moved_out_of: Vec<(CueId, CueId)>,
 }
 
@@ -1366,6 +1367,14 @@ impl Run {
                     if *state != CueState::Paused {
                         self.held_in_playlist.remove(cue);
                     }
+                    // A moved cue's run that ends, or a group that ends or is stopped (it lets
+                    // go of the cues moved out of it), no longer ties the two together.
+                    let ended = matches!(state, CueState::Idle | CueState::Loaded);
+                    // (A group's new run lets go of them too.)
+                    let stopping = matches!(state, CueState::Stopping | CueState::PreWaiting);
+                    self.moved_out_of.retain(|(m, g)| {
+                        !(ended && m == cue) && !((ended || stopping) && g == cue)
+                    });
                     self.seen.insert(*cue);
                     if !matches!(state, CueState::Idle | CueState::Broken | CueState::Loaded) {
                         self.since_entry.insert(*cue);

@@ -1402,6 +1402,27 @@ fn a_stopped_group_lets_go_of_a_child_dragged_out_of_it() {
 }
 
 #[test]
+fn a_group_run_does_not_wait_on_a_child_dragged_out_before_it_started() {
+    let g = timed(
+        grp(1, GroupMode::Timeline, vec![sound(20), wait(21, 1.0)]),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![g, memo(4)]);
+    // A child started on its own while the group is idle, then dragged out.
+    rig.start(0, 20);
+    let c = children_of(&mut rig, 1).remove(0);
+    rig.ws.cue_lists[0].cues.push(c);
+    rig.tick(100);
+    rig.start(200, 1);
+    // The group's run waits only on its own children and follows when they end.
+    assert_eq!(starts(&rig.tick(1200)), vec![(id(4), 1200)]);
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(rig.state(20), CueState::Running);
+}
+
+#[test]
 fn a_held_failed_playlist_child_moved_into_an_idle_playlist_starts_nothing_there_on_resume() {
     let playing = grp(1, playlist(), vec![sound(20), sound(21)]);
     let idle = grp(5, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]);

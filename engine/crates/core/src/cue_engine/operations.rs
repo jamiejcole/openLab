@@ -120,6 +120,11 @@ impl CueEngine {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
         let group = matches!(model.kind, CueKind::Group { .. }).then(GroupRun::default);
+        if group.is_some() {
+            // A new run of the group waits only on its own tree: a child started on its own
+            // while the group was idle and dragged out since does not hold it.
+            self.release_moved_runs(cue, cx.ws);
+        }
         self.continued.remove(&cue);
         let mut new = Run::new(run, seq, Phase::PreWait { until }, group);
         new.action_offset = action_offset;

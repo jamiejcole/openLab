@@ -118,7 +118,8 @@ impl CueEngine {
     /// Lets go of the runs that started in `group` but whose cues have been moved out of it: the
     /// group stops waiting on them and their ends no longer reach it. Called when the group is
     /// stopped (a stop or panic reaches only its own tree, so it must not wait on cues outside
-    /// it) and when its run ends (so a later run of the group never waits on them).
+    /// it), and when its run starts or ends (so a run of the group never waits on cues moved out
+    /// before it).
     pub(super) fn release_moved_runs(&mut self, group: CueId, ws: &Workspace) {
         if !self
             .slots
