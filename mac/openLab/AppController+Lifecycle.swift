@@ -231,7 +231,7 @@ extension AppController {
 
     /// Recent workspaces whose file is still there: a moved or deleted one would fail on every choice.
     func existingRecentURLs() -> [URL] {
-        recentURLs().filter { FileManager.default.fileExists(atPath: $0.path) }
+        recentURLs().filter(recentExists)
     }
 
     func clearRecents() {

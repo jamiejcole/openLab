@@ -97,6 +97,7 @@ final class AppControllerTests: XCTestCase {
         app.alerts = alerts
         app.noteRecent = { [unowned self] in recents.append($0) }
         app.recentURLs = { [unowned self] in recents }
+        app.recentExists = { _ in true }
         app.keyWindow = { [unowned self] in keyDoc.flatMap { app.windows[$0]?.window } }
         app.pickSaveURL = { [unowned self] _ in saveURL }
         app.pickOpenURL = { [unowned self] in openURL }
@@ -1104,6 +1105,7 @@ final class AppControllerTests: XCTestCase {
         let here = dir.appendingPathComponent("Here.openlab")
         try Data().write(to: here)
         recents = [dir.appendingPathComponent("Gone.openlab"), here]
+        app.recentExists = { FileManager.default.fileExists(atPath: $0.path) }
         XCTAssertEqual(app.existingRecentURLs(), [here])
     }
 

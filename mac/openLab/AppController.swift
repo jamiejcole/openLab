@@ -36,6 +36,8 @@ final class AppController {
     var pickSaveURL: @MainActor (String) -> URL? = AppController.savePanel
     var noteRecent: @MainActor (URL) -> Void = { NSDocumentController.shared.noteNewRecentDocumentURL($0) }
     var recentURLs: @MainActor () -> [URL] = { NSDocumentController.shared.recentDocumentURLs }
+    /// Whether a recent workspace's file is still there (a seam: tests list files that do not exist).
+    var recentExists: @MainActor (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
     var forgetRecents: @MainActor () -> Void = { NSDocumentController.shared.clearRecentDocuments(nil) }
     var keyWindow: @MainActor () -> NSWindow? = { NSApp.keyWindow }
     var beep: @MainActor () -> Void = { NSSound.beep() }
