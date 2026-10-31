@@ -261,6 +261,7 @@ mod tests {
             WorkspaceId(Uuid::from_u128(1)),
             CueListId(Uuid::from_u128(1)),
             PatchId(Uuid::from_u128(1)),
+            crate::NetworkPatchId(Uuid::from_u128(1)),
         );
         let rename = |name: &str| Command::RenameCueList {
             id: CueListId(Uuid::from_u128(1)),

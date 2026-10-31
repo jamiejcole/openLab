@@ -374,6 +374,7 @@ mod tests {
             WorkspaceId(uuid::Uuid::from_u128(1)),
             CueListId(uuid::Uuid::from_u128(2)),
             PatchId(uuid::Uuid::from_u128(3)),
+            openlab_core::NetworkPatchId(uuid::Uuid::from_u128(4)),
         );
         hub.deliver(&Outgoing::all(ServerMessage::Snapshot {
             snapshot: Box::new(Snapshot {
@@ -495,6 +496,7 @@ mod tap_tests {
                 WorkspaceId(uuid::Uuid::from_u128(1)),
                 CueListId(uuid::Uuid::from_u128(2)),
                 PatchId(uuid::Uuid::from_u128(3)),
+                openlab_core::NetworkPatchId(uuid::Uuid::from_u128(4)),
             ),
             cue_states: vec![],
             problems: vec![],

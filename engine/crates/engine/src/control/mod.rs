@@ -658,6 +658,7 @@ impl Control {
                 openlab_core::WorkspaceId(uuid::Uuid::nil()),
                 openlab_core::CueListId(uuid::Uuid::nil()),
                 openlab_core::PatchId(uuid::Uuid::nil()),
+                openlab_core::NetworkPatchId(uuid::Uuid::nil()),
             ),
             engine: CueEngine::new(engine_config),
         };

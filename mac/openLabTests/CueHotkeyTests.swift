@@ -94,6 +94,16 @@ final class HotkeyRulesTests: XCTestCase {
         return validate(KeyChord(key, modifiers), menu: HotkeyRules.currentMenuChords())
     }
 
+    /// Find's keys (ED-09) are menu keys, so a cue cannot take them (and a loaded one never fires on them).
+    @MainActor
+    func testFindKeysAreRefusedAsCueHotkeys() {
+        XCTAssertEqual(validateAgainstMenuBar("f", [.command]), .menuKey)
+        XCTAssertEqual(validateAgainstMenuBar("g", [.command]), .menuKey)
+        XCTAssertEqual(validateAgainstMenuBar("g", [.command, .shift]), .menuKey)
+        XCTAssertEqual(validateAgainstMenuBar("8", [.command]), .menuKey, "New Network Cue")
+        XCTAssertNil(validateAgainstMenuBar("f", []), "a plain F is still a cue's to take")
+    }
+
     @MainActor
     func testRedoShiftCmdZIsRefused() {
         XCTAssertEqual(validateAgainstMenuBar("z", [.command, .shift]), .menuKey)

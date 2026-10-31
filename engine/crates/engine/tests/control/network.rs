@@ -655,3 +655,62 @@ fn turning_the_override_on_stops_messages_already_queued() {
     assert_eq!(sent.len(), 1, "only the one already being sent: {sent:?}");
     assert!(sent[0].1.starts_with(b"/first\0"));
 }
+
+/// The app's New Network Cue in a workspace with no network patch (the golden message
+/// `client/command_add_new_network_cue.json`, which the Swift test compares): the engine takes
+/// the default patch and the cue in one step, shows the cue broken because it has no address yet,
+/// and one undo removes both.
+#[test]
+fn a_network_cue_added_like_the_app_does_comes_with_its_patch_and_undoes_as_one() {
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/protocol/client/command_add_new_network_cue.json"),
+    )
+    .unwrap();
+    let mut message = openlab_core::protocol::decode_client(&text).unwrap();
+    let ClientMessage::Command {
+        id: rid, command, ..
+    } = &mut message
+    else {
+        panic!("not a command");
+    };
+    // Only the list is pointed at this show's; the patch and cue are the app's.
+    let openlab_core::Command::Transaction { commands } = command.as_mut() else {
+        panic!("not a transaction");
+    };
+    let openlab_core::Command::AddCue { at, .. } = &mut commands[1] else {
+        panic!("not an AddCue");
+    };
+    at.list = list_id();
+    let mut ws = workspace(vec![]);
+    ws.network_patches.clear();
+    let config = config(&ws);
+    let mut s = show_with(ws, config);
+    *rid = s.request_id();
+    let replies = s.send(message);
+    assert!(
+        replies.iter().all(|r| !matches!(
+            r,
+            ServerMessage::Result {
+                outcome: Outcome::Error(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+    let ws = s.control().workspace();
+    assert_eq!(ws.network_patches.len(), 1);
+    let destination = ws.network_patches[0].id;
+    assert!(matches!(
+        &ws.find_cue(id(14)).unwrap().kind,
+        CueKind::Network { destination: d, address, .. } if *d == destination && address.is_empty()
+    ));
+    assert!(matches!(
+        s.control().engine().problems(id(14)),
+        [CueProblem::NetworkMessageInvalid { .. }]
+    ));
+    let undo = s.request_id();
+    s.send(ClientMessage::Undo { id: undo });
+    let ws = s.control().workspace();
+    assert!(ws.network_patches.is_empty() && ws.find_cue(id(14)).is_none());
+}

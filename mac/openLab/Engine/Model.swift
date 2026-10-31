@@ -20,6 +20,10 @@ struct ModelID: Hashable, Sendable, Codable, ExpressibleByStringLiteral, CustomS
 struct ModelObject: Hashable, Sendable, Decodable {
     let id: ModelID
     let raw: JSONValue
+    init(id: ModelID, raw: JSONValue) {
+        self.id = id
+        self.raw = raw
+    }
     init(from decoder: Decoder) throws {
         let v = try JSONValue(from: decoder)
         guard let id = v["id"]?.stringValue else {

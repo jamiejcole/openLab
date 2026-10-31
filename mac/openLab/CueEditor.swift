@@ -151,11 +151,28 @@ final class CueEditor {
 
     func selectedNodes() -> [CueNode] { (cueList?.selectedIDs() ?? []).compactMap { cueList?.node($0) } }
 
+    /// The destination a Network cue gets in a workspace with none: this Mac's OSC port over UDP.
+    static func defaultNetworkPatch(id: ModelID) -> JSONValue {
+        .object([
+            "id": .string(id.raw), "name": .string(loc("edit.networkPatch.defaultName")),
+            "host": .string("127.0.0.1"), "port": .int(53000), "protocol": .string("udp"),
+        ])
+    }
+
     @discardableResult
     func add(_ kind: NewCueKind) async -> ModelID? {
         guard await begin(), let list = cueList?.listID else { return nil }
         let id = ModelID(UUID().uuidString.lowercased())
-        guard let cue = kind.cueJSON(id: id, patch: store.model?.patches.first) else {
+        // A Network cue needs a destination. A workspace with none gets a default one in the same
+        // undo step (the app has no network patch editor yet; the inspector picks another later).
+        var setup: [Command] = []
+        var network = store.model?.networkPatches.first
+        if kind == .network, network == nil {
+            let patch = Self.defaultNetworkPatch(id: ModelID(UUID().uuidString.lowercased()))
+            setup = [.addNetworkPatch(patch, index: 0)]
+            network = patch["id"]?.stringValue.map { ModelObject(id: ModelID($0), raw: patch) }
+        }
+        guard let cue = kind.cueJSON(id: id, patch: store.model?.patches.first, networkPatch: network) else {
             notify(loc("edit.error.noPatch"))
             return nil
         }
@@ -171,7 +188,8 @@ final class CueEditor {
             let place = Self.insertion(selected: selected, roots: roots)
             command = Command.addCue(cue, list: list, parent: place.parent, index: place.index)
         }
-        guard report(await store.send(command: command)) else { return nil }
+        let all = Command.transaction(setup + [command]) ?? command
+        guard report(await store.send(command: all)) else { return nil }
         cueList?.selectAsUser([id])
         return id
     }
