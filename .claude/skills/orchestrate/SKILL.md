@@ -64,7 +64,7 @@ Review traffic stays local (implementer report files, reviewer replies, `SendMes
 - Branch named after the tasks (e.g. `m5-2-engine-lifecycle`). Push once: `git push origin <worktree-branch>:<task-branch>`.
 - `gh pr create --base main` with the body from `.github/pull_request_template.md`: `Closes #N` for each issue, task IDs + one line each, requirement IDs, the `PREPUSH PASS` line, the review summary and docs-claims lines of the template, QLab rows added. No full review text.
 - Check CI on the PR **once** when you would otherwise merge (`gh pr checks N`); fetch job logs only if red (`gh run view <id> --log-failed`). If GitHub reports a conflict, merge `main` into the branch (merge commit, never rebase a pushed branch), re-run `make prepush`, push.
-- Merge only when: CI green, no open High or Medium (or the user's downgrade is quoted in the PR), Lows fixed or filed. `gh pr merge N --merge --delete-branch --subject "Merge <task IDs>: <summary>"`.
+- Merge only when: CI green, no open High or Medium (or the user's downgrade is quoted in the PR), Lows fixed or dropped with a line in the PR. `gh pr merge N --merge --delete-branch --subject "Merge <task IDs>: <summary>"`.
 - Afterwards: `git fetch origin main`, fast-forward the local `main`, remove the worktree (and its `engine/target`).
 - Orchestrator-only PRs that touch `CLAUDE.md`, `.claude/`, `.github/`, `Makefile`, `scripts/` or docs claims get a `pr-reviewer` pass whose brief says: check for contradictions with the other instruction files and for claims that don't match the repo. Land them only while no agent is running, so no agent works under old rules. Small handoff-note commits may ride along in the next batch's PR.
 
@@ -86,9 +86,9 @@ Review traffic stays local (implementer report files, reviewer replies, `SendMes
 - **Escalate instead of deciding** when: architecture or scope changes, a new non-trivial dependency, anything needing the user's machine/accounts/security settings, a reviewer-implementer deadlock, or a requirement looks wrong.
 
 ## 8. Milestone end
-1. Cleanup batch: every open `low` / `severity:*` issue in the milestone is fixed or re-milestoned with a reason.
+1. Cleanup batch: every open `low` / `severity:*` issue in the milestone is fixed or re-milestoned with a reason. Audits below file only Highs and Mediums.
 2. Whole-repo audit: 4 parallel reviewers (Opus: core+audio, engine service, app; Sonnet: CI/docs/instructions), each reading its area's files in full (not a diff) against CLAUDE.md. A second agent verifies each High/Medium before it is filed.
-3. Update the policy-health line in `docs/handoff/orchestrator-state.md`: `low` issues opened/closed, Mediums fixed in the last reviews, claims the repo did not back.
+3. Update the policy-health line in `docs/handoff/orchestrator-state.md`: `low` issues closed (none are opened now), Mediums fixed in the last reviews, claims the repo did not back.
 4. Then the user check-in (section 7).
 
 ## Standing decisions
