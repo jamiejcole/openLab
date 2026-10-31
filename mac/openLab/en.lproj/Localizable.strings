@@ -218,6 +218,7 @@
 "inspector.failed" = "The change could not be sent.";
 
 "transport.reset" = "Reset all";
+"transport.reset.unavailable" = "Reset all is not available yet.";
 "transport.pause" = "Pause all";
 "transport.resume" = "Resume all";
 "transport.panic" = "Panic";
