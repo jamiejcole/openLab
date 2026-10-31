@@ -288,6 +288,31 @@ impl Control {
             .collect()
     }
 
+    /// Waits until a render up to sample `end` reads nothing a disk worker has still to write:
+    /// every playing stream has written the frames it needs (and has seen a devamp cut it was
+    /// sent), every prepared stream is primed. Each wait is bounded by `timeout`; returns how many
+    /// timed out. For drivers that render faster than real time (the offline driver, the stepped
+    /// virtual device), which a device never does for long.
+    pub fn wait_streams(&self, end: SampleTime, timeout: std::time::Duration) -> u64 {
+        let mut stalls = 0;
+        for (handle, needed) in self.stream_needs(end) {
+            // A devamp cut the voice published is seen by the disk worker on its next poll, in
+            // real time; the render must not outrun it (live, the loop exit buffer covers it).
+            if !matches!(handle.wait_cut_seen(timeout), Ok(true) | Err(_)) {
+                stalls += 1;
+            }
+            if !matches!(handle.wait_written(needed, timeout), Ok(true) | Err(_)) {
+                stalls += 1;
+            }
+        }
+        for handle in self.prepared_streams() {
+            if !matches!(handle.wait_primed(timeout), Ok(true) | Err(_)) {
+                stalls += 1;
+            }
+        }
+        stalls
+    }
+
     /// No voice, alias or deferred report is left in any doc.
     pub fn is_idle(&self) -> bool {
         self.docs

@@ -1,0 +1,7 @@
+{
+  "type": "request",
+  "id": 58,
+  "request": {
+    "type": "lose_device"
+  }
+}

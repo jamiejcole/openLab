@@ -10,8 +10,9 @@ PATHS_ALL_RE='^(\.github/|Makefile$|scripts/(paths|rust-checks|soak-rt-ci)\.sh$|
 PATHS_ENGINE_RE='^engine/'
 # The macOS app job. On a pull request it runs only for what the app reads from the engine: the
 # protocol and show file (Swift Codable types, fixtures), the engine's command line and engine.json
-# (host/), and the bundled build. The app's tests use FakeEngine; once XCUITests drive a real
-# engine (M5.16), widen this to every engine change. On main every engine change rebuilds the app.
+# (host/), and the bundled build. The app's tests still use FakeEngine; the engine's virtual device
+# (`--virtual-device`, test-support builds) lets them run the real engine, and when they do (#132)
+# this set must cover every engine change they exercise. On main every engine change rebuilds the app.
 PATHS_MAC_PR_RE='^(mac/|engine/fixtures/protocol/|engine/crates/core/src/(protocol|show_file)|engine/crates/engine/src/(main\.rs|host/)|engine/Cargo\.(toml|lock)$|engine/rust-toolchain\.toml$|docs/(protocol|file-format)\.md$)'
 PATHS_MAC_MAIN_RE='^(mac|engine)/'
 # The Release universal build and bundle check (`make mac`, `make verify-bundle`): on main always,

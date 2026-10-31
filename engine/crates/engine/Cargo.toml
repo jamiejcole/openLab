@@ -15,8 +15,9 @@ workspace = true
 
 [features]
 # Test doubles (the media watch's `FakeFs`, the disk streamer's `before_open`) for the integration
-# tests; never in a release build.
-test-support = ["openlab-audio/test-support"]
+# tests, and the virtual audio device (`--virtual-device`, with core's test-only requests) the app's
+# tests run the real engine on; never in a release build.
+test-support = ["openlab-audio/test-support", "openlab-core/test-support"]
 
 [dependencies]
 # Debug builds install its AllocDisabler as the global allocator (M3.21), so the device

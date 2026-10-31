@@ -820,6 +820,7 @@ name = "openlab-core"
 version = "0.0.1"
 dependencies = [
  "openlab-audio",
+ "openlab-core",
  "proptest",
  "serde",
  "serde_json",

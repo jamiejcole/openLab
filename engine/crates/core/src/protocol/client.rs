@@ -390,7 +390,29 @@ pub enum Request {
         end: f64,
         buckets: u32,
     },
+    /// Test support only (docs/protocol.md "Test support"): with `--virtual-device stepped`,
+    /// waits for the engine's background work (media probes, device jobs, file reads), then
+    /// moves device time on by `frames` (at most [`MAX_ADVANCE_FRAMES`]; 0 only waits),
+    /// rendering them into a discarded buffer block by block with a control tick after each.
+    /// Answers `ok` with no data once done. A build without the `test-support` feature has no
+    /// such request (it answers `bad_request`). App-scope.
+    #[cfg(feature = "test-support")]
+    Advance {
+        frames: u64,
+    },
+    /// Test support only: the virtual output device goes away (the host reports it lost and it
+    /// leaves the device list), as an unplugged interface does. App-scope.
+    #[cfg(feature = "test-support")]
+    LoseDevice,
+    /// Test support only: the virtual output device is back in the list; the engine reopens it
+    /// as it would a device plugged back in. App-scope.
+    #[cfg(feature = "test-support")]
+    RestoreDevice,
 }
+
+/// Most frames one `advance` may move device time by: ten minutes at 192 kHz.
+#[cfg(feature = "test-support")]
+pub const MAX_ADVANCE_FRAMES: u64 = 192_000 * 600;
 
 /// Most buckets one `waveform` request may ask for: more than any screen is wide.
 pub const MAX_WAVEFORM_BUCKETS: u32 = 8192;
@@ -478,6 +500,13 @@ impl ClientMessage {
                 }
                 Ok(())
             }
+            #[cfg(feature = "test-support")]
+            Self::Request {
+                request: Request::Advance { frames },
+                ..
+            } if *frames > MAX_ADVANCE_FRAMES => Err(ProtocolError::OutOfRange {
+                field: "request.frames",
+            }),
             Self::Hotkey { key, .. } if key.is_empty() || key.len() > MAX_HOTKEY_KEY => {
                 Err(ProtocolError::OutOfRange {
                     field: "hotkey.key",

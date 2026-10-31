@@ -1,0 +1,7 @@
+{
+  "type": "request",
+  "id": 59,
+  "request": {
+    "type": "restore_device"
+  }
+}
