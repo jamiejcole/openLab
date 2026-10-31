@@ -42,6 +42,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let fadeSettings = FadeSettingsPanel()
     var levelsItem: NSTabViewItem?
     var fadeItem: NSTabViewItem?
+    /// The timing and loops tab of an Audio cue (AUD-11, AUD-12, AUD-14), in the tab view only while
+    /// one is selected.
+    let timeLoops = TimeLoopsPanel()
+    var timeLoopsItem: NSTabViewItem?
     /// `kind` is replaced whole by a levels or fade edit, so an edit made before the engine answered
     /// the previous one must start from what was sent (as `pendingTriggers`).
     var pendingKinds: [ModelID: JSONValue] = [:]
@@ -244,6 +248,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         modeItem = modeTab(row: row, column: column)
         loadTimeItem = loadTimeTab(row: row, column: column)
         buildLevelsTabs()
+        buildTimeLoopsTab()
         tabView.setAX(AX.inspectorTabs)
 
         for v in [tabView, emptyLabel, messageLabel] {
@@ -266,8 +271,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         subscription = store.changes.sink { [weak self] change in
             switch change {
             case .reset, .model: MainActor.assumeIsolated { self?.render() }
-            case .runtime: MainActor.assumeIsolated { self?.updatePreviewButton() }
-            case .progress, .waits, .notices: break
+            case .runtime(let cues, _):
+                MainActor.assumeIsolated {
+                    self?.updatePreviewButton()
+                    // The file's length may have come (or changed): the waveform follows.
+                    if let self, let cue = self.cueForEdit, cues.contains(cue.id) { self.renderTimeLoops(cue) }
+                }
+            case .progress(let ids):
+                MainActor.assumeIsolated {
+                    if let self, let id = self.cue?.id, ids.contains(id) { self.updateTimeLoopsProgress() }
+                }
+            case .waits, .notices: break
             }
         }
         connectionSub = store.$connectionState.sink { [weak self] state in  // willSet: use the emitted value
@@ -493,6 +507,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         armedCheck.state = cue.raw["armed"] == .bool(false) ? .off : .on
         renderMode(cue)
         renderLevels(cueForEdit ?? cue, model: model)
+        renderTimeLoops(cueForEdit ?? cue)
         updatePreviewButton()
         if isLocked { applyLock() }
     }
@@ -538,6 +553,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         audioLevels.isLocked = isLocked
         fadeLevels.isLocked = isLocked
         fadeSettings.isLocked = isLocked
+        timeLoops.isLocked = isLocked
         if isLocked, !stale.isEmpty { render(force: stale) }
     }
 
