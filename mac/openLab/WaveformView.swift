@@ -156,9 +156,10 @@ class WaveformView: NSView {
     var onTrimChanging: ((Handle, Double) -> Void)?
     /// A drag moved a handle: its new time (for the end, nil is the end of the file).
     var onTrimCommit: ((Handle, Double?) -> Void)?
-    /// A drag moved a slice marker or took it out of the view (`sliceMarks` and `sliceCounts`
-    /// already show the result).
-    var onSliceCommit: (() -> Void)?
+    /// A drag moved the slice marker that was at `from` to `to`, or (nil) took it out of the view.
+    var onSliceCommit: ((_ from: Double, _ to: Double?) -> Void)?
+    /// A drag ended, committed or not: what the view kept for it is to be shown afresh.
+    var onDragEnded: (() -> Void)?
     /// A drag changed the fades: the new fade-in and fade-out lengths.
     var onFadesCommit: ((Double, Double) -> Void)?
     /// The insertion point moved.
@@ -280,6 +281,7 @@ class WaveformView: NSView {
     func endDrag() {
         guard let handle = dragging else { return }
         dragging = nil
+        defer { onDragEnded?() }
         switch handle {
         case .start:
             if trimStart != dragOrigin.start { onTrimCommit?(.start, trimStart) }
@@ -293,9 +295,9 @@ class WaveformView: NSView {
                 removing = false
                 sliceMarks.remove(at: i)
                 if sliceCounts.indices.contains(i) { sliceCounts.remove(at: i) }
-                onSliceCommit?()
+                onSliceCommit?(markOrigin, nil)
             } else if sliceMarks[i] != markOrigin {
-                onSliceCommit?()
+                onSliceCommit?(markOrigin, sliceMarks[i])
             }
         case .fadeIn, .fadeOut:
             if fadeIn != fadeOrigin.in || fadeOut != fadeOrigin.out { onFadesCommit?(fadeIn, fadeOut) }

@@ -199,6 +199,7 @@ final class TimeLoopsTests: XCTestCase {
         await assertEventually { self.kinds.count == 1 }
         XCTAssertEqual(kinds.last?["start_time"], .double(5))
         await assertEventually { self.panel.startTime == 5 }
+        await answered()
         type(panel.endField, "4")
         XCTAssertEqual(vc.messageLabel.stringValue, loc("timeLoops.invalid.trim"))
         XCTAssertEqual(panel.endField.stringValue, "01:02.50", "the file's end is shown again")
@@ -227,6 +228,7 @@ final class TimeLoopsTests: XCTestCase {
         await assertEventually { self.kinds.count == 2 }
         XCTAssertEqual(kinds.last?["last_slice_play_count"], .double(0))
         await assertEventually { self.panel.loopRadio.state == .on && !self.panel.countField.isEnabled }
+        await answered()
         panel.playRadio.state = .on
         fire(panel.playRadio)
         await assertEventually { self.kinds.count == 3 }
@@ -296,11 +298,13 @@ final class TimeLoopsTests: XCTestCase {
         await showIntro()
         type(panel.startField, "10")
         await assertEventually { self.panel.startTime == 10 }
+        await answered()
         panel.showProgress(elapsed: 3)
         XCTAssertEqual(wave.playhead, 13)
         panel.loopRadio.state = .on
         fire(panel.loopRadio)
         await assertEventually { self.panel.playCount == 0 }
+        await answered()
         panel.showProgress(elapsed: 52.5 + 2)
         XCTAssertEqual(wave.playhead ?? 0, 12, accuracy: 1e-9, "the second pass")
         panel.showProgress(elapsed: nil)
@@ -315,12 +319,16 @@ final class TimeLoopsTests: XCTestCase {
 
     private var modelKind: JSONValue? { rig.store.model?.cue(Self.intro)?.raw["kind"] }
 
+    /// Every edit sent from the tab has been answered (the fake engine has it).
+    private func answered() async { await assertEventually("answered") { self.vc.pendingKinds.isEmpty } }
+
     /// Clicks at `t` and adds a slice there; waits until the model has `count` markers.
     private func addSlice(at t: Double, expect count: Int) async {
         wave.click(atX: wave.scale.x(t))
         XCTAssertTrue(panel.addSliceButton.isEnabled)
         fire(panel.addSliceButton)
         await assertEventually("\(count) markers") { self.panel.sliceMarks.count == count }
+        await answered()
     }
 
     /// AUD-12: a click places the insertion point and the new-slice button puts a marker there,
@@ -336,6 +344,7 @@ final class TimeLoopsTests: XCTestCase {
         panel.editSliceCount(0)
         type(panel.sliceCountField, "3")
         await assertEventually { self.panel.sliceMarks.first?.playCount == 3 }
+        await answered()
         await addSlice(at: 5, expect: 2)
         XCTAssertEqual(slices(kinds.last), [[5, 1], [10, 3]], "the split slice's count stays after the marker")
         XCTAssertFalse(panel.slicesNote.isHidden, "the note says each slice has its own count")
@@ -399,6 +408,64 @@ final class TimeLoopsTests: XCTestCase {
         await assertEventually { self.slices(self.modelKind) == [[12, 1], [40, 5]] }
     }
 
+    /// Another client (or OSC, or an undo) adds a marker at `t` while the tab has the cue shown.
+    private func addMarkerElsewhere(_ t: Double) async {
+        guard var k = modelKind else { return XCTFail("no kind") }
+        let marks = (k["slices"]?.arrayValue ?? []) + [.object(["time": .double(t), "play_count": .int(1)])]
+        k.set("slices", .array(marks.sorted { ($0["time"]?.doubleValue ?? 0) < ($1["time"]?.doubleValue ?? 0) }))
+        _ = await rig.store.send(command: .setProperty(Self.intro, .kind(k)), coalesce: nil)
+        await assertEventually("the tab has the other edit") { self.panel.sliceMarks.contains { $0.time == t } }
+        await answered()
+    }
+
+    /// A marker added elsewhere while a marker is dragged is kept when the drag is let go: the
+    /// drag sends only its own move.
+    func testAnEditElsewhereDuringADragIsKept() async {
+        await showIntro()
+        await addSlice(at: 10, expect: 1)
+        await addSlice(at: 20, expect: 2)
+        XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(10)))
+        wave.drag(toX: wave.scale.x(12))
+        await addMarkerElsewhere(40)
+        XCTAssertEqual(wave.sliceMarks, [12, 20], "the drag keeps its own view meanwhile")
+        wave.endDrag()
+        await assertEventually { self.slices(self.modelKind) == [[12, 1], [20, 1], [40, 1]] }
+        XCTAssertEqual(slices(kinds.last), [[12, 1], [20, 1], [40, 1]])
+        XCTAssertEqual(wave.sliceMarks, [12, 20, 40])
+    }
+
+    /// A drag let go where it began leaves no stale view behind: a new slice added next keeps a
+    /// marker added elsewhere during the drag.
+    func testANewSliceAfterAnUnchangedDragKeepsAnEditElsewhere() async {
+        await showIntro()
+        await addSlice(at: 10, expect: 1)
+        XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(10)))
+        await addMarkerElsewhere(40)
+        wave.endDrag()
+        XCTAssertEqual(wave.sliceMarks, [10, 40])
+        await addSlice(at: 30, expect: 3)
+        XCTAssertEqual(slices(kinds.last), [[10, 1], [30, 1], [40, 1]])
+    }
+
+    /// Each slice change applies to the cue it is given, touching only its own marker; a marker
+    /// that is gone or a place too near another changes nothing.
+    func testSliceChangesApplyToTheCurrentKind() {
+        let base = TimeLoopsPanel.apply(
+            .addSlice(20), to: TimeLoopsPanel.apply(.addSlice(10), to: FakeEngine.audioKind("a.wav")))
+        XCTAssertEqual(slices(base), [[10, 1], [20, 1]])
+        XCTAssertEqual(slices(TimeLoopsPanel.apply(.moveSlice(from: 10, to: 12), to: base)), [[12, 1], [20, 1]])
+        XCTAssertEqual(TimeLoopsPanel.apply(.moveSlice(from: 11, to: 12), to: base), base, "no marker there")
+        XCTAssertEqual(TimeLoopsPanel.apply(.moveSlice(from: 10, to: 25), to: base), base, "never past a neighbour")
+        XCTAssertEqual(TimeLoopsPanel.apply(.addSlice(20.01), to: base), base, "too near")
+        XCTAssertEqual(slices(TimeLoopsPanel.apply(.removeSlice(10), to: base)), [[20, 1]])
+        XCTAssertEqual(slices(TimeLoopsPanel.apply(.sliceCount(20, 0), to: base)), [[10, 1], [20, 0]])
+        XCTAssertEqual(TimeLoopsPanel.apply(.sliceCount(30, 2), to: base), base)
+        let faded = TimeLoopsPanel.apply(.fades(fadeIn: 2, fadeOut: nil, curve: "s_curve"), to: base)
+        XCTAssertEqual(faded["fade_in"]?["duration"]?.doubleValue, 2)
+        XCTAssertEqual(faded["fade_out"]?["duration"]?.doubleValue, 0, "the fade-out is kept")
+        XCTAssertEqual(faded["fade_out"]?["curve"], .string("s_curve"))
+    }
+
     /// AUD-12: clearing removes every marker; it is off while there are none.
     func testClearingSlices() async {
         await showIntro()
@@ -407,6 +474,7 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertTrue(panel.deleteSlicesButton.isEnabled)
         fire(panel.deleteSlicesButton)
         await assertEventually { !self.panel.hasSlices }
+        await answered()
         XCTAssertEqual(slices(kinds.last), [])
         XCTAssertFalse(panel.deleteSlicesButton.isEnabled)
         XCTAssertTrue(panel.slicesNote.isHidden)
@@ -475,6 +543,7 @@ final class TimeLoopsTests: XCTestCase {
         panel.fadeCheck.state = .on
         fire(panel.fadeCheck)
         await assertEventually { self.panel.hasFades }
+        await answered()
         XCTAssertEqual(kinds.last?["fade_in"], .object(["duration": .double(1), "curve": .string("linear")]))
         XCTAssertEqual(kinds.last?["fade_out"], .object(["duration": .double(1), "curve": .string("linear")]))
         XCTAssertTrue(wave.fadesShown)
@@ -482,20 +551,24 @@ final class TimeLoopsTests: XCTestCase {
         panel.fadeCurvePopup.selectItem(at: FadeSettingsPanel.curves.firstIndex(of: "equal_power")!)
         fire(panel.fadeCurvePopup)
         await assertEventually { self.panel.fadeCurve == "equal_power" }
+        await answered()
         XCTAssertEqual(kinds.last?["fade_out"]?["curve"], .string("equal_power"))
         XCTAssertEqual(wave.fadeCurve, "equal_power")
         panel.fadeCheck.state = .off
         fire(panel.fadeCheck)
         await assertEventually { !self.panel.hasFades }
+        await answered()
         XCTAssertEqual(kinds.last?["fade_in"], .object(["duration": .double(0), "curve": .string("equal_power")]))
         XCTAssertEqual(kinds.last?["fade_out"]?["duration"], .double(0))
         XCTAssertFalse(wave.fadesShown)
         // A short cue gets a quarter of its length each way.
         type(panel.endField, "2")
         await assertEventually { self.panel.endTime == 2 }
+        await answered()
         panel.fadeCheck.state = .on
         fire(panel.fadeCheck)
         await assertEventually { self.panel.hasFades }
+        await answered()
         XCTAssertEqual(kinds.last?["fade_in"]?["duration"], .double(0.5))
     }
 
@@ -506,6 +579,7 @@ final class TimeLoopsTests: XCTestCase {
         panel.fadeCheck.state = .on
         fire(panel.fadeCheck)
         await assertEventually { self.panel.hasFades }
+        await answered()
         let top = wave.waveRect.minY + 2
         XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(1), y: top))
         XCTAssertEqual(wave.dragging, .fadeIn)
@@ -516,12 +590,14 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertEqual(kinds.last?["fade_in"]?["duration"], .double(3))
         XCTAssertEqual(kinds.last?["fade_out"]?["duration"], .double(1))
         await assertEventually { self.panel.fadeIn == 3 }
+        await answered()
         XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(61.5), y: top))
         XCTAssertEqual(wave.dragging, .fadeOut)
         wave.drag(toX: wave.scale.x(0), y: top)
         XCTAssertEqual(wave.fadeOut, 59.5, accuracy: 1e-9, "stops where the fade-in ends")
         wave.endDrag()
         await assertEventually { self.panel.fadeOut == 59.5 }
+        await answered()
         XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(0), y: 2), "in the ruler the start trim is taken")
         XCTAssertEqual(wave.dragging, .start)
         wave.endDrag()
@@ -549,31 +625,39 @@ final class TimeLoopsTests: XCTestCase {
         await showIntro()
         type(panel.startField, "0.25")
         await assertEventually { self.panel.startTime == 0.25 }
+        await answered()
         type(panel.endField, "1.75")
         await assertEventually { self.panel.endTime == 1.75 }
+        await answered()
         await addSlice(at: 0.5, expect: 1)
         await addSlice(at: 1, expect: 2)
         panel.editSliceCount(0)
         type(panel.sliceCountField, "3")
         await assertEventually { self.panel.sliceMarks.first?.playCount == 3 }
+        await answered()
         panel.editSliceCount(2)
         type(panel.sliceCountField, "2")
         await assertEventually { self.panel.playCount == 2 }
+        await answered()
         panel.fadeCheck.state = .on
         fire(panel.fadeCheck)
         await assertEventually { self.panel.fadeIn == 0.375 }
+        await answered()
         let top = wave.waveRect.minY + 2
         XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(0.625), y: top))
         wave.drag(toX: wave.scale.x(0.35), y: top)
         wave.endDrag()
         await assertEventually { self.panel.fadeIn == 0.1 }
+        await answered()
         XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(1.375), y: top))
         wave.drag(toX: wave.scale.x(1.55), y: top)
         wave.endDrag()
         await assertEventually { self.panel.fadeOut == 0.2 }
+        await answered()
         panel.fadeCurvePopup.selectItem(at: FadeSettingsPanel.curves.firstIndex(of: "s_curve")!)
         fire(panel.fadeCurvePopup)
         await assertEventually { self.panel.fadeCurve == "s_curve" }
+        await answered()
         let golden = try XCTUnwrap(
             Fixtures.json("client", "command_set_audio_timing")["command"]?["property"]?["value"])
         let sent = try XCTUnwrap(kinds.last)

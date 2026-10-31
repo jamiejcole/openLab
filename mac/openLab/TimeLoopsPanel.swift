@@ -16,10 +16,17 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         case end(Double?)
         /// 0: loop until devamped (infinite). With slices, the last slice's count.
         case playCount(Int)
-        /// The whole set of slice markers, in time order.
-        case slices([SliceMark])
-        /// The built-in fade-in and fade-out lengths (0: none) and their one curve.
-        case fades(fadeIn: Double, fadeOut: Double, curve: String)
+        /// A new marker; the slice before it plays once.
+        case addSlice(Double)
+        /// The marker at `from` moved to `to`.
+        case moveSlice(from: Double, to: Double)
+        /// The marker at this time deleted.
+        case removeSlice(Double)
+        case clearSlices
+        /// The play count of the slice the marker at this time ends.
+        case sliceCount(Double, Int)
+        /// Built-in fade lengths (0: none) and the one curve of both; nil keeps what the cue has.
+        case fades(fadeIn: Double?, fadeOut: Double?, curve: String?)
     }
 
     /// A slice marker: where it is in the file, and the play count of the slice it ends (0: until
@@ -27,6 +34,73 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     struct SliceMark: Equatable {
         var time: Double
         var playCount: Int
+    }
+
+    /// `kind` with `change` made to it. The inspector applies it to the cue as the model has it
+    /// plus any edit not yet answered, never to a copy the tab kept: a drag or a quick second edit
+    /// changes only what it touched, and an edit made meanwhile elsewhere (another client, OSC,
+    /// undo) stays. A marker that is no longer there, or a place too near another, changes
+    /// nothing.
+    static func apply(_ change: Change, to kind: JSONValue) -> JSONValue {
+        var kind = kind
+        var marks = marks(of: kind)
+        let start = kind["start_time"]?.doubleValue ?? 0
+        let end = kind["end_time"]?.doubleValue ?? .infinity
+        let index = { (t: Double) in marks.firstIndex { abs($0.time - t) < 1e-9 } }
+        /// Whether `t` may hold a marker given the others in `others`.
+        func fits(_ t: Double, among others: [SliceMark]) -> Bool {
+            let near = WaveformView.minLength - 1e-9
+            return t - start >= near && end - t >= near && others.allSatisfy { abs($0.time - t) >= near }
+        }
+        switch change {
+        case .start(let t):
+            kind.set("start_time", .double(t))
+            return kind
+        case .end(let e):
+            kind.set("end_time", e.map { .double($0) } ?? .null)
+            return kind
+        case .playCount(let n):
+            kind.set("last_slice_play_count", .int(Int64(n)))
+            return kind
+        case .addSlice(let t):
+            guard marks.count < maxSliceMarks, fits(t, among: marks) else { return kind }
+            marks.insert(SliceMark(time: t, playCount: 1), at: marks.firstIndex { $0.time > t } ?? marks.count)
+        case .moveSlice(let from, let to):
+            guard let i = index(from) else { return kind }
+            var others = marks
+            others.remove(at: i)
+            // Only between the same neighbours: a move never reorders the slices' counts.
+            let before = i > 0 ? marks[i - 1].time : -Double.infinity
+            let after = i + 1 < marks.count ? marks[i + 1].time : Double.infinity
+            guard to > before, to < after, fits(to, among: others) else { return kind }
+            marks[i].time = to
+        case .removeSlice(let t):
+            guard let i = index(t) else { return kind }
+            marks.remove(at: i)
+        case .clearSlices: marks = []
+        case .sliceCount(let t, let n):
+            guard let i = index(t) else { return kind }
+            marks[i].playCount = n
+        case .fades(let fadeIn, let fadeOut, let curve):
+            for (key, length) in [("fade_in", fadeIn), ("fade_out", fadeOut)] {
+                var spec = kind[key] ?? .object(["duration": .double(0), "curve": .string("linear")])
+                if let length { spec.set("duration", .double(length)) }
+                if let curve { spec.set("curve", .string(curve)) }
+                kind.set(key, spec)
+            }
+            return kind
+        }
+        kind.set(
+            "slices",
+            .array(marks.map { .object(["time": .double($0.time), "play_count": .int(Int64($0.playCount))]) }))
+        return kind
+    }
+
+    static func marks(of kind: JSONValue) -> [SliceMark] {
+        (kind["slices"]?.arrayValue ?? []).compactMap { m in
+            guard let t = m["time"]?.doubleValue, let n = m["play_count"]?.doubleValue else { return nil }
+            return SliceMark(time: t, playCount: Int(n))
+        }
     }
 
     /// Peaks asked for: one file, one stretch of it, at one width.
@@ -64,8 +138,10 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     let fadeCurvePopup = NSPopUpButton()
     /// Edits one slice's play count in place, over its number on the waveform.
     let sliceCountField = NSTextField()
-    /// The slice whose count `sliceCountField` edits.
+    /// The slice whose count `sliceCountField` edits (its index when the edit began) and the
+    /// marker that ends it (nil: the last slice).
     private(set) var editingSlice: Int?
+    private var editingMark: Double?
 
     var onChange: ((Change) -> Void)?
     /// A typed value was refused here (its `Localizable.strings` key); the field shows the model's again.
@@ -154,11 +230,15 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             (handle == .start ? startField : endField).stringValue = CueTime.format(t)
         }
         waveform.onTrimCommit = { [weak self] handle, t in self?.commitDrag(handle, t) }
-        waveform.onSliceCommit = { [weak self] in self?.commitSlice() }
+        waveform.onSliceCommit = { [weak self] from, to in
+            guard let self, !isLocked else { return }
+            onChange?(to.map { .moveSlice(from: from, to: $0) } ?? .removeSlice(from))
+        }
         waveform.onFadesCommit = { [weak self] fadeIn, fadeOut in
             guard let self, !isLocked else { return }
-            onChange?(.fades(fadeIn: fadeIn, fadeOut: fadeOut, curve: waveform.fadeCurve))
+            onChange?(.fades(fadeIn: fadeIn, fadeOut: fadeOut, curve: nil))
         }
+        waveform.onDragEnded = { [weak self] in self?.syncWaveform() }
         waveform.onInsertion = { [weak self] in self?.applyLock() }
         waveform.onEditCount = { [weak self] i in self?.editSliceCount(i) }
         waveform.onResize = { [weak self] in self?.reload() }
@@ -217,12 +297,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     var endTime: Double? { kind["end_time"]?.doubleValue }
     var playCount: Int { Int(kind["last_slice_play_count"]?.doubleValue ?? 1) }
     var hasSlices: Bool { !sliceMarks.isEmpty }
-    var sliceMarks: [SliceMark] {
-        (kind["slices"]?.arrayValue ?? []).compactMap { m in
-            guard let t = m["time"]?.doubleValue, let n = m["play_count"]?.doubleValue else { return nil }
-            return SliceMark(time: t, playCount: Int(n))
-        }
-    }
+    var sliceMarks: [SliceMark] { Self.marks(of: kind) }
     var fadeIn: Double { kind["fade_in"]?["duration"]?.doubleValue ?? 0 }
     var fadeOut: Double { kind["fade_out"]?["duration"]?.doubleValue ?? 0 }
     /// The built-in fades' curve: the fade-in's, which the tab sets for both.
@@ -254,17 +329,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         playRadio.state = looping ? .off : .on
         loopRadio.state = looping ? .on : .off
         slicesNote.isHidden = !hasSlices
-        if waveform.dragging == nil {
-            waveform.trimStart = startTime
-            waveform.trimEnd = endTime
-            let marks = sliceMarks
-            waveform.sliceMarks = marks.map(\.time)
-            waveform.sliceCounts = marks.map(\.playCount) + [playCount]
-            waveform.fadesShown = hasFades
-            waveform.fadeIn = fadeIn
-            waveform.fadeOut = fadeOut
-            waveform.fadeCurve = fadeCurve
-        }
+        if waveform.dragging == nil { syncWaveform() }
         fadeCheck.state = hasFades ? .on : .off
         fadeCurvePopup.selectItem(at: FadeSettingsPanel.curves.firstIndex(of: fadeCurve) ?? 0)
         if fileChanged {
@@ -278,6 +343,21 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             reload()
         }
         applyLock()
+    }
+
+    /// The waveform shows the cue as last shown here. While a drag is under way the view keeps its
+    /// own handle; when the drag ends it is shown afresh (`onDragEnded`), so nothing the drag
+    /// kept outlives it.
+    private func syncWaveform() {
+        waveform.trimStart = startTime
+        waveform.trimEnd = endTime
+        let marks = sliceMarks
+        waveform.sliceMarks = marks.map(\.time)
+        waveform.sliceCounts = marks.map(\.playCount) + [playCount]
+        waveform.fadesShown = hasFades
+        waveform.fadeIn = fadeIn
+        waveform.fadeOut = fadeOut
+        waveform.fadeCurve = fadeCurve
     }
 
     /// Where the cue plays in the file, from its elapsed action time: past the trimmed length it
@@ -380,92 +460,59 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         }
     }
 
-    /// The markers as the waveform shows them. Slice edits build on these, not on the model: a
-    /// second edit made before the engine answered the first must keep the first.
-    var shownMarks: [SliceMark] {
-        zip(waveform.sliceMarks, waveform.sliceCounts).map { SliceMark(time: $0, playCount: $1) }
-    }
-
-    /// Shows `marks` at once and sends them.
-    private func sendSlices(_ marks: [SliceMark]) {
-        let last = waveform.sliceCounts.last ?? playCount
-        waveform.sliceMarks = marks.map(\.time)
-        waveform.sliceCounts = marks.map(\.playCount) + [last]
-        onChange?(.slices(marks))
-    }
-
-    /// A slice marker let go at a new time or dragged out of the waveform (the view has already
-    /// moved or dropped it).
-    private func commitSlice() {
-        guard !isLocked else { return }
-        onChange?(.slices(shownMarks))
-    }
-
     /// A new marker at the insertion point. The slice before it plays once and the one after keeps
     /// the count the split slice had, as QLab does.
     @objc func addSlice() {
         guard !isLocked, let t = waveform.insertion else { return }
-        var marks = shownMarks
+        let marks = sliceMarks
         guard marks.count < Self.maxSliceMarks else { return refuseSlice("timeLoops.invalid.tooManySlices") }
         let end = endTime ?? file?.duration ?? .infinity
         let bounds = [startTime, end] + marks.map(\.time)
         guard bounds.allSatisfy({ abs($0 - t) >= WaveformView.minLength - 1e-9 }), t > startTime, t < end else {
             return refuseSlice("timeLoops.invalid.slice")
         }
-        marks.insert(SliceMark(time: t, playCount: 1), at: marks.firstIndex { $0.time > t } ?? marks.count)
-        sendSlices(marks)
+        onChange?(.addSlice(t))
     }
 
     @objc func deleteSlices() {
-        guard !isLocked, !shownMarks.isEmpty else { return }
-        sendSlices([])
+        guard !isLocked, hasSlices else { return }
+        onChange?(.clearSlices)
     }
 
     private func refuseSlice(_ key: String) { onInvalid?(key) }
-
-    /// Shows the fades at once and sends them. Like slice edits, fade edits build on what the
-    /// waveform shows, so a quick second edit keeps the first.
-    private func sendFades(_ fadeIn: Double, _ fadeOut: Double, _ curve: String) {
-        waveform.fadeIn = fadeIn
-        waveform.fadeOut = fadeOut
-        waveform.fadeCurve = curve
-        waveform.fadesShown = fadeIn > 0 || fadeOut > 0
-        fadeCheck.state = waveform.fadesShown ? .on : .off
-        fadeCurvePopup.isEnabled = waveform.fadesShown
-        onChange?(.fades(fadeIn: fadeIn, fadeOut: fadeOut, curve: curve))
-    }
 
     /// The built-in fades on (each way `defaultFade`, at most a quarter of the cue) or off (no
     /// length; the curve is kept).
     @objc private func fadeToggled() {
         guard !isLocked else { return }
-        let on = waveform.fadesShown
-        if fadeCheck.state == .on, !on {
+        if fadeCheck.state == .on, !hasFades {
             let length = (endTime ?? file?.duration).map { $0 - startTime } ?? 4 * Self.defaultFade
             let d = WaveformView.clampRounded(min(Self.defaultFade, length / 4), 0, Self.defaultFade)
-            sendFades(d, d, waveform.fadeCurve)
-        } else if fadeCheck.state == .off, on {
-            sendFades(0, 0, waveform.fadeCurve)
+            onChange?(.fades(fadeIn: d, fadeOut: d, curve: nil))
+        } else if fadeCheck.state == .off, hasFades {
+            onChange?(.fades(fadeIn: 0, fadeOut: 0, curve: nil))
         }
-        fadeCheck.state = waveform.fadesShown ? .on : .off
+        // The cue as shown (the inspector shows it again with the edit).
+        fadeCheck.state = hasFades ? .on : .off
     }
 
     @objc private func fadeCurveChanged() {
         guard !isLocked else { return }
         let curve = FadeSettingsPanel.curves[max(0, fadeCurvePopup.indexOfSelectedItem)]
         let other = kind["fade_out"]?["curve"]?.stringValue ?? curve
-        if curve != waveform.fadeCurve || curve != other { sendFades(waveform.fadeIn, waveform.fadeOut, curve) }
+        if curve != fadeCurve || curve != other { onChange?(.fades(fadeIn: nil, fadeOut: nil, curve: curve)) }
     }
 
     /// Opens the in-place editor on slice `index`'s play count (the last slice's is the cue's
     /// `last_slice_play_count`).
     func editSliceCount(_ index: Int) {
-        let counts = waveform.sliceCounts
-        guard !isLocked, counts.count > 1, counts.indices.contains(index) else { return }
+        let marks = sliceMarks
+        guard !isLocked, !marks.isEmpty, index >= 0, index <= marks.count else { return }
         // One edit at a time: a field editor still open is closed without its text.
         endSliceCountEdit()
         editingSlice = index
-        let count = counts[index]
+        editingMark = index < marks.count ? marks[index].time : nil
+        let count = index < marks.count ? marks[index].playCount : playCount
         sliceCountField.stringValue = count == 0 ? "\u{221E}" : String(count)
         sliceCountField.frame = waveform.countRect(index)
         sliceCountField.isHidden = false
@@ -474,14 +521,17 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
 
     private func endSliceCountEdit() {
         editingSlice = nil
+        editingMark = nil
         sliceCountField.abortEditing()
         sliceCountField.isHidden = true
     }
 
     /// A slice's typed play count: a whole number of plays, or a letter (or ∞) to loop until
-    /// devamped, as QLab takes one. 0 is refused: openLab cannot skip a slice.
+    /// devamped, as QLab takes one. 0 is refused: openLab cannot skip a slice. The slice is the one
+    /// the marker found when the edit began ends, wherever it is now.
     private func commitSliceCount(_ text: String) {
-        guard let index = editingSlice else { return }
+        guard editingSlice != nil else { return }
+        let mark = editingMark
         endSliceCountEdit()
         let n: Int
         if let typed = Int(text), (1...Self.maxPlayCount).contains(typed) {
@@ -491,13 +541,9 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         } else {
             return refuseSlice("timeLoops.invalid.sliceCount")
         }
-        var marks = shownMarks
-        if index < marks.count {
-            guard marks[index].playCount != n else { return }
-            marks[index].playCount = n
-            sendSlices(marks)
-        } else if index == marks.count, n != waveform.sliceCounts.last {
-            waveform.sliceCounts[index] = n
+        if let mark {
+            onChange?(.sliceCount(mark, n))
+        } else if n != playCount {
             onChange?(.playCount(n))
         }
     }

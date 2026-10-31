@@ -63,26 +63,10 @@ extension InspectorViewController {
         timeLoops.showProgress(elapsed: store.progress[cue.id]?.elapsed)
     }
 
+    /// Sends `change` made to the cue as the model has it plus any edit not yet answered
+    /// (`cueForEdit`), then shows that at once, so the next edit and the waveform build on it.
     func sendTimeLoops(_ change: TimeLoopsPanel.Change) {
-        sendKind(
-            { kind in
-                var kind = kind
-                switch change {
-                case .start(let s): kind.set("start_time", .double(s))
-                case .end(let e): kind.set("end_time", e.map { .double($0) } ?? .null)
-                case .playCount(let n): kind.set("last_slice_play_count", .int(Int64(n)))
-                case .slices(let marks):
-                    kind.set(
-                        "slices",
-                        .array(
-                            marks.map {
-                                .object(["time": .double($0.time), "play_count": .int(Int64($0.playCount))])
-                            }))
-                case .fades(let fadeIn, let fadeOut, let curve):
-                    kind.set("fade_in", .object(["duration": .double(fadeIn), "curve": .string(curve)]))
-                    kind.set("fade_out", .object(["duration": .double(fadeOut), "curve": .string(curve)]))
-                }
-                return kind
-            }, key: "timeLoops")
+        sendKind({ TimeLoopsPanel.apply(change, to: $0) }, key: "timeLoops")
+        if let cue = cueForEdit, cue.kindType == "audio" { renderTimeLoops(cue) }
     }
 }
