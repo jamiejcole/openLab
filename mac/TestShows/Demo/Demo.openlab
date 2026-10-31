@@ -173,7 +173,7 @@
             "second_trigger_on_release": false,
             "kind": {
               "type": "fade",
-              "target": "00000000-0000-0000-0000-000000000063",
+              "target": "00000000-0000-0000-0000-00000000000a",
               "duration": 5.0,
               "curve": "equal_power",
               "levels": {

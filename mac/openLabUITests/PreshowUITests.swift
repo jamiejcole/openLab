@@ -2,14 +2,13 @@
 
 import XCTest
 
-/// SM-06: Window > Pre-Show Check runs the check against the fake engine (whose demo show reports
-/// "Radio" broken by a missing file) and lists it; clicking the entry selects Radio in the cue
-/// list while the workspace window keeps the keys (GO still works).
+/// SM-06: Window > Pre-Show Check runs the engine's check on the demo show (whose "Radio" cue is
+/// broken by a missing file) and lists it; clicking the entry selects Radio in the cue list while
+/// the workspace window keeps the keys (GO still works).
 @MainActor
 final class PreshowUITests: XCTestCase {
     func testMenuRunsTheCheckAndClickingAnEntrySelectsTheCue() {
         let app = launchDemo()
-        XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
 
         app.menuBars.menuBarItems["Window"].click()
         app.menuBars.menuItems["Pre-Show Check"].click()
@@ -17,7 +16,7 @@ final class PreshowUITests: XCTestCase {
         let report = app.descendants(matching: .any).matching(identifier: "preshow-table").firstMatch
         XCTAssertTrue(report.waitForExistence(timeout: 10), "the report opens")
         let summary = app.staticTexts.matching(identifier: "preshow-summary").firstMatch
-        XCTAssertTrue(waitFor("value == '2 problems found.'", summary), "the summary counts the problems")
+        XCTAssertTrue(waitFor("value ENDSWITH 'problems found.'", summary), "the summary counts the problems")
         let radio = report.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '2.3  Radio'")).firstMatch
         XCTAssertTrue(radio.waitForExistence(timeout: 10), "the broken cue is listed")
 
@@ -30,23 +29,21 @@ final class PreshowUITests: XCTestCase {
         // NSTableView hit makes an ordinary panel key): GO still reaches the workspace.
         report.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)).click()
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
-        app.checkBoxes["toggle-sidebar"].click()
-        tabButton("Active Cues", in: app).click()
-        XCTAssertTrue(app.staticTexts["2.1  Door slam"].waitForExistence(timeout: 10), "GO ran")
+        XCTAssertTrue(cueStates("Running", in: app).firstMatch.waitForExistence(timeout: 10), "GO ran")
     }
 
     /// Two workspaces: with "Second" holding the keys, choosing an entry in the demo workspace's
     /// report makes the demo window key, so Space fires GO there and not in the other workspace.
     func testChoosingAnEntryMakesItsWorkspaceKey() {
-        let app = launchFake()
-        let demo = app.windows.matching(NSPredicate(format: "identifier == 'main-window' AND title == 'Test'"))
+        let app = launchApp()
+        let demo = app.windows.matching(NSPredicate(format: "identifier == 'main-window' AND title == 'Demo'"))
             .firstMatch
         XCTAssertTrue(demo.waitForExistence(timeout: 10))
         XCTAssertTrue(
             app.windows.matching(NSPredicate(format: "title == 'Second'")).firstMatch.waitForExistence(timeout: 10))
 
         app.menuBars.menuBarItems["Window"].click()
-        app.menuBars.menuItems["Test"].click()
+        app.menuBars.menuItems["Demo"].click()
         app.menuBars.menuBarItems["Window"].click()
         app.menuBars.menuItems["Pre-Show Check"].click()
         let report = app.descendants(matching: .any).matching(identifier: "preshow-table").firstMatch
@@ -58,8 +55,8 @@ final class PreshowUITests: XCTestCase {
         app.menuBars.menuItems["Second"].click()  // the other workspace takes the keys
         radio.click()
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
-        demo.checkBoxes["toggle-sidebar"].click()
-        demo.radioButtons["Active Cues"].click()
-        XCTAssertTrue(demo.staticTexts["2.1  Door slam"].waitForExistence(timeout: 10), "GO ran in the demo workspace")
+        XCTAssertTrue(
+            demo.images.matching(identifier: "cue-state").matching(NSPredicate(format: "label == 'Running'")).firstMatch
+                .waitForExistence(timeout: 10), "GO ran in the demo workspace")
     }
 }

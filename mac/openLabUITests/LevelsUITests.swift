@@ -2,7 +2,7 @@
 
 import XCTest
 
-/// The inspector's Levels tab (Audio cue) and Fade tab (Fade cue) against the fake engine, which
+/// The inspector's Levels tab (Audio cue) and Fade tab (Fade cue) on the real engine, which
 /// applies the cue edits and answers with `model_changed`.
 @MainActor
 final class LevelsUITests: XCTestCase {
