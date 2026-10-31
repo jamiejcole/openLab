@@ -325,7 +325,9 @@ final class MainWindowTests: XCTestCase {
         XCTAssertTrue(wc.masthead.standbyField.stringValue.hasPrefix(number + " \u{00B7} "))
         wc.setShowMode(true)
         XCTAssertEqual(wc.masthead.standbyField.maximumNumberOfLines, 1)
-        XCTAssertEqual(wc.masthead.standbyField.font?.pointSize, MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero).standbyFontSize)
+        XCTAssertEqual(
+            wc.masthead.standbyField.font?.pointSize,
+            MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero).standbyFontSize)
     }
 
     func testShowModePaletteMeetsContrastTargets() {
@@ -342,9 +344,11 @@ final class MainWindowTests: XCTestCase {
     func testMastheadAppliesThePaletteInShowModeOnly() async throws {
         let (wc, _) = try await demoController()
         wc.setShowMode(true)
-        let c = try XCTUnwrap(wc.masthead.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB))
+        let c = try XCTUnwrap(
+            wc.masthead.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB))
         XCTAssertEqual(c.redComponent, 0, accuracy: 0.001)
-        let go = try XCTUnwrap(wc.masthead.goButton.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB))
+        let go = try XCTUnwrap(
+            wc.masthead.goButton.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB))
         XCTAssertEqual(Double(go.greenComponent), ShowModePalette.goFill.g, accuracy: 0.001)
         wc.setShowMode(false)
         XCTAssertNil(wc.masthead.layer?.backgroundColor)

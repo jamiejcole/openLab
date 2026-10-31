@@ -1021,7 +1021,10 @@ final class AppControllerTests: XCTestCase {
             XCTAssertFalse(delegate.validateMenuItem(item), item.title)
         }
         // Items that are not edits stay available in Show Mode.
-        let inspector = try XCTUnwrap(items.first { MainMenu.layoutArea(of: $0) == .masthead && $0.action == #selector(AppDelegate.toggleLayoutArea(_:)) })
+        let inspector = try XCTUnwrap(
+            items.first {
+                MainMenu.layoutArea(of: $0) == .masthead && $0.action == #selector(AppDelegate.toggleLayoutArea(_:))
+            })
         XCTAssertTrue(delegate.validateMenuItem(inspector))
         let launcher = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.showLauncherWindow(_:)) })
         XCTAssertTrue(delegate.validateMenuItem(launcher))
@@ -1870,7 +1873,10 @@ final class AppControllerTests: XCTestCase {
         let wc = try XCTUnwrap(app.windows["1"])
         let items = MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items)
         func layout(_ area: LayoutArea) throws -> NSMenuItem {
-            try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.toggleLayoutArea(_:)) && MainMenu.layoutArea(of: $0) == area })
+            try XCTUnwrap(
+                items.first {
+                    $0.action == #selector(AppDelegate.toggleLayoutArea(_:)) && MainMenu.layoutArea(of: $0) == area
+                })
         }
         let enterShow = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.enterShowMode(_:)) })
         let enterEdit = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.enterEditMode(_:)) })
@@ -1896,13 +1902,16 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(wc.masthead.isShowMode)
         XCTAssertGreaterThan(show.goSize.width, edit.goSize.width)
         XCTAssertGreaterThan(show.goSize.height, edit.goSize.height)
-        XCTAssertEqual(wc.masthead.goButton.constraints.first { $0.firstAttribute == .width }?.constant, show.goSize.width)
+        XCTAssertEqual(
+            wc.masthead.goButton.constraints.first { $0.firstAttribute == .width }?.constant, show.goSize.width)
         wc.setShowMode(false)
         XCTAssertEqual(wc.masthead.metrics, edit)
         XCTAssertFalse(wc.masthead.isShowMode)
         wc.window?.setContentSize(NSSize(width: 1600, height: 1000))
         wc.setShowMode(true)
-        XCTAssertEqual(wc.masthead.metrics, MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero))
+        XCTAssertEqual(
+            wc.masthead.metrics,
+            MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero))
     }
 
     /// Errors and notices that would be a modal in Edit Mode become a log record and a footer line.
