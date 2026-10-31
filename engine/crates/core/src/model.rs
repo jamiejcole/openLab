@@ -66,7 +66,6 @@ impl Workspace {
         let output = PatchOutput {
             level_db: 0.0,
             mute: false,
-            delay_ms: 0.0,
             polarity_inverted: false,
         };
         Self {
@@ -163,8 +162,6 @@ pub struct OutputPatch {
 pub struct PatchOutput {
     pub level_db: f64,
     pub mute: bool,
-    /// Speaker-alignment delay, milliseconds.
-    pub delay_ms: f64,
     pub polarity_inverted: bool,
 }
 

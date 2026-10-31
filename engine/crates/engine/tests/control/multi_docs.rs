@@ -717,32 +717,6 @@ fn closing_a_doc_frees_its_mixer_slots_for_one_waiting() {
     assert_eq!(state(&s, da, 1), CueState::Idle);
 }
 
-/// Device-output delay is one value per physical output (an openLab extra; QLab has none): two
-/// docs that give one output different delays use the longest, and both are told.
-#[test]
-fn a_delay_two_docs_disagree_on_is_a_conflict_in_both() {
-    let mut a = workspace(vec![]);
-    a.patches[0].outputs[0].delay_ms = 1.0;
-    let mut b = ws_n(1, vec![]);
-    b.patches[0].outputs[0].delay_ms = 3.0;
-    let (mut s, ids) = docs_show(a, vec![b]);
-    for doc in &ids {
-        let codes = notice_codes(s.control().doc(*doc).unwrap().warnings());
-        assert!(
-            codes.contains(&"output_delay_conflict".to_owned()),
-            "{codes:?}"
-        );
-    }
-    // The conflict goes with the doc that made it.
-    s.close_doc(ids[1], false).unwrap();
-    s.run(BLOCK);
-    let codes = notice_codes(s.control().doc(ids[0]).unwrap().warnings());
-    assert!(
-        !codes.contains(&"output_delay_conflict".to_owned()),
-        "{codes:?}"
-    );
-}
-
 /// Opening a big show beside one that plays: the install is cheap on the control thread and
 /// the playing doc's auto-follow chain keeps its exact joins, with no late start.
 #[test]

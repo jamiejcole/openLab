@@ -1438,6 +1438,32 @@ fn unknown_fields_are_ignored_and_unknown_types_refused() {
     ));
 }
 
+/// Protocol 4 has no output delay (QLab 5 has none): the old patch property is refused, and a
+/// patch output that still carries `delay_ms` reads as one without it.
+#[test]
+fn the_removed_output_delay_is_refused_or_ignored() {
+    let set = r#"{"type":"command","id":4,"command":{"type":"set_patch_property",
+        "id":"00000000-0000-0000-0000-000000000002",
+        "property":{"type":"output_delay","output":1,"value":12.5}}}"#;
+    assert!(matches!(
+        decode_client(set),
+        Err(ProtocolError::Malformed(_))
+    ));
+    let outputs = r#"{"type":"command","id":4,"command":{"type":"set_patch_property",
+        "id":"00000000-0000-0000-0000-000000000002","property":{"type":"outputs","value":[
+        {"level_db":0.0,"mute":false,"delay_ms":2.5,"polarity_inverted":false}]}}}"#;
+    let Ok(ClientMessage::Command { command, .. }) = decode_client(outputs) else {
+        panic!("not a command");
+    };
+    assert!(matches!(
+        *command,
+        Command::SetPatchProperty {
+            property: PatchProperty::Outputs { ref value },
+            ..
+        } if value == &vec![patch_output()]
+    ));
+}
+
 #[test]
 fn defaults_fill_optional_fields() {
     let goodbye = decode_client(r#"{"type":"goodbye"}"#).unwrap();
@@ -3016,10 +3042,6 @@ fn property_commands() -> Vec<(String, Command)> {
         PatchProperty::OutputMute {
             output: 0,
             value: true,
-        },
-        PatchProperty::OutputDelay {
-            output: 1,
-            value: 12.5,
         },
         PatchProperty::OutputPolarity {
             output: 0,

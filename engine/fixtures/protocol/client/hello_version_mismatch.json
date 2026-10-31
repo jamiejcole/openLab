@@ -1,6 +1,6 @@
 {
   "type": "hello",
-  "protocol_version": 4,
+  "protocol_version": 5,
   "token": "3f9a1c0e5b7d42a8",
   "client_name": "openLab for macOS from the future"
 }

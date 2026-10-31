@@ -15,15 +15,13 @@
 mod common;
 
 use common::*;
-use openlab_audio::{
-    CommandKind, Curve, Fade, GainTarget, MixerController, OutputSettings, VoiceId,
-};
+use openlab_audio::{CommandKind, Curve, Fade, GainTarget, MixerController, VoiceId};
 
 /// FNV-1a (64 bit) over the bit patterns of every output sample and meter peak of the workload.
 /// To regenerate after an intended change to the mixer's arithmetic: run
 /// `cargo test -p openlab-audio --test golden`, which prints the new value on a mismatch, and
 /// paste it here (say why in the commit message).
-const GOLDEN: u64 = 0xd0b5_9ed1_43e7_e2be;
+const GOLDEN: u64 = 0x73ce_a58c_318f_693f;
 
 struct Fnv(u64);
 
@@ -55,15 +53,6 @@ fn noise(n: usize, seed: u32) -> Vec<f32> {
 
 fn lin(frames: u64) -> Fade {
     Fade::new(frames, Curve::Linear)
-}
-
-fn output(delay_frames: u32, level: f32, invert: bool) -> OutputSettings {
-    OutputSettings {
-        level,
-        invert,
-        delay_frames,
-        ..OutputSettings::default()
-    }
 }
 
 fn ramp(ctl: &mut MixerController, at: u64, voice: u64, target: GainTarget, gain: f32, fade: Fade) {
@@ -102,35 +91,6 @@ fn workload() -> u64 {
     ramp(&mut ctl, 500, 2, GainTarget::CueOutput(0), 0.0, lin(100));
     ramp(&mut ctl, 520, 1, GainTarget::Master, 0.75, lin(90));
     ramp(&mut ctl, 600, 1, m(2, 2), 0.5, Fade::NONE);
-    ctl.send(
-        400,
-        CommandKind::SetOutput {
-            output: 0,
-            settings: output(40, 1.0, false),
-        },
-    );
-    // A retarget while the first delay change is still crossfading.
-    ctl.send(
-        430,
-        CommandKind::SetOutput {
-            output: 0,
-            settings: output(90, 0.5, false),
-        },
-    );
-    ctl.send(
-        700,
-        CommandKind::SetOutput {
-            output: 0,
-            settings: output(0, 1.0, false),
-        },
-    );
-    ctl.send(
-        800,
-        CommandKind::SetOutput {
-            output: 2,
-            settings: output(7, 0.5, true),
-        },
-    );
     ctl.send(
         900,
         CommandKind::StopVoice {
