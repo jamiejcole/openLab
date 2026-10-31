@@ -79,6 +79,7 @@ miri:
 
 # Every unit test plus the UI smoke set (scripts/ui-smoke.txt): what a PR runs.
 test-mac: project
+	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
 	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -only-testing:openLabTests $(UI_SMOKE) test
 
 # Every unit test and the whole UI suite: what the nightly run does.
