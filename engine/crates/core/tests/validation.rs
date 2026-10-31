@@ -441,12 +441,11 @@ fn patch_channel_count_must_be_1_to_64() {
 }
 
 #[test]
-fn patch_levels_and_delays_are_clamped() {
+fn patch_levels_are_clamped() {
     let mut ws = workspace(vec![]);
     let p = &mut ws.patches[0];
     p.master_db = f64::NAN;
     p.outputs[0].level_db = 50.0;
-    p.outputs[1].delay_ms = -1.0;
     p.outputs[1].level_db = -500.0;
     let bad = |field| {
         issue(
@@ -460,21 +459,13 @@ fn patch_levels_and_delays_are_clamped() {
     };
     assert_eq!(
         repair(&mut ws),
-        vec![
-            bad("master_db"),
-            bad("outputs.level_db"),
-            bad("outputs.delay_ms")
-        ]
+        vec![bad("master_db"), bad("outputs.level_db")]
     );
     let p = &ws.patches[0];
     assert_eq!(
         (p.master_db, p.outputs[0].level_db, p.outputs[1].level_db),
         (SILENCE_DB, MAX_DB, SILENCE_DB)
     );
-    assert_eq!(p.outputs[1].delay_ms, 0.0);
-    ws.patches[0].outputs[0].delay_ms = 5000.0;
-    repair(&mut ws);
-    assert_eq!(ws.patches[0].outputs[0].delay_ms, MAX_DELAY_MS);
 }
 
 fn audio_with(

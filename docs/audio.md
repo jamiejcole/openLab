@@ -30,12 +30,12 @@ The mixer notes the stage it is in (`Stage`: a plain field write, no allocation)
 | a voice's render (pool index) | nothing more (the window resets when the slot plays another voice) | finished with `FinishReason::Faulted` (its start goes back, its meters flush, `faulted_voices` counts it) |
 | applying a command to a voice | the command is gone (it left the pending set before it was applied); the voice, in whatever state it was left, is finished with `Faulted` at once; a start that never reached the pool, or a voice that left the pool inside `finish` before it was reported (a slot keeps its last id), is reported as `VoiceFinished { Faulted }` all the same | — |
 | a patch matrix (mixing its bus, or `SetPatchRouting` / `SnapPatch` for it) | every gain set to 0, bus cleared; `StageFaulted { Patch(k) }` | disabled: not mixed (its voices play on unheard), routing commands ignored |
-| a device output (delay line and gain, or `SetOutput` for it) | gain to unity (the only level the engine sends), the delay line emptied but its delay kept, so the output is never heard undelayed (nothing is cleared in the callback: what it stored is not read); `StageFaulted { Output(o) }` | disabled: silent, `SetOutput` ignored |
+| a device output (the master applied to it, its meter peak) | nothing to reset (an output has no setting of its own); `StageFaulted { Output(o) }` | disabled: silent |
 | the master (or `SetMaster`) | gain to unity (the engine keeps it there), so one fault costs one block; `StageFaulted { Master }` | disabled: bypassed at unity, `SetMaster` ignored |
 | the meter flush | the block's peaks dropped; `StageFaulted { Meters }` | disabled: meters no longer published |
-| none of these (taking commands off the queue, scheduling, the copy out) | nothing more | rebuild: every patch reset to silence, every output and the master to unity (each output keeping its delay, its line emptied), all enabled again, `dev` cleared; `StageFaulted { Mixer }`. Voices and pending commands are kept |
+| none of these (taking commands off the queue, scheduling, the copy out) | nothing more | rebuild: every patch reset to silence, the master to unity, every unit enabled again, `dev` cleared; `StageFaulted { Mixer }`. Voices and pending commands are kept |
 
-`StageFaulted { stage, at, disabled }` is counted in `faulted_stages` just before it is queued. A disabled unit is also published before its report, as bits in preallocated atomics (`MixerController::disabled_units`: a `u64` mask of patches, one of outputs, master, meters; cleared by a rebuild), so a report lost to a full event queue is still found. The control thread answers it from its own copy (docs/control.md "Mixer faults"). Emptying a delay line clears nothing: it reads silence for taps older than the reset, so a reset costs the same at any rate or output count. Every reset reuses the mixer's buffers; the panic itself (its payload, the hook) allocates, as before. Test hooks (`#[cfg(test)]`): `panic_next` (unblamed), `panic_voice`, `panic_apply` (a command matching a predicate), `stage.panic_at` (entering a patch, output, master or meter stage).
+`StageFaulted { stage, at, disabled }` is counted in `faulted_stages` just before it is queued. A disabled unit is also published before its report, as bits in preallocated atomics (`MixerController::disabled_units`: a `u64` mask of patches, one of outputs, master, meters; cleared by a rebuild), so a report lost to a full event queue is still found. The control thread answers it from its own copy (docs/control.md "Mixer faults"). Every reset reuses the mixer's buffers; the panic itself (its payload, the hook) allocates, as before. Test hooks (`#[cfg(test)]`): `panic_next` (unblamed), `panic_voice`, `panic_apply` (a command matching a predicate), `stage.panic_at` (entering a patch, output, master or meter stage).
 
 ### Scheduling horizon
 
@@ -50,7 +50,7 @@ Every command goes through a hold queue on the control thread, ordered by `(at, 
 
 ### Real-time rules
 
-Everything `process` can reach is allocation-free, lock-free, and makes no syscalls or log calls. All buffers are sized in `Mixer::new` from `MixerConfig`: voice pool, per-voice gain matrices, patch matrices and buses, scratch, delay lines, and the pending heap.
+Everything `process` can reach is allocation-free, lock-free, and makes no syscalls or log calls. All buffers are sized in `Mixer::new` from `MixerConfig`: voice pool, per-voice gain matrices, patch matrices and buses, scratch, and the pending heap.
 
 | Field | Default | Limit |
 |---|---|---|
@@ -235,13 +235,12 @@ Per sample, for each voice (routed through patch *P*) and its input channel *i*,
 voice_gain   = master(t) · stop(t) · fade_env(p)
 bus_P[o]    += Σ_i input[i] · crosspoint[i][o](t) · (cue_out[o](t) · voice_gain)
 dev[d]       = Σ_P Σ_o bus_P[o] · patch_P[o][d](t)
-out[d]       = delay_d(dev[d]) · out_gain[d](t) · global_master(t)
-out_gain[d]  = (mute ? 0 : level) · (invert ? −1 : 1)
+out[d]       = dev[d] · global_master(t)
 ```
 
 - `t` is sample time and `p` is the voice's frame position after the skip.
 - Each patch's bus is shared by all voices routed through it, so a patch matrix costs nothing per voice. Patches no voice uses in a block are skipped.
-- Output level, mute and polarity act **after** the alignment delay, so the operator hears a mute or level change immediately.
+- A patch output's level, mute and polarity (AUD-07) are its gains in the patch matrix (docs/control.md "Patches"); a device output has no stage of its own. There is no per-output delay: QLab 5 has none (speaker alignment belongs in a processor or the audio interface).
 
 | Command | Effect |
 |---|---|
@@ -249,18 +248,16 @@ out_gain[d]  = (mute ? 0 : level) · (invert ? −1 : 1)
 | `SetPatchRouting { patch, cue_output, device_output, gain }` | one patch's cue output → device output gain (default: identity in every patch) (AUD-07) |
 | `SnapPatch { patch }` | the patch matrix takes the gains its routing is ramping to at once (a matrix just given to a patch, which nothing plays through: a cue started on that sample is heard at its level, on that patch's outputs only); an unknown patch is ignored (`tests/mixer.rs::snap_patch_ends_the_routing_ramps_on_their_targets`, also under `assert_no_alloc`) |
 | `MoveVoice { voice, patch }` | moves a playing voice to another patch matrix (its cue's patch changed, #293): for the de-zipper time it plays into both, crossfading linearly from the old patch to the new, so neither set of outputs clicks and the two always add up to the voice. A voice not heard yet (moved on its start sample, or paused past its declick tail) moves at once. A move asked for during a move's crossfade waits for it and starts with the next segment rendered (at most a block later; the latest wins). Ignored for an unknown voice, a patch out of range, or the patch the voice is on. Each move a voice takes (out-of-range patch included) is counted, and `MoveEnded { voice, at, moves }` reports it settled on one patch once no crossfade is left: at once for a move with no crossfade, else from the end of the segment its last crossfade ends in (not while another move waits for it). Tests: `tests/mixer.rs` (`a_moved_voice_crossfades_…`, `a_move_…`, `moving_a_voice_does_not_allocate`) |
-| `SetOutput { output, settings }` | per device output: level, mute, polarity, delay (AUD-07, PB-11) |
 | `SetMaster { gain }` | global master (PB-11). The control loop does not send it: each workspace's master is folded into its patch matrices (docs/control.md, Patches), so the mixer master stays at unity |
 
 - Gains are linear `f32`. Use `db_to_linear` and `linear_to_db`, where −120 dB and below is exactly 0.0 (ARCHITECTURE §4).
 - Every gain the mixer applies is clamped to ±`MAX_GAIN` (+24 dB, `MAX_GAIN_DB`). This is a safety net; the show model stops at +12 dB. NaN counts as 0.0. A patch matrix gain carries the workspace master × patch master × output level (M4.15b, docs/control.md "Patches"), so the clamp applies to their sum in dB: settings adding up to more than +24 dB (each at most +12) are heard at +24 dB. Before M4.15b the workspace master was a separate mixer stage with its own clamp.
 - Commands that name an unknown voice, an index out of range, or an input beyond the voice's channel count are ignored.
 - Silent crosspoints, cue outputs and patch entries (constant 0) are skipped per block, so cost scales with the routes in use.
-- **Delay**: a per-output delay line preallocated for 1 s, in frames, clamped to that maximum. A delay change crossfades from the old tap to the new one over the de-zipper time. A change requested during a running crossfade waits for it to finish, so the output never jumps.
 
 ### De-zipper
 
-Gain changes without an explicit ramp (`Ramp` with `fade.frames == 0`, `SetPatchRouting`, `SetOutput`, `SetMaster`) move linearly over 5 ms (240 frames at 48 kHz), so no change can click. A polarity flip passes through zero. The exception is `Ramp` gain changes scheduled on a voice's start sample, which take effect immediately because nothing has been heard yet.
+Gain changes without an explicit ramp (`Ramp` with `fade.frames == 0`, `SetPatchRouting`, `SetMaster`) move linearly over 5 ms (240 frames at 48 kHz), so no change can click. A polarity flip passes through zero. The exception is `Ramp` gain changes scheduled on a voice's start sample, which take effect immediately because nothing has been heard yet.
 
 ### Ganging (AUD-08)
 
@@ -329,7 +326,7 @@ The control thread reads meters at any rate (the engine samples them at ≤30 Hz
 
 | Meter | Point | Read with |
 |---|---|---|
-| Device output `d` | `out[d]` in the signal path: what goes to the device, after the patch, delay, output level, mute, polarity and master | `read_output_meters_into(&mut [f32])`, `output_meters()` |
+| Device output `d` | `out[d]` in the signal path: what goes to the device, after the patch matrices (output level, mute, polarity) and master | `read_output_meters_into(&mut [f32])`, `output_meters()` |
 | Voice cue output `o` | the voice's own contribution to `bus_P[o]`: after crosspoints, cue-output level, voice master, stop fade, integrated fades and pause declick; before the patch matrix | `read_voice_meters_into(&mut [VoiceId], &mut [f32])`, `voice_meters()` |
 
 Values are absolute linear peaks (`linear_to_db` for display). NaN samples count as 0.0 and ±∞ reads as `f32::MAX`, so a meter is always finite and non-negative.

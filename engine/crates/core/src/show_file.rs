@@ -11,7 +11,7 @@ use crate::model::Workspace;
 use crate::validate::{IssueKind, Severity, ValidationIssue, repair};
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 6;
+pub const FORMAT_VERSION: u32 = 7;
 /// Larger inputs are refused before parsing.
 pub const MAX_SHOW_FILE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -92,17 +92,22 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
     let version = probe.format_version.ok_or(LoadError::MissingVersion)?;
     let mut from = FORMAT_VERSION;
     let mut had_playhead_keys = false;
+    let mut had_output_delays = false;
     let file: ShowFileIn = match u32::try_from(version) {
         // Parse straight from text so errors carry line and column.
         Ok(FORMAT_VERSION) => serde_json::from_str(text).map_err(LoadError::Model)?,
         Ok(old) if old < FORMAT_VERSION => {
             from = old;
             let value = serde_json::from_str(text).map_err(LoadError::Syntax)?;
-            // Version 6 dropped the Next / Previous Cue keys: look at the version-5 document
-            // first, to say so when a show had its own.
+            // Version 6 dropped the Next / Previous Cue keys and version 7 the patch output
+            // delays: look at the document just before each step, to say so when a show had
+            // its own. (A step to a version the file already has does nothing.)
             let v5 = migrate_to(value, old, 5)?;
-            had_playhead_keys = custom_playhead_keys(&v5);
-            serde_json::from_value(migrate_to(v5, 5, FORMAT_VERSION)?).map_err(LoadError::Model)?
+            had_playhead_keys = old < 6 && custom_playhead_keys(&v5);
+            let v6 = migrate_to(v5, old.max(5), 6)?;
+            had_output_delays = output_delays(&v6);
+            serde_json::from_value(migrate_to(v6, old.max(6), FORMAT_VERSION)?)
+                .map_err(LoadError::Model)?
         }
         _ => {
             return Err(LoadError::TooNew {
@@ -121,6 +126,13 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
             severity: Severity::Warning,
             cue_id: None,
             kind: IssueKind::PlayheadKeysRemoved,
+        });
+    }
+    if had_output_delays {
+        issues.push(ValidationIssue {
+            severity: Severity::Warning,
+            cue_id: None,
+            kind: IssueKind::OutputDelaysRemoved,
         });
     }
     if issues.iter().any(|issue| issue.severity == Severity::Error) {
@@ -191,6 +203,7 @@ fn migrate_to(mut document: Value, from: u32, to: u32) -> Result<Value, LoadErro
             3 => v3_to_v4(document),
             4 => v4_to_v5(document),
             5 => v5_to_v6(document),
+            6 => v6_to_v7(document),
             _ => Err(format!("no upgrade step from version {version}")),
         }
         .map_err(|reason| LoadError::Migration {
@@ -375,6 +388,41 @@ fn v5_to_v6(mut document: Value) -> Result<Value, String> {
         keys.remove("playhead_previous");
     }
     Ok(document)
+}
+
+/// v7 removed `delay_ms` from every patch output: QLab 5 has no per-output delay. Nothing else
+/// changes; a document not shaped like this is left for the model parse to refuse.
+fn v6_to_v7(mut document: Value) -> Result<Value, String> {
+    let root = document
+        .as_object_mut()
+        .ok_or("top level is not an object")?;
+    root.insert("format_version".into(), 7.into());
+    let outputs = root
+        .get_mut("workspace")
+        .and_then(|w| w.get_mut("patches"))
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.get_mut("outputs").and_then(Value::as_array_mut))
+        .flatten();
+    for output in outputs.filter_map(Value::as_object_mut) {
+        output.remove("delay_ms");
+    }
+    Ok(document)
+}
+
+/// Whether a version-6 document delayed any patch output: a `delay_ms` that is anything but 0
+/// (a value that is not even a number counts), which v7 drops.
+fn output_delays(v6: &Value) -> bool {
+    v6.get("workspace")
+        .and_then(|w| w.get("patches"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.get("outputs").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|o| o.get("delay_ms"))
+        .any(|d| d.as_f64() != Some(0.0))
 }
 
 /// Whether a version-5 document's Next / Previous Cue keys held anything but v5's defaults

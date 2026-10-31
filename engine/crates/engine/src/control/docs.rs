@@ -2142,8 +2142,7 @@ impl Control {
             .map(|c| (now, c))
             .collect();
         self.eng.send_commands(commands);
-        // Its delays may have made a conflict in another doc, and its slots may be one's.
-        self.eng.patches.take_conflicts_changed();
+        // Its slots may be a waiting patch's in another doc.
         self.mark_warnings_dirty();
         self.eng.voice_ids.retain(|_, owner| owner != doc);
         self.eng.observe.reset(doc);

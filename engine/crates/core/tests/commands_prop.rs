@@ -506,14 +506,13 @@ fn patch_output_from(p: &Pick) -> PatchOutput {
     PatchOutput {
         level_db: level(p.c),
         mute: p.d.is_multiple_of(2),
-        delay_ms: time(p.d) * 10.0,
         polarity_inverted: p.b.is_multiple_of(2),
     }
 }
 
 fn patch_property(p: &Pick) -> PatchProperty {
     let output = p.c as usize % 4;
-    match p.b % 8 {
+    match p.b % 7 {
         0 => PatchProperty::Name {
             value: name_pool(p.d),
         },
@@ -526,15 +525,11 @@ fn patch_property(p: &Pick) -> PatchProperty {
             output,
             value: p.d.is_multiple_of(2),
         },
-        4 => PatchProperty::OutputDelay {
-            output,
-            value: time(p.d) * 10.0,
-        },
-        5 => PatchProperty::OutputPolarity {
+        4 => PatchProperty::OutputPolarity {
             output,
             value: p.d.is_multiple_of(2),
         },
-        6 => PatchProperty::ChannelCount {
+        5 => PatchProperty::ChannelCount {
             value: [1, 2, 3, 8, 0, 65, usize::MAX][p.d as usize % 7],
         },
         _ => PatchProperty::Outputs {
