@@ -523,7 +523,7 @@ fn a_show_with_very_many_named_patches_follows_a_bounded_number() {
     assert!(net.running.len() <= MAX_LOOKUPS);
 }
 
-/// Look-ups that wait until released.
+/// Look-ups and sends that wait until released (a resolver or a connect that hangs).
 #[derive(Default)]
 struct Hang {
     open: Mutex<bool>,
@@ -531,6 +531,13 @@ struct Hang {
 }
 
 impl Hang {
+    fn wait(&self) {
+        let mut open = self.open.lock().unwrap();
+        while !*open {
+            open = self.cv.wait(open).unwrap();
+        }
+    }
+
     fn release(&self) {
         *self.open.lock().unwrap() = true;
         self.cv.notify_all();
@@ -539,13 +546,11 @@ impl Hang {
 
 impl Transport for Hang {
     fn send(&self, _: &Destination, _: &[SocketAddr], _: &[u8]) -> Result<(), String> {
+        self.wait();
         Ok(())
     }
     fn resolve(&self, _: &str, _: u16) -> Result<Vec<SocketAddr>, String> {
-        let mut open = self.open.lock().unwrap();
-        while !*open {
-            open = self.cv.wait(open).unwrap();
-        }
+        self.wait();
         Ok(vec![])
     }
 }
@@ -664,11 +669,53 @@ fn idle_senders_are_freed_when_the_limit_is_reached() {
     // The workers drain on their own threads; wait until every queue is empty, so the
     // senders are idle (bounded: a failure guard, not a timing assumption).
     crate::spin::spin_until("workers never drained", || {
-        net.links.values().all(|l| l.tx.is_empty())
+        net.links
+            .values()
+            .all(|l| l.pending.load(Ordering::SeqCst) == 0)
     });
     for n in limit..limit + 10 {
         let o = net.send(&patch(n + 1, "10.0.0.1"), CueId(Uuid::nil()), vec![1]);
         assert_eq!(o, SendOutcome::Queued, "{n}");
     }
     assert!(net.links.len() <= MAX_LINKS);
+}
+
+/// A worker stuck in its own name look-up or connect is not idle: it is never evicted for room,
+/// and a sender replaced by a host edit keeps counting against MAX_LINKS until it is done, so
+/// stuck workers cannot pile up past the limit.
+#[test]
+fn stuck_senders_are_neither_evicted_nor_forgotten() {
+    let hang = Arc::new(Hang::default());
+    let (tx, _rx) = crossbeam_channel::unbounded();
+    let mut net = NetOut::new(
+        NetTransport(Arc::clone(&hang) as Arc<dyn Transport>),
+        tx,
+        1000,
+    );
+    let nil = CueId(Uuid::nil());
+    for n in 0..MAX_LINKS as u128 {
+        assert_eq!(
+            net.send(&patch(n + 1, "10.0.0.1"), nil, vec![1]),
+            SendOutcome::Queued
+        );
+    }
+    // Every worker is stuck mid-send: none is idle, so a new destination is refused.
+    let extra = net.send(&patch(1000, "10.0.0.1"), nil, vec![1]);
+    assert!(matches!(extra, SendOutcome::Refused(_)), "{extra:?}");
+    assert_eq!(net.links.len(), MAX_LINKS);
+    // Editing a stuck destination's host replaces its sender; the old worker still counts.
+    let refused = net.send(&patch(1, "10.0.0.9"), nil, vec![1]);
+    assert!(matches!(refused, SendOutcome::Refused(_)), "{refused:?}");
+    assert_eq!(net.retiring.len(), 1);
+    assert!(net.links.len() + net.retiring.len() <= MAX_LINKS);
+    hang.release();
+    crate::spin::spin_until("workers never finished", || {
+        net.outstanding.load(Ordering::SeqCst) == 0
+    });
+    // Done: the retired worker no longer counts and the edited destination sends.
+    assert_eq!(
+        net.send(&patch(1, "10.0.0.9"), nil, vec![1]),
+        SendOutcome::Queued
+    );
+    assert!(net.retiring.is_empty());
 }

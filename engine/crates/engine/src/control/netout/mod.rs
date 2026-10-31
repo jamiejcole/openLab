@@ -124,6 +124,8 @@ struct Link {
     /// This link's own copy of the addresses; the control thread keeps it current while the
     /// link is the patch's current one.
     cache: Resolved,
+    /// Messages queued or being handled by the worker (zero: truly idle, not mid-send).
+    pending: Arc<AtomicUsize>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -208,6 +210,10 @@ pub struct NetOut {
     /// Shared with the workers, so turning the override on also stops what is queued.
     disabled: Arc<AtomicBool>,
     links: HashMap<NetworkPatchId, Link>,
+    /// Senders that were dropped from `links` while a message was queued or being sent (their
+    /// worker may be stuck in a resolver or a connect). They keep counting against
+    /// [`MAX_LINKS`] until the worker is done, so replacing or evicting never piles up threads.
+    retiring: Vec<Arc<AtomicUsize>>,
     lookups: HashMap<NetworkPatchId, Lookup>,
     /// This doc's look-up threads that have not answered yet, by ticket.
     running: HashMap<u64, (String, u16)>,
@@ -269,6 +275,7 @@ impl NetOut {
             rate: u64::from(sample_rate.max(1)),
             disabled,
             links: HashMap::new(),
+            retiring: Vec::new(),
             lookups: HashMap::new(),
             running: HashMap::new(),
             alive,

@@ -138,6 +138,13 @@ impl Transport for Fake {
         if let Some(why) = self.fail_sends.lock().unwrap().clone() {
             return Err(why);
         }
+        // Like the real transport: with no looked-up addresses the sender resolves the name
+        // itself, and a name that does not resolve fails the send.
+        if resolved.is_empty()
+            && let Some(Err(why)) = self.names.lock().unwrap().get(&to.host).cloned()
+        {
+            return Err(why);
+        }
         self.given.lock().unwrap().push(resolved.to_vec());
         self.sent
             .lock()
@@ -381,17 +388,24 @@ fn an_unresolvable_host_does_not_break_its_cues_and_go_still_sends() {
         RuntimeChange::Problems { cue, .. } if *cue == id(1)
     )));
 
-    // GO sends with no addresses known; no cue_broken warning.
+    // GO tries to send with no addresses known: the worker's own look-up fails, which is a
+    // network_send_failed notice, not a broken cue.
     go(&mut s);
     s.run(256);
     s.settle_net();
-    assert_eq!(fake.sent().len(), 1);
-    assert_eq!(fake.given.lock().unwrap().last(), Some(&Vec::new()));
+    assert!(fake.sent().is_empty());
     let msgs = s.take_outbound();
     assert!(
         !warnings(&msgs)
             .iter()
             .any(|w| matches!(w, WireWarning::CueBroken { .. }))
+    );
+    assert!(
+        notices(&msgs)
+            .iter()
+            .any(|(code, m)| code == "network_send_failed" && m.contains("no such host")),
+        "{:?}",
+        notices(&msgs)
     );
 
     // The name starts to resolve (the network came up). Nothing is looked up again before the
@@ -410,7 +424,7 @@ fn an_unresolvable_host_does_not_break_its_cues_and_go_still_sends() {
     go(&mut s);
     s.run(256);
     s.settle_net();
-    assert_eq!(fake.sent().len(), 2);
+    assert_eq!(fake.sent().len(), 1);
     assert_eq!(
         fake.given.lock().unwrap().last(),
         Some(&vec![SocketAddr::from(([127, 0, 0, 1], 9000))])

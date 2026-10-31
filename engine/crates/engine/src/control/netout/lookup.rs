@@ -17,7 +17,15 @@ impl NetOut {
         for id in gone {
             self.forget(id);
         }
-        self.links.retain(|id, _| keep.contains(id));
+        let dropped: Vec<NetworkPatchId> = self
+            .links
+            .keys()
+            .filter(|id| !keep.contains(id))
+            .copied()
+            .collect();
+        for id in dropped {
+            self.drop_link(id);
+        }
         for patch in patches {
             let named = matches!(check_endpoint(&patch.host, patch.port), Ok(HostKind::Name));
             match self.lookups.get(&patch.id) {
