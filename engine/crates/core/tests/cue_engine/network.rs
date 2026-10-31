@@ -27,17 +27,6 @@ fn network(n: u128) -> Cue {
     network_to(n, 1, "/lx/go", vec![OscArg::Int { value: 7 }])
 }
 
-impl Rig {
-    fn reach(&mut self, now: SampleTime, patch: u128, r: NetworkReachability) -> Vec<Action> {
-        self.at(
-            now,
-            Input::NetworkAvailability {
-                patches: vec![(net_id(patch), r)],
-            },
-        )
-    }
-}
-
 fn sends(actions: &[Action]) -> Vec<&Action> {
     actions
         .iter()
@@ -47,12 +36,6 @@ fn sends(actions: &[Action]) -> Vec<&Action> {
 
 fn set_patch(rig: &mut Rig, f: impl FnOnce(&mut NetworkPatch)) {
     f(&mut rig.ws.network_patches[0]);
-}
-
-fn unresolved(reason: &str) -> NetworkReachability {
-    NetworkReachability::Unresolved {
-        reason: reason.into(),
-    }
 }
 
 #[test]
@@ -235,85 +218,18 @@ fn problems_add_up_in_order() {
 }
 
 #[test]
-fn an_unresolvable_host_name_breaks_the_cues_that_use_it_until_it_resolves() {
-    let mut ws = workspace(vec![network(1), network(2), memo(3)]);
-    ws.network_patches[0].host = "lights.local".into();
+fn a_host_name_is_never_checked_before_go_and_go_sends() {
+    // QLab 5 does not flag a destination it cannot find (manual pp. 371-372 list only a missing
+    // patch, an incomplete patch and a malformed message), so a name is not a problem: the
+    // cue stays playable and GO emits the send for the worker to resolve and warn about.
+    let mut ws = workspace(vec![network(1), memo(2)]);
+    ws.network_patches[0].host = "no-such-host.invalid".into();
     let mut rig = Rig::on(ws, EngineConfig::new(RATE, 0, 1).unwrap());
-    // Taken to be fine until the binary says otherwise.
     assert!(rig.problems(1).is_empty());
-
-    let actions = rig.reach(10, 1, unresolved("no such host"));
-    let want = vec![CueProblem::NetworkHostUnresolved {
-        patch: net_id(1),
-        reason: "no such host".into(),
-    }];
-    assert_eq!(rig.problems(1), want);
-    assert_eq!(rig.problems(2), want);
-    assert!(actions.contains(&Action::ProblemsChanged {
-        cue: id(1),
-        problems: want.clone()
-    }));
-    assert_eq!(rig.engine.state(id(2)), CueState::Broken);
-    assert!(rig.engine.broken_cues().iter().any(|(c, _)| *c == id(1)));
-
-    // GO on a broken cue sends nothing.
-    assert!(sends(&rig.go(20)).is_empty());
-
-    // The same news again changes nothing; a new reason is shown.
-    assert!(
-        !rig.reach(30, 1, unresolved("no such host"))
-            .iter()
-            .any(|a| matches!(a, Action::ProblemsChanged { .. }))
-    );
-    rig.reach(40, 1, unresolved("timed out"));
-    assert!(matches!(
-        rig.problems(1).as_slice(),
-        [CueProblem::NetworkHostUnresolved { reason, .. }] if reason == "timed out"
-    ));
-
-    // Resolved: fixed, and the cue sends again.
-    let actions = rig.reach(50, 1, NetworkReachability::Resolved);
-    assert!(rig.problems(1).is_empty());
-    assert!(actions.contains(&Action::ProblemsChanged {
-        cue: id(1),
-        problems: vec![]
-    }));
-    assert_eq!(rig.engine.state(id(2)), CueState::Idle);
-    let mut rig2 = rig;
-    rig2.at(
-        60,
-        Input::SetPlayhead {
-            list: list_id(1),
-            cue: Some(id(1)),
-        },
-    );
-    assert_eq!(sends(&rig2.go(70)).len(), 1);
-}
-
-#[test]
-fn unknown_clears_a_failed_look_up() {
-    let mut ws = workspace(vec![network(1)]);
-    ws.network_patches[0].host = "lights.local".into();
-    let mut rig = Rig::on(ws, EngineConfig::new(RATE, 0, 1).unwrap());
-    rig.reach(0, 1, unresolved("x"));
-    assert!(!rig.problems(1).is_empty());
-    rig.reach(1, 1, NetworkReachability::Unknown);
-    assert!(rig.problems(1).is_empty());
-}
-
-#[test]
-fn a_report_about_an_ip_address_or_another_patch_changes_nothing() {
-    // The default patch is 127.0.0.1: there is nothing to look up, so a failure report (a
-    // stale one, say) cannot break its cues.
-    let mut rig = Rig::checked(vec![network(1)]);
-    assert!(
-        !rig.reach(0, 1, unresolved("stale"))
-            .iter()
-            .any(|a| matches!(a, Action::ProblemsChanged { .. }))
-    );
-    assert!(rig.problems(1).is_empty());
-    rig.reach(1, 77, unresolved("unknown patch"));
-    assert!(rig.problems(1).is_empty());
+    assert_eq!(rig.engine.state(id(1)), CueState::Idle);
+    assert!(rig.engine.broken_cues().is_empty());
+    let actions = rig.go(10);
+    assert_eq!(sends(&actions).len(), 1);
 }
 
 #[test]
@@ -329,11 +245,11 @@ fn a_broken_network_cue_with_auto_follow_is_skipped_like_other_broken_cues() {
 }
 
 #[test]
-fn deleting_the_cue_forgets_its_look_up_bookkeeping() {
-    let mut ws = workspace(vec![network(1)]);
+fn deleting_a_network_cue_leaves_the_problem_cache_consistent() {
+    let mut ws = workspace(vec![network_to(1, 1, "bad", vec![])]);
     ws.network_patches[0].host = "lights.local".into();
     let mut rig = Rig::on(ws, EngineConfig::new(RATE, 0, 1).unwrap());
-    rig.reach(0, 1, unresolved("x"));
+    assert!(!rig.problems(1).is_empty());
     rig.ws.cue_lists[0].cues.clear();
     rig.engine.model_changed();
     rig.last = Some(rig.ws.clone());

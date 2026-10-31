@@ -280,7 +280,6 @@
 "problem.device_unavailable.output_count_mismatch" = "Patch {patch} has {outputs} outputs but its device mapping lists {mapped}.";
 "problem.network_patch_missing" = "Its network patch, {patch}, does not exist.";
 "problem.network_host_invalid" = "Network patch {patch} cannot be used: {reason}.";
-"problem.network_host_unresolved" = "The host of network patch {patch} cannot be found: {reason}.";
 "problem.network_message_invalid" = "The OSC message cannot be sent: {reason}.";
 "problem.started_broken" = "It was started while broken and has been fixed since; it runs normally next time.";
 

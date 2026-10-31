@@ -24,7 +24,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - [x] **NFR-04** `v0.0.1` Saves MUST be atomic (write-temp-then-rename). A crash or power loss during save never corrupts the existing file.
 - [ ] **NFR-05** `v0.0.1` Autosave to a recovery file at a configurable interval; on launch after an unclean exit, offer to restore.
 - [ ] **NFR-06** `v0.0.1` Keep N rolling timestamped backups of each workspace (configurable, default on).
-- [ ] **NFR-07** `v0.0.1` Missing/unsupported media, missing audio/MIDI devices and unreachable network targets MUST be reported as "broken" cue state before the show, not discovered at GO.
+- [ ] **NFR-07** `v0.0.1` Missing/unsupported media, missing audio/MIDI devices and Network cues with no or an unusable network patch or a malformed message MUST be reported as "broken" cue state before the show, not discovered at GO. As in QLab 5, whether the destination is reachable or its host name resolves is not checked: a failed send is a warning at GO.
 - [ ] **NFR-08** `v0.0.1` Device hot-unplug/replug (audio interface, MIDI, display) MUST be survived without a crash; reconnect automatically where possible, warn loudly otherwise.
 - [ ] **NFR-09** `v0.0.1` The app MUST run for 24 hours continuously with no memory growth, timing drift or performance degradation (soak-tested).
 - [ ] **NFR-10** `v0.0.1` No network connection is ever required. No telemetry by default. No modal dialogs, update prompts or OS notifications from openLab during Show Mode.

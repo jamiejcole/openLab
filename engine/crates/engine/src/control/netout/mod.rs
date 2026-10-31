@@ -9,30 +9,31 @@
 //! lighting cue that arrives seconds late, after the operator has moved on, is worse than none.
 //!
 //! Host names are looked up (name resolution only, nothing is sent to the host) when a
-//! workspace opens or its network patches change, so a name that does not resolve breaks the
-//! cues that use it before GO; the addresses found are what the sender then uses. A failed
-//! look-up is repeated every [`RETRY_AFTER`], because a network that was not up yet when the
-//! show opened must not leave its cues broken for good. The retry and the look-up timeout run
-//! on sample time, which stands still while the audio device is down, so during an outage a
-//! failed name is retried only once audio is back (Network cues do not need audio, but the
-//! control loop's clock is the audio clock). There is no probing of the destination itself:
-//! UDP has no way to know, and QLab does not either.
+//! workspace opens or its network patches change; the addresses found are what the sender then
+//! uses, so no send waits on the resolver. Whether a name resolves is **not** a cue problem
+//! (QLab 5 flags only a missing or incomplete patch and a malformed message): a name that does
+//! not resolve is logged once per run of failures, and a send to it resolves the name itself on
+//! its worker, where a failure is a `network_send_failed` warning. A failed look-up is
+//! repeated every [`RETRY_AFTER`], so a network that was not up yet when the show opened is
+//! followed once it is. The retry and the look-up timeout run on sample time, which stands
+//! still while the audio device is down, so during an outage a failed name is retried only once
+//! audio is back. There is no probing of the destination itself: UDP has no way to know, and
+//! QLab does not either.
 //!
 //! A name that has resolved is looked up again every [`REFRESH_AFTER`] (sample time, through
 //! the same slots and limits as retries), so a host whose address changes (a DHCP lease, a
 //! console that rebooted) is not sent to at its old address for the rest of the session. A
 //! TCP send that fails clears the destination's addresses and asks for a look-up at once. A
-//! refresh that fails for a name that resolved before keeps the last-known addresses and does
-//! not break its cues (one log line per run of failures): a DNS blip must not break a working
-//! show. Only a name that never resolved is `Unresolved`.
+//! refresh that fails for a name that resolved before keeps the last-known addresses (one log
+//! line per run of failures): a DNS blip must not disturb a working show.
 //!
 //! Each sender owns a snapshot cache of the addresses, so a replaced sender's old worker never
 //! reads the new destination's addresses.
 //!
 //! Look-up threads are bounded: at most [`MAX_LOOKUPS`] are alive at once, counting those that
 //! timed out or whose name was forgotten until they answer, and at most one per (host, port).
-//! If hung look-ups fill every slot, the names waiting for one are reported `Unknown` (their
-//! cues are not broken on a guess) and [`NetOut::take_limit_note`] says so once. The bound is
+//! If hung look-ups fill every slot, [`NetOut::take_limit_note`] says so once; sends to the
+//! names waiting for a slot resolve the name themselves. The bound is
 //! the engine's: each doc has its own `NetOut` (and send threads), but they count their live
 //! look-up threads together ([`LookupThreads`]), and the PB-10 override is one flag for every
 //! doc.
@@ -48,8 +49,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Sender, TrySendError, bounded};
 use openlab_core::{
-    CueId, HostKind, NetworkPatch, NetworkPatchId, NetworkProtocol, NetworkReachability, OscArg,
-    SampleTime, check_endpoint,
+    CueId, HostKind, NetworkPatch, NetworkPatchId, NetworkProtocol, OscArg, SampleTime,
+    check_endpoint,
 };
 use rosc::{OscMessage, OscType};
 
@@ -143,8 +144,6 @@ struct Lookup {
     host: String,
     port: u16,
     phase: Phase,
-    /// What the cue engine has been told.
-    reported: NetworkReachability,
     /// When this name's last look-up started; `None` until its first. Free slots go to the
     /// longest-waiting name, so hung look-ups holding most slots cannot starve the rest.
     last_start: Option<SampleTime>,
@@ -238,9 +237,6 @@ impl Drop for NetOut {
         }
     }
 }
-
-/// Reachability changes for `Input::NetworkAvailability`.
-pub type Reports = Vec<(NetworkPatchId, NetworkReachability)>;
 
 impl NetOut {
     /// Network output with an override and a look-up bound of its own (unit tests of one).

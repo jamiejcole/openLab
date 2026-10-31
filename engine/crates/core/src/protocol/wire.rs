@@ -151,10 +151,6 @@ pub enum WireProblem {
         patch: NetworkPatchId,
         reason: String,
     },
-    NetworkHostUnresolved {
-        patch: NetworkPatchId,
-        reason: String,
-    },
     NetworkMessageInvalid {
         reason: String,
     },
@@ -186,10 +182,6 @@ impl From<&CueProblem> for WireProblem {
                 Self::NetworkPatchMissing { patch: *patch }
             }
             CueProblem::NetworkHostInvalid { patch, reason } => Self::NetworkHostInvalid {
-                patch: *patch,
-                reason: reason.clone(),
-            },
-            CueProblem::NetworkHostUnresolved { patch, reason } => Self::NetworkHostUnresolved {
                 patch: *patch,
                 reason: reason.clone(),
             },
