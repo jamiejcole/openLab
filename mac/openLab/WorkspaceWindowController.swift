@@ -61,6 +61,14 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         preshowController = pc
         return pc
     }
+    private var settingsController: WorkspaceSettingsWindowController?
+    /// The workspace settings window, made on first use. It closes with this window.
+    var settingsWindow: WorkspaceSettingsWindowController {
+        if let sc = settingsController { return sc }
+        let sc = WorkspaceSettingsWindowController(store: store)
+        settingsController = sc
+        return sc
+    }
     let footer = FooterBar()
     /// The audio file chosen for an Audio cue (nil: cancelled). A seam for tests.
     var pickAudioFile: @MainActor () -> URL? = WorkspaceWindowController.audioPanel
@@ -144,6 +152,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
         footer.onModeChange = { [weak self] show in Task { await self?.requestShowMode(show) } }
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
+        footer.onSettings = { [weak self] in self?.showSettings() }
         setVisible(.sidebar, false)
         wire(masthead.goButton, #selector(goClicked))
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
@@ -168,6 +177,14 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func showLog() {
         logWindow.showWindow(nil)
         Task { await logWindow.refresh() }
+    }
+
+    /// Opens the workspace settings (the footer gear, File > Workspace Settings).
+    @discardableResult
+    func showSettings() -> Task<Void, Never> {
+        let sc = settingsWindow
+        sc.window?.title = String(format: loc("settings.title.workspace"), workspaceName)
+        return sc.present()
     }
 
     /// The pre-show check asks the engine: without a connection there is nothing to ask (the menu
@@ -312,6 +329,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// A report about a workspace that is gone must not float on over the next one.
     func windowWillClose(_ notification: Notification) {
         preshowController?.close()
+        settingsController?.close()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {

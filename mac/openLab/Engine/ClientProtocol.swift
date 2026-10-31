@@ -141,6 +141,11 @@ enum Request: Hashable, Sendable, Codable {
     case saveAs(path: String)
     case relink(folder: String)
     case listDevices
+    /// Chooses the output device the engine opens at its next start (nil: the system default).
+    /// App-scope; the engine plays on one device for its whole run.
+    case setOutputDevice(device: String?)
+    /// Where each of the workspace's patches plays on this machine (WS-07).
+    case listPatchMappings
     case preshowCheck
     case logTail(max: UInt32? = nil)
     /// PB-10: Network cues still run but send nothing. Engine-wide, in memory only.
@@ -180,6 +185,10 @@ enum Request: Hashable, Sendable, Codable {
         case .saveAs(let p): return ("save_as", [("path", p)])
         case .relink(let folder): return ("relink", [("folder", folder)])
         case .listDevices: return ("list_devices", [])
+        case .setOutputDevice(let device):
+            opt(&f, "device", device)
+            return ("set_output_device", f)
+        case .listPatchMappings: return ("list_patch_mappings", [])
         case .preshowCheck: return ("preshow_check", [])
         case .logTail(let max):
             opt(&f, "max", max)
@@ -212,6 +221,9 @@ enum Request: Hashable, Sendable, Codable {
         case "save_as": self = .saveAs(path: try c.decode(String.self, forKey: "path"))
         case "relink": self = .relink(folder: try c.decode(String.self, forKey: "folder"))
         case "list_devices": self = .listDevices
+        case "set_output_device":
+            self = .setOutputDevice(device: try c.decodeIfPresent(String.self, forKey: "device"))
+        case "list_patch_mappings": self = .listPatchMappings
         case "preshow_check": self = .preshowCheck
         case "log_tail": self = .logTail(max: try c.decodeIfPresent(UInt32.self, forKey: "max"))
         case "set_output_overrides":

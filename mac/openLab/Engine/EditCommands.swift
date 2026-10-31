@@ -95,6 +95,13 @@ extension Command {
         return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
     }
 
+    /// `SetWorkspaceSetting` of one number: `panic_duration` (0 to 60 s) or `min_go_interval`
+    /// (0 to 10 s). The engine refuses a value out of range.
+    static func setWorkspaceNumber(_ type: String, _ value: Double) -> Command {
+        let setting = JSONValue.object(["type": .string(type), "value": .double(value)])
+        return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
+    }
+
     /// `SetWorkspaceSetting { hotkeys { value } }`: the whole key map in one undo step (a swap,
     /// or Reset). `hotkeys` is the `settings.hotkeys` object with every key, null for none.
     static func setKeyMap(_ hotkeys: JSONValue) -> Command {

@@ -289,6 +289,35 @@ impl DocCx<'_> {
 }
 
 impl Engine {
+    /// `set_output_device`: the device the engine opens at its next start. Validated against the
+    /// list, stored like a mapping; the stream in use is not touched (the engine plays on one
+    /// device for its whole run).
+    pub(super) fn set_output_device(&mut self, device: Option<String>) -> Result<(), ErrorBody> {
+        if let Some(name) = &device
+            && !self.device_list().iter().any(|d| &d.name == name)
+        {
+            return Err(ErrorBody::new(
+                ErrorCode::NotFound,
+                format!("no output device named \"{name}\""),
+            ));
+        }
+        self.require_saveable()?;
+        let message = match &device {
+            Some(name) => {
+                format!("output device \"{name}\" will be used from the next engine start")
+            }
+            None => "the system default output device will be used from the next engine start"
+                .to_owned(),
+        };
+        self.config
+            .machine
+            .set_output_device(device)
+            .map_err(|why| ErrorBody::new(ErrorCode::BadRequest, why))?;
+        self.save_machine();
+        self.log(LogLevel::Info, message);
+        Ok(())
+    }
+
     /// Refuses an operator's change to the machine settings that could not be kept: they would
     /// work until the app quits and then be gone, and the reply would have said all was well.
     /// With no settings folder configured (tests, the offline driver) there is nothing to keep.

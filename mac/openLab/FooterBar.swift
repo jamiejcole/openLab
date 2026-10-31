@@ -65,6 +65,8 @@ final class WallClockLabel: NSTextField {
 /// Bottom bar: Edit/Show switch (Show Mode, M5.12), area toggles, status text, settings.
 final class FooterBar: NSView {
     var onToggle: ((LayoutArea, Bool) -> Void)?
+    /// The gear was used: open the workspace settings.
+    var onSettings: (() -> Void)?
     /// The switch was used (true: Show Mode).
     var onModeChange: ((Bool) -> Void)?
     /// "SHOW MODE" text: the mode is never shown by colour alone.
@@ -138,10 +140,9 @@ final class FooterBar: NSView {
         }
         settingsButton.image = Icon.settings.image(loc("footer.settings"))
         settingsButton.setAX(AX.settingsButton, label: loc("footer.settings"))
-        // No workspace settings window exists yet: a live-looking button that does nothing would
-        // mislead, so it is disabled and says why.
-        settingsButton.toolTip = loc("footer.settings.unavailable")
-        settingsButton.isEnabled = false
+        settingsButton.toolTip = loc("footer.settings.open")
+        settingsButton.target = self
+        settingsButton.action = #selector(settingsClicked)
         settingsButton.bezelStyle = .texturedRounded
 
         let left = NSStackView(views: [modeSwitch, showModeLabel] + [.toolbar, .masthead].compactMap { toggles[$0] })
@@ -215,6 +216,8 @@ final class FooterBar: NSView {
         modeSwitch.selectedSegment = on ? 1 : 0
         showModeLabel.isHidden = !on
     }
+
+    @objc private func settingsClicked() { onSettings?() }
 
     @objc private func modeChanged() { onModeChange?(modeSwitch.selectedSegment == 1) }
 

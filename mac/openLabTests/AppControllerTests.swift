@@ -215,7 +215,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
             MainMenu.make().bar.items[1].submenu?.items.map(
-                \.keyEquivalent), ["n", "o", "", "", "", "", "", "w", "s", "S"])
+                \.keyEquivalent), ["n", "o", "", "", "", "", "", ",", "", "w", "s", "S"])
     }
 
     // MARK: Front-window routing

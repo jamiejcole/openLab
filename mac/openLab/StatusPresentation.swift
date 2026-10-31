@@ -71,7 +71,8 @@ struct StatusPresentation: Equatable {
     private static func details(_ s: SystemStatus, _ problems: [(Level, String)]) -> [String] {
         var out = problems.map(\.1)
         let d = s.device
-        out.append(String(format: loc("status.detail.device"), d.name ?? loc("status.detail.none"), stateText(d.state)))
+        let deviceName = d.name ?? loc("status.detail.none")
+        out.append(String(format: loc("status.detail.device"), deviceName, deviceStateText(d.state)))
         var format = String(format: loc("status.detail.format"), Int(d.sampleRate), Int(d.channels))
         if let b = d.blockFrames { format += "  " + String(format: loc("status.detail.block"), Int(b)) }
         if let l = d.latencyMs { format += "  " + String(format: loc("status.detail.latency"), l) }
@@ -89,7 +90,7 @@ struct StatusPresentation: Equatable {
         return out
     }
 
-    private static func stateText(_ state: DeviceState) -> String {
+    static func deviceStateText(_ state: DeviceState) -> String {
         let key = "status.state.\(state.raw)"
         let missing = "\u{1}"
         let value = NSLocalizedString(key, value: missing, comment: "")
