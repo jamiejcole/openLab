@@ -222,7 +222,8 @@ enum MainMenu {
                 .separator(),
                 chord(item("menu.view.movePlayheadToCue", #selector(AppDelegate.movePlayheadToCue(_:)), "j"), shiftCmd),
                 chord(item("menu.view.playheadNext", #selector(AppDelegate.movePlayheadNext(_:)), down), shiftCmd),
-                chord(item("menu.view.playheadPrevious", #selector(AppDelegate.movePlayheadPrevious(_:)), up), shiftCmd),
+                chord(
+                    item("menu.view.playheadPrevious", #selector(AppDelegate.movePlayheadPrevious(_:)), up), shiftCmd),
                 .separator(),
                 chord(item("menu.view.moveDown", #selector(AppDelegate.moveCuesDown(_:)), down), [.command, .option]),
                 chord(item("menu.view.moveUp", #selector(AppDelegate.moveCuesUp(_:)), up), [.command, .option]),

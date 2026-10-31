@@ -53,7 +53,11 @@ extension AppController {
     /// View > Select Next / Previous Inspector Tab (the inspector must be showing).
     func selectAdjacentInspectorTab(by delta: Int) {
         guard let front = frontController, front.isVisible(.inspector) else { return }
-        if delta > 0 { front.inspector.tabView.selectNextTabViewItem(nil) } else { front.inspector.tabView.selectPreviousTabViewItem(nil) }
+        if delta > 0 {
+            front.inspector.tabView.selectNextTabViewItem(nil)
+        } else {
+            front.inspector.tabView.selectPreviousTabViewItem(nil)
+        }
     }
 
     /// View > Inspector / Toolbar / GO Area / Sidebar: the footer toggle buttons' action.

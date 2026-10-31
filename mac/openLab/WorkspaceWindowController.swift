@@ -326,7 +326,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// command (the Transport menu's Load Selected uses 0).
     func promptLoadToTime() {
         guard let id = cueList.selectedIDs().last else { return NSSound.beep() }
-        askText(title: loc("menu.tools.loadToTime.title"), label: loc("cue.prompt.time"), ok: loc("menu.tools.loadToTime.ok"), field: "00:00.00") {
+        askText(
+            title: loc("menu.tools.loadToTime.title"), label: loc("cue.prompt.time"),
+            ok: loc("menu.tools.loadToTime.ok"), field: "00:00.00"
+        ) {
             [weak self] text in
             guard let self else { return }
             guard let seconds = CueTime.parse(text) else { return self.showNotice(loc("cue.prompt.badTime")) }

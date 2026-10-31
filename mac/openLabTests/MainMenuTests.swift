@@ -36,8 +36,10 @@ final class MainMenuTests: XCTestCase {
 
     func testCuesMenuListsEveryToolbarKindInQLabsOrder() {
         let kinds = MainMenu.make().cues.items.compactMap { $0.representedObject as? String }
-        XCTAssertEqual(kinds, ["group", "audio", "fade", "start", "stop", "pause", "load", "reset", "devamp"]
-            + ["goto", "arm", "disarm", "wait", "memo"])
+        XCTAssertEqual(
+            kinds,
+            ["group", "audio", "fade", "start", "stop", "pause", "load", "reset", "devamp"]
+                + ["goto", "arm", "disarm", "wait", "memo"])
         let toolbar = CueToolbarView.kinds.flatMap { $0 }.compactMap { $0 }
         XCTAssertEqual(Set(kinds), Set(toolbar.map(\.rawValue)), "every toolbar button has a menu item")
         let separators = MainMenu.make().cues.items.enumerated().filter { $0.element.isSeparatorItem }.map(\.offset)
@@ -59,7 +61,8 @@ final class MainMenuTests: XCTestCase {
     func testViewMenuHasQLabsItemsAndKeys() {
         let view = MainMenu.make().view
         func item(_ s: Selector) -> NSMenuItem? { view.items.first { $0.action == s } }
-        let cmd: NSEvent.ModifierFlags = [.command], shiftCmd: NSEvent.ModifierFlags = [.command, .shift]
+        let cmd: NSEvent.ModifierFlags = [.command]
+        let shiftCmd: NSEvent.ModifierFlags = [.command, .shift]
         let expected: [(Selector, String, NSEvent.ModifierFlags)] = [
             (#selector(AppDelegate.selectCue(_:)), "j", cmd),
             (#selector(AppDelegate.selectNextCue(_:)), KeyChord.down, cmd),
@@ -92,7 +95,8 @@ final class MainMenuTests: XCTestCase {
         let all = try XCTUnwrap(file.items.first { $0.action == #selector(AppDelegate.closeAllWorkspaces(_:)) })
         XCTAssertEqual(all.keyEquivalent, "w")
         XCTAssertEqual(all.keyEquivalentModifierMask, [.command, .option])
-        let launcher = try XCTUnwrap(menus.windows.items.first { $0.action == #selector(AppDelegate.showLauncherWindow(_:)) })
+        let launcher = try XCTUnwrap(
+            menus.windows.items.first { $0.action == #selector(AppDelegate.showLauncherWindow(_:)) })
         XCTAssertEqual(launcher.keyEquivalent, "1")
         XCTAssertEqual(launcher.keyEquivalentModifierMask, [.command, .shift])
     }
