@@ -519,7 +519,7 @@ fn a_first_open_that_never_answers_fails_the_start_with_a_clear_error() {
     fake.open_gate();
 }
 
-// ---- The device-loss policy (QLab 5: PROGRESS check X1) ----
+// ---- The device-loss policy (measured on QLab 5) ----
 
 /// Cue 1 plays a ramp (every sample distinct) and auto-follows into cue 2; both on the device.
 fn follow_show() -> DeviceShow {
