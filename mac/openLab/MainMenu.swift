@@ -45,7 +45,9 @@ enum MainMenu {
             holder.submenu = submenu
             bar.addItem(holder)
         }
-        return Menus(bar: bar, edit: edit, openRecent: openRecent, cues: cues, transport: transport, windows: windows, help: help)
+        return Menus(
+            bar: bar, edit: edit, openRecent: openRecent, cues: cues, transport: transport, windows: windows, help: help
+        )
     }
 
     private static func appMenu() -> NSMenu {
