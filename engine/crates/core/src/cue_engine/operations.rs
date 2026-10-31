@@ -126,6 +126,7 @@ impl CueEngine {
         new.pre_wait_total = pre_wait_total;
         new.voice = voice;
         new.started = at;
+        new.started_in = super::group::ancestors(cx.ws, cue).first().copied();
         // A statically broken cue does not start, but keeps its timing as a disarmed cue does,
         // so its auto-continue fires on schedule (user decision, M2.13).
         if self.refuses(cue, cx) {

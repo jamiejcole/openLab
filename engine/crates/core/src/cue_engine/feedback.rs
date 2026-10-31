@@ -86,6 +86,7 @@ impl CueEngine {
         run.voice = Voice::None;
         let follow = run.follow;
         let seq = run.seq;
+        let started_in = run.started_in;
         // The voice ended before the devamp's deadline was carried out (it left the loop
         // there): the Devamp cue's next cue still starts, on the devamp sample.
         let devamp = run.devamp.take();
@@ -103,7 +104,7 @@ impl CueEngine {
         {
             self.continue_after(by, left.min(at), cx);
         }
-        self.child_action_done(cue, seq, at, cx);
+        self.child_action_done(cue, seq, started_in, at, cx);
     }
 
     /// The binary knows how long the run's action is: its end becomes a deadline. Ignored for a
@@ -212,7 +213,7 @@ impl CueEngine {
                 // then (QLab 5.5.3) and its playlist hears of the failure on the resume: a
                 // running one halts there, as for a child that broke while playing. A stop or
                 // panic cancels it.
-                let playlist = run.paused_at.is_some() && in_playlist(cx.ws, cue);
+                let playlist = run.paused_at.is_some() && in_playlist(cx.ws, cue, run.started_in);
                 if let (Some(paused), Phase::Action { start, .. }) = (run.paused_at, run.phase)
                     && (follow || playlist)
                 {
@@ -235,6 +236,7 @@ impl CueEngine {
                     run.phase = Phase::Done;
                 }
                 let seq = run.seq;
+                let started_in = run.started_in;
                 self.slots.insert(cue, Slot::Active(run));
                 self.settle(cue, cx.now, cx);
                 self.report(cue, before, cx.now, cx);
@@ -245,7 +247,7 @@ impl CueEngine {
                     self.halt_playlist(cue, seq, end, cx);
                 }
                 // A playlist moves on past a child that broke (unless it halted).
-                self.child_action_done(cue, seq, cx.now, cx);
+                self.child_action_done(cue, seq, started_in, cx.now, cx);
             }
             Slot::Loaded(_) | Slot::Broken(_) => {
                 self.slots.insert(cue, Slot::Broken(reason));
@@ -255,19 +257,26 @@ impl CueEngine {
     }
 }
 
-/// Whether `cue` is a child of a playlist group with no run of its own, which a child's end
-/// carries on (`follow_through`).
+/// Whether `cue`'s run started in, and is still in, a playlist group with no run of its own,
+/// which the run's end carries on (`follow_through`).
 fn in_runless_playlist(engine: &CueEngine, cue: CueId, ws: &Workspace) -> bool {
+    let started_in = match engine.slots.get(&cue) {
+        Some(Slot::Active(run)) => run.started_in,
+        _ => None,
+    };
     group::ancestors(ws, cue).first().is_some_and(|parent| {
-        !matches!(engine.slots.get(parent), Some(Slot::Active(_))) && is_playlist(ws, *parent)
+        started_in == Some(*parent)
+            && !matches!(engine.slots.get(parent), Some(Slot::Active(_)))
+            && is_playlist(ws, *parent)
     })
 }
 
-/// Whether `cue` is a child of a playlist group (running or not).
-fn in_playlist(ws: &Workspace, cue: CueId) -> bool {
+/// Whether `cue`, whose run started as a child of `started_in`, is still a child of that group
+/// and it is a playlist (running or not): only that playlist hears of the run's end.
+fn in_playlist(ws: &Workspace, cue: CueId, started_in: Option<CueId>) -> bool {
     group::ancestors(ws, cue)
         .first()
-        .is_some_and(|parent| is_playlist(ws, *parent))
+        .is_some_and(|parent| started_in == Some(*parent) && is_playlist(ws, *parent))
 }
 
 fn is_playlist(ws: &Workspace, group: CueId) -> bool {

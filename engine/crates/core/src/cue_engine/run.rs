@@ -129,6 +129,10 @@ pub(super) struct Run {
     /// sample is ignored, so a trigger chain back to a restarting cue cannot restart it again and
     /// again within one sample.
     pub started: SampleTime,
+    /// The group the cue was a child of when this run started (`None`: top level). Only that
+    /// group's playlist carries on when the run ends (`child_action_done`): a running cue moved
+    /// into another playlist does not start that playlist's children.
+    pub started_in: Option<CueId>,
     /// Set for Group cues: how the group runs its children.
     pub group: Option<GroupRun>,
     /// Audio cues: the gains Fade cues have set or are moving (the model's levels apply to the
@@ -309,6 +313,7 @@ impl Run {
             broke_paused: None,
             panicked: false,
             started: 0,
+            started_in: None,
             group,
             levels: BTreeMap::new(),
             faders: BTreeSet::new(),

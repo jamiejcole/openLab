@@ -1264,6 +1264,70 @@ fn a_looping_follow_through_passes_over_children_that_cannot_start_and_wraps() {
     );
 }
 
+// ----- a running cue moved into a playlist that did not start it -----
+
+#[test]
+fn a_running_cue_moved_into_an_idle_playlist_starts_none_of_its_children_when_it_ends() {
+    let p = grp(1, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]);
+    let mut rig = Rig::new(vec![p, wait(3, 1.0)]);
+    rig.start(0, 3);
+    // The operator drags the running Wait to the front of the idle playlist.
+    let c = rig.ws.cue_lists[0].cues.remove(1);
+    children_of(&mut rig, 1).insert(0, c);
+    rig.tick(200);
+    let end = rig.tick(1000);
+    assert_eq!(rig.state(3), CueState::Idle);
+    // The playlist never started it, so its end carries nothing on.
+    assert!(starts(&end).is_empty(), "{:?}", starts(&end));
+    assert!(starts(&rig.tick(3000)).is_empty());
+    assert_eq!(rig.state(10), CueState::Idle);
+    assert_eq!(rig.state(11), CueState::Idle);
+}
+
+#[test]
+fn a_moved_cues_end_reported_after_pause_all_is_not_held_for_the_idle_playlist() {
+    let p = grp(1, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]);
+    let mut rig = Rig::new(vec![p, sound(3)]);
+    rig.start(0, 3);
+    let c = rig.ws.cue_lists[0].cues.remove(1);
+    children_of(&mut rig, 1).insert(0, c);
+    rig.tick(200);
+    rig.at(500, Input::PauseAll);
+    // Its end, dated before the pause, arrives after it: it starts nothing, so nothing is held.
+    rig.ended(600, 3, 450);
+    assert_eq!(rig.state(3), CueState::Idle);
+    let mut all = rig.at(700, Input::ResumeAll);
+    all.extend(rig.tick(3000));
+    assert!(starts(&all).is_empty(), "{:?}", starts(&all));
+}
+
+#[test]
+fn a_held_failed_playlist_child_moved_into_an_idle_playlist_starts_nothing_there_on_resume() {
+    let playing = grp(1, playlist(), vec![sound(20), sound(21)]);
+    let idle = grp(5, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]);
+    let mut rig = Rig::new(vec![playing, idle]);
+    rig.go(0);
+    assert_eq!(rig.state(20), CueState::Running);
+    rig.at(100, Input::PauseAll);
+    // Its stream fails while Pause All holds: the end is held for the resume (QLab 5.5.3).
+    failed_while_playing(&mut rig, 200, 20);
+    assert_eq!(rig.state(20), CueState::Paused);
+    // The operator drags it to the front of the idle playlist, then resumes.
+    let c = children_of(&mut rig, 1).remove(0);
+    children_of(&mut rig, 5).insert(0, c);
+    rig.tick(300);
+    let mut all = rig.at(400, Input::ResumeAll);
+    all.extend(rig.tick(3000));
+    for n in [10, 11] {
+        assert!(
+            !starts(&all).iter().any(|(c, _)| *c == id(n)),
+            "{n} started: {:?}",
+            starts(&all)
+        );
+        assert_eq!(rig.state(n), CueState::Idle);
+    }
+}
+
 // ----- Q2 against a reference: the follow of a halted playlist -----
 
 /// One child of the playlist the property builds: a sound of `len` ms or a Wait of `len` ms,

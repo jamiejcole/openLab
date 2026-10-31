@@ -504,13 +504,24 @@ impl CueEngine {
         }
     }
 
-    /// The action of `cue` (run `seq`) completed, or it broke, on `at`: a playlist around it
-    /// moves on to its next child; in a playlist that is not running, the child after it starts
-    /// (`follow_through`).
-    pub(super) fn child_action_done(&mut self, cue: CueId, seq: u64, at: SampleTime, cx: &mut Ctx) {
+    /// The action of `cue` (run `seq`, started as a child of `started_in`) completed, or it
+    /// broke, on `at`: a playlist around it moves on to its next child; in a playlist that is not
+    /// running, the child after it starts (`follow_through`). Only the group the run started in
+    /// carries on: a cue moved into a playlist while it ran starts nothing there.
+    pub(super) fn child_action_done(
+        &mut self,
+        cue: CueId,
+        seq: u64,
+        started_in: Option<CueId>,
+        at: SampleTime,
+        cx: &mut Ctx,
+    ) {
         let Some(&parent) = ancestors(cx.ws, cue).first() else {
             return;
         };
+        if started_in != Some(parent) {
+            return;
+        }
         if !matches!(self.slots.get(&parent), Some(Slot::Active(_))) {
             return self.follow_through(parent, cue, at, cx);
         }
@@ -792,6 +803,7 @@ impl CueEngine {
         }
         let follow = follow == Some(0);
         let seq = run.seq;
+        let started_in = run.started_in;
         self.settle(group, at, cx);
         self.report(group, before, at, cx);
         if follow {
@@ -800,7 +812,7 @@ impl CueEngine {
         if let Some(by) = devamp_next {
             self.continue_after(by, at, cx);
         }
-        self.child_action_done(group, seq, at, cx);
+        self.child_action_done(group, seq, started_in, at, cx);
     }
 
     /// Ends groups whose action has no busy child left although no child told them (a busy

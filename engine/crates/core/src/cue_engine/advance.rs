@@ -104,6 +104,7 @@ impl CueEngine {
             run.length = None;
             let follow = run.follow;
             let seq = run.seq;
+            let started_in = run.started_in;
             // A playlist child that broke while paused: its playlist hears of it now.
             let halt = run.broke_paused.take().and_then(|b| b.halt);
             if run.fade.is_some() {
@@ -122,7 +123,7 @@ impl CueEngine {
             if let Some(rest) = halt {
                 self.halt_playlist(cue, seq, rest.map(|r| at.saturating_add(r)), cx);
             }
-            self.child_action_done(cue, seq, at, cx);
+            self.child_action_done(cue, seq, started_in, at, cx);
         }
     }
 
