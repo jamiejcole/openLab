@@ -1456,19 +1456,6 @@ fn child_added_to_a_running_timeline_is_not_started() {
     assert_eq!(rig.state(11), CueState::Idle);
 }
 
-#[test]
-fn moving_the_busy_child_out_of_a_group_ends_the_group() {
-    let g = timed(grp(1, TIMELINE, vec![sound(10)]), 0.0, 0.0, AF);
-    let mut rig = Rig::new(vec![g, memo(2)]);
-    rig.go(0);
-    let c = children_mut(&mut rig.cues_mut()[0]).remove(0);
-    rig.cues_mut().push(c);
-    let tick = rig.tick(500);
-    assert_eq!(changes(&tick, 1), vec![(CueState::Idle, 500)]);
-    assert_eq!(rig.state(10), CueState::Running);
-    assert_eq!(rig.state(2), CueState::Idle);
-}
-
 // ----- robustness (regressions found by the property test) -----
 
 #[test]

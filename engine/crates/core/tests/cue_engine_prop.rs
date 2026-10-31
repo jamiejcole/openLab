@@ -1177,6 +1177,11 @@ struct Run {
     /// Playlist children that failed while paused, as of the failure (a later move or mode
     /// change does not undo it): they show `paused` with no voice until they leave `paused`.
     held_in_playlist: BTreeSet<CueId>,
+    /// Cues moved out of a group by a model edit, with that group: a group goes on waiting on a
+    /// run that started in it wherever the cue is moved, so it can run with none of its own
+    /// children busy while such a cue is. Dropped when that run ends, or when the group ends,
+    /// is stopped or starts a new run (it lets go of them then).
+    moved_out_of: Vec<(CueId, CueId)>,
 }
 
 fn preview_action(a: &Action) -> bool {
@@ -1228,6 +1233,7 @@ impl Run {
             since_entry: BTreeSet::new(),
             ph_around: Vec::new(),
             held_in_playlist: BTreeSet::new(),
+            moved_out_of: Vec::new(),
         }
     }
 
@@ -1370,6 +1376,14 @@ impl Run {
                     if *state != CueState::Paused {
                         self.held_in_playlist.remove(cue);
                     }
+                    // A moved cue's run that ends, or a group that ends or is stopped (it lets
+                    // go of the cues moved out of it), no longer ties the two together.
+                    let ended = matches!(state, CueState::Idle | CueState::Loaded);
+                    // (A group's new run lets go of them too.)
+                    let stopping = matches!(state, CueState::Stopping | CueState::PreWaiting);
+                    self.moved_out_of.retain(|(m, g)| {
+                        !(ended && m == cue) && !((ended || stopping) && g == cue)
+                    });
                     self.seen.insert(*cue);
                     if !matches!(state, CueState::Idle | CueState::Broken | CueState::Loaded) {
                         self.since_entry.insert(*cue);
@@ -1888,11 +1902,11 @@ impl Run {
                 && state == CueState::Running
                 && !self.engine.is_halted(*id)
             {
+                let busy =
+                    |k: CueId| !matches!(self.engine.state(k), CueState::Idle | CueState::Loaded);
                 prop_assert!(
-                    c.children().iter().any(|k| !matches!(
-                        self.engine.state(k.id),
-                        CueState::Idle | CueState::Loaded
-                    )),
+                    c.children().iter().any(|k| busy(k.id))
+                        || self.moved_out_of.iter().any(|(m, g)| g == id && busy(*m)),
                     "group {} runs with no busy child",
                     id
                 );
@@ -2048,6 +2062,9 @@ impl Run {
             }
             15 => {
                 // Model edit: move a cue to the end of the top level.
+                if let Some(&g) = groups_around(&self.ws.cue_lists[0].cues, target).last() {
+                    self.moved_out_of.push((target, g));
+                }
                 if let Some(c) = take(&mut self.ws.cue_lists[0].cues, target) {
                     self.ws.cue_lists[0].cues.push(c);
                 }
@@ -2150,6 +2167,11 @@ impl Run {
                     .get(usize::from(s.b) % groups.len().max(1))
                     .copied()
                     .filter(|g| *g != target && !groups_around(cues, *g).contains(&target));
+                if into.is_some()
+                    && let Some(&from) = groups_around(cues, target).last()
+                {
+                    self.moved_out_of.push((target, from));
+                }
                 if let Some(g) = into
                     && let Some(c) = take(&mut self.ws.cue_lists[0].cues, target)
                 {
@@ -2431,6 +2453,15 @@ impl Run {
     /// Whether a cue can rest with nothing scheduled: it is paused, or its voice loops until it
     /// is stopped, or it is a group that is running or stopping around such a cue.
     fn waits_for_the_operator(&self, id: CueId) -> bool {
+        self.waits_within(id, 0)
+    }
+
+    /// `waits_for_the_operator`, `depth` levels down: cues moved out of a group can lead back
+    /// into it, so the walk is bounded.
+    fn waits_within(&self, id: CueId, depth: usize) -> bool {
+        if depth > 64 {
+            return false;
+        }
         let Some(c) = self.ws.find_cue(id) else {
             return false;
         };
@@ -2447,9 +2478,17 @@ impl Run {
                 // (A broken child waits only while paused: Pause freezes a broken cue's
                 // timers too, and it reports `broken` all the same. A settled broken child
                 // does not hold the group open.)
+                // A cue moved out of the group keeps it waiting as one of its children does.
+                let moved = self
+                    .moved_out_of
+                    .iter()
+                    .filter(|(_, g)| *g == id)
+                    .map(|(m, _)| *m);
                 children
                     .iter()
-                    .any(|k| self.engine.is_paused(k.id) || self.waits_for_the_operator(k.id))
+                    .map(|k| k.id)
+                    .chain(moved)
+                    .any(|k| self.engine.is_paused(k) || self.waits_within(k, depth + 1))
             }
             _ => false,
         }
