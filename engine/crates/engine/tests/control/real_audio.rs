@@ -17,10 +17,12 @@ use std::path::{Path, PathBuf};
 
 use crate::show::media::{self, Pcm};
 use crate::show::*;
-use openlab_core::protocol::{Outcome, ServerMessage, WireCueState, WireWarning, decode_client};
+use openlab_core::protocol::{
+    ClientMessage, Outcome, ServerMessage, WireCueState, WireWarning, decode_client,
+};
 use openlab_core::{
-    ContinueMode, Crosspoint, Cue, CueKind, CueLevels, CueState, FadeCurve, FadeLevels, GroupMode,
-    SILENCE_DB, Workspace, db_to_gain,
+    Command, ContinueMode, Crosspoint, Cue, CueKind, CueLevels, CueState, FadeCurve, FadeLevels,
+    GroupMode, MediaRef, SILENCE_DB, Workspace, db_to_gain,
 };
 use openlab_engine::control::offline::OfflineShow;
 
@@ -198,20 +200,50 @@ fn tone_db() -> (f64, f64) {
     (db(0.5 / 2f64.sqrt()), db(0.25 / 2f64.sqrt()))
 }
 
+/// The app's Finder drop of `path`: the golden `AddCue` the Swift side is checked against
+/// (`engine/fixtures/protocol/client/command_add_new_audio_cue.json`), with only the list, patch
+/// and file pointed at this show's. Its levels and routing are sent as the app sends them.
+fn drop_like_app(s: &mut OfflineShow, path: &Path) -> u128 {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/protocol/client/command_add_new_audio_cue.json"),
+    )
+    .unwrap();
+    let mut message = decode_client(&text).unwrap();
+    let ClientMessage::Command { id, command, .. } = &mut message else {
+        panic!("not a command");
+    };
+    *id = s.request_id();
+    let Command::AddCue { at, cue, .. } = command.as_mut() else {
+        panic!("not an AddCue");
+    };
+    at.list = list_id();
+    let CueKind::Audio { media, patch, .. } = &mut cue.kind else {
+        panic!("not an audio cue");
+    };
+    *media = Some(MediaRef::new(path.to_str().unwrap()));
+    *patch = patch_id();
+    let cue = cue.id.0.as_u128();
+    let replies = s.send(message);
+    assert!(
+        replies.iter().all(|r| !matches!(
+            r,
+            ServerMessage::Result {
+                outcome: Outcome::Error(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+    s.settle_media();
+    cue
+}
+
 #[test]
-fn a_file_added_like_a_finder_drop_plays_on_outputs_one_and_two() {
-    // The app's drop: `AddCue` with one cue output per patch output and file channel n on cue
-    // output n (`NewCueKind.audio.kindJSON`).
+fn a_stereo_file_dropped_like_the_app_plays_left_on_one_and_right_on_two() {
     let path = tone_file("drop.wav", R48, 0.5, false, Pcm::I24);
     let mut s = show_at(workspace(vec![]), R48, B);
-    let json = format!(
-        r#"{{"type":"add_cue","at":{{"list":"{list}","parent":null,"index":0}},"auto_number":true,"cue":{{"id":"{cue}","number":null,"name":"","notes":"","color":"none","flagged":false,"armed":true,"pre_wait":0,"post_wait":0,"continue_mode":"do_not_continue","triggers":{{"hotkey":null,"osc":null}},"second_trigger":"nothing","second_trigger_on_release":false,"kind":{{"type":"audio","media":{media},"patch":"{patch}","start_time":0,"end_time":null,"fade_in":{{"duration":0,"curve":"linear"}},"fade_out":{{"duration":0,"curve":"linear"}},"slices":[],"last_slice_play_count":1,"levels":{{"master_db":0,"outputs":[{{"db":0,"mute":false}},{{"db":0,"mute":false}}],"crosspoints":[{{"input":0,"output":0,"db":0,"mute":false}},{{"input":1,"output":1,"db":0,"mute":false}}],"gangs":[]}},"preload":false}}}}}}"#,
-        list = uuid(900),
-        cue = uuid(1),
-        patch = uuid(901),
-        media = serde_json::to_string(path.to_str().unwrap()).unwrap(),
-    );
-    command(&mut s, &json);
+    let n = drop_like_app(&mut s, &path);
     let at = go_app(&mut s);
     s.run(u64::from(R48));
     let (l, r) = (s.channel(0), s.channel(1));
@@ -220,7 +252,24 @@ fn a_file_added_like_a_finder_drop_plays_on_outputs_one_and_two() {
     close(rms_db(&r[w.clone()]), tone_db().1, 0.01, "right dB");
     close(media::frequency(&l[w.clone()], R48), 440.0, 0.05, "left Hz");
     close(media::frequency(&r[w], R48), 1000.0, 0.05, "right Hz");
-    assert_eq!(state(&s, 1), CueState::Idle);
+    assert_eq!(state(&s, n), CueState::Idle);
+}
+
+#[test]
+fn a_mono_file_dropped_like_the_app_plays_on_output_one_only() {
+    // QLab 5's default levels: input 1 to output 1 only (a mono file is not spread).
+    let x = media::sine(R48 as usize / 2, R48, 440.0, 0.5);
+    let path = media::temp_file("mono.wav", &media::wav(&x, 1, R48, Pcm::I16));
+    let mut s = show_at(workspace(vec![]), R48, B);
+    drop_like_app(&mut s, &path);
+    let at = go_app(&mut s);
+    s.run(u64::from(R48));
+    let w = at + 4800..at + 19_200;
+    close(rms_db(&s.channel(0)[w]), tone_db().0, 0.01, "output 1 dB");
+    assert!(
+        s.channel(1).iter().all(|&v| v == 0.0),
+        "output 2 not silent"
+    );
 }
 
 #[test]

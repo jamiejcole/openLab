@@ -14,8 +14,10 @@ enum NewCueKind: String, CaseIterable, Sendable {
 
     /// The `kind` object with defaults. Audio needs a patch (core requires one) and gets one cue
     /// output per patch output, with file channel n routed to cue output n at 0 dB (QLab 5's default
-    /// Audio cue levels). Core's crosspoints are sparse, so a cue sent with none plays silent. A mono
-    /// file plays on output 1 alone; inputs beyond the file's channels are ignored by the mixer.
+    /// Audio cue levels; QLab 5 manual pp. 181-182, Levels tab and default levels, and p. 190, signal
+    /// flow through crosspoint (1,1)). Core's crosspoints are sparse, so a cue sent with none plays
+    /// silent. A mono file plays on output 1 alone; inputs beyond the file's channels are ignored by
+    /// the mixer. The engine plays this exact message in its tests (client/command_add_new_audio_cue).
     func kindJSON(patch: ModelObject?) -> JSONValue? {
         let fade = JSONValue.object(["duration": .double(0), "curve": .string("linear")])
         var fields: [String: JSONValue] = ["type": .string(wireType)]

@@ -90,14 +90,23 @@ final class CueEditingTests: XCTestCase {
         XCTAssertEqual(
             NewCueKind.audio.kindJSON(patch: model)?["levels"]?["outputs"]?.arrayValue?.count, 2,
             "one cue output per patch output")
-        // File channel n to cue output n at 0 dB: with no crosspoint a dropped file plays silent.
-        let route = { (n: Int64) -> JSONValue in
-            .object(["input": .int(n), "output": .int(n), "db": .double(0), "mute": .bool(false)])
-        }
-        XCTAssertEqual(
-            NewCueKind.audio.kindJSON(patch: model)?["levels"]?["crosspoints"], .array([route(0), route(1)]))
         XCTAssertEqual(NewCueKind.goto.wireType, "go_to")
         XCTAssertEqual(CueToolbarView.kinds.flatMap { $0 }.compactMap { $0 }.count, NewCueKind.allCases.count)
+    }
+
+    /// A dropped file's `AddCue` (built as `addFiles` builds it) is the engine's golden fixture, which the
+    /// engine's real-audio tests play and measure: file channel n on cue output n at 0 dB, so it is heard.
+    func testNewAudioCueEncodesAsTheGoldenFixtureTheEnginePlays() throws {
+        let patch = try XCTUnwrap(
+            try Fixtures.json("server", "welcome")["snapshot"]?["workspace"]?["patches"]?.arrayValue?.first)
+        let model = try JSONDecoder().decode(ModelObject.self, from: Data(try patch.text().utf8))
+        let fixture = try XCTUnwrap(Fixtures.json("client", "command_add_new_audio_cue")["command"])
+        var cue = try XCTUnwrap(NewCueKind.audio.cueJSON(id: "00000000-0000-0000-0000-00000000000d", patch: model))
+        var kind = try XCTUnwrap(cue["kind"])
+        kind.set("media", .string("/Volumes/Show/thunder.wav"))
+        cue.set("kind", kind)
+        let sent = Command.addCue(cue, list: "00000000-0000-0000-0000-000000000001", parent: nil, index: 0).json
+        XCTAssertEqual(normalised(sent), normalised(fixture))
     }
 
     // MARK: Insertion

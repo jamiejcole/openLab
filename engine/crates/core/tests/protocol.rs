@@ -375,6 +375,37 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
+    // A new Audio cue exactly as the app's Finder drop sends it (`NewCueKind.audio.cueJSON`, the
+    // Swift test compares): no number, the file, one cue output per patch output and file
+    // channel n on cue output n at 0 dB. The engine's real-audio tests play this message.
+    let mut dropped = cue(13, audio());
+    if let CueKind::Audio { media, levels, .. } = &mut dropped.kind {
+        *media = Some(MediaRef::new("/Volumes/Show/thunder.wav"));
+        levels.crosspoints = (0..2)
+            .map(|n| Crosspoint {
+                input: n,
+                output: n,
+                db: 0.0,
+                mute: false,
+            })
+            .collect();
+    }
+    add(
+        "command_add_new_audio_cue",
+        client(ClientMessage::Command {
+            id: rid(4),
+            command: Box::new(Command::AddCue {
+                at: Position {
+                    list: list(),
+                    parent: None,
+                    index: 0,
+                },
+                cue: dropped,
+                auto_number: true,
+            }),
+            coalesce: None,
+        }),
+    );
     // A Devamp cue's settings, `devamp_mode` included, travel as its kind.
     add(
         "command_set_devamp_kind",
