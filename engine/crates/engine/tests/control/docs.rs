@@ -823,6 +823,56 @@ fn an_autosave_left_at_the_old_path_stays_while_it_holds_edits_or_another_worksp
     );
 }
 
+/// A recovery file the operator kept when opening P1 (`ignore`: offered again next time) holds
+/// edits that are nowhere else: a Save As to P2 without an edit leaves it alone, since this doc
+/// never wrote it (#383).
+#[test]
+fn a_recovery_file_kept_at_open_survives_a_save_as_elsewhere() {
+    let mut ws = memo_ws("one", &[1]);
+    ws.settings.autosave_interval = 30.0;
+    let mut r = saved_rig(ws);
+    let workspace = r.s.control().workspace().id;
+    let old = r.env.show_path();
+    // Unsaved edits autosaved at P1 (as a crashed run leaves them).
+    rename(&mut r.s, 1, "crash");
+    r.s.tick();
+    r.clock.advance(30_000);
+    r.s.settle_docs();
+    assert_eq!(recovered_at(&r, workspace, &old), "crash");
+    let file = r.env.dirs.recovery_path(workspace, Some(&old));
+    let bytes = fs::read(&file).unwrap();
+    let doc = r.s.control().doc_ids()[0];
+    r.s.close_doc(doc, true).unwrap();
+    r.s.settle_docs();
+    fs::write(&file, &bytes).unwrap();
+    // The operator opens P1 and ignores the offered recovery ("offered again next time").
+    r.s.open_doc(openlab_engine::control::DocSource::Open {
+        path: old.clone(),
+        recovery: Some(RecoveryChoice::Ignore),
+    })
+    .unwrap();
+    assert_eq!(r.s.control().workspace().id, workspace);
+    assert!(file.exists(), "ignored recovery kept after open");
+    let new = r.env.show_dir().join("copy.openlab");
+    ok_result(&request(
+        &mut r.s,
+        Request::SaveAs {
+            path: new.to_string_lossy().into_owned(),
+        },
+    ));
+    r.s.settle_docs();
+    r.s.tick();
+    r.s.settle_docs();
+    assert!(
+        !fs::read_to_string(&new).unwrap().contains("crash"),
+        "P2 lacks the crash edits"
+    );
+    assert!(
+        file.exists(),
+        "the kept recovery of P1, whose edits are nowhere else, was deleted"
+    );
+}
+
 #[test]
 fn an_untitled_workspace_autosaves_under_its_id_alone() {
     let mut r = rig(memo_ws("one", &[1]));

@@ -471,6 +471,10 @@ pub(super) struct DocFile {
     /// recovery files may still be on disk, and are this workspace's to remove once a save or
     /// an autosave at the current path holds every edit they do (#383).
     left_paths: Vec<(WorkspaceId, PathBuf)>,
+    /// Show paths whose recovery file this doc wrote in this run and no save of it has removed
+    /// since. Only these are left behind for removal: a recovery file that was there before
+    /// (one the operator chose to keep when opening the show) holds edits that are nowhere else.
+    autosaved_at: Vec<PathBuf>,
     /// Of those, the ones whose recovery file may go now ([`Control::clear_left_autosaves`]
     /// removes them unless another workspace claims the path).
     left_ready: Vec<(WorkspaceId, PathBuf)>,
@@ -493,12 +497,29 @@ impl DocFile {
             autosave_path: None,
             autosave_failed: false,
             left_paths: Vec::new(),
+            autosaved_at: Vec::new(),
             left_ready: Vec::new(),
             autosaved_revision: None,
             dirty_since: None,
             last_autosave: None,
             notices: Vec::new(),
             resend_snapshot: false,
+        }
+    }
+
+    /// This doc's recovery file at `path` was left behind (`ws`: the workspace id it is named by),
+    /// if this doc wrote it.
+    fn leave(&mut self, ws: WorkspaceId, path: PathBuf) {
+        let Some(i) = self.autosaved_at.iter().position(|p| same_path(p, &path)) else {
+            return;
+        };
+        self.autosaved_at.swap_remove(i);
+        if !self
+            .left_paths
+            .iter()
+            .any(|(w, p)| *w == ws && same_path(p, &path))
+        {
+            self.left_paths.push((ws, path));
         }
     }
 
@@ -1345,13 +1366,8 @@ impl DocCx<'_> {
             let old_dir = self.show_dir();
             let ws = self.doc.model.ws().id;
             let file = &mut self.doc.file;
-            if let Some(old) = self.doc.show_path.take()
-                && !file
-                    .left_paths
-                    .iter()
-                    .any(|(w, p)| *w == ws && same_path(p, &old))
-            {
-                file.left_paths.push((ws, old));
+            if let Some(old) = self.doc.show_path.take() {
+                file.leave(ws, old);
             }
             // Back at a path it left: that recovery file is the current one again.
             file.left_paths.retain(|(_, p)| !same_path(p, &save.path));
@@ -1365,6 +1381,11 @@ impl DocCx<'_> {
                 );
             }
         }
+        // The save removed the recovery file of its path (and wrote none).
+        self.doc
+            .file
+            .autosaved_at
+            .retain(|p| !same_path(p, &save.path));
         if clean_before {
             // No edit since this save began, so no autosave at a path left behind holds one
             // this save does not: their recovery files are redundant (#383). With edits since,
@@ -1450,8 +1471,18 @@ impl DocCx<'_> {
                 self.doc.file.autosave_failed = false;
                 // Written at the current path, after every path left behind was left: it holds
                 // every edit their recovery files do (#383).
-                if written.is_some() && path.is_some() && path == self.doc.show_path {
-                    self.doc.file.left_paths_done();
+                if let (Some(_), Some(path)) = (written, path) {
+                    let file = &mut self.doc.file;
+                    if !file.autosaved_at.iter().any(|p| same_path(p, &path)) {
+                        file.autosaved_at.push(path.clone());
+                    }
+                    if self.doc.show_path.as_ref() == Some(&path) {
+                        file.left_paths_done();
+                    } else {
+                        // Started before a Save As moved the doc on: left behind at once.
+                        let ws = self.doc.model.ws().id;
+                        file.leave(ws, path);
+                    }
                 }
             }
             Err(e) => {

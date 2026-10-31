@@ -38,12 +38,15 @@ tell the copies apart: with the hash, each copy has its own backups and its own 
    pre-first-save one) and their moved-aside stale files are removed. This happens only after the rename
    and folder sync succeeded, so a failed save leaves the recovery file in place.
 5. Save As (control loop, `Control::clear_left_autosaves`, #383): the recovery file of the show path the
-   workspace was saved away from is removed too, but only once something at the new path holds every edit
-   it does: at once when no edit was made while the save was written, else after the next successful save
+   workspace was saved away from is removed too, if this doc wrote it in this run (an autosave at that path
+   that no save of it has removed since; one already there when the show was opened, kept with `ignore`,
+   holds edits that are nowhere else and is never touched), but only once something at the new path holds
+   every edit it does: at once when no edit was made while the save was written, else after the next successful save
    or autosave at the new path. A path another open workspace holds, is saving to, or an `open` is reading
    is skipped (its recovery file may be that workspace's) and looked at again after the next save or
    autosave. Tests: `tests/control/docs.rs` (`save_as_removes_the_autosave_left_at_the_old_path`,
-   `an_autosave_left_at_the_old_path_stays_while_it_holds_edits_or_another_workspace_has_it`).
+   `an_autosave_left_at_the_old_path_stays_while_it_holds_edits_or_another_workspace_has_it`,
+   `a_recovery_file_kept_at_open_survives_a_save_as_elsewhere`).
 
 Details of the replace in step 3:
 
