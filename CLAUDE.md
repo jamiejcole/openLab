@@ -12,7 +12,7 @@ This file is the only copy of every rule below; other files link here instead of
 
 ## Layout and commands
 `engine/` Rust workspace (`crates/core` pure logic, `crates/audio` devices/decode/mixer/render, `crates/engine` binary). `mac/` Swift + AppKit app (XcodeGen from `mac/project.yml`; never commit `.xcodeproj`). `docs/` contracts. Machine setup: `docs/dev-setup.md`.
-`make lint`, `make test`, `make test-rust`, `make mac`, `make verify-bundle`, `make prepush` (the pre-push gate; prints `PREPUSH PASS <sha>` or `PREPUSH FAIL: <step>`).
+`make lint`, `make test`, `make test-rust`, `make test-mac` (unit tests + the UI smoke set, `scripts/ui-smoke.txt`), `make test-mac-ui-full` (every UI test; nightly in CI), `make mac`, `make verify-bundle`, `make prepush` (the pre-push gate; prints `PREPUSH PASS <sha>` or `PREPUSH FAIL: <step>`).
 
 ## Real-time audio thread (anything the audio callback calls)
 - No allocation/deallocation, locks, syscalls, logging, formatting or disk I/O. Preallocate; hand objects to the control thread to free.
@@ -28,6 +28,7 @@ This file is the only copy of every rule below; other files link here instead of
 ## Tests
 - Every change ships with tests; every bug fix with one regression test that failed before the fix. No variant matrices.
 - No real-time sleeps or wall-clock in tests: use the virtual clock or offline render driver.
+- New behaviour is proven by unit tests. Add an XCUITest only for a flow unit tests cannot reach (focus, window ordering) and say in the PR whether it joins the per-PR smoke set (`scripts/ui-smoke.txt`, 3 tests: launch, GO, panic) or only the nightly full suite (the default).
 - Extend the existing test file and `tests/common`; no new harness types. `tests/common/mod.rs` starts with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`.
 - A test that cannot run here fails or reports a skip; it never passes by returning early.
 - Test-only code (fakes, fault switches, fixtures) never compiles into a Release product.

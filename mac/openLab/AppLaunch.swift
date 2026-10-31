@@ -69,6 +69,7 @@ struct AppLaunch {
                 let menu = MainMenu.make()
                 menu.transport.delegate = delegate
                 menu.edit.delegate = delegate
+                menu.openRecent.delegate = delegate
                 NSApp.mainMenu = menu.bar
                 NSApp.windowsMenu = menu.windows
                 NSApp.helpMenu = menu.help

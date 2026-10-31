@@ -138,7 +138,10 @@ final class FooterBar: NSView {
         }
         settingsButton.image = Icon.settings.image(loc("footer.settings"))
         settingsButton.setAX(AX.settingsButton, label: loc("footer.settings"))
-        settingsButton.toolTip = loc("footer.settings")
+        // No workspace settings window exists yet: a live-looking button that does nothing would
+        // mislead, so it is disabled and says why.
+        settingsButton.toolTip = loc("footer.settings.unavailable")
+        settingsButton.isEnabled = false
         settingsButton.bezelStyle = .texturedRounded
 
         let left = NSStackView(views: [modeSwitch, showModeLabel] + [.toolbar, .masthead].compactMap { toggles[$0] })

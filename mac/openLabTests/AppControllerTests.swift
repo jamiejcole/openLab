@@ -97,6 +97,7 @@ final class AppControllerTests: XCTestCase {
         app.alerts = alerts
         app.noteRecent = { [unowned self] in recents.append($0) }
         app.recentURLs = { [unowned self] in recents }
+        app.recentExists = { _ in true }
         app.keyWindow = { [unowned self] in keyDoc.flatMap { app.windows[$0]?.window } }
         app.pickSaveURL = { [unowned self] _ in saveURL }
         app.pickOpenURL = { [unowned self] in openURL }
@@ -214,7 +215,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
             MainMenu.make().bar.items[1].submenu?.items.map(
-                \.keyEquivalent), ["n", "o", "", "", "", "", "w"])
+                \.keyEquivalent), ["n", "o", "", "", "", "", "", "w", "s", "S"])
     }
 
     // MARK: Front-window routing
@@ -1053,6 +1054,89 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(closed)
         XCTAssertNotNil(app.windows[second])
         XCTAssertTrue(closeMessages().isEmpty)
+    }
+
+    // MARK: File > Save, Save As, Open Recent
+
+    private func saveRequests() -> (save: Int, saveAs: [String]) {
+        var paths: [String] = []
+        var plain = 0
+        for r in engine.receivedFrom {
+            if case .request(_, .save) = r.message { plain += 1 }
+            if case .request(_, .saveAs(let p)) = r.message { paths.append(p) }
+        }
+        return (plain, paths)
+    }
+
+    func testSaveAndSaveAsNeedAFrontWorkspaceAndWorkInShowMode() async throws {
+        keyDoc = nil
+        XCTAssertFalse(app.canSaveFront)
+        keyDoc = "1"
+        XCTAssertTrue(app.canSaveFront)
+        app.windows["1"]?.setShowMode(true)
+        XCTAssertTrue(app.canSaveFront, "saving is allowed in Show Mode")
+        let file = try XCTUnwrap(MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.file") })
+        let save = try XCTUnwrap(file.items.first { $0.action == #selector(AppDelegate.saveWorkspace(_:)) })
+        let saveAs = try XCTUnwrap(file.items.first { $0.action == #selector(AppDelegate.saveWorkspaceAs(_:)) })
+        XCTAssertEqual(save.keyEquivalent, "s")
+        XCTAssertEqual(save.keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(saveAs.keyEquivalent, "S")
+    }
+
+    func testSaveUsesTheStoresSavePathAndSaveAsAsksForAPath() async throws {
+        let store = try XCTUnwrap(app.session.stores["1"])
+        keyDoc = "1"
+        let ok = await app.saveWorkspace(store)
+        XCTAssertTrue(ok)
+        XCTAssertEqual(saveRequests().save, 1)
+        XCTAssertTrue(saveRequests().saveAs.isEmpty)
+
+        saveURL = nil  // Save As cancelled in the panel: nothing is sent
+        let cancelled = await app.saveWorkspace(store, asNew: true)
+        XCTAssertFalse(cancelled)
+        XCTAssertEqual(saveRequests().save, 1)
+
+        saveURL = URL(fileURLWithPath: "/Shows/Copy.openlab")
+        let saved = await app.saveWorkspace(store, asNew: true)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(saveRequests().saveAs, ["/Shows/Copy.openlab"])
+        XCTAssertEqual(recents, [saveURL])
+    }
+
+    func testSaveOfAnUntitledWorkspaceShowsTheSavePanel() async throws {
+        let second = try await addWorkspace()
+        let store = try XCTUnwrap(app.session.stores[second])
+        saveURL = URL(fileURLWithPath: "/Shows/Fresh.openlab")
+        let ok = await app.saveWorkspace(store)
+        XCTAssertTrue(ok)
+        XCTAssertEqual(saveRequests().saveAs, ["/Shows/Fresh.openlab"])
+    }
+
+    func testRecentsHideWorkspacesWhoseFileIsGone() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let here = dir.appendingPathComponent("Here.openlab")
+        try Data().write(to: here)
+        recents = [dir.appendingPathComponent("Gone.openlab"), here]
+        app.recentExists = { FileManager.default.fileExists(atPath: $0.path) }
+        XCTAssertEqual(app.existingRecentURLs(), [here])
+    }
+
+    func testOpenRecentMenuListsTheRecentWorkspacesAndClearForgetsThem() throws {
+        let menu = NSMenu()
+        MainMenu.fillRecent(menu, [])
+        XCTAssertEqual(menu.items.map(\.title), [loc("menu.file.openRecent.none")])
+        XCTAssertFalse(menu.items[0].isEnabled)
+        let urls = [URL(fileURLWithPath: "/Shows/A.openlab"), URL(fileURLWithPath: "/Shows/B.openlab")]
+        MainMenu.fillRecent(menu, urls)
+        XCTAssertEqual(menu.items.prefix(2).map(\.title), ["A", "B"])
+        XCTAssertEqual(menu.items[1].representedObject as? URL, urls[1])
+        XCTAssertEqual(menu.items.last?.action, #selector(AppDelegate.clearRecents(_:)))
+        var cleared = 0
+        app.forgetRecents = { cleared += 1 }
+        app.clearRecents()
+        XCTAssertEqual(cleared, 1)
     }
 
     func testUnsavedSaveSavesThenClosesWithoutDiscard() async throws {

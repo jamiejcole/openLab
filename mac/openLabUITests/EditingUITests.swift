@@ -10,7 +10,7 @@ final class EditingUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
         app.staticTexts["Intro"].click()
 
-        app.typeKey("9", modifierFlags: .command)  // New Group Cue (QLab's key)
+        app.typeKey("0", modifierFlags: .command)  // New Group Cue (QLab's key)
         let name = app.textFields["inspector-name"]
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         // The new cue is selected and shown in the inspector: its name is empty.
@@ -48,7 +48,7 @@ final class EditingUITests: XCTestCase {
         app.staticTexts["Intro"].click()
         app.radioGroups["mode-switch"].radioButtons["Show"].click()
         XCTAssertTrue(app.staticTexts["show-mode-indicator"].waitForExistence(timeout: 5))
-        app.typeKey("9", modifierFlags: .command)
+        app.typeKey("0", modifierFlags: .command)
         app.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: .command)
         app.typeKey("z", modifierFlags: .command)
         XCTAssertFalse(app.staticTexts["Group"].waitForExistence(timeout: 2), "no cue is added in Show Mode")
