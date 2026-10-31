@@ -10,6 +10,7 @@ engine/crates/engine/tests/perf.rs | permanent: the performance budget gate meas
 engine/crates/engine/tests/soak_rt.rs | permanent: the real-time soak runs against the wall clock by design (`Instant::now()`); ignored test, nightly only
 engine/crates/audio/src/resample.rs | permanent: an ignored benchmark that prints real render time (`let t = std::time::Instant::now();`)
 engine/crates/engine/src/control/media/catalog/tests/volume.rs | permanent: `let base = Instant::now();` is only the origin of the probe clock the test moves by hand
+engine/crates/engine/src/control/waveform_reader/tests.rs | permanent: `let base = Instant::now();` is only the origin of the waveform reader clock the test moves by hand
 engine/crates/engine/src/control/media/gate.rs | permanent: `let t0 = Instant::now();` is only the origin of the instants the test passes to the gate
 engine/crates/engine/src/net/relaunch.rs | permanent: `let t0 = Instant::now();` is only the origin of the instants the test passes to the budget
 engine/crates/engine/tests/persist/writer.rs | permanent: `let t0 = std::time::Instant::now();` is only the origin of the instants the test passes to check_stalled
