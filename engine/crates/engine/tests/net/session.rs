@@ -22,7 +22,7 @@
 //! closing another doc, shutdown), and both protocols and several clients
 //! at once seeing the same show.
 
-use crate::common::text;
+use crate::common::{ENGINE, Engine, text};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::thread::{self, JoinHandle};
@@ -33,8 +33,9 @@ use crossbeam_channel::{Receiver, Sender};
 use futures_util::{SinkExt, StreamExt};
 use openlab_audio::{Mixer, OfflineRenderer};
 use openlab_core::protocol::{
-    ClientMessage, Delete, DocId, Outcome, PROTOCOL_VERSION, Request, RequestId, RuntimeChange,
-    ServerMessage, Snapshot, TransportAction, Upsert, WireCueState, decode_server, encode_client,
+    ClientMessage, Delete, DocId, ErrorCode, LogLevel, Outcome, PROTOCOL_VERSION, Request,
+    RequestId, ResultData, RuntimeChange, ServerMessage, Snapshot, TransportAction, Upsert,
+    WireBrokenReason, WireCueState, decode_server, encode_client,
 };
 use openlab_core::{Command, CueId, CueKind, CueProperty, Position, Workspace};
 use openlab_engine::control::{
@@ -277,18 +278,25 @@ struct Ws {
     playhead: Option<CueId>,
     progress: Vec<(CueId, f64, Option<f64>)>,
     changed: Vec<(Vec<Upsert>, Vec<Delete>)>,
+    /// Every message read, in order.
+    seen: Vec<ServerMessage>,
 }
 
 impl Ws {
     async fn connect(show: &Show) -> (Self, Snapshot) {
-        let (mut c, _) = connect_async(format!("ws://127.0.0.1:{}", show.server.port()))
+        Self::connect_to(show.server.port(), show.server.token(), DocId(0)).await
+    }
+
+    /// A connection bound to doc `doc` of the engine at `port`.
+    async fn connect_to(port: u16, token: &str, doc: DocId) -> (Self, Snapshot) {
+        let (mut c, _) = connect_async(format!("ws://127.0.0.1:{port}"))
             .await
             .unwrap();
         let hello = ClientMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
-            token: show.server.token().to_owned(),
+            token: token.to_owned(),
             client_name: "session test".into(),
-            workspace: Some(DocId(0)),
+            workspace: Some(doc),
             pid: None,
         };
         c.send(Message::text(encode_client(&hello).unwrap()))
@@ -310,6 +318,7 @@ impl Ws {
             playhead: None,
             progress: Vec::new(),
             changed: Vec::new(),
+            seen: Vec::new(),
         };
         let ServerMessage::Welcome {
             snapshot: Some(snapshot),
@@ -332,7 +341,7 @@ impl Ws {
 
     /// The next message, skipping pings.
     async fn raw(&mut self) -> ServerMessage {
-        guard("a WebSocket message", async {
+        let m = guard("a WebSocket message", async {
             loop {
                 match self.c.next().await {
                     Some(Ok(Message::Text(t))) => return decode_server(t.as_str()).unwrap(),
@@ -341,7 +350,9 @@ impl Ws {
                 }
             }
         })
-        .await
+        .await;
+        self.seen.push(m.clone());
+        m
     }
 
     /// The next message, folded into this client's copy of the show; checks that revisions and
@@ -455,16 +466,25 @@ impl Ws {
 /// An app connection (`hello` without a workspace).
 struct App {
     c: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    /// Every message read, in order.
+    seen: Vec<ServerMessage>,
 }
 
 impl App {
     async fn connect(show: &Show) -> Self {
-        let (mut c, _) = connect_async(format!("ws://127.0.0.1:{}", show.server.port()))
+        let (me, open) = Self::connect_to(show.server.port(), show.server.token()).await;
+        assert_eq!(open, 1);
+        me
+    }
+
+    /// An app connection to the engine at `port`, and how many workspaces its welcome lists.
+    async fn connect_to(port: u16, token: &str) -> (Self, usize) {
+        let (mut c, _) = connect_async(format!("ws://127.0.0.1:{port}"))
             .await
             .unwrap();
         let hello = ClientMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
-            token: show.server.token().to_owned(),
+            token: token.to_owned(),
             client_name: "app".into(),
             workspace: None,
             pid: None,
@@ -472,19 +492,24 @@ impl App {
         c.send(Message::text(encode_client(&hello).unwrap()))
             .await
             .unwrap();
-        let mut me = Self { c };
+        let mut me = Self {
+            c,
+            seen: Vec::new(),
+        };
         match me.next().await {
             ServerMessage::Welcome {
                 workspaces: Some(list),
                 ..
-            } => assert_eq!(list.len(), 1),
+            } => {
+                let open = list.len();
+                (me, open)
+            }
             other => panic!("{other:?}"),
         }
-        me
     }
 
     async fn next(&mut self) -> ServerMessage {
-        guard("an app connection message", async {
+        let m = guard("an app connection message", async {
             loop {
                 match self.c.next().await {
                     Some(Ok(Message::Text(t))) => return decode_server(t.as_str()).unwrap(),
@@ -493,7 +518,9 @@ impl App {
                 }
             }
         })
-        .await
+        .await;
+        self.seen.push(m.clone());
+        m
     }
 
     async fn call(&mut self, id: u64, message: ClientMessage) -> Outcome {
@@ -1124,4 +1151,260 @@ async fn websocket_and_osc_clients_see_one_consistent_show() {
         assert!(osc.updated(2));
     }
     show.finish();
+}
+
+// ---------------------------------------------------------------------------------------------
+// The engine binary on its virtual device (QA-01): no audio hardware, the real process and socket
+
+/// A virtual-device engine (`openlab-engine --virtual-device <mode>`) with a fresh
+/// application-support folder, once it listens: the process, the folder, its port and token.
+fn spawn_virtual(mode: &str) -> (Engine, tempfile::TempDir, u16, String) {
+    let support = tempfile::tempdir().unwrap();
+    let mut engine = Engine::spawn(
+        std::process::Command::new(ENGINE)
+            .args(["--virtual-device", mode, "--watch-stdin"])
+            .args(["--app-support".as_ref(), support.path().as_os_str()]),
+    );
+    assert!(engine.wait_for("listening on"), "{:?}", engine.seen);
+    let file = openlab_engine::persist::AppDirs::new(support.path()).engine_file_path();
+    let info = openlab_engine::host::engine_file::read(&file).expect("engine.json");
+    (engine, support, info.port, info.token)
+}
+
+/// Ends a spawned engine as its parent going away does (stdin closes); it must exit cleanly.
+fn end(mut engine: Engine) {
+    drop(engine.child.stdin.take());
+    let status = engine.exit_status();
+    assert!(status.success(), "{status}: {:?}", engine.seen);
+}
+
+fn request(id: RequestId, request: Request) -> ClientMessage {
+    ClientMessage::Request { id, request }
+}
+
+fn advance_by(frames: u64) -> impl FnOnce(RequestId) -> ClientMessage {
+    move |id| request(id, Request::Advance { frames })
+}
+
+/// The virtual device's rate.
+const VRATE: u64 = 48_000;
+
+/// Three audio cues on 2 s files, saved to `dir`.
+fn three_cue_show(dir: &std::path::Path) -> std::path::PathBuf {
+    let files: Vec<_> = (0..3).map(|_| wav(&dc(16_000, 0.25))).collect();
+    let ws = workspace(vec![
+        audio(1, &files[0], 0),
+        audio(2, &files[1], 1),
+        audio(3, &files[2], 0),
+    ]);
+    let path = dir.join("Three cues.openlab");
+    std::fs::write(&path, openlab_core::save_show(&ws).unwrap()).unwrap();
+    path
+}
+
+/// Opens `show` on the app connection; the doc it opened as.
+async fn open_show(app: &mut App, id: u64, show: &std::path::Path) -> DocId {
+    let opened = app
+        .call(
+            id,
+            request(
+                RequestId(id),
+                Request::Open {
+                    path: show.to_string_lossy().into_owned(),
+                    recovery: None,
+                },
+            ),
+        )
+        .await;
+    match opened {
+        Outcome::Ok(ok) => match ok.data {
+            Some(ResultData::Opened { doc }) => doc,
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The progress `elapsed` of cue `n`, as last reported.
+fn elapsed(ws: &Ws, n: u128) -> f64 {
+    ws.progress
+        .iter()
+        .find(|p| p.0 == id(n))
+        .map(|p| p.1)
+        .unwrap_or_else(|| panic!("no progress for cue {n}: {:?}", ws.progress))
+}
+
+async fn ok_call(ws: &mut Ws, make: impl FnOnce(RequestId) -> ClientMessage) {
+    let o = ws.call(make).await;
+    assert!(matches!(o, Outcome::Ok(_)), "{o:?}");
+}
+
+/// What a session told its two connections: results, and every other message, apart (the two
+/// kinds may pass each other on a connection, docs/network.md "Ordering and gaps").
+#[derive(Debug, PartialEq)]
+struct Told {
+    app_results: Vec<ServerMessage>,
+    results: Vec<ServerMessage>,
+    broadcasts: Vec<ServerMessage>,
+}
+
+fn split(seen: &[ServerMessage]) -> (Vec<ServerMessage>, Vec<ServerMessage>) {
+    seen.iter()
+        .cloned()
+        .partition(|m| matches!(m, ServerMessage::Result { .. }))
+}
+
+/// One scripted session against a stepped engine: open the show, GO, let time pass, panic.
+async fn stepped_session(show: &std::path::Path) -> Told {
+    let (engine, _support, port, token) = spawn_virtual("stepped");
+    let (mut app, open) = App::connect_to(port, &token).await;
+    assert_eq!(open, 0, "the engine starts with no workspace open");
+    let doc = open_show(&mut app, 1, show).await;
+    // The media probes answer before device time moves: the doc is fully known after this.
+    let settled = app.call(2, advance_by(0)(RequestId(2))).await;
+    assert!(matches!(settled, Outcome::Ok(_)), "{settled:?}");
+
+    let (mut ws, snapshot) = Ws::connect_to(port, &token, doc).await;
+    assert!(snapshot.cue_states.is_empty(), "{:?}", snapshot.cue_states);
+    assert_eq!(ws.playhead, Some(id(1)));
+    // Ids from 100 on this connection, so the two connections' ids never meet.
+    ws.next_id = 100;
+
+    ws.transport(go()).await;
+    // A tenth of a second: cue 1 runs, the playhead is on cue 2.
+    ok_call(&mut ws, advance_by(VRATE / 10)).await;
+    assert_eq!(ws.state(1), Some(WireCueState::Running));
+    assert_eq!(ws.playhead, Some(id(2)));
+    let first = elapsed(&ws, 1);
+    assert!(first > 0.0 && first <= 0.1, "{first}");
+    ok_call(&mut ws, advance_by(VRATE / 10)).await;
+    let second = elapsed(&ws, 1);
+    // Progress is sent at most 30 times a second of device time.
+    assert!(
+        second > first && second <= first + 0.1 + 1.0 / 30.0,
+        "{first} then {second}"
+    );
+    assert_eq!(ws.state(1), Some(WireCueState::Running));
+
+    ws.transport(TransportAction::Panic).await;
+    // Past the show's 0.1 s panic fade.
+    ok_call(&mut ws, advance_by(VRATE / 5)).await;
+    assert_eq!(ws.state(1), None, "cue 1 is idle after the panic");
+    assert_eq!(ws.playhead, Some(id(2)), "the panic left the playhead");
+    // A barrier: a command's result follows its model_changed, so every broadcast before it
+    // has been read by now.
+    let o = ws.command(rename(3, "barrier")).await;
+    assert!(matches!(o, Outcome::Ok(_)), "{o:?}");
+    let o = app.call(3, advance_by(0)(RequestId(3))).await;
+    assert!(matches!(o, Outcome::Ok(_)), "{o:?}");
+    // The debug engine counts allocations on its audio thread and logs them as errors.
+    for m in ws.seen.iter().chain(&app.seen) {
+        if let ServerMessage::LogEntry { entry, .. } = m {
+            assert_ne!(entry.level, LogLevel::Error, "{entry:?}");
+        }
+    }
+    end(engine);
+    let (results, mut broadcasts) = split(&ws.seen);
+    // Up to the barrier's model_changed: what the edit sends after it (`document`) may come
+    // before or after its result.
+    let barrier = broadcasts
+        .iter()
+        .position(|m| matches!(m, ServerMessage::ModelChanged { .. }))
+        .expect("the barrier's model_changed");
+    broadcasts.truncate(barrier + 1);
+    Told {
+        app_results: split(&app.seen).0,
+        results,
+        broadcasts,
+    }
+}
+
+/// QA-01 (#132): the real engine binary on its stepped virtual device, over its real socket.
+/// A show of three audio cues opens; GO starts cue 1 and moves the playhead to cue 2; progress
+/// counts device time, which moves only on `advance`; a panic followed by time past its fade
+/// leaves cue 1 idle and the playhead where it was. The same script twice tells the
+/// connections exactly the same things.
+#[tokio::test]
+async fn the_engine_on_its_stepped_virtual_device_plays_a_show_the_same_every_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let show = three_cue_show(dir.path());
+    let once = stepped_session(&show).await;
+    let again = stepped_session(&show).await;
+    assert!(once.broadcasts.len() > 5, "{:?}", once.broadcasts);
+    assert_eq!(once, again);
+}
+
+fn device_names(o: Outcome) -> Vec<(String, u32)> {
+    match o {
+        Outcome::Ok(ok) => match ok.data {
+            Some(ResultData::Devices { devices, .. }) => devices
+                .into_iter()
+                .map(|d| (d.name, d.output_channels))
+                .collect(),
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The device faults a test can ask a virtual engine for: `lose_device` takes the device away
+/// (the running cue breaks with `device_lost`, the device list empties), `restore_device`
+/// brings it back and the engine reopens it once a list read sees it.
+#[tokio::test]
+async fn a_stepped_engine_loses_and_gets_back_its_virtual_device_on_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let show = three_cue_show(dir.path());
+    let (engine, _support, port, token) = spawn_virtual("stepped");
+    let (mut app, _) = App::connect_to(port, &token).await;
+    let doc = open_show(&mut app, 1, &show).await;
+    let (mut ws, _) = Ws::connect_to(port, &token, doc).await;
+    ws.next_id = 100;
+    let virtual_output = [("openLab Virtual Output".to_owned(), 2)];
+    let listed = device_names(ws.call(|id| request(id, Request::ListDevices)).await);
+    assert_eq!(listed, virtual_output);
+
+    ws.transport(go()).await;
+    ok_call(&mut ws, advance_by(VRATE / 10)).await;
+    assert_eq!(ws.state(1), Some(WireCueState::Running));
+
+    ok_call(&mut ws, |id| request(id, Request::LoseDevice)).await;
+    // The loss is handled before the answer: the cue that played on the device broke.
+    assert_eq!(ws.state(1), Some(WireCueState::Broken));
+    assert!(ws.seen.iter().any(|m| matches!(
+        m,
+        ServerMessage::Runtime { changes, .. } if changes.iter().any(|c| matches!(
+            c,
+            RuntimeChange::CueState {
+                state: WireCueState::Broken,
+                reason: Some(WireBrokenReason::DeviceLost),
+                ..
+            }
+        ))
+    )));
+    // Time passes with the device gone: the list read finds it missing.
+    ok_call(&mut ws, advance_by(VRATE)).await;
+    assert!(device_names(ws.call(|id| request(id, Request::ListDevices)).await).is_empty());
+
+    ok_call(&mut ws, |id| request(id, Request::RestoreDevice)).await;
+    // The next list read sees it back and the stream is reopened at once.
+    ok_call(&mut ws, advance_by(VRATE * 2)).await;
+    let listed = device_names(ws.call(|id| request(id, Request::ListDevices)).await);
+    assert_eq!(listed, virtual_output);
+    // Playing again: GO starts the next cue and it runs.
+    ws.transport(go()).await;
+    ok_call(&mut ws, advance_by(VRATE / 10)).await;
+    assert_eq!(ws.state(2), Some(WireCueState::Running));
+    end(engine);
+}
+
+/// A realtime virtual engine plays on its own: `advance` is refused.
+#[tokio::test]
+async fn a_realtime_virtual_engine_refuses_advance() {
+    let (engine, _support, port, token) = spawn_virtual("realtime");
+    let (mut app, _) = App::connect_to(port, &token).await;
+    match app.call(1, advance_by(1)(RequestId(1))).await {
+        Outcome::Error(e) => assert_eq!(e.code, ErrorCode::Unsupported, "{e:?}"),
+        other => panic!("{other:?}"),
+    }
+    end(engine);
 }

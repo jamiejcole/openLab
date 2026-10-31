@@ -43,6 +43,8 @@ mod reports;
 pub mod runner;
 mod tick;
 mod transport;
+#[cfg(feature = "test-support")]
+pub mod virtual_device;
 mod voice_ids;
 mod voices;
 mod wake;
@@ -252,6 +254,10 @@ pub struct ControlConfig {
     /// Where the loop says whether the computer must stay awake (SM-07: a doc in Show Mode or
     /// a cue running; `platform::power`). `None`: nobody listens (offline tests).
     pub awake: Option<Sender<bool>>,
+    /// The virtual device the backend's stream runs on (`--virtual-device`): it answers the
+    /// test-only `advance`, `lose_device` and `restore_device` requests.
+    #[cfg(feature = "test-support")]
+    pub virtual_device: Option<virtual_device::VirtualDevice>,
 }
 
 impl ControlConfig {
@@ -290,6 +296,8 @@ impl ControlConfig {
             net: NetTransport::default(),
             watch: watch::WatchConfig::default(),
             awake: None,
+            #[cfg(feature = "test-support")]
+            virtual_device: None,
         }
     }
 }
@@ -1114,6 +1122,12 @@ fn request_name(r: &Request) -> &'static str {
         Request::SetOutputOverrides { .. } => "set_output_overrides",
         Request::Snapshot => "snapshot",
         Request::Waveform { .. } => "waveform",
+        #[cfg(feature = "test-support")]
+        Request::Advance { .. } => "advance",
+        #[cfg(feature = "test-support")]
+        Request::LoseDevice => "lose_device",
+        #[cfg(feature = "test-support")]
+        Request::RestoreDevice => "restore_device",
     }
 }
 

@@ -18,8 +18,14 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[cfg(not(feature = "test-support"))]
 const USAGE: &str = "usage: openlab-engine [--version] [--open SHOW_FILE]... \
 [--app-support DIR] [--watch-stdin] [--relaunch-app BUNDLE_ID]";
+/// A test-support build also takes `--virtual-device` (docs/control.md "Virtual device").
+#[cfg(feature = "test-support")]
+const USAGE: &str = "usage: openlab-engine [--version] [--open SHOW_FILE]... \
+[--app-support DIR] [--watch-stdin] [--relaunch-app BUNDLE_ID] \
+[--virtual-device stepped|realtime]";
 
 /// The exit status of a usage error (the convention of `getopt` tools: 2, not 1, which is a
 /// failed run).
@@ -58,6 +64,18 @@ fn mode(args: &[String]) -> Mode {
                 }
                 _ => return Mode::Usage,
             },
+            // Test-support builds only: a release engine has no such option and refuses it as
+            // any unknown one (mac/scripts/verify-bundle.sh checks the bundled engine does).
+            #[cfg(feature = "test-support")]
+            "--virtual-device" => {
+                match rest
+                    .next()
+                    .and_then(|m| openlab_engine::control::virtual_device::VirtualMode::parse(m))
+                {
+                    Some(mode) => options.virtual_device = Some(mode),
+                    None => return Mode::Usage,
+                }
+            }
             _ => return Mode::Usage,
         }
     }
@@ -135,6 +153,32 @@ mod tests {
         ] {
             assert!(matches!(mode(&args(bad)), Mode::Usage), "{bad:?}");
         }
+    }
+
+    /// QA-01: a test-support build takes `--virtual-device stepped|realtime` and nothing else
+    /// after it.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn the_virtual_device_option_names_its_mode() {
+        use openlab_engine::control::virtual_device::VirtualMode;
+        for (arg, mode) in [
+            ("stepped", VirtualMode::Stepped),
+            ("realtime", VirtualMode::Realtime),
+        ] {
+            let Mode::Run(o) = mode_of(&["--virtual-device", arg]) else {
+                panic!("{arg}: not run")
+            };
+            assert_eq!(o.virtual_device, Some(mode));
+        }
+        for bad in [&["--virtual-device"][..], &["--virtual-device", "fast"]] {
+            assert!(matches!(mode_of(bad), Mode::Usage), "{bad:?}");
+        }
+        assert!(matches!(mode_of(&[]), Mode::Run(o) if o.virtual_device.is_none()));
+    }
+
+    #[cfg(feature = "test-support")]
+    fn mode_of(list: &[&str]) -> Mode {
+        mode(&args(list))
     }
 
     /// M3.21: the debug binary's global allocator is `assert_no_alloc`'s, so an allocation

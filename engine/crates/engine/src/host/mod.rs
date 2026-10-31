@@ -39,7 +39,9 @@ use openlab_core::protocol::{
     ServerMessage,
 };
 
-use crate::control::devices::{self, CpalDevices, StartError};
+use crate::control::devices::{self, CpalDevices, DeviceLayer, SleepClock, StartError, WallClock};
+#[cfg(feature = "test-support")]
+use crate::control::virtual_device::{VIRTUAL_DEVICE_ID, VIRTUAL_SEED, VirtualDevice, VirtualMode};
 use crate::control::{
     Backend, Control, ControlConfig, ControlError, EpochClock, Inbox, OUTBOUND_CAPACITY,
     outbound_channel, reply_channel, runner,
@@ -98,6 +100,10 @@ pub struct Options {
     /// The app to relaunch (its bundle identifier) when its connection ends without `goodbye`
     /// (M4.9; the app passes its own). `None`: only log it (dev and tests).
     pub relaunch_app: Option<String>,
+    /// Play on the virtual device instead of the host's (`--virtual-device`; test-support
+    /// builds only, docs/control.md "Virtual device").
+    #[cfg(feature = "test-support")]
+    pub virtual_device: Option<VirtualMode>,
 }
 
 /// This run's `engine.json` once written: shared by the run, the thread that marks it stopping
@@ -318,6 +324,49 @@ fn choose_device<'a>(
         .map(|d| (d, note))
 }
 
+/// Where the engine's sound goes: the host's devices through cpal or, in a test-support build
+/// started with `--virtual-device`, the virtual device, with the clocks its policy runs on.
+struct Audio {
+    layer: Box<dyn DeviceLayer>,
+    devices: Vec<openlab_audio::DeviceInfo>,
+    default: Option<String>,
+    wall: WallClock,
+    sleep: SleepClock,
+    #[cfg(feature = "test-support")]
+    virtual_device: Option<VirtualDevice>,
+}
+
+#[cfg_attr(not(feature = "test-support"), allow(unused_variables))]
+fn audio(options: &Options) -> Result<Audio, HostError> {
+    #[cfg(feature = "test-support")]
+    if let Some(mode) = options.virtual_device {
+        let vd = VirtualDevice::new(mode);
+        return Ok(Audio {
+            layer: vd.layer(),
+            devices: vd.listed(),
+            default: Some(VIRTUAL_DEVICE_ID.to_owned()),
+            wall: vd.wall_clock(),
+            sleep: vd.sleep_clock(),
+            virtual_device: Some(vd),
+        });
+    }
+    Ok(Audio {
+        layer: Box::new(CpalDevices),
+        devices: output_devices()?,
+        default: default_output_device_id(),
+        wall: devices::system_clock(),
+        sleep: devices::system_sleep_clock(),
+        #[cfg(feature = "test-support")]
+        virtual_device: None,
+    })
+}
+
+/// No CPU time in `status` (a stepped engine's messages must not depend on the machine).
+#[cfg(feature = "test-support")]
+fn no_cpu() -> Option<f64> {
+    None
+}
+
 /// The run itself. This run's `engine.json`, once written, is left in `engine_file` for the
 /// caller to remove last.
 fn run_with(
@@ -330,8 +379,15 @@ fn run_with(
     if let Some(dirs) = dirs {
         check_single_instance(dirs)?;
     }
-    let devices = output_devices()?;
-    let default = default_output_device_id();
+    let Audio {
+        layer,
+        devices,
+        default,
+        wall,
+        sleep,
+        #[cfg(feature = "test-support")]
+        virtual_device,
+    } = audio(options)?;
     let machine = dirs.map(load_machine_settings_checked);
     let (device, device_note) = choose_device(
         &devices,
@@ -364,14 +420,8 @@ fn run_with(
         buffer_frames: Some(BUFFER_FRAMES),
     };
     let (inbox_tx, inbox) = crossbeam_channel::unbounded();
-    let device = devices::start(
-        Box::new(CpalDevices),
-        mixer,
-        request,
-        devices,
-        inbox_tx.clone(),
-        devices::system_clock(),
-    )?;
+    let device = devices::start(layer, mixer, request, devices, inbox_tx.clone(), wall)?
+        .with_sleep_clock(sleep);
     let block = device
         .info()
         .block_frames
@@ -381,16 +431,33 @@ fn run_with(
     config.show_log = show_log;
     config.status = Some(StatusConfig::default());
     config.push_log = true;
-    // Not essential: without it the computer may sleep, which the log says.
-    match power::spawn(inbox_tx.clone()) {
-        Ok(awake) => config.awake = Some(awake),
-        Err(e) => {
-            let _ = inbox_tx.send(Inbox::Log {
-                level: LogLevel::Warn,
-                message: format!(
-                    "could not start sleep prevention ({e}); the computer may sleep during the show"
-                ),
-            });
+    #[cfg(feature = "test-support")]
+    if let Some(vd) = virtual_device {
+        say(&format!("audio: the virtual device ({:?})", vd.mode()));
+        config.clock = vd.epoch_clock();
+        config.seed = VIRTUAL_SEED;
+        if vd.mode() == VirtualMode::Stepped {
+            config.cpu_probe = no_cpu;
+        }
+        config.virtual_device = Some(vd.with_inbox(inbox.clone()));
+    }
+    // Not essential: without it the computer may sleep, which the log says. A test engine on
+    // the virtual device never keeps the test machine awake.
+    #[cfg(feature = "test-support")]
+    let keep_awake = config.virtual_device.is_none();
+    #[cfg(not(feature = "test-support"))]
+    let keep_awake = true;
+    if keep_awake {
+        match power::spawn(inbox_tx.clone()) {
+            Ok(awake) => config.awake = Some(awake),
+            Err(e) => {
+                let _ = inbox_tx.send(Inbox::Log {
+                    level: LogLevel::Warn,
+                    message: format!(
+                        "could not start sleep prevention ({e}); the computer may sleep during the show"
+                    ),
+                });
+            }
         }
     }
     log_start_notes(&inbox_tx, device_note.into_iter());
@@ -407,8 +474,14 @@ fn run_with(
         Relaunch::new(action)
     });
     let (stopping, stopping_rx) = Stopping::new();
+    // On the virtual device the OSC listeners stay off: test engines run side by side, and
+    // whichever got port 53000 first would log differently from the others.
+    #[cfg(feature = "test-support")]
+    let osc = config.virtual_device.is_none().then(OscConfig::default);
+    #[cfg(not(feature = "test-support"))]
+    let osc = Some(OscConfig::default());
     let net_config = ServerConfig {
-        osc: Some(OscConfig::default()),
+        osc,
         relaunch,
         stopping: stopping.clone(),
         ..ServerConfig::default()

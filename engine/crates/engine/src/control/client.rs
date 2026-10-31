@@ -22,6 +22,10 @@ impl Control {
     /// driver) addresses the first open doc. A worker's answer goes to the doc it was for, and one for
     /// a doc closed since is dropped.
     pub fn handle(&mut self, msg: Inbox) -> Flow {
+        #[cfg(feature = "test-support")]
+        let Some(msg) = self.hold_while_stepped(msg) else {
+            return Flow::Continue;
+        };
         match msg {
             Inbox::Client { message, reply: to } => {
                 let first = self.docs.first().map(|d| d.id);
@@ -219,6 +223,12 @@ impl Control {
                         },
                     );
                 }
+                #[cfg(feature = "test-support")]
+                Request::Advance { frames } => return Ok(self.advance(id, frames, to)),
+                #[cfg(feature = "test-support")]
+                Request::LoseDevice => return Ok(self.lose_device(id, to)),
+                #[cfg(feature = "test-support")]
+                Request::RestoreDevice => return Ok(self.restore_device(id, to)),
                 request => return Err(ClientMessage::Request { id, request }),
             },
             ClientMessage::Close {

@@ -267,6 +267,10 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 buckets: 800,
             },
         ),
+        // Test support only (the `test-support` feature, `--virtual-device`).
+        ("advance", Request::Advance { frames: 4800 }),
+        ("lose_device", Request::LoseDevice),
+        ("restore_device", Request::RestoreDevice),
     ]
 }
 
@@ -1598,7 +1602,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 24);
-    assert_eq!(all_requests().len(), 17);
+    assert_eq!(all_requests().len(), 20);
 }
 
 #[test]
@@ -3770,6 +3774,9 @@ fn arb_request() -> impl Strategy<Value = Request> {
                 end: start + len,
                 buckets,
             }),
+        (0..=MAX_ADVANCE_FRAMES).prop_map(|frames| Request::Advance { frames }),
+        Just(Request::LoseDevice),
+        Just(Request::RestoreDevice),
     ]
 }
 

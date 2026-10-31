@@ -4,7 +4,10 @@
 //! Helpers for persistence tests.
 
 use std::fs::{self, File};
+use std::io::{BufRead as _, BufReader};
 use std::path::Path;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use openlab_core::{MediaRef, Relink, Workspace, load_show, relink_command};
@@ -116,4 +119,107 @@ pub fn renamed(name: &str) -> openlab_core::Workspace {
     let mut ws = example();
     ws.name = name.into();
     ws
+}
+
+/// The engine binary, built for the tests (with test-support).
+pub const ENGINE: &str = env!("CARGO_BIN_EXE_openlab-engine");
+
+/// A hang guard for waits on a spawned engine, not a timing assertion: generous for a slow
+/// host, so an expected line that never comes fails the test instead of hanging it.
+pub const HANG: Duration = Duration::from_secs(30);
+/// Most stderr lines read while waiting for one thing; an engine that never stops logging fails.
+pub const MAX_LINES: usize = 10_000;
+
+/// A spawned engine whose stderr lines arrive on a channel (read on a thread, so a wait is
+/// bounded), killed and reaped on drop: a failed assertion does not leave it running.
+pub struct Engine {
+    pub child: Child,
+    lines: mpsc::Receiver<String>,
+    pub seen: Vec<String>,
+}
+
+impl Engine {
+    /// Spawns `command` with stdin and stderr piped.
+    pub fn spawn(command: &mut Command) -> Self {
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            child,
+            lines,
+            seen: Vec::new(),
+        }
+    }
+
+    /// Reads stderr lines until one contains `want`; `false` when stderr ends first. Panics
+    /// if neither happens within [`HANG`].
+    pub fn wait_for(&mut self, want: &str) -> bool {
+        // Silence for `HANG` is a hang, and so is an engine that never stops logging.
+        for _ in 0..MAX_LINES {
+            match self.lines.recv_timeout(HANG) {
+                Ok(line) => {
+                    let hit = line.contains(want);
+                    self.seen.push(line);
+                    if hit {
+                        return true;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("no {want:?} within {HANG:?}: {:?}", self.seen)
+                }
+            }
+        }
+        panic!("no {want:?} in {MAX_LINES} lines: {:?}", self.seen)
+    }
+
+    /// Asks the engine to end gracefully (SIGTERM on macOS; stdin closing with
+    /// `--watch-stdin` elsewhere) and returns its exit status, reading stderr to its end.
+    /// Panics if it is still running after [`HANG`].
+    pub fn stop(&mut self) -> ExitStatus {
+        if cfg!(target_os = "macos") {
+            let sent = Command::new("kill")
+                .args(["-TERM", &self.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(sent.success());
+        } else {
+            drop(self.child.stdin.take());
+        }
+        self.exit_status()
+    }
+
+    /// Reads stderr to its end (the engine has exited, or is exiting) and reaps it. Panics if
+    /// stderr is still open after [`HANG`].
+    pub fn exit_status(&mut self) -> ExitStatus {
+        for _ in 0..MAX_LINES {
+            match self.lines.recv_timeout(HANG) {
+                Ok(line) => self.seen.push(line),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return self.child.wait().unwrap(),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("still running after {HANG:?}: {:?}", self.seen)
+                }
+            }
+        }
+        panic!("still logging after {MAX_LINES} lines: {:?}", self.seen)
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // Already reaped after a clean stop: kill then fails harmlessly.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }

@@ -13,6 +13,9 @@ workspace = true
 # Test seam (never in a release build): makes a transaction fail and its rollback fail too, so
 # the engine's handling of `CommandError::RollbackFailed` can be tested. See `fault`.
 fault-injection = []
+# Test-only protocol requests (`advance`, `lose_device`, `restore_device`) for an engine run on its
+# virtual audio device (docs/protocol.md "Test support"); never in a release build.
+test-support = []
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
@@ -22,6 +25,8 @@ unicode-normalization = "0.1.26"
 uuid = { version = "1.29.0", default-features = false, features = ["serde"] }
 
 [dev-dependencies]
+# The crate itself with its test-only requests, so the protocol fixtures cover them.
+openlab-core = { path = ".", features = ["test-support"] }
 # Only to check that the cue engine's ramp maths matches the mixer's (tests/level_maths.rs).
 openlab-audio = { version = "0.0.1", path = "../audio" }
 proptest = "1.12.0"
