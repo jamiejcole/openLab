@@ -12,10 +12,6 @@ struct CueStateStyle: Equatable {
 
     var label: String { loc(labelKey) }
 
-    /// A non-blocking warning: the cue still plays. Nothing raises one yet (a group with a broken
-    /// descendant shows broken, like the child).
-    static let warning = CueStateStyle(icon: .stateWarning, labelKey: "cue.state.warning", tint: .systemYellow)
-
     static func style(for state: WireCueState) -> CueStateStyle {
         switch state {
         case .idle: return CueStateStyle(icon: nil, labelKey: "cue.state.idle", tint: nil)

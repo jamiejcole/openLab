@@ -488,7 +488,6 @@
 
 "cuelist.time.showRemaining" = "Show the time left";
 "cuelist.time.showFull" = "Show the whole time";
-"cue.state.warning" = "Warning";
 "cuelist.menu.preview" = "Preview";
 "cuelist.menu.load" = "Load";
 "cuelist.menu.panic" = "Panic";

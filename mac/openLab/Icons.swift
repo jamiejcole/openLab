@@ -18,7 +18,7 @@ enum Icon: CaseIterable {
     case kindReset, kindDevamp, kindGoTo, kindTarget, kindArm, kindDisarm, kindNetwork
     // Cue states (UI-04: each non-idle state has its own shape).
     case stateLoaded, statePreWaiting, stateRunning, statePaused, statePostWaiting, stateFading
-    case stateStopping, stateBroken, stateWarning
+    case stateStopping, stateBroken
     // Colours: one shape each (UI-04).
     case colourRed, colourOrange, colourGreen, colourBlue, colourPurple
     // Continue modes.
@@ -74,7 +74,6 @@ enum Icon: CaseIterable {
         case .stateFading: return Self.row("waveform")
         case .stateStopping: return Self.row("stop.fill")
         case .stateBroken: return Self.row("exclamationmark.triangle.fill")
-        case .stateWarning: return Self.row("exclamationmark.circle")
         case .colourRed: return Self.row("circle.fill")
         case .colourOrange: return Self.row("square.fill")
         case .colourGreen: return Self.row("triangle.fill")

@@ -41,12 +41,27 @@ enum CueRowMenu {
         switch item {
         case .preview: return c.anyAudioSelected
         case .load: return c.selectedCount > 0
-        case .cut, .copy, .delete: return c.selectedCount > 0 && !c.showMode
+        case .cut, .copy, .delete: return c.selectedCount > 0 && !locked(item, c)
         case .panic: return c.anyActive  // greyed unless something plays
         case .movePlayhead: return !c.clickedIsPlayhead
         case .revealTarget: return c.clickedHasMedia
-        case .paste: return c.canPaste && !c.showMode
+        case .paste: return c.canPaste && !locked(item, c)
         }
+    }
+
+    /// The Edit-menu command an item stands for (nil: not an edit).
+    static func lockedEdit(_ item: Item) -> MainMenu.LockedEdit? {
+        switch item {
+        case .cut: return .cut
+        case .copy: return .copy
+        case .paste: return .paste
+        case .delete: return .delete
+        default: return nil
+        }
+    }
+
+    private static func locked(_ item: Item, _ c: Context) -> Bool {
+        c.showMode && lockedEdit(item).map(MainMenu.LockedEdit.allCases.contains) == true
     }
 
     /// The file a media path names: absolute as given, relative to the folder of the saved show.

@@ -890,6 +890,23 @@ extension CueListTests {
         XCTAssertNil(h.vc.timeShown["name"])
     }
 
+    /// One list of locked edits: the row menu and the Edit menu both read it.
+    func testShowModeLocksTheSameEditsInBothMenus() {
+        let edit = NSMenu()
+        for lock in MainMenu.LockedEdit.allCases {
+            edit.addItem(NSMenuItem(title: "\(lock)", action: lock.selector, keyEquivalent: ""))
+        }
+        MainMenu.lockEditItems(in: edit, locked: true)
+        XCTAssertTrue(edit.items.allSatisfy { !$0.isEnabled })
+        let context = CueRowMenu.Context(
+            selectedCount: 1, anyAudioSelected: true, clickedIsPlayhead: false, clickedHasMedia: true,
+            anyActive: true, canPaste: true, showMode: true)
+        for item in CueRowMenu.Item.allCases {
+            XCTAssertEqual(
+                CueRowMenu.isEnabled(item, context), CueRowMenu.lockedEdit(item) == nil, "\(item)")
+        }
+    }
+
     func testGroupWithABrokenDescendantShowsBrokenLikeItsChild() async throws {
         let h = try await H()
         try h.runtime(
