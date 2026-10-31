@@ -265,6 +265,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         chosenList = id
         sentPlayhead = nil
         rebuild()
+        onModelApplied?()
     }
 
     /// Show Mode: rows cannot be dragged, nothing can be dropped and no cell can be edited; a
@@ -319,6 +320,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// Told of every selection change (the inspector follows it).
     var onSelectionChange: (([ModelID]) -> Void)?
+    /// Called once the tree matches a reset or a model change, so a listener (Find) reads `roots`
+    /// after the update and not before it, whatever order the store's subscribers run in.
+    var onModelApplied: (() -> Void)?
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         // Programmatic restores (select, rebuild, batches) are not the user's choice.
@@ -345,8 +349,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     private func handle(_ change: StoreChange) {
         switch change {
-        case .reset: rebuild()
-        case .model(let upserts, let deletes): applyModel(upserts: upserts, deletes: deletes)
+        case .reset:
+            rebuild()
+            onModelApplied?()
+        case .model(let upserts, let deletes):
+            applyModel(upserts: upserts, deletes: deletes)
+            onModelApplied?()
         case .runtime(let cues, let heads):
             if !heads.isEmpty { sentPlayhead = nil }  // the engine's echo is the truth again
             refresh(cues, playheads: heads)

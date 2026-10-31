@@ -190,7 +190,7 @@ outputs reach is configured per machine.
 
 ### 4.5 Network patches
 
-A destination for Network cues.
+A destination for Network cues. A new workspace starts with one, "Network 1": `127.0.0.1`, port 53000, UDP, so a new Network cue can send to this computer (QLab 5 manual p. 111). Only new workspaces get it; a file loads with the patches it has, none included, and no format version changes.
 
 | Field | Type | Meaning |
 |---|---|---|

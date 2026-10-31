@@ -28,6 +28,18 @@
 "menu.edit.paste" = "Paste";
 "menu.edit.selectAll" = "Select All";
 "menu.edit.delete" = "Delete";
+"menu.edit.find" = "Find";
+"menu.edit.find.find" = "Find…";
+"menu.edit.find.next" = "Find Next";
+"menu.edit.find.previous" = "Find Previous";
+"find.label" = "Find:";
+"find.placeholder" = "Name, number, notes, file or message";
+"find.count.found" = "%d found";
+"find.count.of" = "%d of %d";
+"find.previous" = "Previous Found Cue";
+"find.next" = "Next Found Cue";
+"find.selectFound" = "Select Found";
+"find.done" = "Done";
 "menu.cues" = "Cues";
 "menu.cues.new" = "New %@ Cue";
 "menu.cues.deleteNumbers" = "Delete Numbers of Selected Cues";
@@ -42,6 +54,7 @@
 "edit.renumber.start" = "First number:";
 "edit.renumber.increment" = "Increment:";
 "edit.renumber.ok" = "Renumber";
+"edit.networkPatch.defaultName" = "Network 1";
 "edit.error.noPatch" = "This workspace has no audio patch, so an Audio cue cannot be added.";
 "edit.error.deleteBusy" = "A cue that is running, paused, fading or previewing cannot be deleted. Stop it first.";
 "edit.error.renumberValues" = "Enter a first number of 0 or more and an increment above 0.";

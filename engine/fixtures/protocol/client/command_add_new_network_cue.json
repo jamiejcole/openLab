@@ -1,0 +1,53 @@
+{
+  "type": "command",
+  "id": 5,
+  "command": {
+    "type": "transaction",
+    "commands": [
+      {
+        "type": "add_network_patch",
+        "index": 0,
+        "patch": {
+          "id": "00000000-0000-0000-0000-000000000005",
+          "name": "Network 1",
+          "host": "127.0.0.1",
+          "port": 53000,
+          "protocol": "udp"
+        }
+      },
+      {
+        "type": "add_cue",
+        "at": {
+          "list": "00000000-0000-0000-0000-000000000001",
+          "parent": null,
+          "index": 0
+        },
+        "cue": {
+          "id": "00000000-0000-0000-0000-00000000000e",
+          "number": null,
+          "name": "",
+          "notes": "",
+          "color": "none",
+          "flagged": false,
+          "armed": true,
+          "pre_wait": 0.0,
+          "post_wait": 0.0,
+          "continue_mode": "do_not_continue",
+          "triggers": {
+            "hotkey": null,
+            "osc": null
+          },
+          "second_trigger": "nothing",
+          "second_trigger_on_release": false,
+          "kind": {
+            "type": "network",
+            "destination": "00000000-0000-0000-0000-000000000005",
+            "address": "",
+            "args": []
+          }
+        },
+        "auto_number": true
+      }
+    ]
+  }
+}

@@ -972,9 +972,10 @@ pub(crate) fn new_workspace(
     id: WorkspaceId,
     list: CueListId,
     patch: PatchId,
+    network: openlab_core::NetworkPatchId,
     seed: u32,
 ) -> Workspace {
-    let mut workspace = Workspace::new_empty(id, list, patch);
+    let mut workspace = Workspace::new_empty(id, list, patch, network);
     workspace.settings.osc_access = openlab_core::OscAccess::new_workspace(seed);
     workspace
 }
@@ -1690,6 +1691,7 @@ impl Engine {
             WorkspaceId(random_id()),
             CueListId(random_id()),
             PatchId(random_id()),
+            openlab_core::NetworkPatchId(random_id()),
             seed,
         )
     }
@@ -2459,6 +2461,7 @@ mod tests {
                 WorkspaceId(uuid::Uuid::from_u128(1)),
                 CueListId(uuid::Uuid::from_u128(2)),
                 PatchId(uuid::Uuid::from_u128(3)),
+                openlab_core::NetworkPatchId(uuid::Uuid::from_u128(4)),
                 seed,
             )
         };

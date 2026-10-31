@@ -10,6 +10,7 @@ final class CueToolbarView: NSView {
             (.kindGroup, "cue.type.group"), (.kindMemo, "cue.type.memo"),
             (.kindWait, "cue.type.wait"), (.kindFade, "cue.type.fade"),
         ],
+        [(.kindNetwork, "cue.type.network")],
         [
             (.kindStart, "cue.type.start"), (.kindStop, "cue.type.stop"),
             (.kindPause, "cue.type.pause"), (.kindLoad, "cue.type.load"),
