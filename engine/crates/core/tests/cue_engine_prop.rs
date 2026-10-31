@@ -1177,6 +1177,10 @@ struct Run {
     /// Playlist children that failed while paused, as of the failure (a later move or mode
     /// change does not undo it): they show `paused` with no voice until they leave `paused`.
     held_in_playlist: BTreeSet<CueId>,
+    /// Cues moved out of a group by a model edit, with that group: a group goes on waiting on a
+    /// run that started in it wherever the cue is moved, so it can run with none of its own
+    /// children busy while such a cue is.
+    moved_out_of: Vec<(CueId, CueId)>,
 }
 
 fn preview_action(a: &Action) -> bool {
@@ -1228,6 +1232,7 @@ impl Run {
             since_entry: BTreeSet::new(),
             ph_around: Vec::new(),
             held_in_playlist: BTreeSet::new(),
+            moved_out_of: Vec::new(),
         }
     }
 
@@ -1878,11 +1883,11 @@ impl Run {
                 && state == CueState::Running
                 && !self.engine.is_halted(*id)
             {
+                let busy =
+                    |k: CueId| !matches!(self.engine.state(k), CueState::Idle | CueState::Loaded);
                 prop_assert!(
-                    c.children().iter().any(|k| !matches!(
-                        self.engine.state(k.id),
-                        CueState::Idle | CueState::Loaded
-                    )),
+                    c.children().iter().any(|k| busy(k.id))
+                        || self.moved_out_of.iter().any(|(m, g)| g == id && busy(*m)),
                     "group {} runs with no busy child",
                     id
                 );
@@ -2038,6 +2043,9 @@ impl Run {
             }
             15 => {
                 // Model edit: move a cue to the end of the top level.
+                if let Some(&g) = groups_around(&self.ws.cue_lists[0].cues, target).last() {
+                    self.moved_out_of.push((target, g));
+                }
                 if let Some(c) = take(&mut self.ws.cue_lists[0].cues, target) {
                     self.ws.cue_lists[0].cues.push(c);
                 }
@@ -2140,6 +2148,11 @@ impl Run {
                     .get(usize::from(s.b) % groups.len().max(1))
                     .copied()
                     .filter(|g| *g != target && !groups_around(cues, *g).contains(&target));
+                if into.is_some()
+                    && let Some(&from) = groups_around(cues, target).last()
+                {
+                    self.moved_out_of.push((target, from));
+                }
                 if let Some(g) = into
                     && let Some(c) = take(&mut self.ws.cue_lists[0].cues, target)
                 {

@@ -1367,6 +1367,41 @@ fn a_child_dragged_out_of_a_running_playlist_moves_it_on_only_when_it_ends() {
 }
 
 #[test]
+fn a_stopped_group_lets_go_of_a_child_dragged_out_of_it() {
+    let g = timed(
+        grp(1, GroupMode::Timeline, vec![sound(20), wait(21, 1.0)]),
+        0.0,
+        0.0,
+        AF,
+    );
+    let mut rig = Rig::new(vec![g, memo(4)]);
+    rig.go(0);
+    let c = children_of(&mut rig, 1).remove(0);
+    rig.ws.cue_lists[0].cues.push(c);
+    rig.tick(100);
+    // A stop with a fade reaches only the group's own tree: it does not wait on the dragged
+    // sound, which plays on.
+    rig.at(
+        200,
+        Input::Stop {
+            cue: id(1),
+            fade_out: Some(FadeSpec {
+                duration: 0.5,
+                curve: FadeCurve::Linear,
+            }),
+        },
+    );
+    rig.tick(300);
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(rig.state(20), CueState::Running);
+    // Its next run waits only on its own children and follows when they end.
+    rig.start(400, 1);
+    assert_eq!(starts(&rig.tick(1400)), vec![(id(4), 1400)]);
+    assert_eq!(rig.state(1), CueState::Idle);
+    assert_eq!(rig.state(20), CueState::Running);
+}
+
+#[test]
 fn a_held_failed_playlist_child_moved_into_an_idle_playlist_starts_nothing_there_on_resume() {
     let playing = grp(1, playlist(), vec![sound(20), sound(21)]);
     let idle = grp(5, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]);

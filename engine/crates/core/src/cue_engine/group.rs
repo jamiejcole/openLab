@@ -115,6 +115,34 @@ impl CueEngine {
         })
     }
 
+    /// Lets go of the runs that started in `group` but whose cues have been moved out of it: the
+    /// group stops waiting on them and their ends no longer reach it. Called when the group is
+    /// stopped (a stop or panic reaches only its own tree, so it must not wait on cues outside
+    /// it) and when its run ends (so a later run of the group never waits on them).
+    pub(super) fn release_moved_runs(&mut self, group: CueId, ws: &Workspace) {
+        if !self
+            .slots
+            .values()
+            .any(|s| matches!(s, Slot::Active(r) if r.started_in == Some(group)))
+        {
+            return;
+        }
+        let inside: HashSet<CueId> = ws
+            .find_cue(group)
+            .map(descendants)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        for (id, slot) in &mut self.slots {
+            if let Slot::Active(run) = slot
+                && run.started_in == Some(group)
+                && !inside.contains(id)
+            {
+                run.started_in = None;
+            }
+        }
+    }
+
     /// The group's action has started on `at`: start its children per its mode. If none ends up
     /// busy (no children, all broken, chain limit), the action completes at once. A child that is
     /// broken when the group gets to it is skipped and does not keep the group from

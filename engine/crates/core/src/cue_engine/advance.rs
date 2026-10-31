@@ -295,6 +295,7 @@ impl CueEngine {
             // is passed over, as a disarmed cue is); one that broke at run time did not.
             let failed = run.group.as_ref().is_some_and(|g| g.failed);
             let started_in = run.started_in;
+            let is_group = run.group.is_some();
             let exit = if (run.broken.is_some() && !run.unplayed) || failed {
                 Exit::Broken
             } else {
@@ -307,6 +308,9 @@ impl CueEngine {
                 None => self.slots.remove(&cue),
             };
             cx.vacated.push((started_in, at, exit));
+            if is_group {
+                self.release_moved_runs(cue, cx.ws);
+            }
         }
     }
 
@@ -324,6 +328,9 @@ impl CueEngine {
             // A Fade cue stopped mid-fade leaves its targets' levels where they are.
             if let Some(fade) = &run.fade {
                 self.hold_fade(cue, run.seq, fade, at.max(cx.now), false, cx);
+            }
+            if run.group.is_some() {
+                self.release_moved_runs(cue, cx.ws);
             }
         }
         Some(slot)

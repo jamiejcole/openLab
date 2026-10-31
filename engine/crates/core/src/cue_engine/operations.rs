@@ -143,6 +143,7 @@ impl CueEngine {
         let before = self.state(cue);
         let now = cx.now;
         let frames = fade_out.map_or(0, |f| cx.secs(f.duration, &self.config));
+        self.release_moved_runs(cue, cx.ws);
         let busy_children = self.any_busy_child(cue);
         match self.slots.get_mut(&cue) {
             None | Some(Slot::Broken(_)) => return,
