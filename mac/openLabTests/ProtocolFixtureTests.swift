@@ -158,17 +158,19 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertNil(old.mediaDurations)
     }
 
-    /// The fake engine sends a `media_duration` change in sequence, which the store applies.
+    /// The real engine probes the demo show's files and the store holds what it reports: Door slam
+    /// plays its 1.25 s file once, the looping cues have a file length but no duration, Radio's
+    /// missing file has no entry.
     @MainActor
-    func testFakeEnginePushesMediaDurationsInSequence() async throws {
-        let rig = try Rig()
-        let connected = await rig.connect()
-        XCTAssertTrue(connected)
-        let seq = rig.store.runtimeSeq
-        let cue: ModelID = "00000000-0000-0000-0000-00000000000a"
-        rig.engine.pushMediaDuration(cue, file: nil, trimmed: nil, duration: nil, doc: rig.engine.docs.keys.first!)
-        await assertEventually { rig.store.runtimeSeq == seq + 1 }
-        XCTAssertEqual(rig.engine.docs.values.first?["media_durations"]?.arrayValue?.count, 0)
+    func testTheEngineReportsMediaDurationsOfTheOpenedShow() async throws {
+        let rig = try await Rig.open()
+        let d = rig.store.mediaDurations
+        XCTAssertEqual(d[TestSnapshots.door]?.file, 1.25)
+        XCTAssertEqual(d[TestSnapshots.door]?.duration, 1.25)
+        XCTAssertEqual(d[TestSnapshots.intro]?.file, 1.0)
+        XCTAssertNil(d[TestSnapshots.intro]?.duration, "a cue that loops until devamped has no duration")
+        XCTAssertEqual(d[TestSnapshots.rain]?.file, 2.0)
+        XCTAssertNil(d[TestSnapshots.radio], "its file is missing")
     }
 
     func testDecodedValuesAreRight() throws {
