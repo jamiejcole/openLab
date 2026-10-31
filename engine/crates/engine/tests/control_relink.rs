@@ -267,6 +267,22 @@ fn a_missing_folder_or_a_file_is_refused_without_changes() {
     assert_eq!(counts(&relink(&mut r)).0, 1);
 }
 
+/// The walk's thread cannot be started (the process is out of threads): the request answers
+/// `internal`, nothing changes, and no walk is left counted as running, so the next relink is
+/// not refused as "another relink is still walking".
+#[test]
+fn a_walk_whose_thread_cannot_start_answers_internal_and_changes_nothing() {
+    let mut r = rig_with(&["a.wav"], |c| c.fail_relink_spawn = true);
+    touch(&r.lib.join("a.wav"));
+    let rev = r.s.control().snapshot().revision;
+    for _ in 0..2 {
+        assert_eq!(error_code(&relink(&mut r)), ErrorCode::Internal);
+    }
+    assert_eq!(media(&r.s, 1), format!("{}/a.wav", portable(&r.gone)));
+    assert_eq!(r.s.control().snapshot().revision, rev);
+    assert_eq!(r.s.control().docs_busy(), 0);
+}
+
 /// A hook that holds the worker's first job until released.
 fn hold_first_job() -> (DocHook, mpsc::Receiver<()>, mpsc::Sender<()>) {
     let (entered_tx, entered) = mpsc::channel::<()>();
