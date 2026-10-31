@@ -857,7 +857,13 @@ fn install_and_remove(second: &std::path::Path) -> Option<String> {
         "wake after remove",
     ];
     let mut took = [Duration::MAX; 4];
-    for _ in 0..RUNS {
+    // Each step is timed once per run, so a shared runner's noise needs more runs than the
+    // loops that time a thousand ticks; the budget is unchanged. A run that leaves every step
+    // under it ends the loop.
+    for _ in 0..RUNS * 4 {
+        if took.iter().all(|t| *t < limit) {
+            break;
+        }
         s.take_outbound();
         let rid = s.request_id();
         let (tx, _rx) = openlab_engine::control::reply_channel();
