@@ -299,7 +299,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let devamp = devampTab(row: row, column: column)
         buildLevelsTabs()
         buildTimeLoopsTab()
-        for i in [item, triggers, devamp] + [modeItem, loadTimeItem, levelsItem, curveItem, fadeLevelsItem, timeLoopsItem].compactMap({ $0 }) {
+        for i in [item, triggers, devamp]
+            + [modeItem, loadTimeItem, levelsItem, curveItem, fadeLevelsItem, timeLoopsItem].compactMap({ $0 })
+        {
             if let id = i.identifier as? String { tabItems[id] = i }
         }
         syncTabs(forKind: "")
@@ -432,7 +434,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     /// Shows the Mode tab for a Group cue and hides it otherwise; the controls follow the model.
     private func renderMode(_ cue: Cue) {
-                let mode = cue.kindType == "group" ? cue.raw["kind"]?["mode"] : nil
+        let mode = cue.kindType == "group" ? cue.raw["kind"]?["mode"] : nil
         guard let mode else { return }
         let type = mode["type"]?.stringValue ?? "timeline"
         groupModePopup.selectItem(at: Self.groupModes.firstIndex(of: type) ?? 0)
@@ -586,7 +588,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private var lockedControls: [NSControl] {
         [
             numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField, oscField,
-            hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck, devampModePopup,
+            hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck,
+            devampModePopup,
             secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck,
         ]
