@@ -301,6 +301,36 @@ fn an_added_group_that_holds_ids_removed_in_the_same_edit_takes_them_as_new() {
 }
 
 #[test]
+fn a_cue_moved_out_of_a_re_added_group_in_the_same_edit_is_new_with_its_subtree() {
+    // Group 2 { 3, group 4 { 5 } } removed and added again, then group 4 moved to the top: 4
+    // and 5 are under no added top, yet they are the re-added content.
+    let mut ws = sample();
+    let mut index = CueIndex::build(&ws);
+    let command = Command::Transaction {
+        commands: vec![
+            Command::RemoveCue { id: id(2) },
+            Command::AddCue {
+                at: pos(None, 1),
+                cue: cue(2, group(vec![memo(3), cue(4, group(vec![memo(5)]))])),
+                auto_number: false,
+            },
+            Command::ReparentCue {
+                id: id(4),
+                to: pos(None, 0),
+            },
+        ],
+    };
+    ws.apply(command.clone()).unwrap();
+    let delta = follow(&mut index, &ws, &command);
+    for n in [2, 3, 4, 5] {
+        assert!(delta.gone.contains(&id(n)), "{n} gone");
+        assert!(delta.fresh.contains(&id(n)), "{n} fresh");
+    }
+    // Cue 1, untouched, is neither.
+    assert!(!delta.gone.contains(&id(1)) && !delta.fresh.contains(&id(1)));
+}
+
+#[test]
 fn a_changed_set_of_cue_lists_rebuilds() {
     let mut ws = sample();
     let mut index = CueIndex::build(&ws);
