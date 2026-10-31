@@ -57,8 +57,8 @@ This file is the only copy of every rule below; other files link here instead of
 - **Low:** everything else.
 - High and Medium block merge; only the user downgrades a Medium (quote it in the PR). Lows are fixed in the same PR or dropped with one line in the PR; they are never filed as issues.
 - Review covers the diff. A pre-existing problem in a touched file is reported only if High (fixed in this PR, or the PR waits for its fix) or Medium (a `severity:medium` issue in the current milestone; blocks the milestone, not the PR, unless the PR makes it worse). Milestone audits file only Highs and Mediums.
-- More than about 30 open finding issues (`severity:*` and `low`): the next batch is clean-up only. Existing `low` issues are worked down, not added to.
-- Every known exception (an allowlist or known-failure entry, an accepted finding) cites an open issue, or says why it is permanent.
+- More than 30 open issues labelled `low` or `severity:*` (all milestones): batches take only those issues until the count is 30 or fewer. Existing `low` issues are worked down, not added to.
+- Every known exception (an allowlist or known-failure entry, an accepted finding) cites an open issue, or says why it is permanent (a dropped Low's one-line reason in the PR counts).
 - A generator, fuzzer or oracle finding that is not a crash, panic or hang and needs input the loader already rejects: fix the generator or oracle.
 
 ## Review

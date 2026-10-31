@@ -26,6 +26,7 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 - `gh pr list` and `gh run list --branch main --limit 3`. A red `main` (or an open `ci-red` issue) is the top priority.
 
 ## 1. Pick work
+- First count open `low` + `severity:*` issues (`gh issue list --state open --label low --json number --jq length`, same for each `severity:*` label). Above 30, the batch is only those issues (CLAUDE.md "Findings policy").
 - Pick from the current milestone's open task issues, skipping issues blocked by an open issue (`gh api repos/jamiejcole/openLab/issues/N/dependencies/blocked_by`). Prefer finishing a milestone over starting several, and show-safety issues first. Model from the `model:*` label, size from `size:*`.
 - Batch 1–4 closely related issues per implementer (same files, same concepts). Split unrelated areas into separate implementers. An issue's text may say what to batch it with.
 - Every implementer works in its own worktree (`isolation: "worktree"`) on a task branch, never on `main`. Parallel implementers only when they touch disjoint files (e.g. `engine/` vs `mac/`; two `mac/` tasks rarely qualify: `AppController`, `WorkspaceStore` and the window controllers are shared).
@@ -88,7 +89,7 @@ Review traffic stays local (implementer report files, reviewer replies, `SendMes
 ## 8. Milestone end
 1. Cleanup batch: every open `low` / `severity:*` issue in the milestone is fixed or re-milestoned with a reason. Audits below file only Highs and Mediums.
 2. Whole-repo audit: 4 parallel reviewers (Opus: core+audio, engine service, app; Sonnet: CI/docs/instructions), each reading its area's files in full (not a diff) against CLAUDE.md. A second agent verifies each High/Medium before it is filed.
-3. Update the policy-health line in `docs/handoff/orchestrator-state.md`: `low` issues closed (none are opened now), Mediums fixed in the last reviews, claims the repo did not back.
+3. Update the policy-health line in `docs/handoff/orchestrator-state.md`: open `low` + `severity:*` count, `low` issues closed, Mediums fixed in the last reviews, claims the repo did not back.
 4. Then the user check-in (section 7).
 
 ## Standing decisions
