@@ -554,6 +554,7 @@ impl CueEngine {
             Input::StopPreview { cue } => self.stop_previews(cue, false, cx),
             Input::Panic => self.panic(cx),
             Input::StopAll => self.stop_all(cx),
+            Input::ResetAll => self.reset_all(cx),
             Input::PanicCue { cue } => {
                 if self.known(cue, cx) {
                     // A second press on a cue already fading out in a panic stops it at once

@@ -194,6 +194,7 @@ fn all_actions() -> Vec<(&'static str, TransportAction)> {
                 ],
             },
         ),
+        ("reset_all", TransportAction::ResetAll),
     ]
 }
 
@@ -1517,6 +1518,7 @@ fn every_message_type_and_variant_has_a_fixture() {
             | TransportAction::GoFrom { .. }
             | TransportAction::PauseAll
             | TransportAction::ResumeAll
+            | TransportAction::ResetAll
             | TransportAction::SetPlayhead { .. }
             | TransportAction::SetPlayheadByNumber { .. }
             | TransportAction::PlayheadNext { .. }
@@ -1534,7 +1536,7 @@ fn every_message_type_and_variant_has_a_fixture() {
             | TransportAction::Batch { .. } => {}
         }
     }
-    assert_eq!(all_actions().len(), 23);
+    assert_eq!(all_actions().len(), 24);
     assert_eq!(all_requests().len(), 17);
 }
 
@@ -1792,6 +1794,7 @@ fn a_batch_is_refused_whole_unless_well_formed() {
         TransportAction::Panic,
         TransportAction::StopAll,
         TransportAction::PauseAll,
+        TransportAction::ResetAll,
         TransportAction::TriggerReleased { cue: cue_id(2) },
         TransportAction::StopPreview { cue: None },
         TransportAction::Batch {
@@ -3606,6 +3609,7 @@ fn arb_action() -> impl Strategy<Value = TransportAction> {
         Just(TransportAction::Panic),
         Just(TransportAction::PauseAll),
         Just(TransportAction::ResumeAll),
+        Just(TransportAction::ResetAll),
         (arb_list(), proptest::option::of(arb_cue()))
             .prop_map(|(list, cue)| TransportAction::SetPlayhead { list, cue }),
         (arb_list(), arb_text())
