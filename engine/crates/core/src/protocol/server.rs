@@ -174,11 +174,13 @@ pub struct WorkspaceInfo {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResultData {
     /// `new`, `open` or `open_recovery` opened this workspace; bind a connection to it.
-    Opened {
-        doc: DocId,
-    },
+    Opened { doc: DocId },
     Devices {
         devices: Vec<DeviceEntry>,
+        /// The device chosen with `set_output_device` (opened at the next engine start); absent
+        /// when none is chosen. The device playing now is `status.device`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selected: Option<String>,
     },
     Relink {
         relinked: u64,
@@ -200,9 +202,7 @@ pub enum ResultData {
         modified_ms: i64,
     },
     /// Answer to `scan_recovery`, newest first.
-    RecoveryEntries {
-        entries: Vec<RecoveryEntryInfo>,
-    },
+    RecoveryEntries { entries: Vec<RecoveryEntryInfo> },
     /// Answer to `log_tail`: the newest show-log entries, oldest first.
     LogTail {
         entries: Vec<LogEntry>,
@@ -218,6 +218,17 @@ pub enum ResultData {
     /// Answer to `preshow_check` (SM-06).
     /// Boxed: the report is large and a `ServerMessage` is passed around by value.
     PreshowCheck(Box<PreshowReport>),
+    /// Answer to `list_patch_mappings`: every patch of the workspace, in workspace order.
+    PatchMappings { patches: Vec<PatchMappingEntry> },
+}
+
+/// One patch's mapping on this machine; `mapping` is absent for a patch that has none (never
+/// mapped, or cleared).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatchMappingEntry {
+    pub patch: PatchId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapping: Option<crate::settings::PatchMapping>,
 }
 
 /// The pre-show check (SM-06, NFR-07): everything that would keep the show from running,
@@ -469,6 +480,9 @@ pub struct RecoveryEntryInfo {
 pub struct DeviceEntry {
     pub name: String,
     pub output_channels: u32,
+    /// The system default device (what an unchosen engine opens at start).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_default: bool,
 }
 
 /// A missing file that matched several; the operator picks (a `set_cue_property` command).

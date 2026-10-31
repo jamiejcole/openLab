@@ -129,10 +129,13 @@ final class CueClipboardTests: XCTestCase {
         XCTAssertEqual(log.commands.count, 1)
     }
 
-    func testFooterGearIsDisabledWithAnExplanation() {
+    func testFooterGearCallsOnSettings() {
         let footer = FooterBar()
-        XCTAssertFalse(footer.settingsButton.isEnabled)
-        XCTAssertEqual(footer.settingsButton.toolTip, loc("footer.settings.unavailable"))
+        var opened = 0
+        footer.onSettings = { opened += 1 }
+        XCTAssertTrue(footer.settingsButton.isEnabled)
+        footer.settingsButton.performClick(nil)
+        XCTAssertEqual(opened, 1)
     }
 
     func testReplaceFileSendsTheMediaAloneAndSkipsBusyCues() async throws {

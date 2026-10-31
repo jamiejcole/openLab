@@ -72,6 +72,27 @@ final class ProtocolFixtureTests: XCTestCase {
             ])
     }
 
+    func testOutputDeviceAndPatchMappingMessagesDecodeFromTheirFixtures() throws {
+        guard
+            case .request(_, .setOutputDevice(let device)) = try JSONDecoder().decode(
+                ClientMessage.self, from: Data(try Fixtures.text("client", "request_set_output_device").utf8))
+        else { return XCTFail("set_output_device") }
+        XCTAssertEqual(device, "Scarlett 2i2")
+        let devicesText = try Fixtures.text("server", "result_devices")
+        guard case .result(_, .ok(let devices)) = try ServerMessage.decode(devicesText),
+            case .devices(let list, let selected)? = devices.data
+        else { return XCTFail("devices") }
+        XCTAssertEqual(list.map(\.name), ["Scarlett 2i2"])
+        XCTAssertEqual(selected, "Scarlett 2i2")
+        let mappingsText = try Fixtures.text("server", "result_patch_mappings")
+        guard case .result(_, .ok(let ok)) = try ServerMessage.decode(mappingsText),
+            case .patchMappings(let entries)? = ok.data
+        else { return XCTFail("patch_mappings") }
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries[0].mapping, PatchMapping(device: "Scarlett 2i2", channels: [0, 1]))
+        XCTAssertNil(entries[1].mapping)
+    }
+
     func testSetPatchMappingSetsAndClears() throws {
         let set = try JSONDecoder().decode(
             ClientMessage.self, from: Data(try Fixtures.text("client", "request_set_patch_mapping").utf8))

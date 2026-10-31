@@ -59,6 +59,10 @@ pub struct MachineSettings {
     /// Backups kept per workspace; 0 turns backups off (NFR-06).
     #[serde(default = "default_backup_keep")]
     pub backup_keep: u32,
+    /// The output device the engine opens at start, by the name `list_devices` gives
+    /// (`set_output_device`). None: the system default device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_device: Option<String>,
     /// Keyed by workspace id (lower-case hyphenated UUID).
     #[serde(default)]
     pub workspaces: BTreeMap<String, WorkspaceMachineSettings>,
@@ -77,6 +81,7 @@ impl Default for MachineSettings {
         Self {
             settings_version: SETTINGS_VERSION,
             backup_keep: DEFAULT_BACKUP_KEEP,
+            output_device: None,
             workspaces: BTreeMap::new(),
             extra: BTreeMap::new(),
         }
@@ -104,13 +109,28 @@ pub fn load_settings(text: &str) -> LoadedSettings {
         ));
     }
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut settings: MachineSettings = match serde_json::from_str(text) {
+    let unreadable = |error: serde_json::Error| {
+        defaults(format!(
+            "settings file is unreadable ({error}); using defaults"
+        ))
+    };
+    let mut value: serde_json::Value = match serde_json::from_str(text) {
+        Ok(value) => value,
+        Err(error) => return unreadable(error),
+    };
+    // A wrong-typed device choice drops only itself: the mappings beside it are the operator's.
+    let mut warnings = Vec::new();
+    if let Some(object) = value.as_object_mut()
+        && object
+            .get("output_device")
+            .is_some_and(|v| !v.is_string() && !v.is_null())
+    {
+        object.remove("output_device");
+        warnings.push("output device is not a name; using the system default".to_owned());
+    }
+    let mut settings: MachineSettings = match serde_json::from_value(value) {
         Ok(settings) => settings,
-        Err(error) => {
-            return defaults(format!(
-                "settings file is unreadable ({error}); using defaults"
-            ));
-        }
+        Err(error) => return unreadable(error),
     };
     if settings.settings_version > SETTINGS_VERSION {
         return defaults(format!(
@@ -118,7 +138,6 @@ pub fn load_settings(text: &str) -> LoadedSettings {
             settings.settings_version
         ));
     }
-    let mut warnings = Vec::new();
     sanitise(&mut settings, &mut warnings);
     LoadedSettings { settings, warnings }
 }
@@ -133,6 +152,14 @@ fn sanitise(settings: &mut MachineSettings, warnings: &mut Vec<String>) {
             settings.backup_keep
         ));
         settings.backup_keep = MAX_BACKUP_KEEP;
+    }
+    if settings
+        .output_device
+        .as_ref()
+        .is_some_and(|d| d.is_empty() || d.len() > MAX_DEVICE_NAME_BYTES)
+    {
+        warnings.push("output device name is invalid; using the system default".into());
+        settings.output_device = None;
     }
     if settings.workspaces.len() > MAX_WORKSPACES {
         warnings.push(format!(
@@ -209,6 +236,18 @@ impl MachineSettings {
             .get(&workspace.to_string())?
             .patches
             .get(&patch.to_string())
+    }
+
+    /// Chooses the output device the engine opens at its next start; `None` goes back to the
+    /// system default. Refuses a name no device layer could list and changes nothing.
+    pub fn set_output_device(&mut self, device: Option<String>) -> Result<(), String> {
+        if let Some(name) = &device
+            && (name.is_empty() || name.len() > MAX_DEVICE_NAME_BYTES)
+        {
+            return Err("invalid device name".into());
+        }
+        self.output_device = device;
+        Ok(())
     }
 
     /// Records where `patch` plays on this machine. Refuses an invalid mapping and changes
@@ -356,6 +395,29 @@ mod tests {
         let out = save_settings(&loaded.settings).unwrap();
         assert!(out.contains("\"future\""), "{out}");
         assert!(!out.contains("recent_files"), "{out}");
+    }
+
+    #[test]
+    fn an_invalid_output_device_name_is_dropped_with_a_warning() {
+        let loaded = load_settings(r#"{"settings_version": 1, "output_device": ""}"#);
+        assert_eq!(loaded.settings.output_device, None);
+        assert_eq!(loaded.warnings.len(), 1);
+        let loaded = load_settings(r#"{"settings_version": 1, "output_device": "Scarlett"}"#);
+        assert_eq!(loaded.settings.output_device.as_deref(), Some("Scarlett"));
+        assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn a_wrong_typed_output_device_keeps_the_mappings() {
+        let ws = "00000000-0000-0000-0000-000000000001";
+        let p = "00000000-0000-0000-0000-000000000002";
+        let text = format!(
+            r#"{{"settings_version": 1, "output_device": 5, "workspaces": {{"{ws}": {{"patches": {{"{p}": {{"device": "Scarlett", "channels": [0, 1]}}}}}}}}}}"#
+        );
+        let loaded = load_settings(&text);
+        assert_eq!(loaded.settings.output_device, None);
+        assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.workspaces.len(), 1, "mappings survive");
     }
 
     #[test]

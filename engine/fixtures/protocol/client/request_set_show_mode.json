@@ -1,6 +1,6 @@
 {
   "type": "request",
-  "id": 52,
+  "id": 54,
   "request": {
     "type": "set_show_mode",
     "on": true

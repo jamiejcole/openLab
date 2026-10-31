@@ -373,6 +373,7 @@ impl Engine {
                 .map(|l| DeviceEntry {
                     name: l.name.clone(),
                     output_channels: u32::from(l.max_channels()),
+                    is_default: l.is_default,
                 })
                 .collect(),
             None => self
@@ -382,6 +383,7 @@ impl Engine {
                 .map(|d| DeviceEntry {
                     name: d.name.clone(),
                     output_channels: d.output_channels,
+                    is_default: false,
                 })
                 .collect(),
         }
