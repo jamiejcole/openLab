@@ -31,6 +31,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let doneButton = NSButton(title: loc("settings.done"), target: nil, action: nil)
 
     private var subs: [AnyCancellable] = []
+    // Weak-self observers: they outlive the controller harmlessly and do nothing.
     private var observers: [NSObjectProtocol] = []
     /// How many times the controls were rebuilt (tests: an unchanged status rebuilds nothing).
     private(set) var renderCount = 0
@@ -68,8 +69,6 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             })
         render()
     }
-
-    deinit { for o in observers { NotificationCenter.default.removeObserver(o) } }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
