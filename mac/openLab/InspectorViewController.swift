@@ -677,7 +677,11 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             let outcome = await store.send(command: command, coalesce: coalesce)
             // Answered: the model holds the edit (or refused it), so the unanswered copy must not hide it
             // from the render below.
-            if let sentKind, pendingKinds[cue] == sentKind { pendingKinds[cue] = nil }
+            if let sentKind, pendingKinds[cue] == sentKind {
+                pendingKinds[cue] = nil
+                // The panels were last drawn with the overlay; show the model's kind now it is gone.
+                if selection == [cue] { render() }
+            }
             if case .failure(let error) = outcome {
                 sendFailures += 1
                 if case .engine(_, let message) = error {
