@@ -1226,12 +1226,8 @@ async fn open_show(app: &mut App, id: u64, show: &std::path::Path) -> DocId {
 }
 
 /// The progress `elapsed` of cue `n`, as last reported.
-fn elapsed(ws: &Ws, n: u128) -> f64 {
-    ws.progress
-        .iter()
-        .find(|p| p.0 == id(n))
-        .map(|p| p.1)
-        .unwrap_or_else(|| panic!("no progress for cue {n}: {:?}", ws.progress))
+fn elapsed(ws: &Ws, n: u128) -> Option<f64> {
+    ws.progress.iter().find(|p| p.0 == id(n)).map(|p| p.1)
 }
 
 async fn ok_call(ws: &mut Ws, make: impl FnOnce(RequestId) -> ClientMessage) {
@@ -1271,30 +1267,38 @@ async fn stepped_session(show: &std::path::Path) -> Told {
     ws.next_id = 100;
 
     ws.transport(go()).await;
-    // A tenth of a second: cue 1 runs, the playhead is on cue 2.
+    // A tenth of a second: cue 1 runs, the playhead is on cue 2. (A result may pass the
+    // broadcasts queued before it, so these read on until what the advance made is in.)
     ok_call(&mut ws, advance_by(VRATE / 10)).await;
-    assert_eq!(ws.state(1), Some(WireCueState::Running));
+    // Progress is sent at most 30 times a second of device time: the last one of this tenth
+    // is at least a fifteenth of a second in.
+    ws.wait("cue 1 running with progress", |c| {
+        c.state(1) == Some(WireCueState::Running) && elapsed(c, 1).is_some_and(|e| e >= 0.066)
+    })
+    .await;
     assert_eq!(ws.playhead, Some(id(2)));
-    let first = elapsed(&ws, 1);
-    assert!(first > 0.0 && first <= 0.1, "{first}");
+    let first = elapsed(&ws, 1).unwrap_or_default();
+    assert!(first <= 0.1, "{first}");
     ok_call(&mut ws, advance_by(VRATE / 10)).await;
-    let second = elapsed(&ws, 1);
-    // Progress is sent at most 30 times a second of device time.
-    assert!(
-        second > first && second <= first + 0.1 + 1.0 / 30.0,
-        "{first} then {second}"
-    );
+    ws.wait("progress a tenth later", |c| {
+        elapsed(c, 1).is_some_and(|e| e >= first + 0.066)
+    })
+    .await;
+    let second = elapsed(&ws, 1).unwrap_or_default();
+    assert!(second <= 0.2, "{first} then {second}");
     assert_eq!(ws.state(1), Some(WireCueState::Running));
 
     ws.transport(TransportAction::Panic).await;
     // Past the show's 0.1 s panic fade.
     ok_call(&mut ws, advance_by(VRATE / 5)).await;
-    assert_eq!(ws.state(1), None, "cue 1 is idle after the panic");
+    ws.wait("cue 1 idle after the panic", |c| c.state(1).is_none())
+        .await;
     assert_eq!(ws.playhead, Some(id(2)), "the panic left the playhead");
     // A barrier: a command's result follows its model_changed, so every broadcast before it
     // has been read by now.
     let o = ws.command(rename(3, "barrier")).await;
     assert!(matches!(o, Outcome::Ok(_)), "{o:?}");
+    assert_eq!(ws.playhead, Some(id(2)), "the panic left the playhead");
     let o = app.call(3, advance_by(0)(RequestId(3))).await;
     assert!(matches!(o, Outcome::Ok(_)), "{o:?}");
     // The debug engine counts allocations on its audio thread and logs them as errors.
@@ -1365,11 +1369,15 @@ async fn a_stepped_engine_loses_and_gets_back_its_virtual_device_on_request() {
 
     ws.transport(go()).await;
     ok_call(&mut ws, advance_by(VRATE / 10)).await;
-    assert_eq!(ws.state(1), Some(WireCueState::Running));
+    ws.wait("cue 1 running", |c| {
+        c.state(1) == Some(WireCueState::Running)
+    })
+    .await;
 
     ok_call(&mut ws, |id| request(id, Request::LoseDevice)).await;
     // The loss is handled before the answer: the cue that played on the device broke.
-    assert_eq!(ws.state(1), Some(WireCueState::Broken));
+    ws.wait("cue 1 broken", |c| c.state(1) == Some(WireCueState::Broken))
+        .await;
     assert!(ws.seen.iter().any(|m| matches!(
         m,
         ServerMessage::Runtime { changes, .. } if changes.iter().any(|c| matches!(
@@ -1393,7 +1401,10 @@ async fn a_stepped_engine_loses_and_gets_back_its_virtual_device_on_request() {
     // Playing again: GO starts the next cue and it runs.
     ws.transport(go()).await;
     ok_call(&mut ws, advance_by(VRATE / 10)).await;
-    assert_eq!(ws.state(2), Some(WireCueState::Running));
+    ws.wait("cue 2 running", |c| {
+        c.state(2) == Some(WireCueState::Running)
+    })
+    .await;
     end(engine);
 }
 

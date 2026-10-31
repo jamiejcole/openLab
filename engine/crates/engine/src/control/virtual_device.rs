@@ -656,9 +656,11 @@ impl Control {
         let Some(vd) = self.virtual_device() else {
             return Ok(());
         };
-        vd.shared.settling.store(true, Ordering::Release);
+        // A settle inside another (a `lose_device` taken in during an `advance`) leaves the
+        // outer one settling.
+        let outer = vd.shared.settling.swap(true, Ordering::AcqRel);
         let result = self.settle_answers(&vd, inbox);
-        vd.shared.settling.store(false, Ordering::Release);
+        vd.shared.settling.store(outer, Ordering::Release);
         result
     }
 
@@ -908,6 +910,25 @@ mod tests {
         assert_eq!(code(&o), None, "{o:?}");
         assert!(crate::lock(&r.vd.shared.held).is_empty());
         assert_eq!(is_default(&r), Some(false), "taken in by the advance");
+    }
+
+    /// A `lose_device` from another connection, taken in while an `advance` waits, settles
+    /// inside it; the advance goes on taking answers in (none is left held) and renders
+    /// nothing on the lost device.
+    #[test]
+    fn a_loss_during_an_advance_is_handled_inside_it() {
+        let mut r = rig(VirtualMode::Stepped);
+        let (lose, mut lose_rx) = conn(2, Request::LoseDevice);
+        r.inbox.send(lose).unwrap();
+        let (_, o) = ask(&mut r, Request::Advance { frames: 48_000 });
+        assert_eq!(code(&o), None, "{o:?}");
+        assert_eq!(code(&outcome(&mut lose_rx, 2)), None);
+        assert!(r.control.device_down());
+        assert_eq!(r.control.mixer().samples_rendered(), 0);
+        // A second of reopen attempts and list reads ran inside the advance: all answered.
+        assert!(crate::lock(&r.vd.shared.held).is_empty());
+        assert_eq!(r.control.device_jobs_pending(), 0);
+        assert!(!r.vd.shared.settling.load(Ordering::Acquire));
     }
 
     /// `lose_device`, stepped: answered once the loss is handled (the device is down and its
