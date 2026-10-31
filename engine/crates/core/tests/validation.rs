@@ -526,6 +526,28 @@ fn slices_are_sorted_deduplicated_and_kept_inside_the_trim() {
 }
 
 #[test]
+fn slice_markers_beyond_the_audio_engine_limit_are_removed_with_a_warning() {
+    let a = audio_with(|_, slices, _, _| {
+        *slices = (1..=MAX_SLICE_MARKERS + 3)
+            .map(|i| slice(i as f64, 1))
+            .collect();
+    });
+    let mut ws = workspace(vec![cue(1, a)]);
+    assert_eq!(
+        repair(&mut ws),
+        vec![warning(1, IssueKind::TooManySlices { count: 3 })]
+    );
+    let kept = audio_parts(&ws, 1).1;
+    assert_eq!(kept.len(), MAX_SLICE_MARKERS);
+    assert_eq!(
+        kept.last().copied(),
+        Some(slice(MAX_SLICE_MARKERS as f64, 1))
+    );
+    // A show at the limit loads without a warning.
+    assert!(repair(&mut ws).is_empty());
+}
+
+#[test]
 fn slices_without_end_time_only_need_to_be_after_start() {
     let a = audio_with(|_, slices, _, _| *slices = vec![slice(0.0, 1), slice(8e4, 1)]);
     let mut ws = workspace(vec![cue(1, a)]);
