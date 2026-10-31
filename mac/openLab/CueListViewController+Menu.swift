@@ -61,7 +61,7 @@ enum CueRowMenu {
     }
 
     private static func locked(_ item: Item, _ c: Context) -> Bool {
-        c.showMode && lockedEdit(item).map(MainMenu.LockedEdit.allCases.contains) == true
+        c.showMode && lockedEdit(item) != nil
     }
 
     /// The file a media path names: absolute as given, relative to the folder of the saved show.
