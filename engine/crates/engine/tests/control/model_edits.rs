@@ -865,3 +865,14 @@ fn duration_and_load_time_edits_go_through_the_engine_and_undo() {
         "ran {ran} frames"
     );
 }
+
+/// Core's marker limit and the mixer's slice-table limit are separate constants (core cannot
+/// depend on the audio crate); a cue at the marker limit with a start offset inside its first
+/// slice must still fit the table.
+#[test]
+fn the_cue_slice_marker_limit_fits_the_mixers_slice_table() {
+    assert_eq!(
+        openlab_core::MAX_SLICE_MARKERS + 2,
+        openlab_audio::MAX_SLICES
+    );
+}
