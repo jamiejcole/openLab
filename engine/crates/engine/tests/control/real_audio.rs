@@ -1046,28 +1046,20 @@ fn slices_play_their_counts_sample_exact_under_the_integrated_fades() {
             Some(k) => ramp(1.0, 0.0, k as f64 / fout as f64, FadeCurve::SCurve),
             None => 1.0,
         };
-        let want = frame as f64 / 8_388_608.0 * env_in * env_out;
         let got = f64::from(out[at + p]);
-        assert!(
-            (got - want).abs() <= 1.1e-6,
-            "sample {p} (file frame {frame}): {got}, want {want}"
-        );
-    }
-    // Unfaded, the samples name their frames exactly: the loop joins are seamless.
-    for p in [
-        fin,
-        12_000 - 1,
-        12_000,
-        36_000,
-        60_000,
-        96_000,
-        len - fout - 2,
-    ] {
-        assert_eq!(
-            (f64::from(out[at + p]) * 8_388_608.0).round() as usize,
-            plan[p],
-            "sample {p}"
-        );
+        if env_in * env_out == 1.0 {
+            // Unfaded, each sample names its file frame exactly: a play one frame early or late
+            // fails here.
+            assert_eq!(got * 8_388_608.0, frame as f64, "sample {p}");
+        } else {
+            // A neighbouring frame is 1.2e-7 away at full gain; the mixer's gain is within 1e-6 of
+            // the curve, which on these small samples is under 1e-8.
+            let want = frame as f64 / 8_388_608.0 * env_in * env_out;
+            assert!(
+                (got - want).abs() <= 2e-9 + 1.1e-6 * want,
+                "sample {p} (file frame {frame}): {got}, want {want}"
+            );
+        }
     }
     assert_eq!(
         out[at + len - 1],
