@@ -8,4 +8,4 @@ engine/crates/audio/src/output.rs | permanent: detector: debug builds run the ca
 engine/crates/engine/src/main.rs | permanent: debug global allocator (`assert_no_alloc::AllocDisabler`) so the callback guard can count allocations; no effect on behaviour, plus its test
 engine/crates/audio/tests/cpu_budget.rs | permanent: test skips the wall-clock CPU gate in a debug build (`cfg!(debug_assertions)`), where it is meaningless
 engine/crates/engine/tests/perf.rs | permanent: test skips the wall-clock performance gate in a debug build (`cfg!(debug_assertions)`), where it is meaningless
-engine/crates/core/src/cue_engine/mod.rs | permanent: detector: the edit cross-check is on by default in debug builds (`cfg!(debug_assertions).then(cross_check::CrossCheck::default)`); it counts unsignalled edits and changes no action
+engine/crates/core/src/cue_engine/mod.rs | permanent: detector: the edit cross-check is on by default in debug builds (`cfg!(debug_assertions).then(cross_check::CrossCheck::default)`); it counts edits the write guard of the engine binary does not cover (a footprint that missed a cue, a caller of core without the guard) and changes no action
