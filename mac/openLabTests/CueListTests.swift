@@ -641,7 +641,8 @@ final class CueListTests: XCTestCase {
 
     func testMenuDialogAnswersSelectMovePlayheadOrNameTheProblem() async throws {
         let rig = try Rig()
-        XCTAssertTrue(await rig.connect())
+        let connected = await rig.connect()
+        XCTAssertTrue(connected)
         let wc = WorkspaceWindowController(store: rig.store)
         let list = wc.cueList
         let target = try XCTUnwrap(list.roots.first { $0.cue.number != nil })
