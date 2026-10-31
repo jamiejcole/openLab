@@ -2434,6 +2434,15 @@ impl Run {
     /// Whether a cue can rest with nothing scheduled: it is paused, or its voice loops until it
     /// is stopped, or it is a group that is running or stopping around such a cue.
     fn waits_for_the_operator(&self, id: CueId) -> bool {
+        self.waits_within(id, 0)
+    }
+
+    /// `waits_for_the_operator`, `depth` levels down: cues moved out of a group can lead back
+    /// into it, so the walk is bounded.
+    fn waits_within(&self, id: CueId, depth: usize) -> bool {
+        if depth > 64 {
+            return false;
+        }
         let Some(c) = self.ws.find_cue(id) else {
             return false;
         };
@@ -2450,9 +2459,17 @@ impl Run {
                 // (A broken child waits only while paused: Pause freezes a broken cue's
                 // timers too, and it reports `broken` all the same. A settled broken child
                 // does not hold the group open.)
+                // A cue moved out of the group keeps it waiting as one of its children does.
+                let moved = self
+                    .moved_out_of
+                    .iter()
+                    .filter(|(_, g)| *g == id)
+                    .map(|(m, _)| *m);
                 children
                     .iter()
-                    .any(|k| self.engine.is_paused(k.id) || self.waits_for_the_operator(k.id))
+                    .map(|k| k.id)
+                    .chain(moved)
+                    .any(|k| self.engine.is_paused(k) || self.waits_within(k, depth + 1))
             }
             _ => false,
         }
