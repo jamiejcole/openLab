@@ -664,10 +664,38 @@ mod tests {
 
     #[test]
     fn new_empty_workspace_is_valid_and_round_trips() {
-        let ws = Workspace::new_empty(ws(1), CueListId(Uuid::from_u128(2)), pid(3));
+        let ws = Workspace::new_empty(
+            ws(1),
+            CueListId(Uuid::from_u128(2)),
+            pid(3),
+            crate::NetworkPatchId(Uuid::from_u128(4)),
+        );
         let text = crate::save_show(&ws).unwrap();
         let loaded = crate::load_show(&text).unwrap();
         assert_eq!(loaded.workspace, ws);
+        assert!(loaded.warnings.is_empty());
+    }
+
+    /// QLab 5 (manual p. 111): a new workspace starts with a network patch that sends to this
+    /// computer. Only `new_empty` adds it; a saved show with none keeps none when it loads.
+    #[test]
+    fn a_new_workspace_has_a_loopback_network_patch_but_a_loaded_show_keeps_its_own() {
+        let mut ws = Workspace::new_empty(
+            ws(1),
+            CueListId(Uuid::from_u128(2)),
+            pid(3),
+            crate::NetworkPatchId(Uuid::from_u128(4)),
+        );
+        assert_eq!(ws.network_patches.len(), 1);
+        let patch = &ws.network_patches[0];
+        assert_eq!(patch.id, crate::NetworkPatchId(Uuid::from_u128(4)));
+        assert_eq!(
+            (patch.host.as_str(), patch.port, patch.protocol),
+            ("127.0.0.1", 53000, crate::NetworkProtocol::Udp)
+        );
+        ws.network_patches.clear();
+        let loaded = crate::load_show(&crate::save_show(&ws).unwrap()).unwrap();
+        assert!(loaded.workspace.network_patches.is_empty());
         assert!(loaded.warnings.is_empty());
     }
 }

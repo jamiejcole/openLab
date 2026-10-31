@@ -129,6 +129,7 @@ mod tests {
             WorkspaceId(Uuid::from_u128(1)),
             CueListId(Uuid::from_u128(2)),
             PatchId(Uuid::from_u128(3)),
+            openlab_core::NetworkPatchId(Uuid::from_u128(4)),
         );
         let engine = CueEngine::new(EngineConfig::new(48_000, 64, 1).unwrap());
         let mut m = DocModel::new(ws, engine);

@@ -78,8 +78,11 @@ final class CueEditingTests: XCTestCase {
         let patch = try XCTUnwrap(
             try Fixtures.json("server", "welcome")["snapshot"]?["workspace"]?["patches"]?.arrayValue?.first)
         let model = try JSONDecoder().decode(ModelObject.self, from: Data(try patch.text().utf8))
+        let desk = try XCTUnwrap(
+            try Fixtures.json("server", "welcome")["snapshot"]?["workspace"]?["network_patches"]?.arrayValue?.first)
+        let network = try JSONDecoder().decode(ModelObject.self, from: Data(try desk.text().utf8))
         for kind in NewCueKind.allCases {
-            let cue = try XCTUnwrap(kind.cueJSON(id: "x", patch: model), "\(kind)")
+            let cue = try XCTUnwrap(kind.cueJSON(id: "x", patch: model, networkPatch: network), "\(kind)")
             XCTAssertEqual(cue["kind"]?["type"]?.stringValue, kind.wireType)
             // The same top-level fields the fixture cue has.
             let fixture = try Fixtures.json("client", "command_add_cue")["command"]?["commands"]?.arrayValue?[0]["cue"]
@@ -263,6 +266,81 @@ final class CueEditingTests: XCTestCase {
         XCTAssertNil(id)
         XCTAssertEqual(log.notices, [loc("edit.error.noPatch")])
         XCTAssertTrue(log.commands.isEmpty)
+    }
+
+    func testAddNetworkCueUsesTheFirstNetworkPatchAndIsSelected() async throws {
+        let (h, editor, log) = try await harness()
+        let desk = try XCTUnwrap(h.store.model?.networkPatches.first)
+        let added = await editor.add(.network)
+        let id = try XCTUnwrap(added)
+        let sent = try XCTUnwrap(log.commands.first)
+        XCTAssertEqual(log.commands.count, 1, "an existing destination needs no new patch")
+        XCTAssertEqual(sent["type"]?.stringValue, "add_cue")
+        XCTAssertEqual(sent["cue"]?["kind"]?["type"]?.stringValue, "network")
+        XCTAssertEqual(sent["cue"]?["kind"]?["destination"]?.stringValue, desk.id.raw)
+        XCTAssertEqual(sent["cue"]?["kind"]?["address"]?.stringValue, "")
+        XCTAssertEqual(sent["cue"]?["kind"]?["args"], .array([]))
+        await assertEventually { h.vc.selectedIDs() == [id] }
+        XCTAssertEqual(h.vc.node(id)?.cue.kindType, "network")
+        XCTAssertTrue(log.notices.isEmpty)
+    }
+
+    func testAddNetworkCueWithNoNetworkPatchAddsADefaultOneInTheSameStep() async throws {
+        var snapshot = FakeEngine.demoSnapshot(base: try Fixtures.json("server", "welcome")["snapshot"])
+        snapshot["workspace"]?.set("network_patches", .array([]))
+        let h = try await H(snapshot: snapshot)
+        let editor = CueEditor(store: h.store, cueList: h.vc)
+        let log = SendLog(h.rig.engine)
+        editor.notify = { log.notices.append($0) }
+        let added = await editor.add(.network)
+        let id = try XCTUnwrap(added)
+        let sent = try XCTUnwrap(log.commands.first)
+        XCTAssertEqual(log.commands.count, 1, "one command, so one undo step")
+        XCTAssertEqual(sent["type"]?.stringValue, "transaction")
+        let inner = try XCTUnwrap(sent["commands"]?.arrayValue)
+        XCTAssertEqual(inner.map { $0["type"]?.stringValue }, ["add_network_patch", "add_cue"])
+        let patch = try XCTUnwrap(inner[0]["patch"])
+        XCTAssertEqual(patch["host"]?.stringValue, "127.0.0.1")
+        XCTAssertEqual(patch["port"], .int(53000))
+        XCTAssertEqual(patch["protocol"]?.stringValue, "udp")
+        XCTAssertEqual(patch["name"]?.stringValue, loc("edit.networkPatch.defaultName"))
+        XCTAssertEqual(inner[1]["cue"]?["kind"]?["destination"], patch["id"])
+        XCTAssertEqual(inner[1]["cue"]?["id"]?.stringValue, id.raw)
+        await assertEventually { h.vc.node(id) != nil }
+        XCTAssertTrue(log.notices.isEmpty)
+
+        // Byte for byte the engine's golden message, which its tests play: only the ids are the
+        // app's random ones, so they are set to the fixture's.
+        let golden = try XCTUnwrap(try Fixtures.json("client", "command_add_new_network_cue")["command"])
+        let want = try XCTUnwrap(golden["commands"]?.arrayValue)
+        let patchID = try XCTUnwrap(want[0]["patch"]?["id"])
+        var steps = try XCTUnwrap(sent["commands"]?.arrayValue)
+        var patchStep = steps[0]
+        var patchJSON = try XCTUnwrap(patchStep["patch"])
+        patchJSON.set("id", patchID)
+        patchStep.set("patch", patchJSON)
+        var cueStep = steps[1]
+        var cue = try XCTUnwrap(cueStep["cue"])
+        var kind = try XCTUnwrap(cue["kind"])
+        kind.set("destination", patchID)
+        cue.set("kind", kind)
+        cue.set("id", try XCTUnwrap(want[1]["cue"]?["id"]))
+        cueStep.set("cue", cue)
+        cueStep.set("at", try XCTUnwrap(want[1]["at"]))  // where it goes is the selection's, not the message format's
+        steps = [patchStep, cueStep]
+        var sentCommand = sent
+        sentCommand.set("commands", .array(steps))
+        XCTAssertEqual(JSONValue.parse(try sentCommand.text()), golden)
+    }
+
+    func testNetworkIsOnTheToolbarAndTheCuesMenuAtCmd8() throws {
+        XCTAssertTrue(CueToolbarView.kinds.flatMap { $0 }.contains(.network))
+        let cues = MainMenu.make().cues
+        let entry = try XCTUnwrap(cues.items.first { ($0.representedObject as? String) == "network" })
+        XCTAssertEqual(entry.keyEquivalent, "8")
+        XCTAssertEqual(entry.keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(entry.action, #selector(AppDelegate.newCue(_:)))
+        XCTAssertEqual(cues.items.filter { $0.keyEquivalent == "8" }.count, 1)
     }
 
     // MARK: Delete
@@ -481,12 +559,13 @@ final class CueEditingTests: XCTestCase {
         toolbar.onAdd = { asked.append($0) }
         toolbar.add(group: 0, segment: 0)
         toolbar.add(group: 1, segment: 1)
-        toolbar.add(group: 3, segment: 1)  // Target: the model has no such cue
-        XCTAssertEqual(asked, [.audio, .memo])
+        toolbar.add(group: 2, segment: 0)
+        toolbar.add(group: 4, segment: 1)  // Target: the model has no such cue
+        XCTAssertEqual(asked, [.audio, .memo, .network])
         toolbar.isLocked = true
         toolbar.add(group: 0, segment: 0)  // even if a control were live, a locked toolbar adds nothing
-        XCTAssertEqual(asked, [.audio, .memo])
-        XCTAssertFalse(toolbar.segmentedControls[3].isEnabled(forSegment: 1))
+        XCTAssertEqual(asked, [.audio, .memo, .network])
+        XCTAssertFalse(toolbar.segmentedControls[4].isEnabled(forSegment: 1))
     }
 
     func testCuesMenuKeysFollowQLab() {
@@ -498,8 +577,9 @@ final class CueEditingTests: XCTestCase {
         XCTAssertEqual(keys["group"], "0")
         XCTAssertEqual(keys["audio"], "1")
         XCTAssertEqual(keys["fade"], "7")
+        XCTAssertEqual(keys["network"], "8")
         // Types QLab gives no menu key (or that openLab alone has) stay unbound.
-        for kind in NewCueKind.allCases where ![.group, .audio, .fade].contains(kind) {
+        for kind in NewCueKind.allCases where ![.group, .audio, .fade, .network].contains(kind) {
             XCTAssertEqual(keys[kind.rawValue], "", "\(kind)")
         }
         let edit = MainMenu.make().edit

@@ -134,8 +134,24 @@ enum MainMenu {
                 item("menu.edit.paste", #selector(AppDelegate.pasteCues(_:)), "v"),
                 deleteItem(),
                 item("menu.edit.selectAll", #selector(NSText.selectAll(_:)), "a"),
+                .separator(),
+                findItem(),
             ]
         )
+    }
+
+    /// Edit > Find (ED-09): Find (Cmd-F), Find Next (Cmd-G), Find Previous (Shift-Cmd-G).
+    private static func findItem() -> NSMenuItem {
+        let sub = menu(
+            "menu.edit.find",
+            [
+                item("menu.edit.find.find", #selector(AppDelegate.showFind(_:)), "f"),
+                item("menu.edit.find.next", #selector(AppDelegate.findNextCue(_:)), "g"),
+                item("menu.edit.find.previous", #selector(AppDelegate.findPreviousCue(_:)), "G"),
+            ])
+        let holder = NSMenuItem(title: sub.title, action: nil, keyEquivalent: "")
+        holder.submenu = sub
+        return holder
     }
 
     /// QLab: Delete is Cmd-Delete (Edit menu).
@@ -148,14 +164,14 @@ enum MainMenu {
     /// The Cues menu's kinds in QLab's order: media (Group, Audio), Fade, the control cues, then
     /// Wait and Memo. Kinds QLab has but openLab lacks are absent; Target has no model cue.
     static let cueMenuGroups: [[NewCueKind]] = [
-        [.group, .audio], [.fade], [.start, .stop, .pause, .load, .reset, .devamp, .goto, .arm, .disarm],
+        [.group, .audio], [.fade], [.network, .start, .stop, .pause, .load, .reset, .devamp, .goto, .arm, .disarm],
         [.wait, .memo],
     ]
 
-    /// New cues of each kind (QLab keys: Cmd-0 Group, Cmd-1 Audio, Cmd-7 Fade; the other types have none).
+    /// New cues of each kind (QLab keys: Cmd-0 Group, Cmd-1 Audio, Cmd-8 Network, Cmd-7 Fade; the other types have none).
     /// `representedObject` carries the kind.
     private static func cuesMenu() -> NSMenu {
-        let keys: [NewCueKind: String] = [.group: "0", .audio: "1", .fade: "7"]
+        let keys: [NewCueKind: String] = [.group: "0", .audio: "1", .fade: "7", .network: "8"]
         var items: [NSMenuItem] = []
         for (n, group) in cueMenuGroups.enumerated() {
             if n > 0 { items.append(.separator()) }

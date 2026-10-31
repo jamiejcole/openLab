@@ -423,6 +423,49 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
+    // A new Network cue in a workspace with no network patch, exactly as the app's Cues menu
+    // sends it (`CueEditor.add(.network)`, the Swift test compares): the default patch and the
+    // cue, one transaction, one undo step. The cue has no address, so it shows broken until one
+    // is typed. The engine tests play this message.
+    let mut network = cue(
+        14,
+        CueKind::Network {
+            destination: net_id(5),
+            address: String::new(),
+            args: vec![],
+        },
+    );
+    network.number = None;
+    add(
+        "command_add_new_network_cue",
+        client(ClientMessage::Command {
+            id: rid(5),
+            command: Box::new(Command::Transaction {
+                commands: vec![
+                    Command::AddNetworkPatch {
+                        index: 0,
+                        patch: NetworkPatch {
+                            id: net_id(5),
+                            name: "Network 1".into(),
+                            host: "127.0.0.1".into(),
+                            port: 53000,
+                            protocol: NetworkProtocol::Udp,
+                        },
+                    },
+                    Command::AddCue {
+                        at: Position {
+                            list: list(),
+                            parent: None,
+                            index: 0,
+                        },
+                        cue: network,
+                        auto_number: true,
+                    },
+                ],
+            }),
+            coalesce: None,
+        }),
+    );
     // A Devamp cue's settings, `devamp_mode` included, travel as its kind.
     add(
         "command_set_devamp_kind",
