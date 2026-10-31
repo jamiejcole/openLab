@@ -371,9 +371,13 @@ final class CueEditingTests: XCTestCase {
             uniqueKeysWithValues: cues.items.compactMap { i in
                 (i.representedObject as? String).map { ($0, i.keyEquivalent) }
             })
-        XCTAssertEqual(keys["audio"], "0")
-        XCTAssertEqual(keys["fade"], "6")
-        XCTAssertEqual(keys["group"], "9")
+        XCTAssertEqual(keys["group"], "0")
+        XCTAssertEqual(keys["audio"], "1")
+        XCTAssertEqual(keys["fade"], "7")
+        // Types QLab gives no menu key (or that openLab alone has) stay unbound.
+        for kind in NewCueKind.allCases where ![.group, .audio, .fade].contains(kind) {
+            XCTAssertEqual(keys[kind.rawValue], "", "\(kind)")
+        }
         let edit = MainMenu.make().edit
         let delete = edit.items.first { $0.action == #selector(AppDelegate.deleteCues(_:)) }
         XCTAssertEqual(delete?.keyEquivalent, "\u{8}")

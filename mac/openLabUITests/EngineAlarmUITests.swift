@@ -25,7 +25,7 @@ final class EngineAlarmUITests: XCTestCase {
         let cues = app.outlines.matching(identifier: "cue-list").outlineRows
         XCTAssertEqual(cues.count, 0, "the reopened workspaces are empty")
         windows.element(boundBy: 0).click()
-        app.typeKey("9", modifierFlags: .command)  // New Group Cue
+        app.typeKey("0", modifierFlags: .command)  // New Group Cue
         XCTAssertTrue(cues.firstMatch.waitForExistence(timeout: 5), "the key reached the workspace window")
         XCTAssertTrue(title.exists, "the alarm is still up")
         app.buttons["engine-alarm-dismiss"].click()
