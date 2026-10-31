@@ -276,6 +276,45 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.batch(actions: order.map { .panicCue(cue: $0) })), ["1"])
     }
 
+    /// A group's panic fades its whole subtree; a selected descendant's own panic_cue would be a
+    /// second press (hard cut), so only the topmost selected cue of each subtree is panicked.
+    func testPanicSelectedSkipsSelectedDescendantsOfASelectedGroup() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let list = try XCTUnwrap(wc.cueList.listID)
+        func audio(_ id: String) -> JSONValue {
+            FakeEngine.cueJSON(id: id, number: "", name: id, kind: FakeEngine.audioKind("media/x.wav"))
+        }
+        func group(_ id: String, _ kids: [JSONValue]) -> JSONValue {
+            FakeEngine.cueJSON(id: id, number: "", name: id, kind: FakeEngine.groupKind(kids))
+        }
+        let outer = group("g-outer", [audio("child"), group("g-inner", [audio("grandchild")])])
+        let cue = try outer.text()
+        engine.push(
+            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[{"type":"cue","list":"\#(list)","parent":null,"index":0,"cue":\#(cue)}],"deletes":[]}"#,
+            doc: "1")
+        await assertEventually { wc.cueList.node("grandchild") != nil }
+        wc.cueList.reveal("grandchild")  // expands the groups so every row can be selected
+        let sibling = try XCTUnwrap(wc.cueList.roots.map(\.id).first { $0 != "g-outer" })
+
+        // Group + child: only the group.
+        wc.cueList.select(["g-outer", "child"])
+        await app.perform(.panicSelected)
+        XCTAssertEqual(transports(.panicCue(cue: "g-outer")), ["1"])
+        XCTAssertTrue(transports(.panicCue(cue: "child")).isEmpty)
+        // Group + grandchild, and a top-level sibling: one panic each for group and sibling.
+        wc.cueList.select(["g-outer", "grandchild", sibling])
+        await app.perform(.panicSelected)
+        XCTAssertEqual(transports(.panicCue(cue: "g-outer")).count, 1, "the second press went out inside the batch")
+        XCTAssertTrue(transports(.panicCue(cue: "grandchild")).isEmpty)
+        XCTAssertEqual(transports(.batch(actions: [.panicCue(cue: "g-outer"), .panicCue(cue: sibling)])), ["1"])
+        // A child alone, with no selected ancestor, is still panicked.
+        wc.cueList.select(["child"])
+        await app.perform(.panicSelected)
+        XCTAssertEqual(transports(.panicCue(cue: "child")), ["1"])
+    }
+
     /// The sidebar Reset all button and the Transport menu item send `reset_all` to their own
     /// workspace, with no confirmation, in Show Mode as in Edit Mode (QLab's sidebar is the same
     /// in both).

@@ -107,7 +107,11 @@ extension AppController {
         case .resetSelected: await runAll(selected.map { .reset(cue: $0) }, on: store)
         // A second press on cues still fading from the first stops them at once: the engine
         // decides that per cue (QLab: S twice is a hard stop of the selection).
-        case .panicSelected: await runAll(selected.map { .panicCue(cue: $0) }, on: store)
+        // A group's panic already fades its whole subtree, so a selected descendant of a selected
+        // cue is left out: its own panic_cue would read as a second press and hard-cut it.
+        case .panicSelected:
+            let roots = CueEditor.topLevel(selected.compactMap { wc.cueList.node($0) })
+            await runAll(roots.map { .panicCue(cue: $0.id) }, on: store)
         case .previewSelected:
             // Audio cues only (the engine ignores other kinds); each toggles on its own preview state.
             let audio = selected.filter { store.model?.cue($0)?.kindType == "audio" }
