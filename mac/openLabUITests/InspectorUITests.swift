@@ -26,15 +26,22 @@ final class InspectorUITests: XCTestCase {
     func testGroupSetToPlaylistAndLoop() {
         let app = launchDemo()
 
-        XCTAssertTrue(app.staticTexts["Act One"].waitForExistence(timeout: 10))
-        app.staticTexts["Act One"].click()
+        selectCue("Act One", in: app)
         tabButton("Mode", in: app).click()
         let mode = app.popUpButtons["inspector-group-mode"]
         XCTAssertTrue(mode.waitForExistence(timeout: 5))
         let loop = app.checkBoxes["inspector-group-loop"]
         XCTAssertFalse(loop.isEnabled, "loop is for playlists")
+        // A popup opened while another process holds focus can fail to show its
+        // menu; close it and open it once more before failing.
+        let playlist = app.menuItems["Playlist - one child at a time"]
         mode.click()
-        app.menuItems["Playlist - one child at a time"].click()
+        if !playlist.waitForExistence(timeout: 3) {
+            app.typeKey(.escape, modifierFlags: [])
+            mode.click()
+        }
+        XCTAssertTrue(playlist.waitForExistence(timeout: 5))
+        playlist.click()
         XCTAssertTrue(waitFor("isEnabled == true", loop))
         loop.click()
         XCTAssertTrue(waitFor("value == 1", loop))
