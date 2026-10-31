@@ -2,10 +2,10 @@
 
 import XCTest
 
-/// Show Mode against the fake engine: the inspector goes read-only, Space still fires GO.
+/// Show Mode against the fake engine: the inspector is hidden, Space still fires GO.
 @MainActor
 final class ShowModeUITests: XCTestCase {
-    func testShowModeLocksTheInspectorAndSpaceStillGoes() {
+    func testShowModeHidesTheInspectorAndSpaceStillGoes() {
         let app = launchDemo()
 
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
@@ -16,7 +16,7 @@ final class ShowModeUITests: XCTestCase {
 
         app.radioGroups["mode-switch"].radioButtons["Show"].click()
         XCTAssertTrue(app.staticTexts["show-mode-indicator"].waitForExistence(timeout: 5))
-        XCTAssertFalse(name.isEnabled, "the inspector is read-only in Show Mode")
+        XCTAssertTrue(waitFor("exists == false", name, timeout: 5), "the inspector is hidden in Show Mode")
 
         let states = app.images.matching(identifier: "cue-state")
         let loaded = states.matching(NSPredicate(format: "label == 'Loaded'"))
@@ -25,6 +25,6 @@ final class ShowModeUITests: XCTestCase {
         XCTAssertTrue(waitFor("count == 0", loaded), "GO still fires in Show Mode")
 
         app.radioGroups["mode-switch"].radioButtons["Edit"].click()
-        XCTAssertTrue(waitFor("isEnabled == true", name, timeout: 5), "leaving Show Mode unlocks editing")
+        XCTAssertTrue(waitFor("exists == true", name, timeout: 5), "leaving Show Mode brings the inspector back")
     }
 }
