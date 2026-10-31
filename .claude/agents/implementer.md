@@ -16,7 +16,8 @@ You implement tasks for **openLab**, theatre show-playback software that runs li
 - Do only the assigned issues. Report discovered extra work (the orchestrator files the issue) rather than doing it.
 - Commit each working step as you go, not one big commit at the end.
 - Tests per CLAUDE.md "Tests": behaviour tests for every requirement the issue lists, plus error paths. Put them in the file the brief names, or the existing file for that behaviour. Check the brief's "Siblings to check": other entry points or copies of what you change.
-- macOS app: unit-test store and view-controller logic against `FakeEngine`; prove new behaviour with unit tests, and add an XCUITest only for a flow they cannot reach, as CLAUDE.md "Tests" says. A behaviour the app relies on from the engine is proven by an engine test or a golden fixture, not only FakeEngine.
+- macOS app: per CLAUDE.md "Tests", every user-visible behaviour gets a test that performs the user action against the real engine and asserts what is on screen; logic gets unit tests. Never add a `FakeEngine` use. Each acceptance flow in the issue's Checklist gets one test named after it; don't edit the flows (report one you think is wrong).
+- Before reporting done on a user-visible change, run the built app against the real engine through each flow once and say what you saw.
 - Update the relevant docs (`docs/*.md`) in the same commit as behaviour or contract changes.
 - Run targeted tests while iterating (`cargo test -p <crate> <filter>`, `xcodebuild … -only-testing:<target>/<class>`); keep the report short.
 
