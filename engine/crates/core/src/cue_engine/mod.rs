@@ -208,13 +208,14 @@ impl CueEngine {
     /// Tells the engine the workspace changed (any edit, undo or redo, relink, an applied
     /// `SetArmed`, a newly opened workspace): the next `handle` call follows the edits (stops
     /// deleted cues, moves playheads, recounts the chain limit) and rebuilds the static problems.
-    /// M4.2 contract. Every other call skips those whole-workspace passes unless the
-    /// workspace's outline changed (`shape.rs`: then the miss is counted and the passes run), so
-    /// a missed signal inside a cue or group leaves them out of date until the next signal; what
-    /// could then refuse or drop a cue is guarded where it happens (a cue about to be refused
-    /// for its problems is rechecked, a spent chain budget is recounted, a GO whose playhead cue
-    /// is gone resyncs that list) and counted in [`Self::unsignalled_model_changes`]. Debug and
-    /// release builds act alike; the edit cross-check (debug builds) only counts any other miss.
+    /// The binary calls it after every change. Every other call skips those whole-workspace
+    /// passes unless the workspace's outline changed (`shape.rs`: then the miss is counted and
+    /// the passes run), so a missed signal inside a cue or group leaves them out of date until
+    /// the next signal; what could then refuse or drop a cue is guarded where it happens (a cue
+    /// about to be refused for its problems is rechecked, a spent chain budget is recounted, a
+    /// GO whose playhead cue is gone resyncs that list) and counted in
+    /// [`Self::unsignalled_model_changes`]. Debug and release builds act alike; the edit
+    /// cross-check (debug builds) only counts any other miss.
     pub fn model_changed(&mut self) {
         self.model_dirty = true;
         self.mark_problems_dirty();
