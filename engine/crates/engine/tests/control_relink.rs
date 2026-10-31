@@ -270,21 +270,16 @@ fn hold_first_job() -> (DocHook, mpsc::Receiver<()>, mpsc::Sender<()>) {
 /// host, so a regression that never answers fails instead of hanging the run.
 const HANG: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Ticks the show until `rx` answers; panics if no answer comes within [`HANG`]. The answer
-/// comes from worker threads, so the bound is wall time, not a tick count.
+/// Ticks the show until `rx` answers; fails the test if no answer ever comes. The answer comes
+/// from worker threads, so the bound is a count of polls, not a tick count.
 fn tick_until_answer(r: &mut Rig, rx: &mut openlab_engine::control::ReplyRx) -> ServerMessage {
-    let deadline = std::time::Instant::now() + HANG;
-    loop {
+    let mut answer = None;
+    show::spin::spin_until("an answer from the document worker", || {
         r.s.tick();
-        if let Ok(answer) = rx.try_recv() {
-            return answer;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no answer within {HANG:?}"
-        );
-        std::thread::yield_now();
-    }
+        answer = rx.try_recv().ok();
+        answer.is_some()
+    });
+    answer.unwrap()
 }
 
 fn deliver(r: &mut Rig, request: Request) -> (RequestId, openlab_engine::control::ReplyRx) {

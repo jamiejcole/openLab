@@ -107,6 +107,11 @@ pub(crate) fn no_alloc_for_tests<T>(f: impl FnOnce() -> T) -> T {
     r
 }
 
+/// The hang guard for tests that wait on a thread of their own (the engine's tests include this file too).
+#[cfg(test)]
+#[path = "../tests/common/spin.rs"]
+pub(crate) mod spin;
+
 #[cfg(test)]
 mod tests {
     #[test]
