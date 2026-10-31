@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use crate::show::*;
 use openlab_core::protocol::{
-    ClientMessage, Outcome, Request, RuntimeChange, ServerMessage, WireProblem, WireWarning,
+    ClientMessage, Outcome, Request, RuntimeChange, ServerMessage, WireWarning,
 };
 use openlab_core::{
     ContinueMode, CueKind, CueProblem, CueState, NetworkPatch, NetworkPatchId, NetworkProtocol,
@@ -136,6 +136,13 @@ impl Transport for Fake {
             let _ = gate.release.lock().unwrap().recv_timeout(GUARD);
         }
         if let Some(why) = self.fail_sends.lock().unwrap().clone() {
+            return Err(why);
+        }
+        // Like the real transport: with no looked-up addresses the sender resolves the name
+        // itself, and a name that does not resolve fails the send.
+        if resolved.is_empty()
+            && let Some(Err(why)) = self.names.lock().unwrap().get(&to.host).cloned()
+        {
             return Err(why);
         }
         self.given.lock().unwrap().push(resolved.to_vec());
@@ -358,8 +365,11 @@ fn the_override_is_reported_in_status_promptly_and_survives_no_restart() {
     assert!(!fresh.control().network_output_disabled());
 }
 
+/// QLab 5 does not flag a destination it cannot find: a host name that does not resolve leaves
+/// the cue playable, GO sends (the worker resolves the name itself; the control thread never
+/// waits on it), and once the name resolves the sender uses the looked-up addresses.
 #[test]
-fn an_unresolvable_host_breaks_its_cues_before_go_and_clears_when_it_resolves() {
+fn an_unresolvable_host_does_not_break_its_cues_and_go_still_sends() {
     let fake = Arc::new(Fake::default());
     fake.name("lights.invalid", Err("no such host".into()));
     let mut s = show_of(
@@ -367,44 +377,46 @@ fn an_unresolvable_host_breaks_its_cues_before_go_and_clears_when_it_resolves() 
         patch("lights.invalid", 9000, NetworkProtocol::Udp),
         Some(Arc::clone(&fake)),
     );
-    // Found at load, off the control thread, by a name look-up alone.
+    // Looked up at load, off the control thread, by a name look-up alone.
     assert_eq!(fake.lookups(), 1);
-    assert!(matches!(
-        s.control().engine().problems(id(1)),
-        [CueProblem::NetworkHostUnresolved { reason, .. }] if reason == "no such host"
-    ));
-    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    s.settle_net();
+    let msgs = s.take_outbound();
+    assert!(!changes(&msgs).iter().any(|c| matches!(
+        c,
+        RuntimeChange::Problems { cue, .. } if *cue == id(1)
+    )));
 
-    // The operator sees it: a runtime `problems` change was broadcast when it was found.
-    // (Taken before the first assertion drained nothing: `show_of` discards startup traffic.)
+    // GO tries to send with no addresses known: the worker's own look-up fails, which is a
+    // network_send_failed notice, not a broken cue.
     go(&mut s);
     s.run(256);
     s.settle_net();
     assert!(fake.sent().is_empty());
     let msgs = s.take_outbound();
     assert!(
-        warnings(&msgs)
+        !warnings(&msgs)
             .iter()
-            .any(|w| matches!(w, WireWarning::CueBroken { cue } if *cue == id(1)))
+            .any(|w| matches!(w, WireWarning::CueBroken { .. }))
+    );
+    assert!(
+        notices(&msgs)
+            .iter()
+            .any(|(code, m)| code == "network_send_failed" && m.contains("no such host")),
+        "{:?}",
+        notices(&msgs)
     );
 
     // The name starts to resolve (the network came up). Nothing is looked up again before the
-    // retry interval of virtual time (10 s) has passed, then the cue is mended.
+    // retry interval of virtual time (10 s) has passed; then the sender has the addresses.
     fake.name("lights.invalid", Ok(()));
     s.run(u64::from(RATE) * 9);
     s.settle_net();
     assert_eq!(fake.lookups(), 1, "no retry yet");
-    assert!(!s.control().engine().problems(id(1)).is_empty());
     s.run(u64::from(RATE) * 2);
     s.settle_net();
     assert_eq!(fake.lookups(), 2);
-    assert!(s.control().engine().problems(id(1)).is_empty());
-    let msgs = s.take_outbound();
-    assert!(changes(&msgs).iter().any(|c| matches!(
-        c,
-        RuntimeChange::Problems { cue, problems } if *cue == id(1) && problems.is_empty()
-    )));
-
     s.transport(openlab_core::protocol::TransportAction::SetPlayhead {
         list: list_id(),
         cue: Some(id(1)),
@@ -413,25 +425,10 @@ fn an_unresolvable_host_breaks_its_cues_before_go_and_clears_when_it_resolves() 
     s.run(256);
     s.settle_net();
     assert_eq!(fake.sent().len(), 1);
-}
-
-#[test]
-fn a_failed_look_up_is_broadcast_as_a_problem() {
-    let fake = Arc::new(Fake::default());
-    fake.name("lights.invalid", Err("no such host".into()));
-    let mut ws = workspace(vec![osc(1, "/lx/go", vec![])]);
-    ws.network_patches = vec![patch("lights.invalid", 9000, NetworkProtocol::Udp)];
-    let mut c = config(&ws);
-    c.net = NetTransport(fake);
-    let mut s = show_with(ws, c);
-    s.settle_net();
-    let msgs = s.take_outbound();
-    assert!(changes(&msgs).iter().any(|c| matches!(
-        c,
-        RuntimeChange::Problems { cue, problems }
-            if *cue == id(1)
-                && matches!(problems[..], [WireProblem::NetworkHostUnresolved { .. }])
-    )));
+    assert_eq!(
+        fake.given.lock().unwrap().last(),
+        Some(&vec![SocketAddr::from(([127, 0, 0, 1], 9000))])
+    );
 }
 
 #[test]

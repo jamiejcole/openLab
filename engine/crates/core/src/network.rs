@@ -2,8 +2,8 @@
 
 //! What can be said about a Network cue without touching the network (CT-30, NFR-07): whether a
 //! destination's host and port can be addressed at all, and whether the OSC message the cue
-//! would send is well formed and small enough to send. Pure: resolving a host name is the
-//! binary's job and arrives as a status (`NetworkReachability`).
+//! would send is well formed and small enough to send. Pure: whether a host name resolves is
+//! never checked before GO (QLab 5 does not flag an unreachable destination).
 
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};

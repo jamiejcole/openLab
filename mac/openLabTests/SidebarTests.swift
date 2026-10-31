@@ -75,6 +75,23 @@ final class SidebarTests: XCTestCase {
         wc.sidebar.listTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
     }
 
+    // MARK: Transport strip
+
+    /// A button that is enabled must do something: the window controller gives it an action.
+    /// Reset all has no engine command yet, so it is disabled and its tooltip says why.
+    func testEveryEnabledTransportButtonHasAnActionAndResetAllIsDisabledWithItsReason() async throws {
+        let wc = try await make()
+        wc.sidebar.loadViewIfNeeded()
+        XCTAssertEqual(wc.sidebar.transportButtons.count, 4)
+        for (id, button) in wc.sidebar.transportButtons where button.isEnabled {
+            XCTAssertNotNil(button.action, "\(id) is enabled but has no action")
+            XCTAssertNotNil(button.target, "\(id) is enabled but has no target")
+        }
+        let reset = try XCTUnwrap(wc.sidebar.transportButtons[AX.transportReset])
+        XCTAssertFalse(reset.isEnabled)
+        XCTAssertEqual(reset.toolTip, loc("transport.reset.unavailable"))
+    }
+
     // MARK: Cue lists
 
     func testListsShowEveryListAndTheShownOneIsSelected() async throws {

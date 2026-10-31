@@ -257,12 +257,6 @@ pub enum Input {
         media: Vec<(MediaRef, MediaStatus)>,
         patches: Vec<(PatchId, PatchResolution)>,
     },
-    /// Whether the hosts of network patches can be found, from the binary's name lookups
-    /// (NFR-07). A host that is not `Resolved` breaks the Network cues sending to it; a patch
-    /// the report does not name is taken to be fine until it does.
-    NetworkAvailability {
-        patches: Vec<(NetworkPatchId, NetworkReachability)>,
-    },
     /// The output device went away (M4.2g, as QLab 5). The binary has already failed the audio
     /// runs with `ActionFailed { device_lost }`; this hard-stops every other active run (memo,
     /// Wait, control, Fade and group cues, and runs broken earlier), so no pre-wait, post-wait,
@@ -282,18 +276,6 @@ pub enum MediaStatus {
     Missing,
     /// Found but cannot be played; `reason` is the probe's message.
     Unsupported { reason: String },
-}
-
-/// What the binary found out about a network patch's host by looking it up (never by sending
-/// anything to it).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum NetworkReachability {
-    /// Not looked up (yet), or forgotten: the engine assumes it can be reached.
-    Unknown,
-    /// An address was found for the host.
-    Resolved,
-    /// The lookup failed; `reason` is the resolver's message.
-    Unresolved { reason: String },
 }
 
 /// Why a cue cannot run, found without running it (CUE-06, NFR-07). A cue may have several.
@@ -339,11 +321,6 @@ pub enum CueProblem {
     },
     /// A Network cue's destination host or port cannot be addressed (`reason` says why).
     NetworkHostInvalid {
-        patch: NetworkPatchId,
-        reason: String,
-    },
-    /// A Network cue's destination host name could not be resolved (NFR-07).
-    NetworkHostUnresolved {
         patch: NetworkPatchId,
         reason: String,
     },
@@ -409,9 +386,6 @@ impl fmt::Display for CueProblem {
             }
             Self::NetworkHostInvalid { patch, reason } => {
                 write!(f, "network patch {patch}: {reason}")
-            }
-            Self::NetworkHostUnresolved { patch, reason } => {
-                write!(f, "host of network patch {patch} cannot be found: {reason}")
             }
             Self::NetworkMessageInvalid { reason } => write!(f, "{reason}"),
         }

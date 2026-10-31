@@ -567,16 +567,13 @@ impl CueEngine {
             Input::PauseAll => self.pause_all(cx),
             Input::ResumeAll => self.resume_all(cx),
             Input::MediaStatus { media, status } => {
-                self.availability(vec![(media, status)], Vec::new(), Vec::new(), cx);
+                self.availability(vec![(media, status)], Vec::new(), cx);
             }
             Input::PatchStatus { patch, resolution } => {
-                self.availability(Vec::new(), vec![(patch, resolution)], Vec::new(), cx);
+                self.availability(Vec::new(), vec![(patch, resolution)], cx);
             }
             Input::Availability { media, patches } => {
-                self.availability(media, patches, Vec::new(), cx);
-            }
-            Input::NetworkAvailability { patches } => {
-                self.availability(Vec::new(), Vec::new(), patches, cx);
+                self.availability(media, patches, cx);
             }
             Input::DeviceLost => self.device_lost(cx),
         }
