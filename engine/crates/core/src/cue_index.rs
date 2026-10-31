@@ -382,7 +382,9 @@ impl CueIndex {
     /// added subtree is new as a whole: a cue in it that had been in the index (removed and
     /// added again with the same id, alone or inside another group, as a group or not) is
     /// reported gone and fresh, with every descendant of the old cue and of the new one,
-    /// whether or not the ids are the same.
+    /// whether or not the ids are the same. With anything added, a cue moved out of an added
+    /// subtree in the same footprint is new as a whole too (every structural cue is then walked
+    /// as a top).
     pub fn reconcile(
         &mut self,
         ws: &Workspace,
@@ -421,7 +423,14 @@ impl CueIndex {
         // gone too. The walk covers everything the old tops held, not just the re-added ids.
         let mut delta = IndexDelta::default();
         let mut new_ids: HashSet<CueId> = HashSet::new();
-        for top in added {
+        // An added subtree holds its cues only until something moves one out (later in the
+        // transaction, or in another edit whose footprint was added to this one): that cue is
+        // under no added top any more yet carries the new content. The sets do not say where a
+        // moved cue came from, so with anything added every structural cue is walked as a top:
+        // a moved one's subtree counts as new (right either way, at the cost of that subtree);
+        // a removed one is not located and adds nothing.
+        let tops = if added.is_empty() { added } else { structural };
+        for top in tops {
             if let Some(&(_, cue)) = located.get(top) {
                 subtree_ids(cue, &mut new_ids);
             }

@@ -213,15 +213,6 @@ impl CueEngine {
             .chain(&footprint.removed)
             .chain(&footprint.moved);
         structural.extend(moved.copied());
-        // An added subtree is new as a whole only while it holds its cues: a cue moved out of
-        // it (later in the transaction, or by another edit before the next call) is found
-        // outside every added top and would keep its old content's problems (#464). The sets
-        // do not say where a moved cue came from, so with anything added every structural cue
-        // counts as an added top: a moved one's subtree is re-read as new (correct either way,
-        // at the cost of that subtree), a removed one is not in the workspace to walk.
-        if !added.is_empty() {
-            added.extend(structural.iter().copied());
-        }
         touched.extend(structural.iter().copied());
         touched.extend(footprint.edited.iter().copied());
     }

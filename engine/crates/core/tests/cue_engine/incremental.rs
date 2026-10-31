@@ -476,7 +476,7 @@ fn a_cue_moved_out_of_a_re_added_group_before_the_call_keeps_its_new_content() {
 fn a_cue_moved_out_of_a_re_added_group_in_one_transaction_keeps_its_new_content() {
     let (mut twin, readd) = readd_with_a_fixed_child();
     let Command::Transaction { mut commands } = readd else {
-        unreachable!()
+        panic!("a transaction")
     };
     commands.push(move_11_to_the_top());
     twin.edit(Command::Transaction { commands });
