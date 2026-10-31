@@ -36,6 +36,12 @@ pub const DEFAULT_WORKERS: usize = 2;
 /// volume holds at most all but one of them, so opens on other volumes always have one (see
 /// docs/audio.md, Disk streaming).
 pub const DEFAULT_OPENERS: usize = 4;
+/// Extra openers started while every opener is held and an open on a volume with nothing in
+/// flight waits (opens hung on several dead volumes). Each exits when it finds nothing to do.
+/// The bound means dead volumes cannot make the streamer start threads without end, as the
+/// probe pool's `MAX_ABANDONED_WORKERS` does for probes; past it, such an open waits for an
+/// opener to come free.
+pub const MAX_EXTRA_OPENERS: usize = 16;
 pub const DEFAULT_BUFFER_MS: u32 = 2000;
 pub const DEFAULT_MAX_STREAMS: usize = 256;
 /// Loop exit buffer length. After a devamp leaves a loop the worker must, within this time:
@@ -416,19 +422,14 @@ impl DiskStreamer {
         {
             return Err(MediaError::Worker);
         }
-        let opener = Arc::new(OpenQueue {
-            state: Mutex::new(OpenState::default()),
-            changed: Condvar::new(),
-            // One volume never takes the last opener (unless there is only one).
-            per_volume: config.openers.saturating_sub(1).max(1),
-        });
+        let opener = OpenQueue::new(config.openers);
         let mut workers = Vec::with_capacity(config.workers);
         let spawned = (|| {
-            for i in 0..config.openers {
-                let queue = Arc::clone(&opener);
-                std::thread::Builder::new()
-                    .name(format!("openlab-open-{i}"))
-                    .spawn(move || run_opener(&queue))?;
+            for _ in 0..config.openers {
+                let mut st = opener.lock();
+                if !opener.spawn(&mut st) {
+                    return Err(std::io::Error::other("opener"));
+                }
             }
             for i in 0..config.workers {
                 let (tx, rx) = mpsc::channel();
@@ -462,6 +463,12 @@ impl DiskStreamer {
     /// Streams currently open.
     pub fn open_streams(&self) -> usize {
         self.open.load(Ordering::Acquire)
+    }
+
+    /// Opener threads alive: the base pool plus extras started while opens hang (at most
+    /// [`MAX_EXTRA_OPENERS`] of them).
+    pub fn opener_threads(&self) -> usize {
+        self.opener.lock().threads
     }
 
     /// Bytes all streams hold in loop caches and exit buffers (at most
@@ -618,12 +625,15 @@ impl Drop for DiskStreamer {
     }
 }
 
-/// The opener pool's queue: jobs in the order they came, and the opens running per volume.
+/// The opener pool's queue: jobs in the order they came, the opens running per volume, and the
+/// opener threads.
 struct OpenQueue {
     state: Mutex<OpenState>,
     changed: Condvar,
     /// Most opens of one volume running at once.
     per_volume: usize,
+    /// Openers kept running ([`StreamerConfig::openers`]); extras exit when idle.
+    base: usize,
 }
 
 #[derive(Default)]
@@ -631,20 +641,83 @@ struct OpenState {
     jobs: VecDeque<OpenJob>,
     running: HashMap<String, usize>,
     closed: bool,
+    /// Opener threads alive (started and not exited).
+    threads: usize,
+    /// Openers running an open.
+    busy: usize,
+}
+
+impl OpenState {
+    /// Queued jobs that would start a volume with nothing in flight (each such volume counted
+    /// once), plus jobs without a volume: each must get an opener at once.
+    fn fresh(&self) -> usize {
+        let mut seen: Vec<&str> = Vec::new();
+        self.jobs
+            .iter()
+            .filter(|j| !j.shared.cancelled.load(Ordering::Acquire))
+            .filter(|j| match j.volume.as_deref() {
+                None => true,
+                Some(v) if self.running.contains_key(v) || seen.contains(&v) => false,
+                Some(v) => {
+                    seen.push(v);
+                    true
+                }
+            })
+            .count()
+    }
 }
 
 impl OpenQueue {
+    fn new(openers: usize) -> Arc<Self> {
+        Arc::new(OpenQueue {
+            state: Mutex::new(OpenState::default()),
+            changed: Condvar::new(),
+            // One volume never takes the last opener (unless there is only one).
+            per_volume: openers.saturating_sub(1).max(1),
+            base: openers,
+        })
+    }
+
     fn lock(&self) -> MutexGuard<'_, OpenState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Starts one opener thread; false if the system refuses one.
+    fn spawn(self: &Arc<Self>, st: &mut OpenState) -> bool {
+        let queue = Arc::clone(self);
+        let started = std::thread::Builder::new()
+            .name(format!("openlab-open-{}", st.threads))
+            .spawn(move || run_opener(&queue))
+            .is_ok();
+        if started {
+            st.threads += 1;
+        }
+        started
+    }
+
+    /// Starts extra openers while a job on a volume with nothing in flight has no free opener
+    /// (every opener is held, e.g. by opens hung on other volumes), at most
+    /// [`MAX_EXTRA_OPENERS`] beyond the base pool. A job left without one waits for an opener
+    /// to come free.
+    fn grow(self: &Arc<Self>, st: &mut OpenState) {
+        let fresh = st.fresh();
+        while fresh > st.threads.saturating_sub(st.busy)
+            && st.threads < self.base + MAX_EXTRA_OPENERS
+        {
+            if !self.spawn(st) {
+                return;
+            }
+        }
+    }
+
     /// Queues `job`; `None` once the streamer is gone.
-    fn push(&self, job: OpenJob) -> Option<()> {
+    fn push(self: &Arc<Self>, job: OpenJob) -> Option<()> {
         let mut st = self.lock();
         if st.closed {
             return None;
         }
         st.jobs.push_back(job);
+        self.grow(&mut st);
         drop(st);
         self.changed.notify_all();
         Some(())
@@ -658,11 +731,13 @@ impl OpenQueue {
 
     /// The oldest job an opener may run now: one without a volume, or whose volume has fewer
     /// than `per_volume` opens running. Jobs of streams let go of meanwhile are dropped
-    /// unopened. Blocks while there is none; `None` once the streamer is gone.
-    fn take(&self) -> Option<OpenJob> {
+    /// unopened. Blocks while there is none; `None` once the streamer is gone, or for an extra
+    /// opener with nothing to do (it exits).
+    fn take(self: &Arc<Self>) -> Option<OpenJob> {
         let mut st = self.lock();
         loop {
             if st.closed {
+                st.threads = st.threads.saturating_sub(1);
                 return None;
             }
             st.jobs
@@ -677,7 +752,15 @@ impl OpenQueue {
                 if let Some(v) = &job.volume {
                     *running.entry(v.clone()).or_insert(0) += 1;
                 }
+                st.busy += 1;
+                // This opener may have taken an older job of a busy volume ahead of one on an
+                // idle volume: that one still gets an opener.
+                self.grow(&mut st);
                 return Some(job);
+            }
+            if st.threads > self.base {
+                st.threads -= 1;
+                return None;
             }
             st = self
                 .changed
@@ -686,13 +769,14 @@ impl OpenQueue {
         }
     }
 
-    /// An open of `volume` returned: a job waiting for that volume may run now.
+    /// An open of `volume` returned: its opener is free, and a job waiting for that volume may
+    /// run now.
     fn done(&self, volume: Option<&str>) {
-        let Some(v) = volume else {
-            return;
-        };
         let mut st = self.lock();
-        if let Some(n) = st.running.get_mut(v) {
+        st.busy = st.busy.saturating_sub(1);
+        if let Some(v) = volume
+            && let Some(n) = st.running.get_mut(v)
+        {
             *n = n.saturating_sub(1);
             if *n == 0 {
                 st.running.remove(v);
@@ -722,7 +806,7 @@ struct OpenJob {
 /// An opener: takes the oldest job the per-volume cap allows and opens its file. An open that
 /// hangs holds this thread only; the fill workers never wait for it. Exits when the streamer is
 /// dropped.
-fn run_opener(queue: &OpenQueue) {
+fn run_opener(queue: &Arc<OpenQueue>) {
     // The queue's lock is held only while choosing a job, never during an open.
     while let Some(job) = queue.take() {
         #[cfg(any(test, feature = "test-support"))]
