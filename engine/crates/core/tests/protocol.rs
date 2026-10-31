@@ -489,8 +489,8 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
-    // A Fade cue's curve and an Audio cue's levels: the inspector sends only the fields it
-    // changed, so another client's edit to the rest of the kind is kept.
+    // Only the named kind fields are written (here an Audio cue's last slice play count and
+    // preload), so another client's edit to the rest of the kind is kept.
     add(
         "command_set_kind_fields",
         client(ClientMessage::Command {

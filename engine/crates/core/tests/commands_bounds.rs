@@ -48,6 +48,18 @@ fn oversize_kinds() -> Vec<CueKind> {
     ]
 }
 
+/// `kind` as a `KindFields` value: every field a client may name (not `type`, `media`, `children`).
+fn kind_fields_of(kind: &CueKind) -> CueProperty {
+    let mut value = match serde_json::to_value(kind).unwrap() {
+        serde_json::Value::Object(map) => map,
+        _ => panic!("a kind serializes to an object"),
+    };
+    for key in ["type", "media", "children"] {
+        value.remove(key);
+    }
+    CueProperty::KindFields { value }
+}
+
 fn with_kind(n: u128, kind: CueKind) -> Cue {
     let mut c = cue(n, CueKind::Memo);
     c.kind = kind;
@@ -121,7 +133,23 @@ fn an_oversize_network_message_is_refused_on_every_path_that_makes_one() {
             &w,
             Command::SetCueProperty {
                 id: cue_id(1),
-                property: CueProperty::Kind { value: kind },
+                property: CueProperty::Kind {
+                    value: kind.clone(),
+                },
+            },
+        );
+        // The same fields named one by one, on a Network cue that has them.
+        let mut small = w.clone();
+        small.cue_lists[0].cues[0].kind = CueKind::Network {
+            destination: net_id(1),
+            address: "/go".into(),
+            args: vec![],
+        };
+        assert_refused(
+            &small,
+            Command::SetCueProperty {
+                id: cue_id(1),
+                property: kind_fields_of(&kind),
             },
         );
     }
@@ -335,6 +363,15 @@ fn a_trim_or_slice_under_50_ms_is_refused_on_every_path_and_50_ms_is_accepted() 
         ] {
             assert_refused(&w, command);
         }
+        let mut on_audio = w.clone();
+        on_audio.cue_lists[0].cues[0].kind = audio();
+        assert_refused(
+            &on_audio,
+            Command::SetCueProperty {
+                id: cue_id(1),
+                property: kind_fields_of(&bad.kind),
+            },
+        );
         let ok = short_region(0.05, as_trim);
         let mut work = w.clone();
         History::new()

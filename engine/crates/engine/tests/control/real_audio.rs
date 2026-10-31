@@ -155,7 +155,7 @@ fn add(s: &mut OfflineShow, cue: &Cue, index: usize) {
     );
 }
 
-/// `SetCueProperty { kind }`: the app's Levels tab sends the whole kind.
+/// `SetCueProperty { kind }`: a whole-kind replacement, as a client may still send.
 fn set_kind(s: &mut OfflineShow, n: u128, kind: &CueKind) {
     let kind = serde_json::to_string(kind).unwrap();
     command(
