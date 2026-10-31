@@ -618,11 +618,88 @@ final class CueListTests: XCTestCase {
         for id in [H.intro, H.fade, H.group] { XCTAssertFalse(h.vc.isPlayheadInside(id)) }
     }
 
+    private func sentPlayheads(_ h: H) -> [ModelID?] {
+        h.rig.engine.receivedFrom.compactMap {
+            if case .transport(_, .setPlayhead(_, let cue)) = $0.message { return cue }
+            return nil
+        }
+    }
+
+    /// #496: GO on the group moved the playhead past the end of the list while the group's row stayed
+    /// highlighted and in the inspector, so a mode change there and Space fired nothing, and clicking
+    /// the highlighted row changed nothing. The selection now follows the playhead: past the end
+    /// nothing is selected (the inspector shows no cue), and the click that selects the group again
+    /// puts the playhead back on it.
+    func testAPlayheadPastTheEndClearsTheSelectionAndTheNextClickSetsItAgain() async throws {
+        let h = try await H()
+        var shown: [[ModelID]] = []
+        h.vc.onSelectionChange = { shown.append($0) }
+        h.vc.selectAsUser([H.group])
+        await assertEventually { self.sentPlayheads(h) == [H.group] }
+        await settle()
+        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":null}"#)
+        XCTAssertEqual(h.vc.selectedIDs(), [])
+        XCTAssertEqual(shown.last, [], "the inspector shows no cue")
+        h.vc.selectAsUser([H.group])
+        await assertEventually { self.sentPlayheads(h) == [H.group, H.group] }
+    }
+
+    /// The engine moving the playhead (GO, a Go To cue, OSC) moves the selection to the cue standing
+    /// by, opening a collapsed group to show it; the inspector follows and nothing is sent back.
+    func testTheSelectionFollowsAPlayheadTheEngineMoves() async throws {
+        let h = try await H()
+        var shown: [[ModelID]] = []
+        h.vc.onSelectionChange = { shown.append($0) }
+        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.rain)"}"#)
+        XCTAssertEqual(h.vc.selectedIDs(), [H.rain])
+        XCTAssertTrue(h.spy.isItemExpanded(h.vc.node(H.group)))
+        XCTAssertEqual(shown.last, [H.rain])
+        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.intro)"}"#)
+        XCTAssertEqual(h.vc.selectedIDs(), [H.intro])
+        await settle()
+        XCTAssertEqual(sentPlayheads(h), [], "a followed selection sends no set_playhead")
+    }
+
+    /// Several cues selected by hand hold the playhead's cue: its echo leaves them selected.
+    func testTheEchoOfAPlayheadInsideASelectionKeepsTheSelection() async throws {
+        let h = try await H()
+        h.vc.selectAsUser([H.intro, H.fade])
+        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.fade)"}"#)
+        XCTAssertEqual(h.vc.selectedIDs(), [H.intro, H.fade])
+    }
+
+    /// Two quick clicks: the echo of the first, arriving while the second is unanswered, must not
+    /// pull the selection back; once all are answered the selection stays on the last click.
+    func testAStaleEchoDoesNotPullTheSelectionBack() async throws {
+        let h = try await H()
+        h.vc.selectAsUser([H.intro])
+        h.vc.selectAsUser([H.group])
+        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.intro)"}"#)
+        XCTAssertEqual(h.vc.selectedIDs(), [H.group])
+        await assertEventually { self.sentPlayheads(h) == [H.intro, H.group] }
+        await settle()
+        XCTAssertEqual(h.vc.selectedIDs(), [H.group], "the group's echo is still to come")
+        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.group)"}"#)
+        XCTAssertEqual(h.vc.selectedIDs(), [H.group])
+    }
+
+    /// A click and a GO straight after it: the GO's playhead move arrives before the click's answer
+    /// and is followed once the click is answered.
+    func testAPlayheadMovedOnBeforeTheClickIsAnsweredIsFollowed() async throws {
+        let h = try await H()
+        h.vc.selectAsUser([H.intro])
+        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.group)"}"#)
+        XCTAssertEqual(h.vc.selectedIDs(), [H.intro], "the click is not answered yet")
+        await assertEventually { h.vc.selectedIDs() == [H.group] }
+    }
+
     /// A playhead inside a collapsed group has no row: Move Playhead Next / Previous steps from the
     /// group's row, not from the top or bottom of the list (the next GO would fire the first cue).
     func testMovePlayheadFromInsideACollapsedGroupStepsFromTheGroup() async throws {
         let h = try await H()
         try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.rain)"}"#)
+        // The selection following the playhead opened the group; the operator closes it again.
+        h.spy.collapseItem(try XCTUnwrap(h.vc.node(H.group)))
         let rows = h.visibleIDs()
         let at = try XCTUnwrap(rows.firstIndex(of: H.group))
         XCTAssertFalse(rows.contains(H.rain), "collapsed")

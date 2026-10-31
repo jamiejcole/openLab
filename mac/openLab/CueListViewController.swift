@@ -335,12 +335,65 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let latest = lastRow.flatMap { (outlineView.item(atRow: $0) as? CueNode)?.id }
         // Compared with what was last sent, not only what the engine echoed: A, B, A within one
         // round trip must still end on A.
-        guard !restoringSelection, !batching, let list = listID,
+        guard !restoringSelection, !batching, !followingPlayhead, let list = listID,
             let id = Self.playheadTarget(selected: selected, previous: previous, latest: latest),
             (sentPlayhead ?? store.playheads[list]) != id
         else { return }
         sentPlayhead = id
-        Task { await store.transport(.setPlayhead(list: list, cue: id)) }
+        if playheadSends == 0 { awaitedHeads = [store.playheads[list]] }
+        awaitedHeads.insert(id)
+        playheadSends += 1
+        Task { [weak self] in
+            _ = await self?.store.transport(.setPlayhead(list: list, cue: id))
+            self?.playheadSendAnswered(list: list)
+        }
+    }
+
+    /// The selection is being moved to the playhead: the inspector follows, nothing is sent.
+    private var followingPlayhead = false
+    /// `set_playhead`s sent for the selection and not yet answered. Until they are, the engine may
+    /// still echo an earlier one, so the selection does not follow the playhead meanwhile.
+    private var playheadSends = 0
+    /// The store's playhead of the list when the first of those was sent, and each cue sent since.
+    private var awaitedHeads: Set<ModelID?> = []
+
+    private func playheadSendAnswered(list: ModelID) {
+        playheadSends = max(0, playheadSends - 1)
+        guard playheadSends == 0, list == listID else { return }
+        // Still where it was, or on a cue sent before the last: the engine's echo of the last send
+        // is still on its way (a result may pass its broadcasts) and the selection follows when it
+        // comes. Elsewhere, the playhead has moved on by itself (a GO right after the click): follow.
+        if awaitedHeads.contains(store.playheads[list]) { return }
+        followPlayhead()
+    }
+
+    /// The playhead and the selection stay together (QLab 5's default, its workspace setting that
+    /// links them): when the engine moves the playhead (GO, a Go To cue, OSC, an edit), the
+    /// selection moves to the cue standing by, opening the groups above it, and the inspector
+    /// follows; with no cue standing by (past the end of the list) nothing is selected. A selection
+    /// that already holds the playhead's cue (several selected by hand) is left as it is.
+    func followPlayhead() {
+        guard playheadSends == 0, let list = listID else { return }
+        let selected = selectedIDs()
+        let head = store.playheads[list]
+        if let head {
+            guard !selected.contains(head), let node = nodes[head] else { return }
+            followingPlayhead = true
+            defer { followingPlayhead = false }
+            var p = node.parent
+            while let a = p {
+                outlineView.expandItem(a)
+                p = a.parent
+            }
+            let row = outlineView.row(forItem: node)
+            guard row >= 0 else { return }
+            outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            outlineView.scrollRowToVisible(row)
+        } else if !selected.isEmpty {
+            followingPlayhead = true
+            defer { followingPlayhead = false }
+            outlineView.deselectAll(nil)
+        }
     }
 
     func isPlayheadRow(_ id: ModelID) -> Bool { listID.flatMap { store.playheads[$0] } == id }
@@ -359,6 +412,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case .runtime(let cues, let heads):
             if !heads.isEmpty { sentPlayhead = nil }  // the engine's echo is the truth again
             refresh(cues, playheads: heads)
+            if !heads.isEmpty { followPlayhead() }
         case .progress(let ids): refresh(ids, columns: ["duration"])
         case .waits(let ids): refresh(ids, columns: ["preWait", "postWait"])
         case .notices: break
