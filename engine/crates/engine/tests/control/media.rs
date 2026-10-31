@@ -973,6 +973,29 @@ fn a_start_whose_open_hangs_fails_after_five_seconds() {
     assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
 }
 
+/// Stream opens are filed under the probe gate's volumes (the media watch's `bucket_of`, or the
+/// one a test injects), so opens hung on one share never take every opener (the cap itself is
+/// tested in the audio crate's `tests/stream.rs`).
+#[test]
+fn stream_opens_are_told_apart_by_the_probe_gates_volumes() {
+    let share = std::path::Path::new("/Volumes/Share/a.wav");
+    let local = std::path::Path::new("/Users/someone/a.wav");
+    let s = show(workspace(vec![]));
+    assert_eq!(
+        s.control().stream_volume(share).as_deref(),
+        Some("/Volumes/Share")
+    );
+    assert_eq!(s.control().stream_volume(local).as_deref(), Some("/"));
+    let ws = workspace(vec![]);
+    let mut c = config(&ws);
+    c.probe_volume = Some(|_| "/Volumes/Injected".to_owned());
+    let s = show_with(ws, c);
+    assert_eq!(
+        s.control().stream_volume(local).as_deref(),
+        Some("/Volumes/Injected")
+    );
+}
+
 /// Time paused does not count towards the stream start limit: a cue paused while its open
 /// hangs is still paused well past 5 s, and breaks only after 5 s of running time in all.
 #[test]

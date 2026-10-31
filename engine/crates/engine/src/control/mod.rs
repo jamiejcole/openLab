@@ -592,7 +592,14 @@ impl Control {
         let block = config.block_frames.max(1);
         let engine_config = EngineConfig::new(config.sample_rate, block, config.seed)?;
         let rate = engine_config.sample_rate();
-        let streamer = DiskStreamer::new(config.streamer).map_err(ControlError::Streamer)?;
+        // Stream opens are told apart by the probe gate's volumes, so opens hung on one volume
+        // never take every opener (docs/audio.md, Disk streaming).
+        let mut streamer_config = config.streamer;
+        streamer_config.volume_of = streamer_config
+            .volume_of
+            .or(config.probe_volume)
+            .or(Some(watch::bucket_of));
+        let streamer = DiskStreamer::new(streamer_config).map_err(ControlError::Streamer)?;
         // Only a doc has a show path ([`Self::new`]).
         config.show_path = None;
         let docs = Docs::new(&config, inbox.clone())?;

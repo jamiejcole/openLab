@@ -538,6 +538,75 @@ fn a_hung_open_never_starves_another_stream_on_its_worker() {
     assert!(hung.handle.wait_primed(FAILSAFE).unwrap());
 }
 
+/// Opens of files on the dead share below wait here until the share answers.
+static DEAD_SHARE: (std::sync::Mutex<bool>, std::sync::Condvar) =
+    (std::sync::Mutex::new(false), std::sync::Condvar::new());
+
+fn on_dead_share(path: &std::path::Path) -> bool {
+    path.file_name()
+        .is_some_and(|n| n.to_string_lossy().contains("-dead_share_"))
+}
+
+fn dead_share_open(path: &std::path::Path) {
+    if on_dead_share(path) {
+        let mut answered = DEAD_SHARE.0.lock().unwrap();
+        while !*answered {
+            answered = DEAD_SHARE.1.wait(answered).unwrap();
+        }
+    }
+}
+
+fn share_volume(path: &std::path::Path) -> String {
+    if on_dead_share(path) {
+        "/Volumes/Dead"
+    } else {
+        "/"
+    }
+    .to_owned()
+}
+
+/// Opens hung on one volume (a dead network share) hold at most all openers but one, however
+/// many there are: a file on another volume still opens and primes at once, and the hung ones
+/// prime when the share answers.
+#[test]
+fn opens_hung_on_one_volume_never_take_every_opener() {
+    let mut c = StreamerConfig::new(SR);
+    c.before_open = dead_share_open;
+    c.volume_of = Some(share_volume);
+    let mut d = DiskStreamer::new(c).unwrap();
+    let one = |frames| plan(0..frames, &[], &[], 0).unwrap();
+    let hung: Vec<_> = (0..c.openers + 2)
+        .map(|i| {
+            let (media, info) = marker_file(&format!("dead_share_{i}.wav"), 1000);
+            d.prepare(StreamRequest {
+                media,
+                info,
+                seeking: Seeking::Direct,
+                slices: one(1000),
+            })
+            .unwrap()
+        })
+        .collect();
+    let (media, info) = marker_file("healthy_local.wav", 1000);
+    let ok = d
+        .prepare(StreamRequest {
+            media,
+            info,
+            seeking: Seeking::Direct,
+            slices: one(1000),
+        })
+        .unwrap();
+    let primed = ok.handle.wait_primed(FAILSAFE);
+    let none_primed = hung.iter().all(|p| !p.handle.is_primed());
+    *DEAD_SHARE.0.lock().unwrap() = true;
+    DEAD_SHARE.1.notify_all();
+    assert_eq!(primed, Ok(true), "a local file waited behind a dead share");
+    assert!(none_primed);
+    for p in &hung {
+        assert!(p.handle.wait_primed(FAILSAFE).unwrap());
+    }
+}
+
 #[test]
 fn a_streamer_without_openers_is_refused() {
     let mut c = StreamerConfig::new(SR);

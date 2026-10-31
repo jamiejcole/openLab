@@ -10,9 +10,12 @@
 //! [`DiskStreamer::prepare`] does no I/O on the caller's thread. A file is opened on a separate
 //! small pool of opener threads, never on a fill worker: an open that hangs (a dead network
 //! share, a stalled USB disk) holds up only its own stream and one opener, while every stream
-//! already open keeps refilling. Failures arrive through [`StreamHandle::error`]; an open that
-//! never answers leaves its stream unprimed, which the engine reports.
+//! already open keeps refilling. One volume never holds every opener, so opens on other volumes
+//! go on while one hangs. Failures arrive through [`StreamHandle::error`]; an open that never
+//! answers leaves its stream unprimed, which the engine reports.
 
+use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -29,8 +32,9 @@ const SAMPLE_BYTES: usize = std::mem::size_of::<f32>();
 use crate::resample::Pipeline;
 
 pub const DEFAULT_WORKERS: usize = 2;
-/// Opener threads: opens on a hung volume each hold one until the volume answers; the rest
-/// queue behind them (see docs/audio.md, Disk streaming).
+/// Opener threads. Opens on a hung volume each hold one until the volume answers, but one
+/// volume holds at most all but one of them, so opens on other volumes always have one (see
+/// docs/audio.md, Disk streaming).
 pub const DEFAULT_OPENERS: usize = 4;
 pub const DEFAULT_BUFFER_MS: u32 = 2000;
 pub const DEFAULT_MAX_STREAMS: usize = 256;
@@ -70,6 +74,10 @@ pub struct StreamerConfig {
     pub workers: usize,
     /// Threads that open stream files, apart from the fill workers.
     pub openers: usize,
+    /// Which volume a file is on, from its path text alone (a stat could hang on exactly that
+    /// volume). Opens of one volume hold at most `openers - 1` openers at once. `None`: opens
+    /// are not told apart by volume (the engine always sets it, to its probe gate's volumes).
+    pub volume_of: Option<fn(&Path) -> String>,
     /// Ring length per stream (read-ahead).
     pub buffer_ms: u32,
     /// Streams open at once (each holds a decoder and a ring).
@@ -95,7 +103,7 @@ pub struct StreamerConfig {
     /// that stalls there (a FIFO no longer can: media opens never block on one, #323). Test
     /// support only: not in a shipped build.
     #[cfg(any(test, feature = "test-support"))]
-    pub before_open: fn(&std::path::Path),
+    pub before_open: fn(&Path),
 }
 
 impl StreamerConfig {
@@ -104,6 +112,7 @@ impl StreamerConfig {
             device_rate,
             workers: DEFAULT_WORKERS,
             openers: DEFAULT_OPENERS,
+            volume_of: None,
             buffer_ms: DEFAULT_BUFFER_MS,
             max_streams: DEFAULT_MAX_STREAMS,
             exit_ms: DEFAULT_EXIT_MS,
@@ -340,8 +349,8 @@ struct Worker {
 pub struct DiskStreamer {
     config: StreamerConfig,
     workers: Vec<Worker>,
-    /// The opener pool's job queue; the openers exit when it is dropped.
-    opener: Sender<OpenJob>,
+    /// The opener pool's job queue; the openers exit when the streamer is dropped.
+    opener: Arc<OpenQueue>,
     next: usize,
     open: Arc<AtomicUsize>,
     budget: Arc<Budget>,
@@ -407,23 +416,33 @@ impl DiskStreamer {
         {
             return Err(MediaError::Worker);
         }
-        let (opener, jobs) = mpsc::channel();
-        let jobs = Arc::new(Mutex::new(jobs));
-        for i in 0..config.openers {
-            let jobs = Arc::clone(&jobs);
-            std::thread::Builder::new()
-                .name(format!("openlab-open-{i}"))
-                .spawn(move || run_opener(&jobs))
-                .map_err(|_| MediaError::Worker)?;
-        }
+        let opener = Arc::new(OpenQueue {
+            state: Mutex::new(OpenState::default()),
+            changed: Condvar::new(),
+            // One volume never takes the last opener (unless there is only one).
+            per_volume: config.openers.saturating_sub(1).max(1),
+        });
         let mut workers = Vec::with_capacity(config.workers);
-        for i in 0..config.workers {
-            let (tx, rx) = mpsc::channel();
-            std::thread::Builder::new()
-                .name(format!("openlab-disk-{i}"))
-                .spawn(move || run_worker(rx))
-                .map_err(|_| MediaError::Worker)?;
-            workers.push(Worker { tx });
+        let spawned = (|| {
+            for i in 0..config.openers {
+                let queue = Arc::clone(&opener);
+                std::thread::Builder::new()
+                    .name(format!("openlab-open-{i}"))
+                    .spawn(move || run_opener(&queue))?;
+            }
+            for i in 0..config.workers {
+                let (tx, rx) = mpsc::channel();
+                std::thread::Builder::new()
+                    .name(format!("openlab-disk-{i}"))
+                    .spawn(move || run_worker(rx))?;
+                workers.push(Worker { tx });
+            }
+            Ok::<(), std::io::Error>(())
+        })();
+        if spawned.is_err() {
+            // The openers started so far exit; workers end with their channel.
+            opener.close();
+            return Err(MediaError::Worker);
         }
         Ok(DiskStreamer {
             config,
@@ -509,8 +528,13 @@ impl DiskStreamer {
             Media::Preloaded(_) => Opening::Here(media),
             media => {
                 let (reply, rx) = mpsc::channel();
+                let volume = match (&media, self.config.volume_of) {
+                    (Media::Path(path), Some(volume_of)) => Some(volume_of(path)),
+                    _ => None,
+                };
                 self.opener
-                    .send(OpenJob {
+                    .push(OpenJob {
+                        volume,
                         media,
                         seeking: seeking.clone(),
                         info,
@@ -521,7 +545,7 @@ impl DiskStreamer {
                         #[cfg(any(test, feature = "test-support"))]
                         before_open: self.config.before_open,
                     })
-                    .map_err(|_| MediaError::Worker)?;
+                    .ok_or(MediaError::Worker)?;
                 Opening::Away(rx)
             }
         };
@@ -590,11 +614,99 @@ impl Drop for DiskStreamer {
         for w in &self.workers {
             let _ = w.tx.send(Msg::Shutdown);
         }
+        self.opener.close();
+    }
+}
+
+/// The opener pool's queue: jobs in the order they came, and the opens running per volume.
+struct OpenQueue {
+    state: Mutex<OpenState>,
+    changed: Condvar,
+    /// Most opens of one volume running at once.
+    per_volume: usize,
+}
+
+#[derive(Default)]
+struct OpenState {
+    jobs: VecDeque<OpenJob>,
+    running: HashMap<String, usize>,
+    closed: bool,
+}
+
+impl OpenQueue {
+    fn lock(&self) -> MutexGuard<'_, OpenState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Queues `job`; `None` once the streamer is gone.
+    fn push(&self, job: OpenJob) -> Option<()> {
+        let mut st = self.lock();
+        if st.closed {
+            return None;
+        }
+        st.jobs.push_back(job);
+        drop(st);
+        self.changed.notify_all();
+        Some(())
+    }
+
+    /// The streamer is gone: every opener exits once its current open returns.
+    fn close(&self) {
+        self.lock().closed = true;
+        self.changed.notify_all();
+    }
+
+    /// The oldest job an opener may run now: one without a volume, or whose volume has fewer
+    /// than `per_volume` opens running. Jobs of streams let go of meanwhile are dropped
+    /// unopened. Blocks while there is none; `None` once the streamer is gone.
+    fn take(&self) -> Option<OpenJob> {
+        let mut st = self.lock();
+        loop {
+            if st.closed {
+                return None;
+            }
+            st.jobs
+                .retain(|j| !j.shared.cancelled.load(Ordering::Acquire));
+            let OpenState { jobs, running, .. } = &mut *st;
+            let ready = jobs.iter().position(|j| {
+                j.volume
+                    .as_ref()
+                    .is_none_or(|v| running.get(v).copied().unwrap_or(0) < self.per_volume)
+            });
+            if let Some(job) = ready.and_then(|i| jobs.remove(i)) {
+                if let Some(v) = &job.volume {
+                    *running.entry(v.clone()).or_insert(0) += 1;
+                }
+                return Some(job);
+            }
+            st = self
+                .changed
+                .wait(st)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// An open of `volume` returned: a job waiting for that volume may run now.
+    fn done(&self, volume: Option<&str>) {
+        let Some(v) = volume else {
+            return;
+        };
+        let mut st = self.lock();
+        if let Some(n) = st.running.get_mut(v) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                st.running.remove(v);
+            }
+        }
+        drop(st);
+        self.changed.notify_all();
     }
 }
 
 /// A stream's file to open, for the opener pool.
 struct OpenJob {
+    /// The volume its file is on, when known ([`StreamerConfig::volume_of`]).
+    volume: Option<String>,
     media: Media,
     seeking: Seeking,
     info: MediaInfo,
@@ -604,30 +716,34 @@ struct OpenJob {
     /// The stream's fill worker, woken when the answer is in.
     wake: Sender<Msg>,
     #[cfg(any(test, feature = "test-support"))]
-    before_open: fn(&std::path::Path),
+    before_open: fn(&Path),
 }
 
-/// An opener: takes jobs in order and opens each file. An open that hangs holds this thread
-/// only; the fill workers never wait for it. Exits when the streamer is dropped.
-fn run_opener(jobs: &Mutex<Receiver<OpenJob>>) {
-    loop {
-        // The lock is held only while waiting for a job, never during an open.
-        let next = jobs.lock().unwrap_or_else(PoisonError::into_inner).recv();
-        let Ok(job) = next else {
-            return;
-        };
-        // A stream let go of while its job waited is not opened at all.
-        if job.shared.cancelled.load(Ordering::Acquire) {
-            continue;
-        }
+/// An opener: takes the oldest job the per-volume cap allows and opens its file. An open that
+/// hangs holds this thread only; the fill workers never wait for it. Exits when the streamer is
+/// dropped.
+fn run_opener(queue: &OpenQueue) {
+    // The queue's lock is held only while choosing a job, never during an open.
+    while let Some(job) = queue.take() {
         #[cfg(any(test, feature = "test-support"))]
         if let Media::Path(path) = &job.media {
             (job.before_open)(path);
         }
-        let opened = contain(|| open_pipeline(job.media, job.seeking, &job.info, job.device_rate));
+        let OpenJob {
+            volume,
+            media,
+            seeking,
+            info,
+            device_rate,
+            reply,
+            wake,
+            ..
+        } = job;
+        let opened = contain(|| open_pipeline(media, seeking, &info, device_rate));
+        queue.done(volume.as_deref());
         // The stream may have gone meanwhile; then nobody needs the answer.
-        let _ = job.reply.send(opened);
-        let _ = job.wake.send(Msg::Wake);
+        let _ = reply.send(opened);
+        let _ = wake.send(Msg::Wake);
     }
 }
 
