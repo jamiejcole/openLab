@@ -216,6 +216,10 @@ pub struct ControlConfig {
     pub doc_timeout: Duration,
     /// Bounds on a `relink` folder walk (WS-03); tests shrink them.
     pub relink_limits: crate::persist::ScanLimits,
+    /// Test support (feature `test-support`, not in the shipping engine): the `relink` folder
+    /// walk's thread fails to start, as when the process is out of threads.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fail_relink_spawn: bool,
     /// How long [`Control::shutdown`] waits for the final recovery writes ([`SHUTDOWN_WAIT`]).
     pub shutdown_wait: Duration,
     /// How files are probed (tests inject a stand-in).
@@ -273,6 +277,8 @@ impl ControlConfig {
             doc_hook: None,
             doc_timeout: DOC_TIMEOUT,
             relink_limits: crate::persist::ScanLimits::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            fail_relink_spawn: false,
             shutdown_wait: SHUTDOWN_WAIT,
             prime_cues: PRIME_CUES,
             max_primes: MAX_PRIMES,

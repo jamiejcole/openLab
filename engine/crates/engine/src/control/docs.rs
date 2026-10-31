@@ -455,6 +455,9 @@ pub(super) struct Docs {
     clears: Vec<ClearRx>,
     /// Saves of docs closed while they were being written: answered when they finish.
     orphans: Vec<PendingSave>,
+    /// [`ControlConfig::fail_relink_spawn`].
+    #[cfg(any(test, feature = "test-support"))]
+    fail_relink_spawn: bool,
 }
 
 /// One workspace's file state: its saves and autosave in flight, autosave pacing, load notices.
@@ -539,6 +542,8 @@ impl Docs {
             relink: None,
             clears: Vec::new(),
             orphans: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            fail_relink_spawn: config.fail_relink_spawn,
         };
         docs.spawn_worker()?;
         Ok(docs)
@@ -587,6 +592,10 @@ impl Docs {
     /// worker: a walk stuck on a stalled volume ends when its read returns, and its answer (a
     /// stale ticket by then) is ignored.
     fn spawn_relink(&self, job: RelinkJob, flags: &Arc<WalkFlags>) -> std::io::Result<()> {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.fail_relink_spawn {
+            return Err(std::io::Error::other("thread start refused (test)"));
+        }
         let (inbox, hook, stuck, answered, flags) = (
             self.inbox.clone(),
             self.hook.clone(),
