@@ -13,13 +13,8 @@ use super::{DocCx, FEEDBACK_LIMIT, ProbeAnswer};
 
 impl DocCx<'_> {
     pub(super) fn probe_answer(&mut self, answer: ProbeAnswer) {
-        let key = match answer {
-            ProbeAnswer::Waveform {
-                key,
-                ticket,
-                result,
-            } => return self.doc.waveforms.answer(&key, ticket, result),
-            ProbeAnswer::Probed { ref key, .. } => Some(key.clone()),
+        let key = match &answer {
+            ProbeAnswer::Probed { key, .. } => Some(key.clone()),
             ProbeAnswer::Preloaded { .. } => None,
         };
         if let ProbeAnswer::Preloaded { key, .. } = &answer {

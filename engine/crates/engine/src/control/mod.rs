@@ -48,6 +48,7 @@ mod voices;
 mod wake;
 pub mod watch;
 mod watch_share;
+mod waveform_reader;
 mod waveforms;
 
 use std::hash::{BuildHasher, RandomState};
@@ -221,8 +222,10 @@ pub struct ControlConfig {
     pub probe: media::ProbeFn,
     /// A probe worker busy on one file longer than this is replaced (a stalled volume).
     pub probe_timeout: Duration,
-    /// How waveforms are read on the probe workers (tests inject a stand-in).
-    pub waveform: media::WaveformFn,
+    /// How waveforms are read on the waveform reader's thread (tests inject a stand-in).
+    pub waveform: waveform_reader::WaveformFn,
+    /// A waveform read running longer than this is given up on (measured on `probe_clock`).
+    pub waveform_timeout: Duration,
     /// The clock `probe_timeout` is measured on (tests inject one that only moves when told).
     pub probe_clock: media::ProbeClock,
     /// The monotonic clock the save watchdog measures `doc_timeout` on (a wall-clock step must
@@ -275,7 +278,8 @@ impl ControlConfig {
             max_primes: MAX_PRIMES,
             probe: openlab_audio::probe,
             probe_timeout: PROBE_TIMEOUT,
-            waveform: media::read_waveform,
+            waveform: waveform_reader::read_waveform,
+            waveform_timeout: waveform_reader::WAVEFORM_TIMEOUT,
             probe_clock: media::ProbeClock::system(),
             stall_clock: media::ProbeClock::system(),
             probe_volume: None,
@@ -410,6 +414,8 @@ struct Engine {
     observe: Observe,
     /// The probe workers every doc's catalog uses (one pool, ARCHITECTURE §3.1).
     pool: ProbePool,
+    /// The one thread reading waveforms (AUD-14), apart from the probe workers.
+    waveform_reader: waveform_reader::WaveformReader,
     /// The one media watch, shared by the docs with per-file counts.
     watch: WatchShare,
     /// Watch batches taken from the inbox, handled at the next tick.
@@ -617,10 +623,15 @@ impl Control {
         config.show_path = None;
         let docs = Docs::new(&config, inbox.clone())?;
         let watch = WatchShare::new(MediaWatch::new(&config.watch, inbox.clone())?);
+        let waveform_reader = waveform_reader::WaveformReader::new(
+            inbox.clone(),
+            config.waveform,
+            config.waveform_timeout,
+            config.probe_clock.clone(),
+        );
         let mut pool = ProbePool::new(
             inbox.clone(),
             config.probe,
-            config.waveform,
             config.probe_timeout,
             config.probe_clock.clone(),
         )?;
@@ -680,6 +691,7 @@ impl Control {
             meter_peaks: Vec::new(),
             observe,
             pool,
+            waveform_reader,
             watch,
             watch_batches: Vec::new(),
             net_disabled: Arc::new(AtomicBool::new(false)),

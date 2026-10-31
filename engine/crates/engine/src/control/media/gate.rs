@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use super::super::DocId;
 use super::super::watch::{RETRY_FIRST, RETRY_MAX, bucket_of};
-use super::{Job, JobKind};
+use super::Job;
 
 /// The volume of everything not on a mount of its own (Unix); a probe-side verdict on it is
 /// meaningless, see [`Gate::exempt`].
@@ -62,10 +62,10 @@ pub(super) struct Taken {
 /// What the workers and the control thread share about the volumes (never held across I/O).
 #[derive(Debug, Default)]
 pub(super) struct Gate {
-    /// The highest ticket a worker took per (doc, job kind, file): a copy of a job already
+    /// The highest ticket a worker took per (doc, probe or not, file): a copy of a job already
     /// taken (the high-priority copy [`MediaCatalog::prioritize`] sends) is dropped, not run
     /// again. Tickets are each doc's own.
-    pub(super) claimed: HashMap<(DocId, JobKind, String), u64>,
+    pub(super) claimed: HashMap<(DocId, bool, String), u64>,
     pub(super) volumes: HashMap<String, Volume>,
     /// Jobs for stalled volumes (and whether they came from the high-priority queue).
     pub(super) deferred: Vec<(Job, bool)>,
@@ -151,7 +151,7 @@ impl Gate {
         if self.left.contains(&job.doc()) {
             return None;
         }
-        let claim = (job.doc(), job.kind(), key.to_owned());
+        let claim = (job.doc(), job.is_probe(), key.to_owned());
         if self.claimed.get(&claim).is_some_and(|t| *t >= ticket) {
             return None;
         }
@@ -180,7 +180,8 @@ impl Gate {
     /// asked for urgently stays urgent.
     fn defer(&mut self, job: Job, high: bool) {
         let (key, ticket) = job.key();
-        let same = |j: &Job| j.doc() == job.doc() && j.kind() == job.kind() && j.key().0 == key;
+        let same =
+            |j: &Job| j.doc() == job.doc() && j.is_probe() == job.is_probe() && j.key().0 == key;
         if let Some((_, h)) = self
             .deferred
             .iter_mut()

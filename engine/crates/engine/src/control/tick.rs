@@ -30,6 +30,7 @@ impl Control {
         self.balance_primes();
         self.follow_key_changes();
         self.probe_watchdog();
+        self.waveform_watchdog();
         self.hand_out_freed_slots();
         self.eng.check_stalled_read();
         self.eng.check_stalled_save();
@@ -127,6 +128,25 @@ impl Control {
         }
     }
 
+    /// The waveform reader's watchdog: a read past its timeout is given up on and its requests
+    /// fail with `io`. Apart from the probe pool's: a slow read never counts as a stuck probe.
+    fn waveform_watchdog(&mut self) {
+        let given_up = self.eng.waveform_reader.watchdog();
+        if given_up.is_empty() {
+            return;
+        }
+        let message = format!(
+            "a waveform read did not finish in time and was given up on ({} so far)",
+            self.eng.waveform_reader.abandoned()
+        );
+        self.eng.log(LogLevel::Error, message);
+        for (doc, ticket) in given_up {
+            if let Some(d) = self.docs.iter_mut().find(|d| d.id == doc) {
+                d.waveforms.give_up(ticket);
+            }
+        }
+    }
+
     /// The probe pool's watchdog: stuck workers replaced, their files reported unplayable in
     /// the doc that asked (from the next tick's `Availability`), volume notes logged once.
     fn probe_watchdog(&mut self) {
@@ -142,7 +162,6 @@ impl Control {
                 if let Some(doc) = self.docs.iter_mut().find(|d| d.id == s.doc) {
                     let mut out = Vec::new();
                     doc.media.give_up(&s.key, s.ticket, &mut out);
-                    doc.waveforms.give_up(&s.key, s.ticket);
                     doc.pending_media.extend(out);
                 }
             }

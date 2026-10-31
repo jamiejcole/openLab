@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `waveform` requests (AUD-14): an Audio cue's file waveform for the inspector. The peaks are
-//! read once per file on a probe worker (the decode takes as long as a probe, so it never runs
-//! on the control thread, ARCHITECTURE §3.1), kept per doc within [`CACHE_BYTES`], and every
+//! read once per file by the engine's one waveform reader ([`super::waveform_reader`]: never on
+//! the control thread nor a probe worker), kept per doc within [`CACHE_BYTES`], and every
 //! later request, at any zoom, is cut from the kept pyramid at once. A read stuck on a disk that
-//! stops answering is given up on by the pool's watchdog like a probe: its requests fail with
-//! `io` and the worker is replaced. Everything here is bounded: requests waiting, files read at
-//! once, the size of a waveform read and of an answer.
+//! stops answering is given up on by the reader's watchdog: its requests fail with
+//! `io`. Everything here is bounded: requests waiting, reads queued (one runs at a time for the
+//! engine), the size of a waveform read and of an answer.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use openlab_audio::{Waveform, WaveformError};
+use openlab_audio::{MediaError, Waveform, WaveformError};
 use openlab_core::protocol::{
     ErrorCode, OkBody, Outcome, RequestId, ResultData, ServerMessage, WaveformChannel, WaveformData,
 };
@@ -19,14 +19,14 @@ use openlab_core::{CueId, CueKind};
 
 use super::inbox::{ReplyTx, reply};
 use super::media::Ready;
+use super::waveform_reader::Refused;
 use super::{DocCx, fail};
 
 /// Peak memory a doc keeps for waveforms already read; the least recently used go first.
 pub const CACHE_BYTES: usize = 64 * 1024 * 1024;
-/// Largest waveform read at all (a very long file of many channels): refused before reading.
-pub const MAX_WAVEFORM_BYTES: u64 = 256 * 1024 * 1024;
-/// Files whose waveform is being read for one doc at once.
-pub const MAX_READS: usize = 4;
+/// Largest waveform read at all, refused before reading: a three-hour stereo file at 48 kHz fits,
+/// a long file of many channels does not. With one read at a time this bounds its memory.
+pub const MAX_WAVEFORM_BYTES: u64 = 32 * 1024 * 1024;
 /// Requests waiting for reads, per doc.
 pub const MAX_WAITERS: usize = 64;
 /// Most peaks (buckets × channels) in one answer: the bucket count is cut to fit.
@@ -67,11 +67,6 @@ pub(super) struct Waveforms {
 }
 
 impl Waveforms {
-    /// Reads under way.
-    pub(super) fn reading(&self) -> usize {
-        self.reading.len()
-    }
-
     fn waiting(&self) -> usize {
         self.reading.iter().map(|r| r.waiters.len()).sum()
     }
@@ -106,14 +101,10 @@ impl Waveforms {
         self.kept.push(Kept { key, ready, wave });
     }
 
-    /// The pool's watchdog gave up on job `ticket` of `key`: if it was a waveform read, its
-    /// requests fail with `io` and the worker is told to stop if it ever returns.
-    pub(super) fn give_up(&mut self, key: &str, ticket: u64) {
-        if let Some(i) = self
-            .reading
-            .iter()
-            .position(|r| r.key == key && r.ticket == ticket)
-        {
+    /// The reader gave up on read `ticket` (stuck, or no more reads are started): its requests
+    /// fail with `io`.
+    pub(super) fn give_up(&mut self, ticket: u64) {
+        if let Some(i) = self.reading.iter().position(|r| r.ticket == ticket) {
             let r = self.reading.remove(i);
             r.cancel.store(true, Ordering::Relaxed);
             for w in r.waiters {
@@ -127,9 +118,9 @@ impl Waveforms {
         }
     }
 
-    /// The doc's files are probed afresh (the show moved folder): reads under way may have
-    /// been dropped with the doc's waiting jobs, so their requests fail now (`io`, try again)
-    /// rather than wait for ever.
+    /// The doc's files are probed afresh (the show moved folder): what the reads under way
+    /// read may be stale, so their requests fail now (`io`, ask again) and the reader drops
+    /// them ([`super::waveform_reader::WaveformReader::forget`]).
     pub(super) fn reset(&mut self) {
         for r in std::mem::take(&mut self.reading) {
             r.cancel.store(true, Ordering::Relaxed);
@@ -144,18 +135,9 @@ impl Waveforms {
         }
     }
 
-    /// A worker's waveform: answers its requests and keeps it. A stale ticket is dropped.
-    pub(super) fn answer(
-        &mut self,
-        key: &str,
-        ticket: u64,
-        result: Result<Arc<Waveform>, WaveformError>,
-    ) {
-        let Some(i) = self
-            .reading
-            .iter()
-            .position(|r| r.key == key && r.ticket == ticket)
-        else {
+    /// The reader's waveform: answers its requests and keeps it. A stale ticket is dropped.
+    pub(super) fn answer(&mut self, ticket: u64, result: Result<Arc<Waveform>, WaveformError>) {
+        let Some(i) = self.reading.iter().position(|r| r.ticket == ticket) else {
             return;
         };
         let r = self.reading.remove(i);
@@ -168,7 +150,7 @@ impl Waveforms {
             }
             Err(e) => {
                 let code = match &e {
-                    WaveformError::Media(m) if !super::media::volume_answered(m) => ErrorCode::Io,
+                    WaveformError::Media(MediaError::Io(_) | MediaError::Worker) => ErrorCode::Io,
                     _ => ErrorCode::Unsupported,
                 };
                 for w in r.waiters {
@@ -280,14 +262,6 @@ impl DocCx<'_> {
             r.waiters.push(waiter);
             return;
         }
-        if waves.reading.len() >= MAX_READS {
-            return fail(
-                to,
-                id,
-                ErrorCode::CommandRefused,
-                "too many waveforms are being read",
-            );
-        }
         if waveform_bytes(&ready.probed.info) > MAX_WAVEFORM_BYTES {
             return fail(
                 to,
@@ -296,9 +270,34 @@ impl DocCx<'_> {
                 "the file is too long to draw",
             );
         }
-        let cancel = Arc::new(AtomicBool::new(false));
-        let Some((ticket, ready)) = self.doc.media.read_waveform(&key, Arc::clone(&cancel)) else {
-            return fail(to, id, ErrorCode::Internal, "the media workers are gone");
+        // Its preload when it has one: no disk read at all.
+        let Some((ready, media)) = self.doc.media.media(&key) else {
+            return fail(to, id, ErrorCode::Unsupported, "the file is not playable");
+        };
+        let submitted = self.eng.waveform_reader.submit(
+            self.doc.id,
+            ready.path.clone(),
+            media,
+            ready.probed.info,
+        );
+        let (ticket, cancel) = match submitted {
+            Ok(t) => t,
+            Err(Refused::Busy) => {
+                return fail(
+                    to,
+                    id,
+                    ErrorCode::CommandRefused,
+                    "too many waveforms are waiting to be read",
+                );
+            }
+            Err(Refused::Stuck) => {
+                return fail(
+                    to,
+                    id,
+                    ErrorCode::Io,
+                    "waveform reads have stopped: a disk did not answer. Restart openLab to read them again",
+                );
+            }
         };
         self.doc.waveforms.reading.push(Reading {
             key,

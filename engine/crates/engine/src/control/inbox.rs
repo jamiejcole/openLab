@@ -45,6 +45,13 @@ pub enum Inbox {
     /// (internal feedback, docs/control.md "Network output"), for the doc that sent it (dropped
     /// if it has closed since).
     Net(super::DocId, super::netout::NetAnswer),
+    /// The waveform reader's answer for doc `doc`'s read `ticket` (AUD-14): the loop starts the
+    /// next read, and drops the answer if the doc has closed since.
+    Waveform {
+        doc: super::DocId,
+        ticket: u64,
+        result: Result<Arc<Waveform>, WaveformError>,
+    },
     /// The document worker's answer to an open or a recovery scan (internal feedback,
     /// docs/control.md "Documents"). One read runs at a time engine-wide, so its ticket names
     /// the request, and the request the doc.
@@ -74,12 +81,6 @@ pub enum ProbeAnswer {
         key: String,
         ticket: u64,
         result: Result<Arc<Preloaded>, MediaError>,
-    },
-    /// A waveform read for a `waveform` request (AUD-14).
-    Waveform {
-        key: String,
-        ticket: u64,
-        result: Result<Arc<Waveform>, WaveformError>,
     },
 }
 

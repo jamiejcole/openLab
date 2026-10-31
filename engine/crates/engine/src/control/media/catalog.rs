@@ -4,7 +4,7 @@ use crate::lock;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use openlab_audio::{Media, MediaError, Preloaded, Probed};
 use openlab_core::{
@@ -14,8 +14,8 @@ use openlab_core::{
 use crate::persist::media_path;
 
 use super::super::inbox::ProbeAnswer;
+use super::Job;
 use super::pool::*;
-use super::{Job, JobKind};
 
 #[cfg(test)]
 use super::super::DocId;
@@ -243,7 +243,7 @@ impl MediaCatalog {
         timeout: Duration,
         clock: ProbeClock,
     ) -> std::io::Result<Self> {
-        let pool = ProbePool::new(inbox, probe, super::read_waveform, timeout, clock)?;
+        let pool = ProbePool::new(inbox, probe, timeout, clock)?;
         let mut catalog = Self::new(pool.handle(DocId(0)), show_dir, preload_budget);
         catalog.own_pool = Some(pool);
         Ok(catalog)
@@ -593,7 +593,7 @@ impl MediaCatalog {
             // dropped, or probe the file twice.
             if lock(&self.pool.gate)
                 .claimed
-                .get(&(self.pool.doc, JobKind::Probe, key.to_owned()))
+                .get(&(self.pool.doc, true, key.to_owned()))
                 .is_some_and(|t| *t >= e.ticket)
             {
                 continue;
@@ -784,8 +784,6 @@ impl MediaCatalog {
                 }
                 None
             }
-            // The control loop hands these to the doc's waveforms, never here.
-            ProbeAnswer::Waveform { .. } => None,
         }
     }
 
@@ -861,33 +859,6 @@ impl MediaCatalog {
             None => Media::Path(ready.path.clone()),
         };
         Some((Arc::clone(ready), media))
-    }
-
-    /// Asks a worker for `key`'s waveform (AUD-14), read from its preload when it has one, on
-    /// the low-priority queue so probes come first. Returns the job's ticket and the probe the
-    /// waveform is of, or `None` when the file is not playable (not probed yet, missing,
-    /// unplayable) or the pool is gone.
-    pub fn read_waveform(
-        &mut self,
-        key: &str,
-        cancel: Arc<AtomicBool>,
-    ) -> Option<(u64, Arc<Ready>)> {
-        let (ready, media) = self.media(key)?;
-        self.next_ticket += 1;
-        let ticket = self.next_ticket;
-        self.pool
-            .low
-            .send(Job::Waveform {
-                doc: self.pool.doc,
-                key: key.to_owned(),
-                ticket,
-                path: ready.path.clone(),
-                media,
-                info: ready.probed.info,
-                cancel,
-            })
-            .ok()?;
-        Some((ticket, ready))
     }
 
     /// Whether `key` is held in memory (a preload finished and not released).
