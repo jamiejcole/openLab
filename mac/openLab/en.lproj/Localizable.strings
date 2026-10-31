@@ -491,7 +491,14 @@
 
 /* Audio levels and routing matrix, Fade cue settings (AUD-06, AUD-08, CT-10, AUD-09) */
 "inspector.tab.levels" = "Levels";
-"inspector.tab.fade" = "Fade";
+"inspector.tab.curve" = "Curve";
+"inspector.tab.devamp" = "Devamp";
+"inspector.devamp.startNext" = "Start next cue";
+"inspector.devamp.stopTarget" = "Stop target when its slice ends";
+"inspector.devampMode" = "Leaves";
+"inspector.devampMode.current_slice" = "The loop now playing";
+"inspector.devampMode.looping_cue" = "The cue's own loop";
+"inspector.target.clear" = "Clear target";
 "levels.matrix" = "Levels matrix";
 "levels.master" = "Cue master";
 "levels.output" = "Cue output %d";

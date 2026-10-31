@@ -30,16 +30,10 @@ extension InspectorViewController {
         timeLoopsItem = item
     }
 
-    /// Shows the tab for an Audio cue, third after Basics and Triggers; hides it otherwise.
+    /// Fills the tab (third after Basics and Triggers, see `InspectorTabs`) for an Audio cue.
     func renderTimeLoops(_ cue: Cue) {
-        guard let item = timeLoopsItem else { return }
+        guard timeLoopsItem != nil else { return }
         let audio = cue.kindType == "audio"
-        let present = tabView.tabViewItems.contains { $0 === item }
-        if audio, !present {
-            tabView.insertTabViewItem(item, at: min(2, tabView.numberOfTabViewItems))
-        } else if !audio, present {
-            tabView.removeTabViewItem(item)
-        }
         guard audio else {
             timeLoops.isActive = false
             return
