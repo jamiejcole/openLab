@@ -238,6 +238,12 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 network_disabled: true,
             },
         ),
+        (
+            "set_output_device",
+            Request::SetOutputDevice {
+                device: Some("Scarlett 2i2".into()),
+            },
+        ),
         ("preshow_check", Request::PreshowCheck),
         ("set_show_mode", Request::SetShowMode { on: true }),
         (
@@ -909,6 +915,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                         name: "Scarlett 2i2".into(),
                         output_channels: 2,
                     }],
+                    selected: Some("Scarlett 2i2".into()),
                 }),
             }),
         }),
@@ -1389,7 +1396,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 23);
-    assert_eq!(all_requests().len(), 14);
+    assert_eq!(all_requests().len(), 15);
 }
 
 #[test]

@@ -1,0 +1,8 @@
+{
+  "type": "request",
+  "id": 51,
+  "request": {
+    "type": "set_output_device",
+    "device": "Scarlett 2i2"
+  }
+}

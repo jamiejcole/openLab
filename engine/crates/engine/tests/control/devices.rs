@@ -79,7 +79,7 @@ fn list_devices(s: &mut DeviceShow) -> Vec<DeviceEntry> {
     };
     match outcome {
         Outcome::Ok(ok) => match &ok.data {
-            Some(ResultData::Devices { devices }) => devices.clone(),
+            Some(ResultData::Devices { devices, .. }) => devices.clone(),
             other => panic!("{other:?}"),
         },
         Outcome::Error(e) => panic!("{e:?}"),

@@ -443,3 +443,70 @@ fn a_mapping_that_cannot_be_saved_is_refused_not_kept_in_memory() {
     assert_eq!(set(&mut s, patch_id(), None), Err(ErrorCode::Io));
     assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[0, 1])));
 }
+
+/// Sends `set_output_device`; the error code if it was refused.
+fn choose(s: &mut OfflineShow, device: Option<&str>) -> Result<(), ErrorCode> {
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id,
+        request: Request::SetOutputDevice {
+            device: device.map(str::to_owned),
+        },
+    });
+    match replies.iter().find_map(|m| match m {
+        ServerMessage::Result { outcome, .. } => Some(outcome.clone()),
+        _ => None,
+    }) {
+        Some(Outcome::Ok(_)) => Ok(()),
+        Some(Outcome::Error(e)) => Err(e.code),
+        None => panic!("no result"),
+    }
+}
+
+/// The operator picks the output device for the next start: a listed name is stored in the
+/// machine settings (and reported back by `list_devices`), an unknown one is refused with
+/// nothing changed, and null goes back to the system default.
+#[test]
+fn the_output_device_choice_is_stored_validated_and_cleared() {
+    let env = env();
+    let ws = workspace(vec![]);
+    let mut s = start_show(ws, from_disk(&env, vec![device("Offline", 4)]));
+    assert_eq!(choose(&mut s, Some("Nowhere")), Err(ErrorCode::NotFound));
+    assert_eq!(s.control().machine().output_device, None);
+    assert_eq!(choose(&mut s, Some("Offline")), Ok(()));
+    assert_eq!(
+        s.control().machine().output_device.as_deref(),
+        Some("Offline")
+    );
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id,
+        request: Request::ListDevices,
+    });
+    assert!(replies.iter().any(|m| matches!(
+        m,
+        ServerMessage::Result { outcome: Outcome::Ok(ok), .. }
+            if matches!(&ok.data, Some(ResultData::Devices { selected: Some(n), .. }) if n == "Offline")
+    )));
+    drop(s);
+    let (loaded, _) = load_machine_settings_checked(&env.dirs);
+    assert_eq!(loaded.settings.output_device.as_deref(), Some("Offline"));
+
+    let mut s = start_show(
+        workspace(vec![]),
+        from_disk(&env, vec![device("Offline", 4)]),
+    );
+    assert_eq!(choose(&mut s, None), Ok(()));
+    assert_eq!(s.control().machine().output_device, None);
+}
+
+/// Settings that cannot be kept refuse the choice rather than losing it at the next launch.
+#[test]
+fn an_output_device_choice_that_cannot_be_saved_is_refused() {
+    let env = env();
+    let mut c = from_disk(&env, vec![device("Offline", 4)]);
+    c.machine_writable = false;
+    let mut s = start_show(workspace(vec![]), c);
+    assert_eq!(choose(&mut s, Some("Offline")), Err(ErrorCode::Io));
+    assert_eq!(s.control().machine().output_device, None);
+}

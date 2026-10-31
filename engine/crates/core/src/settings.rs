@@ -59,6 +59,10 @@ pub struct MachineSettings {
     /// Backups kept per workspace; 0 turns backups off (NFR-06).
     #[serde(default = "default_backup_keep")]
     pub backup_keep: u32,
+    /// The output device the engine opens at start, by the name `list_devices` gives
+    /// (`set_output_device`). None: the system default device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_device: Option<String>,
     /// Keyed by workspace id (lower-case hyphenated UUID).
     #[serde(default)]
     pub workspaces: BTreeMap<String, WorkspaceMachineSettings>,
@@ -77,6 +81,7 @@ impl Default for MachineSettings {
         Self {
             settings_version: SETTINGS_VERSION,
             backup_keep: DEFAULT_BACKUP_KEEP,
+            output_device: None,
             workspaces: BTreeMap::new(),
             extra: BTreeMap::new(),
         }
@@ -133,6 +138,14 @@ fn sanitise(settings: &mut MachineSettings, warnings: &mut Vec<String>) {
             settings.backup_keep
         ));
         settings.backup_keep = MAX_BACKUP_KEEP;
+    }
+    if settings
+        .output_device
+        .as_ref()
+        .is_some_and(|d| d.is_empty() || d.len() > MAX_DEVICE_NAME_BYTES)
+    {
+        warnings.push("output device name is invalid; using the system default".into());
+        settings.output_device = None;
     }
     if settings.workspaces.len() > MAX_WORKSPACES {
         warnings.push(format!(
@@ -209,6 +222,18 @@ impl MachineSettings {
             .get(&workspace.to_string())?
             .patches
             .get(&patch.to_string())
+    }
+
+    /// Chooses the output device the engine opens at its next start; `None` goes back to the
+    /// system default. Refuses a name no device layer could list and changes nothing.
+    pub fn set_output_device(&mut self, device: Option<String>) -> Result<(), String> {
+        if let Some(name) = &device
+            && (name.is_empty() || name.len() > MAX_DEVICE_NAME_BYTES)
+        {
+            return Err("invalid device name".into());
+        }
+        self.output_device = device;
+        Ok(())
     }
 
     /// Records where `patch` plays on this machine. Refuses an invalid mapping and changes
@@ -356,6 +381,16 @@ mod tests {
         let out = save_settings(&loaded.settings).unwrap();
         assert!(out.contains("\"future\""), "{out}");
         assert!(!out.contains("recent_files"), "{out}");
+    }
+
+    #[test]
+    fn an_invalid_output_device_name_is_dropped_with_a_warning() {
+        let loaded = load_settings(r#"{"settings_version": 1, "output_device": ""}"#);
+        assert_eq!(loaded.settings.output_device, None);
+        assert_eq!(loaded.warnings.len(), 1);
+        let loaded = load_settings(r#"{"settings_version": 1, "output_device": "Scarlett"}"#);
+        assert_eq!(loaded.settings.output_device.as_deref(), Some("Scarlett"));
+        assert!(loaded.warnings.is_empty());
     }
 
     #[test]

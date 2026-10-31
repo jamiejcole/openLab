@@ -1084,6 +1084,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::SaveAs { .. } => "save_as",
         Request::Relink { .. } => "relink",
         Request::ListDevices => "list_devices",
+        Request::SetOutputDevice { .. } => "set_output_device",
         Request::PreshowCheck => "preshow_check",
         Request::SetShowMode { .. } => "set_show_mode",
         Request::SetPatchMapping { .. } => "set_patch_mapping",

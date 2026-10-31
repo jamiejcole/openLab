@@ -177,10 +177,21 @@ impl Control {
                             revision: None,
                             data: Some(ResultData::Devices {
                                 devices: self.eng.device_list(),
+                                selected: self.eng.config.machine.output_device.clone(),
                             }),
                         }),
                     },
                 ),
+                Request::SetOutputDevice { device } => {
+                    let outcome = self.eng.set_output_device(device);
+                    reply(
+                        to,
+                        match outcome {
+                            Ok(()) => ok(id, None),
+                            Err(error) => failed(id, error),
+                        },
+                    );
+                }
                 Request::LogTail { max } => {
                     let (entries, dropped, seq) = self.eng.log_tail(max);
                     reply(
