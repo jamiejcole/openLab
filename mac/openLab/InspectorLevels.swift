@@ -31,15 +31,15 @@ extension InspectorViewController {
         levels.view = padded(audioLevels.view)
         levelsItem = levels
 
-        let fadeColumns = NSStackView(views: [fadeSettings.view, fadeLevels.view])
-        fadeColumns.orientation = .horizontal
-        fadeColumns.alignment = .top
-        fadeColumns.spacing = 20
-        fadeLevels.view.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let fade = NSTabViewItem(identifier: "fade")
-        fade.label = loc("inspector.tab.fade")
-        fade.view = padded(fadeColumns)
-        fadeItem = fade
+        // The curve comes before the levels, as in QLab (Basics, Triggers, Curve, Levels).
+        let curve = NSTabViewItem(identifier: "curve")
+        curve.label = loc("inspector.tab.curve")
+        curve.view = padded(fadeSettings.view)
+        curveItem = curve
+        let fadeLevelsTab = NSTabViewItem(identifier: "fadeLevels")
+        fadeLevelsTab.label = loc("inspector.tab.levels")
+        fadeLevelsTab.view = padded(fadeLevels.view)
+        fadeLevelsItem = fadeLevelsTab
     }
 
     private func padded(_ content: NSView) -> NSView {
@@ -55,24 +55,11 @@ extension InspectorViewController {
         return box
     }
 
-    /// Puts `item` in the tab view or takes it out.
-    func syncTab(_ item: NSTabViewItem?, present wanted: Bool) {
-        guard let item else { return }
-        let present = tabView.tabViewItems.contains { $0 === item }
-        if wanted, !present {
-            tabView.addTabViewItem(item)
-        } else if !wanted, present {
-            tabView.removeTabViewItem(item)
-        }
-    }
-
-    /// Shows the Levels tab for an Audio cue and the Fade tab for a Fade cue, and none otherwise.
+    /// Fills the Levels tab of an Audio cue and the Curve and Levels tabs of a Fade cue.
     func renderLevels(_ cue: Cue, model: WorkspaceModel) {
         let kind = cue.raw["kind"] ?? .null
         let audio = cue.kindType == "audio"
         let fade = cue.kindType == "fade"
-        syncTab(levelsItem, present: audio)
-        syncTab(fadeItem, present: fade)
         let set = LevelSet(kind: kind)
         audioLevels.meter.bank = store.meters
         audioLevels.meter.source = audio ? .cue(cue.id) : nil

@@ -386,3 +386,58 @@ fn a_trim_or_slice_under_50_ms_is_refused_on_every_path_and_50_ms_is_accepted() 
             .unwrap();
     }
 }
+
+/// An Audio cue with `n` slice markers one second apart.
+fn many_slices(n: usize) -> Cue {
+    let mut kind = audio();
+    if let CueKind::Audio { slices, .. } = &mut kind {
+        *slices = (1..=n)
+            .map(|i| SliceMarker {
+                time: i as f64,
+                play_count: 1,
+            })
+            .collect();
+    }
+    cue(5, kind)
+}
+
+#[test]
+fn more_slice_markers_than_the_audio_engine_plays_are_refused_on_every_path() {
+    let w = ws();
+    let bad = many_slices(MAX_SLICE_MARKERS + 1);
+    for command in [
+        Command::AddCue {
+            at: at_end(),
+            cue: bad.clone(),
+            auto_number: false,
+        },
+        Command::Paste {
+            at: at_end(),
+            cues: vec![bad.clone()],
+        },
+        Command::PasteClipboard {
+            at: at_end(),
+            cues: vec![bad.clone()],
+            source_dir: None,
+        },
+        Command::SetCueProperty {
+            id: cue_id(1),
+            property: CueProperty::Kind {
+                value: bad.kind.clone(),
+            },
+        },
+    ] {
+        assert_refused(&w, command);
+    }
+    let mut work = w.clone();
+    History::new()
+        .execute(
+            &mut work,
+            Command::AddCue {
+                at: at_end(),
+                cue: many_slices(MAX_SLICE_MARKERS),
+                auto_number: false,
+            },
+        )
+        .unwrap();
+}

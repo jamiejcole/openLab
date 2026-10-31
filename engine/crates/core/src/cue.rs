@@ -17,6 +17,10 @@ pub const MAX_DB: f64 = 12.0;
 pub const MAX_TIME: f64 = 24.0 * 60.0 * 60.0;
 /// Most channels a patch, cue or media file may have (AUD-03).
 pub const MAX_CHANNELS: u32 = 64;
+/// Most slice markers an Audio cue may hold. The audio engine plays at most 256 slice entries
+/// (`openlab_audio::MAX_SLICES`): n markers make n + 1 slices, and a start offset inside a slice
+/// splits it in two. The engine crate tests that the two limits agree.
+pub const MAX_SLICE_MARKERS: usize = 254;
 
 /// One cue. Fields common to every kind live here; the rest is in `kind`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
