@@ -47,4 +47,3 @@ to `main` (QA-07).
 ## Waiting on the user (answered in batches, never blocking)
 - Decision notes in `decisions/` (most worth a look: `m4-11b.md`, `m4-6.md`, `m4-5c.md`, `m2-25b.md`).
 - Rows marked `assumed` in `docs/todo/open-qlab-questions.md`.
-- Issues labelled `low`.
