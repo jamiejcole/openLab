@@ -58,7 +58,7 @@ final class CueListHarness {
     let vc: CueListViewController
     var store: WorkspaceStore { rig.store }
 
-    static let list = FakeEngine.demoListID
+    static let list = TestSnapshots.mainList.raw
     static let group: ModelID = "00000000-0000-0000-0000-000000000020"
     static let door: ModelID = "00000000-0000-0000-0000-000000000021"
     static let rain: ModelID = "00000000-0000-0000-0000-000000000022"
@@ -66,12 +66,15 @@ final class CueListHarness {
     static let intro: ModelID = "00000000-0000-0000-0000-00000000000a"
     static let fade: ModelID = "00000000-0000-0000-0000-00000000000b"
 
-    /// The list shows `snapshot`, connected through the fake engine; the table has a size so rows exist.
-    init(snapshot: JSONValue? = nil, collapsed: Bool = true) async throws {
-        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
-        rig = try Rig(snapshot: snapshot ?? FakeEngine.demoSnapshot(base: base))
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+    /// The list shows `snapshot` (default: `demoSnapshot()`) with no engine (`Rig.offline`): what
+    /// the list does with what the engine sends. `rig`: a real-engine rig to show instead. The table
+    /// has a size so rows exist.
+    init(snapshot: JSONValue? = nil, collapsed: Bool = true, rig real: Rig? = nil) async throws {
+        if let real {
+            rig = real
+        } else {
+            rig = try Rig.offline(snapshot ?? Self.demoSnapshot())
+        }
         vc = CueListViewController(store: rig.store, outlineView: spy)
         vc.view.frame = NSRect(x: 0, y: 0, width: 1000, height: 600)
         vc.view.layoutSubtreeIfNeeded()
@@ -88,6 +91,43 @@ final class CueListHarness {
 
     func receive(_ json: String) throws {
         XCTAssertEqual(store.receive(try ServerMessage.decode(json)), .applied)
+    }
+
+    /// The demo show (mac/TestShows/Demo) as the engine would send it mid-show: the golden welcome's
+    /// runtime state (Intro running, the Fade at the playhead and reported broken, Intro's probed
+    /// length) plus, in the group, Door slam loaded, Rain paused and Radio broken by a lost device,
+    /// with Door slam's and Rain's probed lengths.
+    static func demoSnapshot() throws -> JSONValue {
+        var s = try TestSnapshots.show("Demo")
+        let welcome = try XCTUnwrap(Fixtures.json("server", "welcome")["snapshot"])
+        for key in ["revision", "runtime_seq", "problems", "group_warnings", "playheads", "warnings"] {
+            s.set(key, welcome[key] ?? .null)
+        }
+        func state(_ cue: ModelID, _ state: String, reason: String? = nil) -> JSONValue {
+            var o: [String: JSONValue] = ["cue": .string(cue.raw), "state": .string(state)]
+            if let reason { o["reason"] = .string(reason) }
+            return .object(o)
+        }
+        s.set(
+            "cue_states",
+            .array([
+                state(TestSnapshots.intro, "running"), state(TestSnapshots.door, "loaded"),
+                state(TestSnapshots.rain, "paused"), state(TestSnapshots.radio, "broken", reason: "device_lost"),
+            ]))
+        func length(_ cue: ModelID, _ file: Double, trimmed: Double, duration: Double) -> JSONValue {
+            .object([
+                "cue": .string(cue.raw), "file": .double(file), "trimmed": .double(trimmed),
+                "duration": .double(duration),
+            ])
+        }
+        s.set(
+            "media_durations",
+            .array([
+                length(TestSnapshots.intro, 62.5, trimmed: 60, duration: 120),
+                length(TestSnapshots.door, 1.25, trimmed: 1.25, duration: 1.25),
+                length(TestSnapshots.rain, 95.5, trimmed: 95.5, duration: 95.5),
+            ]))
+        return s
     }
 
     static func upsertJSON(_ cue: JSONValue, parent: ModelID? = nil, index: Int) throws -> String {
@@ -107,11 +147,11 @@ final class CueListHarness {
     }
 
     func cue(
-        _ id: String, _ name: String, kind: JSONValue = FakeEngine.audioKind("media/x.wav"), color: String = "none"
+        _ id: String, _ name: String, kind: JSONValue = TestSnapshots.audioKind("media/x.wav"), color: String = "none"
     )
         -> JSONValue
     {
-        FakeEngine.cueJSON(id: id, number: nil, name: name, kind: kind, color: color)
+        TestSnapshots.cueJSON(id: id, number: nil, name: name, kind: kind, color: color)
     }
 
     /// The ids in table order, top to bottom.
@@ -147,17 +187,17 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.visibleIDs(), [H.intro, H.fade, H.group, H.door, H.rain, H.radio])
         // A group the engine adds later opens expanded too; one that was collapsed and moves stays so.
         let kids = [h.cue("00000000-0000-0000-0000-0000000000a1", "Kid")]
-        let g = FakeEngine.cueJSON(
-            id: "00000000-0000-0000-0000-0000000000a0", number: nil, name: "New", kind: FakeEngine.groupKind(kids))
+        let g = TestSnapshots.cueJSON(
+            id: "00000000-0000-0000-0000-0000000000a0", number: nil, name: "New", kind: TestSnapshots.groupKind(kids))
         try h.change(upserts: [try H.upsertJSON(g, index: 0)])
         XCTAssertEqual(
             h.visibleIDs().prefix(2).map(\.raw),
             ["00000000-0000-0000-0000-0000000000a0", "00000000-0000-0000-0000-0000000000a1"])
         h.spy.collapseItem(try XCTUnwrap(h.vc.node(H.group)))
         let current = try XCTUnwrap(h.store.model?.cue(H.group))
-        let regroup = FakeEngine.cueJSON(
+        let regroup = TestSnapshots.cueJSON(
             id: H.group.raw, number: "2", name: "Act One",
-            kind: FakeEngine.groupKind(
+            kind: TestSnapshots.groupKind(
                 current.children.map { h.cue($0.id.raw, $0.name) }))
         try h.change(upserts: [try H.upsertJSON(regroup, index: 0)], deletes: [H.group])
         XCTAssertFalse(h.spy.isItemExpanded(try XCTUnwrap(h.vc.node(H.group))))
@@ -194,8 +234,8 @@ final class CueListTests: XCTestCase {
         // Zero waits show as a dimmed 00:00.00, a non-zero one in the normal colour.
         XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:00.00")
         XCTAssertEqual(h.cell("preWait", H.intro)?.label.textColor, .secondaryLabelColor)
-        var timed = FakeEngine.cueJSON(
-            id: H.intro.raw, number: "1", name: "Intro", kind: FakeEngine.audioKind("media/a.wav"), preWait: 1.5)
+        var timed = TestSnapshots.cueJSON(
+            id: H.intro.raw, number: "1", name: "Intro", kind: TestSnapshots.audioKind("media/a.wav"), preWait: 1.5)
         timed.set("armed", .bool(true))
         try h.change(upserts: [try H.upsertJSON(timed, index: 0)])
         XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:01.50")
@@ -250,8 +290,8 @@ final class CueListTests: XCTestCase {
         func groupFlag() throws -> NSImageView { try XCTUnwrap(h.cell("status", H.group)).images[3] }
         XCTAssertFalse(try groupFlag().isHidden, "Rain is flagged")
         func rain(flagged: Bool) throws -> String {
-            var json = FakeEngine.cueJSON(
-                id: H.rain.raw, number: "2.2", name: "Rain", kind: FakeEngine.audioKind("media/r.wav"))
+            var json = TestSnapshots.cueJSON(
+                id: H.rain.raw, number: "2.2", name: "Rain", kind: TestSnapshots.audioKind("media/r.wav"))
             json.set("flagged", .bool(flagged))
             return try H.upsertJSON(json, parent: H.group, index: 1)
         }
@@ -266,8 +306,8 @@ final class CueListTests: XCTestCase {
 
     func testDisarmedCueIsDimmed() async throws {
         let h = try await H()
-        var cue = FakeEngine.cueJSON(
-            id: H.intro.raw, number: "1", name: "Intro", kind: FakeEngine.audioKind("media/a.wav"))
+        var cue = TestSnapshots.cueJSON(
+            id: H.intro.raw, number: "1", name: "Intro", kind: TestSnapshots.audioKind("media/a.wav"))
         cue.set("armed", .bool(false))
         try h.change(upserts: [try H.upsertJSON(cue, index: 0)])
         XCTAssertEqual(h.cell("name", H.intro)?.label.alphaValue, 0.5)
@@ -302,8 +342,8 @@ final class CueListTests: XCTestCase {
 
     func testChangeInPlaceReloadsThatRowOnly() async throws {
         let h = try await H()
-        let renamed = FakeEngine.cueJSON(
-            id: H.intro.raw, number: "1", name: "Overture", kind: FakeEngine.audioKind("media/a.wav"))
+        let renamed = TestSnapshots.cueJSON(
+            id: H.intro.raw, number: "1", name: "Overture", kind: TestSnapshots.audioKind("media/a.wav"))
         try h.change(upserts: [try H.upsertJSON(renamed, index: 0)])
         XCTAssertEqual(h.cell("name", H.intro)?.label.stringValue, "Overture")
         XCTAssertEqual(h.spy.counts + [h.spy.itemReloads], [0, 0, 0, 0, 1])
@@ -314,12 +354,12 @@ final class CueListTests: XCTestCase {
         // The engine sends a group with its whole subtree; use the store's own copy for the children.
         let current = try XCTUnwrap(h.store.model?.cue(H.group))
         XCTAssertEqual(current.children.count, 3)
-        var json = FakeEngine.cueJSON(
+        var json = TestSnapshots.cueJSON(
             id: H.group.raw, number: "2", name: "Act One",
-            kind: FakeEngine.groupKind(
+            kind: TestSnapshots.groupKind(
                 current.children.map { c in
-                    FakeEngine.cueJSON(
-                        id: c.id.raw, number: c.number, name: c.name, kind: FakeEngine.audioKind("media/z.wav"))
+                    TestSnapshots.cueJSON(
+                        id: c.id.raw, number: c.number, name: c.name, kind: TestSnapshots.audioKind("media/z.wav"))
                 }), color: "green")
         json.set("flagged", .bool(false))
         try h.change(upserts: [try H.upsertJSON(json, index: 0)])
@@ -331,8 +371,8 @@ final class CueListTests: XCTestCase {
 
     func testMovingDownTheListLandsAtTheEnginesIndex() async throws {
         let h = try await H()
-        let intro = FakeEngine.cueJSON(
-            id: H.intro.raw, number: "1", name: "Intro", kind: FakeEngine.audioKind("media/a.wav"))
+        let intro = TestSnapshots.cueJSON(
+            id: H.intro.raw, number: "1", name: "Intro", kind: TestSnapshots.audioKind("media/a.wav"))
         try h.change(upserts: [try H.upsertJSON(intro, index: 1)])
         XCTAssertEqual(h.vc.roots.map(\.id), [H.fade, H.intro, H.group])
         XCTAssertEqual(h.visibleIDs(), [H.fade, H.intro, H.group])
@@ -347,10 +387,10 @@ final class CueListTests: XCTestCase {
         // Engine form of a move: a delete, then an upsert of the group that now holds the cue.
         let current = try XCTUnwrap(h.store.model?.cue(H.group))
         var kids = current.children.map { c in
-            FakeEngine.cueJSON(id: c.id.raw, number: c.number, name: c.name, kind: FakeEngine.audioKind("media/z.wav"))
+            TestSnapshots.cueJSON(id: c.id.raw, number: c.number, name: c.name, kind: TestSnapshots.audioKind("media/z.wav"))
         }
         kids.insert(h.cue(H.fade.raw, "Fade moved"), at: 0)
-        let group = FakeEngine.cueJSON(id: H.group.raw, number: "2", name: "Act One", kind: FakeEngine.groupKind(kids))
+        let group = TestSnapshots.cueJSON(id: H.group.raw, number: "2", name: "Act One", kind: TestSnapshots.groupKind(kids))
         try h.change(upserts: [try H.upsertJSON(group, index: 1)], deletes: [H.fade])
         let node = try XCTUnwrap(h.vc.node(H.group))
         XCTAssertEqual(node.children.map(\.id), [H.fade, H.door, H.rain, H.radio])
@@ -365,11 +405,11 @@ final class CueListTests: XCTestCase {
         let group = try XCTUnwrap(h.vc.node(H.group))
         h.spy.expandItem(group)
         let kids = [
-            FakeEngine.cueJSON(
-                id: H.door.raw, number: "2.1", name: "Door slam", kind: FakeEngine.audioKind("media/d.wav")),
-            FakeEngine.cueJSON(id: H.rain.raw, number: "2.2", name: "Storm", kind: FakeEngine.audioKind("media/r.wav")),
+            TestSnapshots.cueJSON(
+                id: H.door.raw, number: "2.1", name: "Door slam", kind: TestSnapshots.audioKind("media/d.wav")),
+            TestSnapshots.cueJSON(id: H.rain.raw, number: "2.2", name: "Storm", kind: TestSnapshots.audioKind("media/r.wav")),
         ]
-        let json = FakeEngine.cueJSON(id: H.group.raw, number: "2", name: "Act One", kind: FakeEngine.groupKind(kids))
+        let json = TestSnapshots.cueJSON(id: H.group.raw, number: "2", name: "Act One", kind: TestSnapshots.groupKind(kids))
         try h.change(upserts: [try H.upsertJSON(json, index: 2)])
         XCTAssertTrue(h.spy.isItemExpanded(group))
         XCTAssertEqual(h.visibleIDs(), [H.intro, H.fade, H.group, H.door, H.rain])
@@ -380,7 +420,7 @@ final class CueListTests: XCTestCase {
 
     func testACueThatStopsBeingAGroupLosesItsChildren() async throws {
         let h = try await H()
-        let memo = FakeEngine.cueJSON(
+        let memo = TestSnapshots.cueJSON(
             id: H.group.raw, number: "2", name: "Act One", kind: .object(["type": .string("memo")]))
         try h.change(upserts: [try H.upsertJSON(memo, index: 2)])
         XCTAssertEqual(h.vc.node(H.group)?.children.count, 0)
@@ -402,9 +442,9 @@ final class CueListTests: XCTestCase {
 
     func testRenameRefreshesTheTargetCellOfCuesThatPointAtIt() async throws {
         let h = try await H()
-        let target = FakeEngine.cueJSON(
-            id: H.intro.raw, number: "1", name: "Overture", kind: FakeEngine.audioKind("media/a.wav"))
-        var fade = FakeEngine.cueJSON(
+        let target = TestSnapshots.cueJSON(
+            id: H.intro.raw, number: "1", name: "Overture", kind: TestSnapshots.audioKind("media/a.wav"))
+        var fade = TestSnapshots.cueJSON(
             id: H.fade.raw, number: nil, name: "",
             kind: .object(["type": .string("fade"), "target": .string(H.intro.raw), "duration": .double(5)]))
         fade.set("armed", .bool(true))
@@ -422,8 +462,7 @@ final class CueListTests: XCTestCase {
         h.spy.expandItem(try XCTUnwrap(h.vc.node(H.group)))
         h.vc.select([H.fade, H.rain])
         h.spy.resetCounts()
-        let snap = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
-        var next = FakeEngine.demoSnapshot(base: snap)
+        var next = try H.demoSnapshot()
         next.set("revision", .int(900))
         let message = try ServerMessage.decode(
             try JSONValue.object(["type": .string("snapshot"), "snapshot": next]).text())
@@ -434,7 +473,8 @@ final class CueListTests: XCTestCase {
     }
 
     func testListShowsTheStoreThatConnectsLater() async throws {
-        let rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: try Fixtures.json("server", "welcome")["snapshot"]))
+        let engine = try await TestEngine.shared()
+        let rig = Rig(engine: engine, workspace: try await engine.open("Demo"))
         let vc = CueListViewController(store: rig.store)
         XCTAssertEqual(vc.roots.count, 0)
         let ok = await rig.connect()
@@ -467,7 +507,7 @@ final class CueListTests: XCTestCase {
     func testSelectionSurvivesAMove() async throws {
         let h = try await H()
         h.vc.select([H.intro, H.group])
-        let moved = FakeEngine.cueJSON(id: H.fade.raw, number: nil, name: "", kind: .object(["type": .string("memo")]))
+        let moved = TestSnapshots.cueJSON(id: H.fade.raw, number: nil, name: "", kind: .object(["type": .string("memo")]))
         try h.change(upserts: [try H.upsertJSON(moved, index: 0)])
         XCTAssertEqual(h.spy.moves, 1)
         XCTAssertEqual(Set(h.vc.selectedIDs()), [H.intro, H.group])
@@ -621,61 +661,52 @@ final class CueListTests: XCTestCase {
     /// A playhead inside a collapsed group has no row: Move Playhead Next / Previous steps from the
     /// group's row, not from the top or bottom of the list (the next GO would fire the first cue).
     func testMovePlayheadFromInsideACollapsedGroupStepsFromTheGroup() async throws {
-        let h = try await H()
-        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.rain)"}"#)
+        let h = try await H(rig: try await Rig.open())
+        let playhead = { h.store.playheads[ModelID(H.list)] }
+        guard case .success = await h.store.transport(.setPlayhead(list: ModelID(H.list), cue: H.rain)) else {
+            return XCTFail("set_playhead")
+        }
+        await assertEventually { playhead() == H.rain }
         let rows = h.visibleIDs()
         let at = try XCTUnwrap(rows.firstIndex(of: H.group))
         XCTAssertFalse(rows.contains(H.rain), "collapsed")
-        func sentPlayheads() -> [ModelID] {
-            h.rig.engine.receivedFrom.compactMap {
-                if case .transport(_, .setPlayhead(_, let cue)) = $0.message { return cue }
-                return nil
-            }
-        }
-        // Each direction goes to the group's neighbour, or (at an end of the list) nowhere: never
-        // to the opposite end.
-        var expected: [ModelID] = []
-        for (delta, row) in [(1, at + 1), (-1, at - 1)] {
-            h.vc.movePlayhead(by: delta)
-            if rows.indices.contains(row) { expected.append(rows[row]) }
-            await settle()
-            await assertEventually { sentPlayheads() == expected }
-        }
-        XCTAssertGreaterThan(rows.count, 1)
+        XCTAssertEqual(at, rows.count - 1, "the group is the last row")
+        // Past the end of the list there is no row: the playhead stays where it is, never wrapping
+        // to the top (the next GO would fire the first cue).
+        h.vc.movePlayhead(by: 1)
+        await h.rig.sync()
+        XCTAssertEqual(playhead(), H.rain)
+        // Up goes to the group's neighbour, not to the row above the playhead's hidden one.
+        h.vc.movePlayhead(by: -1)
+        await assertEventually { playhead() == rows[at - 1] }
     }
 
     func testMenuDialogAnswersSelectMovePlayheadOrNameTheProblem() async throws {
-        let rig = try Rig()
-        let connected = await rig.connect()
-        XCTAssertTrue(connected)
+        let rig = try await Rig.open()
         let wc = WorkspaceWindowController(store: rig.store)
         let list = wc.cueList
-        let target = try XCTUnwrap(list.roots.first { $0.cue.number != nil })
+        let target = try XCTUnwrap(list.roots.last { $0.cue.number != nil })
         let number = try XCTUnwrap(target.cue.number)
         XCTAssertNil(wc.applyCueNumber(number, movePlayhead: false))
         XCTAssertEqual(list.selectedIDs(), [target.id], "Select Cue selects it")
         XCTAssertNil(wc.applyCueNumber(number, movePlayhead: true))
-        await assertEventually {
-            rig.engine.receivedFrom.contains {
-                if case .transport(_, .setPlayhead(_, let cue)) = $0.message { return cue == target.id }
-                return false
-            }
+        await assertEventually("the engine moved the playhead") {
+            rig.store.playheads[ModelID(H.list)] == target.id
         }
         XCTAssertEqual(
             wc.applyCueNumber("no-such", movePlayhead: true), String(format: loc("cue.prompt.notFound"), "no-such"))
         XCTAssertEqual(
             wc.applyCueNumber("no-such", movePlayhead: false), String(format: loc("cue.prompt.notFound"), "no-such"))
-        // Load to Time: a bad time (also a negative one: the engine's load takes 0 or more) is a notice.
+        // Load to Time: a bad time (also a negative one: the engine's load takes 0 or more) is a notice
+        // and no action.
+        var loads: [TransportAction] = []
+        wc.onCueAction = { loads.append($0) }
         for bad in ["", "abc", "-5", "1:75"] {
             XCTAssertEqual(wc.applyLoadTime(bad, to: target.id), loc("cue.prompt.badTime"), bad)
         }
-        var loads: [TransportAction] = []
-        wc.onCueAction = { loads.append($0) }
+        XCTAssertEqual(loads, [], "nothing is done for a bad time")
         XCTAssertNil(wc.applyLoadTime("1:02.5", to: target.id))
         XCTAssertEqual(loads, [.load(cue: target.id, at: 62.5)])
-        let before = rig.engine.receivedFrom.count
-        await settle()
-        XCTAssertEqual(rig.engine.receivedFrom.count, before, "nothing was sent for a bad time")
     }
 
     // MARK: Progress
@@ -771,7 +802,7 @@ final class CueListTests: XCTestCase {
         let h = try await H(collapsed: false)
         func id(_ n: Int) -> String { String(format: "00000000-0000-0000-0000-0000000001%02d", n) }
         func group(_ n: Int, _ kids: [JSONValue] = []) -> JSONValue {
-            FakeEngine.cueJSON(id: id(n), number: nil, name: "G\(n)", kind: FakeEngine.groupKind(kids))
+            TestSnapshots.cueJSON(id: id(n), number: nil, name: "G\(n)", kind: TestSnapshots.groupKind(kids))
         }
         func index(of cue: String) -> Int {
             h.store.model?.cueLists.first?.cues.firstIndex { $0.id.raw == cue } ?? 0
@@ -825,7 +856,7 @@ final class CueListTests: XCTestCase {
 
     func testCuesTargetingAGroupsDescendantRefreshWhenTheGroupIsResent() async throws {
         let h = try await H(collapsed: false)
-        let fade = FakeEngine.cueJSON(
+        let fade = TestSnapshots.cueJSON(
             id: H.fade.raw, number: nil, name: "",
             kind: .object(["type": .string("fade"), "target": .string(H.rain.raw), "duration": .double(5)]))
         try h.change(upserts: [try H.upsertJSON(fade, index: 1)])
@@ -833,7 +864,7 @@ final class CueListTests: XCTestCase {
         let kids = ["Door slam", "Storm", "Radio"].enumerated().map { i, n in
             h.cue([H.door, H.rain, H.radio][i].raw, n)
         }
-        let group = FakeEngine.cueJSON(id: H.group.raw, number: "2", name: "Act One", kind: FakeEngine.groupKind(kids))
+        let group = TestSnapshots.cueJSON(id: H.group.raw, number: "2", name: "Act One", kind: TestSnapshots.groupKind(kids))
         try h.change(upserts: [try H.upsertJSON(group, index: 2)])
         XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "Storm")
         try h.change(deletes: [H.group])
@@ -912,7 +943,7 @@ extension CueListTests {
         }
         // An audio cue with a file on disk: preview and reveal work; a running cue enables Panic.
         let id = "00000000-0000-0000-0000-0000000000c1"
-        try h.change(upserts: [try H.upsertJSON(h.cue(id, "File", kind: FakeEngine.audioKind("/tmp/a.wav")), index: 3)])
+        try h.change(upserts: [try H.upsertJSON(h.cue(id, "File", kind: TestSnapshots.audioKind("/tmp/a.wav")), index: 3)])
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"running"}"#)
         pb.setString("{}", forType: CueEditor.pasteType)
         e = enabled(try menu(h, ModelID(id), pasteboard: pb))
