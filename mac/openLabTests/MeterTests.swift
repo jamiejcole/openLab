@@ -77,25 +77,22 @@ final class MeterTests: XCTestCase {
     // MARK: Coalescing
 
     func testManyPushesAreOneRedrawPerTick() {
-        view.displayIfNeeded()
-        view.needsDisplay = false
+        let before = view.invalidations
         for i in 1...50 { push([Float(i) / 100, 0.1]) }
-        XCTAssertFalse(view.needsDisplay, "a push does not invalidate the view")
+        XCTAssertEqual(view.invalidations, before, "a push does not invalidate the view")
         ticker.fire()
-        XCTAssertTrue(view.needsDisplay)
+        XCTAssertEqual(view.invalidations, before + 1, "fifty pushes, one redraw")
         XCTAssertEqual(bank.level(.cue(Self.intro), channel: 0), 0.5, "the tick shows the loudest peak since the last")
-        view.displayIfNeeded()
-        view.needsDisplay = false
+        let afterFirst = view.invalidations
         ticker.fire(0)  // nothing new and no time passed: no redraw
-        XCTAssertFalse(view.needsDisplay)
+        XCTAssertEqual(view.invalidations, afterFirst)
     }
 
     func testAViewOnlyRedrawsForItsOwnSource() {
-        view.displayIfNeeded()
-        view.needsDisplay = false
+        let before = view.invalidations
         push([0.9], cue: "other")
         ticker.fire()
-        XCTAssertFalse(view.needsDisplay)
+        XCTAssertEqual(view.invalidations, before)
     }
 
     // MARK: Fall
@@ -231,5 +228,29 @@ final class MeterTests: XCTestCase {
         }
         XCTAssertEqual(meters(in: wc.sidebar.view), 0)
         XCTAssertEqual(meters(in: wc.cueList.view), 0)
+    }
+
+    /// A closed window keeps its views, so the bank must let go of them at close: neither it nor
+    /// the view's observers may keep the window and its views alive (AppKit itself keeps a window
+    /// object around in the test host, so this checks the bank, not deallocation).
+    func testClosingAWindowReleasesItsMeters() {
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 50), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        w.isReleasedWhenClosed = false
+        let v = MeterView(frame: NSRect(x: 0, y: 0, width: 50, height: 20))
+        v.bank = bank
+        w.contentView?.addSubview(v)
+        w.orderFront(nil)
+        v.updateLive()
+        XCTAssertEqual(bank.visibleCount, 2)
+        w.close()
+        XCTAssertEqual(bank.visibleCount, 1, "closing the window takes its meter off the bank")
+    }
+
+    func testChangingTheSourceRedrawsTheView() {
+        let before = view.invalidations
+        view.source = .cue("other")
+        XCTAssertGreaterThan(view.invalidations, before, "bars of the old cue must not stay frozen")
     }
 }

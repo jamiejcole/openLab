@@ -34,10 +34,13 @@ final class MeterBank {
         var count = 0
         var silentTicks = 0
         var dirty = false
+        var changed = false
     }
 
     private var slots: [MeterSource: Slot] = [:]
-    private var views = [ObjectIdentifier: MeterView]()
+    private struct WeakView { weak var view: MeterView? }
+    /// Weak: a window closed with its views in place must still be freed.
+    private var views = [ObjectIdentifier: WeakView]()
     private var stopTicker: (() -> Void)?
     private let startTicker: (@escaping @MainActor (Double) -> Void) -> () -> Void
 
@@ -55,7 +58,7 @@ final class MeterBank {
     // MARK: Views come and go
 
     func attach(_ view: MeterView) {
-        views[ObjectIdentifier(view)] = view
+        views[ObjectIdentifier(view)] = WeakView(view: view)
         if stopTicker == nil {
             stopTicker = startTicker { [weak self] dt in self?.tick(dt) }
         }
@@ -108,16 +111,21 @@ final class MeterBank {
     /// One display frame: fold, fall, mark the views whose source changed, forget idle sources.
     func tick(_ dt: Double) {
         let fall = Float(pow(10.0, -Self.fallDbPerSecond * min(max(dt, 0), 1) / 20))
-        var changed = Set<MeterSource>()
-        for key in Array(slots.keys) {
-            guard var slot = slots[key] else { continue }
-            if slot.advance(fall: fall) { changed.insert(key) }
-            slots[key] = slot.silentTicks > Self.idleTicks ? nil : slot
+        var any = false
+        var idle = false
+        // In place through `values`: no copy of a slot's arrays and no key list per frame.
+        for i in slots.values.indices {
+            let changed = slots.values[i].advance(fall: fall)
+            slots.values[i].changed = changed
+            any = any || changed
+            idle = idle || slots.values[i].silentTicks > Self.idleTicks
         }
-        if changed.isEmpty { return }
-        for v in views.values {
-            if let s = v.source, changed.contains(s) { v.needsDisplay = true }
+        if any {
+            for w in views.values {
+                if let v = w.view, let s = v.source, slots[s]?.changed == true { v.invalidate() }
+            }
         }
+        if idle { slots = slots.filter { $0.value.silentTicks <= Self.idleTicks } }
     }
 
     private static func timerTicker(_ handler: @escaping @MainActor (Double) -> Void) -> () -> Void {
@@ -180,9 +188,19 @@ final class MeterView: NSView {
     weak var bank: MeterBank? {
         didSet { if oldValue !== bank { updateLive(old: oldValue) } }
     }
-    var source: MeterSource?
+    var source: MeterSource? {
+        didSet { if oldValue != source { invalidate() } }
+    }
     private var attachedTo: MeterBank?
+    /// Redraws requested so far (tests count them: a view that cannot draw ignores `needsDisplay`).
+    private(set) var invalidations = 0
+
+    func invalidate() {
+        invalidations += 1
+        needsDisplay = true
+    }
     private var observer: NSObjectProtocol?
+    private var closeObserver: NSObjectProtocol?
     /// The window says it is covered or off screen (set by its occlusion notification, so a window
     /// that never reports one counts as showing).
     private var occluded = false
@@ -196,13 +214,24 @@ final class MeterView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let observer { NotificationCenter.default.removeObserver(observer) }
+        closeObserver.map(NotificationCenter.default.removeObserver)
         observer = nil
+        closeObserver = nil
         occluded = false
         if let w = window {
-            observer = NotificationCenter.default.addObserver(
-                forName: NSWindow.didChangeOcclusionStateNotification, object: w, queue: .main
+            closeObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: w, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
+                    self?.occluded = true
+                    self?.updateLive()
+                }
+            }
+            observer = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification, object: w, queue: .main
+            ) { [weak self, weak w] _ in
+                MainActor.assumeIsolated {
+                    guard let w else { return }
                     self?.occluded = !w.occlusionState.contains(.visible)
                     self?.updateLive()
                 }
@@ -237,7 +266,7 @@ final class MeterView: NSView {
         attachedTo?.detach(self)
         attachedTo = want
         want?.attach(self)
-        needsDisplay = true
+        invalidate()
     }
 
     /// 0...1 bar fill of a linear peak on a 60 dB scale.
