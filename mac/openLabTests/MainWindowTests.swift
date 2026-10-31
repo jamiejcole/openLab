@@ -63,12 +63,72 @@ final class MainWindowTests: XCTestCase {
         XCTAssertFalse(wc.inspector.emptyLabel.isHidden)
     }
 
-    func testSymbolsResolve() {
-        let names =
-            CueToolbarView.symbolNames + SidebarViewController.symbolNames + FooterBar.symbolNames
-        for name in names {
-            XCTAssertNotNil(NSImage(systemSymbolName: name, accessibilityDescription: nil), name)
+    func testFooterCountsCuesAndListsAndFollowsAddsAndDeletes() async throws {
+        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
+        let rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: base))
+        let connected = await rig.connect()
+        XCTAssertTrue(connected)
+        let wc = WorkspaceWindowController(store: rig.store)
+        XCTAssertEqual(wc.footer.countLabel.stringValue, "6 cues in 1 list")
+        let id = "00000000-0000-0000-0000-0000000000d1"
+        let cue = FakeEngine.cueJSON(id: id, number: nil, name: "New", kind: FakeEngine.audioKind("/tmp/a.wav"))
+        let add = try CueListHarness.upsertJSON(cue, index: 0)
+        let revision = rig.store.revision + 1
+        XCTAssertEqual(
+            rig.store.receive(
+                try ServerMessage.decode(
+                    #"{"type":"model_changed","revision":\#(revision),"upserts":[\#(add)],"deletes":[]}"#)),
+            .applied)
+        XCTAssertEqual(wc.footer.countLabel.stringValue, "7 cues in 1 list")
+        // Deleting a group takes its children with it.
+        XCTAssertEqual(
+            rig.store.receive(
+                try ServerMessage.decode(
+                    #"{"type":"model_changed","revision":\#(revision + 1),"upserts":[],"deletes":[{"type":"cue","id":"\#(CueListHarness.group)"}]}"#
+                )), .applied)
+        XCTAssertEqual(wc.footer.countLabel.stringValue, "3 cues in 1 list")
+    }
+
+    func testCountTextPluralForms() {
+        XCTAssertEqual(FooterBar.countText(cues: 1, lists: 1), "1 cue in 1 list")
+        XCTAssertEqual(FooterBar.countText(cues: 0, lists: 2), "0 cues in 2 lists")
+    }
+
+    func testEveryIconAndFallbackResolves() {
+        for icon in Icon.allCases {
+            let e = icon.entry
+            XCTAssertNotNil(NSImage(systemSymbolName: e.symbol, accessibilityDescription: nil), "\(icon) \(e.symbol)")
+            XCTAssertTrue(icon.resolvesToSymbol, "\(icon)")
+            if let fb = e.fallback {
+                XCTAssertNotNil(NSImage(systemSymbolName: fb, accessibilityDescription: nil), "\(icon) fallback \(fb)")
+            }
+            // Deployment target is macOS 12: a newer symbol must come with a fallback, and no row
+            // may need more than 12 without one.
+            XCTAssertLessThanOrEqual(e.minMacOS, 12, "\(icon) needs macOS \(e.minMacOS)")
+            if e.minMacOS > 10 { XCTAssertNotNil(e.fallback, "\(icon) has no fallback") }
         }
+        // The call sites that expose their icons use only table rows.
+        XCTAssertFalse((CueToolbarView.icons + SidebarViewController.icons + FooterBar.icons).isEmpty)
+    }
+
+    func testMissingSymbolFallsBackThenShowsTheLocalisedNameAndLogsOnce() {
+        defer { IconLookup.shared.setLookup(nil) }
+        // The primary name vanishes: the fallback symbol shows.
+        IconLookup.shared.setLookup { $0 != "gearshape" }
+        XCTAssertNotNil(Icon.settings.image("Settings").accessibilityDescription)
+        XCTAssertTrue(Icon.settings.resolvesToSymbol)
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape"])
+        // Both vanish: a text image carrying the label, logged once per name.
+        IconLookup.shared.setLookup { _ in false }
+        let text = Icon.settings.image("Settings")
+        XCTAssertEqual(text.accessibilityDescription, "Settings")
+        XCTAssertTrue(text.isTemplate)
+        XCTAssertGreaterThan(text.size.width, Icon.settings.image("S", compact: true).size.width)
+        _ = Icon.settings.image("Settings")
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape"])
+        _ = Icon.kindAudio.image("Audio")
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape", "speaker.wave.2"])
+        XCTAssertFalse(Icon.settings.resolvesToSymbol)
     }
 
     func testEveryDottedStringLiteralInSourcesIsLocalised() throws {

@@ -54,15 +54,17 @@ extension AppController {
         return true
     }
 
-    /// Runs `command` on the key window's workspace (Panic: every workspace). A held key is ignored
+    /// Runs `command` on `target`, else the key window's workspace (Panic: every workspace). A held key is ignored
     /// after its first press: a repeating GO would fire cue after cue.
-    func perform(_ command: TransportCommand, isRepeat: Bool = false) async {
+    func perform(_ command: TransportCommand, isRepeat: Bool = false, on target: WorkspaceWindowController? = nil)
+        async
+    {
         guard !isRepeat else { return }
         if command == .panic {
             _ = await panicAll()
             return
         }
-        guard let wc = frontController else { return }
+        guard let wc = target ?? frontController else { return }
         let store = wc.store
         let selected = wc.cueList.selectedIDs()
         let list = wc.cueList.listID  // the list picked in the sidebar

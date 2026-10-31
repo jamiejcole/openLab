@@ -353,7 +353,6 @@ fn two_patch_show_with(
             PatchOutput {
                 level_db: 0.0,
                 mute: false,
-                delay_ms: 0.0,
                 polarity_inverted: false,
             };
             1

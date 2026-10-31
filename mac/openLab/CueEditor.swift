@@ -7,8 +7,12 @@ import AppKit
 /// first, and sends core's commands through the store; the cue list follows the engine's echo.
 ///
 /// Why it behaves this way (QLab 5's shortcuts page gives the keys only; where it is silent the safest
-/// live-show choice is used): a new cue goes after the last selected cue, beside it, never inside a
-/// selected group; delete has no prompt (one undo step) but refuses a cue that is running, paused,
+/// live-show choice is used): a new cue goes after the last selected cue, beside it, in the same
+/// group; with a group selected it goes into that group, as its last child (assumed, QLab's pages
+/// are silent). A new Group made with two or more cues selected takes those cues in, in list order, at
+/// the place of the first (QLab's Group cue page), as one undo step of existing commands; a selected
+/// child of a selected group goes with its group, and busy cues are moved, never stopped or started
+/// (a group answers only runs it started). Delete has no prompt (one undo step) but refuses a cue that is running, paused,
 /// waiting, fading, stopping or previewing, or a group holding one; deleting a group deletes its
 /// children; a drop on a group appends to it, on a cue goes after it, never into the cue's own
 /// descendants; the audio cue needs a patch. Undo and redo are the engine's and are not guarded: an
@@ -50,13 +54,32 @@ final class CueEditor {
         return true
     }
 
-    /// Where a new cue goes: right after the last selected cue, beside it (a selected group gets
-    /// the cue after it, not inside); with nothing selected, at the end of the list.
+    /// Where a new cue goes: right after the last selected cue, beside it in the same group; a
+    /// selected group takes it in as its last child; with nothing selected, at the end of the list.
     static func insertion(selected: [CueNode], roots: [CueNode]) -> (parent: ModelID?, index: Int) {
         guard let last = selected.last else { return (nil, roots.count) }
+        if last.isGroup { return (last.id, last.children.count) }
         let siblings = last.parent?.children ?? roots
         let at = siblings.firstIndex { $0 === last } ?? siblings.count - 1
         return (last.parent?.id, at + 1)
+    }
+
+    /// The commands that make the new group `group` (id `groupID`) from `selected` (in list order):
+    /// the group goes where the first selected cue is, then each selected cue moves into it in order.
+    /// A selected cue inside a selected group goes with its group. Nil when fewer than two cues are
+    /// selected: the group is then added as any new cue. Ancestors precede descendants in list order,
+    /// so no selected cue holds the first one and the group never lands inside a cue it takes in.
+    static func groupCommands(
+        list: ModelID, group: JSONValue, groupID: ModelID, selected: [CueNode], roots: [CueNode]
+    ) -> [Command]? {
+        guard selected.count >= 2 else { return nil }
+        let nodes = topLevel(selected)
+        guard let first = nodes.first else { return nil }
+        let siblings = first.parent?.children ?? roots
+        guard let at = siblings.firstIndex(where: { $0 === first }) else { return nil }
+        let add = Command.addCue(group, list: list, parent: first.parent?.id, index: at)
+        return [add]
+            + nodes.enumerated().map { i, node in .reparentCue(node.id, list: list, parent: groupID, index: i) }
     }
 
     /// The nodes whose ancestors are not in the set, in the given order.
@@ -136,8 +159,18 @@ final class CueEditor {
             notify(loc("edit.error.noPatch"))
             return nil
         }
-        let place = Self.insertion(selected: selectedNodes(), roots: (cueList?.roots ?? []))
-        let command = Command.addCue(cue, list: list, parent: place.parent, index: place.index)
+        let selected = selectedNodes()
+        let roots = cueList?.roots ?? []
+        let command: Command
+        if kind == .group,
+            let wrap = Self.groupCommands(list: list, group: cue, groupID: id, selected: selected, roots: roots),
+            let all = Command.transaction(wrap)
+        {
+            command = all
+        } else {
+            let place = Self.insertion(selected: selected, roots: roots)
+            command = Command.addCue(cue, list: list, parent: place.parent, index: place.index)
+        }
         guard report(await store.send(command: command)) else { return nil }
         cueList?.selectAsUser([id])
         return id

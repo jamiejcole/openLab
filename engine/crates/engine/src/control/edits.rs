@@ -36,11 +36,11 @@ impl DocCx<'_> {
             LogLevel::Error,
             format!("workspace partly changed: {error}"),
         );
-        self.doc.engine.model_changed();
+        // The cue engine was told by the edit's guard (`WorkspaceEdit::ended`).
         self.doc.revision += 1;
         // Not `reset`: the files are the same, so their probe results stay (a cue started
         // meanwhile must not find them pending).
-        self.doc.media.sync(&self.doc.ws);
+        self.doc.media.sync(self.doc.model.ws());
         let inputs = self.sync_workspace(false);
         self.document();
         for input in inputs {
@@ -50,30 +50,22 @@ impl DocCx<'_> {
         self.feed(Input::Tick, now);
     }
 
-    /// Signals a workspace change to the engine (before its next `handle`, M4.2 contract) and
-    /// the clients (one `model_changed` for `footprint`'s cues, M4.1a), and follows it on the
-    /// audio side. Returns the inputs that must follow (patch resolutions).
+    /// Signals a workspace change to the clients (one `model_changed` for `footprint`'s cues,
+    /// M4.1a) and follows it on the audio side; the cue engine was told by the edit itself
+    /// (`DocModel::edit`). Returns the inputs that must follow (patch resolutions).
     /// An Arm/Disarm change (`SetArmed`) goes through here too: it is saved with the show, so it
     /// makes the document dirty (as in QLab 5), but it is not an undo step.
     pub(super) fn model_changed(&mut self, footprint: &Footprint) -> Vec<Input> {
-        // Lists, patches and settings decide which cues are broken and where the playheads are:
-        // the cue-scoped shortcut is only for edits that touched cues alone.
-        if footprint.is_model_wide() {
-            self.doc.engine.model_changed();
-        } else {
-            self.doc.engine.model_changed_cues(footprint);
-        }
         self.doc.revision += 1;
         // The catalog's cue index follows the edit first; the changes are read through it, at
         // the cost of the edit's cues (M4.12c). The walk is the fallback.
-        self.doc.media.sync_cues(&self.doc.ws, footprint);
+        self.doc.media.sync_cues(self.doc.model.ws(), footprint);
         let (upserts, deletes) =
-            model_changes_indexed(&self.doc.ws, footprint, self.doc.media.index()).unwrap_or_else(
-                || {
+            model_changes_indexed(self.doc.model.ws(), footprint, self.doc.media.index())
+                .unwrap_or_else(|| {
                     self.doc.model_change_walks += 1;
-                    model_changes(&self.doc.ws, footprint)
-                },
-            );
+                    model_changes(self.doc.model.ws(), footprint)
+                });
         self.eng.out.send(
             Some(self.doc.id),
             ServerMessage::ModelChanged {
@@ -92,12 +84,12 @@ impl DocCx<'_> {
         self.doc.primes_dirty = true;
         let inputs = self.sync_patches(all);
         let now = self.now();
-        self.doc.net.sync(&self.doc.ws.network_patches, now);
+        self.doc.net.sync(&self.doc.model.ws().network_patches, now);
         inputs
     }
 
     /// Resolves the patches against the playable devices and brings the mixer's matrices (with
-    /// the workspace master folded in) and output delays up to date. Returns the
+    /// the workspace master folded in) up to date. Returns the
     /// `Availability` for the patches whose resolution changed (`all`: every patch).
     pub(super) fn sync_patches(&mut self, all: bool) -> Vec<Input> {
         self.map_unmapped_patches();
@@ -106,7 +98,7 @@ impl DocCx<'_> {
         let busy = self.doc.voices.slots_in_use();
         let (cmds, changed) = self.eng.patches.sync(
             self.doc.id,
-            &self.doc.ws,
+            self.doc.model.ws(),
             &self.eng.config.machine,
             &self.eng.playable,
             &busy,
@@ -118,9 +110,9 @@ impl DocCx<'_> {
         // After the routing: a voice whose cue now names another patch follows it (#293).
         let moves = self.doc.voices.follow_patches(
             self.doc.id,
-            &self.doc.ws,
+            self.doc.model.ws(),
             &self.eng.patches,
-            &self.doc.engine,
+            self.doc.model.engine(),
             now,
         );
         if !moves.is_empty() {
@@ -172,7 +164,11 @@ mod tests {
         s.take_outbound();
         // What the failed transaction did before it stopped, with history cleared as core does.
         let c = s.control_mut();
-        c.docs[0].ws.apply(Command::RemoveCue { id: cue }).unwrap();
+        c.docs[0]
+            .model
+            .edit()
+            .apply(Command::RemoveCue { id: cue })
+            .unwrap();
         c.docs[0].history.clear();
         let now = s.now();
         s.control_mut()
@@ -305,6 +301,7 @@ mod tests {
     fn a_command_whose_rollback_fails_is_an_unundoable_edit() {
         let mut s = two_cue_show();
         let before = s.control().revision();
+        let syncs = s.control().engine().model_syncs();
         s.take_outbound();
         openlab_core::fault::inject(0, 1, true);
         let id = s.request_id();
@@ -314,6 +311,8 @@ mod tests {
             coalesce: None,
         });
         assert_partly_changed(&mut s, &replies, before);
+        // The workspace's write guard told the engine (no signal by hand), in every build.
+        assert!(s.control().engine().model_syncs() > syncs);
         // The first rename stayed; the second never ran.
         let names: Vec<_> = s.control().workspace().cue_lists[0]
             .cues
@@ -339,7 +338,8 @@ mod tests {
         // rollback is wrong.
         let c = s.control_mut();
         c.docs[0]
-            .ws
+            .model
+            .edit()
             .apply(Command::RemoveCue {
                 id: CueId(uuid_zero()),
             })
@@ -368,7 +368,8 @@ mod tests {
         send_ok(&mut s, ClientMessage::Undo { id });
         let c = s.control_mut();
         c.docs[0]
-            .ws
+            .model
+            .edit()
             .apply(Command::RemoveCue {
                 id: CueId(uuid::Uuid::from_u128(1)),
             })

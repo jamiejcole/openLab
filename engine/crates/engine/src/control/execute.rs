@@ -56,7 +56,7 @@ impl DocCx<'_> {
             let floor = self.stop_floor();
             let mut env = Env {
                 doc: self.doc.id,
-                ws: &self.doc.ws,
+                ws: self.doc.model.ws(),
                 media: &self.doc.media,
                 streamer: &mut self.eng.streamer,
                 patches: &self.eng.patches,
@@ -98,8 +98,8 @@ impl DocCx<'_> {
                 );
                 break;
             }
-            let actions = self.doc.engine.handle(&self.doc.ws, input, now);
-            let unsignalled = self.doc.engine.unsignalled_model_changes();
+            let actions = self.doc.model.handle(input, now);
+            let unsignalled = self.doc.model.engine().unsignalled_model_changes();
             if unsignalled > self.doc.seen_unsignalled {
                 self.doc.seen_unsignalled = unsignalled;
                 self.log(
@@ -121,7 +121,7 @@ impl DocCx<'_> {
             let floor = self.stop_floor();
             let mut env = Env {
                 doc: self.doc.id,
-                ws: &self.doc.ws,
+                ws: self.doc.model.ws(),
                 media: &self.doc.media,
                 streamer: &mut self.eng.streamer,
                 patches: &self.eng.patches,
@@ -132,7 +132,7 @@ impl DocCx<'_> {
                 floor,
             };
             for action in actions {
-                if let Some(change) = RuntimeChange::from_action(action, &self.doc.engine) {
+                if let Some(change) = RuntimeChange::from_action(action, self.doc.model.engine()) {
                     changes.push(change);
                 }
                 if matches!(action, Action::PlayheadChanged { .. }) {
@@ -143,10 +143,13 @@ impl DocCx<'_> {
         }
         for action in actions {
             match action {
-                Action::SetArmed { cue, armed: value }
-                    if set_armed(&mut self.doc.ws, *cue, *value) =>
-                {
-                    armed.push(*cue);
+                Action::SetArmed { cue, armed: value } => {
+                    let mut edit = self.doc.model.edit();
+                    let applied = set_armed(&mut edit, *cue, *value);
+                    edit.touched(&Footprint::edited([*cue]));
+                    if applied {
+                        armed.push(*cue);
+                    }
                 }
                 Action::SendOsc {
                     cue,

@@ -73,6 +73,7 @@ enum AX {
     static let statusLabel = "status-label"
     static let statusDetails = "status-details"
     static let footerNotice = "footer-notice"
+    static let footerCount = "footer-count"
     static let sidebarWarnings = "sidebar-warnings"
     static let warningsCount = "warnings-count"
     static let warningRelink = "warning-relink"
@@ -95,8 +96,4 @@ extension NSView {
         setAccessibilityIdentifier(id)
         if let label { setAccessibilityLabel(label) }
     }
-}
-
-func symbolImage(_ name: String, _ description: String) -> NSImage? {
-    NSImage(systemSymbolName: name, accessibilityDescription: description)
 }

@@ -26,7 +26,7 @@ final class ActiveCueCell: NSTableCellView {
             b.imageScaling = .scaleProportionallyDown
             b.setContentHuggingPriority(.required, for: .horizontal)
         }
-        panicButton.image = symbolImage("exclamationmark.octagon", loc("activeCue.panic"))
+        panicButton.image = Icon.activeCuePanic.image(loc("activeCue.panic"))
         panicButton.toolTip = loc("activeCue.panic")
         panicButton.setAccessibilityLabel(loc("activeCue.panic"))
         panicButton.setAccessibilityIdentifier(AX.activeCuePanic)
@@ -81,7 +81,7 @@ final class WarningCell: NSTableCellView {
         super.init(frame: .zero)
         identifier = NSUserInterfaceItemIdentifier("warning")
         let marker = NSImageView(
-            image: symbolImage("exclamationmark.triangle.fill", loc("warnings.marker")) ?? NSImage())
+            image: Icon.warningMarker.image(loc("warnings.marker"), compact: true))
         marker.setContentHuggingPriority(.required, for: .horizontal)
         marker.contentTintColor = .systemOrange
         title.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -120,14 +120,14 @@ final class WarningCell: NSTableCellView {
 /// reports intents through closures; it never talks to the engine.
 @MainActor
 final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
-    private static let transport: [(id: String, symbol: String, key: String)] = [
-        (AX.transportReset, "stop.circle", "transport.reset"),
-        (AX.transportPause, "pause.circle", "transport.pause"),
-        (AX.transportResume, "play.circle", "transport.resume"),
-        (AX.transportPanic, "exclamationmark.octagon", "transport.panic"),
+    private static let transport: [(id: String, icon: Icon, key: String)] = [
+        (AX.transportReset, .transportReset, "transport.reset"),
+        (AX.transportPause, .transportPause, "transport.pause"),
+        (AX.transportResume, .transportResume, "transport.resume"),
+        (AX.transportPanic, .transportPanic, "transport.panic"),
     ]
 
-    static var symbolNames: [String] { transport.map(\.symbol) + ["pause.fill", "play.fill"] }
+    static var icons: [Icon] { transport.map(\.icon) + [.activeCuePause, .activeCueResume, .activeCuePanic] }
 
     let store: WorkspaceStore
     let tabs = NSSegmentedControl(
@@ -209,7 +209,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         for entry in Self.transport {
             let name = loc(entry.key)
             let button = NSButton(
-                image: symbolImage(entry.symbol, name) ?? NSImage(), target: nil, action: nil)
+                image: entry.icon.image(name), target: nil, action: nil)
             button.setAX(entry.id, label: name)
             button.toolTip = name
             button.bezelStyle = .texturedRounded
@@ -591,7 +591,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         cell.pauseButton.cue = id
         cell.panicButton.cue = id
         let pauseName = loc(paused ? "activeCue.resume" : "activeCue.pause")
-        cell.pauseButton.image = symbolImage(paused ? "play.fill" : "pause.fill", pauseName)
+        cell.pauseButton.image = (paused ? Icon.activeCueResume : Icon.activeCuePause).image(pauseName)
         cell.pauseButton.toolTip = pauseName
         cell.pauseButton.setAccessibilityLabel(pauseName)
         cell.pauseButton.isEnabled = state != .stopping

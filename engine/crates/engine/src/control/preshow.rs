@@ -30,13 +30,13 @@ impl DocCx<'_> {
             self.doc.warnings_dirty = false;
             self.refresh_warnings();
         }
-        let ws = &self.doc.ws;
+        let ws = self.doc.model.ws();
         let places = places(ws);
         let mut broken_cues = Vec::new();
         let mut media: BTreeMap<String, (PreshowMediaStatus, Option<String>, Vec<CueId>)> =
             BTreeMap::new();
         let mut missing_patches: BTreeSet<PatchId> = BTreeSet::new();
-        for (cue, problems) in self.doc.engine.broken_cues() {
+        for (cue, problems) in self.doc.model.engine().broken_cues() {
             let Some(&(list, number, name)) = places.get(&cue) else {
                 continue;
             };

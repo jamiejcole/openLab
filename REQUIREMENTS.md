@@ -151,7 +151,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - [ ] **AUD-04** `v0.0.1` File formats: WAV, AIFF, FLAC, MP3, AAC/M4A, OGG; 16/24/32-bit int and float; any common sample rate with high-quality resampling to the device rate.
 - [ ] **AUD-05** `v0.0.1` Stream from disk with read-ahead buffering; optional preload-to-RAM per cue for short or critical files.
 - [ ] **AUD-06** `v0.0.1` Routing matrix per cue: file channels → cue outputs → patch outputs, with crosspoint levels (dB) and mute.
-- [ ] **AUD-07** `v0.0.1` Output patches: named logical outputs mapped to device channels, with per-output level, mute, delay (speaker alignment) and polarity.
+- [ ] **AUD-07** `v0.0.1` Output patches: named logical outputs mapped to device channels, with per-output level, mute and polarity (no per-output delay: QLab 5 has none).
 - [ ] **AUD-08** `v0.0.1` Cue master level, per-channel levels, ganging of channels.
 - [ ] **AUD-09** `v0.0.1` Fade curves: linear, equal-power, S-curve, logarithmic, exponential; custom curves.
 - [ ] **AUD-10** `v0.0.1` Integrated fade-in/fade-out inside an Audio cue.

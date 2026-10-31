@@ -17,7 +17,8 @@ use proptest::prelude::*;
 use proptest::{collection::vec, option};
 
 /// The current format (golden: saved files must match it byte for byte).
-const EXAMPLE: &str = include_str!("../../../fixtures/show/v6-example.openlab");
+const EXAMPLE: &str = include_str!("../../../fixtures/show/v7-example.openlab");
+const V6_EXAMPLE: &str = include_str!("../../../fixtures/show/v6-example.openlab");
 const V5_EXAMPLE: &str = include_str!("../../../fixtures/show/v5-example.openlab");
 const V4_EXAMPLE: &str = include_str!("../../../fixtures/show/v4-example.openlab");
 const V3_EXAMPLE: &str = include_str!("../../../fixtures/show/v3-example.openlab");
@@ -85,7 +86,7 @@ fn golden_fixture_is_in_canonical_form() {
 #[test]
 fn v3_fixture_with_a_passcode_migrates_to_a_row_with_all_rights() {
     let loaded = load_show(V3_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.warnings, vec![delays_removed()]);
     let current = load_show(EXAMPLE).unwrap().workspace;
     assert_eq!(loaded.workspace, current);
     assert_eq!(
@@ -104,7 +105,7 @@ fn v3_fixture_with_a_passcode_migrates_to_a_row_with_all_rights() {
 #[test]
 fn v3_fixture_without_a_passcode_migrates_to_open_no_passcode_rights() {
     let loaded = load_show(V3_NO_PASSCODE).unwrap();
-    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.warnings, vec![delays_removed()]);
     assert_eq!(loaded.workspace.settings.osc_access, OscAccess::default());
     assert_eq!(
         loaded.workspace.settings.osc_access.no_passcode,
@@ -123,7 +124,7 @@ fn v3_fixture_without_a_passcode_migrates_to_open_no_passcode_rights() {
 #[test]
 fn v4_fixture_migrates_to_the_selected_cue_keys() {
     let loaded = load_show(V4_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.warnings, vec![delays_removed()]);
     let keys = &loaded.workspace.settings.hotkeys;
     assert_eq!(keys.stop_all, None);
     assert_eq!(keys.go.as_ref().unwrap().key, "space");
@@ -145,18 +146,92 @@ fn v4_fixture_migrates_to_the_selected_cue_keys() {
 }
 
 /// v6 dropped the Next / Previous Cue keys (QLab's key map has none and takes no arrow keys).
-/// The v5 example, which has the defaults Shift-Command-Down / Up, loads without a warning and is
-/// the current example.
+/// The v5 example, which has the defaults Shift-Command-Down / Up, loads without a warning for
+/// them and is the current example.
 #[test]
 fn v5_fixture_migrates_by_dropping_the_playhead_keys() {
     let loaded = load_show(V5_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.warnings, vec![delays_removed()]);
     assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
     let migrated = migrate(serde_json::from_str(V5_EXAMPLE).unwrap(), 5).unwrap();
     let keys = &migrated["workspace"]["settings"]["hotkeys"];
     assert!(keys.get("playhead_next").is_none() && keys.get("playhead_previous").is_none());
     assert_eq!(keys["go"]["key"], "space", "the other keys stay");
     assert_eq!(migrated["format_version"], FORMAT_VERSION);
+}
+
+/// The one warning a show older than v7 whose patches delayed an output loads with.
+fn delays_removed() -> ValidationIssue {
+    ValidationIssue {
+        severity: Severity::Warning,
+        cue_id: None,
+        kind: IssueKind::OutputDelaysRemoved,
+    }
+}
+
+/// v7 dropped the patch output delays (QLab 5 has no per-output delay). The v6 example, with a
+/// 2.5 ms delay on one output, loads as the current example with one warning saying the delay is
+/// gone; saved, it is the current format with no trace of it.
+#[test]
+fn v6_fixture_migrates_by_dropping_the_output_delays_with_one_warning() {
+    let loaded = load_show(V6_EXAMPLE).unwrap();
+    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert!(loaded.warnings[0].to_string().contains("undelayed"));
+    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+    let migrated = migrate(serde_json::from_str(V6_EXAMPLE).unwrap(), 6).unwrap();
+    let outputs = &migrated["workspace"]["patches"][0]["outputs"];
+    assert!(outputs[1].get("delay_ms").is_none());
+    assert_eq!(outputs[1]["level_db"], -1.5, "the other settings stay");
+    assert_eq!(migrated["format_version"], FORMAT_VERSION);
+    let text = save_show(&loaded.workspace).unwrap();
+    assert_eq!(text, EXAMPLE);
+    assert_eq!(load_show(&text).unwrap().warnings, vec![]);
+}
+
+/// Only a delay that did something warns: every delay at 0 (or none written) loads silently. A
+/// value that is not even a number counts as the user's; a document not shaped like a workspace
+/// is left for the model parse.
+#[test]
+fn a_v6_output_delay_warns_only_when_it_was_set() {
+    let load = |delay: Option<serde_json::Value>| {
+        let mut doc: serde_json::Value = serde_json::from_str(V6_EXAMPLE).unwrap();
+        for output in doc["workspace"]["patches"][0]["outputs"]
+            .as_array_mut()
+            .unwrap()
+        {
+            let output = output.as_object_mut().unwrap();
+            match &delay {
+                Some(d) => output.insert("delay_ms".into(), d.clone()),
+                None => output.remove("delay_ms"),
+            };
+        }
+        load_show(&doc.to_string()).unwrap()
+    };
+    let current = load_show(EXAMPLE).unwrap().workspace;
+    for (delay, warned) in [
+        (Some(serde_json::json!(0.0)), false),
+        (Some(serde_json::json!(0)), false),
+        (None, false),
+        (Some(serde_json::json!(1000.0)), true),
+        (Some(serde_json::json!(-1.0)), true),
+        (Some(serde_json::json!("soon")), true),
+    ] {
+        let show = load(delay.clone());
+        let want = if warned {
+            vec![delays_removed()]
+        } else {
+            vec![]
+        };
+        assert_eq!(show.warnings, want, "{delay:?}");
+        assert_eq!(show.workspace, current, "{delay:?}");
+    }
+    let not_a_workspace = r#"{"format_version": 6, "workspace": {"patches": [7, {"outputs": 3}]}}"#;
+    assert!(matches!(
+        load_show(not_a_workspace),
+        Err(LoadError::Model(_))
+    ));
+    let no_workspace = r#"{"format_version": 6, "workspace": 3}"#;
+    assert!(matches!(load_show(no_workspace), Err(LoadError::Model(_))));
 }
 
 /// A v5 show whose own Next / Previous Cue key is not the default loses it with one warning;
@@ -340,7 +415,7 @@ fn cue_named<'a>(ws: &'a Workspace, name: &str) -> &'a Cue {
 #[test]
 fn v1_fixture_migrates_with_default_second_triggers() {
     let loaded = load_show(V1_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.warnings, vec![delays_removed()]);
     let mut ws = loaded.workspace;
     let mut count = 0;
     for list in &ws.cue_lists {
@@ -402,7 +477,7 @@ fn devamp_modes(ws: &Workspace) -> Vec<DevampMode> {
 #[test]
 fn v2_fixture_migrates_with_devamp_mode_current_slice() {
     let loaded = load_show(V2_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.warnings, vec![delays_removed()]);
     let mut ws = loaded.workspace;
     assert_eq!(devamp_modes(&ws), vec![DevampMode::CurrentSlice]);
     let current = load_show(EXAMPLE).unwrap().workspace;
@@ -503,6 +578,7 @@ fn v2_fades_aimed_at_groups_are_pointed_out_on_load() {
                 Some(cue_id(0xf1)),
                 IssueKind::GroupFadeNowRelative
             ),
+            (Severity::Warning, None, IssueKind::OutputDelaysRemoved),
         ]
     );
     assert!(loaded.warnings[0].to_string().contains("relative"));
@@ -516,7 +592,10 @@ fn v2_fades_aimed_at_groups_are_pointed_out_on_load() {
     let again = load_show(&save_show(&loaded.workspace).unwrap()).unwrap();
     assert_eq!(again.warnings, vec![]);
     // The unchanged v2 example's only Fade targets an audio cue.
-    assert_eq!(load_show(V2_EXAMPLE).unwrap().warnings, vec![]);
+    assert_eq!(
+        load_show(V2_EXAMPLE).unwrap().warnings,
+        vec![delays_removed()]
+    );
 }
 
 #[test]
@@ -620,18 +699,18 @@ fn migrate_is_identity_from_current_version() {
 
 #[test]
 fn too_new_format_version_is_refused_naming_both_versions() {
-    let text = EXAMPLE.replacen("\"format_version\": 6", "\"format_version\": 7", 1);
+    let text = EXAMPLE.replacen("\"format_version\": 7", "\"format_version\": 8", 1);
     let err = load_show(&text).unwrap_err();
     assert!(matches!(
         err,
         LoadError::TooNew {
-            found: 7,
+            found: 8,
             supported: FORMAT_VERSION
         }
     ));
     let message = err.to_string();
     assert!(
-        message.contains('7') && message.contains(&FORMAT_VERSION.to_string()),
+        message.contains('8') && message.contains(&FORMAT_VERSION.to_string()),
         "{message}"
     );
 
@@ -1183,20 +1262,14 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
 }
 
 fn any_patch() -> impl Strategy<Value = (String, f64, Vec<PatchOutput>)> {
-    let output = (
-        level(),
-        any::<bool>(),
-        num(0.0..=MAX_DELAY_MS),
-        any::<bool>(),
-    )
-        .prop_map(
-            |(level_db, mute, delay_ms, polarity_inverted)| PatchOutput {
+    let output =
+        (level(), any::<bool>(), any::<bool>()).prop_map(|(level_db, mute, polarity_inverted)| {
+            PatchOutput {
                 level_db,
                 mute,
-                delay_ms,
                 polarity_inverted,
-            },
-        );
+            }
+        });
     (text(), level(), vec(output, 0..5))
 }
 

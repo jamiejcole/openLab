@@ -133,11 +133,11 @@ impl Control {
             FaultStage::Output(o) if disabled => {
                 faults.outputs.insert(o);
             }
+            // Nothing to send: the output has no setting of its own.
             FaultStage::Output(o) => {
-                commands.extend(self.eng.patches.resend_output(o));
                 told = Some(format!(
-                    "device output {} failed in the audio engine and was reset: it may have \
-                     dropped out briefly",
+                    "device output {} failed in the audio engine: it may have dropped out \
+                     briefly",
                     u32::from(o) + 1
                 ));
             }
@@ -249,7 +249,8 @@ impl DocCx<'_> {
         let now = self.now();
         let name = self
             .doc
-            .ws
+            .model
+            .ws()
             .patches
             .iter()
             .find(|p| p.id == patch)
@@ -330,7 +331,6 @@ mod tests {
         let output = openlab_core::PatchOutput {
             level_db: 0.0,
             mute: false,
-            delay_ms: 0.0,
             polarity_inverted: false,
         };
         ws.patches.push(openlab_core::OutputPatch {
@@ -413,19 +413,6 @@ mod tests {
                 }
             }
         };
-        let quiet_output = |s: &mut OfflineShow| {
-            let settings = openlab_audio::OutputSettings {
-                level: 0.0,
-                ..Default::default()
-            };
-            mixer_does(
-                s,
-                CommandKind::SetOutput {
-                    output: 0,
-                    settings,
-                },
-            );
-        };
         let quiet_master =
             |s: &mut OfflineShow| mixer_does(s, CommandKind::SetMaster { gain: 0.0 });
 
@@ -434,8 +421,7 @@ mod tests {
         s.control_mut().stage_faulted(FaultStage::Master, false);
         assert_eq!(level_after(&mut s, 640), heard, "master");
 
-        quiet_output(&mut s);
-        assert_eq!(level_after(&mut s, 640), [0.0, heard[1]]);
+        // An output has nothing to send back: it plays on as it was.
         s.control_mut().stage_faulted(FaultStage::Output(0), false);
         assert_eq!(level_after(&mut s, 640), heard, "output");
 
@@ -447,7 +433,6 @@ mod tests {
 
         for (k, answer) in ["rebuild", "lost report"].into_iter().enumerate() {
             zero_slot(&mut s);
-            quiet_output(&mut s);
             quiet_master(&mut s);
             assert_eq!(level_after(&mut s, 640), [0.0, 0.0]);
             if k == 0 {

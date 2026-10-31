@@ -236,7 +236,7 @@ final class CueListTests: XCTestCase {
         let plain = try XCTUnwrap(h.spy.rowView(atRow: 0, makeIfNecessary: true) as? CueRowView)
         XCTAssertNil(plain.tint)
         // Every colour has its own shape (UI-04).
-        let shapes = CueKindStyle.colours.values.map(\.symbol)
+        let shapes = CueKindStyle.colours.values.map(\.icon.symbol)
         XCTAssertEqual(Set(shapes).count, shapes.count)
     }
 
@@ -465,12 +465,12 @@ final class CueListTests: XCTestCase {
             XCTAssertNotEqual(style.label, style.labelKey, "\(state) has no label string")
             XCTAssertFalse(style.label.isEmpty)
             if state == .idle {
-                XCTAssertNil(style.symbol)
+                XCTAssertNil(style.icon)
                 continue
             }
-            let symbol = try? XCTUnwrap(style.symbol, "\(state)")
-            XCTAssertNotNil(symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }, "\(state)")
-            XCTAssertTrue(symbols.insert(symbol ?? "").inserted, "\(state) shares a symbol")
+            let icon = try? XCTUnwrap(style.icon, "\(state)")
+            XCTAssertEqual(icon?.resolvesToSymbol, true, "\(state)")
+            XCTAssertTrue(symbols.insert(icon?.symbol ?? "").inserted, "\(state) shares a symbol")
         }
         XCTAssertEqual(
             Set(WireCueState.allCases.map { CueStateStyle.style(for: $0).label }).count, WireCueState.allCases.count)
@@ -754,5 +754,216 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "Storm")
         try h.change(deletes: [H.group])
         XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, loc("cue.target.missing"))
+    }
+}
+
+// MARK: Row context menu, time header toggles, warning marker
+
+extension CueListTests {
+    private func menu(_ h: H, _ id: ModelID, pasteboard: NSPasteboard? = nil) throws -> NSMenu {
+        if let pasteboard { h.vc.pasteboard = pasteboard }
+        let menu = NSMenu()
+        h.vc.prepareRowMenu(menu, row: h.spy.row(forItem: try XCTUnwrap(h.vc.node(id))))
+        return menu
+    }
+
+    private func enabled(_ menu: NSMenu) -> [CueRowMenu.Item: Bool] {
+        var out: [CueRowMenu.Item: Bool] = [:]
+        menu.update()  // AppKit's own pass must not change what the rules decided
+        for item in menu.items where !item.isSeparatorItem {
+            out[CueRowMenu.Item.allCases[item.tag]] = item.isEnabled
+        }
+        return out
+    }
+
+    private func privatePasteboard() -> NSPasteboard {
+        let pb = NSPasteboard(name: NSPasteboard.Name("dev.openlab.test.\(UUID().uuidString)"))
+        pb.clearContents()
+        return pb
+    }
+
+    func testRowMenuHasTheSupportedItemsInOrderOnExistingActions() async throws {
+        let h = try await H()
+        let m = try menu(h, H.intro, pasteboard: privatePasteboard())
+        XCTAssertEqual(
+            m.items.map { $0.isSeparatorItem ? "-" : $0.title },
+            [
+                "Preview", "Load", "Panic", "-", "Move Playhead to This Cue", "Reveal Target in Finder", "-", "Cut",
+                "Copy", "Paste", "Delete",
+            ])
+        XCTAssertTrue(m.items.filter { !$0.isSeparatorItem }.allSatisfy { $0.target === h.vc }, "this window's own")
+        let transport = m.items.filter { $0.action == #selector(CueListViewController.rowCommand(_:)) }
+        XCTAssertEqual(
+            transport.compactMap { $0.representedObject as? String }, ["previewSelected", "loadSelected", "panic"])
+    }
+
+    func testRightClickSelectsAnUnselectedRowButKeepsASelectionItIsIn() async throws {
+        let h = try await H()
+        h.vc.select([H.intro, H.fade])
+        _ = try menu(h, H.fade)
+        XCTAssertEqual(Set(h.vc.selectedIDs()), [H.intro, H.fade])
+        _ = try menu(h, H.group)
+        XCTAssertEqual(h.vc.selectedIDs(), [H.group])
+        let empty = NSMenu()
+        h.vc.prepareRowMenu(empty, row: -1)
+        XCTAssertTrue(empty.items.isEmpty)
+        XCTAssertEqual(h.vc.selectedIDs(), [H.group])
+    }
+
+    func testRowMenuItemsFollowSelectionStateAndClipboard() async throws {
+        let h = try await H()
+        let pb = privatePasteboard()
+        // A fade: no audio to preview, no file to reveal, nothing running to panic.
+        for (id, run) in h.store.cueStates where run.state.isActive {
+            try h.runtime(#"{"type":"cue_state","cue":"\#(id)","state":"idle"}"#)
+        }
+        var e = enabled(try menu(h, H.group, pasteboard: pb))
+        XCTAssertEqual(e[.preview], false)
+        XCTAssertEqual(e[.panic], false)
+        XCTAssertEqual(e[.revealTarget], false)
+        XCTAssertEqual(e[.paste], false)
+        for item in [CueRowMenu.Item.load, .movePlayhead, .cut, .copy, .delete] {
+            XCTAssertEqual(e[item], true, "\(item)")
+        }
+        // An audio cue with a file on disk: preview and reveal work; a running cue enables Panic.
+        let id = "00000000-0000-0000-0000-0000000000c1"
+        try h.change(upserts: [try H.upsertJSON(h.cue(id, "File", kind: FakeEngine.audioKind("/tmp/a.wav")), index: 3)])
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"running"}"#)
+        pb.setString("{}", forType: CueEditor.pasteType)
+        e = enabled(try menu(h, ModelID(id), pasteboard: pb))
+        XCTAssertEqual(e[.preview], true)
+        XCTAssertEqual(e[.revealTarget], true)
+        XCTAssertEqual(e[.panic], true)
+        XCTAssertEqual(e[.paste], true)
+        // A cue already holding the playhead has nowhere to move it.
+        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(id)"}"#)
+        XCTAssertEqual(enabled(try menu(h, ModelID(id)))[.movePlayhead], false)
+    }
+
+    func testShowModeLocksTheEditingItemsOfTheRowMenuOnly() async throws {
+        let h = try await H()
+        let pb = privatePasteboard()
+        pb.setString("{}", forType: CueEditor.pasteType)
+        h.store.setShowMode(true)
+        let e = enabled(try menu(h, H.group, pasteboard: pb))
+        for item in [CueRowMenu.Item.cut, .copy, .paste, .delete] { XCTAssertEqual(e[item], false, "\(item)") }
+        XCTAssertEqual(e[.load], true)
+        XCTAssertEqual(e[.movePlayhead], true)
+    }
+
+    func testMediaURLIsAbsoluteOrRelativeToTheSavedShow() {
+        XCTAssertEqual(CueRowMenu.mediaURL("/a/b.wav", showPath: nil)?.path, "/a/b.wav")
+        XCTAssertEqual(CueRowMenu.mediaURL("media/b.wav", showPath: "/shows/x.openlab")?.path, "/shows/media/b.wav")
+        XCTAssertNil(CueRowMenu.mediaURL("media/b.wav", showPath: nil))
+        XCTAssertNil(CueRowMenu.mediaURL("", showPath: "/shows/x.openlab"))
+        XCTAssertNil(CueRowMenu.mediaURL(nil, showPath: "/shows/x.openlab"))
+    }
+
+    func testTimeHeaderTogglesBetweenWholeTimeAndTimeLeftPerWindow() async throws {
+        let h = try await H()
+        let other = try await H()
+        let columns = h.spy.tableColumns
+        let duration = try XCTUnwrap(columns.first { $0.identifier.rawValue == "duration" })
+        XCTAssertTrue(duration.headerCell is TimeHeaderCell)
+        XCTAssertFalse(try XCTUnwrap(columns.first { $0.identifier.rawValue == "number" }).headerCell is TimeHeaderCell)
+        try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":2.5,"remaining":7.5}]}"#)
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:02.50 / 00:10.00")
+        // A header click (the delegate hook) switches Duration to the time left, in place.
+        h.vc.outlineView(h.spy, didClick: duration)
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:07.50")
+        XCTAssertEqual((duration.headerCell as? TimeHeaderCell)?.shown, .remaining)
+        XCTAssertEqual(duration.headerToolTip, loc("cuelist.time.showFull"))
+        // The next tick keeps the choice; an unknown end falls back to elapsed.
+        try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":3.0,"remaining":null}]}"#)
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:03.00")
+        h.vc.toggleTimeShown("duration")
+        XCTAssertEqual(h.vc.timeShown["duration"], .full)
+        // Waits default to counting down; the toggle shows elapsed / total.
+        let waits = #"[{"cue":"\#(H.intro)","wait":"pre_wait","elapsed":0.5,"remaining":1.5}]"#
+        try h.receive(#"{"type":"progress","items":[],"waits":\#(waits)}"#)
+        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:01.50")
+        h.vc.toggleTimeShown("preWait")
+        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:00.50 / 00:02.00")
+        // Another window keeps its own choice; non-time columns ignore the toggle.
+        XCTAssertEqual(other.vc.timeShown["preWait"], .remaining)
+        h.vc.toggleTimeShown("name")
+        XCTAssertNil(h.vc.timeShown["name"])
+    }
+
+    /// One list of locked edits: the row menu and the Edit menu both read it.
+    func testShowModeLocksTheSameEditsInBothMenus() {
+        let edit = NSMenu()
+        for lock in MainMenu.LockedEdit.allCases {
+            edit.addItem(NSMenuItem(title: "\(lock)", action: lock.selector, keyEquivalent: ""))
+        }
+        MainMenu.lockEditItems(in: edit, locked: true)
+        XCTAssertTrue(edit.items.allSatisfy { !$0.isEnabled })
+        let context = CueRowMenu.Context(
+            selectedCount: 1, anyAudioSelected: true, clickedIsPlayhead: false, clickedHasMedia: true,
+            anyActive: true, canPaste: true, showMode: true)
+        for item in CueRowMenu.Item.allCases {
+            XCTAssertEqual(
+                CueRowMenu.isEnabled(item, context), CueRowMenu.lockedEdit(item) == nil, "\(item)")
+        }
+    }
+
+    func testGroupWithABrokenDescendantShowsBrokenLikeItsChild() async throws {
+        let h = try await H()
+        try h.runtime(
+            #"{"type":"cue_state","cue":"\#(H.group)","state":"broken"},{"type":"group_warning","group":"\#(H.group)","warning":true}"#
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(h.cell("status", H.group)).images[1].accessibilityLabel(), loc("cue.state.broken"))
+    }
+
+    /// With two workspaces open, the row menu acts on the window that was right-clicked, never the
+    /// key window's selection.
+    func testRowMenuActsOnTheClickedWindowNotAnotherOne() async throws {
+        let a = try await H()
+        let b = try await H()
+        let editorA = CueEditor(store: a.store, cueList: a.vc)
+        let editorB = CueEditor(store: b.store, cueList: b.vc)
+        a.vc.editor = editorA
+        b.vc.editor = editorB
+        let pbA = privatePasteboard()
+        let pbB = privatePasteboard()
+        editorA.pasteboard = pbA
+        editorB.pasteboard = pbB
+        var commandsA: [TransportCommand] = []
+        var commandsB: [TransportCommand] = []
+        a.vc.onCommand = { commandsA.append($0) }
+        b.vc.onCommand = { commandsB.append($0) }
+        a.vc.select([H.intro])  // A holds a selection, as the key window
+        let m = try menu(b, H.fade, pasteboard: privatePasteboard())
+        func fire(_ item: CueRowMenu.Item) throws {
+            let entry = try XCTUnwrap(m.items.first { !$0.isSeparatorItem && CueRowMenu.Item.allCases[$0.tag] == item })
+            let target = try XCTUnwrap(entry.target as? CueListViewController)
+            XCTAssertTrue(target === b.vc)
+            _ = target.perform(try XCTUnwrap(entry.action), with: entry)
+        }
+        try fire(.load)
+        XCTAssertEqual(commandsB, [.loadSelected])
+        XCTAssertEqual(commandsA, [])
+        try fire(.copy)
+        await assertEventually { pbB.string(forType: CueEditor.pasteType) != nil }
+        XCTAssertNil(pbA.string(forType: CueEditor.pasteType))
+        XCTAssertTrue(try XCTUnwrap(pbB.string(forType: CueEditor.pasteType)).contains(H.fade.raw))
+    }
+
+    func testLeftAndRightArrowsCollapseAndExpandTheSelectedGroup() async throws {
+        let h = try await H(collapsed: false)
+        let group = try XCTUnwrap(h.vc.node(H.group))
+        h.vc.select([H.group])
+        func press(_ key: Int) {
+            let chars = String(UnicodeScalar(key)!)
+            let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: 0)
+            if let event { h.spy.keyDown(with: event) }
+        }
+        press(Int(NSLeftArrowFunctionKey))
+        XCTAssertFalse(h.spy.isItemExpanded(group))
+        press(Int(NSRightArrowFunctionKey))
+        XCTAssertTrue(h.spy.isItemExpanded(group))
     }
 }

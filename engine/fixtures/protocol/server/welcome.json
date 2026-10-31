@@ -1,6 +1,6 @@
 {
   "type": "welcome",
-  "protocol_version": 3,
+  "protocol_version": 4,
   "doc": 3,
   "snapshot": {
     "revision": 7,
@@ -90,13 +90,11 @@
             {
               "level_db": 0.0,
               "mute": false,
-              "delay_ms": 0.0,
               "polarity_inverted": false
             },
             {
               "level_db": 0.0,
               "mute": false,
-              "delay_ms": 0.0,
               "polarity_inverted": false
             }
           ]

@@ -15,8 +15,7 @@ mod common;
 
 use common::*;
 use openlab_audio::{
-    CommandKind, Curve, Fade, GainTarget, MixerConfig, MixerController, OfflineRenderer,
-    OutputSettings, VoiceId,
+    CommandKind, Curve, Fade, GainTarget, MixerConfig, MixerController, OfflineRenderer, VoiceId,
 };
 
 /// Past every de-zipper ramp (5 ms at 48 kHz = 240 frames).
@@ -57,8 +56,9 @@ fn max_abs(xs: &[f32]) -> f32 {
 #[test]
 fn output_meters_show_exact_post_master_peaks() {
     let (mut ctl, mut r) = setup(config(4));
-    // A: 0.5 on cue output 0 (identity → device 0, plus cue 0 → device 3, which is muted).
-    // B: -0.25 on cue output 1, patched to device 2 at 0.5 instead of device 1.
+    // A: 0.5 on cue output 0 (identity → device 0, plus cue 0 → device 3 at silence).
+    // B: -0.25 on cue output 1, patched to device 2 at -0.25 (half level, inverted) instead of
+    // device 1.
     ctl.send(
         0,
         CommandKind::SetPatchRouting {
@@ -74,7 +74,7 @@ fn output_meters_show_exact_post_master_peaks() {
             patch: 0,
             cue_output: 1,
             device_output: 2,
-            gain: 0.5,
+            gain: -0.25,
         },
     );
     ctl.send(
@@ -83,27 +83,7 @@ fn output_meters_show_exact_post_master_peaks() {
             patch: 0,
             cue_output: 0,
             device_output: 3,
-            gain: 1.0,
-        },
-    );
-    let out = |level, mute, invert| OutputSettings {
-        level,
-        mute,
-        invert,
-        delay_frames: 0,
-    };
-    ctl.send(
-        0,
-        CommandKind::SetOutput {
-            output: 2,
-            settings: out(0.5, false, true),
-        },
-    );
-    ctl.send(
-        0,
-        CommandKind::SetOutput {
-            output: 3,
-            settings: out(1.0, true, false),
+            gain: 0.0,
         },
     );
     ctl.send(0, CommandKind::SetMaster { gain: 0.5 });

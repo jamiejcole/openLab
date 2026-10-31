@@ -64,8 +64,8 @@ impl Control {
             .iter()
             .map(|d| WorkspaceInfo {
                 doc: d.id,
-                workspace_id: d.ws.id,
-                name: d.ws.name.clone(),
+                workspace_id: d.model.ws().id,
+                name: d.model.ws().name.clone(),
                 path: d
                     .show_path
                     .as_ref()
@@ -146,7 +146,7 @@ impl DocCx<'_> {
             // never among them), their pre-waits and post-waits go in `waits` (M4.2e).
             let mut waits: Vec<WaitProgress> = Vec::new();
             let voiced = items.len();
-            for t in self.doc.engine.timers(rendered) {
+            for t in self.doc.model.engine().timers(rendered) {
                 let elapsed = self.seconds(t.elapsed);
                 let wait = match t.timer {
                     Timer::Action => {
@@ -229,7 +229,8 @@ impl DocCx<'_> {
         self.reconcile(&listed, rendered, prev);
         let outputs: Vec<OutputMeter> = self
             .doc
-            .ws
+            .model
+            .ws()
             .patches
             .iter()
             .filter_map(|p| {
@@ -327,10 +328,10 @@ impl DocCx<'_> {
                 None,
             ));
         }
-        for (cue, e) in self
-            .doc
-            .checks
-            .check(&self.doc.ws, &mut self.doc.media, self.eng.rate)
+        for (cue, e) in
+            self.doc
+                .checks
+                .check(self.doc.model.ws(), &mut self.doc.media, self.eng.rate)
         {
             list.push(notice(
                 "bad_plan",

@@ -142,15 +142,28 @@ enum MainMenu {
         return menu("menu.view", [edit, show])
     }
 
-    /// Show Mode (SM-01) turns the editing items off by hand; Copy and Select All change nothing.
+    /// The editing commands Show Mode (SM-01) locks: the one list both the Edit menu and the cue
+    /// row menu read. (The editor refuses them too, `CueEditor.begin`.)
+    enum LockedEdit: CaseIterable {
+        case undo, redo, delete, cut, copy, paste, deleteNumbers
+
+        var selector: Selector {
+            switch self {
+            case .undo: return #selector(AppDelegate.undoEdit(_:))
+            case .redo: return #selector(AppDelegate.redoEdit(_:))
+            case .delete: return #selector(AppDelegate.deleteCues(_:))
+            case .cut: return #selector(AppDelegate.cutCues(_:))
+            case .copy: return #selector(AppDelegate.copyCues(_:))
+            case .paste: return #selector(AppDelegate.pasteCues(_:))
+            case .deleteNumbers: return #selector(AppDelegate.deleteNumbers(_:))
+            }
+        }
+    }
+
+    /// Show Mode (SM-01) turns the editing items off by hand; Select All changes nothing.
     static func lockEditItems(in edit: NSMenu, locked: Bool) {
         edit.autoenablesItems = !locked
-        let editing = [
-            #selector(AppDelegate.undoEdit(_:)), #selector(AppDelegate.redoEdit(_:)),
-            #selector(AppDelegate.deleteCues(_:)), #selector(AppDelegate.cutCues(_:)),
-            #selector(AppDelegate.copyCues(_:)), #selector(AppDelegate.pasteCues(_:)),
-            #selector(AppDelegate.deleteNumbers(_:)),
-        ]
+        let editing = LockedEdit.allCases.map(\.selector)
         for entry in edit.items {
             guard let action = entry.action else { continue }
             entry.isEnabled = !(locked && editing.contains(action))
