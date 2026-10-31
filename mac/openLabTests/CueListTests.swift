@@ -626,17 +626,22 @@ final class CueListTests: XCTestCase {
         let rows = h.visibleIDs()
         let at = try XCTUnwrap(rows.firstIndex(of: H.group))
         XCTAssertFalse(rows.contains(H.rain), "collapsed")
-        XCTAssertTrue(rows.indices.contains(at + 1) && at > 0, "the group has a neighbour on each side")
         func sentPlayheads() -> [ModelID] {
             h.rig.engine.receivedFrom.compactMap {
                 if case .transport(_, .setPlayhead(_, let cue)) = $0.message { return cue }
                 return nil
             }
         }
-        h.vc.movePlayhead(by: 1)
-        await assertEventually { sentPlayheads() == [rows[at + 1]] }
-        h.vc.movePlayhead(by: -1)
-        await assertEventually { sentPlayheads() == [rows[at + 1], rows[at - 1]] }
+        // Each direction goes to the group's neighbour, or (at an end of the list) nowhere: never
+        // to the opposite end.
+        var expected: [ModelID] = []
+        for (delta, row) in [(1, at + 1), (-1, at - 1)] {
+            h.vc.movePlayhead(by: delta)
+            if rows.indices.contains(row) { expected.append(rows[row]) }
+            await settle()
+            await assertEventually { sentPlayheads() == expected }
+        }
+        XCTAssertGreaterThan(rows.count, 1)
     }
 
     func testMenuDialogAnswersSelectMovePlayheadOrNameTheProblem() async throws {
