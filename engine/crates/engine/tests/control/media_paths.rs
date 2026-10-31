@@ -29,11 +29,13 @@ fn at(index: usize) -> Position {
 
 fn send(s: &mut OfflineShow, command: Command) -> Vec<ServerMessage> {
     let id = s.request_id();
-    s.send(ClientMessage::Command {
+    let replies = s.send(ClientMessage::Command {
         id,
         command: Box::new(command),
         coalesce: None,
-    })
+    });
+    assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
+    replies
 }
 
 fn ok(replies: &[ServerMessage]) {

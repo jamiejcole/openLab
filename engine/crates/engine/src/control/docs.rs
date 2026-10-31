@@ -2005,6 +2005,9 @@ impl Control {
         if duplicate {
             workspace.id = WorkspaceId(random_id());
             dirty = true;
+            // The engine's first call saw the old id; every model change is signalled
+            // (docs/cue-engine.md).
+            engine.model_changed();
         }
         // The device may have come back with another block size while the doc was built.
         if engine.config().lookahead() != self.eng.block

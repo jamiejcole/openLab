@@ -42,7 +42,7 @@ impl CueEngine {
         };
         // A cue with target problems never reaches its action (see `broken.rs`), so these only
         // act when the static problems are out of date: a model change the binary did not
-        // signal (`model_changed`), in a release build. They are also how the types say "no
+        // signal (`model_changed`) inside a cue or group. They are also how the types say "no
         // target". Tested in `tests.rs`.
         let Some(target) = *target else {
             return cx.warn(EngineWarning::NoTarget { cue });

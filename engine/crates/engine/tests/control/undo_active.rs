@@ -28,6 +28,7 @@ fn command(s: &mut OfflineShow, command: Command) {
     });
     assert!(matches!(outcome(&r), Outcome::Ok(_)), "{r:?}");
     s.settle_media();
+    assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
 }
 
 fn add(s: &mut OfflineShow, cue: Cue) {

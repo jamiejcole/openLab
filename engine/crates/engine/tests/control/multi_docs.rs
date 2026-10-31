@@ -1261,3 +1261,22 @@ fn contended_primes_are_shared_fairly_and_never_refuse_a_start() {
     assert_eq!(first_nonzero(&s.channel(0)[at..]), Some(0));
     assert!(!format!("{:?}", s.take_outbound()).contains("stream_failed"));
 }
+
+/// A copy of an open show (its workspace id) opens with a fresh id, and the doc's cue engine is
+/// told: no model change goes unsignalled (debug builds' edit cross-check would count one).
+#[test]
+fn a_copy_of_an_open_show_gets_a_fresh_id_signalled_to_its_engine() {
+    let a = ws_n(0, vec![cue(1, openlab_core::CueKind::Memo)]);
+    let (mut s, ids) = docs_show(a.clone(), vec![]);
+    let copy = s
+        .open_doc(DocSource::Workspace(Box::new(a.clone())))
+        .unwrap();
+    s.settle_media();
+    start_in(&mut s, copy, 1);
+    s.run(100);
+    let doc = s.control().doc(copy).unwrap();
+    assert_ne!(doc.workspace().id, a.id);
+    assert_eq!(doc.engine().unsignalled_model_changes(), 0);
+    let first = s.control().doc(ids[0]).unwrap();
+    assert_eq!(first.engine().unsignalled_model_changes(), 0);
+}

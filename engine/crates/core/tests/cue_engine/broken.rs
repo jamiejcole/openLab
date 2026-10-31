@@ -875,18 +875,107 @@ fn model_changes_count_from_the_signal() {
     assert_eq!(engine.unsignalled_model_changes(), 0);
 }
 
-/// Debug builds catch (and correct) an edit the binary did not signal, so tests find a broken
-/// contract; release builds trust the signal.
-#[cfg(debug_assertions)]
+/// Edits nobody signalled inside a group (the outline is unchanged): a running cue deleted, a
+/// cue newly broken, cues added (the chain limit) and the playhead's cue replaced. An engine
+/// with the edit cross-check (debug builds) acts exactly as one without it (release builds) on
+/// every call, before and after the next signal: the check only counts.
 #[test]
-fn an_unsignalled_model_change_is_caught_in_debug_builds() {
-    let mut ws = workspace(vec![memo(1), start_cue(2, Some(1))]);
+fn an_unsignalled_edit_inside_a_group_is_followed_alike_with_or_without_the_cross_check() {
+    let ws = workspace(vec![
+        cue(1, group(vec![wait(2, 100.0), start_cue(3, Some(4))])),
+        memo(4),
+        memo(5),
+    ]);
+    let config = EngineConfig::new(RATE, 0, 1).unwrap();
+    let mut checked = CueEngine::new(config);
+    checked.set_edit_cross_check(true);
+    let mut plain = CueEngine::new(config);
+    plain.set_edit_cross_check(false);
+    let mut both = |ws: &Workspace, input: Input, now: SampleTime| {
+        let a = checked.handle(ws, input.clone(), now);
+        let b = plain.handle(ws, input, now);
+        assert_eq!(a, b, "the same actions at {now}");
+        assert_eq!(
+            checked.cue_states().collect::<Vec<_>>(),
+            plain.cue_states().collect::<Vec<_>>()
+        );
+        assert_eq!(checked.broken_cues(), plain.broken_cues());
+        assert_eq!(checked.playhead(list()), plain.playhead(list()));
+        (a, checked.unsignalled_model_changes())
+    };
+    both(&ws, Input::Tick, 0);
+    both(&ws, Input::Start { cue: id(1) }, 10);
+    both(
+        &ws,
+        Input::SetPlayhead {
+            list: list(),
+            cue: Some(id(5)),
+        },
+        20,
+    );
+    let mut edited = ws.clone();
+    edited.cue_lists[0].cues[0].kind = group(vec![start_cue(3, Some(99)), memo(7), memo(8)]);
+    edited.cue_lists[0].cues[2] = memo(6);
+    let (_, counted) = both(&edited, Input::Tick, 1000);
+    assert_eq!(counted, 1, "the cross-check counted the edit");
+    both(&edited, Input::Go { list: list() }, 2000);
+    both(&edited, Input::Start { cue: id(1) }, 3000);
+    both(&edited, Input::Tick, 4000);
+    // The next signal brings both up to date alike.
+    checked.model_changed();
+    plain.model_changed();
+    let mut both_after = |input: Input, now: SampleTime| {
+        let a = checked.handle(&edited, input.clone(), now);
+        assert_eq!(a, plain.handle(&edited, input, now));
+        a
+    };
+    let caught_up = both_after(Input::Tick, 5000);
+    assert_eq!(changes(&caught_up, 2), vec![(CueState::Idle, 5000)]);
+    assert_eq!(
+        checked.problems(id(3)),
+        [CueProblem::TargetMissing { target: id(99) }]
+    );
+}
+
+/// The edit cross-check compares the workspace itself, not only the problems: an unsignalled
+/// level change or rename (no cue's problems change, the outline stays) is counted once, not
+/// again on the calls after it.
+#[test]
+fn the_cross_check_counts_an_unsignalled_level_change_or_rename_once() {
+    let mut ws = workspace(vec![sound(1), memo(2)]);
     let mut engine = CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap());
+    engine.set_edit_cross_check(true);
+    for now in [0, 10, 20] {
+        engine.handle(&ws, Input::Tick, now);
+    }
+    assert_eq!(engine.unsignalled_model_changes(), 0);
+    if let CueKind::Audio { levels, .. } = &mut ws.cue_lists[0].cues[0].kind {
+        levels.master_db = -6.0;
+    }
+    for now in [30, 40, 50] {
+        assert_eq!(engine.handle(&ws, Input::Tick, now), vec![]);
+    }
+    assert_eq!(engine.unsignalled_model_changes(), 1, "level change");
+    ws.cue_lists[0].cues[1].name = "Renamed".into();
+    for now in [60, 70, 80] {
+        assert_eq!(engine.handle(&ws, Input::Tick, now), vec![]);
+    }
+    assert_eq!(engine.unsignalled_model_changes(), 2, "rename");
+}
+
+/// A NaN a hostile workspace holds is not equal to itself under `==`; the cross-check still
+/// sees an unchanged workspace as unchanged and never counts it.
+#[test]
+fn the_cross_check_does_not_count_an_unchanged_workspace_holding_a_nan() {
+    let mut ws = workspace(vec![memo(1), memo(2)]);
+    ws.patches[0].master_db = f64::NAN;
+    let mut engine = CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap());
+    engine.set_edit_cross_check(true);
     engine.handle(&ws, Input::Tick, 0);
-    ws.cue_lists[0].cues.remove(0);
-    let edit = engine.handle(&ws, Input::Tick, 10);
-    assert_eq!(engine.unsignalled_model_changes(), 1);
-    assert_eq!(changes(&edit, 2), vec![(CueState::Broken, 10)]);
+    for now in [10, 20, 30] {
+        assert_eq!(engine.handle(&ws, Input::Tick, now), vec![], "{now}");
+    }
+    assert_eq!(engine.unsignalled_model_changes(), 0);
 }
 
 #[test]

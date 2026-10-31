@@ -407,8 +407,7 @@ impl CueEngine {
 
     /// Stops previews of cues that are gone from the workspace or are no longer audio cues, and
     /// group previews whose group is gone or no longer a group (with the audio cues they play).
-    /// Returns whether any did.
-    pub(super) fn sync_previews(&mut self, cx: &mut Ctx) -> bool {
+    pub(super) fn sync_previews(&mut self, cx: &mut Ctx) {
         let ws = cx.ws;
         let groups: Vec<CueId> = (self.group_previews.keys())
             .copied()
@@ -424,7 +423,6 @@ impl CueEngine {
                     .is_some_and(|c| matches!(c.kind, CueKind::Audio { .. }))
             })
             .collect();
-        let any = !gone.is_empty() || !groups.is_empty();
         for group in groups {
             self.stop_previews(Some(group), true, cx);
             // A group whose audio cues had all ended or moved on still goes.
@@ -439,6 +437,5 @@ impl CueEngine {
         for cue in gone {
             self.stop_previews(Some(cue), true, cx);
         }
-        any
     }
 }

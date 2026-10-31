@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The workspace's outline: what release builds compare on every call to notice a model change
-//! nobody signalled (debug builds rebuild everything instead, see `CueEngine::model_changed`).
+//! The workspace's outline: what every call compares to notice a model change nobody signalled
+//! (see `CueEngine::model_changed`).
 
 use crate::model::{CueListId, Workspace};
 

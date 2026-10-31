@@ -128,6 +128,7 @@ fn edit_kind(s: &mut OfflineShow, cue: u128, edit: impl Fn(&mut CueKind)) -> Vec
         }
     )));
     s.settle_media();
+    assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
     let mut msgs = replies;
     msgs.extend(s.take_outbound());
     msgs

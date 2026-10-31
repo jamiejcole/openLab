@@ -49,7 +49,8 @@ fn bytes(ws: &Workspace) -> String {
     serde_json::to_string(ws).unwrap()
 }
 
-/// 1, 2[3, 4[5]], 6 (numbered), two lists, two patches, a passcode.
+/// 1, 2[3, 4[5]], 6 (numbered), three lists (the middle one empty), two patches, two network
+/// patches, a passcode.
 fn sample() -> Workspace {
     let mut ws = workspace(vec![
         numbered(1, "1", CueKind::Memo),
@@ -63,6 +64,18 @@ fn sample() -> Workspace {
         numbered(6, "6", audio()),
     ]);
     ws.patches.push(patch(2, 4));
+    ws.network_patches.push(NetworkPatch {
+        id: net_id(3),
+        name: "Video".into(),
+        host: "10.0.0.3".into(),
+        port: 9000,
+        protocol: NetworkProtocol::Udp,
+    });
+    ws.cue_lists.push(CueList {
+        id: list_id(4),
+        name: "Empty".into(),
+        cues: vec![],
+    });
     ws.cue_lists.push(CueList {
         id: list_id(2),
         name: "Second".into(),
@@ -101,9 +114,11 @@ fn missing() -> Command {
     }
 }
 
-/// Every command kind before the failing one: tree edits, a paste and a batch edit (whose
-/// inverses are transactions), a no-op (an empty one), settings, patches, network patches,
-/// cue lists and the passcode table.
+/// Every command kind a transaction can hold, before the failing one: tree edits, a paste and
+/// a batch edit (whose inverses are transactions), a no-op (an empty one), settings, the
+/// workspace name, patches, network patches, cue lists and the passcode table. Not
+/// `PasteClipboard` (`apply` refuses it unprepared; it reaches a transaction as a `Paste`) nor
+/// a nested `Transaction` (refused; `a_nested_transaction_after_other_commands_rolls_them_back`).
 fn everything() -> Vec<Command> {
     let ws = sample();
     let pasted = prepare_paste(&ws, &[ws.find_cue(cue_id(2)).unwrap().clone()], {
@@ -194,6 +209,11 @@ fn everything() -> Vec<Command> {
             id: net_id(1),
             property: NetworkPatchProperty::Port { value: 9000 },
         },
+        // A patch the sample had: the add's inverse would hide a wrong move of the added one.
+        Command::MoveNetworkPatch {
+            id: net_id(3),
+            index: 0,
+        },
         Command::RemoveNetworkPatch {
             id: net_id(1),
             even_if_used: true,
@@ -210,6 +230,11 @@ fn everything() -> Vec<Command> {
         Command::RenameCueList {
             id: list_id(1),
             name: "Renamed".into(),
+        },
+        // Only an empty list can go; its inverse must put it back by name and place.
+        Command::RemoveCueList { id: list_id(4) },
+        Command::RenameWorkspace {
+            name: "Renamed show".into(),
         },
         Command::SetOscRights {
             target: OscRightsTarget::NoPasscode,
@@ -500,7 +525,7 @@ fn a_rollback_restores_a_removed_cue_with_a_value_load_kept() {
 }
 
 /// A show saved and loaded with a network patch on port 0 (load accepts any port) that a
-/// Network cue uses, next to network patch 1.
+/// Network cue uses, after the sample's network patches.
 fn with_loaded_port_zero() -> Workspace {
     let mut ws = sample();
     ws.network_patches.push(NetworkPatch {
@@ -519,8 +544,15 @@ fn with_loaded_port_zero() -> Workspace {
         },
     ));
     let loaded = load_show(&save_show(&ws).unwrap()).unwrap();
-    assert_eq!(loaded.workspace.network_patches[1].port, 0);
+    assert_eq!(zero_patch(&loaded.workspace).port, 0);
     loaded.workspace
+}
+
+fn zero_patch(ws: &Workspace) -> &NetworkPatch {
+    ws.network_patches
+        .iter()
+        .find(|p| p.id == net_id(2))
+        .unwrap()
 }
 
 /// Removing the port-0 patch, then a patch in use, is refused and rolled back
@@ -596,7 +628,7 @@ fn undo_restores_a_loaded_port_of_zero() {
         property: NetworkPatchProperty::Port { value: 0 },
     };
     assert!(matches!(ws.apply(zero), Err(CommandError::InvalidValue(_))));
-    let mut patch = before.network_patches[1].clone();
+    let mut patch = zero_patch(&before).clone();
     patch.id = net_id(5);
     assert!(matches!(
         ws.apply(Command::AddNetworkPatch { index: 0, patch }),

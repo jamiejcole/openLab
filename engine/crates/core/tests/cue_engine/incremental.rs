@@ -787,24 +787,28 @@ fn the_chain_limit_follows_cues_added_and_removed_by_footprint() {
 }
 
 #[test]
-fn a_footprint_that_misses_a_cue_is_caught_and_repaired() {
+fn a_footprint_that_misses_a_cue_is_counted_and_the_next_signal_catches_up() {
     // The contract: the footprint names every cue the edit changed. One that does not is
-    // counted (debug builds, and a cue about to be refused), and the next call is right.
+    // counted by the edit cross-check (and by a cue about to be refused), once; the cross-check
+    // repairs nothing, so the problems stay as they were until the next signal.
     let mut ws = workspace(vec![cue(1, fade(2)), sound(2, "media/a.wav")]);
     let mut engine = CueEngine::new(EngineConfig::new(RATE, 0, 1).unwrap());
+    engine.set_edit_cross_check(true);
     engine.handle(&ws, Input::Tick, 0);
     ws.cue_lists[0].cues[1].kind = CueKind::Memo;
     engine.model_changed_cues(&Footprint::edited([id(7)]));
     engine.handle(&ws, Input::Tick, 10);
     engine.handle(&ws, Input::Tick, 20);
-    if cfg!(debug_assertions) {
-        assert_eq!(engine.unsignalled_model_changes(), 1);
-        engine.verify_problem_cache(&ws).unwrap();
-        assert_eq!(
-            engine.problems(id(1)),
-            [CueProblem::TargetWrongKind { target: id(2) }]
-        );
-    }
+    assert_eq!(engine.unsignalled_model_changes(), 1);
+    assert!(engine.problems(id(1)).is_empty());
+    engine.model_changed();
+    engine.handle(&ws, Input::Tick, 30);
+    engine.verify_problem_cache(&ws).unwrap();
+    assert_eq!(
+        engine.problems(id(1)),
+        [CueProblem::TargetWrongKind { target: id(2) }]
+    );
+    assert_eq!(engine.unsignalled_model_changes(), 1);
 }
 
 #[test]
