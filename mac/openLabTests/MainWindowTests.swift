@@ -455,6 +455,42 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(wc.findBar.countLabel.stringValue, "0 found")
     }
 
+    /// Combine does not deliver in subscription order. The cue list is detached so the window's
+    /// own sink is guaranteed to run first, as in the bad order; the window's syncs that read the
+    /// cue list must still end on the new model once the cue list has applied it.
+    func testWindowSyncsFollowTheCueListWhateverTheDeliveryOrder() async throws {
+        let wc = try await findController()
+        let second = ModelID("00000000-0000-0000-0000-0000000000b1")
+        _ = wc.sidebar.view
+        let store = wc.store
+        func playhead(_ list: String, _ cue: ModelID) throws {
+            let change = #"{"type":"playhead","list":"\#(list)","cue":"\#(cue)"}"#
+            let msg = try ServerMessage.decode(
+                #"{"type":"runtime","seq":\#(store.runtimeSeq + 1),"changes":[\#(change)]}"#)
+            XCTAssertEqual(store.receive(msg), .applied)
+        }
+        try playhead(FakeEngine.demoListID, F.thunder)
+        try playhead(second.raw, F.other)
+        wc.cueList.showList(second)
+        XCTAssertEqual(wc.masthead.cueID, F.other)
+        XCTAssertEqual(wc.sidebar.listTable.selectedRow, 1)
+
+        wc.cueList.sub = nil
+        let delete = try ServerMessage.decode(
+            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[],"deletes":[{"type":"cue_list","id":"\#(second.raw)"}]}"#
+        )
+        XCTAssertEqual(store.receive(delete), .applied)
+        XCTAssertEqual(
+            wc.footer.countLabel.stringValue,
+            FooterBar.countText(cues: store.model?.cueCount ?? 0, lists: 1), "the count reads the store")
+        wc.cueList.handle(.model(upserts: [], deletes: [.cueList(second)]))
+
+        XCTAssertEqual(wc.cueList.listID.map(\.raw), FakeEngine.demoListID)
+        XCTAssertEqual(wc.masthead.cueID, F.thunder, "the standby line follows the list now shown")
+        XCTAssertEqual(wc.sidebar.listTable.selectedRow, 0, "the highlight follows the shown list")
+        XCTAssertEqual(wc.sidebar.listTable.numberOfRows, 1)
+    }
+
     /// Playing cues send progress and runtime ticks up to 30 times a second; none may rescan the
     /// list, or a big show with the bar open would starve GO and Esc. Only a model change does.
     func testOnlyModelChangesRescanTheListWhileTheBarIsOpen() async throws {

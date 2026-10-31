@@ -385,6 +385,13 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     /// switched (a click here, a deleted list, a new snapshot).
     func syncSelection() {
         guard isViewLoaded else { return }
+        // This may run before the sidebar's own store subscription has: draw from the store's lists.
+        // Only ids and names are compared: a cue edit must not deep-compare every cue tree.
+        let current = store.model?.cueLists ?? []
+        if lists.map(\.id) != current.map(\.id) || lists.map(\.name) != current.map(\.name) {
+            lists = current
+            listTable.reloadData()
+        }
         settingSelection = true
         defer { settingSelection = false }
         // The cue list falls back to the first list when the shown one is gone; so does the highlight.
