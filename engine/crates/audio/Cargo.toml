@@ -14,6 +14,9 @@ default = ["device"]
 # Real audio devices through cpal (CoreAudio, WASAPI; ALSA on Linux needs libasound2-dev). Off for
 # the fuzz crate, which needs no device. Everything else builds and is tested without it.
 device = ["dep:cpal"]
+# Test seams (the disk streamer's `before_open`) for the integration tests and the engine's;
+# never in a shipped build (scripts/rust-checks.sh checks).
+test-support = []
 
 [dependencies]
 # The device callback runs under it in debug builds (M3.12). warn_debug counts violations (the
@@ -25,6 +28,8 @@ rubato = "5.0.1"
 symphonia = { version = "0.6.1", default-features = false, features = ["aac", "aiff", "alac", "flac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
 
 [dev-dependencies]
+# The crate itself with its test seams, for the integration tests.
+openlab-audio = { path = ".", features = ["test-support"] }
 # Count violations instead of aborting so a failing test names itself, in debug and release.
 assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug", "warn_release"] }
 proptest = "1.12.0"

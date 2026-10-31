@@ -14,8 +14,9 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-# Test doubles (the media watch's `FakeFs`) for the integration tests; never in a release build.
-test-support = []
+# Test doubles (the media watch's `FakeFs`, the disk streamer's `before_open`) for the integration
+# tests; never in a release build.
+test-support = ["openlab-audio/test-support"]
 
 [dependencies]
 # Debug builds install its AllocDisabler as the global allocator (M3.21), so the device

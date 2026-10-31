@@ -887,32 +887,122 @@ fn slow_probes_on_another_volume_delay_a_short_file_on_it() {
 
 /// A cue whose stream stalls underruns for its whole planned length, so the engine completes
 /// it on its planned end; then its audio arrives and the voice sounds on as a tail its cue no
-/// longer owns. The stall: one disk worker, held by another cue's stream whose file is on a
-/// stalled volume (its open is gated), until the volume answers. Returns the show with the tail
-/// sounding.
+/// longer owns. The stall: its file is on a stalled volume (its open is gated) until the volume
+/// answers, within the stream start limit. Returns the show with the tail sounding.
 #[allow(clippy::unwrap_used, clippy::panic)]
 fn stalled_tail() -> openlab_engine::control::offline::OfflineShow {
     let path = wav(&dc(4000, 0.5));
-    let stalled = wav(&dc(100, 0.5));
-    let ws = workspace(vec![audio(1, &path, 0), audio(2, &stalled, 1)]);
+    let ws = workspace(vec![audio(1, &path, 0)]);
     let mut c = config(&ws);
     c.prime_cues = 0;
-    c.streamer.workers = 1;
     c.streamer.before_open = gated_open;
     let mut s = show_with(ws, c);
-    gate(&stalled);
-    start(&mut s, 2);
+    gate(&path);
     start(&mut s, 1);
     s.run_unsettled(4000 + 1000);
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
     assert!(s.channel(0).iter().all(|&v| v == 0.0));
-    // The volume answers: the worker goes on, and cue 1's audio comes.
-    release(&stalled);
+    // The volume answers: the open completes, and cue 1's audio comes.
+    release(&path);
     s.run(BLOCK * 4);
     let from = s.channel(0).len() - BLOCK as usize;
     assert!(s.channel(0)[from..].iter().all(|&v| v == 0.5));
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
     s
+}
+
+/// A cue whose file never opens (its volume hangs after the probe) is stopped once the stream
+/// start limit (5 s of sample time) passes: it never played, so it fails as a failed start
+/// (`stream_failed`, a `stream_timeout` notice) and its auto-follow fires, instead of running
+/// silent and playing late if the volume ever answers. Its open holds no disk worker: the
+/// follow plays on the only one.
+#[test]
+fn a_start_whose_open_hangs_fails_after_five_seconds() {
+    // Longer than the limit: a shorter cue completes on its planned end first.
+    let path = wav(&dc(10 * RATE as usize, 0.5));
+    let next = wav(&dc(200, 0.5));
+    let mut held = audio(1, &path, 0);
+    held.continue_mode = ContinueMode::AutoFollow;
+    let ws = workspace(vec![held, audio(2, &next, 1)]);
+    let mut c = config(&ws);
+    c.prime_cues = 0;
+    c.streamer.workers = 1;
+    c.streamer.before_open = gated_open;
+    let mut s = show_with(ws, c);
+    gate(&path);
+    let at = go(&mut s);
+    // Unsettled: the driver would wait for the hung stream.
+    let limit = u64::from(RATE) * 5;
+    s.run_unsettled(limit - 4 * BLOCK);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    s.run_unsettled(at + limit + 4 * BLOCK - s.now());
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    let msgs = s.take_outbound();
+    assert_eq!(
+        states(&msgs, id(1)).last(),
+        Some(&(WireCueState::Broken, Some(WireBrokenReason::StreamFailed)))
+    );
+    assert!(warnings(&msgs).iter().any(|w| matches!(
+        w,
+        WireWarning::Notice { code, .. } if code == "stream_timeout"
+    )));
+    s.run(BLOCK * 8);
+    assert!(first_nonzero(&s.channel(1)).is_some(), "the follow played");
+    s.run(400);
+    assert_eq!(s.control().live_voices(), 0);
+    // The volume answers late: the cue stays broken and nothing sounds.
+    release(&path);
+    s.run(BLOCK * 8);
+    assert!(s.channel(0).iter().all(|&v| v == 0.0));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+}
+
+/// Stream opens are filed under the probe gate's volumes (the media watch's `bucket_of`, or the
+/// one a test injects), so opens hung on one share never take every opener (the cap itself is
+/// tested in the audio crate's `tests/stream.rs`).
+#[test]
+fn stream_opens_are_told_apart_by_the_probe_gates_volumes() {
+    let share = std::path::Path::new("/Volumes/Share/a.wav");
+    let local = std::path::Path::new("/Users/someone/a.wav");
+    let s = show(workspace(vec![]));
+    assert_eq!(
+        s.control().stream_volume(share).as_deref(),
+        Some("/Volumes/Share")
+    );
+    assert_eq!(s.control().stream_volume(local).as_deref(), Some("/"));
+    let ws = workspace(vec![]);
+    let mut c = config(&ws);
+    c.probe_volume = Some(|_| "/Volumes/Injected".to_owned());
+    let s = show_with(ws, c);
+    assert_eq!(
+        s.control().stream_volume(local).as_deref(),
+        Some("/Volumes/Injected")
+    );
+}
+
+/// Time paused does not count towards the stream start limit: a cue paused while its open
+/// hangs is still paused well past 5 s, and breaks only after 5 s of running time in all.
+#[test]
+fn time_paused_does_not_count_towards_the_stream_start_limit() {
+    let path = wav(&dc(10 * RATE as usize, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let mut c = config(&ws);
+    c.prime_cues = 0;
+    c.streamer.before_open = gated_open;
+    let mut s = show_with(ws, c);
+    gate(&path);
+    start(&mut s, 1);
+    let second = u64::from(RATE);
+    s.run_unsettled(2 * second);
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run_unsettled(6 * second);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    s.transport(TransportAction::Resume { cue: id(1) });
+    s.run_unsettled(2 * second);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    s.run_unsettled(second + 4 * BLOCK);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    release(&path);
 }
 
 #[test]

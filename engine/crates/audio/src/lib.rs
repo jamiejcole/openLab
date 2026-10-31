@@ -66,8 +66,9 @@ pub use regular_file::O_NONBLOCK;
 pub use regular_file::{NotRegularFile, is_not_regular, open_regular};
 pub use stream::{
     DEFAULT_BUFFER_MS, DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_EXIT_BUDGET_BYTES, DEFAULT_EXIT_BYTES,
-    DEFAULT_EXIT_MS, DEFAULT_LOOP_CACHE_BYTES, DEFAULT_MAX_STREAMS, DEFAULT_STEP_FRAMES,
-    DEFAULT_WORKERS, DiskStreamer, PreparedStream, StreamHandle, StreamRequest, StreamerConfig,
+    DEFAULT_EXIT_MS, DEFAULT_LOOP_CACHE_BYTES, DEFAULT_MAX_STREAMS, DEFAULT_OPENERS,
+    DEFAULT_STEP_FRAMES, DEFAULT_WORKERS, DiskStreamer, MAX_EXTRA_OPENERS, PreparedStream,
+    StreamHandle, StreamRequest, StreamerConfig,
 };
 
 pub use waveform::{
