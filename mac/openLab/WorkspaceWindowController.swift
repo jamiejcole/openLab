@@ -309,17 +309,16 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let key = movePlayhead ? "menu.view.movePlayheadToCue" : "menu.view.selectCue"
         askText(title: loc(key + ".title"), label: loc("cue.prompt.number"), ok: loc(key + ".ok"), field: "") {
             [weak self] text in
-            guard let self else { return }
-            guard let id = self.cueList.cue(numbered: text) else {
-                return self.showNotice(String(format: loc("cue.prompt.notFound"), text))
-            }
-            if movePlayhead {
-                guard let list = self.cueList.listID else { return }
-                Task { await self.store.transport(.setPlayhead(list: list, cue: id)) }
-            } else {
-                self.cueList.selectAsUser([id])
-            }
+            guard let self, let problem = self.applyCueNumber(text, movePlayhead: movePlayhead) else { return }
+            self.showNotice(problem)
         }
+    }
+
+    /// The dialog's answer for Select Cue / Move Playhead to Cue. Nil: done; else the notice to show.
+    func applyCueNumber(_ text: String, movePlayhead: Bool) -> String? {
+        guard let id = cueList.cue(numbered: text) else { return String(format: loc("cue.prompt.notFound"), text) }
+        if movePlayhead { cueList.setPlayhead(id) } else { cueList.selectAsUser([id]) }
+        return nil
     }
 
     /// Tools > Load to Time...: loads the last selected cue to a typed time, the engine's `load`
@@ -331,10 +330,17 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             ok: loc("menu.tools.loadToTime.ok"), field: "00:00.00"
         ) {
             [weak self] text in
-            guard let self else { return }
-            guard let seconds = CueTime.parse(text) else { return self.showNotice(loc("cue.prompt.badTime")) }
-            self.loadToTime(id, seconds)
+            guard let self, let problem = self.applyLoadTime(text, to: id) else { return }
+            self.showNotice(problem)
         }
+    }
+
+    /// The dialog's answer for Load to Time. Nil: the load was sent; else the notice to show. The
+    /// engine's `load` takes 0 or more seconds, so a negative time is refused like any bad time.
+    func applyLoadTime(_ text: String, to id: ModelID) -> String? {
+        guard let seconds = CueTime.parse(text) else { return loc("cue.prompt.badTime") }
+        loadToTime(id, seconds)
+        return nil
     }
 
     func loadToTime(_ id: ModelID, _ seconds: Double) {

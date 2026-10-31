@@ -21,15 +21,19 @@ extension AppController {
             : TransportKeys(settings: settings, cueChords: cueChords)
         // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire); the
         // fixed app defaults (L, P, V) already yielded to cue hotkeys inside `TransportKeys`.
-        let shadowed = cueChords.intersection(keys.chords.values)
+        // A menu command's key (Cmd-J, Shift-Cmd-Down, ...) is taken before a cue hotkey is looked
+        // at (`fireCueHotkeys`), so a cue on one never fires either: warn for it the same way.
+        let transportShadowed = cueChords.intersection(keys.chords.values)
+        let menuShadowed = cueChords.intersection(menuChords()).subtracting(transportShadowed)
+        let shadowed = transportShadowed.union(menuShadowed)
         if let cached, same, cached.shadowed == shadowed { return cached.keys }
         keyCache[id] = (settings, cueChords, shadowed, keys)
         if !same {
             for warning in keys.warnings { _ = store.receive(.log(.warn, warning)) }
         }
         for chord in shadowed.subtracting(cached?.shadowed ?? []) {
-            _ = store.receive(
-                .log(.warn, String(format: loc("hotkeys.warn.shadowed"), chord.display)))
+            let key = transportShadowed.contains(chord) ? "hotkeys.warn.shadowed" : "hotkeys.warn.menuShadowed"
+            _ = store.receive(.log(.warn, String(format: loc(key), chord.display)))
         }
         return keys
     }

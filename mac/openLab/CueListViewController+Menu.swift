@@ -141,15 +141,21 @@ extension CueListViewController: NSMenuDelegate {
     @objc func rowDelete(_ sender: Any?) { Task { await editor?.deleteSelection() } }
 
     @objc func movePlayheadToCue(_ sender: NSMenuItem) {
-        guard let list = listID, let raw = sender.representedObject as? String else { return }
-        Task { await store.transport(.setPlayhead(list: list, cue: ModelID(raw))) }
+        guard let raw = sender.representedObject as? String else { return }
+        setPlayhead(ModelID(raw))
     }
 
     @objc func revealTargetInFinder(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let node = node(ModelID(raw)),
-            let url = revealURL(node)
-        else { return }
+        guard let raw = sender.representedObject as? String else { return }
+        reveal(ModelID(raw))
+    }
+
+    /// Shows cue `id`'s file in Finder; false when it has none.
+    @discardableResult
+    func reveal(_ id: ModelID) -> Bool {
+        guard let node = node(id), let url = revealURL(node) else { return false }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+        return true
     }
 
     // MARK: View and Tools menu actions (the same commands the row menu and the keys run)
@@ -169,24 +175,34 @@ extension CueListViewController: NSMenuDelegate {
         return find(roots)
     }
 
-    /// Move Playhead to Next / Previous Cue: the visible row `delta` from the playhead's, as the
-    /// row menu's "Move Playhead" sends it. At either end nothing changes.
+    /// The engine's `set_playhead` for the current list: the one place the menus, the row menu and
+    /// the cue-number dialog send it from.
+    func setPlayhead(_ id: ModelID) {
+        guard let list = listID else { return }
+        Task { await store.transport(.setPlayhead(list: list, cue: id)) }
+    }
+
+    /// Move Playhead to Next / Previous Cue: the visible row `delta` from the playhead's. A
+    /// playhead inside a collapsed group steps from the group's row (it has none of its own), so
+    /// it never jumps to an end of the list. With no playhead it starts from the edge. At either
+    /// end nothing changes.
     func movePlayhead(by delta: Int) {
         guard let list = listID, outlineView.numberOfRows > 0 else { return }
         let count = outlineView.numberOfRows
-        let current = store.playheads[list].flatMap { node($0) }.map { outlineView.row(forItem: $0) } ?? -1
+        var anchor = store.playheads[list].flatMap { node($0) }
+        while let a = anchor, outlineView.row(forItem: a) < 0 { anchor = a.parent }
+        let current = anchor.map { outlineView.row(forItem: $0) } ?? -1
         let from = current >= 0 ? current : (delta > 0 ? -1 : count)
         let row = min(max(from + delta, 0), count - 1)
-        guard row != from, let node = outlineView.item(atRow: row) as? CueNode else { return }
-        Task { await store.transport(.setPlayhead(list: list, cue: node.id)) }
+        guard row != from, let target = outlineView.item(atRow: row) as? CueNode else { return }
+        setPlayhead(target.id)
     }
 
     /// Tools > Reveal Target File in Finder: the last selected cue's file, as the row menu does.
     @discardableResult
     func revealSelectedTarget() -> Bool {
-        guard let id = selectedIDs().last, let node = node(id), let url = revealURL(node) else { return false }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-        return true
+        guard let id = selectedIDs().last else { return false }
+        return reveal(id)
     }
 
     /// Whether Reveal Target File has a file to show (for the menu item).

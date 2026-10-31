@@ -239,6 +239,12 @@ enum MainMenu {
     enum LockedEdit: CaseIterable {
         case undo, redo, delete, cut, copy, paste, deleteNumbers, renumber, moveUp, moveDown
 
+        /// The locked edit a menu action stands for (nil: not an edit).
+        init?(action: Selector?) {
+            guard let action, let lock = Self.allCases.first(where: { $0.selector == action }) else { return nil }
+            self = lock
+        }
+
         var selector: Selector {
             switch self {
             case .undo: return #selector(AppDelegate.undoEdit(_:))

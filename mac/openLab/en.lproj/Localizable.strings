@@ -185,6 +185,7 @@
 "inspector.hotkey.unsupported" = "That key cannot be used as a hotkey.";
 "hotkeys.warn.unusable" = "%1$@ key: %2$@, so no key is bound.";
 "hotkeys.warn.yields" = "%1$@ key: %2$@ is a cue hotkey in this show, so the cue keeps it and no key is bound.";
+"hotkeys.warn.menuShadowed" = "Cue hotkey %@ is also a menu command's key, so the cue does not fire from it.";
 "hotkeys.warn.shadowed" = "Cue hotkey %@ is a transport key in this workspace, so the cue does not fire from it.";
 "hotkeys.reason.reserved" = "the key is reserved";
 "hotkeys.reason.duplicate" = "it is the same key as %@";

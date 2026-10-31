@@ -203,6 +203,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor private var canEditFront: Bool { appController.frontController.map { !$0.isShowMode } ?? false }
 
     @MainActor @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        // Show Mode (SM-01): every item of the locked-edit list is off, in whatever menu it sits.
+        if MainMenu.LockedEdit(action: item.action) != nil, appController.frontController?.isShowMode == true {
+            return false
+        }
         switch item.action {
         case #selector(enterShowMode(_:))?, #selector(enterEditMode(_:))?:
             guard let front = appController.frontController else { return false }
