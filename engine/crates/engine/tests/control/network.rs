@@ -12,7 +12,7 @@ use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::show::*;
 use openlab_core::protocol::{
@@ -240,17 +240,16 @@ fn go_sends_a_slip_frame_over_tcp() {
         None,
     );
     go(&mut s);
-    let began = Instant::now();
-    let mut stream = loop {
-        match listener.accept() {
-            Ok((stream, _)) => break stream,
-            Err(_) if began.elapsed() < GUARD => {
-                s.run(64);
-                std::thread::yield_now();
-            }
-            Err(e) => panic!("nothing connected: {e}"),
+    let mut accepted = None;
+    crate::show::spin::spin_until("the show to connect", || {
+        if let Ok((stream, _)) = listener.accept() {
+            accepted = Some(stream);
+            return true;
         }
-    };
+        s.run(64);
+        false
+    });
+    let mut stream = accepted.unwrap();
     stream.set_nonblocking(false).unwrap();
     stream.set_read_timeout(Some(GUARD)).unwrap();
     let mut bytes = Vec::new();

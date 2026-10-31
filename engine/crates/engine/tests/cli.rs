@@ -9,7 +9,7 @@
 use std::io::{BufRead as _, BufReader};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 mod common;
 
@@ -97,10 +97,9 @@ impl Engine {
     /// Reads stderr lines until one contains `want`; `false` when stderr ends first. Panics
     /// if neither happens within [`HANG`].
     fn wait_for(&mut self, want: &str) -> bool {
-        let deadline = Instant::now() + HANG;
         loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match self.lines.recv_timeout(left) {
+            // A wait of `HANG` for each line: the guard is on silence, so a slow start is not a hang.
+            match self.lines.recv_timeout(HANG) {
                 Ok(line) => {
                     let hit = line.contains(want);
                     self.seen.push(line);
@@ -135,10 +134,8 @@ impl Engine {
     /// Reads stderr to its end (the engine has exited, or is exiting) and reaps it. Panics if
     /// stderr is still open after [`HANG`].
     fn exit_status(&mut self) -> ExitStatus {
-        let deadline = Instant::now() + HANG;
         loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match self.lines.recv_timeout(left) {
+            match self.lines.recv_timeout(HANG) {
                 Ok(line) => self.seen.push(line),
                 Err(mpsc::RecvTimeoutError::Disconnected) => return self.child.wait().unwrap(),
                 Err(mpsc::RecvTimeoutError::Timeout) => {

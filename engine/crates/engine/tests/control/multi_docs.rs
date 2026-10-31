@@ -7,7 +7,7 @@
 //! (`OfflineShow::open_doc`, `close_doc`, `transport_doc`, `panic_all`, `hotkey`); the
 //! protocol's bound connections are in net_docs.rs.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::show::device::{DeviceShow, listed};
 use crate::show::*;
@@ -771,10 +771,7 @@ fn opening_two_thousand_cues_during_an_auto_follow_chain_keeps_exact_joins() {
         .collect();
     let mut big_ws = ws_n(1, big);
     big_ws.cue_lists[0].name = "big".into();
-    let started = Instant::now();
     let db = s.open_doc(DocSource::Workspace(Box::new(big_ws))).unwrap();
-    let took = started.elapsed();
-    println!("open of 2,000 cues (worker read and build plus install): {took:?}");
     s.run(3000);
     let ch1 = s.channel(1);
     for k in 0..4 {
@@ -1044,15 +1041,13 @@ fn a_hung_show_volume_of_one_doc_leaves_workers_for_the_others() {
     // fresh workers try one of A's files and leave a worker for B.
     time.advance(Duration::from_secs(31));
     s.tick();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while s.control().doc(b).unwrap().probes_pending() > 0 {
-        assert!(
-            Instant::now() < deadline,
-            "doc B's probe never ran: A's hung show volume took every worker"
-        );
-        s.tick();
-        std::thread::yield_now();
-    }
+    crate::show::spin::spin_until(
+        "doc B's probe to run: A's hung show volume took every worker",
+        || {
+            s.tick();
+            s.control().doc(b).unwrap().probes_pending() == 0
+        },
+    );
     assert_ne!(state(&s, b, 20), CueState::Broken);
     for f in &dead {
         release(f);

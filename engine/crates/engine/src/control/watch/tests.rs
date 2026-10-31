@@ -529,11 +529,7 @@ fn wait_finished(w: &MediaWatch) {
         panic!("not threaded")
     };
     let h = t.handle.as_ref().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !h.is_finished() {
-        assert!(Instant::now() < deadline, "the watcher did not end");
-        thread::yield_now();
-    }
+    crate::spin::spin_until("the watcher did not end", || h.is_finished());
 }
 
 #[test]

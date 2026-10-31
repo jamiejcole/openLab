@@ -25,6 +25,8 @@ use openlab_engine::control::watch::WatchMode;
 use uuid::Uuid;
 
 pub mod device;
+#[path = "../common/spin.rs"]
+pub mod spin;
 
 pub const RATE: u32 = 8000;
 pub const BLOCK: u64 = 64;
@@ -474,37 +476,33 @@ pub fn probe_order(paths: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Ticks until at most `n` probes are pending (their answers applied); fails the test after 30 s.
+/// Ticks until at most `n` probes are pending (their answers applied); fails the test if they
+/// never are.
 pub fn settle_probes_to(s: &mut OfflineShow, n: usize) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
+    spin::spin_until("probes never answered", || {
         s.tick();
-        if s.control().probes_pending() <= n {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "probes never answered"
-        );
-        std::thread::yield_now();
-    }
+        s.control().probes_pending() <= n
+    });
 }
 
 /// Waits (event-driven, bounded) until `gated_probe` has been asked for `n` of these files.
 pub fn wait_probed(paths: &[PathBuf], n: usize) {
+    /// Consecutive 1 s waits with nothing new before the probes are given up on.
+    const IDLE_WAITS: u32 = 30;
     let mut probed = PROBED.lock().unwrap_or_else(PoisonError::into_inner);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut idle = 0;
     while probed.iter().filter(|p| paths.contains(p)).count() < n {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        if left.is_zero() {
+        if idle >= IDLE_WAITS {
             // Let go of the lock first, so this failure does not poison the other tests.
             drop(probed);
             panic!("probes never came");
         }
-        probed = PROBED_CHANGED
-            .wait_timeout(probed, left)
-            .unwrap_or_else(PoisonError::into_inner)
-            .0;
+        let seen = probed.len();
+        let (guard, _) = PROBED_CHANGED
+            .wait_timeout(probed, std::time::Duration::from_secs(1))
+            .unwrap_or_else(PoisonError::into_inner);
+        probed = guard;
+        idle = if probed.len() == seen { idle + 1 } else { 0 };
     }
 }
 

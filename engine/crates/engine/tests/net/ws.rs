@@ -979,14 +979,9 @@ async fn stopping_the_server_closes_every_connection() {
 /// Blocks until the stand-in has seen a message matching `pred` (hang-guarded). Nothing on the
 /// test's own runtime needs to run meanwhile: the server has its own.
 fn wait_seen(c: &Control, pred: impl Fn(&ClientMessage) -> bool) {
-    let deadline = std::time::Instant::now() + GUARD;
-    loop {
-        if c.seen.lock().unwrap().iter().any(&pred) {
-            return;
-        }
-        assert!(std::time::Instant::now() < deadline, "hang");
-        thread::yield_now();
-    }
+    crate::show::spin::spin_until("the stand-in to see the message", || {
+        c.seen.lock().unwrap().iter().any(&pred)
+    });
 }
 
 fn has(seen: &[ServerMessage], pred: impl Fn(&ServerMessage) -> bool) -> Option<usize> {
@@ -1091,14 +1086,9 @@ fn paced_logs(out: &Out, total: usize, read: &Arc<AtomicUsize>) -> thread::JoinH
     let (out, read) = (out.clone(), Arc::clone(read));
     thread::spawn(move || {
         for n in 0..total {
-            let deadline = std::time::Instant::now() + GUARD;
-            while n >= read.load(Ordering::Acquire) + LEAD {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the client stopped reading"
-                );
-                thread::yield_now();
-            }
+            crate::show::spin::spin_until("the client to keep reading", || {
+                n < read.load(Ordering::Acquire) + LEAD
+            });
             let message = format!("{n:08}{}", "x".repeat(16 * 1024));
             // The control loop's own channel never stays full because the fan-out never waits
             // for a client; one that does not drain within the guard means it blocked.
@@ -1117,19 +1107,19 @@ fn state_text(message: String) -> ServerMessage {
     }
 }
 
-fn push(out: &Out, mut m: ServerMessage) {
-    let deadline = std::time::Instant::now() + GUARD;
-    loop {
+fn push(out: &Out, m: ServerMessage) {
+    let mut pending = Some(m);
+    crate::show::spin::spin_until("the fan-out to take the message", || {
+        let Some(m) = pending.take() else { return true };
         match out.try_send(m) {
-            Ok(()) => return,
+            Ok(()) => true,
             Err(TrySendError::Full(back)) => {
-                assert!(std::time::Instant::now() < deadline, "fan-out blocked");
-                m = back;
-                thread::yield_now();
+                pending = Some(back);
+                false
             }
             Err(TrySendError::Closed(_)) => panic!("fan-out gone"),
         }
-    }
+    });
 }
 
 fn changed(revision: u64) -> ServerMessage {
@@ -1330,20 +1320,18 @@ async fn refusals_after_the_first_log_are_logged_once_the_interval_has_passed() 
             .sum()
     };
     // Hang guard only: the flush is the server's own timer.
-    let deadline = std::time::Instant::now() + GUARD;
-    loop {
-        let logs = f.control.logs.lock().unwrap().clone();
-        if total(&logs) >= 3 {
-            assert_eq!(total(&logs), 3, "{logs:?}");
-            assert!(logs.iter().all(|l| l.contains("handshaking")), "{logs:?}");
-            break;
+    guard("the log flush", async {
+        loop {
+            let logs = f.control.logs.lock().unwrap().clone();
+            if total(&logs) >= 3 {
+                assert_eq!(total(&logs), 3, "{logs:?}");
+                assert!(logs.iter().all(|l| l.contains("handshaking")), "{logs:?}");
+                return;
+            }
+            tokio::task::yield_now().await;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "not flushed: {logs:?}"
-        );
-        tokio::task::yield_now().await;
-    }
+    })
+    .await;
 }
 
 impl Fix {

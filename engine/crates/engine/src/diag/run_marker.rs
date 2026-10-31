@@ -552,10 +552,10 @@ pub(crate) mod tests {
         second.unwrap().finish().unwrap();
     }
 
-    /// A temp file at `dir/name`, last written ten minutes ago.
+    /// A temp file at `dir/name`, last written long ago.
     fn aged_temp(dir: &Path, name: &str) -> File {
         let file = File::create(dir.join(name)).unwrap();
-        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600))
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(600))
             .unwrap();
         file
     }

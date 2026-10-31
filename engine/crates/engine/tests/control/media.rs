@@ -602,14 +602,11 @@ fn a_stuck_probe_worker_is_replaced() {
     for p in &stuck {
         release(p);
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while s.control().engine().state(id(1)) == CueState::Broken
-        || s.control().engine().state(id(2)) == CueState::Broken
-    {
-        assert!(std::time::Instant::now() < deadline);
+    spin::spin_until("the late answers to count", || {
         s.settle_media();
-        std::thread::yield_now();
-    }
+        s.control().engine().state(id(1)) != CueState::Broken
+            && s.control().engine().state(id(2)) != CueState::Broken
+    });
 }
 
 /// A volume that never answers (the path's mount prefix is what the catalog goes by) with more
@@ -644,15 +641,10 @@ fn a_dead_volume_does_not_starve_a_healthy_one_with_priming_on() {
     time.advance(timeout + std::time::Duration::from_secs(1));
     // One watchdog round later the healthy file is probed (the dead files cannot be: they are
     // pending, or given up on). `step` hands the answers in and ticks.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while s.control().probes_pending() > 3 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the healthy file waits"
-        );
+    spin::spin_until("the healthy file to be probed", || {
         s.step();
-        std::thread::yield_now();
-    }
+        s.control().probes_pending() <= 3
+    });
     assert_eq!(s.control().engine().state(id(6)), CueState::Idle);
     assert!(s.control().engine().problems(id(6)).is_empty());
     // Two workers were stuck and replaced; the other files of the dead volume wait for one
@@ -663,17 +655,15 @@ fn a_dead_volume_does_not_starve_a_healthy_one_with_priming_on() {
     for p in &dead {
         release(p);
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while (1..=5).any(|n| {
-        !matches!(
-            s.control().engine().problems(id(n)),
-            [CueProblem::MediaMissing { .. }]
-        )
-    }) {
-        assert!(std::time::Instant::now() < deadline);
+    spin::spin_until("every file of the dead volume to be probed", || {
         s.step();
-        std::thread::yield_now();
-    }
+        (1..=5).all(|n| {
+            matches!(
+                s.control().engine().problems(id(n)),
+                [CueProblem::MediaMissing { .. }]
+            )
+        })
+    });
     assert_eq!(s.control().probes_pending(), 0);
     assert!(s.control().abandoned_probe_workers() <= 3);
 }
@@ -725,12 +715,10 @@ fn share_with_a_hung_trial() -> (OfflineShow, Vec<std::path::PathBuf>) {
     let mut s = OfflineShow::new(ws, mixer_config(), c).unwrap();
     wait_probed(&hung, 2);
     time.advance(timeout + std::time::Duration::from_secs(1));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while s.control().abandoned_probe_workers() < 2 {
-        assert!(std::time::Instant::now() < deadline);
+    spin::spin_until("two stuck workers to be given up on", || {
         s.step();
-        std::thread::yield_now();
-    }
+        s.control().abandoned_probe_workers() >= 2
+    });
     // The share is stalled: one trial goes to it (and hangs), the good file waits.
     wait_probed(&hung, 3);
     (s, hung)
@@ -843,12 +831,10 @@ fn slow_probes_and_a_short_file(
     wait_probed(&slow, 2);
     time.advance(timeout + std::time::Duration::from_secs(1));
     if delayed {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while s.control().abandoned_probe_workers() < 2 {
-            assert!(std::time::Instant::now() < deadline);
+        spin::spin_until("two stuck workers to be given up on", || {
             s.step();
-            std::thread::yield_now();
-        }
+            s.control().abandoned_probe_workers() >= 2
+        });
         // The volume is stalled: one trial (the third slow file) hangs, the short file waits.
         wait_probed(&slow, 3);
         set_kind(&mut s, 4, short_kind);
@@ -864,12 +850,10 @@ fn slow_probes_and_a_short_file(
     }
     // Both stuck workers are replaced; the third slow file takes one fresh worker, the short
     // file another. Only the third slow file is still pending.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while s.control().probes_pending() > 1 {
-        assert!(std::time::Instant::now() < deadline, "the short file waits");
+    spin::spin_until("the short file to be probed", || {
         s.step();
-        std::thread::yield_now();
-    }
+        s.control().probes_pending() <= 1
+    });
     assert_eq!(s.control().abandoned_probe_workers(), 2);
     let at = start(&mut s, 4);
     s.run(2000);

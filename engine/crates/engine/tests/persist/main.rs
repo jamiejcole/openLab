@@ -4,6 +4,8 @@
 
 #[path = "../common/mod.rs"]
 mod common;
+#[path = "../common/spin.rs"]
+mod spin;
 
 mod recovery_scan;
 mod recovery_settings;

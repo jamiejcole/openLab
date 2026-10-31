@@ -50,6 +50,8 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 const GUARD: Duration = Duration::from_secs(30);
 const SETTLE: Duration = Duration::from_secs(30);
+/// 20 ms waits that make up [`SETTLE`] when counted instead of timed.
+const SETTLE_WAITS: u32 = 1_500;
 
 async fn guard<F: std::future::Future>(what: &str, f: F) -> F::Output {
     match tokio::time::timeout(GUARD, f).await {
@@ -121,10 +123,12 @@ fn advance(
         peak: 0.0,
         finite: true,
     };
-    let deadline = std::time::Instant::now() + SETTLE;
+    let mut waits = 0;
     // Media answers first, so a start does not wait on a probe for want of a wake.
     while control.probes_pending() > 0 || control.preloads_pending() > 0 {
-        if std::time::Instant::now() >= deadline {
+        waits += 1;
+        // 20 ms or more each: at least SETTLE.
+        if waits > SETTLE_WAITS {
             panic!("probes never answered");
         }
         match inbox.recv_timeout(Duration::from_millis(20)) {
