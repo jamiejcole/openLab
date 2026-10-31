@@ -39,10 +39,10 @@ final class CueRowView: NSTableRowView {
     }
 }
 
-/// A cell: up to three small images around one label. Status column: images 0 (playhead) and 1
-/// (state). Name column: type icon, label, colour shape (1), flag (2).
+/// A cell: up to four small images around one label. Status column: playhead (0), state (1),
+/// preview (2), flag (3). Name column: type icon (0) and label.
 final class CueCell: NSTableCellView {
-    let images = [NSImageView(), NSImageView(), NSImageView()]
+    let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView()]
     let label = NSTextField(labelWithString: "")
 
     init(identifier: NSUserInterfaceItemIdentifier) {
@@ -51,7 +51,7 @@ final class CueCell: NSTableCellView {
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         label.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let views: [NSView] = [images[0], label, images[1], images[2]]
+        let views: [NSView] = [images[0], label, images[1], images[2], images[3]]
         let stack = NSStackView(views: views)
         stack.spacing = 4
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -73,10 +73,9 @@ final class CueCell: NSTableCellView {
             images[0].setAccessibilityIdentifier("cue-playhead")
             images[1].setAccessibilityIdentifier("cue-state")
             images[2].setAccessibilityIdentifier("cue-preview")
+            images[3].setAccessibilityIdentifier("cue-flag")
         case "name":
             images[0].setAccessibilityIdentifier("cue-type")
-            images[1].setAccessibilityIdentifier("cue-colour")
-            images[2].setAccessibilityIdentifier("cue-flag")
         case "continue":
             images[0].setAccessibilityIdentifier("cue-continue")
         default: break
@@ -115,7 +114,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 {
     /// QLab order. The first and last columns carry no title.
     static let columns: [(id: String, titleKey: String?, width: CGFloat)] = [
-        ("status", nil, 52), ("number", "cuelist.col.number", 60), ("name", "cuelist.col.name", 280),
+        ("status", nil, 70), ("number", "cuelist.col.number", 60), ("name", "cuelist.col.name", 280),
         ("target", "cuelist.col.target", 160), ("preWait", "cuelist.col.preWait", 80),
         ("duration", "cuelist.col.duration", 120), ("postWait", "cuelist.col.postWait", 80),
         ("continue", nil, 36),
@@ -781,8 +780,31 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.setAccessibilityChildren(rows + [durationEditor])
     }
 
-    func outlineViewItemDidCollapse(_ notification: Notification) { replaceEditorAfterLayoutChange() }
-    func outlineViewItemDidExpand(_ notification: Notification) { replaceEditorAfterLayoutChange() }
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        refreshFlag(notification)
+        replaceEditorAfterLayoutChange()
+    }
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        refreshFlag(notification)
+        replaceEditorAfterLayoutChange()
+    }
+
+    /// A group's hollow flag shows only while it is collapsed, so opening or closing redraws it.
+    private func refreshFlag(_ notification: Notification) {
+        guard let node = notification.userInfo?["NSObject"] as? CueNode else { return }
+        refresh([node.id], columns: ["status"])
+    }
+
+    enum FlagMarker { case solid, hollow }
+
+    /// QLab shows a flag in the status column, and on a collapsed group a hollow flag when a cue
+    /// inside it is flagged. A cue's colour never adds a marker: it only tints the row.
+    func flagMarker(_ node: CueNode, expanded: Bool) -> FlagMarker? {
+        func flagged(_ n: CueNode) -> Bool { n.cue.raw["flagged"] == .bool(true) }
+        func anyFlagged(_ n: CueNode) -> Bool { n.children.contains { flagged($0) || anyFlagged($0) } }
+        if flagged(node) { return .solid }
+        return node.isGroup && !expanded && anyFlagged(node) ? .hollow : nil
+    }
     func outlineViewColumnDidResize(_ notification: Notification) { replaceEditorAfterLayoutChange() }
     func outlineViewColumnDidMove(_ notification: Notification) { replaceEditorAfterLayoutChange() }
     private func replaceEditorAfterLayoutChange() { if !rebuilding && !batching { placeDurationEditor() } }
@@ -900,6 +922,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             if store.previewing.contains(node.id) {
                 cell.setImage(2, icon: .preview, label: loc("cue.previewing"), tint: .systemTeal)
             }
+            switch flagMarker(node, expanded: outlineView.isItemExpanded(node)) {
+            case .solid: cell.setImage(3, icon: .flagged, label: loc("cue.flagged"), tint: .systemYellow)
+            case .hollow:
+                cell.setImage(3, icon: .flaggedInside, label: loc("cue.flagged.inside"), tint: .systemYellow)
+            case nil: break
+            }
         case "number": text(cue.number ?? "")
         case "name":
             let kind = cue.kindType
@@ -911,12 +939,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 cell.label.textColor = .secondaryLabelColor
             } else {
                 text(cue.displayName)
-            }
-            if let colour = cue.raw["color"]?.stringValue.flatMap({ CueKindStyle.colours[$0] }) {
-                cell.setImage(1, icon: colour.icon, label: loc(colour.labelKey), tint: colour.tint)
-            }
-            if cue.raw["flagged"] == .bool(true) {
-                cell.setImage(2, icon: .flagged, label: loc("cue.flagged"), tint: .systemOrange)
             }
         case "target": text(targetText(cue))
         case "preWait", "postWait":

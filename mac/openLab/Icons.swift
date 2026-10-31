@@ -19,8 +19,8 @@ enum Icon: CaseIterable {
     // Cue states (UI-04: each non-idle state has its own shape).
     case stateLoaded, statePreWaiting, stateRunning, statePaused, statePostWaiting, stateFading
     case stateStopping, stateBroken
-    // Colours: one shape each (UI-04).
-    case colourRed, colourOrange, colourGreen, colourBlue, colourPurple
+    // Swatch beside a colour name in the Inspector pop-up.
+    case colourSwatch
     // Continue modes.
     case continueAuto, continueFollow
     // Transport strip and the Active Cues rows.
@@ -31,7 +31,7 @@ enum Icon: CaseIterable {
     // Engine status levels.
     case statusWaiting, statusNormal, statusWarning, statusAlarm
     // Cue list markers.
-    case playhead, playheadInside, preview, flagged, warningMarker, engineAlarm
+    case playhead, playheadInside, preview, flagged, flaggedInside, warningMarker, engineAlarm
     // Time column header toggle (elapsed / remaining).
     case timeToggle, timeToggleUp
     // Reserved for screens that do not exist yet; they resolve and are tested already.
@@ -74,11 +74,7 @@ enum Icon: CaseIterable {
         case .stateFading: return Self.row("waveform")
         case .stateStopping: return Self.row("stop.fill")
         case .stateBroken: return Self.row("exclamationmark.triangle.fill")
-        case .colourRed: return Self.row("circle.fill")
-        case .colourOrange: return Self.row("square.fill")
-        case .colourGreen: return Self.row("triangle.fill")
-        case .colourBlue: return Self.row("diamond.fill", 11, fallback: "suit.diamond.fill")
-        case .colourPurple: return Self.row("hexagon.fill")
+        case .colourSwatch: return Self.row("circle.fill")
         case .continueAuto: return Self.row("arrow.down")
         case .continueFollow: return Self.row("arrow.turn.down.right")
         case .transportReset: return Self.row("stop.circle")
@@ -102,6 +98,7 @@ enum Icon: CaseIterable {
         case .playheadInside: return Self.row("arrowtriangle.right")
         case .preview: return Self.row("headphones")
         case .flagged: return Self.row("flag.fill")
+        case .flaggedInside: return Self.row("flag")
         case .warningMarker: return Self.row("exclamationmark.triangle.fill")
         case .engineAlarm: return Self.row("exclamationmark.triangle.fill")
         case .timeToggle: return Self.row("chevron.down")

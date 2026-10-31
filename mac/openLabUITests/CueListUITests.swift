@@ -32,9 +32,9 @@ final class CueListUITests: XCTestCase {
         let states = app.images.matching(identifier: "cue-state")
         let labels = (0..<states.count).map { states.element(boundBy: $0).label }
         XCTAssertTrue(labels.contains("Loaded") && labels.contains("Paused"), "\(labels)")
-        // The paused cue is blue and flagged: shape and flag symbol carry it, not only the tint.
-        XCTAssertTrue(app.images["Blue"].exists)
+        // The paused cue is flagged: the flag is a status-column icon; its blue colour adds no marker.
         XCTAssertTrue(app.images["Flagged"].exists)
+        XCTAssertFalse(app.images["Blue"].exists)
         let twisty = app.disclosureTriangles.firstMatch
         XCTAssertTrue(twisty.exists)
         twisty.click()

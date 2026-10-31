@@ -402,7 +402,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             let style = CueKindStyle.colours[key]
             let item = NSMenuItem(title: loc(style?.labelKey ?? "cue.colour.none"), action: nil, keyEquivalent: "")
             if let style {
-                let base = style.icon.image(loc(style.labelKey), compact: true)
+                let base = Icon.colourSwatch.image(loc(style.labelKey), compact: true)
                 item.image = base.withSymbolConfiguration(.init(paletteColors: [style.tint])) ?? base
             }
             colourPopup.menu?.addItem(item)
