@@ -316,9 +316,9 @@ final class CueEditingTests: XCTestCase {
         let patchID = try XCTUnwrap(want[0]["patch"]?["id"])
         var steps = try XCTUnwrap(sent["commands"]?.arrayValue)
         var patchStep = steps[0]
-        var patch = try XCTUnwrap(patchStep["patch"])
-        patch.set("id", patchID)
-        patchStep.set("patch", patch)
+        var patchJSON = try XCTUnwrap(patchStep["patch"])
+        patchJSON.set("id", patchID)
+        patchStep.set("patch", patchJSON)
         var cueStep = steps[1]
         var cue = try XCTUnwrap(cueStep["cue"])
         var kind = try XCTUnwrap(cue["kind"])
@@ -326,6 +326,7 @@ final class CueEditingTests: XCTestCase {
         cue.set("kind", kind)
         cue.set("id", try XCTUnwrap(want[1]["cue"]?["id"]))
         cueStep.set("cue", cue)
+        cueStep.set("at", try XCTUnwrap(want[1]["at"]))  // where it goes is the selection's, not the message format's
         steps = [patchStep, cueStep]
         var sentCommand = sent
         sentCommand.set("commands", .array(steps))
