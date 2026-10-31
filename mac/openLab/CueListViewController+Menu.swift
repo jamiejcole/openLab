@@ -147,12 +147,12 @@ extension CueListViewController: NSMenuDelegate {
 
     @objc func revealTargetInFinder(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String else { return }
-        reveal(ModelID(raw))
+        revealFile(of: ModelID(raw))
     }
 
     /// Shows cue `id`'s file in Finder; false when it has none.
     @discardableResult
-    func reveal(_ id: ModelID) -> Bool {
+    func revealFile(of id: ModelID) -> Bool {
         guard let node = node(id), let url = revealURL(node) else { return false }
         NSWorkspace.shared.activateFileViewerSelecting([url])
         return true
@@ -202,7 +202,7 @@ extension CueListViewController: NSMenuDelegate {
     @discardableResult
     func revealSelectedTarget() -> Bool {
         guard let id = selectedIDs().last else { return false }
-        return reveal(id)
+        return revealFile(of: id)
     }
 
     /// Whether Reveal Target File has a file to show (for the menu item).
