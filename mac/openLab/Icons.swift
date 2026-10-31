@@ -18,7 +18,7 @@ enum Icon: CaseIterable {
     case kindReset, kindDevamp, kindGoTo, kindTarget, kindArm, kindDisarm, kindNetwork
     // Cue states (UI-04: each non-idle state has its own shape).
     case stateLoaded, statePreWaiting, stateRunning, statePaused, statePostWaiting, stateFading
-    case stateStopping, stateBroken
+    case stateStopping, stateBroken, stateWarning
     // Colours: one shape each (UI-04).
     case colourRed, colourOrange, colourGreen, colourBlue, colourPurple
     // Continue modes.
@@ -33,7 +33,7 @@ enum Icon: CaseIterable {
     // Cue list markers.
     case playhead, playheadInside, preview, flagged, warningMarker, engineAlarm
     // Time column header toggle (elapsed / remaining).
-    case timeToggle
+    case timeToggle, timeToggleUp
     // Reserved for screens that do not exist yet; they resolve and are tested already.
     case reservedTargetCue, reservedTargetFile, reservedFieldClear, reservedFieldChoose, reservedPopOut
 
@@ -74,6 +74,7 @@ enum Icon: CaseIterable {
         case .stateFading: return Self.row("waveform")
         case .stateStopping: return Self.row("stop.fill")
         case .stateBroken: return Self.row("exclamationmark.triangle.fill")
+        case .stateWarning: return Self.row("exclamationmark.circle")
         case .colourRed: return Self.row("circle.fill")
         case .colourOrange: return Self.row("square.fill")
         case .colourGreen: return Self.row("triangle.fill")
@@ -105,6 +106,7 @@ enum Icon: CaseIterable {
         case .warningMarker: return Self.row("exclamationmark.triangle.fill")
         case .engineAlarm: return Self.row("exclamationmark.triangle.fill")
         case .timeToggle: return Self.row("chevron.down")
+        case .timeToggleUp: return Self.row("chevron.up")
         case .reservedTargetCue: return Self.row("scope")
         case .reservedTargetFile: return Self.row("doc")
         case .reservedFieldClear: return Self.row("xmark.circle.fill")

@@ -108,7 +108,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.center()
         // The cue list's own subscription is older, so it has switched lists by the time this runs.
         sub = store.changes.sink { [weak self] _ in
-            MainActor.assumeIsolated { self?.syncSidebarList() }
+            MainActor.assumeIsolated {
+                self?.syncSidebarList()
+                self?.syncFooterCount()
+            }
         }
         sidebar.shownProvider = { [weak self] in self?.cueList.listID }
         sidebar.onSelectList = { [weak self] id in
@@ -121,6 +124,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             MainActor.assumeIsolated { self?.footer.show(status: status, connected: state == .connected) }
         }
         syncSidebarList()
+        syncFooterCount()
         // The store's mode moves on the operator's choice and on the engine's word (a reconnect,
         // another client): the window follows either. Published before it changes: use the value.
         showModeSub = store.$showMode.sink { [weak self] on in
@@ -261,6 +265,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshTitle() {
         window?.title = isShowMode ? String(format: loc("window.main.title.showMode"), workspaceName) : workspaceName
+    }
+
+    /// The footer's cue count follows the model (adds, deletes, a new snapshot).
+    func syncFooterCount() {
+        let model = store.model
+        footer.showCount(cues: model?.cueCount ?? 0, lists: model?.cueLists.count ?? 0)
     }
 
     private func syncSidebarList() {

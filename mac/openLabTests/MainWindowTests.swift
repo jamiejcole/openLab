@@ -63,6 +63,37 @@ final class MainWindowTests: XCTestCase {
         XCTAssertFalse(wc.inspector.emptyLabel.isHidden)
     }
 
+    func testFooterCountsCuesAndListsAndFollowsAddsAndDeletes() async throws {
+        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
+        let rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: base))
+        let connected = await rig.connect()
+        XCTAssertTrue(connected)
+        let wc = WorkspaceWindowController(store: rig.store)
+        XCTAssertEqual(wc.footer.countLabel.stringValue, "6 cues in 1 list")
+        let id = "00000000-0000-0000-0000-0000000000d1"
+        let cue = FakeEngine.cueJSON(id: id, number: nil, name: "New", kind: FakeEngine.audioKind("/tmp/a.wav"))
+        let add = try CueListHarness.upsertJSON(cue, index: 0)
+        let revision = rig.store.revision + 1
+        XCTAssertEqual(
+            rig.store.receive(
+                try ServerMessage.decode(
+                    #"{"type":"model_changed","revision":\#(revision),"upserts":[\#(add)],"deletes":[]}"#)),
+            .applied)
+        XCTAssertEqual(wc.footer.countLabel.stringValue, "7 cues in 1 list")
+        // Deleting a group takes its children with it.
+        XCTAssertEqual(
+            rig.store.receive(
+                try ServerMessage.decode(
+                    #"{"type":"model_changed","revision":\#(revision + 1),"upserts":[],"deletes":[{"type":"cue","id":"\#(CueListHarness.group)"}]}"#
+                )), .applied)
+        XCTAssertEqual(wc.footer.countLabel.stringValue, "3 cues in 1 list")
+    }
+
+    func testCountTextPluralForms() {
+        XCTAssertEqual(FooterBar.countText(cues: 1, lists: 1), "1 cue in 1 list")
+        XCTAssertEqual(FooterBar.countText(cues: 0, lists: 2), "0 cues in 2 lists")
+    }
+
     func testEveryIconAndFallbackResolves() {
         for icon in Icon.allCases {
             let e = icon.entry

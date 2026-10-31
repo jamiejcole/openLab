@@ -143,6 +143,15 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private var batchTouched = Set<ModelID>()
     private var batchNewGroups = Set<ModelID>()
     private var batchCollapsed = Set<ModelID>()
+    /// Whether a running time shows the whole time or the time left, per time column; each window
+    /// has its own. A wait counts down by default, as it always has; Duration shows elapsed / total.
+    /// Kept for the life of the window only (no window-state persistence exists yet).
+    static let timeColumns = ["preWait", "duration", "postWait"]
+    private(set) var timeShown: [String: TimeShown] = [
+        "preWait": .remaining, "duration": .full, "postWait": .remaining,
+    ]
+    /// Where Paste looks for cues (tests use a private one).
+    var pasteboard: NSPasteboard = .general
 
     /// `outlineView` is a parameter so tests can count the calls made on it.
     init(store: WorkspaceStore, outlineView: NSOutlineView = NSOutlineView()) {
@@ -162,6 +171,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         for spec in Self.columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.id))
             column.title = spec.titleKey.map(loc) ?? ""
+            if Self.timeColumns.contains(spec.id) {
+                column.headerCell = TimeHeaderCell(textCell: column.title)
+                updateTimeHeader(column)
+            }
             column.width = spec.width
             column.minWidth = 24
             outlineView.addTableColumn(column)
@@ -178,6 +191,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
         outlineView.target = self
         outlineView.doubleAction = #selector(doubleClicked)
+        let menu = NSMenu()
+        menu.delegate = self
+        outlineView.menu = menu
         durationEditor.setAX(AX.cueDurationEditor, label: loc("cuelist.durationEditor.label"))
         durationEditor.delegate = self
         durationEditor.usesSingleLineMode = true
@@ -823,6 +839,44 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return (state, detail)
     }
 
+    /// `displayState`, with a group that only has a broken descendant told apart as a warning: the
+    /// protocol marks it `broken` with no reason and no problems of its own, and it still starts.
+    func displayStyle(_ id: ModelID) -> (style: CueStateStyle, detail: String?) {
+        let (state, detail) = displayState(id)
+        let warningOnly =
+            state == .broken && store.cueStates[id]?.reason == nil && (store.problems[id] ?? []).isEmpty
+            && store.groupWarnings.contains(id)
+        return (warningOnly ? .warning : CueStateStyle.style(for: state), detail)
+    }
+
+    // MARK: Time column headers
+
+    /// The header chevron: switches the column between the full time and the time left.
+    func toggleTimeShown(_ column: String) {
+        guard Self.timeColumns.contains(column) else { return }
+        timeShown[column] = timeShown[column] == .full ? .remaining : .full
+        guard let index = outlineView.tableColumns.firstIndex(where: { $0.identifier.rawValue == column }) else {
+            return
+        }
+        updateTimeHeader(outlineView.tableColumns[index])
+        outlineView.headerView?.needsDisplay = true
+        let rows = outlineView.numberOfRows
+        if rows > 0 {
+            outlineView.reloadData(forRowIndexes: IndexSet(0..<rows), columnIndexes: IndexSet(integer: index))
+        }
+        placeDurationEditor()
+    }
+
+    private func updateTimeHeader(_ column: NSTableColumn) {
+        let shown = timeShown[column.identifier.rawValue] ?? .remaining
+        (column.headerCell as? TimeHeaderCell)?.shown = shown
+        column.headerToolTip = loc(shown == .full ? "cuelist.time.showRemaining" : "cuelist.time.showFull")
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, didClick tableColumn: NSTableColumn) {
+        toggleTimeShown(tableColumn.identifier.rawValue)
+    }
+
     private func fill(_ cell: CueCell, column: String, node: CueNode) {
         let cue = node.cue
         cell.label.stringValue = ""
@@ -841,8 +895,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             } else if isPlayheadInside(node.id) {
                 cell.setImage(0, icon: .playheadInside, label: loc("cue.playhead.inside"))
             }
-            let (state, detail) = displayState(node.id)
-            let style = CueStateStyle.style(for: state)
+            let (style, detail) = displayStyle(node.id)
             if let icon = style.icon {
                 cell.setImage(
                     1, icon: icon, label: style.label, tint: style.tint,
@@ -874,7 +927,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case "preWait", "postWait":
             // A wait in progress counts down what is left, as QLab's columns do.
             if let wait = store.waits[cue.id]?[column == "preWait" ? .preWait : .postWait] {
-                text(CueTime.running(wait.remaining))
+                text(
+                    timeShown[column] == .full
+                        ? CueTime.progress(elapsed: wait.elapsed, remaining: wait.remaining)
+                        : CueTime.running(wait.remaining))
                 break
             }
             let seconds = cue.raw[column == "preWait" ? "pre_wait" : "post_wait"]?.doubleValue ?? 0
@@ -902,7 +958,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private func durationText(_ node: CueNode) -> String {
-        if let p = store.progress[node.id] { return CueTime.progress(elapsed: p.elapsed, remaining: p.remaining) }
+        if let p = store.progress[node.id] {
+            if timeShown["duration"] == .remaining, let left = p.remaining { return CueTime.running(left) }
+            return CueTime.progress(elapsed: p.elapsed, remaining: p.remaining)
+        }
         switch node.cue.kindType {
         case "fade", "wait": return CueTime.format(node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
         default: return ""

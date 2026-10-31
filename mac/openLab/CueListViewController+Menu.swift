@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+import AppKit
+
+/// The cue row's context menu (QLab 5 surface `context.cue-row`), cut down to what openLab does.
+/// Commands go through the same actions as the menu bar (`AppDelegate`'s Transport and Edit items,
+/// found along the responder chain), so there is one path for each; only Move Playhead and Reveal
+/// are the list's own. Show Mode locks the editing items exactly as the Edit menu does.
+enum CueRowMenu {
+    enum Item: CaseIterable {
+        case preview, load, panic, movePlayhead, revealTarget, cut, copy, paste, delete
+
+        var titleKey: String {
+            switch self {
+            case .preview: return "cuelist.menu.preview"
+            case .load: return "cuelist.menu.load"
+            case .panic: return "cuelist.menu.panic"
+            case .movePlayhead: return "cuelist.menu.movePlayhead"
+            case .revealTarget: return "cuelist.menu.revealTarget"
+            case .cut: return "menu.edit.cut"
+            case .copy: return "menu.edit.copy"
+            case .paste: return "menu.edit.paste"
+            case .delete: return "menu.edit.delete"
+            }
+        }
+    }
+
+    /// What the rules need to know; the view controller fills it from the store.
+    struct Context {
+        var selectedCount: Int
+        var anyAudioSelected: Bool
+        var clickedIsPlayhead: Bool
+        var clickedHasMedia: Bool
+        var anyActive: Bool
+        var canPaste: Bool
+    }
+
+    /// Show Mode is applied separately (`MainMenu.lockEditItems`).
+    static func isEnabled(_ item: Item, _ c: Context) -> Bool {
+        switch item {
+        case .preview: return c.anyAudioSelected
+        case .load, .cut, .copy, .delete: return c.selectedCount > 0
+        case .panic: return c.anyActive  // greyed unless something plays
+        case .movePlayhead: return !c.clickedIsPlayhead
+        case .revealTarget: return c.clickedHasMedia
+        case .paste: return c.canPaste
+        }
+    }
+
+    /// The file a media path names: absolute as given, relative to the folder of the saved show.
+    @MainActor static func mediaURL(_ media: String?, showPath: String?) -> URL? {
+        guard let media, !media.isEmpty else { return nil }
+        if media.hasPrefix("/") { return URL(fileURLWithPath: media) }
+        guard let dir = CueEditor.sourceDir(showPath: showPath) else { return nil }
+        return URL(fileURLWithPath: dir).appendingPathComponent(media)
+    }
+}
+
+extension CueListViewController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        prepareRowMenu(menu, row: outlineView.clickedRow)
+    }
+
+    /// Fills `menu` for the cue at `row` (no cue under the pointer: an empty menu, which does not
+    /// show). A right-click on a cue outside the selection selects it, as a click would.
+    func prepareRowMenu(_ menu: NSMenu, row: Int) {
+        menu.removeAllItems()
+        guard row >= 0, let node = outlineView.item(atRow: row) as? CueNode else { return }
+        if !selectedIDs().contains(node.id) { selectAsUser([node.id]) }
+        let selected = selectedIDs().compactMap { self.node($0) }
+        let context = CueRowMenu.Context(
+            selectedCount: selected.count,
+            anyAudioSelected: selected.contains { $0.cue.kindType == "audio" },
+            clickedIsPlayhead: isPlayheadRow(node.id),
+            clickedHasMedia: revealURL(node) != nil,
+            anyActive: store.cueStates.values.contains { $0.state.isActive } || !store.previewing.isEmpty,
+            canPaste: pasteboard.data(forType: CueEditor.pasteType) != nil)
+        func entry(_ item: CueRowMenu.Item, _ action: Selector, target: AnyObject? = nil, command: String? = nil)
+            -> NSMenuItem
+        {
+            let e = NSMenuItem(title: loc(item.titleKey), action: action, keyEquivalent: "")
+            e.target = target
+            e.representedObject = command ?? node.id.raw
+            e.tag = CueRowMenu.Item.allCases.firstIndex(of: item) ?? -1
+            return e
+        }
+        let transport = #selector(AppDelegate.transportCommand(_:))
+        let items: [NSMenuItem?] = [
+            entry(.preview, transport, command: TransportCommand.previewSelected.rawValue),
+            entry(.load, transport, command: TransportCommand.loadSelected.rawValue),
+            entry(.panic, transport, command: TransportCommand.panic.rawValue),
+            .separator(),
+            entry(.movePlayhead, #selector(movePlayheadToCue(_:)), target: self),
+            entry(.revealTarget, #selector(revealTargetInFinder(_:)), target: self),
+            .separator(),
+            entry(.cut, #selector(AppDelegate.cutCues(_:))),
+            entry(.copy, #selector(AppDelegate.copyCues(_:))),
+            entry(.paste, #selector(AppDelegate.pasteCues(_:))),
+            entry(.delete, #selector(AppDelegate.deleteCues(_:))),
+        ]
+        items.compactMap { $0 }.forEach(menu.addItem)
+        MainMenu.lockEditItems(in: menu, locked: store.showMode)
+        for item in menu.items where CueRowMenu.Item.allCases.indices.contains(item.tag) && !item.isSeparatorItem {
+            item.isEnabled = item.isEnabled && CueRowMenu.isEnabled(CueRowMenu.Item.allCases[item.tag], context)
+        }
+    }
+
+    private func revealURL(_ node: CueNode) -> URL? {
+        guard node.cue.kindType == "audio" else { return nil }
+        return CueRowMenu.mediaURL(node.cue.raw["kind"]?["media"]?.stringValue, showPath: store.document?.path)
+    }
+
+    @objc func movePlayheadToCue(_ sender: NSMenuItem) {
+        guard let list = listID, let raw = sender.representedObject as? String else { return }
+        Task { await store.transport(.setPlayhead(list: list, cue: ModelID(raw))) }
+    }
+
+    @objc func revealTargetInFinder(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let node = node(ModelID(raw)),
+            let url = revealURL(node)
+        else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+}

@@ -12,6 +12,10 @@ struct CueStateStyle: Equatable {
 
     var label: String { loc(labelKey) }
 
+    /// A group with a broken descendant and no problem of its own: it still starts, so it is not
+    /// marked broken (its own shape and wording keep that from reading as "will not fire").
+    static let warning = CueStateStyle(icon: .stateWarning, labelKey: "cue.state.warning", tint: .systemYellow)
+
     static func style(for state: WireCueState) -> CueStateStyle {
         switch state {
         case .idle: return CueStateStyle(icon: nil, labelKey: "cue.state.idle", tint: nil)

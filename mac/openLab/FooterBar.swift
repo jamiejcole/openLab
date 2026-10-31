@@ -78,6 +78,8 @@ final class FooterBar: NSView {
     private(set) var presentation = StatusPresentation.make(nil)
     /// A result the operator asked for that needs no answer (a relink); stays until replaced.
     let noticeLabel = NSTextField(labelWithString: "")
+    /// "12 cues in 2 lists", from the model (QLab's footer centre).
+    let countLabel = NSTextField(labelWithString: "")
     private var lastXruns: UInt64?
     private var popover: NSPopover?
     let clock = WallClockLabel()
@@ -110,6 +112,10 @@ final class FooterBar: NSView {
         statusButton.setAX(AX.statusLabel)
         statusButton.target = self
         statusButton.action = #selector(showStatusDetails)
+        countLabel.setAX(AX.footerCount)
+        countLabel.textColor = .secondaryLabelColor
+        countLabel.font = .systemFont(ofSize: 12)
+        showCount(cues: 0, lists: 0)
         noticeLabel.setAX(AX.footerNotice)
         noticeLabel.textColor = .secondaryLabelColor
         noticeLabel.lineBreakMode = .byTruncatingTail
@@ -137,7 +143,7 @@ final class FooterBar: NSView {
 
         let left = NSStackView(views: [modeSwitch, showModeLabel] + [.toolbar, .masthead].compactMap { toggles[$0] })
         let right = NSStackView(views: [clock] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
-        let bar = NSStackView(views: [left, NSStackView(views: [statusButton, noticeLabel]), right])
+        let bar = NSStackView(views: [left, NSStackView(views: [countLabel, statusButton, noticeLabel]), right])
         bar.distribution = .equalCentering
         bar.translatesAutoresizingMaskIntoConstraints = false
         addSubview(bar)
@@ -147,6 +153,17 @@ final class FooterBar: NSView {
             bar.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             bar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
         ])
+    }
+
+    /// The cue count text; the plural forms are separate strings (the app has no stringsdict).
+    static func countText(cues: Int, lists: Int) -> String {
+        let cuesText = cues == 1 ? loc("footer.count.cue.one") : String(format: loc("footer.count.cue.many"), cues)
+        let listsText = lists == 1 ? loc("footer.count.list.one") : String(format: loc("footer.count.list.many"), lists)
+        return String(format: loc("footer.count"), cuesText, listsText)
+    }
+
+    func showCount(cues: Int, lists: Int) {
+        countLabel.stringValue = Self.countText(cues: cues, lists: lists)
     }
 
     /// Redraws the status line. The alarm state differs in symbol and wording as well as colour.
