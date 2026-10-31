@@ -540,6 +540,27 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(alerts.log.last, "info:" + loc("recover.none"))
     }
 
+    /// The alarm controller is built on `app.gatedAlerts`, as the app delegate does: in Show Mode
+    /// "nothing to recover" and a failed scan are a log record, not an alert (NFR-10).
+    func testRecoverNoticesAreQuietInShowMode() async throws {
+        let quiet = EngineAlarmController(
+            session: app.session, supervisor: supervisor, presenter: presenter,
+            alerts: { [unowned self] in app.gatedAlerts })
+        let wc = try XCTUnwrap(app.allWindows.first)
+        wc.setShowMode(true)
+        engine.recoveryEntries = []
+        await quiet.recoverAutosaves()
+        XCTAssertTrue(alerts.log.isEmpty, "\(alerts.log)")
+        XCTAssertEqual(wc.store.logEntries.last?.message, loc("recover.none"))
+        engine.garbleResults = true
+        await quiet.recoverAutosaves()
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(wc.store.logEntries.last?.level, .error)
+        XCTAssertTrue(
+            wc.store.logEntries.last?.message.hasPrefix(
+                loc("error.recoverFailed").replacingOccurrences(of: ": %@", with: "")) ?? false)
+    }
+
     func testRecoverAutosavesIsInTheFileMenuAndWaitsForTheEngine() throws {
         let file = MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.file") }
         let item = try XCTUnwrap(file?.items.first { $0.action == #selector(AppDelegate.recoverAutosaves(_:)) })

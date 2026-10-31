@@ -122,6 +122,7 @@ final class FooterBar: NSView {
         noticeLabel.textColor = .secondaryLabelColor
         noticeLabel.lineBreakMode = .byTruncatingTail
         noticeLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        noticeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
         show(status: nil, connected: true)
 
         for spec in Self.specs {
@@ -171,7 +172,16 @@ final class FooterBar: NSView {
     }
 
     /// Redraws the status line. The alarm state differs in symbol and wording as well as colour.
-    func showNotice(_ text: String) { noticeLabel.stringValue = text }
+    func showNotice(_ text: String, error: Bool = false) {
+        noticeLabel.stringValue = text
+        noticeLabel.textColor = error ? .systemRed : .secondaryLabelColor
+        // An old notice must not stay up for the whole show: it goes after a while, unless replaced.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+            guard let self, self.noticeLabel.stringValue == text else { return }
+            self.noticeLabel.stringValue = ""
+            self.noticeLabel.textColor = .secondaryLabelColor
+        }
+    }
 
     /// Without a connection the last status is stale: the line says the engine is offline.
     func show(status: SystemStatus?, connected: Bool) {

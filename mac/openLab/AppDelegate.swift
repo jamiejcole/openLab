@@ -226,7 +226,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             guard let front = appController.frontController else { return false }
             return front.isVisible(.inspector) && !appController.isTextEditing()
         case #selector(loadToTime(_:))?:
-            return appController.frontController.map { !$0.cueList.selectedIDs().isEmpty } ?? false
+            // An edit-time tool: off in Show Mode, as in QLab.
+            return appController.frontController.map { !$0.isShowMode && !$0.cueList.selectedIDs().isEmpty } ?? false
         case #selector(revealTargetFile(_:))?:
             return appController.frontController?.cueList.canRevealSelectedTarget ?? false
         case #selector(closeAllWorkspaces(_:))?: return !appController.allWindows.isEmpty

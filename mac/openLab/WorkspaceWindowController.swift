@@ -273,14 +273,16 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         refreshMasthead()
     }
 
+    /// A notice without an interruption: a log record and the footer line.
+    func quietNotice(_ message: String, error: Bool) {
+        _ = store.receive(.log(error ? .error : .warn, message))
+        footer.showNotice(message, error: error)
+    }
+
     /// Why an edit was refused: a sheet on this window (beep when it has none).
     func showNotice(_ message: String) {
         // Show Mode raises nothing modal (NFR-10): the footer and the show log carry it.
-        if isShowMode {
-            _ = store.receive(.log(.warn, message))
-            footer.showNotice(message)
-            return
-        }
+        if isShowMode { return quietNotice(message, error: false) }
         guard let window else { return NSSound.beep() }
         let alert = NSAlert()
         alert.messageText = message
@@ -354,7 +356,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// Tools > Load to Time...: loads the last selected cue to a typed time, the engine's `load`
     /// command (the Transport menu's Load Selected uses 0).
     func promptLoadToTime() {
-        guard let id = cueList.selectedIDs().last else { return NSSound.beep() }
+        guard !isShowMode, let id = cueList.selectedIDs().last else { return NSSound.beep() }
         askText(
             title: loc("menu.tools.loadToTime.title"), label: loc("cue.prompt.time"),
             ok: loc("menu.tools.loadToTime.ok"), field: "00:00.00"

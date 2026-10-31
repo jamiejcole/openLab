@@ -1973,4 +1973,72 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(alerts.log.contains("info:" + loc("crash.none")))
         XCTAssertTrue(wc.footer.noticeLabel.stringValue.isEmpty)
     }
+
+    func testShowModeSuppressesTheOpenFailedAlert() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setShowMode(true)
+        engine.garbleResults = true
+        await app.openWorkspace(url: URL(fileURLWithPath: "/Shows/X.openlab"))
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(wc.store.logEntries.last?.level, .error)
+        XCTAssertEqual(wc.footer.noticeLabel.stringValue, wc.store.logEntries.last?.message)
+    }
+
+    func testShowModeSuppressesTheCloseRefusedAlertOfAnotherWorkspace() async throws {
+        let second = try await addWorkspace()
+        let show = try XCTUnwrap(app.windows["1"])
+        show.setShowMode(true)
+        engine.garbleResults = true
+        let closed = await app.closeWorkspace(second)
+        XCTAssertFalse(closed)
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(show.store.logEntries.last?.level, .error)
+    }
+
+    func testShowModeSuppressesTheSaveTimeoutAlert() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.setShowMode(true)
+        engine.holdResults = true
+        let task = Task { await app.saveWorkspace(wc.store) }
+        await assertEventually { await quitScheduler.waitingCount > 0 }
+        await quitScheduler.fire()
+        let saved = await task.value
+        XCTAssertFalse(saved)
+        XCTAssertTrue(alerts.errors.isEmpty)
+        XCTAssertEqual(wc.store.logEntries.last?.level, .error)
+        engine.releaseResults()
+    }
+
+    /// An Edit Mode workspace's failure shows on its own window while another is in Show Mode: as a
+    /// sheet there (which blocks nothing else), logged once, and nothing lands on the Show Mode window.
+    func testRelinkFailureOfAnEditWorkspaceIsASheetOnItAndLeavesTheShowModeWindowAlone() async throws {
+        let second = try await addWorkspace()
+        let show = try XCTUnwrap(app.windows["1"])
+        let edit = try XCTUnwrap(app.windows[second])
+        show.setShowMode(true)
+        engine.garbleResults = true
+        app.pickFolderURL = { URL(fileURLWithPath: "/m") }
+        await app.relinkMedia(on: edit.store)
+        XCTAssertTrue(alerts.errors.isEmpty, "no app-level modal")
+        let sheet = try XCTUnwrap(edit.window?.attachedSheet, "a sheet on the failing workspace's window")
+        edit.window?.endSheet(sheet)
+        XCTAssertEqual(edit.store.logEntries.filter { $0.level == .error }.count, 1, "logged once")
+        XCTAssertTrue(show.footer.noticeLabel.stringValue.isEmpty)
+        XCTAssertFalse(show.store.logEntries.contains { $0.level == .error })
+    }
+
+    func testLoadToTimeIsOffInShowMode() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        let items = MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items)
+        let item = try XCTUnwrap(items.first { $0.action == #selector(AppDelegate.loadToTime(_:)) })
+        wc.cueList.selectAsUser([try XCTUnwrap(wc.store.model?.cueLists.first?.cues.first?.id)])
+        XCTAssertTrue(delegate.validateMenuItem(item))
+        wc.setShowMode(true)
+        XCTAssertFalse(delegate.validateMenuItem(item))
+        wc.promptLoadToTime()
+        XCTAssertNil(wc.window?.attachedSheet)
+    }
 }
