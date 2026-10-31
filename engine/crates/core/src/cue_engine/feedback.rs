@@ -190,8 +190,7 @@ impl CueEngine {
                 if !(reason == BrokenReason::DeviceLost && self.device_back(cue)) {
                     self.slots.insert(cue, Slot::Broken(reason));
                 }
-                cx.vacated
-                    .push((cue, run.started_in, cx.now, Exit::Stopped));
+                cx.vacated.push((run.started_in, cx.now, Exit::Stopped));
                 self.report(cue, before, cx.now, cx);
             }
             // Auto-continue is time-based: an armed or still-to-be-armed post-wait fires on its
@@ -214,7 +213,8 @@ impl CueEngine {
                 // then (QLab 5.5.3) and its playlist hears of the failure on the resume: a
                 // running one halts there, as for a child that broke while playing. A stop or
                 // panic cancels it.
-                let playlist = run.paused_at.is_some() && in_playlist(cx.ws, cue, run.started_in);
+                let playlist =
+                    run.paused_at.is_some() && in_playlist(self, cx.ws, cue, run.started_in);
                 if let (Some(paused), Phase::Action { start, .. }) = (run.paused_at, run.phase)
                     && (follow || playlist)
                 {
@@ -245,7 +245,7 @@ impl CueEngine {
                     self.continue_after(cue, cx.now, cx);
                 }
                 if let Some(end) = halt {
-                    self.halt_playlist(cue, seq, end, cx);
+                    self.halt_playlist(cue, seq, started_in, end, cx);
                 }
                 // A playlist moves on past a child that broke (unless it halted).
                 self.child_action_done(cue, seq, started_in, cx.now, cx);
@@ -272,12 +272,15 @@ fn in_runless_playlist(engine: &CueEngine, cue: CueId, ws: &Workspace) -> bool {
     })
 }
 
-/// Whether `cue`, whose run started as a child of `started_in`, is still a child of that group
-/// and it is a playlist (running or not): only that playlist hears of the run's end.
-fn in_playlist(ws: &Workspace, cue: CueId, started_in: Option<CueId>) -> bool {
-    group::ancestors(ws, cue)
-        .first()
-        .is_some_and(|parent| started_in == Some(*parent) && is_playlist(ws, *parent))
+/// Whether the playlist `cue`'s run started in (`started_in`) hears of the run's end: a running
+/// one does wherever the cue has been moved since; one with no run only while the cue is still
+/// its child (`follow_through`).
+fn in_playlist(engine: &CueEngine, ws: &Workspace, cue: CueId, started_in: Option<CueId>) -> bool {
+    started_in.is_some_and(|g| {
+        is_playlist(ws, g)
+            && (matches!(engine.slots.get(&g), Some(Slot::Active(_)))
+                || group::ancestors(ws, cue).first() == Some(&g))
+    })
 }
 
 fn is_playlist(ws: &Workspace, group: CueId) -> bool {

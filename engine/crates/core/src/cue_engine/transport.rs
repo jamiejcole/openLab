@@ -104,7 +104,7 @@ impl CueEngine {
     fn panic_one(&mut self, cue: CueId, end: SampleTime, cx: &mut Ctx) {
         let before = self.state(cue);
         let now = cx.now;
-        let busy_children = self.any_busy_child(cx.ws, cue);
+        let busy_children = self.any_busy_child(cue);
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return self.stop_one(cue, None, cx);
         };

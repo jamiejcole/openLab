@@ -1326,7 +1326,7 @@ fn a_running_cue_moved_into_a_running_group_neither_holds_it_open_nor_cancels_it
 }
 
 #[test]
-fn a_group_whose_last_busy_child_is_moved_out_completes_and_follows() {
+fn a_child_dragged_out_of_a_running_group_holds_it_until_the_child_ends() {
     let g = timed(
         grp(1, GroupMode::Timeline, vec![wait(20, 1.0)]),
         0.0,
@@ -1335,33 +1335,34 @@ fn a_group_whose_last_busy_child_is_moved_out_completes_and_follows() {
     );
     let mut rig = Rig::new(vec![g, memo(4)]);
     rig.go(0);
-    // The operator drags the running Wait out of the group: the group waits on nothing now.
+    // The operator drags the running Wait out of the group: a drag is not a completion.
     let c = children_of(&mut rig, 1).remove(0);
     rig.ws.cue_lists[0].cues.push(c);
     let moved = rig.tick(100);
-    assert_eq!(changes(&moved, 1), vec![(CueState::Idle, 100)]);
-    assert_eq!(starts(&moved), vec![(id(4), 100)]);
-    // The Wait plays on where it now stands and starts nothing when it ends.
+    assert!(starts(&moved).is_empty(), "{:?}", starts(&moved));
+    assert_eq!(rig.state(1), CueState::Running);
     assert_eq!(rig.state(20), CueState::Running);
-    assert!(starts(&rig.tick(1000)).is_empty());
+    // When the Wait ends, the group it started in completes and follows.
+    let end = rig.tick(1000);
+    assert_eq!(starts(&end), vec![(id(4), 1000)]);
+    assert_eq!(rig.state(1), CueState::Idle);
     assert_eq!(rig.state(20), CueState::Idle);
 }
 
 #[test]
-fn a_moved_playlist_child_lets_its_playlist_play_on_from_where_it_stood() {
+fn a_child_dragged_out_of_a_running_playlist_moves_it_on_only_when_it_ends() {
     let p = grp(1, playlist(), vec![wait(10, 1.0), wait(11, 1.0)]);
     let mut rig = Rig::new(vec![p]);
     rig.go(0);
     let c = children_of(&mut rig, 1).remove(0);
     rig.ws.cue_lists[0].cues.push(c);
-    // The playlist moves on to the child that took its place, as when its child ends.
     let moved = rig.tick(100);
-    assert_eq!(starts(&moved), vec![(id(11), 100)]);
+    assert!(starts(&moved).is_empty(), "{:?}", starts(&moved));
+    assert_eq!(rig.state(11), CueState::Idle);
+    // The dragged child ends: the playlist moves on to the child that took its place.
+    assert_eq!(starts(&rig.tick(1000)), vec![(id(11), 1000)]);
     assert_eq!(rig.state(1), CueState::Running);
-    // The moved child's end does not move the playlist on again.
-    assert!(starts(&rig.tick(1000)).is_empty());
-    assert_eq!(rig.state(11), CueState::Running);
-    rig.tick(1100);
+    rig.tick(2000);
     assert_eq!(rig.state(1), CueState::Idle);
 }
 

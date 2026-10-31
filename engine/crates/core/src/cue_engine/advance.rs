@@ -121,7 +121,7 @@ impl CueEngine {
                 self.continue_after(cue, at, cx);
             }
             if let Some(rest) = halt {
-                self.halt_playlist(cue, seq, rest.map(|r| at.saturating_add(r)), cx);
+                self.halt_playlist(cue, seq, started_in, rest.map(|r| at.saturating_add(r)), cx);
             }
             self.child_action_done(cue, seq, started_in, at, cx);
         }
@@ -306,7 +306,7 @@ impl CueEngine {
                 Some(reason) => self.slots.insert(cue, Slot::Broken(reason)),
                 None => self.slots.remove(&cue),
             };
-            cx.vacated.push((cue, started_in, at, exit));
+            cx.vacated.push((started_in, at, exit));
         }
     }
 
@@ -320,7 +320,7 @@ impl CueEngine {
     ) -> Option<Slot> {
         let slot = self.slots.remove(&cue)?;
         if let Slot::Active(run) = &slot {
-            cx.vacated.push((cue, run.started_in, at, exit));
+            cx.vacated.push((run.started_in, at, exit));
             // A Fade cue stopped mid-fade leaves its targets' levels where they are.
             if let Some(fade) = &run.fade {
                 self.hold_fade(cue, run.seq, fade, at.max(cx.now), false, cx);
