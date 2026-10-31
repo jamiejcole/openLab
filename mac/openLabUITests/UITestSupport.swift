@@ -19,10 +19,12 @@ extension XCTestCase {
         let windows = app.windows.matching(identifier: "main-window")
         XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
         // Cmd-W closes the key window: wait until the front window is the empty one (the demo's
-        // cue is not in it), or the demo closes instead and the test finds no cues.
+        // cue is not in it) and the demo, behind it, has loaded its list: a demo window that has not
+        // loaded yet also lacks the cue, and Cmd-W would close it instead.
         let emptyInFront = NSPredicate { _, _ in
             let front = windows.element(boundBy: 0)
             return front.exists && !front.staticTexts["Intro"].exists
+                && windows.element(boundBy: 1).staticTexts["Intro"].exists
         }
         XCTAssertEqual(
             XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: emptyInFront, object: nil)], timeout: 10),
