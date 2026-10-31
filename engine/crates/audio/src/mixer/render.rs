@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Rendering a segment: voices into patch buses, patch matrices into device outputs, then
-//! delay, output gain and master.
+//! Rendering a segment: voices into patch buses, patch matrices into device outputs, then the
+//! master.
 
 use std::sync::atomic::Ordering;
 
@@ -12,7 +12,7 @@ use super::{Event, FinishReason, Mixer, Outbox, Patch, SampleTime, Scratch, Stag
 
 impl Mixer {
     /// Renders frames `a..a + len` of the chunk: voices → patch buses → patch matrices →
-    /// delay → output gain → master.
+    /// master.
     pub(super) fn render(&mut self, out: &mut [f32], a: usize, len: usize) {
         let t0 = self.now + a as u64;
         let (block, outs) = (self.block, self.outputs);
@@ -20,8 +20,6 @@ impl Mixer {
             voices,
             outbox,
             patches,
-            out_gain,
-            delays,
             out_health,
             master,
             master_health,
@@ -121,7 +119,6 @@ impl Mixer {
             }
         }
 
-        // Delay first, so output level, mute and polarity act immediately for the operator.
         let Some(mb) = scratch.master.get_mut(..len) else {
             return;
         };
@@ -131,10 +128,8 @@ impl Mixer {
             stage.enter(Stage::Master);
             master.fill(mb);
         }
-        for (o, ((((dv, g), dl), pk), h)) in dev
+        for (o, ((dv, pk), h)) in dev
             .chunks_exact_mut(block)
-            .zip(out_gain.iter_mut())
-            .zip(delays.iter_mut())
             .zip(out_peak.iter_mut())
             .zip(out_health.iter())
             .enumerate()
@@ -147,19 +142,7 @@ impl Mixer {
                 continue;
             }
             stage.enter(Stage::Output(o));
-            dl.process(dv);
-            match g.steady() {
-                Some(gg) => dv
-                    .iter_mut()
-                    .zip(mb.iter())
-                    .for_each(|(y, m)| *y = *y * gg * m),
-                None => {
-                    g.fill(tmp);
-                    for ((y, gg), m) in dv.iter_mut().zip(tmp.iter()).zip(mb.iter()) {
-                        *y = *y * gg * m;
-                    }
-                }
-            }
+            dv.iter_mut().zip(mb.iter()).for_each(|(y, m)| *y *= m);
             track_all(pk, dv);
         }
         stage.enter(Stage::Idle);

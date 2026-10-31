@@ -494,15 +494,11 @@ pub enum PatchProperty {
         output: usize,
         value: bool,
     },
-    OutputDelay {
-        output: usize,
-        value: f64,
-    },
     OutputPolarity {
         output: usize,
         value: bool,
     },
-    /// 1 to [`MAX_CHANNELS`]. New outputs start at 0 dB, unmuted, no delay. Shrinking drops the
+    /// 1 to [`MAX_CHANNELS`]. New outputs start at 0 dB, unmuted, polarity normal. Shrinking drops the
     /// last outputs' settings (undo brings them back); cues keep their routing to them.
     ChannelCount {
         value: usize,
@@ -540,10 +536,6 @@ impl PatchProperty {
                 output: *output,
                 value: out(*output)?.mute,
             },
-            Self::OutputDelay { output, .. } => Self::OutputDelay {
-                output: *output,
-                value: out(*output)?.delay_ms,
-            },
             Self::OutputPolarity { output, .. } => Self::OutputPolarity {
                 output: *output,
                 value: out(*output)?.polarity_inverted,
@@ -568,7 +560,6 @@ impl PatchProperty {
             Self::MasterDb { value } => patch.master_db = *value,
             Self::OutputLevel { output, value } => out(patch, *output)?.level_db = *value,
             Self::OutputMute { output, value } => out(patch, *output)?.mute = *value,
-            Self::OutputDelay { output, value } => out(patch, *output)?.delay_ms = *value,
             Self::OutputPolarity { output, value } => {
                 out(patch, *output)?.polarity_inverted = *value;
             }
@@ -589,7 +580,6 @@ impl PatchProperty {
         let output = |p: &Self| match p {
             Self::OutputLevel { output, .. }
             | Self::OutputMute { output, .. }
-            | Self::OutputDelay { output, .. }
             | Self::OutputPolarity { output, .. } => Some(*output),
             _ => None,
         };
@@ -602,7 +592,6 @@ fn default_output() -> PatchOutput {
     PatchOutput {
         level_db: 0.0,
         mute: false,
-        delay_ms: 0.0,
         polarity_inverted: false,
     }
 }
@@ -1052,7 +1041,6 @@ impl Command {
                     }
                     PatchProperty::OutputLevel { output, .. }
                     | PatchProperty::OutputMute { output, .. }
-                    | PatchProperty::OutputDelay { output, .. }
                     | PatchProperty::OutputPolarity { output, .. } => *output,
                     _ => usize::MAX,
                 };

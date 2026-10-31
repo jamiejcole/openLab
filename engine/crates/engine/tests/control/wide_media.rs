@@ -78,7 +78,6 @@ fn a_64_channel_cue_plays_each_channel_on_its_own_output() {
         PatchOutput {
             level_db: 0.0,
             mute: false,
-            delay_ms: 0.0,
             polarity_inverted: false,
         };
         CHANNELS

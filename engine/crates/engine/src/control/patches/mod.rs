@@ -16,15 +16,12 @@
 //! ([`Patches::release_doc`]): its voices were stopped first.
 //!
 //! Patches resolve against the device the mixer plays on (the control loop's `playable` list:
-//! empty during a device outage; docs/control.md "Devices"). Per output alignment delay is a
-//! device-output setting in the mixer (`SetOutput`), not a matrix gain: each device output gets
-//! the delay of the patch outputs mapped to it, over every doc's patches (the longest, if
-//! patches disagree, listed as a conflict in each doc that maps to that output).
+//! empty during a device outage; docs/control.md "Devices"). Output level, mute and polarity
+//! are in the matrix: the mixer has no other per-output setting.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::num::NonZeroU32;
 
-use openlab_audio::{CommandKind, MAX_PATCHES, OutputSettings};
+use openlab_audio::{CommandKind, MAX_PATCHES};
 use openlab_core::{
     DeviceInfo, MachineSettings, OutputPatch, PatchId, PatchOutput, PatchResolution, Workspace,
     db_to_gain, resolve_patch,
@@ -57,11 +54,6 @@ struct DocSlots {
     /// Patch output count, for meters.
     outputs: HashMap<PatchId, usize>,
     resolutions: HashMap<PatchId, PatchResolution>,
-    /// The delay each device output should have for this doc's mapped patches (`None`: none
-    /// of them maps to it).
-    delays: Vec<Option<u32>>,
-    /// Device outputs this doc's own patches give different delays.
-    conflicts: BTreeSet<u16>,
 }
 
 pub struct Patches {
@@ -77,21 +69,13 @@ pub struct Patches {
     /// follows a master change too.
     bases: Vec<Vec<f32>>,
     device_outputs: usize,
-    rate: NonZeroU32,
-    /// Delay sent for each device output (frames; the mixer starts at 0).
-    delays: Vec<u32>,
-    /// Device outputs that patches (of one doc or of several) give different delays.
-    conflicts: BTreeSet<u16>,
-    /// The conflicts changed since [`Self::take_conflicts_changed`]: every doc's notices
-    /// should be looked at again (another doc's change can make or end one).
-    conflicts_changed: bool,
     /// Slots the mixer disabled after repeated faults ([`Self::quarantine`]).
     quarantined: BTreeSet<u16>,
 }
 
 impl Patches {
     /// `mixer_patches` matrices of `device_outputs` square, identity as the mixer starts them.
-    pub fn new(mixer_patches: usize, device_outputs: usize, rate: NonZeroU32) -> Self {
+    pub fn new(mixer_patches: usize, device_outputs: usize) -> Self {
         let identity: Vec<f32> = (0..device_outputs * device_outputs)
             .map(|i| {
                 if i / device_outputs == i % device_outputs {
@@ -109,19 +93,14 @@ impl Patches {
             sent: vec![identity; count],
             bases: vec![vec![0.0; device_outputs * device_outputs]; count],
             device_outputs,
-            rate,
-            delays: vec![0; device_outputs],
-            conflicts: BTreeSet::new(),
-            conflicts_changed: false,
             quarantined: BTreeSet::new(),
         }
     }
 
     /// Follows doc `doc`'s patches and the devices present. `busy`: the slots a voice of that
     /// doc in the mixer may still play through (`Voices::slots_in_use`; no other doc's voice
-    /// can be on its slots). Returns the mixer commands that bring the matrices (and the
-    /// device outputs' delays, over every doc) up to date, and the patches whose resolution
-    /// changed (for `Input::PatchStatus`).
+    /// can be on its slots). Returns the mixer commands that bring the matrices up to date, and
+    /// the patches whose resolution changed (for `Input::PatchStatus`).
     pub fn sync(
         &mut self,
         doc: DocId,
@@ -175,15 +154,12 @@ impl Patches {
                 .into_iter()
                 .map(|patch| CommandKind::SnapPatch { patch }),
         );
-        self.doc_delays(&mut d, ws);
         self.docs.insert(doc, d);
-        self.sync_delays(&mut commands);
         (commands, changed)
     }
 
     /// A doc closed (its voices were stopped first): every slot it had, in use or retired, is
-    /// zeroed and freed, and the device outputs' delays follow the docs left. Returns the
-    /// mixer commands.
+    /// zeroed and freed. Returns the mixer commands.
     pub fn release_doc(&mut self, doc: DocId) -> Vec<CommandKind> {
         let mut commands = Vec::new();
         let Some(d) = self.docs.remove(&doc) else {
@@ -205,7 +181,6 @@ impl Patches {
             self.free.push_back(slot);
             self.freed = true;
         }
-        self.sync_delays(&mut commands);
         commands
     }
 
@@ -362,11 +337,6 @@ impl Patches {
         std::mem::take(&mut self.freed)
     }
 
-    /// True once after the delay conflicts changed.
-    pub fn take_conflicts_changed(&mut self) -> bool {
-        std::mem::take(&mut self.conflicts_changed)
-    }
-
     /// Mixer slots the patches can have.
     pub fn capacity(&self) -> usize {
         self.sent.len()
@@ -375,89 +345,6 @@ impl Patches {
     /// Slots no doc has (in use or retired).
     pub fn free_slots(&self) -> usize {
         self.free.len()
-    }
-
-    /// The delay each device output should have for the doc's mapped patches.
-    fn doc_delays(&self, d: &mut DocSlots, ws: &Workspace) {
-        let n = self.device_outputs;
-        let mut want: Vec<Option<u32>> = vec![None; n];
-        d.conflicts.clear();
-        for patch in &ws.patches {
-            if !d.slots.contains_key(&patch.id) {
-                continue;
-            }
-            let Some(PatchResolution::Mapped { channels, .. }) = d.resolutions.get(&patch.id)
-            else {
-                continue;
-            };
-            for (out, &ch) in patch.outputs.iter().zip(channels) {
-                let Some(slot) = usize::try_from(ch).ok().and_then(|o| want.get_mut(o)) else {
-                    continue;
-                };
-                let frames = delay_frames(out.delay_ms, self.rate);
-                if let Some(old) = *slot
-                    && old != frames
-                    && let Ok(o) = u16::try_from(ch)
-                {
-                    d.conflicts.insert(o);
-                }
-                *slot = Some(slot.map_or(frames, |old| old.max(frames)));
-            }
-        }
-        d.delays = want;
-    }
-
-    /// Each device output's delay: the longest any doc's mapped patches want for it (one value
-    /// per physical output, so docs that disagree are a conflict too).
-    fn sync_delays(&mut self, commands: &mut Vec<CommandKind>) {
-        let n = self.device_outputs;
-        let mut want: Vec<Option<u32>> = vec![None; n];
-        let before = std::mem::take(&mut self.conflicts);
-        for d in self.docs.values() {
-            self.conflicts.extend(d.conflicts.iter().copied());
-            for (o, (slot, doc_want)) in want.iter_mut().zip(&d.delays).enumerate() {
-                let Some(frames) = *doc_want else { continue };
-                if let Some(old) = *slot
-                    && old != frames
-                    && let Ok(o) = u16::try_from(o)
-                {
-                    self.conflicts.insert(o);
-                }
-                *slot = Some(slot.map_or(frames, |old| old.max(frames)));
-            }
-        }
-        if before != self.conflicts {
-            self.conflicts_changed = true;
-        }
-        for (d, (sent, want)) in self.delays.iter_mut().zip(want).enumerate() {
-            let want = want.unwrap_or(0);
-            if *sent == want {
-                continue;
-            }
-            let Ok(output) = u16::try_from(d) else {
-                continue;
-            };
-            *sent = want;
-            // Level, mute and polarity are in the matrix; the output itself only delays.
-            commands.push(CommandKind::SetOutput {
-                output,
-                settings: OutputSettings {
-                    delay_frames: want,
-                    ..OutputSettings::default()
-                },
-            });
-        }
-    }
-
-    /// Device outputs `doc`'s patches map to that patches give different delays (within the
-    /// doc or across docs; the longest is used).
-    pub fn delay_conflicts(&self, doc: DocId) -> impl Iterator<Item = u16> + '_ {
-        let wants = self.docs.get(&doc).map_or(&[][..], |d| d.delays.as_slice());
-        self.conflicts.iter().copied().filter(move |&o| {
-            wants
-                .get(usize::from(o))
-                .is_some_and(std::option::Option::is_some)
-        })
     }
 
     /// A patch's current resolution.
@@ -635,7 +522,7 @@ impl Patches {
     }
 
     /// The mixer rebuilt its non-voice state after repeated faults (every slot silent and
-    /// enabled, every device output and the master at unity, each output keeping its delay):
+    /// enabled, every device output enabled and the master at unity):
     /// the commands that bring all of it back to what was last sent. Quarantined slots are free again.
     pub fn rebuilt(&mut self) -> Vec<CommandKind> {
         let back = std::mem::take(&mut self.quarantined);
@@ -646,34 +533,16 @@ impl Patches {
         self.resend_all()
     }
 
-    /// Every slot's gains, every device output's settings and the master, as last sent. Sent
-    /// again to a mixer that did not reset them changes nothing.
+    /// Every slot's gains and the master, as last sent. Sent again to a mixer that did not
+    /// reset them changes nothing.
     pub fn resend_all(&self) -> Vec<CommandKind> {
         let mut commands = Vec::new();
         for slot in (0..self.sent.len()).filter_map(|s| u16::try_from(s).ok()) {
             self.resend_into(slot, &mut commands);
         }
-        commands.extend(
-            (0..self.delays.len())
-                .filter_map(|o| u16::try_from(o).ok())
-                .filter_map(|o| self.resend_output(o)),
-        );
         // The mixer's master stays at unity (the workspace master is in the matrices).
         commands.push(CommandKind::SetMaster { gain: 1.0 });
         commands
-    }
-
-    /// The mixer reset device output `output` (to unity, keeping its delay) after a fault: its
-    /// settings as last sent.
-    pub fn resend_output(&self, output: u16) -> Option<CommandKind> {
-        let &delay_frames = self.delays.get(usize::from(output))?;
-        Some(CommandKind::SetOutput {
-            output,
-            settings: OutputSettings {
-                delay_frames,
-                ..OutputSettings::default()
-            },
-        })
     }
 }
 
@@ -685,16 +554,6 @@ fn output_gain(master: f32, out: &PatchOutput) -> f32 {
         master * db_to_gain(out.level_db)
     };
     if out.polarity_inverted { -g } else { g }
-}
-
-/// A delay in ms (the show file allows 0–1000) in frames, rounded; the mixer caps it at 1 s.
-fn delay_frames(ms: f64, rate: NonZeroU32) -> u32 {
-    if !ms.is_finite() || ms <= 0.0 {
-        return 0;
-    }
-    let frames = (ms.min(1000.0) * f64::from(rate.get()) / 1000.0).round();
-    // At most `rate` (1 s), so it fits.
-    frames as u32
 }
 
 #[cfg(test)]

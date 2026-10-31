@@ -188,10 +188,6 @@ impl Control {
     /// A mixer slot went back to the free list (a doc's voice ended on a retired slot, or a doc
     /// closed): docs with patches waiting for one sync again.
     fn hand_out_freed_slots(&mut self) {
-        // A conflict another doc's patches made or ended shows in every doc's notices.
-        if self.eng.patches.take_conflicts_changed() {
-            self.mark_warnings_dirty();
-        }
         if !self.eng.patches.take_freed() {
             return;
         }
