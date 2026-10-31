@@ -385,6 +385,11 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     /// switched (a click here, a deleted list, a new snapshot).
     func syncSelection() {
         guard isViewLoaded else { return }
+        // This may run before the sidebar's own store subscription has: draw from the store's lists.
+        if lists != (store.model?.cueLists ?? []) {
+            lists = store.model?.cueLists ?? []
+            listTable.reloadData()
+        }
         settingSelection = true
         defer { settingSelection = false }
         // The cue list falls back to the first list when the shown one is gone; so does the highlight.
