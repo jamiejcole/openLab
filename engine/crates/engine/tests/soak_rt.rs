@@ -28,7 +28,9 @@
 //! Each run first measures the host: a host whose one-block sleeps overshoot by more than a
 //! block at p50 (or past the device lateness bound at p99) cannot run the stand-in device on a
 //! block cadence, and the run is skipped with the reason, or fails when
-//! `OPENLAB_SOAK_RT_REQUIRE` is set. GitHub's hosted macOS VMs are such hosts.
+//! `OPENLAB_SOAK_RT_REQUIRE` is set. GitHub's hosted macOS VMs are such hosts, so CI sets it and
+//! `scripts/soak-rt-ci.sh` reports exactly that refusal as SKIPPED (annotation and job summary),
+//! never as a pass.
 //! When a run fails, it prints what the threads measured and the stalls just before.
 //!
 //! The stand-in device is a thread that renders one block every block-length of wall time,

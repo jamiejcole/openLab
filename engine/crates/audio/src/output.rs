@@ -677,6 +677,7 @@ mod tests {
 
     #[test]
     fn a_panic_in_the_mixer_is_caught_and_counted_as_an_allocation_in_debug() {
+        let _lock = crate::alloc_counter_lock();
         let (_ctl, mut mixer) = Mixer::new(MixerConfig::default()).unwrap();
         mixer.panic_next = true;
         let (mut host, link) = OutputHost::new(mixer, 2);
@@ -693,6 +694,7 @@ mod tests {
 
     #[test]
     fn a_panic_outside_the_mixer_silences_the_buffer_and_counts_a_fault() {
+        let _lock = crate::alloc_counter_lock();
         let (ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
         let (mut host, mut link) = OutputHost::new(mixer, 3);
         host.panic_next = true;
@@ -760,6 +762,7 @@ mod tests {
 
     #[test]
     fn an_allocation_in_the_timing_is_counted_in_debug() {
+        let _lock = crate::alloc_counter_lock();
         let (_ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
         let (mut host, link) = OutputHost::new(mixer, 2);
         host.alloc_while_timing = true;
@@ -775,6 +778,7 @@ mod tests {
 
     #[test]
     fn a_panic_in_the_timing_is_caught_and_counts_a_fault() {
+        let _lock = crate::alloc_counter_lock();
         let (ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
         let (mut host, mut link) = OutputHost::new(mixer, 2);
         host.panic_while_timing = true;
@@ -794,6 +798,7 @@ mod tests {
 
     #[test]
     fn a_clean_render_counts_no_violation() {
+        let _lock = crate::alloc_counter_lock();
         let (_ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
         let (mut host, link) = OutputHost::new(mixer, 4);
         let mut buf = vec![0i16; 4 * 3000];
