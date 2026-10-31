@@ -1055,7 +1055,10 @@ impl Quiet {
             idle: c.is_idle(),
             voices: c.live_voices(),
             held: c.held_streams(),
-            primed: c.primed().len(),
+            // Every doc's: a doc beside the show keeps the cue at its playhead primed too.
+            primed: (c.doc_ids().into_iter())
+                .filter_map(|d| c.doc(d).map(|v| v.primed().len()))
+                .sum(),
             open: c.open_streams(),
             deferred: c.deferred(),
             mixer_voices: c.mixer_voice_count(),

@@ -234,6 +234,12 @@ pub enum Input {
     PanicCue {
         cue: CueId,
     },
+    /// A `PanicCue` item of a batch after its first one: as `PanicCue`, but a cue fading out
+    /// in a panic only because an earlier item of the batch panicked it (an ancestor, or its
+    /// children) takes this as a first press, not a second (PB-03).
+    PanicCueInBatch {
+        cue: CueId,
+    },
     /// Pause every active cue (PB-04).
     PauseAll,
     /// Resume every paused cue (PB-04).

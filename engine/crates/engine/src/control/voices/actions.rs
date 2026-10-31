@@ -431,6 +431,7 @@ impl Voices {
             self.by_run.remove(&r.run);
         }
         self.drop_aliases(&r);
+        self.freed |= !r.preview;
         if self.gone.len() >= GONE_LIMIT {
             self.gone.remove(0);
         }
