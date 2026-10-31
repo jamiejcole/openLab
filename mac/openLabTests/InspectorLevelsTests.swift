@@ -611,7 +611,8 @@ final class InspectorTabOrderTests: XCTestCase {
     func testShowModeLocksTheDevampTabAndClearButton() async {
         vc.setSelection([Self.devamp])
         vc.isLocked = true
-        for c in [vc.devampStartNextCheck, vc.devampStopCheck, vc.devampModePopup, vc.clearTargetButton] as [NSControl] {
+        for c in [vc.devampStartNextCheck, vc.devampStopCheck, vc.devampModePopup, vc.clearTargetButton] as [NSControl]
+        {
             XCTAssertFalse(c.isEnabled)
         }
         vc.devampStartNextCheck.state = .on
@@ -663,7 +664,8 @@ final class InspectorTabOrderTests: XCTestCase {
                 }
             }
             XCTAssertTrue(
-                vc.view.bounds.insetBy(dx: -1, dy: -1).contains(frame(vc.clearTargetButton)), "clear clipped at \(width)")
+                vc.view.bounds.insetBy(dx: -1, dy: -1).contains(frame(vc.clearTargetButton)),
+                "clear clipped at \(width)")
         }
     }
 }
