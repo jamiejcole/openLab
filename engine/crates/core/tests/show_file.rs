@@ -1468,6 +1468,30 @@ fn strip_second_triggers(value: &mut serde_json::Value) {
     }
 }
 
+#[test]
+fn a_show_with_too_many_slice_markers_loads_with_the_extras_removed() {
+    let mut kind = audio();
+    if let CueKind::Audio { slices, .. } = &mut kind {
+        *slices = (1..=MAX_SLICE_MARKERS + 1)
+            .map(|i| SliceMarker {
+                time: i as f64,
+                play_count: 1,
+            })
+            .collect();
+    }
+    let text = save_show(&workspace(vec![cue(1, kind)])).unwrap();
+    let loaded = load_show(&text).unwrap();
+    assert_eq!(loaded.warnings.len(), 1);
+    assert!(matches!(
+        loaded.warnings[0].kind,
+        IssueKind::TooManySlices { count: 1 }
+    ));
+    match &loaded.workspace.find_cue(cue_id(1)).unwrap().kind {
+        CueKind::Audio { slices, .. } => assert_eq!(slices.len(), MAX_SLICE_MARKERS),
+        _ => panic!("not audio"),
+    }
+}
+
 fn reset_second_triggers(cues: &mut [Cue]) {
     for cue in cues {
         cue.second_trigger = SecondTrigger::Nothing;
