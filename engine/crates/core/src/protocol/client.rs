@@ -362,6 +362,9 @@ pub enum Request {
         #[serde(default)]
         mapping: Option<PatchMapping>,
     },
+    /// Where each of the connection's workspace's patches plays on this machine (WS-07), for a
+    /// patch editor: answers `patch_mappings`. Workspace-bound.
+    ListPatchMappings,
     /// One report of every broken cue, missing file, unmapped device and unreachable target
     /// (SM-06), from the engine's current state.
     PreshowCheck,

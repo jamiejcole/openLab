@@ -510,3 +510,46 @@ fn an_output_device_choice_that_cannot_be_saved_is_refused() {
     assert_eq!(choose(&mut s, Some("Offline")), Err(ErrorCode::Io));
     assert_eq!(s.control().machine().output_device, None);
 }
+
+/// A patch editor reads where each patch plays: the default mapping, an edit, and a clear.
+#[test]
+fn list_patch_mappings_reports_the_stored_mapping_of_each_patch() {
+    let env = env();
+    let ws = workspace(vec![]);
+    let mut s = start_show(ws, from_disk(&env, vec![device("Offline", 4)]));
+    let listed = |s: &mut OfflineShow| {
+        let id = s.request_id();
+        let replies = s.send(ClientMessage::Request {
+            id,
+            request: Request::ListPatchMappings,
+        });
+        replies
+            .iter()
+            .find_map(|m| match m {
+                ServerMessage::Result {
+                    outcome:
+                        Outcome::Ok(openlab_core::protocol::OkBody {
+                            data: Some(ResultData::PatchMappings { patches }),
+                            ..
+                        }),
+                    ..
+                } => Some(patches.clone()),
+                _ => None,
+            })
+            .expect("patch_mappings")
+    };
+    let entry = |m: Option<PatchMapping>| {
+        vec![openlab_core::protocol::PatchMappingEntry {
+            patch: patch_id(),
+            mapping: m,
+        }]
+    };
+    assert_eq!(listed(&mut s), entry(Some(mapping("Offline", &[0, 1]))));
+    assert_eq!(
+        set(&mut s, patch_id(), Some(mapping("Offline", &[2, 3]))),
+        Ok(())
+    );
+    assert_eq!(listed(&mut s), entry(Some(mapping("Offline", &[2, 3]))));
+    assert_eq!(set(&mut s, patch_id(), None), Ok(()));
+    assert_eq!(listed(&mut s), entry(None));
+}

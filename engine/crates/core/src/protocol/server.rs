@@ -218,6 +218,17 @@ pub enum ResultData {
     /// Answer to `preshow_check` (SM-06).
     /// Boxed: the report is large and a `ServerMessage` is passed around by value.
     PreshowCheck(Box<PreshowReport>),
+    /// Answer to `list_patch_mappings`: every patch of the workspace, in workspace order.
+    PatchMappings { patches: Vec<PatchMappingEntry> },
+}
+
+/// One patch's mapping on this machine; `mapping` is absent for a patch that has none (never
+/// mapped, or cleared).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatchMappingEntry {
+    pub patch: PatchId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapping: Option<crate::settings::PatchMapping>,
 }
 
 /// The pre-show check (SM-06, NFR-07): everything that would keep the show from running,
