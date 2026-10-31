@@ -465,3 +465,66 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(m.slot(at: NSPoint(x: m.bounds.maxX - 1, y: m.bounds.maxY - 1)), .cross(input: 63, output: 63))
     }
 }
+
+/// #445: the Basics tab at the inspector's real height (240 pt) and at minimum and typical widths.
+@MainActor
+final class InspectorBasicsLayoutTests: XCTestCase {
+    private var rig: Rig!
+    private var vc: InspectorViewController!
+    private var window: NSWindow!
+
+    override func setUp() async throws {
+        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
+        rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: base))
+        let ok = await rig.connect()
+        XCTAssertTrue(ok)
+        vc = InspectorViewController(store: rig.store)
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 300), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = vc.view
+    }
+
+    override func tearDown() async throws { window.orderOut(nil) }
+
+    private func laidOut(_ cue: ModelID, width: CGFloat) {
+        vc.setSelection([cue])
+        window.setContentSize(NSSize(width: width, height: 240))
+        vc.view.layoutSubtreeIfNeeded()
+        vc.tabView.selectedTabViewItem?.view?.layoutSubtreeIfNeeded()
+    }
+
+    private func frame(_ v: NSView) -> NSRect { vc.view.convert(v.bounds, from: v) }
+
+    func testNumberAndTargetKeepUsableWidthWithoutOverlap() {
+        for width in [CGFloat(640), 900] {
+            laidOut(CueListHarness.intro, width: width)
+            let fields: [(String, NSView)] = [
+                ("number", vc.numberField), ("duration", vc.durationField), ("preWait", vc.preWaitField),
+                ("postWait", vc.postWaitField), ("name", vc.nameField), ("target", vc.targetField),
+                ("choose", vc.chooseButton),
+            ]
+            for (name, v) in fields {
+                let f = frame(v)
+                XCTAssertGreaterThanOrEqual(f.width, name == "target" ? 150 : 60, "\(name) at \(width)")
+                XCTAssertGreaterThanOrEqual(f.height, 14, "\(name) height at \(width)")
+                XCTAssertTrue(vc.view.bounds.insetBy(dx: -1, dy: -1).contains(f), "\(name) clipped at \(width)")
+            }
+            for (i, a) in fields.enumerated() {
+                for b in fields[(i + 1)...] {
+                    XCTAssertFalse(frame(a.1).intersects(frame(b.1)), "\(a.0) overlaps \(b.0) at \(width)")
+                }
+            }
+            XCTAssertLessThanOrEqual(frame(vc.targetField).maxX, frame(vc.chooseButton).minX, "\(width)")
+            XCTAssertEqual(vc.targetField.lineBreakMode, .byTruncatingMiddle)
+        }
+    }
+
+    func testTargetTooltipCarriesTheFullPath() {
+        laidOut(CueListHarness.intro, width: 900)
+        vc.targetField.stringValue = "/Volumes/Show/Act 1/Sound/intro.wav"
+        vc.render()
+        XCTAssertEqual(vc.targetField.toolTip, vc.targetField.stringValue)
+    }
+}
