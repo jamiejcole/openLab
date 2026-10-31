@@ -459,6 +459,23 @@ pub fn release(path: &Path) {
     GATE_CHANGED.notify_all();
 }
 
+/// A waveform read (AUD-14) that, as [`gated_probe`], records its file and blocks while the
+/// file is gated, then reads it for real.
+pub fn gated_waveform(
+    path: &Path,
+    media: openlab_audio::Media,
+    info: &openlab_audio::MediaInfo,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<openlab_audio::WaveformResult, openlab_audio::WaveformError> {
+    PROBED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(path.to_path_buf());
+    PROBED_CHANGED.notify_all();
+    gated_open(path);
+    openlab_audio::build_waveform(media, info, cancel)
+}
+
 /// The probe watchdog's clock, moved only by the test: whether a worker counts as stuck must not
 /// depend on how long the machine takes to run it.
 #[derive(Clone)]

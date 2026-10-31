@@ -8,12 +8,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, select};
-use openlab_audio::{Media, MediaError, preload_within};
+use openlab_audio::{Media, MediaError, WaveformError, preload_within};
 
 use super::super::DocId;
 use super::super::inbox::{Inbox, ProbeAnswer};
 use super::gate::*;
-use super::{Job, MAX_ABANDONED_WORKERS, PROBE_WORKERS, ProbeClock, ProbeFn};
+use super::{Job, MAX_ABANDONED_WORKERS, PROBE_WORKERS, ProbeClock, ProbeFn, WaveformFn};
 
 /// The job a worker is on.
 pub(super) struct Busy {
@@ -45,6 +45,7 @@ pub struct ProbePool {
     low_rx: Receiver<Job>,
     inbox: Sender<Inbox>,
     probe: ProbeFn,
+    waveform: WaveformFn,
     gate: Arc<Mutex<Gate>>,
     workers: Vec<Arc<WorkerState>>,
     abandoned: usize,
@@ -92,10 +93,12 @@ pub struct Stuck {
 }
 
 impl ProbePool {
-    /// Starts the probe workers; they answer through `inbox`.
+    /// Starts the probe workers; they answer through `inbox`. Files are probed with `probe` and
+    /// waveforms read with `waveform` (tests inject stand-ins for both).
     pub fn new(
         inbox: Sender<Inbox>,
         probe: ProbeFn,
+        waveform: WaveformFn,
         timeout: Duration,
         clock: ProbeClock,
     ) -> std::io::Result<Self> {
@@ -108,6 +111,7 @@ impl ProbePool {
             low_rx,
             inbox,
             probe,
+            waveform,
             gate: Arc::default(),
             workers: Vec::new(),
             abandoned: 0,
@@ -158,11 +162,12 @@ impl ProbePool {
             busy: Mutex::new(None),
             abandoned: AtomicBool::new(false),
         });
-        let (high, low, inbox, probe) = (
+        let (high, low, inbox, probe, waveform) = (
             self.high_rx.clone(),
             self.low_rx.clone(),
             self.inbox.clone(),
             self.probe,
+            self.waveform,
         );
         let st = Arc::clone(&state);
         let clock = self.clock.clone();
@@ -173,7 +178,7 @@ impl ProbePool {
         // is done.
         thread::Builder::new()
             .name(format!("openlab-probe-{n}"))
-            .spawn(move || worker(&high, &low, &inbox, probe, &st, &clock, &gate))?;
+            .spawn(move || worker(&high, &low, &inbox, (probe, waveform), &st, &clock, &gate))?;
         self.workers.push(state);
         Ok(())
     }
@@ -302,7 +307,7 @@ pub(super) fn worker(
     high: &Receiver<Job>,
     low: &Receiver<Job>,
     inbox: &Sender<Inbox>,
-    probe: ProbeFn,
+    (probe, waveform): (ProbeFn, WaveformFn),
     state: &WorkerState,
     clock: &ProbeClock,
     gate: &Mutex<Gate>,
@@ -374,6 +379,29 @@ pub(super) fn worker(
                     answered,
                 )
             }
+            Job::Waveform {
+                key,
+                ticket,
+                path,
+                media,
+                info,
+                cancel,
+                ..
+            } => {
+                let result = waveform(&path, media, &info, &cancel).map(|r| Arc::new(r.waveform));
+                let answered = match &result {
+                    Err(WaveformError::Media(e)) => volume_answered(e),
+                    _ => true,
+                };
+                (
+                    ProbeAnswer::Waveform {
+                        result,
+                        key,
+                        ticket,
+                    },
+                    answered,
+                )
+            }
         };
         *lock(&state.busy) = None;
         lock(gate).finished(
@@ -393,6 +421,6 @@ pub(super) fn worker(
 }
 
 /// An error that still shows the volume answered: the file is missing or bad, not unreachable.
-pub(super) fn volume_answered(e: &MediaError) -> bool {
+pub(crate) fn volume_answered(e: &MediaError) -> bool {
     !matches!(e, MediaError::Io(_) | MediaError::Worker)
 }

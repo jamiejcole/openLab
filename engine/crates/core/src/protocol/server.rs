@@ -218,7 +218,33 @@ pub enum ResultData {
     /// Answer to `preshow_check` (SM-06).
     /// Boxed: the report is large and a `ServerMessage` is passed around by value.
     PreshowCheck(Box<PreshowReport>),
+    /// Answer to `waveform` (AUD-14). Boxed, as the report is.
+    Waveform(Box<WaveformData>),
 }
+
+/// An Audio cue's file waveform over file seconds `start..end`. `channels[c]` holds file channel
+/// `c`'s minimum and maximum per bucket, full scale being ±[`WAVEFORM_PEAK_SCALE`]. There are
+/// fewer buckets than asked when the range has fewer frames than that.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WaveformData {
+    pub cue: CueId,
+    /// The whole file's length, seconds.
+    pub duration: f64,
+    pub start: f64,
+    /// The end asked for, clamped to the file.
+    pub end: f64,
+    pub channels: Vec<WaveformChannel>,
+}
+
+/// One file channel's peaks: `min[i]` and `max[i]` are bucket `i`'s extremes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaveformChannel {
+    pub min: Vec<i16>,
+    pub max: Vec<i16>,
+}
+
+/// What a `waveform` peak of full scale (1.0) is sent as.
+pub const WAVEFORM_PEAK_SCALE: i16 = 32767;
 
 /// The pre-show check (SM-06, NFR-07): everything that would keep the show from running,
 /// computed from the engine's state when the request is handled (no disk or network I/O: media

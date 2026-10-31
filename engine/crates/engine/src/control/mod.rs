@@ -48,6 +48,7 @@ mod voices;
 mod wake;
 pub mod watch;
 mod watch_share;
+mod waveforms;
 
 use std::hash::{BuildHasher, RandomState};
 use std::num::NonZeroU32;
@@ -220,6 +221,8 @@ pub struct ControlConfig {
     pub probe: media::ProbeFn,
     /// A probe worker busy on one file longer than this is replaced (a stalled volume).
     pub probe_timeout: Duration,
+    /// How waveforms are read on the probe workers (tests inject a stand-in).
+    pub waveform: media::WaveformFn,
     /// The clock `probe_timeout` is measured on (tests inject one that only moves when told).
     pub probe_clock: media::ProbeClock,
     /// The monotonic clock the save watchdog measures `doc_timeout` on (a wall-clock step must
@@ -272,6 +275,7 @@ impl ControlConfig {
             max_primes: MAX_PRIMES,
             probe: openlab_audio::probe,
             probe_timeout: PROBE_TIMEOUT,
+            waveform: media::read_waveform,
             probe_clock: media::ProbeClock::system(),
             stall_clock: media::ProbeClock::system(),
             probe_volume: None,
@@ -510,6 +514,8 @@ struct Doc {
     resend_warnings: bool,
     last_progress: Option<SampleTime>,
     meters_live: bool,
+    /// Waveforms read for `waveform` requests (AUD-14) and reads under way.
+    waveforms: waveforms::Waveforms,
     /// Show Mode (SM-01, `set_show_mode`): in memory only; holds off sleep (SM-07).
     show_mode: bool,
 }
@@ -614,6 +620,7 @@ impl Control {
         let mut pool = ProbePool::new(
             inbox.clone(),
             config.probe,
+            config.waveform,
             config.probe_timeout,
             config.probe_clock.clone(),
         )?;
@@ -885,6 +892,7 @@ impl Doc {
             resend_warnings: false,
             last_progress: None,
             meters_live: false,
+            waveforms: waveforms::Waveforms::default(),
             show_mode: false,
         }
     }
@@ -1090,6 +1098,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::LogTail { .. } => "log_tail",
         Request::SetOutputOverrides { .. } => "set_output_overrides",
         Request::Snapshot => "snapshot",
+        Request::Waveform { .. } => "waveform",
     }
 }
 

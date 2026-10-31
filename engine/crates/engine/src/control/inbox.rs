@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use openlab_audio::{MediaError, Preloaded, Probed};
+use openlab_audio::{MediaError, Preloaded, Probed, Waveform, WaveformError};
 use openlab_core::protocol::{ClientMessage, LogLevel, ServerMessage};
 use tokio::sync::mpsc::{self, error::TrySendError};
 
@@ -74,6 +74,12 @@ pub enum ProbeAnswer {
         key: String,
         ticket: u64,
         result: Result<Arc<Preloaded>, MediaError>,
+    },
+    /// A waveform read for a `waveform` request (AUD-14).
+    Waveform {
+        key: String,
+        ticket: u64,
+        result: Result<Arc<Waveform>, WaveformError>,
     },
 }
 

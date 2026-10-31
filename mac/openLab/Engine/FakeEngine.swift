@@ -733,7 +733,37 @@ final class FakeEngine: EngineTransport {
         case .listDevices:
             let dev: JSONValue = .object(["name": .string("Fake Output"), "output_channels": .int(2)])
             result(c, id, ok: .object(["data": .object(["type": .string("devices"), "devices": .array([dev])])]))
+        case .waveform(let cue, let start, let end, let buckets):
+            waveform(id, cue: cue, range: (start, end), buckets: Int(buckets), from: c)
         }
+    }
+
+    /// A made-up stereo waveform of the cue's file, whose length is its `media_durations` entry (as the
+    /// engine, `unsupported` until that is known): a swell that peaks mid-file, the right channel
+    /// at half the left.
+    private func waveform(
+        _ id: UInt64, cue: ModelID, range: (Double, Double), buckets: Int, from c: FakeConnection
+    ) {
+        let entry = c.doc.flatMap { docs[$0]?["media_durations"]?.arrayValue }?
+            .first { $0["cue"]?.stringValue == cue.raw }
+        guard let duration = entry?["file"]?.doubleValue, duration > 0 else {
+            return result(c, id, error: (.unsupported, "the file is not playable, or not read yet"))
+        }
+        let start = min(range.0, duration)
+        let end = min(range.1, duration)
+        let n = max(1, min(buckets, 8192))
+        func channel(_ scale: Double) -> JSONValue {
+            let peaks = (0..<n).map { i -> Int64 in
+                let t = start + (end - start) * (Double(i) + 0.5) / Double(n)
+                return Int64(32767 * scale * sin(Double.pi * t / duration))
+            }
+            return .object(["min": .array(peaks.map { .int(-$0) }), "max": .array(peaks.map { .int($0) })])
+        }
+        let data: JSONValue = .object([
+            "type": .string("waveform"), "cue": .string(cue.raw), "duration": .double(duration),
+            "start": .double(start), "end": .double(end), "channels": .array([channel(0.9), channel(0.45)]),
+        ])
+        result(c, id, ok: .object(["data": data]))
     }
 
     private func workspaceID(_ n: Int) -> String { String(format: "00000000-0000-0000-0000-%012x", n) }

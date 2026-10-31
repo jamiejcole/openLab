@@ -128,6 +128,7 @@ fn settle(cat: &mut MediaCatalog, rx: &Receiver<Inbox>, received: &mut u64) {
         round.sort_by_key(|a| match a {
             ProbeAnswer::Probed { key, .. } => (key.clone(), 0),
             ProbeAnswer::Preloaded { key, .. } => (key.clone(), 1),
+            ProbeAnswer::Waveform { key, .. } => (key.clone(), 2),
         });
         for a in round {
             cat.answer(a);

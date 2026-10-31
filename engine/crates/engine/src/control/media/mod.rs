@@ -31,9 +31,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use openlab_audio::{MediaError, Probed};
+use openlab_audio::{
+    Media, MediaError, MediaInfo, Probed, WaveformError, WaveformResult, build_waveform,
+};
 
 use super::DocId;
 
@@ -79,6 +82,29 @@ impl std::fmt::Debug for ProbeClock {
 /// How a file is probed: [`openlab_audio::probe`] in the engine; tests inject a stand-in.
 pub type ProbeFn = fn(&Path) -> Result<Probed, MediaError>;
 
+/// How a file's waveform is read (AUD-14): [`read_waveform`] in the engine; tests inject a
+/// stand-in that holds on `path` as a stalled disk would. `media` is the file or its preload.
+pub type WaveformFn =
+    fn(&Path, Media, &MediaInfo, &AtomicBool) -> Result<WaveformResult, WaveformError>;
+
+/// [`openlab_audio::build_waveform`] of `media` (`path` only names it).
+pub fn read_waveform(
+    _path: &Path,
+    media: Media,
+    info: &MediaInfo,
+    cancel: &AtomicBool,
+) -> Result<WaveformResult, WaveformError> {
+    build_waveform(media, info, cancel)
+}
+
+/// What a job does, for the gate: one claim and one deferred job per file and kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum JobKind {
+    Probe,
+    Preload,
+    Waveform,
+}
+
 /// A job for a probe worker.
 #[derive(Debug)]
 enum Job {
@@ -95,28 +121,53 @@ enum Job {
         path: PathBuf,
         max_bytes: u64,
     },
+    /// The file's waveform (AUD-14), read from `media` (its preload when it has one).
+    Waveform {
+        doc: DocId,
+        key: String,
+        ticket: u64,
+        path: PathBuf,
+        media: Media,
+        info: MediaInfo,
+        /// Set once nobody wants the answer (the watchdog gave up on it, the doc reset).
+        cancel: Arc<AtomicBool>,
+    },
 }
 
 impl Job {
     fn key(&self) -> (&str, u64) {
         match self {
-            Self::Probe { key, ticket, .. } | Self::Preload { key, ticket, .. } => (key, *ticket),
+            Self::Probe { key, ticket, .. }
+            | Self::Preload { key, ticket, .. }
+            | Self::Waveform { key, ticket, .. } => (key, *ticket),
         }
     }
 
     fn doc(&self) -> DocId {
         match self {
-            Self::Probe { doc, .. } | Self::Preload { doc, .. } => *doc,
+            Self::Probe { doc, .. } | Self::Preload { doc, .. } | Self::Waveform { doc, .. } => {
+                *doc
+            }
         }
     }
 
     fn path(&self) -> &Path {
         match self {
-            Self::Probe { path, .. } | Self::Preload { path, .. } => path,
+            Self::Probe { path, .. } | Self::Preload { path, .. } | Self::Waveform { path, .. } => {
+                path
+            }
         }
     }
 
     fn is_probe(&self) -> bool {
         matches!(self, Self::Probe { .. })
+    }
+
+    fn kind(&self) -> JobKind {
+        match self {
+            Self::Probe { .. } => JobKind::Probe,
+            Self::Preload { .. } => JobKind::Preload,
+            Self::Waveform { .. } => JobKind::Waveform,
+        }
     }
 }

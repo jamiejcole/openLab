@@ -43,6 +43,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var playheads: [ModelID: ModelID] = [:]
     @Published private(set) var previewing: Set<ModelID> = []
     @Published private(set) var progress: [ModelID: ProgressItem] = [:]
+    /// Audio cues' media lengths as the engine probed them (`media_durations`, `media_duration`).
+    @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:]
     /// Pre-wait and post-wait countdowns in progress (`progress.waits`), by cue.
     @Published private(set) var waits: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
     /// Workspace-level notices in force (replaced by each `warnings` message).
@@ -190,6 +192,17 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         }
     }
 
+    /// An Audio cue's file waveform over file seconds `start..<end` in `buckets` parts (AUD-14).
+    func waveform(cue: ModelID, start: Double, end: Double, buckets: Int) async -> Result<WaveformPeaks, EngineError> {
+        let n = UInt32(Swift.max(1, Swift.min(buckets, 8192)))
+        switch await client.send({ .request(id: $0, .waveform(cue: cue, start: start, end: end, buckets: n)) }) {
+        case .success(let ok):
+            if case .waveform(let peaks)? = ok.data { return .success(peaks) }
+            return .failure(.encoding("waveform result has no waveform data"))
+        case .failure(let e): return .failure(e)
+        }
+    }
+
     /// The pre-show check (SM-06): one report of what would keep the show from running.
     func preshowCheck() async -> Result<PreshowReport, EngineError> {
         switch await client.send({ .request(id: $0, .preshowCheck) }) {
@@ -322,6 +335,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         groupWarnings = Set(s.groupWarnings)
         playheads = Dictionary(s.playheads.compactMap { e in e.cue.map { (e.list, $0) } }, uniquingKeysWith: { $1 })
         previewing = Set(s.previewing)
+        mediaDurations = Dictionary((s.mediaDurations ?? []).map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
         warnings = s.warnings
         progress = [:]
         waits = [:]
@@ -477,9 +491,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 if runtimeWarnings.count > Self.maxRuntimeWarnings {
                     runtimeWarnings.removeFirst(runtimeWarnings.count - Self.maxRuntimeWarnings)
                 }
-            case .mediaDuration:
-                // Decoded for the Duration column (#112), which keeps them; nothing shows them yet.
-                break
+            case .mediaDuration(let d):
+                // The Time & Loops tab draws the file once its length is known (AUD-14).
+                mediaDurations[d.cue] = d
+                cues.insert(d.cue)
             case .unknown(let type):
                 engineLog.notice("ignoring unknown runtime change \(type, privacy: .public)")
             }

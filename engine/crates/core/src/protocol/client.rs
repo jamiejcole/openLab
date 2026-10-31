@@ -364,7 +364,20 @@ pub enum Request {
     },
     /// Send the full state again (after a `revision` or `seq` gap).
     Snapshot,
+    /// The waveform of an Audio cue's file (AUD-14): min/max peaks of each file channel over file
+    /// seconds `start..end` (`end` clamped to the file) in `buckets` equal parts, 1 to
+    /// [`MAX_WAVEFORM_BUCKETS`]. Read on a probe worker the first time and kept, so a later
+    /// zoom answers at once. Workspace-bound.
+    Waveform {
+        cue: CueId,
+        start: f64,
+        end: f64,
+        buckets: u32,
+    },
 }
+
+/// Most buckets one `waveform` request may ask for: more than any screen is wide.
+pub const MAX_WAVEFORM_BUCKETS: u32 = 8192;
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -424,6 +437,30 @@ impl ClientMessage {
                 Err(ProtocolError::NotAbsolute {
                     field: "request.path",
                 })
+            }
+            Self::Request {
+                request:
+                    Request::Waveform {
+                        start,
+                        end,
+                        buckets,
+                        ..
+                    },
+                ..
+            } => {
+                non_negative("request.start", *start)?;
+                non_negative("request.end", *end)?;
+                if end <= start {
+                    return Err(ProtocolError::OutOfRange {
+                        field: "request.end",
+                    });
+                }
+                if !(1..=MAX_WAVEFORM_BUCKETS).contains(buckets) {
+                    return Err(ProtocolError::OutOfRange {
+                        field: "request.buckets",
+                    });
+                }
+                Ok(())
             }
             Self::Hotkey { key, .. } if key.is_empty() || key.len() > MAX_HOTKEY_KEY => {
                 Err(ProtocolError::OutOfRange {

@@ -142,6 +142,7 @@ impl Control {
                 if let Some(doc) = self.docs.iter_mut().find(|d| d.id == s.doc) {
                     let mut out = Vec::new();
                     doc.media.give_up(&s.key, s.ticket, &mut out);
+                    doc.waveforms.give_up(&s.key, s.ticket);
                     doc.pending_media.extend(out);
                 }
             }

@@ -1364,6 +1364,7 @@ impl DocCx<'_> {
             }
         }
         self.doc.media.reset(self.show_dir(), self.doc.model.ws());
+        self.doc.waveforms.reset();
         if changed {
             // An undo can restore an old relative spelling that now resolves against the new
             // folder, so history goes on any move from a known folder. Only the first save of an

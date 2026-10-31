@@ -399,6 +399,12 @@ impl DocCx<'_> {
                         },
                     );
                 }
+                Request::Waveform {
+                    cue,
+                    start,
+                    end,
+                    buckets,
+                } => self.waveform(id, cue, (start, end, buckets), to),
                 // Saves come through [`Control::save`], which knows the other docs.
                 request => self.doc_request(id, request, to, Vec::new()),
             },
