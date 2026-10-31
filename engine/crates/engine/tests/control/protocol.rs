@@ -339,31 +339,25 @@ fn an_edit_in_a_big_show_rebuilds_only_what_it_changed() {
     assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
 }
 
-/// The cues of the last `warnings` message's `bad_plan` notices, in order.
-fn bad_plans(messages: &[ServerMessage]) -> Option<Vec<openlab_core::CueId>> {
-    messages.iter().rev().find_map(|m| match m {
-        ServerMessage::Warnings { warnings } => Some(
-            warnings
-                .iter()
-                .filter_map(|w| match w {
-                    openlab_core::protocol::WireWarning::Notice {
-                        code,
-                        cue: Some(cue),
-                        ..
-                    } if code == "bad_plan" => Some(*cue),
-                    _ => None,
-                })
-                .collect(),
-        ),
-        _ => None,
-    })
+/// The cues broken because their slices cannot be played, in workspace order.
+fn bad_plans(s: &openlab_engine::control::offline::OfflineShow) -> Vec<openlab_core::CueId> {
+    s.control()
+        .engine()
+        .broken_cues()
+        .into_iter()
+        .filter(|(_, p)| {
+            p.iter()
+                .any(|p| matches!(p, openlab_core::CueProblem::SlicesUnplayable { .. }))
+        })
+        .map(|(c, _)| c)
+        .collect()
 }
 
 #[test]
-fn bad_plan_warnings_follow_edits_moves_removals_and_undo() {
-    // The slice-plan checks look only at what each edit touched; the warnings still
-    // name exactly the cues whose slices cannot play, in workspace order. A 300-frame file and
-    // a start time past its end make a plan that cannot play.
+fn unplayable_slices_follow_edits_moves_removals_and_undo() {
+    // The slice-plan checks look only at what each edit touched; the cue engine is still told
+    // of exactly the cues whose slices cannot play (#410). A 300-frame file and a start time
+    // past its end make a plan that cannot play.
     let path = wav(&dc(300, 0.5));
     let mut cues: Vec<_> = (1..=5).map(|n| audio(n, &path, 0)).collect();
     cues.push(openlab_core::Cue {
@@ -386,7 +380,7 @@ fn bad_plan_warnings_follow_edits_moves_removals_and_undo() {
         });
         assert!(matches!(result(&replies), Outcome::Ok(_)), "{replies:?}");
         s.run(BLOCK);
-        bad_plans(&s.take_outbound())
+        bad_plans(s)
     };
     let past_end = |s: &openlab_engine::control::offline::OfflineShow, n: u128| {
         let mut kind = s
@@ -405,9 +399,9 @@ fn bad_plan_warnings_follow_edits_moves_removals_and_undo() {
         }
     };
     let c = past_end(&s, 7);
-    assert_eq!(edit(&mut s, c), Some(vec![id(7)]));
+    assert_eq!(edit(&mut s, c), vec![id(7)]);
     let c = past_end(&s, 2);
-    assert_eq!(edit(&mut s, c), Some(vec![id(2), id(7)]));
+    assert_eq!(edit(&mut s, c), vec![id(2), id(7)]);
     // The group moves to the top: its cue's warning now comes first, though no cue in it was
     // touched.
     let moved = edit(
@@ -417,17 +411,17 @@ fn bad_plan_warnings_follow_edits_moves_removals_and_undo() {
             index: 0,
         },
     );
-    assert_eq!(moved, Some(vec![id(7), id(2)]));
+    assert_eq!(moved, vec![id(7), id(2)]);
     // Gone with its group, and back with the undo.
     assert_eq!(
         edit(&mut s, Command::RemoveCue { id: id(100) }),
-        Some(vec![id(2)])
+        vec![id(2)]
     );
     s.take_outbound();
     let undo = s.request_id();
     s.send(ClientMessage::Undo { id: undo });
     s.run(BLOCK);
-    assert_eq!(bad_plans(&s.take_outbound()), Some(vec![id(7), id(2)]));
+    assert_eq!(bad_plans(&s), vec![id(7), id(2)]);
     assert_eq!(
         s.control().plan_walks(),
         1,

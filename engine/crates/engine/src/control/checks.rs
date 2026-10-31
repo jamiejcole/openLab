@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Which audio cues' slices cannot be played with their file (`bad_plan` warnings), kept per
+//! Which audio cues' slices cannot be played with their file (the cue engine's
+//! `slices_unplayable` problem, `Input::SliceProblems`, #410), kept per
 //! cue and recomputed only when the cue's trims and markers or its file's probe change: an edit
 //! of one cue in a show of thousands builds one plan, not thousands (docs/control.md).
 //!
@@ -11,9 +12,10 @@
 //! [`PlanChecks::check_all`], the reference the incremental path equals (property-tested in
 //! `media.rs`).
 //!
-//! The same plans give each cue's nominal length, which the cue engine is told when it changes
-//! (`Input::CueLengths`), and its media lengths, which clients are told when they change
-//! (`media_duration`, M5.4d): [`PlanChecks::take_changes`]. Only cues whose plan was rebuilt or
+//! What changed is taken with [`PlanChecks::take_changes`]: the cues whose slices became
+//! unplayable or playable again, which the cue engine is told (`Input::SliceProblems`); each
+//! cue's nominal length, which it is told too (`Input::CueLengths`); and its media lengths,
+//! which clients are told (`media_duration`, M5.4d). Only cues whose plan was rebuilt or
 //! dropped are looked at for them, so a probe answer costs the cues on that file.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -91,8 +93,6 @@ pub struct PlanChecks {
     by_key: HashMap<String, BTreeSet<CueId>>,
     /// The cues whose slices cannot be played, with why.
     errors: BTreeMap<CueId, String>,
-    /// The last answer, in workspace order.
-    out: Vec<(CueId, String)>,
     /// The rate the checks were made at.
     rate: Option<NonZeroU32>,
     builds: u64,
@@ -102,19 +102,21 @@ pub struct PlanChecks {
     told: BTreeMap<CueId, SampleTime>,
     /// The media lengths clients were last told (`take_changes`), for the snapshot.
     sent: BTreeMap<CueId, CueMediaDuration>,
+    /// The slice problems the cue engine was last told (`take_changes`).
+    told_errors: BTreeMap<CueId, String>,
     /// Cues whose plan was rebuilt or dropped since then, so the change costs what it touched.
     stale: BTreeSet<CueId>,
 }
 
 impl PlanChecks {
-    /// The cues (in workspace order) whose slices cannot be played, with why: the cues the
-    /// catalog noted since the last call are checked again, the others keep their answer.
+    /// The cues whose slices cannot be played, with why: the cues the catalog noted since the
+    /// last call are checked again, the others keep their answer.
     pub fn check(
         &mut self,
         ws: &Workspace,
         media: &mut MediaCatalog,
         rate: NonZeroU32,
-    ) -> Vec<(CueId, String)> {
+    ) -> &BTreeMap<CueId, String> {
         let changes = media.take_plan_changes();
         if changes.all || self.rate != Some(rate) || media.index().has_duplicates() {
             return self.check_all(ws, media, rate);
@@ -123,11 +125,11 @@ impl PlanChecks {
             // The index disagrees with the workspace: start over.
             return self.check_all(ws, media, rate);
         }
-        self.out.clone()
+        &self.errors
     }
 
-    /// Checks the cues `changes` names, and those on the files it names; then orders the
-    /// answer by the index. `None` if the index cannot place a cue it has.
+    /// Checks the cues `changes` names, and those on the files it names. `None` if the index
+    /// cannot place a cue it has.
     fn follow(
         &mut self,
         ws: &Workspace,
@@ -150,17 +152,6 @@ impl PlanChecks {
             };
             self.update(id, cue, media, rate);
         }
-        // Moves change the order without changing the cues, so it is found again; only the
-        // cues with a warning are placed.
-        let mut placed: Vec<(Vec<usize>, CueId)> = Vec::with_capacity(self.errors.len());
-        for id in self.errors.keys() {
-            placed.push((index.path(*id)?, *id));
-        }
-        placed.sort();
-        self.out = placed
-            .into_iter()
-            .filter_map(|(_, id)| self.errors.get(&id).map(|e| (id, e.clone())))
-            .collect();
         Some(())
     }
 
@@ -171,7 +162,7 @@ impl PlanChecks {
         ws: &Workspace,
         media: &impl Probes,
         rate: NonZeroU32,
-    ) -> Vec<(CueId, String)> {
+    ) -> &BTreeMap<CueId, String> {
         self.walks += 1;
         if self.rate != Some(rate) {
             // Every plan depends on the rate.
@@ -182,7 +173,6 @@ impl PlanChecks {
             self.rate = Some(rate);
         }
         let mut seen: BTreeSet<CueId> = BTreeSet::new();
-        let mut out = Vec::new();
         for list in &ws.cue_lists {
             each_cue(&list.cues, &mut |c| {
                 if audio_spec(c).is_none() {
@@ -190,9 +180,6 @@ impl PlanChecks {
                 }
                 seen.insert(c.id);
                 self.update(c.id, Some(c), media, rate);
-                if let Some(e) = self.errors.get(&c.id) {
-                    out.push((c.id, e.clone()));
-                }
             });
         }
         let gone: Vec<CueId> = self
@@ -204,8 +191,7 @@ impl PlanChecks {
         for id in gone {
             self.update(id, None, media, rate);
         }
-        self.out.clone_from(&out);
-        out
+        &self.errors
     }
 
     /// Brings what is kept about `id` in line with `cue` (`None`: gone) and its file's probe.
@@ -293,6 +279,10 @@ impl PlanChecks {
     /// What changed since the last call, as of the last `check`, in id order. Looks only at
     /// the cues whose plan was rebuilt or dropped since then.
     ///
+    /// `slices`: the slice problems for the cue engine. A cue whose plan cannot be built gets
+    /// why; one told that before whose plan builds now, or that has no plan any more (gone,
+    /// another file, its file not probed or not playable), gets `None`.
+    ///
     /// `lengths`: the nominal lengths for the cue engine. A cue with a finite plan now gets its
     /// length; one that had a length and has none now (gone, its file not probed or not
     /// playable, a plan that loops forever or cannot be built) gets `None`.
@@ -301,11 +291,19 @@ impl PlanChecks {
     /// them; one that had them and has not now (gone, its file missing, not probed again yet,
     /// another file) gets a change with every field absent, so a client never keeps a stale
     /// length.
-    pub fn take_changes(&mut self) -> LengthChanges {
-        let mut out = LengthChanges::default();
+    pub fn take_changes(&mut self) -> CheckChanges {
+        let mut out = CheckChanges::default();
         let rate = self.rate;
         for id in std::mem::take(&mut self.stale) {
             let entry = self.cues.get(&id).and_then(|t| t.entry.as_ref());
+            let error = self.errors.get(&id);
+            if self.told_errors.get(&id) != error {
+                match error {
+                    Some(e) => self.told_errors.insert(id, e.clone()),
+                    None => self.told_errors.remove(&id),
+                };
+                out.slices.push((id, error.cloned()));
+            }
             let now = entry.and_then(|e| e.length);
             if self.told.get(&id).copied() != now {
                 match now {
@@ -368,7 +366,8 @@ impl PlanChecks {
 
 /// What [`PlanChecks::take_changes`] found.
 #[derive(Debug, Default)]
-pub struct LengthChanges {
+pub struct CheckChanges {
+    pub slices: Vec<(CueId, Option<String>)>,
     pub lengths: Vec<(CueId, Option<SampleTime>)>,
     pub media: Vec<CueMediaDuration>,
 }

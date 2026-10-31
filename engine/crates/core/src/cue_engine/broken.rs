@@ -111,6 +111,10 @@ pub(super) struct Problems {
     model: ModelFacts,
     media: BTreeMap<String, MediaStatus>,
     patches: BTreeMap<PatchId, PatchResolution>,
+    /// Audio cues whose slices the binary reported unplayable, with why (`Input::SliceProblems`).
+    /// Kept by cue id as reported, like `media`: the binary tells `None` for a cue it stops
+    /// tracking (gone, another file, not probed).
+    slices: BTreeMap<CueId, String>,
     /// Every cue that has problems, with them.
     current: BTreeMap<CueId, Vec<CueProblem>>,
     /// Cues shown with [`CueProblem::StartedBroken`].
@@ -136,6 +140,7 @@ impl Default for Problems {
             model: ModelFacts::default(),
             media: BTreeMap::new(),
             patches: BTreeMap::new(),
+            slices: BTreeMap::new(),
             current: BTreeMap::new(),
             started_broken: BTreeSet::new(),
             below: BTreeMap::new(),
@@ -304,7 +309,7 @@ impl CueEngine {
                     |n| ws.network_patches.iter().find(|x| x.id == n),
                 )
             })
-            .map(|f| combine(&f, &self.problems.media, &self.problems.patches))
+            .map(|f| combine(cue, &f, &self.problems))
             .unwrap_or_default();
         if self.problems.current.get(&cue) != Some(&fresh) {
             self.problems.unsignalled = self.problems.unsignalled.saturating_add(1);
@@ -602,7 +607,7 @@ impl CueEngine {
         let current: BTreeMap<CueId, Vec<CueProblem>> = fresh
             .facts
             .iter()
-            .map(|(id, f)| (*id, combine(f, &p.media, &p.patches)))
+            .map(|(id, f)| (*id, combine(*id, f, p)))
             .filter(|(_, v)| !v.is_empty())
             .collect();
         if current != p.current {
@@ -651,6 +656,23 @@ impl CueEngine {
         self.refresh(cues, cx);
     }
 
+    /// Records which Audio cues' slices the binary found unplayable (and which no longer are),
+    /// and recomputes the problems of those cues only.
+    pub(super) fn slice_problems(&mut self, cues: Vec<(CueId, Option<String>)>, cx: &mut Ctx) {
+        let p = &mut self.problems;
+        let mut changed = BTreeSet::new();
+        for (cue, reason) in cues {
+            let differs = match reason {
+                Some(reason) => p.slices.insert(cue, reason.clone()) != Some(reason),
+                None => p.slices.remove(&cue).is_some(),
+            };
+            if differs {
+                changed.insert(cue);
+            }
+        }
+        self.refresh(changed, cx);
+    }
+
     /// Recomputes the problems of `cues` and reports those that changed. A loaded cue that
     /// became broken is unloaded (it cannot start). A cue with a runtime keeps it: its runtime
     /// state is reported until it ends.
@@ -672,7 +694,7 @@ impl CueEngine {
                 .model
                 .facts
                 .get(&cue)
-                .map(|f| combine(f, &p.media, &p.patches))
+                .map(|f| combine(cue, f, p))
                 .unwrap_or_default();
             let started_broken = new.is_empty()
                 && matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.static_broken);
@@ -731,13 +753,10 @@ impl CueEngine {
     }
 }
 
-/// A cue's problems in their order: target, nothing to fade, media, patch or device, network
-/// destination.
-fn combine(
-    f: &Facts,
-    media: &BTreeMap<String, MediaStatus>,
-    patches: &BTreeMap<PatchId, PatchResolution>,
-) -> Vec<CueProblem> {
+/// A cue's problems in their order: target, nothing to fade, media, slices, patch or device,
+/// network destination.
+fn combine(cue: CueId, f: &Facts, p: &Problems) -> Vec<CueProblem> {
+    let (media, patches) = (&p.media, &p.patches);
     let mut found: Vec<CueProblem> = f.target.iter().cloned().collect();
     if f.nothing_to_fade {
         found.push(CueProblem::NothingToFade);
@@ -757,7 +776,15 @@ fn combine(
                         reason: reason.clone(),
                     });
                 }
-                Some(MediaStatus::Available | MediaStatus::Unknown) | None => {}
+                // Slices are planned against the file's probe: a file that is missing or
+                // cannot be played has no slices to judge.
+                Some(MediaStatus::Available | MediaStatus::Unknown) | None => {
+                    if let Some(reason) = p.slices.get(&cue) {
+                        found.push(CueProblem::SlicesUnplayable {
+                            reason: reason.clone(),
+                        });
+                    }
+                }
             },
         }
         if !a.patch_exists {

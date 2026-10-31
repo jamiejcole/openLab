@@ -858,18 +858,12 @@ fn a_doc_built_off_the_control_thread_checks_its_slices_as_its_files_answer() {
         vec![ws_n(1, vec![audio(1, &path, 0), bad])],
     );
     s.run(BLOCK);
-    let flagged: Vec<_> = s
-        .control()
-        .doc(ids[1])
-        .unwrap()
-        .warnings()
-        .iter()
-        .filter_map(|w| match w {
-            WireWarning::Notice { code, cue, .. } if code == "bad_plan" => *cue,
-            _ => None,
-        })
-        .collect();
-    assert_eq!(flagged, vec![id(2)]);
+    let doc = s.control().doc(ids[1]).unwrap();
+    assert!(doc.engine().problems(id(1)).is_empty());
+    assert!(matches!(
+        doc.engine().problems(id(2)),
+        [openlab_core::CueProblem::SlicesUnplayable { .. }]
+    ));
 }
 
 /// Answers of the shared workers for a doc closed since (its probes, here) are dropped: they
