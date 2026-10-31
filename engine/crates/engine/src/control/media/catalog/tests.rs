@@ -653,6 +653,75 @@ fn replaced_group(same_child_id: bool) {
 }
 
 #[test]
+fn a_child_moved_out_of_a_re_added_group_in_the_same_edit_follows_its_new_file() {
+    // Group 10_001 { group 10_002 { audio 10_003 on old.wav } } removed and added again with the
+    // audio on new.wav, then group 10_002 moved to the top in the same transaction: the moved
+    // group is under no added top, yet its audio is the new content.
+    let dir = tempfile::tempdir().unwrap();
+    let (old_file, new_file) = (
+        write_wav(dir.path(), "old.wav"),
+        write_wav(dir.path(), "new.wav"),
+    );
+    let (mut ws, template) = template();
+    let mut old_child = template.clone();
+    old_child.id = CueId(uuid::Uuid::from_u128(10_003));
+    set_media(&mut old_child, &old_file, true);
+    let mut new_child = old_child.clone();
+    set_media(&mut new_child, &new_file, true);
+    let group = |id: u128, child: Cue| Cue {
+        id: CueId(uuid::Uuid::from_u128(id)),
+        kind: CueKind::Group {
+            mode: GroupMode::Timeline,
+            children: vec![child],
+        },
+        number: None,
+        ..template.clone()
+    };
+    ws.cue_lists[0].cues = vec![group(10_001, group(10_002, old_child))];
+    let (mut inc, rx_inc) = catalog(10_000);
+    let (mut full, rx_full) = catalog(10_000);
+    let (mut got_inc, mut got_full) = (0, 0);
+    inc.sync(&ws);
+    full.sync(&ws);
+    settle(&mut inc, &rx_inc, &mut got_inc);
+    settle(&mut full, &rx_full, &mut got_full);
+    assert_eq!(inc.preload_reserved(), 400);
+    let top = Position {
+        list: ws.cue_lists[0].id,
+        parent: None,
+        index: 0,
+    };
+    let command = Command::Transaction {
+        commands: vec![
+            Command::RemoveCue {
+                id: CueId(uuid::Uuid::from_u128(10_001)),
+            },
+            Command::AddCue {
+                at: top.clone(),
+                cue: group(10_001, group(10_002, new_child)),
+                auto_number: false,
+            },
+            Command::ReparentCue {
+                id: CueId(uuid::Uuid::from_u128(10_002)),
+                to: top,
+            },
+        ],
+    };
+    let footprint = command.footprint();
+    ws.apply(command).unwrap();
+    inc.sync_cues(&ws, &footprint);
+    full.sync(&ws);
+    assert!(inc.index.matches(&ws));
+    assert_eq!(view(&inc), view(&full));
+    settle(&mut inc, &rx_inc, &mut got_inc);
+    settle(&mut full, &rx_full, &mut got_full);
+    assert_eq!(view(&inc), view(&full));
+    assert!(inc.get(&new_file).is_some(), "the new file is probed");
+    assert!(inc.get(&old_file).is_none(), "the old file is forgotten");
+    assert_eq!(inc.preload_reserved(), 400, "one preload, the new file's");
+}
+
+#[test]
 fn switching_preload_on_for_a_probed_file_preloads_it_and_off_releases_it() {
     let dir = tempfile::tempdir().unwrap();
     let file = write_wav(dir.path(), "a.wav");

@@ -31,3 +31,4 @@ cc 535a6382ce44dbc8cb62a756f637ff99001e4d719e0820c613945af9ff24bc2b # shrinks to
 cc ff4d33bd2b6bd8ca69ef95781a433c543038ce1634fdc2b8686f504982bde875 # shrinks to prefix = [Pick { op: 11, a: 0, b: 0, c: 2419703823, d: 0 }], p = Pick { op: 0, a: 0, b: 0, c: 0, d: 992641 }
 cc 8ac494fe596373272bd7a948f98969af6840c2d6752d0d5773a68565f64be371 # shrinks to prefix = [Pick { op: 11, a: 0, b: 0, c: 4042955541, d: 0 }], p = Pick { op: 0, a: 0, b: 0, c: 0, d: 0 }, len = 0, missing_at = None
 cc 163c2d05c9d824f4e11adbc56df721780d332bfd7b7663dfb4caee901eebb537 # shrinks to sequence = [Pick { op: 0, a: 17213905, b: 0, c: 3624321, d: 0 }, Pick { op: 0, a: 2046402901, b: 0, c: 6, d: 0 }, Pick { op: 11, a: 1287069907, b: 0, c: 1181568232, d: 2603302130 }]
+cc 57a6217ced9c5962f324c121c853e09ac7dd1ffedbbe7b6f953efaea008f429b # playheads_and_group_visits_follow_footprints: a cue moved out of a re-added group before the call (#464)
