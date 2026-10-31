@@ -238,6 +238,13 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 network_disabled: true,
             },
         ),
+        (
+            "set_output_device",
+            Request::SetOutputDevice {
+                device: Some("Scarlett 2i2".into()),
+            },
+        ),
+        ("list_patch_mappings", Request::ListPatchMappings),
         ("preshow_check", Request::PreshowCheck),
         ("set_show_mode", Request::SetShowMode { on: true }),
         (
@@ -380,6 +387,37 @@ fn fixtures() -> Vec<(String, Sample)> {
                     },
                     Command::RemoveCue { id: cue_id(11) },
                 ],
+            }),
+            coalesce: None,
+        }),
+    );
+    // A new Audio cue exactly as the app's Finder drop sends it (`NewCueKind.audio.cueJSON`, the
+    // Swift test compares): no number, the file, one cue output per patch output and file
+    // channel n on cue output n at 0 dB. The engine's real-audio tests play this message.
+    let mut dropped = cue(13, audio());
+    if let CueKind::Audio { media, levels, .. } = &mut dropped.kind {
+        *media = Some(MediaRef::new("/Volumes/Show/thunder.wav"));
+        levels.crosspoints = (0..2)
+            .map(|n| Crosspoint {
+                input: n,
+                output: n,
+                db: 0.0,
+                mute: false,
+            })
+            .collect();
+    }
+    add(
+        "command_add_new_audio_cue",
+        client(ClientMessage::Command {
+            id: rid(4),
+            command: Box::new(Command::AddCue {
+                at: Position {
+                    list: list(),
+                    parent: None,
+                    index: 0,
+                },
+                cue: dropped,
+                auto_number: true,
             }),
             coalesce: None,
         }),
@@ -917,7 +955,9 @@ fn fixtures() -> Vec<(String, Sample)> {
                     devices: vec![DeviceEntry {
                         name: "Scarlett 2i2".into(),
                         output_channels: 2,
+                        is_default: true,
                     }],
+                    selected: Some("Scarlett 2i2".into()),
                 }),
             }),
         }),
@@ -958,6 +998,30 @@ fn fixtures() -> Vec<(String, Sample)> {
                         },
                     ],
                 }))),
+            }),
+        }),
+    );
+    add(
+        "result_patch_mappings",
+        server(ServerMessage::Result {
+            id: rid(60),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::PatchMappings {
+                    patches: vec![
+                        PatchMappingEntry {
+                            patch: PatchId(uuid::Uuid::from_u128(0x70)),
+                            mapping: Some(PatchMapping {
+                                device: "Scarlett 2i2".into(),
+                                channels: vec![0, 1],
+                            }),
+                        },
+                        PatchMappingEntry {
+                            patch: PatchId(uuid::Uuid::from_u128(0x71)),
+                            mapping: None,
+                        },
+                    ],
+                }),
             }),
         }),
     );
@@ -1423,7 +1487,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 23);
-    assert_eq!(all_requests().len(), 15);
+    assert_eq!(all_requests().len(), 17);
 }
 
 #[test]
@@ -3568,6 +3632,8 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::ListDevices),
         any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
         Just(Request::PreshowCheck),
+        Just(Request::ListPatchMappings),
+        proptest::option::of("[ -~]{1,20}").prop_map(|device| Request::SetOutputDevice { device }),
         any::<bool>().prop_map(|on| Request::SetShowMode { on }),
         (
             any::<u128>(),

@@ -439,10 +439,11 @@ extension ClientMessage {
         case .hello, .goodbye, .close: return false
         case .request(_, let r):
             switch r {
-            // A first waveform reads the whole file on a probe worker; the engine fails it itself after
-            // its probe timeout.
+            // A first waveform reads the whole file on the engine's waveform reader, which fails it
+            // itself after its timeout.
             case .new, .open, .openRecovery, .scanRecovery, .save, .saveAs, .relink, .waveform: return false
-            case .listDevices, .preshowCheck, .logTail, .setOutputOverrides, .setShowMode, .setPatchMapping,
+            case .listDevices, .setOutputDevice, .listPatchMappings, .preshowCheck, .logTail, .setOutputOverrides,
+                .setShowMode, .setPatchMapping,
                 .snapshot:
                 return true
             }

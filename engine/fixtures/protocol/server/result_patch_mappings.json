@@ -1,0 +1,24 @@
+{
+  "type": "result",
+  "id": 60,
+  "ok": {
+    "data": {
+      "type": "patch_mappings",
+      "patches": [
+        {
+          "patch": "00000000-0000-0000-0000-000000000070",
+          "mapping": {
+            "device": "Scarlett 2i2",
+            "channels": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "patch": "00000000-0000-0000-0000-000000000071"
+        }
+      ]
+    }
+  }
+}

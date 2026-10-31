@@ -161,6 +161,7 @@ files, so call it off the control thread: the `scan_recovery` request runs it on
 {
   "settings_version": 1,
   "backup_keep": 20,
+  "output_device": "Scarlett 2i2",
   "workspaces": {
     "<workspace-id>": {
       "patches": { "<patch-id>": { "device": "Scarlett 18i20", "channels": [4, 5] } }

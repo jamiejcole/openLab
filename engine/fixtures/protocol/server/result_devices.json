@@ -7,9 +7,11 @@
       "devices": [
         {
           "name": "Scarlett 2i2",
-          "output_channels": 2
+          "output_channels": 2,
+          "is_default": true
         }
-      ]
+      ],
+      "selected": "Scarlett 2i2"
     }
   }
 }

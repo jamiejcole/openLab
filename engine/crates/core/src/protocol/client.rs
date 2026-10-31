@@ -326,6 +326,15 @@ pub enum Request {
         folder: String,
     },
     ListDevices,
+    /// Chooses the output device the engine opens at its **next start** (the engine plays on one
+    /// device and does not switch while running; the app restarts it). `device` must be a name
+    /// `list_devices` gives; null or absent goes back to the system default. Kept in the
+    /// machine settings, not a show file. Answers `ok` with no data, `not_found` (no such
+    /// device) or `io` (the settings cannot be kept); nothing changes on a refusal. App-scope.
+    SetOutputDevice {
+        #[serde(default)]
+        device: Option<String>,
+    },
     /// Switches output overrides (PB-10) for the whole engine, every open workspace: not saved
     /// in any show file and gone when the engine restarts, as QLab's Overrides are. The
     /// `status` message reports them. Answers `ok` with no data.
@@ -353,6 +362,9 @@ pub enum Request {
         #[serde(default)]
         mapping: Option<PatchMapping>,
     },
+    /// Where each of the connection's workspace's patches plays on this machine (WS-07), for a
+    /// patch editor: answers `patch_mappings`. Workspace-bound.
+    ListPatchMappings,
     /// One report of every broken cue, missing file, unmapped device and unreachable target
     /// (SM-06), from the engine's current state.
     PreshowCheck,
