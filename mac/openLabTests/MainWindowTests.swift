@@ -280,4 +280,20 @@ final class MainWindowTests: XCTestCase {
         XCTAssertFalse(saved)
         XCTAssertEqual(notices, [loc("masthead.notes.cueGone")])
     }
+
+    func testEscapeInMastheadNotesCommitsAndReturnsFocus() async throws {
+        let (wc, rig) = try await demoController()
+        try standBy(rig, CueListHarness.intro)
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        typeMastheadNotes(wc, "typed then escape")
+        let handled = wc.masthead.textView(
+            wc.masthead.notesView, doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertTrue(handled)
+        XCTAssertFalse(window.firstResponder === wc.masthead.notesView)
+        await assertEventually { !self.setNotesCommands(rig).isEmpty }
+        XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed then escape")
+        XCTAssertFalse(
+            wc.masthead.textView(wc.masthead.notesView, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+    }
 }

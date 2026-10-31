@@ -113,6 +113,14 @@ final class MastheadView: NSView, NSTextViewDelegate {
         applyEditable()
     }
 
+    /// Escape ends editing (the text is committed by the end-of-editing that follows) and gives
+    /// focus back, so Space fires GO again.
+    func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        window?.makeFirstResponder(nil)
+        return true
+    }
+
     func textDidBeginEditing(_ notification: Notification) {
         editingID = cueID
     }
