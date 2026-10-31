@@ -295,6 +295,26 @@ soak_classifier() {
   rm -rf "$d"
 }
 
+# 12. Every UI smoke identifier (scripts/ui-smoke.txt) names an existing test, so a rename cannot
+# silently drop it from the per-PR set.
+ui_smoke() {
+  local line cls name n=0
+  while IFS= read -r line; do
+    case "$line" in ''|'#'*) continue ;; esac
+    n=$((n + 1))
+    case "$line" in
+      openLabUITests/*/*) cls=$(printf '%s' "$line" | cut -d/ -f2); name=$(printf '%s' "$line" | cut -d/ -f3) ;;
+      *) fail ui-smoke "'$line' is not openLabUITests/<Class>/<test>"; continue ;;
+    esac
+    # The class and the test must be in the same file.
+    f=$(grep -lE "^(final )?class $cls\\b" mac/openLabUITests/*.swift 2>/dev/null | head -n 1)
+    if [ -z "$f" ] || ! grep -qE "func $name\\(\\)" "$f"; then
+      fail ui-smoke "'$line' names no test in mac/openLabUITests"
+    fi
+  done <scripts/ui-smoke.txt
+  [ "$n" -ge 3 ] || fail ui-smoke "scripts/ui-smoke.txt lists $n tests; the smoke set needs launch, GO and panic"
+}
+
 known_entries
 spdx
 strings_keys
@@ -307,6 +327,7 @@ wall_clock
 one_gate
 prepush_no_stamp
 soak_classifier
+ui_smoke
 
 if [ "$failed" = 0 ]; then
   echo "check-repo: ok"

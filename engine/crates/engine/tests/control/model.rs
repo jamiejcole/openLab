@@ -8,7 +8,7 @@
 
 use crate::show::*;
 use openlab_core::protocol::{ClientMessage, ServerMessage};
-use openlab_core::{Command, CueKind, CueProperty, Position, Workspace};
+use openlab_core::{Command, CueKind, CueProperty, CueState, Position, Workspace};
 use openlab_engine::control::offline::OfflineShow;
 
 /// A client: the snapshot it started from, then every `model_changed`.
@@ -181,6 +181,118 @@ fn a_runtime_arm_change_is_sent_as_an_upsert_of_that_cue() {
     assert_eq!(mirror.catch_up(&mut s), 1);
     assert_eq!(mirror.entities, 1);
     assert!(!mirror.workspace.find_cue(id(3)).unwrap().armed);
+}
+
+// ---- Every path that changes the workspace reaches the cue engine ----
+//
+// The control loop signals no edit by hand: a doc's workspace is written only through a guard
+// that tells its cue engine (docs/control.md, Model changes). Each path is checked with
+// `assert_engine_follows` and, where the edit changes what the engine reports, by that report:
+// a Start cue losing its target is broken at once. Without the signal the problem cache would
+// stay as it was (the outline check sees no change inside a cue).
+
+/// Start cue 2 aimed at Memo 1.
+fn aimed_start() -> OfflineShow {
+    show(workspace(vec![
+        cue(1, CueKind::Memo),
+        cue(
+            2,
+            CueKind::Start {
+                target: Some(id(1)),
+            },
+        ),
+    ]))
+}
+
+fn clear_target() -> Command {
+    Command::SetCueProperty {
+        id: id(2),
+        property: CueProperty::Target { value: None },
+    }
+}
+
+fn state(s: &OfflineShow, n: u128) -> CueState {
+    s.control().engine().state(id(n))
+}
+
+#[test]
+fn a_command_reaches_the_cue_engine_without_a_signal() {
+    let mut s = aimed_start();
+    assert_ne!(state(&s, 2), CueState::Broken);
+    assert_engine_follows(&mut s, |s| command(s, clear_target()));
+    assert_eq!(state(&s, 2), CueState::Broken);
+}
+
+#[test]
+fn an_undo_reaches_the_cue_engine_without_a_signal() {
+    let mut s = aimed_start();
+    command(&mut s, clear_target());
+    assert_engine_follows(&mut s, |s| {
+        let rid = s.request_id();
+        s.send(ClientMessage::Undo { id: rid })
+    });
+    assert_ne!(state(&s, 2), CueState::Broken);
+}
+
+#[test]
+fn a_redo_reaches_the_cue_engine_without_a_signal() {
+    let mut s = aimed_start();
+    command(&mut s, clear_target());
+    let rid = s.request_id();
+    s.send(ClientMessage::Undo { id: rid });
+    assert_engine_follows(&mut s, |s| {
+        let rid = s.request_id();
+        s.send(ClientMessage::Redo { id: rid })
+    });
+    assert_eq!(state(&s, 2), CueState::Broken);
+}
+
+#[test]
+fn a_paste_reaches_the_cue_engine_without_a_signal() {
+    let mut s = show(workspace(vec![cue(1, CueKind::Memo)]));
+    assert_engine_follows(&mut s, |s| {
+        command(
+            s,
+            Command::PasteClipboard {
+                at: Position {
+                    list: list_id(),
+                    parent: None,
+                    index: 1,
+                },
+                cues: vec![cue(500, CueKind::Start { target: None })],
+                source_dir: None,
+            },
+        );
+    });
+    let pasted = s.control().workspace().cue_lists[0].cues[1].id;
+    assert_eq!(s.control().engine().state(pasted), CueState::Broken);
+}
+
+#[test]
+fn a_runtime_arm_change_reaches_the_cue_engine_without_a_signal() {
+    let path = wav(&dc(300, 0.5));
+    let disarm = cue(
+        2,
+        CueKind::Disarm {
+            target: Some(id(3)),
+        },
+    );
+    let mut s = show(workspace(vec![disarm, audio(3, &path, 0)]));
+    assert_engine_follows(&mut s, |s| {
+        go(s);
+        s.run(BLOCK * 2);
+    });
+    assert!(!s.control().workspace().find_cue(id(3)).unwrap().armed);
+}
+
+#[test]
+fn an_opened_workspace_reaches_the_cue_engine_without_a_signal() {
+    // Opening builds the doc's engine around the workspace (`DocModel::new`): its first call
+    // follows all of it, so a cue broken in the file is broken from the start.
+    let s = show(workspace(vec![cue(2, CueKind::Start { target: None })]));
+    assert!(s.control().engine().model_syncs() >= 1);
+    assert_eq!(state(&s, 2), CueState::Broken);
+    assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
 }
 
 /// A deterministic random walk of edits, undos and redos over groups, moves and renumbering.

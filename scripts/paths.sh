@@ -5,7 +5,7 @@
 # ERE patterns, matched with `grep -E` against repo-relative paths.
 
 # A CI, Makefile or gate-script change re-runs everything.
-PATHS_ALL_RE='^(\.github/|Makefile$|scripts/(paths|rust-checks|soak-rt-ci)\.sh$)'
+PATHS_ALL_RE='^(\.github/|Makefile$|scripts/(paths|rust-checks|soak-rt-ci)\.sh$|scripts/ui-smoke\.txt$)'
 # The Rust workspace (Cargo files, toolchain pin and deny.toml all live under engine/).
 PATHS_ENGINE_RE='^engine/'
 # The macOS app job. On a pull request it runs only for what the app reads from the engine: the

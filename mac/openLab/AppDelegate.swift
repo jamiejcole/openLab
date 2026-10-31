@@ -85,6 +85,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @MainActor @objc func newWorkspace(_ sender: Any?) { Task { await appController.newWorkspace() } }
     @MainActor @objc func openWorkspace(_ sender: Any?) { Task { await appController.openWorkspace() } }
+    @MainActor @objc func saveWorkspace(_ sender: Any?) {
+        guard let store = appController.frontController?.store else { return }
+        Task { await appController.saveWorkspace(store) }
+    }
+    @MainActor @objc func saveWorkspaceAs(_ sender: Any?) {
+        guard let store = appController.frontController?.store else { return }
+        Task { await appController.saveWorkspace(store, asNew: true) }
+    }
+    @MainActor @objc func openRecent(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        Task { await appController.openWorkspace(url: url) }
+    }
+    @MainActor @objc func clearRecents(_ sender: Any?) { appController.clearRecents() }
     @MainActor @objc func recoverAutosaves(_ sender: Any?) { Task { await alarmController.recoverAutosaves() } }
 
     @MainActor @objc func enterShowMode(_ sender: Any?) {
@@ -185,6 +198,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return textEditor == nil && canEditFront
         case #selector(undoEdit(_:))?: return textEditor != nil || (editor?.canUndo ?? false)
         case #selector(redoEdit(_:))?: return textEditor != nil || (editor?.canRedo ?? false)
+        case #selector(saveWorkspace(_:))?, #selector(saveWorkspaceAs(_:))?:
+            return appController.canSaveFront
         case #selector(recoverAutosaves(_:))?: return engineSession.connectionState == .connected
         case #selector(showLog(_:))?: return appController.frontController != nil
         case #selector(showPreshowCheck(_:))?: return appController.frontController?.canRunPreshowCheck ?? false
@@ -198,6 +213,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     /// The Transport menu shows the key window's workspace keys.
     @MainActor func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu.title == NSLocalizedString("menu.file.openRecent", comment: "") {
+            MainMenu.fillRecent(menu, appController.existingRecentURLs())
+            return
+        }
         // Show Mode (SM-01): the editing items go dark in the front window's Show Mode.
         if menu.title == NSLocalizedString("menu.edit", comment: "") {
             MainMenu.lockEditItems(in: menu, locked: appController.frontController?.isShowMode == true)

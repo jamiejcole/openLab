@@ -1251,6 +1251,9 @@ fn a_copy_of_an_open_show_gets_a_fresh_id_signalled_to_its_engine() {
     let doc = s.control().doc(copy).unwrap();
     assert_ne!(doc.workspace().id, a.id);
     assert_eq!(doc.engine().unsignalled_model_changes(), 0);
+    // Two signalled follow-ups, in every build: the opened workspace's (on the document
+    // worker) and the new id's.
+    assert_eq!(doc.engine().model_syncs(), 2);
     let first = s.control().doc(ids[0]).unwrap();
     assert_eq!(first.engine().unsignalled_model_changes(), 0);
 }

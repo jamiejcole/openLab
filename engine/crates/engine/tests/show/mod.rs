@@ -214,6 +214,30 @@ pub fn show_with(ws: Workspace, config: ControlConfig) -> OfflineShow {
     s
 }
 
+/// Runs `edit` (a path that changes the first doc's workspace) and checks that doc's cue engine
+/// followed the change as a signalled one, in every build: its whole-model passes ran again
+/// (`model_syncs` counts only follow-ups of a signal) and no change went unsignalled. Nothing in
+/// the control loop signals an edit by hand any more: the signal is the workspace's write
+/// guard's (docs/control.md, Model changes).
+pub fn assert_engine_follows<R>(
+    s: &mut OfflineShow,
+    edit: impl FnOnce(&mut OfflineShow) -> R,
+) -> R {
+    let syncs = s.control().engine().model_syncs();
+    let unsignalled = s.control().engine().unsignalled_model_changes();
+    let out = edit(s);
+    // The engine follows a signal on its next call (an edit's own tick, or this one: a
+    // transport action that changes nothing here).
+    s.transport(TransportAction::ResumeAll);
+    let engine = s.control().engine();
+    assert!(
+        engine.model_syncs() > syncs,
+        "the cue engine was not told of the edit"
+    );
+    assert_eq!(engine.unsignalled_model_changes(), unsignalled);
+    out
+}
+
 pub fn go(s: &mut OfflineShow) -> u64 {
     let at = s.now();
     s.transport(TransportAction::Go { list: list_id() });

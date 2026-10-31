@@ -315,11 +315,13 @@ impl DocCx<'_> {
                     }
                 };
                 let footprint = command.footprint();
-                match self.doc.history.execute_coalescing(
-                    &mut self.doc.ws,
-                    command,
-                    coalesce.as_deref(),
-                ) {
+                let mut edit = self.doc.model.edit();
+                let result =
+                    self.doc
+                        .history
+                        .execute_coalescing(&mut edit, command, coalesce.as_deref());
+                edit.ended(&footprint, &result);
+                match result {
                     Ok(changed) => {
                         // An empty transaction, or an edit that sets what is already there,
                         // changed nothing and is no undo step: no revision, no
@@ -348,11 +350,13 @@ impl DocCx<'_> {
                 // A step that removes an active cue (an undo of its add, a redo of its delete)
                 // is performed, as QLab 5 does; the engine stops the cue as it stops a deleted
                 // one when it follows the edit.
+                let mut edit = self.doc.model.edit();
                 let result = if undo {
-                    self.doc.history.undo(&mut self.doc.ws)
+                    self.doc.history.undo(&mut edit)
                 } else {
-                    self.doc.history.redo(&mut self.doc.ws)
+                    self.doc.history.redo(&mut edit)
                 };
+                edit.ended(&footprint, &result);
                 match result {
                     Ok(true) => {
                         self.edited(now, &footprint);

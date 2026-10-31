@@ -268,7 +268,10 @@ jobs:
           # Only main saves; PRs restore main's cache instead of filling the repo's 10 GB cache limit.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: swift format lint --strict -r mac/
-      - run: make test-mac
+      # A PR and a push run the unit tests and the UI smoke set (scripts/ui-smoke.txt); the full UI
+      # suite is slow and flaky, so it runs on the nightly schedule (and on demand), where a failure
+      # turns the run red and the `alert` job opens the ci-red issue.
+      - run: make ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'test-mac-ui-full' || 'test-mac' }}
       - run: make mac
         if: needs.changes.outputs.bundle == 'true'
       - run: make verify-bundle

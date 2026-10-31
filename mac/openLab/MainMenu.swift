@@ -8,6 +8,7 @@ enum MainMenu {
     struct Menus {
         let bar: NSMenu
         let edit: NSMenu
+        let openRecent: NSMenu
         let cues: NSMenu
         let transport: NSMenu
         let windows: NSMenu
@@ -16,6 +17,7 @@ enum MainMenu {
 
     static func make(keys: TransportKeys = TransportKeys(settings: nil)) -> Menus {
         let edit = editMenu()
+        let (file, openRecent) = fileMenu()
         let cues = cuesMenu()
         let windows = menu(
             "menu.window",
@@ -38,12 +40,14 @@ enum MainMenu {
             ])
         let transport = transportMenu(keys)
         let bar = NSMenu()
-        for submenu in [appMenu(), fileMenu(), edit, cues, viewMenu(), transport, windows, help] {
+        for submenu in [appMenu(), file, edit, cues, viewMenu(), transport, windows, help] {
             let holder = NSMenuItem()
             holder.submenu = submenu
             bar.addItem(holder)
         }
-        return Menus(bar: bar, edit: edit, cues: cues, transport: transport, windows: windows, help: help)
+        return Menus(
+            bar: bar, edit: edit, openRecent: openRecent, cues: cues, transport: transport, windows: windows, help: help
+        )
     }
 
     private static func appMenu() -> NSMenu {
@@ -64,19 +68,49 @@ enum MainMenu {
         )
     }
 
-    private static func fileMenu() -> NSMenu {
-        menu(
+    /// QLab's File menu order: New, Open, Open Recent, Close, Save, Save As. The Open Recent
+    /// submenu is filled when it opens (`AppDelegate.menuNeedsUpdate`).
+    private static func fileMenu() -> (file: NSMenu, openRecent: NSMenu) {
+        let recent = NSMenu(title: localized("menu.file.openRecent"))
+        let recentItem = NSMenuItem(title: recent.title, action: nil, keyEquivalent: "")
+        recentItem.submenu = recent
+        let file = menu(
             "menu.file",
             [
                 item("menu.file.new", #selector(AppDelegate.newWorkspace(_:)), "n"),
                 item("menu.file.open", #selector(AppDelegate.openWorkspace(_:)), "o"),
+                recentItem,
                 item("menu.file.recover", #selector(AppDelegate.recoverAutosaves(_:))),
                 .separator(),
                 item("menu.file.relink", #selector(AppDelegate.relinkMedia(_:))),
                 .separator(),
                 item("menu.file.close", #selector(NSWindow.performClose(_:)), "w"),
+                item("menu.file.save", #selector(AppDelegate.saveWorkspace(_:)), "s"),
+                item("menu.file.saveAs", #selector(AppDelegate.saveWorkspaceAs(_:)), "S"),
             ]
         )
+        return (file, recent)
+    }
+
+    /// The items of the Open Recent submenu for `urls`: one per workspace, then Clear Menu.
+    static func fillRecent(_ menu: NSMenu, _ urls: [URL]) {
+        menu.removeAllItems()
+        for url in urls.prefix(10) {
+            let entry = NSMenuItem(
+                title: url.deletingPathExtension().lastPathComponent,
+                action: #selector(AppDelegate.openRecent(_:)), keyEquivalent: "")
+            entry.representedObject = url
+            entry.toolTip = url.path
+            menu.addItem(entry)
+        }
+        if urls.isEmpty {
+            let none = NSMenuItem(title: localized("menu.file.openRecent.none"), action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
+        } else {
+            menu.addItem(.separator())
+            menu.addItem(item("menu.file.openRecent.clear", #selector(AppDelegate.clearRecents(_:))))
+        }
     }
 
     private static func editMenu() -> NSMenu {

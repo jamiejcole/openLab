@@ -2,6 +2,7 @@
 
 import AppKit
 import Combine
+import UniformTypeIdentifiers
 
 /// One open workspace's window and its QLab-style layout: masthead, cue-type row, cue list over
 /// inspector, optional right sidebar, footer. Built in code; it holds only its own store. Close
@@ -61,6 +62,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         return pc
     }
     let footer = FooterBar()
+    /// The audio file chosen for an Audio cue (nil: cancelled). A seam for tests.
+    var pickAudioFile: @MainActor () -> URL? = WorkspaceWindowController.audioPanel
     private let verticalSplit = NSSplitView()
     private let horizontalSplit = NSSplitView()
 
@@ -98,14 +101,18 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cueList.onEditDuration = { [weak self] id, text in
             Task { await self?.editor.setDuration(of: id, text: text) }
         }
-        cueList.onFileDrop = { [weak self] drop in
+        cueList.onFileDrop = { [weak self] drop, skipped in
             Task {
                 switch drop {
                 case .replace(let id, let url): await self?.editor.replaceFile(of: id, with: url)
                 case .insert(let urls, let parent, let index):
-                    await self?.editor.addFiles(urls, parent: parent, index: index)
+                    await self?.editor.addFiles(urls, parent: parent, index: index, skipped: skipped)
                 }
             }
+        }
+        inspector.onChooseFile = { [weak self] id in
+            guard let self, let url = self.pickAudioFile() else { return }
+            Task { await self.editor.replaceFile(of: id, with: url) }
         }
         cueToolbar.onAdd = { [weak self] kind in Task { await self?.editor.add(kind) } }
         window.contentView = buildContent()
@@ -371,5 +378,18 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
         horizontalSplit.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         return stack
+    }
+}
+
+extension WorkspaceWindowController {
+    /// Only the types a drop accepts (`CueEditor.audioExtensions`).
+    static func audioPanel() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = loc("inspector.target.choosePrompt")
+        panel.allowedContentTypes = CueEditor.audioExtensions.sorted().compactMap { UTType(filenameExtension: $0) }
+        return panel.runModal() == .OK ? panel.url : nil
     }
 }
