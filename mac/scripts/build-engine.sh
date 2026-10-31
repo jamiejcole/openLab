@@ -1,7 +1,9 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Xcode build phase: build openlab-engine with cargo and copy it to Contents/MacOS.
-# Release builds a universal (arm64 + x86_64) binary; Debug builds the host arch only.
+# Release builds a universal (arm64 + x86_64) binary without test support; Debug builds the host arch
+# only, with the `test-support` feature: the app's tests start this engine on its virtual audio device
+# (docs/control.md "Virtual device"). verify-bundle.sh checks a Release engine refuses it.
 set -euo pipefail
 
 # Xcode's PATH does not include rustup's proxies.
@@ -20,7 +22,7 @@ if [ "$CONFIGURATION" = "Release" ]; then
         target/aarch64-apple-darwin/release/openlab-engine \
         target/x86_64-apple-darwin/release/openlab-engine
 else
-    cargo build --locked --bin openlab-engine
+    cargo build --locked --bin openlab-engine --features test-support
     cp target/debug/openlab-engine "$dest/openlab-engine"
 fi
 
