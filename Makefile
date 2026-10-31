@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 XCODEBUILD := xcodebuild -project mac/openLab.xcodeproj -scheme openLab -derivedDataPath build
+# The per-PR UI tests (scripts/ui-smoke.txt) as -only-testing arguments.
+UI_SMOKE := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/ui-smoke.txt),-only-testing:$(t))
 
 FUZZ_TIME ?= 30
 FUZZ_TOOLCHAIN ?= nightly
@@ -7,7 +9,7 @@ FUZZ_TOOLCHAIN ?= nightly
 SAN_TOOLCHAIN ?= nightly-2026-10-15
 SAN_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 
-.PHONY: lint test test-rust test-mac mac verify-bundle dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
+.PHONY: lint test test-rust test-mac test-mac-ui-full mac verify-bundle dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
 
 lint:
 	scripts/check-repo.sh
@@ -75,7 +77,12 @@ MIRI_SKIP := --skip too_many_workspaces_are_truncated_quickly
 miri:
 	cd engine && PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +$(SAN_TOOLCHAIN) miri test -p openlab-core --lib --locked -- $(MIRI_SKIP)
 
+# Every unit test plus the UI smoke set (scripts/ui-smoke.txt): what a PR runs.
 test-mac: project
+	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -only-testing:openLabTests $(UI_SMOKE) test
+
+# Every unit test and the whole UI suite: what the nightly run does.
+test-mac-ui-full: project
 	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" test
 
 mac: project
