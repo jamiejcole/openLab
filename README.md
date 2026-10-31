@@ -28,6 +28,7 @@ make test-mac    # generate the Xcode project and run macOS unit tests + the UI 
 make test-mac-ui-full  # the same with every UI test (run nightly in CI)
 make mac         # build the Release app with a universal engine: build/Build/Products/Release/openLab.app
 make verify-bundle  # check that app: universal, macOS 12.0 minimum on every slice, valid signature
+make test-bundle-rebuild  # check an engine-only rebuild still gives a validly signed app (slow; run nightly in CI)
 ```
 
 The Xcode project is generated from `mac/project.yml` and is not committed; run `cd mac && xcodegen` to open it in
