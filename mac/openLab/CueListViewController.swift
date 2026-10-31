@@ -631,7 +631,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case insert([URL], ModelID?, Int)
     }
 
-    var onFileDrop: ((FileDrop) -> Void)?
+    /// The plan, and how many of the dragged files it leaves out (not audio).
+    var onFileDrop: ((FileDrop, Int) -> Void)?
 
     /// The file URLs of a drag from Finder (empty for a drag of our own rows).
     private func fileURLs(_ info: NSDraggingInfo) -> [URL] {
@@ -640,17 +641,19 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
     }
 
-    /// What a file drop does, or nil to refuse it: all audio files, nothing in Show Mode. A single
-    /// file dropped on an audio cue's row replaces its file; anything else makes cues where it lands.
+    /// What a file drop does, or nil to refuse it: at least one audio file, nothing in Show Mode. A
+    /// single file dropped on an audio cue's row replaces its file; anything else makes cues from
+    /// the audio files where it lands (other files in the drop are left out).
     func fileDropPlan(_ urls: [URL], item: Any?, index: Int) -> FileDrop? {
-        guard !isEditLocked, CueEditor.hasAudioExtensions(urls) else { return nil }
+        let audio = CueEditor.audioExtensionFiles(urls)
+        guard !isEditLocked, !audio.isEmpty else { return nil }
         if urls.count == 1, index == NSOutlineViewDropOnItemIndex, let node = item as? CueNode,
             node.cue.kindType == "audio"
         {
             return .replace(node.id, urls[0])
         }
         let target = dropTarget(item, index)
-        return .insert(urls, target.parent?.id, target.index)
+        return .insert(audio, target.parent?.id, target.index)
     }
 
     func outlineView(
@@ -678,7 +681,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let files = fileURLs(info)
         if !files.isEmpty {
             guard let plan = fileDropPlan(files, item: item, index: index) else { return false }
-            onFileDrop?(plan)
+            var used = 1
+            if case .insert(let audio, _, _) = plan { used = audio.count }
+            onFileDrop?(plan, files.count - used)
             return true
         }
         guard !isEditLocked, !dragged.isEmpty else { return false }

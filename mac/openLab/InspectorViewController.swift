@@ -62,6 +62,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let messageLabel = NSTextField(labelWithString: "")
     /// Preview / Stop Preview of the selected audio cue. M5.8 (Time & Loops tab) should host it.
     let previewButton = NSButton(title: loc("inspector.preview"), target: nil, action: nil)
+    /// Choose... next to an Audio cue's file: opens the file chooser (set by the window controller).
+    let chooseButton = NSButton(title: loc("inspector.target.choose"), target: nil, action: nil)
+    var onChooseFile: ((ModelID) -> Void)?
     /// Sends a transport action (set by the window controller).
     var onTransport: ((TransportAction) -> Void)?
     private var connectionSub: AnyCancellable?
@@ -160,6 +163,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         previewButton.setAX(AX.inspectorPreview)
         previewButton.target = self
         previewButton.action = #selector(previewClicked)
+        chooseButton.setAX(AX.inspectorChoose)
+        chooseButton.target = self
+        chooseButton.action = #selector(chooseClicked)
         messageLabel.setAX(AX.inspectorMessage)
         messageLabel.textColor = .systemRed
         messageLabel.lineBreakMode = .byTruncatingTail
@@ -211,13 +217,16 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 row(loc("cuelist.col.preWait"), preWaitField), row(loc("cuelist.col.postWait"), postWaitField),
                 row(loc("inspector.continue"), continuePopup),
             ], width: 150)
+        let targetRow = NSStackView(views: [targetField, chooseButton])
+        targetRow.spacing = 6
+        targetField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         let centre = column([
-            row(loc("cuelist.col.name"), nameRow), row(loc("cuelist.col.target"), targetField),
+            row(loc("cuelist.col.name"), nameRow), row(loc("cuelist.col.target"), targetRow),
             row(loc("inspector.notes"), scroll),
         ])
         for v in centre.arrangedSubviews { v.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true }
         nameRow.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
-        targetField.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
+        targetRow.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         scroll.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         let right = column(
             [previewButton, row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 140)
@@ -455,7 +464,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let style = CueKindStyle.kinds[kind]
         kindIcon.image = style.flatMap { symbolImage($0.symbol, CueKindStyle.kindLabel(kind)) }
         let isTarget = InspectorEdit.targetKinds.contains(kind)
-        targetField.placeholderString = isTarget ? nil : loc("inspector.target.notApplicable")
+        let noFile = kind == "audio" && (cue.raw["kind"]?["media"]?.stringValue ?? "").isEmpty
+        targetField.placeholderString =
+            isTarget ? (noFile ? loc("inspector.target.noFile") : nil) : loc("inspector.target.notApplicable")
+        chooseButton.isEnabled = kind == "audio" && !isLocked
         if kind == "audio" {
             targetField.stringValue = cue.raw["kind"]?["media"]?.stringValue ?? ""
         } else if !isTarget {
@@ -494,6 +506,11 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         previewButton.isEnabled = cue?.kindType == "audio" && (connected ?? (store.connectionState == .connected))
     }
 
+    @objc private func chooseClicked() {
+        guard !isLocked, let cue, cue.kindType == "audio" else { return }
+        onChooseFile?(cue.id)
+    }
+
     @objc private func previewClicked() {
         guard let id = cue?.id else { return }
         onTransport?(store.previewing.contains(id) ? .stopPreview(cue: id) : .preview(cue: id))
@@ -502,7 +519,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private var lockedControls: [NSControl] {
         [
             numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField, oscField,
-            hotkeyField, hotkeyClear,
+            hotkeyField, hotkeyClear, chooseButton,
             secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck,
         ]

@@ -85,6 +85,47 @@ final class CueClipboardTests: XCTestCase {
         XCTAssertNil(h.vc.fileDropPlan(wav, item: nil, index: 0), "Show Mode")
     }
 
+    func testMixedDropKeepsTheAudioFilesAndReportsTheRest() async throws {
+        let (h, editor, log) = try await harness()
+        let files = try tempFiles(["a.wav", "notes.txt", "b.flac"])
+        XCTAssertEqual(
+            h.vc.fileDropPlan(files, item: nil, index: 0), .insert([files[0], files[2]], nil, 0))
+        let ids = await editor.addFiles([files[0], files[2]], parent: nil, index: 0, skipped: 1)
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertEqual(log.notices, [String(format: loc("edit.drop.skipped"), 1)])
+    }
+
+    func testChooseButtonReplacesTheFileThroughTheDropPath() async throws {
+        let h = try await H(collapsed: false)
+        let wc = WorkspaceWindowController(store: h.store)
+        wc.cueList.view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
+        let log = CueEditingTests.SendLog(h.rig.engine)
+        let wav = try tempFiles(["chosen.wav"])[0]
+        wc.pickAudioFile = { wav }
+        // The door cue is idle in the demo show (a running cue refuses a new file).
+        let audio = try XCTUnwrap(wc.cueList.node(H.door)?.id)
+        wc.cueList.selectAsUser([audio])
+        await assertEventually { wc.inspector.chooseButton.isEnabled }
+        wc.inspector.chooseButton.performClick(nil)
+        await assertEventually { log.commands.count == 1 }
+        let sent = try XCTUnwrap(log.commands.first)
+        XCTAssertEqual(sent["property"]?["type"]?.stringValue, "media")
+        XCTAssertEqual(sent["property"]?["value"]?.stringValue, wav.standardizedFileURL.path)
+        // A cancelled panel sends nothing; Show Mode disables the button.
+        wc.pickAudioFile = { nil }
+        wc.inspector.chooseButton.performClick(nil)
+        wc.setShowMode(true)
+        XCTAssertFalse(wc.inspector.chooseButton.isEnabled)
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(log.commands.count, 1)
+    }
+
+    func testFooterGearIsDisabledWithAnExplanation() {
+        let footer = FooterBar()
+        XCTAssertFalse(footer.settingsButton.isEnabled)
+        XCTAssertEqual(footer.settingsButton.toolTip, loc("footer.settings.unavailable"))
+    }
+
     func testReplaceFileSendsTheMediaAloneAndSkipsBusyCues() async throws {
         let (h, editor, log) = try await harness()
         _ = h  // the window owns the cue list for as long as the editor lives

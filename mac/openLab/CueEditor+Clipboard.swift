@@ -37,9 +37,9 @@ extension CueEditor {
         return cue
     }
 
-    /// The extension test alone, cheap enough for every drag update.
-    static func hasAudioExtensions(_ urls: [URL]) -> Bool {
-        !urls.isEmpty && urls.allSatisfy { $0.isFileURL && audioExtensions.contains($0.pathExtension.lowercased()) }
+    /// The files of a mixed drop that carry an audio extension; the rest are skipped.
+    static func audioExtensionFiles(_ urls: [URL]) -> [URL] {
+        urls.filter { $0.isFileURL && audioExtensions.contains($0.pathExtension.lowercased()) }
     }
 
     /// The private pasteboard payload; bump `version` when its shape changes.
@@ -72,7 +72,7 @@ extension CueEditor {
 
     /// One audio cue per file, in drop order, at child `index` of `parent`; one undo step.
     @discardableResult
-    func addFiles(_ urls: [URL], parent: ModelID?, index: Int) async -> [ModelID] {
+    func addFiles(_ urls: [URL], parent: ModelID?, index: Int, skipped: Int = 0) async -> [ModelID] {
         // The inspector commit below can take a while and the list can change meanwhile: remember the cue
         // the drop landed before and find its place again afterwards.
         let anchor = children(of: parent).dropFirst(max(0, index)).first?.id
@@ -104,6 +104,8 @@ extension CueEditor {
             return []
         }
         cueList?.selectAsUser(ids)
+        // Say what a mixed drop left out, so the operator does not think a file was lost.
+        if skipped > 0 { notify(String(format: loc("edit.drop.skipped"), skipped)) }
         return ids
     }
 

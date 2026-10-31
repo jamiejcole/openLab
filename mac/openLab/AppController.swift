@@ -36,6 +36,7 @@ final class AppController {
     var pickSaveURL: @MainActor (String) -> URL? = AppController.savePanel
     var noteRecent: @MainActor (URL) -> Void = { NSDocumentController.shared.noteNewRecentDocumentURL($0) }
     var recentURLs: @MainActor () -> [URL] = { NSDocumentController.shared.recentDocumentURLs }
+    var forgetRecents: @MainActor () -> Void = { NSDocumentController.shared.clearRecentDocuments(nil) }
     var keyWindow: @MainActor () -> NSWindow? = { NSApp.keyWindow }
     var beep: @MainActor () -> Void = { NSSound.beep() }
     /// DX-04: the folders holding crash reports, and the Finder reveal of those that exist.
