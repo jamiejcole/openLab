@@ -24,6 +24,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let patchProblemLabel = NSTextField(wrappingLabelWithString: "")
     let patchDevicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     let channelsStack = NSStackView()
+    /// Peaks of the shown patch's outputs (AUD-19), live only while the Audio tab shows.
+    let patchMeter = MeterView()
     /// One popup per output of the shown patch: the device channel it plays on.
     private(set) var channelPopups: [NSPopUpButton] = []
 
@@ -132,8 +134,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             heading(loc("settings.audio.patches")),
             patchPopup,
             row(loc("settings.audio.patchDevice"), patchDevicePopup, nil),
-            channelsStack, patchProblemLabel,
+            channelsStack, patchMeter, patchProblemLabel,
         ])
+        patchMeter.bank = model.store.meters
+        patchMeter.setAX("settings-patch-meter")
         audio.orientation = .vertical
         audio.alignment = .leading
         audio.spacing = 8
@@ -266,10 +270,12 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             patchDevicePopup.isEnabled = false
             channelPopups = []
             for v in channelsStack.views { v.removeFromSuperview() }
+            patchMeter.source = nil
             patchProblemLabel.stringValue = ""
             return
         }
         shownPatch = row.id
+        patchMeter.source = .output(row.id)
         patchPopup.selectItem(at: model.patches.firstIndex { $0.id == row.id } ?? 0)
 
         patchDevicePopup.removeAllItems()

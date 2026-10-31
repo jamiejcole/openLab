@@ -32,6 +32,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     let activeCheck = NSButton(checkboxWithTitle: loc("levels.active"), target: nil, action: nil)
     let gangField = NSTextField()
     let gangLabel = NSTextField(labelWithString: loc("levels.gang"))
+    /// Peaks of the cue's output channels beside the fader (an Audio cue's Levels tab only).
+    let meter = MeterView()
     let silentButton = NSButton(title: loc("levels.setSilent"), target: nil, action: nil)
     let fromTargetButton = NSButton(title: loc("levels.fromTarget"), target: nil, action: nil)
 
@@ -61,6 +63,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         cellLabel.setAX("\(prefix)-cell")
         levelField.setAX("\(prefix)-field")
         fader.setAX("\(prefix)-fader")
+        meter.setAX("\(prefix)-meter")
         muteCheck.setAX("\(prefix)-mute")
         activeCheck.setAX("\(prefix)-active")
         gangField.setAX("\(prefix)-gang")
@@ -98,6 +101,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
         let buttons: [NSView] = isFade ? [silentButton, fromTargetButton] : [silentButton]
         var strip: [NSView] = [cellLabel, levelField, fader]
+        if !isFade { strip.append(meter) }
         strip += isFade ? [activeCheck] : [muteCheck, gangLabel, gangField]
         let stripRow = NSStackView(views: strip)
         stripRow.spacing = 8
