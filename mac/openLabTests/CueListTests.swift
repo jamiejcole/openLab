@@ -1108,29 +1108,6 @@ final class CueListDrawingTests: XCTestCase {
         window = nil
     }
 
-    /// A silent stereo WAV of `seconds`.
-    private static func wav(seconds: Int) -> Data {
-        let rate = 8000
-        var d = Data()
-        func u32(_ v: Int) { withUnsafeBytes(of: UInt32(v).littleEndian) { d.append(contentsOf: $0) } }
-        func u16(_ v: Int) { withUnsafeBytes(of: UInt16(v).littleEndian) { d.append(contentsOf: $0) } }
-        let bytes = rate * seconds * 4
-        d.append(contentsOf: Array("RIFF".utf8))
-        u32(36 + bytes)
-        d.append(contentsOf: Array("WAVEfmt ".utf8))
-        u32(16)
-        u16(1)
-        u16(2)
-        u32(rate)
-        u32(rate * 4)
-        u16(4)
-        u16(16)
-        d.append(contentsOf: Array("data".utf8))
-        u32(bytes)
-        d.append(Data(count: bytes))
-        return d
-    }
-
     /// Audio cue 1 (10 s), Audio cue 2 (5 s), Memo cue 3: the Demo show with its cues replaced.
     private func timingRig() async throws -> Rig {
         let (five, memo) = (self.five, self.memo)
@@ -1138,35 +1115,31 @@ final class CueListDrawingTests: XCTestCase {
             "Demo",
             edit: { folder in
                 let media = folder.appendingPathComponent("media")
-                try Self.wav(seconds: 10).write(to: media.appendingPathComponent("ten.wav"))
-                try Self.wav(seconds: 5).write(to: media.appendingPathComponent("five.wav"))
-                let file = folder.appendingPathComponent("Demo.openlab")
-                var root = try XCTUnwrap(
-                    JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-                var workspace = try XCTUnwrap(root["workspace"] as? [String: Any])
-                var lists = try XCTUnwrap(workspace["cue_lists"] as? [[String: Any]])
-                var cues = try XCTUnwrap(lists[0]["cues"] as? [[String: Any]])
-                var one = cues[0]
-                var kind = try XCTUnwrap(one["kind"] as? [String: Any])
-                kind["media"] = "media/ten.wav"
-                kind["last_slice_play_count"] = 1  // the Demo loops until devamped, which has no duration
-                one["kind"] = kind
-                var two = one
-                two["id"] = five.raw
-                two["number"] = "2"
-                two["name"] = "Two"
-                kind["media"] = "media/five.wav"
-                two["kind"] = kind
-                var note = one
-                note["id"] = memo.raw
-                note["number"] = "3"
-                note["name"] = "Note"
-                note["kind"] = ["type": "memo"]
-                cues = [one, two, note]
-                lists[0]["cues"] = cues
-                workspace["cue_lists"] = lists
-                root["workspace"] = workspace
-                try JSONSerialization.data(withJSONObject: root).write(to: file)
+                try writeWAV(media.appendingPathComponent("ten.wav"), seconds: 10)
+                try writeWAV(media.appendingPathComponent("five.wav"), seconds: 5)
+                try editShow(folder.appendingPathComponent("Demo.openlab")) { ws in
+                    guard var list = ws["cue_lists"]?.arrayValue?.first, var one = list["cues"]?.arrayValue?.first,
+                        var kind = one["kind"]
+                    else { return }
+                    kind.set("media", .string("media/ten.wav"))
+                    kind.set("last_slice_play_count", .int(1))  // the Demo loops until devamped: no duration
+                    one.set("kind", kind)
+                    var two = one
+                    two.set("id", .string(five.raw))
+                    two.set("number", .string("2"))
+                    two.set("name", .string("Two"))
+                    kind.set("media", .string("media/five.wav"))
+                    two.set("kind", kind)
+                    var note = one
+                    note.set("id", .string(memo.raw))
+                    note.set("number", .string("3"))
+                    note.set("name", .string("Note"))
+                    note.set("kind", .object(["type": .string("memo")]))
+                    list.set("cues", .array([one, two, note]))
+                    var lists = ws["cue_lists"]?.arrayValue ?? []
+                    lists[0] = list
+                    ws.set("cue_lists", .array(lists))
+                }
             })
     }
 
@@ -1287,7 +1260,7 @@ final class CueListDrawingTests: XCTestCase {
         let two = try pixels(h, "status", five)
         XCTAssertGreaterThan(two.count(Self.playheadGrey), 8, "cue 2 shows the grey pointer")
         XCTAssertEqual(two.count(Self.green), 0)
-        // The two read apart by colour and by shape.
+        // The two read apart by colour and position (the icons' shapes are alike).
         let running = try XCTUnwrap(h.cell("status", ten)).images[1]
         let pointer = try XCTUnwrap(h.cell("status", five)).images[0]
         XCTAssertNotEqual(Icon.stateRunning.symbol, Icon.playhead.symbol)
@@ -1326,7 +1299,6 @@ final class CueListDrawingTests: XCTestCase {
             XCTAssertFalse(type.images[0].isHidden)
             XCTAssertEqual(type.images[0].accessibilityLabel(), CueKindStyle.kindLabel(kind))
             let drawn = try pixels(h, "type", cue)
-            let colours = Set(drawn.all.map { "\(Int($0.r * 20)),\(Int($0.g * 20)),\(Int($0.b * 20))" })
             XCTAssertGreaterThan(drawn.countDifferingFromBackground(), 8, "the icon is drawn for \(kind)")
         }
         // The Name cell shows only the name.
@@ -1370,7 +1342,6 @@ final class CueListDrawingTests: XCTestCase {
     func testDurationShowsTheDuration() async throws {
         let rig = try await timingRig()
         let h = try await harness(rig)
-        _ = await eventually(timeout: 2) { rig.store.mediaDurations[self.ten]?.duration == 10 }
         await assertEventually { rig.store.mediaDurations[self.ten]?.duration == 10 }
         XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00")
         XCTAssertEqual(h.cell("duration", five)?.label.stringValue, "00:05.00")

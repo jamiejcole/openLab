@@ -5,10 +5,10 @@ import Combine
 import UniformTypeIdentifiers
 
 /// The workspace window. Esc is panic: `AppController`'s key monitor has already sent it, then lets the
-/// key run on so an editor or alert can use it. Nothing else in a workspace takes Esc, and a key that
-/// reaches the end of the responder chain unhandled (as `keyDown` from a button or the tab view, or as
-/// `cancelOperation(_:)` from a table, which no AppKit class implements) makes AppKit play the alert
-/// sound, which an audience can hear. The window is the end of the chain, so it takes Esc here.
+/// key run on so an editor or alert can use it. Nothing else in a workspace takes Esc, and NSWindow's
+/// own `cancelOperation(_:)` (the end of the chain for a table's Esc) and its `keyDown` (for a button
+/// or the tab view) both play the alert sound, which an audience can hear. The window is the end of the
+/// responder chain, so it overrides both and takes Esc.
 @MainActor
 final class WorkspaceWindow: NSWindow {
     override func cancelOperation(_ sender: Any?) {}

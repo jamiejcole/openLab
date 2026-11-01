@@ -13,7 +13,7 @@ import os
 /// is older than a row's minimum or the name does not resolve, and as a last resort draws the
 /// localised name as text, so a slot is never silently blank.
 enum Icon: CaseIterable {
-    // Cue kinds (the toolbar and the Name column).
+    // Cue kinds (the toolbar and the cue list's type column).
     case kindAudio, kindGroup, kindMemo, kindWait, kindFade, kindStart, kindStop, kindPause, kindLoad
     case kindReset, kindDevamp, kindGoTo, kindTarget, kindArm, kindDisarm, kindNetwork
     // A Group cue's icon follows its mode (the timeline mode uses `kindGroup`).

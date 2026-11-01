@@ -2519,8 +2519,6 @@ final class AppControllerTests: XCTestCase {
         /// (a table's key bindings the first, a button or tab view the second) or it beeps.
         init() throws {
             let cancel = #selector(NSResponder.cancelOperation(_:))
-            // AppKit's NSResponder has no cancelOperation(_:): without a handler the key goes unhandled.
-            XCTAssertNil(class_getInstanceMethod(NSResponder.self, cancel), "the base class does not handle Esc")
             let count = count
             let cancelMethod = try XCTUnwrap(class_getInstanceMethod(WorkspaceWindow.self, cancel))
             let cancelOriginal = method_getImplementation(cancelMethod)
