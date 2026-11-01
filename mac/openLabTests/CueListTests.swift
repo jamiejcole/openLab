@@ -1263,3 +1263,435 @@ extension CueListTests {
         XCTAssertTrue(h.spy.isItemExpanded(group))
     }
 }
+
+/// The acceptance flows of the playhead and selection (#489) and of GO on a group after a mode
+/// change (#496), done as the operator does them, through the app's own window, keys and inspector
+/// on an engine of the test's own (stepped virtual device), checked by what the window shows: the
+/// highlighted row, the playhead marker and running icons in the status column, and the standby
+/// display.
+@MainActor
+final class PlayheadFlowTests: XCTestCase {
+    private var app: AppController!
+    private var engine: TestEngine!
+    private let wire = WireTap()
+    private var doc: ModelID = "none"
+    private var wc: WorkspaceWindowController { app.windows[doc]! }
+    private var store: WorkspaceStore { wc.store }
+    private var list: ModelID { wc.cueList.listID! }
+
+    override func setUp() async throws {
+        engine = try await TestEngine.start()
+        let url = engine.infoURL
+        let session = EngineSession(
+            transport: wire, infoProvider: { EngineConnectionInfo.load(from: url) }, scheduler: ManualScheduler())
+        app = AppController(session: session, scheduler: ManualScheduler())
+        app.keyWindow = { [unowned self] in app.windows[doc]?.window }
+        session.start()
+        await assertEventually { session.appClient.state == .connected }
+        guard case .success(let new) = await session.newWorkspace() else { return XCTFail("new") }
+        doc = new
+        await assertEventually {
+            self.app.windows[new]?.store.model != nil && self.app.windows[new]?.cueList.listID != nil
+        }
+        // The operator's own typing is what the key window's first responder says.
+        app.isTextEditing = { [unowned self] in (wc.window?.firstResponder as? NSText)?.isEditable == true }
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 1400, height: 900), display: false)
+    }
+
+    override func tearDown() async throws {
+        app?.closeAllWindows()
+        app = nil
+        engine?.stop()
+    }
+
+    // MARK: Doing what the operator does
+
+    private func key(_ chars: String, code: UInt16, _ flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code))
+    }
+
+    /// The GOs the window sent.
+    private func goes() -> Int {
+        wire.sent.filter { if case .transport(_, .go) = $0 { return true } else { return false } }.count
+    }
+
+    /// Everything the engine sent the window so far is applied.
+    private func sync() async { _ = await store.client.send({ .request(id: $0, .listPatchMappings) }) }
+
+    /// `seconds` of device time.
+    private func play(_ seconds: Double) async throws {
+        try await engine.advance(seconds: seconds)
+        await sync()
+    }
+
+    /// Space, as the key monitor gets it, then a tenth of a second of the show.
+    private func space() async throws {
+        let before = goes()
+        XCTAssertNil(app.handleKeyDown(try key(" ", code: 49)), "Space is GO")
+        await assertEventually("GO was sent") { self.goes() == before + 1 }
+        await sync()  // answered after the GO: the engine has run it
+        try await play(0.1)
+    }
+
+    /// A click on `id`'s row.
+    private func click(_ id: ModelID) { wc.cueList.selectAsUser([id]) }
+
+    /// The Mode tab's popup set to `mode`, as the operator picks it.
+    private func choose(_ mode: String) async throws {
+        let popup = wc.inspector.groupModePopup
+        popup.selectItem(at: try XCTUnwrap(InspectorViewController.groupModes.firstIndex(of: mode)))
+        XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
+        await assertEventually("the engine took the mode") { self.mode(self.group) == mode }
+    }
+
+    private func mode(_ id: ModelID) -> String? { store.model?.cue(id)?.raw["kind"]?["mode"]?["type"]?.stringValue }
+
+    // MARK: What the window shows
+
+    /// The label of status image `index` (0: playhead marker, 1: run state) drawn in `id`'s row; nil
+    /// when it shows none.
+    private func status(_ id: ModelID, _ index: Int) -> String? {
+        let ov = wc.cueList.outlineView
+        guard let node = wc.cueList.node(id) else { return nil }
+        let row = ov.row(forItem: node)
+        let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier("status"))
+        guard row >= 0, col >= 0, let cell = ov.view(atColumn: col, row: row, makeIfNecessary: true) as? CueCell,
+            !cell.images[index].isHidden
+        else { return nil }
+        return cell.images[index].accessibilityLabel()
+    }
+
+    private func running(_ id: ModelID) -> Bool { status(id, 1) == loc("cue.state.running") }
+
+    private func standbyText(_ id: ModelID?) throws -> String {
+        guard let id else { return loc("masthead.standby.none") }
+        let cue = try XCTUnwrap(store.model?.cue(id))
+        return [cue.number, cue.listName].compactMap { $0 }.joined(separator: " \u{00B7} ")
+    }
+
+    /// The highlighted rows, the playhead marker and the standby display are all on `id` (nil:
+    /// nothing highlighted, no marker, nothing standing by).
+    private func assertAllOn(_ id: ModelID?, file: StaticString = #filePath, line: UInt = #line) async throws {
+        await assertEventually("the highlight and the playhead", file: file, line: line) {
+            self.wc.cueList.selectedIDs() == (id.map { [$0] } ?? []) && self.store.playheads[self.list] == id
+        }
+        let all = wc.cueList.roots.flatMap { [$0] + $0.children }.map(\.id)
+        XCTAssertEqual(
+            all.filter { status($0, 0) == loc("cue.playhead") }, id.map { [$0] } ?? [], file: file, line: line)
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(id), file: file, line: line)
+    }
+
+    // MARK: #489: the selection follows the playhead
+
+    private var cues: [ModelID] = []
+
+    /// The issue's workspace: Audio cues 1, 2, 3 dropped into a new list, cue 1 clicked.
+    private func threeCues() async throws {
+        let files = try tempFiles(["1.wav", "2.wav", "3.wav"])
+        cues = await wc.editor.addFiles(files, parent: nil, index: 0)
+        XCTAssertEqual(cues.count, 3)
+        try await play(0)
+        click(cues[0])
+        try await assertAllOn(cues[0])
+    }
+
+    /// Another client of the workspace (an OSC peer's `/playhead`, another Mac) moves the playhead.
+    private func moveElsewhere(to cue: ModelID?) async throws {
+        let other = Rig(engine: engine, workspace: doc)
+        guard await other.connect(), case .success = await other.store.transport(.setPlayhead(list: list, cue: cue))
+        else { return XCTFail("set_playhead elsewhere") }
+        other.client.stop()
+        await sync()
+    }
+
+    func testGoMovesTheHighlight() async throws {
+        try await threeCues()
+        try await space()
+        XCTAssertTrue(running(cues[0]))
+        try await assertAllOn(cues[1])
+    }
+
+    func testRepeatedGoWalksTheList() async throws {
+        try await threeCues()
+        try await space()
+        try await space()
+        XCTAssertTrue(running(cues[0]) && running(cues[1]))
+        try await assertAllOn(cues[2])
+    }
+
+    func testGoPanicClickTheFirstCueGo() async throws {
+        try await threeCues()
+        try await space()
+        try await assertAllOn(cues[1])
+        let esc = try key("\u{1B}", code: 53)
+        XCTAssertTrue(app.handleKeyDown(esc) === esc, "Esc goes on to the responder too")
+        try await play(0.05)
+        await assertEventually("panic stopped cue 1") {
+            try? await self.play(0.5)
+            return !self.running(self.cues[0]) && self.store.cueStates[self.cues[0]]?.state.isActive != true
+        }
+        try await assertAllOn(cues[1])
+        click(cues[0])
+        try await assertAllOn(cues[0])
+        try await space()
+        XCTAssertTrue(running(cues[0]))
+        try await assertAllOn(cues[1])
+    }
+
+    /// Typing in the inspector holds the highlight while the playhead moves; the click on the
+    /// highlighted row (which ends the typing) puts the playhead back on it.
+    func testClickingTheHighlightedRowResetsThePlayhead() async throws {
+        try await threeCues()
+        click(cues[1])
+        try await assertAllOn(cues[1])
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.nameField))
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[1]], "held while the field has focus")
+        // The click: the table takes focus, then its selection and action.
+        let ov = wc.cueList.outlineView
+        XCTAssertTrue(window.makeFirstResponder(ov))
+        click(cues[1])
+        wc.cueList.rowClicked(ov.row(forItem: wc.cueList.node(cues[1])))
+        try await assertAllOn(cues[1])
+        await settle()
+        try await assertAllOn(cues[1])
+    }
+
+    func testAPlayheadMoveFromOutsideFollowsIntoTheTable() async throws {
+        try await threeCues()
+        try await moveElsewhere(to: cues[2])
+        try await assertAllOn(cues[2])
+        let ov = wc.cueList.outlineView
+        let row = ov.row(forItem: wc.cueList.node(cues[2]))
+        XCTAssertTrue(ov.visibleRect.intersects(ov.rect(ofRow: row)), "scrolled into view")
+    }
+
+    /// A click in the status column is a click on the row.
+    func testClickingTheStatusColumn() async throws {
+        try await threeCues()
+        click(cues[2])
+        try await assertAllOn(cues[2])
+    }
+
+    func testArrowKeysMoveBoth() async throws {
+        try await threeCues()
+        let ov = wc.cueList.outlineView
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(ov))
+        func press(_ chars: String, _ code: UInt16) throws {
+            let e = try key(chars, code: code, [.numericPad, .function])
+            if let passed = app.handleKeyDown(e) { ov.keyDown(with: passed) }
+        }
+        try press(String(UnicodeScalar(NSDownArrowFunctionKey)!), 125)
+        try await assertAllOn(cues[1])
+        try press(String(UnicodeScalar(NSUpArrowFunctionKey)!), 126)
+        try await assertAllOn(cues[0])
+    }
+
+    func testMultiSelection() async throws {
+        try await threeCues()
+        let ov = wc.cueList.outlineView
+        ov.selectRowIndexes(IndexSet(integer: ov.row(forItem: wc.cueList.node(cues[2]))), byExtendingSelection: true)
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        await settle()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0], cues[2]])
+        XCTAssertEqual(status(cues[2], 0), loc("cue.playhead"))
+        XCTAssertNil(status(cues[0], 0))
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cues[2]))
+    }
+
+    func testGoAtTheEndOfTheList() async throws {
+        try await threeCues()
+        click(cues[2])
+        try await assertAllOn(cues[2])
+        try await space()
+        XCTAssertTrue(running(cues[2]))
+        try await assertAllOn(nil)
+    }
+
+    // MARK: Typing while the playhead moves
+
+    /// A playhead move from outside while a name is typed in the inspector: the highlight and the
+    /// inspector stay, so the typing keeps its focus and Space types instead of firing GO. Once the
+    /// typing ends the name goes to its cue and the highlight follows the playhead.
+    func testAPlayheadMoveWhileTypingKeepsTheFocusAndSpaceDoesNotGo() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        let field = wc.inspector.nameField
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        editor.insertText("half typed", replacementRange: editor.selectedRange())
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]], "the selection stays")
+        XCTAssertTrue(field.currentEditor() === editor, "still typing")
+        let space = try key(" ", code: 49)
+        XCTAssertTrue(app.handleKeyDown(space) === space, "Space goes to the field")
+        await settle()
+        try await play(0.1)
+        XCTAssertEqual(goes(), 0, "no GO")
+        for id in cues { XCTAssertFalse(running(id)) }
+        XCTAssertEqual(editor.string, "half typed")
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]])
+        // The typing ends (Return, Tab, a click away).
+        window.makeFirstResponder(nil)
+        try await assertAllOn(cues[2])
+        await assertEventually("the name went to its own cue") {
+            self.store.model?.cue(self.cues[0])?.name == "half typed"
+        }
+        XCTAssertNotEqual(store.model?.cue(cues[2])?.name, "half typed")
+    }
+
+    /// The same in the inspector's notes.
+    func testAPlayheadMoveWhileTypingNotesKeepsTheSelection() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        let notes = wc.inspector.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        notes.insertText("cue line", replacementRange: notes.selectedRange())
+        try await moveElsewhere(to: cues[1])
+        await assertEventually { self.store.playheads[self.list] == self.cues[1] }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]])
+        XCTAssertTrue(window.firstResponder === notes)
+        window.makeFirstResponder(nil)
+        try await assertAllOn(cues[1])
+        await assertEventually { self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "cue line" }
+    }
+
+    // MARK: #496: GO on a group after a mode change
+
+    private var group: ModelID = "none"
+    private var child1: ModelID = "none"
+    private var child2: ModelID = "none"
+    private var cue2: ModelID = "none"
+
+    /// The issue's workspace, made as the operator makes it: a new Group cue; two Audio cues dropped
+    /// into it; Audio cue 2 dropped after it; the group's row clicked; `modes` chosen in the Mode
+    /// tab, in order.
+    private func groupWorkspace(_ modes: [String]) async throws {
+        let files = try tempFiles(["one.wav", "two.wav", "three.wav"])
+        let made = await wc.editor.add(.group)
+        group = try XCTUnwrap(made)
+        let kids = await wc.editor.addFiles(Array(files[0..<2]), parent: group, index: 0)
+        XCTAssertEqual(kids.count, 2)
+        (child1, child2) = (kids[0], kids[1])
+        let after = await wc.editor.addFiles([files[2]], parent: nil, index: 1)
+        cue2 = try XCTUnwrap(after.first)
+        try await play(0)  // the files are probed
+        XCTAssertEqual(wc.cueList.roots.map(\.id), [group, cue2])
+        XCTAssertEqual(wc.cueList.node(group)?.children.map(\.id), [child1, child2])
+        click(group)
+        try await assertAllOn(group)
+        for m in modes { try await choose(m) }
+        try await assertAllOn(group)
+    }
+
+    /// Reproduce: the issue's steps where the group is the last cue and has been played once (as
+    /// the first try of a new group is). The playhead went past the end of the list while the
+    /// group's row stayed highlighted and in the inspector, so the operator changed the mode there,
+    /// pressed Space and nothing played. Now the highlight and the inspector leave the group with
+    /// the playhead, nothing shows as standing by, and the click that brings the group back puts
+    /// the playhead on it: Space then plays it in its new mode.
+    func testReproduceGoOnAGroupAfterAModeChange() async throws {
+        let files = try tempFiles(["one.wav", "two.wav"])
+        let made = await wc.editor.add(.group)
+        group = try XCTUnwrap(made)
+        let kids = await wc.editor.addFiles(files, parent: group, index: 0)
+        (child1, child2) = (kids[0], kids[1])
+        try await play(0)
+        click(group)
+        try await assertAllOn(group)
+        try await space()
+        XCTAssertTrue(running(child1) && running(child2))
+        try await assertAllOn(nil)
+        XCTAssertEqual(wc.inspector.emptyLabel.stringValue, loc("inspector.empty"), "the inspector shows no cue")
+        try await play(2)
+        await assertEventually { !self.running(self.child1) && !self.running(self.child2) }
+        click(group)
+        try await assertAllOn(group)
+        try await choose("playlist")
+        try await space()
+        XCTAssertTrue(running(group) && running(child1), "the group plays in its new mode")
+        XCTAssertFalse(running(child2))
+        try await assertAllOn(nil)
+    }
+
+    /// Timeline (QLab 5 manual p. 138): both children and the group run, cue 2 stands by.
+    func testTimelineSpaceRunsBothChildrenAndStandsByCue2() async throws {
+        try await groupWorkspace([])
+        XCTAssertEqual(mode(group), "timeline", "a new group")
+        try await space()
+        for id in [group, child1, child2] { XCTAssertTrue(running(id)) }
+        XCTAssertFalse(running(cue2))
+        try await assertAllOn(cue2)
+    }
+
+    /// Playlist (p. 138): 1.1 runs, then 1.2 once it ends; cue 2 stands by.
+    func testPlaylistSpaceRunsTheChildrenOneAfterTheOtherAndStandsByCue2() async throws {
+        try await groupWorkspace(["playlist"])
+        try await space()
+        XCTAssertTrue(running(group) && running(child1))
+        XCTAssertFalse(running(child2))
+        try await assertAllOn(cue2)
+        try await play(1)
+        await assertEventually { self.running(self.child2) && !self.running(self.child1) }
+        XCTAssertFalse(running(cue2))
+        try await assertAllOn(cue2)
+    }
+
+    /// Start first child and enter (pp. 138-139): 1.1 runs, 1.2 stands by; a second Space runs 1.2
+    /// and cue 2 stands by.
+    func testStartFirstChildAndEnterSpaceRuns1Then12AndStandsByCue2() async throws {
+        try await groupWorkspace(["start_first_and_enter"])
+        try await space()
+        XCTAssertTrue(running(child1))
+        XCTAssertFalse(running(child2))
+        try await assertAllOn(child2)
+        try await space()
+        XCTAssertTrue(running(child2))
+        try await assertAllOn(cue2)
+    }
+
+    /// Start first child and go to the next cue (p. 139): 1.1 runs, 1.2 never starts, cue 2 stands by.
+    func testStartFirstChildAndGoToNextSpaceRunsOnly11AndStandsByCue2() async throws {
+        try await groupWorkspace(["start_first_and_go_to_next"])
+        try await space()
+        XCTAssertTrue(running(child1))
+        try await assertAllOn(cue2)
+        try await play(0.5)
+        XCTAssertFalse(running(child2), "1.2 does not start")
+        try await play(1)
+        XCTAssertFalse(running(child2), "not after 1.1 either")
+    }
+
+    /// Start a random child (p. 139): one child runs and cue 2 stands by; once it has stopped, a click
+    /// on the group's row and Space run the other (round robin).
+    func testStartRandomChildSpaceRunsOneThenTheOtherAfterAClickOnTheGroup() async throws {
+        try await groupWorkspace(["start_random"])
+        try await space()
+        let first = [child1, child2].filter(running)
+        XCTAssertEqual(first.count, 1, "exactly one child")
+        try await assertAllOn(cue2)
+        try await play(2)
+        await assertEventually { !self.running(self.child1) && !self.running(self.child2) }
+        click(group)
+        try await assertAllOn(group)
+        try await space()
+        let second = [child1, child2].filter(running)
+        XCTAssertEqual(second.count, 1)
+        XCTAssertNotEqual(first, second, "round robin")
+        try await assertAllOn(cue2)
+    }
+
+    /// Mode change round trip: Timeline, Playlist, back to Timeline; the last mode chosen is used.
+    func testModeChangeRoundTripRunsBothChildren() async throws {
+        try await groupWorkspace(["playlist", "timeline"])
+        try await space()
+        XCTAssertTrue(running(child1) && running(child2))
+        try await assertAllOn(cue2)
+    }
+}
