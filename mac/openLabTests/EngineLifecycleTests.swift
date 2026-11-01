@@ -803,6 +803,66 @@ final class EngineCrashFlowTests: XCTestCase {
         await alarm.recoverAutosaves()
         XCTAssertEqual(alerts.log.last, "info:" + loc("recover.none"))
     }
+
+    /// Hamlet came back from its file and its autosave was set aside; a Save As elsewhere
+    /// afterwards does not put the autosave's edits in the window, so File > Recover Autosaves…
+    /// still offers it. A time is not lineage.
+    func testASetAsideAutosaveIsStillOfferedAfterASaveAs() async throws {
+        try await launch()
+        try await openShows()
+        let path = try XCTUnwrap(app.session.workspaces.first { $0.name == "Hamlet" }?.path)
+        try await advance(31)  // Hamlet's edit is autosaved
+        try await crash()
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(3600)], ofItemAtPath: path)
+        let offered = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(offered)
+        presenter.dismiss()
+        let hamlet = try XCTUnwrap(hamletStore)
+        let elsewhere = runs.folder.appendingPathComponent("elsewhere/Hamlet.openlab")
+        try FileManager.default.createDirectory(
+            at: elsewhere.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard case .success = await hamlet.saveAs(path: elsewhere.path) else { return XCTFail("save as") }
+        await assertEventually { hamlet.document?.path == elsewhere.path }
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log.filter { $0.hasPrefix("setAside") }, ["setAsideAutosave:Hamlet"])
+    }
+
+    /// B and a Finder copy of it share a workspace id; the copy's autosave (another path, so
+    /// another path hash) is offered from File > Recover Autosaves… while B is open, and B's own
+    /// autosave, which its window holds, is not.
+    func testAnotherCopysAutosaveIsOfferedWhileThatWorkspaceIsOpenAndItsOwnIsNot() async throws {
+        let bPath = try runs.show("Demo", named: "B")
+        let copy = runs.folder.appendingPathComponent("shows/Copy/Copy.openlab")
+        try FileManager.default.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var file = try XCTUnwrap(JSONValue.parse(try String(contentsOfFile: bPath, encoding: .utf8)))
+        file["workspace"]?.set("name", .string("Copy"))  // the same workspace id
+        try file.text().write(to: copy, atomically: true, encoding: .utf8)
+        // An earlier run edited the copy and died with its autosave written.
+        try await runs.start()
+        let copyDoc = try await runs.open(copy.path)
+        try await runs.rename(intro, in: copyDoc, to: "Edited copy")
+        try await runs.advance(31)
+        try await runs.crash()
+
+        try await launch()
+        _ = await app.session.open(path: bPath)
+        await assertEventually { self.app.session.stores.values.contains { $0.model?.name == "B" } }
+        let b = try XCTUnwrap(app.session.stores.values.first { $0.model?.name == "B" })
+        guard case .success = await b.send(command: .setProperty(intro, .name("Edited B"))) else {
+            return XCTFail("edit B")
+        }
+        try await advance(31)  // B's own autosave is written
+        // Both autosaves are there, under one workspace id and two path hashes.
+        guard case .success(let ok) = await app.session.appClient.send({ .request(id: $0, .scanRecovery) }),
+            case .recoveryEntries(let entries)? = ok.data
+        else { return XCTFail("scan_recovery") }
+        let id = try XCTUnwrap(b.model?.id)
+        XCTAssertEqual(Set(entries.filter { $0.workspaceId == id }.map(\.showName)), ["Copy", "B"])
+        alerts.restoreAutosaves = false
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log.filter { $0.hasPrefix("autosave") || $0.hasPrefix("setAside") }, ["autosave:Copy"])
+    }
 }
 
 /// Which autosaves are offered (#332), on the scan data alone.
