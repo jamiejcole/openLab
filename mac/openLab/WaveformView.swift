@@ -421,8 +421,8 @@ class WaveformView: NSView {
 
     /// Cmd-= (or Cmd-+) zooms in and Cmd-- out about the middle while the waveform is focused.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard window?.firstResponder === self,
-            event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.shift, .numericPad]) == .command,
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.shift, .numericPad])
+        guard window?.firstResponder === self, flags == .command,
             let key = event.charactersIgnoringModifiers
         else { return super.performKeyEquivalent(with: event) }
         switch key {
