@@ -111,6 +111,7 @@ class WaveformView: NSView {
             if scale != oldValue {
                 drawing = nil
                 needsDisplay = true
+                window?.invalidateCursorRects(for: self)
             }
         }
     }
@@ -168,6 +169,11 @@ class WaveformView: NSView {
     var onEditCount: ((Int) -> Void)?
     /// The width changed: the peaks drawn no longer fit it.
     var onResize: (() -> Void)?
+    /// A gesture, wheel or key asks to zoom: the factor on the visible span (below 1 zooms in) and
+    /// where in the view's width (0...1) the time under it stays.
+    var onZoom: ((_ factor: Double, _ anchor: Double) -> Void)?
+    /// A scroll asks to pan: the fraction of the view's width the content moves right by.
+    var onPan: ((_ fraction: Double) -> Void)?
 
     private(set) var dragging: Handle?
     /// The dragged slice marker is outside the view: letting go there deletes it.
@@ -354,6 +360,7 @@ class WaveformView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
         let p = convert(event.locationInWindow, from: nil)
         if event.clickCount == 2 {
             doubleClick(atX: p.x, y: p.y)
@@ -368,6 +375,63 @@ class WaveformView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) { endDrag() }
+
+    // MARK: Zoom and pan
+
+    override var acceptsFirstResponder: Bool { true }
+
+    /// A click that brings the window forward still takes a handle or places the insertion point.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    private func anchor(of event: NSEvent) -> Double {
+        guard bounds.width > 0 else { return 0.5 }
+        let x = convert(event.locationInWindow, from: nil).x
+        return Double(min(max(x / bounds.width, 0), 1))
+    }
+
+    /// Pinch: spreading the fingers zooms in about the pointer.
+    override func magnify(with event: NSEvent) {
+        let m = Double(event.magnification)
+        guard m.isFinite, m > -0.9 else { return }
+        onZoom?(1 / (1 + m), anchor(of: event))
+    }
+
+    /// Option + vertical scroll or a mouse wheel zooms about the pointer (up zooms in); on a
+    /// trackpad a horizontal scroll pans, and Shift + wheel pans for a mouse.
+    override func scrollWheel(with event: NSEvent) {
+        let precise = event.hasPreciseScrollingDeltas
+        let dx = Double(event.scrollingDeltaX)
+        let dy = Double(event.scrollingDeltaY)
+        let width = max(1, Double(bounds.width))
+        if !precise && event.modifierFlags.contains(.shift) {
+            let d = dx != 0 ? dx : dy
+            if d != 0 { onPan?(d * Self.wheelPoints / width) }
+        } else if event.modifierFlags.contains(.option) || !precise {
+            guard dy != 0 else { return }
+            onZoom?(exp(-dy * (precise ? 0.02 : 0.2)), anchor(of: event))
+        } else if abs(dx) > abs(dy) {
+            onPan?(dx / width)
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
+
+    /// Points a mouse-wheel notch moves a pan.
+    static let wheelPoints = 20.0
+
+    /// Cmd-= (or Cmd-+) zooms in and Cmd-- out about the middle while the waveform is focused.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.shift, .numericPad])
+        guard window?.firstResponder === self, flags == .command,
+            let key = event.charactersIgnoringModifiers
+        else { return super.performKeyEquivalent(with: event) }
+        switch key {
+        case "=", "+": onZoom?(0.5, 0.5)
+        case "-": onZoom?(2, 0.5)
+        default: return super.performKeyEquivalent(with: event)
+        }
+        return true
+    }
 
     override func resetCursorRects() {
         guard !isLocked, duration != nil else { return }
