@@ -1872,10 +1872,10 @@ final class AppControllerTests: XCTestCase {
         app.showLauncher()
         let root = try XCTUnwrap(app.launcher.window?.contentView)
         (find(root, AX.launcherRecentPrefix + "0") as? NSButton)?.performClick(nil)
-        await settle()
+        // The launcher closes once the engine has answered the open, which a fixed settle() can miss.
+        await assertEventually { !(app.launcher.window?.isVisible ?? true) }
         XCTAssertEqual(app.windows.count, 2)
         XCTAssertTrue(alerts.errors.isEmpty)
-        XCTAssertFalse(app.launcher.window?.isVisible ?? true)
     }
 
     // MARK: Sidebar
