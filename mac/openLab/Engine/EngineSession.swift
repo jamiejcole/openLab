@@ -207,6 +207,8 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         switch message {
         case .appWelcome(_, let list):
             let token = client.connectedRun?.token
+            // Doc ids start again from 0 in a new run: what an old run's lists named means nothing.
+            if token != runToken { listed = [] }
             if runToken != nil, token != runToken, !stores.isEmpty || !detached.isEmpty {
                 detachAll()
             }

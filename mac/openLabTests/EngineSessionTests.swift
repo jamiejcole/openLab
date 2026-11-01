@@ -461,6 +461,29 @@ final class EngineSessionTests: XCTestCase {
         await assertEventually { s.workspaces.count == 3 }
     }
 
+    /// A new run with no window open: the docs the old run's lists named are forgotten, so a list
+    /// already on its way when a show is opened in the new run (one that does not name its doc yet)
+    /// does not drop that window, even when the new doc has an old run's id.
+    func testANewRunWithNoWindowsForgetsTheOldRunsListedDocs() async throws {
+        let (s, runs) = try await started([("Hamlet", "Demo")])
+        let oldDoc = try XCTUnwrap(s.orderedStores.first?.doc)
+        guard case .success = await s.close(doc: oldDoc, discardChanges: true) else { return XCTFail("close") }
+        await assertEventually { s.stores.isEmpty && s.workspaces.isEmpty }
+        try await runs.crash()
+        try await runs.start()
+        let oldToken = s.runToken
+        let connected = await pump { s.connectionState == .connected && s.runToken != oldToken }
+        XCTAssertTrue(connected, "the session reached the new run")
+        guard case .success(let doc) = await s.open(path: try runs.show("Second", named: "Other")) else {
+            return XCTFail("open")
+        }
+        XCTAssertEqual(doc, oldDoc, "the new run gives the old doc id again")
+        // The list the engine sent before it opened the show, arriving after its answer.
+        _ = s.engineClient(s.appClient, didReceive: .workspaces([]))
+        XCTAssertNotNil(s.stores[doc], "the just-opened show keeps its window")
+        await assertEventually { s.stores[doc]?.model?.name == "Other" }
+    }
+
     func testAnOldDocIdIsNeverUsedInANewRun() async throws {
         let (s, runs) = try await started([("Hamlet", "Demo")])
         let store = try XCTUnwrap(s.orderedStores.first?.store)
