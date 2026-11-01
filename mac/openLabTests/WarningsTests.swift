@@ -260,7 +260,8 @@ final class WarningsTests: XCTestCase {
         await settle()
         try await rig.advance()
         XCTAssertEqual(
-            store.playheads[TestSnapshots.mainList], TestSnapshots.intro, "selecting a warning must not change what GO fires")
+            store.playheads[TestSnapshots.mainList], TestSnapshots.intro,
+            "selecting a warning must not change what GO fires")
         guard case .success = await store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
         try await rig.advance(0.1)
         await assertEventually("GO still fires Intro") { self.store.cueStates[TestSnapshots.intro]?.state == .running }

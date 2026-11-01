@@ -191,13 +191,19 @@ versions() {
   fi
 }
 
-# 5. UI tests run against FakeEngine; the docs must not claim otherwise until a real-engine UI job exists.
-headless() {
-  grep -q 'real-engine-ui:' .github/workflows/ci.yml && return 0
+# 5. The app's tests run on the real engine (#132): no source, build or CI file refers to the deleted
+# in-process fake engine, the UI tests launch the test engine, and no doc says a test runs on a fake one.
+real_engine_tests() {
   local f
-  for f in $(git ls-files -co --exclude-standard '*.md' | sort -u | xargs grep -li 'real headless engine'); do
-    if known headless-claim "$f"; then continue; fi
-    fail headless-claim "$f says 'real headless engine', but no real-engine UI test job exists (job id real-engine-ui in ci.yml); say 'FakeEngine'"
+  for f in $(git ls-files -co --exclude-standard mac scripts Makefile .github | sort -u |
+    grep -v -e '^scripts/check-repo' | xargs grep -l -E 'FakeEngine|FakeShows' 2>/dev/null); do
+    fail fake-engine "$f refers to FakeEngine, which is deleted: app tests use the real engine (mac/openLabTests/EngineTestSupport.swift)"
+  done
+  grep -rq -e '"-OpenLabEngine", "test"' mac/openLabUITests ||
+    fail fake-engine "mac/openLabUITests does not launch the test engine ('-OpenLabEngine test')"
+  for f in $(git ls-files -co --exclude-standard 'docs/*.md' | sort -u | xargs grep -l -i -E 'FakeEngine|fake engine|real headless engine' 2>/dev/null); do
+    if known fake-engine "$f"; then continue; fi
+    fail fake-engine "$f mentions a fake engine; the app's tests run on the real engine on its virtual device"
   done
 }
 
@@ -320,7 +326,7 @@ spdx
 strings_keys
 debug_assertions
 versions
-headless
+real_engine_tests
 one_home
 path_filters
 wall_clock

@@ -387,10 +387,12 @@ final class CueListTests: XCTestCase {
         // Engine form of a move: a delete, then an upsert of the group that now holds the cue.
         let current = try XCTUnwrap(h.store.model?.cue(H.group))
         var kids = current.children.map { c in
-            TestSnapshots.cueJSON(id: c.id.raw, number: c.number, name: c.name, kind: TestSnapshots.audioKind("media/z.wav"))
+            TestSnapshots.cueJSON(
+                id: c.id.raw, number: c.number, name: c.name, kind: TestSnapshots.audioKind("media/z.wav"))
         }
         kids.insert(h.cue(H.fade.raw, "Fade moved"), at: 0)
-        let group = TestSnapshots.cueJSON(id: H.group.raw, number: "2", name: "Act One", kind: TestSnapshots.groupKind(kids))
+        let group = TestSnapshots.cueJSON(
+            id: H.group.raw, number: "2", name: "Act One", kind: TestSnapshots.groupKind(kids))
         try h.change(upserts: [try H.upsertJSON(group, index: 1)], deletes: [H.fade])
         let node = try XCTUnwrap(h.vc.node(H.group))
         XCTAssertEqual(node.children.map(\.id), [H.fade, H.door, H.rain, H.radio])
@@ -407,9 +409,11 @@ final class CueListTests: XCTestCase {
         let kids = [
             TestSnapshots.cueJSON(
                 id: H.door.raw, number: "2.1", name: "Door slam", kind: TestSnapshots.audioKind("media/d.wav")),
-            TestSnapshots.cueJSON(id: H.rain.raw, number: "2.2", name: "Storm", kind: TestSnapshots.audioKind("media/r.wav")),
+            TestSnapshots.cueJSON(
+                id: H.rain.raw, number: "2.2", name: "Storm", kind: TestSnapshots.audioKind("media/r.wav")),
         ]
-        let json = TestSnapshots.cueJSON(id: H.group.raw, number: "2", name: "Act One", kind: TestSnapshots.groupKind(kids))
+        let json = TestSnapshots.cueJSON(
+            id: H.group.raw, number: "2", name: "Act One", kind: TestSnapshots.groupKind(kids))
         try h.change(upserts: [try H.upsertJSON(json, index: 2)])
         XCTAssertTrue(h.spy.isItemExpanded(group))
         XCTAssertEqual(h.visibleIDs(), [H.intro, H.fade, H.group, H.door, H.rain])
@@ -507,7 +511,8 @@ final class CueListTests: XCTestCase {
     func testSelectionSurvivesAMove() async throws {
         let h = try await H()
         h.vc.select([H.intro, H.group])
-        let moved = TestSnapshots.cueJSON(id: H.fade.raw, number: nil, name: "", kind: .object(["type": .string("memo")]))
+        let moved = TestSnapshots.cueJSON(
+            id: H.fade.raw, number: nil, name: "", kind: .object(["type": .string("memo")]))
         try h.change(upserts: [try H.upsertJSON(moved, index: 0)])
         XCTAssertEqual(h.spy.moves, 1)
         XCTAssertEqual(Set(h.vc.selectedIDs()), [H.intro, H.group])
@@ -864,7 +869,8 @@ final class CueListTests: XCTestCase {
         let kids = ["Door slam", "Storm", "Radio"].enumerated().map { i, n in
             h.cue([H.door, H.rain, H.radio][i].raw, n)
         }
-        let group = TestSnapshots.cueJSON(id: H.group.raw, number: "2", name: "Act One", kind: TestSnapshots.groupKind(kids))
+        let group = TestSnapshots.cueJSON(
+            id: H.group.raw, number: "2", name: "Act One", kind: TestSnapshots.groupKind(kids))
         try h.change(upserts: [try H.upsertJSON(group, index: 2)])
         XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "Storm")
         try h.change(deletes: [H.group])
@@ -943,7 +949,9 @@ extension CueListTests {
         }
         // An audio cue with a file on disk: preview and reveal work; a running cue enables Panic.
         let id = "00000000-0000-0000-0000-0000000000c1"
-        try h.change(upserts: [try H.upsertJSON(h.cue(id, "File", kind: TestSnapshots.audioKind("/tmp/a.wav")), index: 3)])
+        try h.change(upserts: [
+            try H.upsertJSON(h.cue(id, "File", kind: TestSnapshots.audioKind("/tmp/a.wav")), index: 3)
+        ])
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"running"}"#)
         pb.setString("{}", forType: CueEditor.pasteType)
         e = enabled(try menu(h, ModelID(id), pasteboard: pb))

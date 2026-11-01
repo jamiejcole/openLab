@@ -25,7 +25,8 @@ extension XCTestCase {
         do {
             try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
             let source = try XCTUnwrap(
-                Bundle(for: Anchor.self).url(forResource: "TestShows", withExtension: nil), "the test shows are bundled")
+                Bundle(for: Anchor.self).url(forResource: "TestShows", withExtension: nil), "the test shows are bundled"
+            )
             try FileManager.default.copyItem(at: source, to: copies)
         } catch {
             XCTFail("could not set up the test shows: \(error)")

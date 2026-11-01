@@ -29,6 +29,7 @@ final class TransportUITests: XCTestCase {
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
 
         XCTAssertTrue(
-            cueState("Running", of: "Intro", in: app).waitForExistence(timeout: 10), "GO fired with the log window in front")
+            cueState("Running", of: "Intro", in: app).waitForExistence(timeout: 10),
+            "GO fired with the log window in front")
     }
 }
