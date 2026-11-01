@@ -692,7 +692,14 @@ final class InspectorWindowFrameTests: XCTestCase {
     private let fade = CueListHarness.fade
     private let group = CueListHarness.group
     private let memo: ModelID = "00000000-0000-0000-0000-0000000000e1"
-    private let userFrame = NSRect(x: 120, y: 140, width: 1100, height: 720)
+    /// A frame the user might pick, inside the screen: AppKit shrinks a frame bigger than the screen (CI runners
+    /// have small displays), and the tests compare the frame exactly.
+    private lazy var userFrame: NSRect = {
+        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 700)
+        let width = min(1100, screen.width - 40).rounded(.down)
+        let height = min(720, screen.height - 40).rounded(.down)
+        return NSRect(x: screen.minX + 20, y: screen.minY + 20, width: width, height: height)
+    }()
     private var rig: Rig!
     private var wc: WorkspaceWindowController!
 
