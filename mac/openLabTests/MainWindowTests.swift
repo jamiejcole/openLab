@@ -251,6 +251,9 @@ final class MainWindowTests: XCTestCase {
         typeMastheadNotes(wc, "typed before show mode")
         await wc.requestShowMode(true)
         XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed before show mode")
+        await assertEventually("the engine stored them") {
+            self.notes(rig, TestSnapshots.intro) == "typed before show mode"
+        }
     }
 
     func testSaveMidEditCommitsTheMastheadNotes() async throws {
@@ -261,6 +264,7 @@ final class MainWindowTests: XCTestCase {
         XCTAssertTrue(ok)
         XCTAssertEqual(setNotesCommands(rig).count, 1)
         XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed before save")
+        await assertEventually("the engine stored them") { self.notes(rig, TestSnapshots.intro) == "typed before save" }
     }
 
     func testTypingForTheNewCueAfterAMidEditPlayheadMoveIsCommittedToIt() async throws {
