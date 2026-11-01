@@ -4,6 +4,21 @@ import AppKit
 import Combine
 import UniformTypeIdentifiers
 
+/// The workspace window. Esc is panic: `AppController`'s key monitor has already sent it, then lets the
+/// key run on so an editor or alert can use it. Nothing else in a workspace takes Esc, and a key that
+/// reaches the end of the responder chain unhandled (as `keyDown` from a button or the tab view, or as
+/// `cancelOperation(_:)` from a table, which no AppKit class implements) makes AppKit play the alert
+/// sound, which an audience can hear. The window is the end of the chain, so it takes Esc here.
+@MainActor
+final class WorkspaceWindow: NSWindow {
+    override func cancelOperation(_ sender: Any?) {}
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { return }
+        super.keyDown(with: event)
+    }
+}
+
 /// One open workspace's window and its QLab-style layout: masthead, cue-type row, cue list over
 /// inspector, optional right sidebar, footer. Built in code; it holds only its own store. Close
 /// requests and the GO / Pause All / Panic controls are handed to `AppController` through the
@@ -86,7 +101,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cueList.editor = editor
         sidebar = SidebarViewController(store: store)
         inspector = InspectorViewController(store: store)
-        let window = NSWindow(
+        let window = WorkspaceWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)

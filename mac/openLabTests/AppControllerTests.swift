@@ -2504,4 +2504,186 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(alerts.errors.isEmpty)
         XCTAssertEqual(wc.store.logEntries.last?.message, "boom")
     }
+
+    // MARK: Esc without the system beep
+
+    /// Counts the Esc a workspace window takes (`cancelOperation(_:)` or `keyDown`) while it is installed:
+    /// the Esc that reached the end of the responder chain and found a handler instead of the beep.
+    private final class CancelTap {
+        private final class Box: @unchecked Sendable { var n = 0 }
+        private let count = Box()
+        var taken: Int { count.n }
+        private var restores: [() -> Void] = []
+
+        /// Wraps `cancelOperation:` and `keyDown:` of the workspace window: Esc reaches one of them
+        /// (a table's key bindings the first, a button or tab view the second) or it beeps.
+        init() throws {
+            let cancel = #selector(NSResponder.cancelOperation(_:))
+            // AppKit's NSResponder has no cancelOperation(_:): without a handler the key goes unhandled.
+            XCTAssertNil(class_getInstanceMethod(NSResponder.self, cancel), "the base class does not handle Esc")
+            let count = count
+            let cancelMethod = try XCTUnwrap(class_getInstanceMethod(WorkspaceWindow.self, cancel))
+            let cancelOriginal = method_getImplementation(cancelMethod)
+            let cancelBlock: @convention(block) (AnyObject, Any?) -> Void = { object, sender in
+                count.n += 1
+                typealias Call = @convention(c) (AnyObject, Selector, Any?) -> Void
+                unsafeBitCast(cancelOriginal, to: Call.self)(object, cancel, sender)
+            }
+            method_setImplementation(cancelMethod, imp_implementationWithBlock(cancelBlock))
+            restores.append { method_setImplementation(cancelMethod, cancelOriginal) }
+
+            let key = #selector(NSResponder.keyDown(with:))
+            let keyMethod = try XCTUnwrap(class_getInstanceMethod(WorkspaceWindow.self, key))
+            let keyOriginal = method_getImplementation(keyMethod)
+            let keyBlock: @convention(block) (AnyObject, NSEvent) -> Void = { object, event in
+                if event.keyCode == 53 { count.n += 1 }
+                typealias Call = @convention(c) (AnyObject, Selector, NSEvent) -> Void
+                unsafeBitCast(keyOriginal, to: Call.self)(object, key, event)
+            }
+            method_setImplementation(keyMethod, imp_implementationWithBlock(keyBlock))
+            restores.append { method_setImplementation(keyMethod, keyOriginal) }
+        }
+
+        func restore() { for undo in restores { undo() } }
+    }
+
+    /// The front workspace window, key, with `focus` the first responder.
+    private func keyWindow(focus: (WorkspaceWindowController) -> NSResponder) throws -> (
+        WorkspaceWindowController, NSWindow
+    ) {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        let target = focus(wc)
+        XCTAssertTrue(window.makeFirstResponder(target), "\(target) takes the focus")
+        XCTAssertTrue(window.firstResponder === target)
+        return (wc, window)
+    }
+
+    /// Esc through the app's key path: the key monitor's body, then the window's own dispatch to the
+    /// first responder, as AppKit does for a key the monitor passes on.
+    private func pressEsc(in window: NSWindow) throws {
+        let event = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false,
+                keyCode: 53))
+        if let passed = app.handleKeyDown(event) { window.sendEvent(passed) }
+    }
+
+    private func statusIcon(_ wc: WorkspaceWindowController, row: Int) throws -> NSImageView {
+        let outline = wc.cueList.outlineView
+        let column = outline.column(withIdentifier: NSUserInterfaceItemIdentifier("status"))
+        let cell = try XCTUnwrap(outline.view(atColumn: column, row: row, makeIfNecessary: true) as? CueCell)
+        return cell.images[1]
+    }
+
+    private func beeps() -> Counter {
+        let counter = Counter()
+        app.beep = { counter.count += 1 }
+        return counter
+    }
+
+    private final class Counter { var count = 0 }
+
+    private func assertNoBeep(_ tap: CancelTap, _ presses: Int, _ beeps: Counter, _ message: String) {
+        XCTAssertEqual(
+            tap.taken, presses, "every Esc that reached the window found a handler (no system beep): \(message)")
+        XCTAssertEqual(beeps.count, 0, "the app did not beep either: \(message)")
+    }
+
+    func testEscOnTheCueListWithACueRunningPanicsItWithoutABeep() async throws {
+        let tap = try CancelTap()
+        defer { tap.restore() }
+        let beeps = beeps()
+        let (wc, window) = try keyWindow { $0.cueList.outlineView }
+        let store = wc.store
+        XCTAssertEqual(store.cueStates[intro]?.state, .running)
+        XCTAssertEqual(try statusIcon(wc, row: 0).accessibilityLabel(), loc("cue.state.running"))
+        try pressEsc(in: window)
+        await assertEventually { panics().count == 1 }
+        try await real.advance(seconds: 0.1)
+        XCTAssertNotEqual(store.cueStates[intro]?.state, .running, "fading out over the panic time")
+        try await real.advance(seconds: 1)  // past the show's 0.5 s panic time
+        await assertEventually { store.cueStates[self.intro] == nil || store.cueStates[self.intro]?.state == .idle }
+        XCTAssertTrue(try statusIcon(wc, row: 0).isHidden, "the running icon clears")
+        assertNoBeep(tap, 1, beeps, "cue list")
+    }
+
+    func testEscWithNothingRunningChangesNothingAndDoesNotBeep() async throws {
+        let tap = try CancelTap()
+        defer { tap.restore() }
+        let beeps = beeps()
+        let (wc, window) = try keyWindow { $0.cueList.outlineView }
+        let store = wc.store
+        _ = await store.transport(.hardStopAll)
+        try await real.advance(seconds: 0.1)
+        await assertEventually { store.cueStates[self.intro]?.state ?? .idle == .idle }
+        let (states, selection, playhead) = (store.cueStates, wc.cueList.selectedIDs(), store.playheads[list])
+        try pressEsc(in: window)
+        await assertEventually { panics().count == 1 }
+        try await real.advance(seconds: 1)
+        await settle()
+        XCTAssertEqual(store.cueStates, states)
+        XCTAssertEqual(wc.cueList.selectedIDs(), selection)
+        XCTAssertEqual(store.playheads[list], playhead)
+        XCTAssertTrue(try statusIcon(wc, row: 0).isHidden)
+        assertNoBeep(tap, 1, beeps, "nothing running")
+    }
+
+    func testDoubleEscStopsAtOnceWithoutABeep() async throws {
+        let tap = try CancelTap()
+        defer { tap.restore() }
+        let beeps = beeps()
+        let (wc, window) = try keyWindow { $0.cueList.outlineView }
+        let store = wc.store
+        try pressEsc(in: window)
+        try pressEsc(in: window)
+        await assertEventually { panics().count == 2 }
+        try await real.advance(seconds: 0.05)  // far inside the 0.5 s panic time: only a hard stop is over by now
+        await assertEventually { store.cueStates[self.intro] == nil || store.cueStates[self.intro]?.state == .idle }
+        XCTAssertTrue(try statusIcon(wc, row: 0).isHidden)
+        assertNoBeep(tap, 2, beeps, "double Esc")
+    }
+
+    func testEscFromTheInspectorPanicsWithoutABeep() async throws {
+        let tap = try CancelTap()
+        defer { tap.restore() }
+        let beeps = beeps()
+        let (wc, window) = try keyWindow { $0.cueList.outlineView }
+        wc.cueList.selectAsUser([intro])
+        await assertEventually { wc.inspector.cueForEdit?.id == self.intro }
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.tabView), "focus in the inspector, not editing")
+        XCTAssertFalse(window.firstResponder is NSText, "no field is being edited")
+        try pressEsc(in: window)
+        await assertEventually { panics().count == 1 }
+        try await real.advance(seconds: 1.2)
+        await assertEventually {
+            wc.store.cueStates[self.intro] == nil || wc.store.cueStates[self.intro]?.state == .idle
+        }
+        assertNoBeep(tap, 1, beeps, "inspector")
+    }
+
+    func testEscFromTheMastheadSidebarAndFooterPanicsWithoutABeep() async throws {
+        let tap = try CancelTap()
+        defer { tap.restore() }
+        let beeps = beeps()
+        var presses = 0
+        let targets: [(String, (WorkspaceWindowController) -> NSResponder)] = [
+            ("GO button", { $0.masthead.goButton }),
+            ("sidebar list", { $0.sidebar.listTable }),
+            ("footer control", { $0.footer.settingsButton }),
+        ]
+        for (name, focus) in targets {
+            let (_, window) = try keyWindow(focus: focus)
+            try pressEsc(in: window)
+            presses += 1
+            await assertEventually { panics().count == presses }
+            assertNoBeep(tap, presses, beeps, name)
+        }
+        try await real.advance(seconds: 1.2)
+        let store = try XCTUnwrap(app.windows["1"]).store
+        await assertEventually { store.cueStates[self.intro] == nil || store.cueStates[self.intro]?.state == .idle }
+    }
 }
