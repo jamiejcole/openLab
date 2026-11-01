@@ -165,7 +165,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     private var generation = 0
     /// The fetch under way (tests wait on it).
     private(set) var loading: Task<Void, Never>?
-    private var loadInFlight = false
+    /// The read out (its generation and file); one at a time per file.
+    private var inFlight: (gen: Int, cue: ModelID, media: String)?
     /// A zoom or pan asked for other peaks while a read was out.
     private(set) var reloadPending = false
 
@@ -431,13 +432,14 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     /// the tab is on screen and not in Show Mode: reading a waveform decodes the whole file, which
     /// a show in progress must not pay for a click in the cue list.
     func reload() {
+        // Whatever read is out is for something no longer asked for, even when nothing is asked now.
+        generation += 1
         guard let file, isActive, !isLocked else { return }
         let (a, b) = visible
         let scaleFactor = waveform.window?.backingScaleFactor ?? 2
         let width = Int(waveform.bounds.width * scaleFactor)
         let key = PeaksKey(
             cue: file.cue, media: file.media, start: a, end: b, buckets: min(8192, max(1, width > 0 ? width : 1024)))
-        generation += 1
         if let hit = cache[key] {
             reloadPending = false
             waveform.peaks = hit
@@ -445,21 +447,25 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         }
         guard let loadPeaks else { return }
         // A pinch or wheel asks many times a second and each read decodes the file: while one is
-        // out, only the latest ask is kept and made when it comes back.
-        if loadInFlight {
+        // out for this file, only the latest ask is kept and made when it comes back. Another
+        // file's read is not waited for: its result is dropped when it comes.
+        if let out = inFlight, out.cue == key.cue, out.media == key.media {
             reloadPending = true
             return
         }
-        loadInFlight = true
+        reloadPending = false
         let gen = generation
+        inFlight = (gen, key.cue, key.media)
         loading = Task { [weak self] in
             let result = await loadPeaks(key.cue, key.start, key.end, key.buckets)
             guard let self else { return }
-            self.loadInFlight = false
-            if self.reloadPending {
-                self.reloadPending = false
-                self.reload()
-                return
+            if self.inFlight?.gen == gen {
+                self.inFlight = nil
+                if self.reloadPending {
+                    self.reloadPending = false
+                    self.reload()
+                    return
+                }
             }
             guard gen == self.generation else { return }
             switch result {

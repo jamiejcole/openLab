@@ -380,6 +380,9 @@ class WaveformView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
+    /// A click that brings the window forward still takes a handle or places the insertion point.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     private func anchor(of event: NSEvent) -> Double {
         guard bounds.width > 0 else { return 0.5 }
         let x = convert(event.locationInWindow, from: nil).x
@@ -419,7 +422,7 @@ class WaveformView: NSView {
     /// Cmd-= (or Cmd-+) zooms in and Cmd-- out about the middle while the waveform is focused.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard window?.firstResponder === self,
-            event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.shift) == .command,
+            event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.shift, .numericPad]) == .command,
             let key = event.charactersIgnoringModifiers
         else { return super.performKeyEquivalent(with: event) }
         switch key {

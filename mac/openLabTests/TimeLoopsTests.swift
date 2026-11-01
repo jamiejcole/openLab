@@ -26,6 +26,7 @@ final class TimeLoopsTests: XCTestCase {
         "testALiveResizeAsksForPeaksOnceWhenItEnds", "testSliceChangesApplyToTheCurrentKind",
         "testTheDrawnFadeShapeIsCoresCurve", "testViewportZoomKeepsTheAnchorAndStaysInTheFile",
         "testViewportPanStopsAtTheFileEnds",
+        "testAReadStillOutForAnotherCueDoesNotLandOnTheCueShown", "testAnotherCuesReadIsNotWaitedFor",
     ]
 
     override func setUp() async throws {
@@ -181,6 +182,64 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertEqual(v.panned(by: 500).span, 10, accuracy: 1e-9)
     }
 
+    /// A panel whose reads are held until the test answers them.
+    @MainActor private final class HeldReads {
+        var asked: [ModelID] = []
+        var held: [CheckedContinuation<Result<WaveformPeaks, EngineError>, Never>] = []
+        let panel = TimeLoopsPanel()
+        init() {
+            panel.loadPeaks = { [unowned self] cue, _, _, _ in
+                asked.append(cue)
+                return await withCheckedContinuation { held.append($0) }
+            }
+            panel.isActive = true
+        }
+        func show(_ cue: ModelID, media: String?, duration: Double?) {
+            let kind = media.map { JSONValue.object(["media": .string($0)]) } ?? .object([:])
+            panel.show(cue: cue, kind: kind, duration: duration)
+        }
+        func answer(_ i: Int, cue: ModelID) {
+            let json = """
+                {"cue":"\(cue)","duration":10,"start":0,"end":10,"channels":[{"min":[-100],"max":[100]}]}
+                """
+            // swiftlint:disable:next force_try
+            let peaks = try! JSONDecoder().decode(WaveformPeaks.self, from: Data(json.utf8))
+            held[i].resume(returning: .success(peaks))
+        }
+    }
+
+    /// #501: a read out for cue A when B (no file yet) is shown must not draw A's waveform on B.
+    func testAReadStillOutForAnotherCueDoesNotLandOnTheCueShown() async {
+        let reads = HeldReads()
+        let a = TestSnapshots.intro
+        let b = TestSnapshots.fade
+        reads.show(a, media: "a.wav", duration: 10)
+        await settle()
+        XCTAssertEqual(reads.asked, [a])
+        reads.show(b, media: nil, duration: nil)
+        reads.answer(0, cue: a)
+        await reads.panel.loading?.value
+        XCTAssertNil(reads.panel.waveform.peaks)
+    }
+
+    /// A's read held (a stalled disk), B shown: B's read is asked at once, and A's late result is dropped.
+    func testAnotherCuesReadIsNotWaitedFor() async {
+        let reads = HeldReads()
+        let a = TestSnapshots.intro
+        let b = TestSnapshots.fade
+        reads.show(a, media: "a.wav", duration: 10)
+        await settle()
+        reads.show(b, media: "b.wav", duration: 10)
+        await settle()
+        XCTAssertEqual(reads.asked, [a, b], "B's read does not wait for A's")
+        reads.answer(1, cue: b)
+        await reads.panel.loading?.value
+        XCTAssertEqual(reads.panel.waveform.peaks?.cue, b)
+        reads.answer(0, cue: a)
+        await settle()
+        XCTAssertEqual(reads.panel.waveform.peaks?.cue, b, "A's late result is dropped")
+    }
+
     /// Waits for the peaks of the visible stretch, including a read a later zoom queued behind one.
     private func peaksSettled() async {
         repeat { await panel.loading?.value } while panel.reloadPending
@@ -314,8 +373,17 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertEqual(wave.scale.seconds(x), 45, accuracy: 0.05)
         scroll(dy: -30, precise: true, flags: .option, at: p)
         XCTAssertGreaterThan(span, zoomedIn)
+        let before = span
+        final class Spy: NSResponder {
+            var scrolls = 0
+            override func scrollWheel(with event: NSEvent) { scrolls += 1 }
+        }
+        let spy = Spy()
+        spy.nextResponder = wave.nextResponder
+        wave.nextResponder = spy
         scroll(dy: 30, precise: true, at: p)
-        XCTAssertGreaterThan(span, zoomedIn - 1e-9, "without Option a vertical trackpad scroll does not zoom")
+        XCTAssertEqual(span, before, "without Option a vertical trackpad scroll does not zoom")
+        XCTAssertEqual(spy.scrolls, 1, "it goes on to the next responder, as a scroll does")
         await peaksSettled()
     }
 
@@ -332,15 +400,40 @@ final class TimeLoopsTests: XCTestCase {
 
     func testKeyboardZoom() async {
         await showIntro()
-        XCTAssertFalse(wave.performKeyEquivalent(with: commandKey("=")!), "ignored while the waveform is not focused")
-        XCTAssertEqual(span, 62.5)
         window.makeKeyAndOrderFront(nil)
-        XCTAssertTrue(window.makeFirstResponder(wave))
-        XCTAssertTrue(wave.performKeyEquivalent(with: commandKey("=")!))
+        XCTAssertFalse(window.performKeyEquivalent(with: commandKey("=")!), "ignored while the waveform is not focused")
+        XCTAssertEqual(span, 62.5)
+        click(atSeconds: 30)
+        XCTAssertTrue(window.firstResponder === wave, "a click on the waveform focuses it")
+        XCTAssertTrue(window.performKeyEquivalent(with: commandKey("=")!))
         XCTAssertEqual(span, 31.25, accuracy: 1e-9)
-        XCTAssertTrue(wave.performKeyEquivalent(with: commandKey("-")!))
+        XCTAssertTrue(window.performKeyEquivalent(with: commandKey("-")!))
         XCTAssertEqual(span, 62.5, accuracy: 1e-9)
         await peaksSettled()
+    }
+
+    private func mouse(_ type: NSEvent.EventType, atSeconds t: Double) -> NSEvent {
+        NSEvent.mouseEvent(
+            with: type, location: windowPoint(atSeconds: t), modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+
+    private func click(atSeconds t: Double) {
+        window.sendEvent(mouse(.leftMouseDown, atSeconds: t))
+        window.sendEvent(mouse(.leftMouseUp, atSeconds: t))
+    }
+
+    /// A real mouse-down on a trim handle still takes it, and the drag moves the trim.
+    func testAHandleStillDragsAfterTheWaveformTakesFocus() async {
+        await showIntro()
+        window.makeKeyAndOrderFront(nil)
+        window.sendEvent(mouse(.leftMouseDown, atSeconds: 0.2))
+        XCTAssertTrue(window.firstResponder === wave)
+        XCTAssertEqual(wave.dragging, .start)
+        window.sendEvent(mouse(.leftMouseDragged, atSeconds: 10))
+        window.sendEvent(mouse(.leftMouseUp, atSeconds: 10))
+        await assertEventually { self.kinds.last?["start_time"] == .double(10) }
+        XCTAssertEqual(panel.startField.stringValue, "00:10.00")
     }
 
     /// Zoomed to 0-10 s, a horizontal scroll moves along the file to 20-30 s, and stops at both ends.
