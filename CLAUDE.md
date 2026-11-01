@@ -32,7 +32,7 @@ This file is the only copy of every rule below; other files link here instead of
 - An app test that needs an engine uses the real engine; the only double is a raw-socket stub for wire-codec failures.
 - A feature issue's Checklist is acceptance flows, written before implementation from QLab 5's behaviour (manual pages cited): starting state → user action → what the user sees. The implementer does not edit them; each flow has a real-engine test named after it, and a box is ticked only when that test passes.
 - Unit tests prove logic; an XCUITest covers a flow unit tests cannot drive (real key events, focus, window ordering, layout). Say in the PR whether it joins the smoke set (`scripts/ui-smoke.txt`) or only the nightly full suite (the default).
-- CI cost: a mac PR runs the engine-free app unit tests; the real-engine app tests and the UI smoke set run when the engine, the protocol or the app's engine client changes (`changes.app_engine`), nightly and on demand; the full UI suite runs nightly; the core-flows set (#498) runs nightly and after big feature changes.
+- CI cost: a mac PR runs the engine-free app unit tests; the real-engine app tests and the UI smoke set run when the engine, the protocol or the app's engine client changes (`changes.app_engine`), nightly and on demand; the full UI suite runs nightly. A core-flows set to run nightly and after big feature changes is planned (#498).
 - Extend the existing test file and `tests/common`; no new harness types. `tests/common/mod.rs` starts with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`.
 - A test that cannot run here fails or reports a skip; it never passes by returning early.
 - Test-only code (fakes, fault switches, fixtures) never compiles into a Release product.
