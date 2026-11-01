@@ -16,7 +16,7 @@ final class PreshowUITests: XCTestCase {
         let report = app.descendants(matching: .any).matching(identifier: "preshow-table").firstMatch
         XCTAssertTrue(report.waitForExistence(timeout: 10), "the report opens")
         let summary = app.staticTexts.matching(identifier: "preshow-summary").firstMatch
-        XCTAssertTrue(waitFor("value ENDSWITH 'problems found.'", summary), "the summary counts the problems")
+        XCTAssertTrue(waitFor("value == '1 problem found.'", summary), "the summary counts the one problem")
         let radio = report.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '2.3  Radio'")).firstMatch
         XCTAssertTrue(radio.waitForExistence(timeout: 10), "the broken cue is listed")
 
