@@ -498,8 +498,15 @@ final class EngineSessionTests: XCTestCase {
         // A drop with an open in flight and a scan behind it: both end.
         tap.holdResults = true
         var ended = 0
-        let first = Task { _ = await s.open(path: try runs.show("Demo", named: "B")); ended += 1 }
-        let second = Task { _ = await s.scanRecovery(); ended += 1 }
+        let bPath = try runs.show("Demo", named: "B")
+        let first = Task {
+            _ = await s.open(path: bPath)
+            ended += 1
+        }
+        let second = Task {
+            _ = await s.scanRecovery()
+            ended += 1
+        }
         await assertEventually("the open was answered, held") { self.tap.heldCount >= 1 }
         tap.dropConnections()
         tap.holdResults = false
@@ -513,8 +520,15 @@ final class EngineSessionTests: XCTestCase {
         // The engine dies with an open held and a scan behind it.
         tap.holdResults = true
         ended = 0
-        let third = Task { _ = await s.open(path: try runs.show("Demo", named: "C")); ended += 1 }
-        let fourth = Task { _ = await s.scanRecovery(); ended += 1 }
+        let cPath = try runs.show("Demo", named: "C")
+        let third = Task {
+            _ = await s.open(path: cPath)
+            ended += 1
+        }
+        let fourth = Task {
+            _ = await s.scanRecovery()
+            ended += 1
+        }
         await assertEventually("the open was answered, held") { self.tap.heldCount >= 1 }
         try await runs.crash()
         tap.holdResults = false
