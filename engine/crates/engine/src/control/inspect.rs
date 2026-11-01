@@ -101,19 +101,19 @@ impl Control {
         self.eng.watch.watch().abandoned()
     }
 
-    /// Slice plans built for the `bad_plan` warnings so far (a cost measure: an edit rebuilds
+    /// Slice plans built for the slice-plan checks so far (a cost measure: an edit rebuilds
     /// only the cues it changed), in the first doc.
     pub fn plan_builds(&self) -> u64 {
         self.first().map_or(0, |d| d.checks.builds())
     }
 
-    /// Cues the `bad_plan` checks have looked at so far (a cost measure: an edit looks at the
+    /// Cues the slice-plan checks have looked at so far (a cost measure: an edit looks at the
     /// cues it touched, M4.12c), in the first doc.
     pub fn plan_cues_examined(&self) -> u64 {
         self.first().map_or(0, |d| d.checks.examined())
     }
 
-    /// Walks of every audio cue the `bad_plan` checks made so far (a newly followed workspace;
+    /// Walks of every audio cue the slice-plan checks made so far (a newly followed workspace;
     /// an edit or a probe answer makes none, M4.12c), in the first doc.
     pub fn plan_walks(&self) -> u64 {
         self.first().map_or(0, |d| d.checks.walks())

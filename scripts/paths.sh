@@ -8,18 +8,19 @@
 PATHS_ALL_RE='^(\.github/|Makefile$|scripts/(paths|rust-checks|soak-rt-ci)\.sh$|scripts/ui-smoke\.txt$)'
 # The Rust workspace (Cargo files, toolchain pin and deny.toml all live under engine/).
 PATHS_ENGINE_RE='^engine/'
-# The macOS app job. On a pull request it runs only for what the app reads from the engine: the
-# protocol and show file (Swift Codable types, fixtures), the engine's command line and engine.json
-# (host/), and the bundled build. The app's tests still use FakeEngine; the engine's virtual device
-# (`--virtual-device`, test-support builds) lets them run the real engine, and when they do (#132)
-# this set must cover every engine change they exercise. On main every engine change rebuilds the app.
+# The macOS app job. On a pull request it runs for app changes and for what the app reads from the
+# engine: the protocol and show file (Swift Codable types, fixtures), the engine's command line and
+# engine.json (host/), and the bundled build. On main every engine change rebuilds the app.
 PATHS_MAC_PR_RE='^(mac/|engine/fixtures/protocol/|engine/crates/core/src/(protocol|show_file)|engine/crates/engine/src/(main\.rs|host/)|engine/Cargo\.(toml|lock)$|engine/rust-toolchain\.toml$|docs/(protocol|file-format)\.md$)'
 PATHS_MAC_MAIN_RE='^(mac|engine)/'
+# The app tests that start the real engine (its virtual device) and the UI smoke set: expensive, so on
+# a pull request or push only when the engine, the protocol, the app's engine client, the app's tests
+# (unit and UI: a new or changed real-engine test runs before merge), the test shows or the project
+# (how the tests and shows are built and bundled) change; nightly and on demand always. Other app
+# changes run the engine-free unit tests (`make test-mac-unit`; the real-engine tests report a skip).
+PATHS_APP_ENGINE_RE='^(engine/|docs/protocol\.md$|mac/openLab/Engine/|mac/TestShows/|mac/scripts/build-engine\.sh$|mac/openLabTests/|mac/openLabUITests/|mac/project\.yml$)'
 # The Release universal build and bundle check (`make mac`, `make verify-bundle`): on main always,
 # on a pull request only when the build itself changes.
 PATHS_BUNDLE_RE='^(mac/(project\.yml|scripts/)|engine/Cargo\.(toml|lock)$|engine/rust-toolchain\.toml$)'
 # Perf-sensitive code also runs on the Intel runner (closest to the 2014 Mac mini target).
 PATHS_INTEL_RE='^engine/(crates/audio/|crates/engine/tests/(perf|soak|soak_rt)\.rs$|crates/engine/tests/soak_common/|crates/engine/src/control/(watch|media|voices)/|crates/engine/src/control/watch_share\.rs$)'
-# App code that XCUITests exercise (the engine client under Engine/ is covered by unit tests).
-PATHS_UI_RE='^mac/openLab/.*\.swift$'
-PATHS_UI_EXCLUDE_RE='^mac/openLab/Engine/'

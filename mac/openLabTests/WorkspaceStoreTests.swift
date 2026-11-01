@@ -9,12 +9,8 @@ final class WorkspaceStoreTests: XCTestCase {
     private let list: ModelID = "00000000-0000-0000-0000-000000000001"
     private let cueA: ModelID = "00000000-0000-0000-0000-00000000000a"
 
-    private func connectedRig() async throws -> Rig {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
-        return rig
-    }
+    /// No engine: the store as the golden welcome left it (for what it does with what it receives).
+    private func connectedRig() async throws -> Rig { try Rig.offline() }
 
     private func msg(_ json: String) throws -> ServerMessage { try ServerMessage.decode(json) }
 
@@ -282,13 +278,16 @@ final class WorkspaceStoreTests: XCTestCase {
     }
 
     func testLogTailIntentSendsMaxAndReturnsEntries() async throws {
-        let rig = try await connectedRig()
-        let result = await rig.store.logTail(max: 50)
-        guard case .success(let tail) = result else { return XCTFail("\(result)") }
-        XCTAssertEqual(tail.entries, [])
+        let rig = try await Rig.open()
+        // The real engine's log: it started, then opened the show.
+        guard case .success(let tail) = await rig.store.logTail(max: 50) else { return XCTFail("log_tail") }
+        XCTAssertTrue(tail.entries.contains { $0.message.hasPrefix("workspace opened") }, "\(tail.entries)")
         XCTAssertEqual(tail.dropped, 0)
-        XCTAssertTrue(rig.engine.received.contains { $0.isLogTail(max: 50) })
-        // The fixture's result decodes to entries.
+        guard case .success(let one) = await rig.store.logTail(max: 1) else { return XCTFail("log_tail 1") }
+        XCTAssertEqual(one.entries.count, 1, "max is sent and kept to")
+    }
+
+    func testLogTailFixtureDecodes() throws {
         guard case .result(_, .ok(let ok)) = try msg(try Fixtures.text("server", "result_log_tail")),
             case .logTail(let entries, let dropped, let seq)? = ok.data
         else { return XCTFail("fixture") }
@@ -300,21 +299,21 @@ final class WorkspaceStoreTests: XCTestCase {
     }
 
     func testPreshowCheckReturnsTheReportAndFixturesDecode() async throws {
-        let rig = try await connectedRig()
-        let result = await rig.store.preshowCheck()
-        guard case .success(let clean) = result else { return XCTFail("\(result)") }
+        // An empty show passes the engine's check.
+        let empty = try await Rig.open("Second")
+        guard case .success(let clean) = await empty.store.preshowCheck() else { return XCTFail("clean") }
         XCTAssertTrue(clean.ok)
         XCTAssertEqual(clean.summary.total, 0)
-        XCTAssertTrue(rig.engine.received.contains { $0.isPreshowCheck })
-
-        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
-        guard case .success(let bad) = await rig.store.preshowCheck() else { return XCTFail("sample") }
+        // The demo show's Radio has no file.
+        let demo = try await Rig.open()
+        guard case .success(let bad) = await demo.store.preshowCheck() else { return XCTFail("demo") }
         XCTAssertFalse(bad.ok)
-        XCTAssertEqual(bad.summary.total, 2)
         XCTAssertEqual(bad.brokenCues.map(\.name), ["Radio"])
-        XCTAssertEqual(bad.media.map(\.status), [.missing])
-        XCTAssertEqual(bad.system.count, 1)
+        XCTAssertEqual(bad.brokenCues.first?.problems.first?.type, "media_missing")
+        XCTAssertEqual(bad.media.filter { $0.status == .missing }.map(\.path), ["media/o.wav"])
+    }
 
+    func testPreshowCheckFixturesDecode() throws {
         guard case .result(_, .ok(let ok)) = try msg(try Fixtures.text("server", "result_preshow_check")),
             case .preshowCheck(let r)? = ok.data
         else { return XCTFail("fixture") }
@@ -364,74 +363,68 @@ final class WorkspaceStoreTests: XCTestCase {
     }
 
     func testSnapshotArrivingThroughTheClientReplacesStoreState() async throws {
-        let rig = try await connectedRig()
-        var snap = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
-        snap["workspace"]?.set("name", .string("Pushed"))
-        rig.engine.push(#"{"type":"snapshot","snapshot":\#(try snap.text())}"#)
-        await assertEventually { rig.store.model?.name == "Pushed" }
+        let rig = try await Rig.open()
+        // State the engine never sent: the snapshot it sends when asked takes it away.
+        rig.store.receive(
+            try msg(
+                #"{"type":"runtime","seq":\#(rig.store.runtimeSeq + 1),"changes":[{"type":"cue_state","cue":"x","state":"running"}]}"#
+            ))
+        XCTAssertNotNil(rig.store.cueStates["x"])
+        rig.client.requestSnapshot()
+        await assertEventually { rig.store.cueStates["x"] == nil }
+        XCTAssertEqual(rig.store.model?.name, "Demo")
     }
 
     // MARK: Intents
 
     func testIntentsSendTheRightMessagesAndReturnTheResult() async throws {
-        let rig = try await connectedRig()
-        let go = await rig.store.go(list: list)
-        guard case .success = go else { return XCTFail("\(go)") }
+        let rig = try await Rig.open()
+        let s = rig.store
+        guard case .success = await s.go(list: list) else { return XCTFail("go") }
+        try await rig.advance(0.1)
+        await assertEventually { s.cueStates[cueA]?.state == .running }
+        // The fixture command renames Intro.
         let cmd = Command(try Fixtures.json("client", "command")["command"] ?? .null)
-        let sent = await rig.store.send(command: cmd)
-        guard case .success = sent else { return XCTFail("\(sent)") }
-        _ = await rig.store.save()
-        _ = await rig.store.panic()
-
-        let kinds = rig.engine.received.dropFirst().map { m -> String in
-            switch m {
-            case .transport(_, .go(let l)): return "go \(l)"
-            case .transport(_, .panic): return "panic"
-            case .command(_, let c, _): return "command \(c == cmd)"
-            case .request(_, .save): return "save"
-            default: return "other"
-            }
-        }
-        XCTAssertEqual(kinds, ["go \(list)", "command true", "save", "panic"])
+        guard case .success = await s.send(command: cmd) else { return XCTFail("command") }
+        XCTAssertEqual(s.model?.cue(cueA)?.name, "Storm", "its model_changed came before the result")
+        await assertEventually { s.document?.dirty == true }
+        guard case .success = await s.save() else { return XCTFail("save") }
+        await assertEventually { s.document?.dirty == false }
+        let path = try XCTUnwrap(s.document?.path)
+        XCTAssertTrue(try String(contentsOfFile: path, encoding: .utf8).contains("Storm"), "saved to the file")
+        guard case .success = await s.panic() else { return XCTFail("panic") }
+        try await rig.advance(1)  // past the show's 0.5 s panic fade
+        await assertEventually { s.cueStates[cueA] == nil || s.cueStates[cueA]?.state == .idle }
     }
 
     func testOscApiTransportIntentsSendTheirActions() async throws {
-        let rig = try await connectedRig()
-        for result in [
-            await rig.store.goFrom(list: list, cue: cueA), await rig.store.stopAll(),
-            await rig.store.hardStopAll(), await rig.store.panicCue(cueA),
-        ] {
-            guard case .success = result else { return XCTFail("\(result)") }
+        let rig = try await Rig.open()
+        let s = rig.store
+        func playing() -> Bool { s.cueStates[cueA]?.state == .running }
+        func start() async throws {
+            guard case .success = await s.goFrom(list: list, cue: cueA) else { return XCTFail("go_from") }
+            try await rig.advance(0.1)
+            await assertEventually("go_from starts the cue") { playing() }
         }
-        let actions = rig.engine.received.compactMap { m -> TransportAction? in
-            if case .transport(_, let a) = m { return a }
-            return nil
-        }
-        XCTAssertEqual(actions, [.goFrom(list: list, cue: cueA), .stopAll, .hardStopAll, .panicCue(cue: cueA)])
+        try await start()
+        guard case .success = await s.stopAll() else { return XCTFail("stop_all") }
+        try await rig.advance(0.1)
+        await assertEventually("stop_all stops it") { !playing() }
+        try await start()
+        guard case .success = await s.hardStopAll() else { return XCTFail("hard_stop_all") }
+        try await rig.advance(0.1)
+        await assertEventually("hard_stop_all stops it") { !playing() }
+        try await start()
+        guard case .success = await s.panicCue(cueA) else { return XCTFail("panic_cue") }
+        try await rig.advance(1)  // past the show's 0.5 s panic fade
+        await assertEventually("panic_cue fades it out and stops it") { !playing() }
     }
 
     func testEngineRefusalComesBackAsATypedError() async throws {
-        let rig = try await connectedRig()
-        // A fake that refuses: swap the next result for an error by sending the real thing by hand.
-        rig.engine.holdResults = true
-        let task = Task { await rig.store.send(command: Command(.object([:]))) }
-        _ = await eventually { rig.engine.received.count == 2 }
-        rig.engine.push(
-            try Fixtures.text("server", "result_error").replacingOccurrences(of: "\"id\": 2", with: "\"id\": 1"))
-        let result = await task.value
+        let rig = try await Rig.open()
+        // A rename of a cue the workspace does not have: the engine refuses it.
+        let result = await rig.store.send(command: .setProperty("00000000-0000-0000-0000-0000000000ff", .name("x")))
         guard case .failure(.engine(let code, _)) = result else { return XCTFail("\(result)") }
         XCTAssertEqual(code, .commandRefused)
-    }
-}
-
-extension ClientMessage {
-    fileprivate var isPreshowCheck: Bool {
-        if case .request(_, .preshowCheck) = self { return true }
-        return false
-    }
-
-    fileprivate func isLogTail(max: UInt32?) -> Bool {
-        if case .request(_, .logTail(let m)) = self { return m == max }
-        return false
     }
 }

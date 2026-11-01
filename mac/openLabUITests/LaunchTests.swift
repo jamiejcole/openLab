@@ -4,26 +4,27 @@ import XCTest
 
 @MainActor
 final class LaunchTests: XCTestCase {
-    /// With an engine that has no workspace open the launcher is what the operator sees. (The
-    /// fake: a UI test must not start a real engine, which outlives the app and relaunches it.)
+    /// With an engine that has no workspace open the launcher is what the operator sees.
     func testLaunchWithNoWorkspaceShowsLauncher() {
-        let app = launchFake(["-OpenLabFakeEmpty"])
+        let app = launchApp(opening: [])
         XCTAssertTrue(app.windows["launcher-window"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["launcher-new"].exists)
         XCTAssertTrue(app.buttons["launcher-open"].exists)
     }
 
-    /// The fake engine needs no engine process and opens two workspaces, one window each.
-    func testLaunchWithFakeEngineShowsOneWindowPerWorkspace() {
-        let app = launchFake()
-        XCTAssertTrue(app.windows.matching(identifier: "main-window").element(boundBy: 1).waitForExistence(timeout: 10))
-        XCTAssertEqual(app.windows.matching(identifier: "main-window").count, 2)
+    /// The app starts its engine, which has two shows open: one window each, no launcher.
+    func testLaunchShowsOneWindowPerWorkspace() {
+        let app = launchApp()
+        let windows = app.windows.matching(identifier: "main-window")
+        XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
+        XCTAssertEqual(windows.count, 2)
+        XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10), "the demo show's cues are listed")
         XCTAssertFalse(app.windows["launcher-window"].exists)
     }
 
     /// Closing one workspace leaves the other running; closing the last shows the launcher.
     func testClosingWorkspacesLeavesTheOtherThenShowsLauncher() {
-        let app = launchFake()
+        let app = launchApp()
         let windows = app.windows.matching(identifier: "main-window")
         XCTAssertTrue(windows.element(boundBy: 1).waitForExistence(timeout: 10))
 
@@ -36,7 +37,7 @@ final class LaunchTests: XCTestCase {
         XCTAssertTrue(app.windows["launcher-window"].waitForExistence(timeout: 10))
     }
 
-    /// Cmd-W; the fake's first workspace has a cue playing, so closing it asks for confirmation.
+    /// Cmd-W, confirming if the app asks (a workspace with a cue playing asks first).
     private func closeFrontWorkspace(_ app: XCUIApplication) {
         app.typeKey("w", modifierFlags: .command)
         let close = app.dialogs.buttons["Close"]

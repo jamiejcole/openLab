@@ -1170,7 +1170,7 @@ fn a_cue_primed_from_disk_is_primed_again_from_memory_when_its_preload_lands() {
 
 #[test]
 fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
-    // From the plans the loop builds for `bad_plan` (QLab check Q2: a playlist halted by a
+    // From the slice plans the loop checks (QLab check Q2: a playlist halted by a
     // broken child times its auto-follow by them).
     let path = wav(&dc(800, 0.5));
     let gone = fresh_path("wav");
@@ -1235,6 +1235,130 @@ fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
     });
     s.run(BLOCK);
     assert_eq!(length(&s, 1), None);
+}
+
+/// A cue whose slices cannot be played with its probed file is broken before any GO, as soon
+/// as its file answers (#410): a GO skips it and its auto-continue fires. The model keeps every
+/// slice at least 50 ms long except the last one, which ends at the file's end, so a last slice
+/// that loops can be too short for the file it plays: fixed by an edit of its markers or by
+/// pointing it at a longer file; pointed at a file that is not there, that is its problem.
+#[test]
+fn a_cue_whose_last_loop_is_too_short_for_its_file_is_broken_before_go() {
+    // 100 ms; the last slice, from 90 ms, is 10 ms played twice: under the 50 ms loop minimum.
+    let path = wav(&dc(800, 0.5));
+    let longer = wav(&dc(8000, 0.5));
+    let other = wav(&dc(400, 0.25));
+    let short_loop = |file: &std::path::Path| with_slices(audio(1, file, 0), &[(0.09, 1)], 2);
+    let mut c1 = short_loop(&path);
+    c1.continue_mode = ContinueMode::AutoContinue;
+    let mut s = show(workspace(vec![c1, audio(2, &other, 1)]));
+    s.settle_media();
+    s.run(BLOCK);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    assert!(matches!(
+        s.control().engine().problems(id(1)),
+        [CueProblem::SlicesUnplayable { reason }] if reason == "a looping slice is too short"
+    ));
+    let told = |msgs: &[ServerMessage], broken: bool| {
+        changes(msgs).iter().any(|c| {
+            matches!(
+                c,
+                RuntimeChange::Problems { cue, problems }
+                    if *cue == id(1)
+                        && matches!(problems[..], [WireProblem::SlicesUnplayable { .. }])
+                            == broken
+            )
+        })
+    };
+    assert!(told(&s.take_outbound(), true), "clients are told");
+    // A broken cue, not a second time among the workspace notices.
+    let doc = s.control().doc_ids()[0];
+    assert!(
+        s.control()
+            .doc(doc)
+            .unwrap()
+            .warnings()
+            .iter()
+            .all(|w| !matches!(w, WireWarning::Notice { cue: Some(c), .. } if *c == id(1)))
+    );
+    // GO: it plays nothing, and its auto-continue starts cue 2 at once.
+    let at = go(&mut s) as usize;
+    s.run(1200);
+    assert!(s.channel(0).iter().all(|&v| v == 0.0));
+    assert_eq!(first_nonzero(&s.channel(1)), Some(at));
+    assert!(
+        warnings(&s.take_outbound())
+            .iter()
+            .any(|w| matches!(w, WireWarning::CueBroken { cue } if *cue == id(1)))
+    );
+
+    // A 50 ms last slice: fixed.
+    set_kind(
+        &mut s,
+        1,
+        with_slices(audio(1, &path, 0), &[(0.05, 1)], 2).kind,
+    );
+    s.run(BLOCK);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert!(
+        told(&s.take_outbound(), false),
+        "clients are told it is fixed"
+    );
+    // Too short again; then a file that is not there is the problem, not the slices.
+    set_kind(&mut s, 1, short_loop(&path).kind);
+    s.run(BLOCK);
+    assert!(matches!(
+        s.control().engine().problems(id(1)),
+        [CueProblem::SlicesUnplayable { .. }]
+    ));
+    set_kind(&mut s, 1, short_loop(&fresh_path("wav")).kind);
+    s.settle_media();
+    s.run(BLOCK);
+    assert!(matches!(
+        s.control().engine().problems(id(1)),
+        [CueProblem::MediaMissing { .. }]
+    ));
+    // A file long enough for the loop: playable.
+    set_kind(&mut s, 1, short_loop(&longer).kind);
+    s.settle_media();
+    s.run(BLOCK);
+    assert!(s.control().engine().problems(id(1)).is_empty());
+}
+
+/// The fix of a cue's slices and a GO arrive in one burst (one inbox drain, no tick between, so
+/// no new plan check yet): the fixed cue plays, as the cue engine holds a slice report only for
+/// the plan it was made for (#410).
+#[test]
+fn a_go_right_after_a_slice_fix_plays_the_fixed_cue() {
+    let path = wav(&dc(800, 0.5));
+    let mut s = show(workspace(vec![with_slices(
+        audio(1, &path, 0),
+        &[(0.09, 1)],
+        2,
+    )]));
+    s.settle_media();
+    s.run(BLOCK);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    set_kind(
+        &mut s,
+        1,
+        with_slices(audio(1, &path, 0), &[(0.05, 1)], 2).kind,
+    );
+    let at = go(&mut s) as usize;
+    s.run(1200);
+    assert_eq!(first_nonzero(&s.channel(0)), Some(at));
+    // Broken again by an edit to another plan that cannot play: reported once checked.
+    set_kind(
+        &mut s,
+        1,
+        with_slices(audio(1, &path, 0), &[(0.08, 1)], 2).kind,
+    );
+    s.run(BLOCK);
+    assert!(matches!(
+        s.control().engine().problems(id(1)),
+        [CueProblem::SlicesUnplayable { .. }]
+    ));
 }
 
 #[test]

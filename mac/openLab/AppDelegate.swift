@@ -4,7 +4,7 @@ import AppKit
 
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
-    /// `-OpenLabEngine fake` runs the in-process fake engine (UI tests); default is the real one.
+    /// The shipping engine, or in Debug builds the test engine (`EngineMode`).
     @MainActor private(set) lazy var engine = launch.makeEngine()
     @MainActor var engineSession: EngineSession { engine.0 }
     @MainActor lazy var appController = AppController(session: engineSession, supervisor: engine.1)
@@ -56,12 +56,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             launch.activation.bringForward(first)
             return launch.terminate()
         }
-        // The launcher shows until the engine reports a workspace (fake engine: at once).
+        // The launcher shows until the engine reports a workspace.
         appController.showLauncher()
         appController.installKeyMonitor()
         _ = alarmController
         // Finds the engine (or starts one) and connects; the engine opens nothing by itself.
-        if !EngineMode.isUnitTestHost() { engine.1.start() }
+        engine.1.start()
         NSApp.activate(ignoringOtherApps: true)
     }
 

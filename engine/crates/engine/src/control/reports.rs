@@ -297,8 +297,9 @@ impl DocCx<'_> {
         }
     }
 
-    /// The workspace-level notices in force: damaged media, preloads over budget, cues whose
-    /// slices cannot play, audio-thread allocations. Sent when the list changes.
+    /// The workspace-level notices in force: damaged media, preloads over budget, audio-thread
+    /// allocations. Sent when the list changes. Also checks the cues' slice plans and tells the
+    /// cue engine and clients what they changed.
     pub(super) fn refresh_warnings(&mut self) {
         let mut list = self.doc.file.notices.clone();
         let mut damaged: Vec<(&str, usize)> = self.doc.media.damaged().collect();
@@ -328,17 +329,11 @@ impl DocCx<'_> {
                 None,
             ));
         }
-        for (cue, e) in
-            self.doc
-                .checks
-                .check(self.doc.model.ws(), &mut self.doc.media, self.eng.rate)
-        {
-            list.push(notice(
-                "bad_plan",
-                format!("the cue's slices cannot be played: {e}"),
-                Some(cue),
-            ));
-        }
+        // Cues whose slices cannot be played are broken cues (`slices_unplayable`, below), not
+        // workspace notices.
+        self.doc
+            .checks
+            .check(self.doc.model.ws(), &mut self.doc.media, self.eng.rate);
         self.device_warnings(&mut list);
         self.eng.watch.watch().notices(&mut list);
         if self.eng.seen.alloc_violations > 0 {
@@ -358,10 +353,21 @@ impl DocCx<'_> {
                 ServerMessage::Warnings { warnings: list },
             );
         }
-        // The plans just checked also give the cues' nominal lengths, which a playlist halted by
-        // a broken child times its auto-follow by (docs/cue-engine.md, "Playlist"), and the
-        // media lengths clients show (M5.4d): only the cues whose plan changed.
+        // The plans just checked give the cues whose slices cannot be played, which the cue
+        // engine shows broken before a GO (`Input::SliceProblems`); the cues' nominal lengths,
+        // which a playlist halted by a broken child times its auto-follow by
+        // (docs/cue-engine.md, "Playlist"); and the media lengths clients show (M5.4d): only
+        // the cues whose plan changed.
         let changes = self.doc.checks.take_changes();
+        if !changes.slices.is_empty() {
+            let now = self.now();
+            self.feed(
+                Input::SliceProblems {
+                    cues: changes.slices,
+                },
+                now,
+            );
+        }
         if !changes.media.is_empty() {
             self.runtime(
                 changes

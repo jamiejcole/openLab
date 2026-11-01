@@ -8,8 +8,8 @@ import XCTest
 @MainActor
 final class WarningsTests: XCTestCase {
     static let second: ModelID = "00000000-0000-0000-0000-000000000002"
-    private let rain = CueListHarness.rain
-    private let radio = CueListHarness.radio
+    private let rain = TestSnapshots.rain
+    private let radio = TestSnapshots.radio
 
     private var rig: Rig!
     private var store: WorkspaceStore { rig.store }
@@ -17,15 +17,22 @@ final class WarningsTests: XCTestCase {
     private var wc: WorkspaceWindowController!
     private var side: SidebarViewController!
 
+    /// No engine: the demo show with a second, empty list, its Radio broken by a lost device.
     private func make() async throws {
-        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
-        var snap = FakeEngine.demoSnapshot(base: base)
+        var snap = try TestSnapshots.show()
         var lists = snap["workspace"]?["cue_lists"]?.arrayValue ?? []
         lists.append(.object(["id": .string(Self.second.raw), "name": .string("Second"), "cues": .array([])]))
         snap["workspace"]?.set("cue_lists", .array(lists))
-        rig = try Rig(snapshot: snap)
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        snap.set(
+            "cue_states",
+            .array([
+                .object(["cue": .string(radio.raw), "state": .string("broken"), "reason": .string("device_lost")])
+            ]))
+        rig = try Rig.offline(snap)
+        makeWindow()
+    }
+
+    private func makeWindow() {
         wc = WorkspaceWindowController(store: store)
         // The sidebar the tests watch: a second one around a spy table.
         side = SidebarViewController(store: store, warningsTable: spy)
@@ -183,7 +190,7 @@ final class WarningsTests: XCTestCase {
         try await make()
         let rows = side.warningRows
         side.clearWarningUpdateLog()
-        try runtime(#"{"type":"cue_state","cue":"\#(CueListHarness.door)","state":"running"}"#)
+        try runtime(#"{"type":"cue_state","cue":"\#(TestSnapshots.door)","state":"running"}"#)
         XCTAssertEqual(side.warningRows, rows)
         XCTAssertTrue(side.updatedWarningRows.isEmpty)
     }
@@ -226,7 +233,7 @@ final class WarningsTests: XCTestCase {
     func testChoosingAWarningSelectsItsCueAndOpensItsGroup() async throws {
         try await make()
         let outline = wc.cueList.outlineView
-        let group = try XCTUnwrap(wc.cueList.node(CueListHarness.group))
+        let group = try XCTUnwrap(wc.cueList.node(TestSnapshots.group))
         outline.collapseItem(group)
         XCTAssertEqual(outline.row(forItem: wc.cueList.node(radio)), -1)
         try chooseRow(of: radio)
@@ -239,17 +246,37 @@ final class WarningsTests: XCTestCase {
         wc.sidebar.listTable.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         XCTAssertEqual(wc.cueList.listID, Self.second)
         try chooseRow(of: radio)
-        XCTAssertEqual(wc.cueList.listID, ModelID(FakeEngine.demoListID))
+        XCTAssertEqual(wc.cueList.listID, TestSnapshots.mainList)
         XCTAssertEqual(wc.cueList.selectedIDs(), [radio])
         XCTAssertEqual(wc.sidebar.listTable.selectedRow, 0)
     }
 
     func testChoosingAWarningNeverMovesThePlayhead() async throws {
-        try await make()
+        rig = try await Rig.open()
+        makeWindow()
+        XCTAssertEqual(store.playheads[TestSnapshots.mainList], TestSnapshots.intro)
         try chooseRow(of: radio)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [radio])
         await settle()
-        let sent = rig.engine.received.filter { if case .transport = $0 { return true } else { return false } }
-        XCTAssertTrue(sent.isEmpty, "selecting a warning must not change what GO fires")
+        try await rig.advance()
+        XCTAssertEqual(
+            store.playheads[TestSnapshots.mainList], TestSnapshots.intro,
+            "selecting a warning must not change what GO fires")
+        guard case .success = await store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
+        try await rig.advance(0.1)
+        await assertEventually("GO still fires Intro") { self.store.cueStates[TestSnapshots.intro]?.state == .running }
+    }
+
+    /// The real engine's demo show: Radio's file is missing, so it is listed with that reason and
+    /// can be relinked.
+    func testTheEnginesBrokenCueIsListedWithItsReason() async throws {
+        rig = try await Rig.open()
+        makeWindow()
+        await assertEventually { self.side.warningRows.contains { $0.cue == self.radio } }
+        let row = try XCTUnwrap(side.warningRows.first { $0.cue == radio })
+        XCTAssertEqual(row.title, "2.3  Radio")
+        XCTAssertTrue(row.detail.contains("media/o.wav"), row.detail)
+        XCTAssertTrue(row.canRelink)
     }
 
     func testRowChangesFromTheStoreNeverRevealACue() async throws {
@@ -258,13 +285,13 @@ final class WarningsTests: XCTestCase {
         wc.sidebar.onSelectCue = { reveals.append($0) }
         try chooseRow(of: radio)
         XCTAssertEqual(reveals, [radio], "once per click")
-        wc.cueList.select([CueListHarness.door])
+        wc.cueList.select([TestSnapshots.door])
         // A row inserted above the selected one moves the table's selection; an edit redraws a row.
         try missingMedia(rain)
         try missingMedia(rain, "media/other.wav")
         try receive(#"{"type":"warnings","warnings":[]}"#)
         XCTAssertEqual(reveals, [radio])
-        XCTAssertEqual(wc.cueList.selectedIDs(), [CueListHarness.door])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [TestSnapshots.door])
     }
 
     func testRowWithoutACueCannotBeSelected() async throws {

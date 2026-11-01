@@ -41,15 +41,27 @@ final class SystemEngineProcesses: EngineProcesses {
     let stderrTail: EngineStderrTail
     private let watchStderr: Bool
     private var stderrWatcher: EngineStderrWatcher?
+    /// The engine's arguments; nil: the shipping engine's `--relaunch-app BUNDLE_ID`.
+    private let arguments: [String]?
+    /// Added to the first start only (the test engine's `--open`s).
+    private var firstSpawnArguments: [String]
+    /// The engine reads a pipe on stdin and ends when it closes (`--watch-stdin`): it ends with
+    /// this app. The write end, held open while this app runs.
+    private let watchStdin: Bool
+    private var stdinWriter: Int32 = -1
 
     init(
         executable: URL? = Bundle.main.url(forAuxiliaryExecutable: SystemEngineProcesses.engineName),
         bundleID: String = Bundle.main.bundleIdentifier ?? "dev.openlab.openLab",
-        infoURL: URL = EngineConnectionInfo.defaultURL, stderrURL: URL? = nil, watchStderr: Bool = true
+        infoURL: URL = EngineConnectionInfo.defaultURL, stderrURL: URL? = nil, watchStderr: Bool = true,
+        arguments: [String]? = nil, firstSpawnArguments: [String] = [], watchStdin: Bool = false
     ) {
         self.executable = executable
         self.bundleID = bundleID
         self.infoURL = infoURL
+        self.arguments = arguments
+        self.firstSpawnArguments = firstSpawnArguments
+        self.watchStdin = watchStdin
         stderrTail = EngineStderrTail(
             url: stderrURL ?? infoURL.deletingLastPathComponent().appendingPathComponent("engine-stderr.log"))
         self.watchStderr = watchStderr
@@ -82,6 +94,7 @@ final class SystemEngineProcesses: EngineProcesses {
     /// `engine-stderr.log` (the app logs what lands there; /dev/null if the file cannot be made), in its own
     /// process group (a signal to the app's group does not reach it), no other descriptor
     /// inherited. Not `--watch-stdin`: the engine must outlive the app (it relaunches it).
+    /// The test engine (Debug) has its own arguments instead and stdin on a pipe this app holds.
     func spawnEngine() throws -> Int32 {
         guard let executable, FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw EngineSpawnError.missingExecutable(executable?.path ?? Self.engineName)
@@ -99,7 +112,16 @@ final class SystemEngineProcesses: EngineProcesses {
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+        var stdinPipe: [Int32] = [-1, -1]
+        if watchStdin {
+            guard pipe(&stdinPipe) == 0 else { throw EngineSpawnError.spawnFailed(errno) }
+            // The write end stays in this app only (posix_spawn closes every other descriptor too).
+            _ = fcntl(stdinPipe[1], F_SETFD, FD_CLOEXEC)
+            posix_spawn_file_actions_adddup2(&actions, stdinPipe[0], 0)
+        } else {
+            posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+        }
+        defer { if stdinPipe[0] >= 0 { close(stdinPipe[0]) } }
         posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0)
         // Opened here, not by posix_spawn: a file that cannot be opened (read-only, a directory, gone
         // since the check) must cost the engine its stderr log, never its start.
@@ -115,7 +137,7 @@ final class SystemEngineProcesses: EngineProcesses {
             posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0)
         }
 
-        let args = [executable.path, "--relaunch-app", bundleID]
+        let args = [executable.path] + (arguments ?? ["--relaunch-app", bundleID]) + firstSpawnArguments
         let env = ProcessInfo.processInfo.environment.map { "\($0.key)=\($0.value)" }
         var argv: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) } + [nil]
         var envp: [UnsafeMutablePointer<CChar>?] = env.map { strdup($0) } + [nil]
@@ -125,7 +147,16 @@ final class SystemEngineProcesses: EngineProcesses {
         }
         var pid: pid_t = 0
         let rc = posix_spawn(&pid, executable.path, &actions, &attr, &argv, &envp)
-        guard rc == 0 else { throw EngineSpawnError.spawnFailed(rc) }
+        guard rc == 0 else {
+            if stdinPipe[1] >= 0 { close(stdinPipe[1]) }
+            throw EngineSpawnError.spawnFailed(rc)
+        }
+        firstSpawnArguments = []
+        if watchStdin {
+            // The previous engine's pipe: it is gone (or ending) when another is started.
+            if stdinWriter >= 0 { close(stdinWriter) }
+            stdinWriter = stdinPipe[1]
+        }
         if logged, watchStderr {
             stderrWatcher?.stop()
             let watcher = EngineStderrWatcher(tail: stderrTail)

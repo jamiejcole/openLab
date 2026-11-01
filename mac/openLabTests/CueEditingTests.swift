@@ -4,42 +4,51 @@ import XCTest
 
 @testable import openLab
 
-/// Add, delete, reorder, renumber, undo and redo (M5.10 part 1): the commands sent, where cues
-/// go, what is refused and that Show Mode blocks every path.
+/// Add, delete, reorder, renumber, undo and redo (M5.10 part 1) on the real engine: where cues go
+/// once the engine has made the edit, what the app refuses before sending, what the engine refuses,
+/// and that Show Mode blocks every path.
 @MainActor
 final class CueEditingTests: XCTestCase {
     typealias H = CueListHarness
 
-    private func harness() async throws -> (H, CueEditor, SendLog) {
-        let h = try await H(collapsed: false)
+    /// The demo show open on the real engine, its list expanded, an editor on it.
+    private func harness(_ show: String = "Demo") async throws -> (H, CueEditor, SendLog) {
+        try await Self.harness(show)
+    }
+
+    static func harness(_ show: String = "Demo") async throws -> (H, CueEditor, SendLog) {
+        let h = try await H(collapsed: false, rig: try await Rig.open(show))
         let editor = CueEditor(store: h.store, cueList: h.vc)
-        let log = SendLog(h.rig.engine)
+        let log = SendLog(h.rig)
         editor.notify = { log.notices.append($0) }
         return (h, editor, log)
     }
 
-    /// Commands the fake engine received after a mark.
+    /// What the client sent the engine after a mark (every command, transport, undo, redo and
+    /// request takes a request id), and the notices the editor showed.
     @MainActor final class SendLog {
-        let engine: FakeEngine
+        let rig: Rig
         var notices: [String] = []
-        private var mark = 0
-        init(_ engine: FakeEngine) {
-            self.engine = engine
-            mark = engine.received.count
+        private var mark: UInt64
+        init(_ rig: Rig) {
+            self.rig = rig
+            mark = rig.client.nextRequestID
         }
-        var messages: [ClientMessage] { Array(engine.received.dropFirst(mark)) }
-        var commands: [JSONValue] {
-            messages.compactMap { if case .command(_, let c, _) = $0 { return c.json } else { return nil } }
-        }
-        /// Everything but transport and the Show Mode switch itself.
-        var edits: Int {
-            messages.filter {
-                switch $0 {
-                case .transport, .request(_, .setShowMode): return false
-                default: return true
-                }
-            }.count
-        }
+        var sent: Int { Int(rig.client.nextRequestID - mark) }
+        func reset() { mark = rig.client.nextRequestID }
+    }
+
+    /// Starts `cue` on the engine and waits until the store shows it in `state` (default running).
+    static func start(_ h: H, _ cue: ModelID, until state: WireCueState = .running) async throws {
+        guard case .success = await h.store.transport(.start(cue: cue)) else { return XCTFail("start") }
+        try await h.rig.advance(0.05)
+        await assertEventually("\(cue) is \(state)") { h.store.cueStates[cue]?.state == state }
+    }
+
+    /// Makes the store hold a cue the engine never had (as if its copy were behind the engine's): an
+    /// edit that names it is one the engine refuses. A snapshot puts the store right again.
+    static func phantom(_ h: H, _ id: ModelID = "00000000-0000-0000-0000-0000000000ee", index: Int) throws {
+        try h.change(upserts: [try H.upsertJSON(h.cue(id.raw, "Ghost"), index: index)])
     }
 
     /// What goes over the wire: encoded and parsed back, so 1.0 and 1 compare as the engine sees them.
@@ -135,26 +144,20 @@ final class CueEditingTests: XCTestCase {
     func testAddSendsAddCueAfterTheSelectionAndSelectsIt() async throws {
         let (h, editor, log) = try await harness()
         h.vc.select([H.door])
-        let id = await editor.add(.memo)
-        let sent = try XCTUnwrap(log.commands.first)
-        XCTAssertEqual(sent["type"]?.stringValue, "add_cue")
-        XCTAssertEqual(sent["at"]?["parent"]?.stringValue, H.group.raw)
-        XCTAssertEqual(sent["at"]?["index"], .int(1))
-        XCTAssertEqual(sent["at"]?["list"]?.stringValue, H.list)
-        XCTAssertEqual(sent["auto_number"], .bool(true))
-        XCTAssertEqual(sent["cue"]?["kind"]?["type"]?.stringValue, "memo")
-        XCTAssertEqual(sent["cue"]?["id"]?.stringValue, id?.raw)
-        let new = try XCTUnwrap(id)
+        let added = await editor.add(.memo)
+        let new = try XCTUnwrap(added)
         await assertEventually { h.vc.selectedIDs() == [new] }
         XCTAssertEqual(h.vc.node(H.group)?.children.map(\.id), [H.door, new, H.rain, H.radio])
+        XCTAssertEqual(h.vc.node(new)?.cue.kindType, "memo")
+        XCTAssertNotNil(h.vc.node(new)?.cue.number, "the engine numbered it (auto_number)")
+        XCTAssertTrue(log.notices.isEmpty)
     }
 
     func testAddWithAGroupSelectedPutsTheCueInsideItLast() async throws {
-        let (h, editor, log) = try await harness()
+        let (h, editor, _) = try await harness()
         h.vc.select([H.group])
         let added = await editor.add(.memo)
         let new = try XCTUnwrap(added)
-        XCTAssertEqual(log.commands.first?["at"]?["parent"]?.stringValue, H.group.raw)
         await assertEventually { h.vc.selectedIDs() == [new] }
         XCTAssertEqual(h.vc.node(H.group)?.children.map(\.id), [H.door, H.rain, H.radio, new])
     }
@@ -179,22 +182,14 @@ final class CueEditingTests: XCTestCase {
         h.vc.select([H.door, H.intro])
         let added = await editor.add(.group)
         let new = try XCTUnwrap(added)
-        XCTAssertEqual(log.commands.count, 1, "one undo step")
-        let sent = try XCTUnwrap(log.commands.first)
-        XCTAssertEqual(sent["type"]?.stringValue, "transaction")
-        let steps = sent["commands"]?.arrayValue ?? []
-        XCTAssertEqual(steps.map { $0["type"]?.stringValue }, ["add_cue", "reparent_cue", "reparent_cue"])
-        XCTAssertEqual(steps.first?["at"]?["parent"], .null)
-        XCTAssertEqual(steps.first?["at"]?["index"], .int(0))
-        XCTAssertEqual(steps.first?["cue"]?["kind"]?["type"]?.stringValue, "group")
-        XCTAssertEqual(steps.dropFirst().map { $0["id"]?.stringValue }, [H.intro.raw, H.door.raw])
-        XCTAssertEqual(steps.dropFirst().map { $0["to"]?["parent"]?.stringValue }, [new.raw, new.raw])
-        XCTAssertEqual(steps.dropFirst().map { $0["to"]?["index"] }, [.int(0), .int(1)])
         await assertEventually { h.vc.selectedIDs() == [new] }
         XCTAssertEqual(shape(h.vc.roots, new: new), "N[0a 21] 0b 20[22 23]")
+        XCTAssertEqual(h.vc.node(new)?.cue.kindType, "group")
         XCTAssertTrue(log.notices.isEmpty)
+        // One undo step takes the whole of it back.
         await editor.undo()
         await assertEventually { shape(h.vc.roots, new: new) == before }
+        XCTAssertNil(h.vc.node(new))
     }
 
     func testNewGroupTakesInContiguousCuesInsideAGroupWhereTheFirstWas() async throws {
@@ -217,55 +212,52 @@ final class CueEditingTests: XCTestCase {
 
     func testNewGroupAroundARunningCueSendsOnlyTheEditAndIsNotRefused() async throws {
         let (h, editor, log) = try await harness()
-        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"running"}"#)
+        try await Self.start(h, H.intro)
         h.vc.select([H.intro, H.fade])
         let added = await editor.add(.group)
         let new = try XCTUnwrap(added)
         XCTAssertTrue(log.notices.isEmpty)
-        // No stop, start or other transport: the one edit, and the playhead following the selection.
-        let others = log.messages.filter {
-            switch $0 {
-            case .command, .transport(_, .setPlayhead): return false
-            default: return true
-            }
-        }
-        XCTAssertEqual(others, [])
-        XCTAssertEqual(log.commands.map { $0["type"]?.stringValue }, ["transaction"])
         await assertEventually { h.vc.node(new)?.children.map(\.id) == [H.intro, H.fade] }
+        // No stop or restart went with the edit: Intro plays on inside the new group.
+        try await h.rig.advance(0.1)
+        XCTAssertEqual(h.store.cueStates[H.intro]?.state, .running)
     }
 
     func testNewGroupWithOneCueSelectedIsAnEmptyGroupAfterIt() async throws {
-        let (h, editor, log) = try await harness()
+        let (h, editor, _) = try await harness()
         h.vc.select([H.intro])
         let added = await editor.add(.group)
         let new = try XCTUnwrap(added)
-        XCTAssertEqual(log.commands.first?["type"]?.stringValue, "add_cue")
         await assertEventually { h.vc.selectedIDs() == [new] }
         XCTAssertEqual(shape(h.vc.roots, new: new), "0a N[] 0b 20[21 22 23]")
     }
 
     func testNewGroupRefusedByTheEngineLeavesTheListAndSaysWhy() async throws {
         let (h, editor, log) = try await harness()
-        h.rig.engine.refuseCommands = true
-        h.vc.select([H.intro, H.fade])
+        // The store holds a cue the engine does not have; grouping it is refused, whole.
+        let ghost: ModelID = "00000000-0000-0000-0000-0000000000ee"
+        try Self.phantom(h, ghost, index: 1)
+        h.vc.select([H.intro, ghost])
         let new = await editor.add(.group)
         XCTAssertNil(new)
         XCTAssertEqual(log.notices.count, 1)
-        XCTAssertTrue(log.notices[0].contains("refused by the fake"), log.notices[0])
-        XCTAssertEqual(shape(h.vc.roots, new: nil), "0a 0b 20[21 22 23]")
+        XCTAssertTrue(log.notices[0].contains("does not exist"), log.notices[0])
+        // The engine's list is as it was: nothing of the group was made.
+        h.rig.client.requestSnapshot()
+        await assertEventually { shape(h.vc.roots, new: nil) == "0a 0b 20[21 22 23]" }
     }
 
+    /// The app refuses this itself (no engine is involved): an Audio cue needs a patch to play to.
     func testAddAudioWithoutAPatchIsRefusedWithAMessage() async throws {
-        var snapshot = FakeEngine.demoSnapshot(base: try Fixtures.json("server", "welcome")["snapshot"])
+        var snapshot = try H.demoSnapshot()
         snapshot["workspace"]?.set("patches", .array([]))
         let h = try await H(snapshot: snapshot)
         let editor = CueEditor(store: h.store, cueList: h.vc)
-        let log = SendLog(h.rig.engine)
-        editor.notify = { log.notices.append($0) }
+        var notices: [String] = []
+        editor.notify = { notices.append($0) }
         let id = await editor.add(.audio)
         XCTAssertNil(id)
-        XCTAssertEqual(log.notices, [loc("edit.error.noPatch")])
-        XCTAssertTrue(log.commands.isEmpty)
+        XCTAssertEqual(notices, [loc("edit.error.noPatch")], "refused before anything is sent")
     }
 
     func testAddNetworkCueUsesTheFirstNetworkPatchAndIsSelected() async throws {
@@ -273,64 +265,44 @@ final class CueEditingTests: XCTestCase {
         let desk = try XCTUnwrap(h.store.model?.networkPatches.first)
         let added = await editor.add(.network)
         let id = try XCTUnwrap(added)
-        let sent = try XCTUnwrap(log.commands.first)
-        XCTAssertEqual(log.commands.count, 1, "an existing destination needs no new patch")
-        XCTAssertEqual(sent["type"]?.stringValue, "add_cue")
-        XCTAssertEqual(sent["cue"]?["kind"]?["type"]?.stringValue, "network")
-        XCTAssertEqual(sent["cue"]?["kind"]?["destination"]?.stringValue, desk.id.raw)
-        XCTAssertEqual(sent["cue"]?["kind"]?["address"]?.stringValue, "")
-        XCTAssertEqual(sent["cue"]?["kind"]?["args"], .array([]))
         await assertEventually { h.vc.selectedIDs() == [id] }
-        XCTAssertEqual(h.vc.node(id)?.cue.kindType, "network")
+        let kind = try XCTUnwrap(h.vc.node(id)?.cue.raw["kind"])
+        XCTAssertEqual(kind["type"]?.stringValue, "network")
+        XCTAssertEqual(kind["destination"]?.stringValue, desk.id.raw)
+        XCTAssertEqual(kind["address"]?.stringValue, "")
+        XCTAssertEqual(kind["args"], .array([]))
+        XCTAssertEqual(h.store.model?.networkPatches.count, 1, "an existing destination needs no new patch")
         XCTAssertTrue(log.notices.isEmpty)
     }
 
     func testAddNetworkCueWithNoNetworkPatchAddsADefaultOneInTheSameStep() async throws {
-        var snapshot = FakeEngine.demoSnapshot(base: try Fixtures.json("server", "welcome")["snapshot"])
-        snapshot["workspace"]?.set("network_patches", .array([]))
-        let h = try await H(snapshot: snapshot)
-        let editor = CueEditor(store: h.store, cueList: h.vc)
-        let log = SendLog(h.rig.engine)
-        editor.notify = { log.notices.append($0) }
+        let (h, editor, log) = try await harness("Second")
+        // The empty show's one destination is removed first.
+        let desk = try XCTUnwrap(h.store.model?.networkPatches.first)
+        let removed = await h.store.send(
+            command: Command(.object(["type": .string("remove_network_patch"), "id": .string(desk.id.raw)])))
+        guard case .success = removed else { return XCTFail("\(removed)") }
+        await assertEventually { h.store.model?.networkPatches.isEmpty == true }
         let added = await editor.add(.network)
         let id = try XCTUnwrap(added)
-        let sent = try XCTUnwrap(log.commands.first)
-        XCTAssertEqual(log.commands.count, 1, "one command, so one undo step")
-        XCTAssertEqual(sent["type"]?.stringValue, "transaction")
-        let inner = try XCTUnwrap(sent["commands"]?.arrayValue)
-        XCTAssertEqual(inner.map { $0["type"]?.stringValue }, ["add_network_patch", "add_cue"])
-        let patch = try XCTUnwrap(inner[0]["patch"])
-        XCTAssertEqual(patch["host"]?.stringValue, "127.0.0.1")
-        XCTAssertEqual(patch["port"], .int(53000))
-        XCTAssertEqual(patch["protocol"]?.stringValue, "udp")
-        XCTAssertEqual(patch["name"]?.stringValue, loc("edit.networkPatch.defaultName"))
-        XCTAssertEqual(inner[1]["cue"]?["kind"]?["destination"], patch["id"])
-        XCTAssertEqual(inner[1]["cue"]?["id"]?.stringValue, id.raw)
         await assertEventually { h.vc.node(id) != nil }
         XCTAssertTrue(log.notices.isEmpty)
-
-        // Byte for byte the engine's golden message, which its tests play: only the ids are the
-        // app's random ones, so they are set to the fixture's.
+        let patch = try XCTUnwrap(h.store.model?.networkPatches.first)
+        XCTAssertEqual(h.vc.node(id)?.cue.raw["kind"]?["destination"]?.stringValue, patch.id.raw)
+        // What the engine stored is the engine's golden message, which its tests play: all but the
+        // app's random ids.
         let golden = try XCTUnwrap(try Fixtures.json("client", "command_add_new_network_cue")["command"])
         let want = try XCTUnwrap(golden["commands"]?.arrayValue)
-        let patchID = try XCTUnwrap(want[0]["patch"]?["id"])
-        var steps = try XCTUnwrap(sent["commands"]?.arrayValue)
-        var patchStep = steps[0]
-        var patchJSON = try XCTUnwrap(patchStep["patch"])
-        patchJSON.set("id", patchID)
-        patchStep.set("patch", patchJSON)
-        var cueStep = steps[1]
-        var cue = try XCTUnwrap(cueStep["cue"])
-        var kind = try XCTUnwrap(cue["kind"])
-        kind.set("destination", patchID)
-        cue.set("kind", kind)
-        cue.set("id", try XCTUnwrap(want[1]["cue"]?["id"]))
-        cueStep.set("cue", cue)
-        cueStep.set("at", try XCTUnwrap(want[1]["at"]))  // where it goes is the selection's, not the message format's
-        steps = [patchStep, cueStep]
-        var sentCommand = sent
-        sentCommand.set("commands", .array(steps))
-        XCTAssertEqual(JSONValue.parse(try sentCommand.text()), golden)
+        var stored = patch.raw
+        stored.set("id", try XCTUnwrap(want[0]["patch"]?["id"]))
+        XCTAssertEqual(stored, want[0]["patch"])
+        XCTAssertEqual(patch.raw["name"]?.stringValue, loc("edit.networkPatch.defaultName"))
+        var kind = try XCTUnwrap(h.vc.node(id)?.cue.raw["kind"])
+        kind.set("destination", try XCTUnwrap(want[0]["patch"]?["id"]))
+        XCTAssertEqual(kind, want[1]["cue"]?["kind"])
+        // One command, so one undo step: undo takes the cue and the patch back.
+        await editor.undo()
+        await assertEventually { h.vc.node(id) == nil && h.store.model?.networkPatches.isEmpty == true }
     }
 
     func testNetworkIsOnTheToolbarAndTheCuesMenuAtCmd8() throws {
@@ -347,53 +319,83 @@ final class CueEditingTests: XCTestCase {
 
     func testDeleteSendsOneTransactionAndSkipsChildrenOfADeletedGroup() async throws {
         let (h, editor, log) = try await harness()
-        try h.runtime(#"{"type":"cue_state","cue":"\#(H.rain)","state":"idle"}"#)  // the demo's paused child
+        let before = shape(h.vc.roots, new: nil)
         h.vc.select([H.group, H.door, H.fade])
         await editor.deleteSelection()
-        let sent = try XCTUnwrap(log.commands.first)
-        XCTAssertEqual(sent["type"]?.stringValue, "transaction")
-        let ids = sent["commands"]?.arrayValue?.map { $0["id"]?.stringValue }
-        XCTAssertEqual(ids, [H.fade.raw, H.group.raw])
-        XCTAssertEqual(log.commands.count, 1)
+        await assertEventually { shape(h.vc.roots, new: nil) == "0a" }
+        XCTAssertTrue(log.notices.isEmpty, "the child of the deleted group is not deleted again (refused)")
+        // One transaction: one undo brings all of it back.
+        await editor.undo()
+        await assertEventually { shape(h.vc.roots, new: nil) == before }
     }
 
     func testDeleteOfASingleCueIsPlainRemoveAndSelectionMovesOn() async throws {
-        let (h, editor, log) = try await harness()
+        let (h, editor, _) = try await harness()
         h.vc.select([H.fade])
         await editor.deleteSelection()
-        XCTAssertEqual(log.commands.first, Command.removeCue(H.fade).json)
-        await assertEventually { h.vc.selectedIDs() == [H.group] }
+        await assertEventually { h.vc.node(H.fade) == nil && h.vc.selectedIDs() == [H.group] }
     }
 
     func testDeleteRefusedForRunningCuePausedCueAndGroupWithARunningChild() async throws {
-        for state in ["running", "paused", "fading", "pre_waiting"] {
+        for state in [WireCueState.running, .paused, .stopping, .fading, .preWaiting] {
             let (h, editor, log) = try await harness()
-            try h.runtime(#"{"type":"cue_state","cue":"\#(H.rain)","state":"\#(state)"}"#)
+            switch state {
+            case .paused:
+                try await Self.start(h, H.rain)
+                _ = await h.store.transport(.pause(cue: H.rain))
+                try await h.rig.advance(0.05)
+            case .fading:
+                // The demo's Fade cue, aimed at Rain, moving its levels.
+                _ = await h.store.send(command: .setProperty(H.fade, .target(H.rain)))
+                try await Self.start(h, H.rain)
+                _ = await h.store.transport(.start(cue: H.fade))
+                try await h.rig.advance(0.05)
+            case .stopping:
+                try await Self.start(h, H.rain)
+                _ = await h.store.transport(.stop(cue: H.rain, fadeOut: FadeSpec(duration: 5, curve: "linear")))
+                try await h.rig.advance(0.05)
+            case .preWaiting:
+                _ = await h.store.send(command: .setProperty(H.rain, .preWait(5)))
+                _ = await h.store.transport(.start(cue: H.rain))
+                try await h.rig.advance(0.05)
+            default:
+                try await Self.start(h, H.rain)
+            }
+            await assertEventually("Rain is \(state)") { h.store.cueStates[H.rain]?.state == state }
+            log.reset()
             h.vc.select([H.rain])
             await editor.deleteSelection()
-            XCTAssertTrue(log.commands.isEmpty, state)
-            XCTAssertEqual(log.notices, [loc("edit.error.deleteBusy")], state)
+            XCTAssertEqual(log.sent, 0, "\(state): nothing is sent")
+            XCTAssertEqual(log.notices, [loc("edit.error.deleteBusy")], "\(state)")
             h.vc.select([H.group])
             await editor.deleteSelection()
-            XCTAssertTrue(log.commands.isEmpty, "group with a \(state) child")
+            XCTAssertEqual(log.sent, 0, "group with a \(state) child")
             XCTAssertEqual(log.notices.count, 2)
+            XCTAssertNotNil(h.vc.node(H.rain))
         }
     }
 
     func testDeleteRefusedWhilePreviewing() async throws {
         let (h, editor, log) = try await harness()
-        try h.runtime(#"{"type":"preview","cue":"\#(H.intro)","active":true}"#)
+        _ = await h.store.transport(.preview(cue: H.intro))
+        try await h.rig.advance(0.05)
+        await assertEventually { h.store.previewing.contains(H.intro) }
+        log.reset()
         h.vc.select([H.intro])
         await editor.deleteSelection()
-        XCTAssertTrue(log.commands.isEmpty)
+        XCTAssertEqual(log.sent, 0)
         XCTAssertEqual(log.notices.count, 1)
+        XCTAssertNotNil(h.vc.node(H.intro))
     }
 
     func testDeleteOfIdleAndLoadedCuesIsAllowed() async throws {
         let (h, editor, log) = try await harness()
-        h.vc.select([H.door])  // loaded in the demo show
+        _ = await h.store.transport(.load(cue: H.door, at: 0))
+        try await h.rig.advance(0.05)
+        await assertEventually { h.store.cueStates[H.door]?.state == .loaded }
+        h.vc.select([H.door])
         await editor.deleteSelection()
-        XCTAssertEqual(log.commands.count, 1)
+        await assertEventually { h.vc.node(H.door) == nil }
         XCTAssertTrue(log.notices.isEmpty)
     }
 
@@ -435,29 +437,27 @@ final class CueEditingTests: XCTestCase {
 
     func testMoveSendsOneUndoStep() async throws {
         let (h, editor, log) = try await harness()
+        let before = shape(h.vc.roots, new: nil)
         await editor.move([H.door, H.rain], to: nil, at: 0)
-        let sent = try XCTUnwrap(log.commands.first)
-        XCTAssertEqual(sent["type"]?.stringValue, "transaction")
-        XCTAssertEqual(sent["commands"]?.arrayValue?.count, 2)
+        await assertEventually { shape(h.vc.roots, new: nil) == "21 22 0a 0b 20[23]" }
+        await editor.undo()
+        await assertEventually { shape(h.vc.roots, new: nil) == before }
         // Dropping the group into itself is refused before anything is sent.
-        let before = log.commands.count
+        log.reset()
         await editor.move([H.group], to: H.radio, at: 0)
         await editor.move([H.group], to: H.group, at: 0)
-        XCTAssertEqual(log.commands.count, before)
-        _ = h
+        XCTAssertEqual(log.sent, 0)
+        XCTAssertEqual(shape(h.vc.roots, new: nil), before)
     }
 
     func testMoveSelectionByOneKeepsBlockedCuesInPlace() async throws {
         let (h, editor, log) = try await harness()
         h.vc.select([H.door, H.rain])
         await editor.moveSelection(by: -1)  // Door is first already: only Rain stays behind it
-        XCTAssertTrue(log.commands.isEmpty, "a selection already at the top does not move")
+        XCTAssertEqual(log.sent, 0, "a selection already at the top does not move")
         h.vc.select([H.rain, H.radio])
         await editor.moveSelection(by: -1)
-        let sent = try XCTUnwrap(log.commands.first)
-        XCTAssertEqual(
-            sent["commands"]?.arrayValue?.map { $0["id"]?.stringValue }, [H.rain.raw, H.radio.raw])
-        XCTAssertEqual(sent["commands"]?.arrayValue?.map { $0["index"] }, [.int(0), .int(1)])
+        await assertEventually { h.vc.node(H.group)?.children.map(\.id) == [H.rain, H.radio, H.door] }
     }
 
     // MARK: Renumber, undo, redo
@@ -466,25 +466,21 @@ final class CueEditingTests: XCTestCase {
         let (h, editor, log) = try await harness()
         h.vc.select([H.intro, H.fade])
         await editor.renumberSelection(start: 10, increment: 5)
-        XCTAssertEqual(
-            log.commands.first,
-            try wire(.renumber([H.intro, H.fade], start: 10, increment: 5)))
+        await assertEventually { h.vc.node(H.intro)?.cue.number == "10" && h.vc.node(H.fade)?.cue.number == "15" }
+        log.reset()
         for (s, i) in [(-1.0, 1.0), (1.0, 0.0), (1.0, -1.0), (.nan, 1.0), (1.0, .infinity)] {
             await editor.renumberSelection(start: s, increment: i)
         }
-        XCTAssertEqual(log.commands.count, 1)
+        XCTAssertEqual(log.sent, 0)
         XCTAssertEqual(log.notices.count, 5)
+        XCTAssertEqual(h.vc.node(H.intro)?.cue.number, "10")
     }
 
     func testUndoAndRedoAreEngineMessagesAndFollowDocumentState() async throws {
-        let (h, editor, log) = try await harness()
+        let (h, editor, _) = try await harness()
         XCTAssertEqual(editor.canUndo, h.store.document?.canUndo, "enabled from the engine's document state")
         XCTAssertEqual(editor.canRedo, h.store.document?.canRedo)
-        await editor.undo()
-        await editor.redo()
-        XCTAssertEqual(
-            log.messages.map { if case .undo = $0 { "undo" } else if case .redo = $0 { "redo" } else { "?" } },
-            ["undo", "redo"])
+        XCTAssertFalse(editor.canUndo, "a show just opened has nothing to undo")
         h.vc.select([H.fade])
         await editor.deleteSelection()
         await assertEventually { editor.canUndo && h.vc.node(H.fade) == nil }
@@ -493,31 +489,32 @@ final class CueEditingTests: XCTestCase {
         await assertEventually { editor.canRedo && h.vc.node(H.fade) != nil }
         XCTAssertFalse(editor.canUndo)
         await editor.redo()
-        await assertEventually { h.vc.node(H.fade) == nil }
+        await assertEventually { h.vc.node(H.fade) == nil && editor.canUndo && !editor.canRedo }
     }
 
     func testAnEngineRefusalIsShown() async throws {
         let (h, editor, log) = try await harness()
-        h.rig.engine.refuseCommands = true
-        h.vc.select([H.fade])
+        let ghost: ModelID = "00000000-0000-0000-0000-0000000000ee"
+        try Self.phantom(h, ghost, index: 1)
+        h.vc.select([ghost])
         await editor.deleteSelection()
         XCTAssertEqual(log.notices.count, 1)
-        XCTAssertTrue(log.notices[0].contains("refused by the fake"), log.notices[0])
+        XCTAssertTrue(log.notices[0].contains("does not exist"), log.notices[0])
     }
 
     // MARK: Show Mode
 
     func testShowModeBlocksEveryEditPath() async throws {
-        let rig = try Rig()
-        let connected = await rig.connect()
-        XCTAssertTrue(connected)
+        let rig = try await Rig.open()
         let wc = WorkspaceWindowController(store: rig.store)
         wc.cueList.view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
         let ids = wc.cueList.roots.map(\.id)
         let first = try XCTUnwrap(ids.first)
         wc.cueList.select([first])
-        let log = SendLog(rig.engine)
         wc.setShowMode(true)
+        await assertEventually { rig.store.document?.showMode == true }
+        let log = SendLog(rig)
+        let revision = rig.store.revision
         let e = wc.editor
         XCTAssertTrue(wc.cueList.isEditLocked)
         XCTAssertTrue(wc.cueToolbar.segmentedControls.allSatisfy { !$0.isEnabled })
@@ -538,7 +535,9 @@ final class CueEditingTests: XCTestCase {
             wc.cueList.outlineView(
                 wc.cueList.outlineView, pasteboardWriterForItem: try XCTUnwrap(wc.cueList.node(first))))
         for _ in 0..<50 { await Task.yield() }  // let any stray Task run
-        XCTAssertEqual(log.edits, 0, "nothing reached the engine")
+        XCTAssertEqual(log.sent, 0, "nothing reached the engine")
+        await rig.sync()
+        XCTAssertEqual(rig.store.revision, revision, "and the engine changed nothing")
         wc.setShowMode(false)
         XCTAssertFalse(wc.cueList.isEditLocked)
         XCTAssertNotNil(

@@ -859,7 +859,8 @@ fn plan_edit(ws: &Workspace, rng: &mut Rng) -> Option<Command> {
 /// probe changed) answer exactly what a walk of every audio cue answers, after any edits,
 /// undos and redos (groups removed and added again under their ids included), probe
 /// answers, re-probes of files that changed length, and checks with nothing new; and they
-/// look at what changed, not at the show.
+/// look at what changed, not at the show. The slice problems the cue engine is told
+/// (`take_changes`) add up to the answer.
 #[test]
 fn plan_checks_following_changes_equal_a_full_walk() {
     let dir = tempfile::tempdir().unwrap();
@@ -875,7 +876,9 @@ fn plan_checks_following_changes_equal_a_full_walk() {
         let (mut ws, mut history, mut next) = (base.clone(), History::new(), 20_000u128);
         cat.sync(&ws);
         let mut checks = PlanChecks::default();
-        let mut last: Vec<(CueId, String)> = Vec::new();
+        let mut last: std::collections::BTreeMap<CueId, String> = Default::default();
+        // What the cue engine has been told (`take_changes().slices`), applied in order.
+        let mut told: std::collections::BTreeMap<CueId, String> = Default::default();
         for step in 0..80 {
             let footprint = match rng.below(12) {
                 0 => history
@@ -912,11 +915,33 @@ fn plan_checks_following_changes_equal_a_full_walk() {
             if rng.below(2) == 0 {
                 settle(&mut cat, &rx, &mut got);
             }
-            let got_now = checks.check(&ws, &mut cat, PLAN_RATE);
-            let reference = PlanChecks::default().check_all(&ws, &cat, PLAN_RATE);
-            assert_eq!(got_now, reference, "seed {seed} step {step}");
-            warned += got_now.iter().filter(|w| !last.contains(w)).count();
-            cleared += last.iter().filter(|w| !got_now.contains(w)).count();
+            let got_now = checks.check(&ws, &mut cat, PLAN_RATE).clone();
+            let mut reference = PlanChecks::default();
+            assert_eq!(
+                &got_now,
+                reference.check_all(&ws, &cat, PLAN_RATE),
+                "seed {seed} step {step}"
+            );
+            for (cue, error) in checks.take_changes().slices {
+                match error {
+                    Some(e) => {
+                        told.insert(cue, e);
+                    }
+                    None => assert!(told.remove(&cue).is_some(), "cleared what was not told"),
+                };
+            }
+            assert_eq!(
+                told, got_now,
+                "seed {seed} step {step}: the engine was told"
+            );
+            warned += got_now
+                .iter()
+                .filter(|(c, e)| last.get(c) != Some(e))
+                .count();
+            cleared += last
+                .iter()
+                .filter(|(c, e)| got_now.get(c) != Some(e))
+                .count();
             last = got_now;
         }
         // Only the first check (a newly followed workspace) walked the show.

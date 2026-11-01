@@ -154,6 +154,9 @@ pub enum WireProblem {
     NetworkMessageInvalid {
         reason: String,
     },
+    SlicesUnplayable {
+        reason: String,
+    },
     StartedBroken,
 }
 
@@ -186,6 +189,9 @@ impl From<&CueProblem> for WireProblem {
                 reason: reason.clone(),
             },
             CueProblem::NetworkMessageInvalid { reason } => Self::NetworkMessageInvalid {
+                reason: reason.clone(),
+            },
+            CueProblem::SlicesUnplayable { reason } => Self::SlicesUnplayable {
                 reason: reason.clone(),
             },
             CueProblem::StartedBroken => Self::StartedBroken,

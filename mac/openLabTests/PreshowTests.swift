@@ -7,16 +7,14 @@ import XCTest
 /// SM-06, NFR-07: the pre-show check window, its report rows and the click-through to the cue.
 @MainActor
 final class PreshowTests: XCTestCase {
-    private let intro = CueListHarness.intro
-    private let radio = CueListHarness.radio
+    private let intro = TestSnapshots.intro
+    private let radio = TestSnapshots.radio
 
-    private func demoRig() async throws -> Rig {
-        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
-        let rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: base))
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
-        return rig
-    }
+    /// No engine: the demo show's model, for what the rows make of a report.
+    private func demoRig() async throws -> Rig { try Rig.offline(TestSnapshots.show()) }
+
+    /// The demo show on the real engine, whose check finds Radio's file missing.
+    private func realRig() async throws -> Rig { try await Rig.open() }
 
     private func report(_ json: String) throws -> PreshowReport {
         try JSONDecoder().decode(PreshowReport.self, from: Data(json.utf8))
@@ -49,7 +47,7 @@ final class PreshowTests: XCTestCase {
         let entries = rows.filter { !$0.isHeading }
         let broken = entries.filter { $0.section == .brokenCues }
         // Names come from the app's model: the fade cue has no name, so its kind shows.
-        XCTAssertEqual(broken.map(\.cue), [intro, CueListHarness.fade])
+        XCTAssertEqual(broken.map(\.cue), [intro, TestSnapshots.fade])
         XCTAssertTrue(broken[0].title.contains("Intro"))
         XCTAssertEqual(broken[0].inspectorTab, "basics")
         XCTAssertTrue(broken[0].detail.contains("/Shows/storm.wav"))
@@ -83,7 +81,7 @@ final class PreshowTests: XCTestCase {
         let rig = try await demoRig()
         let gone = "00000000-0000-0000-0000-0000000000ff"
         let r = try report(
-            #"{"ok":false,\#(Self.emptySummary),"broken_cues":[{"cue":"\#(gone)","list":"\#(CueListHarness.list)","number":"9","name":"Thunder","problems":[{"type":"no_media"}]}],"#
+            #"{"ok":false,\#(Self.emptySummary),"broken_cues":[{"cue":"\#(gone)","list":"\#(TestSnapshots.mainList)","number":"9","name":"Thunder","problems":[{"type":"no_media"}]}],"#
                 + #""media":[],"patches":[],"network":[],"system":[]}"#)
         let pc = PreshowWindowController(store: rig.store)
         var inspected: [ModelID] = []
@@ -122,15 +120,17 @@ final class PreshowTests: XCTestCase {
     // MARK: Window
 
     func testCheckClickThroughRevealsTheCueAndOpensTheBasicsTab() async throws {
-        let rig = try await demoRig()
-        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
+        let rig = try await realRig()
         let wc = WorkspaceWindowController(store: rig.store)
         wc.setVisible(.inspector, false)
         let playheads = rig.store.playheads
         XCTAssertTrue(wc.canRunPreshowCheck)
         await wc.showPreshowCheck().value
         let pc = wc.preshowWindow
-        XCTAssertEqual(pc.summaryLabel.stringValue, String(format: loc("preshow.summary.many"), 2))
+        let report = try XCTUnwrap(pc.report, "the engine answered")
+        XCTAssertFalse(report.ok)
+        XCTAssertEqual(pc.summaryLabel.stringValue, PreshowRows.summary(report))
+        XCTAssertTrue(pc.rows.contains { $0.section == .media && $0.title.contains("media/o.wav") }, "the missing file")
         let row = try XCTUnwrap(pc.rows.firstIndex { $0.cue == radio && $0.section == .brokenCues })
         XCTAssertTrue(pc.choose(row: row))
         // Radio sits inside the collapsed group Act One: the group opens and Radio is selected.
@@ -143,8 +143,7 @@ final class PreshowTests: XCTestCase {
     }
 
     func testClickThroughInShowModeSelectsButLeavesTheInspector() async throws {
-        let rig = try await demoRig()
-        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
+        let rig = try await realRig()
         let wc = WorkspaceWindowController(store: rig.store)
         wc.setVisible(.inspector, false)
         wc.setShowMode(true)
@@ -158,15 +157,14 @@ final class PreshowTests: XCTestCase {
     }
 
     func testDisconnectedEngineGreysTheItemAndClearsTheReport() async throws {
-        let rig = try await demoRig()
-        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
+        let rig = try await realRig()
         let wc = WorkspaceWindowController(store: rig.store)
         let pc = wc.preshowWindow
         await pc.runCheck()
         XCTAssertFalse(pc.rows.isEmpty)
         XCTAssertTrue(pc.checkButton.isEnabled)
 
-        rig.engine.dropConnections()
+        rig.client.stop()  // the connection to the engine is gone
         await assertEventually { rig.store.connectionState != .connected }
         XCTAssertFalse(wc.canRunPreshowCheck)
         XCTAssertFalse(pc.checkButton.isEnabled)
@@ -181,42 +179,47 @@ final class PreshowTests: XCTestCase {
     }
 
     func testAReplyThatDoesNotDecodeShowsAFailureNotAnOldReport() async throws {
-        let rig = try await demoRig()
-        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
+        let rig = try await realRig()
         let pc = PreshowWindowController(store: rig.store)
         await pc.runCheck()
-        XCTAssertFalse(pc.rows.isEmpty)
-        rig.engine.garbleResults = true
+        XCTAssertFalse(pc.rows.isEmpty, "Radio's file is missing")
+        rig.wire.garbleResults = true
         await pc.runCheck()
         XCTAssertEqual(pc.rows, [])
         XCTAssertEqual(pc.summaryLabel.stringValue, loc("preshow.failed"))
     }
 
     func testAnOlderAnswerDoesNotReplaceANewerCheck() async throws {
-        let rig = try await demoRig()
+        let rig = try await realRig()
         let pc = PreshowWindowController(store: rig.store)
-        rig.engine.holdResults = true
-        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
-        let first = Task { await pc.runCheck() }
-        await settle()
+        rig.wire.holdResults = true
+        let first = Task { await pc.runCheck() }  // Radio's file is missing
+        await assertEventually { rig.wire.requestCount { $0 == .preshowCheck } == 1 }
         XCTAssertTrue(pc.checking)
         XCTAssertFalse(pc.checkButton.isEnabled)
-        rig.engine.preshowProblemDocs = []
+        // Another client points Radio at a file that is there; the engine takes in its probe.
+        let other = Rig(engine: rig.testEngine, workspace: rig.doc)
+        guard await other.connect() else { return XCTFail("other client") }
+        defer { other.client.stop() }
+        guard case .success = await other.store.send(command: .setProperty(radio, .media("media/a.wav"))) else {
+            return XCTFail("relink Radio")
+        }
+        try await other.advance()
         let second = Task { await pc.runCheck() }
-        await settle()
-        rig.engine.holdResults = false
-        // The newer (all-clear) answer lands first; the older one with problems must not replace it.
-        rig.engine.releaseResults(reversed: true)
+        await assertEventually("both answers held") { rig.wire.heldCount == 2 }
+        rig.wire.holdResults = false
+        // The newer (no media problem) answer lands first; the older one must not replace it.
+        rig.wire.releaseResults(reversed: true)
         await first.value
         await second.value
         XCTAssertFalse(pc.checking)
         XCTAssertTrue(pc.checkButton.isEnabled)
-        XCTAssertEqual(pc.report?.ok, true)
-        XCTAssertEqual(pc.rows, [])
+        XCTAssertEqual(pc.report?.summary.media, 0)
+        XCTAssertFalse(pc.rows.contains { $0.section == .media }, "\(pc.rows)")
     }
 
     func testThePanelClosesWithItsWorkspaceAndNamesIt() async throws {
-        let rig = try await demoRig()
+        let rig = try await realRig()
         let wc = WorkspaceWindowController(store: rig.store)
         wc.workspaceName = "Lear"
         wc.showWindow(nil)
@@ -229,8 +232,7 @@ final class PreshowTests: XCTestCase {
     }
 
     func testCheckAgainClearsTheSelectionAndRevealsNothing() async throws {
-        let rig = try await demoRig()
-        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
+        let rig = try await realRig()
         let pc = PreshowWindowController(store: rig.store)
         var inspected: [ModelID] = []
         pc.onInspect = { id, _ in inspected.append(id) }
@@ -246,8 +248,7 @@ final class PreshowTests: XCTestCase {
     /// A click on any view that needs its panel to be key (an NSTableView does by default) would
     /// make the report key, and GO would stop reaching the workspace window.
     func testNothingInThePanelMakesItKey() async throws {
-        let rig = try await demoRig()
-        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
+        let rig = try await realRig()
         let pc = PreshowWindowController(store: rig.store)
         await pc.runCheck()
         let panel = try XCTUnwrap(pc.window as? NSPanel)
@@ -269,8 +270,7 @@ final class PreshowTests: XCTestCase {
     }
 
     func testInspectCueButtonAndDoubleClickSelectTheCueAndOpenItsTab() async throws {
-        let rig = try await demoRig()
-        rig.engine.preshowProblemDocs = Set(rig.engine.openDocs)
+        let rig = try await realRig()
         let wc = WorkspaceWindowController(store: rig.store)
         wc.setVisible(.inspector, false)
         await wc.showPreshowCheck().value

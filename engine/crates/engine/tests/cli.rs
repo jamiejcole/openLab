@@ -165,6 +165,43 @@ fn open_of_a_show_with_a_newer_autosave_says_not_opened_and_keeps_running() {
     assert!(status.success(), "{status}: {:?}", engine.seen);
 }
 
+/// Regression: every `--open` opens its show. They were all sent at once, and the engine, which
+/// reads one document at a time, refused every one after the first ("another document request is
+/// still being handled"). Runs on the virtual device, so it needs no audio hardware.
+#[test]
+fn every_open_on_the_command_line_opens_its_show() {
+    let root = tempfile::tempdir().unwrap();
+    let shows = root.path().join("shows");
+    std::fs::create_dir_all(&shows).unwrap();
+    let mut paths = Vec::new();
+    for n in 1..=3u128 {
+        let mut ws = common::example();
+        ws.id = openlab_core::WorkspaceId(uuid::Uuid::from_u128(n));
+        let path = shows.join(format!("show{n}.openlab"));
+        std::fs::write(&path, openlab_core::save_show(&ws).unwrap()).unwrap();
+        paths.push(path);
+    }
+    let mut command = Command::new(ENGINE);
+    command
+        .args(["--virtual-device", "realtime", "--watch-stdin"])
+        .args(["--app-support".as_ref(), root.path().as_os_str()]);
+    for p in &paths {
+        command.args(["--open".as_ref(), p.as_os_str()]);
+    }
+    let mut engine = Engine::spawn(&mut command);
+    for p in &paths {
+        let want = format!("opened {}", p.display());
+        assert!(engine.wait_for(&want), "{want}: {:?}", engine.seen);
+    }
+    assert!(
+        !engine.seen.iter().any(|l| l.contains("could not open")),
+        "{:?}",
+        engine.seen
+    );
+    let status = engine.stop();
+    assert!(status.success(), "{status}: {:?}", engine.seen);
+}
+
 /// M8: one engine per user. While another process holds `engine.lock` (here the test itself,
 /// standing for an engine still starting), a start is refused at once, with exit 1 and the
 /// message, before it opens a log, a run marker, the audio device or `engine.json`. Needs no

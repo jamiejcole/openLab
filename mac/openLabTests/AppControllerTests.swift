@@ -65,7 +65,8 @@ final class ScriptedAlerts: WorkspaceAlerts {
 @MainActor
 final class AppControllerTests: XCTestCase {
     private var app: AppController!
-    private var engine: FakeEngine!
+    private var real: TestEngine!
+    private var engine: WireTap!
     private var alerts: ScriptedAlerts!
     private var recents: [URL] = []
     private var keyDoc: ModelID?
@@ -74,25 +75,40 @@ final class AppControllerTests: XCTestCase {
 
     private let sessionScheduler = ManualScheduler()
     private let quitScheduler = ManualScheduler()
-    /// What `engine.json` says of the engine's shutdown.
+    /// What `engine.json` is read as saying of the engine's shutdown.
     private var engineStopping = false
+    /// The engine.json the app reads (another engine run's, after a restart).
+    private var infoURL: URL!
+
+    private let list: ModelID = "00000000-0000-0000-0000-000000000001"
+    private let intro: ModelID = "00000000-0000-0000-0000-00000000000a"
+    private let fade: ModelID = "00000000-0000-0000-0000-00000000000b"
 
     override func setUp() async throws { try await build() }
 
+    /// A real engine of this test's own with the demo show open as doc 1 (the engine numbers
+    /// docs from 0: a first one is opened and closed), Intro playing (GO, which moves the playhead
+    /// to the Fade cue below it) and unsaved changes, and the app connected to it with one window.
     private func build() async throws {
         app?.closeAllWindows()
-        engine = FakeEngine(snapshot: try Fixtures.json("server", "welcome")["snapshot"])
-        let engine = engine!
-        // Read afresh each attempt, as engine.json is (a new engine run has a new token).
+        real = try await TestEngine.start()
+        let real = real!
+        infoURL = real.infoURL
+        let scratch = try await real.open("Second")
+        _ = await real.app.send({ .close(id: $0, doc: scratch, discardChanges: true) })
+        let doc = try await real.open("Demo")
+        XCTAssertEqual(doc, "1")
+        engine = WireTap()
         let session = EngineSession(
             transport: engine,
             infoProvider: { [unowned self] in
-                var info = engine.info
-                info.stopping = engineStopping
-                return .success(info)
+                EngineConnectionInfo.load(from: infoURL).map {
+                    var info = $0
+                    info.stopping = engineStopping
+                    return info
+                }
             }, scheduler: sessionScheduler)
-        app = AppController(
-            session: session, scheduler: quitScheduler)
+        app = AppController(session: session, scheduler: quitScheduler)
         alerts = ScriptedAlerts()
         app.alerts = alerts
         app.noteRecent = { [unowned self] in recents.append($0) }
@@ -103,11 +119,24 @@ final class AppControllerTests: XCTestCase {
         app.pickOpenURL = { [unowned self] in openURL }
         session.start()
         await assertEventually { app.windows.count == 1 && session.stores.values.allSatisfy { $0.model != nil } }
+        let store = try XCTUnwrap(session.stores["1"])
+        guard case .success = await store.go(list: list) else { return XCTFail("go") }
+        try await real.advance(seconds: 0.05)
+        await assertEventually {
+            store.cueStates[self.intro]?.state == .running && store.playheads[self.list] == self.fade
+        }
+        guard case .success = await store.send(command: .setProperty(fade, .notes("unsaved"))) else {
+            return XCTFail("edit")
+        }
+        await assertEventually { store.document?.dirty == true }
+        engine.forgetSent()
     }
 
     override func tearDown() async throws {
-        app.closeAllWindows()
+        app?.closeAllWindows()
         app = nil
+        engine?.releaseResults()
+        real?.stop()
     }
 
     static func hotkey(_ key: String, _ mods: [String] = []) -> String {
@@ -116,17 +145,61 @@ final class AppControllerTests: XCTestCase {
         return #"{"key":"\#(key)","modifiers":{\#(flags)}}"#
     }
 
-    /// Replaces the workspace's `settings.hotkeys` as the engine would (a `settings` upsert).
+    /// Changes the workspace's key map through the engine (`set_workspace_setting hotkeys`): the
+    /// fields of `hotkeys` over the ones it has.
     private func setHotkeys(_ doc: ModelID, _ hotkeys: String) async throws {
         let store = try XCTUnwrap(app.session.stores[doc])
-        var settings = try XCTUnwrap(store.model?.settings)
-        settings.set("hotkeys", try XCTUnwrap(JSONValue.parse(hotkeys)))
-        let name = store.model?.name ?? ""
-        let upsert = #"{"type":"settings","name":"\#(name)","settings":\#(try settings.text())}"#
-        engine.push(
-            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#, doc: doc
-        )
-        await assertEventually { store.model?.settings == settings }
+        var map = try XCTUnwrap(store.model?.settings["hotkeys"])
+        for (key, value) in try XCTUnwrap(JSONValue.parse(hotkeys)?.objectValue) { map.set(key, value) }
+        let result = await store.send(command: .setKeyMap(map))
+        guard case .success = result else { return XCTFail("set_key_map: \(result)") }
+        await assertEventually { store.model?.settings["hotkeys"] == map }
+    }
+
+    /// Opens a copy of the demo show whose file holds `hotkeys` (a hand edit can hold a map the
+    /// engine's commands refuse, a repeated key say); its doc, its window up.
+    private func openShow(withHotkeys hotkeys: String) async throws -> ModelID {
+        let source = try XCTUnwrap(
+            Bundle(for: AppControllerTests.self).url(forResource: "TestShows", withExtension: nil))
+        let dir = real.folder.appendingPathComponent("edited-\(UUID().uuidString)")
+        try FileManager.default.copyItem(at: source.appendingPathComponent("Demo"), to: dir)
+        let url = dir.appendingPathComponent("Demo.openlab")
+        var show = try XCTUnwrap(JSONValue.parse(try String(contentsOf: url, encoding: .utf8)))
+        var settings = try XCTUnwrap(show["workspace"]?["settings"])
+        var map = try XCTUnwrap(settings["hotkeys"])
+        for (key, value) in try XCTUnwrap(JSONValue.parse(hotkeys)?.objectValue) { map.set(key, value) }
+        settings.set("hotkeys", map)
+        show["workspace"]?.set("settings", settings)
+        show["workspace"]?.set("id", .string(UUID().uuidString.lowercased()))
+        try show.text().write(to: url, atomically: true, encoding: .utf8)
+        let before = Set(app.windows.keys)
+        await app.openWorkspace(url: url)
+        await assertEventually { app.windows.count == before.count + 1 }
+        let doc = try XCTUnwrap(Set(app.windows.keys).subtracting(before).first)
+        await assertEventually { app.session.stores[doc]?.model != nil }
+        return doc
+    }
+
+    /// A show file of the empty test show at a path of its own, named `name` (a new workspace id).
+    private func showFile(_ name: String) throws -> URL {
+        let source = try XCTUnwrap(
+            Bundle(for: AppControllerTests.self).url(forResource: "TestShows", withExtension: nil)?
+                .appendingPathComponent("Second/Second.openlab"))
+        var show = try XCTUnwrap(JSONValue.parse(try String(contentsOf: source, encoding: .utf8)))
+        show["workspace"]?.set("id", .string(UUID().uuidString.lowercased()))
+        show["workspace"]?.set("name", .string(name))
+        let dir = real.folder.appendingPathComponent("shows-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("\(name).openlab")
+        try show.text().write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    /// Where a Save As in this test writes `name`.
+    private func savePath(_ name: String) -> URL {
+        let dir = real.folder.appendingPathComponent("saved", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("\(name).openlab")
     }
 
     /// A second, clean workspace.
@@ -139,14 +212,16 @@ final class AppControllerTests: XCTestCase {
         return doc
     }
 
+    /// Unsaved changes: an edit through the engine (the panic fade time, which nothing here shows).
     private func makeDirty(_ doc: ModelID) async {
-        let document = #"{"path":null,"dirty":true,"can_undo":false,"can_redo":false}"#
-        engine.push(#"{"type":"document","document":\#(document)}"#, doc: doc)
-        await assertEventually { app.session.stores[doc]?.document?.dirty == true }
+        guard let store = app.session.stores[doc] else { return XCTFail("no store \(doc)") }
+        let command = Command.setWorkspaceNumber("panic_duration", 0.25)
+        guard case .success = await store.send(command: command) else { return XCTFail("edit") }
+        await assertEventually { store.document?.dirty == true }
     }
 
     private func closeMessages(_ doc: ModelID? = nil) -> [(doc: ModelID?, discard: Bool)] {
-        engine.receivedFrom.compactMap {
+        engine.sentOn.compactMap {
             if case .close(_, let d, let discard) = $0.message { return (d, discard) }
             return nil
         }
@@ -154,17 +229,32 @@ final class AppControllerTests: XCTestCase {
 
     /// The app-scope `panic` messages, by the connection they came on (nil: the app's).
     private func panics() -> [ModelID?] {
-        engine.receivedFrom.compactMap {
+        engine.sentOn.compactMap {
             if case .panic = $0.message { return $0.doc }
             return nil
         }
     }
 
+    /// The docs every GO went to, whatever the list (a new workspace's list has an id of its own).
+    private func gos() -> [ModelID?] {
+        engine.sentOn.compactMap {
+            if case .transport(_, .go) = $0.message { return $0.doc }
+            return nil
+        }
+    }
+
     private func transports(_ action: TransportAction) -> [ModelID?] {
-        engine.receivedFrom.compactMap {
+        engine.sentOn.compactMap {
             if case .transport(_, let a) = $0.message, a == action { return $0.doc }
             return nil
         }
+    }
+
+    /// Lets the engine's device time run on, so what the app asked for takes effect.
+    private func advance(_ seconds: Double = 0.05) async throws { try await real.advance(seconds: seconds) }
+
+    private func state(_ cue: ModelID, _ doc: ModelID = "1") -> WireCueState? {
+        app.session.stores[doc]?.cueStates[cue]?.state
     }
 
     // MARK: Windows follow the session
@@ -177,7 +267,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(app.windows["1"]?.store === app.session.stores["1"])
         XCTAssertTrue(app.windows[second]?.store === app.session.stores[second])
         XCTAssertTrue(app.windows["1"]?.store !== app.windows[second]?.store)
-        XCTAssertEqual(app.windows["1"]?.window?.title, "Test")
+        XCTAssertEqual(app.windows["1"]?.window?.title, "Demo")
 
         _ = await app.session.close(doc: second, discardChanges: true)
         await assertEventually { app.windows.count == 1 }
@@ -186,7 +276,7 @@ final class AppControllerTests: XCTestCase {
     }
 
     func testNewAndOpenAddWindowsWhileTheFirstKeepsRunning() async throws {
-        openURL = URL(fileURLWithPath: "/Shows/Macbeth.openlab")
+        openURL = try showFile("Macbeth")
         await app.newWorkspace()
         await app.openWorkspace()
         await assertEventually { app.windows.count == 3 && app.session.stores.values.allSatisfy { $0.model != nil } }
@@ -197,7 +287,7 @@ final class AppControllerTests: XCTestCase {
     }
 
     func testRecentIsNotNotedWhenOpenFailsAndAlreadyOpenFrontsTheWindow() async throws {
-        let url = URL(fileURLWithPath: "/Shows/A.openlab")
+        let url = try showFile("A")
         await app.openWorkspace(url: url)
         await assertEventually { app.windows.count == 2 }
         recents = []
@@ -225,24 +315,24 @@ final class AppControllerTests: XCTestCase {
         keyDoc = second
         await app.perform(.go)
         await app.perform(.pauseAll)
-        XCTAssertEqual(transports(.go(list: "00000000-0000-0000-0000-000000000001")), [second])
+        XCTAssertEqual(gos(), [second])
         XCTAssertEqual(transports(.pauseAll), [second])
 
         keyDoc = "1"
         await app.perform(.go)
-        XCTAssertEqual(transports(.go(list: "00000000-0000-0000-0000-000000000001")), [second, "1"])
+        XCTAssertEqual(gos(), [second, "1"])
 
         keyDoc = nil  // no workspace window is key: nothing is sent
         await app.perform(.go)
-        XCTAssertEqual(transports(.go(list: "00000000-0000-0000-0000-000000000001")).count, 2)
+        XCTAssertEqual(gos().count, 2)
     }
 
     func testWindowButtonsAddressTheirOwnStoreNotTheKeyWindow() async throws {
         let second = try await addWorkspace()
         keyDoc = "1"
         app.windows[second]?.masthead.goButton.performClick(nil)
-        await assertEventually { !transports(.go(list: "00000000-0000-0000-0000-000000000001")).isEmpty }
-        XCTAssertEqual(transports(.go(list: "00000000-0000-0000-0000-000000000001")), [second])
+        await assertEventually { !gos().isEmpty }
+        XCTAssertEqual(gos(), [second])
         let pause = try XCTUnwrap(app.windows[second]?.sidebar.transportButtons[AX.transportPause])
         pause.performClick(nil)
         await assertEventually { !transports(.pauseAll).isEmpty }
@@ -257,7 +347,7 @@ final class AppControllerTests: XCTestCase {
         let wc = try XCTUnwrap(app.windows["1"])
         XCTAssertEqual(app.frontKeys.chord(for: .panicSelected), KeyChord("s"))
         let roots = wc.cueList.roots.map(\.id)
-        XCTAssertEqual(roots.count, 2)
+        XCTAssertEqual(roots.count, 3)
         wc.setShowMode(true)
         await assertEventually { wc.isShowMode }
         XCTAssertTrue(app.canPerform(.panicSelected))
@@ -283,36 +373,43 @@ final class AppControllerTests: XCTestCase {
         let wc = try XCTUnwrap(app.windows["1"])
         let store = try XCTUnwrap(app.session.stores["1"])
         let list = try XCTUnwrap(wc.cueList.listID)
-        func audio(_ id: String) -> JSONValue {
-            FakeEngine.cueJSON(id: id, number: "", name: id, kind: FakeEngine.audioKind("media/x.wav"))
+        // Cues as a show file holds them (every field), so the engine takes them as they are.
+        func cue(_ id: String, _ kind: JSONValue) -> JSONValue {
+            var c = TestSnapshots.cueJSON(id: id, number: nil, name: id, kind: kind)
+            c.set("triggers", .object(["hotkey": .null, "osc": .null]))
+            c.set("second_trigger", .string("nothing"))
+            c.set("second_trigger_on_release", .bool(false))
+            return c
         }
-        func group(_ id: String, _ kids: [JSONValue]) -> JSONValue {
-            FakeEngine.cueJSON(id: id, number: "", name: id, kind: FakeEngine.groupKind(kids))
-        }
-        let outer = group("g-outer", [audio("child"), group("g-inner", [audio("grandchild")])])
-        let cue = try outer.text()
-        engine.push(
-            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[{"type":"cue","list":"\#(list)","parent":null,"index":0,"cue":\#(cue)}],"deletes":[]}"#,
-            doc: "1")
-        await assertEventually { wc.cueList.node("grandchild") != nil }
-        wc.cueList.reveal("grandchild")  // expands the groups so every row can be selected
-        let sibling = try XCTUnwrap(wc.cueList.roots.map(\.id).first { $0 != "g-outer" })
+        func audio(_ id: String) -> JSONValue { cue(id, TestSnapshots.audioKind("media/a.wav")) }
+        func group(_ id: String, _ kids: [JSONValue]) -> JSONValue { cue(id, TestSnapshots.groupKind(kids)) }
+        let (gOuter, gInner, child, grandchild) = (
+            "00000000-0000-0000-0000-0000000000f1", "00000000-0000-0000-0000-0000000000f2",
+            "00000000-0000-0000-0000-0000000000f3", "00000000-0000-0000-0000-0000000000f4"
+        )
+        let outer = group(gOuter, [audio(child), group(gInner, [audio(grandchild)])])
+        let added = await store.send(command: .addCue(outer, list: list, parent: nil, index: 0))
+        guard case .success = added else { return XCTFail("add_cue: \(added)") }
+        await assertEventually { wc.cueList.node(ModelID(grandchild)) != nil }
+        wc.cueList.reveal(ModelID(grandchild))  // expands the groups so every row can be selected
+        let sibling = try XCTUnwrap(wc.cueList.roots.map(\.id).first { $0 != ModelID(gOuter) })
 
         // Group + child: only the group.
-        wc.cueList.select(["g-outer", "child"])
+        wc.cueList.select([ModelID(gOuter), ModelID(child)])
         await app.perform(.panicSelected)
-        XCTAssertEqual(transports(.panicCue(cue: "g-outer")), ["1"])
-        XCTAssertTrue(transports(.panicCue(cue: "child")).isEmpty)
+        XCTAssertEqual(transports(.panicCue(cue: ModelID(gOuter))), ["1"])
+        XCTAssertTrue(transports(.panicCue(cue: ModelID(child))).isEmpty)
         // Group + grandchild, and a top-level sibling: one panic each for group and sibling.
-        wc.cueList.select(["g-outer", "grandchild", sibling])
+        wc.cueList.select([ModelID(gOuter), ModelID(grandchild), sibling])
         await app.perform(.panicSelected)
-        XCTAssertEqual(transports(.panicCue(cue: "g-outer")).count, 1, "the second press went out inside the batch")
-        XCTAssertTrue(transports(.panicCue(cue: "grandchild")).isEmpty)
-        XCTAssertEqual(transports(.batch(actions: [.panicCue(cue: "g-outer"), .panicCue(cue: sibling)])), ["1"])
+        XCTAssertEqual(
+            transports(.panicCue(cue: ModelID(gOuter))).count, 1, "the second press went out inside the batch")
+        XCTAssertTrue(transports(.panicCue(cue: ModelID(grandchild))).isEmpty)
+        XCTAssertEqual(transports(.batch(actions: [.panicCue(cue: ModelID(gOuter)), .panicCue(cue: sibling)])), ["1"])
         // A child alone, with no selected ancestor, is still panicked.
-        wc.cueList.select(["child"])
+        wc.cueList.select([ModelID(child)])
         await app.perform(.panicSelected)
-        XCTAssertEqual(transports(.panicCue(cue: "child")), ["1"])
+        XCTAssertEqual(transports(.panicCue(cue: ModelID(child))), ["1"])
     }
 
     /// The sidebar Reset all button and the Transport menu item send `reset_all` to their own
@@ -386,7 +483,7 @@ final class AppControllerTests: XCTestCase {
     func testEveryCommandSendsItsMessageToTheKeyWindowsWorkspace() async throws {
         let second = try await addWorkspace()
         keyDoc = second
-        let list: ModelID = "00000000-0000-0000-0000-000000000001"
+        let list = try XCTUnwrap(app.session.stores[second]?.model?.cueLists.first?.id)
         for (command, action) in [
             (TransportCommand.go, TransportAction.go(list: list)), (.pauseAll, .pauseAll), (.resumeAll, .resumeAll),
         ] {
@@ -523,9 +620,10 @@ final class AppControllerTests: XCTestCase {
     }
 
     func testHotkeyWarningsAreLoggedWhenTheSettingsArriveNotAtTheFirstKeyPress() async throws {
-        let store = try XCTUnwrap(app.session.stores["1"])
+        // The engine refuses a repeated key as a command; a show file can hold one (a hand edit).
         let hk = Self.hotkey("x")
-        try await setHotkeys("1", #"{"go":\#(hk),"pause_all":\#(hk)}"#)
+        let doc = try await openShow(withHotkeys: #"{"go":\#(hk),"pause_all":\#(hk)}"#)
+        let store = try XCTUnwrap(app.session.stores[doc])
         await assertEventually { store.logEntries.contains { $0.level == .warn } }
         XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 1)
     }
@@ -575,11 +673,11 @@ final class AppControllerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(selected.count, 2)
         var beeps = 0
         app.beep = { beeps += 1 }
-        let before = engine.received.count
+        let before = engine.sent.count
         await app.perform(.startSelected)
         await app.perform(.stopSelected)
         await app.perform(.resetSelected)
-        let sent = engine.received[before...].compactMap { m -> TransportAction? in
+        let sent = engine.sent[before...].compactMap { m -> TransportAction? in
             if case .transport(_, let a) = m { return a } else { return nil }
         }
         XCTAssertEqual(
@@ -598,29 +696,35 @@ final class AppControllerTests: XCTestCase {
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])
         let store = try XCTUnwrap(app.session.stores["1"])
-        let ids = wc.cueList.roots.map(\.id)
-        XCTAssertGreaterThanOrEqual(ids.count, 2)
-        let (a, b) = (ids[0], ids[1])
-        let seq = store.runtimeSeq
-        engine.push(
-            #"{"type":"runtime","seq":\#(seq + 1),"changes":[{"type":"cue_state","cue":"\#(a)","state":"running"},{"type":"cue_state","cue":"\#(b)","state":"paused"}]}"#,
-            doc: "1")
+        // Intro plays; Door slam is started and paused.
+        let (a, b) = (intro, TestSnapshots.door)
+        _ = await store.transport(.start(cue: b))
+        try await advance()
+        _ = await store.transport(.pause(cue: b))
+        try await advance()
         await assertEventually { store.cueStates[b]?.state == .paused && store.cueStates[a]?.state == .running }
+        wc.cueList.reveal(b)
         wc.cueList.select([b, a])
         let order = wc.cueList.selectedIDs()
         await app.perform(.pauseResumeSelected)
         let toggles = order.map { $0 == a ? TransportAction.pause(cue: a) : .resume(cue: b) }
         XCTAssertEqual(transports(.batch(actions: toggles)), ["1"])
+        try await advance()
+        await assertEventually("each cue toggled") {
+            store.cueStates[a]?.state == .paused && store.cueStates[b]?.state == .running
+        }
     }
 
     func testPauseResumeSelectedResumesACueThatBrokeWhilePaused() async throws {
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])
         let store = try XCTUnwrap(app.session.stores["1"])
-        let cue = try XCTUnwrap(wc.cueList.roots.first?.id)
-        engine.push(
-            #"{"type":"runtime","seq":\#(store.runtimeSeq + 1),"changes":[{"type":"cue_state","cue":"\#(cue)","state":"broken","reason":"stream_failed"}]}"#,
-            doc: "1")
+        let cue = intro
+        _ = await store.transport(.pause(cue: cue))
+        try await advance()
+        await assertEventually { store.cueStates[cue]?.state == .paused }
+        // The audio device goes while it is paused: the engine breaks it.
+        guard case .success = await real.request(.loseDevice) else { return XCTFail("lose_device") }
         await assertEventually { store.cueStates[cue]?.state == .broken }
         wc.cueList.select([cue])
         await app.perform(.pauseResumeSelected)
@@ -628,25 +732,23 @@ final class AppControllerTests: XCTestCase {
     }
 
     func testPreviewSelectedTogglesAudioCuesOfTheKeyWindowOnly() async throws {
-        let audio: ModelID = "00000000-0000-0000-0000-00000000000a"
-        let fade: ModelID = "00000000-0000-0000-0000-00000000000b"
+        let audio = intro
         let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
         XCTAssertEqual(app.frontKeys.chord(for: .previewSelected), KeyChord("v"))
         wc.cueList.select([audio])
         keyDoc = nil  // no workspace window is key: nothing is sent
         await app.perform(.previewSelected)
         XCTAssertTrue(transports(.preview(cue: audio)).isEmpty)
         keyDoc = "1"
-        let store = try XCTUnwrap(app.session.stores["1"])
-        XCTAssertTrue(store.previewing.contains(audio), "the welcome fixture has it previewing")
-        await app.perform(.previewSelected)
-        XCTAssertEqual(transports(.stopPreview(cue: audio)), ["1"])
-        engine.push(
-            #"{"type":"runtime","seq":\#(store.runtimeSeq + 1),"changes":[{"type":"preview","cue":"\#(audio)","active":false}]}"#,
-            doc: "1")
-        await assertEventually { !store.previewing.contains(audio) }
         await app.perform(.previewSelected)
         XCTAssertEqual(transports(.preview(cue: audio)), ["1"])
+        try await advance()
+        await assertEventually("the engine previews it") { store.previewing.contains(audio) }
+        await app.perform(.previewSelected)
+        XCTAssertEqual(transports(.stopPreview(cue: audio)), ["1"])
+        try await advance()
+        await assertEventually("and stops") { !store.previewing.contains(audio) }
         wc.cueList.select([fade])
         await app.perform(.previewSelected)
         XCTAssertTrue(transports(.preview(cue: fade)).isEmpty, "only audio cues")
@@ -659,7 +761,9 @@ final class AppControllerTests: XCTestCase {
         wc.cueList.select([audio])
         wc.inspector.setSelection([audio])
         await assertEventually { wc.inspector.previewButton.isEnabled }
-        XCTAssertTrue(store.previewing.contains(audio))
+        _ = await store.transport(.preview(cue: audio))
+        try await advance()
+        await assertEventually { store.previewing.contains(audio) }
         engine.dropConnections()
         await assertEventually { store.connectionState != .connected }
         XCTAssertTrue(store.previewing.isEmpty, "nothing is known to be previewing while disconnected")
@@ -736,21 +840,21 @@ final class AppControllerTests: XCTestCase {
         keyDoc = second
         XCTAssertEqual(app.frontKeys.chord(for: .go), KeyChord("g"))
         XCTAssertNil(app.handleKeyDown(try keyEvent("g")))
-        let go = TransportAction.go(list: "00000000-0000-0000-0000-000000000001")
-        await assertEventually { !transports(go).isEmpty }
+        await assertEventually { !gos().isEmpty }
         keyDoc = "1"
         XCTAssertEqual(app.frontKeys.chord(for: .go), KeyChord(" "))
         let g = try keyEvent("g")
         XCTAssertTrue(app.handleKeyDown(g) === g)
         await settle()
-        XCTAssertEqual(transports(go), [second])
+        XCTAssertEqual(gos(), [second])
     }
 
     func testConflictingHotkeysInAShowWarnInTheLogAndDoNotCrash() async throws {
-        let store = try XCTUnwrap(app.session.stores["1"])
-        keyDoc = "1"
         let hk = Self.hotkey("x")
-        try await setHotkeys("1", #"{"go":\#(hk),"pause_all":\#(hk),"resume_all":{"key":"f13","modifiers":{}}}"#)
+        let doc = try await openShow(
+            withHotkeys: #"{"go":\#(hk),"pause_all":\#(hk),"resume_all":\#(Self.hotkey("f13"))}"#)
+        let store = try XCTUnwrap(app.session.stores[doc])
+        keyDoc = doc
         let keys = app.frontKeys
         XCTAssertEqual(keys.chord(for: .go), KeyChord("x"))
         XCTAssertNil(keys.chord(for: .pauseAll), "the later field loses")
@@ -855,25 +959,58 @@ final class AppControllerTests: XCTestCase {
 
     // MARK: Show Mode (SM-01, SM-05)
 
-    /// Stops the fixture's live cues (running, paused) so only Show Mode can raise a prompt.
+    /// Stops every live cue (Intro plays from the start) so only Show Mode can raise a prompt.
     private func quiet(_ doc: ModelID) async throws {
         let store = try XCTUnwrap(app.session.stores[doc])
-        for (cue, run) in store.cueStates where run.state.isActive { try await setState(.idle, of: cue, doc) }
+        _ = await store.transport(.hardStopAll)
+        try await advance()
+        await assertEventually("nothing live") { !store.cueStates.values.contains { $0.state.isActive } }
     }
 
-    private func setState(_ state: WireCueState, of cue: ModelID, _ doc: ModelID) async throws {
+    /// Makes the engine hold `cue` in `state` the way a show would: started then paused; started
+    /// with a long pre-wait; a one-shot cue whose post-wait outlasts its file; a stop with a fade.
+    private func makeLive(_ state: WireCueState, _ cue: ModelID, _ doc: ModelID = "1") async throws {
         let store = try XCTUnwrap(app.session.stores[doc])
-        let change = #"{"type":"cue_state","cue":"\#(cue)","state":"\#(state.rawValue)"}"#
-        engine.push(#"{"type":"runtime","seq":\#(store.runtimeSeq + 1),"changes":[\#(change)]}"#, doc: doc)
-        await assertEventually { store.cueStates[cue]?.state == state }
+        func send(_ c: Command) async {
+            if case .failure(let e) = await store.send(command: c) { XCTFail("\(c): \(e)") }
+        }
+        switch state {
+        case .paused:
+            _ = await store.transport(.start(cue: cue))
+            try await advance()
+            _ = await store.transport(.pause(cue: cue))
+        case .preWaiting:
+            await send(.setProperty(cue, .preWait(30)))
+            _ = await store.transport(.start(cue: cue))
+            try await advance()
+        case .postWaiting:
+            // A post-wait counts only for a top-level cue the list's GO started.
+            await send(.setProperty(cue, .postWait(30)))
+            await send(.setProperty(cue, .continueMode("auto_continue")))
+            _ = await store.transport(.goFrom(list: list, cue: cue))
+            try await advance(6)  // past the end of its action
+        case .stopping:
+            _ = await store.transport(.start(cue: cue))
+            try await advance()
+            _ = await store.transport(.stop(cue: cue, fadeOut: FadeSpec(duration: 30, curve: "linear")))
+        default: return XCTFail("no way to make \(state)")
+        }
+        try await advance()
+        await assertEventually("\(cue) is \(state), not \(String(describing: store.cueStates[cue]))") {
+            store.cueStates[cue]?.state == state
+        }
     }
 
     /// SM-05: a paused, waiting or stopping cue is live; closing or quitting would lose it unasked.
     func testQuitAndCloseAskWhenOnlyAPausedOrWaitingCueIsLive() async throws {
-        let cue: ModelID = "00000000-0000-0000-0000-00000000000a"
-        for state in [WireCueState.paused, .preWaiting, .postWaiting, .stopping] {
+        // The 5 s fade can be past its action with its post-wait still counting; Rain gets the long
+        // pre-wait, so Intro starts at once for the stop with a fade.
+        for (state, cue) in [
+            (WireCueState.paused, intro), (.preWaiting, TestSnapshots.rain), (.postWaiting, fade),
+            (.stopping, intro),
+        ] {
             try await quiet("1")
-            try await setState(state, of: cue, "1")
+            try await makeLive(state, cue)
             alerts.quitPlaying = false
             alerts.closePlaying = false
             let quit = await app.prepareToQuit()
@@ -904,14 +1041,25 @@ final class AppControllerTests: XCTestCase {
 
     /// The `set_show_mode` requests the engine received, in order.
     private func showModeRequests(_ doc: ModelID = "1") -> [Bool] {
-        engine.receivedFrom.compactMap {
+        engine.sentOn.compactMap {
             if $0.doc == doc, case .request(_, .setShowMode(let on)) = $0.message { return on }
             return nil
         }
     }
 
-    private func engineShowMode(_ doc: ModelID = "1") -> Bool {
-        engine.docs[doc]?["document"]?["show_mode"] == .bool(true)
+    /// Another client of the engine (its own connection to `doc`), as a second app or OSC peer is.
+    private func otherClient(_ doc: ModelID = "1") async throws -> Rig {
+        let rig = Rig(engine: real, workspace: doc)
+        guard await rig.connect() else { throw TestEngineError.notConnected }
+        addTeardownBlock { @MainActor in rig.client.stop() }
+        return rig
+    }
+
+    /// Whether the engine has `doc` in Show Mode, as a fresh connection's welcome says.
+    private func engineShowMode(_ doc: ModelID = "1") async -> Bool {
+        guard let rig = try? await otherClient(doc) else { return false }
+        defer { rig.client.stop() }
+        return rig.store.document?.showMode == true
     }
 
     /// SM-07: the engine holds off sleep only for a workspace it knows is in Show Mode.
@@ -929,19 +1077,22 @@ final class AppControllerTests: XCTestCase {
     /// engine kept the workspace in Show Mode).
     func testTheEnginesShowModeIsTheWindowsMode() async throws {
         let wc = try XCTUnwrap(app.windows["1"])
-        let doc = #"{"path":null,"dirty":false,"can_undo":false,"can_redo":false"#
-        engine.push(#"{"type":"document","document":\#(doc),"show_mode":true}}"#, doc: "1")
+        let other = try await otherClient()
+        _ = await other.store.setShowMode(true).value
         await assertEventually { wc.isShowMode }
         XCTAssertTrue(wc.inspector.isLocked)
         // A document update that does not change the engine's mode leaves the window alone.
         wc.setShowMode(false)
-        await assertEventually { wc.store.document?.showMode == false }
-        engine.push(#"{"type":"document","document":\#(doc),"show_mode":false}}"#, doc: "1")
+        await assertEventually { wc.store.document?.showMode == false && other.store.document?.showMode == false }
+        _ = await other.store.send(command: .setProperty(intro, .notes("edited elsewhere")))
+        await assertEventually { wc.store.model?.cue(self.intro)?.raw["notes"]?.stringValue == "edited elsewhere" }
         await settle()
         XCTAssertFalse(wc.isShowMode)
-        engine.push(#"{"type":"document","document":\#(doc)}}"#, doc: "1")
-        await settle()
-        XCTAssertFalse(wc.isShowMode, "absent show_mode is false")
+        // An engine that sends no show_mode (an older one) means Edit Mode.
+        let offline = try Rig.offline()
+        let doc = #"{"path":null,"dirty":false,"can_undo":false,"can_redo":false}"#
+        offline.store.receive(try ServerMessage.decode(#"{"type":"document","document":\#(doc)}"#))
+        XCTAssertEqual(offline.store.document?.showMode, false, "absent show_mode is false")
     }
 
     /// A choice the engine could not be told (connection down) is logged and sent on reconnect.
@@ -951,10 +1102,11 @@ final class AppControllerTests: XCTestCase {
         await wc.store.setShowMode(true).value
         XCTAssertTrue(wc.isShowMode, "the window locks at once")
         XCTAssertTrue(wc.store.logEntries.contains { $0.level == .warn && $0.message.contains("Show Mode") })
-        XCTAssertFalse(engineShowMode())
+        let before = await engineShowMode()
+        XCTAssertFalse(before)
         await assertEventually {
             await self.sessionScheduler.fire()
-            return self.engineShowMode()
+            return await self.engineShowMode()
         }
         XCTAssertTrue(wc.isShowMode, "the engine's stale false did not unlock the window")
     }
@@ -965,11 +1117,11 @@ final class AppControllerTests: XCTestCase {
         switcher.selectedSegment = 1
         _ = switcher.target?.perform(switcher.action, with: switcher)
         await assertEventually { wc.isShowMode }
-        XCTAssertEqual(wc.window?.title, String(format: loc("window.main.title.showMode"), "Test"))
+        XCTAssertEqual(wc.window?.title, String(format: loc("window.main.title.showMode"), "Demo"))
         switcher.selectedSegment = 0
         _ = switcher.target?.perform(switcher.action, with: switcher)
         await assertEventually { !wc.isShowMode }
-        XCTAssertEqual(wc.window?.title, "Test")
+        XCTAssertEqual(wc.window?.title, "Demo")
     }
 
     func testTransportStillWorksInShowMode() async throws {
@@ -1150,7 +1302,7 @@ final class AppControllerTests: XCTestCase {
         let cancelled = await app.prepareToQuit()
         XCTAssertFalse(cancelled)
         XCTAssertEqual(alerts.log, ["quitShowMode"])
-        XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
         alerts.quitShowMode = true
         alerts.saveChoices = [.dontSave]
         let quit = await app.prepareToQuit()
@@ -1169,14 +1321,14 @@ final class AppControllerTests: XCTestCase {
         let wc = try typePendingName("Thunder")
         await wc.requestShowMode(true)
         XCTAssertTrue(wc.isShowMode)
-        XCTAssertTrue(engine.received.contains { isCommand($0) }, "the edit was sent first")
+        XCTAssertTrue(engine.sent.contains { isCommand($0) }, "the edit was sent first")
         await assertEventually { wc.inspector.nameField.stringValue == "Thunder" }
         XCTAssertFalse(wc.inspector.nameField.isEnabled)
     }
 
     func testEnteringShowModeWithAnInvalidPendingEditStaysInEditMode() async throws {
         let wc = try XCTUnwrap(app.windows["1"])
-        wc.inspector.setSelection([CueListHarness.fade])
+        wc.inspector.setSelection([TestSnapshots.fade])
         wc.inspector.preWaitField.stringValue = "abc"
         wc.inspector.controlTextDidChange(
             Notification(name: NSControl.textDidChangeNotification, object: wc.inspector.preWaitField))
@@ -1184,7 +1336,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(wc.isShowMode)
         XCTAssertFalse(wc.inspector.isLocked)
         XCTAssertEqual(wc.footer.modeSwitch.selectedSegment, 0)
-        XCTAssertFalse(engine.received.contains { isCommand($0) })
+        XCTAssertFalse(engine.sent.contains { isCommand($0) })
         XCTAssertFalse(wc.inspector.messageLabel.stringValue.isEmpty, "the field's message shows")
     }
 
@@ -1192,16 +1344,17 @@ final class AppControllerTests: XCTestCase {
         let wc = try typePendingName("Never sent")
         wc.setShowMode(true)  // bypasses the commit: the safety net in the inspector
         XCTAssertEqual(wc.inspector.nameField.stringValue, "Intro")
-        XCTAssertFalse(engine.received.contains { isCommand($0) })
+        XCTAssertFalse(engine.sent.contains { isCommand($0) })
     }
 
     func testRelinkIsRefusedInShowModeAndTheMenuItemIsOff() async throws {
         let wc = try XCTUnwrap(app.windows["1"])
         let store = wc.store
         var asked = false
+        let folder = try mediaFolder([])
         app.pickFolderURL = {
             asked = true
-            return URL(fileURLWithPath: "/m")
+            return folder
         }
         wc.setShowMode(true)
         await app.relinkMedia(on: store)
@@ -1210,12 +1363,9 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(wc.sidebar.relinkLocked)
         wc.setShowMode(false)
         XCTAssertFalse(wc.sidebar.relinkLocked)
-        engine.relinkData = .object([
-            "type": .string("relink"), "relinked": .int(0), "ambiguous": .array([]), "unmatched": .array([]),
-            "truncated": .bool(false), "skipped": .int(0),
-        ])
         await app.relinkMedia(on: store)
         XCTAssertTrue(asked, "Edit Mode relinks as before")
+        XCTAssertEqual(relinkRequests(), [folder.path])
     }
 
     func testQuitIdleInEditModeAsksNoConfirmation() async throws {
@@ -1243,7 +1393,7 @@ final class AppControllerTests: XCTestCase {
         alerts.saveChoices = [.dontSave]
         let closed = await app.closeWorkspace("1")
         XCTAssertTrue(closed)
-        XCTAssertEqual(alerts.log, ["closePlaying", "unsaved:Test"])
+        XCTAssertEqual(alerts.log, ["closePlaying", "unsaved:Demo"])
         XCTAssertEqual(closeMessages().map(\.discard), [true])
         XCTAssertNil(app.windows["1"])
     }
@@ -1272,9 +1422,9 @@ final class AppControllerTests: XCTestCase {
     private func saveRequests() -> (save: Int, saveAs: [String]) {
         var paths: [String] = []
         var plain = 0
-        for r in engine.receivedFrom {
-            if case .request(_, .save) = r.message { plain += 1 }
-            if case .request(_, .saveAs(let p)) = r.message { paths.append(p) }
+        for r in engine.sent {
+            if case .request(_, .save) = r { plain += 1 }
+            if case .request(_, .saveAs(let p)) = r { paths.append(p) }
         }
         return (plain, paths)
     }
@@ -1307,20 +1457,22 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(cancelled)
         XCTAssertEqual(saveRequests().save, 1)
 
-        saveURL = URL(fileURLWithPath: "/Shows/Copy.openlab")
+        saveURL = savePath("Copy")
         let saved = await app.saveWorkspace(store, asNew: true)
         XCTAssertTrue(saved)
-        XCTAssertEqual(saveRequests().saveAs, ["/Shows/Copy.openlab"])
+        XCTAssertEqual(saveRequests().saveAs, [savePath("Copy").path])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: savePath("Copy").path), "the engine wrote it")
         XCTAssertEqual(recents, [saveURL])
     }
 
     func testSaveOfAnUntitledWorkspaceShowsTheSavePanel() async throws {
         let second = try await addWorkspace()
         let store = try XCTUnwrap(app.session.stores[second])
-        saveURL = URL(fileURLWithPath: "/Shows/Fresh.openlab")
+        saveURL = savePath("Fresh")
         let ok = await app.saveWorkspace(store)
         XCTAssertTrue(ok)
-        XCTAssertEqual(saveRequests().saveAs, ["/Shows/Fresh.openlab"])
+        XCTAssertEqual(saveRequests().saveAs, [savePath("Fresh").path])
+        await assertEventually { store.document?.path == self.savePath("Fresh").path }
     }
 
     func testRecentsHideWorkspacesWhoseFileIsGone() throws {
@@ -1369,12 +1521,12 @@ final class AppControllerTests: XCTestCase {
         XCTAssertNotNil(app.windows[second])
 
         alerts.saveChoices = [.save]
-        saveURL = URL(fileURLWithPath: "/Shows/New.openlab")
+        saveURL = savePath("New")
         let closed = await app.closeWorkspace(second)
         XCTAssertTrue(closed)
         XCTAssertEqual(recents, [saveURL])
         let saveAs = engine.requestCount {
-            if case .saveAs(let p) = $0 { return p == "/Shows/New.openlab" } else { return false }
+            if case .saveAs(let p) = $0 { return p == self.savePath("New").path } else { return false }
         }
         XCTAssertEqual(saveAs, 1)
     }
@@ -1414,7 +1566,7 @@ final class AppControllerTests: XCTestCase {
     }
 
     func testLauncherButtonsDriveNewOpenAndRecent() async throws {
-        let url = URL(fileURLWithPath: "/Shows/Lear.openlab")
+        let url = try showFile("Lear")
         recents = [url]
         app.showLauncher()
         let root = try XCTUnwrap(app.launcher.window?.contentView)
@@ -1423,7 +1575,9 @@ final class AppControllerTests: XCTestCase {
         (find(root, AX.launcherRecentPrefix + "0") as? NSButton)?.performClick(nil)
         await assertEventually { app.windows.count == 3 }
         await assertEventually { recents.count == 2 }
-        XCTAssertEqual(app.session.workspaces.last?.path, url.path)
+        // The engine answers `open` before it lists the new doc, so the list may still be on its way.
+        await assertEventually { app.session.workspaces.contains { $0.path == url.path } }
+        XCTAssertTrue(app.windows.values.contains { $0.window?.title == "Lear" }, "the opened show's window")
         XCTAssertEqual(recents, [url, url])
     }
 
@@ -1434,14 +1588,14 @@ final class AppControllerTests: XCTestCase {
     /// Types a name in the inspector of "1" without committing it.
     private func typePendingName(_ text: String = "Typed") throws -> WorkspaceWindowController {
         let wc = try XCTUnwrap(app.windows["1"])
-        wc.inspector.setSelection([CueListHarness.intro])
+        wc.inspector.setSelection([TestSnapshots.intro])
         wc.inspector.nameField.stringValue = text
         wc.inspector.controlTextDidChange(
             Notification(name: NSControl.textDidChangeNotification, object: wc.inspector.nameField))
         return wc
     }
 
-    private func index(of match: (ClientMessage) -> Bool) -> Int? { engine.received.firstIndex(where: match) }
+    private func index(of match: (ClientMessage) -> Bool) -> Int? { engine.sent.firstIndex(where: match) }
     private func isCommand(_ m: ClientMessage) -> Bool {
         if case .command = m { return true } else { return false }
     }
@@ -1460,10 +1614,16 @@ final class AppControllerTests: XCTestCase {
         _ = try typePendingName()
         await makeDirty("1")
         alerts.saveChoices = [.save]
-        saveURL = URL(fileURLWithPath: "/tmp/x.openlab")
+        saveURL = savePath("x")
         _ = await app.closeWorkspace("1")
         let edit = try XCTUnwrap(index { self.isCommand($0) })
-        let save = try XCTUnwrap(index { if case .request(_, .saveAs) = $0 { return true } else { return false } })
+        let save = try XCTUnwrap(
+            index {
+                switch $0 {
+                case .request(_, .save), .request(_, .saveAs): return true
+                default: return false
+                }
+            })
         XCTAssertLessThan(edit, save)
     }
 
@@ -1480,7 +1640,7 @@ final class AppControllerTests: XCTestCase {
 
     func testInvalidPendingEditStopsCloseAndQuit() async throws {
         let wc = try XCTUnwrap(app.windows["1"])
-        wc.inspector.setSelection([CueListHarness.fade])
+        wc.inspector.setSelection([TestSnapshots.fade])
         func typeBadTime() {
             wc.inspector.preWaitField.stringValue = "abc"
             wc.inspector.controlTextDidChange(
@@ -1493,8 +1653,8 @@ final class AppControllerTests: XCTestCase {
         typeBadTime()
         let quit = await app.prepareToQuit()
         XCTAssertFalse(quit)
-        XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
-        XCTAssertFalse(engine.received.contains { isCommand($0) })
+        XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertFalse(engine.sent.contains { isCommand($0) })
         XCTAssertEqual(wc.inspector.messageLabel.stringValue, loc("inspector.invalid.time"))
     }
 
@@ -1506,8 +1666,8 @@ final class AppControllerTests: XCTestCase {
         alerts.saveChoices = [.dontSave, .dontSave]
         let quit = await app.prepareToQuit()
         XCTAssertTrue(quit)
-        XCTAssertEqual(alerts.log, ["quitPlaying", "unsaved:Test", "unsaved:Untitled 2"])
-        let goodbyes = engine.received.filter { if case .goodbye(true) = $0 { return true } else { return false } }
+        XCTAssertEqual(alerts.log, ["quitPlaying", "unsaved:Demo", "unsaved:Untitled"])
+        let goodbyes = engine.sent.filter { if case .goodbye(true) = $0 { return true } else { return false } }
         XCTAssertEqual(goodbyes.count, 1)
     }
 
@@ -1515,12 +1675,12 @@ final class AppControllerTests: XCTestCase {
     /// recovery file for the workspace and File > Recover Autosaves lists it later (#333).
     func testQuitDontSaveClosesWithDiscardBeforeGoodbyeAndASavedOneIsNotClosed() async throws {
         let b = try await addWorkspace()
-        await makeDirty(b)  // the fixture's "Test" is dirty already
-        saveURL = URL(fileURLWithPath: "/tmp/x.openlab")
+        await makeDirty(b)  // the demo show is dirty already
+        saveURL = savePath("x")
         alerts.saveChoices = [.dontSave, .save]
         let quit = await app.prepareToQuit()
         XCTAssertTrue(quit)
-        let sent = engine.received
+        let sent = engine.sent
         let closes = sent.enumerated().compactMap { i, m -> (Int, ModelID, Bool)? in
             if case .close(_, let doc?, let discard) = m { return (i, doc, discard) }
             return nil
@@ -1541,9 +1701,9 @@ final class AppControllerTests: XCTestCase {
         engine.garbleResults = true
         let quit = await app.prepareToQuit()
         XCTAssertTrue(quit)
-        let closes = engine.received.filter { if case .close = $0 { return true } else { return false } }
+        let closes = engine.sent.filter { if case .close = $0 { return true } else { return false } }
         XCTAssertEqual(closes.count, 1)
-        XCTAssertTrue(engine.received.contains { if case .goodbye(true) = $0 { return true } else { return false } })
+        XCTAssertTrue(engine.sent.contains { if case .goodbye(true) = $0 { return true } else { return false } })
     }
 
     func testQuitCancelOnASecondWorkspaceAbortsAndSendsNoGoodbye() async throws {
@@ -1553,8 +1713,8 @@ final class AppControllerTests: XCTestCase {
         let quit = await app.prepareToQuit()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log.filter { $0.hasPrefix("unsaved") }.count, 2)
-        XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
-        XCTAssertFalse(engine.received.contains { if case .close = $0 { return true } else { return false } })
+        XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertFalse(engine.sent.contains { if case .close = $0 { return true } else { return false } })
         XCTAssertEqual(app.windows.count, 2)
     }
 
@@ -1563,7 +1723,7 @@ final class AppControllerTests: XCTestCase {
         let quit = await app.prepareToQuit()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log, ["quitPlaying"])
-        XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
     }
 
     func testSaveFailureDuringQuitAbortsWithALocalisedAlertAndNoGoodbye() async throws {
@@ -1573,7 +1733,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.errors.count, 1)
         XCTAssertFalse(alerts.errors[0].contains("encoding("))
-        XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
     }
 
     func testHungSaveTimesOutAndAbortsQuit() async throws {
@@ -1594,7 +1754,7 @@ final class AppControllerTests: XCTestCase {
         engine.holdFlush = true
         let task = Task { await app.prepareToQuit() }
         await assertEventually {
-            self.engine.received.contains { if case .goodbye = $0 { return true } else { return false } }
+            self.engine.sent.contains { if case .goodbye = $0 { return true } else { return false } }
         }
         await assertEventually { await quitScheduler.waitingCount > 0 }
         await quitScheduler.fire()
@@ -1639,7 +1799,7 @@ final class AppControllerTests: XCTestCase {
         let quit = await app.prepareToQuit()
         XCTAssertTrue(quit)
         XCTAssertEqual(alerts.log, [])
-        XCTAssertFalse(engine.received.contains { if case .goodbye = $0 { return true } else { return false } })
+        XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
     }
 
     // MARK: Re-entrancy, single-workspace engine, reconnect
@@ -1705,7 +1865,7 @@ final class AppControllerTests: XCTestCase {
     }
 
     func testAlreadyOpenFromTheLauncherFrontsTheExistingWindowWithoutAnError() async throws {
-        let url = URL(fileURLWithPath: "/Shows/A.openlab")
+        let url = try showFile("A")
         await app.openWorkspace(url: url)
         await assertEventually { app.windows.count == 2 }
         recents = [url]
@@ -1720,13 +1880,14 @@ final class AppControllerTests: XCTestCase {
 
     // MARK: Sidebar
 
-    /// Adds a second list "Second" to `doc` as the engine would.
+    /// Adds a second list "Second" to `doc` through the engine.
     private func addSecondList(_ doc: ModelID) async throws -> ModelID {
         let store = try XCTUnwrap(app.session.stores[doc])
         let id: ModelID = "00000000-0000-0000-0000-000000000002"
-        engine.push(
-            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[{"type":"cue_list","id":"\#(id)","name":"Second","index":1}],"deletes":[]}"#,
-            doc: doc)
+        guard case .success = await store.send(command: .addCueList(id: id, name: "Second", index: 1)) else {
+            XCTFail("add_cue_list")
+            return id
+        }
         await assertEventually { store.model?.cueLists.count == 2 }
         return id
     }
@@ -1771,8 +1932,24 @@ final class AppControllerTests: XCTestCase {
 
     // MARK: Relink missing media (WS-03)
 
+    /// A folder holding a copy of a.wav at each of `files` (paths relative to it).
+    private func mediaFolder(_ files: [String]) throws -> URL {
+        let dir = real.folder.appendingPathComponent("relink-\(UUID().uuidString)", isDirectory: true)
+        let wav = try XCTUnwrap(
+            Bundle(for: AppControllerTests.self).url(forResource: "TestShows", withExtension: nil)?
+                .appendingPathComponent("Demo/media/a.wav"))
+        for f in files {
+            let to = dir.appendingPathComponent(f)
+            try FileManager.default.createDirectory(
+                at: to.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: wav, to: to)
+        }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     private func relinkRequests() -> [String] {
-        engine.received.compactMap {
+        engine.sent.compactMap {
             if case .request(_, .relink(let folder)) = $0 { return folder }
             return nil
         }
@@ -1781,50 +1958,54 @@ final class AppControllerTests: XCTestCase {
     func testRelinkSendsTheFolderRequestAndReportsTheResult() async throws {
         let doc = try XCTUnwrap(app.windows.keys.first)
         let store = try XCTUnwrap(app.session.stores[doc])
-        engine.relinkData = .object([
-            "type": .string("relink"), "relinked": .int(3), "ambiguous": .array([]), "unmatched": .array([]),
-            "truncated": .bool(false), "skipped": .int(0),
-        ])
-        app.pickFolderURL = { URL(fileURLWithPath: "/Volumes/Audio/Hamlet") }
+        // Radio's o.wav is missing from the show; the picked folder has it.
+        let folder = try mediaFolder(["Hamlet/o.wav"])
+        app.pickFolderURL = { folder }
         await app.relinkMedia(on: store)
-        XCTAssertEqual(relinkRequests(), ["/Volumes/Audio/Hamlet"])
-        // The frame is the documented one (client fixture request_relink.json), apart from the id.
+        XCTAssertEqual(relinkRequests(), [folder.path])
+        // The frame is the documented one (client fixture request_relink.json), apart from id and folder.
         let sent = try XCTUnwrap(
-            engine.received.first { if case .request(_, .relink) = $0 { return true } else { return false } })
+            engine.sent.first { if case .request(_, .relink) = $0 { return true } else { return false } })
         var frame = try XCTUnwrap(JSONValue.parse(try sent.text()))
         var golden = try Fixtures.json("client", "request_relink")
         frame.set("id", .int(0))
         golden.set("id", .int(0))
+        golden["request"]?.set("folder", .string(folder.path))
         XCTAssertEqual(frame, golden)
         XCTAssertTrue(alerts.errors.isEmpty, "a clean relink does not interrupt the show")
         XCTAssertEqual(
             app.windows[doc]?.footer.noticeLabel.stringValue,
-            AppController.relinkSummary(relinked: 3, ambiguous: 0, unmatched: 0))
-        XCTAssertTrue(alerts.errors.isEmpty)
+            AppController.relinkSummary(relinked: 1, ambiguous: 0, unmatched: 0))
         XCTAssertEqual(store.logEntries.last?.level, .info)
-        XCTAssertEqual(store.logEntries.last?.message, "Relinked 3 cue(s).")
+        XCTAssertEqual(store.logEntries.last?.message, "Relinked 1 cue(s).")
+        // The engine changed the cue: Radio plays the found file and is no longer broken.
+        await assertEventually {
+            store.model?.cue(TestSnapshots.radio)?.raw["kind"]?["media"]?.stringValue?.hasSuffix("Hamlet/o.wav") == true
+        }
+        await assertEventually { store.problems[TestSnapshots.radio]?.isEmpty ?? true }
     }
 
     func testRelinkWithAmbiguousOrUnmatchedCuesIsAWarningNotSuccess() async throws {
         let doc = try XCTUnwrap(app.windows.keys.first)
         let store = try XCTUnwrap(app.session.stores[doc])
-        engine.relinkData = .object([
-            "type": .string("relink"), "relinked": .int(1),
-            "ambiguous": .array([
-                .object([
-                    "cue": .string("00000000-0000-0000-0000-00000000000a"), "candidates": .array([.string("a/x.wav")]),
-                ])
-            ]),
-            "unmatched": .array([.string("00000000-0000-0000-0000-00000000000b")]),
-            "truncated": .bool(false), "skipped": .int(0),
-        ])
-        app.pickFolderURL = { URL(fileURLWithPath: "/m") }
+        // Door slam and Rain lose their files too: the folder has Door slam's, two of Radio's, none of Rain's.
+        for (cue, file) in [(TestSnapshots.door, "media/gone-door.wav"), (TestSnapshots.rain, "media/gone-rain.wav")] {
+            guard case .success = await store.send(command: .setProperty(cue, .media(file))) else {
+                return XCTFail("media")
+            }
+        }
+        try await advance()
+        let folder = try mediaFolder(["gone-door.wav", "x/o.wav", "y/o.wav"])
+        app.pickFolderURL = { folder }
         await app.relinkMedia(on: store)
         let expected = AppController.relinkSummary(relinked: 1, ambiguous: 1, unmatched: 1)
         XCTAssertTrue(alerts.errors.isEmpty, "not modal")
         let messages = store.logEntries.map(\.message)
-        XCTAssertTrue(messages.contains(expected))
-        XCTAssertTrue(messages.contains { $0.contains("a/x.wav") && $0.contains("Candidates") }, "\(messages)")
+        XCTAssertTrue(messages.contains(expected), "\(messages)")
+        XCTAssertTrue(
+            messages.contains { $0.contains("Radio") && $0.contains("x/o.wav") && $0.contains("Candidates") },
+            "\(messages)")
+        XCTAssertTrue(messages.contains { $0.contains("Rain") && $0.hasPrefix("No match") }, "\(messages)")
         XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 3, "summary and one per cue")
         XCTAssertEqual(app.windows[doc]?.footer.noticeLabel.stringValue, expected)
     }
@@ -1850,9 +2031,14 @@ final class AppControllerTests: XCTestCase {
 
     func testRelinkButtonInTheWarningsTabRunsTheRelink() async throws {
         let doc = try XCTUnwrap(app.windows.keys.first)
-        app.pickFolderURL = { URL(fileURLWithPath: "/Volumes/Audio/Hamlet") }
+        let folder = try mediaFolder([])
+        app.pickFolderURL = { folder }
         try XCTUnwrap(app.windows[doc]).onRelink?()
-        await assertEventually { relinkRequests() == ["/Volumes/Audio/Hamlet"] }
+        await assertEventually { relinkRequests() == [folder.path] }
+        await assertEventually {
+            app.windows[doc]?.footer.noticeLabel.stringValue
+                == AppController.relinkSummary(relinked: 0, ambiguous: 0, unmatched: 1)
+        }
     }
 
     // MARK: Crash reports (DX-04)
@@ -1886,52 +2072,95 @@ final class AppControllerTests: XCTestCase {
 
     func testAnUncleanPreviousRunIsAnnouncedInTheFooterAndACleanOneIsNot() async throws {
         let wc = try XCTUnwrap(app.allWindows.first)
-        engine.logTailEntries = [
-            try XCTUnwrap(JSONValue.parse(#"{"time_ms":1,"level":"info","kind":"go","message":"GO 1"}"#))
-        ]
+        // This engine is the first to run in its folder: nothing to announce.
         await app.announcePreviousRun(on: wc.store)
         XCTAssertEqual(wc.footer.noticeLabel.stringValue, "")
-        engine.logTailEntries.append(
-            try XCTUnwrap(
-                JSONValue.parse(
-                    #"{"time_ms":2,"level":"warn","kind":"engine","message":"previous run ended without a clean shutdown (crash, kill or power loss): pid 7"}"#
-                )))
-        await app.announcePreviousRun(on: wc.store)
-        XCTAssertEqual(wc.footer.noticeLabel.stringValue, loc("crash.previousRun"))
+        // In another folder the app's own launch path starts an engine, which is killed, and
+        // starts the next one there: its log says the run before it did not end cleanly.
+        let dir = real.folder.appendingPathComponent("crashed", isDirectory: true)
+        let info = dir.appendingPathComponent("openLab/engine.json")
+        let processes = SystemEngineProcesses(
+            infoURL: info, watchStderr: false,
+            arguments: TestEngineOptions(clock: .stepped, appSupport: dir).engineArguments, watchStdin: true)
+        func started(_ pid: Int32) async -> Bool {
+            await eventually {
+                if case .success(let i) = processes.readInfo() { return i.pid == pid } else { return false }
+            }
+        }
+        let first = try processes.spawnEngine()
+        let up = await started(first)
+        XCTAssertTrue(up)
+        processes.signal(first, .kill)
+        await assertEventually { !processes.isEngine(first) }
+        let second = try processes.spawnEngine()
+        addTeardownBlock { @MainActor in
+            processes.signal(second, .kill)
+            _ = await eventually { !processes.isEngine(second) }
+        }
+        let upAgain = await started(second)
+        XCTAssertTrue(upAgain)
+        try await moveToANewEngineRun(info)
+        let rebound = try XCTUnwrap(app.allWindows.first)
+        await app.announcePreviousRun(on: rebound.store)
+        XCTAssertEqual(rebound.footer.noticeLabel.stringValue, loc("crash.previousRun"))
     }
 
     // MARK: Window order and engine restarts (M5.19a, M5.2)
 
     func testWindowsAreInOpenOrderWithTenOrMoreWorkspaces() async throws {
-        for _ in 0..<10 { _ = try await addWorkspace() }
-        XCTAssertEqual(app.allWindows.count, 11)
+        // The engine holds at most 8 docs and never reuses an id: open and close some first.
+        for _ in 0..<7 {
+            let doc = try await addWorkspace()
+            _ = await app.session.close(doc: doc, discardChanges: true)
+            await assertEventually { app.windows[doc] == nil }
+        }
+        for _ in 0..<3 { _ = try await addWorkspace() }
+        XCTAssertEqual(app.allWindows.count, 4)
         let order = app.allWindows.compactMap { wc in app.session.doc(of: wc.store)?.raw }
-        XCTAssertEqual(order, (1...11).map(String.init), "\"10\" after \"9\", not after \"1\"")
+        XCTAssertEqual(order, ["1", "9", "10", "11"], "\"10\" after \"9\", not after \"1\"")
     }
 
     func testANewEngineRunKeepsEveryWindowAndRebindsItByReopeningItsFile() async throws {
-        await app.openWorkspace(url: URL(fileURLWithPath: "/Shows/A.openlab"))
-        await assertEventually { app.windows.count == 2 }
+        let a = try showFile("A")
+        await app.openWorkspace(url: a)
+        await assertEventually { app.windows.count == 2 && app.session.stores.values.allSatisfy { $0.model != nil } }
+        await settle()
+        let demoPath = try XCTUnwrap(app.session.stores["1"]?.document?.path)
         let before = app.allWindows.map(ObjectIdentifier.init)
-        engine.restart()  // a new engine run is up (its pid alive): doc ids start again
-        var reattached = false
-        let sub = app.session.events.sink { if case .reattached = $0 { reattached = true } }
-        defer { sub.cancel() }
-        for _ in 0..<200 where !reattached {
-            await sessionScheduler.fire()
-            for _ in 0..<20 { await Task.yield() }
-        }
-        XCTAssertTrue(reattached)
-        await assertEventually { app.session.stores.values.allSatisfy { $0.connectionState == .connected } }
-        XCTAssertEqual(app.allWindows.map(ObjectIdentifier.init), before, "the same windows, none made twice")
-        XCTAssertEqual(Set(app.windows.keys), ["1", "2"], "under the new run's doc ids")
-        XCTAssertEqual(app.windows["1"]?.store.model?.name, "Hamlet")
-        XCTAssertEqual(app.windows["2"]?.store.model?.name, "A")
-        let reopened = engine.receivedFrom.compactMap { m -> String? in
+        try await moveToANewEngineRun()
+        XCTAssertEqual(
+            app.allWindows.map(ObjectIdentifier.init), before,
+            "the same windows, none made twice: \(app.windows.mapValues { $0.store.model?.name ?? "-" })")
+        XCTAssertEqual(Set(app.windows.keys), ["0", "1"], "under the new run's doc ids")
+        XCTAssertEqual(app.windows["0"]?.store.model?.name, "Demo")
+        XCTAssertEqual(app.windows["1"]?.store.model?.name, "A")
+        let reopened = engine.sentOn.compactMap { m -> String? in
             if case .request(_, .open(let path, _)) = m.message { return path }
             return nil
         }
-        XCTAssertEqual(reopened, ["/Shows/A.openlab", "/Users/sam/Shows/Hamlet.openlab", "/Shows/A.openlab"])
+        XCTAssertEqual(reopened, [a.path, demoPath, a.path], "\(alerts.log) \(alerts.errors)")
+    }
+
+    /// The engine the app talks to is killed and a new one (a new run, its own engine.json) is the one
+    /// it finds when it reconnects; returns once every window is reattached.
+    private func moveToANewEngineRun(_ info: URL? = nil) async throws {
+        if let info {
+            infoURL = info
+        } else {
+            let next = try await TestEngine.start()
+            addTeardownBlock { @MainActor in next.stop() }
+            infoURL = next.infoURL
+        }
+        real.kill()
+        var reattached = false
+        let sub = app.session.events.sink { if case .reattached = $0 { reattached = true } }
+        defer { sub.cancel() }
+        let done = await eventually {
+            await self.sessionScheduler.fire()
+            return reattached
+        }
+        XCTAssertTrue(done)
+        await assertEventually { app.session.stores.values.allSatisfy { $0.connectionState == .connected } }
     }
 
     // MARK: Find (ED-09) and the Network cue key
@@ -1965,9 +2194,9 @@ final class AppControllerTests: XCTestCase {
         wc.findBar.field.stringValue = "intro"
         wc.setFindQuery("intro")
         delegate.findNextCue(items[1])
-        XCTAssertEqual(wc.cueList.selectedIDs(), [CueListHarness.intro])
+        XCTAssertEqual(wc.cueList.selectedIDs(), [TestSnapshots.intro])
         delegate.findPreviousCue(items[2])
-        XCTAssertEqual(wc.cueList.selectedIDs(), [CueListHarness.intro], "one match: Previous wraps onto it")
+        XCTAssertEqual(wc.cueList.selectedIDs(), [TestSnapshots.intro], "one match: Previous wraps onto it")
 
         // Cmd-G with the bar closed opens it, as Cmd-F does.
         wc.closeFind()
@@ -2033,7 +2262,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(entry.representedObject as? String, "network")
         XCTAssertTrue(delegate.validateMenuItem(entry))
         func added() -> [JSONValue] {
-            engine.receivedFrom.compactMap {
+            engine.sentOn.compactMap {
                 if case .command(_, let c, _) = $0.message, c.json["type"]?.stringValue == "add_cue" { return c.json }
                 return nil
             }
@@ -2149,13 +2378,18 @@ final class AppControllerTests: XCTestCase {
         engine.holdResults = true
         let task = Task { await app.closeWorkspace(second) }
         await assertEventually { closeMessages().count == 1 }
+        // The engine closed it (its window is gone); only the answer is held back.
+        await assertEventually { app.windows[second] == nil }
         await assertEventually { await quitScheduler.waitingCount > 0 }
         await quitScheduler.fire()
         let closed = await task.value
         XCTAssertFalse(closed)
         XCTAssertTrue(alerts.errors.isEmpty, "no modal about the failure: \(alerts.errors)")
-        XCTAssertEqual(show.store.logEntries.last?.level, .error)
-        XCTAssertEqual(show.footer.noticeLabel.stringValue, show.store.logEntries.last?.message)
+        // The engine's own log lines keep arriving: the failure is the error among them.
+        let failure = try XCTUnwrap(
+            show.store.logEntries.last { $0.level == .error },
+            "\(show.store.logEntries.map(\.message)) footer \(show.footer.noticeLabel.stringValue)")
+        XCTAssertEqual(show.footer.noticeLabel.stringValue, failure.message)
         engine.releaseResults()
     }
 
@@ -2183,7 +2417,7 @@ final class AppControllerTests: XCTestCase {
         let wc = try XCTUnwrap(app.windows["1"])
         wc.setShowMode(true)
         engine.garbleResults = true
-        await app.openWorkspace(url: URL(fileURLWithPath: "/Shows/X.openlab"))
+        await app.openWorkspace(url: try showFile("X"))
         XCTAssertTrue(alerts.errors.isEmpty)
         XCTAssertEqual(wc.store.logEntries.last?.level, .error)
         XCTAssertEqual(wc.footer.noticeLabel.stringValue, wc.store.logEntries.last?.message)

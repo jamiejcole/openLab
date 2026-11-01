@@ -52,7 +52,7 @@ final class LevelSetTests: XCTestCase {
     }
 
     private func audio() -> LevelSet {
-        var s = LevelSet(kind: FakeEngine.audioKind("a.wav"))!
+        var s = LevelSet(kind: TestSnapshots.audioKind("a.wav"))!
         s.outputs = (0..<4).map { _ in LevelSet.Output(db: 0) }
         return s
     }
@@ -84,7 +84,7 @@ final class LevelSetTests: XCTestCase {
     }
 
     func testAudioRoutingRoundTrip() throws {
-        let k = FakeEngine.audioKind("a.wav")
+        let k = TestSnapshots.audioKind("a.wav")
         var set = try XCTUnwrap(LevelSet(kind: k))
         set.set(.cross(input: 1, output: 0), db: -6)
         set.set(.cross(input: 0, output: 1), db: -3)
@@ -209,7 +209,7 @@ final class LevelSetTests: XCTestCase {
         s.set(.cross(input: 0, output: 64), db: 0)
         XCTAssertEqual(s.outputs.count, 4)
         XCTAssertTrue(s.crosspoints.isEmpty)
-        var raw = FakeEngine.audioKind("a.wav")
+        var raw = TestSnapshots.audioKind("a.wav")
         raw["levels"]?.set(
             "crosspoints",
             .array([.object(["input": .int(70), "output": .int(0), "db": .double(0), "mute": .bool(false)])]))

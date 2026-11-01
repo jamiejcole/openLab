@@ -2,8 +2,8 @@
 
 import XCTest
 
-/// The cue list against the fake engine's demo show (the first workspace): cue 1 running, a fade
-/// cue at the playhead with a missing target, and a group "Act One" of three cues.
+/// The cue list on the real engine's demo show: Intro, a Fade cue of Intro, and a
+/// group "Act One" of three cues.
 @MainActor
 final class CueListUITests: XCTestCase {
     func testListShowsTheCues() {
@@ -15,13 +15,11 @@ final class CueListUITests: XCTestCase {
 
     func testRunningCueShowsAStateIconWithALabel() {
         let app = launchDemo()
-        XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
-        let states = app.images.matching(identifier: "cue-state")
-        XCTAssertTrue(states.firstMatch.waitForExistence(timeout: 5))
-        let labels = (0..<states.count).map { states.element(boundBy: $0).label }
-        XCTAssertTrue(labels.contains("Running"), "\(labels)")
-        // The fade cue has a missing target: broken, by icon and label, not by colour.
-        XCTAssertTrue(labels.contains("Broken"), "\(labels)")
+        // Radio's file is missing: broken, by icon and label, not by colour.
+        XCTAssertTrue(cueState("Broken", of: "Radio", in: app).waitForExistence(timeout: 10))
+        XCTAssertEqual(cueStates("Running", in: app).count, 0, "nothing plays when the show opens")
+        app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])  // GO: Intro, at the playhead
+        XCTAssertTrue(cueState("Running", of: "Intro", in: app).waitForExistence(timeout: 10), "Intro runs")
     }
 
     func testGroupStartsExpandedAndCollapses() {
@@ -29,10 +27,11 @@ final class CueListUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Act One"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Door slam"].waitForExistence(timeout: 5), "groups open expanded")
         XCTAssertTrue(app.staticTexts["Rain"].exists)
-        let states = app.images.matching(identifier: "cue-state")
-        let labels = (0..<states.count).map { states.element(boundBy: $0).label }
-        XCTAssertTrue(labels.contains("Loaded") && labels.contains("Paused"), "\(labels)")
-        // The paused cue is flagged: the flag is a status-column icon; its blue colour adds no marker.
+        // The L key loads the selected cue: its row shows it.
+        selectCue("Door slam", in: app)
+        app.typeKey("l", modifierFlags: [])
+        XCTAssertTrue(cueState("Loaded", of: "Door slam", in: app).waitForExistence(timeout: 10), "Door slam is loaded")
+        // Rain is flagged: the flag is a status-column icon; its blue colour adds no marker.
         XCTAssertTrue(app.images["Flagged"].exists)
         XCTAssertFalse(app.images["Blue"].exists)
         let twisty = app.disclosureTriangles.firstMatch

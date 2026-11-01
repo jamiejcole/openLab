@@ -121,6 +121,67 @@ fn unsupported_media_is_broken_with_its_reason() {
     assert_eq!(changes(&forget, 1), vec![(CueState::Idle, 10)]);
 }
 
+/// The binary reports an Audio cue whose slices cannot be played with its probed file (a
+/// looping slice too short): the cue is broken before any GO, a GO skips it, and it is fixed
+/// when the binary says so. A media problem takes its place while the file cannot be played.
+#[test]
+fn unplayable_slices_break_the_cue_until_the_binary_clears_them() {
+    let mut rig = Rig::new(vec![sound(1), sound(2)]);
+    let slices = |cue: u128, reason: Option<&str>| Input::SliceProblems {
+        cues: vec![(id(cue), reason.map(str::to_owned))],
+    };
+    let broken = rig.at(100, slices(1, Some("a looping slice is too short")));
+    let problem = vec![CueProblem::SlicesUnplayable {
+        reason: "a looping slice is too short".into(),
+    }];
+    assert_eq!(problem_reports(&broken), vec![(id(1), problem.clone())]);
+    assert_eq!(changes(&broken, 1), vec![(CueState::Broken, 100)]);
+    assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(
+        problem[0].to_string(),
+        "its slices cannot be played: a looping slice is too short"
+    );
+    assert_eq!(rig.engine.broken_cues(), vec![(id(1), problem.as_slice())]);
+    // The same report again changes nothing.
+    assert!(
+        problem_reports(&rig.at(110, slices(1, Some("a looping slice is too short")))).is_empty()
+    );
+    // Started, it does not play.
+    assert!(voice_starts(&rig.start(120, 1)).is_empty());
+
+    // The file goes missing: that is the cue's problem now, not its slices.
+    rig.media(150, "media/a.wav", MediaStatus::Missing);
+    assert_eq!(
+        rig.problems(1),
+        vec![CueProblem::MediaMissing { media: media() }]
+    );
+    rig.media(160, "media/a.wav", MediaStatus::Available);
+    assert_eq!(rig.problems(1), problem);
+
+    let fixed = rig.at(200, slices(1, None));
+    assert_eq!(problem_reports(&fixed), vec![(id(1), vec![])]);
+    assert_eq!(changes(&fixed, 1), vec![(CueState::Idle, 200)]);
+    assert_eq!(voice_starts(&rig.start(300, 1)), vec![(id(1), 300)]);
+    // An edit of anything else keeps the report; an edit of the plan's inputs (here a marker)
+    // drops it at once, before the binary has checked the new plan: a GO in the same burst as
+    // the fix plays the cue.
+    rig.at(400, slices(2, Some("a looping slice is too short")));
+    rig.find_mut(2).name = "renamed".into();
+    rig.tick(410);
+    assert_eq!(rig.problems(2), problem);
+    if let CueKind::Audio { slices, .. } = &mut rig.find_mut(2).kind {
+        slices.push(SliceMarker {
+            time: 0.5,
+            play_count: 1,
+        });
+    }
+    assert_eq!(voice_starts(&rig.start(420, 2)), vec![(id(2), 420)]);
+    assert!(rig.problems(2).is_empty());
+    // Clearing a cue that has none, or one not in the workspace, does nothing.
+    assert!(rig.at(430, slices(2, None)).is_empty());
+    assert!(rig.at(440, slices(99, Some("too short"))).is_empty());
+}
+
 #[test]
 fn damaged_but_playable_media_is_not_broken() {
     // The binary reports a file that probed with damage warnings as available.
