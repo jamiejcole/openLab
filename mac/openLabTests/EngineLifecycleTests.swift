@@ -496,6 +496,12 @@ final class EngineCrashFlowTests: XCTestCase {
         }
     }
 
+    /// The app's engine has written the autosaves of `names` (`waitForAutosaves`).
+    private func autosaved(_ names: String..., file: StaticString = #filePath, line: UInt = #line) async {
+        let ok = await waitForAutosaves(Set(names), on: app.session.appClient)
+        XCTAssertTrue(ok, "autosaves of \(names) written", file: file, line: line)
+    }
+
     /// Kills the running engine (SIGKILL): its engine.json and autosaves stay behind.
     private func crash() async throws {
         guard case .success(let info) = processes.readInfo() else { return XCTFail("no engine.json") }
@@ -565,6 +571,7 @@ final class EngineCrashFlowTests: XCTestCase {
         await assertEventually { bound.state == .connected }
         _ = await bound.send({ .command(id: $0, .renameWorkspace("Lost")) })
         try await runs.advance(31)  // past the 30 s autosave interval
+        await runs.autosaved("Lost")
         bound.stop()
         try await runs.crash()
 
@@ -594,6 +601,7 @@ final class EngineCrashFlowTests: XCTestCase {
         await assertEventually { bound.state == .connected }
         _ = await bound.send({ .command(id: $0, .renameWorkspace("Untitled one")) })
         try await runs.advance(31)
+        await runs.autosaved("Untitled one")
         bound.stop()
         try await runs.crash()
 
@@ -670,7 +678,8 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertTrue(alarmed)
         XCTAssertFalse(store.cueStates.values.contains { $0.state.isActive })
         XCTAssertTrue(store.progress.isEmpty)
-        await assertEventually { !self.app.session.isReattaching && store.connectionState == .connected }
+        let back = await pump { !self.app.session.isReattaching && store.connectionState == .connected }
+        XCTAssertTrue(back, "reattached")
         XCTAssertFalse(store.cueStates.values.contains { $0.state.isActive }, "nothing plays in the new run")
     }
 
@@ -760,6 +769,7 @@ final class EngineCrashFlowTests: XCTestCase {
             try await runs.rename(intro, in: doc, to: "Autosaved")
         }
         try await runs.advance(31)
+        await runs.autosaved("B", "C")
         try await runs.crash()
 
         try await launch()
@@ -784,7 +794,8 @@ final class EngineCrashFlowTests: XCTestCase {
         try await launch()
         try await openShows()
         let path = try XCTUnwrap(app.session.workspaces.first { $0.name == "Hamlet" }?.path)
-        try await advance(31)  // Hamlet's edit is autosaved
+        try await advance(31)
+        await autosaved("Hamlet")  // Hamlet's edit is autosaved
         try await crash()
         try FileManager.default.setAttributes(
             [.modificationDate: Date().addingTimeInterval(3600)], ofItemAtPath: path)
@@ -811,7 +822,8 @@ final class EngineCrashFlowTests: XCTestCase {
         try await launch()
         try await openShows()
         let path = try XCTUnwrap(app.session.workspaces.first { $0.name == "Hamlet" }?.path)
-        try await advance(31)  // Hamlet's edit is autosaved
+        try await advance(31)
+        await autosaved("Hamlet")  // Hamlet's edit is autosaved
         try await crash()
         try FileManager.default.setAttributes(
             [.modificationDate: Date().addingTimeInterval(3600)], ofItemAtPath: path)
@@ -843,16 +855,29 @@ final class EngineCrashFlowTests: XCTestCase {
         let copyDoc = try await runs.open(copy.path)
         try await runs.rename(intro, in: copyDoc, to: "Edited copy")
         try await runs.advance(31)
+        await runs.autosaved("Copy")
         try await runs.crash()
 
         try await launch()
-        _ = await app.session.open(path: bPath)
-        await assertEventually { self.app.session.stores.values.contains { $0.model?.name == "B" } }
-        let b = try XCTUnwrap(app.session.stores.values.first { $0.model?.name == "B" })
+        // The launch's recovery scan holds the engine's document worker: an open sent meanwhile is
+        // refused ("another document request is still being handled"). Its offer means it is done.
+        let scanned = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(scanned, "the launch offered the copy's autosave")
+        let opened = await app.session.open(path: bPath)
+        guard case .success(let bDoc) = opened else { return XCTFail("open B: \(opened)") }
+        await assertEventually("B's window: stores \(app.session.stores.keys.sorted { $0.raw < $1.raw }), bDoc \(bDoc)")
+        {
+            self.app.session.stores[bDoc]?.model?.name == "B"
+        }
+        let b = try XCTUnwrap(
+            app.session.stores[bDoc],
+            "stores \(app.session.stores.map { "\($0.key) \($0.value.model?.name ?? "-")" }) detached \(app.session.detached.count) reattaching \(app.session.isReattaching)"
+        )
         guard case .success = await b.send(command: .setProperty(intro, .name("Edited B"))) else {
             return XCTFail("edit B")
         }
-        try await advance(31)  // B's own autosave is written
+        try await advance(31)
+        await autosaved("B")  // B's own autosave is written
         // Both autosaves are there, under one workspace id and two path hashes.
         guard case .success(let ok) = await app.session.appClient.send({ .request(id: $0, .scanRecovery) }),
             case .recoveryEntries(let entries)? = ok.data

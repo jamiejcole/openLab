@@ -422,6 +422,12 @@ final class EngineRuns {
         return doc
     }
 
+    /// The autosaves of `names` are written (`waitForAutosaves`); fails the test if they never are.
+    func autosaved(_ names: String..., file: StaticString = #filePath, line: UInt = #line) async {
+        let ok = await waitForAutosaves(Set(names), on: app)
+        XCTAssertTrue(ok, "autosaves of \(names) written", file: file, line: line)
+    }
+
     /// Renames a cue of `doc` as another client would.
     func rename(_ cue: ModelID, in doc: ModelID, to name: String) async throws {
         let url = infoURL
@@ -460,6 +466,22 @@ final class EngineRuns {
         let path = dir.appendingPathComponent("\(name).openlab")
         try file.text().write(to: path, atomically: true, encoding: .utf8)
         return path.path
+    }
+}
+
+/// Waits until the engine's autosaves of the workspaces named `names` are on disk (`scan_recovery`
+/// lists them). An autosave falls due on `advance` but is written on the engine's persist thread,
+/// so a SIGKILL right after the advance can beat it.
+@MainActor
+func waitForAutosaves(_ names: Set<String>, on client: EngineClient) async -> Bool {
+    await eventually {
+        if case .success(let ok) = await client.send({ .request(id: $0, .scanRecovery) }),
+            case .recoveryEntries(let entries)? = ok.data, names.isSubset(of: Set(entries.compactMap(\.showName)))
+        {
+            return true
+        }
+        _ = await client.send({ .request(id: $0, .advance(frames: 0)) })
+        return false
     }
 }
 

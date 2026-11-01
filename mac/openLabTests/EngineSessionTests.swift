@@ -181,6 +181,7 @@ final class EngineSessionTests: XCTestCase {
         let doc = try await runs.open(path)
         try await runs.rename(intro, in: doc, to: "Unsaved")
         try await runs.advance(31)  // past the show's 30 s autosave interval
+        await runs.autosaved("A")
         try await runs.crash()
         try await runs.start()
 
@@ -316,6 +317,7 @@ final class EngineSessionTests: XCTestCase {
         let id = try XCTUnwrap(s.stores[doc]?.model?.id)
         _ = await s.stores[doc]?.send(command: .renameWorkspace("Unsaved"))
         try await runs.advance(31)
+        await runs.autosaved("Unsaved")
         try await runs.crash()
         s.stop()
         try await runs.start()
@@ -511,6 +513,7 @@ final class EngineSessionTests: XCTestCase {
         let hamlet = try XCTUnwrap(store(named: "Hamlet", s))
         try await dirty(hamlet, "Autosaved")
         try await runs.advance(31)  // past the 30 s autosave interval
+        await runs.autosaved("Hamlet")
         var events: [SessionEvent] = []
         let sub = s.events.sink { events.append($0) }
         defer { sub.cancel() }
@@ -532,7 +535,8 @@ final class EngineSessionTests: XCTestCase {
         await assertEventually { s.stores.values.allSatisfy { $0.model != nil && $0.connectionState == .connected } }
         _ = clean
         _ = await s.stores[dirty]?.send(command: .renameWorkspace("Kept"))
-        try await runs.advance(31)  // "Kept" is autosaved
+        try await runs.advance(31)
+        await runs.autosaved("Kept")
         _ = await s.stores[lost]?.send(command: .renameWorkspace("Lost"))  // after the autosave: none
         await assertEventually { s.stores[dirty]?.document?.dirty == true && s.stores[lost]?.document?.dirty == true }
         var events: [SessionEvent] = []
@@ -581,6 +585,7 @@ final class EngineSessionTests: XCTestCase {
         let path = try XCTUnwrap(s.workspaces.first?.path)
         try await dirty(hamlet, "Autosaved")
         try await runs.advance(31)
+        await runs.autosaved("Hamlet")
         try await runs.crash()
         try await runs.start()
         _ = try await runs.open(path, recovery: .restore)
