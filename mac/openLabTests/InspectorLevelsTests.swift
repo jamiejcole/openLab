@@ -50,7 +50,7 @@ final class InspectorLevelsTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        window.orderOut(nil)
+        window?.orderOut(nil)
         rig?.client.stop()
     }
 
@@ -521,7 +521,7 @@ final class InspectorBasicsLayoutTests: XCTestCase {
         window.contentView = vc.view
     }
 
-    override func tearDown() async throws { window.orderOut(nil) }
+    override func tearDown() async throws { window?.orderOut(nil) }
 
     private func laidOut(_ cue: ModelID, width: CGFloat) {
         vc.setSelection([cue])
@@ -602,8 +602,8 @@ final class InspectorTabOrderTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        window.orderOut(nil)
-        rig.client.stop()
+        window?.orderOut(nil)
+        rig?.client.stop()
     }
 
     private func tabs() -> [String] { vc.tabView.tabViewItems.compactMap { $0.identifier as? String } }

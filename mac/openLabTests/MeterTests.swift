@@ -49,8 +49,8 @@ final class MeterTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        view.removeFromSuperview()
-        window.orderOut(nil)
+        view?.removeFromSuperview()
+        window?.orderOut(nil)
     }
 
     private func push(_ peaks: [Float], cue: ModelID = intro) {

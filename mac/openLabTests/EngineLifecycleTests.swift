@@ -90,8 +90,8 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        session.stop()
-        engine.stop()
+        session?.stop()
+        engine?.stop()
         subs = []
     }
 

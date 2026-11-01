@@ -233,7 +233,7 @@ final class TestEngine {
             } else if !process.isRunning || ProcessInfo.processInfo.systemUptime > deadline {
                 process.terminate()
                 let said = (try? String(contentsOf: stderr, encoding: .utf8)) ?? ""
-                throw XCTSkip("the test engine did not start: \(said)")
+                throw TestEngineError.refused("the test engine did not start: \(said)")
             } else {
                 try await Task.sleep(nanoseconds: 2_000_000)
             }

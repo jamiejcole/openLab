@@ -163,7 +163,7 @@ final class TriggersTabTests: XCTestCase {
         vc.setSelection([intro])
     }
 
-    override func tearDown() async throws { window.orderOut(nil) }
+    override func tearDown() async throws { window?.orderOut(nil) }
 
     /// The cue's triggers as the engine sent them.
     private func triggers(_ cue: ModelID? = nil) -> JSONValue? { rig.store.model?.cue(cue ?? intro)?.raw["triggers"] }
@@ -393,9 +393,9 @@ final class CueHotkeyFiringTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        app.closeAllWindows()
+        app?.closeAllWindows()
         app = nil
-        engine.stop()
+        engine?.stop()
     }
 
     private func event(

@@ -169,7 +169,7 @@ final class InspectorDurationTests: XCTestCase {
         log = CueEditingTests.SendLog(rig)
     }
 
-    override func tearDown() async throws { window.orderOut(nil) }
+    override func tearDown() async throws { window?.orderOut(nil) }
 
     private func edit(_ field: InspectorField, _ text: String) {
         vc.field(field)?.stringValue = text

@@ -156,7 +156,7 @@ final class InspectorTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        window.orderOut(nil)
+        window?.orderOut(nil)
         rig?.client.stop()
     }
 
