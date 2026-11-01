@@ -39,15 +39,44 @@ final class CueRowView: NSTableRowView {
     }
 }
 
+/// A running cue's progress behind its Duration text: the cell filled and outlined from the left up
+/// to `fraction` of its width (nothing drawn when nil).
+final class ProgressFillView: NSView {
+    var progress: (fraction: Double, colour: NSColor)? {
+        didSet {
+            if progress?.fraction != oldValue?.fraction || progress?.colour != oldValue?.colour { needsDisplay = true }
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let progress, progress.fraction > 0 else { return }
+        let box = bounds.insetBy(dx: 1, dy: 2)
+        let rect = NSRect(
+            x: box.minX, y: box.minY, width: box.width * CGFloat(min(1, progress.fraction)), height: box.height)
+        guard rect.width >= 1 else { return }
+        let path = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
+        progress.colour.withAlphaComponent(0.3).setFill()
+        path.fill()
+        progress.colour.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+}
+
 /// A cell: up to four small images around one label. Status column: playhead (0), state (1),
-/// preview (2), flag (3). Name column: type icon (0) and label.
+/// preview (2), flag (3). Type column: the cue's type icon (0). Duration column: `progress` behind
+/// the label.
 final class CueCell: NSTableCellView {
     let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView()]
     let label = NSTextField(labelWithString: "")
+    let progress = ProgressFillView()
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
+        progress.frame = bounds
+        progress.autoresizingMask = [.width, .height]
+        addSubview(progress)
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         label.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -74,7 +103,7 @@ final class CueCell: NSTableCellView {
             images[1].setAccessibilityIdentifier("cue-state")
             images[2].setAccessibilityIdentifier("cue-preview")
             images[3].setAccessibilityIdentifier("cue-flag")
-        case "name":
+        case "type":
             images[0].setAccessibilityIdentifier("cue-type")
         case "continue":
             images[0].setAccessibilityIdentifier("cue-continue")
@@ -95,8 +124,11 @@ final class CueCell: NSTableCellView {
             return
         }
         view.isHidden = false
-        view.image = icon.image(label, compact: true)
-        view.contentTintColor = tint
+        let image = icon.image(label, compact: true)
+        // A tinted icon is drawn in its colour as a plain image: a template would turn white on a
+        // highlighted row, and a state must keep its colour there.
+        view.image = tint.map { TimeHeaderCell.tinted(image, $0, size: image.size, description: label) } ?? image
+        view.contentTintColor = nil
         view.setAccessibilityLabel(label)
         view.toolTip = tooltip ?? label
     }
@@ -114,7 +146,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 {
     /// QLab order. The first and last columns carry no title.
     static let columns: [(id: String, titleKey: String?, width: CGFloat)] = [
-        ("status", nil, 80), ("number", "cuelist.col.number", 60), ("name", "cuelist.col.name", 280),
+        ("status", nil, 80), ("type", nil, 32), ("number", "cuelist.col.number", 60), ("name", "cuelist.col.name", 280),
         ("target", "cuelist.col.target", 160), ("preWait", "cuelist.col.preWait", 80),
         ("duration", "cuelist.col.duration", 120), ("postWait", "cuelist.col.postWait", 80),
         ("continue", nil, 36),
@@ -144,7 +176,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private var batchNewGroups = Set<ModelID>()
     private var batchCollapsed = Set<ModelID>()
     /// Whether a running time shows the whole time or the time left, per time column; each window
-    /// has its own. A wait counts down by default, as it always has; Duration shows elapsed / total.
+    /// has its own. A wait counts down by default, as it always has; Duration shows the cue's duration, also while it runs.
     /// Kept for the life of the window only (no window-state persistence exists yet).
     static let timeColumns = ["preWait", "duration", "postWait"]
     private(set) var timeShown: [String: TimeShown] = [
@@ -175,6 +207,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         for spec in Self.columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.id))
             column.title = spec.titleKey.map(loc) ?? ""
+            if spec.id == "type" { column.headerToolTip = loc("cuelist.col.type") }
             if Self.timeColumns.contains(spec.id) {
                 column.headerCell = TimeHeaderCell(textCell: column.title)
                 updateTimeHeader(column)
@@ -932,6 +965,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         cell.label.textColor = .labelColor
         cell.label.isHidden = true
         for i in cell.images.indices { cell.setImage(i, icon: nil, label: nil) }
+        cell.progress.progress = nil
         func text(_ s: String) {
             cell.label.isHidden = false
             cell.label.stringValue = s
@@ -939,9 +973,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         switch column {
         case "status":
             if isPlayheadRow(node.id) {
-                cell.setImage(0, icon: .playhead, label: loc("cue.playhead"))
+                cell.setImage(0, icon: .playhead, label: loc("cue.playhead"), tint: PlayheadStyle.colour)
             } else if isPlayheadInside(node.id) {
-                cell.setImage(0, icon: .playheadInside, label: loc("cue.playhead.inside"))
+                cell.setImage(
+                    0, icon: .playheadInside, label: loc("cue.playhead.inside"), tint: PlayheadStyle.colour)
             }
             let (state, detail) = displayState(node.id)
             let style = CueStateStyle.style(for: state)
@@ -961,11 +996,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             case nil: break
             }
         case "number": text(cue.number ?? "")
+        case "type":
+            if let style = CueKindStyle.typeStyle(kind: cue.raw["kind"]) {
+                cell.setImage(0, icon: style.icon, label: style.label)
+            }
         case "name":
             let kind = cue.kindType
-            if let style = CueKindStyle.kinds[kind] {
-                cell.setImage(0, icon: style.icon, label: loc(style.labelKey))
-            }
             if cue.displayName.isEmpty {
                 text(CueKindStyle.kindLabel(kind))
                 cell.label.textColor = .secondaryLabelColor
@@ -985,7 +1021,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             let seconds = cue.raw[column == "preWait" ? "pre_wait" : "post_wait"]?.doubleValue ?? 0
             text(CueTime.format(seconds))
             if seconds == 0 { cell.label.textColor = .secondaryLabelColor }  // zero is dimmed, as in QLab
-        case "duration": text(durationText(node))
+        case "duration":
+            text(durationText(node))
+            cell.progress.progress = durationProgress(node)
         case "continue":
             if let mode = cue.raw["continue_mode"]?.stringValue.flatMap({ CueKindStyle.continueModes[$0] }) {
                 cell.setImage(0, icon: mode.icon, label: loc(mode.labelKey))
@@ -1006,14 +1044,32 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return label.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
     }
 
+    /// The Duration column's text: the cue's duration, or while it runs and the column shows the time
+    /// left, that time. Instantaneous cues (and Audio cues whose file is unknown) have none.
     private func durationText(_ node: CueNode) -> String {
-        if let p = store.progress[node.id] {
-            if timeShown["duration"] == .remaining, let left = p.remaining { return CueTime.running(left) }
-            return CueTime.progress(elapsed: p.elapsed, remaining: p.remaining)
-        }
+        let p = store.progress[node.id]
+        if timeShown["duration"] == .remaining, let left = p?.remaining { return CueTime.running(left) }
+        if let seconds = restingDuration(node) { return CueTime.format(seconds) }
+        // A running cue whose length the model does not hold (a group, a looping cue) shows what the engine knows.
+        if let p, let left = p.remaining { return CueTime.running(p.elapsed + left) }
+        return ""
+    }
+
+    private func restingDuration(_ node: CueNode) -> Double? {
         switch node.cue.kindType {
-        case "fade", "wait": return CueTime.format(node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
-        default: return ""
+        case "fade", "wait": return node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0
+        case "audio": return store.mediaDurations[node.id]?.duration
+        default: return nil
         }
+    }
+
+    /// How far a running or paused cue is, drawn in its Duration cell: green running, yellow paused
+    /// (the Active Cues bar's colours).
+    private func durationProgress(_ node: CueNode) -> (fraction: Double, colour: NSColor)? {
+        guard let p = store.progress[node.id], let left = p.remaining else { return nil }
+        let total = p.elapsed + left
+        guard total > 0 else { return nil }
+        let paused = displayState(node.id).state == .paused
+        return (p.elapsed / total, paused ? .systemYellow : .systemGreen)
     }
 }

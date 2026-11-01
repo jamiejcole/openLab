@@ -7,7 +7,7 @@ import Foundation
 /// time with a millisecond digit shows it: an edit field must give back exactly what it shows.
 /// `mm:ss.cc`, `h:mm:ss.cc` from an hour.
 enum TimeShown {
-    /// The whole time: `elapsed / total` while it runs, the set time at rest.
+    /// The cue's own time: its duration, also while it runs.
     case full
     /// The time left while it runs.
     case remaining

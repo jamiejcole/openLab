@@ -16,6 +16,8 @@ enum Icon: CaseIterable {
     // Cue kinds (the toolbar and the Name column).
     case kindAudio, kindGroup, kindMemo, kindWait, kindFade, kindStart, kindStop, kindPause, kindLoad
     case kindReset, kindDevamp, kindGoTo, kindTarget, kindArm, kindDisarm, kindNetwork
+    // A Group cue's icon follows its mode (the timeline mode uses `kindGroup`).
+    case kindGroupPlaylist, kindGroupEnter, kindGroupNext, kindGroupRandom
     // Cue states (UI-04: each non-idle state has its own shape).
     case stateLoaded, statePreWaiting, stateRunning, statePaused, statePostWaiting, stateFading
     case stateStopping, stateBroken
@@ -66,6 +68,10 @@ enum Icon: CaseIterable {
         case .kindArm: return Self.row("record.circle", 11, fallback: "largecircle.fill.circle")
         case .kindDisarm: return Self.row("slash.circle")
         case .kindNetwork: return Self.row("network", 11, fallback: "globe")
+        case .kindGroupPlaylist: return Self.row("list.bullet")
+        case .kindGroupEnter: return Self.row("arrow.right.circle")
+        case .kindGroupNext: return Self.row("forward.end")
+        case .kindGroupRandom: return Self.row("shuffle")
         case .stateLoaded: return Self.row("arrow.down.circle.fill")
         case .statePreWaiting: return Self.row("hourglass")
         case .stateRunning: return Self.row("play.fill")

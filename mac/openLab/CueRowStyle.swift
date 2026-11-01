@@ -45,6 +45,12 @@ struct CueStateStyle: Equatable {
     }
 }
 
+/// The playhead's pointer: a light grey, never the green of a running cue, and not a template so a
+/// highlighted row cannot turn it white.
+enum PlayheadStyle {
+    static let colour = NSColor(white: 0.62, alpha: 1)
+}
+
 /// Symbols and labels for the cue kinds, colours and continue modes (cell content).
 enum CueKindStyle {
     static let kinds: [String: (icon: Icon, labelKey: String)] = [
@@ -59,6 +65,24 @@ enum CueKindStyle {
     ]
 
     static func kindLabel(_ type: String) -> String { kinds[type].map { loc($0.labelKey) } ?? type }
+
+    /// A Group cue's icon and label for each mode (the type column follows the mode, as QLab's does).
+    static let groupModes: [String: (icon: Icon, labelKey: String)] = [
+        "timeline": (.kindGroup, "cue.type.group.timeline"),
+        "playlist": (.kindGroupPlaylist, "cue.type.group.playlist"),
+        "start_first_and_enter": (.kindGroupEnter, "cue.type.group.enter"),
+        "start_first_and_go_to_next": (.kindGroupNext, "cue.type.group.next"),
+        "start_random": (.kindGroupRandom, "cue.type.group.random"),
+    ]
+
+    /// The icon and label the type column shows for a cue of `kind` (its `kind` object in the model).
+    static func typeStyle(kind: JSONValue?) -> (icon: Icon, label: String)? {
+        let type = kind?["type"]?.stringValue ?? ""
+        if type == "group", let mode = groupModes[kind?["mode"]?["type"]?.stringValue ?? ""] {
+            return (mode.icon, loc(mode.labelKey))
+        }
+        return kinds[type].map { ($0.icon, loc($0.labelKey)) }
+    }
 
     /// A cue colour only tints its row, as in QLab; it is not a state, so it has no shape.
     static let colours: [String: (labelKey: String, tint: NSColor)] = [
