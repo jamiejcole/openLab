@@ -119,20 +119,35 @@ final class EditCommandTests: XCTestCase {
 /// group of three audio cues).
 @MainActor
 final class InspectorTests: XCTestCase {
-    static let intro = CueListHarness.intro
-    static let fade = CueListHarness.fade
-    static let door = CueListHarness.door
+    static let intro = TestSnapshots.intro
+    static let fade = TestSnapshots.fade
+    static let door = TestSnapshots.door
+    static let group = TestSnapshots.group
+    static let list = TestSnapshots.mainList
+    /// Over the engine's bound on a cue name (1024 bytes): the engine refuses it.
+    static let tooLong = String(repeating: "x", count: 1100)
 
+    /// The demo show on the real engine, the inspector's wire recorded (nil for the engine-free tests).
     private var rig: Rig!
+    private var store: WorkspaceStore!
+
+    /// What only reads the model or the controls needs no engine (and runs in engine-free runs).
+    private static let engineFree = [
+        "testEmptyAndMultipleStates", "testShowsTheSelectedCue", "testModeTabIsForGroupsOnly",
+        "testSelectionFollowsTheCueList",
+        "testUnchangedSelectionMidEditKeepsTextAndMessage", "testDecimalCommaHasItsOwnMessage",
+    ]
     private var vc: InspectorViewController!
     private var window: NSWindow!
 
     override func setUp() async throws {
-        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
-        rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: base))
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
-        vc = InspectorViewController(store: rig.store)
+        if Self.engineFree.contains(where: { name.contains($0) }) {
+            store = try Rig.offline(TestSnapshots.show()).store
+        } else {
+            rig = try await Rig.open()
+            store = rig.store
+        }
+        vc = InspectorViewController(store: store)
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 300), styleMask: [.titled], backing: .buffered,
             defer: false)
@@ -140,13 +155,33 @@ final class InspectorTests: XCTestCase {
         window.contentView = vc.view
     }
 
-    override func tearDown() async throws { window.orderOut(nil) }
+    override func tearDown() async throws {
+        window.orderOut(nil)
+        rig?.client.stop()
+    }
 
     private var commands: [JSONValue] {
-        rig.engine.received.compactMap {
-            if case .command(_, let c, _) = $0 { return JSONValue.parse((try? c.json.text()) ?? "") }
-            return nil
-        }
+        rig.wire.commands.compactMap { JSONValue.parse((try? $0.json.text()) ?? "") }
+    }
+
+    private var intro: Cue? { store.model?.cue(Self.intro) }
+
+    /// Another client of the same workspace (another window, a second Mac), for changes made elsewhere.
+    private func elsewhere(_ command: Command) async throws {
+        let other = Rig(engine: rig.testEngine, workspace: rig.doc)
+        let connected = await other.connect()
+        XCTAssertTrue(connected)
+        guard case .success = await other.store.send(command: command) else { return XCTFail("\(command)") }
+        other.client.stop()
+    }
+
+    private func setModeElsewhere(_ mode: JSONValue) async throws {
+        let cmd = Command(
+            .object([
+                "type": .string("set_cue_property"), "id": .string(Self.group.raw),
+                "property": .object(["type": .string("group_mode"), "value": mode]),
+            ]))
+        try await self.elsewhere(cmd)
     }
 
     private func property(_ type: String, _ value: String, id: ModelID = intro) -> JSONValue? {
@@ -190,7 +225,7 @@ final class InspectorTests: XCTestCase {
         vc.setSelection([Self.fade])
         XCTAssertTrue(vc.targetField.isEnabled)
         XCTAssertEqual(vc.targetField.stringValue, "1", "the target is shown by its number")
-        vc.setSelection([CueListHarness.rain])
+        vc.setSelection([TestSnapshots.rain])
         XCTAssertEqual(vc.colourPopup.indexOfSelectedItem, 4)
         XCTAssertEqual(vc.flaggedCheck.state, .on)
         XCTAssertEqual(vc.continuePopup.indexOfSelectedItem, 2)
@@ -224,6 +259,12 @@ final class InspectorTests: XCTestCase {
             commands.last,
             JSONValue.parse(
                 #"{"type":"set_cue_numbers","numbers":[{"id":"\#(Self.intro)","number":null}]}"#))
+        // The engine stored each one.
+        await assertEventually { self.intro?.number == nil }
+        XCTAssertEqual(intro?.name, "Storm")
+        XCTAssertEqual(intro?.raw["notes"]?.stringValue, "line 1\nline 2")
+        XCTAssertEqual(intro?.raw["pre_wait"]?.doubleValue, 90)
+        XCTAssertEqual(intro?.raw["post_wait"]?.doubleValue, 2.5)
     }
 
     func testPopupsAndChecksSendTheirCommands() async {
@@ -244,6 +285,10 @@ final class InspectorTests: XCTestCase {
         _ = vc.armedCheck.target?.perform(vc.armedCheck.action, with: vc.armedCheck)
         await assertEventually { self.commands.count == 4 }
         XCTAssertEqual(commands.last, property("armed", "false"))
+        await assertEventually("the engine stored them") { self.intro?.raw["armed"] == .bool(false) }
+        XCTAssertEqual(intro?.raw["color"]?.stringValue, "green")
+        XCTAssertEqual(intro?.raw["continue_mode"]?.stringValue, "auto_continue")
+        XCTAssertEqual(intro?.raw["flagged"], .bool(true))
     }
 
     private func choose(_ popup: NSPopUpButton, _ i: Int) {
@@ -257,14 +302,14 @@ final class InspectorTests: XCTestCase {
     }
 
     private func groupMode(_ json: String) -> JSONValue? {
-        property("group_mode", json, id: CueListHarness.group)
+        property("group_mode", json, id: Self.group)
     }
 
     func testModeTabIsForGroupsOnly() {
         let hasMode = { self.vc.tabView.tabViewItems.contains { $0.identifier as? String == "mode" } }
         vc.setSelection([Self.intro])
         XCTAssertFalse(hasMode())
-        vc.setSelection([CueListHarness.group])
+        vc.setSelection([Self.group])
         XCTAssertTrue(hasMode())
         XCTAssertEqual(vc.groupModePopup.indexOfSelectedItem, 0, "the demo group is a timeline")
         vc.setSelection([Self.fade])
@@ -272,7 +317,7 @@ final class InspectorTests: XCTestCase {
     }
 
     func testEachGroupModeSendsItsCommand() async {
-        vc.setSelection([CueListHarness.group])
+        vc.setSelection([Self.group])
         let expected = [
             (1, #"{"type":"playlist","loop":false,"shuffle":false}"#),
             (2, #"{"type":"start_first_and_enter"}"#),
@@ -289,7 +334,7 @@ final class InspectorTests: XCTestCase {
     }
 
     func testLoopAndShuffleOnlyForPlaylistAndSendWholeMode() async {
-        vc.setSelection([CueListHarness.group])
+        vc.setSelection([Self.group])
         XCTAssertFalse(vc.groupLoopCheck.isEnabled)
         XCTAssertFalse(vc.groupShuffleCheck.isEnabled)
         choose(vc.groupModePopup, 1)
@@ -305,44 +350,35 @@ final class InspectorTests: XCTestCase {
         XCTAssertEqual(vc.groupLoopCheck.state, .off)
     }
 
-    func testGroupControlsFollowAModelChangeFromElsewhere() throws {
-        vc.setSelection([CueListHarness.group])
-        var cue = try XCTUnwrap(rig.store.model?.cue(CueListHarness.group)).raw
-        cue["kind"]?.set("mode", .object(["type": .string("playlist"), "loop": .bool(true), "shuffle": .bool(true)]))
-        let upsert =
-            #"{"type":"cue","list":"\#(CueListHarness.list)","parent":null,"index":2,"cue":\#(try cue.text())}"#
-        XCTAssertEqual(
-            rig.store.receive(
-                try ServerMessage.decode(
-                    #"{"type":"model_changed","revision":\#(rig.store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#
-                )), .applied)
-        XCTAssertEqual(vc.groupModePopup.indexOfSelectedItem, 1)
+    func testGroupControlsFollowAModelChangeFromElsewhere() async throws {
+        vc.setSelection([Self.group])
+        try await setModeElsewhere(
+            .object(["type": .string("playlist"), "loop": .bool(true), "shuffle": .bool(true)]))
+        await assertEventually { self.vc.groupModePopup.indexOfSelectedItem == 1 }
         XCTAssertEqual(vc.groupLoopCheck.state, .on)
         XCTAssertEqual(vc.groupShuffleCheck.state, .on)
         XCTAssertTrue(vc.groupLoopCheck.isEnabled)
     }
 
     func testRechoosingPlaylistKeepsLoopAndShuffleAndSendsNothing() async throws {
-        vc.setSelection([CueListHarness.group])
-        var cue = try XCTUnwrap(rig.store.model?.cue(CueListHarness.group)).raw
-        cue["kind"]?.set("mode", .object(["type": .string("playlist"), "loop": .bool(true), "shuffle": .bool(true)]))
-        let upsert =
-            #"{"type":"cue","list":"\#(CueListHarness.list)","parent":null,"index":2,"cue":\#(try cue.text())}"#
-        XCTAssertEqual(
-            rig.store.receive(
-                try ServerMessage.decode(
-                    #"{"type":"model_changed","revision":\#(rig.store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#
-                )), .applied)
+        vc.setSelection([Self.group])
+        try await setModeElsewhere(
+            .object(["type": .string("playlist"), "loop": .bool(true), "shuffle": .bool(true)]))
+        await assertEventually { self.vc.groupShuffleCheck.state == .on }
         let before = commands.count
         choose(vc.groupModePopup, 1)
         // A command sent after it must be the very next one: the re-choice sent none.
         toggle(vc.groupShuffleCheck, false)
         await assertEventually { self.commands.count == before + 1 }
         XCTAssertEqual(commands.last, groupMode(#"{"type":"playlist","loop":true,"shuffle":false}"#))
+        await assertEventually("the engine kept the loop") {
+            self.store.model?.cue(Self.group)?.raw["kind"]?["mode"]
+                == .object(["type": .string("playlist"), "loop": .bool(true), "shuffle": .bool(false)])
+        }
     }
 
     func testGroupControlsAreLockedInShowMode() async {
-        vc.setSelection([CueListHarness.group])
+        vc.setSelection([Self.group])
         choose(vc.groupModePopup, 1)
         await assertEventually { self.vc.groupLoopCheck.isEnabled }
         vc.isLocked = true
@@ -365,6 +401,9 @@ final class InspectorTests: XCTestCase {
         edit(.target, "")
         await assertEventually { self.commands.count == 2 }
         XCTAssertEqual(commands.last, property("target", "null", id: Self.fade))
+        await assertEventually("the engine cleared it") {
+            self.store.model?.cue(Self.fade)?.raw["kind"]?["target"] == .null
+        }
     }
 
     func testInvalidInputRevertsWithoutSending() async {
@@ -400,14 +439,14 @@ final class InspectorTests: XCTestCase {
     }
 
     func testRefusedCommandRevertsAndWarns() async {
-        rig.engine.refuseCommands = true
         vc.setSelection([Self.intro])
-        edit(.name, "Storm")
-        XCTAssertEqual(vc.nameField.stringValue, "Storm")
+        edit(.name, Self.tooLong)  // over the engine's bound on a name: refused
+        XCTAssertEqual(vc.nameField.stringValue, Self.tooLong)
         await assertEventually { self.vc.nameField.stringValue == "Intro" }
         XCTAssertTrue(vc.messageLabel.stringValue.contains("refused"))
-        edit(.preWait, "5")
-        await assertEventually { self.vc.preWaitField.stringValue == "00:00.00" }
+        edit(.notes, String(repeating: "n", count: 70_000))  // over the bound on notes
+        await assertEventually { self.vc.notesView.string == "" }
+        XCTAssertEqual(intro?.name, "Intro", "the engine changed nothing")
     }
 
     func testExternalChangeUpdatesFieldsButNotTheOneBeingEdited() async throws {
@@ -416,23 +455,20 @@ final class InspectorTests: XCTestCase {
         vc.nameField.currentEditor()?.string = "half typed"
         typed(.name, "half typed")
         XCTAssertTrue(vc.isEditing(.name))
-        var cue = try XCTUnwrap(rig.store.model?.cue(Self.intro)).raw
-        cue.set("name", .string("Renamed elsewhere"))
-        cue.set("notes", .string("from another client"))
-        cue.set("pre_wait", .double(2))
-        let upsert =
-            #"{"type":"cue","list":"\#(CueListHarness.list)","parent":null,"index":0,"cue":\#(try cue.text())}"#
-        XCTAssertEqual(
-            rig.store.receive(
-                try ServerMessage.decode(
-                    #"{"type":"model_changed","revision":\#(rig.store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#
-                )), .applied)
+        try await elsewhere(
+            XCTUnwrap(
+                Command.transaction([
+                    .setProperty(Self.intro, .name("Renamed elsewhere")),
+                    .setProperty(Self.intro, .notes("from another client")),
+                    .setProperty(Self.intro, .preWait(2)),
+                ])))
+        await assertEventually { self.vc.notesView.string == "from another client" }
         XCTAssertEqual(vc.nameField.currentEditor()?.string, "half typed")
-        XCTAssertEqual(vc.notesView.string, "from another client")
         XCTAssertEqual(vc.preWaitField.stringValue, "00:02.00")
         window.makeFirstResponder(nil)  // focus loss commits the typed name
         await assertEventually { self.commands.count == 1 }
         XCTAssertEqual(commands.last, property("name", #""half typed""#))
+        await assertEventually("the typed name wins") { self.intro?.name == "half typed" }
     }
 
     func testEscCancelsTheEdit() async {
@@ -447,27 +483,24 @@ final class InspectorTests: XCTestCase {
         XCTAssertNil(vc.nameField.currentEditor(), "editing ended")
     }
 
-    private func previewChanged(_ active: Bool) throws {
-        let message = try ServerMessage.decode(
-            #"{"type":"runtime","seq":\#(rig.store.runtimeSeq + 1),"changes":[{"type":"preview","cue":"\#(Self.intro)","active":\#(active)}]}"#
-        )
-        XCTAssertEqual(rig.store.receive(message), .applied)
-    }
-
-    func testPreviewButtonFollowsTheRuntimeAndSendsToggles() throws {
+    /// The button sends its toggle to the window's transport and follows what the engine says.
+    func testPreviewButtonFollowsTheRuntimeAndSendsToggles() async throws {
         var sent: [TransportAction] = []
-        vc.onTransport = { sent.append($0) }
+        vc.onTransport = { action in
+            sent.append(action)
+            Task { _ = await self.store.transport(action) }
+        }
         vc.setSelection([Self.intro])
         XCTAssertTrue(vc.previewButton.isEnabled)
         XCTAssertEqual(vc.previewButton.title, loc("inspector.preview"))
         vc.previewButton.performClick(nil)
         XCTAssertEqual(sent, [.preview(cue: Self.intro)])
-        try previewChanged(true)
-        XCTAssertEqual(vc.previewButton.title, loc("inspector.stopPreview"))
+        try await rig.advance(0.1)
+        await assertEventually("the engine previews it") { self.vc.previewButton.title == loc("inspector.stopPreview") }
         vc.previewButton.performClick(nil)
         XCTAssertEqual(sent.last, .stopPreview(cue: Self.intro))
-        try previewChanged(false)
-        XCTAssertEqual(vc.previewButton.title, loc("inspector.preview"))
+        try await rig.advance(0.1)
+        await assertEventually("and stops") { self.vc.previewButton.title == loc("inspector.preview") }
     }
 
     func testPreviewButtonIsDisabledForOtherKindsAndShowModeKeepsItUsable() throws {
@@ -481,7 +514,7 @@ final class InspectorTests: XCTestCase {
     }
 
     func testSelectionFollowsTheCueList() throws {
-        let list = CueListViewController(store: rig.store)
+        let list = CueListViewController(store: store)
         list.view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
         var seen: [[ModelID]] = []
         list.onSelectionChange = { seen.append($0) }
@@ -502,18 +535,6 @@ final class InspectorTests: XCTestCase {
         }
     }
 
-    private func upsertName(_ name: String, id: ModelID = intro) throws {
-        var cue = try XCTUnwrap(rig.store.model?.cue(id)).raw
-        cue.set("name", .string(name))
-        let upsert =
-            #"{"type":"cue","list":"\#(CueListHarness.list)","parent":null,"index":0,"cue":\#(try cue.text())}"#
-        XCTAssertEqual(
-            rig.store.receive(
-                try ServerMessage.decode(
-                    #"{"type":"model_changed","revision":\#(rig.store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#
-                )), .applied)
-    }
-
     func testUnchangedSelectionMidEditKeepsTextAndMessage() {
         vc.setSelection([Self.intro])
         typed(.name, "half")
@@ -530,9 +551,9 @@ final class InspectorTests: XCTestCase {
         typed(.name, "A")
         vc.commit(.name)  // Return: sent, field stays focused
         await assertEventually { self.commands.count == 1 }
-        await assertEventually { self.rig.store.model?.cue(Self.intro)?.name == "A" }
-        try upsertName("B")
-        XCTAssertEqual(vc.nameField.stringValue, "B")
+        await assertEventually { self.store.model?.cue(Self.intro)?.name == "A" }
+        try await elsewhere(.setProperty(Self.intro, .name("B")))
+        await assertEventually { self.vc.nameField.stringValue == "B" }
         window.makeFirstResponder(nil)  // clicking away
         await settle()
         XCTAssertEqual(commands.count, 1, "nothing is re-sent for a field the user did not touch")
@@ -541,12 +562,8 @@ final class InspectorTests: XCTestCase {
     func testCueDeletedMidEditDropsTheEdit() async throws {
         vc.setSelection([Self.intro])
         typed(.name, "doomed")
-        XCTAssertEqual(
-            rig.store.receive(
-                try ServerMessage.decode(
-                    #"{"type":"model_changed","revision":\#(rig.store.revision + 1),"upserts":[],"deletes":[{"type":"cue","id":"\#(Self.intro)"}]}"#
-                )), .applied)
-        XCTAssertFalse(vc.emptyLabel.isHidden)
+        try await elsewhere(.removeCue(Self.intro))
+        await assertEventually { !self.vc.emptyLabel.isHidden }
         vc.commit(.name)
         await settle()
         XCTAssertTrue(commands.isEmpty)
@@ -554,45 +571,36 @@ final class InspectorTests: XCTestCase {
         XCTAssertTrue(ok)
     }
 
+    /// The refusal of an edit arrives while a newer one is being typed in the same field.
     func testRefusalDoesNotWipeANewerEditOfTheSameField() async {
-        rig.engine.holdResults = true
-        rig.engine.refuseCommands = true
         vc.setSelection([Self.intro])
-        edit(.name, "first")
-        await assertEventually { self.commands.count == 1 }
-        typed(.name, "second, still typing")
-        rig.engine.releaseResults()
+        edit(.name, Self.tooLong)
+        typed(.name, "second, still typing")  // before the engine's answer (it needs this turn to end)
         await assertEventually { self.vc.messageLabel.stringValue.contains("refused") }
         XCTAssertEqual(vc.nameField.stringValue, "second, still typing", "a dirty field is not reverted")
     }
 
     func testStaleRefusalDoesNotRevertWhileANewerEditIsInFlight() async {
-        rig.engine.holdResults = true
-        rig.engine.refuseCommands = true
         vc.setSelection([Self.intro])
-        edit(.name, "first")
-        await assertEventually { self.commands.count == 1 }
-        rig.engine.refuseCommands = false  // the newer edit is accepted
-        edit(.name, "second")
+        edit(.name, Self.tooLong)  // refused
+        edit(.name, "second")  // sent before the first is answered, and accepted
         await assertEventually { self.commands.count == 2 }
-        rig.engine.releaseResults()
         await assertEventually { self.vc.messageLabel.stringValue.contains("refused") }
+        await assertEventually { self.intro?.name == "second" }
         await settle()
         XCTAssertEqual(vc.nameField.stringValue, "second", "the newest edit decides what shows")
     }
 
     func testSecondEditBeforeTheFirstResultSendsBoth() async {
-        rig.engine.holdResults = true
         vc.setSelection([Self.intro])
         edit(.name, "one")
         edit(.name, "two")
         await assertEventually { self.commands.count == 2 }
         XCTAssertEqual(commands[0], property("name", #""one""#))
         XCTAssertEqual(commands[1], property("name", #""two""#))
-        rig.engine.holdResults = false
-        rig.engine.releaseResults()
         let ok = await vc.commitPendingEdits()
         XCTAssertTrue(ok)
+        await assertEventually { self.intro?.name == "two" }
     }
 
     func testPendingEditsAreCommittedAndAwaited() async {
@@ -603,12 +611,13 @@ final class InspectorTests: XCTestCase {
         XCTAssertTrue(ok)
         XCTAssertEqual(commands.count, 2)
         XCTAssertTrue(vc.dirty.isEmpty)
+        XCTAssertEqual(intro?.name, "Storm", "committed and answered")
+        XCTAssertEqual(intro?.raw["notes"]?.stringValue, "n")
     }
 
     func testRefusedPendingEditReportsFailure() async {
-        rig.engine.refuseCommands = true
         vc.setSelection([Self.intro])
-        typed(.name, "Storm")
+        typed(.name, Self.tooLong)
         let ok = await vc.commitPendingEdits()
         XCTAssertFalse(ok)
     }

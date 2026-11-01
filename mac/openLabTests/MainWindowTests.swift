@@ -16,7 +16,7 @@ final class MainWindowTests: XCTestCase {
     }
 
     private func controller() throws -> WorkspaceWindowController {
-        WorkspaceWindowController(store: try Rig().store)
+        WorkspaceWindowController(store: try Rig.offline().store)
     }
 
     func testAllAreasPresent() throws {
@@ -67,15 +67,13 @@ final class MainWindowTests: XCTestCase {
     }
 
     func testFooterCountsCuesAndListsAndFollowsAddsAndDeletes() async throws {
-        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
-        let rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: base))
-        let connected = await rig.connect()
-        XCTAssertTrue(connected)
+        let rig = try Rig.offline(TestSnapshots.show())
         let wc = WorkspaceWindowController(store: rig.store)
         XCTAssertEqual(wc.footer.countLabel.stringValue, "6 cues in 1 list")
         let id = "00000000-0000-0000-0000-0000000000d1"
-        let cue = FakeEngine.cueJSON(id: id, number: nil, name: "New", kind: FakeEngine.audioKind("/tmp/a.wav"))
-        let add = try CueListHarness.upsertJSON(cue, index: 0)
+        let cue = TestSnapshots.cueJSON(id: id, number: nil, name: "New", kind: TestSnapshots.audioKind("/tmp/a.wav"))
+        let add =
+            #"{"type":"cue","list":"\#(TestSnapshots.mainList)","parent":null,"index":0,"cue":\#(try cue.text())}"#
         let revision = rig.store.revision + 1
         XCTAssertEqual(
             rig.store.receive(
@@ -87,7 +85,7 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(
             rig.store.receive(
                 try ServerMessage.decode(
-                    #"{"type":"model_changed","revision":\#(revision + 1),"upserts":[],"deletes":[{"type":"cue","id":"\#(CueListHarness.group)"}]}"#
+                    #"{"type":"model_changed","revision":\#(revision + 1),"upserts":[],"deletes":[{"type":"cue","id":"\#(TestSnapshots.group)"}]}"#
                 )), .applied)
         XCTAssertEqual(wc.footer.countLabel.stringValue, "3 cues in 1 list")
     }
@@ -161,62 +159,68 @@ final class MainWindowTests: XCTestCase {
 
     // MARK: Masthead standby and notes
 
+    /// The demo show on the real engine, its wire recorded.
     private func demoController() async throws -> (WorkspaceWindowController, Rig) {
-        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
-        let rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: base))
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        let rig = try await Rig.open()
         return (WorkspaceWindowController(store: rig.store), rig)
     }
 
-    private func standBy(_ rig: Rig, _ cue: ModelID) throws {
-        let change = #"{"type":"playhead","list":"\#(CueListHarness.list)","cue":"\#(cue)"}"#
-        let msg = try ServerMessage.decode(
-            #"{"type":"runtime","seq":\#(rig.store.runtimeSeq + 1),"changes":[\#(change)]}"#)
-        XCTAssertEqual(rig.store.receive(msg), .applied)
+    /// The engine moves the playhead to `cue` (another window, an OSC client) and this one hears it.
+    private func standBy(_ rig: Rig, _ cue: ModelID) async throws {
+        guard case .success = await rig.store.transport(.setPlayhead(list: TestSnapshots.mainList, cue: cue)) else {
+            return XCTFail("set_playhead")
+        }
+        try await rig.advance()
+        await assertEventually { rig.store.playheads[TestSnapshots.mainList] == cue }
     }
 
     private func setNotesCommands(_ rig: Rig) -> [JSONValue] {
-        rig.engine.received.compactMap {
-            if case .command(_, let c, _) = $0, c.json["property"]?["type"]?.stringValue == "notes" { return c.json }
-            return nil
-        }
+        rig.wire.commands.compactMap { c in c.json["property"]?["type"]?.stringValue == "notes" ? c.json : nil }
+    }
+
+    private func notes(_ rig: Rig, _ cue: ModelID) -> String? {
+        rig.store.model?.cue(cue)?.raw["notes"]?.stringValue
     }
 
     func testMastheadShowsStandbyCueAsNumberDotNameWithItsNotes() async throws {
         let (wc, rig) = try await demoController()
-        // The snapshot's playhead is shown from the start (an unnumbered cue: its name alone).
-        XCTAssertEqual(wc.masthead.cueID, CueListHarness.fade)
-        XCTAssertEqual(wc.masthead.standbyField.stringValue, "Fade")
-        try standBy(rig, CueListHarness.intro)
-        let cue = try XCTUnwrap(rig.store.model?.cue(CueListHarness.intro))
+        // The show's playhead (its first cue) is shown from the start.
+        XCTAssertEqual(wc.masthead.cueID, TestSnapshots.intro)
+        let cue = try XCTUnwrap(rig.store.model?.cue(TestSnapshots.intro))
         XCTAssertEqual(
             wc.masthead.standbyField.stringValue,
             [cue.number, cue.listName].compactMap { $0 }.joined(separator: " \u{00B7} "))
         XCTAssertTrue(wc.masthead.notesView.isEditable)
+        // An unnumbered, unnamed cue: its name alone, from its kind.
+        try await standBy(rig, TestSnapshots.fade)
+        XCTAssertEqual(wc.masthead.cueID, TestSnapshots.fade)
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, "Fade")
     }
 
     func testMastheadNotesEditSendsTheInspectorNotesCommand() async throws {
         let (wc, rig) = try await demoController()
-        try standBy(rig, CueListHarness.intro)
+        try await standBy(rig, TestSnapshots.intro)
         typeMastheadNotes(wc, "Hold for applause")
         wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
         await assertEventually { !self.setNotesCommands(rig).isEmpty }
-        XCTAssertEqual(setNotesCommands(rig).last?["id"]?.stringValue, CueListHarness.intro.raw)
+        XCTAssertEqual(setNotesCommands(rig).last?["id"]?.stringValue, TestSnapshots.intro.raw)
         XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "Hold for applause")
+        await assertEventually("the engine stored them") { self.notes(rig, TestSnapshots.intro) == "Hold for applause" }
     }
 
     func testMastheadNotesAreReadOnlyAndSendNothingInShowMode() async throws {
         let (wc, rig) = try await demoController()
-        try standBy(rig, CueListHarness.intro)
+        try await standBy(rig, TestSnapshots.intro)
         wc.setShowMode(true)
         await assertEventually { wc.masthead.isLocked }
         XCTAssertFalse(wc.masthead.notesView.isEditable)
         XCTAssertFalse(wc.masthead.notesView.isSelectable, "a focused text view would swallow GO")
         wc.masthead.notesView.string = "typed anyway"
         wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
-        await wc.editor.setNotes(of: CueListHarness.intro, text: "typed anyway")
+        await wc.editor.setNotes(of: TestSnapshots.intro, text: "typed anyway")
+        await settle()
         XCTAssertTrue(setNotesCommands(rig).isEmpty)
+        XCTAssertEqual(notes(rig, TestSnapshots.intro), "")
     }
 
     private func typeMastheadNotes(_ wc: WorkspaceWindowController, _ text: String) {
@@ -226,22 +230,24 @@ final class MainWindowTests: XCTestCase {
 
     func testPlayheadMovingMidEditCommitsTheNotesToTheCueTheyWereTypedFor() async throws {
         let (wc, rig) = try await demoController()
-        try standBy(rig, CueListHarness.intro)
+        try await standBy(rig, TestSnapshots.intro)
         typeMastheadNotes(wc, "for intro")
-        try standBy(rig, CueListHarness.fade)
+        try await standBy(rig, TestSnapshots.fade)
         await assertEventually { !self.setNotesCommands(rig).isEmpty }
         wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
         await Task.yield()
         let sent = setNotesCommands(rig)
         XCTAssertEqual(sent.count, 1)
-        XCTAssertEqual(sent.first?["id"]?.stringValue, CueListHarness.intro.raw)
+        XCTAssertEqual(sent.first?["id"]?.stringValue, TestSnapshots.intro.raw)
         XCTAssertEqual(sent.first?["property"]?["value"]?.stringValue, "for intro")
         XCTAssertNotEqual(wc.masthead.notesView.string, "for intro", "the new cue shows its own notes")
+        await assertEventually { self.notes(rig, TestSnapshots.intro) == "for intro" }
+        XCTAssertEqual(notes(rig, TestSnapshots.fade), "")
     }
 
     func testEnteringShowModeMidEditCommitsTheMastheadNotes() async throws {
         let (wc, rig) = try await demoController()
-        try standBy(rig, CueListHarness.intro)
+        try await standBy(rig, TestSnapshots.intro)
         typeMastheadNotes(wc, "typed before show mode")
         await wc.requestShowMode(true)
         XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed before show mode")
@@ -249,7 +255,7 @@ final class MainWindowTests: XCTestCase {
 
     func testSaveMidEditCommitsTheMastheadNotes() async throws {
         let (wc, rig) = try await demoController()
-        try standBy(rig, CueListHarness.intro)
+        try await standBy(rig, TestSnapshots.intro)
         typeMastheadNotes(wc, "typed before save")
         let ok = await wc.commitPendingEdits()
         XCTAssertTrue(ok)
@@ -259,11 +265,11 @@ final class MainWindowTests: XCTestCase {
 
     func testTypingForTheNewCueAfterAMidEditPlayheadMoveIsCommittedToIt() async throws {
         let (wc, rig) = try await demoController()
-        try standBy(rig, CueListHarness.intro)
+        try await standBy(rig, TestSnapshots.intro)
         let window = try XCTUnwrap(wc.window)
         XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
         typeMastheadNotes(wc, "for intro")
-        try standBy(rig, CueListHarness.fade)
+        try await standBy(rig, TestSnapshots.fade)
         XCTAssertFalse(window.firstResponder === wc.masthead.notesView, "focus leaves so a new session starts")
         // The operator clicks back in and types for the new cue.
         XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
@@ -271,8 +277,10 @@ final class MainWindowTests: XCTestCase {
         wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
         await assertEventually { self.setNotesCommands(rig).count == 2 }
         let sent = setNotesCommands(rig)
-        XCTAssertEqual(sent.last?["id"]?.stringValue, CueListHarness.fade.raw)
+        XCTAssertEqual(sent.last?["id"]?.stringValue, TestSnapshots.fade.raw)
         XCTAssertEqual(sent.last?["property"]?["value"]?.stringValue, "for fade")
+        await assertEventually { self.notes(rig, TestSnapshots.fade) == "for fade" }
+        XCTAssertEqual(notes(rig, TestSnapshots.intro), "for intro")
     }
 
     func testNotesForADeletedCueReportInsteadOfVanishing() async throws {
@@ -286,7 +294,7 @@ final class MainWindowTests: XCTestCase {
 
     func testEscapeInMastheadNotesCommitsAndReturnsFocus() async throws {
         let (wc, rig) = try await demoController()
-        try standBy(rig, CueListHarness.intro)
+        try await standBy(rig, TestSnapshots.intro)
         let window = try XCTUnwrap(wc.window)
         XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
         typeMastheadNotes(wc, "typed then escape")
@@ -315,7 +323,7 @@ final class MainWindowTests: XCTestCase {
     /// A show with a name, a number, notes, a file and a type to find, two of them inside a group.
     private func findController() async throws -> WorkspaceWindowController {
         func cue(_ id: ModelID, _ number: String?, _ name: String, _ notes: String, _ kind: JSONValue) -> JSONValue {
-            var c = FakeEngine.cueJSON(id: id.raw, number: number, name: name, kind: kind)
+            var c = TestSnapshots.cueJSON(id: id.raw, number: number, name: name, kind: kind)
             c.set("notes", .string(notes))
             return c
         }
@@ -330,16 +338,16 @@ final class MainWindowTests: XCTestCase {
             ]),
         ])
         let kids = [cue(F.door, "3.1", "Door", "", wait), cue(F.zebra, "3.2", "Zebra", "", memo)]
-        var snapshot = FakeEngine.emptySnapshot(name: "Find")
+        var snapshot = TestSnapshots.emptySnapshot(name: "Find")
         snapshot["workspace"]?.set(
             "cue_lists",
             .array([
                 .object([
-                    "id": .string(FakeEngine.demoListID), "name": .string("Main"),
+                    "id": .string(TestSnapshots.mainList.raw), "name": .string("Main"),
                     "cues": .array([
-                        cue(F.thunder, "1", "Opening Light", "", FakeEngine.audioKind("/show/media/Thunder.wav")),
+                        cue(F.thunder, "1", "Opening Light", "", TestSnapshots.audioKind("/show/media/Thunder.wav")),
                         cue(F.wind, "2", "Cue", "bring up the Wind chimes before the door", wait),
-                        cue(F.group, "3", "Act Two", "", FakeEngine.groupKind(kids)),
+                        cue(F.group, "3", "Act Two", "", TestSnapshots.groupKind(kids)),
                         cue(F.net, "4", "Lights", "", network),
                     ]),
                 ]),
@@ -348,9 +356,7 @@ final class MainWindowTests: XCTestCase {
                     "cues": .array([cue(F.other, "1", "Back door", "", memo)]),
                 ]),
             ]))
-        let rig = try Rig(snapshot: snapshot)
-        let connected = await rig.connect()
-        XCTAssertTrue(connected)
+        let rig = try Rig.offline(snapshot)
         let wc = WorkspaceWindowController(store: rig.store)
         wc.cueList.view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
         retained.append(rig)
@@ -446,9 +452,9 @@ final class MainWindowTests: XCTestCase {
         wc.stepFind(forward: true)
         XCTAssertEqual(wc.findBar.countLabel.stringValue, "1 of 1")
         let memo = JSONValue.object(["type": .string("memo")])
-        let renamed = FakeEngine.cueJSON(id: F.zebra.raw, number: "3.2", name: "Lion", kind: memo)
+        let renamed = TestSnapshots.cueJSON(id: F.zebra.raw, number: "3.2", name: "Lion", kind: memo)
         let upsert = try ServerMessage.decode(
-            #"{"type":"model_changed","revision":\#(wc.store.revision + 1),"upserts":[{"type":"cue","list":"\#(FakeEngine.demoListID)","parent":"\#(F.group)","index":1,"cue":\#(try renamed.text())}],"deletes":[]}"#
+            #"{"type":"model_changed","revision":\#(wc.store.revision + 1),"upserts":[{"type":"cue","list":"\#(TestSnapshots.mainList)","parent":"\#(F.group)","index":1,"cue":\#(try renamed.text())}],"deletes":[]}"#
         )
         XCTAssertEqual(wc.store.receive(upsert), .applied)
         XCTAssertEqual(wc.find.matches, [], "the renamed cue no longer matches")
@@ -469,7 +475,7 @@ final class MainWindowTests: XCTestCase {
                 #"{"type":"runtime","seq":\#(store.runtimeSeq + 1),"changes":[\#(change)]}"#)
             XCTAssertEqual(store.receive(msg), .applied)
         }
-        try playhead(FakeEngine.demoListID, F.thunder)
+        try playhead(TestSnapshots.mainList.raw, F.thunder)
         try playhead(second.raw, F.other)
         wc.cueList.showList(second)
         XCTAssertEqual(wc.masthead.cueID, F.other)
@@ -485,7 +491,7 @@ final class MainWindowTests: XCTestCase {
             FooterBar.countText(cues: store.model?.cueCount ?? 0, lists: 1), "the count reads the store")
         wc.cueList.handle(.model(upserts: [], deletes: [.cueList(second)]))
 
-        XCTAssertEqual(wc.cueList.listID.map(\.raw), FakeEngine.demoListID)
+        XCTAssertEqual(wc.cueList.listID, TestSnapshots.mainList)
         XCTAssertEqual(wc.masthead.cueID, F.thunder, "the standby line follows the list now shown")
         XCTAssertEqual(wc.sidebar.listTable.selectedRow, 0, "the highlight follows the shown list")
         XCTAssertEqual(wc.sidebar.listTable.numberOfRows, 1)
@@ -511,10 +517,10 @@ final class MainWindowTests: XCTestCase {
         let progress = #"{"type":"progress","items":[{"cue":"\#(F.wind)","elapsed":1.0,"remaining":2.0}]}"#
         _ = store.receive(try ServerMessage.decode(progress))
         XCTAssertEqual(wc.find.scans, scans, "runtime and progress ticks do not scan")
-        let renamed = FakeEngine.cueJSON(
+        let renamed = TestSnapshots.cueJSON(
             id: F.door.raw, number: "3.1", name: "Gate", kind: .object(["type": .string("memo")]))
         let upsert = try ServerMessage.decode(
-            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[{"type":"cue","list":"\#(FakeEngine.demoListID)","parent":"\#(F.group)","index":0,"cue":\#(try renamed.text())}],"deletes":[]}"#
+            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[{"type":"cue","list":"\#(TestSnapshots.mainList)","parent":"\#(F.group)","index":0,"cue":\#(try renamed.text())}],"deletes":[]}"#
         )
         XCTAssertEqual(store.receive(upsert), .applied)
         XCTAssertEqual(wc.find.scans, scans + 1, "a model change scans once, after the tree is updated")
@@ -638,8 +644,8 @@ final class MainWindowTests: XCTestCase {
     func testStandbyIsOneLineNumberDotName() async throws {
         let (wc, rig) = try await demoController()
         XCTAssertEqual(wc.masthead.standbyField.maximumNumberOfLines, 1)
-        try standBy(rig, CueListHarness.intro)
-        let cue = try XCTUnwrap(rig.store.model?.cue(CueListHarness.intro))
+        try await standBy(rig, TestSnapshots.intro)
+        let cue = try XCTUnwrap(rig.store.model?.cue(TestSnapshots.intro))
         let number = try XCTUnwrap(cue.number, "the demo's Intro cue is numbered")
         XCTAssertTrue(wc.masthead.standbyField.stringValue.hasPrefix(number + " \u{00B7} "))
         wc.setShowMode(true)

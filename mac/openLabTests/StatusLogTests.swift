@@ -92,24 +92,29 @@ final class StatusLogTests: XCTestCase {
         XCTAssertTrue(p.summary.contains("sleeping"))
     }
 
-    private func send(_ rig: Rig, xruns: Int) throws {
+    private func send(_ store: WorkspaceStore, xruns: Int) throws {
         var json = try Fixtures.json("server", "status")
         json["status"]?.set("xruns", .int(Int64(xruns)))
-        rig.store.receive(try ServerMessage.decode(try json.text()))
+        store.receive(try ServerMessage.decode(try json.text()))
+    }
+
+    /// Applies a frame as the client applies one from the engine (one the real engine cannot be
+    /// made to send on cue: a status with given counts, a `log_entry` past a lost push).
+    private func push(_ store: WorkspaceStore, _ json: String) {
+        guard let message = try? ServerMessage.decode(json) else { return XCTFail("does not decode: \(json)") }
+        _ = store.engineClient(store.client, didReceive: message)
     }
 
     func testFooterFollowsTheStoresStatus() async throws {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        let rig = try await Rig.open()
         let wc = WorkspaceWindowController(store: rig.store)
         XCTAssertEqual(wc.footer.statusButton.title, loc("status.waiting"))
-        try send(rig, xruns: 1)
+        try send(rig.store, xruns: 1)
         XCTAssertEqual(wc.footer.presentation.level, .normal, "the first status is the baseline")
         XCTAssertTrue(wc.footer.statusButton.title.contains("Dropouts 1"), "the count is always shown")
-        try send(rig, xruns: 2)
+        try send(rig.store, xruns: 2)
         XCTAssertEqual(wc.footer.presentation.level, .warning, "a new dropout warns")
-        try send(rig, xruns: 2)
+        try send(rig.store, xruns: 2)
         XCTAssertEqual(wc.footer.presentation.level, .normal, "no new dropouts since the last status")
         rig.store.receive(try ServerMessage.decode(try Fixtures.text("server", "status_device_lost")))
         let button = wc.footer.statusButton
@@ -117,20 +122,32 @@ final class StatusLogTests: XCTestCase {
         XCTAssertTrue(button.title.hasPrefix(loc("status.alarm")))
         XCTAssertEqual(button.accessibilityLabel(), button.title)
         XCTAssertNotNil(button.image)
-        try send(rig, xruns: 1)
+        try send(rig.store, xruns: 1)
         XCTAssertEqual(wc.footer.presentation.level, .normal, "recovers when the device is back")
     }
 
-    func testOfflineEngineShowsAnAlarmAndNoStaleStatus() async throws {
-        let rig = try Rig()
+    /// The real engine's own status (about once a second of device time): its device, healthy.
+    func testTheEnginesStatusShowsInTheFooter() async throws {
+        let rig = try await Rig.open()
         let wc = WorkspaceWindowController(store: rig.store)
-        XCTAssertEqual(wc.footer.presentation, StatusPresentation.offline(), "not connected yet")
+        try await rig.advance(1.5)
+        await assertEventually("a status came") { rig.store.status != nil }
+        XCTAssertEqual(rig.store.status?.device.name, "openLab Virtual Output")
+        XCTAssertEqual(wc.footer.presentation.level, .normal)
+    }
+
+    func testOfflineEngineShowsAnAlarmAndNoStaleStatus() async throws {
+        let rig = try await Rig.open()
+        rig.client.stop()
+        await assertEventually { rig.client.state != .connected }
+        let wc = WorkspaceWindowController(store: rig.store)
+        XCTAssertEqual(wc.footer.presentation, StatusPresentation.offline(), "not connected")
         XCTAssertTrue(wc.footer.statusButton.title.hasPrefix(loc("status.alarm")))
         XCTAssertTrue(wc.footer.statusButton.title.contains(loc("status.offline")))
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
-        XCTAssertEqual(wc.footer.statusButton.title, loc("status.waiting"))
-        try send(rig, xruns: 0)
+        rig.client.start()
+        await assertEventually { rig.client.state == .connected }
+        await assertEventually { wc.footer.statusButton.title == loc("status.waiting") }
+        try send(rig.store, xruns: 0)
         XCTAssertEqual(wc.footer.presentation.level, .normal)
         rig.client.stop()
         await assertEventually { wc.footer.presentation == StatusPresentation.offline() }
@@ -138,14 +155,12 @@ final class StatusLogTests: XCTestCase {
     }
 
     func testNewSnapshotClearsTheStatusUntilTheNextPush() async throws {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        let rig = try await Rig.open()
         let wc = WorkspaceWindowController(store: rig.store)
-        try send(rig, xruns: 0)
+        try send(rig.store, xruns: 0)
         XCTAssertNotNil(rig.store.status)
-        rig.store.receive(try ServerMessage.decode(try Fixtures.text("server", "welcome")))
-        XCTAssertNil(rig.store.status)
+        rig.client.requestSnapshot()  // the engine's snapshot
+        await assertEventually { rig.store.status == nil }
         XCTAssertEqual(wc.footer.statusButton.title, loc("status.waiting"))
     }
 
@@ -164,13 +179,10 @@ final class StatusLogTests: XCTestCase {
         return try JSONDecoder().decode(ShowLogEntry.self, from: Data(json.utf8))
     }
 
-    func testLogShowsEngineTailAndIgnoresLogNotices() async throws {
-        let rig = try Rig()
+    func testLogShowsEngineTailAndIgnoresLogNotices() throws {
+        let rig = try Rig.offline()
         let log = LogWindowController(store: rig.store)
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
-        rig.engine.push(#"{"type":"log","level":"warn","message":"a notice, also a record"}"#)
-        await settle()
+        push(rig.store, #"{"type":"log","level":"warn","message":"a notice, also a record"}"#)
         let entries = try tail()
         log.apply(tail: entries, dropped: 0)
         XCTAssertEqual(log.rows.count, entries.count, "`log` notices are the same records as log_entry")
@@ -179,8 +191,8 @@ final class StatusLogTests: XCTestCase {
         XCTAssertEqual(log.table.numberOfRows, log.visible.count)
     }
 
-    func testLevelFilterShowsThatLevelAndWorse() async throws {
-        let rig = try Rig()
+    func testLevelFilterShowsThatLevelAndWorse() throws {
+        let rig = try Rig.offline()
         let log = LogWindowController(store: rig.store)
         log.apply(
             tail: [
@@ -201,221 +213,204 @@ final class StatusLogTests: XCTestCase {
         XCTAssertEqual(log.visible.first?.level.title, "ERROR", "the level is a word, not just a colour")
     }
 
-    func testLogIsBoundedKeepingTheNewest() async throws {
-        let rig = try Rig()
+    func testLogIsBoundedKeepingTheNewest() throws {
+        let rig = try Rig.offline()
         let log = LogWindowController(store: rig.store)
         log.apply(tail: try (0..<(LogWindowController.maxRows + 200)).map { try entry($0) }, dropped: 0)
         XCTAssertEqual(log.rows.count, LogWindowController.maxRows)
         XCTAssertEqual(log.rows.last?.message, "record \(LogWindowController.maxRows + 199)")
     }
 
+    /// Refresh shows the real engine's records: it opened the show, then GO started Intro.
     func testRefreshFetchesTheTailFromTheEngine() async throws {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
-        rig.engine.logTailEntries = [
-            try XCTUnwrap(
-                JSONValue.parse(#"{"time_ms":1700000000123,"level":"info","kind":"go","message":"GO 1"}"#))
-        ]
+        let rig = try await Rig.open()
+        guard case .success = await rig.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
+        try await rig.advance(0.1)
         let log = LogWindowController(store: rig.store)
         await log.refresh()
-        XCTAssertEqual(log.rows.map(\.message), ["GO 1"])
-        XCTAssertEqual(log.rows.first?.kind, "go")
+        XCTAssertTrue(log.rows.contains { $0.message.hasPrefix("workspace opened") }, "\(log.rows.map(\.message))")
+        let go = try XCTUnwrap(log.rows.first { $0.kind == "go" })
+        XCTAssertTrue(go.message.contains("Intro"), go.message)
+        XCTAssertTrue(log.rows.contains { $0.kind == "cue_start" })
     }
 
+    /// The engine cannot be asked (the connection is gone): what is shown stays, and the window says so.
     func testFailedRefreshKeepsWhatIsShownAndSaysSo() async throws {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        let rig = try await Rig.open()
         let log = LogWindowController(store: rig.store)
         log.apply(tail: [try entry(1)], dropped: 0)
-        rig.engine.garbleResults = true
+        rig.client.stop()
         await log.refresh()
         XCTAssertEqual(log.rows.map(\.message), ["record 1"])
         XCTAssertEqual(log.note.stringValue, loc("log.tailFailed"))
     }
 
+    private func tails(_ rig: Rig) -> Int {
+        rig.wire.requestCount { if case .logTail = $0 { return true } else { return false } }
+    }
+
+    private func logEntry(_ seq: UInt64, _ message: String = "m", level: String = "info") -> String {
+        #"{"type":"log_entry","seq":\#(seq),"entry":{"time_ms":1,"level":"\#(level)","kind":"cue_fail","message":"\#(message)"}}"#
+    }
+
     /// M18: `log_entry` numbers every record; a jump means some were not pushed, so an open log
-    /// window reads `log_tail` again. Consecutive numbers (and a closed window) read nothing.
+    /// window reads `log_tail` again (from the real engine). Consecutive numbers (and a closed
+    /// window) read nothing. The pushes past the engine's own records stand for lost ones.
     func testALogEntryGapRereadsTheTailInAnOpenWindow() async throws {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        let rig = try await Rig.open()
         let log = LogWindowController(store: rig.store)
-        func tails() -> Int { rig.engine.requestCount { if case .logTail = $0 { return true } else { return false } } }
-        func entry(_ seq: Int) -> String {
-            #"{"type":"log_entry","seq":\#(seq),"entry":{"time_ms":1,"level":"info","kind":"go","message":"m"}}"#
-        }
-        rig.engine.push(entry(1))
-        rig.engine.push(entry(5))  // window closed: nothing read
+        let base = rig.store.logSeq + 100
+        push(rig.store, logEntry(base + 1))
+        push(rig.store, logEntry(base + 5))  // window closed: nothing read
         await settle()
-        XCTAssertEqual(tails(), 0)
-        XCTAssertEqual(rig.store.logSeq, 5)
+        XCTAssertEqual(tails(rig), 0)
+        XCTAssertEqual(rig.store.logSeq, base + 5)
         log.showWindow(nil)
         defer { log.close() }
-        rig.engine.push(entry(6))
+        push(rig.store, logEntry(base + 6))
         await settle()
-        XCTAssertEqual(tails(), 0, "no gap")
-        rig.engine.push(entry(9))
-        await assertEventually { tails() == 1 }
+        XCTAssertEqual(tails(rig), 0, "no gap")
+        push(rig.store, logEntry(base + 9))
+        await assertEventually { self.tails(rig) == 1 }
+        await assertEventually("the real engine's records came") {
+            log.rows.contains { $0.message.hasPrefix("workspace opened") }
+        }
         // A broken or hostile engine's largest number must not overflow the gap check.
-        let max = entry(9).replacingOccurrences(of: #""seq":9"#, with: #""seq":18446744073709551615"#)
-        rig.engine.push(max)
-        rig.engine.push(max)
+        push(rig.store, logEntry(UInt64.max))
+        push(rig.store, logEntry(UInt64.max))
         await assertEventually { rig.store.logSeq == UInt64.max }
     }
 
     /// A burst of gaps is one re-read in flight and at most one after it, never one per gap.
     func testABurstOfLogGapsIsAtMostTwoTailReads() async throws {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        let rig = try await Rig.open()
         let log = LogWindowController(store: rig.store)
         log.showWindow(nil)
         defer { log.close() }
-        func tails() -> Int { rig.engine.requestCount { if case .logTail = $0 { return true } else { return false } } }
-        func push(_ seq: Int) {
-            rig.engine.push(
-                #"{"type":"log_entry","seq":\#(seq),"entry":{"time_ms":1,"level":"info","kind":"go","message":"m"}}"#)
-        }
-        rig.engine.holdResults = true
-        push(1)
-        push(5)
-        await assertEventually { tails() == 1 }
-        // Ten more gaps while that read is out: one more read after it, not ten.
-        for seq in stride(from: 9, through: 45, by: 4) { push(seq) }
+        let base = rig.store.logSeq + 100
+        // All in one turn, before the engine can answer the first re-read: the ten gaps after the
+        // first fold into that one read (a read already out when they come gets one more after it).
+        push(rig.store, logEntry(base + 1))
+        push(rig.store, logEntry(base + 5))
+        for seq in stride(from: base + 9, through: base + 45, by: 4) { push(rig.store, logEntry(seq)) }
+        await assertEventually { self.tails(rig) == 1 }
+        await assertEventually("the real engine's records came") { !log.rows.isEmpty }
+        try await rig.advance()
         await settle()
-        XCTAssertEqual(tails(), 1)
-        rig.engine.holdResults = false
-        rig.engine.releaseResults()
-        await assertEventually { tails() == 2 }
-        await settle()
-        XCTAssertEqual(tails(), 2)
+        XCTAssertEqual(tails(rig), 1, "one read for the whole burst, never one per gap")
     }
 
-    private func pushEntry(_ rig: Rig, _ seq: Int, _ message: String, level: String = "info") {
-        rig.engine.push(
-            #"{"type":"log_entry","seq":\#(seq),"entry":{"time_ms":1,"level":"\#(level)","kind":"cue_fail","message":"\#(message)"}}"#
-        )
-    }
-
-    private func pushStatus(_ rig: Rig, logSeq: Int) {
-        rig.engine.push(
+    private func pushStatus(_ store: WorkspaceStore, logSeq: UInt64) {
+        push(
+            store,
             #"{"type":"status","status":{"cpu_percent":1,"engine_load":0.1,"xruns":0,"disk":{"streams":0,"underrun_frames":0,"healthy":true},"device":{"name":"d","state":"ok","sample_rate":48000,"block_frames":256,"channels":2,"latency_ms":9},"log_dropped":0,"log_seq":\#(logSeq),"network_output_disabled":false}}"#
         )
     }
 
     /// #312: an engine record pushed as `log_entry` shows in an open window without a refresh,
-    /// once (a replay at or below a number already shown adds nothing).
+    /// once (a replay at or below a number already shown adds nothing). The real engine pushes the
+    /// records GO makes.
     func testAPushedLogEntryAppearsInAnOpenLogWindow() async throws {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        let rig = try await Rig.open()
         let log = LogWindowController(store: rig.store)
         log.showWindow(nil)
         defer { log.close() }
-        await settle()
-        pushEntry(rig, 1, "cue 3 broke")
-        await assertEventually { log.rows.contains { $0.message == "cue 3 broke" } }
-        XCTAssertEqual(log.rows.last?.kind, "cue_fail")
+        await log.refresh()
+        XCTAssertFalse(log.rows.isEmpty)
+        let reads = tails(rig)
+        guard case .success = await rig.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
+        try await rig.advance(0.1)
+        await assertEventually("GO's record is pushed") { log.rows.contains { $0.kind == "cue_start" } }
+        XCTAssertEqual(tails(rig), reads, "shown from the push, not a re-read")
         XCTAssertFalse(try XCTUnwrap(log.rows.last).time.isEmpty)
-        pushEntry(rig, 1, "cue 3 broke")
-        pushEntry(rig, 2, "cue 4 broke")
+        let seq = rig.store.logSeq
+        let count = log.rows.count
+        push(rig.store, logEntry(seq, "a replay"))
+        XCTAssertEqual(log.rows.count, count, "at or below a number already shown: nothing added")
+        push(rig.store, logEntry(seq + 1, "cue 4 broke"))
         await assertEventually { log.rows.contains { $0.message == "cue 4 broke" } }
-        XCTAssertEqual(log.rows.filter { $0.message == "cue 3 broke" }.count, 1)
         // The engine also sends the same record as a `log` notice: not a row of its own.
-        rig.store.receive(.log(.info, "cue 4 broke"))
-        pushEntry(rig, 3, "cue 4 broke")
-        await assertEventually { log.rows.count == 3 }
+        push(rig.store, #"{"type":"log","level":"info","message":"cue 4 broke"}"#)
+        push(rig.store, logEntry(seq + 2, "cue 4 broke"))
+        await assertEventually { log.rows.count == count + 2 }
         XCTAssertEqual(log.rows.filter { $0.message == "cue 4 broke" }.count, 2, "two records, not three rows")
     }
 
     /// #312: a push the hub dropped is noticed from `status.log_seq` alone (nothing follows it),
     /// and the re-read is one tail read.
     func testStatusLogSeqAboveTheLastHeardRereadsTheTailOnce() async throws {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        let rig = try await Rig.open()
         let log = LogWindowController(store: rig.store)
         log.showWindow(nil)
         defer { log.close() }
-        func tails() -> Int { rig.engine.requestCount { if case .logTail = $0 { return true } else { return false } } }
-        pushEntry(rig, 4, "heard")
+        await log.refresh()
+        let heard = rig.store.logSeq + 100
+        push(rig.store, logEntry(heard, "heard"))
         await settle()
-        let before = tails()
-        pushStatus(rig, logSeq: 4)
+        let before = tails(rig)
+        pushStatus(rig.store, logSeq: heard)
         await settle()
-        XCTAssertEqual(tails(), before, "status agrees with what was heard")
-        pushStatus(rig, logSeq: 5)
-        await assertEventually { tails() == before + 1 }
+        XCTAssertEqual(tails(rig), before, "status agrees with what was heard")
+        pushStatus(rig.store, logSeq: heard + 1)
+        await assertEventually { self.tails(rig) == before + 1 }
         await settle()
-        XCTAssertEqual(tails(), before + 1)
-    }
-
-    private func tailEntry(_ n: Int) -> JSONValue {
-        JSONValue.parse(
-            #"{"time_ms":\#(n),"level":"info","kind":"engine","message":"record \#(n)"}"#)!
+        XCTAssertEqual(tails(rig), before + 1)
     }
 
     private func tailMaxes(_ rig: Rig) -> [UInt32?] {
-        rig.engine.received.compactMap {
+        rig.wire.sent.compactMap {
             if case .request(_, .logTail(let max)) = $0 { return .some(max) } else { return nil }
         }
     }
 
     /// #129: a gap reads only the missing records (sized to the gap), merged with those held.
     func testAGapReadsOnlyTheMissingRecords() async throws {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
-        rig.engine.logTailEntries = (1...10).map(tailEntry)
-        rig.engine.logTailSeq = 10
+        let rig = try await Rig.open()
         let log = LogWindowController(store: rig.store)
         log.showWindow(nil)
         defer { log.close() }
         await log.refresh()
-        XCTAssertEqual(log.rows.count, 10)
-        rig.engine.logTailEntries = (1...13).map(tailEntry)
-        rig.engine.logTailSeq = 13
-        pushEntry(rig, 13, "record 13")  // 11 and 12 were not pushed
-        await assertEventually { self.tailMaxes(rig).count == 2 }
-        XCTAssertEqual(tailMaxes(rig).last, 3, "newest 13 minus last held 10")
-        await assertEventually { log.rows.count == 13 }
-        XCTAssertEqual(log.rows.map(\.message), (1...13).map { "record \($0)" }, "merged, none twice")
+        let held = log.rows.count
+        XCTAssertGreaterThan(held, 0)
+        let last = rig.store.logSeq
+        // The engine makes three records; the window hears only the newest (two pushes lost).
+        guard case .success = await rig.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
+        try await rig.advance(0.1)
+        await assertEventually { rig.store.logSeq >= last + 3 }
+        let maxesBefore = tailMaxes(rig).count
+        push(rig.store, logEntry(rig.store.logSeq + 3, "a record past two lost ones"))
+        await assertEventually { self.tailMaxes(rig).count == maxesBefore + 1 }
+        XCTAssertEqual(tailMaxes(rig).last, 3, "sized to the gap")
+        await settle()
+        let messages = log.rows.map { "\($0.time) \($0.message)" }
+        XCTAssertEqual(Set(messages).count, messages.count, "merged, none twice")
     }
 
     /// #312/#129: after an engine restart the numbers start over: pushes below the old tail's
     /// number still show, and the window reads the new run's tail.
     func testANewConnectionResetsTheWindowsRecordNumbers() async throws {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
-        rig.engine.logTailEntries = (1...50).map(tailEntry)
-        rig.engine.logTailSeq = 50
+        let rig = try await Rig.open()
         let log = LogWindowController(store: rig.store)
         log.showWindow(nil)
         defer { log.close() }
         await log.refresh()
-        XCTAssertEqual(log.rows.count, 50)
+        XCTAssertFalse(log.rows.isEmpty)
+        push(rig.store, logEntry(rig.store.logSeq + 50, "a late record of the old run"))
         guard case .welcome(_, let snapshot) = try ServerMessage.decode(try Fixtures.text("server", "welcome")) else {
             return XCTFail("welcome fixture")
         }
-        rig.engine.logTailEntries = []
-        rig.engine.logTailSeq = 0
-        rig.store.receive(.welcome(protocolVersion: 1, snapshot: snapshot))
+        rig.store.receive(.welcome(protocolVersion: 1, snapshot: snapshot))  // a new run's first frame
         XCTAssertTrue(log.rows.isEmpty, "the old run's records are gone")
-        pushEntry(rig, 1, "first after restart")
+        push(rig.store, logEntry(1, "first after restart"))
         await assertEventually { log.rows.contains { $0.message == "first after restart" } }
     }
 
     /// #312: a same-run resync keeps the record number (a gap after it still shows); a new
     /// connection starts over.
-    func testLogSeqSurvivesASnapshotButNotAWelcome() async throws {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
-        pushEntry(rig, 7, "m")
-        await assertEventually { rig.store.logSeq == 7 }
+    func testLogSeqSurvivesASnapshotButNotAWelcome() throws {
+        let rig = try Rig.offline()
+        push(rig.store, logEntry(7))
+        XCTAssertEqual(rig.store.logSeq, 7)
         guard case .welcome(_, let snapshot) = try ServerMessage.decode(try Fixtures.text("server", "welcome")) else {
             return XCTFail("welcome fixture")
         }
@@ -425,8 +420,8 @@ final class StatusLogTests: XCTestCase {
         XCTAssertEqual(rig.store.logSeq, 0)
     }
 
-    func testDroppedRecordsAreMentioned() async throws {
-        let rig = try Rig()
+    func testDroppedRecordsAreMentioned() throws {
+        let rig = try Rig.offline()
         let log = LogWindowController(store: rig.store)
         log.apply(tail: [], dropped: 7)
         XCTAssertEqual(log.note.stringValue, String(format: loc("log.dropped"), 7))
@@ -436,27 +431,27 @@ final class StatusLogTests: XCTestCase {
     /// where they happened, kept over a tail re-read and a new run; the engine's own `log`
     /// notices are not (they are records, shown from `log_entry`).
     func testAppNotesShowAndSurviveARereadAndANewRun() async throws {
-        let rig = try Rig()
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        let rig = try await Rig.open()
         let log = LogWindowController(store: rig.store)
-        log.showWindow(nil)
-        defer { log.close() }
         let lost = "Edits lost: the workspace was reopened"
         rig.store.receive(.log(.warn, lost))  // the app's own note
-        XCTAssertEqual(log.rows.map(\.message), [lost])
-        rig.engine.push(#"{"type":"log","level":"warn","message":"engine notice"}"#)
-        await settle()
-        XCTAssertEqual(log.rows.map(\.message), [lost], "an engine notice is a record, not a note")
-        pushEntry(rig, 1, "record 1")
-        await assertEventually { log.rows.count == 2 }
-        rig.store.receive(.log(.info, "after record 1"))
-        XCTAssertEqual(log.rows.map(\.message), [lost, "record 1", "after record 1"])
-        // A full tail re-read replaces the records, not the notes.
-        rig.engine.logTailEntries = [tailEntry(1)]
-        rig.engine.logTailSeq = 1
+        log.showWindow(nil)
+        defer { log.close() }
         await log.refresh()
-        XCTAssertEqual(log.rows.map(\.message), [lost, "record 1", "after record 1"])
+        XCTAssertTrue(log.rows.contains { $0.message.hasPrefix("workspace opened") })
+        XCTAssertTrue(log.rows.contains { $0.message == lost })
+        push(rig.store, #"{"type":"log","level":"warn","message":"engine notice"}"#)
+        XCTAssertFalse(log.rows.contains { $0.message == "engine notice" }, "an engine notice is a record, not a note")
+        // A record the engine makes (GO), then a note after it.
+        guard case .success = await rig.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
+        try await rig.advance(0.1)
+        await assertEventually { log.rows.contains { $0.kind == "cue_start" } }
+        rig.store.receive(.log(.info, "after the GO"))
+        let shown = log.rows.map(\.message)
+        XCTAssertEqual(shown.last, "after the GO")
+        // A full tail re-read replaces the records, not the notes.
+        await log.refresh()
+        XCTAssertEqual(log.rows.map(\.message), shown)
         // A note made before the window existed is there too.
         let late = LogWindowController(store: rig.store)
         XCTAssertTrue(late.rows.map(\.message).contains(lost))
@@ -464,15 +459,13 @@ final class StatusLogTests: XCTestCase {
         guard case .welcome(_, let snapshot) = try ServerMessage.decode(try Fixtures.text("server", "welcome")) else {
             return XCTFail("welcome fixture")
         }
-        rig.engine.logTailEntries = []
-        rig.engine.logTailSeq = 0
         rig.store.receive(.welcome(protocolVersion: 1, snapshot: snapshot))
-        XCTAssertEqual(log.rows.map(\.message), [lost, "after record 1"])
+        XCTAssertEqual(log.rows.map(\.message), [lost, "after the GO"])
     }
 
     /// The log window must never take the keys from the workspace (GO, transport keys).
     func testLogWindowCanNeverBecomeKey() throws {
-        let log = LogWindowController(store: try Rig().store)
+        let log = LogWindowController(store: try Rig.offline().store)
         let window = try XCTUnwrap(log.window)
         XCTAssertTrue(window is NSPanel)
         XCTAssertFalse(window.canBecomeKey)
@@ -481,10 +474,10 @@ final class StatusLogTests: XCTestCase {
 
     /// The log window goes with its workspace's window; none is made just to be closed.
     func testLogWindowClosesWithItsWorkspaceWindow() throws {
-        let wc = WorkspaceWindowController(store: try Rig().store)
+        let wc = WorkspaceWindowController(store: try Rig.offline().store)
         wc.window?.close()
         XCTAssertNil(wc.existingLogWindow, "closing does not make a log window")
-        let other = WorkspaceWindowController(store: try Rig().store)
+        let other = WorkspaceWindowController(store: try Rig.offline().store)
         other.showLog()
         let log = try XCTUnwrap(other.existingLogWindow)
         XCTAssertTrue(log.window?.isVisible == true)
