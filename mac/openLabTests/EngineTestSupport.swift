@@ -80,52 +80,38 @@ func settle() async {
     for _ in 0..<200 { await Task.yield() }
 }
 
-/// A client + store wired to a `FakeEngine`, with a manual scheduler and counted info reads.
+/// A client + store bound to one document (nil: the app connection) on a real `TestEngine`
+/// (`Rig.open`) or on none (`Rig.offline`), with manual reconnect, handshake and request
+/// schedulers and counted `engine.json` reads.
 @MainActor
 final class Rig {
     final class InfoBox {
         var reads = 0
-        var port: UInt16 = 1
+        /// What `engine.json` says, for a rig on the wire stub (`init(port:token:workspace:)`).
+        var port: UInt16 = 0
         var token = ""
     }
 
-    let engine: FakeEngine!
-    /// The real engine this rig is connected to (`Rig.open`).
+    /// The real engine this rig is connected to (`Rig.open`; nil for `Rig.offline`).
     private(set) var realEngine: TestEngine?
     let scheduler = ManualScheduler()
     let handshakeScheduler = ManualScheduler()
     /// Request deadlines (M15): fire it to time out what is in flight.
     let requestScheduler = ManualScheduler()
     let box = InfoBox()
+    /// What this rig's client sent the engine (`Rig.open`, `init(engine:workspace:)`).
+    let wire = WireTap()
     let client: EngineClient
     let store: WorkspaceStore
-
-    /// Bound to the fake's first doc ("1") unless `workspace` says otherwise (nil: the app connection).
-    init(workspace: ModelID? = "1", snapshot: JSONValue? = nil) throws {
-        let snap = try snapshot ?? Fixtures.json("server", "welcome")["snapshot"]
-        engine = FakeEngine(snapshot: snap)
-        box.token = engine.token
-        let box = box
-        client = EngineClient(
-            transport: engine,
-            infoProvider: {
-                box.reads += 1
-                return .success(EngineConnectionInfo(port: box.port, token: box.token, pid: 1))
-            },
-            scheduler: scheduler, handshakeScheduler: handshakeScheduler, requestScheduler: requestScheduler,
-            workspace: workspace)
-        store = WorkspaceStore(client: client)
-    }
 
     /// Bound to `workspace` on `engine` (nil: the app connection); reads its `engine.json` afresh
     /// for every connection, as the app does.
     init(engine real: TestEngine, workspace: ModelID?) {
-        engine = nil
         realEngine = real
         let box = box
         let url = real.infoURL
         client = EngineClient(
-            transport: WebSocketTransport(),
+            transport: wire,
             infoProvider: {
                 box.reads += 1
                 return EngineConnectionInfo.load(from: url)
@@ -135,14 +121,33 @@ final class Rig {
         store = WorkspaceStore(client: client)
     }
 
+    /// Bound to `workspace` on the wire stub (EngineClientTests' `StubEngine`) at `port`; a test
+    /// points `box.port` elsewhere to make the engine go away or come back.
+    init(port: UInt16, token: String, workspace: ModelID?) {
+        box.port = port
+        box.token = token
+        let box = box
+        client = EngineClient(
+            transport: WebSocketTransport(),
+            infoProvider: {
+                box.reads += 1
+                return .success(EngineConnectionInfo(port: box.port, token: box.token, pid: 1))
+            },
+            scheduler: scheduler, handshakeScheduler: handshakeScheduler, requestScheduler: requestScheduler,
+            workspace: workspace)
+        store = WorkspaceStore(client: client)
+    }
+
     /// A client that never connects (`Rig.offline`).
     fileprivate init(offlineDoc: ModelID) {
-        engine = nil
         client = EngineClient(
             transport: WebSocketTransport(), infoProvider: { .failure(.missing) }, scheduler: scheduler,
             handshakeScheduler: handshakeScheduler, requestScheduler: requestScheduler, workspace: offlineDoc)
         store = WorkspaceStore(client: client)
     }
+
+    /// The document this rig is bound to.
+    var doc: ModelID { client.workspace ?? "" }
 
     func connect() async -> Bool {
         client.start()
@@ -246,13 +251,16 @@ final class TestEngine {
         return engine
     }
 
-    /// Opens a fresh copy of the test show `name` (`mac/TestShows/<name>/<name>.openlab`) and lets
-    /// the engine take in its media probes; its doc. Closed again when the test ends.
-    func open(_ name: String) async throws -> ModelID {
+    /// Opens a fresh copy of the test show `name` (`mac/TestShows/<name>/<name>.openlab`), first
+    /// changed by `edit` (given the copy's folder) when there is one, and lets the engine take in
+    /// its media probes; its doc. Closed again when the test ends.
+    func open(_ name: String, edit: ((URL) throws -> Void)? = nil) async throws -> ModelID {
         let copies = folder.appendingPathComponent("shows-\(UUID().uuidString)", isDirectory: true)
         let source = try XCTUnwrap(
-            Bundle(for: TestEngine.self).url(forResource: "TestShows", withExtension: nil), "the test shows are bundled")
+            Bundle(for: TestEngine.self).url(forResource: "TestShows", withExtension: nil), "the test shows are bundled"
+        )
         try FileManager.default.copyItem(at: source.appendingPathComponent(name), to: copies)
+        try edit?(copies)
         let path = copies.appendingPathComponent("\(name).openlab").path
         guard case .success(let ok) = await app.send({ .request(id: $0, .open(path: path)) }),
             case .opened(let doc)? = ok.data
@@ -337,6 +345,124 @@ private final class EngineTestObserver: NSObject, XCTestObservation {
     }
 }
 
+/// Engine runs, one after another, in one Application Support folder: the bundled engine on its
+/// stepped virtual device started the way the app starts it (`SystemEngineProcesses`), so a crash
+/// (SIGKILL) leaves its `engine.json` and autosaves for the next run. Every run is ended by
+/// `endAll`.
+@MainActor
+final class EngineRuns {
+    let folder: URL
+    var support: URL { folder.appendingPathComponent("support", isDirectory: true) }
+    var infoURL: URL { support.appendingPathComponent("openLab/engine.json") }
+    private var runs: [(processes: SystemEngineProcesses, pid: Int32)] = []
+    /// An app connection to the current run, for what another client does.
+    private(set) var app: EngineClient
+    private var bound: [EngineClient] = []
+
+    init() throws {
+        if ProcessInfo.processInfo.environment["OPENLAB_ENGINE_TESTS"] == "skip" {
+            throw XCTSkip("real-engine tests are off in this run (make test-mac-unit)")
+        }
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "openlab-runs-\(UUID().uuidString)", isDirectory: true)
+        app = EngineClient(transport: WebSocketTransport(), infoProvider: { .failure(.missing) }, workspace: nil)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+    }
+
+    /// Starts a new run (a new token) and connects `app` to it.
+    func start() async throws {
+        let processes = SystemEngineProcesses(
+            infoURL: infoURL, watchStderr: false,
+            arguments: TestEngineOptions(clock: .stepped, appSupport: support).engineArguments, watchStdin: true)
+        let pid = try processes.spawnEngine()
+        runs.append((processes, pid))
+        let found = await eventually {
+            if case .success(let i) = processes.readInfo() { return i.pid == pid }
+            return false
+        }
+        guard found else { throw TestEngineError.notConnected }
+        app.stop()
+        let url = infoURL
+        app = EngineClient(
+            transport: WebSocketTransport(), infoProvider: { EngineConnectionInfo.load(from: url) }, workspace: nil)
+        app.start()
+        guard await eventually({ self.app.state == .connected }) else { throw TestEngineError.notConnected }
+    }
+
+    /// Ends the current run as a crash does: SIGKILL, its files left behind.
+    func crash() async throws {
+        guard let run = runs.last else { return }
+        app.stop()
+        for c in bound { c.stop() }
+        bound = []
+        run.processes.signal(run.pid, .kill)
+        guard await eventually({ !run.processes.isEngine(run.pid) }) else {
+            throw TestEngineError.refused("the engine did not end")
+        }
+    }
+
+    func endAll() {
+        app.stop()
+        for c in bound { c.stop() }
+        for run in runs where run.processes.isEngine(run.pid) {
+            run.processes.signal(run.pid, .kill)
+            let deadline = ProcessInfo.processInfo.systemUptime + 10
+            while run.processes.isEngine(run.pid) && ProcessInfo.processInfo.systemUptime < deadline {
+                usleep(5_000)
+            }
+        }
+        try? FileManager.default.removeItem(at: folder)
+    }
+
+    /// Opens `path` on the current run as another client would; its doc.
+    func open(_ path: String, recovery: RecoveryChoice? = nil) async throws -> ModelID {
+        guard case .success(let ok) = await app.send({ .request(id: $0, .open(path: path, recovery: recovery)) }),
+            case .opened(let doc)? = ok.data
+        else { throw TestEngineError.refused("open \(path)") }
+        return doc
+    }
+
+    /// Renames a cue of `doc` as another client would.
+    func rename(_ cue: ModelID, in doc: ModelID, to name: String) async throws {
+        let url = infoURL
+        let client = EngineClient(
+            transport: WebSocketTransport(), infoProvider: { EngineConnectionInfo.load(from: url) }, workspace: doc)
+        bound.append(client)
+        client.start()
+        guard await eventually({ client.state == .connected }),
+            case .success = await client.send({ .command(id: $0, .setProperty(cue, .name(name))) })
+        else { throw TestEngineError.refused("rename") }
+    }
+
+    /// Moves the current run's device time on.
+    func advance(_ seconds: Double) async throws {
+        let frames = UInt64((seconds * TestEngine.rate).rounded())
+        guard case .success = await app.send({ .request(id: $0, .advance(frames: frames)) }) else {
+            throw TestEngineError.refused("advance")
+        }
+    }
+
+    /// A copy of the test show `template` as `<name>/<name>.openlab` (its media beside it), the
+    /// workspace named `name` with an id of its own; its path.
+    func show(_ template: String, named name: String) throws -> String {
+        let source = try XCTUnwrap(
+            Bundle(for: TestEngine.self).url(forResource: "TestShows", withExtension: nil)?.appendingPathComponent(
+                template))
+        let dir = folder.appendingPathComponent("shows/\(name)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: dir.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: source, to: dir)
+        let original = dir.appendingPathComponent("\(template).openlab")
+        var file = try XCTUnwrap(JSONValue.parse(try String(contentsOf: original, encoding: .utf8)))
+        file["workspace"]?.set("name", .string(name))
+        file["workspace"]?.set("id", .string(UUID().uuidString.lowercased()))
+        try FileManager.default.removeItem(at: original)
+        let path = dir.appendingPathComponent("\(name).openlab")
+        try file.text().write(to: path, atomically: true, encoding: .utf8)
+        return path.path
+    }
+}
+
 extension Rig {
     /// No engine at all: a store that has received a `welcome` with `snapshot` (default: the golden
     /// welcome the Rust tests write, engine/fixtures/protocol/server/welcome.json), for logic that
@@ -355,11 +481,14 @@ extension Rig {
     /// A client + store bound to a fresh copy of the test show `show` on the class's real engine
     /// (nil `show`: the app connection), connected, with manual reconnect and request schedulers.
     /// `engine`: one of the test's own (`TestEngine.start()`, for a test that kills or stops it).
-    static func open(_ show: String? = "Demo", on own: TestEngine? = nil) async throws -> Rig {
+    /// `edit` changes the copy (its folder) before it opens.
+    static func open(
+        _ show: String? = "Demo", on own: TestEngine? = nil, edit: ((URL) throws -> Void)? = nil
+    ) async throws -> Rig {
         let engine: TestEngine
         if let own { engine = own } else { engine = try await TestEngine.shared() }
         var doc: ModelID?
-        if let show { doc = try await engine.open(show) }
+        if let show { doc = try await engine.open(show, edit: edit) }
         let rig = Rig(engine: engine, workspace: doc)
         guard await rig.connect() else { throw TestEngineError.notConnected }
         return rig
@@ -378,6 +507,146 @@ extension Rig {
     /// Returns once every frame the engine sent this connection before now has been applied.
     func sync() async {
         _ = await client.send({ .request(id: $0, .listPatchMappings) })
+    }
+}
+
+/// The real engine's connections as the app opens them (every `Rig` on an engine uses one), with
+/// what the app sent on each (the order of messages is part of several flows: an edit before a
+/// close, everything before `goodbye`) and the wire faults the real engine cannot be asked for: results held or made
+/// unreadable, a flush that never returns, the connections dropped. No cue model: every frame the
+/// app reads came from the engine.
+@MainActor
+final class WireTap: EngineTransport {
+    private let inner = WebSocketTransport()
+    /// Every message the app sent, with the doc of the connection it went on (nil: an app connection).
+    private(set) var sentOn: [(doc: ModelID?, message: ClientMessage)] = []
+    /// Every message the app sent, in order.
+    var sent: [ClientMessage] { sentOn.map(\.message) }
+    /// The commands sent, in order.
+    var commands: [Command] { sent.compactMap { if case .command(_, let c, _) = $0 { return c } else { return nil } } }
+    var holdResults = false
+    var garbleResults = false
+    var holdFlush = false
+    fileprivate var connections: [TapConnection] = []
+    fileprivate var held: [(TapConnection, String)] = []
+
+    func connect(info: EngineConnectionInfo) async throws -> any EngineConnection {
+        let c = TapConnection(inner: try await inner.connect(info: info), tap: self)
+        connections.append(c)
+        return c
+    }
+
+    fileprivate func record(_ text: String, from c: TapConnection) {
+        guard let m = try? JSONDecoder().decode(ClientMessage.self, from: Data(text.utf8)) else { return }
+        if case .hello(let h) = m { c.doc = h.workspace }
+        sentOn.append((c.doc, m))
+    }
+
+    /// Ends every connection as a network drop would; the engine and its documents stay.
+    func dropConnections() {
+        for c in connections { c.close() }
+        connections = []
+    }
+
+    /// Delivers the held results, in the order they came or (`reversed`) newest first.
+    func releaseResults(reversed: Bool = false) {
+        let all = reversed ? held.reversed() : held
+        held = []
+        for (c, text) in all { c.deliver(text) }
+    }
+
+    /// How many results are held (`holdResults`).
+    var heldCount: Int { held.count }
+
+    /// Forgets what was sent so far (the test's own setup).
+    func forgetSent() { sentOn = [] }
+
+    /// How many `request`s of this kind were sent.
+    func requestCount(_ matches: (Request) -> Bool) -> Int {
+        sent.filter { if case .request(_, let r) = $0 { return matches(r) } else { return false } }.count
+    }
+}
+
+@MainActor
+final class TapConnection: EngineConnection {
+    private let inner: any EngineConnection
+    private unowned let tap: WireTap
+    fileprivate var doc: ModelID?
+    private var queue: [String] = []
+    private var failure: Error?
+    private var waiter: CheckedContinuation<String, Error>?
+    private var reader: Task<Void, Never>?
+
+    fileprivate init(inner: any EngineConnection, tap: WireTap) {
+        self.inner = inner
+        self.tap = tap
+        reader = Task { [weak self] in
+            while true {
+                do {
+                    let text = try await inner.receive()
+                    self?.arrived(text)
+                } catch {
+                    self?.fail(error)
+                    return
+                }
+            }
+        }
+    }
+
+    private func arrived(_ text: String) {
+        guard var v = JSONValue.parse(text), v["type"]?.stringValue == "result" else { return deliver(text) }
+        if tap.garbleResults, var o = v.objectValue {
+            o["error"] = nil
+            o["ok"] = .string("garbled")
+            v = .object(o)
+            return deliver((try? v.text()) ?? text)
+        }
+        if tap.holdResults { return tap.held.append((self, text)) }
+        deliver(text)
+    }
+
+    fileprivate func deliver(_ text: String) {
+        guard failure == nil else { return }
+        if let w = waiter {
+            waiter = nil
+            w.resume(returning: text)
+        } else {
+            queue.append(text)
+        }
+    }
+
+    private func fail(_ error: Error) {
+        guard failure == nil else { return }
+        failure = error
+        if queue.isEmpty, let w = waiter {
+            waiter = nil
+            w.resume(throwing: error)
+        }
+    }
+
+    func send(_ text: String) {
+        tap.record(text, from: self)
+        inner.send(text)
+    }
+
+    func sendAndFlush(_ text: String) async {
+        tap.record(text, from: self)
+        if tap.holdFlush {
+            inner.send(text)
+            await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+        }
+        await inner.sendAndFlush(text)
+    }
+
+    func receive() async throws -> String {
+        if !queue.isEmpty { return queue.removeFirst() }
+        if let failure { throw failure }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+
+    func close() {
+        inner.close()
+        fail(URLError(.networkConnectionLost))
     }
 }
 

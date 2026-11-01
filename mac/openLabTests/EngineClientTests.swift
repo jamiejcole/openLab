@@ -15,9 +15,9 @@ final class EngineClientTests: XCTestCase {
     private let list: ModelID = "00000000-0000-0000-0000-000000000001"
 
     /// A client bound to the stub's workspace "1" (nil: the app connection), with manual schedulers.
-    private func stubRig(workspace: ModelID? = "1") async throws -> (StubEngine, StubRig) {
+    private func stubRig(workspace: ModelID? = "1") async throws -> (StubEngine, Rig) {
         let stub = try await StubEngine.start()
-        let rig = StubRig(stub: stub, workspace: workspace)
+        let rig = Rig(port: stub.port, token: stub.token, workspace: workspace)
         addTeardownBlock { @MainActor in
             rig.client.stop()
             stub.stop()
@@ -538,7 +538,8 @@ final class EngineClientTests: XCTestCase {
     func testLaunchArgumentSelectsTheEngine() {
         let app: [String: String] = [:]
         XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab"], environment: app), .real)
-        XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "nonsense"], environment: app), .real)
+        XCTAssertEqual(
+            EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "nonsense"], environment: app), .real)
         XCTAssertEqual(EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine"], environment: app), .real)
         XCTAssertEqual(
             EngineMode.fromLaunchArguments(
@@ -550,7 +551,8 @@ final class EngineClientTests: XCTestCase {
                 TestEngineOptions(
                     clock: .stepped, appSupport: URL(fileURLWithPath: "/tmp/s"), open: ["/a.openlab", "/b.openlab"])))
         // Realtime unless told otherwise, and a folder of its own when none is named.
-        guard case .test(let o) = EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "test"], environment: app)
+        guard
+            case .test(let o) = EngineMode.fromLaunchArguments(["openLab", "-OpenLabEngine", "test"], environment: app)
         else { return XCTFail("not the test engine") }
         XCTAssertEqual(o.clock, .realtime)
         XCTAssertTrue(o.appSupport.path.hasPrefix(FileManager.default.temporaryDirectory.path))
@@ -602,6 +604,18 @@ final class StubEngine {
     /// When set, `hello` is answered with this `error` and the connection closes.
     var refuseAuth: ErrorCode?
     var welcomeFault = WelcomeFault.none
+    /// What an app connection's welcome lists (`workspaces` entries; empty by default).
+    var appWorkspaces: [JSONValue] = []
+    /// What `scan_recovery` lists (`recovery_entries` entry objects).
+    var recoveryEntries: [JSONValue] = []
+
+    /// A `workspaces` entry for `doc` (the stub binds only doc 1: the golden welcome's).
+    static func workspaceEntry(doc: Int64 = 1, dirty: Bool = false) -> JSONValue {
+        .object([
+            "doc": .int(doc), "workspace_id": .string("00000000-0000-0000-0000-000000000001"),
+            "name": .string("Test"), "path": .null, "dirty": .bool(dirty),
+        ])
+    }
     /// When set, `snapshot` is answered with this error.
     var refuseSnapshot: ErrorCode?
     private(set) var received: [ClientMessage] = []
@@ -625,7 +639,8 @@ final class StubEngine {
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .any)
         let listener = try NWListener(using: params)
-        let stub = StubEngine(listener: listener, snapshot: try XCTUnwrap(Fixtures.json("server", "welcome")["snapshot"]))
+        let stub = StubEngine(
+            listener: listener, snapshot: try XCTUnwrap(Fixtures.json("server", "welcome")["snapshot"]))
         listener.newConnectionHandler = { conn in
             MainActor.assumeIsolated { stub.accept(conn) }
         }
@@ -721,7 +736,7 @@ final class StubEngine {
             case .listDevices:
                 result(c, id, data: .object(["type": .string("devices"), "devices": .array([])]))
             case .scanRecovery:
-                result(c, id, data: .object(["type": .string("recovery_entries"), "entries": .array([])]))
+                result(c, id, data: .object(["type": .string("recovery_entries"), "entries": .array(recoveryEntries)]))
             case .snapshot:
                 if let refuseSnapshot {
                     return c.send(
@@ -755,8 +770,7 @@ final class StubEngine {
                     .object([
                         "type": .string("error"), "code": .string(code.raw), "message": .string("refused"),
                         "protocol_version": .int(Int64(protocolVersion)),
-                    ])))
-            c.close()
+                    ])), thenClose: true)
         }
         if let refuseAuth { return fail(refuseAuth) }
         if h.token != token { return fail(.badToken) }
@@ -770,7 +784,7 @@ final class StubEngine {
             "type": .string("welcome"), "protocol_version": .int(Int64(protocolVersion)),
         ]
         if h.workspace == nil {
-            welcome["workspaces"] = .array([])
+            welcome["workspaces"] = .array(appWorkspaces)
         } else if h.workspace == "1" {
             welcome["snapshot"] = snapshot
         } else {
@@ -809,11 +823,20 @@ private final class StubConnection {
         }
     }
 
-    func send(_ text: String) {
+    /// `thenClose`: closes once the frame is on the wire (as the engine does after a refusal), so
+    /// the client reads it before the close.
+    func send(_ text: String, thenClose: Bool = false) {
         guard !closed else { return }
         let meta = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "frame", metadata: [meta])
-        nw.send(content: Data(text.utf8), contentContext: context, isComplete: true, completion: .idempotent)
+        guard thenClose else {
+            return nw.send(content: Data(text.utf8), contentContext: context, isComplete: true, completion: .idempotent)
+        }
+        nw.send(
+            content: Data(text.utf8), contentContext: context, isComplete: true,
+            completion: .contentProcessed { [weak self] _ in
+                MainActor.assumeIsolated { self?.close() }
+            })
     }
 
     func close() {
@@ -821,43 +844,5 @@ private final class StubConnection {
         closed = true
         stub.remove(self)
         nw.cancel()
-    }
-}
-
-/// A client + store bound to the stub (nil: the app connection), with manual schedulers and a
-/// counted connection-info read whose port can be pointed elsewhere.
-@MainActor
-final class StubRig {
-    final class InfoBox {
-        var reads = 0
-        var port: UInt16 = 0
-        var token = ""
-    }
-
-    let scheduler = ManualScheduler()
-    let handshakeScheduler = ManualScheduler()
-    let requestScheduler = ManualScheduler()
-    let box = InfoBox()
-    let client: EngineClient
-    let store: WorkspaceStore
-
-    init(stub: StubEngine, workspace: ModelID?) {
-        box.port = stub.port
-        box.token = stub.token
-        let box = box
-        client = EngineClient(
-            transport: WebSocketTransport(),
-            infoProvider: {
-                box.reads += 1
-                return .success(EngineConnectionInfo(port: box.port, token: box.token, pid: 1))
-            },
-            scheduler: scheduler, handshakeScheduler: handshakeScheduler, requestScheduler: requestScheduler,
-            workspace: workspace)
-        store = WorkspaceStore(client: client)
-    }
-
-    func connect() async -> Bool {
-        client.start()
-        return await eventually { self.client.state == .connected }
     }
 }
