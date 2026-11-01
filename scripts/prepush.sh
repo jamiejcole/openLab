@@ -4,7 +4,7 @@
 # against origin/main (committed, staged, unstaged and untracked files) with the same path sets CI uses
 # (scripts/paths.sh):
 #   engine/ changed or CI/Makefile changed -> Windows clippy and the Rust tests
-#   the engine, protocol or app engine client changed (PATHS_APP_ENGINE_RE)
+#   the engine, protocol, app engine client, app tests or project changed (PATHS_APP_ENGINE_RE)
 #                                          -> the app's unit tests on the real engine and the UI smoke set
 #   other app code, the protocol or show file changed
 #                                          -> the app's engine-free unit tests (`make test-mac-unit`)

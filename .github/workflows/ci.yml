@@ -277,7 +277,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: swift format lint --strict -r mac/
       # The app tests that start the real engine are expensive: a PR or push runs them with the UI smoke
-      # set (`make test-mac`) only when the engine, the protocol or the app's engine client changed
+      # set (`make test-mac`) only when the engine, the protocol, the app's engine client, its tests or project changed
       # (`changes.app_engine`, scripts/paths.sh); otherwise the engine-free unit tests (`make
       # test-mac-unit`, where the real-engine tests report a skip). The full UI suite is slow and flaky,
       # so it runs on the nightly schedule (and on demand), where a failure turns the run red and the

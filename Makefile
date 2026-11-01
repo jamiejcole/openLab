@@ -83,7 +83,7 @@ test-mac-unit: project
 	TEST_RUNNER_OPENLAB_ENGINE_TESTS=skip $(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -only-testing:openLabTests test
 
 # Every unit test, real-engine ones included, plus the UI smoke set (scripts/ui-smoke.txt): what a PR
-# that changes the engine, the protocol or the app's engine client runs (scripts/paths.sh).
+# that changes the engine, the protocol, the app's engine client, its tests or project runs (scripts/paths.sh).
 test-mac: project
 	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
 	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -only-testing:openLabTests $(UI_SMOKE) test
