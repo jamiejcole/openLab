@@ -1551,7 +1551,7 @@ fn list_positions(cues: &[Cue]) -> Vec<CueId> {
 fn status_input(ws: &Workspace, p: &Pick) -> Input {
     let ids = all_ids(ws);
     let list = ws.cue_lists[p.a as usize % ws.cue_lists.len()].id;
-    match p.c % 12 {
+    match p.c % 13 {
         0 | 1 => Input::Start {
             cue: choose(&ids, p.a).unwrap_or(cue_id(1)),
         },
@@ -1592,6 +1592,14 @@ fn status_input(ws: &Workspace, p: &Pick) -> Input {
             cue: choose(&ids, p.b).filter(|_| !p.d.is_multiple_of(5)),
         },
         10 => Input::Go { list },
+        // Any cue, audio or not, in the workspace or gone, told unplayable or playable again.
+        11 => Input::SliceProblems {
+            cues: vec![(
+                choose(&ids, p.b).unwrap_or(cue_id(1)),
+                (!p.d.is_multiple_of(3))
+                    .then(|| ["too short", "bad marks"][p.d as usize % 2].into()),
+            )],
+        },
         _ => Input::Tick,
     }
 }
@@ -1600,7 +1608,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(incremental_cases()))]
 
     /// After any random sequence of commands, undos and redos, mixed with runtime inputs,
-    /// playhead moves and media and patch reports, an engine told only each edit's footprint
+    /// playhead moves and media, patch and slice reports, an engine told only each edit's footprint
     /// (`model_changed_cues`) has done exactly what an engine that rebuilds everything
     /// (`model_changed`) has: the same actions on every call (playhead moves and group visits
     /// included), the same playheads, broken cues and group warnings, and its bookkeeping

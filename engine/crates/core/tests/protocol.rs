@@ -2401,7 +2401,7 @@ fn wire_warning_idx(w: &WireWarning) -> usize {
     }
 }
 
-const ENGINE_PROBLEM_COUNT: usize = 14;
+const ENGINE_PROBLEM_COUNT: usize = 15;
 fn engine_problem_idx(p: &CueProblem) -> usize {
     match p {
         CueProblem::NoTarget => 0,
@@ -2418,6 +2418,7 @@ fn engine_problem_idx(p: &CueProblem) -> usize {
         CueProblem::NetworkMessageInvalid { .. } => 11,
         CueProblem::StartedBroken => 12,
         CueProblem::NothingToFade => 13,
+        CueProblem::SlicesUnplayable { .. } => 14,
     }
 }
 
@@ -2437,6 +2438,7 @@ fn wire_problem_idx(p: &WireProblem) -> usize {
         WireProblem::NetworkMessageInvalid { .. } => 11,
         WireProblem::StartedBroken => 12,
         WireProblem::NothingToFade => 13,
+        WireProblem::SlicesUnplayable { .. } => 14,
     }
 }
 
@@ -2776,6 +2778,14 @@ fn problem_table() -> Vec<(CueProblem, WireProblem)> {
             },
             WireProblem::NetworkMessageInvalid {
                 reason: "the OSC address must start with /".into(),
+            },
+        ),
+        (
+            CueProblem::SlicesUnplayable {
+                reason: "a looping slice is too short".into(),
+            },
+            WireProblem::SlicesUnplayable {
+                reason: "a looping slice is too short".into(),
             },
         ),
         (CueProblem::StartedBroken, WireProblem::StartedBroken),
