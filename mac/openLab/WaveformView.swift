@@ -380,9 +380,6 @@ class WaveformView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
-    /// A click that brings the window forward still takes a handle or places the insertion point.
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
     private func anchor(of event: NSEvent) -> Double {
         guard bounds.width > 0 else { return 0.5 }
         let x = convert(event.locationInWindow, from: nil).x
