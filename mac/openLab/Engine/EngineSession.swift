@@ -81,6 +81,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         detached = []
         workspaces = []
         pendingCovers = [:]
+        listed = []
         offeredAutosaves = [:]
         storesChanged.send()
     }
@@ -122,6 +123,11 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
     private var offeredAutosaves: [String: Int64] = [:]
     /// Covers for docs whose store is not made yet (one opened while windows are being reattached).
     private var pendingCovers: [ModelID: AutosaveCover] = [:]
+    /// The docs of this engine run some `workspaces` list has named. The engine answers an `open`
+    /// before it sends the list naming the new doc, so a list that does not name a doc closes it
+    /// only once a list has named it: a store bound to a doc just opened (by the operator or a
+    /// reattach) is never dropped by the list that was already on its way.
+    private var listed: Set<ModelID> = []
 
     private func cover(_ doc: ModelID, _ update: (inout AutosaveCover) -> Void) {
         if let store = stores[doc] {
@@ -201,6 +207,8 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         switch message {
         case .appWelcome(_, let list):
             let token = client.connectedRun?.token
+            // Doc ids start again from 0 in a new run: what an old run's lists named means nothing.
+            if token != runToken { listed = [] }
             if runToken != nil, token != runToken, !stores.isEmpty || !detached.isEmpty {
                 detachAll()
             }
@@ -230,10 +238,13 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         if detached.isEmpty && reattachTask == nil {
             for info in list where stores[info.doc] == nil { makeStore(info.doc) }
         }
-        for doc in stores.keys where !list.contains(where: { $0.doc == doc }) { dropStore(doc) }
+        listed.formUnion(list.map(\.doc))
+        for doc in stores.keys where listed.contains(doc) && !list.contains(where: { $0.doc == doc }) {
+            dropStore(doc)
+        }
         var seen = Set<ModelID>()
-        let listed = list.map(\.doc).filter { stores[$0] != nil && seen.insert($0).inserted }
-        order = listed + order.filter { !listed.contains($0) && stores[$0] != nil }
+        let inList = list.map(\.doc).filter { stores[$0] != nil && seen.insert($0).inserted }
+        order = inList + order.filter { !inList.contains($0) && stores[$0] != nil }
         storesChanged.send()
     }
 
@@ -310,6 +321,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         stores = [:]
         order = []
         pendingCovers = [:]  // doc ids of the old run
+        listed = []
         events.send(.newEngineRun)
         storesChanged.send()
     }

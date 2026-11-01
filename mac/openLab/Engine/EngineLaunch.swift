@@ -2,68 +2,101 @@
 
 import Foundation
 
-/// Which engine the app talks to. `-OpenLabEngine fake` runs the in-process fake so UI tests need
-/// no engine (and never start a real one); the default is the real one. With the fake,
-/// `-OpenLabFakeEmpty` opens no workspace and `-OpenLabFakeCrashAfter SECONDS` makes it crash that
-/// long after launch (the crash-alarm UI test).
+/// Which engine the app starts. The default is the shipping one: detached, relaunching the app
+/// when it ends, its `engine.json` in the user's Application Support folder. Debug builds also have
+/// the test engine (`-OpenLabEngine test`): the same bundled engine on its virtual audio device,
+/// with an Application Support folder of its own, ending with the app (`--watch-stdin`) and never
+/// relaunching it. The app's tests run against it.
 enum EngineMode: Equatable {
     case real
     #if DEBUG
-        case fake(crashAfter: Double?, empty: Bool = false)
+        case test(TestEngineOptions)
     #endif
 
     /// Only the process arguments are read (never a persisted default), and only in Debug builds:
-    /// a shipping app cannot be switched to the fake engine. Release builds do not contain it at
-    /// all: project.yml excludes the fake engine, its shows and its welcome.json from them.
-    static func fromLaunchArguments(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> EngineMode {
+    /// a shipping app cannot be switched to the test engine (and its engine has no virtual device).
+    ///
+    /// The unit-test host always runs the test engine on the stepped clock, whatever its arguments:
+    /// a shipping engine started from a test run would outlive it and relaunch the app over the
+    /// UI tests.
+    static func fromLaunchArguments(
+        _ arguments: [String] = ProcessInfo.processInfo.arguments,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> EngineMode {
         #if DEBUG
-            guard let i = arguments.firstIndex(of: "-OpenLabEngine"), i + 1 < arguments.count,
-                arguments[i + 1] == "fake"
-            else { return .real }
-            var crashAfter: Double?
-            if let c = arguments.firstIndex(of: "-OpenLabFakeCrashAfter"), c + 1 < arguments.count {
-                crashAfter = Double(arguments[c + 1])
+            if isUnitTestHost(environment) {
+                return .test(TestEngineOptions(clock: .stepped, appSupport: TestEngineOptions.freshFolder()))
             }
-            return .fake(crashAfter: crashAfter, empty: arguments.contains("-OpenLabFakeEmpty"))
+            guard value(of: "-OpenLabEngine", in: arguments) == "test" else { return .real }
+            let clock = value(of: "-OpenLabVirtualDevice", in: arguments).flatMap(TestEngineOptions.Clock.init)
+            let support = value(of: "-OpenLabAppSupport", in: arguments).map { URL(fileURLWithPath: $0) }
+            var open: [String] = []
+            for (i, a) in arguments.enumerated() where a == "-OpenLabOpen" && i + 1 < arguments.count {
+                open.append(arguments[i + 1])
+            }
+            return .test(
+                TestEngineOptions(
+                    clock: clock ?? .realtime, appSupport: support ?? TestEngineOptions.freshFolder(), open: open))
         #else
             return .real
         #endif
     }
 
-    /// The app is the host process of the unit tests (XCTest sets this for it). It must start no
-    /// engine: the real engine is detached and relaunches the app when it ends, so on a machine
-    /// with no engine running every test run left an engine behind that relaunched the app over
-    /// the UI tests (they then could not bring their own instance to the front).
+    private static func value(of flag: String, in arguments: [String]) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+
+    /// The app is the host process of the unit tests (XCTest sets this for it).
     static func isUnitTestHost(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         environment["XCTestConfigurationFilePath"] != nil || environment["XCTestBundlePath"] != nil
     }
 
     @MainActor
     func make() -> (EngineSession, EngineSupervisor) {
+        let processes: SystemEngineProcesses
         switch self {
         case .real:
-            let processes = SystemEngineProcesses()
-            let session = EngineSession(transport: WebSocketTransport(), infoProvider: { processes.readInfo() })
-            return (session, EngineSupervisor(processes: processes, session: session))
+            processes = SystemEngineProcesses()
         #if DEBUG
-            case .fake(let crashAfter, let empty):
-                let engine = FakeEngine(snapshot: FakeEngine.demoSnapshot())
-                // Two clean workspaces so UI tests start with several windows and no save prompts.
-                for doc in engine.openDocs { engine.setDocument(doc, dirty: false) }
-                // The demo show has broken cues, so its pre-show check reports them.
-                engine.preshowProblemDocs = Set(engine.openDocs)
-                _ = engine.addDoc(FakeEngine.emptySnapshot(name: "Second"), path: nil)
-                if empty { engine.closeAll() }
-                let processes = FakeEngineProcesses(engine: engine)
-                let session = EngineSession(transport: engine, infoProvider: { processes.readInfo() })
-                if let crashAfter {
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: UInt64(max(0, crashAfter) * 1_000_000_000))
-                        processes.crash()
-                    }
-                }
-                return (session, EngineSupervisor(processes: processes, session: session))
+            case .test(let options):
+                processes = SystemEngineProcesses(
+                    infoURL: options.appSupport.appendingPathComponent("openLab/engine.json"),
+                    arguments: options.engineArguments, firstSpawnArguments: options.openArguments, watchStdin: true)
         #endif
         }
+        let session = EngineSession(transport: WebSocketTransport(), infoProvider: { processes.readInfo() })
+        return (session, EngineSupervisor(processes: processes, session: session))
     }
 }
+
+#if DEBUG
+    /// The test engine's launch: its clock, its Application Support folder and the shows it opens
+    /// when first started (not when restarted after a crash: the app reopens its workspaces then).
+    struct TestEngineOptions: Equatable {
+        enum Clock: String {
+            /// Device time moves only on an `advance` request (unit tests).
+            case stepped
+            /// Device time follows the system clock (UI tests).
+            case realtime
+        }
+
+        var clock: Clock
+        var appSupport: URL
+        var open: [String] = []
+
+        var engineArguments: [String] {
+            ["--virtual-device", clock.rawValue, "--app-support", appSupport.path, "--watch-stdin"]
+        }
+
+        var openArguments: [String] { open.flatMap { ["--open", $0] } }
+
+        /// A new, empty folder under the temporary directory.
+        static func freshFolder() -> URL {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+                "openlab-test-engine-\(UUID().uuidString)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
+    }
+#endif

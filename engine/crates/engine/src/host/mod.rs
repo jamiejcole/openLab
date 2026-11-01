@@ -606,38 +606,40 @@ fn open_at_start(
     if paths.is_empty() {
         return Ok(());
     }
-    let (reply, mut replies) = reply_channel();
-    let mut asked = Vec::new();
-    for (n, path) in paths.iter().enumerate() {
-        let id = RequestId(n as u64);
-        // The protocol takes absolute paths only.
-        let path = std::path::absolute(path).unwrap_or_else(|_| path.clone());
-        asked.push(path.display().to_string());
-        let _ = inbox.send(Inbox::Conn {
-            doc: None,
-            message: ClientMessage::Request {
-                id,
-                request: Request::Open {
-                    path: path.to_string_lossy().into_owned(),
-                    recovery: None,
-                },
-            },
-            reply: reply.clone(),
-        });
-    }
-    drop(reply);
+    // The protocol takes absolute paths only.
+    let asked: Vec<PathBuf> = paths
+        .iter()
+        .map(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone()))
+        .collect();
+    let inbox = inbox.clone();
+    // One at a time: the engine reads one document at a time and refuses an `open` sent while
+    // another is being read, so each waits for the answer to the one before.
     thread::Builder::new()
         .name("openlab-open".into())
         .spawn(move || {
-            while let Some(message) = replies.blocking_recv() {
-                let ServerMessage::Result { id, outcome } = message else {
-                    continue;
-                };
-                let path = usize::try_from(id.0)
-                    .ok()
-                    .and_then(|n| asked.get(n))
-                    .map_or("?", String::as_str);
-                say(&open_outcome(path, &outcome));
+            for (n, path) in asked.iter().enumerate() {
+                let (reply, mut replies) = reply_channel();
+                let sent = inbox.send(Inbox::Conn {
+                    doc: None,
+                    message: ClientMessage::Request {
+                        id: RequestId(n as u64),
+                        request: Request::Open {
+                            path: path.to_string_lossy().into_owned(),
+                            recovery: None,
+                        },
+                    },
+                    reply,
+                });
+                if sent.is_err() {
+                    return;
+                }
+                let shown = path.display().to_string();
+                while let Some(message) = replies.blocking_recv() {
+                    if let ServerMessage::Result { outcome, .. } = message {
+                        say(&open_outcome(&shown, &outcome));
+                        break;
+                    }
+                }
             }
         })
         .map(|_| ())

@@ -21,15 +21,7 @@ targets:
     platform: macOS
     sources:
       - openLab
-      # The fake engine's welcome snapshot (launch argument `-OpenLabEngine fake`), so the running
-      # app never reads the repo path. Debug only (excluded from Release below).
-      - path: ../engine/fixtures/protocol/server/welcome.json
-        buildPhase: resources
     settings:
-      configs:
-        # A shipping app holds no fake engine, demo shows or fault switches (only Debug can run them).
-        Release:
-          EXCLUDED_SOURCE_FILE_NAMES: FakeEngine.swift FakeShows.swift FakeEngineProcesses.swift welcome.json
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.openlab.openLab
         PRODUCT_NAME: openLab
@@ -61,6 +53,10 @@ targets:
       # Shared with the Rust test of core's `display_name` (M2.29c).
       - path: ../engine/fixtures/display_name.json
         buildPhase: resources
+      # The shows the tests open on the real engine (each test opens a copy).
+      - path: TestShows
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: openLab
     settings:
@@ -73,6 +69,9 @@ targets:
     platform: macOS
     sources:
       - openLabUITests
+      - path: TestShows
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: openLab
     settings:

@@ -27,25 +27,32 @@ final class SpyTableView: NSTableView {
 final class SidebarTests: XCTestCase {
     static let main: ModelID = "00000000-0000-0000-0000-000000000001"
     static let second: ModelID = "00000000-0000-0000-0000-000000000002"
-    static let intro: ModelID = CueListHarness.intro  // running in the fixture
-    static let rain: ModelID = CueListHarness.rain  // paused in the demo show
-    static let door: ModelID = CueListHarness.door  // loaded in the demo show
+    static let intro: ModelID = TestSnapshots.intro  // running in `make()`
+    static let rain: ModelID = TestSnapshots.rain  // paused in `make()`
+    static let door: ModelID = TestSnapshots.door  // loaded in `make()`
 
     private var rig: Rig!
     private var store: WorkspaceStore { rig.store }
     private let spy = SpyTableView()
     private var side: SidebarViewController!
 
-    /// The demo show plus a second, empty list "Second".
+    /// No engine: the demo show plus a second, empty list "Second", with Intro running, Rain
+    /// paused, Door slam loaded and Radio broken.
     private func make() async throws -> WorkspaceWindowController {
-        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
-        var snap = FakeEngine.demoSnapshot(base: base)
+        var snap = try TestSnapshots.show()
         var lists = snap["workspace"]?["cue_lists"]?.arrayValue ?? []
         lists.append(.object(["id": .string(Self.second.raw), "name": .string("Second"), "cues": .array([])]))
         snap["workspace"]?.set("cue_lists", .array(lists))
-        rig = try Rig(snapshot: snap)
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        func state(_ cue: ModelID, _ s: String) -> JSONValue {
+            .object(["cue": .string(cue.raw), "state": .string(s)])
+        }
+        snap.set(
+            "cue_states",
+            .array([
+                state(Self.intro, "running"), state(Self.rain, "paused"), state(Self.door, "loaded"),
+                state(TestSnapshots.radio, "broken"),
+            ]))
+        rig = try Rig.offline(snap)
         let wc = WorkspaceWindowController(store: store)
         // The sidebar the tests watch: a second one around a spy table.
         side = SidebarViewController(store: store, activeTable: spy)
@@ -184,57 +191,54 @@ final class SidebarTests: XCTestCase {
     /// CL-01: New List asks the engine for an empty list after the last one and shows it once the
     /// engine has accepted; New Cart stays off (CL-05).
     func testNewListAddsAnEmptyListAtTheEndAndShowsIt() async throws {
-        _ = try await make()
+        let wired = try await Rig.open()
+        side = SidebarViewController(store: wired.store, activeTable: spy)
+        side.view.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
         XCTAssertTrue(side.newListButton.isEnabled)
         XCTAssertFalse(side.newCartButton.isEnabled)
         var picked: ModelID?
         side.onSelectList = { picked = $0 }
         side.newListButton.performClick(nil)
-        let command = { () -> JSONValue? in
-            for case .command(_, let c, _) in self.rig.engine.received {
-                if let j = JSONValue.parse((try? c.json.text()) ?? ""), j["type"]?.stringValue == "add_cue_list" {
-                    return j
-                }
-            }
-            return nil
-        }
-        await assertEventually { command() != nil }
-        let sent = try XCTUnwrap(command())
-        XCTAssertEqual(sent["index"], .int(2))
-        XCTAssertEqual(sent["name"]?.stringValue, "Cue List 3")
-        XCTAssertNotNil(sent["id"]?.stringValue)
         await assertEventually { picked != nil }
-        XCTAssertEqual(picked?.raw, sent["id"]?.stringValue)
+        // The engine added it after the demo's one list, named in order, empty; the sidebar lists it.
+        let lists = try XCTUnwrap(wired.store.model?.cueLists)
+        XCTAssertEqual(lists.map(\.name), ["Main", "Cue List 2"])
+        XCTAssertEqual(lists.last?.id, picked)
+        XCTAssertEqual(lists.last?.cues.count, 0)
+        XCTAssertEqual(side.lists.map(\.name), ["Main", "Cue List 2"])
+        let sent = wired.wire.commands.filter { $0.json["type"]?.stringValue == "add_cue_list" }
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertEqual(sent.first?.json["index"], .int(1))
     }
 
     /// The right-click menu on a list row renames and deletes it; Show Mode and an engine refusal
     /// are both handled.
     func testListRowMenuRenamesAndDeletesAndRefusesInShowMode() async throws {
-        let wc = try await make()
+        let wired = try await Rig.open()
+        let wc = WorkspaceWindowController(store: wired.store)
+        side = SidebarViewController(store: wired.store, activeTable: spy)
         let list = try XCTUnwrap(side.lists.first).id
-        let sent = { (type: String) -> [JSONValue] in
-            self.rig.engine.received.compactMap {
-                if case .command(_, let c, _) = $0, c.json["type"]?.stringValue == type { return c.json }
-                return nil
-            }
+        let sent = { (type: String) -> Int in
+            wired.wire.commands.filter { $0.json["type"]?.stringValue == type }.count
         }
         await side.rename(list: list, to: "Front of House")
-        XCTAssertEqual(sent("rename_cue_list").last?["name"]?.stringValue, "Front of House")
-        XCTAssertEqual(sent("rename_cue_list").last?["id"]?.stringValue, list.raw)
+        XCTAssertEqual(wired.store.model?.cueLists.first?.name, "Front of House", "the engine renamed it")
+        await assertEventually { self.side.lists.first?.name == "Front of House" }
         var notices: [String] = []
         side.onNotice = { notices.append($0) }
-        rig.engine.refuseCommands = true
+        // The list has cues: the engine refuses to remove it, and the operator is told.
         await side.delete(list: list)
-        XCTAssertEqual(sent("remove_cue_list").count, 1)
+        XCTAssertEqual(sent("remove_cue_list"), 1)
         XCTAssertEqual(notices.count, 1, "the engine's refusal is shown")
-        rig.engine.refuseCommands = false
+        XCTAssertEqual(wired.store.model?.cueLists.map(\.id), [list], "the list is still there")
         wc.setShowMode(true)
         await assertEventually { wc.sidebar.listEditLocked }
         side.listEditLocked = true
         await side.rename(list: list, to: "Other")
         await side.delete(list: list)
-        XCTAssertEqual(sent("rename_cue_list").count, 1)
-        XCTAssertEqual(sent("remove_cue_list").count, 1)
+        XCTAssertEqual(sent("rename_cue_list"), 1, "nothing is sent in Show Mode")
+        XCTAssertEqual(sent("remove_cue_list"), 1)
+        XCTAssertEqual(wired.store.model?.cueLists.first?.name, "Front of House")
     }
 
     func testCuesAppearAndDisappearWithRuntimeChangesWithoutAFullReload() async throws {

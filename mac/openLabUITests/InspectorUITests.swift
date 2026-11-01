@@ -2,7 +2,7 @@
 
 import XCTest
 
-/// The inspector against the fake engine, which applies name edits and sends the `model_changed`:
+/// The inspector on the real engine, which applies name edits and sends the `model_changed`:
 /// a rename shows in the list only after the command went out and came back.
 @MainActor
 final class InspectorUITests: XCTestCase {

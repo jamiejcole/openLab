@@ -2,7 +2,7 @@
 
 import XCTest
 
-/// Add, rename, delete and undo against the fake engine, and the same keys doing nothing in Show Mode.
+/// Add, rename, delete and undo on the real engine, and the same keys doing nothing in Show Mode.
 @MainActor
 final class EditingUITests: XCTestCase {
     func testAddRenameDeleteAndUndo() {
@@ -30,16 +30,17 @@ final class EditingUITests: XCTestCase {
 
     func testCopyAndPasteDuplicatesACue() {
         let app = launchDemo()
-        let intro = app.staticTexts.matching(identifier: "Intro")
-        XCTAssertTrue(intro.firstMatch.waitForExistence(timeout: 10))
-        let before = intro.count
-        intro.firstMatch.click()
+        // Rows of the list only: the standby display above it names the playhead's cue too.
+        let intro = app.outlines.matching(identifier: "cue-list").outlineRows.containing(
+            NSPredicate(format: "label == 'Intro' OR value == 'Intro'"))
+        XCTAssertTrue(waitFor("count == 1", intro))
+        app.staticTexts["Intro"].firstMatch.click()
         app.typeKey("c", modifierFlags: .command)
         let copied = NSPredicate { _, _ in NSPasteboard.general.types?.contains(.init("dev.openlab.cue-data")) == true }
         XCTAssertEqual(
             XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: copied, object: nil)], timeout: 10), .completed)
         app.typeKey("v", modifierFlags: .command)
-        XCTAssertTrue(waitFor("count == \(before + 1)", intro), "the pasted copy shows in the list")
+        XCTAssertTrue(waitFor("count == 2", intro), "the pasted copy shows in the list")
     }
 
     func testEditingKeysDoNothingInShowMode() {

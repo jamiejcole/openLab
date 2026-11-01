@@ -5,12 +5,14 @@ import XCTest
 @testable import openLab
 
 /// The timing and loops tab of an Audio cue (AUD-11, AUD-12, AUD-14): the waveform drawing model,
-/// the trim handles and fields, the play count, and how peaks are fetched, against the fake engine
-/// (which answers `waveform` from the cue's `media_durations` entry and applies `kind` edits).
+/// the trim handles and fields, the play count, and how peaks are fetched, on the real engine
+/// (which reads the file for `waveform` and applies the `kind` edits). The wire is recorded to check
+/// what the tab sends and when.
 @MainActor
 final class TimeLoopsTests: XCTestCase {
-    /// Intro: an Audio cue of a 62.5 s file, untrimmed, played once (the welcome fixture).
-    static let intro = CueListHarness.intro
+    /// Intro: an Audio cue of a 62.5 s stereo file, untrimmed, played once (the demo show with a
+    /// longer a.wav written for these tests).
+    static let intro = TestSnapshots.intro
 
     private var rig: Rig!
     private var vc: InspectorViewController!
@@ -18,11 +20,27 @@ final class TimeLoopsTests: XCTestCase {
     private var panel: TimeLoopsPanel { vc.timeLoops }
     private var wave: WaveformView { vc.timeLoops.waveform }
 
+    /// The tests of pure drawing and editing logic: they need no engine (and run in engine-free runs).
+    private static let engineFree = [
+        "testDrawingStacksChannelsAndSpansMinToMax", "testDrawingFollowsTheZoom",
+        "testALiveResizeAsksForPeaksOnceWhenItEnds", "testSliceChangesApplyToTheCurrentKind",
+        "testTheDrawnFadeShapeIsCoresCurve",
+    ]
+
     override func setUp() async throws {
-        let base = try Fixtures.json("server", "welcome")["snapshot"] ?? .null
-        rig = try Rig(snapshot: FakeEngine.demoSnapshot(base: base))
-        let ok = await rig.connect()
-        XCTAssertTrue(ok)
+        if Self.engineFree.contains(where: { name.contains($0) }) { return }
+        rig = try await Rig.open("Demo") { show in
+            try writeWAV(show.appendingPathComponent("media/a.wav"), seconds: 62.5)
+            try editShow(show.appendingPathComponent("Demo.openlab")) { ws in
+                guard var lists = ws["cue_lists"]?.arrayValue, var cues = lists.first?["cues"]?.arrayValue,
+                    var kind = cues.first?["kind"]
+                else { return XCTFail("the demo show has no first cue") }
+                kind.set("last_slice_play_count", .int(1))
+                cues[0].set("kind", kind)
+                lists[0].set("cues", .array(cues))
+                ws.set("cue_lists", .array(lists))
+            }
+        }
         vc = InspectorViewController(store: rig.store)
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 300), styleMask: [.titled], backing: .buffered,
@@ -31,7 +49,10 @@ final class TimeLoopsTests: XCTestCase {
         window.contentView = vc.view
     }
 
-    override func tearDown() async throws { window.orderOut(nil) }
+    override func tearDown() async throws {
+        window?.orderOut(nil)
+        rig?.client.stop()
+    }
 
     /// Selects Intro and shows its tab, the waveform at least 625 points wide (10 points a second or more).
     private func showIntro() async {
@@ -44,7 +65,7 @@ final class TimeLoopsTests: XCTestCase {
     }
 
     private var kinds: [JSONValue] {
-        rig.engine.received.compactMap {
+        rig.wire.sent.compactMap {
             guard case .command(_, let c, _) = $0, let cmd = JSONValue.parse((try? c.json.text()) ?? ""),
                 cmd["property"]?["type"]?.stringValue == "kind_fields"
             else { return nil }
@@ -53,7 +74,7 @@ final class TimeLoopsTests: XCTestCase {
     }
 
     private var waveformRequests: Int {
-        rig.engine.requestCount { if case .waveform = $0 { return true } else { return false } }
+        rig.wire.requestCount { if case .waveform = $0 { return true } else { return false } }
     }
 
     private func type(_ field: NSTextField, _ text: String) {
@@ -112,7 +133,7 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertEqual(
             vc.tabView.tabViewItems.compactMap { $0.identifier as? String },
             ["basics", "triggers", "timeLoops", "levels"])
-        vc.setSelection([CueListHarness.fade])
+        vc.setSelection([TestSnapshots.fade])
         XCTAssertFalse(vc.tabView.tabViewItems.contains { $0.identifier as? String == "timeLoops" })
     }
 
@@ -245,7 +266,7 @@ final class TimeLoopsTests: XCTestCase {
     func testNoPeaksAreAskedWhileTheTabIsHidden() async {
         vc.setSelection([Self.intro])
         vc.tabView.selectTabViewItem(withIdentifier: "basics")
-        vc.setSelection([CueListHarness.fade])
+        vc.setSelection([TestSnapshots.fade])
         vc.setSelection([Self.intro])
         XCTAssertNil(panel.loading)
         XCTAssertEqual(waveformRequests, 0)
@@ -323,7 +344,7 @@ final class TimeLoopsTests: XCTestCase {
 
     private var modelKind: JSONValue? { rig.store.model?.cue(Self.intro)?.raw["kind"] }
 
-    /// Every edit sent from the tab has been answered (the fake engine has it).
+    /// Every edit sent from the tab has been answered (the engine has it).
     private func answered() async { await assertEventually("answered") { self.vc.pendingKinds.isEmpty } }
 
     /// Clicks at `t` and adds a slice there; waits until the model has `count` markers.
@@ -455,7 +476,7 @@ final class TimeLoopsTests: XCTestCase {
     /// that is gone or a place too near another changes nothing.
     func testSliceChangesApplyToTheCurrentKind() {
         let base = TimeLoopsPanel.apply(
-            .addSlice(20), to: TimeLoopsPanel.apply(.addSlice(10), to: FakeEngine.audioKind("a.wav")))
+            .addSlice(20), to: TimeLoopsPanel.apply(.addSlice(10), to: TestSnapshots.audioKind("a.wav")))
         XCTAssertEqual(slices(base), [[10, 1], [20, 1]])
         XCTAssertEqual(slices(TimeLoopsPanel.apply(.moveSlice(from: 10, to: 12), to: base)), [[12, 1], [20, 1]])
         XCTAssertEqual(TimeLoopsPanel.apply(.moveSlice(from: 11, to: 12), to: base), base, "no marker there")
@@ -700,4 +721,42 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertLessThan(WaveformView.shape("exponential", 0.5), 0.05)
         XCTAssertGreaterThan(WaveformView.shape("logarithmic", 0.5), 0.95)
     }
+}
+
+// MARK: Show-file helpers (also used by the other inspector and window tests)
+
+/// A 16-bit stereo WAV of `seconds` at 8 kHz: a quiet tone, the right channel at half the left.
+func writeWAV(_ url: URL, seconds: Double, rate: Int = 8000) throws {
+    let frames = Int((seconds * Double(rate)).rounded())
+    var d = Data()
+    func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
+    func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
+    d.append(contentsOf: Array("RIFF".utf8))
+    u32(UInt32(36 + frames * 4))
+    d.append(contentsOf: Array("WAVEfmt ".utf8))
+    u32(16)
+    u16(1)
+    u16(2)
+    u32(UInt32(rate))
+    u32(UInt32(rate * 4))
+    u16(4)
+    u16(16)
+    d.append(contentsOf: Array("data".utf8))
+    u32(UInt32(frames * 4))
+    d.reserveCapacity(d.count + frames * 4)
+    for i in 0..<frames {
+        let v = Int16(3000 * sin(2 * Double.pi * 440 * Double(i) / Double(rate)))
+        u16(UInt16(bitPattern: v))
+        u16(UInt16(bitPattern: v / 2))
+    }
+    try d.write(to: url)
+}
+
+/// Rewrites the workspace of the show file at `url`.
+func editShow(_ url: URL, _ edit: (inout JSONValue) -> Void) throws {
+    var file = try XCTUnwrap(JSONValue.parse(try String(contentsOf: url, encoding: .utf8)))
+    var ws = try XCTUnwrap(file["workspace"])
+    edit(&ws)
+    file.set("workspace", ws)
+    try file.text().write(to: url, atomically: true, encoding: .utf8)
 }

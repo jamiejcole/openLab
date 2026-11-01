@@ -55,8 +55,7 @@ extension EngineConnectionInfo {
     }
 }
 
-/// One live connection to the engine. Exactly two implementations: `WebSocketConnection` and the
-/// fake engine's `FakeConnection`.
+/// One live connection to the engine: `WebSocketConnection` (tests wrap it to record or hold frames).
 @MainActor
 protocol EngineConnection: AnyObject {
     /// Queues one text frame; order is preserved. A failed write surfaces as `receive` throwing.
@@ -72,7 +71,7 @@ extension EngineConnection {
     func sendAndFlush(_ text: String) async { send(text) }
 }
 
-/// Opens connections: `WebSocketTransport` for the real engine, `FakeEngine` in tests and UI tests.
+/// Opens connections: `WebSocketTransport` (tests wrap it to record or hold frames).
 @MainActor
 protocol EngineTransport: AnyObject {
     func connect(info: EngineConnectionInfo) async throws -> any EngineConnection
