@@ -165,8 +165,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     private var generation = 0
     /// The fetch under way (tests wait on it).
     private(set) var loading: Task<Void, Never>?
-    /// The read out (its generation and file); one at a time per file.
-    private var inFlight: (gen: Int, cue: ModelID, media: String)?
+    /// The generation of the read out; one at a time for the panel.
+    private var inFlight: Int?
     /// A zoom or pan asked for other peaks while a read was out.
     private(set) var reloadPending = false
 
@@ -431,7 +431,12 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     /// The peaks for what is visible at the view's width: from the cache, or fetched. Only while
     /// the tab is on screen and not in Show Mode: reading a waveform decodes the whole file, which
     /// a show in progress must not pay for a click in the cue list.
-    func reload() {
+    func reload() { ask(busyRetries: 0) }
+
+    /// How many times a refusal for too many waveforms waiting is asked again before giving up.
+    static let busyRetryLimit = 3
+
+    private func ask(busyRetries: Int) {
         // Whatever read is out is for something no longer asked for, even when nothing is asked now.
         generation += 1
         guard let file, isActive, !isLocked else { return }
@@ -446,32 +451,33 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             return
         }
         guard let loadPeaks else { return }
-        // A pinch or wheel asks many times a second and each read decodes the file: while one is
-        // out for this file, only the latest ask is kept and made when it comes back. Another
-        // file's read is not waited for: its result is dropped when it comes.
-        if let out = inFlight, out.cue == key.cue, out.media == key.media {
+        // Each read decodes a whole file and the engine queues only a few: one is out for the whole
+        // panel, and of the asks made meanwhile (a pinch, arrowing through cues) only the latest is
+        // kept and made when it comes back. The result of a read nobody asks for now is dropped.
+        if inFlight != nil {
             reloadPending = true
             return
         }
         reloadPending = false
         let gen = generation
-        inFlight = (gen, key.cue, key.media)
+        inFlight = gen
         loading = Task { [weak self] in
             let result = await loadPeaks(key.cue, key.start, key.end, key.buckets)
             guard let self else { return }
-            if self.inFlight?.gen == gen {
-                self.inFlight = nil
-                if self.reloadPending {
-                    self.reloadPending = false
-                    self.reload()
-                    return
-                }
+            self.inFlight = nil
+            if self.reloadPending {
+                self.reloadPending = false
+                self.ask(busyRetries: 0)
+                return
             }
             guard gen == self.generation else { return }
             switch result {
             case .success(let peaks):
                 self.remember(key, peaks)
                 self.waveform.peaks = peaks
+            case .failure(.engine(.commandRefused, _)) where busyRetries < Self.busyRetryLimit:
+                // The engine's queue was full of reads that nobody waits for now; it drains.
+                self.ask(busyRetries: busyRetries + 1)
             case .failure:
                 self.waveform.peaks = nil
                 self.waveform.message = loc("timeLoops.unavailable")

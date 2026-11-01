@@ -26,7 +26,7 @@ final class TimeLoopsTests: XCTestCase {
         "testALiveResizeAsksForPeaksOnceWhenItEnds", "testSliceChangesApplyToTheCurrentKind",
         "testTheDrawnFadeShapeIsCoresCurve", "testViewportZoomKeepsTheAnchorAndStaysInTheFile",
         "testViewportPanStopsAtTheFileEnds",
-        "testAReadStillOutForAnotherCueDoesNotLandOnTheCueShown", "testAnotherCuesReadIsNotWaitedFor",
+        "testAReadStillOutForAnotherCueDoesNotLandOnTheCueShown", "testOneReadIsOutAtATimeAndTheLatestAskIsMade", "testARefusedReadIsAskedAgain",
     ]
 
     override func setUp() async throws {
@@ -198,6 +198,7 @@ final class TimeLoopsTests: XCTestCase {
             let kind = media.map { JSONValue.object(["media": .string($0)]) } ?? .object([:])
             panel.show(cue: cue, kind: kind, duration: duration)
         }
+        func fail(_ i: Int, _ error: EngineError) { held[i].resume(returning: .failure(error)) }
         func answer(_ i: Int, cue: ModelID) {
             let json = """
                 {"cue":"\(cue)","duration":10,"start":0,"end":10,"channels":[{"min":[-100],"max":[100]}]}
@@ -222,22 +223,91 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertNil(reads.panel.waveform.peaks)
     }
 
-    /// A's read held (a stalled disk), B shown: B's read is asked at once, and A's late result is dropped.
-    func testAnotherCuesReadIsNotWaitedFor() async {
+    /// A's read held (a stalled disk), B shown: B waits for it, and only then is asked.
+    func testOneReadIsOutAtATimeAndTheLatestAskIsMade() async {
+        let reads = HeldReads()
+        let (a, b, c) = (TestSnapshots.intro, TestSnapshots.fade, TestSnapshots.door)
+        reads.show(a, media: "a.wav", duration: 10)
+        reads.show(b, media: "b.wav", duration: 10)
+        reads.show(c, media: "c.wav", duration: 10)
+        await settle()
+        XCTAssertEqual(reads.asked, [a], "one read out for the panel")
+        reads.answer(0, cue: a)
+        await reads.panel.loading?.value
+        await assertEventually { reads.asked == [a, c] }
+        XCTAssertNil(reads.panel.waveform.peaks, "A's result is not drawn on C")
+        reads.answer(1, cue: c)
+        await reads.panel.loading?.value
+        XCTAssertEqual(reads.panel.waveform.peaks?.cue, c)
+    }
+
+    /// The engine refuses a read when too many wait: the cue still shown is asked again, not marked unavailable.
+    func testARefusedReadIsAskedAgain() async {
         let reads = HeldReads()
         let a = TestSnapshots.intro
-        let b = TestSnapshots.fade
         reads.show(a, media: "a.wav", duration: 10)
         await settle()
-        reads.show(b, media: "b.wav", duration: 10)
-        await settle()
-        XCTAssertEqual(reads.asked, [a, b], "B's read does not wait for A's")
-        reads.answer(1, cue: b)
+        reads.fail(0, .engine(code: .commandRefused, message: "too many waveforms are waiting to be read"))
         await reads.panel.loading?.value
-        XCTAssertEqual(reads.panel.waveform.peaks?.cue, b)
-        reads.answer(0, cue: a)
-        await settle()
-        XCTAssertEqual(reads.panel.waveform.peaks?.cue, b, "A's late result is dropped")
+        await assertEventually { reads.asked == [a, a] }
+        reads.answer(1, cue: a)
+        await reads.panel.loading?.value
+        XCTAssertEqual(reads.panel.waveform.peaks?.cue, a)
+        XCTAssertNotEqual(reads.panel.waveform.message, loc("timeLoops.unavailable"))
+    }
+
+    /// Arrowing through ten Audio cues leaves the last one's waveform drawn, never "unavailable", with
+    /// no more than one read out at a time (the engine queues only a few).
+    func testArrowingThroughAudioCuesDrawsTheLastWaveform() async throws {
+        let ids = (0..<10).map { String(format: "00000000-0000-0000-0000-0000000002%02d", $0) }
+        let many = try await Rig.open("Demo") { show in
+            try writeWAV(show.appendingPathComponent("media/a.wav"), seconds: 20)
+            try editShow(show.appendingPathComponent("Demo.openlab")) { ws in
+                guard var lists = ws["cue_lists"]?.arrayValue, var cues = lists.first?["cues"]?.arrayValue,
+                    let first = cues.first
+                else { return XCTFail("the demo show has no first cue") }
+                for (n, id) in ids.enumerated() {
+                    var cue = first
+                    cue.set("id", .string(id))
+                    cue.set("number", .string("A\(n)"))
+                    cues.append(cue)
+                }
+                lists[0].set("cues", .array(cues))
+                ws.set("cue_lists", .array(lists))
+            }
+        }
+        defer { many.client.stop() }
+        let inspector = InspectorViewController(store: many.store)
+        let box = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 300), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        box.isReleasedWhenClosed = false
+        box.contentView = inspector.view
+        defer { box.orderOut(nil) }
+        inspector.setSelection([ModelID(ids[0])])
+        inspector.tabView.selectTabViewItem(withIdentifier: "timeLoops")
+        inspector.view.layoutSubtreeIfNeeded()
+        let panel = inspector.timeLoops
+        if panel.waveform.bounds.width < 625 { panel.waveform.setFrameSize(NSSize(width: 625, height: 120)) }
+        await assertEventually("durations known") { ids.allSatisfy { many.store.mediaDurations[ModelID($0)]?.file != nil } }
+        var out = 0
+        var most = 0
+        let real = panel.loadPeaks
+        panel.loadPeaks = { cue, a, b, n in
+            out += 1
+            most = max(most, out)
+            let r = await real?(cue, a, b, n) ?? .failure(.notConnected)
+            out -= 1
+            return r
+        }
+        for id in ids {
+            inspector.setSelection([ModelID(id)])
+            await Task.yield()
+        }
+        let last = ModelID(ids[9])
+        await assertEventually("the last cue's waveform is drawn") { panel.waveform.peaks?.cue == last }
+        XCTAssertNotEqual(panel.waveform.message, loc("timeLoops.unavailable"))
+        XCTAssertLessThanOrEqual(most, 1)
     }
 
     /// Waits for the peaks of the visible stretch, including a read a later zoom queued behind one.
@@ -400,7 +470,6 @@ final class TimeLoopsTests: XCTestCase {
 
     func testKeyboardZoom() async {
         await showIntro()
-        window.makeKeyAndOrderFront(nil)
         XCTAssertFalse(window.performKeyEquivalent(with: commandKey("=")!), "ignored while the waveform is not focused")
         XCTAssertEqual(span, 62.5)
         click(atSeconds: 30)
@@ -412,6 +481,20 @@ final class TimeLoopsTests: XCTestCase {
         await peaksSettled()
     }
 
+    /// Hands `event` to the view under it, as the window does for a window that is key. The test
+    /// host is not the active app, so no window here is key and `sendEvent` would take a first
+    /// click for activation only (the test below that sends one that way).
+    private func deliver(_ event: NSEvent) {
+        guard let content = window.contentView,
+            let target = content.hitTest(content.convert(event.locationInWindow, from: nil))
+        else { return XCTFail("nothing under the pointer") }
+        switch event.type {
+        case .leftMouseDown: target.mouseDown(with: event)
+        case .leftMouseDragged: target.mouseDragged(with: event)
+        default: target.mouseUp(with: event)
+        }
+    }
+
     private func mouse(_ type: NSEvent.EventType, atSeconds t: Double) -> NSEvent {
         NSEvent.mouseEvent(
             with: type, location: windowPoint(atSeconds: t), modifierFlags: [], timestamp: 0,
@@ -419,19 +502,31 @@ final class TimeLoopsTests: XCTestCase {
     }
 
     private func click(atSeconds t: Double) {
-        window.sendEvent(mouse(.leftMouseDown, atSeconds: t))
-        window.sendEvent(mouse(.leftMouseUp, atSeconds: t))
+        deliver(mouse(.leftMouseDown, atSeconds: t))
+        deliver(mouse(.leftMouseUp, atSeconds: t))
+    }
+
+    /// A click that only brings the window forward moves no handle and places no insertion point.
+    func testAClickThatBringsTheWindowForwardMovesNoHandle() async {
+        await showIntro()
+        XCTAssertFalse(window.isKeyWindow, "the test host is not active, so this click only activates")
+        window.sendEvent(mouse(.leftMouseDown, atSeconds: 0.2))
+        window.sendEvent(mouse(.leftMouseDragged, atSeconds: 10))
+        window.sendEvent(mouse(.leftMouseUp, atSeconds: 10))
+        XCTAssertNil(wave.dragging)
+        XCTAssertEqual(panel.startField.stringValue, "00:00.00")
+        XCTAssertTrue(kinds.isEmpty)
+        XCTAssertNil(wave.insertion)
     }
 
     /// A real mouse-down on a trim handle still takes it, and the drag moves the trim.
     func testAHandleStillDragsAfterTheWaveformTakesFocus() async {
         await showIntro()
-        window.makeKeyAndOrderFront(nil)
-        window.sendEvent(mouse(.leftMouseDown, atSeconds: 0.2))
+        deliver(mouse(.leftMouseDown, atSeconds: 0.2))
         XCTAssertTrue(window.firstResponder === wave)
         XCTAssertEqual(wave.dragging, .start)
-        window.sendEvent(mouse(.leftMouseDragged, atSeconds: 10))
-        window.sendEvent(mouse(.leftMouseUp, atSeconds: 10))
+        deliver(mouse(.leftMouseDragged, atSeconds: 10))
+        deliver(mouse(.leftMouseUp, atSeconds: 10))
         await assertEventually { self.kinds.last?["start_time"] == .double(10) }
         XCTAssertEqual(panel.startField.stringValue, "00:10.00")
     }
