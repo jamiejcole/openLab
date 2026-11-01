@@ -24,12 +24,15 @@ final class TimeHeaderCell: NSTableHeaderCell {
     }
 
     /// A template image filled with `colour`; a template drawn directly would be black in dark mode.
-    static func tinted(_ image: NSImage, _ colour: NSColor, size: NSSize) -> NSImage {
-        NSImage(size: size, flipped: false) { rect in
+    static func tinted(_ image: NSImage, _ colour: NSColor, size: NSSize, description: String? = nil) -> NSImage {
+        let out = NSImage(size: size, flipped: false) { rect in
             image.draw(in: rect)
             colour.set()
             rect.fill(using: .sourceIn)
             return true
         }
+        out.isTemplate = false
+        out.accessibilityDescription = description
+        return out
     }
 }

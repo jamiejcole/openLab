@@ -219,7 +219,7 @@ final class CueListTests: XCTestCase {
     func testColumnsAreQLabOrder() {
         XCTAssertEqual(
             CueListViewController.columns.map(\.id),
-            ["status", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
+            ["status", "type", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
     }
 
     func testCellsShowNumberNameTargetAndTimes() async throws {
@@ -264,7 +264,7 @@ final class CueListTests: XCTestCase {
         h.spy.expandItem(try XCTUnwrap(h2.node(H.group)))
         let name = try XCTUnwrap(h.cell("name", H.rain))
         // A colour adds no marker to the Name column; the flag is a status-column icon.
-        XCTAssertTrue(name.images[1...].allSatisfy(\.isHidden))
+        XCTAssertTrue(name.images.allSatisfy(\.isHidden))
         let status = try XCTUnwrap(h.cell("status", H.rain))
         XCTAssertFalse(status.images[3].isHidden)
         XCTAssertEqual(status.images[3].accessibilityLabel(), loc("cue.flagged"))
@@ -724,15 +724,16 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(reload.rows, IndexSet(integer: 0))
         XCTAssertEqual(reload.columns.map { h.spy.tableColumns[$0].identifier.rawValue }, ["duration"])
         XCTAssertEqual(h.spy.wholeReloads, 0)
-        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:02.50 / 00:10.00")
-        // Next tick: the same row again; when it ends, that row once more, back to its own duration.
+        // The cell keeps reading the cue's duration (the probed 120 s) while it runs.
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "02:00.00")
+        // Next tick: the same row again; when it ends, that row once more.
         h.spy.resetCounts()
         try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":3.0,"remaining":null}]}"#)
         XCTAssertEqual(h.spy.rowsReloaded, 1)
-        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:03.00")
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "02:00.00")
         h.spy.resetCounts()
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"idle"}"#)
-        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "")
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "02:00.00")
         XCTAssertEqual(h.spy.wholeReloads, 0)
     }
 
@@ -991,15 +992,15 @@ extension CueListTests {
         XCTAssertTrue(duration.headerCell is TimeHeaderCell)
         XCTAssertFalse(try XCTUnwrap(columns.first { $0.identifier.rawValue == "number" }).headerCell is TimeHeaderCell)
         try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":2.5,"remaining":7.5}]}"#)
-        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:02.50 / 00:10.00")
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "02:00.00")
         // A header click (the delegate hook) switches Duration to the time left, in place.
         h.vc.outlineView(h.spy, didClick: duration)
         XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:07.50")
         XCTAssertEqual((duration.headerCell as? TimeHeaderCell)?.shown, .remaining)
         XCTAssertEqual(duration.headerToolTip, loc("cuelist.time.showFull"))
-        // The next tick keeps the choice; an unknown end falls back to elapsed.
+        // The next tick keeps the choice; an unknown end falls back to the duration.
         try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":3.0,"remaining":null}]}"#)
-        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:03.00")
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "02:00.00")
         h.vc.toggleTimeShown("duration")
         XCTAssertEqual(h.vc.timeShown["duration"], .full)
         // Waits default to counting down; the toggle shows elapsed / total.
@@ -1089,5 +1090,302 @@ extension CueListTests {
         XCTAssertFalse(h.spy.isItemExpanded(group))
         press(Int(NSRightArrowFunctionKey))
         XCTAssertTrue(h.spy.isItemExpanded(group))
+    }
+}
+
+/// What the cue list draws, on the real engine: the status, cue-type and Duration cells are rendered
+/// and their pixels read, so what a test sees is what is on screen.
+@MainActor
+final class CueListDrawingTests: XCTestCase {
+    typealias H = CueListHarness
+    private let ten: ModelID = "00000000-0000-0000-0000-00000000000a"
+    private let five: ModelID = "00000000-0000-0000-0000-0000000000f2"
+    private let memo: ModelID = "00000000-0000-0000-0000-0000000000f3"
+    private var window: NSWindow?
+
+    override func tearDown() async throws {
+        window?.close()
+        window = nil
+    }
+
+    /// Audio cue 1 (10 s), Audio cue 2 (5 s), Memo cue 3: the Demo show with its cues replaced.
+    private func timingRig() async throws -> Rig {
+        let (five, memo) = (self.five, self.memo)
+        return try await Rig.open(
+            "Demo",
+            edit: { folder in
+                let media = folder.appendingPathComponent("media")
+                try writeWAV(media.appendingPathComponent("ten.wav"), seconds: 10)
+                try writeWAV(media.appendingPathComponent("five.wav"), seconds: 5)
+                try editShow(folder.appendingPathComponent("Demo.openlab")) { ws in
+                    guard var list = ws["cue_lists"]?.arrayValue?.first, var one = list["cues"]?.arrayValue?.first,
+                        var kind = one["kind"]
+                    else { return }
+                    kind.set("media", .string("media/ten.wav"))
+                    kind.set("last_slice_play_count", .int(1))  // the Demo loops until devamped: no duration
+                    one.set("kind", kind)
+                    var two = one
+                    two.set("id", .string(five.raw))
+                    two.set("number", .string("2"))
+                    two.set("name", .string("Two"))
+                    kind.set("media", .string("media/five.wav"))
+                    two.set("kind", kind)
+                    var note = one
+                    note.set("id", .string(memo.raw))
+                    note.set("number", .string("3"))
+                    note.set("name", .string("Note"))
+                    note.set("kind", .object(["type": .string("memo")]))
+                    list.set("cues", .array([one, two, note]))
+                    var lists = ws["cue_lists"]?.arrayValue ?? []
+                    lists[0] = list
+                    ws.set("cue_lists", .array(lists))
+                }
+            })
+    }
+
+    /// The cue list in a key window with the table focused, so a selected row is drawn as the user sees it.
+    private func harness(_ rig: Rig) async throws -> H {
+        let h = try await H(rig: rig)
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 400), styleMask: [.titled, .resizable],
+            backing: .buffered, defer: false)
+        w.isReleasedWhenClosed = false
+        w.appearance = NSAppearance(named: .aqua)  // the pixel checks assume dark icons on a light row
+        w.contentView = h.vc.view
+        w.makeKeyAndOrderFront(nil)
+        w.makeFirstResponder(h.spy)
+        window = w
+        w.layoutIfNeeded()
+        return h
+    }
+
+    /// The rendered pixels (0...1 RGB) of one cell of a row, as drawn inside the row (selection and
+    /// alternating background included).
+    private func pixels(_ h: H, _ column: String, _ id: ModelID) throws -> Pixels {
+        let row = h.spy.row(forItem: h.vc.node(id))
+        let col = h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
+        XCTAssertGreaterThanOrEqual(row, 0)
+        let rowView = try XCTUnwrap(h.spy.rowView(atRow: row, makeIfNecessary: true))
+        rowView.layoutSubtreeIfNeeded()
+        let cell = h.spy.frameOfCell(atColumn: col, row: row)
+        let rowFrame = h.spy.rect(ofRow: row)
+        let region = NSRect(x: cell.minX - rowFrame.minX, y: 0, width: cell.width, height: rowFrame.height)
+        rowView.layoutSubtreeIfNeeded()
+        let scale = max(1, rowView.window?.backingScaleFactor ?? 2)
+        let rep = try XCTUnwrap(
+            NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: Int(rowView.bounds.width * scale),
+                pixelsHigh: Int(rowView.bounds.height * scale), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
+        context.cgContext.setFillColor(NSColor.white.cgColor)  // the window's light background under a clear row
+        context.cgContext.fill(CGRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh))
+        context.cgContext.scaleBy(x: scale, y: scale)
+        // Draws the view tree straight into the bitmap (cacheDisplay skips layer-backed subviews).
+        rowView.displayIgnoringOpacity(rowView.bounds, in: context)
+        return Pixels(rep: rep, region: region, scale: scale)
+    }
+
+    struct Pixels {
+        let rep: NSBitmapImageRep
+        let region: NSRect
+        let scale: CGFloat
+
+        var all: [(x: Int, r: CGFloat, g: CGFloat, b: CGFloat)] {
+            var out: [(Int, CGFloat, CGFloat, CGFloat)] = []
+            let x0 = Int(region.minX * scale)
+            let x1 = min(rep.pixelsWide, Int(region.maxX * scale))
+            for y in 0..<rep.pixelsHigh {
+                for x in x0..<max(x0, x1) {
+                    guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                    out.append((x - x0, c.redComponent, c.greenComponent, c.blueComponent))
+                }
+            }
+            return out
+        }
+
+        /// Pixels clearly unlike the cell's top-left pixel (its background, light or dark).
+        func countDifferingFromBackground() -> Int {
+            guard let first = all.first else { return 0 }
+            return count { r, g, b in abs(r - first.r) + abs(g - first.g) + abs(b - first.b) > 0.6 }
+        }
+
+        func count(_ match: (CGFloat, CGFloat, CGFloat) -> Bool) -> Int { all.filter { match($0.r, $0.g, $0.b) }.count }
+        /// Pixel columns (0...1 of the cell's width) the matching pixels reach.
+        func extent(_ match: (CGFloat, CGFloat, CGFloat) -> Bool) -> ClosedRange<Double>? {
+            let xs = all.filter { match($0.r, $0.g, $0.b) }.map(\.x)
+            guard let lo = xs.min(), let hi = xs.max() else { return nil }
+            let w = Double(region.width * scale)
+            return (Double(lo) / w)...(Double(hi + 1) / w)
+        }
+    }
+
+    // Colours as drawn: the system green (running), yellow (paused) and the playhead's grey.
+    private static let green: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in g > 0.65 && r < 0.4 && b < 0.55 }
+    private static let greenish: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in g - r > 0.08 && g - b > 0.04 }
+    private static let yellowish: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in
+        r > 0.85 && g > 0.7 && r - b > 0.2 && abs(r - g) < 0.3
+    }
+    private static let playheadGrey: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in
+        abs(r - 0.62) < 0.04 && abs(g - 0.62) < 0.04 && abs(b - 0.62) < 0.04
+    }
+
+    private func go(_ rig: Rig) async throws {
+        guard case .success = await rig.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
+        try await rig.advance()
+    }
+
+    func testPlayheadMarkerDistinctFromRunning() async throws {
+        let rig = try await timingRig()
+        let h = try await harness(rig)
+        await assertEventually { rig.store.playheads[TestSnapshots.mainList] == self.ten }
+        let one = try pixels(h, "status", ten)
+        XCTAssertGreaterThan(one.count(Self.playheadGrey), 8, "cue 1 shows the light grey pointer")
+        XCTAssertEqual(one.count(Self.green), 0, "and no green triangle")
+        XCTAssertEqual(try pixels(h, "status", five).count(Self.playheadGrey), 0, "no other row shows a pointer")
+        XCTAssertEqual(try pixels(h, "status", memo).count(Self.playheadGrey), 0)
+        // At the far left edge of the row.
+        XCTAssertLessThan(try XCTUnwrap(one.extent(Self.playheadGrey)).lowerBound, 0.15)
+    }
+
+    func testRunningAndStandingByAtOnce() async throws {
+        let rig = try await timingRig()
+        let h = try await harness(rig)
+        try await go(rig)
+        await assertEventually { rig.store.cueStates[self.ten]?.state == .running }
+        await assertEventually { rig.store.playheads[TestSnapshots.mainList] == self.five }
+        let one = try pixels(h, "status", ten)
+        XCTAssertGreaterThan(one.count(Self.green), 8, "cue 1 shows a green running triangle")
+        XCTAssertEqual(one.count(Self.playheadGrey), 0)
+        let two = try pixels(h, "status", five)
+        XCTAssertGreaterThan(two.count(Self.playheadGrey), 8, "cue 2 shows the grey pointer")
+        XCTAssertEqual(two.count(Self.green), 0)
+        // The two read apart by colour and position (the icons' shapes are alike).
+        let running = try XCTUnwrap(h.cell("status", ten)).images[1]
+        let pointer = try XCTUnwrap(h.cell("status", five)).images[0]
+        XCTAssertNotEqual(Icon.stateRunning.symbol, Icon.playhead.symbol)
+        XCTAssertEqual(running.accessibilityLabel(), loc("cue.state.running"))
+        XCTAssertEqual(pointer.accessibilityLabel(), loc("cue.playhead"))
+    }
+
+    func testHighlightedRowsKeepIconColours() async throws {
+        let rig = try await timingRig()
+        let h = try await harness(rig)
+        try await go(rig)
+        await assertEventually { rig.store.cueStates[self.ten]?.state == .running }
+        await assertEventually { rig.store.playheads[TestSnapshots.mainList] == self.five }
+        h.spy.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        h.spy.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: true)
+        try await rig.advance()
+        await assertEventually { rig.store.playheads[TestSnapshots.mainList] == self.five }
+        XCTAssertEqual(h.spy.selectedRowIndexes, IndexSet([0, 1]))
+        // A test process is not the active app, so AppKit draws the selection unfocused; draw it as a
+        // focused one (white-on-accent is what turns template icons white).
+        for row in 0...1 { h.spy.rowView(atRow: row, makeIfNecessary: true)?.isEmphasized = true }
+        XCTAssertGreaterThan(try pixels(h, "status", ten).count(Self.green), 8, "running triangle stays green")
+        let two = try pixels(h, "status", five)
+        XCTAssertGreaterThan(two.count(Self.playheadGrey), 8, "pointer stays grey")
+        XCTAssertEqual(two.count { r, g, b in r > 0.97 && g > 0.97 && b > 0.97 }, 0, "and nothing turns white")
+    }
+
+    func testCueTypeColumn() async throws {
+        let rig = try await timingRig()
+        let h = try await harness(rig)
+        let ids = h.spy.tableColumns.map(\.identifier.rawValue)
+        let status = try XCTUnwrap(ids.firstIndex(of: "status"))
+        XCTAssertEqual(Array(ids[status...(status + 2)]), ["status", "type", "number"])
+        for (cue, kind) in [(ten, "audio"), (five, "audio"), (memo, "memo")] {
+            let type = try XCTUnwrap(h.cell("type", cue))
+            XCTAssertFalse(type.images[0].isHidden)
+            XCTAssertEqual(type.images[0].accessibilityLabel(), CueKindStyle.kindLabel(kind))
+            let drawn = try pixels(h, "type", cue)
+            XCTAssertGreaterThan(drawn.countDifferingFromBackground(), 8, "the icon is drawn for \(kind)")
+        }
+        // The Name cell shows only the name.
+        let name = try XCTUnwrap(h.cell("name", ten))
+        XCTAssertTrue(name.images.allSatisfy(\.isHidden))
+        XCTAssertEqual(name.label.stringValue, "Intro")
+        // The icon sits between the status and Number columns.
+        let col = { h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier($0)) }
+        XCTAssertEqual(col("type"), col("status") + 1)
+        XCTAssertEqual(col("number"), col("type") + 1)
+    }
+
+    func testGroupModeChangesTheTypeIcon() async throws {
+        let rig = try await Rig.open()
+        let h = try await harness(rig)
+        let inspector = InspectorViewController(store: rig.store)
+        _ = inspector.view
+        let group = H.group
+        h.vc.selectAsUser([group])
+        inspector.setSelection([group])
+        await assertEventually { inspector.cueForEdit?.id == group }
+        let before = try pixels(h, "type", group)
+        let beforeLabel = try XCTUnwrap(h.cell("type", group)).images[0].accessibilityLabel()
+        XCTAssertEqual(beforeLabel, loc("cue.type.group.timeline"))
+        let tab = try XCTUnwrap(inspector.tabView.tabViewItems.first { $0.identifier as? String == "mode" })
+        inspector.tabView.selectTabViewItem(tab)
+        let popup = inspector.groupModePopup
+        popup.selectItem(at: InspectorViewController.groupModes.firstIndex(of: "playlist") ?? 1)
+        _ = popup.sendAction(popup.action, to: popup.target)  // the menu choice, without a tracking menu
+        await assertEventually {
+            rig.store.model?.cue(group)?.raw["kind"]?["mode"]?["type"]?.stringValue == "playlist"
+        }
+        await assertEventually {
+            self.window?.layoutIfNeeded()
+            return (try? self.pixels(h, "type", group))?.rep.tiffRepresentation != before.rep.tiffRepresentation
+        }
+        XCTAssertEqual(
+            try XCTUnwrap(h.cell("type", group)).images[0].accessibilityLabel(), loc("cue.type.group.playlist"))
+    }
+
+    func testDurationShowsTheDuration() async throws {
+        let rig = try await timingRig()
+        let h = try await harness(rig)
+        await assertEventually { rig.store.mediaDurations[self.ten]?.duration == 10 }
+        XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00")
+        XCTAssertEqual(h.cell("duration", five)?.label.stringValue, "00:05.00")
+        XCTAssertEqual(h.cell("duration", memo)?.label.stringValue, "", "an instantaneous cue has none")
+        XCTAssertEqual(try pixels(h, "duration", ten).count(Self.greenish), 0, "and no progress outline")
+    }
+
+    func testRunningCueShowsProgressInTheDurationCell() async throws {
+        let rig = try await timingRig()
+        let h = try await harness(rig)
+        await assertEventually { rig.store.mediaDurations[self.ten]?.duration == 10 }
+        try await go(rig)
+        try await rig.advance(4)
+        await assertEventually { (rig.store.progress[self.ten]?.elapsed ?? 0) >= 3.9 }
+        XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00", "still reads the duration")
+        let drawn = try pixels(h, "duration", ten)
+        let reach = try XCTUnwrap(drawn.extent(Self.greenish), "outlined and filled in green")
+        XCTAssertEqual(reach.upperBound, 0.4, accuracy: 0.06, "to about 40 % of the cell")
+        XCTAssertEqual(reach.lowerBound, 0, accuracy: 0.03)
+        // It ends: the outline is gone.
+        try await rig.advance(7)
+        await assertEventually { rig.store.cueStates[self.ten]?.state != .running }
+        XCTAssertEqual(try pixels(h, "duration", ten).count(Self.greenish), 0)
+        XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00")
+    }
+
+    func testPausedCueKeepsItsProgressInYellow() async throws {
+        let rig = try await timingRig()
+        let h = try await harness(rig)
+        await assertEventually { rig.store.mediaDurations[self.ten]?.duration == 10 }
+        try await go(rig)
+        try await rig.advance(4)
+        await assertEventually { (rig.store.progress[self.ten]?.elapsed ?? 0) >= 3.9 }
+        guard case .success = await rig.store.transport(.pause(cue: ten)) else { return XCTFail("pause") }
+        try await rig.advance(0.05)
+        await assertEventually { rig.store.cueStates[self.ten]?.state == .paused }
+        let status = try pixels(h, "status", ten)
+        XCTAssertGreaterThan(status.count(Self.yellowish), 8, "the paused icon is drawn")
+        XCTAssertEqual(try XCTUnwrap(h.cell("status", ten)).images[1].accessibilityLabel(), loc("cue.state.paused"))
+        let first = try XCTUnwrap(try pixels(h, "duration", ten).extent(Self.yellowish), "progress drawn in yellow")
+        XCTAssertEqual(first.upperBound, 0.4, accuracy: 0.06)
+        XCTAssertEqual(try pixels(h, "duration", ten).count(Self.greenish), 0)
+        try await rig.advance(2)
+        let later = try XCTUnwrap(try pixels(h, "duration", ten).extent(Self.yellowish))
+        XCTAssertEqual(later.upperBound, first.upperBound, accuracy: 0.02, "stays where it stopped")
     }
 }

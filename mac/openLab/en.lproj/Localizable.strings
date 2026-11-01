@@ -121,6 +121,11 @@
 "masthead.notes.cueGone" = "The notes could not be saved: the cue no longer exists.";
 "masthead.notes.label" = "Notes for the standing-by cue";
 
+"cue.type.group.timeline" = "Group (timeline)";
+"cue.type.group.playlist" = "Group (playlist)";
+"cue.type.group.enter" = "Group (start first and enter)";
+"cue.type.group.next" = "Group (start first and go to next)";
+"cue.type.group.random" = "Group (random)";
 "cue.type.audio" = "Audio";
 "cue.type.group" = "Group";
 "cue.type.memo" = "Memo";
@@ -139,6 +144,7 @@
 "cue.type.network" = "Network";
 
 "cuelist.label" = "Cue list";
+"cuelist.col.type" = "Cue type";
 "cuelist.col.number" = "Number";
 "cuelist.col.name" = "Name";
 "cuelist.col.target" = "Target";
