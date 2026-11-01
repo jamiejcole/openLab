@@ -485,9 +485,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // The list re-announces an unchanged selection after model changes; that must not wipe
         // what the user is typing or the message they are reading.
         if ids == selection { return }
-        // A click elsewhere has already ended any typing; a selection moved by the playhead (GO,
-        // OSC) finds it still under way. It is committed to the cue it was typed for before another
-        // cue is shown, never dropped or written to the new one.
+        // A click elsewhere has already ended any typing, and the playhead does not move the
+        // selection while it lasts (`CueListViewController.followPlayhead`); a selection the app
+        // changes itself (a menu command, Find) can find it still under way. It is committed to the
+        // cue it was typed for before another cue is shown, never dropped or written to the new one.
         if let window = view.window, let responder = window.firstResponder as? NSView, responder.isDescendant(of: view)
         {
             window.makeFirstResponder(nil)

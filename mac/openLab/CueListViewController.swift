@@ -194,7 +194,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.registerForDraggedTypes([Self.dragType, .fileURL])
         outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
         outlineView.target = self
+        outlineView.action = #selector(clicked)
         outlineView.doubleAction = #selector(doubleClicked)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(textEditingEnded(_:)), name: NSText.didEndEditingNotification, object: nil)
         let menu = NSMenu()
         menu.delegate = self
         outlineView.menu = menu
@@ -333,15 +336,30 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         lastSelection = Set(selected)
         let lastRow = outlineView.selectedRow >= 0 ? outlineView.selectedRow : nil
         let latest = lastRow.flatMap { (outlineView.item(atRow: $0) as? CueNode)?.id }
-        // Compared with what was last sent, not only what the engine echoed: A, B, A within one
-        // round trip must still end on A.
-        guard !restoringSelection, !batching, !followingPlayhead, let list = listID,
-            let id = Self.playheadTarget(selected: selected, previous: previous, latest: latest),
-            (sentPlayhead ?? store.playheads[list]) != id
+        guard !restoringSelection, !batching, !followingPlayhead,
+            let id = Self.playheadTarget(selected: selected, previous: previous, latest: latest)
         else { return }
+        sendPlayhead(id)
+    }
+
+    /// A click on a row (the table's action, after any selection change). Clicking the one row that
+    /// is already highlighted changes no selection, so it puts the playhead back on that cue here
+    /// (the playhead can be elsewhere while a text field was being typed in).
+    @objc private func clicked() { rowClicked(outlineView.clickedRow) }
+
+    func rowClicked(_ row: Int) {
+        guard row >= 0, let node = outlineView.item(atRow: row) as? CueNode, selectedIDs() == [node.id] else {
+            return
+        }
+        sendPlayhead(node.id)
+    }
+
+    /// Moves the playhead to `id` for the selection. Compared with what was last sent, not only what
+    /// the engine echoed: A, B, A within one round trip must still end on A.
+    private func sendPlayhead(_ id: ModelID) {
+        guard let list = listID, (sentPlayhead ?? store.playheads[list]) != id else { return }
         sentPlayhead = id
-        if playheadSends == 0 { awaitedHeads = [store.playheads[list]] }
-        awaitedHeads.insert(id)
+        lastSentHead = id
         playheadSends += 1
         Task { [weak self] in
             _ = await self?.store.transport(.setPlayhead(list: list, cue: id))
@@ -354,26 +372,68 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// `set_playhead`s sent for the selection and not yet answered. Until they are, the engine may
     /// still echo an earlier one, so the selection does not follow the playhead meanwhile.
     private var playheadSends = 0
-    /// The store's playhead of the list when the first of those was sent, and each cue sent since.
-    private var awaitedHeads: Set<ModelID?> = []
+    /// The cue the last of those was for.
+    private var lastSentHead: ModelID?
+    /// The list's playhead moved while sends were unanswered.
+    private var headMovedWhileSending = false
+    /// The list's playhead as last seen here: the selection follows only a change of this list's
+    /// own playhead (another list's, or a runtime batch that leaves it, must not reopen groups).
+    private var seenHead: ModelID?
+    /// The selection did not follow a playhead move because text was being typed in this window.
+    private var followHeld = false
 
     private func playheadSendAnswered(list: ModelID) {
         playheadSends = max(0, playheadSends - 1)
         guard playheadSends == 0, list == listID else { return }
-        // Still where it was, or on a cue sent before the last: the engine's echo of the last send
-        // is still on its way (a result may pass its broadcasts) and the selection follows when it
-        // comes. Elsewhere, the playhead has moved on by itself (a GO right after the click): follow.
-        if awaitedHeads.contains(store.playheads[list]) { return }
-        followPlayhead()
+        let moved = headMovedWhileSending
+        headMovedWhileSending = false
+        // On the cue sent last: its echo is in and the selection is already there. Elsewhere, it
+        // moved on by itself after the click (a GO straight after it, another client): follow.
+        if moved, store.playheads[list] != lastSentHead { followPlayhead() }
+    }
+
+    /// This list's playhead may have moved (a runtime change): follow it if it did.
+    private func playheadChanged() {
+        guard let list = listID else { return }
+        let head = store.playheads[list]
+        guard head != seenHead else { return }
+        seenHead = head
+        if playheadSends > 0 {
+            headMovedWhileSending = true
+        } else {
+            followPlayhead()
+        }
+    }
+
+    /// Text is being typed in this window (an inspector field, the notes, the masthead's notes, a
+    /// Duration being edited in the list): moving the selection would take the operator's focus,
+    /// and their next Space would fire GO.
+    private var isTextEditing: Bool { (view.window?.firstResponder as? NSText)?.isEditable == true }
+
+    /// Typing in this window ended: a playhead move held meanwhile is followed now.
+    @objc private func textEditingEnded(_ note: Notification) {
+        guard followHeld, (note.object as? NSView)?.window === view.window else { return }
+        // The field editor still holds focus while it reports the end; follow once it has let go.
+        Task { @MainActor [weak self] in
+            guard let self, self.followHeld, !self.isTextEditing else { return }
+            self.followHeld = false
+            self.followPlayhead()
+        }
     }
 
     /// The playhead and the selection stay together (QLab 5's default, its workspace setting that
     /// links them): when the engine moves the playhead (GO, a Go To cue, OSC, an edit), the
     /// selection moves to the cue standing by, opening the groups above it, and the inspector
     /// follows; with no cue standing by (past the end of the list) nothing is selected. A selection
-    /// that already holds the playhead's cue (several selected by hand) is left as it is.
-    func followPlayhead() {
+    /// that already holds the playhead's cue (several selected by hand) is left as it is. While text
+    /// is being typed in the window the selection stays, and follows once the typing ends.
+    private func followPlayhead() {
         guard playheadSends == 0, let list = listID else { return }
+        if isTextEditing {
+            followHeld = true
+            return
+        }
+        followHeld = false
         let selected = selectedIDs()
         let head = store.playheads[list]
         if let head {
@@ -412,7 +472,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case .runtime(let cues, let heads):
             if !heads.isEmpty { sentPlayhead = nil }  // the engine's echo is the truth again
             refresh(cues, playheads: heads)
-            if !heads.isEmpty { followPlayhead() }
+            if !heads.isEmpty { playheadChanged() }
         case .progress(let ids): refresh(ids, columns: ["duration"])
         case .waits(let ids): refresh(ids, columns: ["preWait", "postWait"])
         case .notices: break
@@ -431,6 +491,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let list = shownList()
         listID = list?.id
         chosenList = list?.id
+        seenHead = list.flatMap { store.playheads[$0.id] }
         roots = (list?.cues ?? []).map { makeNode($0, parent: nil) }
         updatePlayheadAncestors()
         outlineView.reloadData()

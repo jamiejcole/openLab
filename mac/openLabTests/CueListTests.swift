@@ -664,78 +664,173 @@ final class CueListTests: XCTestCase {
     }
 
     private func sentPlayheads(_ h: H) -> [ModelID?] {
-        h.rig.engine.receivedFrom.compactMap {
-            if case .transport(_, .setPlayhead(_, let cue)) = $0.message { return cue }
+        h.rig.wire.sent.compactMap {
+            if case .transport(_, .setPlayhead(_, let cue)) = $0 { return cue }
             return nil
         }
     }
 
-    /// #496: GO on the group moved the playhead past the end of the list while the group's row stayed
-    /// highlighted and in the inspector, so a mode change there and Space fired nothing, and clicking
-    /// the highlighted row changed nothing. The selection now follows the playhead: past the end
-    /// nothing is selected (the inspector shows no cue), and the click that selects the group again
-    /// puts the playhead back on it.
+    /// The demo show on the real engine, the list's wire recorded from here on.
+    private func live() async throws -> H {
+        let h = try await H(rig: try await Rig.open())
+        h.rig.wire.forgetSent()
+        return h
+    }
+
+    /// Another client of the same workspace (an OSC peer, another Mac) moves the list's playhead.
+    /// The list has heard it on return (unless its results are held: then it is on its way).
+    private func moveElsewhere(_ h: H, to cue: ModelID?) async throws {
+        let other = Rig(engine: h.rig.testEngine, workspace: h.rig.doc)
+        guard await other.connect(),
+            case .success = await other.store.transport(.setPlayhead(list: ModelID(H.list), cue: cue))
+        else { return XCTFail("set_playhead elsewhere") }
+        other.client.stop()
+        if !h.rig.wire.holdResults { await h.rig.sync() }
+    }
+
+    private func playhead(_ h: H) -> ModelID? { h.store.playheads[ModelID(H.list)] }
+
+    /// #496: GO on a group that was the last cue moved the playhead past the end of the list while
+    /// the group's row stayed highlighted and in the inspector, so a mode change there and Space
+    /// fired nothing, and clicking the highlighted row changed nothing. The selection now follows
+    /// the playhead: past the end nothing is selected (the inspector shows no cue), and the click
+    /// that selects the group again puts the playhead back on it.
     func testAPlayheadPastTheEndClearsTheSelectionAndTheNextClickSetsItAgain() async throws {
-        let h = try await H()
+        let h = try await live()
         var shown: [[ModelID]] = []
         h.vc.onSelectionChange = { shown.append($0) }
         h.vc.selectAsUser([H.group])
-        await assertEventually { self.sentPlayheads(h) == [H.group] }
-        await settle()
-        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":null}"#)
+        await assertEventually { self.playhead(h) == H.group }
+        try await moveElsewhere(h, to: nil)
+        await assertEventually { self.playhead(h) == nil }
         XCTAssertEqual(h.vc.selectedIDs(), [])
         XCTAssertEqual(shown.last, [], "the inspector shows no cue")
         h.vc.selectAsUser([H.group])
-        await assertEventually { self.sentPlayheads(h) == [H.group, H.group] }
+        await assertEventually { self.playhead(h) == H.group }
+        XCTAssertEqual(sentPlayheads(h), [H.group, H.group])
     }
 
     /// The engine moving the playhead (GO, a Go To cue, OSC) moves the selection to the cue standing
     /// by, opening a collapsed group to show it; the inspector follows and nothing is sent back.
     func testTheSelectionFollowsAPlayheadTheEngineMoves() async throws {
-        let h = try await H()
+        let h = try await live()
         var shown: [[ModelID]] = []
         h.vc.onSelectionChange = { shown.append($0) }
-        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.rain)"}"#)
-        XCTAssertEqual(h.vc.selectedIDs(), [H.rain])
+        try await moveElsewhere(h, to: H.rain)
+        await assertEventually { h.vc.selectedIDs() == [H.rain] }
         XCTAssertTrue(h.spy.isItemExpanded(h.vc.node(H.group)))
         XCTAssertEqual(shown.last, [H.rain])
-        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.intro)"}"#)
-        XCTAssertEqual(h.vc.selectedIDs(), [H.intro])
+        try await moveElsewhere(h, to: H.intro)
+        await assertEventually { h.vc.selectedIDs() == [H.intro] }
         await settle()
         XCTAssertEqual(sentPlayheads(h), [], "a followed selection sends no set_playhead")
     }
 
+    /// Only this list's own playhead moves the selection, and only when it changes: a group the
+    /// operator closed stays closed when another list's playhead moves.
+    func testAnotherListsPlayheadLeavesAClosedGroupClosed() async throws {
+        let h = try await live()
+        try await moveElsewhere(h, to: H.rain)
+        await assertEventually { h.vc.selectedIDs() == [H.rain] }
+        let group = try XCTUnwrap(h.vc.node(H.group))
+        h.spy.collapseItem(group)
+        let other: ModelID = "00000000-0000-0000-0000-0000000000c1"
+        let cue: ModelID = "00000000-0000-0000-0000-0000000000c2"
+        var memo = try XCTUnwrap(NewCueKind.memo.cueJSON(id: cue, patch: nil))
+        memo.set("name", .string("Elsewhere"))
+        guard
+            let add = Command.transaction([
+                .addCueList(id: other, name: "Other", index: 1), .addCue(memo, list: other, parent: nil, index: 0),
+            ]),
+            case .success = await h.store.send(command: add),
+            case .success = await h.store.transport(.setPlayhead(list: other, cue: cue)),
+            case .success = await h.store.transport(.setPlayhead(list: other, cue: nil))
+        else { return XCTFail("other list") }
+        await h.rig.sync()
+        XCTAssertFalse(h.spy.isItemExpanded(group), "still closed")
+        XCTAssertEqual(h.vc.selectedIDs(), [], "the closed group hides the selected cue")
+    }
+
     /// Several cues selected by hand hold the playhead's cue: its echo leaves them selected.
     func testTheEchoOfAPlayheadInsideASelectionKeepsTheSelection() async throws {
-        let h = try await H()
+        let h = try await live()
         h.vc.selectAsUser([H.intro, H.fade])
-        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.fade)"}"#)
+        await assertEventually { self.playhead(h) == H.fade }
+        await settle()
         XCTAssertEqual(h.vc.selectedIDs(), [H.intro, H.fade])
     }
 
     /// Two quick clicks: the echo of the first, arriving while the second is unanswered, must not
     /// pull the selection back; once all are answered the selection stays on the last click.
     func testAStaleEchoDoesNotPullTheSelectionBack() async throws {
-        let h = try await H()
-        h.vc.selectAsUser([H.intro])
+        let h = try await live()
+        h.rig.wire.holdResults = true
+        h.vc.selectAsUser([H.fade])
         h.vc.selectAsUser([H.group])
-        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.intro)"}"#)
+        await assertEventually("both echoes are in, neither answer") { self.playhead(h) == H.group }
         XCTAssertEqual(h.vc.selectedIDs(), [H.group])
-        await assertEventually { self.sentPlayheads(h) == [H.intro, H.group] }
+        XCTAssertEqual(sentPlayheads(h), [H.fade, H.group])
+        h.rig.wire.holdResults = false
+        h.rig.wire.releaseResults()
+        await h.rig.sync()
         await settle()
-        XCTAssertEqual(h.vc.selectedIDs(), [H.group], "the group's echo is still to come")
-        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.group)"}"#)
         XCTAssertEqual(h.vc.selectedIDs(), [H.group])
     }
 
     /// A click and a GO straight after it: the GO's playhead move arrives before the click's answer
     /// and is followed once the click is answered.
     func testAPlayheadMovedOnBeforeTheClickIsAnsweredIsFollowed() async throws {
-        let h = try await H()
-        h.vc.selectAsUser([H.intro])
-        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.group)"}"#)
-        XCTAssertEqual(h.vc.selectedIDs(), [H.intro], "the click is not answered yet")
+        let h = try await live()
+        h.rig.wire.holdResults = true
+        h.vc.selectAsUser([H.fade])
+        await assertEventually { self.playhead(h) == H.fade }
+        try await moveElsewhere(h, to: H.group)
+        await assertEventually { self.playhead(h) == H.group }
+        XCTAssertEqual(h.vc.selectedIDs(), [H.fade], "the click is not answered yet")
+        h.rig.wire.holdResults = false
+        h.rig.wire.releaseResults()
         await assertEventually { h.vc.selectedIDs() == [H.group] }
+    }
+
+    /// The playhead on the group, a click on Intro and Space straight after it: Intro's echo and the
+    /// GO's move back onto the group both arrive before the click is answered. The selection ends
+    /// on the group, where the playhead and the standby display are.
+    func testAGoBackOntoThePlayheadBeforeTheClickWasAnsweredIsFollowed() async throws {
+        let h = try await live()
+        guard case .success = await h.store.send(command: .removeCue(H.fade)) else { return XCTFail("remove") }
+        h.vc.selectAsUser([H.group])
+        await assertEventually { self.playhead(h) == H.group }
+        await h.rig.sync()
+        h.rig.wire.holdResults = true
+        h.vc.selectAsUser([H.intro])
+        let go = Task { await h.store.go(list: ModelID(H.list)) }
+        try await h.rig.testEngine.advance(seconds: 0.05)
+        await assertEventually("Intro ran and the group stands by") {
+            h.store.cueStates[H.intro]?.state == .running && self.playhead(h) == H.group
+        }
+        XCTAssertEqual(h.vc.selectedIDs(), [H.intro], "the click is not answered yet")
+        h.rig.wire.holdResults = false
+        h.rig.wire.releaseResults()
+        _ = await go.value
+        await assertEventually { h.vc.selectedIDs() == [H.group] }
+    }
+
+    /// The highlighted row clicked again while the playhead is elsewhere (it was moved while text
+    /// was typed) puts the playhead back on it; a click on a row the playhead is on sends nothing.
+    func testClickingTheHighlightedRowPutsThePlayheadBackOnIt() async throws {
+        let h = try await live()
+        h.vc.selectAsUser([H.intro])
+        await assertEventually { self.playhead(h) == H.intro }
+        h.vc.rowClicked(h.spy.row(forItem: h.vc.node(H.intro)))
+        await settle()
+        XCTAssertEqual(sentPlayheads(h), [], "the show opens with the playhead on Intro")
+        // A playhead the selection did not follow (H1 hold), here set without the list hearing it.
+        h.vc.sub = nil
+        try await moveElsewhere(h, to: H.group)
+        XCTAssertEqual(h.vc.selectedIDs(), [H.intro])
+        h.vc.rowClicked(h.spy.row(forItem: h.vc.node(H.intro)))
+        await assertEventually { self.playhead(h) == H.intro }
+        XCTAssertEqual(sentPlayheads(h), [H.intro])
     }
 
     /// A playhead inside a collapsed group has no row: Move Playhead Next / Previous steps from the

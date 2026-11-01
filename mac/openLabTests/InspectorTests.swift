@@ -471,9 +471,10 @@ final class InspectorTests: XCTestCase {
         await assertEventually("the typed name wins") { self.intro?.name == "half typed" }
     }
 
-    /// The selection follows the playhead (#496), so a GO can move it while a name is typed: the
-    /// name goes to the cue it was typed for, and the inspector shows the next cue's own name.
-    func testASelectionMovedMidEditCommitsTheTypingToTheCueItWasTypedFor() async throws {
+    /// A menu command can select another cue while a name is typed (a new cue, Select Cue by number;
+    /// a playhead move cannot, `PlayheadFlowTests`): the name goes to the cue it was typed for, and
+    /// the inspector shows the other cue's own name.
+    func testASelectionTheAppChangesMidEditCommitsTheTypingToTheCueItWasTypedFor() async throws {
         vc.setSelection([Self.intro])
         XCTAssertTrue(window.makeFirstResponder(vc.nameField))
         vc.nameField.currentEditor()?.string = "half typed"
