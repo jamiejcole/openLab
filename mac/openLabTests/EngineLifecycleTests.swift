@@ -773,6 +773,11 @@ final class EngineCrashFlowTests: XCTestCase {
         try await runs.crash()
 
         try await launch()
+        // The launch's recovery scan (it finds B's and C's autosaves) holds the engine's document
+        // worker; an open sent meanwhile is refused. Its offer means it is done.
+        let scanned = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(scanned, "the launch offered the autosaves")
+        presenter.dismiss()
         alerts.recoveryChoice = nil  // Cancel: nothing opens, no error
         await app.openWorkspace(url: URL(fileURLWithPath: b))
         XCTAssertEqual(alerts.log.filter { $0.hasPrefix("recoveryOffer") }, ["recoveryOffer:B"])
