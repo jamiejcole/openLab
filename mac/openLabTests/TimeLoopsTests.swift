@@ -26,7 +26,8 @@ final class TimeLoopsTests: XCTestCase {
         "testALiveResizeAsksForPeaksOnceWhenItEnds", "testSliceChangesApplyToTheCurrentKind",
         "testTheDrawnFadeShapeIsCoresCurve", "testViewportZoomKeepsTheAnchorAndStaysInTheFile",
         "testViewportPanStopsAtTheFileEnds",
-        "testAReadStillOutForAnotherCueDoesNotLandOnTheCueShown", "testOneReadIsOutAtATimeAndTheLatestAskIsMade", "testARefusedReadIsAskedAgain",
+        "testAReadStillOutForAnotherCueDoesNotLandOnTheCueShown",
+        "testOneReadIsOutAtATimeAndTheLatestAskIsMade", "testARefusedReadIsAskedAgain",
     ]
 
     override func setUp() async throws {
@@ -289,7 +290,9 @@ final class TimeLoopsTests: XCTestCase {
         inspector.view.layoutSubtreeIfNeeded()
         let panel = inspector.timeLoops
         if panel.waveform.bounds.width < 625 { panel.waveform.setFrameSize(NSSize(width: 625, height: 120)) }
-        await assertEventually("durations known") { ids.allSatisfy { many.store.mediaDurations[ModelID($0)]?.file != nil } }
+        await assertEventually("durations known") {
+            ids.allSatisfy { many.store.mediaDurations[ModelID($0)]?.file != nil }
+        }
         var out = 0
         var most = 0
         let real = panel.loadPeaks
