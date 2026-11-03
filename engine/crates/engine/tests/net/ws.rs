@@ -35,11 +35,26 @@ type Client = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// not keep a wait for a message that never comes alive (that hung CI on Windows).
 const GUARD: Duration = Duration::from_secs(20);
 
+/// Hang guard for a wait that includes the fan-out encoding a message over the frame cap. That is
+/// pure CPU work on 33 MiB: an unoptimised build takes 0.7 s on an Apple M4, ThreadSanitizer 9.4 s,
+/// and a loaded CI runner past [`GUARD`].
+const ENCODE_GUARD: Duration = Duration::from_secs(300);
+
+/// `dead_after` and `write_timeout` for a test with a client it does not read for as long as CPU
+/// work takes: an unread client answers no ping, and ThreadSanitizer on a loaded machine runs such
+/// a test past the default 30 s. Being closed for that is not what these tests are about.
+const UNREAD_FOR: Duration = Duration::from_secs(3600);
+
 /// Runs `f` within [`GUARD`], or fails the test naming `what`.
 async fn guard<F: std::future::Future>(what: &str, f: F) -> F::Output {
-    match tokio::time::timeout(GUARD, f).await {
+    guard_for(GUARD, what, f).await
+}
+
+/// Runs `f` within `limit`, or fails the test naming `what`.
+async fn guard_for<F: std::future::Future>(limit: Duration, what: &str, f: F) -> F::Output {
+    match tokio::time::timeout(limit, f).await {
         Ok(out) => out,
-        Err(_) => panic!("hang: {what} took longer than {GUARD:?}"),
+        Err(_) => panic!("hang: {what} took longer than {limit:?}"),
     }
 }
 
@@ -294,17 +309,18 @@ async fn send(c: &mut Client, m: &ClientMessage) {
 /// The next engine message; `None` when the connection is closed. Pings do not extend the
 /// guard.
 async fn next(c: &mut Client) -> Option<ServerMessage> {
-    guard("waiting for the next message", async {
-        loop {
-            match c.next().await {
-                Some(Ok(Message::Text(t))) => return Some(decode_server(t.as_str()).unwrap()),
-                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return None,
-                Some(Ok(other)) => panic!("unexpected frame {other:?}"),
-            }
+    guard("waiting for the next message", read_message(c)).await
+}
+
+async fn read_message(c: &mut Client) -> Option<ServerMessage> {
+    loop {
+        match c.next().await {
+            Some(Ok(Message::Text(t))) => return Some(decode_server(t.as_str()).unwrap()),
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+            Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return None,
+            Some(Ok(other)) => panic!("unexpected frame {other:?}"),
         }
-    })
-    .await
+    }
 }
 
 async fn expect_closed(c: &mut Client) {
@@ -749,7 +765,10 @@ async fn a_big_subtree_upsert_goes_through() {
 
 #[tokio::test]
 async fn a_message_over_the_frame_cap_makes_the_client_resnapshot() {
-    let f = fixture();
+    let f = fixture_with(ServerConfig {
+        dead_after: UNREAD_FOR,
+        ..ServerConfig::default()
+    });
     f.control.revision.store(2, Ordering::SeqCst);
     let mut a = f.client().await;
     let mut b = f.client().await;
@@ -759,7 +778,8 @@ async fn a_message_over_the_frame_cap_makes_the_client_resnapshot() {
         .unwrap();
     f.control.revision.store(3, Ordering::SeqCst);
     for c in [&mut a, &mut b] {
-        match next(c).await {
+        let resync = guard_for(ENCODE_GUARD, "the resync snapshot", read_message(c));
+        match resync.await {
             Some(ServerMessage::Snapshot { snapshot }) => assert!(snapshot.revision >= 2),
             other => panic!("{other:?}"),
         }
@@ -1134,7 +1154,8 @@ fn changed(revision: u64) -> ServerMessage {
 async fn a_client_whose_queue_overflows_gets_a_snapshot_and_then_only_newer_broadcasts() {
     let f = fixture_with(ServerConfig {
         // The stalled client must not be closed while the queue fills.
-        write_timeout: Duration::from_secs(120),
+        write_timeout: UNREAD_FOR,
+        dead_after: UNREAD_FOR,
         ..ServerConfig::default()
     });
     f.control.revision.store(5, Ordering::SeqCst);
