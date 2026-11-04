@@ -244,6 +244,8 @@ jobs:
     # The app bundles the engine, so an engine change rebuilds it too.
     if: needs.changes.outputs.mac == 'true'
     runs-on: xcode-27
+    # Backstop: a hung test fails the job (seen holding a runner past 75 min; a run takes 15-20).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - name: Select Xcode

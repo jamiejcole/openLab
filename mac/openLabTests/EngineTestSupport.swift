@@ -831,3 +831,42 @@ enum TestSnapshots {
         return s
     }
 }
+
+extension WorkspaceStore {
+    /// Merges `hotkeys` (a JSON object of key-map fields) into the workspace's key map through the
+    /// engine (`set_key_map`) and waits until this store's model shows it.
+    func setHotkeys(_ hotkeys: String) async throws {
+        var map = try XCTUnwrap(model?.settings["hotkeys"])
+        for (key, value) in try XCTUnwrap(JSONValue.parse(hotkeys)?.objectValue) { map.set(key, value) }
+        let result = await send(command: .setKeyMap(map))
+        guard case .success = result else { return XCTFail("set_key_map: \(result)") }
+        await assertEventually { self.model?.settings["hotkeys"] == map }
+    }
+}
+
+/// The texts shown in a sheet (an alert's message).
+@MainActor
+func sheetText(_ sheet: NSWindow) -> String {
+    var found: [String] = []
+    func walk(_ view: NSView) {
+        if let field = view as? NSTextField { found.append(field.stringValue) }
+        view.subviews.forEach(walk)
+    }
+    if let content = sheet.contentView { walk(content) }
+    return found.joined(separator: " ")
+}
+
+/// Clicks the button titled `title` in `sheet`, as the operator would; false when it has none.
+@MainActor
+func pressButton(_ title: String, in sheet: NSWindow) -> Bool {
+    var pressed = false
+    func walk(_ view: NSView) {
+        if let button = view as? NSButton, button.title == title, !pressed {
+            button.performClick(nil)
+            pressed = true
+        }
+        view.subviews.forEach(walk)
+    }
+    if let content = sheet.contentView { walk(content) }
+    return pressed
+}
