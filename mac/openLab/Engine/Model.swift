@@ -58,8 +58,57 @@ struct Cue: Hashable, Sendable, Decodable {
         return String(name)
     }
 
-    /// `displayName`, or the kind's label when that is empty (a cue with neither name nor file).
-    var listName: String { displayName.isEmpty ? CueKindStyle.kindLabel(kindType) : displayName }
+    /// Kinds whose default name is the kind and the name of the cue they act on (QLab 5, manual pp.
+    /// 93, 126: Fade, Start, Stop, Pause, Load, Reset, Go To, Arm, Disarm).
+    static let namedAfterTarget: Set<String> = [
+        "fade", "start", "stop", "pause", "load", "reset", "go_to", "arm", "disarm",
+    ]
+
+    /// The default name of an unnamed cue that acts on another: its kind and the target's shown name
+    /// ("Fade and stop ..." for a Fade that stops its target), empty when the cue has no such name
+    /// or its target is missing. `lookup` finds a cue by id. Never stored: it follows the target.
+    func targetDefaultName(lookup: (ModelID) -> Cue?) -> String {
+        targetDefaultName(lookup: lookup, depth: 0)
+    }
+
+    private func targetDefaultName(lookup: (ModelID) -> Cue?, depth: Int) -> String {
+        guard name.isEmpty, Self.namedAfterTarget.contains(kindType), depth < 8,
+            let id = raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }), let target = lookup(id)
+        else { return "" }
+        var shown = target.displayName
+        if shown.isEmpty { shown = target.targetDefaultName(lookup: lookup, depth: depth + 1) }
+        if shown.isEmpty { shown = CueKindStyle.kindLabel(target.kindType) }
+        let stops = kindType == "fade" && raw["kind"]?["stop_target_when_done"] == .bool(true)
+        return String(
+            format: loc(stops ? "cue.name.fadeAndStop" : "cue.name.afterTarget"), CueKindStyle.kindLabel(kindType),
+            shown)
+    }
+
+    /// Whether the name this cue shows follows one of `ids`: one of them is further along its chain
+    /// of targets (a default name is made from its target's, which may be a default name too).
+    func followsName(of ids: Set<ModelID>, lookup: (ModelID) -> Cue?) -> Bool {
+        var seen: Set<ModelID> = [id]
+        var next = raw["kind"]?["target"]?.stringValue.map { ModelID($0) }
+        while let t = next, seen.insert(t).inserted {
+            if ids.contains(t) { return true }
+            guard let target = lookup(t), Self.namedAfterTarget.contains(target.kindType) else { return false }
+            next = target.raw["kind"]?["target"]?.stringValue.map { ModelID($0) }
+        }
+        return false
+    }
+
+    /// The name every surface shows for the cue (list, standby, Find, messages): its own name, an
+    /// Audio cue's file name, else the default name of a cue that acts on another; empty for none.
+    func shownName(lookup: (ModelID) -> Cue?) -> String {
+        let own = displayName
+        return own.isEmpty ? targetDefaultName(lookup: lookup) : own
+    }
+
+    /// `shownName`, or the kind's label when that is empty.
+    func listName(lookup: (ModelID) -> Cue?) -> String {
+        let shown = shownName(lookup: lookup)
+        return shown.isEmpty ? CueKindStyle.kindLabel(kindType) : shown
+    }
 
     init(from decoder: Decoder) throws {
         try self.init(json: try JSONValue(from: decoder))
@@ -126,6 +175,9 @@ struct WorkspaceModel: Sendable, Decodable {
         guard let value = settings["hotkeys"]?[key.rawValue], value != .null else { return nil }
         return value
     }
+
+    func shownName(_ cue: Cue) -> String { cue.shownName(lookup: { self.cue($0) }) }
+    func listName(_ cue: Cue) -> String { cue.listName(lookup: { self.cue($0) }) }
 
     /// Every cue of every list, groups' children included (the footer's count).
     var cueCount: Int {

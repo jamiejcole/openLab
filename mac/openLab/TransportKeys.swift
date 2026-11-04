@@ -77,6 +77,8 @@ enum KeyBindError: Error, Equatable {
     case menuKey
     /// The key has no show-file name (Delete, media keys, ...).
     case unsupported
+    /// N and Q edit the highlighted cue's number and name (QLab refuses a key that has a function).
+    case editKey
 }
 
 /// The transport keys of one workspace, read from its `settings.hotkeys` (QLab keeps them per
@@ -100,6 +102,10 @@ enum KeyBindError: Error, Equatable {
 struct TransportKeys: Equatable {
     private(set) var chords: [TransportCommand: KeyChord] = [:]
     private(set) var warnings: [String] = []
+
+    /// QLab 5's edit-number and edit-name keys, by default: key to the cue-list column they open.
+    /// Fixed like the selected-cue keys, but a cue hotkey cannot take them (`HotkeyRules`).
+    static let editKeys: [KeyChord: String] = [KeyChord("n"): "number", KeyChord("q"): "name"]
 
     static let fixed: [(TransportCommand, KeyChord)] = [
         (.pauseResumeSelected, KeyChord("p")), (.loadSelected, KeyChord("l")), (.previewSelected, KeyChord("v")),
@@ -182,6 +188,7 @@ struct TransportKeys: Equatable {
         case .cueHotkey: return loc("hotkeys.reason.cueHotkey")
         case .menuKey: return loc("hotkeys.reason.menuKey")
         case .unsupported: return loc("hotkeys.reason.unsupported")
+        case .editKey: return loc("hotkeys.reason.editKey")
         }
     }
 }

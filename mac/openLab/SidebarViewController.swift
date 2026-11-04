@@ -449,7 +449,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             if listsChanged || !touched.isDisjoint(with: activeCues) { syncActive(changed: touched) }
             // Only an edit to a warned cue (or to what its text names) can change a row.
             let other = upserts.contains { if case .cue = $0 { return false } else { return true } }
-            if other || !touched.isDisjoint(with: warnedCues) { syncWarnings() }
+            let follows = warnedCues.contains { id in
+                store.model?.cue(id)?.followsName(of: touched, lookup: { store.model?.cue($0) }) ?? false
+            }
+            if other || follows || !touched.isDisjoint(with: warnedCues) { syncWarnings() }
         case .runtime(let cues, _):
             syncActive(changed: cues)
             // Only a cue that has problems, has a runtime reason or already has a row can change
@@ -665,7 +668,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     func fill(_ cell: ActiveCueCell, _ id: ModelID) {
         let cue = store.model?.cue(id)
         let state = store.cueStates[id]?.state ?? .idle
-        let name = cue?.listName ?? ""
+        let name = cue.flatMap { store.model?.listName($0) } ?? ""
         cell.title.stringValue = [cue?.number, name].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "  ")
         let paused = state == .paused
         cell.pauseButton.cue = id

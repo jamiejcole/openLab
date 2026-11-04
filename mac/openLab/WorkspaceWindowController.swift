@@ -169,9 +169,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cueList.onMove = { [weak self] ids, parent, index in
             Task { await self?.editor.move(ids, to: parent, at: index) }
         }
-        cueList.onEditDuration = { [weak self] id, text in
-            Task { await self?.editor.setDuration(of: id, text: text) }
+        cueList.onEditCell = { [weak self] id, column, text in
+            Task { await self?.editor.setCell(column, of: id, text: text) }
         }
+        cueList.onEditedCueGone = { [weak self] in self?.showNotice(loc("cuelist.edit.cueGone")) }
         cueList.onFileDrop = { [weak self] drop, skipped in
             Task {
                 switch drop {
@@ -473,7 +474,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// The shown list's playhead cue, with its notes.
     func syncMasthead() {
         let id = cueList.listID.flatMap { store.playheads[$0] }
-        masthead.show(standby: id.flatMap { store.model?.cue($0) })
+        let cue = id.flatMap { store.model?.cue($0) }
+        masthead.show(standby: cue, name: cue.flatMap { store.model?.listName($0) })
     }
 
     /// The cue list has applied a change: the syncs that read its shown list and tree run now.
@@ -505,12 +507,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Commits what is typed in the inspector. False: it was invalid or refused, so the caller
     /// (Save, Close, Quit) must stop.
-    /// Commits what is typed in the inspector and in the cue list's Duration cell and the masthead notes, and waits for the
+    /// Commits what is typed in the inspector and in the cue list's cell being edited and the masthead notes, and waits for the
     /// engine's answers; false when an edit was invalid or refused (Save, Close, Quit stop).
     func commitPendingEdits() async -> Bool {
         endLostGesture()
         var ok = true
-        if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
+        if let edit = cueList.takeCellEdit() { ok = await editor.setCell(edit.column, of: edit.id, text: edit.text) }
         if let notes = masthead.pendingNotes() {
             if await !editor.setNotes(of: notes.id, text: notes.text) {
                 masthead.notesNotSaved()

@@ -87,7 +87,7 @@ extension WorkspaceWindowController {
 
     private func recomputeFind() {
         find.countScan()
-        find.matches = CueFinder.matches(find.query, in: cueList.roots)
+        find.matches = CueFinder.matches(find.query, in: cueList.roots, shownName: { cueList.shownName($0) })
         if let id = find.currentID, !find.matches.contains(id) { find.currentID = nil }
         findBar.setCount(
             found: find.matches.count, current: find.currentIndex,
