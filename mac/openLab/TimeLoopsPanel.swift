@@ -119,9 +119,6 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     static let maxSliceMarks = 254
     /// The fade each way that switching the built-in fades on gives, at most a quarter of the cue.
     static let defaultFade = 1.0
-    /// The narrowest stretch a zoom shows, seconds.
-    static let minSpan = 0.1
-
     let view = NSStackView()
     let startField = NSTextField()
     let endField = NSTextField()
@@ -168,6 +165,10 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     private var generation = 0
     /// The fetch under way (tests wait on it).
     private(set) var loading: Task<Void, Never>?
+    /// The generation of the read out; one at a time for the panel.
+    private var inFlight: Int?
+    /// A zoom or pan asked for other peaks while a read was out.
+    private(set) var reloadPending = false
 
     override init() {
         super.init()
@@ -242,6 +243,11 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         waveform.onInsertion = { [weak self] in self?.applyLock() }
         waveform.onEditCount = { [weak self] i in self?.editSliceCount(i) }
         waveform.onResize = { [weak self] in self?.reload() }
+        waveform.onZoom = { [weak self] factor, anchor in self?.zoom(by: factor, anchor: anchor) }
+        waveform.onPan = { [weak self] fraction in
+            guard let self else { return }
+            self.pan(bySeconds: -fraction * (self.visible.end - self.visible.start))
+        }
         layout()
     }
 
@@ -399,41 +405,79 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     @objc func zoomIn() { zoom(by: 0.5) }
     @objc func zoomOut() { zoom(by: 2) }
 
-    /// Narrows or widens the visible stretch about its middle, within the file.
-    func zoom(by factor: Double) {
-        guard let file else { return }
-        let (a, b) = visible
-        let span = min(file.duration, max(Self.minSpan, (b - a) * factor))
-        let mid = (a + b) / 2
-        let start = min(max(0, mid - span / 2), max(0, file.duration - span))
-        setVisible(start: start, end: start + span)
+    /// Narrows or widens the visible stretch, within the file, keeping the time at `anchor` (a
+    /// fraction of the view's width; the middle by default) where it is.
+    func zoom(by factor: Double, anchor: Double = 0.5) {
+        guard let viewport = viewport?.zoomed(by: factor, anchor: anchor) else { return }
+        show(viewport)
+    }
+
+    /// Moves the visible stretch along the file by `seconds`, stopping at its start and end.
+    func pan(bySeconds seconds: Double) {
+        guard let viewport = viewport?.panned(by: seconds) else { return }
+        show(viewport)
+    }
+
+    private var viewport: WaveformViewport? {
+        file.map { WaveformViewport(start: visible.start, end: visible.end, duration: $0.duration) }
+    }
+
+    private func show(_ viewport: WaveformViewport) {
+        guard viewport.start != visible.start || viewport.end != visible.end else { return }
+        setVisible(start: viewport.start, end: viewport.end)
         reload()
     }
 
     /// The peaks for what is visible at the view's width: from the cache, or fetched. Only while
     /// the tab is on screen and not in Show Mode: reading a waveform decodes the whole file, which
     /// a show in progress must not pay for a click in the cue list.
-    func reload() {
+    func reload() { ask(busyRetries: 0) }
+
+    /// How many times a refusal for too many waveforms waiting is asked again before giving up.
+    static let busyRetryLimit = 3
+
+    private func ask(busyRetries: Int) {
+        // Whatever read is out is for something no longer asked for, even when nothing is asked now.
+        generation += 1
         guard let file, isActive, !isLocked else { return }
         let (a, b) = visible
         let scaleFactor = waveform.window?.backingScaleFactor ?? 2
         let width = Int(waveform.bounds.width * scaleFactor)
         let key = PeaksKey(
             cue: file.cue, media: file.media, start: a, end: b, buckets: min(8192, max(1, width > 0 ? width : 1024)))
-        generation += 1
         if let hit = cache[key] {
+            reloadPending = false
             waveform.peaks = hit
             return
         }
         guard let loadPeaks else { return }
+        // Each read decodes a whole file and the engine queues only a few: one is out for the whole
+        // panel, and of the asks made meanwhile (a pinch, arrowing through cues) only the latest is
+        // kept and made when it comes back. The result of a read nobody asks for now is dropped.
+        if inFlight != nil {
+            reloadPending = true
+            return
+        }
+        reloadPending = false
         let gen = generation
+        inFlight = gen
         loading = Task { [weak self] in
             let result = await loadPeaks(key.cue, key.start, key.end, key.buckets)
-            guard let self, gen == self.generation else { return }
+            guard let self else { return }
+            self.inFlight = nil
+            if self.reloadPending {
+                self.reloadPending = false
+                self.ask(busyRetries: 0)
+                return
+            }
+            guard gen == self.generation else { return }
             switch result {
             case .success(let peaks):
                 self.remember(key, peaks)
                 self.waveform.peaks = peaks
+            case .failure(.engine(.commandRefused, _)) where busyRetries < Self.busyRetryLimit:
+                // The engine's queue was full of reads that nobody waits for now; it drains.
+                self.ask(busyRetries: busyRetries + 1)
             case .failure:
                 self.waveform.peaks = nil
                 self.waveform.message = loc("timeLoops.unavailable")

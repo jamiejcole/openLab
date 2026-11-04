@@ -57,7 +57,6 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
         for v in [row(loc("fade.duration"), durationField), row(loc("fade.curve"), curvePopup), stopCheck] {
             view.addArrangedSubview(v)
         }
-        view.widthAnchor.constraint(equalToConstant: 170).isActive = true
     }
 
     /// Shows the Fade cue's `kind`. A duration being typed keeps its text.

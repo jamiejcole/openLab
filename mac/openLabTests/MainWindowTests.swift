@@ -37,7 +37,7 @@ final class MainWindowTests: XCTestCase {
         let outline = try controller().cueList.outlineView
         XCTAssertEqual(
             outline.tableColumns.map(\.identifier.rawValue),
-            ["status", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
+            ["status", "type", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
         XCTAssertTrue(outline.usesAlternatingRowBackgroundColors)
     }
 
@@ -681,5 +681,125 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(Double(go.greenComponent), ShowModePalette.goFill.g, accuracy: 0.001)
         wc.setShowMode(false)
         XCTAssertNil(wc.masthead.layer?.backgroundColor)
+    }
+}
+
+/// Inspector tabs and the window frame, on the real engine: what the user sees of the window when
+/// they click through the tabs.
+@MainActor
+final class InspectorWindowFrameTests: XCTestCase {
+    private let audio = CueListHarness.intro
+    private let fade = CueListHarness.fade
+    private let group = CueListHarness.group
+    private let memo: ModelID = "00000000-0000-0000-0000-0000000000e1"
+    /// A frame the user might pick, inside the screen: AppKit shrinks a frame bigger than the screen (CI runners
+    /// have small displays), and the tests compare the frame exactly.
+    private lazy var userFrame: NSRect = {
+        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 700)
+        let width = min(1100, screen.width - 40).rounded(.down)
+        let height = min(720, screen.height - 40).rounded(.down)
+        return NSRect(x: screen.minX + 20, y: screen.minY + 20, width: width, height: height)
+    }()
+    private var rig: Rig!
+    private var wc: WorkspaceWindowController!
+
+    override func setUp() async throws {
+        rig = try await Rig.open()
+        let list = try XCTUnwrap(rig.store.model?.cueLists.first?.id)
+        let cue = try XCTUnwrap(NewCueKind.memo.cueJSON(id: memo, patch: nil))
+        guard case .success = await rig.store.send(command: .addCue(cue, list: list, parent: nil, index: 3)) else {
+            return XCTFail("add memo")
+        }
+        await assertEventually { self.rig.store.model?.cue(self.memo) != nil }
+        wc = WorkspaceWindowController(store: rig.store)
+        let window = try XCTUnwrap(wc.window)
+        window.setFrame(userFrame, display: true)
+        window.makeKeyAndOrderFront(nil)
+        settleLayout()
+    }
+
+    override func tearDown() async throws {
+        wc.window?.close()
+        wc = nil
+    }
+
+    private var window: NSWindow { wc.window! }
+
+    /// Lets the window run the layout pass a click on a tab triggers.
+    private func settleLayout() {
+        window.layoutIfNeeded()
+        window.displayIfNeeded()
+        window.layoutIfNeeded()
+    }
+
+    private func select(_ id: ModelID) async {
+        wc.cueList.selectAsUser([id])
+        await assertEventually { self.wc.inspector.cueForEdit?.id == id }
+        settleLayout()
+    }
+
+    private func clickTab(_ id: String) throws {
+        let tabs = wc.inspector.tabView
+        let item = try XCTUnwrap(tabs.tabViewItems.first { $0.identifier as? String == id }, "tab \(id)")
+        tabs.selectTabViewItem(item)
+        settleLayout()
+    }
+
+    private struct Layout: Equatable {
+        var frame: NSRect
+        var cueList: NSRect
+        var inspector: NSRect
+    }
+
+    private func layout() -> Layout {
+        Layout(frame: window.frame, cueList: wc.cueList.view.frame, inspector: wc.inspector.view.frame)
+    }
+
+    func testFadeCurveTabKeepsTheWindow() async throws {
+        await select(fade)
+        try clickTab("basics")
+        let before = layout()
+        XCTAssertEqual(before.frame, userFrame)
+        try clickTab("curve")
+        XCTAssertEqual(wc.inspector.tabView.selectedTabViewItem?.identifier as? String, "curve")
+        XCTAssertEqual(window.frame, userFrame, "the window frame does not move or resize")
+        // The curve editor fits inside the inspector.
+        let editor = wc.inspector.fadeSettings.view
+        let inspector = wc.inspector.view
+        XCTAssertTrue(inspector.bounds.contains(editor.convert(editor.bounds, to: inspector)))
+    }
+
+    func testEveryInspectorTabKeepsTheWindowAndTheSplit() async throws {
+        for cue in [audio, fade, group, memo] {
+            await select(cue)
+            let ids = InspectorTabs.ids(forKind: wc.store.model?.cue(cue)?.kindType ?? "")
+            let before = layout()
+            XCTAssertEqual(before.frame, userFrame)
+            for id in ids + [ids[0]] {
+                try clickTab(id)
+                XCTAssertEqual(layout(), before, "tab \(id) of cue \(cue)")
+            }
+        }
+    }
+
+    func testCurveTabInASmallWindowKeepsTheWindow() async throws {
+        window.setFrame(NSRect(origin: userFrame.origin, size: window.minSize), display: true)
+        settleLayout()
+        let small = window.frame
+        XCTAssertEqual(small.size, window.minSize)
+        await select(fade)
+        XCTAssertEqual(window.frame, small)
+        try clickTab("curve")
+        XCTAssertEqual(window.frame, small, "the window neither grows nor shrinks")
+    }
+
+    func testSelectingACueWithoutTheCurveTabKeepsTheWindow() async throws {
+        await select(fade)
+        try clickTab("curve")
+        let before = layout()
+        await select(audio)
+        XCTAssertFalse(InspectorTabs.ids(forKind: "audio").contains("curve"))
+        XCTAssertEqual(window.frame, before.frame)
+        XCTAssertEqual(layout().frame, userFrame)
     }
 }

@@ -24,7 +24,10 @@ final class TimeLoopsTests: XCTestCase {
     private static let engineFree = [
         "testDrawingStacksChannelsAndSpansMinToMax", "testDrawingFollowsTheZoom",
         "testALiveResizeAsksForPeaksOnceWhenItEnds", "testSliceChangesApplyToTheCurrentKind",
-        "testTheDrawnFadeShapeIsCoresCurve",
+        "testTheDrawnFadeShapeIsCoresCurve", "testViewportZoomKeepsTheAnchorAndStaysInTheFile",
+        "testViewportPanStopsAtTheFileEnds",
+        "testAReadStillOutForAnotherCueDoesNotLandOnTheCueShown",
+        "testOneReadIsOutAtATimeAndTheLatestAskIsMade", "testARefusedReadIsAskedAgain",
     ]
 
     override func setUp() async throws {
@@ -152,6 +155,419 @@ final class TimeLoopsTests: XCTestCase {
         panel.zoomOut()
         XCTAssertEqual(waveformRequests, asked + 1, "the whole file again comes from the cache")
         XCTAssertEqual(wave.peaks?.end, 62.5)
+    }
+
+    // MARK: Zoom and pan (AUD-14)
+
+    func testViewportZoomKeepsTheAnchorAndStaysInTheFile() {
+        let whole = WaveformViewport(start: 0, end: 60, duration: 60)
+        let z = whole.zoomed(by: 0.5, anchor: 0.75)
+        XCTAssertEqual(z.start, 22.5, accuracy: 1e-9, "the 45 s point stays three quarters across")
+        XCTAssertEqual(z.end, 52.5, accuracy: 1e-9)
+        XCTAssertEqual(whole.zoomed(by: 4), whole, "cannot zoom past the whole file")
+        let edge = whole.zoomed(by: 0.1, anchor: 1)
+        XCTAssertEqual(edge.end, 60, accuracy: 1e-9, "anchored at the right edge, the end stays put")
+        let tiny = whole.zoomed(by: 1e-9)
+        XCTAssertEqual(tiny.span, WaveformViewport.minSpan, accuracy: 1e-9)
+        XCTAssertEqual(whole.zoomed(by: .nan), whole)
+        XCTAssertEqual(whole.zoomed(by: -1), whole)
+        XCTAssertEqual(WaveformViewport(start: 0, end: 1, duration: 0).zoomed(by: 0.5).span, 0)
+    }
+
+    func testViewportPanStopsAtTheFileEnds() {
+        let v = WaveformViewport(start: 10, end: 20, duration: 60)
+        XCTAssertEqual(v.panned(by: 10).start, 20)
+        XCTAssertEqual(v.panned(by: -50).start, 0)
+        XCTAssertEqual(v.panned(by: 500).end, 60)
+        XCTAssertEqual(v.panned(by: .infinity), v)
+        XCTAssertEqual(v.panned(by: 500).span, 10, accuracy: 1e-9)
+    }
+
+    /// A panel whose reads are held until the test answers them.
+    @MainActor private final class HeldReads {
+        var asked: [ModelID] = []
+        var held: [CheckedContinuation<Result<WaveformPeaks, EngineError>, Never>] = []
+        let panel = TimeLoopsPanel()
+        init() {
+            panel.loadPeaks = { [unowned self] cue, _, _, _ in
+                asked.append(cue)
+                return await withCheckedContinuation { held.append($0) }
+            }
+            panel.isActive = true
+        }
+        func show(_ cue: ModelID, media: String?, duration: Double?) {
+            let kind = media.map { JSONValue.object(["media": .string($0)]) } ?? .object([:])
+            panel.show(cue: cue, kind: kind, duration: duration)
+        }
+        func fail(_ i: Int, _ error: EngineError) { held[i].resume(returning: .failure(error)) }
+        func answer(_ i: Int, cue: ModelID) {
+            let json = """
+                {"cue":"\(cue)","duration":10,"start":0,"end":10,"channels":[{"min":[-100],"max":[100]}]}
+                """
+            // swiftlint:disable:next force_try
+            let peaks = try! JSONDecoder().decode(WaveformPeaks.self, from: Data(json.utf8))
+            held[i].resume(returning: .success(peaks))
+        }
+    }
+
+    /// #501: a read out for cue A when B (no file yet) is shown must not draw A's waveform on B.
+    func testAReadStillOutForAnotherCueDoesNotLandOnTheCueShown() async {
+        let reads = HeldReads()
+        let a = TestSnapshots.intro
+        let b = TestSnapshots.fade
+        reads.show(a, media: "a.wav", duration: 10)
+        await settle()
+        XCTAssertEqual(reads.asked, [a])
+        reads.show(b, media: nil, duration: nil)
+        reads.answer(0, cue: a)
+        await reads.panel.loading?.value
+        XCTAssertNil(reads.panel.waveform.peaks)
+    }
+
+    /// A's read held (a stalled disk), B shown: B waits for it, and only then is asked.
+    func testOneReadIsOutAtATimeAndTheLatestAskIsMade() async {
+        let reads = HeldReads()
+        let (a, b, c) = (TestSnapshots.intro, TestSnapshots.fade, TestSnapshots.door)
+        reads.show(a, media: "a.wav", duration: 10)
+        reads.show(b, media: "b.wav", duration: 10)
+        reads.show(c, media: "c.wav", duration: 10)
+        await settle()
+        XCTAssertEqual(reads.asked, [a], "one read out for the panel")
+        reads.answer(0, cue: a)
+        await reads.panel.loading?.value
+        await assertEventually { reads.asked == [a, c] }
+        XCTAssertNil(reads.panel.waveform.peaks, "A's result is not drawn on C")
+        reads.answer(1, cue: c)
+        await reads.panel.loading?.value
+        XCTAssertEqual(reads.panel.waveform.peaks?.cue, c)
+    }
+
+    /// The engine refuses a read when too many wait: the cue still shown is asked again, not marked unavailable.
+    func testARefusedReadIsAskedAgain() async {
+        let reads = HeldReads()
+        let a = TestSnapshots.intro
+        reads.show(a, media: "a.wav", duration: 10)
+        await settle()
+        reads.fail(0, .engine(code: .commandRefused, message: "too many waveforms are waiting to be read"))
+        await reads.panel.loading?.value
+        await assertEventually { reads.asked == [a, a] }
+        reads.answer(1, cue: a)
+        await reads.panel.loading?.value
+        XCTAssertEqual(reads.panel.waveform.peaks?.cue, a)
+        XCTAssertNotEqual(reads.panel.waveform.message, loc("timeLoops.unavailable"))
+    }
+
+    /// Arrowing through ten Audio cues leaves the last one's waveform drawn, never "unavailable", with
+    /// no more than one read out at a time (the engine queues only a few).
+    func testArrowingThroughAudioCuesDrawsTheLastWaveform() async throws {
+        let ids = (0..<10).map { String(format: "00000000-0000-0000-0000-0000000002%02d", $0) }
+        let many = try await Rig.open("Demo") { show in
+            try writeWAV(show.appendingPathComponent("media/a.wav"), seconds: 20)
+            try editShow(show.appendingPathComponent("Demo.openlab")) { ws in
+                guard var lists = ws["cue_lists"]?.arrayValue, var cues = lists.first?["cues"]?.arrayValue,
+                    let first = cues.first
+                else { return XCTFail("the demo show has no first cue") }
+                for (n, id) in ids.enumerated() {
+                    var cue = first
+                    cue.set("id", .string(id))
+                    cue.set("number", .string("A\(n)"))
+                    cues.append(cue)
+                }
+                lists[0].set("cues", .array(cues))
+                ws.set("cue_lists", .array(lists))
+            }
+        }
+        defer { many.client.stop() }
+        let inspector = InspectorViewController(store: many.store)
+        let box = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 300), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        box.isReleasedWhenClosed = false
+        box.contentView = inspector.view
+        defer { box.orderOut(nil) }
+        inspector.setSelection([ModelID(ids[0])])
+        inspector.tabView.selectTabViewItem(withIdentifier: "timeLoops")
+        inspector.view.layoutSubtreeIfNeeded()
+        let panel = inspector.timeLoops
+        if panel.waveform.bounds.width < 625 { panel.waveform.setFrameSize(NSSize(width: 625, height: 120)) }
+        await assertEventually("durations known") {
+            ids.allSatisfy { many.store.mediaDurations[ModelID($0)]?.file != nil }
+        }
+        var out = 0
+        var most = 0
+        let real = panel.loadPeaks
+        panel.loadPeaks = { cue, a, b, n in
+            out += 1
+            most = max(most, out)
+            let r = await real?(cue, a, b, n) ?? .failure(.notConnected)
+            out -= 1
+            return r
+        }
+        for id in ids {
+            inspector.setSelection([ModelID(id)])
+            await Task.yield()
+        }
+        let last = ModelID(ids[9])
+        await assertEventually("the last cue's waveform is drawn") { panel.waveform.peaks?.cue == last }
+        XCTAssertNotEqual(panel.waveform.message, loc("timeLoops.unavailable"))
+        XCTAssertLessThanOrEqual(most, 1)
+    }
+
+    /// Waits for the peaks of the visible stretch, including a read a later zoom queued behind one.
+    private func peaksSettled() async {
+        repeat { await panel.loading?.value } while panel.reloadPending
+        await assertEventually("peaks for the visible range") {
+            self.wave.peaks.map { $0.start == self.panel.visible.start && $0.end == self.panel.visible.end } ?? false
+        }
+    }
+
+    private var span: Double { panel.visible.end - panel.visible.start }
+
+    /// A real event's worth of fields at a point of the waveform, as AppKit delivers them to the view.
+    private final class WaveEvent: NSEvent {
+        var point = NSPoint.zero
+        var mag: CGFloat = 0
+        var delta = (x: CGFloat(0), y: CGFloat(0))
+        var precise = true
+        var flags: NSEvent.ModifierFlags = []
+        override var locationInWindow: NSPoint { point }
+        override var magnification: CGFloat { mag }
+        override var scrollingDeltaX: CGFloat { delta.x }
+        override var scrollingDeltaY: CGFloat { delta.y }
+        override var hasPreciseScrollingDeltas: Bool { precise }
+        override var modifierFlags: NSEvent.ModifierFlags { flags }
+    }
+
+    private func windowPoint(atSeconds t: Double) -> NSPoint {
+        wave.convert(NSPoint(x: wave.scale.x(t), y: WaveformView.rulerHeight + 20), to: nil)
+    }
+
+    private func pinch(_ m: CGFloat, at p: NSPoint) {
+        let e = WaveEvent()
+        e.point = p
+        e.mag = m
+        wave.magnify(with: e)
+    }
+
+    private func scroll(
+        dx: CGFloat = 0, dy: CGFloat = 0, precise: Bool, flags: NSEvent.ModifierFlags = [], at p: NSPoint
+    ) {
+        let e = WaveEvent()
+        e.point = p
+        e.delta = (dx, dy)
+        e.precise = precise
+        e.flags = flags
+        wave.scrollWheel(with: e)
+    }
+
+    private func commandKey(_ chars: String) -> NSEvent? {
+        NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: window.windowNumber,
+            context: nil, characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: 0)
+    }
+
+    /// The x of the orange trim handle line nearest `x` in the drawn view, or nil: read from the pixels.
+    private func drawnHandle(near x: CGFloat) -> CGFloat? {
+        guard let rep = wave.bitmapImageRepForCachingDisplay(in: wave.bounds) else { return nil }
+        wave.cacheDisplay(in: wave.bounds, to: rep)
+        let scale = CGFloat(rep.pixelsWide) / wave.bounds.width
+        let y = Int((WaveformView.rulerHeight + 60) * scale)
+        var best: CGFloat?
+        for px in 0..<rep.pixelsWide {
+            guard let c = rep.colorAt(x: px, y: y)?.usingColorSpace(.sRGB) else { continue }
+            // A one-point line between pixels is a blend with the dark wave behind it: red well above blue.
+            guard c.redComponent - c.blueComponent > 0.3, c.redComponent > c.greenComponent else { continue }
+            let vx = (CGFloat(px) + 0.5) / scale
+            if best == nil || abs(vx - x) < abs(best! - x) { best = vx }
+        }
+        return best
+    }
+
+    /// Zoom buttons: two clicks in shrink the span each time with the handles staying on their times
+    /// (drawn there), and out returns to the whole file but no further.
+    func testZoomButtons() async {
+        await showIntro()
+        type(panel.startField, "20")
+        await assertEventually { self.panel.startTime == 20 }
+        type(panel.endField, "50")
+        await assertEventually { self.panel.endTime == 50 }
+        XCTAssertEqual(span, 62.5, accuracy: 1e-9)
+        func handlesDrawnOnTheirTimes() {
+            for t in [20.0, 50.0] where t >= panel.visible.start && t <= panel.visible.end {
+                let expected = CGFloat((t - panel.visible.start) / span) * wave.bounds.width
+                XCTAssertEqual(wave.scale.x(t), expected, accuracy: 0.5)
+                XCTAssertEqual(drawnHandle(near: expected) ?? -99, expected, accuracy: 1.5, "handle at \(t) s")
+            }
+        }
+        handlesDrawnOnTheirTimes()
+        var spans = [span]
+        for _ in 0..<2 {
+            fire(panel.zoomInButton)
+            await peaksSettled()
+            spans.append(span)
+            handlesDrawnOnTheirTimes()
+        }
+        XCTAssertLessThan(spans[1], spans[0])
+        XCTAssertLessThan(spans[2], spans[1])
+        XCTAssertEqual(panel.startTime, 20)
+        XCTAssertEqual(panel.endTime, 50)
+        for _ in 0..<4 { fire(panel.zoomOutButton) }
+        await peaksSettled()
+        XCTAssertEqual(panel.visible.start, 0)
+        XCTAssertEqual(panel.visible.end, 62.5, "zoom out stops at the whole file")
+        handlesDrawnOnTheirTimes()
+    }
+
+    /// Pinch zooms around the pointer: the 45 s point stays under it.
+    func testPinchZoomsAroundThePointer() async {
+        await showIntro()
+        let p = windowPoint(atSeconds: 45)
+        let x = wave.convert(p, from: nil).x
+        pinch(0.5, at: p)
+        XCTAssertLessThan(span, 62.5)
+        XCTAssertEqual(wave.scale.seconds(x), 45, accuracy: 0.05, "45 s still under the pointer")
+        pinch(0.5, at: p)
+        XCTAssertEqual(wave.scale.seconds(x), 45, accuracy: 0.05)
+        await peaksSettled()
+        pinch(-0.5, at: p)
+        pinch(-0.5, at: p)
+        pinch(-0.5, at: p)
+        await peaksSettled()
+        XCTAssertEqual(span, 62.5, accuracy: 1e-9, "pinching in returns to, and stops at, the whole file")
+    }
+
+    func testOptionScrollZooms() async {
+        await showIntro()
+        let p = windowPoint(atSeconds: 45)
+        let x = wave.convert(p, from: nil).x
+        scroll(dy: 30, precise: true, flags: .option, at: p)
+        let zoomedIn = span
+        XCTAssertLessThan(zoomedIn, 62.5)
+        XCTAssertEqual(wave.scale.seconds(x), 45, accuracy: 0.05)
+        scroll(dy: -30, precise: true, flags: .option, at: p)
+        XCTAssertGreaterThan(span, zoomedIn)
+        let before = span
+        final class Spy: NSResponder {
+            var scrolls = 0
+            override func scrollWheel(with event: NSEvent) { scrolls += 1 }
+        }
+        let spy = Spy()
+        spy.nextResponder = wave.nextResponder
+        wave.nextResponder = spy
+        scroll(dy: 30, precise: true, at: p)
+        XCTAssertEqual(span, before, "without Option a vertical trackpad scroll does not zoom")
+        XCTAssertEqual(spy.scrolls, 1, "it goes on to the next responder, as a scroll does")
+        await peaksSettled()
+    }
+
+    func testMouseWheelZooms() async {
+        await showIntro()
+        let p = windowPoint(atSeconds: 45)
+        scroll(dy: 1, precise: false, at: p)
+        let zoomedIn = span
+        XCTAssertLessThan(zoomedIn, 62.5)
+        scroll(dy: -1, precise: false, at: p)
+        XCTAssertGreaterThan(span, zoomedIn)
+        await peaksSettled()
+    }
+
+    func testKeyboardZoom() async {
+        await showIntro()
+        XCTAssertFalse(window.performKeyEquivalent(with: commandKey("=")!), "ignored while the waveform is not focused")
+        XCTAssertEqual(span, 62.5)
+        click(atSeconds: 30)
+        XCTAssertTrue(window.firstResponder === wave, "a click on the waveform focuses it")
+        XCTAssertTrue(window.performKeyEquivalent(with: commandKey("=")!))
+        XCTAssertEqual(span, 31.25, accuracy: 1e-9)
+        XCTAssertTrue(window.performKeyEquivalent(with: commandKey("-")!))
+        XCTAssertEqual(span, 62.5, accuracy: 1e-9)
+        await peaksSettled()
+    }
+
+    /// Hands `event` to the view under it, as the window does for a window that is key. The test
+    /// host is not the active app, so no window here is key and `sendEvent` would take a first
+    /// click for activation only (the test below that sends one that way).
+    private func deliver(_ event: NSEvent) {
+        guard let content = window.contentView,
+            let target = content.hitTest(content.convert(event.locationInWindow, from: nil))
+        else { return XCTFail("nothing under the pointer") }
+        switch event.type {
+        case .leftMouseDown: target.mouseDown(with: event)
+        case .leftMouseDragged: target.mouseDragged(with: event)
+        default: target.mouseUp(with: event)
+        }
+    }
+
+    private func mouse(_ type: NSEvent.EventType, atSeconds t: Double) -> NSEvent {
+        NSEvent.mouseEvent(
+            with: type, location: windowPoint(atSeconds: t), modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+
+    private func click(atSeconds t: Double) {
+        deliver(mouse(.leftMouseDown, atSeconds: t))
+        deliver(mouse(.leftMouseUp, atSeconds: t))
+    }
+
+    /// A click that only brings the window forward moves no handle and places no insertion point.
+    func testAClickThatBringsTheWindowForwardMovesNoHandle() async {
+        await showIntro()
+        XCTAssertFalse(window.isKeyWindow, "the test host is not active, so this click only activates")
+        window.sendEvent(mouse(.leftMouseDown, atSeconds: 0.2))
+        window.sendEvent(mouse(.leftMouseDragged, atSeconds: 10))
+        window.sendEvent(mouse(.leftMouseUp, atSeconds: 10))
+        XCTAssertNil(wave.dragging)
+        XCTAssertEqual(panel.startField.stringValue, "00:00.00")
+        XCTAssertTrue(kinds.isEmpty)
+        XCTAssertNil(wave.insertion)
+    }
+
+    /// A real mouse-down on a trim handle still takes it, and the drag moves the trim.
+    func testAHandleStillDragsAfterTheWaveformTakesFocus() async {
+        await showIntro()
+        deliver(mouse(.leftMouseDown, atSeconds: 0.2))
+        XCTAssertTrue(window.firstResponder === wave)
+        XCTAssertEqual(wave.dragging, .start)
+        deliver(mouse(.leftMouseDragged, atSeconds: 10))
+        deliver(mouse(.leftMouseUp, atSeconds: 10))
+        await assertEventually { self.kinds.last?["start_time"] == .double(10) }
+        XCTAssertEqual(panel.startField.stringValue, "00:10.00")
+    }
+
+    /// Zoomed to 0-10 s, a horizontal scroll moves along the file to 20-30 s, and stops at both ends.
+    func testPanWhenZoomed() async {
+        await showIntro()
+        panel.zoom(by: 10 / 62.5, anchor: 0)
+        await peaksSettled()
+        XCTAssertEqual(panel.visible.start, 0, accuracy: 1e-9)
+        XCTAssertEqual(panel.visible.end, 10, accuracy: 1e-9)
+        let p = windowPoint(atSeconds: 5)
+        let width = wave.bounds.width
+        // Content follows the fingers: dragging it left moves the view later in the file.
+        scroll(dx: -2 * width, precise: true, at: p)
+        XCTAssertEqual(panel.visible.start, 20, accuracy: 1e-9)
+        XCTAssertEqual(panel.visible.end, 30, accuracy: 1e-9)
+        await peaksSettled()
+        scroll(dx: -100 * width, precise: true, at: p)
+        XCTAssertEqual(panel.visible.end, 62.5, accuracy: 1e-9, "stops at the end of the file")
+        XCTAssertEqual(span, 10, accuracy: 1e-9)
+        scroll(dx: 100 * width, precise: true, at: p)
+        XCTAssertEqual(panel.visible.start, 0, accuracy: 1e-9, "stops at the start of the file")
+        // Shift + mouse wheel pans too (up is earlier, as the content follows the wheel).
+        scroll(dx: 0, dy: -10, precise: false, flags: .shift, at: p)
+        XCTAssertGreaterThan(panel.visible.start, 0)
+        XCTAssertEqual(span, 10, accuracy: 1e-9)
+        await peaksSettled()
+    }
+
+    /// A pinch asks for peaks many times a second: only one read is out at a time.
+    func testAPinchReadsPeaksOneAtATime() async {
+        await showIntro()
+        let before = waveformRequests
+        let p = windowPoint(atSeconds: 30)
+        for _ in 0..<10 { pinch(0.1, at: p) }
+        await peaksSettled()
+        XCTAssertLessThanOrEqual(waveformRequests - before, 3)
     }
 
     // MARK: Trims
