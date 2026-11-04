@@ -385,3 +385,39 @@ fn an_unknown_destination_edit_breaks_the_cue() {
     );
     assert!(sends(&rig.go(2)).is_empty());
 }
+
+#[test]
+fn send_now_sends_the_message_once_and_touches_no_show_state() {
+    let mut rig = Rig::checked(vec![network(1), memo(2)]);
+    let actions = rig.preview(40, 1);
+    assert_eq!(
+        sends(&actions),
+        vec![&Action::SendOsc {
+            cue: id(1),
+            at: 40,
+            destination: net_id(1),
+            address: "/lx/go".into(),
+            args: vec![OscArg::Int { value: 7 }],
+        }]
+    );
+    assert_eq!(actions.len(), 1, "no preview state, no warning");
+    assert!(!rig.engine.is_previewing(id(1)));
+    assert_eq!(rig.engine.state(id(1)), CueState::Idle);
+    // The playhead did not move: GO still fires this cue.
+    assert_eq!(sends(&rig.go(50)).len(), 1);
+    // And a second send is not "already previewing".
+    assert_eq!(sends(&rig.preview(60, 1)).len(), 1);
+}
+
+#[test]
+fn send_now_from_a_broken_cue_sends_nothing() {
+    let mut rig = Rig::checked(vec![network_to(1, 9, "/x", vec![])]);
+    let actions = rig.preview(0, 1);
+    assert!(sends(&actions).is_empty());
+    assert_eq!(
+        actions,
+        vec![Action::Warning(EngineWarning::CueBroken { cue: id(1) })]
+    );
+    let mut rig = Rig::checked(vec![network_to(1, 1, "no-slash", vec![])]);
+    assert!(sends(&rig.preview(0, 1)).is_empty());
+}

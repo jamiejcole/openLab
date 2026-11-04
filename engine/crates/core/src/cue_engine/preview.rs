@@ -78,7 +78,26 @@ impl CueEngine {
             return cx.warn(EngineWarning::UnknownCue { cue });
         };
         let ignored = |reason| EngineWarning::PreviewIgnored { cue, reason };
-        let group = match model.kind {
+        let group = match &model.kind {
+            // The inspector's Send button: the message goes out once, now, as the cue's action
+            // would (docs/cue-engine.md "Network cues"). No preview state: nothing to stop.
+            CueKind::Network {
+                destination,
+                address,
+                args,
+            } => {
+                if self.refuses(cue, cx) {
+                    return cx.warn(EngineWarning::CueBroken { cue });
+                }
+                let action = Action::SendOsc {
+                    cue,
+                    at: cx.now,
+                    destination: *destination,
+                    address: address.clone(),
+                    args: args.clone(),
+                };
+                return cx.out.push(action);
+            }
             CueKind::Audio { .. } => false,
             CueKind::Group { .. } => true,
             _ => return cx.warn(ignored(PreviewIgnoredReason::NotAudio)),
