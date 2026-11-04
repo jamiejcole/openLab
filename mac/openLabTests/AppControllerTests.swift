@@ -1729,11 +1729,24 @@ final class AppControllerTests: XCTestCase {
         return wc
     }
 
-    /// The master level of Intro in the show file the engine wrote.
-    private func savedMaster(at path: String) throws -> JSONValue? {
+    /// Types -6 in the master level field of the Fade's Fade tab in "1" without committing it.
+    private func typePendingFadeLevel() throws -> WorkspaceWindowController {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.inspector.setSelection([fade])
+        wc.inspector.tabView.selectTabViewItem(withIdentifier: "fadeLevels")
+        let field = wc.inspector.fadeLevels.levelField
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(field))
+        try XCTUnwrap(field.currentEditor()).string = "-6"
+        wc.inspector.fadeLevels.controlTextDidChange(
+            Notification(name: NSControl.textDidChangeNotification, object: field))
+        return wc
+    }
+
+    /// The master level of the cue at `index` (0: Intro, 1: the Fade) in the show file the engine wrote.
+    private func savedMaster(at path: String, cue index: Int = 0) throws -> JSONValue? {
         let file = try XCTUnwrap(JSONValue.parse(try String(contentsOfFile: path, encoding: .utf8)))
-        let cue = file["workspace"]?["cue_lists"]?.arrayValue?.first?["cues"]?.arrayValue?.first
-        return normalised(cue?["kind"]?["levels"]?["master_db"])
+        let cues = file["workspace"]?["cue_lists"]?.arrayValue?.first?["cues"]?.arrayValue
+        return normalised(cues?[index]["kind"]?["levels"]?["master_db"])
     }
 
     func testEnteringShowModeWhileTypingALevelCommitsItToTheCue() async throws {
@@ -1756,6 +1769,54 @@ final class AppControllerTests: XCTestCase {
         let saved = await app.saveWorkspace(store)
         XCTAssertTrue(saved)
         XCTAssertEqual(try savedMaster(at: path), .double(-6))
+    }
+
+    func testSaveWhileTypingALevelForAFadeWritesItToTheFile() async throws {
+        _ = try typePendingFadeLevel()
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let path = try XCTUnwrap(store.document?.path)
+        let saved = await app.saveWorkspace(store)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(try savedMaster(at: path, cue: 1), .double(-6))
+    }
+
+    /// A level typed for Intro in "1", then another client removes Intro while the app has not yet heard of it:
+    /// the commit finds Intro still there and the engine refuses the write.
+    private func typePendingLevelOfARemovedCue() async throws -> WorkspaceWindowController {
+        let wc = try typePendingLevel()
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let other = Rig(engine: real, workspace: "1")
+        let connected = await other.connect()
+        XCTAssertTrue(connected)
+        defer { other.client.stop() }
+        engine.holdModel = true
+        guard case .success = await other.store.send(command: .removeCue(intro)) else {
+            XCTFail("remove")
+            return wc
+        }
+        XCTAssertNotNil(store.model?.cue(intro), "the app has not heard of the removal")
+        return wc
+    }
+
+    func testARefusedTypedLevelFailsTheCommit() async throws {
+        let wc = try await typePendingLevelOfARemovedCue()
+        let committed = await wc.commitPendingEdits()
+        XCTAssertFalse(committed)
+    }
+
+    func testARefusedTypedLevelStopsSave() async throws {
+        _ = try await typePendingLevelOfARemovedCue()
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let saved = await app.saveWorkspace(store)
+        XCTAssertFalse(saved)
+    }
+
+    func testARefusedTypedLevelStopsClose() async throws {
+        _ = try await typePendingLevelOfARemovedCue()
+        alerts.saveChoices = [.save]  // if the commit went through, Close would save and finish
+        let closed = await app.closeWorkspace("1")
+        XCTAssertFalse(closed)
+        XCTAssertNotNil(app.windows["1"])
     }
 
     func testCloseWhileTypingALevelSavesItWithTheWorkspace() async throws {
