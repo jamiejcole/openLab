@@ -2537,7 +2537,8 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertNil(wc.window?.attachedSheet, "no sheet")
         XCTAssertNil(NSApp.modalWindow, "nothing modal")
         XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains("not saved"))
-        XCTAssertTrue(store.logEntries.contains { $0.message.contains("not saved") && $0.message.contains("typed text") })
+        XCTAssertTrue(
+            store.logEntries.contains { $0.message.contains("not saved") && $0.message.contains("typed text") })
     }
 
     /// Save with notes the engine refuses still being typed: the sheet, the typing ends and the field
