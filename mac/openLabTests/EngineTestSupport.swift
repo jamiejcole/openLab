@@ -831,3 +831,15 @@ enum TestSnapshots {
         return s
     }
 }
+
+extension WorkspaceStore {
+    /// Merges `hotkeys` (a JSON object of key-map fields) into the workspace's key map through the
+    /// engine (`set_key_map`) and waits until this store's model shows it.
+    func setHotkeys(_ hotkeys: String) async throws {
+        var map = try XCTUnwrap(model?.settings["hotkeys"])
+        for (key, value) in try XCTUnwrap(JSONValue.parse(hotkeys)?.objectValue) { map.set(key, value) }
+        let result = await send(command: .setKeyMap(map))
+        guard case .success = result else { return XCTFail("set_key_map: \(result)") }
+        await assertEventually { self.model?.settings["hotkeys"] == map }
+    }
+}

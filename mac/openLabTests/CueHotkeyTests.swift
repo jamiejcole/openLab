@@ -265,6 +265,20 @@ final class TriggersTabTests: XCTestCase {
         XCTAssertEqual(triggers(CueListHarness.fade)?["hotkey"], .null)
     }
 
+    /// A cue hotkey on a key a command owns is refused with the transport message, and which keys
+    /// the commands own is what the model says: the remapped key, not the old default.
+    func testRecorderRefusesTheRemappedSelectedCueKeysNotTheDefaults() async throws {
+        try await rig.store.setHotkeys(#"{"load_selected":\#(AppControllerTests.hotkey("k"))}"#)
+        XCTAssertFalse(vc.record(KeyChord("k")))
+        XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.hotkey.transport"))
+        XCTAssertFalse(vc.record(KeyChord("p")), "Pause/Resume Selected still has P")
+        XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.hotkey.transport"))
+        XCTAssertEqual(triggers()?["hotkey"], .null, "nothing was stored")
+        XCTAssertTrue(vc.record(KeyChord("l")), "L is no longer Load Selected")
+        await assertEventually { vc.hotkeyField.stringValue == "L" }
+        XCTAssertEqual(triggers()?["hotkey"], KeyChord("l").hotkeyJSON, "the engine stored it")
+    }
+
     func testClearKeepsTheOSCAddressAndOSCEditKeepsTheHotkey() async {
         vc.oscField.stringValue = "/cue/one"
         vc.commit(.osc)
@@ -549,12 +563,12 @@ final class CueHotkeyFiringTests: XCTestCase {
 
     func testFixedDefaultKeysYieldToACueHotkey() async throws {
         keyDoc = demoDoc
-        for (n, key) in ["v", "l"].enumerated() {
+        for (n, key) in ["v", "s"].enumerated() {
             _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord(key).hotkeyJSON, osc: nil)))
             await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == KeyChord(key) } == true }
-            XCTAssertNil(app.handleKeyDown(try event(key, code: key == "v" ? 9 : 37)), "\(key) fires the cue")
+            XCTAssertNil(app.handleKeyDown(try event(key, code: key == "v" ? 9 : 1)), "\(key) fires the cue")
             await assertEventually { await self.hotkeys() == n + 1 }
-            XCTAssertNil(app.frontKeys.chord(for: key == "v" ? .previewSelected : .loadSelected))
+            XCTAssertNil(app.frontKeys.chord(for: key == "v" ? .previewSelected : .panicSelected))
             XCTAssertTrue(
                 first.logEntries.contains { $0.level == .warn && $0.message.contains("the cue keeps it") })
         }

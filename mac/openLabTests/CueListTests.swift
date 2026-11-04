@@ -1571,6 +1571,64 @@ final class PlayheadFlowTests: XCTestCase {
         try await assertAllOn(nil)
     }
 
+    // MARK: Selected-cue keys come from the model
+
+    private func hk(_ key: String) -> String { AppControllerTests.hotkey(key) }
+
+    private func isLoaded(_ id: ModelID) -> Bool { status(id, 1) == loc("cue.state.loaded") }
+
+    /// A workspace with Load Selected moved from L to K: K loads the selected cue, L does nothing as
+    /// Load Selected, and a cue with its hotkey on L starts in the app and the engine alike.
+    func testRemappedLoadSelectedKeyLoadsAndTheOldKeyIsFreeForACueHotkey() async throws {
+        try await threeCues()
+        try await store.setHotkeys(#"{"load_selected":\#(hk("k"))}"#)
+        await assertEventually { self.app.frontKeys.chord(for: .loadSelected) == KeyChord("k") }
+        let l = try key("l", code: 37)
+        XCTAssertTrue(app.handleKeyDown(l) === l, "L is no longer a transport key")
+        await sync()
+        await settle()
+        XCTAssertFalse(isLoaded(cues[0]), "L did not load the selected cue")
+        XCTAssertNil(app.handleKeyDown(try key("k", code: 40)), "K is Load Selected")
+        await assertEventually("K loaded the selected cue") { self.isLoaded(self.cues[0]) }
+
+        _ = await store.send(command: .setProperty(cues[1], .triggers(hotkey: KeyChord("l").hotkeyJSON, osc: nil)))
+        await assertEventually { self.store.model?.cueHotkeys.contains { $0.chord == KeyChord("l") } == true }
+        XCTAssertNil(app.handleKeyDown(try key("l", code: 37)), "the cue's hotkey takes L")
+        await sync()
+        try await play(0.1)
+        await assertEventually("the engine started the cue on L") { self.running(self.cues[1]) }
+        XCTAssertFalse(running(cues[0]))
+    }
+
+    /// Another client changes the mapping while this workspace is open: the next key press follows
+    /// it, and the Transport menu shows the new key; no reopen.
+    func testAMappingChangedByAnotherClientIsFollowedByTheNextKeyPress() async throws {
+        try await threeCues()
+        let other = Rig(engine: engine, workspace: doc)
+        let connected = await other.connect()
+        XCTAssertTrue(connected)
+        addTeardownBlock { @MainActor in other.client.stop() }
+        try await other.store.setHotkeys(#"{"load_selected":\#(hk("k"))}"#)
+        await assertEventually { self.app.frontKeys.chord(for: .loadSelected) == KeyChord("k") }
+        let menus = MainMenu.make()
+        MainMenu.applyKeys(to: menus.transport, app.frontKeys)
+        let item = try XCTUnwrap(menus.transport.items.first { $0.representedObject as? String == "loadSelected" })
+        XCTAssertEqual(item.keyEquivalent, "k")
+        XCTAssertNil(app.handleKeyDown(try key("k", code: 40)))
+        await assertEventually { self.isLoaded(self.cues[0]) }
+
+        click(cues[1])
+        try await other.store.setHotkeys(#"{"load_selected":\#(hk("j"))}"#)
+        await assertEventually { self.app.frontKeys.chord(for: .loadSelected) == KeyChord("j") }
+        MainMenu.applyKeys(to: menus.transport, app.frontKeys)
+        XCTAssertEqual(item.keyEquivalent, "j")
+        let k = try key("k", code: 40)
+        XCTAssertTrue(app.handleKeyDown(k) === k, "K is free again")
+        XCTAssertNil(app.handleKeyDown(try key("j", code: 38)))
+        await assertEventually("J loaded cue 2") { self.isLoaded(self.cues[1]) }
+        XCTAssertFalse(isLoaded(cues[2]))
+    }
+
     // MARK: In-place cue number and name (#493)
 
     private var fade: ModelID = "none"
