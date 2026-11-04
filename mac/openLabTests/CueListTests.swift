@@ -1907,7 +1907,9 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertFalse(ov.visibleRect.intersects(ov.rect(ofRow: row)), "the row is scrolled away")
         try press("n", code: 45)
         XCTAssertEqual(wc.cueList.editingCell?.id, cues[1])
-        XCTAssertTrue(ov.visibleRect.contains(wc.cueList.cellEditor.frame), "the editor is on screen")
+        // The cell's middle is in view (its edges can sit under a scroller on a small screen).
+        let editor = wc.cueList.cellEditor.frame
+        XCTAssertTrue(ov.visibleRect.contains(NSPoint(x: editor.midX, y: editor.midY)), "the editor is on screen")
     }
 
     /// A letter held with fn is not the plain key (an arrow key carries fn).
