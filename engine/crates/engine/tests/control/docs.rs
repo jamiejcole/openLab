@@ -2267,3 +2267,135 @@ fn save_as_from_one_folder_to_another_drops_history_that_names_relative_paths_of
     let _ = r.s.send(ClientMessage::Undo { id: undo_id });
     assert_eq!(media_of(r.s.control().workspace(), 1), "b.wav");
 }
+
+fn set_show_mode(r: &mut Rig, on: bool) {
+    ok_result(&request(&mut r.s, Request::SetShowMode { on }));
+}
+
+
+/// Opens `path` and says whether the workspace came up in Show Mode, as the app sees it.
+fn opens_in_show_mode(r: &mut Rig, path: &Path) -> bool {
+    let replies = request(&mut r.s, open(path));
+    ok_result(&replies);
+    let snap = snapshot(&replies);
+    assert!(
+        !snap.workspace.show_mode,
+        "the wire workspace never carries the mode: `document` does"
+    );
+    snap.document.show_mode
+}
+
+fn saved_show_mode(path: &Path) -> bool {
+    load_show(&fs::read_to_string(path).unwrap())
+        .unwrap()
+        .workspace
+        .show_mode
+}
+
+/// SM-01: a workspace saved in Show Mode reopens in Show Mode, one saved in Edit Mode reopens in
+/// Edit Mode, a new workspace starts in Edit Mode. Changing the mode does not mark it unsaved.
+#[test]
+fn show_mode_is_saved_with_the_workspace_and_restored_on_open() {
+    let mut r = rig(memo_ws("one", &[1]));
+    let (a, b) = (
+        r.env.show_dir().join("a.openlab"),
+        r.env.show_dir().join("b.openlab"),
+    );
+    set_show_mode(&mut r, true);
+    assert!(!r.s.control().is_unsaved(), "a mode change is not an edit");
+    save_as(&mut r.s, &a);
+    assert!(saved_show_mode(&a));
+
+    // A new workspace is in Edit Mode, whatever the one before was in.
+    let replies = request(&mut r.s, Request::New {});
+    assert!(!snapshot(&replies).document.show_mode);
+    save_as(&mut r.s, &b);
+    assert!(opens_in_show_mode(&mut r, &a), "saved in Show Mode");
+    assert!(!r.s.control().is_unsaved(), "opening is not an edit");
+
+    // Back to Edit Mode and a Save: the file says Edit Mode.
+    set_show_mode(&mut r, false);
+    rename(&mut r.s, 1, "edited");
+    ok_result(&request(&mut r.s, Request::Save));
+    assert!(!fs::read_to_string(&a).unwrap().contains("show_mode"));
+    assert!(!opens_in_show_mode(&mut r, &b));
+    assert!(!opens_in_show_mode(&mut r, &a), "saved in Edit Mode");
+}
+
+/// A Save As copy takes the mode the workspace is in at that moment; the file it was opened from
+/// is not touched by a mode change.
+#[test]
+fn save_as_writes_the_current_show_mode() {
+    let mut r = saved_rig(memo_ws("one", &[1]));
+    let copy = r.env.show_dir().join("copy.openlab");
+    set_show_mode(&mut r, true);
+    save_as(&mut r.s, &copy);
+    assert!(saved_show_mode(&copy));
+    assert!(!saved_show_mode(&r.env.show_path()));
+}
+
+/// Files without a mode (every v7 file) and files with a damaged one open in Edit Mode; the
+/// damaged one says so in the open's warnings. Neither is refused.
+#[test]
+fn old_and_damaged_files_open_in_edit_mode() {
+    let mut r = rig(memo_ws("one", &[1]));
+    let dir = r.env.show_dir();
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&save_show(&memo_ws("two", &[1])).unwrap()).unwrap();
+    doc["format_version"] = 7.into();
+    let old = dir.join("old.openlab");
+    fs::write(&old, doc.to_string()).unwrap();
+    assert!(!opens_in_show_mode(&mut r, &old));
+
+    doc["format_version"] = 8.into();
+    doc["workspace"]["id"] = "00000000-0000-4000-8000-0000000000aa".into();
+    doc["workspace"]["show_mode"] = "yes".into();
+    let damaged = dir.join("damaged.openlab");
+    fs::write(&damaged, doc.to_string()).unwrap();
+    let replies = request(&mut r.s, open(&damaged));
+    ok_result(&replies);
+    let snap = snapshot(&replies);
+    assert!(!snap.document.show_mode);
+    assert!(
+        snap.warnings.iter().any(|w| matches!(
+            w,
+            openlab_core::protocol::WireWarning::Notice { code, message, .. }
+                if code == "load_repair" && message.contains("Show Mode")
+        )),
+        "{:?}",
+        snap.warnings
+    );
+}
+
+/// The autosave carries the mode, and both ways of restoring one (the offer on open, and the
+/// recovery scan after a corrupt show) bring the workspace back in the mode it was autosaved in:
+/// a crash in the middle of a show must not drop the operator out of Show Mode.
+#[test]
+fn a_recovered_workspace_opens_in_the_mode_it_was_autosaved_in() {
+    let mut r = saved_rig(memo_ws("one", &[1]));
+    set_show_mode(&mut r, true);
+    let (env, path, id) = crash_with_autosave(r);
+    assert!(saved_show_mode(&env.dirs.recovery_path(id, Some(&path))));
+
+    let mut r = restart(env, memo_ws("blank", &[5]));
+    let replies = request(
+        &mut r.s,
+        Request::Open {
+            path: path.to_string_lossy().into_owned(),
+            recovery: Some(RecoveryChoice::Restore),
+        },
+    );
+    ok_result(&replies);
+    assert!(snapshot(&replies).document.show_mode, "restore on open");
+
+    let replies = request(
+        &mut r.s,
+        Request::OpenRecovery {
+            workspace_id: id,
+            path_hash: None,
+            modified_ms: None,
+        },
+    );
+    ok_result(&replies);
+    assert!(snapshot(&replies).document.show_mode, "open_recovery");
+}

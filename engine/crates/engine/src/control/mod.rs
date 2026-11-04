@@ -536,7 +536,9 @@ struct Doc {
     meters_live: bool,
     /// Waveforms read for `waveform` requests (AUD-14) and reads under way.
     waveforms: waveforms::Waveforms,
-    /// Show Mode (SM-01, `set_show_mode`): in memory only; holds off sleep (SM-07).
+    /// Show Mode (SM-01, `set_show_mode`): read from the file at open and written into every
+    /// saved or autosaved copy (`saved_workspace`); changing it does not mark the doc unsaved.
+    /// Holds off sleep (SM-07).
     show_mode: bool,
 }
 
@@ -922,6 +924,13 @@ impl Doc {
             waveforms: waveforms::Waveforms::default(),
             show_mode: false,
         }
+    }
+
+    /// The workspace as it is written to a show file or an autosave: the model's, plus the mode.
+    pub(super) fn saved_workspace(&self) -> Workspace {
+        let mut copy = self.model.ws().clone();
+        copy.show_mode = self.show_mode;
+        copy
     }
 
     fn document_state(&self) -> DocumentState {
