@@ -200,6 +200,9 @@ pub enum IssueKind {
     /// Version 7 has none (QLab 5 has no per-output delay), so the delays were removed and those
     /// outputs now play undelayed.
     OutputDelaysRemoved,
+    /// Warning: the file's `show_mode` is not `true` or `false`, so the workspace opens in Edit
+    /// Mode.
+    ShowModeUnreadable,
     /// An OSC rights set had Edit or Control without View: they were cleared. `row` is the
     /// passcode row (`None`: the No Passcode row).
     OscRightsNeedView { row: Option<usize> },
@@ -310,6 +313,10 @@ impl fmt::Display for ValidationIssue {
                 "this show delayed some patch outputs; patches no longer have output delays, so \
                  the delays were removed and those outputs play undelayed: align speakers in a \
                  processor or the audio interface"
+            ),
+            IssueKind::ShowModeUnreadable => write!(
+                f,
+                "the show file's Show Mode setting is damaged, so the workspace opened in Edit Mode"
             ),
             IssueKind::GroupFadeNowRelative => write!(
                 f,

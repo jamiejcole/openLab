@@ -17,7 +17,8 @@ use proptest::prelude::*;
 use proptest::{collection::vec, option};
 
 /// The current format (golden: saved files must match it byte for byte).
-const EXAMPLE: &str = include_str!("../../../fixtures/show/v7-example.openlab");
+const EXAMPLE: &str = include_str!("../../../fixtures/show/v8-example.openlab");
+const V7_EXAMPLE: &str = include_str!("../../../fixtures/show/v7-example.openlab");
 const V6_EXAMPLE: &str = include_str!("../../../fixtures/show/v6-example.openlab");
 const V5_EXAMPLE: &str = include_str!("../../../fixtures/show/v5-example.openlab");
 const V4_EXAMPLE: &str = include_str!("../../../fixtures/show/v4-example.openlab");
@@ -699,18 +700,18 @@ fn migrate_is_identity_from_current_version() {
 
 #[test]
 fn too_new_format_version_is_refused_naming_both_versions() {
-    let text = EXAMPLE.replacen("\"format_version\": 7", "\"format_version\": 8", 1);
+    let text = EXAMPLE.replacen("\"format_version\": 8", "\"format_version\": 9", 1);
     let err = load_show(&text).unwrap_err();
     assert!(matches!(
         err,
         LoadError::TooNew {
-            found: 8,
+            found: 9,
             supported: FORMAT_VERSION
         }
     ));
     let message = err.to_string();
     assert!(
-        message.contains('8') && message.contains(&FORMAT_VERSION.to_string()),
+        message.contains('9') && message.contains(&FORMAT_VERSION.to_string()),
         "{message}"
     );
 
@@ -1500,4 +1501,88 @@ fn reset_second_triggers(cues: &mut [Cue]) {
             reset_second_triggers(children);
         }
     }
+}
+
+fn example_with_show_mode(value: serde_json::Value) -> String {
+    let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    doc["workspace"]["show_mode"] = value;
+    doc.to_string()
+}
+
+fn show_mode_unreadable() -> ValidationIssue {
+    ValidationIssue {
+        severity: Severity::Warning,
+        cue_id: None,
+        kind: IssueKind::ShowModeUnreadable,
+    }
+}
+
+/// v8 added the workspace's `show_mode` (SM-01). A v7 file has none: it opens in Edit Mode with
+/// no warning and is the current example when saved.
+#[test]
+fn v7_fixture_migrates_to_edit_mode() {
+    let loaded = load_show(V7_EXAMPLE).unwrap();
+    assert_eq!(loaded.warnings, vec![]);
+    assert!(!loaded.workspace.show_mode);
+    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+    let migrated = migrate(serde_json::from_str(V7_EXAMPLE).unwrap(), 7).unwrap();
+    assert_eq!(migrated["format_version"], FORMAT_VERSION);
+    assert_eq!(save_show(&loaded.workspace).unwrap(), EXAMPLE);
+}
+
+/// A v7 reader ignored unknown keys, so a `show_mode` in a v7 file was never the user's: it is
+/// dropped rather than switching the show into Show Mode.
+#[test]
+fn a_show_mode_in_a_v7_file_is_not_read() {
+    let mut doc: serde_json::Value = serde_json::from_str(V7_EXAMPLE).unwrap();
+    doc["workspace"]["show_mode"] = true.into();
+    let loaded = load_show(&doc.to_string()).unwrap();
+    assert!(!loaded.workspace.show_mode);
+    assert_eq!(loaded.warnings, vec![]);
+}
+
+/// Saved in Show Mode, reopened in Show Mode; saved in Edit Mode, reopened in Edit Mode and the
+/// file has no `show_mode` key at all.
+#[test]
+fn show_mode_round_trips_through_save_and_load() {
+    let mut workspace = load_show(EXAMPLE).unwrap().workspace;
+    workspace.show_mode = true;
+    let text = save_show(&workspace).unwrap();
+    assert!(text.contains("\"show_mode\": true"), "{text}");
+    let loaded = load_show(&text).unwrap();
+    assert!(loaded.workspace.show_mode);
+    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.workspace, workspace);
+
+    workspace.show_mode = false;
+    let text = save_show(&workspace).unwrap();
+    assert!(!text.contains("show_mode"));
+    assert!(!load_show(&text).unwrap().workspace.show_mode);
+    assert_eq!(text, EXAMPLE);
+}
+
+/// A `show_mode` that is not a boolean is damage in an outside input: the show opens in Edit
+/// Mode with one warning, never refused. `null` counts as absent.
+#[test]
+fn a_damaged_show_mode_opens_in_edit_mode_with_a_warning() {
+    for bad in [
+        serde_json::json!("true"),
+        serde_json::json!(1),
+        serde_json::json!(0.5),
+        serde_json::json!([true]),
+        serde_json::json!({"on": true}),
+    ] {
+        let loaded = load_show(&example_with_show_mode(bad.clone())).unwrap();
+        assert!(!loaded.workspace.show_mode, "{bad}");
+        assert_eq!(loaded.warnings, vec![show_mode_unreadable()], "{bad}");
+        assert!(loaded.warnings[0].to_string().contains("Edit Mode"));
+        // Saved again, the damage is gone.
+        let text = save_show(&loaded.workspace).unwrap();
+        assert_eq!(load_show(&text).unwrap().warnings, vec![]);
+    }
+    let loaded = load_show(&example_with_show_mode(serde_json::Value::Null)).unwrap();
+    assert!(!loaded.workspace.show_mode);
+    assert_eq!(loaded.warnings, vec![]);
+    let loaded = load_show(&example_with_show_mode(false.into())).unwrap();
+    assert_eq!(loaded.warnings, vec![]);
 }
