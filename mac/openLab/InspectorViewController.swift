@@ -706,6 +706,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// False when an edit was invalid or refused: the caller (Save, Close, Quit) must not go on.
     func commitPendingEdits() async -> Bool {
         var ok = true
+        // A level typed in a Levels panel is sent like the fields below; before the lock, which would refuse it.
+        audioLevels.commitTyping()
+        fadeLevels.commitTyping()
         for f in InspectorField.allCases where dirty.contains(f) { ok = commit(f) && ok }
         let failuresBefore = sendFailures
         for task in Array(inFlight.values) { await task.value }

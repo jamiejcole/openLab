@@ -388,6 +388,20 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(modelKind(Self.intro)?["levels"]?["master_db"], .double(-10))
     }
 
+    func testADragStartedWhileTypingCommitsTheTextFirstAndLeavingTheFieldWritesNothingOverIt() async throws {
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        try typeInto(p.levelField, "-6")
+        drag(p, to: [-10])
+        await assertEventually { self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(-10) }
+        XCTAssertEqual(p.levelField.stringValue, LevelText.format(-10), "the field follows the fader")
+        let before = sent.count
+        window.makeFirstResponder(nil)
+        await rig.sync()
+        XCTAssertEqual(sent.count, before, "leaving the field writes nothing over the drag")
+        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["master_db"], .double(-10))
+    }
+
     func testAfterEscAPeersChangeIsTakenAndNotWrittenBack() async throws {
         showCue(Self.intro)
         let p = vc.audioLevels

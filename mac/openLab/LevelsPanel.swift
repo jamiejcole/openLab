@@ -133,7 +133,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     /// Text has been typed in a field and not yet committed or dropped (a field that was only
     /// clicked into is not: nothing of it is held or written).
-    private var isDirty = false
+    private var typedField: NSTextField?
+    private var isDirty: Bool { typedField != nil }
 
     /// Shows `levels` over `inputs` file channels and `outputs` cue outputs. Ignored while a
     /// gesture is under way, so the fader does not jump under the mouse. While text is being typed
@@ -230,8 +231,17 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     // MARK: Editing
 
+    /// Commits text typed in a field and closes its editor: before Save, Close, Quit or Show Mode, and
+    /// before a drag starts (a typed value must not be written over the drag when the field is left).
+    func commitTyping() {
+        guard let typed = typedField else { return }
+        finishTyping(commit: typed)
+        typed.window?.makeFirstResponder(nil)
+    }
+
     func beginGesture() {
         guard !isLocked else { return }
+        commitTyping()
         Self.gestureSeq += 1
         gesture = Self.gestureSeq
         onHold?(true)
@@ -293,7 +303,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         return control.endTyping(by: selector)
     }
 
-    func controlTextDidChange(_ obj: Notification) { isDirty = true }
+    func controlTextDidChange(_ obj: Notification) { typedField = obj.object as? NSTextField }
 
     func controlTextDidEndEditing(_ obj: Notification) { finishTyping(commit: obj.object as? NSTextField) }
 
@@ -302,9 +312,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     /// (a level that does not round-trip through its text, -6.25 shown as -6.2, stays as it is). The
     /// grid size a `show` held meanwhile is applied, and the strip shows the levels as they now are.
     private func finishTyping(commit field: NSTextField?) {
-        let wasDirty = isDirty
-        isDirty = false
-        if wasDirty, let field { commitText(of: field) }
+        let typed = typedField
+        typedField = nil
+        if let typed, field != nil { commitText(of: typed) }
         if let held = heldSize, gesture == nil {
             place(levels, inputs: held.inputs, outputs: held.outputs)
         } else {
