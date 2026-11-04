@@ -21,10 +21,15 @@ extension InspectorViewController {
         let messageRow = NSStackView(views: [networkMessageField, networkSendButton])
         messageRow.spacing = 6
         let content = column(
-            [row(loc("inspector.network.patch"), networkPatchPopup), row(loc("inspector.network.message"), messageRow)],
+            [
+                row(loc("inspector.network.patch"), networkPatchPopup),
+                row(loc("inspector.network.message"), messageRow),
+            ],
             nil)
         content.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
-        for v in content.arrangedSubviews { v.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -24).isActive = true }
+        for v in content.arrangedSubviews {
+            v.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -24).isActive = true
+        }
         messageRow.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -24).isActive = true
         let item = NSTabViewItem(identifier: "network")
         item.label = loc("inspector.tab.network")
@@ -43,7 +48,9 @@ extension InspectorViewController {
             networkPatchIDs = ids
             networkPatchNames = names
             networkPatchPopup.menu?.removeAllItems()
-            for name in names { networkPatchPopup.menu?.addItem(NSMenuItem(title: name, action: nil, keyEquivalent: "")) }
+            for name in names {
+                networkPatchPopup.menu?.addItem(NSMenuItem(title: name, action: nil, keyEquivalent: ""))
+            }
             if !patches.isEmpty { networkPatchPopup.menu?.addItem(.separator()) }
             networkPatchPopup.menu?.addItem(
                 NSMenuItem(title: loc("inspector.network.unpatched"), action: nil, keyEquivalent: ""))

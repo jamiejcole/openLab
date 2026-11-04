@@ -19,7 +19,9 @@ enum ProblemText {
             for (k, v) in o where k != "type" { fields[k] = v }
         }
         // The inspector's "no patch" choice is the nil id: say so instead of naming an id.
-        if p.type == "network_patch_missing", p.json["patch"]?.stringValue == ModelID.unpatched.raw { specific = "none" }
+        if p.type == "network_patch_missing", p.json["patch"]?.stringValue == ModelID.unpatched.raw {
+            specific = "none"
+        }
         return render("problem", p.type, specific: specific, fields: fields, label: label)
     }
 

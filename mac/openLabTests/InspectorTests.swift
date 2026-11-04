@@ -656,7 +656,9 @@ final class InspectorTests: XCTestCase {
 
 /// The Network message line: address, then space-separated typed arguments (CT-30).
 final class NetworkMessageTests: XCTestCase {
-    private func arg(_ type: String, _ value: JSONValue) -> JSONValue { .object(["type": .string(type), "value": value]) }
+    private func arg(_ type: String, _ value: JSONValue) -> JSONValue {
+        .object(["type": .string(type), "value": value])
+    }
 
     func testParsesEachArgumentType() throws {
         let parsed = try NetworkMessage.parse(#"/x 2 10.5 "two words" \T \F word -3 .5 7."#).get()
