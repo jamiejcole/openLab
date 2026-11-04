@@ -62,6 +62,46 @@ final class ScriptedAlerts: WorkspaceAlerts {
     }
 }
 
+/// Counts the Esc a workspace window takes (`cancelOperation(_:)` or `keyDown`) while it is installed:
+/// the Esc that reached the end of the responder chain and found a handler instead of the beep.
+final class CancelTap {
+    private final class Box: @unchecked Sendable { var n = 0 }
+    private let count = Box()
+    var taken: Int { count.n }
+    private var restores: [() -> Void] = []
+
+    /// Wraps `cancelOperation:` and `keyDown:` of the workspace window: Esc reaches one of them
+    /// (a table's key bindings the first, a button or tab view the second) or it beeps.
+    init() throws {
+        let cancel = #selector(NSResponder.cancelOperation(_:))
+        let count = count
+        let cancelMethod = try XCTUnwrap(class_getInstanceMethod(WorkspaceWindow.self, cancel))
+        let cancelOriginal = method_getImplementation(cancelMethod)
+        let cancelBlock: @convention(block) (AnyObject, Any?) -> Void = { object, sender in
+            count.n += 1
+            typealias Call = @convention(c) (AnyObject, Selector, Any?) -> Void
+            unsafeBitCast(cancelOriginal, to: Call.self)(object, cancel, sender)
+        }
+        method_setImplementation(cancelMethod, imp_implementationWithBlock(cancelBlock))
+        restores.append { method_setImplementation(cancelMethod, cancelOriginal) }
+
+        let key = #selector(NSResponder.keyDown(with:))
+        let keyMethod = try XCTUnwrap(class_getInstanceMethod(WorkspaceWindow.self, key))
+        let keyOriginal = method_getImplementation(keyMethod)
+        let keyBlock: @convention(block) (AnyObject, NSEvent) -> Void = { object, event in
+            if event.keyCode == 53 { count.n += 1 }
+            typealias Call = @convention(c) (AnyObject, Selector, NSEvent) -> Void
+            unsafeBitCast(keyOriginal, to: Call.self)(object, key, event)
+        }
+        method_setImplementation(keyMethod, imp_implementationWithBlock(keyBlock))
+        restores.append { method_setImplementation(keyMethod, keyOriginal) }
+    }
+
+    func restore() { for undo in restores { undo() } }
+}
+
+final class Counter { var count = 0 }
+
 @MainActor
 final class AppControllerTests: XCTestCase {
     private var app: AppController!
@@ -85,6 +125,81 @@ final class AppControllerTests: XCTestCase {
     private let fade: ModelID = "00000000-0000-0000-0000-00000000000b"
 
     override func setUp() async throws { try await build() }
+
+    /// Another client holds the engine's document gate: an open from the app is refused, tried again
+    /// after the scheduler's wait, and opens once the gate is free, with no error for the operator.
+    /// The other client's open reads and parses a large file, as the engine has no switch to hold its
+    /// worker. If the app's request lost that race and simply opened, the attempt proves nothing and
+    /// another is made; running out of attempts fails.
+    func testAnOpenRefusedBecauseAnotherClientHoldsTheGateIsTriedAgain() async throws {
+        let big = real.folder.appendingPathComponent("big-\(UUID().uuidString).openlab")
+        try Data(repeating: 0x20, count: 64 * 1024 * 1024).write(to: big)
+        addTeardownBlock { try? FileManager.default.removeItem(at: big) }
+        let harness = real!
+        let session = app.session
+        for _ in 1...10 {
+            engine.forgetSent()
+            let held = Task { await harness.request(.open(path: big.path)) }
+            // Answered in order on that connection: the engine has taken the open when this returns.
+            _ = await harness.request(.listPatchMappings)
+            let answered = Counter()
+            let opening = Task {
+                let result = await session.newWorkspace()
+                answered.count = 1
+                return result
+            }
+            await assertEventually("the request was refused, or opened") {
+                let waiting = await self.sessionScheduler.waitingCount
+                return waiting >= 1 || answered.count == 1
+            }
+            guard answered.count == 0 else {
+                // Lost the race: the gate was free already.
+                guard case .success(let doc) = await opening.value else { return XCTFail("new failed") }
+                _ = await session.close(doc: doc, discardChanges: true)
+                _ = await held.value
+                continue
+            }
+            guard case .failure = await held.value else { return XCTFail("the big file is not a show") }
+            await sessionScheduler.fire()
+            guard case .success = await opening.value else { return XCTFail("the retry should have opened") }
+            let requests = engine.requestCount { if case .new = $0 { return true } else { return false } }
+            XCTAssertEqual(requests, 2, "refused once, then tried again")
+            return
+        }
+        XCTFail("no attempt was refused: the retry was never exercised")
+    }
+
+    /// Notes the engine refuses stop a Close, and stop it again: the text is not lost by asking twice.
+    func testMastheadNotesTheEngineRefusesStopEveryClose() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let window = try XCTUnwrap(wc.window)
+        keyDoc = "1"
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        let tooLong = String(repeating: "x", count: 64 * 1024 + 1)
+        notes.insertText(tooLong, replacementRange: notes.selectedRange())
+        func dismissNotice() async {
+            await assertEventually("a notice") { window.attachedSheet != nil }
+            if let sheet = window.attachedSheet { window.endSheet(sheet) }
+            await assertEventually { window.attachedSheet == nil }
+        }
+        alerts.saveChoices = [.dontSave, .dontSave]  // the prompt must not be what stops it
+        let first = await app.closeWorkspace("1")
+        XCTAssertFalse(first, "stopped")
+        await dismissNotice()
+        let second = await app.closeWorkspace("1")
+        XCTAssertFalse(second, "stopped again: the text was never saved")
+        await dismissNotice()
+        XCTAssertNotNil(app.windows["1"])
+        XCTAssertTrue(notes.string.hasSuffix(tooLong), "the text is still there")
+        // Cut down, the same typing saves.
+        notes.setSelectedRange(NSRange(location: 0, length: notes.string.utf16.count))
+        notes.insertText("short", replacementRange: notes.selectedRange())
+        let cue = try XCTUnwrap(wc.masthead.cueID)
+        let saved = await wc.commitPendingEdits()
+        XCTAssertTrue(saved)
+        await assertEventually { wc.store.model?.cue(cue)?.raw["notes"]?.stringValue == "short" }
+    }
 
     /// A real engine of this test's own with the demo show open as doc 1 (the engine numbers
     /// docs from 0: a first one is opened and closed), Intro playing (GO, which moves the playhead
@@ -2520,44 +2635,6 @@ final class AppControllerTests: XCTestCase {
 
     // MARK: Esc without the system beep
 
-    /// Counts the Esc a workspace window takes (`cancelOperation(_:)` or `keyDown`) while it is installed:
-    /// the Esc that reached the end of the responder chain and found a handler instead of the beep.
-    private final class CancelTap {
-        private final class Box: @unchecked Sendable { var n = 0 }
-        private let count = Box()
-        var taken: Int { count.n }
-        private var restores: [() -> Void] = []
-
-        /// Wraps `cancelOperation:` and `keyDown:` of the workspace window: Esc reaches one of them
-        /// (a table's key bindings the first, a button or tab view the second) or it beeps.
-        init() throws {
-            let cancel = #selector(NSResponder.cancelOperation(_:))
-            let count = count
-            let cancelMethod = try XCTUnwrap(class_getInstanceMethod(WorkspaceWindow.self, cancel))
-            let cancelOriginal = method_getImplementation(cancelMethod)
-            let cancelBlock: @convention(block) (AnyObject, Any?) -> Void = { object, sender in
-                count.n += 1
-                typealias Call = @convention(c) (AnyObject, Selector, Any?) -> Void
-                unsafeBitCast(cancelOriginal, to: Call.self)(object, cancel, sender)
-            }
-            method_setImplementation(cancelMethod, imp_implementationWithBlock(cancelBlock))
-            restores.append { method_setImplementation(cancelMethod, cancelOriginal) }
-
-            let key = #selector(NSResponder.keyDown(with:))
-            let keyMethod = try XCTUnwrap(class_getInstanceMethod(WorkspaceWindow.self, key))
-            let keyOriginal = method_getImplementation(keyMethod)
-            let keyBlock: @convention(block) (AnyObject, NSEvent) -> Void = { object, event in
-                if event.keyCode == 53 { count.n += 1 }
-                typealias Call = @convention(c) (AnyObject, Selector, NSEvent) -> Void
-                unsafeBitCast(keyOriginal, to: Call.self)(object, key, event)
-            }
-            method_setImplementation(keyMethod, imp_implementationWithBlock(keyBlock))
-            restores.append { method_setImplementation(keyMethod, keyOriginal) }
-        }
-
-        func restore() { for undo in restores { undo() } }
-    }
-
     /// The front workspace window, key, with `focus` the first responder.
     private func keyWindow(focus: (WorkspaceWindowController) -> NSResponder) throws -> (
         WorkspaceWindowController, NSWindow
@@ -2595,8 +2672,6 @@ final class AppControllerTests: XCTestCase {
         app.beep = { counter.count += 1 }
         return counter
     }
-
-    private final class Counter { var count = 0 }
 
     private func assertNoBeep(_ tap: CancelTap, _ presses: Int, _ beeps: Counter, _ message: String) {
         XCTAssertEqual(

@@ -98,12 +98,12 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
     // MARK: Calls
 
     func newWorkspace() async -> Result<ModelID, EngineError> {
-        await opened(appClient.send { .request(id: $0, .new) })
+        await opened(docRequest(.new))
     }
 
     func open(path: String, recovery: RecoveryChoice? = nil) async -> Result<ModelID, EngineError> {
         let result = await opened(
-            appClient.send { .request(id: $0, .open(path: path, recovery: recovery)) }, path: path)
+            docRequest(.open(path: path, recovery: recovery)), path: path)
         if recovery == .restore, case .success(let doc) = result, let ms = offeredAutosaves[path] {
             cover(doc) { $0.loadOwn(modifiedMs: ms) }
         }
@@ -138,7 +138,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
     }
 
     func scanRecovery() async -> Result<[RecoveryEntryInfo], EngineError> {
-        switch await appClient.send({ .request(id: $0, .scanRecovery) }) {
+        switch await docRequest(.scanRecovery) {
         case .success(let ok):
             if case .recoveryEntries(let e)? = ok.data { return .success(e) }
             return .success([])
@@ -176,11 +176,8 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
     }
 
     private func sendOpenRecovery(_ entry: RecoveryEntryInfo) async -> Result<OkBody, EngineError> {
-        await appClient.send {
-            .request(
-                id: $0,
-                .openRecovery(workspaceId: entry.workspaceId, pathHash: entry.pathHash, modifiedMs: entry.modifiedMs))
-        }
+        await docRequest(
+            .openRecovery(workspaceId: entry.workspaceId, pathHash: entry.pathHash, modifiedMs: entry.modifiedMs))
     }
 
     /// A `new` / `open` result: the new doc, or the autosave offer that opened nothing.
@@ -421,13 +418,13 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
             // With no autosave newer than the file, a window with unsaved changes loses them.
             var source: Source = info.dirty ? .fileEditsLost : .file
             var cover = AutosaveCover()
-            var result = await openForRebind(.open(path: path, recovery: nil))
+            var result = await docRequest(.open(path: path, recovery: nil))
             if case .success(let ok) = result, case .recoveryOffer(_, _, let modified)? = ok.data {
                 // An autosave newer than the file: the window showed it if it had unsaved changes
                 // (the engine stopped before they were saved); otherwise it showed the saved file.
                 source = info.dirty ? .autosave : .file
                 if info.dirty { cover.loadOwn(modifiedMs: modified) }
-                result = await openForRebind(.open(path: path, recovery: info.dirty ? .restore : .ignore))
+                result = await docRequest(.open(path: path, recovery: info.dirty ? .restore : .ignore))
             }
             switch result {
             case .success(let ok):
@@ -466,7 +463,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         } else {
             return .failed(loc("engine.reattach.noAutosave"))
         }
-        switch await openForRebind(request) {
+        switch await docRequest(request) {
         case .success(let ok):
             if let doc = ok.data?.openedDoc, stores[doc] == nil {
                 var cover = AutosaveCover()
@@ -479,16 +476,40 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         }
     }
 
-    /// One document request; `command_refused` (another client's request is being handled) is
-    /// tried again a few times.
-    private func openForRebind(_ request: Request) async -> Result<OkBody, EngineError> {
+    /// Whether a document request is in flight from this app (see `docRequest`).
+    private var docBusy = false
+    private var docWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// One request through the engine's document gate (`new`, `open`, `open_recovery`,
+    /// `scan_recovery`). The engine handles one at a time and refuses a second, so the app sends
+    /// them one after another (#499): an open right after an engine restart waits for the launch
+    /// recovery scan, and the scan for the open. When another client holds the gate the engine
+    /// still refuses; that refusal alone is tried again a few times. Any other error returns at once.
+    private func docRequest(_ request: Request) async -> Result<OkBody, EngineError> {
+        if docBusy {
+            await withCheckedContinuation { docWaiters.append($0) }
+        } else {
+            docBusy = true
+        }
+        defer {
+            if docWaiters.isEmpty { docBusy = false } else { docWaiters.removeFirst().resume() }
+        }
         var result = await appClient.send { .request(id: $0, request) }
         for _ in 0..<5 {
-            guard case .failure(.engine(.commandRefused, _)) = result else { break }
+            guard Self.isGateBusy(result) else { break }
             do { try await scheduler.sleep(seconds: 0.5) } catch { break }
             result = await appClient.send { .request(id: $0, request) }
         }
         return result
+    }
+
+    /// The engine's refusal while another document request is being handled (not its other
+    /// `command_refused` reasons, which are the operator's to see).
+    private static func isGateBusy(_ result: Result<OkBody, EngineError>) -> Bool {
+        if case .failure(.engine(.commandRefused, let message)) = result {
+            return message.contains("another document request")
+        }
+        return false
     }
 
     static func describe(_ e: EngineError) -> String {

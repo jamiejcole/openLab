@@ -16,23 +16,6 @@ final class CueClipboardTests: XCTestCase {
         return (h, editor, log)
     }
 
-    /// Real WAV files (one second of silence), so the engine probes them as playable audio.
-    private func tempFiles(_ names: [String], directories: [String] = []) throws -> [URL] {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
-        for d in directories {
-            try FileManager.default.createDirectory(
-                at: dir.appendingPathComponent(d), withIntermediateDirectories: true)
-        }
-        let demo = try XCTUnwrap(
-            Bundle(for: CueEditingTests.self).url(forResource: "TestShows", withExtension: nil)?
-                .appendingPathComponent("Demo/media/a.wav"))
-        let wav = try Data(contentsOf: demo)
-        for n in names { try (n.hasSuffix(".wav") ? wav : Data()).write(to: dir.appendingPathComponent(n)) }
-        return (names + directories).map { dir.appendingPathComponent($0) }
-    }
-
     // MARK: Finder drops
 
     func testDropOfFilesIsOneTransactionOfAddsInDropOrderAtThePosition() async throws {
@@ -442,5 +425,24 @@ final class CueClipboardTests: XCTestCase {
         await rig.sync()
         XCTAssertEqual(rig.store.revision, revision, "and the engine changed nothing")
         XCTAssertEqual(e.pasteboard.string(forType: CueEditor.pasteType), payload, "copy did not run")
+    }
+}
+
+extension XCTestCase {
+    /// Real WAV files (one second of silence), so the engine probes them as playable audio.
+    func tempFiles(_ names: [String], directories: [String] = []) throws -> [URL] {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        for d in directories {
+            try FileManager.default.createDirectory(
+                at: dir.appendingPathComponent(d), withIntermediateDirectories: true)
+        }
+        let demo = try XCTUnwrap(
+            Bundle(for: CueEditingTests.self).url(forResource: "TestShows", withExtension: nil)?
+                .appendingPathComponent("Demo/media/a.wav"))
+        let wav = try Data(contentsOf: demo)
+        for n in names { try (n.hasSuffix(".wav") ? wav : Data()).write(to: dir.appendingPathComponent(n)) }
+        return (names + directories).map { dir.appendingPathComponent($0) }
     }
 }

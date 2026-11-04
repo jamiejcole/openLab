@@ -132,11 +132,11 @@ extension CueEditor {
 
     // MARK: Copy, cut, paste
 
-    /// Puts the selected cues (with their children) on the pasteboard.
+    /// Puts `cues` (nil: the selection), with their children, on the pasteboard.
     @discardableResult
-    func copySelection() async -> Bool {
+    func copySelection(of cues: [ModelID]? = nil) async -> Bool {
         guard await begin() else { return false }
-        return writePasteboard(Self.topLevel(selectedNodes()))
+        return writePasteboard(Self.topLevel(selectedNodes(of: cues)))
     }
 
     private func writePasteboard(_ nodes: [CueNode]) -> Bool {
@@ -151,21 +151,22 @@ extension CueEditor {
     }
 
     /// Copy, then delete; nothing happens (pasteboard included) if a selected cue is busy.
-    func cutSelection() async {
+    func cutSelection(of cues: [ModelID]? = nil) async {
         guard await begin() else { return }
-        let nodes = Self.topLevel(selectedNodes())
+        let nodes = Self.topLevel(selectedNodes(of: cues))
         if nodes.contains(where: isBusy) { return notify(loc("edit.error.deleteBusy")) }
         guard writePasteboard(nodes) else { return }
-        await deleteSelection()
+        await deleteSelection(of: cues)
     }
 
-    /// Pastes after the selection (see `insertion`) as one undo step, with fresh ids and automatic numbers.
-    func paste() async {
+    /// Pastes after `cues` (nil: the selection; see `insertion`) as one undo step, with fresh ids and
+    /// automatic numbers.
+    func paste(after cues: [ModelID]? = nil) async {
         guard await begin(), let list = cueList?.listID else { return }
         guard let text = pasteboard.string(forType: Self.pasteType), let clipboard = Self.decodeClipboard(text) else {
             return NSSound.beep()
         }
-        let place = Self.insertion(selected: selectedNodes(), roots: cueList?.roots ?? [])
+        let place = Self.insertion(selected: selectedNodes(of: cues), roots: cueList?.roots ?? [])
         let at = Command.position(list: list, parent: place.parent, index: place.index)
         guard
             report(
@@ -181,9 +182,9 @@ extension CueEditor {
     // MARK: Delete numbers
 
     /// Clears the number of every selected cue (QLab: Tools > Delete Numbers of Selected Cues, Cmd-D).
-    func deleteNumbers() async {
+    func deleteNumbers(of cues: [ModelID]? = nil) async {
         guard await begin() else { return }
-        let ids = (cueList?.selectedIDs() ?? []).filter { cueList?.node($0)?.cue.number != nil }
+        let ids = selectedNodes(of: cues).filter { $0.cue.number != nil }.map(\.id)
         guard !ids.isEmpty else { return }
         _ = report(await store.send(command: .clearNumbers(ids)))
     }

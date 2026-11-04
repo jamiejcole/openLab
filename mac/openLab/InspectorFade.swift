@@ -74,6 +74,10 @@ final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
         for c in [durationField, curvePopup, stopCheck] as [NSControl] { c.isEnabled = !isLocked }
     }
 
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        control.endTyping(by: selector)
+    }
+
     func controlTextDidEndEditing(_ obj: Notification) {
         guard !isLocked else { return }
         let shown = CueTime.format(kind["duration"]?.doubleValue ?? 0)

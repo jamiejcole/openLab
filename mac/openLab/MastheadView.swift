@@ -7,7 +7,7 @@ import AppKit
 final class MastheadView: NSView, NSTextViewDelegate {
     let goButton = NSButton(title: loc("masthead.go"), target: nil, action: nil)
     let standbyField = NSTextField(labelWithString: loc("masthead.standby.none"))
-    let notesView = NSTextView()
+    let notesView = NotesTextView()
     /// The cue the masthead shows; nil when nothing stands by.
     private(set) var cueID: ModelID?
     /// Show Mode (or no cue): the notes cannot be typed in.
@@ -117,15 +117,17 @@ final class MastheadView: NSView, NSTextViewDelegate {
     /// the cue it was typed for even if the playhead moves meanwhile.
     private var editingID: ModelID?
 
-    /// Shows `cue` as standing by. Notes being typed for another cue are committed to that cue first.
+    /// Typing ended (or its text was taken): the masthead may now show the standby cue that came
+    /// while the operator typed. The window re-reads it, since the cue may have changed or gone.
+    var onEditingEnded: (() -> Void)?
+    /// The text last handed over by `pendingNotes`.
+    private var handedOver: String?
+
+    /// Shows `cue` as standing by. While notes are being typed for another cue the masthead keeps
+    /// showing that cue, the text and the focus: a Space typed next must go into the text, not fire
+    /// GO. The new standby cue is shown once typing ends.
     func show(standby cue: Cue?) {
-        if let editing = editingID, editing != cue?.id {
-            editingID = nil
-            onCommitNotes?(editing, notesView.string)
-            // AppKit announces the start of typing once per focus session: leave the field so the
-            // next keystroke starts a new session for the new cue instead of typing unseen.
-            if notesView.window?.firstResponder === notesView { notesView.window?.makeFirstResponder(nil) }
-        }
+        if let editing = editingID, editing != cue?.id { return }
         let changed = cueID != cue?.id
         cueID = cue?.id
         if let cue {
@@ -139,30 +141,41 @@ final class MastheadView: NSView, NSTextViewDelegate {
         applyEditable()
     }
 
-    /// Escape ends editing (the text is committed by the end-of-editing that follows) and gives
-    /// focus back, so Space fires GO again.
+    /// Escape, Return and Tab end editing (the text is committed by the end-of-editing that follows)
+    /// and give focus back, so Space fires GO again and the arrow keys work. Shift-Return types a
+    /// new line.
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        guard selector == #selector(NSResponder.cancelOperation(_:)) || textView.endsNotesTyping(selector) else {
+            return false
+        }
         window?.makeFirstResponder(nil)
         return true
     }
 
     func textDidBeginEditing(_ notification: Notification) {
         editingID = cueID
+        handedOver = nil
     }
 
     func textDidEndEditing(_ notification: Notification) {
         guard let id = editingID else { return }
         editingID = nil
         if !isLocked { onCommitNotes?(id, notesView.string) }
+        onEditingEnded?()
     }
 
-    /// Notes typed and not yet sent, handed over (and forgotten) for Show Mode, Save, Close and Quit.
-    func takePendingNotes() -> (id: ModelID, text: String)? {
-        guard let id = editingID, !isLocked else { return nil }
-        editingID = nil
+    /// Notes typed and not yet handed over, for Show Mode, Save, Close, Quit and every edit command.
+    /// The typing goes on (the focus stays, and AppKit reports no new start of editing), so the cue
+    /// being typed for stays too: what is typed next goes to it, and the end of editing sends the
+    /// whole text. Nil once handed over and unchanged, as sending it runs this again.
+    func pendingNotes() -> (id: ModelID, text: String)? {
+        guard let id = editingID, !isLocked, notesView.string != handedOver else { return nil }
+        handedOver = notesView.string
         return (id, notesView.string)
     }
+
+    /// The text handed over was refused or not delivered: the next command must send it again.
+    func notesNotSaved() { handedOver = nil }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }

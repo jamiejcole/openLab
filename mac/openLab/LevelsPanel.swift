@@ -42,6 +42,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     /// A gesture ended: the model may be shown again.
     var onGestureEnd: (() -> Void)?
     var onSetFromTarget: (() -> Void)?
+    /// A drag starts or ends, or the mouse goes down or up on the matrix: the edit must stay on this
+    /// cue until it is over.
+    var onHold: ((Bool) -> Void)?
 
     private(set) var levels: LevelSet?
     private(set) var selection: LevelSet.Slot = .master
@@ -87,10 +90,14 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         matrix.onSelect = { [weak self] slot in self?.select(slot) }
         matrix.onDrag = { [weak self] slot, db, first in
             guard let self else { return }
-            if first { self.beginGesture() }
+            if first, self.gesture == nil { self.beginGesture() }
             self.edit(gesture: self.gesture) { $0.set(slot, db: db, drag: true) }
         }
         matrix.onDragEnd = { [weak self] in self?.endGesture() }
+        // From the press: a drag can start at any moment, and must start from this cue's values.
+        matrix.onPress = { [weak self] on in
+            if on { self?.beginGesture() } else { self?.endGesture() }
+        }
 
         scroll.documentView = matrix
         scroll.hasVerticalScroller = true
@@ -221,12 +228,15 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         guard !isLocked else { return }
         Self.gestureSeq += 1
         gesture = Self.gestureSeq
+        onHold?(true)
     }
 
     func endGesture() {
         guard gesture != nil else { return }
         gesture = nil
+        matrix.forgetPress()
         onGestureEnd?()
+        onHold?(false)
     }
 
     /// Applies `change` to the panel's levels and reports the result, unless it changes nothing.
@@ -270,6 +280,10 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     /// Replaces the levels with `new` as one edit (Set Levels from Target).
     func replace(with new: LevelSet) { edit { $0 = new } }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        control.endTyping(by: selector)
+    }
 
     func controlTextDidEndEditing(_ obj: Notification) {
         defer {

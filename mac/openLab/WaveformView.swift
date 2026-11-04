@@ -159,6 +159,8 @@ class WaveformView: NSView {
     var onTrimCommit: ((Handle, Double?) -> Void)?
     /// A drag moved the slice marker that was at `from` to `to`, or (nil) took it out of the view.
     var onSliceCommit: ((_ from: Double, _ to: Double?) -> Void)?
+    /// A handle was taken: a drag begins.
+    var onDragBegan: (() -> Void)?
     /// A drag ended, committed or not: what the view kept for it is to be shown afresh.
     var onDragEnded: (() -> Void)?
     /// A drag changed the fades: the new fade-in and fade-out lengths.
@@ -239,6 +241,7 @@ class WaveformView: NSView {
             if min(di, dout) <= Self.grab {
                 dragging = di <= dout ? .fadeIn : .fadeOut
                 fadeOrigin = (fadeIn, fadeOut)
+                onDragBegan?()
                 return true
             }
         }
@@ -252,6 +255,7 @@ class WaveformView: NSView {
         dragging = handle
         dragOrigin = (trimStart, trimEnd)
         if case .slice(let i) = handle { markOrigin = sliceMarks[i] }
+        onDragBegan?()
         return true
     }
 

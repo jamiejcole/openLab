@@ -477,6 +477,22 @@ final class InspectorTests: XCTestCase {
         await assertEventually("the typed name wins") { self.intro?.name == "half typed" }
     }
 
+    /// A menu command can select another cue while a name is typed (a new cue, Select Cue by number;
+    /// a playhead move cannot, `PlayheadFlowTests`): the name goes to the cue it was typed for, and
+    /// the inspector shows the other cue's own name.
+    func testASelectionTheAppChangesMidEditCommitsTheTypingToTheCueItWasTypedFor() async throws {
+        vc.setSelection([Self.intro])
+        XCTAssertTrue(window.makeFirstResponder(vc.nameField))
+        vc.nameField.currentEditor()?.string = "half typed"
+        typed(.name, "half typed")
+        vc.setSelection([Self.fade])
+        await assertEventually { self.commands.count == 1 }
+        XCTAssertEqual(commands.last, property("name", #""half typed""#))
+        XCTAssertNil(vc.nameField.currentEditor(), "editing ended")
+        let fadeName = try XCTUnwrap(rig.store.model?.cue(Self.fade)?.raw["name"]?.stringValue)
+        XCTAssertEqual(vc.nameField.stringValue, fadeName)
+    }
+
     func testEscCancelsTheEdit() async {
         vc.setSelection([Self.intro])
         XCTAssertTrue(window.makeFirstResponder(vc.nameField))
@@ -555,7 +571,7 @@ final class InspectorTests: XCTestCase {
         vc.setSelection([Self.intro])
         XCTAssertTrue(window.makeFirstResponder(vc.nameField))
         typed(.name, "A")
-        vc.commit(.name)  // Return: sent, field stays focused
+        vc.commit(.name)  // a Save's commit: sent, field stays focused
         await assertEventually { self.commands.count == 1 }
         await assertEventually { self.store.model?.cue(Self.intro)?.name == "A" }
         try await elsewhere(.setProperty(Self.intro, .name("B")))

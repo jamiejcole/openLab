@@ -26,11 +26,13 @@ extension InspectorViewController {
         audioLevels.onEdit = { [weak self] set, gesture in self?.sendLevels(set, gesture: gesture) }
         fadeLevels.onEdit = { [weak self] set, gesture in self?.sendLevels(set, gesture: gesture) }
         audioLevels.onGestureEnd = { [weak self] in self?.render() }
+        audioLevels.onHold = { [weak self] in self?.gestureHold($0) }
+        fadeLevels.onHold = { [weak self] in self?.gestureHold($0) }
         fadeLevels.onGestureEnd = { [weak self] in self?.render() }
         fadeLevels.onSetFromTarget = { [weak self] in self?.setFadeLevelsFromTarget() }
         fadeSettings.onChange = { [weak self] change in self?.sendFade(change) }
         fadeSettings.onInvalid = { [weak self] in
-            self?.messageLabel.stringValue = loc("inspector.invalid.time")
+            self?.showRefusal(loc("inspector.invalid.time"))
         }
 
         let levels = NSTabViewItem(identifier: "levels")
@@ -132,7 +134,7 @@ extension InspectorViewController {
     func sendKind(
         _ build: (JSONValue) -> JSONValue, key: String, coalesce: ((ModelID) -> String)? = nil
     ) {
-        guard !isLocked, let cue = cueForEdit, let kind = cue.raw["kind"] else { return }
+        guard !isLocked, let cue = cueForKindEdit, let kind = cue.raw["kind"] else { return }
         let new = build(kind)
         guard new != kind else { return }
         // Only the fields this edit changed go out, so a change another client made to the others
