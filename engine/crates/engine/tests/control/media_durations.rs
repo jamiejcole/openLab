@@ -28,9 +28,17 @@ fn fake_probe(path: &Path) -> Result<Probed, MediaError> {
     } else {
         u64::from(RATE)
     };
+    // `wide.wav` has six channels; `broken.wav` claims none (a probe the engine should not trust).
+    let channels = if path.ends_with("wide.wav") {
+        6
+    } else if path.ends_with("broken.wav") {
+        0
+    } else {
+        1
+    };
     Ok(Probed {
         info: MediaInfo {
-            channels: 1,
+            channels,
             sample_rate: RATE,
             frames,
             duration: Duration::from_secs(frames / u64::from(RATE)),
@@ -80,6 +88,7 @@ fn lengths(cue: u128, file: f64, trimmed: f64, duration: Option<f64>) -> CueMedi
         file: Some(file),
         trimmed: Some(trimmed),
         duration,
+        channels: Some(1),
     }
 }
 
@@ -89,6 +98,7 @@ fn unknown(cue: u128) -> CueMediaDuration {
         file: None,
         trimmed: None,
         duration: None,
+        channels: None,
     }
 }
 
@@ -369,4 +379,36 @@ fn one_cues_change_in_two_thousand_sends_one_change_and_no_snapshot() {
     let msgs = s.take_outbound();
     assert_eq!(snapshots(&msgs), 0);
     assert_eq!(durations(&msgs), vec![unknown(42)]);
+}
+
+#[test]
+fn a_cue_relinked_to_a_file_with_another_channel_count_is_told_the_new_count() {
+    let fs = FakeFs::new();
+    let mut s = shows(1, &fs);
+    assert_eq!(s.control().snapshot().media_durations[0].channels, Some(1));
+    let wide = PathBuf::from("/show/sounds/wide.wav");
+    fs.put(&wide, 1);
+    let msgs = edit_kind(&mut s, 1, |k| {
+        if let CueKind::Audio { media, .. } = k {
+            *media = Some(MediaRef::new(wide.to_str().unwrap()));
+        }
+    });
+    assert_eq!(durations(&msgs).last().map(|d| d.channels), Some(Some(6)));
+    assert_eq!(s.control().snapshot().media_durations[0].channels, Some(6));
+    // The file going missing withdraws the count with the lengths.
+    fs.remove(&wide);
+    assert!(s.watch_pass());
+    assert_eq!(durations(&s.take_outbound()), vec![unknown(1)]);
+}
+
+#[test]
+fn a_probe_claiming_no_channels_is_never_sent_as_a_channel_count() {
+    let fs = FakeFs::new();
+    let broken = PathBuf::from("/show/sounds/broken.wav");
+    fs.put(&broken, 1);
+    let ws = workspace(vec![audio(1, &broken, 0)]);
+    let c = manual(&ws, &fs);
+    let s = show_with(ws, c);
+    let told = s.control().snapshot().media_durations;
+    assert!(told.iter().all(|d| d.channels.is_none()), "{told:?}");
 }
