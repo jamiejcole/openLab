@@ -124,9 +124,7 @@ struct TransportKeys: Equatable {
     /// `settings` is the workspace's `settings` object (nil or without `hotkeys`: all defaults).
     /// `cueChords` are the cue hotkeys of the workspace: a fixed default (V, S) that one of them
     /// uses yields to it, so an app default never silently takes a show's key.
-    /// `menuChords` are the menu bar's key equivalents outside the Transport menu: a key-map field
-    /// naming one binds nothing and warns, because the menu command would take the press first.
-    init(settings: JSONValue?, cueChords: Set<KeyChord> = [], menuChords: Set<KeyChord> = []) {
+    init(settings: JSONValue?, cueChords: Set<KeyChord> = []) {
         let hotkeys = settings?["hotkeys"]
         for (field, command, fallback) in Self.fields {
             var chord = fallback
@@ -145,7 +143,7 @@ struct TransportKeys: Equatable {
             }
             guard let chord else { continue }
             if chord.key == KeyChord.escape { continue }  // stop_all = Esc: the app-wide panic
-            if let error = Self.validate(chord, for: command, in: chords, menuChords: menuChords) {
+            if let error = Self.validate(chord, for: command, in: chords) {
                 warnings.append(
                     String(format: loc("hotkeys.warn.unusable"), loc(command.titleKey), Self.describe(error)))
                 continue
@@ -155,7 +153,7 @@ struct TransportKeys: Equatable {
         for (command, chord) in Self.fixed {
             if cueChords.contains(chord) {
                 warnings.append(String(format: loc("hotkeys.warn.yields"), loc(command.titleKey), chord.display))
-            } else if let error = Self.validate(chord, for: command, in: chords, menuChords: menuChords) {
+            } else if let error = Self.validate(chord, for: command, in: chords) {
                 warnings.append(
                     String(format: loc("hotkeys.warn.unusable"), loc(command.titleKey), Self.describe(error)))
             } else {
@@ -172,14 +170,13 @@ struct TransportKeys: Equatable {
     /// (QLab 5), as are Esc and the empty key.
     static func validate(
         _ chord: KeyChord, for command: TransportCommand, in existing: [TransportCommand: KeyChord],
-        isCueHotkey: (KeyChord) -> Bool = { _ in false }, menuChords: Set<KeyChord> = []
+        isCueHotkey: (KeyChord) -> Bool = { _ in false }
     ) -> KeyBindError? {
         guard command != .panic, chord.key != KeyChord.escape, !chord.key.isEmpty else { return .reserved }
         if isArrow(chord) { return .reserved }
         if let other = existing.first(where: { $0.value == chord && $0.key != command })?.key {
             return .duplicate(of: other)
         }
-        if menuChords.contains(chord) { return .menuKey }
         return isCueHotkey(chord) ? .cueHotkey : nil
     }
 

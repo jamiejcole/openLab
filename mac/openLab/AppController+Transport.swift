@@ -11,16 +11,17 @@ extension AppController {
     /// unusable is logged to that store once per change (never a crash).
     func keys(for store: WorkspaceStore) -> TransportKeys {
         let settings = store.model?.settings
+        let hotkeys = settings?["hotkeys"]
         let id = ObjectIdentifier(store)
         let cueChords = Set((store.model?.cueHotkeys ?? []).map(\.chord))
         let menu = menuChords()
         let cached = keyCache[id]
-        let same = cached?.settings == settings && cached?.cueChords == cueChords && cached?.menu == menu
-        // A key-map chord that a menu command owns binds nothing (warned once per change below).
+        // Only the key map and the cue hotkeys move keys: another setting changing re-warns nothing.
+        let same = cached?.hotkeys == hotkeys && cached?.cueChords == cueChords
         let keys =
             same
-            ? (cached?.keys ?? TransportKeys(settings: settings, cueChords: cueChords, menuChords: menu))
-            : TransportKeys(settings: settings, cueChords: cueChords, menuChords: menu)
+            ? (cached?.keys ?? TransportKeys(settings: settings, cueChords: cueChords))
+            : TransportKeys(settings: settings, cueChords: cueChords)
         // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire); the
         // fixed app defaults (V, S) already yielded to cue hotkeys inside `TransportKeys`.
         // A menu command's key (Cmd-J, Shift-Cmd-Down, ...) is taken before a cue hotkey is looked
@@ -28,14 +29,26 @@ extension AppController {
         let transportShadowed = cueChords.intersection(keys.chords.values)
         let menuShadowed = cueChords.intersection(menu).subtracting(transportShadowed)
         let shadowed = transportShadowed.union(menuShadowed)
-        if let cached, same, cached.shadowed == shadowed { return cached.keys }
-        keyCache[id] = (settings, cueChords, menu, shadowed, keys)
+        // A key-map chord a menu command also owns still binds (the key monitor takes it first, as
+        // QLab does): the menu command has lost its key in this workspace, and the operator is told.
+        let lost = keys.chords.filter { menu.contains($0.value) }
+        if let cached, same, cached.shadowed == shadowed, cached.lost == lost { return cached.keys }
+        keyCache[id] = (hotkeys, cueChords, shadowed, lost, keys)
         if !same {
             for warning in keys.warnings { _ = store.receive(.log(.warn, warning)) }
         }
         for chord in shadowed.subtracting(cached?.shadowed ?? []) {
             let key = transportShadowed.contains(chord) ? "hotkeys.warn.shadowed" : "hotkeys.warn.menuShadowed"
             _ = store.receive(.log(.warn, String(format: loc(key), chord.display)))
+        }
+        if cached?.lost != lost {
+            func text(_ entry: (key: TransportCommand, value: KeyChord)) -> String {
+                String(format: loc("hotkeys.warn.menuLost"), loc(entry.key.titleKey), entry.value.display)
+            }
+            store.setAppNotices(lost.sorted { $0.key.rawValue < $1.key.rawValue }.map(text))
+            for entry in lost where cached?.lost[entry.key] != entry.value {
+                _ = store.receive(.log(.warn, text(entry)))
+            }
         }
         return keys
     }

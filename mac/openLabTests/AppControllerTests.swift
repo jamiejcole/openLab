@@ -1030,54 +1030,68 @@ final class AppControllerTests: XCTestCase {
         return bar
     }
 
-    private func menuWarning(_ command: String, _ store: WorkspaceStore) -> Bool {
-        let text = String(
-            format: loc("hotkeys.warn.unusable"), loc(command), loc("hotkeys.reason.menuKey"))
-        return store.logEntries.contains { $0.level == .warn && $0.message == text }
+    private func lostText(_ command: String, _ chord: KeyChord) -> String {
+        String(format: loc("hotkeys.warn.menuLost"), loc(command), chord.display)
     }
 
-    /// A workspace whose file maps Load Selected to Cmd-S, opened: a warning says so, the key binds
-    /// nothing, and Cmd-S saves.
-    func testAFileKeyMapNamingAMenuChordWarnsBindsNothingAndTheMenuCommandRuns() async throws {
+    /// What the Warnings tab lists for the window, as the operator reads it.
+    private func tabTitles(_ doc: ModelID) -> [String] {
+        app.windows[doc]?.sidebar.warningRows.map(\.title) ?? []
+    }
+
+    /// A workspace whose file maps Go to Cmd-S, opened: the key runs GO and Save does not run, and the
+    /// Warnings tab says the Save command lost its key, once.
+    func testAFileKeyMapNamingAMenuChordRunsTheMapsCommandAndTheWarningsTabSaysSo() async throws {
         let bar = realMenuBar()
-        let cmdS = Self.hotkey("s", ["command"])
-        let doc = try await openShow(withHotkeys: #"{"load_selected":\#(cmdS)}"#)
-        let store = try XCTUnwrap(app.session.stores[doc])
+        let cmdS = KeyChord("s", [.command])
+        let doc = try await openShow(withHotkeys: #"{"go":\#(Self.hotkey("s", ["command"]))}"#)
         keyDoc = doc
-        let wc = try XCTUnwrap(app.windows[doc])
-        await assertEventually {
-            wc.cueList.select([self.intro])
-            return wc.cueList.selectedIDs() == [self.intro]
-        }
-        XCTAssertNil(app.frontKeys.chord(for: .loadSelected))
-        await assertEventually { self.menuWarning("menu.transport.loadSelected", store) }
-        let press = try keyEvent("s", [.command])
-        XCTAssertTrue(app.handleKeyDown(press) === press, "the key monitor leaves Cmd-S to the menu")
-        XCTAssertTrue(bar.performKeyEquivalent(with: press), "the Save item takes it")
-        await assertEventually("saved") { self.saveRequests().save == 1 }
-        XCTAssertTrue(transports(.load(cue: intro, at: 0)).isEmpty, "nothing loaded")
+        let text = lostText("menu.transport.go", cmdS)
+        await assertEventually { self.tabTitles(doc).filter { $0 == text }.count == 1 }
+        XCTAssertEqual(app.frontKeys.chord(for: .go), cmdS)
+        let save = try XCTUnwrap(
+            bar.items.compactMap(\.submenu).flatMap(\.items).first { $0.action == #selector(self.saveWorkspace(_:)) })
+        XCTAssertEqual(save.keyEquivalent, "s", "the menu still shows its key")
+        XCTAssertNil(app.handleKeyDown(try keyEvent("s", [.command])), "the key monitor takes it first")
+        await assertEventually { self.gos() == [doc] }
+        await settle()
+        XCTAssertEqual(saveRequests().save, 0, "Save did not run")
+        _ = app.frontKeys
+        XCTAssertEqual(tabTitles(doc).filter { $0 == text }.count, 1, "once")
     }
 
-    /// A peer changes the key map to a menu chord: the warning follows the change, once, and a plain
-    /// key set afterwards works on the next press.
-    func testAPeerKeyMapChangeToAMenuChordWarnsAndAPlainKeyFollows() async throws {
+    /// A peer changes the key map to a menu chord and back: the warning follows each change, once.
+    func testAPeerKeyMapChangeToAMenuChordWarnsInTheTabAndClearsWhenItMovesOn() async throws {
+        _ = realMenuBar()
+        keyDoc = "1"
+        let text = lostText("menu.transport.go", KeyChord("s", [.command]))
+        try await setHotkeys("1", #"{"go":\#(Self.hotkey("s", ["command"]))}"#)
+        await assertEventually { self.tabTitles("1").filter { $0 == text }.count == 1 }
+        XCTAssertNil(app.handleKeyDown(try keyEvent("s", [.command])))
+        await assertEventually { !gos().isEmpty }
+        try await setHotkeys("1", #"{"go":\#(Self.hotkey("g"))}"#)
+        await assertEventually { !self.tabTitles("1").contains(text) }
+        XCTAssertNil(app.handleKeyDown(try keyEvent("g")))
+        await assertEventually { gos().count == 2 }
+    }
+
+    /// Editing another setting does not say the key map's warnings again.
+    func testEditingAnotherSettingDoesNotRepeatTheKeyWarnings() async throws {
         _ = realMenuBar()
         keyDoc = "1"
         let store = try XCTUnwrap(app.session.stores["1"])
-        let cmdS = Self.hotkey("s", ["command"])
-        try await setHotkeys("1", #"{"go":\#(cmdS)}"#)
-        await assertEventually { self.app.frontKeys.chord(for: .go) == nil }
-        await assertEventually { self.menuWarning("menu.transport.go", store) }
-        let press = try keyEvent("s", [.command])
-        XCTAssertTrue(app.handleKeyDown(press) === press)
-        await settle()
-        XCTAssertTrue(gos().isEmpty, "Cmd-S is not GO")
+        let text = lostText("menu.transport.go", KeyChord("s", [.command]))
+        try await setHotkeys("1", #"{"go":\#(Self.hotkey("s", ["command"])),"pause_all":\#(Self.hotkey("f13"))}"#)
+        await assertEventually { store.logEntries.contains { $0.message == text } }
+        let logged = store.logEntries.filter { $0.level == .warn }.count
+        guard case .success = await store.send(command: .setWorkspaceNumber("panic_duration", 3)) else {
+            return XCTFail("setting")
+        }
+        await assertEventually { store.model?.settings["panic_duration"]?.doubleValue == 3 }
         _ = app.frontKeys
-        XCTAssertEqual(store.logEntries.filter { $0.message.contains(loc("hotkeys.reason.menuKey")) }.count, 1)
-        try await setHotkeys("1", #"{"go":\#(Self.hotkey("g"))}"#)
-        await assertEventually { self.app.frontKeys.chord(for: .go) == KeyChord("g") }
-        XCTAssertNil(app.handleKeyDown(try keyEvent("g")))
-        await assertEventually { !gos().isEmpty }
+        await settle()
+        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, logged)
+        XCTAssertEqual(store.logEntries.filter { $0.message == text }.count, 1)
     }
 
     func testConflictingHotkeysInAShowWarnInTheLogAndDoNotCrash() async throws {
@@ -1137,11 +1151,11 @@ final class AppControllerTests: XCTestCase {
 
         try await setHotkeys(
             "1",
-            #"{"go":\#(Self.hotkey("g", ["control"]))}"#)
-        await assertEventually { self.app.frontKeys.chord(for: .go) == KeyChord("g", [.control]) }
+            #"{"go":\#(Self.hotkey("g", ["command"]))}"#)
+        await assertEventually { self.app.frontKeys.chord(for: .go) == KeyChord("g", [.command]) }
         MainMenu.applyKeys(to: menus.transport, app.frontKeys)
         XCTAssertEqual(item(.go)?.keyEquivalent, "g")
-        XCTAssertEqual(item(.go)?.keyEquivalentModifierMask, [.control])
+        XCTAssertEqual(item(.go)?.keyEquivalentModifierMask, [.command])
     }
 
     /// Select Next / Select Previous are fixed View-menu items (Cmd-Down / Cmd-Up), not in the key

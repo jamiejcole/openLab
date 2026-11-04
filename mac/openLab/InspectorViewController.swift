@@ -479,8 +479,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     func record(_ chord: KeyChord) -> Bool {
         guard !isLocked, let cue = cueForEdit, let model = store.model else { return false }
         if let error = HotkeyRules.validate(
-            chord, for: cue.id, in: model,
-            keys: transportKeys?() ?? TransportKeys(settings: model.settings, menuChords: menuChords()),
+            chord, for: cue.id, in: model, keys: transportKeys?() ?? TransportKeys(settings: model.settings),
             menuChords: menuChords())
         {
             showRefusal(loc(HotkeyRules.messageKey(error)))
