@@ -1011,6 +1011,75 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(gos(), [second])
     }
 
+    /// Save in the menu bar of the real app is wired to this test's engine: a key goes to the key
+    /// monitor first, and whatever it leaves goes to the menu, as in the running app.
+    @objc func saveWorkspace(_ sender: Any?) {
+        guard let store = app.frontController?.store else { return }
+        Task { await app.saveWorkspace(store) }
+    }
+
+    private func realMenuBar() -> NSMenu {
+        let bar = MainMenu.make().bar
+        for menu in bar.items.compactMap(\.submenu) {
+            for item in menu.items where item.action == #selector(AppDelegate.saveWorkspace(_:)) {
+                item.action = #selector(AppControllerTests.saveWorkspace(_:))
+                item.target = self
+            }
+        }
+        app.menuChords = { HotkeyRules.menuChords(in: bar) }
+        return bar
+    }
+
+    private func menuWarning(_ command: String, _ store: WorkspaceStore) -> Bool {
+        let text = String(
+            format: loc("hotkeys.warn.unusable"), loc(command), loc("hotkeys.reason.menuKey"))
+        return store.logEntries.contains { $0.level == .warn && $0.message == text }
+    }
+
+    /// A workspace whose file maps Load Selected to Cmd-S, opened: a warning says so, the key binds
+    /// nothing, and Cmd-S saves.
+    func testAFileKeyMapNamingAMenuChordWarnsBindsNothingAndTheMenuCommandRuns() async throws {
+        let bar = realMenuBar()
+        let cmdS = Self.hotkey("s", ["command"])
+        let doc = try await openShow(withHotkeys: #"{"load_selected":\#(cmdS)}"#)
+        let store = try XCTUnwrap(app.session.stores[doc])
+        keyDoc = doc
+        let wc = try XCTUnwrap(app.windows[doc])
+        await assertEventually {
+            wc.cueList.select([self.intro])
+            return wc.cueList.selectedIDs() == [self.intro]
+        }
+        XCTAssertNil(app.frontKeys.chord(for: .loadSelected))
+        await assertEventually { self.menuWarning("menu.transport.loadSelected", store) }
+        let press = try keyEvent("s", [.command])
+        XCTAssertTrue(app.handleKeyDown(press) === press, "the key monitor leaves Cmd-S to the menu")
+        XCTAssertTrue(bar.performKeyEquivalent(with: press), "the Save item takes it")
+        await assertEventually("saved") { self.saveRequests().save == 1 }
+        XCTAssertTrue(transports(.load(cue: intro, at: 0)).isEmpty, "nothing loaded")
+    }
+
+    /// A peer changes the key map to a menu chord: the warning follows the change, once, and a plain
+    /// key set afterwards works on the next press.
+    func testAPeerKeyMapChangeToAMenuChordWarnsAndAPlainKeyFollows() async throws {
+        _ = realMenuBar()
+        keyDoc = "1"
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let cmdS = Self.hotkey("s", ["command"])
+        try await setHotkeys("1", #"{"go":\#(cmdS)}"#)
+        await assertEventually { self.app.frontKeys.chord(for: .go) == nil }
+        await assertEventually { self.menuWarning("menu.transport.go", store) }
+        let press = try keyEvent("s", [.command])
+        XCTAssertTrue(app.handleKeyDown(press) === press)
+        await settle()
+        XCTAssertTrue(gos().isEmpty, "Cmd-S is not GO")
+        _ = app.frontKeys
+        XCTAssertEqual(store.logEntries.filter { $0.message.contains(loc("hotkeys.reason.menuKey")) }.count, 1)
+        try await setHotkeys("1", #"{"go":\#(Self.hotkey("g"))}"#)
+        await assertEventually { self.app.frontKeys.chord(for: .go) == KeyChord("g") }
+        XCTAssertNil(app.handleKeyDown(try keyEvent("g")))
+        await assertEventually { !gos().isEmpty }
+    }
+
     func testConflictingHotkeysInAShowWarnInTheLogAndDoNotCrash() async throws {
         let hk = Self.hotkey("x")
         let doc = try await openShow(

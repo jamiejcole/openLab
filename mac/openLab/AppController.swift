@@ -85,7 +85,8 @@ final class AppController {
     var keySubs: [ObjectIdentifier: AnyCancellable] = [:]
     var keyCache:
         [ObjectIdentifier: (
-            settings: JSONValue?, cueChords: Set<KeyChord>, shadowed: Set<KeyChord>, keys: TransportKeys
+            settings: JSONValue?, cueChords: Set<KeyChord>, menu: Set<KeyChord>, shadowed: Set<KeyChord>,
+            keys: TransportKeys
         )] =
             [:]
     /// A hotkey recorder has the focus: the key goes to it, not to cues or transport (Esc still panics).

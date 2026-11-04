@@ -99,6 +99,31 @@ final class TransportKeysTests: XCTestCase {
         XCTAssertEqual(TransportKeys(settings: .string("nonsense")).chord(for: .go), KeyChord(" "))
     }
 
+    /// Every field of the map: a menu chord binds nothing and warns, in the map's own words.
+    func testEveryKeyMapFieldNamingAMenuChordBindsNothingAndWarns() throws {
+        let menu: Set<KeyChord> = [KeyChord("s", [.command])]
+        let fields: [(String, TransportCommand)] = [
+            ("go", .go), ("stop_all", .stopAll), ("pause_all", .pauseAll), ("resume_all", .resumeAll),
+            ("load_selected", .loadSelected), ("pause_resume_selected", .pauseResumeSelected),
+            ("start_selected", .startSelected), ("stop_selected", .stopSelected), ("reset_selected", .resetSelected),
+        ]
+        for (field, command) in fields {
+            let keys = TransportKeys(
+                settings: try settings(#"{"\#(field)":\#(hk("s", ["command"]))}"#), menuChords: menu)
+            XCTAssertNil(keys.chord(for: command), field)
+            XCTAssertNil(keys.command(for: KeyChord("s", [.command])), field)
+            XCTAssertEqual(
+                keys.warnings,
+                [
+                    String(
+                        format: loc("hotkeys.warn.unusable"), loc(command.titleKey), loc("hotkeys.reason.menuKey"))
+                ], field)
+        }
+        let plain = TransportKeys(settings: try settings(#"{"go":\#(hk("g"))}"#), menuChords: menu)
+        XCTAssertEqual(plain.chord(for: .go), KeyChord("g"))
+        XCTAssertTrue(plain.warnings.isEmpty)
+    }
+
     func testValidateIsPure() {
         let existing: [TransportCommand: KeyChord] = [.go: KeyChord(" ")]
         XCTAssertEqual(TransportKeys.validate(KeyChord(" "), for: .pauseAll, in: existing), .duplicate(of: .go))

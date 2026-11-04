@@ -13,21 +13,23 @@ extension AppController {
         let settings = store.model?.settings
         let id = ObjectIdentifier(store)
         let cueChords = Set((store.model?.cueHotkeys ?? []).map(\.chord))
+        let menu = menuChords()
         let cached = keyCache[id]
-        let same = cached?.settings == settings && cached?.cueChords == cueChords
+        let same = cached?.settings == settings && cached?.cueChords == cueChords && cached?.menu == menu
+        // A key-map chord that a menu command owns binds nothing (warned once per change below).
         let keys =
             same
-            ? (cached?.keys ?? TransportKeys(settings: settings, cueChords: cueChords))
-            : TransportKeys(settings: settings, cueChords: cueChords)
+            ? (cached?.keys ?? TransportKeys(settings: settings, cueChords: cueChords, menuChords: menu))
+            : TransportKeys(settings: settings, cueChords: cueChords, menuChords: menu)
         // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire); the
         // fixed app defaults (V, S) already yielded to cue hotkeys inside `TransportKeys`.
         // A menu command's key (Cmd-J, Shift-Cmd-Down, ...) is taken before a cue hotkey is looked
         // at (`fireCueHotkeys`), so a cue on one never fires either: warn for it the same way.
         let transportShadowed = cueChords.intersection(keys.chords.values)
-        let menuShadowed = cueChords.intersection(menuChords()).subtracting(transportShadowed)
+        let menuShadowed = cueChords.intersection(menu).subtracting(transportShadowed)
         let shadowed = transportShadowed.union(menuShadowed)
         if let cached, same, cached.shadowed == shadowed { return cached.keys }
-        keyCache[id] = (settings, cueChords, shadowed, keys)
+        keyCache[id] = (settings, cueChords, menu, shadowed, keys)
         if !same {
             for warning in keys.warnings { _ = store.receive(.log(.warn, warning)) }
         }
