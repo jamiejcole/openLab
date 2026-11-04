@@ -2554,6 +2554,61 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
     }
 
+    func testReturnInATimeAndLoopsFieldEndsTyping() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        showTab("timeLoops")
+        await assertEventually { self.wc.inspector.timeLoops.waveform.duration != nil }
+        let field = wc.inspector.timeLoops.startField
+        XCTAssertTrue(window.makeFirstResponder(field))
+        field.currentEditor()?.selectAll(nil)
+        try typeKeys("0.2", in: window)
+        try typeKeys("\r", in: window, code: 36)
+        await assertEventually("saved") { abs((self.kind(self.cues[0])?["start_time"]?.doubleValue ?? 0) - 0.2) < 0.01 }
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
+    }
+
+    /// The slice count's field is put away only by the end of editing, which Esc does not report.
+    func testEscInTheSliceCountFieldPutsItAwayAndChangesNothing() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        showTab("timeLoops")
+        let panel = wc.inspector.timeLoops
+        await assertEventually { panel.waveform.duration != nil }
+        wc.inspector.sendTimeLoops(.addSlice(0.5))
+        await assertEventually("a slice to count") { !panel.waveform.sliceMarks.isEmpty }
+        await sync()
+        wire.forgetSent()
+        panel.waveform.onEditCount?(0)
+        XCTAssertFalse(panel.sliceCountField.isHidden)
+        XCTAssertNotNil(panel.sliceCountField.currentEditor())
+        try typeKeys("7", in: window)
+        try typeKeys("\u{1B}", in: window, code: 53)
+        XCTAssertTrue(panel.sliceCountField.isHidden)
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
+        await settle()
+        XCTAssertEqual(commands(on: cues[0]), 0, "the count did not change")
+    }
+
+    func testReturnInAFadeDurationFieldEndsTyping() async throws {
+        try await threeCues()
+        let made = await wc.editor.add(.fade)
+        let fade = try XCTUnwrap(made)
+        await assertEventually { self.wc.inspector.cueForEdit?.id == fade }
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        showTab("curve")
+        let field = wc.inspector.fadeSettings.durationField
+        XCTAssertTrue(window.makeFirstResponder(field))
+        field.currentEditor()?.selectAll(nil)
+        try typeKeys("3", in: window)
+        try typeKeys("\r", in: window, code: 36)
+        await assertEventually("saved") { self.kind(fade)?["duration"]?.doubleValue == 3 }
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
+    }
+
     /// As in the masthead (rows 62, 69): Return ends the typing, Option-Return types a new line.
     func testReturnInTheInspectorNotesEndsTypingAndOptionReturnTypesALine() async throws {
         try await threeCues()
