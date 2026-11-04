@@ -1703,37 +1703,58 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(commands(on: cues[1]), 0)
     }
 
-    /// A menu item whose key equivalent needs the fn key (macOS adds such items itself: Enter Full
-    /// Screen is fn-F) is not the plain key: F can still be recorded, and still fires.
+    /// What a system-provided menu item reports: AppKit refuses the fn flag on an item an app makes.
+    private final class FnMenuItem: NSMenuItem {
+        override var keyEquivalentModifierMask: NSEvent.ModifierFlags {
+            get { .function }
+            set {}
+        }
+    }
+
+    /// A menu item whose key equivalent needs the fn key (macOS adds such items itself) is not the
+    /// plain key: that key can still be recorded, and still fires.
     func testAMenuItemNeedingTheFnKeyDoesNotTakeThePlainKey() async throws {
         try await threeCues()
+        let letter = try unusedLetter()
         let menu = try XCTUnwrap(NSApp.mainMenu?.items.first?.submenu)
-        let item = NSMenuItem(title: "fn-F", action: nil, keyEquivalent: "f")
-        item.keyEquivalentModifierMask = .function
+        let item = FnMenuItem(title: "fn key", action: nil, keyEquivalent: letter)
         menu.addItem(item)
         defer { menu.removeItem(item) }
-        XCTAssertTrue(wc.inspector.record(KeyChord("f")), wc.inspector.messageLabel.stringValue)
+        XCTAssertTrue(wc.inspector.record(KeyChord(letter)), wc.inspector.messageLabel.stringValue)
         await assertEventually("recorded") {
-            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
+            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == letter
         }
-        XCTAssertNil(app.handleKeyDown(try key("f", code: 3)), "the key fires the cue's hotkey")
+        XCTAssertNil(app.handleKeyDown(try key(letter, code: 3)), "the key fires the cue's hotkey")
+    }
+
+    /// A letter free for a hotkey on this Mac: the OS's own menu items differ from one macOS to the
+    /// next, and the first CI failure on one was a refused letter. Any taken is named in the log.
+    private func unusedLetter() throws -> String {
+        let taken = HotkeyRules.currentMenuChords()
+        let keys = TransportKeys(settings: store.model?.settings)
+        let free = "fghjkmnqtuwxyz".map(String.init).first {
+            !taken.contains(KeyChord($0)) && keys.command(for: KeyChord($0)) == nil
+        }
+        if free != "f" { print("menu keys with no modifier here: \(taken.filter { $0.mask == 0 }.map(\.key))") }
+        return try XCTUnwrap(free)
     }
 
     /// A key being recorded for a cue goes to that cue.
     func testAHotkeyBeingRecordedStaysOnItsCueWhileThePlayheadMoves() async throws {
         try await threeCues()
         let recorder = wc.inspector.hotkeyField
+        let letter = try unusedLetter()
         showTab("triggers")
         XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(recorder))
         XCTAssertTrue(wc.window?.firstResponder === recorder)
         wire.forgetSent()
         try await moveElsewhere(to: cues[2])
         await assertHeldOnFirstCue(playheadOn: cues[2])
-        recorder.keyDown(with: try key("f", code: 3))
+        recorder.keyDown(with: try key(letter, code: 3))
         XCTAssertEqual(wc.inspector.messageLabel.stringValue, "", "the key was not refused")
         XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, "the keys go back to the list")
         await assertEventually("recorded on its own cue") {
-            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
+            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == letter
         }
         try await assertAllOn(cues[2])
         XCTAssertEqual(commands(on: cues[2]), 0)
