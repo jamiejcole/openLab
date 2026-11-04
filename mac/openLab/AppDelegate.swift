@@ -8,7 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// The shipping engine, or in Debug builds the test engine (`EngineMode`).
     @MainActor private(set) lazy var engine = launch.makeEngine()
     @MainActor var engineSession: EngineSession { engine.0 }
-    @MainActor lazy var appController = AppController(session: engineSession, supervisor: engine.1, launchDefaults: .standard)
+    @MainActor lazy var appController = AppController(
+        session: engineSession, supervisor: engine.1, launchDefaults: .standard)
     @MainActor private(set) lazy var alarmController = EngineAlarmController(
         session: engineSession, supervisor: engine.1, presenter: EngineAlarmPanel(),
         alerts: { [unowned self] in alarmAlerts })
