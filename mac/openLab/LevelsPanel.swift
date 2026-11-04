@@ -131,15 +131,21 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     /// the text never lands on a slot that moved under the cursor.
     private var heldSize: (inputs: Int, outputs: Int)?
 
-    private var isTyping: Bool { levelField.currentEditor() != nil || gangField.currentEditor() != nil }
+    /// Text has been typed in a field and not yet committed (an open but untouched field editor is
+    /// not: Return leaves one open).
+    private var isDirty = false
 
     /// Shows `levels` over `inputs` file channels and `outputs` cue outputs. Ignored while a
-    /// gesture is under way, so the fader does not jump under the mouse, and held while a level is
-    /// being typed.
+    /// gesture is under way, so the fader does not jump under the mouse. While text is being typed
+    /// the levels are taken (a peer's change must not be written back by the commit) but the grid
+    /// size is held, so the selection does not move under the text.
     func show(_ levels: LevelSet?, inputs: Int, outputs: Int) {
         guard gesture == nil else { return }
-        if isTyping, levels != nil {
+        if isDirty, levels != nil {
             heldSize = (inputs, outputs)
+            self.levels = levels
+            matrix.levels = levels
+            refreshStrip()
             return
         }
         place(levels, inputs: inputs, outputs: outputs)
@@ -188,7 +194,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         }
         let active = levels.isActive(slot)
         let db = levels.db(slot)
-        if levelField.currentEditor() == nil { levelField.stringValue = db.map(LevelText.format) ?? "" }
+        if !isDirty { levelField.stringValue = db.map(LevelText.format) ?? "" }
         // The fader stops at 0 dB (QLab manual p. 181); a level above it shows pinned there.
         fader.doubleValue = min(max(db ?? LevelText.floorDb, LevelText.floorDb), 0)
         activeCheck.state = active ? .on : .off
@@ -199,7 +205,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             isOutput = true
             gangText = levels.gang(of: o).map(LevelSet.gangLetter) ?? ""
         }
-        if gangField.currentEditor() == nil { gangField.stringValue = gangText }
+        if !isDirty { gangField.stringValue = gangText }
         let free = !isLocked
         levelField.isEnabled = free
         fader.isEnabled = free
@@ -285,7 +291,10 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         control.endTyping(by: selector)
     }
 
+    func controlTextDidChange(_ obj: Notification) { isDirty = true }
+
     func controlTextDidEndEditing(_ obj: Notification) {
+        isDirty = false
         defer {
             // The edit below went to the slot that was selected; now the grid may change.
             if let held = heldSize, gesture == nil { place(levels, inputs: held.inputs, outputs: held.outputs) }

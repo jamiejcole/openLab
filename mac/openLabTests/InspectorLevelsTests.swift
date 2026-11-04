@@ -279,6 +279,94 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually { self.vc.audioLevels.matrix.inputs == 1 }
     }
 
+    /// Another client sets the cue's master to `db`; returns once this app's model has it.
+    private func peerSetsMaster(_ db: Double) async throws {
+        let peer = Rig(engine: rig.testEngine, workspace: rig.doc)
+        guard await peer.connect() else { return XCTFail("the peer did not connect") }
+        defer { peer.client.stop() }
+        var levels = try XCTUnwrap(peer.store.model?.cue(Self.intro)?.raw["kind"]?["levels"])
+        levels.set("master_db", .double(db))
+        guard case .success = await peer.store.send(command: .setProperty(Self.intro, .kindFields(["levels": levels])))
+        else { return XCTFail("the peer's edit was refused") }
+        await assertEventually { self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(db) }
+    }
+
+    private func typeInto(_ field: NSTextField, _ text: String) throws {
+        window.makeFirstResponder(field)
+        let editor = try XCTUnwrap(field.currentEditor(), "the field is being edited")
+        editor.string = text
+        // What the field editor posts as each character goes in.
+        (field.delegate as? NSTextFieldDelegate)?.controlTextDidChange?(
+            Notification(name: NSControl.textDidChangeNotification, object: field))
+    }
+
+    func testAPeersChangeDuringTypingIsNotWrittenBackByTheCommit() async throws {
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        p.select(.output(1))
+        try typeInto(p.levelField, "-6")
+        try await peerSetsMaster(-20)
+        XCTAssertEqual(p.levels?.master, -20, "the panel took the peer's level while the text was held")
+        window.makeFirstResponder(nil)
+        await assertEventually { self.sent.contains { self.kindOf($0.command) != nil } }
+        let levels = lastKind?["levels"]
+        XCTAssertEqual(levels?["outputs"]?.arrayValue?[1]["db"], .double(-6))
+        XCTAssertNotEqual(levels?["master_db"], .double(0), "the commit did not put the master back to 0")
+        await rig.sync()
+        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["master_db"], .double(-20), "the peer's level survives")
+        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?[1]["db"], .double(-6))
+    }
+
+    func testLeavingAFieldWithoutTypingTakesAPeersChangeAndWritesNothing() async throws {
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        window.makeFirstResponder(p.levelField)
+        XCTAssertNotNil(p.levelField.currentEditor())
+        try await peerSetsMaster(-20)
+        await assertEventually { p.levelField.stringValue == LevelText.format(-20) }
+        window.makeFirstResponder(nil)
+        await rig.sync()
+        XCTAssertFalse(sent.contains { kindOf($0.command) != nil }, "nothing was typed, nothing is sent")
+        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["master_db"], .double(-20))
+        // The next fader move starts from the peer's level, not a stale 0.
+        drag(p, to: [-10])
+        await assertEventually { self.sent.contains { self.kindOf($0.command) != nil } }
+        XCTAssertEqual(lastKind?["levels"]?["master_db"], .double(-10))
+        XCTAssertEqual(lastKind?["levels"]?["outputs"]?.arrayValue?.count, 2)
+    }
+
+    func testRowsFollowTheFileAfterReturnLeavesTheFieldOpen() async throws {
+        try await reopen {
+            try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6)
+            try writeWAV(self.media($0, "d.wav"), seconds: 1, channels: 1)
+        }
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        await assertEventually { p.matrix.inputs == 6 }
+        p.select(.cross(input: 1, output: 0))
+        try typeInto(p.levelField, "-6")
+        // Return commits and leaves the editor open.
+        p.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: p.levelField))
+        XCTAssertNotNil(p.levelField.currentEditor(), "the editor is still there")
+        try await relink(Self.intro, to: "media/d.wav")
+        await assertEventually { p.matrix.inputs == 1 }
+        XCTAssertNotNil(p.levelField.currentEditor())
+        XCTAssertEqual(p.selection, .master)
+    }
+
+    func testTheModelsLevelsReplaceAnEditThatIsTakenBack() async throws {
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        let before = try XCTUnwrap(p.levels)
+        try typeInto(p.levelField, "-6")
+        p.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: p.levelField))
+        XCTAssertEqual(p.levels?.master, -6)
+        // What the inspector does when the engine refuses the edit: show the model's levels again.
+        p.show(before, inputs: p.matrix.inputs, outputs: p.matrix.outputCount)
+        XCTAssertEqual(p.levels?.master, before.master)
+        XCTAssertEqual(p.levelField.stringValue, LevelText.format(before.master ?? 0))
+    }
+
     func testATypedLevelStaysOnItsCrosspointWhenTheFileLosesThatRow() async throws {
         try await reopen {
             try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6)
@@ -288,9 +376,7 @@ final class InspectorLevelsTests: XCTestCase {
         let p = vc.audioLevels
         await assertEventually { p.matrix.inputs == 6 }
         p.select(.cross(input: 1, output: 0))
-        window.makeFirstResponder(p.levelField)
-        let editor = try XCTUnwrap(p.levelField.currentEditor(), "the field is being edited")
-        editor.string = "-6"
+        try typeInto(p.levelField, "-6")
         try await relink(Self.intro, to: "media/d.wav")
         await assertEventually { self.store.mediaDurations[Self.intro]?.fileChannels == 1 }
         await rig.sync()
