@@ -88,6 +88,14 @@ struct CueMediaDuration: Hashable, Sendable, Decodable {
     let file: Double?
     let trimmed: Double?
     let duration: Double?
+    /// How many channels the probed file has, as the engine sent it (nil: not known).
+    let channels: Int?
+
+    /// The matrix rows this file gives: `channels` when it is a count a file can have, else nil. The
+    /// engine only sends 1 to 64; anything else from a peer is treated as not known.
+    var fileChannels: Int? {
+        channels.flatMap { (1...LevelSet.maxChannels).contains($0) ? $0 : nil }
+    }
 }
 
 struct CueList: Hashable, Sendable, Decodable {

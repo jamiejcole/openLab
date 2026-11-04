@@ -116,6 +116,77 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(vc.audioLevels.cellLabel.stringValue, loc("levels.master"))
     }
 
+    // MARK: Matrix rows follow the file (AUD-06)
+
+    /// Replaces the setUp rig with the demo show opened after `edit`, which can rewrite its files.
+    private func reopen(_ edit: @escaping (URL) throws -> Void) async throws {
+        rig.client.stop()
+        rig = try await Rig.open("Demo", edit: edit)
+        store = rig.store
+        vc = InspectorViewController(store: store)
+        window.contentView = vc.view
+    }
+
+    private func media(_ show: URL, _ name: String) -> URL { show.appendingPathComponent("media/\(name)") }
+
+    /// The input rows the matrix draws: the last row a point inside it hits, and nothing below it.
+    private func drawnRows(_ m: LevelMatrixView) -> Int {
+        var rows = 0
+        while case .cross(let i, _)? = m.slot(
+            at: NSPoint(
+                x: m.rect(of: .cross(input: rows, output: 0)).midX,
+                y: m.rect(of: .cross(input: rows, output: 0)).midY)), i == rows
+        { rows += 1 }
+        return rows
+    }
+
+    func testAMultiChannelFileGivesTheMatrixOneRowPerChannel() async throws {
+        try await reopen { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6) }
+        vc.setSelection([Self.intro])
+        await assertEventually { self.vc.audioLevels.matrix.inputs == 6 }
+        XCTAssertEqual(drawnRows(vc.audioLevels.matrix), 6, "six rows can be hit, the seventh is outside")
+        XCTAssertEqual(vc.audioLevels.matrix.outputCount, 2, "the columns still come from the cue's outputs")
+    }
+
+    func testAMonoFileGivesTheMatrixOneRow() async throws {
+        try await reopen { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 1) }
+        vc.setSelection([Self.intro])
+        await assertEventually { self.vc.audioLevels.matrix.inputs == 1 }
+        XCTAssertEqual(drawnRows(vc.audioLevels.matrix), 1)
+    }
+
+    func testAMissingFileKeepsTheStereoRowsAndNeverCrashes() async throws {
+        vc.setSelection([TestSnapshots.radio])
+        await rig.sync()
+        XCTAssertNil(store.mediaDurations[TestSnapshots.radio], "its file is missing")
+        XCTAssertEqual(vc.audioLevels.matrix.inputs, InspectorViewController.defaultInputs)
+        XCTAssertEqual(drawnRows(vc.audioLevels.matrix), InspectorViewController.defaultInputs)
+    }
+
+    func testPointingTheCueAtAnotherFileChangesTheRows() async throws {
+        try await reopen {
+            try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6)
+            try writeWAV(self.media($0, "d.wav"), seconds: 1, channels: 1)
+        }
+        vc.setSelection([Self.intro])
+        await assertEventually { self.vc.audioLevels.matrix.inputs == 6 }
+        guard case .success = await store.send(command: .setProperty(Self.intro, .media("media/d.wav"))) else {
+            return XCTFail("the relink was refused")
+        }
+        await assertEventually { self.vc.audioLevels.matrix.inputs == 1 }
+        // The file going away leaves the rows for an unknown file, not the old file's six or one.
+        guard case .success = await store.send(command: .setProperty(Self.intro, .media("media/gone.wav"))) else {
+            return XCTFail("the relink was refused")
+        }
+        await assertEventually { self.vc.audioLevels.matrix.inputs == InspectorViewController.defaultInputs }
+    }
+
+    func testAFadeShowsTheRowsOfTheCueItFades() async throws {
+        try await reopen { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6) }
+        vc.setSelection([Self.fade])
+        await assertEventually { self.vc.fadeLevels.matrix.inputs == 6 }
+    }
+
     // MARK: Audio levels
 
     func testTypedMasterOutputAndCrosspointLevelsSendTheCueKind() async throws {

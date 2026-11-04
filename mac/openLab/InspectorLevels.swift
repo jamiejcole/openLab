@@ -7,9 +7,16 @@ import AppKit
 /// (core's `CueProperty::KindFields`, docs/commands.md); the engine merges them into the kind it has; the Fade's duration has its own `duration` property. Dragging a
 /// fader or a matrix cell sends every move with one `coalesce` key, so the whole drag is one undo step.
 extension InspectorViewController {
-    /// How many file channels the matrix shows when the cue's routing mentions fewer. The engine does
-    /// not tell the UI a file's channel count yet, so a stereo file is assumed.
+    /// How many file channels the matrix shows for a cue whose file's channel count is not known (no
+    /// file, missing, damaged, not probed yet): stereo, or more when the routing mentions more.
     static let defaultInputs = 2
+
+    /// The matrix rows of an Audio cue: one per channel of its file as the engine probed it (AUD-06),
+    /// else the unknown-file rows above.
+    static func inputRows(of cue: Cue, durations: [ModelID: CueMediaDuration]) -> Int {
+        if let n = durations[cue.id]?.fileChannels { return n }
+        return max(defaultInputs, LevelSet(kind: cue.raw["kind"] ?? .null)?.inputExtent ?? 0)
+    }
 
     /// Separates this launch's gesture keys from another client's or an earlier launch's: the engine
     /// joins consecutive edits with the same key into one undo step (#280).
@@ -64,30 +71,49 @@ extension InspectorViewController {
         audioLevels.meter.bank = store.meters
         audioLevels.meter.source = audio ? .cue(cue.id) : nil
         if audio, let set {
-            audioLevels.show(set, inputs: max(Self.defaultInputs, set.inputExtent), outputs: set.outputs.count)
+            audioLevels.show(
+                set, inputs: Self.inputRows(of: cue, durations: store.mediaDurations), outputs: set.outputs.count)
         }
         if fade {
             fadeSettings.show(kind: kind)
-            let target = kind["target"]?.stringValue.flatMap { model.cue(ModelID($0)) }
-            let extent = target.map { Self.levelExtent(of: $0) } ?? (inputs: 0, outputs: 0)
-            fadeLevels.canSetFromTarget = target.flatMap { Self.levels(ofAudio: $0) } != nil
-            if let set {
-                fadeLevels.show(
-                    set, inputs: max(Self.defaultInputs, set.inputExtent, extent.inputs),
-                    outputs: max(set.outputExtent, extent.outputs))
-            } else {
-                fadeLevels.show(nil, inputs: 0, outputs: 0)
-            }
+            showFadeLevels(kind: kind, model: model)
+        }
+    }
+
+    private func showFadeLevels(kind: JSONValue, model: WorkspaceModel, onlyIfRowsChange: Bool = false) {
+        let set = LevelSet(kind: kind)
+        let target = kind["target"]?.stringValue.flatMap { model.cue(ModelID($0)) }
+        let extent =
+            target.map { Self.levelExtent(of: $0, durations: store.mediaDurations) } ?? (inputs: 0, outputs: 0)
+        fadeLevels.canSetFromTarget = target.flatMap { Self.levels(ofAudio: $0) } != nil
+        if let set {
+            let rows = max(set.inputExtent, extent.inputs, extent.inputs == 0 ? Self.defaultInputs : 0)
+            if onlyIfRowsChange && rows == fadeLevels.matrix.inputs { return }
+            fadeLevels.show(set, inputs: rows, outputs: max(set.outputExtent, extent.outputs))
+        } else {
+            fadeLevels.show(nil, inputs: 0, outputs: 0)
+        }
+    }
+
+    /// A probe answered (or the file changed) while the cue is shown: the matrix rows follow the
+    /// file's channel count. Nothing else of the tab is touched, so an edit in progress is kept.
+    func refreshMatrixRows(_ cue: Cue) {
+        let kind = cue.raw["kind"] ?? .null
+        if cue.kindType == "audio", let set = LevelSet(kind: kind) {
+            let rows = Self.inputRows(of: cue, durations: store.mediaDurations)
+            if rows != audioLevels.matrix.inputs { audioLevels.show(set, inputs: rows, outputs: set.outputs.count) }
+        } else if cue.kindType == "fade", let model = store.model {
+            showFadeLevels(kind: kind, model: model, onlyIfRowsChange: true)
         }
     }
 
     /// The file channels and cue outputs an Audio cue has, or the most any Audio cue inside a Group has.
-    static func levelExtent(of cue: Cue) -> (inputs: Int, outputs: Int) {
+    static func levelExtent(of cue: Cue, durations: [ModelID: CueMediaDuration]) -> (inputs: Int, outputs: Int) {
         var inputs = 0
         var outputs = 0
         func visit(_ c: Cue) {
             if c.kindType == "audio", let s = LevelSet(kind: c.raw["kind"] ?? .null) {
-                inputs = max(inputs, s.inputExtent)
+                inputs = max(inputs, inputRows(of: c, durations: durations))
                 outputs = max(outputs, s.outputs.count)
             }
             c.children.forEach(visit)

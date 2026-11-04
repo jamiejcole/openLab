@@ -326,6 +326,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                     self?.updatePreviewButton()
                     // The file's length may have come (or changed): the waveform follows.
                     if let self, let cue = self.cueForEdit, cues.contains(cue.id) { self.renderTimeLoops(cue) }
+                    // A probe also tells the matrix how many channels the file has.
+                    if let self, let cue = self.cueForEdit { self.refreshMatrixRows(cue) }
                 }
             case .progress(let ids):
                 MainActor.assumeIsolated {
