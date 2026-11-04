@@ -352,10 +352,11 @@ final class CueEditor {
 
     /// The notice for notes typed for `id` that `error` kept from being saved. Both notes fields use it.
     func reportNotesNotSaved(of id: ModelID, text: String, _ error: EngineError) {
-        guard let cue = store.model?.cue(id) else {
+        guard let model = store.model, let cue = model.cue(id) else {
             return notesNotSaved(NotesNotice(message: loc("notes.notSaved.cueGone"), text: text))
         }
-        let name = [cue.number, cue.listName].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " \u{00B7} ")
+        let name = [cue.number, model.listName(cue)].compactMap { $0 }.filter { !$0.isEmpty }
+            .joined(separator: " \u{00B7} ")
         let label = String(format: loc("notes.cueLabel"), name.isEmpty ? CueKindStyle.kindLabel(cue.kindType) : name)
         let message: String
         if case .engine(_, let reason) = error {
