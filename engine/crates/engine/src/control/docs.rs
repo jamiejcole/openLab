@@ -2429,11 +2429,7 @@ impl Control {
                 (None, true) => counts.written += 1,
                 (_, false) => match &self.eng.docs.writer {
                     Some(writer) => {
-                        let rx = writer.autosave(
-                            copy,
-                            doc.show_path.clone(),
-                            doc.revision,
-                        );
+                        let rx = writer.autosave(copy, doc.show_path.clone(), doc.revision);
                         file.autosaved_revision = Some(doc.revision);
                         waiting.push_back((index, name, rx, false));
                     }
@@ -2477,11 +2473,8 @@ impl Control {
                             "could not write the recovery file of \"{name}\" at shutdown: {e}; trying once more"
                         ),
                     ));
-                    let rx = writer.autosave(
-                        doc.saved_workspace(),
-                        doc.show_path.clone(),
-                        doc.revision,
-                    );
+                    let rx =
+                        writer.autosave(doc.saved_workspace(), doc.show_path.clone(), doc.revision);
                     waiting.push_back((index, name, rx, true));
                 }
                 Ok(Err(e)) => {

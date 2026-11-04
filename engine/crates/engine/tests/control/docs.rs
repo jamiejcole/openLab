@@ -2272,7 +2272,6 @@ fn set_show_mode(r: &mut Rig, on: bool) {
     ok_result(&request(&mut r.s, Request::SetShowMode { on }));
 }
 
-
 /// Opens `path` and says whether the workspace came up in Show Mode, as the app sees it.
 fn opens_in_show_mode(r: &mut Rig, path: &Path) -> bool {
     let replies = request(&mut r.s, open(path));
