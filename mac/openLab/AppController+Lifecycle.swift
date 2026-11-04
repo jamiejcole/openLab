@@ -110,12 +110,14 @@ extension AppController {
             // the recovery file of every workspace with unsaved changes itself. Nothing is left
             // running behind the app, so there is nothing to confirm (#386).
             engineLog.notice("quit while the engine is shutting down: no save prompts")
+            controllers.values.forEach { $0.keepUnsentNotes() }
             supervisor?.appWillQuit()
             return true
         }
         if engineUnreachable {
             // An engine still coming up plays nothing and is ended at quit: nothing to warn about.
             if supervisor?.engineNotReached == nil, !alerts.confirmQuitDisconnected() { return false }
+            controllers.values.forEach { $0.keepUnsentNotes() }
             supervisor?.appWillQuit()
             return true
         }

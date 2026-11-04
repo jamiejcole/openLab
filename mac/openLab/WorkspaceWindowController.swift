@@ -354,17 +354,27 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// Show Mode was asked for: its commit raises nothing, as Show Mode itself does not.
     private var enteringShowMode = false
 
-    /// Notes that were not saved: a small panel with Copy Text that blocks and waits for nothing. In
-    /// Show Mode, and while it is being entered, nothing is raised (NFR-10): the show log carries the
-    /// message and the text, the footer the message.
+    /// Notes that were not saved: the whole text goes to the notes file first (`NotesKeeper`), then a
+    /// small panel with Copy Text that blocks and waits for nothing names it. In Show Mode, and while
+    /// it is being entered, nothing is raised (NFR-10): the show log carries the message and the text,
+    /// the footer the message. A panel already up when Show Mode starts stays (it cannot take keys).
     func showNotesNotice(_ notice: NotesNotice) {
+        let kept = NotesKeeper.keep(notice.text, reason: "\(window?.title ?? "workspace"): \(notice.message)")
+        let message = kept.map { String(format: loc("notes.kept"), notice.message, $0.path) } ?? notice.message
         if isShowMode || enteringShowMode {
-            let kept = notice.text.count > 4000 ? String(notice.text.prefix(4000)) + "\u{2026}" : notice.text
-            _ = store.receive(.log(.error, "\(notice.message) \(kept)"))
-            footer.showNotice(notice.message, error: true)
+            _ = store.receive(.log(.error, "\(message) \(notice.text)"))
+            footer.showNotice(message, error: true)
             return
         }
-        NotesNoticePanel.show(notice, near: window, pasteboard: notesPasteboard)
+        NotesNoticePanel.show(
+            NotesNotice(message: message, text: notice.text), near: window, pasteboard: notesPasteboard)
+    }
+
+    /// Quit with the engine lost: what is still being typed in the masthead can no longer be sent, so it
+    /// is written to the notes file. Nothing is raised and nothing waits.
+    func keepUnsentNotes() {
+        guard let notes = masthead.pendingNotes() else { return }
+        NotesKeeper.keep(notes.text, reason: "\(window?.title ?? "workspace"): the engine was lost at quit")
     }
 
     /// Why an edit was refused: a sheet on this window (beep when it has none).

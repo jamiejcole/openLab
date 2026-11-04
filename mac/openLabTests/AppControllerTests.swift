@@ -176,6 +176,7 @@ final class AppControllerTests: XCTestCase {
         app?.closeAllWindows()
         real = try await TestEngine.start()
         let real = real!
+        NotesKeeper.folder = real.folder.appendingPathComponent("kept-notes", isDirectory: true)
         infoURL = real.infoURL
         let scratch = try await real.open("Second")
         _ = await real.app.send({ .close(id: $0, doc: scratch, discardChanges: true) })
@@ -1979,6 +1980,51 @@ final class AppControllerTests: XCTestCase {
         let quit = await app.prepareToQuit()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log, ["quitDisconnected"])
+    }
+
+    /// Notes being typed when the engine is lost: Quit anyway writes them whole to the notes file and
+    /// quits, with no panel, sheet or other prompt.
+    func testQuitWithTheEngineLostKeepsTheNotesBeingTyped() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.masthead.notesView))
+        let typed = "private line one\n" + String(repeating: "y", count: 5000)
+        wc.masthead.notesView.insertText(typed, replacementRange: wc.masthead.notesView.selectedRange())
+        await disconnect()
+        alerts.quitDisconnected = true
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit, "quits")
+        XCTAssertEqual(alerts.log, ["quitDisconnected"])
+        XCTAssertTrue(NotesNoticePanel.open.isEmpty)
+        let kept = try String(contentsOf: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName))
+        XCTAssertTrue(kept.contains(typed), "the whole text is in the file")
+    }
+
+    /// Quit cancelled at the disconnected prompt keeps typing going: nothing is written.
+    func testCancellingQuitWithTheEngineLostWritesNothing() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.masthead.notesView))
+        wc.masthead.notesView.insertText("still typing", replacementRange: wc.masthead.notesView.selectedRange())
+        await disconnect()
+        alerts.quitDisconnected = false
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName).path))
+    }
+
+    /// A notes folder that cannot be written (a file stands where the folder should be) is logged and
+    /// Quit still goes on.
+    func testQuitWithTheEngineLostGoesOnWhenTheNotesFileCannotBeWritten() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let blocker = real.folder.appendingPathComponent("not-a-folder-\(UUID().uuidString)")
+        try Data().write(to: blocker)
+        NotesKeeper.folder = blocker
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.masthead.notesView))
+        wc.masthead.notesView.insertText("lost", replacementRange: wc.masthead.notesView.selectedRange())
+        await disconnect()
+        alerts.quitDisconnected = true
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit, "a failed write does not stop Quit")
     }
 
     func testQuitWhileDisconnectedQuitAnywayQuitsWithoutPrompts() async throws {
