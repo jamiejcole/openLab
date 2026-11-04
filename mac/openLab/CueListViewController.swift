@@ -187,7 +187,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// This window's editor and transport: the row menu acts on the window that was clicked, not
     /// on the key window (the menu-bar actions do).
     weak var editor: CueEditor?
-    var onCommand: ((TransportCommand) -> Void)?
+    var onCommand: ((TransportCommand, [ModelID]) -> Void)?
+    /// The cues the row menu was opened on: what its commands act on, wherever the selection has
+    /// moved by the time one is chosen (the engine's updates apply while a menu is open).
+    var rowMenuCues: [ModelID]?
 
     /// `outlineView` is a parameter so tests can count the calls made on it.
     init(store: WorkspaceStore, outlineView: NSOutlineView = NSOutlineView()) {
@@ -227,7 +230,16 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.registerForDraggedTypes([Self.dragType, .fileURL])
         outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
         outlineView.target = self
+        outlineView.action = #selector(clicked)
         outlineView.doubleAction = #selector(doubleClicked)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(textEditingEnded(_:)), name: NSText.didEndEditingNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(textEditingEnded(_:)), name: HotkeyRecorder.didEndRecording, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(menuTrackingBegan(_:)), name: NSMenu.didBeginTrackingNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(menuTrackingEnded(_:)), name: NSMenu.didEndTrackingNotification, object: nil)
         let menu = NSMenu()
         menu.delegate = self
         outlineView.menu = menu
@@ -297,8 +309,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     func showList(_ id: ModelID) {
         guard id != listID, store.model?.cueLists.contains(where: { $0.id == id }) == true else { return }
         chosenList = id
-        sentPlayhead = nil
         rebuild()
+        followPlayhead()  // the list shown has its own playhead, and the selection goes with it
         onModelApplied?()
     }
 
@@ -366,14 +378,167 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         lastSelection = Set(selected)
         let lastRow = outlineView.selectedRow >= 0 ? outlineView.selectedRow : nil
         let latest = lastRow.flatMap { (outlineView.item(atRow: $0) as? CueNode)?.id }
-        // Compared with what was last sent, not only what the engine echoed: A, B, A within one
-        // round trip must still end on A.
-        guard !restoringSelection, !batching, let list = listID,
-            let id = Self.playheadTarget(selected: selected, previous: previous, latest: latest),
-            (sentPlayhead ?? store.playheads[list]) != id
+        guard !restoringSelection, !batching, !followingPlayhead,
+            let id = Self.playheadTarget(selected: selected, previous: previous, latest: latest)
         else { return }
+        sendPlayhead(id)
+    }
+
+    /// A click on a row (the table's action, after any selection change). Clicking the one row that
+    /// is already highlighted changes no selection, so it puts the playhead back on that cue here
+    /// (the playhead can be elsewhere while a text field was being typed in).
+    @objc private func clicked() { rowClicked(outlineView.clickedRow) }
+
+    func rowClicked(_ row: Int) {
+        guard row >= 0, let node = outlineView.item(atRow: row) as? CueNode, selectedIDs() == [node.id] else {
+            return
+        }
+        sendPlayhead(node.id)
+    }
+
+    /// Moves the playhead to `id` for the selection. Compared with what was last sent, not only what
+    /// the engine echoed: A, B, A within one round trip must still end on A.
+    private func sendPlayhead(_ id: ModelID) {
+        guard let list = listID, (sentPlayhead ?? store.playheads[list]) != id else { return }
         sentPlayhead = id
-        Task { await store.transport(.setPlayhead(list: list, cue: id)) }
+        lastSentHead = id
+        playheadSends += 1
+        Task { [weak self] in
+            _ = await self?.store.transport(.setPlayhead(list: list, cue: id))
+            self?.playheadSendAnswered(list: list)
+        }
+    }
+
+    /// The selection is being moved to the playhead: the inspector follows, nothing is sent.
+    private var followingPlayhead = false
+    /// `set_playhead`s sent for the selection and not yet answered. Until they are, the engine may
+    /// still echo an earlier one, so the selection does not follow the playhead meanwhile.
+    private var playheadSends = 0
+    /// The cue the last of those was for.
+    private var lastSentHead: ModelID?
+    /// The list's playhead moved while sends were unanswered.
+    private var headMovedWhileSending = false
+    /// The list's playhead as last seen here: the selection follows only a change of this list's
+    /// own playhead (another list's, or a runtime batch that leaves it, must not reopen groups).
+    private var seenHead: ModelID?
+    /// The selection did not follow a playhead move because of `isTextEditing` or a `FollowHold`.
+    private var followHeld = false
+    private var followHolds = Set<FollowHold>()
+
+    /// What holds the selection where it is while the playhead moves, as typing does: the inspector
+    /// edits the selected cue, so moving the selection under one of these would send the rest of an
+    /// edit to another cue.
+    enum FollowHold {
+        /// The mouse button is down in this window, in a control that tracks until it comes up (a
+        /// fader, a checkbox, a table row): only known around the press (`WorkspaceWindow`).
+        case press
+        /// The inspector's own drags, which see the press and the release as separate events.
+        case gesture
+        /// A menu is open (the row menu, an inspector popup, the menu bar).
+        case menu
+    }
+
+    /// Starts or ends a hold; the end of the last one follows a playhead move held meanwhile. A new
+    /// press means any drag before it is over, so a release that never came cannot hold for good.
+    func setFollowHold(_ hold: FollowHold, _ on: Bool) {
+        if on {
+            if hold == .press { followHolds.remove(.gesture) }
+            followHolds.insert(hold)
+        } else {
+            followHolds.remove(hold)
+            resumeHeldFollow()
+        }
+    }
+
+    private func playheadSendAnswered(list: ModelID) {
+        playheadSends = max(0, playheadSends - 1)
+        guard playheadSends == 0 else { return }
+        // Any echo is in by now. A send that failed, or that the engine only warned about (a cue
+        // deleted meanwhile), has none: the next click on that row must send again.
+        sentPlayhead = nil
+        guard list == listID else { return }
+        let moved = headMovedWhileSending
+        headMovedWhileSending = false
+        // On the cue sent last: its echo is in and the selection is already there. Elsewhere, it
+        // moved on by itself after the click (a GO straight after it, another client): follow.
+        if moved, store.playheads[list] != lastSentHead { followPlayhead() }
+    }
+
+    /// This list's playhead may have moved (a runtime change): follow it if it did.
+    private func playheadChanged() {
+        guard let list = listID else { return }
+        let head = store.playheads[list]
+        guard head != seenHead else { return }
+        seenHead = head
+        if playheadSends > 0 {
+            headMovedWhileSending = true
+        } else {
+            followPlayhead()
+        }
+    }
+
+    /// Text is being typed in this window (an inspector field, the notes, the masthead's notes, a
+    /// Duration being edited in the list), or a hotkey is being recorded: moving the selection would
+    /// take the operator's focus, and their next Space would fire GO.
+    private var isTextEditing: Bool {
+        let responder = view.window?.firstResponder
+        return (responder as? NSText)?.isEditable == true || responder is HotkeyRecorder
+    }
+
+    /// Typing in this window ended: a playhead move held meanwhile is followed now.
+    @objc private func textEditingEnded(_ note: Notification) {
+        guard (note.object as? NSView)?.window === view.window else { return }
+        resumeHeldFollow()
+    }
+
+    @objc private func menuTrackingBegan(_ note: Notification) { setFollowHold(.menu, true) }
+    @objc private func menuTrackingEnded(_ note: Notification) { setFollowHold(.menu, false) }
+
+    /// Later, not now: the field editor still holds focus while it reports the end, and a popup's
+    /// action, which edits the selected cue, comes after its menu reports the end.
+    private func resumeHeldFollow() {
+        guard followHeld else { return }
+        Task { @MainActor [weak self] in
+            guard let self, self.followHeld, !self.isTextEditing, self.followHolds.isEmpty else { return }
+            self.followHeld = false
+            self.followPlayhead()
+        }
+    }
+
+    /// The playhead and the selection stay together (QLab 5's default, its workspace setting that
+    /// links them): when the engine moves the playhead (GO, a Go To cue, OSC, an edit), the
+    /// selection moves to the cue standing by, opening the groups above it, and the inspector
+    /// follows; with no cue standing by (past the end of the list) nothing is selected. A selection
+    /// that already holds the playhead's cue (several selected by hand) is left as it is. While text
+    /// is being typed in the window, or a `FollowHold` lasts, the selection stays, and follows once
+    /// that ends.
+    private func followPlayhead() {
+        guard playheadSends == 0, let list = listID else { return }
+        if isTextEditing || !followHolds.isEmpty {
+            followHeld = true
+            return
+        }
+        followHeld = false
+        let selected = selectedIDs()
+        let head = store.playheads[list]
+        if let head {
+            guard !selected.contains(head), let node = nodes[head] else { return }
+            followingPlayhead = true
+            defer { followingPlayhead = false }
+            var p = node.parent
+            while let a = p {
+                outlineView.expandItem(a)
+                p = a.parent
+            }
+            let row = outlineView.row(forItem: node)
+            guard row >= 0 else { return }
+            outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            outlineView.scrollRowToVisible(row)
+        } else if !selected.isEmpty {
+            followingPlayhead = true
+            defer { followingPlayhead = false }
+            outlineView.deselectAll(nil)
+        }
     }
 
     func isPlayheadRow(_ id: ModelID) -> Bool { listID.flatMap { store.playheads[$0] } == id }
@@ -392,6 +557,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case .runtime(let cues, let heads):
             if !heads.isEmpty { sentPlayhead = nil }  // the engine's echo is the truth again
             refresh(cues, playheads: heads)
+            if !heads.isEmpty { playheadChanged() }
         case .progress(let ids): refresh(ids, columns: ["duration"])
         case .waits(let ids): refresh(ids, columns: ["preWait", "postWait"])
         case .notices: break
@@ -410,6 +576,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let list = shownList()
         listID = list?.id
         chosenList = list?.id
+        seenHead = list.flatMap { store.playheads[$0.id] }
         roots = (list?.cues ?? []).map { makeNode($0, parent: nil) }
         updatePlayheadAncestors()
         outlineView.reloadData()

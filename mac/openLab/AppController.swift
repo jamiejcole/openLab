@@ -164,7 +164,7 @@ final class AppController {
         guard !isRecordingKey(), let chord = KeyChord(event: event) else { return event }
         if let command = frontKeys.command(for: chord), canPerform(command) {
             let isRepeat = event.isARepeat
-            Task { await perform(command, isRepeat: isRepeat) }
+            performNow(command, isRepeat: isRepeat)
             return nil
         }
         return fireCueHotkeys(chord, event: event) ? nil : event

@@ -30,6 +30,8 @@ final class LevelMatrixView: NSView {
     /// The mouse is dragging this level to `db`; `first` is true for the first move of a drag.
     var onDrag: ((LevelSet.Slot, Double, _ first: Bool) -> Void)?
     var onDragEnd: (() -> Void)?
+    /// The mouse button goes down or up here: a press can become a drag at any point until it is up.
+    var onPress: ((Bool) -> Void)?
 
     private var dragStartY: CGFloat = 0
     private var dragStartDb = 0.0
@@ -165,6 +167,7 @@ final class LevelMatrixView: NSView {
     // MARK: Mouse and keys
 
     override func mouseDown(with event: NSEvent) {
+        onPress?(true)
         window?.makeFirstResponder(self)
         let p = convert(event.locationInWindow, from: nil)
         dragSlot = slot(at: p)
@@ -193,6 +196,7 @@ final class LevelMatrixView: NSView {
         if dragging { onDragEnd?() }
         dragging = false
         dragSlot = nil
+        onPress?(false)
     }
 
     override func keyDown(with event: NSEvent) {

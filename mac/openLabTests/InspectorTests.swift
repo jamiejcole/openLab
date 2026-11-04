@@ -477,6 +477,22 @@ final class InspectorTests: XCTestCase {
         await assertEventually("the typed name wins") { self.intro?.name == "half typed" }
     }
 
+    /// A menu command can select another cue while a name is typed (a new cue, Select Cue by number;
+    /// a playhead move cannot, `PlayheadFlowTests`): the name goes to the cue it was typed for, and
+    /// the inspector shows the other cue's own name.
+    func testASelectionTheAppChangesMidEditCommitsTheTypingToTheCueItWasTypedFor() async throws {
+        vc.setSelection([Self.intro])
+        XCTAssertTrue(window.makeFirstResponder(vc.nameField))
+        vc.nameField.currentEditor()?.string = "half typed"
+        typed(.name, "half typed")
+        vc.setSelection([Self.fade])
+        await assertEventually { self.commands.count == 1 }
+        XCTAssertEqual(commands.last, property("name", #""half typed""#))
+        XCTAssertNil(vc.nameField.currentEditor(), "editing ended")
+        let fadeName = try XCTUnwrap(rig.store.model?.cue(Self.fade)?.raw["name"]?.stringValue)
+        XCTAssertEqual(vc.nameField.stringValue, fadeName)
+    }
+
     func testEscCancelsTheEdit() async {
         vc.setSelection([Self.intro])
         XCTAssertTrue(window.makeFirstResponder(vc.nameField))

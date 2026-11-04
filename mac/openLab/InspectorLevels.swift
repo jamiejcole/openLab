@@ -19,6 +19,8 @@ extension InspectorViewController {
         audioLevels.onEdit = { [weak self] set, gesture in self?.sendLevels(set, gesture: gesture) }
         fadeLevels.onEdit = { [weak self] set, gesture in self?.sendLevels(set, gesture: gesture) }
         audioLevels.onGestureEnd = { [weak self] in self?.render() }
+        audioLevels.onHold = { [weak self] in self?.onGestureHold?($0) }
+        fadeLevels.onHold = { [weak self] in self?.onGestureHold?($0) }
         fadeLevels.onGestureEnd = { [weak self] in self?.render() }
         fadeLevels.onSetFromTarget = { [weak self] in self?.setFadeLevelsFromTarget() }
         fadeSettings.onChange = { [weak self] change in self?.sendFade(change) }

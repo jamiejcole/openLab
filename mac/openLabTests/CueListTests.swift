@@ -663,6 +663,198 @@ final class CueListTests: XCTestCase {
         for id in [H.intro, H.fade, H.group] { XCTAssertFalse(h.vc.isPlayheadInside(id)) }
     }
 
+    private func sentPlayheads(_ h: H) -> [ModelID?] {
+        h.rig.wire.sent.compactMap {
+            if case .transport(_, .setPlayhead(_, let cue)) = $0 { return cue }
+            return nil
+        }
+    }
+
+    /// The demo show on the real engine, the list's wire recorded from here on.
+    private func live() async throws -> H {
+        let h = try await H(rig: try await Rig.open())
+        h.rig.wire.forgetSent()
+        return h
+    }
+
+    /// Another client of the same workspace (an OSC peer, another Mac) moves the list's playhead.
+    /// The list has heard it on return (unless its results are held: then it is on its way).
+    private func moveElsewhere(_ h: H, to cue: ModelID?) async throws {
+        let other = Rig(engine: h.rig.testEngine, workspace: h.rig.doc)
+        guard await other.connect(),
+            case .success = await other.store.transport(.setPlayhead(list: ModelID(H.list), cue: cue))
+        else { return XCTFail("set_playhead elsewhere") }
+        other.client.stop()
+        if !h.rig.wire.holdResults { await h.rig.sync() }
+    }
+
+    private func playhead(_ h: H) -> ModelID? { h.store.playheads[ModelID(H.list)] }
+
+    /// #496: GO on a group that was the last cue moved the playhead past the end of the list while
+    /// the group's row stayed highlighted and in the inspector, so a mode change there and Space
+    /// fired nothing, and clicking the highlighted row changed nothing. The selection now follows
+    /// the playhead: past the end nothing is selected (the inspector shows no cue), and the click
+    /// that selects the group again puts the playhead back on it.
+    func testAPlayheadPastTheEndClearsTheSelectionAndTheNextClickSetsItAgain() async throws {
+        let h = try await live()
+        var shown: [[ModelID]] = []
+        h.vc.onSelectionChange = { shown.append($0) }
+        h.vc.selectAsUser([H.group])
+        await assertEventually { self.playhead(h) == H.group }
+        try await moveElsewhere(h, to: nil)
+        await assertEventually { self.playhead(h) == nil }
+        XCTAssertEqual(h.vc.selectedIDs(), [])
+        XCTAssertEqual(shown.last, [], "the inspector shows no cue")
+        h.vc.selectAsUser([H.group])
+        await assertEventually { self.playhead(h) == H.group }
+        XCTAssertEqual(sentPlayheads(h), [H.group, H.group])
+    }
+
+    /// The engine moving the playhead (GO, a Go To cue, OSC) moves the selection to the cue standing
+    /// by, opening a collapsed group to show it; the inspector follows and nothing is sent back.
+    func testTheSelectionFollowsAPlayheadTheEngineMoves() async throws {
+        let h = try await live()
+        var shown: [[ModelID]] = []
+        h.vc.onSelectionChange = { shown.append($0) }
+        try await moveElsewhere(h, to: H.rain)
+        await assertEventually { h.vc.selectedIDs() == [H.rain] }
+        XCTAssertTrue(h.spy.isItemExpanded(h.vc.node(H.group)))
+        XCTAssertEqual(shown.last, [H.rain])
+        try await moveElsewhere(h, to: H.intro)
+        await assertEventually { h.vc.selectedIDs() == [H.intro] }
+        await settle()
+        XCTAssertEqual(sentPlayheads(h), [], "a followed selection sends no set_playhead")
+    }
+
+    /// Only this list's own playhead moves the selection, and only when it changes: a group the
+    /// operator closed stays closed when another list's playhead moves.
+    func testAnotherListsPlayheadLeavesAClosedGroupClosed() async throws {
+        let h = try await live()
+        try await moveElsewhere(h, to: H.rain)
+        await assertEventually { h.vc.selectedIDs() == [H.rain] }
+        let group = try XCTUnwrap(h.vc.node(H.group))
+        h.spy.collapseItem(group)
+        let other: ModelID = "00000000-0000-0000-0000-0000000000c1"
+        let cue: ModelID = "00000000-0000-0000-0000-0000000000c2"
+        var memo = try XCTUnwrap(NewCueKind.memo.cueJSON(id: cue, patch: nil))
+        memo.set("name", .string("Elsewhere"))
+        guard
+            let add = Command.transaction([
+                .addCueList(id: other, name: "Other", index: 1), .addCue(memo, list: other, parent: nil, index: 0),
+            ]),
+            case .success = await h.store.send(command: add),
+            case .success = await h.store.transport(.setPlayhead(list: other, cue: cue)),
+            case .success = await h.store.transport(.setPlayhead(list: other, cue: nil))
+        else { return XCTFail("other list") }
+        await h.rig.sync()
+        XCTAssertFalse(h.spy.isItemExpanded(group), "still closed")
+        XCTAssertEqual(h.vc.selectedIDs(), [], "the closed group hides the selected cue")
+    }
+
+    /// Several cues selected by hand hold the playhead's cue: its echo leaves them selected.
+    func testTheEchoOfAPlayheadInsideASelectionKeepsTheSelection() async throws {
+        let h = try await live()
+        h.vc.selectAsUser([H.intro, H.fade])
+        await assertEventually { self.playhead(h) == H.fade }
+        await settle()
+        XCTAssertEqual(h.vc.selectedIDs(), [H.intro, H.fade])
+    }
+
+    /// Two quick clicks: the echo of the first, arriving while the second is unanswered, must not
+    /// pull the selection back; once all are answered the selection stays on the last click.
+    func testAStaleEchoDoesNotPullTheSelectionBack() async throws {
+        let h = try await live()
+        h.rig.wire.holdResults = true
+        h.vc.selectAsUser([H.fade])
+        h.vc.selectAsUser([H.group])
+        await assertEventually("both echoes are in, neither answer") { self.playhead(h) == H.group }
+        XCTAssertEqual(h.vc.selectedIDs(), [H.group])
+        XCTAssertEqual(sentPlayheads(h), [H.fade, H.group])
+        h.rig.wire.holdResults = false
+        h.rig.wire.releaseResults()
+        await h.rig.sync()
+        await settle()
+        XCTAssertEqual(h.vc.selectedIDs(), [H.group])
+    }
+
+    /// A click and a GO straight after it: the GO's playhead move arrives before the click's answer
+    /// and is followed once the click is answered.
+    func testAPlayheadMovedOnBeforeTheClickIsAnsweredIsFollowed() async throws {
+        let h = try await live()
+        h.rig.wire.holdResults = true
+        h.vc.selectAsUser([H.fade])
+        await assertEventually { self.playhead(h) == H.fade }
+        try await moveElsewhere(h, to: H.group)
+        await assertEventually { self.playhead(h) == H.group }
+        XCTAssertEqual(h.vc.selectedIDs(), [H.fade], "the click is not answered yet")
+        h.rig.wire.holdResults = false
+        h.rig.wire.releaseResults()
+        await assertEventually { h.vc.selectedIDs() == [H.group] }
+    }
+
+    /// The playhead on the group, a click on Intro and Space straight after it: Intro's echo and the
+    /// GO's move back onto the group both arrive before the click is answered. The selection ends
+    /// on the group, where the playhead and the standby display are.
+    func testAGoBackOntoThePlayheadBeforeTheClickWasAnsweredIsFollowed() async throws {
+        let h = try await live()
+        guard case .success = await h.store.send(command: .removeCue(H.fade)) else { return XCTFail("remove") }
+        h.vc.selectAsUser([H.group])
+        await assertEventually { self.playhead(h) == H.group }
+        await h.rig.sync()
+        h.rig.wire.holdResults = true
+        h.vc.selectAsUser([H.intro])
+        let go = Task { await h.store.go(list: ModelID(H.list)) }
+        try await h.rig.testEngine.advance(seconds: 0.05)
+        await assertEventually("Intro ran and the group stands by") {
+            h.store.cueStates[H.intro]?.state == .running && self.playhead(h) == H.group
+        }
+        XCTAssertEqual(h.vc.selectedIDs(), [H.intro], "the click is not answered yet")
+        h.rig.wire.holdResults = false
+        h.rig.wire.releaseResults()
+        _ = await go.value
+        await assertEventually { h.vc.selectedIDs() == [H.group] }
+    }
+
+    /// The highlighted row clicked again while the playhead is elsewhere (it was moved while text
+    /// was typed) puts the playhead back on it; a click on a row the playhead is on sends nothing.
+    func testClickingTheHighlightedRowPutsThePlayheadBackOnIt() async throws {
+        let h = try await live()
+        h.vc.selectAsUser([H.intro])
+        await assertEventually { self.playhead(h) == H.intro }
+        h.vc.rowClicked(h.spy.row(forItem: h.vc.node(H.intro)))
+        await settle()
+        XCTAssertEqual(sentPlayheads(h), [], "the show opens with the playhead on Intro")
+        // A playhead the selection did not follow (a hold), here set without the list hearing it.
+        h.vc.sub = nil
+        try await moveElsewhere(h, to: H.group)
+        XCTAssertEqual(h.vc.selectedIDs(), [H.intro])
+        h.vc.rowClicked(h.spy.row(forItem: h.vc.node(H.intro)))
+        await assertEventually { self.playhead(h) == H.intro }
+        XCTAssertEqual(sentPlayheads(h), [H.intro])
+    }
+
+    /// A `set_playhead` the engine would not act on leaves no echo to clear what was last sent: the
+    /// next click on that row must send again. Here the cue was deleted elsewhere, the list has not
+    /// heard (its row is still there, as in the moment before the news arrives), and it comes back.
+    func testAClickAfterARefusedPlayheadMoveStillMovesThePlayhead() async throws {
+        let h = try await live()
+        h.vc.sub = nil
+        let other = Rig(engine: h.rig.testEngine, workspace: h.rig.doc)
+        guard await other.connect(), let remove = Command.transaction([.removeCue(H.fade)]),
+            case .success = await other.store.send(command: remove)
+        else { return XCTFail("delete elsewhere") }
+        h.vc.selectAsUser([H.fade])
+        await assertEventually("sent and refused") { self.sentPlayheads(h) == [H.fade] }
+        await h.rig.sync()
+        await settle()
+        guard case .success = await other.store.undo() else { return XCTFail("undo elsewhere") }
+        other.client.stop()
+        await h.rig.sync()
+        XCTAssertNotEqual(playhead(h), H.fade)
+        h.vc.rowClicked(h.spy.row(forItem: h.vc.node(H.fade)))
+        await assertEventually("the click moved it") { self.playhead(h) == H.fade }
+    }
+
     /// A playhead inside a collapsed group has no row: Move Playhead Next / Previous steps from the
     /// group's row, not from the top or bottom of the list (the next GO would fire the first cue).
     func testMovePlayheadFromInsideACollapsedGroupStepsFromTheGroup() async throws {
@@ -672,6 +864,8 @@ final class CueListTests: XCTestCase {
             return XCTFail("set_playhead")
         }
         await assertEventually { playhead() == H.rain }
+        // The selection following the playhead opened the group; the operator closes it again.
+        h.spy.collapseItem(try XCTUnwrap(h.vc.node(H.group)))
         let rows = h.visibleIDs()
         let at = try XCTUnwrap(rows.firstIndex(of: H.group))
         XCTAssertFalse(rows.contains(H.rain), "collapsed")
@@ -1056,8 +1250,8 @@ extension CueListTests {
         editorB.pasteboard = pbB
         var commandsA: [TransportCommand] = []
         var commandsB: [TransportCommand] = []
-        a.vc.onCommand = { commandsA.append($0) }
-        b.vc.onCommand = { commandsB.append($0) }
+        a.vc.onCommand = { command, _ in commandsA.append(command) }
+        b.vc.onCommand = { command, _ in commandsB.append(command) }
         a.vc.select([H.intro])  // A holds a selection, as the key window
         let m = try menu(b, H.fade, pasteboard: privatePasteboard())
         func fire(_ item: CueRowMenu.Item) throws {
@@ -1090,6 +1284,990 @@ extension CueListTests {
         XCTAssertFalse(h.spy.isItemExpanded(group))
         press(Int(NSRightArrowFunctionKey))
         XCTAssertTrue(h.spy.isItemExpanded(group))
+    }
+}
+
+/// The acceptance flows of the playhead and selection (#489) and of GO on a group after a mode
+/// change (#496), done as the operator does them, through the app's own window, keys and inspector
+/// on an engine of the test's own (stepped virtual device), checked by what the window shows: the
+/// highlighted row, the playhead marker and running icons in the status column, and the standby
+/// display.
+@MainActor
+final class PlayheadFlowTests: XCTestCase {
+    private var app: AppController!
+    private var engine: TestEngine!
+    private let wire = WireTap()
+    private var doc: ModelID = "none"
+    private var wc: WorkspaceWindowController { app.windows[doc]! }
+    private var store: WorkspaceStore { wc.store }
+    private var list: ModelID { wc.cueList.listID! }
+
+    override func setUp() async throws {
+        engine = try await TestEngine.start()
+        let url = engine.infoURL
+        let session = EngineSession(
+            transport: wire, infoProvider: { EngineConnectionInfo.load(from: url) }, scheduler: ManualScheduler())
+        app = AppController(session: session, scheduler: ManualScheduler())
+        app.keyWindow = { [unowned self] in app.windows[doc]?.window }
+        session.start()
+        await assertEventually { session.appClient.state == .connected }
+        guard case .success(let new) = await session.newWorkspace() else { return XCTFail("new") }
+        doc = new
+        await assertEventually {
+            self.app.windows[new]?.store.model != nil && self.app.windows[new]?.cueList.listID != nil
+        }
+        // The operator's own typing is what the key window's first responder says.
+        app.isTextEditing = { [unowned self] in (wc.window?.firstResponder as? NSText)?.isEditable == true }
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 1400, height: 900), display: false)
+    }
+
+    override func tearDown() async throws {
+        app?.closeAllWindows()
+        app = nil
+        engine?.stop()
+    }
+
+    // MARK: Doing what the operator does
+
+    private func key(_ chars: String, code: UInt16, _ flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code))
+    }
+
+    /// The GOs the window sent.
+    private func goes() -> Int {
+        wire.sent.filter { if case .transport(_, .go) = $0 { return true } else { return false } }.count
+    }
+
+    /// Everything the engine sent the window so far is applied.
+    private func sync() async { _ = await store.client.send({ .request(id: $0, .listPatchMappings) }) }
+
+    /// `seconds` of device time.
+    private func play(_ seconds: Double) async throws {
+        try await engine.advance(seconds: seconds)
+        await sync()
+    }
+
+    /// Space, as the key monitor gets it, then a tenth of a second of the show.
+    private func space() async throws {
+        let before = goes()
+        XCTAssertNil(app.handleKeyDown(try key(" ", code: 49)), "Space is GO")
+        await assertEventually("GO was sent") { self.goes() == before + 1 }
+        await sync()  // answered after the GO: the engine has run it
+        try await play(0.1)
+    }
+
+    /// What a click on `id`'s row does to the selection, without a press (real presses, with the
+    /// table's mouse tracking, are in `PlayheadClickUITests`).
+    private func click(_ id: ModelID) { wc.cueList.selectAsUser([id]) }
+
+    /// The Mode tab's popup set to `mode`, as the operator picks it.
+    private func choose(_ mode: String) async throws {
+        let popup = wc.inspector.groupModePopup
+        popup.selectItem(at: try XCTUnwrap(InspectorViewController.groupModes.firstIndex(of: mode)))
+        XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
+        await assertEventually("the engine took the mode") { self.mode(self.group) == mode }
+    }
+
+    private func mode(_ id: ModelID) -> String? { store.model?.cue(id)?.raw["kind"]?["mode"]?["type"]?.stringValue }
+
+    // MARK: What the window shows
+
+    /// The label of status image `index` (0: playhead marker, 1: run state) drawn in `id`'s row; nil
+    /// when it shows none.
+    private func status(_ id: ModelID, _ index: Int) -> String? {
+        let ov = wc.cueList.outlineView
+        guard let node = wc.cueList.node(id) else { return nil }
+        let row = ov.row(forItem: node)
+        let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier("status"))
+        guard row >= 0, col >= 0, let cell = ov.view(atColumn: col, row: row, makeIfNecessary: true) as? CueCell,
+            !cell.images[index].isHidden
+        else { return nil }
+        return cell.images[index].accessibilityLabel()
+    }
+
+    private func running(_ id: ModelID) -> Bool { status(id, 1) == loc("cue.state.running") }
+
+    private func standbyText(_ id: ModelID?) throws -> String {
+        guard let id else { return loc("masthead.standby.none") }
+        let cue = try XCTUnwrap(store.model?.cue(id))
+        return [cue.number, cue.listName].compactMap { $0 }.joined(separator: " \u{00B7} ")
+    }
+
+    /// The highlighted rows, the playhead marker and the standby display are all on `id` (nil:
+    /// nothing highlighted, no marker, nothing standing by).
+    private func assertAllOn(_ id: ModelID?, file: StaticString = #filePath, line: UInt = #line) async throws {
+        await assertEventually("the highlight and the playhead", file: file, line: line) {
+            self.wc.cueList.selectedIDs() == (id.map { [$0] } ?? []) && self.store.playheads[self.list] == id
+        }
+        let all = wc.cueList.roots.flatMap { [$0] + $0.children }.map(\.id)
+        XCTAssertEqual(
+            all.filter { status($0, 0) == loc("cue.playhead") }, id.map { [$0] } ?? [], file: file, line: line)
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(id), file: file, line: line)
+    }
+
+    // MARK: #489: the selection follows the playhead
+
+    private var cues: [ModelID] = []
+
+    /// The issue's workspace: Audio cues 1, 2, 3 dropped into a new list, cue 1 clicked.
+    private func threeCues() async throws {
+        let files = try tempFiles(["1.wav", "2.wav", "3.wav"])
+        cues = await wc.editor.addFiles(files, parent: nil, index: 0)
+        XCTAssertEqual(cues.count, 3)
+        try await play(0)
+        click(cues[0])
+        try await assertAllOn(cues[0])
+    }
+
+    /// Another client of the workspace (an OSC peer's `/playhead`, another Mac) moves the playhead.
+    private func moveElsewhere(to cue: ModelID?) async throws {
+        let other = Rig(engine: engine, workspace: doc)
+        guard await other.connect(), case .success = await other.store.transport(.setPlayhead(list: list, cue: cue))
+        else { return XCTFail("set_playhead elsewhere") }
+        other.client.stop()
+        await sync()
+    }
+
+    func testGoMovesTheHighlight() async throws {
+        try await threeCues()
+        try await space()
+        XCTAssertTrue(running(cues[0]))
+        try await assertAllOn(cues[1])
+    }
+
+    func testRepeatedGoWalksTheList() async throws {
+        try await threeCues()
+        try await space()
+        try await space()
+        XCTAssertTrue(running(cues[0]) && running(cues[1]))
+        try await assertAllOn(cues[2])
+    }
+
+    func testGoPanicSelectTheFirstCueGoFindsEscAHandler() async throws {
+        try await threeCues()
+        try await space()
+        try await assertAllOn(cues[1])
+        // Esc as the key path takes it: the key monitor, then the window's dispatch to the focused
+        // table. It must find a handler (cancelOperation) rather than fall off the chain and beep.
+        let tap = try CancelTap()
+        defer { tap.restore() }
+        let beeps = Counter()
+        app.beep = { beeps.count += 1 }
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
+        let esc = try key("\u{1B}", code: 53)
+        let passed = try XCTUnwrap(app.handleKeyDown(esc), "Esc goes on to the responder too")
+        window.sendEvent(passed)
+        XCTAssertEqual(tap.taken, 1, "the window found a handler for Esc: no system beep")
+        XCTAssertEqual(beeps.count, 0, "the app did not beep")
+        try await play(0.05)
+        await assertEventually("panic stopped cue 1") {
+            try? await self.play(0.5)
+            return !self.running(self.cues[0]) && self.store.cueStates[self.cues[0]]?.state.isActive != true
+        }
+        try await assertAllOn(cues[1])
+        click(cues[0])
+        try await assertAllOn(cues[0])
+        try await space()
+        XCTAssertTrue(running(cues[0]))
+        try await assertAllOn(cues[1])
+    }
+
+    /// Typing in the inspector holds the highlight while the playhead moves; the click on the
+    /// highlighted row (which ends the typing) puts the playhead back on it.
+    func testTheTableActionOnTheHighlightedRowResetsThePlayhead() async throws {
+        try await threeCues()
+        click(cues[1])
+        try await assertAllOn(cues[1])
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.nameField))
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[1]], "held while the field has focus")
+        // The click: the table takes focus, then its selection and action.
+        let ov = wc.cueList.outlineView
+        XCTAssertTrue(window.makeFirstResponder(ov))
+        click(cues[1])
+        wc.cueList.rowClicked(ov.row(forItem: wc.cueList.node(cues[1])))
+        try await assertAllOn(cues[1])
+        await settle()
+        try await assertAllOn(cues[1])
+    }
+
+    func testAPlayheadMoveFromOutsideFollowsIntoTheTable() async throws {
+        try await threeCues()
+        try await moveElsewhere(to: cues[2])
+        try await assertAllOn(cues[2])
+        let ov = wc.cueList.outlineView
+        let row = ov.row(forItem: wc.cueList.node(cues[2]))
+        XCTAssertTrue(ov.visibleRect.intersects(ov.rect(ofRow: row)), "scrolled into view")
+    }
+
+    func testArrowKeysMoveBoth() async throws {
+        try await threeCues()
+        let ov = wc.cueList.outlineView
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(ov))
+        func press(_ chars: String, _ code: UInt16) throws {
+            let e = try key(chars, code: code, [.numericPad, .function])
+            if let passed = app.handleKeyDown(e) { ov.keyDown(with: passed) }
+        }
+        try press(String(UnicodeScalar(NSDownArrowFunctionKey)!), 125)
+        try await assertAllOn(cues[1])
+        try press(String(UnicodeScalar(NSUpArrowFunctionKey)!), 126)
+        try await assertAllOn(cues[0])
+    }
+
+    func testGoAtTheEndOfTheList() async throws {
+        try await threeCues()
+        click(cues[2])
+        try await assertAllOn(cues[2])
+        try await space()
+        XCTAssertTrue(running(cues[2]))
+        try await assertAllOn(nil)
+    }
+
+    // MARK: Typing while the playhead moves
+
+    /// A playhead move from outside while a name is typed in the inspector: the highlight and the
+    /// inspector stay, so the typing keeps its focus and Space types instead of firing GO. Once the
+    /// typing ends the name goes to its cue and the highlight follows the playhead.
+    func testAPlayheadMoveWhileTypingKeepsTheFocusAndSpaceDoesNotGo() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        let field = wc.inspector.nameField
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        editor.insertText("half typed", replacementRange: editor.selectedRange())
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]], "the selection stays")
+        XCTAssertTrue(field.currentEditor() === editor, "still typing")
+        let space = try key(" ", code: 49)
+        XCTAssertTrue(app.handleKeyDown(space) === space, "Space goes to the field")
+        await settle()
+        try await play(0.1)
+        XCTAssertEqual(goes(), 0, "no GO")
+        for id in cues { XCTAssertFalse(running(id)) }
+        XCTAssertEqual(editor.string, "half typed")
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]])
+        // The typing ends (Return, Tab, a click away).
+        window.makeFirstResponder(nil)
+        try await assertAllOn(cues[2])
+        await assertEventually("the name went to its own cue") {
+            self.store.model?.cue(self.cues[0])?.name == "half typed"
+        }
+        XCTAssertNotEqual(store.model?.cue(cues[2])?.name, "half typed")
+    }
+
+    /// The same in the inspector's notes.
+    func testAPlayheadMoveWhileTypingNotesKeepsTheSelection() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        let notes = wc.inspector.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        notes.insertText("cue line", replacementRange: notes.selectedRange())
+        try await moveElsewhere(to: cues[1])
+        await assertEventually { self.store.playheads[self.list] == self.cues[1] }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]])
+        XCTAssertTrue(window.firstResponder === notes)
+        window.makeFirstResponder(nil)
+        try await assertAllOn(cues[1])
+        await assertEventually { self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "cue line" }
+    }
+
+    // MARK: A gesture while the playhead moves
+
+    /// The inspector tab, as a click on it shows it.
+    private func showTab(_ id: String) { wc.inspector.tabView.selectTabViewItem(withIdentifier: id) }
+
+    private func kind(_ id: ModelID) -> JSONValue? { store.model?.cue(id)?.raw["kind"] }
+
+    /// Commands sent for cue `id` since the last `forgetSent`.
+    private func commands(on id: ModelID) -> Int {
+        wire.commands.filter { $0.json["id"]?.stringValue == id.raw }.count
+    }
+
+    /// The playhead moved off cue 1 and the highlight has stayed for the gesture.
+    private func assertHeldOnFirstCue(playheadOn head: ModelID, line: UInt = #line) async {
+        await assertEventually("the playhead moved", line: line) { self.store.playheads[self.list] == head }
+        await settle()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]], "held", line: line)
+        XCTAssertEqual(wc.inspector.cueForEdit?.id, cues[0], "the inspector stays on the cue", line: line)
+    }
+
+    /// The whole of a fader drag lands on the cue it started on, and the highlight follows at the end.
+    func testAFaderDragStaysOnItsCueWhileThePlayheadMoves() async throws {
+        try await threeCues()
+        let p = wc.inspector.audioLevels
+        wire.forgetSent()
+        p.beginGesture()
+        p.fader.doubleValue = -6
+        _ = p.fader.target?.perform(p.fader.action, with: p.fader)
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        p.fader.doubleValue = -12
+        _ = p.fader.target?.perform(p.fader.action, with: p.fader)
+        p.endGesture()
+        await assertEventually("the drag's cue took all of it") {
+            self.kind(self.cues[0])?["levels"]?["master_db"]?.doubleValue == -12
+        }
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(commands(on: cues[1]), 0, "no edit went to the other cue")
+    }
+
+    /// A press in the level matrix can become a drag at any moment until the button is up.
+    func testALevelMatrixDragStaysOnItsCueWhileThePlayheadMoves() async throws {
+        try await threeCues()
+        let matrix = wc.inspector.audioLevels.matrix
+        let window = try XCTUnwrap(wc.window)
+        let master = matrix.rect(of: .master)
+        let start = NSPoint(x: master.midX, y: master.midY)
+        func event(_ type: NSEvent.EventType, _ p: NSPoint) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: type, location: matrix.convert(p, to: nil), modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        wire.forgetSent()
+        matrix.mouseDown(with: try event(.leftMouseDown, start))
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        // The view is flipped: down the screen is a larger y, and quieter.
+        matrix.mouseDragged(with: try event(.leftMouseDragged, NSPoint(x: start.x, y: start.y + 40)))
+        matrix.mouseUp(with: try event(.leftMouseUp, NSPoint(x: start.x, y: start.y + 40)))
+        await assertEventually("the drag's cue took it") {
+            self.kind(self.cues[0])?["levels"]?["master_db"]?.doubleValue == -10
+        }
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(commands(on: cues[1]), 0)
+    }
+
+    /// A trim is sent only when the handle is let go: it must go to the cue it was dragged on.
+    func testAWaveformTrimDragStaysOnItsCueWhileThePlayheadMoves() async throws {
+        try await threeCues()
+        let wave = wc.inspector.timeLoops.waveform
+        await assertEventually { wave.duration != nil }
+        wave.frame = NSRect(x: 0, y: 0, width: 600, height: 100)
+        wire.forgetSent()
+        XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(0)))
+        wave.drag(toX: wave.scale.x(0.3))
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        wave.endDrag()
+        await assertEventually("the drag's cue took it") {
+            abs((self.kind(self.cues[0])?["start_time"]?.doubleValue ?? 0) - 0.3) < 0.01
+        }
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(commands(on: cues[1]), 0)
+    }
+
+    /// A key being recorded for a cue goes to that cue.
+    func testAHotkeyBeingRecordedStaysOnItsCueWhileThePlayheadMoves() async throws {
+        try await threeCues()
+        let recorder = wc.inspector.hotkeyField
+        showTab("triggers")
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(recorder))
+        XCTAssertTrue(wc.window?.firstResponder === recorder)
+        wire.forgetSent()
+        try await moveElsewhere(to: cues[2])
+        await assertHeldOnFirstCue(playheadOn: cues[2])
+        recorder.keyDown(with: try key("f", code: 3))
+        await assertEventually("recorded on its own cue") {
+            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
+        }
+        try await assertAllOn(cues[2])
+        XCTAssertEqual(commands(on: cues[2]), 0)
+    }
+
+    /// Stands in for a control that tracks the mouse inside its `mouseDown` (a checkbox, a slider, a
+    /// table row), as driving a real one needs a real mouse: the press goes through the window.
+    private final class TrackingView: NSView {
+        var whileTracking: () -> Void = {}
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) { whileTracking() }
+    }
+
+    /// A press on a `TrackingView`, from the run loop as a real event comes (a nested loop does not
+    /// run the main queue from inside a main-queue job, and so not this test's own Tasks).
+    private func pressOnTrackingView(whileTracking: @escaping () -> Void) async throws {
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        let content = try XCTUnwrap(window.contentView)
+        // Away from the window's edges, which track a resize until a real mouse-up.
+        let view = TrackingView(frame: NSRect(x: content.bounds.midX, y: content.bounds.midY, width: 20, height: 20))
+        content.addSubview(view)
+        defer { view.removeFromSuperview() }
+        view.whileTracking = whileTracking
+        let point = content.convert(NSPoint(x: view.frame.midX, y: view.frame.midY), to: nil)
+        guard content.hitTest(point) === view else { return XCTFail("the press would land elsewhere") }
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            RunLoop.main.perform(inModes: [.common]) {
+                MainActor.assumeIsolated {
+                    let down = NSEvent.mouseEvent(
+                        with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
+                        windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+                    if let down { window.sendEvent(down) } else { XCTFail("no event") }
+                }
+                done.resume()
+            }
+        }
+    }
+
+    /// Runs the main queue as a control's tracking loop does, until `done` or a long deadline.
+    private func track(until done: () -> Bool) {
+        let deadline = Date(timeIntervalSinceNow: 20)
+        while !done(), Date() < deadline {
+            RunLoop.main.run(mode: .eventTracking, before: Date(timeIntervalSinceNow: 0.01))
+        }
+    }
+
+    /// A checkbox acts when the button comes up: pressed on cue 1, it must not flag the cue the
+    /// playhead moved to meanwhile.
+    func testACheckboxHeldDownStaysOnItsCueWhileThePlayheadMoves() async throws {
+        try await threeCues()
+        wire.forgetSent()
+        let moved = Counter()
+        Task {
+            try await moveElsewhere(to: cues[2])
+            moved.count = 1
+        }
+        var heldOn: [ModelID] = []
+        try await pressOnTrackingView { [self] in
+            track { moved.count == 1 }
+            heldOn = wc.cueList.selectedIDs()
+            wc.inspector.flaggedCheck.performClick(nil)  // the mouse-up
+        }
+        XCTAssertEqual(moved.count, 1)
+        XCTAssertEqual(heldOn, [cues[0]], "held while the button is down")
+        await assertEventually("flagged its own cue") {
+            self.store.model?.cue(self.cues[0])?.raw["flagged"] == .bool(true)
+        }
+        try await assertAllOn(cues[2])
+        XCTAssertEqual(commands(on: cues[2]), 0)
+    }
+
+    /// A drag whose release never came (its view was taken away under it) must not hold for good:
+    /// the next press ends it.
+    func testTheNextPressEndsAGestureWhoseReleaseNeverCame() async throws {
+        try await threeCues()
+        wc.inspector.audioLevels.beginGesture()
+        try await moveElsewhere(to: cues[2])
+        await assertHeldOnFirstCue(playheadOn: cues[2])
+        try await pressOnTrackingView {}
+        try await assertAllOn(cues[2])
+    }
+
+    /// Opens `menu` for real (no mouse: the menu is closed from code), from the run loop as a real
+    /// press does (`pressOnTrackingView`), runs `body` while it tracks, and returns when it has
+    /// closed; `chosen` runs where a chosen item's action does, on the way out of the tracking. A
+    /// timer closes it if `body` never finishes.
+    private func whileOpen(
+        _ menu: NSMenu, in view: NSView, chosen: @escaping @MainActor @Sendable () -> Void = {},
+        _ body: @escaping @MainActor @Sendable () async throws -> Void
+    ) async {
+        nonisolated(unsafe) let menu = menu
+        nonisolated(unsafe) let view = view
+        nonisolated(unsafe) let finished = Counter()
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            RunLoop.main.perform(inModes: [.common]) {
+                MainActor.assumeIsolated {
+                    Task { @MainActor in
+                        do { try await body() } catch { XCTFail("while the menu is open: \(error)") }
+                        finished.count = 1
+                        menu.cancelTracking()
+                    }
+                    let watchdog = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 30_000_000_000)
+                        if !Task.isCancelled { menu.cancelTracking() }
+                    }
+                    menu.popUp(positioning: nil, at: .zero, in: view)
+                    watchdog.cancel()
+                    chosen()
+                }
+                done.resume()
+            }
+        }
+        XCTAssertEqual(finished.count, 1, "the engine's updates apply while a menu is open")
+    }
+
+    /// An inspector popup acts when its menu closes: the choice goes to the cue it was opened on.
+    func testAPopupMenuStaysOnItsCueWhileThePlayheadMoves() async throws {
+        try await threeCues()
+        wire.forgetSent()
+        let popup = wc.inspector.continuePopup
+        let menu = try XCTUnwrap(popup.menu)
+        let choose: @MainActor @Sendable () -> Void = {
+            popup.selectItem(at: 1)
+            XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
+        }
+        await whileOpen(menu, in: popup, chosen: choose) { [self] in
+            try await moveElsewhere(to: cues[2])
+            await assertHeldOnFirstCue(playheadOn: cues[2])
+        }
+        await assertEventually("set on its own cue") {
+            self.store.model?.cue(self.cues[0])?.raw["continue_mode"]?.stringValue
+                == InspectorViewController.continueModes[1]
+        }
+        try await assertAllOn(cues[2])
+        XCTAssertEqual(commands(on: cues[2]), 0)
+    }
+
+    // MARK: The row menu acts on what it was opened on
+
+    private func rowMenu(on id: ModelID) -> NSMenu {
+        let menu = NSMenu()
+        wc.cueList.prepareRowMenu(menu, row: wc.cueList.outlineView.row(forItem: wc.cueList.node(id)))
+        return menu
+    }
+
+    private func item(_ item: CueRowMenu.Item, in menu: NSMenu) throws -> NSMenuItem {
+        try XCTUnwrap(menu.items.first { $0.tag == CueRowMenu.Item.allCases.firstIndex(of: item) })
+    }
+
+    /// Right-click running cue 1; the playhead moves while the menu is open; Panic fades cue 1, the
+    /// cue the menu was opened on, and no other; the highlight then follows the playhead.
+    func testRowMenuPanicAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        try await space()
+        XCTAssertTrue(running(cues[0]))
+        let menu = rowMenu(on: cues[0])
+        await sync()
+        await whileOpen(menu, in: wc.cueList.outlineView) { [self] in
+            try await moveElsewhere(to: cues[2])
+            await assertHeldOn(cues[0], playheadOn: cues[2])
+        }
+        wire.forgetSent()
+        wc.cueList.rowCommand(try item(.panic, in: menu))
+        await assertEventually("cue 1 fades out and stops") {
+            try? await self.play(0.5)
+            return !self.running(self.cues[0]) && self.store.cueStates[self.cues[0]]?.state.isActive != true
+        }
+        let panicked = wire.sent.compactMap { m -> ModelID? in
+            if case .transport(_, .panicCue(let c)) = m { return c }
+            return nil
+        }
+        XCTAssertEqual(panicked.first, cues[0])
+        XCTAssertFalse(panicked.contains(cues[2]))
+        try await assertAllOn(cues[2])
+    }
+
+    private func assertHeldOn(_ id: ModelID, playheadOn head: ModelID, line: UInt = #line) async {
+        await assertEventually("the playhead moved", line: line) { self.store.playheads[self.list] == head }
+        await settle()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [id], "held", line: line)
+    }
+
+    /// Delete removes the cue the menu was opened on; the highlight and the playhead, which have
+    /// moved elsewhere, stay where they are.
+    func testRowMenuDeleteAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        let menu = rowMenu(on: cues[0])
+        try await moveElsewhere(to: cues[2])
+        try await assertAllOn(cues[2])
+        wc.cueList.rowDelete(try item(.delete, in: menu))
+        await assertEventually { self.wc.cueList.roots.count == 2 }
+        XCTAssertNil(wc.cueList.node(cues[0]), "the right-clicked cue went")
+        await sync()
+        await settle()
+        try await assertAllOn(cues[2])
+    }
+
+    /// Load, Preview, Copy, Paste and Cut, each with the selection moved after the menu opened.
+    func testRowMenuOtherCommandsAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
+        addTeardownBlock { @MainActor in pasteboard.releaseGlobally() }
+        wc.editor.pasteboard = pasteboard
+        wc.cueList.pasteboard = pasteboard
+        var menu = rowMenu(on: cues[0])
+        try await moveElsewhere(to: cues[2])
+        try await assertAllOn(cues[2])
+        wc.cueList.rowCommand(try item(.load, in: menu))
+        await assertEventually("Load") { self.status(self.cues[0], 1) == loc("cue.state.loaded") }
+        XCTAssertNil(status(cues[2], 1))
+        wc.cueList.rowCommand(try item(.preview, in: menu))
+        await assertEventually("Preview") { self.store.previewing == [self.cues[0]] }
+        wc.cueList.rowCommand(try item(.preview, in: menu))
+        await assertEventually("Preview stops") { self.store.previewing.isEmpty }
+        wc.cueList.rowCopy(try item(.copy, in: menu))
+        await assertEventually("Copy") { pasteboard.string(forType: CueEditor.pasteType) != nil }
+        let copied = try XCTUnwrap(JSONValue.parse(try XCTUnwrap(pasteboard.string(forType: CueEditor.pasteType))))
+        XCTAssertEqual(copied["cues"]?.arrayValue?.first?["id"]?.stringValue, cues[0].raw)
+        wc.cueList.rowPaste(try item(.paste, in: menu))
+        await assertEventually("Paste goes after it") { self.wc.cueList.roots.count == 4 }
+        XCTAssertEqual(wc.cueList.roots[0].id, cues[0])
+        XCTAssertEqual(wc.cueList.roots[2].id, cues[1], "the copy is between cue 1 and cue 2")
+        menu = rowMenu(on: cues[0])
+        try await moveElsewhere(to: cues[2])
+        try await assertAllOn(cues[2])
+        wc.cueList.rowCut(try item(.cut, in: menu))
+        await assertEventually("Cut") { self.wc.cueList.node(self.cues[0]) == nil }
+        XCTAssertNotNil(wc.cueList.node(cues[2]))
+        try await assertAllOn(cues[2])
+    }
+
+    // MARK: The keys after the selection moves
+
+    private var downArrow: NSEvent {
+        get throws { try key(String(UnicodeScalar(NSDownArrowFunctionKey)!), code: 125, [.numericPad, .function]) }
+    }
+
+    /// Focus in the level matrix stays there when GO moves to a cue that shows it too, so the arrows
+    /// go on moving the matrix's selected cell and nothing beeps.
+    func testFocusInTheLevelMatrixSurvivesGoAndTheArrowKeysStillAct() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        let panel = wc.inspector.audioLevels
+        showTab("levels")
+        XCTAssertTrue(window.makeFirstResponder(panel.matrix))
+        let beeps = Counter()
+        app.beep = { beeps.count += 1 }
+        try await space()
+        try await assertAllOn(cues[1])
+        XCTAssertTrue(window.firstResponder === panel.matrix)
+        let before = panel.cellLabel.stringValue
+        window.sendEvent(try XCTUnwrap(app.handleKeyDown(try downArrow)))
+        XCTAssertNotEqual(panel.cellLabel.stringValue, before, "the matrix took the key")
+        XCTAssertEqual(beeps.count, 0)
+    }
+
+    /// When the next cue does not show the focused control, the list takes the keys: Down moves the
+    /// highlight rather than driving nothing.
+    func testFocusOnAControlTheNextCueHidesGoesToTheList() async throws {
+        try await threeCues()
+        let made = await wc.editor.add(.group)
+        let group = try XCTUnwrap(made)
+        await sync()
+        click(cues[0])
+        try await assertAllOn(cues[0])
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        showTab("levels")
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.audioLevels.matrix))
+        XCTAssertTrue(window.firstResponder === wc.inspector.audioLevels.matrix)
+        try await moveElsewhere(to: group)
+        await assertEventually { self.wc.cueList.selectedIDs() == [group] }
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
+        window.sendEvent(try XCTUnwrap(app.handleKeyDown(try downArrow)))
+        await assertEventually("Down moved the highlight") { self.wc.cueList.selectedIDs() != [group] }
+    }
+
+    /// Typing ended by a selection the app changes: the list takes the keys, not the window.
+    func testASelectionThatEndsTypingLeavesTheKeysWithTheList() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.nameField))
+        click(cues[1])
+        try await assertAllOn(cues[1])
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
+    }
+
+    // MARK: The menu bar and the keys act on the selection at the moment they are used
+
+    private lazy var menuBar: AppDelegate = {
+        let delegate = AppDelegate()
+        delegate.appController = app
+        return delegate
+    }()
+
+    private func panicked() -> [ModelID] {
+        wire.sent.compactMap { m -> ModelID? in
+            if case .transport(_, .panicCue(let c)) = m { return c }
+            return nil
+        }
+    }
+
+    /// A menu is open on cue 1 while the playhead moves to `head`; `action` is what the chosen item
+    /// runs, where an item's action runs (no real menu bar: opening one needs a real mouse).
+    private func chooseFromOpenMenu(
+        afterPlayheadMovesTo head: ModelID, _ action: @escaping @MainActor @Sendable () -> Void
+    ) async throws {
+        click(cues[0])
+        try await assertAllOn(cues[0])
+        let menu = NSMenu()
+        menu.addItem(withTitle: "item", action: nil, keyEquivalent: "")
+        await whileOpen(menu, in: wc.cueList.outlineView, chosen: action) { [self] in
+            try await moveElsewhere(to: head)
+            await assertHeldOn(cues[0], playheadOn: head)
+        }
+    }
+
+    func testMainMenuDeleteAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.deleteCues(nil) }
+        await assertEventually { self.wc.cueList.roots.count == 2 }
+        XCTAssertNil(wc.cueList.node(cues[0]), "the cue highlighted when the menu was used went")
+        XCTAssertNotNil(wc.cueList.node(cues[2]))
+        await sync()
+        await settle()
+        try await assertAllOn(cues[2])
+    }
+
+    func testMainMenuTransportAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        func item(_ command: TransportCommand) -> NSMenuItem {
+            let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            item.representedObject = command.rawValue
+            return item
+        }
+        nonisolated(unsafe) let load = item(.loadSelected)
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.transportCommand(load) }
+        await assertEventually("Load Selected") { self.status(self.cues[0], 1) == loc("cue.state.loaded") }
+        XCTAssertNil(status(cues[2], 1))
+        try await space()
+        XCTAssertTrue(running(cues[2]))
+        nonisolated(unsafe) let panic = item(.panicSelected)
+        wire.forgetSent()
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[1]) { [self] in menuBar.transportCommand(panic) }
+        await assertEventually("Panic Selected") { !self.panicked().isEmpty }
+        XCTAssertEqual(panicked(), [cues[0]])
+    }
+
+    func testMainMenuOtherEditsAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
+        addTeardownBlock { @MainActor in pasteboard.releaseGlobally() }
+        wc.editor.pasteboard = pasteboard
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
+        func index(_ id: ModelID) -> Int? { wc.cueList.roots.firstIndex { $0.id == id } }
+
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.copyCues(nil) }
+        await assertEventually("Copy") { pasteboard.string(forType: CueEditor.pasteType) != nil }
+        let copied = try XCTUnwrap(JSONValue.parse(try XCTUnwrap(pasteboard.string(forType: CueEditor.pasteType))))
+        XCTAssertEqual(copied["cues"]?.arrayValue?.first?["id"]?.stringValue, cues[0].raw)
+
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.pasteCues(nil) }
+        await assertEventually("Paste") { self.wc.cueList.roots.count == 4 }
+        XCTAssertEqual(index(cues[1]), 2, "the copy is right after cue 1")
+        await assertEventually("the copy is selected") {
+            self.wc.cueList.selectedIDs() == [self.wc.cueList.roots[1].id]
+        }
+
+        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        item.representedObject = NewCueKind.memo.rawValue
+        nonisolated(unsafe) let memo = item
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.newCue(memo) }
+        await assertEventually("New cue") { self.wc.cueList.roots.count == 5 }
+        XCTAssertEqual(index(cues[0]), 0)
+        XCTAssertEqual(wc.cueList.roots[1].cue.kindType, "memo", "the new cue is right after cue 1")
+        await assertEventually("the new cue is selected") {
+            self.wc.cueList.selectedIDs() == [self.wc.cueList.roots[1].id]
+        }
+
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.moveCuesDown(nil) }
+        await assertEventually("Move Down") { index(self.cues[0]) == 1 }
+        XCTAssertEqual(index(cues[2]), 4)
+
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.deleteNumbers(nil) }
+        await assertEventually("Delete Numbers") { self.store.model?.cue(self.cues[0])?.number == nil }
+        XCTAssertNotNil(store.model?.cue(cues[2])?.number)
+
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.cutCues(nil) }
+        await assertEventually("Cut") { self.wc.cueList.node(self.cues[0]) == nil }
+        XCTAssertNotNil(wc.cueList.node(cues[2]))
+    }
+
+    /// The renumber dialog names the cues selected when it opened, whatever moves while it is up.
+    func testRenumberDialogAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        wc.promptRenumber()
+        await assertEventually("the dialog") { window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        func field(_ view: NSView) -> NSTextField? {
+            if let f = view as? NSTextField, f.accessibilityIdentifier() == "renumber-start" { return f }
+            return view.subviews.lazy.compactMap(field).first
+        }
+        try XCTUnwrap(field(try XCTUnwrap(sheet.contentView))).stringValue = "10"
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+        await assertEventually("renumbered its own cue") { self.store.model?.cue(self.cues[0])?.number == "10" }
+        XCTAssertEqual(store.model?.cue(cues[2])?.number, "3")
+    }
+
+    /// A key acts on what was highlighted when it was pressed: a playhead update already queued ahead
+    /// of the key's work moves the highlight first, with the screen not yet showing it. The list is
+    /// detached so that update can be put in that place.
+    func testASelectedKeyActsOnTheCueHighlightedWhenItWasPressed() async throws {
+        try await threeCues()
+        try await space()
+        click(cues[0])
+        try await assertAllOn(cues[0])
+        XCTAssertTrue(running(cues[0]))
+        wc.cueList.sub = nil
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        wire.forgetSent()
+        let queued = Task { @MainActor in
+            self.wc.cueList.handle(.runtime(cues: [], playheads: [self.list]))
+        }
+        XCTAssertNil(app.handleKeyDown(try key("s", code: 1)), "S is Panic Selected")
+        await queued.value
+        await assertEventually("Panic Selected") { !self.panicked().isEmpty }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[2]], "the update did come in between")
+        XCTAssertEqual(panicked(), [cues[0]])
+    }
+
+    /// The list shown has its playhead's cue highlighted (the playhead and selection stay together).
+    func testAnotherListShowsItsPlayheadHighlighted() async throws {
+        try await threeCues()
+        let other: ModelID = "00000000-0000-0000-0000-0000000000c1"
+        let cue: ModelID = "00000000-0000-0000-0000-0000000000c2"
+        var memo = try XCTUnwrap(NewCueKind.memo.cueJSON(id: cue, patch: nil))
+        memo.set("name", .string("Elsewhere"))
+        guard
+            let add = Command.transaction([
+                .addCueList(id: other, name: "Other", index: 1), .addCue(memo, list: other, parent: nil, index: 0),
+            ]), case .success = await store.send(command: add),
+            case .success = await store.transport(.setPlayhead(list: other, cue: cue))
+        else { return XCTFail("other") }
+        await sync()
+        wc.cueList.showList(other)
+        await settle()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cue], "standby and highlight agree after switching list")
+        XCTAssertEqual(wc.inspector.cueForEdit?.id, cue)
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cue))
+        XCTAssertEqual(status(cue, 0), loc("cue.playhead"))
+    }
+
+    // MARK: #496: GO on a group after a mode change
+
+    private var group: ModelID = "none"
+    private var child1: ModelID = "none"
+    private var child2: ModelID = "none"
+    private var cue2: ModelID = "none"
+
+    /// The issue's workspace, made as the operator makes it: a new Group cue; two Audio cues dropped
+    /// into it; Audio cue 2 dropped after it; the group's row clicked; `modes` chosen in the Mode
+    /// tab, in order.
+    private func groupWorkspace(_ modes: [String]) async throws {
+        let files = try tempFiles(["one.wav", "two.wav", "three.wav"])
+        let made = await wc.editor.add(.group)
+        group = try XCTUnwrap(made)
+        let kids = await wc.editor.addFiles(Array(files[0..<2]), parent: group, index: 0)
+        XCTAssertEqual(kids.count, 2)
+        (child1, child2) = (kids[0], kids[1])
+        let after = await wc.editor.addFiles([files[2]], parent: nil, index: 1)
+        cue2 = try XCTUnwrap(after.first)
+        try await play(0)  // the files are probed
+        XCTAssertEqual(wc.cueList.roots.map(\.id), [group, cue2])
+        XCTAssertEqual(wc.cueList.node(group)?.children.map(\.id), [child1, child2])
+        click(group)
+        try await assertAllOn(group)
+        for m in modes { try await choose(m) }
+        try await assertAllOn(group)
+    }
+
+    /// Reproduce: the issue's steps where the group is the last cue and has been played once (as
+    /// the first try of a new group is). The playhead went past the end of the list while the
+    /// group's row stayed highlighted and in the inspector, so the operator changed the mode there,
+    /// pressed Space and nothing played. Now the highlight and the inspector leave the group with
+    /// the playhead, nothing shows as standing by, and the click that brings the group back puts
+    /// the playhead on it: Space then plays it in its new mode.
+    func testReproduceGoOnAGroupAfterAModeChange() async throws {
+        let files = try tempFiles(["one.wav", "two.wav"])
+        let made = await wc.editor.add(.group)
+        group = try XCTUnwrap(made)
+        let kids = await wc.editor.addFiles(files, parent: group, index: 0)
+        (child1, child2) = (kids[0], kids[1])
+        try await play(0)
+        click(group)
+        try await assertAllOn(group)
+        try await space()
+        XCTAssertTrue(running(child1) && running(child2))
+        try await assertAllOn(nil)
+        XCTAssertEqual(wc.inspector.emptyLabel.stringValue, loc("inspector.empty"), "the inspector shows no cue")
+        try await play(2)
+        await assertEventually { !self.running(self.child1) && !self.running(self.child2) }
+        click(group)
+        try await assertAllOn(group)
+        try await choose("playlist")
+        try await space()
+        XCTAssertTrue(running(group) && running(child1), "the group plays in its new mode")
+        XCTAssertFalse(running(child2))
+        try await assertAllOn(nil)
+    }
+
+    /// Timeline (QLab 5 manual p. 138): both children and the group run, cue 2 stands by.
+    func testTimelineSpaceRunsBothChildrenAndStandsByCue2() async throws {
+        try await groupWorkspace([])
+        XCTAssertEqual(mode(group), "timeline", "a new group")
+        try await space()
+        for id in [group, child1, child2] { XCTAssertTrue(running(id)) }
+        XCTAssertFalse(running(cue2))
+        try await assertAllOn(cue2)
+    }
+
+    /// Playlist (p. 138): 1.1 runs, then 1.2 once it ends; cue 2 stands by.
+    func testPlaylistSpaceRunsTheChildrenOneAfterTheOtherAndStandsByCue2() async throws {
+        try await groupWorkspace(["playlist"])
+        try await space()
+        XCTAssertTrue(running(group) && running(child1))
+        XCTAssertFalse(running(child2))
+        try await assertAllOn(cue2)
+        try await play(1)
+        await assertEventually { self.running(self.child2) && !self.running(self.child1) }
+        XCTAssertFalse(running(cue2))
+        try await assertAllOn(cue2)
+    }
+
+    /// Start first child and enter (pp. 138-139): 1.1 runs, 1.2 stands by; a second Space runs 1.2
+    /// and cue 2 stands by.
+    func testStartFirstChildAndEnterSpaceRuns1Then12AndStandsByCue2() async throws {
+        try await groupWorkspace(["start_first_and_enter"])
+        try await space()
+        XCTAssertTrue(running(child1))
+        XCTAssertFalse(running(child2))
+        try await assertAllOn(child2)
+        try await space()
+        XCTAssertTrue(running(child2))
+        try await assertAllOn(cue2)
+    }
+
+    /// Start first child and go to the next cue (p. 139): 1.1 runs, 1.2 never starts, cue 2 stands by.
+    func testStartFirstChildAndGoToNextSpaceRunsOnly11AndStandsByCue2() async throws {
+        try await groupWorkspace(["start_first_and_go_to_next"])
+        try await space()
+        XCTAssertTrue(running(child1))
+        try await assertAllOn(cue2)
+        try await play(0.5)
+        XCTAssertFalse(running(child2), "1.2 does not start")
+        try await play(1)
+        XCTAssertFalse(running(child2), "not after 1.1 either")
+    }
+
+    /// Start a random child (p. 139): one child runs and cue 2 stands by; once it has stopped, a click
+    /// on the group's row and Space run the other (round robin).
+    func testStartRandomChildSpaceRunsOneThenTheOtherAfterAClickOnTheGroup() async throws {
+        try await groupWorkspace(["start_random"])
+        try await space()
+        let first = [child1, child2].filter(running)
+        XCTAssertEqual(first.count, 1, "exactly one child")
+        try await assertAllOn(cue2)
+        try await play(2)
+        await assertEventually { !self.running(self.child1) && !self.running(self.child2) }
+        click(group)
+        try await assertAllOn(group)
+        try await space()
+        let second = [child1, child2].filter(running)
+        XCTAssertEqual(second.count, 1)
+        XCTAssertNotEqual(first, second, "round robin")
+        try await assertAllOn(cue2)
+    }
+
+    /// Mode change round trip: Timeline, Playlist, back to Timeline; the last mode chosen is used.
+    func testModeChangeRoundTripRunsBothChildren() async throws {
+        try await groupWorkspace(["playlist", "timeline"])
+        try await space()
+        XCTAssertTrue(running(child1) && running(child2))
+        try await assertAllOn(cue2)
     }
 }
 

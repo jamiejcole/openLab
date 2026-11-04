@@ -115,6 +115,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// The editor of the key window's workspace.
     @MainActor private var editor: CueEditor? { appController.frontController?.editor }
 
+    /// Runs `edit` on the front window's editor with its selection as of now: the selection can move
+    /// with the playhead before the Task runs, and the command is for what the operator saw.
+    @MainActor private func onSelection(_ edit: @escaping @MainActor @Sendable (CueEditor, [ModelID]) async -> Void) {
+        guard let front = appController.frontController else { return }
+        let editor = front.editor
+        let cues = front.cueList.selectedIDs()
+        Task { await edit(editor, cues) }
+    }
+
     /// Text being edited (a field editor) keeps its own Undo and Cmd-Delete.
     @MainActor private var textEditor: NSText? {
         (NSApp.keyWindow?.firstResponder as? NSText).flatMap { $0.isEditable ? $0 : nil }
@@ -125,30 +134,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @MainActor @objc func newCue(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let kind = NewCueKind(rawValue: raw) else { return }
-        Task { await editor?.add(kind) }
+        onSelection { editor, cues in await editor.add(kind, after: cues) }
     }
-    @MainActor @objc func deleteCues(_ sender: Any?) { Task { await editor?.deleteSelection() } }
-    @MainActor @objc func deleteNumbers(_ sender: Any?) { Task { await editor?.deleteNumbers() } }
+    @MainActor @objc func deleteCues(_ sender: Any?) {
+        onSelection { editor, cues in await editor.deleteSelection(of: cues) }
+    }
+    @MainActor @objc func deleteNumbers(_ sender: Any?) {
+        onSelection { editor, cues in await editor.deleteNumbers(of: cues) }
+    }
     /// Cut, Copy and Paste: text being edited keeps them; otherwise they act on the cues.
     @MainActor @objc func copyCues(_ sender: Any?) {
         if let text = anyText { return text.copy(sender) }
-        Task { await editor?.copySelection() }
+        onSelection { editor, cues in await editor.copySelection(of: cues) }
     }
     @MainActor @objc func cutCues(_ sender: Any?) {
         if let text = anyText { return text.cut(sender) }
-        Task { await editor?.cutSelection() }
+        onSelection { editor, cues in await editor.cutSelection(of: cues) }
     }
     @MainActor @objc func pasteCues(_ sender: Any?) {
         if let text = anyText { return text.paste(sender) }
-        Task { await editor?.paste() }
+        onSelection { editor, cues in await editor.paste(after: cues) }
     }
     /// Edit > Find (ED-09); Show Mode greys all three (`validateMenuItem`).
     @MainActor @objc func showFind(_ sender: Any?) { appController.frontController?.toggleFind() }
     @MainActor @objc func findNextCue(_ sender: Any?) { appController.frontController?.findNext(forward: true) }
     @MainActor @objc func findPreviousCue(_ sender: Any?) { appController.frontController?.findNext(forward: false) }
     @MainActor @objc func renumberCues(_ sender: Any?) { appController.frontController?.promptRenumber() }
-    @MainActor @objc func moveCuesUp(_ sender: Any?) { Task { await editor?.moveSelection(by: -1) } }
-    @MainActor @objc func moveCuesDown(_ sender: Any?) { Task { await editor?.moveSelection(by: 1) } }
+    @MainActor @objc func moveCuesUp(_ sender: Any?) {
+        onSelection { editor, cues in await editor.moveSelection(by: -1, of: cues) }
+    }
+    @MainActor @objc func moveCuesDown(_ sender: Any?) {
+        onSelection { editor, cues in await editor.moveSelection(by: 1, of: cues) }
+    }
     @MainActor @objc func toggleLayoutArea(_ sender: NSMenuItem) {
         guard let area = MainMenu.layoutArea(of: sender) else { return }
         appController.toggleLayout(area)
@@ -202,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         // isARepeat raises on non-key events (a menu click).
         let event = NSApp.currentEvent
         let isRepeat = event?.type == .keyDown && event?.isARepeat == true
-        Task { await appController.perform(command, isRepeat: isRepeat) }
+        appController.performNow(command, isRepeat: isRepeat)
     }
 
     /// A workspace window is in front and not in Show Mode: the cue-editing items work.
