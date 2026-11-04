@@ -233,9 +233,9 @@ final class MainWindowTests: XCTestCase {
         try await standBy(rig, TestSnapshots.intro)
         typeMastheadNotes(wc, "for intro")
         try await standBy(rig, TestSnapshots.fade)
-        await assertEventually { !self.setNotesCommands(rig).isEmpty }
+        XCTAssertEqual(wc.masthead.notesView.string, "for intro", "the text stays while typing")
         wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
-        await Task.yield()
+        await assertEventually { !self.setNotesCommands(rig).isEmpty }
         let sent = setNotesCommands(rig)
         XCTAssertEqual(sent.count, 1)
         XCTAssertEqual(sent.first?["id"]?.stringValue, TestSnapshots.intro.raw)
@@ -274,8 +274,10 @@ final class MainWindowTests: XCTestCase {
         XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
         typeMastheadNotes(wc, "for intro")
         try await standBy(rig, TestSnapshots.fade)
-        XCTAssertFalse(window.firstResponder === wc.masthead.notesView, "focus leaves so a new session starts")
-        // The operator clicks back in and types for the new cue.
+        XCTAssertTrue(window.firstResponder === wc.masthead.notesView, "typing keeps its focus")
+        wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
+        XCTAssertEqual(wc.masthead.cueID, TestSnapshots.fade, "the new cue shows once typing ends")
+        // The operator types for the new cue.
         XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
         typeMastheadNotes(wc, "for fade")
         wc.masthead.textDidEndEditing(Notification(name: NSText.didEndEditingNotification))
@@ -309,7 +311,9 @@ final class MainWindowTests: XCTestCase {
         await assertEventually { !self.setNotesCommands(rig).isEmpty }
         XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed then escape")
         XCTAssertFalse(
-            wc.masthead.textView(wc.masthead.notesView, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+            wc.masthead.textView(
+                wc.masthead.notesView, doCommandBy: #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:))),
+            "Option-Return types a new line")
     }
 
     // MARK: Find (ED-09)
