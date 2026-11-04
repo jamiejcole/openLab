@@ -100,7 +100,8 @@ enum WarningRows {
                     if let reason { reasons.append(ProblemText.reason(reason)) }
                     rows.append(
                         WarningRow(
-                            id: "c:\(cue.id.raw)", cue: cue.id, title: cueTitle(cue),
+                            id: "c:\(cue.id.raw)", cue: cue.id,
+                            title: cueTitle(cue, name: model?.listName(cue) ?? CueKindStyle.kindLabel(cue.kindType)),
                             detail: reasons.joined(separator: "\n"),
                             canRelink: problems.contains { $0.type == "media_missing" }))
                 }
@@ -125,7 +126,7 @@ enum WarningRows {
     /// Names an id in problem and warning text: a cue's number and name, a patch or list name.
     static func labeler(_ model: WorkspaceModel?) -> ProblemText.Label {
         { id in
-            if let cue = model?.cue(id) { return cueTitle(cue) }
+            if let model, let cue = model.cue(id) { return cueTitle(cue, name: model.listName(cue)) }
             let patches = (model?.patches ?? []) + (model?.networkPatches ?? [])
             if let name = patches.first(where: { $0.id == id })?.raw["name"]?.stringValue { return name }
             if let list = model?.cueLists.first(where: { $0.id == id }) { return list.name }
@@ -133,8 +134,7 @@ enum WarningRows {
         }
     }
 
-    static func cueTitle(_ cue: Cue) -> String {
-        let name = cue.listName
+    static func cueTitle(_ cue: Cue, name: String) -> String {
         return [cue.number, name].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "  ")
     }
 }

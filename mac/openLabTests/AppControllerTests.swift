@@ -2355,8 +2355,8 @@ final class AppControllerTests: XCTestCase {
 
         delegate.showFind(items[0])
         XCTAssertTrue(wc.find.isOpen)
-        wc.findBar.field.stringValue = "intro"
-        wc.setFindQuery("intro")
+        wc.findBar.field.stringValue = "a.wav"
+        wc.setFindQuery("a.wav")
         delegate.findNextCue(items[1])
         XCTAssertEqual(wc.cueList.selectedIDs(), [TestSnapshots.intro])
         delegate.findPreviousCue(items[2])

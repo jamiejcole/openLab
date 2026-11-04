@@ -168,7 +168,19 @@ final class AppController {
             performNow(command, isRepeat: isRepeat)
             return nil
         }
-        return fireCueHotkeys(chord, event: event) ? nil : event
+        if fireCueHotkeys(chord, event: event) { return nil }
+        return beginCellEdit(for: chord, event: event) ? nil : event
+    }
+
+    /// QLab 5's edit-number (N) and edit-name (Q) keys (`TransportKeys.editKeys`). They come after the
+    /// cue hotkeys: a cue whose hotkey is one of them (a loaded show's) fires, and the key opens no editor.
+    /// The key opens the selected cue's cell in the front workspace's list when the list has the
+    /// focus: a field being typed in, Show Mode (the list is locked) and a held key take nothing.
+    private func beginCellEdit(for chord: KeyChord, event: NSEvent) -> Bool {
+        guard !event.isARepeat, let column = TransportKeys.editKeys[chord],
+            let list = frontController?.cueList
+        else { return false }
+        return list.beginEditFromKey(column)
     }
 
     /// A cue hotkey fires in every open workspace, key window or not (ARCHITECTURE section 6): one

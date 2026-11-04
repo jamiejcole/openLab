@@ -292,6 +292,37 @@ final class CueEditor {
         }
     }
 
+    /// Sends what was typed in a cue list cell (`column`: number, name or duration) for the cue the
+    /// edit was begun for.
+    @discardableResult
+    func setCell(_ column: String, of id: ModelID, text: String) async -> Bool {
+        switch CueListViewController.editableColumns[column] {
+        case .number?: return await setCellText(.number, of: id, text: text)
+        case .name?: return await setCellText(.name, of: id, text: text)
+        default: return await setDuration(of: id, text: text)
+        }
+    }
+
+    /// Sets a cue's number or name (`field`) from the cue list's in-place editor, through the
+    /// inspector's own check: a number another cue has is refused with the inspector's message,
+    /// an emptied name goes back to the cue's default. The cue is the one the edit was begun for.
+    /// True when there was nothing to send or the engine took it.
+    @discardableResult
+    func setCellText(_ field: InspectorField, of id: ModelID, text: String) async -> Bool {
+        guard await begin() else { return false }
+        guard let cue = store.model?.cue(id), let model = store.model else {
+            notify(loc("cuelist.edit.cueGone"))
+            return false
+        }
+        switch InspectorEdit.command(field, text: text, cue: cue, model: model) {
+        case .failure(let rejection):
+            notify(loc(rejection.messageKey))
+            return false
+        case .success(nil): return true
+        case .success(let command?): return report(await store.send(command: command))
+        }
+    }
+
     /// Sets a cue's notes from the masthead, through the inspector's notes command. Refused in
     /// Show Mode like every edit. Notes the engine refuses or cannot receive, or whose cue is gone,
     /// raise the notice with Copy Text (`notesNotSaved`) and are `.notSaved`; `.blocked`: another

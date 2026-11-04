@@ -354,43 +354,63 @@ final class CueListDurationTests: XCTestCase {
         let editor = CueEditor(store: h.store, cueList: h.vc)
         let log = CueEditingTests.SendLog(h.rig)
         editor.notify = { log.notices.append($0) }
-        h.vc.onEditDuration = { id, text in Task { await editor.setDuration(of: id, text: text) } }
+        h.vc.onEditCell = { id, column, text in Task { await editor.setCell(column, of: id, text: text) } }
         return (h, editor, log, window)
     }
 
     private func endEditing(_ vc: CueListViewController) {
         vc.controlTextDidEndEditing(
-            Notification(name: NSControl.textDidEndEditingNotification, object: vc.durationEditor))
+            Notification(name: NSControl.textDidEndEditingNotification, object: vc.cellEditor))
+    }
+
+    /// The Number and Name cells of any cue open over their own cell, with their own label and the
+    /// text the inspector shows; a name typed in is checked and sent as the inspector's.
+    func testNumberAndNameCellsOpenOverTheirOwnCells() async throws {
+        let (h, _, log, window) = try await harness()
+        defer { window.orderOut(nil) }
+        let row = h.spy.row(forItem: try XCTUnwrap(h.vc.node(H.intro)))
+        for (column, text, label) in [
+            ("number", "1", "cuelist.numberEditor.label"), ("name", "Intro", "cuelist.nameEditor.label"),
+        ] {
+            XCTAssertTrue(h.vc.beginCellEdit(H.intro, column: column))
+            XCTAssertEqual(h.vc.cellEditor.stringValue, text)
+            XCTAssertEqual(h.vc.cellEditor.accessibilityLabel(), loc(label))
+            let index = h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
+            XCTAssertEqual(h.vc.cellEditor.frame, h.spy.frameOfCell(atColumn: index, row: row))
+            h.vc.cancelCellEdit()
+        }
+        XCTAssertFalse(h.vc.beginCellEdit(H.intro, column: "target"), "only Number, Name and Duration edit")
+        XCTAssertEqual(log.sent, 0, "cancelled: nothing sent")
     }
 
     func testOnlyWaitAndFadeCellsOpen() async throws {
         let (h, _, _, window) = try await harness()
         defer { window.orderOut(nil) }
-        XCTAssertFalse(h.vc.beginDurationEdit(H.intro), "an audio cue's duration comes from its file")
-        XCTAssertFalse(h.vc.beginDurationEdit(DurationEditingTests.load))
-        XCTAssertFalse(h.vc.beginDurationEdit(H.group))
-        XCTAssertTrue(h.vc.beginDurationEdit(DurationEditingTests.wait))
-        XCTAssertEqual(h.vc.editingDuration, DurationEditingTests.wait)
-        XCTAssertEqual(h.vc.durationEditor.stringValue, "00:02.00")
-        XCTAssertTrue(h.vc.durationEditor.superview === h.vc.outlineView)
+        XCTAssertFalse(h.vc.beginCellEdit(H.intro), "an audio cue's duration comes from its file")
+        XCTAssertFalse(h.vc.beginCellEdit(DurationEditingTests.load))
+        XCTAssertFalse(h.vc.beginCellEdit(H.group))
+        XCTAssertTrue(h.vc.beginCellEdit(DurationEditingTests.wait))
+        XCTAssertEqual(h.vc.editingCell?.id, DurationEditingTests.wait)
+        XCTAssertEqual(h.vc.cellEditor.stringValue, "00:02.00")
+        XCTAssertTrue(h.vc.cellEditor.superview === h.vc.outlineView)
         let row = h.spy.row(forItem: h.vc.node(DurationEditingTests.wait))
         let column = h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier("duration"))
-        XCTAssertEqual(h.vc.durationEditor.frame, h.spy.frameOfCell(atColumn: column, row: row))
+        XCTAssertEqual(h.vc.cellEditor.frame, h.spy.frameOfCell(atColumn: column, row: row))
     }
 
     /// #355: the open field is an accessibility child of the outline, with a localized label.
     func testOpenEditorIsExposedToAccessibility() async throws {
         let (h, _, _, window) = try await harness()
         defer { window.orderOut(nil) }
-        XCTAssertEqual(h.vc.durationEditor.accessibilityLabel(), loc("cuelist.durationEditor.label"))
         XCTAssertFalse(
-            (h.spy.accessibilityChildren() ?? []).contains { $0 as AnyObject === h.vc.durationEditor },
+            (h.spy.accessibilityChildren() ?? []).contains { $0 as AnyObject === h.vc.cellEditor },
             "closed: not listed")
-        XCTAssertTrue(h.vc.beginDurationEdit(DurationEditingTests.wait))
-        XCTAssertTrue((h.spy.accessibilityChildren() ?? []).contains { $0 as AnyObject === h.vc.durationEditor })
-        XCTAssertTrue(h.vc.durationEditor.accessibilityParent() as AnyObject === h.spy)
-        h.vc.cancelDurationEdit()
-        XCTAssertFalse((h.spy.accessibilityChildren() ?? []).contains { $0 as AnyObject === h.vc.durationEditor })
+        XCTAssertTrue(h.vc.beginCellEdit(DurationEditingTests.wait))
+        XCTAssertEqual(h.vc.cellEditor.accessibilityLabel(), loc("cuelist.durationEditor.label"))
+        XCTAssertTrue((h.spy.accessibilityChildren() ?? []).contains { $0 as AnyObject === h.vc.cellEditor })
+        XCTAssertTrue(h.vc.cellEditor.accessibilityParent() as AnyObject === h.spy)
+        h.vc.cancelCellEdit()
+        XCTAssertFalse((h.spy.accessibilityChildren() ?? []).contains { $0 as AnyObject === h.vc.cellEditor })
     }
 
     /// #357: collapsing the group above, or resizing the column, moves the field with its cell; a cue
@@ -403,24 +423,24 @@ final class CueListDurationTests: XCTestCase {
             h.spy.frameOfCell(atColumn: column, row: h.spy.row(forItem: h.vc.node(id)))
         }
         // A cue after the group moves up when the group collapses.
-        XCTAssertTrue(h.vc.beginDurationEdit(DurationEditingTests.wait))
-        let before = h.vc.durationEditor.frame
+        XCTAssertTrue(h.vc.beginCellEdit(DurationEditingTests.wait))
+        let before = h.vc.cellEditor.frame
         h.spy.collapseItem(h.vc.node(H.group))
         XCTAssertNotEqual(cell(DurationEditingTests.wait), before)
-        XCTAssertEqual(h.vc.durationEditor.frame, cell(DurationEditingTests.wait), "follows the collapse")
+        XCTAssertEqual(h.vc.cellEditor.frame, cell(DurationEditingTests.wait), "follows the collapse")
         h.spy.expandItem(h.vc.node(H.group))
-        XCTAssertEqual(h.vc.durationEditor.frame, cell(DurationEditingTests.wait), "follows the expand")
+        XCTAssertEqual(h.vc.cellEditor.frame, cell(DurationEditingTests.wait), "follows the expand")
         // A column resize before the Duration column moves it sideways.
         let name = h.spy.tableColumns[h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))]
         name.width += 40
-        XCTAssertEqual(h.vc.durationEditor.frame, cell(DurationEditingTests.wait), "follows the column resize")
+        XCTAssertEqual(h.vc.cellEditor.frame, cell(DurationEditingTests.wait), "follows the column resize")
         // A cue inside the group: collapsing the group closes the edit; nothing is sent.
         log.reset()
-        XCTAssertTrue(h.vc.beginDurationEdit(DurationEditingTests.nested))
-        h.vc.durationEditor.stringValue = "9"
+        XCTAssertTrue(h.vc.beginCellEdit(DurationEditingTests.nested))
+        h.vc.cellEditor.stringValue = "9"
         h.spy.collapseItem(h.vc.node(H.group))
-        XCTAssertNil(h.vc.editingDuration)
-        XCTAssertNil(h.vc.durationEditor.superview)
+        XCTAssertNil(h.vc.editingCell?.id)
+        XCTAssertNil(h.vc.cellEditor.superview)
         await settle()
         XCTAssertEqual(log.sent, 0)
         XCTAssertEqual(h.store.model?.cue(DurationEditingTests.nested)?.raw["kind"]?["duration"]?.doubleValue, 3)
@@ -429,11 +449,11 @@ final class CueListDurationTests: XCTestCase {
     func testCommittingSendsTheDurationCommand() async throws {
         let (h, _, log, window) = try await harness()
         defer { window.orderOut(nil) }
-        XCTAssertTrue(h.vc.beginDurationEdit(DurationEditingTests.wait))
-        h.vc.durationEditor.stringValue = "1:15"
+        XCTAssertTrue(h.vc.beginCellEdit(DurationEditingTests.wait))
+        h.vc.cellEditor.stringValue = "1:15"
         endEditing(h.vc)
-        XCTAssertNil(h.vc.editingDuration)
-        XCTAssertNil(h.vc.durationEditor.superview)
+        XCTAssertNil(h.vc.editingCell?.id)
+        XCTAssertNil(h.vc.cellEditor.superview)
         await assertEventually("the engine stored it") {
             h.store.model?.cue(DurationEditingTests.wait)?.raw["kind"]?["duration"]?.doubleValue == 75
         }
@@ -447,13 +467,13 @@ final class CueListDurationTests: XCTestCase {
         let (h, _, log, window) = try await harness()
         defer { window.orderOut(nil) }
         for (text, key) in [("abc", "inspector.invalid.time"), ("1,5", "inspector.invalid.decimalComma")] {
-            XCTAssertTrue(h.vc.beginDurationEdit(H.fade))
-            h.vc.durationEditor.stringValue = text
+            XCTAssertTrue(h.vc.beginCellEdit(H.fade))
+            h.vc.cellEditor.stringValue = text
             endEditing(h.vc)
             await assertEventually { log.notices.last == loc(key) }
         }
         // Unchanged text sends nothing and says nothing.
-        XCTAssertTrue(h.vc.beginDurationEdit(H.fade))
+        XCTAssertTrue(h.vc.beginCellEdit(H.fade))
         endEditing(h.vc)
         await settle()
         XCTAssertEqual(log.notices.count, 2)
@@ -463,12 +483,12 @@ final class CueListDurationTests: XCTestCase {
     func testEscapeCancels() async throws {
         let (h, _, log, window) = try await harness()
         defer { window.orderOut(nil) }
-        XCTAssertTrue(h.vc.beginDurationEdit(DurationEditingTests.wait))
-        h.vc.durationEditor.stringValue = "9"
+        XCTAssertTrue(h.vc.beginCellEdit(DurationEditingTests.wait))
+        h.vc.cellEditor.stringValue = "9"
         let handled = h.vc.control(
-            h.vc.durationEditor, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+            h.vc.cellEditor, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
         XCTAssertTrue(handled)
-        XCTAssertNil(h.vc.editingDuration)
+        XCTAssertNil(h.vc.editingCell?.id)
         endEditing(h.vc)  // the end of editing that follows sends nothing
         await settle()
         XCTAssertEqual(log.sent, 0)
@@ -477,8 +497,8 @@ final class CueListDurationTests: XCTestCase {
     func testRefreshesKeepTheTypedTextAndADeletedCueClosesIt() async throws {
         let (h, _, log, window) = try await harness()
         defer { window.orderOut(nil) }
-        XCTAssertTrue(h.vc.beginDurationEdit(DurationEditingTests.wait))
-        h.vc.durationEditor.stringValue = "4"
+        XCTAssertTrue(h.vc.beginCellEdit(DurationEditingTests.wait))
+        h.vc.cellEditor.stringValue = "4"
         // The column refreshes (the Wait runs, its progress shows) and another client adds a cue: the
         // text stays.
         let other = Rig(engine: h.rig.testEngine, workspace: h.rig.client.workspace)
@@ -491,18 +511,18 @@ final class CueListDurationTests: XCTestCase {
             .memo, id: "00000000-0000-0000-0000-000000000050", number: "0", name: "New", [:])
         _ = await other.store.send(command: .addCue(memo, list: TestSnapshots.mainList, parent: nil, index: 0))
         await assertEventually { h.vc.node("00000000-0000-0000-0000-000000000050") != nil }
-        XCTAssertEqual(h.vc.durationEditor.stringValue, "4")
+        XCTAssertEqual(h.vc.cellEditor.stringValue, "4")
         let row = h.spy.row(forItem: h.vc.node(DurationEditingTests.wait))
         let column = h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier("duration"))
-        XCTAssertEqual(h.vc.durationEditor.frame, h.spy.frameOfCell(atColumn: column, row: row), "it follows the row")
+        XCTAssertEqual(h.vc.cellEditor.frame, h.spy.frameOfCell(atColumn: column, row: row), "it follows the row")
         // The other client stops and deletes the cue: the edit closes and nothing is sent.
         _ = await other.store.transport(.hardStop(cue: DurationEditingTests.wait))
         try await h.rig.advance(0.05)
         log.reset()
         _ = await other.store.send(command: .removeCue(DurationEditingTests.wait))
         await assertEventually { h.vc.node(DurationEditingTests.wait) == nil }
-        XCTAssertNil(h.vc.editingDuration)
-        XCTAssertNil(h.vc.durationEditor.superview)
+        XCTAssertNil(h.vc.editingCell?.id)
+        XCTAssertNil(h.vc.cellEditor.superview)
         await settle()
         XCTAssertEqual(log.sent, 0)
     }
@@ -510,12 +530,12 @@ final class CueListDurationTests: XCTestCase {
     func testShowModeDropsTheEditAndRefusesNewOnes() async throws {
         let (h, editor, log, window) = try await harness()
         defer { window.orderOut(nil) }
-        XCTAssertTrue(h.vc.beginDurationEdit(DurationEditingTests.wait))
-        h.vc.durationEditor.stringValue = "9"
+        XCTAssertTrue(h.vc.beginCellEdit(DurationEditingTests.wait))
+        h.vc.cellEditor.stringValue = "9"
         h.vc.isEditLocked = true
         editor.isLocked = { true }
-        XCTAssertNil(h.vc.editingDuration)
-        XCTAssertFalse(h.vc.beginDurationEdit(DurationEditingTests.wait))
+        XCTAssertNil(h.vc.editingCell?.id)
+        XCTAssertFalse(h.vc.beginCellEdit(DurationEditingTests.wait))
         await editor.setDuration(of: DurationEditingTests.wait, text: "9")
         await settle()
         XCTAssertEqual(log.sent, 0)
@@ -526,17 +546,17 @@ final class CueListDurationTests: XCTestCase {
         let rig = try await Rig.open()
         let wc = WorkspaceWindowController(store: rig.store)
         wc.cueList.view.frame = NSRect(x: 0, y: 0, width: 1000, height: 400)
-        XCTAssertTrue(wc.cueList.beginDurationEdit(H.fade))
-        wc.cueList.durationEditor.stringValue = "12"
+        XCTAssertTrue(wc.cueList.beginCellEdit(H.fade))
+        wc.cueList.cellEditor.stringValue = "12"
         let ok = await wc.commitPendingEdits()
         XCTAssertTrue(ok)
         XCTAssertEqual(
             rig.store.model?.cue(H.fade)?.raw["kind"]?["duration"]?.doubleValue, 12, "answered before it returns")
-        XCTAssertNil(wc.cueList.editingDuration)
+        XCTAssertNil(wc.cueList.editingCell?.id)
         // A bad one stops the save.
         let log = CueEditingTests.SendLog(rig)
-        XCTAssertTrue(wc.cueList.beginDurationEdit(H.fade))
-        wc.cueList.durationEditor.stringValue = "later"
+        XCTAssertTrue(wc.cueList.beginCellEdit(H.fade))
+        wc.cueList.cellEditor.stringValue = "later"
         let refused = await wc.commitPendingEdits()
         XCTAssertFalse(refused)
         XCTAssertEqual(log.sent, 0)
