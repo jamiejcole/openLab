@@ -1694,6 +1694,58 @@ final class AppControllerTests: XCTestCase {
         return wc
     }
 
+    /// Types -6 in the master level field of Intro's Levels tab in "1" without committing it.
+    private func typePendingLevel() throws -> WorkspaceWindowController {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.inspector.setSelection([TestSnapshots.intro])
+        wc.inspector.tabView.selectTabViewItem(withIdentifier: "levels")
+        let field = wc.inspector.audioLevels.levelField
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(field))
+        try XCTUnwrap(field.currentEditor()).string = "-6"
+        wc.inspector.audioLevels.controlTextDidChange(
+            Notification(name: NSControl.textDidChangeNotification, object: field))
+        return wc
+    }
+
+    /// The master level of Intro in the show file the engine wrote.
+    private func savedMaster(at path: String) throws -> JSONValue? {
+        let file = try XCTUnwrap(JSONValue.parse(try String(contentsOfFile: path, encoding: .utf8)))
+        let cue = file["workspace"]?["cue_lists"]?.arrayValue?.first?["cues"]?.arrayValue?.first
+        return normalised(cue?["kind"]?["levels"]?["master_db"])
+    }
+
+    func testEnteringShowModeWhileTypingALevelCommitsItToTheCue() async throws {
+        let wc = try typePendingLevel()
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode)
+        await assertEventually("the cue holds the level") {
+            wc.store.model?.cue(TestSnapshots.intro)?.raw["kind"]?["levels"]?["master_db"].map { normalised($0) }
+                == .double(-6)
+        }
+        XCTAssertEqual(wc.inspector.audioLevels.levels?.master, -6)
+        XCTAssertEqual(wc.inspector.audioLevels.levelField.stringValue, LevelText.format(-6))
+        XCTAssertFalse(wc.inspector.audioLevels.levelField.isEnabled)
+    }
+
+    func testSaveWhileTypingALevelWritesItToTheFile() async throws {
+        _ = try typePendingLevel()
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let path = try XCTUnwrap(store.document?.path)
+        let saved = await app.saveWorkspace(store)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(try savedMaster(at: path), .double(-6))
+    }
+
+    func testCloseWhileTypingALevelSavesItWithTheWorkspace() async throws {
+        _ = try typePendingLevel()
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let path = try XCTUnwrap(store.document?.path)
+        alerts.saveChoices = [.save]
+        let closed = await app.closeWorkspace("1")
+        XCTAssertTrue(closed)
+        XCTAssertEqual(try savedMaster(at: path), .double(-6))
+    }
+
     private func index(of match: (ClientMessage) -> Bool) -> Int? { engine.sent.firstIndex(where: match) }
     private func isCommand(_ m: ClientMessage) -> Bool {
         if case .command = m { return true } else { return false }

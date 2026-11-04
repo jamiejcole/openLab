@@ -127,10 +127,33 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     // MARK: Showing the model
 
+    /// The grid size a `show` asked for while a level was being typed; applied when editing ends, so
+    /// the text never lands on a slot that moved under the cursor.
+    private var heldSize: (inputs: Int, outputs: Int)?
+
+    /// Text has been typed in a field and not yet committed or dropped (a field that was only
+    /// clicked into is not: nothing of it is held or written).
+    private var typedField: NSTextField?
+    private var isDirty: Bool { typedField != nil }
+
     /// Shows `levels` over `inputs` file channels and `outputs` cue outputs. Ignored while a
-    /// gesture is under way, so the fader does not jump under the mouse.
+    /// gesture is under way, so the fader does not jump under the mouse. While text is being typed
+    /// the levels are taken (a peer's change must not be written back by the commit) but the grid
+    /// size is held, so the selection does not move under the text.
     func show(_ levels: LevelSet?, inputs: Int, outputs: Int) {
         guard gesture == nil else { return }
+        if isDirty, levels != nil {
+            heldSize = (inputs, outputs)
+            self.levels = levels
+            matrix.levels = levels
+            refreshStrip()
+            return
+        }
+        place(levels, inputs: inputs, outputs: outputs)
+    }
+
+    private func place(_ levels: LevelSet?, inputs: Int, outputs: Int) {
+        heldSize = nil
         self.levels = levels
         matrix.levels = levels
         matrix.resize(inputs: levels == nil ? 0 : inputs, outputs: levels == nil ? 0 : outputs)
@@ -172,7 +195,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         }
         let active = levels.isActive(slot)
         let db = levels.db(slot)
-        if levelField.currentEditor() == nil { levelField.stringValue = db.map(LevelText.format) ?? "" }
+        if !isDirty { levelField.stringValue = db.map(LevelText.format) ?? "" }
         // The fader stops at 0 dB (QLab manual p. 181); a level above it shows pinned there.
         fader.doubleValue = min(max(db ?? LevelText.floorDb, LevelText.floorDb), 0)
         activeCheck.state = active ? .on : .off
@@ -183,7 +206,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             isOutput = true
             gangText = levels.gang(of: o).map(LevelSet.gangLetter) ?? ""
         }
-        if gangField.currentEditor() == nil { gangField.stringValue = gangText }
+        if !isDirty { gangField.stringValue = gangText }
         let free = !isLocked
         levelField.isEnabled = free
         fader.isEnabled = free
@@ -208,8 +231,17 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     // MARK: Editing
 
+    /// Commits text typed in a field and closes its editor: before Save, Close, Quit or Show Mode, and
+    /// before a drag starts (a typed value must not be written over the drag when the field is left).
+    func commitTyping() {
+        guard let typed = typedField else { return }
+        finishTyping(commit: typed)
+        typed.window?.makeFirstResponder(nil)
+    }
+
     func beginGesture() {
         guard !isLocked else { return }
+        commitTyping()
         Self.gestureSeq += 1
         gesture = Self.gestureSeq
         onHold?(true)
@@ -266,25 +298,41 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     func replace(with new: LevelSet) { edit { $0 = new } }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        control.endTyping(by: selector)
+        // Esc aborts the editor, which posts no end of editing: the typing ends here.
+        if selector == #selector(NSResponder.cancelOperation(_:)) { finishTyping(commit: nil) }
+        return control.endTyping(by: selector)
     }
 
-    func controlTextDidEndEditing(_ obj: Notification) {
+    func controlTextDidChange(_ obj: Notification) { typedField = obj.object as? NSTextField }
+
+    func controlTextDidEndEditing(_ obj: Notification) { finishTyping(commit: obj.object as? NSTextField) }
+
+    /// Every way out of typing ends here: Return, Tab and a click elsewhere (`commit` is the field),
+    /// Esc (nil). Only text that was typed is committed, so leaving a field untouched writes nothing
+    /// (a level that does not round-trip through its text, -6.25 shown as -6.2, stays as it is). The
+    /// grid size a `show` held meanwhile is applied, and the strip shows the levels as they now are.
+    private func finishTyping(commit field: NSTextField?) {
+        let typed = typedField
+        typedField = nil
+        if let typed, field != nil { commitText(of: typed) }
+        if let held = heldSize, gesture == nil {
+            place(levels, inputs: held.inputs, outputs: held.outputs)
+        } else {
+            refreshStrip()
+        }
+    }
+
+    private func commitText(of field: NSTextField) {
         let slot = selection
-        if obj.object as? NSTextField === levelField {
+        if field === levelField {
             let text = levelField.stringValue
             // An empty field on a level a Fade is not moving leaves it alone.
-            if text.trimmingCharacters(in: .whitespaces).isEmpty, levels?.isActive(slot) == false {
-                refreshStrip()
-                return
-            }
+            if text.trimmingCharacters(in: .whitespaces).isEmpty, levels?.isActive(slot) == false { return }
             let db = LevelText.parse(text)
             edit { $0.set(slot, db: db) }
-            levelField.stringValue = levels?.db(slot).map(LevelText.format) ?? ""
-        } else if obj.object as? NSTextField === gangField, case .output(let o) = slot {
+        } else if field === gangField, case .output(let o) = slot {
             let text = gangField.stringValue
             edit { $0.setGang(of: o, letter: text) }
-            refreshStrip()
         }
     }
 }
