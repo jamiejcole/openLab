@@ -12,7 +12,7 @@ final class OutputOverridesPanel: NSObject {
     private(set) var panel: NSPanel?
     /// The switch: checked means network output is on.
     let networkSwitch = NSButton(checkboxWithTitle: loc("overrides.network"), target: nil, action: nil)
-    private let note = NSTextField(wrappingLabelWithString: loc("overrides.note"))
+    let note = NSTextField(wrappingLabelWithString: loc("overrides.note"))
     /// The user flipped the switch: the new `network_disabled` value.
     var onChange: ((Bool) -> Void)?
 
@@ -24,6 +24,7 @@ final class OutputOverridesPanel: NSObject {
         networkSwitch.action = #selector(switched)
         networkSwitch.setAX(AX.overrideNetwork, label: loc("overrides.network"))
         networkSwitch.state = .on
+        note.isSelectable = false  // a click on selectable text would make the panel key and GO would go dead
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
         note.setAX(AX.overrideNote)
@@ -45,7 +46,7 @@ final class OutputOverridesPanel: NSObject {
     @objc private func switched() { onChange?(networkSwitch.state == .off) }
 
     private func makePanel() -> NSPanel {
-        let panel = NSPanel(
+        let panel = NonKeyPanel(
             contentRect: NSRect(x: 0, y: 0, width: 280, height: 90),
             styleMask: [.titled, .closable, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = loc("overrides.window")

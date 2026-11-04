@@ -133,6 +133,10 @@ final class OutputOverrideTests: XCTestCase {
 
     /// The label of the mark in the status column's third slot (nil: none shown).
     private func overrideMark(_ cue: ModelID, in wc: WorkspaceWindowController) -> String? {
+        overrideMarkView(cue, in: wc)?.accessibilityLabel()
+    }
+
+    private func overrideMarkView(_ cue: ModelID, in wc: WorkspaceWindowController) -> NSImageView? {
         let outline = wc.cueList.outlineView
         guard let node = wc.cueList.node(cue) else { return nil }
         let row = outline.row(forItem: node)
@@ -141,7 +145,7 @@ final class OutputOverrideTests: XCTestCase {
             let cell = outline.view(atColumn: column, row: row, makeIfNecessary: true) as? CueCell,
             !cell.images[2].isHidden, cell.images[2].accessibilityIdentifier() == "cue-override"
         else { return nil }
-        return cell.images[2].accessibilityLabel()
+        return cell.images[2]
     }
 
     private func overrideShown(_ wc: WorkspaceWindowController) -> Bool {
@@ -225,8 +229,95 @@ final class OutputOverrideTests: XCTestCase {
         XCTAssertNil(NSApp.modalWindow)
         // The details open from the badge, in Show Mode too.
         wc.footer.overrideBadge.performClick(nil)
-        let text = wc.footer.detailsText
-        XCTAssertEqual(text?.components(separatedBy: "\n").first, loc("status.detail.networkOff"))
+        let shown =
+            wc.footer.popover?.contentViewController?.view.subviews
+            .first { $0.accessibilityIdentifier() == AX.statusDetails } as? NSTextField
+        XCTAssertEqual(shown?.stringValue.components(separatedBy: "\n").first, loc("status.detail.networkOff"))
+        XCTAssertEqual(wc.footer.popover?.isShown, true)
+        try assertBadgeOnScreen(wc)
+        XCTAssertEqual(wc.footer.overrideBadge.layer?.backgroundColor, NSColor.systemRed.cgColor)
+        XCTAssertTrue(try drawsRed(XCTUnwrap(overrideMarkView(net, in: wc)?.image)), "the mark is drawn red")
+    }
+
+    /// The opaque pixels of `image` are red (the tint is part of the drawn image).
+    private func drawsRed(_ image: NSImage) throws -> Bool {
+        let rep = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        var red = 0
+        var other = 0
+        for x in 0..<rep.pixelsWide {
+            for y in 0..<rep.pixelsHigh {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), c.alphaComponent > 0.5 else { continue }
+                if c.redComponent > 0.6 && c.greenComponent < 0.45 && c.blueComponent < 0.45 {
+                    red += 1
+                } else {
+                    other += 1
+                }
+            }
+        }
+        return red > 0 && other == 0
+    }
+
+    /// The badge is really in the footer: in the window, with a frame inside the footer that no other
+    /// control of the footer overlaps.
+    private func assertBadgeOnScreen(_ wc: WorkspaceWindowController) throws {
+        let footer = wc.footer
+        let badge = footer.overrideBadge
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertNotNil(badge.window)
+        XCTAssertFalse(badge.isHiddenOrHasHiddenAncestor)
+        let frame = footer.convert(badge.bounds, from: badge)
+        XCTAssertGreaterThan(frame.width, 10)
+        XCTAssertGreaterThan(frame.height, 5)
+        XCTAssertTrue(footer.bounds.contains(frame), "\(frame) in \(footer.bounds)")
+        let others: [NSView] =
+            [
+                footer.modeSwitch, footer.showModeLabel, footer.statusButton, footer.noticeLabel, footer.countLabel,
+                footer.clock, footer.settingsButton,
+            ] + Array(footer.toggles.values)
+        for other in others where !other.isHiddenOrHasHiddenAncestor {
+            let r = footer.convert(other.bounds, from: other)
+            XCTAssertFalse(r.intersects(frame), "\(other) overlaps the badge")
+        }
+    }
+
+    func testAFailedSendPutsTheSwitchBackBeepsAndLogs() async throws {
+        let wc = try await openNetworkShow("Demo")
+        await statusArrives(wc)
+        var beeps = 0
+        app.beep = { beeps += 1 }
+        app.showOverrideControls()
+        app.session.appClient.stop()
+        await assertEventually { self.app.session.appClient.state != .connected }
+        app.overrides.networkSwitch.performClick(nil)
+        await assertEventually("switch back on") { self.app.overrides.networkSwitch.state == .on }
+        XCTAssertEqual(beeps, 1)
+        XCTAssertTrue(wc.store.logEntries.contains { $0.level == .error })
+        XCTAssertTrue(wc.footer.overrideBadge.isHidden)
+    }
+
+    func testWithNoWorkspaceTheSwitchIsDisabledAndTheNoteSaysSo() async throws {
+        app.showOverrideControls()
+        XCTAssertFalse(app.overrides.networkSwitch.isEnabled)
+        XCTAssertEqual(app.overrides.note.stringValue, loc("overrides.noWorkspace"))
+    }
+
+    /// The panel never takes the keys, so GO still works with it up and nothing in it can steal them.
+    func testThePanelNeverBecomesKeyAndGoStillWorks() async throws {
+        let wc = try await openNetworkShow("Demo")
+        keyDoc = app.windows.first { $0.value === wc }?.key
+        await statusArrives(wc)
+        app.showOverrideControls()
+        let panel = try XCTUnwrap(app.overrides.panel)
+        XCTAssertFalse(panel.canBecomeKey)
+        XCTAssertFalse(panel.canBecomeMain)
+        XCTAssertFalse(app.overrides.note.isSelectable)
+        panel.makeKeyAndOrderFront(nil)
+        XCTAssertFalse(panel.isKeyWindow)
+        XCTAssertNil(app.handleKeyDown(try space()))
+        await assertEventually("GO started the follow") {
+            try? await self.real.advance(seconds: 0.1)
+            return wc.store.cueStates[self.intro]?.state == .running
+        }
     }
 
     func testACueRunWhileOverriddenSendsNothing() async throws {

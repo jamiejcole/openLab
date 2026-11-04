@@ -87,7 +87,7 @@ final class FooterBar: NSView {
     /// "12 cues in 2 lists", from the model (QLab's footer centre).
     let countLabel = NSTextField(labelWithString: "")
     private var lastXruns: UInt64?
-    private var popover: NSPopover?
+    private(set) var popover: NSPopover?
     let clock = WallClockLabel()
     let settingsButton = NSButton()
     private(set) var toggles: [LayoutArea: NSButton] = [:]
@@ -233,12 +233,6 @@ final class FooterBar: NSView {
         statusButton.font = .systemFont(ofSize: 12, weight: p.level == .normal ? .regular : .semibold)
         statusButton.setAccessibilityLabel(p.summary)
         statusButton.toolTip = loc("status.tooltip")
-    }
-
-    /// The text the details popover shows now (nil: it is not open).
-    var detailsText: String? {
-        guard popover?.isShown == true else { return nil }
-        return popover?.contentViewController?.view.subviews.compactMap { ($0 as? NSTextField)?.stringValue }.first
     }
 
     @objc func showStatusDetails() {
