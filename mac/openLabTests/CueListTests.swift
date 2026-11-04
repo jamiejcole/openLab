@@ -860,6 +860,11 @@ final class CueListTests: XCTestCase {
     func testClickingBackWithinARoundTripEndsOnThatCue() async throws {
         let h = try await live()
         h.vc.sub = nil
+        let echoes = Counter()
+        let counting = h.store.changes.sink { change in
+            if case .runtime(_, let heads) = change, !heads.isEmpty { MainActor.assumeIsolated { echoes.count += 1 } }
+        }
+        defer { counting.cancel() }
         h.rig.wire.holdResults = true
         h.vc.selectAsUser([H.fade])
         await assertEventually { self.playhead(h) == H.fade }
@@ -868,6 +873,8 @@ final class CueListTests: XCTestCase {
         h.vc.handle(.runtime(cues: [], playheads: [ModelID(H.list)]))
         h.vc.selectAsUser([H.fade])
         await assertEventually("all three went out") { self.sentPlayheads(h).count == 3 }
+        // The engine's order: each echo comes before its answer.
+        await assertEventually("all three echoed") { echoes.count == 3 }
         h.rig.wire.holdResults = false
         h.rig.wire.releaseResults()
         await assertEventually { self.playhead(h) == H.fade }
