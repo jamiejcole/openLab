@@ -1800,13 +1800,11 @@ final class PlayheadFlowTests: XCTestCase {
         wire.forgetSent()
         let popup = wc.inspector.continuePopup
         let menu = try XCTUnwrap(popup.menu)
-        await whileOpen(
-            menu, in: popup,
-            chosen: {
-                popup.selectItem(at: 1)
-                XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
-            }
-        ) { [self] in
+        let choose: @MainActor @Sendable () -> Void = {
+            popup.selectItem(at: 1)
+            XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
+        }
+        await whileOpen(menu, in: popup, chosen: choose) { [self] in
             try await moveElsewhere(to: cues[2])
             await assertHeldOnFirstCue(playheadOn: cues[2])
         }
