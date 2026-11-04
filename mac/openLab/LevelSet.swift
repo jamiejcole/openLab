@@ -37,9 +37,10 @@ enum LevelText {
         return clamp(signed || v == 0 ? v : -v, limits: limits)
     }
 
-    /// Held to what the engine accepts: at most +12, and at or below the floor means silent.
+    /// Held to what the engine accepts: at most the maximum, and at or below the minimum means silent,
+    /// as does anything at or below our silence when the minimum is lower still.
     static func clamp(_ db: Double, limits: VolumeLimits = VolumeLimits()) -> Double {
-        if db.isNaN || db <= limits.min { return silence }
+        if db.isNaN || db <= Swift.max(limits.min, silence) { return silence }
         return min(db, limits.max)
     }
 }
@@ -172,15 +173,15 @@ struct LevelSet: Equatable {
 
     /// Sets a level. A cue output in a gang moves its whole gang by the same amount, each member
     /// held to the limits on its own (QLab, manual p. 181).
-    mutating func set(_ slot: Slot, db: Double, drag: Bool = false) {
-        let db = LevelText.clamp(db)
+    mutating func set(_ slot: Slot, db: Double, drag: Bool = false, limits: VolumeLimits = VolumeLimits()) {
+        let db = LevelText.clamp(db, limits: limits)
         switch slot {
         case .master: master = db
         case .output(let o):
             guard o >= 0, o < Self.maxChannels else { return }
-            // Levels move on the fader's travel, where -inf is the bottom (-60 dB): a member at -inf
-            // is at the floor, not 60 dB below it, so the delta is what the control moved.
-            func travel(_ x: Double) -> Double { max(x, LevelText.floorDb) }
+            // Levels move on the fader's travel, where -inf is the bottom (the minimum limit): a member
+            // at -inf is at the floor, not far below it, so the delta is what the control moved.
+            func travel(_ x: Double) -> Double { max(x, limits.min) }
             let old = travel(self.db(slot) ?? db)
             padOutputs(to: o + 1)
             if !isFade, let g = gang(of: o), gangs[g].count > 1 {
@@ -190,7 +191,7 @@ struct LevelSet: Equatable {
                     var moved = travel(was) + delta
                     // A drag never takes a member past 0 dB (a member already above stays where it is).
                     if drag { moved = min(moved, max(0, was)) }
-                    outputs[m].db = LevelText.clamp(moved)
+                    outputs[m].db = LevelText.clamp(moved, limits: limits)
                 }
             }
             outputs[o].db = db

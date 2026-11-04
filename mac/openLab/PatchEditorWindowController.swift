@@ -20,12 +20,18 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     private(set) var outputFaders: [LevelFader] = []
     private(set) var outputFields: [NSTextField] = []
     let doneButton = NSButton(title: loc("patchEditor.done"), target: nil, action: nil)
+    /// Why the last level edit did not take.
+    let messageLabel = NSTextField(wrappingLabelWithString: "")
     private let columns = NSStackView()
     private var subs: [AnyCancellable] = []
     /// The field whose text was typed and not yet committed: a model update leaves it alone.
     private var typedField: NSTextField?
     /// A fader drag in progress: the edit belongs to one undo step and the model waits for its end.
     private var dragging = false
+    /// Each drag's own undo step: its edits coalesce with each other and no other drag's.
+    private var gesture = 0
+    /// A coalesce key lives as long as the engine's history, which outlives the app.
+    private static let launchToken = UUID().uuidString
 
     private struct Drawn: Equatable {
         var limits: VolumeLimits
@@ -53,7 +59,12 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    func present() { showWindow(nil) }
+    /// Opens with no field focused: AppKit would put the caret in the first box, where the next Space
+    /// (the GO key, in the hands of an operator mid-show) would replace the level.
+    func present() {
+        showWindow(nil)
+        window?.makeFirstResponder(nil)
+    }
 
     // MARK: Building
 
@@ -84,7 +95,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         doneButton.action = #selector(doneClicked)
         let bottom = NSStackView(views: [doneButton])
         bottom.alignment = .trailing
-        let root = NSStackView(views: [titleLabel, tabs, bottom])
+        messageLabel.textColor = .systemRed
+        let root = NSStackView(views: [titleLabel, tabs, messageLabel, bottom])
         root.orientation = .vertical
         root.alignment = .width
         root.spacing = 10
@@ -103,7 +115,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         fader.heightAnchor.constraint(equalToConstant: 150).isActive = true
         fader.target = self
         fader.action = #selector(faderMoved(_:))
-        fader.onGestureBegin = { [weak self] in self?.dragging = true }
+        fader.onGestureBegin = { [weak self] in
+            self?.dragging = true
+            self?.gesture += 1
+        }
         fader.onGestureEnd = { [weak self] in
             self?.dragging = false
             self?.render()
@@ -132,12 +147,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         )
     }
 
-    private var limits: VolumeLimits {
-        let settings = store.model?.settings
-        return VolumeLimits(
-            max: settings?["output_max_db"]?.doubleValue ?? VolumeLimits().max,
-            min: settings?["output_min_db"]?.doubleValue ?? VolumeLimits().min)
-    }
+    private var limits: VolumeLimits { store.volumeLimits }
 
     /// Redraws every control from the model, except a field being typed in or a fader being dragged.
     func render() {
@@ -195,17 +205,20 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     private func send(_ db: Double, tag: Int, coalesce: String?) {
         let command = Command.setPatchLevel(patchID, output: tag == 0 ? nil : tag - 1, db: db)
         Task {
-            _ = await store.send(command: command, coalesce: coalesce)
+            switch await store.send(command: command, coalesce: coalesce) {
+            case .success: messageLabel.stringValue = ""
+            case .failure(let error):
+                messageLabel.stringValue = String(format: loc("patchEditor.refused"), error.detailText)
+            }
             drawn = nil
             render()
         }
     }
 
     @objc private func faderMoved(_ sender: LevelFader) {
-        let v = sender.doubleValue
-        let lim = limits
-        let db = v <= lim.min ? LevelText.silence : (v * 10).rounded() / 10
-        send(db, tag: sender.tag, coalesce: "patch-fader:\(patchID.raw):\(sender.tag)")
+        let db = LevelText.clamp((sender.doubleValue * 10).rounded() / 10, limits: limits)
+        let key = dragging ? "patch-fader:\(patchID.raw):\(Self.launchToken):\(gesture):\(sender.tag)" : nil
+        send(db, tag: sender.tag, coalesce: key)
         // The field follows the fader as it moves; the model confirms it.
         (sender.tag == 0 ? mainField : outputFields[sender.tag - 1]).stringValue = LevelText.format(db)
     }
@@ -224,6 +237,13 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         let typed = typedField
         typedField = nil
         guard let field = obj.object as? NSTextField, field === typed else {
+            drawn = nil
+            render()
+            return
+        }
+        // Blank is no change: Space in a box clears its text (QLab's -inf is for text that is not a
+        // number, manual p. 200; docs/todo/open-qlab-questions.md row 103).
+        if field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             drawn = nil
             render()
             return

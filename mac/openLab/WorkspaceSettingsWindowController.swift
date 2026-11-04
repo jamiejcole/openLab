@@ -406,6 +406,12 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
 
     @objc private func doneClicked() { window?.close() }
 
+    /// Goes with the workspace (and takes its patch editor along, which otherwise outlives them both).
+    override func close() {
+        patchEditor?.close()
+        super.close()
+    }
+
     /// A number field was committed (Return or leaving the field): sent when valid, else the
     /// engine's value comes back.
     func controlTextDidEndEditing(_ notification: Notification) {

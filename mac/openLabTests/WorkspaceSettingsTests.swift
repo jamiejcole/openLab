@@ -557,6 +557,122 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(Double(level), 3000.0 / 32768, accuracy: 0.003)
     }
 
+    // MARK: The patch editor during a show
+
+    /// A real key press, as the window receives it.
+    private func press(_ chars: String, keyCode: UInt16, in window: NSWindow) throws {
+        window.sendEvent(
+            try XCTUnwrap(
+                NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, characters: chars,
+                    charactersIgnoringModifiers: chars, isARepeat: false, keyCode: keyCode)))
+    }
+
+    func testOpeningThePatchEditorFocusesNoFieldAndSpaceEditsNoLevel() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        let window = try XCTUnwrap(editor.window)
+        window.makeKeyAndOrderFront(nil)
+        editor.present()
+        XCTAssertNil(editor.mainField.currentEditor(), "no caret in the main box")
+        XCTAssertFalse(window.firstResponder is NSText, "\(String(describing: window.firstResponder))")
+        // The GO habit, with nothing focused.
+        try press(" ", keyCode: 49, in: window)
+        window.makeFirstResponder(nil)
+        await settle()
+        XCTAssertEqual(editor.mainField.stringValue, "0.0")
+        XCTAssertEqual(patchLevels(rig).main, 0, "the patch is not silenced")
+        let sounding = try await peak(rig, channel: 0)
+        XCTAssertGreaterThan(sounding, 0.05, "and still sounds")
+    }
+
+    func testSpaceInAFocusedLevelBoxLeavesTheLevelAlone() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        let window = try XCTUnwrap(editor.window)
+        window.makeKeyAndOrderFront(nil)
+        // Clicked into, then Space: the text is replaced with a blank, and leaving it is no change.
+        window.makeFirstResponder(editor.mainField)
+        editor.mainField.currentEditor()?.selectAll(nil)
+        try press(" ", keyCode: 49, in: window)
+        XCTAssertEqual(editor.mainField.currentEditor()?.string, " ", "the key reached the field")
+        let sent = commands(rig).count
+        window.makeFirstResponder(nil)
+        await assertEventually { editor.mainField.stringValue == "0.0" }
+        XCTAssertEqual(commands(rig).count, sent, "a blank sends nothing")
+        XCTAssertEqual(patchLevels(rig).main, 0)
+        // Text that is not a number is still -inf (QLab 5 manual p. 200).
+        try type("x", into: editor.mainField)
+        await assertEventually { self.patchLevels(rig).main == -120 }
+        await assertEventually { editor.mainField.stringValue == "-inf" }
+    }
+
+    func testALevelTypedBetweenALowMinimumAndSilenceIsSilent() async throws {
+        let (rig, sc, editor) = try await playing(sounding())
+        try type("-180", into: sc.minLimitField)
+        await assertEventually { sc.model.limits.min == -180 }
+        try type("-150", into: editor.mainField)
+        await assertEventually { self.patchLevels(rig).main == -120 }
+        await assertEventually { editor.mainField.stringValue == "-inf" }
+        XCTAssertEqual(LevelText.clamp(-150, limits: sc.model.limits), LevelText.silence)
+        // A level above silence is a level, however low the minimum.
+        try type("-100", into: editor.mainField)
+        await assertEventually { self.patchLevels(rig).main == -100 }
+    }
+
+    /// Each drag of a fader is its own undo step.
+    func testEachDragOfAPatchFaderIsItsOwnUndoStep() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        func drag(to values: [Double]) async {
+            editor.mainFader.onGestureBegin?()
+            for v in values {
+                editor.mainFader.doubleValue = v
+                _ = editor.mainFader.target?.perform(editor.mainFader.action, with: editor.mainFader)
+            }
+            await assertEventually { self.patchLevels(rig).main == values.last }
+            editor.mainFader.onGestureEnd?()
+        }
+        await drag(to: [-1, -2, -3])
+        await drag(to: [-7, -8])
+        guard case .success = await rig.store.undo() else { return XCTFail("undo") }
+        await assertEventually { self.patchLevels(rig).main == -3 }
+        XCTAssertEqual(editor.mainField.stringValue, "-3.0")
+        guard case .success = await rig.store.undo() else { return XCTFail("undo") }
+        await assertEventually { self.patchLevels(rig).main == 0 }
+    }
+
+    /// An edit that does not take says so; the old level stays on show.
+    func testALevelTheEngineDoesNotTakeSaysSoAndTheOldOneStays() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        XCTAssertEqual(editor.messageLabel.stringValue, "")
+        rig.client.stop()
+        try type("-12", into: editor.mainField)
+        await assertEventually { !editor.messageLabel.stringValue.isEmpty }
+        XCTAssertTrue(
+            editor.messageLabel.stringValue.contains(loc("error.detail.notConnected")),
+            editor.messageLabel.stringValue)
+        XCTAssertEqual(editor.mainField.stringValue, "0.0")
+    }
+
+    func testThePatchEditorClosesWithItsWorkspace() async throws {
+        let rig = try await Rig.open("Demo", on: engine)
+        let wc = WorkspaceWindowController(store: rig.store)
+        await wc.showSettings().value
+        wc.settingsWindow.patchEditButton.performClick(nil)
+        let editor = try XCTUnwrap(wc.settingsWindow.patchEditor)
+        XCTAssertTrue(editor.window?.isVisible == true)
+        wc.window?.close()
+        XCTAssertFalse(editor.window?.isVisible == true, "no dead window left behind")
+        XCTAssertFalse(wc.settingsWindow.window?.isVisible == true)
+    }
+
+    func testClosingTheSettingsControllerClosesThePatchEditor() async throws {
+        let (_, sc) = try await open()
+        sc.patchEditButton.performClick(nil)
+        let editor = try XCTUnwrap(sc.patchEditor)
+        sc.close()
+        XCTAssertFalse(editor.window?.isVisible == true)
+    }
+
     func testWithoutAnEngineNothingCanBeChanged() async throws {
         let rig = try Rig.offline()
         let sc = WorkspaceSettingsWindowController(store: rig.store)  // never connected

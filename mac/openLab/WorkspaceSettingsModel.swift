@@ -207,12 +207,7 @@ final class WorkspaceSettingsModel: ObservableObject {
     // MARK: Volume limits (PB-11)
 
     /// The workspace's volume limits, as the engine has them.
-    var limits: VolumeLimits {
-        let settings = store.model?.settings
-        return VolumeLimits(
-            max: settings?["output_max_db"]?.doubleValue ?? VolumeLimits().max,
-            min: settings?["output_min_db"]?.doubleValue ?? VolumeLimits().min)
-    }
+    var limits: VolumeLimits { store.volumeLimits }
 
     /// Sets the maximum volume limit (-30 to +12 dB) from typed text. False, with a message, when it
     /// is not a number in range: the engine's value stays. The engine puts every level above the new
@@ -253,8 +248,13 @@ final class WorkspaceSettingsModel: ObservableObject {
         }
     }
 
-    private func describe(_ e: EngineError) -> String {
-        switch e {
+    private func describe(_ e: EngineError) -> String { e.detailText }
+}
+
+extension EngineError {
+    /// The error in words, for a window that shows why an edit did not take.
+    var detailText: String {
+        switch self {
         case .notConnected, .disconnected: return loc("error.detail.notConnected")
         case .engine(_, let text) where !text.isEmpty: return text
         case .timeout: return loc("error.detail.timeout")

@@ -335,6 +335,7 @@
 "patchEditor.main" = "Main";
 "patchEditor.output" = "%ld";
 "patchEditor.done" = "Done";
+"patchEditor.refused" = "Level not changed: %@";
 
 "menu.help" = "Help";
 "menu.help.openLabHelp" = "openLab Help";
