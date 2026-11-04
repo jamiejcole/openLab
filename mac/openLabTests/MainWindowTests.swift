@@ -189,12 +189,14 @@ final class MainWindowTests: XCTestCase {
         let cue = try XCTUnwrap(rig.store.model?.cue(TestSnapshots.intro))
         XCTAssertEqual(
             wc.masthead.standbyField.stringValue,
-            [cue.number, cue.listName].compactMap { $0 }.joined(separator: " \u{00B7} "))
+            [cue.number, rig.store.model?.listName(cue)].compactMap { $0 }.joined(separator: " \u{00B7} "))
         XCTAssertTrue(wc.masthead.notesView.isEditable)
         // An unnumbered, unnamed cue: its name alone, from its kind.
         try await standBy(rig, TestSnapshots.fade)
         XCTAssertEqual(wc.masthead.cueID, TestSnapshots.fade)
-        XCTAssertEqual(wc.masthead.standbyField.stringValue, "Fade")
+        XCTAssertEqual(
+            wc.masthead.standbyField.stringValue, "Fade and stop Intro",
+            "an unnamed Fade is named after the cue it fades")
     }
 
     func testMastheadNotesEditSendsTheInspectorNotesCommand() async throws {
@@ -291,11 +293,11 @@ final class MainWindowTests: XCTestCase {
 
     func testNotesForADeletedCueReportInsteadOfVanishing() async throws {
         let (wc, _) = try await demoController()
-        var notices: [String] = []
-        wc.editor.notify = { notices.append($0) }
-        let saved = await wc.editor.setNotes(of: "00000000-0000-0000-0000-0000000000ff", text: "x")
-        XCTAssertFalse(saved)
-        XCTAssertEqual(notices, [loc("masthead.notes.cueGone")])
+        var notices: [NotesNotice] = []
+        wc.editor.notesNotSaved = { notices.append($0) }
+        let outcome = await wc.editor.setNotes(of: "00000000-0000-0000-0000-0000000000ff", text: "x")
+        XCTAssertEqual(outcome, .notSaved)
+        XCTAssertEqual(notices, [NotesNotice(message: loc("notes.notSaved.cueGone"), text: "x")])
     }
 
     func testEscapeInMastheadNotesCommitsAndReturnsFocus() async throws {

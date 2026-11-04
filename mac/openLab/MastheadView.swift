@@ -126,12 +126,13 @@ final class MastheadView: NSView, NSTextViewDelegate {
     /// Shows `cue` as standing by. While notes are being typed for another cue the masthead keeps
     /// showing that cue, the text and the focus: a Space typed next must go into the text, not fire
     /// GO. The new standby cue is shown once typing ends.
-    func show(standby cue: Cue?) {
+    func show(standby cue: Cue?, name: String? = nil) {
         if let editing = editingID, editing != cue?.id { return }
         let changed = cueID != cue?.id
         cueID = cue?.id
         if let cue {
-            standbyField.stringValue = [cue.number, cue.listName].compactMap { $0 }.filter { !$0.isEmpty }
+            standbyField.stringValue = [cue.number, name ?? CueKindStyle.kindLabel(cue.kindType)].compactMap { $0 }
+                .filter { !$0.isEmpty }
                 .joined(separator: " \u{00B7} ")
         } else {
             standbyField.stringValue = loc("masthead.standby.none")
@@ -174,8 +175,14 @@ final class MastheadView: NSView, NSTextViewDelegate {
         return (id, notesView.string)
     }
 
-    /// The text handed over was refused or not delivered: the next command must send it again.
-    func notesNotSaved() { handedOver = nil }
+    /// The text handed over was refused or could not be sent, and the operator has the notice with
+    /// Copy Text: the typing ends and the field shows what the cue holds, as the inspector's does.
+    func endTypingAfterRefusal() {
+        editingID = nil
+        handedOver = nil
+        if window?.firstResponder === notesView { window?.makeFirstResponder(nil) }
+        onEditingEnded?()
+    }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }

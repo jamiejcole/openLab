@@ -155,13 +155,18 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         editor.isLocked = { [weak self] in self?.isShowMode ?? true }
         editor.commitPending = { [weak self] in await self?.commitPendingEdits() ?? true }
         editor.notify = { [weak self] message in self?.showNotice(message) }
+        inspector.onNotesNotSaved = { [weak self] id, text, error in
+            self?.editor.reportNotesNotSaved(of: id, text: text, error)
+        }
+        editor.notesNotSaved = { [weak self] notice in self?.showNotesNotice(notice) }
         editor.trackPending = { [weak inspector] command, cue in inspector?.trackPending(command, cue: cue) ?? {} }
         cueList.onMove = { [weak self] ids, parent, index in
             Task { await self?.editor.move(ids, to: parent, at: index) }
         }
-        cueList.onEditDuration = { [weak self] id, text in
-            Task { await self?.editor.setDuration(of: id, text: text) }
+        cueList.onEditCell = { [weak self] id, column, text in
+            Task { await self?.editor.setCell(column, of: id, text: text) }
         }
+        cueList.onEditedCueGone = { [weak self] in self?.showNotice(loc("cuelist.edit.cueGone")) }
         cueList.onFileDrop = { [weak self] drop, skipped in
             Task {
                 switch drop {
@@ -291,6 +296,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// in the inspector, like Save and Close; if that is invalid or refused the window stays in
     /// Edit Mode with the field's message showing, so it never locks over unsaved text.
     func requestShowMode(_ on: Bool) async {
+        enteringShowMode = on
+        defer { enteringShowMode = false }
         if on, !isShowMode, await !commitPendingEdits() {
             NSSound.beep()
             footer.setShowMode(false)
@@ -340,6 +347,24 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func quietNotice(_ message: String, error: Bool) {
         _ = store.receive(.log(error ? .error : .warn, message))
         footer.showNotice(message, error: error)
+    }
+
+    /// Where Copy Text puts the typed notes.
+    var notesPasteboard = NSPasteboard.general
+    /// Show Mode was asked for: its commit raises nothing, as Show Mode itself does not.
+    private var enteringShowMode = false
+
+    /// Notes that were not saved: a small panel with Copy Text that blocks and waits for nothing. In
+    /// Show Mode, and while it is being entered, nothing is raised (NFR-10): the show log carries the
+    /// message and the text, the footer the message.
+    func showNotesNotice(_ notice: NotesNotice) {
+        if isShowMode || enteringShowMode {
+            let kept = notice.text.count > 4000 ? String(notice.text.prefix(4000)) + "\u{2026}" : notice.text
+            _ = store.receive(.log(.error, "\(notice.message) \(kept)"))
+            footer.showNotice(notice.message, error: true)
+            return
+        }
+        NotesNoticePanel.show(notice, near: window, pasteboard: notesPasteboard)
     }
 
     /// Why an edit was refused: a sheet on this window (beep when it has none).
@@ -458,7 +483,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// The shown list's playhead cue, with its notes.
     func syncMasthead() {
         let id = cueList.listID.flatMap { store.playheads[$0] }
-        masthead.show(standby: id.flatMap { store.model?.cue($0) })
+        let cue = id.flatMap { store.model?.cue($0) }
+        masthead.show(standby: cue, name: cue.flatMap { store.model?.listName($0) })
     }
 
     /// The cue list has applied a change: the syncs that read its shown list and tree run now.
@@ -490,15 +516,20 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Commits what is typed in the inspector. False: it was invalid or refused, so the caller
     /// (Save, Close, Quit) must stop.
-    /// Commits what is typed in the inspector and in the cue list's Duration cell and the masthead notes, and waits for the
+    /// Commits what is typed in the inspector and in the cue list's cell being edited and the masthead notes, and waits for the
     /// engine's answers; false when an edit was invalid or refused (Save, Close, Quit stop).
     func commitPendingEdits() async -> Bool {
         endLostGesture()
         var ok = true
-        if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
+        if let edit = cueList.takeCellEdit() { ok = await editor.setCell(edit.column, of: edit.id, text: edit.text) }
         if let notes = masthead.pendingNotes() {
-            if await !editor.setNotes(of: notes.id, text: notes.text) {
-                masthead.notesNotSaved()
+            // Refused notes raise their notice there and are not held: Close and Save go on. An
+            // edit that never started (another typed edit is invalid) stops them.
+            switch await editor.setNotes(of: notes.id, text: notes.text) {
+            case .saved: break
+            case .notSaved: masthead.endTypingAfterRefusal()
+            case .blocked:
+                masthead.endTypingAfterRefusal()
                 ok = false
             }
         }

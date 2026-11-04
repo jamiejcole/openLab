@@ -77,18 +77,20 @@ enum KeyBindError: Error, Equatable {
     case menuKey
     /// The key has no show-file name (Delete, media keys, ...).
     case unsupported
+    /// N and Q edit the highlighted cue's number and name (QLab refuses a key that has a function).
+    case editKey
 }
 
 /// The transport keys of one workspace, read from its `settings.hotkeys` (QLab keeps them per
 /// workspace). How each model field maps:
-/// - `go`, `pause_all`, `resume_all`: bound as given. Absent: the QLab default (Space, `[`, `]`);
-///   `null`: no key.
+/// - `go`, `pause_all`, `resume_all` and the selected-cue keys `load_selected`, `pause_resume_selected`,
+///   `start_selected`, `stop_selected`, `reset_selected`: bound as given, the engine's own map. Absent:
+///   the default (Space, `[`, `]`, `l`, `p`, none, none, none); `null`: no key.
 /// - `stop_all`: Esc is the fixed app-wide panic, so it binds nothing; any other key binds Stop All.
 /// - There are no Next / Previous Cue keys (format v6): QLab's key map has none and takes no Up or
 ///   Down arrow; the arrows and the fixed Select Next / Select Previous items move the selection.
-/// - The model has no fields for the selected-cue keys: Load Selected `L`, Pause/Resume
-///   Selected `P`, Preview Selected `V` and Panic Selected `S` (QLab's keys) are fixed app
-///   defaults, dropped if a show's key already uses the chord.
+/// - The model has no fields for Preview Selected `V` and Panic Selected `S` (QLab's keys): they are
+///   fixed app defaults, dropped if a show's key or a cue hotkey already uses the chord.
 /// - Reset All has no key (QLab has none); it is the sidebar button and the Transport menu item.
 ///
 /// Conflict precedence: (1) Esc is always panic, even while typing, and cannot be bound; (2) a
@@ -101,18 +103,26 @@ struct TransportKeys: Equatable {
     private(set) var chords: [TransportCommand: KeyChord] = [:]
     private(set) var warnings: [String] = []
 
+    /// QLab 5's edit-number and edit-name keys, by default: key to the cue-list column they open.
+    /// Fixed like the selected-cue keys, but a cue hotkey cannot take them (`HotkeyRules`).
+    static let editKeys: [KeyChord: String] = [KeyChord("n"): "number", KeyChord("q"): "name"]
+
+    /// The two selected-cue keys the model has no field for (QLab remaps both; that needs a show-file
+    /// change): app defaults the engine knows nothing of, so a cue hotkey on one starts its cue in the
+    /// engine and the app yields the key (`init`).
     static let fixed: [(TransportCommand, KeyChord)] = [
-        (.pauseResumeSelected, KeyChord("p")), (.loadSelected, KeyChord("l")), (.previewSelected, KeyChord("v")),
-        (.panicSelected, KeyChord("s")),
+        (.previewSelected, KeyChord("v")), (.panicSelected, KeyChord("s")),
     ]
 
     private static let fields: [(String, TransportCommand, KeyChord?)] = [
         ("go", .go, KeyChord(" ")), ("stop_all", .stopAll, nil), ("pause_all", .pauseAll, KeyChord("[")),
-        ("resume_all", .resumeAll, KeyChord("]")),
+        ("resume_all", .resumeAll, KeyChord("]")), ("load_selected", .loadSelected, KeyChord("l")),
+        ("pause_resume_selected", .pauseResumeSelected, KeyChord("p")), ("start_selected", .startSelected, nil),
+        ("stop_selected", .stopSelected, nil), ("reset_selected", .resetSelected, nil),
     ]
 
     /// `settings` is the workspace's `settings` object (nil or without `hotkeys`: all defaults).
-    /// `cueChords` are the cue hotkeys of the workspace: a fixed default (L, P, V, S) that one of them
+    /// `cueChords` are the cue hotkeys of the workspace: a fixed default (V, S) that one of them
     /// uses yields to it, so an app default never silently takes a show's key.
     init(settings: JSONValue?, cueChords: Set<KeyChord> = []) {
         let hotkeys = settings?["hotkeys"]
@@ -182,6 +192,7 @@ struct TransportKeys: Equatable {
         case .cueHotkey: return loc("hotkeys.reason.cueHotkey")
         case .menuKey: return loc("hotkeys.reason.menuKey")
         case .unsupported: return loc("hotkeys.reason.unsupported")
+        case .editKey: return loc("hotkeys.reason.editKey")
         }
     }
 }

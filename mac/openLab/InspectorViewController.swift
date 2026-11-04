@@ -524,6 +524,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// any other change of cue clears it.
     private var refusalOutlivesFollow = false
 
+    /// Notes that were refused or not delivered (cue, typed text, why); the window raises the notice.
+    var onNotesNotSaved: ((ModelID, String, EngineError) -> Void)?
+    /// The cue the notes being typed are for, kept from the first keystroke: the cue can be deleted
+    /// before typing ends, and the text must still be offered.
+    private var notesTypedFor: ModelID?
+
     func showRefusal(_ message: String) {
         messageLabel.stringValue = message
         refusalOutlivesFollow = isFollowHeld?() == true
@@ -547,6 +553,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         if !(byFollow && refusalOutlivesFollow) { messageLabel.stringValue = "" }
         refusalOutlivesFollow = false
         dirty = []
+        notesTypedFor = nil
         render(force: Set(InspectorField.allCases))
         keepKeyTarget()
     }
@@ -585,8 +592,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             }
         }
         let kind = cue.kindType
-        // An unnamed cue with no file shows its kind as a hint; otherwise the field holds the shown name.
-        nameField.placeholderString = CueKindStyle.kindLabel(kind)
+        // An unnamed cue shows the name it defaults to as a hint (the field stays empty: nothing is stored),
+        // its kind when it has none; an Audio cue's file name is the field's text.
+        let followed = store.model.map { m in cue.targetDefaultName(lookup: { m.cue($0) }) } ?? ""
+        nameField.placeholderString = followed.isEmpty ? CueKindStyle.kindLabel(kind) : followed
         let style = CueKindStyle.kinds[kind]
         kindIcon.image = style.map { $0.icon.image(CueKindStyle.kindLabel(kind), compact: true) }
         let isTarget = InspectorEdit.targetKinds.contains(kind)
@@ -681,8 +690,18 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// Sends the edit for `f` if the text changed; rejects bad input by putting the model's text back.
     @discardableResult
     func commit(_ f: InspectorField) -> Bool {
+        let wasDirty = dirty.contains(f)
         dirty.remove(f)
-        guard !isLocked, let cue = cueForEdit, let model = store.model else { return true }
+        let typedFor = f == .notes ? notesTypedFor : nil
+        if f == .notes { notesTypedFor = nil }
+        guard !isLocked, let cue = cueForEdit, let model = store.model else {
+            // The cue went while its notes were typed: the text is offered, not dropped.
+            if wasDirty, !isLocked, let typedFor {
+                let text = notesView.string
+                onNotesNotSaved?(typedFor, text, .notConnected)
+            }
+            return true
+        }
         let text = f == .notes ? notesView.string : (field(f)?.stringValue ?? "")
         switch InspectorEdit.command(f, text: text, cue: cue, model: model) {
         case .failure(let r):
@@ -719,6 +738,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// end-of-editing that follows finds the text unchanged.
     func cancel(_ f: InspectorField) {
         dirty.remove(f)
+        if f == .notes { notesTypedFor = nil }
         render(force: [f])
     }
 
@@ -756,6 +776,14 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 if selection == [cue] { render() }
             }
             if case .failure(let error) = outcome {
+                if key == "\(InspectorField.notes)", let text = property?["value"]?.stringValue {
+                    // The notice carries the text (Copy Text); the field shows what the cue holds, and
+                    // Close and Save go on.
+                    onNotesNotSaved?(cue, text, error)
+                    guard selection == [cue], editSeq[seqKey] == n else { return }
+                    render(force: revert.subtracting(dirty))
+                    return
+                }
                 sendFailures += 1
                 if case .engine(_, let message) = error {
                     showRefusal(String(format: loc("inspector.refused"), message))
@@ -826,7 +854,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         if let f = inspectorField(of: obj.object) { dirty.insert(f) }
     }
 
-    func textDidChange(_ notification: Notification) { dirty.insert(.notes) }
+    func textDidChange(_ notification: Notification) {
+        dirty.insert(.notes)
+        if notesTypedFor == nil { notesTypedFor = cue?.id }
+    }
 
     func textDidEndEditing(_ notification: Notification) { commit(.notes) }
 

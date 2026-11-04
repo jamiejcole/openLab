@@ -222,13 +222,34 @@ final class CueListTests: XCTestCase {
             ["status", "type", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
     }
 
+    /// A default name follows a chain: Fade 4 of Fade 3 of Intro. Renaming Intro redraws row 4 at once
+    /// (read with no click in between, which would repaint it).
+    func testRenamingATargetRedrawsTheDefaultNamesThatFollowItDownTheChain() async throws {
+        let h = try await H()
+        let fade = try XCTUnwrap(h.store.model?.cue(H.fade))
+        var second = fade.raw
+        let fourth: ModelID = "00000000-0000-0000-0000-0000000000f4"
+        second.set("id", .string(fourth.raw))
+        second.set("number", .null)
+        var kind = try XCTUnwrap(second["kind"])
+        kind.set("target", .string(H.fade.raw))
+        second.set("kind", kind)
+        try h.change(upserts: [try H.upsertJSON(second, index: 2)])
+        XCTAssertEqual(h.cell("name", fourth)?.label.stringValue, "Fade and stop Fade and stop Intro")
+        var intro = try XCTUnwrap(h.store.model?.cue(H.intro)).raw
+        intro.set("name", .string("entrance"))
+        try h.change(upserts: [try H.upsertJSON(intro, index: 0)])
+        XCTAssertEqual(h.cell("name", H.fade)?.label.stringValue, "Fade and stop entrance")
+        XCTAssertEqual(h.cell("name", fourth)?.label.stringValue, "Fade and stop Fade and stop entrance")
+    }
+
     func testCellsShowNumberNameTargetAndTimes() async throws {
         let h = try await H()
         XCTAssertEqual(h.cell("number", H.intro)?.label.stringValue, "1")
         XCTAssertEqual(h.cell("name", H.intro)?.label.stringValue, "Intro")
         XCTAssertEqual(h.cell("target", H.intro)?.label.stringValue, "a.wav")
-        // The fade cue has no name and no number: its kind stands in, and it points at cue 1.
-        XCTAssertEqual(h.cell("name", H.fade)?.label.stringValue, "Fade")
+        // The fade cue has no name and no number: its default name follows the cue it fades, and it points at cue 1.
+        XCTAssertEqual(h.cell("name", H.fade)?.label.stringValue, "Fade and stop Intro")
         XCTAssertEqual(h.cell("duration", H.fade)?.label.stringValue, "00:05.00")
         XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "1 Intro")
         // Zero waits show as a dimmed 00:00.00, a non-zero one in the normal colour.
@@ -1349,6 +1370,7 @@ final class PlayheadFlowTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        NotesNoticePanel.closeAll()
         app?.closeAllWindows()
         app = nil
         engine?.stop()
@@ -1356,10 +1378,13 @@ final class PlayheadFlowTests: XCTestCase {
 
     // MARK: Doing what the operator does
 
-    private func key(_ chars: String, code: UInt16, _ flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
+    private func key(
+        _ chars: String, code: UInt16, _ flags: NSEvent.ModifierFlags = [], windowNumber: Int = 0
+    ) throws -> NSEvent {
         try XCTUnwrap(
             NSEvent.keyEvent(
-                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: windowNumber,
+                context: nil,
                 characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code))
     }
 
@@ -1421,7 +1446,7 @@ final class PlayheadFlowTests: XCTestCase {
     private func standbyText(_ id: ModelID?) throws -> String {
         guard let id else { return loc("masthead.standby.none") }
         let cue = try XCTUnwrap(store.model?.cue(id))
-        return [cue.number, cue.listName].compactMap { $0 }.joined(separator: " \u{00B7} ")
+        return [cue.number, store.model?.listName(cue)].compactMap { $0 }.joined(separator: " \u{00B7} ")
     }
 
     /// The highlighted rows, the playhead marker and the standby display are all on `id` (nil:
@@ -1566,6 +1591,420 @@ final class PlayheadFlowTests: XCTestCase {
         try await space()
         await assertEventually { running(cues[2]) }
         try await assertAllOn(nil)
+    }
+
+    // MARK: Selected-cue keys come from the model
+
+    private func hk(_ key: String) -> String { AppControllerTests.hotkey(key) }
+
+    private func isLoaded(_ id: ModelID) -> Bool { status(id, 1) == loc("cue.state.loaded") }
+
+    /// A workspace with Load Selected moved from L to K: K loads the selected cue, L does nothing as
+    /// Load Selected, and a cue with its hotkey on L starts in the app and the engine alike.
+    func testRemappedLoadSelectedKeyLoadsAndTheOldKeyIsFreeForACueHotkey() async throws {
+        try await threeCues()
+        try await store.setHotkeys(#"{"load_selected":\#(hk("k"))}"#)
+        await assertEventually { self.app.frontKeys.chord(for: .loadSelected) == KeyChord("k") }
+        let l = try key("l", code: 37)
+        XCTAssertTrue(app.handleKeyDown(l) === l, "L is no longer a transport key")
+        await sync()
+        await settle()
+        XCTAssertFalse(isLoaded(cues[0]), "L did not load the selected cue")
+        XCTAssertNil(app.handleKeyDown(try key("k", code: 40)), "K is Load Selected")
+        await assertEventually("K loaded the selected cue") { self.isLoaded(self.cues[0]) }
+
+        _ = await store.send(command: .setProperty(cues[1], .triggers(hotkey: KeyChord("l").hotkeyJSON, osc: nil)))
+        await assertEventually { self.store.model?.cueHotkeys.contains { $0.chord == KeyChord("l") } == true }
+        XCTAssertNil(app.handleKeyDown(try key("l", code: 37)), "the cue's hotkey takes L")
+        await sync()
+        try await play(0.1)
+        await assertEventually("the engine started the cue on L") { self.running(self.cues[1]) }
+        XCTAssertFalse(running(cues[0]))
+    }
+
+    /// Cues with their hotkeys on L and P, which the workspace still maps to Load and Pause/Resume
+    /// Selected: the keys do the workspace's job, neither cue runs, and the log says so for both.
+    func testACueHotkeyOnAStillMappedSelectedCueKeyNeverStartsTheCue() async throws {
+        try await threeCues()
+        for (cue, chord) in [(cues[1], "l"), (cues[2], "p")] {
+            _ = await store.send(command: .setProperty(cue, .triggers(hotkey: KeyChord(chord).hotkeyJSON, osc: nil)))
+        }
+        await assertEventually { self.store.model?.cueHotkeys.count == 2 }
+        XCTAssertNil(app.handleKeyDown(try key("l", code: 37)), "L is Load Selected")
+        await assertEventually("L loaded the selected cue") { self.isLoaded(self.cues[0]) }
+        XCTAssertFalse(running(cues[1]))
+        try await space()
+        await assertEventually { running(cues[0]) }
+        click(cues[0])
+        XCTAssertNil(app.handleKeyDown(try key("p", code: 35)), "P is Pause/Resume Selected")
+        await assertEventually("P paused the selected cue") { self.status(self.cues[0], 1) == loc("cue.state.paused") }
+        try await play(0.1)
+        XCTAssertFalse(running(cues[1]))
+        XCTAssertFalse(running(cues[2]))
+        XCTAssertNil(status(cues[2], 1))
+        for chord in ["L", "P"] {
+            let warning = String(format: loc("hotkeys.warn.shadowed"), chord)
+            XCTAssertTrue(
+                store.logEntries.contains { $0.level == .warn && $0.message == warning }, "\(chord): \(warning)")
+        }
+    }
+
+    /// Another client changes the mapping while this workspace is open: the next key press follows
+    /// it, and the Transport menu shows the new key; no reopen.
+    func testAMappingChangedByAnotherClientIsFollowedByTheNextKeyPress() async throws {
+        try await threeCues()
+        let other = Rig(engine: engine, workspace: doc)
+        let connected = await other.connect()
+        XCTAssertTrue(connected)
+        addTeardownBlock { @MainActor in other.client.stop() }
+        try await other.store.setHotkeys(#"{"load_selected":\#(hk("k"))}"#)
+        await assertEventually { self.app.frontKeys.chord(for: .loadSelected) == KeyChord("k") }
+        let menus = MainMenu.make()
+        MainMenu.applyKeys(to: menus.transport, app.frontKeys)
+        let item = try XCTUnwrap(menus.transport.items.first { $0.representedObject as? String == "loadSelected" })
+        XCTAssertEqual(item.keyEquivalent, "k")
+        XCTAssertNil(app.handleKeyDown(try key("k", code: 40)))
+        await assertEventually { self.isLoaded(self.cues[0]) }
+
+        click(cues[1])
+        try await other.store.setHotkeys(#"{"load_selected":\#(hk("j"))}"#)
+        await assertEventually { self.app.frontKeys.chord(for: .loadSelected) == KeyChord("j") }
+        MainMenu.applyKeys(to: menus.transport, app.frontKeys)
+        XCTAssertEqual(item.keyEquivalent, "j")
+        let k = try key("k", code: 40)
+        XCTAssertTrue(app.handleKeyDown(k) === k, "K is free again")
+        XCTAssertNil(app.handleKeyDown(try key("j", code: 38)))
+        await assertEventually("J loaded cue 2") { self.isLoaded(self.cues[1]) }
+        XCTAssertFalse(isLoaded(cues[2]))
+    }
+
+    // MARK: In-place cue number and name (#493)
+
+    private var fade: ModelID = "none"
+
+    /// The issue's workspace: Audio cue 1 named "intro", Audio cue 2, a Fade cue 3 fading cue 1 with its
+    /// default name. Cue 2 is highlighted and the cue list has the focus, as after a click.
+    private func editWorkspace() async throws {
+        wc.cueList.isLeftButtonDown = { false }
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        cues = await wc.editor.addFiles(try tempFiles(["a.wav", "b.wav"]), parent: nil, index: 0)
+        XCTAssertEqual(cues.count, 2)
+        let added = await wc.editor.add(.fade, after: [cues[1]])
+        fade = try XCTUnwrap(added)
+        for (id, number) in zip(cues + [fade], ["1", "2", "3"]) {
+            guard case .success = await store.send(command: .setNumber(id, number)) else { return XCTFail("number") }
+        }
+        guard case .success = await store.send(command: .setProperty(cues[0], .name("intro"))),
+            case .success = await store.send(command: .setProperty(fade, .target(cues[0])))
+        else { return XCTFail("setup") }
+        await sync()
+        await assertEventually("the workspace is shown") {
+            self.cell(self.fade, "name") == "Fade intro" && self.cell(self.cues[0], "name") == "intro"
+        }
+        try await focusList(on: cues[1])
+    }
+
+    private func focusList(on id: ModelID) async throws {
+        click(id)
+        try await assertAllOn(id)
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
+    }
+
+    /// The text the cue list draws in `column` of `id`'s row.
+    private func cell(_ id: ModelID, _ column: String) -> String? {
+        let ov = wc.cueList.outlineView
+        guard let node = wc.cueList.node(id) else { return nil }
+        let row = ov.row(forItem: node)
+        let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
+        guard row >= 0, col >= 0, let cell = ov.view(atColumn: col, row: row, makeIfNecessary: true) as? CueCell
+        else { return nil }
+        return cell.label.stringValue
+    }
+
+    /// A key as the app takes it: the key monitor, then the window's dispatch to the first responder.
+    private func press(_ chars: String, code: UInt16 = 0) throws {
+        let window = try XCTUnwrap(wc.window)
+        let event = try key(chars, code: code, windowNumber: window.windowNumber)
+        if let passed = app.handleKeyDown(event) { window.sendEvent(passed) }
+    }
+
+    private func type(_ text: String) throws {
+        for c in text { try press(String(c), code: c == "." ? 47 : 0) }
+    }
+
+    private func pressReturn() throws { try press("\r", code: 36) }
+
+    /// The words of the sheet the window shows (a refusal or a notice).
+    private func sheetTexts(_ window: NSWindow) -> [String] {
+        func texts(_ view: NSView) -> [String] {
+            ((view as? NSTextField).map { [$0.stringValue] } ?? []) + view.subviews.flatMap(texts)
+        }
+        return window.attachedSheet?.contentView.map(texts) ?? []
+    }
+
+    /// The cell being edited, with its text selected, is what the window is typing into.
+    private func assertEditing(_ id: ModelID, _ column: String, text: String, line: UInt = #line) throws {
+        XCTAssertEqual(wc.cueList.editingCell?.id, id, line: line)
+        XCTAssertEqual(wc.cueList.editingCell?.column, column, line: line)
+        let editor = try XCTUnwrap(wc.window?.firstResponder as? NSTextView, "typing in the cell", line: line)
+        XCTAssertTrue(editor.delegate === wc.cueList.cellEditor, line: line)
+        XCTAssertEqual(editor.string, text, line: line)
+        XCTAssertEqual(
+            editor.selectedRange(), NSRange(location: 0, length: (text as NSString).length), "selected", line: line)
+    }
+
+    private func assertNotEditing(line: UInt = #line) {
+        XCTAssertNil(wc.cueList.editingCell, line: line)
+        XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, "the keys are the list's again", line: line)
+        XCTAssertNil(wc.cueList.cellEditor.superview, line: line)
+    }
+
+    func testNKeyEditsTheNumberWithItsTextSelected() async throws {
+        try await editWorkspace()
+        try press("n", code: 45)
+        try assertEditing(cues[1], "number", text: "2")
+        XCTAssertEqual(goes(), 0)
+        try await assertAllOn(cues[1])
+    }
+
+    func testQKeyEditsTheName() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        try press("q", code: 12)
+        try assertEditing(cues[0], "name", text: "intro")
+        XCTAssertEqual(goes(), 0)
+    }
+
+    func testReturnCommitsANumberTypedInPlace() async throws {
+        try await editWorkspace()
+        try press("n", code: 45)
+        try type("2.5")
+        XCTAssertEqual(wc.cueList.cellEditor.stringValue, "2.5", "typed into the cell")
+        try pressReturn()
+        assertNotEditing()
+        await assertEventually("the cell and the inspector show 2.5") {
+            self.cell(self.cues[1], "number") == "2.5" && self.wc.inspector.numberField.stringValue == "2.5"
+        }
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(goes(), 0, "Return does not fire GO")
+    }
+
+    func testDuplicateNumberIsRefusedAsTheInspectorDoes() async throws {
+        try await editWorkspace()
+        let window = try XCTUnwrap(wc.window)
+        try press("n", code: 45)
+        try type("1")
+        try pressReturn()
+        await assertEventually("the refusal is up") { window.attachedSheet != nil }
+        XCTAssertTrue(sheetTexts(window).contains(loc("inspector.invalid.duplicateNumber")), "\(sheetTexts(window))")
+        window.endSheet(try XCTUnwrap(window.attachedSheet))
+        XCTAssertEqual(cell(cues[1], "number"), "2", "cue 2 keeps its number")
+        XCTAssertEqual(store.model?.cue(cues[1])?.number, "2")
+        XCTAssertEqual(store.model?.cue(cues[0])?.number, "1")
+        XCTAssertNil(wc.cueList.editingCell)
+    }
+
+    func testEscCancelsTheEditWithoutABeep() async throws {
+        try await editWorkspace()
+        let tap = try CancelTap()
+        defer { tap.restore() }
+        try press("n", code: 45)
+        try type("99")
+        try press("\u{1B}", code: 53)
+        assertNotEditing()
+        // The field's editor took Esc (cancelling the edit), so it never ended up at the window, where
+        // an Esc nothing handles would beep.
+        XCTAssertEqual(tap.taken, 0)
+        XCTAssertEqual(cell(cues[1], "number"), "2", "the old number")
+        XCTAssertEqual(store.model?.cue(cues[1])?.number, "2")
+        try await assertAllOn(cues[1])
+    }
+
+    func testNameEditedInPlaceFollowsIntoTheFadesDefaultName() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        try press("q", code: 12)
+        try type("entrance")
+        try pressReturn()
+        await assertEventually("the name and the fade that follows it") {
+            self.cell(self.cues[0], "name") == "entrance" && self.cell(self.fade, "name") == "Fade entrance"
+        }
+        XCTAssertEqual(store.model?.cue(fade)?.name, "", "the fade still has its default name")
+    }
+
+    func testClearingANameRestoresTheDefault() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        try press("q", code: 12)
+        try press("\u{7F}", code: 51)  // Delete: the selected text goes
+        try pressReturn()
+        await assertEventually("the file's name is back, and the fade follows it") {
+            self.cell(self.cues[0], "name") == "a.wav" && self.store.model?.cue(self.cues[0])?.name == ""
+                && self.cell(self.fade, "name") == "Fade a.wav"
+        }
+    }
+
+    func testEditingDoesNotMoveThePlayheadOrFireGo() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        try press("n", code: 45)
+        try type("1.5")
+        try pressReturn()
+        await assertEventually { self.cell(self.cues[0], "number") == "1.5" }
+        try press("q", code: 12)
+        try type("opening")
+        try pressReturn()
+        await assertEventually { self.cell(self.cues[0], "name") == "opening" }
+        try await assertAllOn(cues[0])
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, "1.5 \u{00B7} opening", "standby shows the edit, on cue 1")
+        XCTAssertEqual(goes(), 0)
+        for id in cues { XCTAssertFalse(running(id)) }
+    }
+
+    /// Letters, N and Q included, and Space are text in the cell: nothing fires, nothing re-opens.
+    func testKeysTypedInTheCellAreTextAndFireNothing() async throws {
+        try await editWorkspace()
+        try press("q", code: 12)
+        try press("n", code: 45)
+        try press("q", code: 12)
+        try press(" ", code: 49)
+        XCTAssertEqual(wc.cueList.cellEditor.stringValue, "nq ")
+        XCTAssertEqual(wc.cueList.editingCell?.column, "name", "N did not move the edit to the number")
+        XCTAssertEqual(goes(), 0)
+        try await play(0.1)
+        for id in cues { XCTAssertFalse(running(id)) }
+        try press("\u{1B}", code: 53)
+        assertNotEditing()
+    }
+
+    func testNAndQDoNothingInShowModeOrWithoutOneHighlightedCueOrOffTheList() async throws {
+        try await editWorkspace()
+        let window = try XCTUnwrap(wc.window)
+        wc.setShowMode(true)
+        try press("n", code: 45)
+        try press("q", code: 12)
+        XCTAssertNil(wc.cueList.editingCell, "Show Mode locks editing")
+        XCTAssertFalse(wc.cueList.beginCellEdit(cues[1], column: "name"))
+        wc.setShowMode(false)
+        wc.cueList.selectAsUser([cues[0], cues[1]])
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
+        try press("n", code: 45)
+        XCTAssertNil(wc.cueList.editingCell, "two cues are highlighted")
+        wc.cueList.selectAsUser([cues[1]])
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.nameField))
+        try press("n", code: 45)
+        XCTAssertNil(wc.cueList.editingCell, "the focus is in the inspector")
+    }
+
+    /// A cue whose hotkey is N is started by it, and the key opens no editor.
+    func testACueHotkeyOnNStartsTheCueAndOpensNoEditor() async throws {
+        try await editWorkspace()
+        let hotkey = try XCTUnwrap(KeyChord("n").hotkeyJSON)
+        guard case .success = await store.send(command: .setProperty(cues[0], .triggers(hotkey: hotkey, osc: nil)))
+        else { return XCTFail("hotkey") }
+        await assertEventually { self.store.model?.cueHotkeys.isEmpty == false }
+        try press("n", code: 45)
+        XCTAssertNil(wc.cueList.editingCell)
+        await assertEventually("the hotkey's cue runs") { self.running(self.cues[0]) }
+        try press("q", code: 12)
+        XCTAssertEqual(wc.cueList.editingCell?.column, "name", "Q still edits")
+    }
+
+    /// The playhead moves while the cell is open: the highlight holds, the edit lands on the cue it was
+    /// begun for, and the highlight follows once it ends.
+    func testTheEditLandsOnItsCueWhileThePlayheadMoves() async throws {
+        try await editWorkspace()
+        try press("n", code: 45)
+        try type("7")
+        try await moveElsewhere(to: fade)
+        await assertEventually { self.store.playheads[self.list] == self.fade }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[1]], "held while the cell is open")
+        XCTAssertEqual(wc.cueList.editingCell?.id, cues[1])
+        try pressReturn()
+        await assertEventually { self.store.model?.cue(self.cues[1])?.number == "7" }
+        XCTAssertNotEqual(store.model?.cue(fade)?.number, "7")
+        try await assertAllOn(fade)
+    }
+
+    func testACueDeletedDuringTheEditGivesANoticeAndDropsIt() async throws {
+        try await editWorkspace()
+        let window = try XCTUnwrap(wc.window)
+        try press("n", code: 45)
+        try type("8")
+        guard case .success = await store.send(command: .removeCue(cues[1])) else { return XCTFail("remove") }
+        await assertEventually("the edit was dropped, with a notice") {
+            self.wc.cueList.editingCell == nil && window.attachedSheet != nil
+        }
+        XCTAssertTrue(sheetTexts(window).contains(loc("cuelist.edit.cueGone")), "\(sheetTexts(window))")
+        window.endSheet(try XCTUnwrap(window.attachedSheet))
+    }
+
+    // MARK: Default names of cues that act on another
+
+    /// An unnamed Fade, Stop and the rest are named after the cue they act on, on every surface: list,
+    /// standby, Find, the inspector (a hint over an empty field) and the editor over the cell.
+    func testAnUnnamedFadeIsNamedAfterItsTargetEverywhere() async throws {
+        try await editWorkspace()
+        try await focusList(on: fade)
+        XCTAssertEqual(cell(fade, "name"), "Fade intro")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, "3 \u{00B7} Fade intro")
+        XCTAssertEqual(wc.inspector.nameField.stringValue, "", "nothing is stored")
+        XCTAssertEqual(wc.inspector.nameField.placeholderString, "Fade intro")
+        wc.setFindQuery("fade intro")
+        XCTAssertEqual(wc.find.matches, [fade])
+        try press("q", code: 12)
+        XCTAssertEqual(wc.cueList.cellEditor.stringValue, "", "the editor starts empty for an unnamed cue")
+        XCTAssertEqual(wc.cueList.cellEditor.placeholderString, "Fade intro")
+        try pressReturn()
+        await settle()
+        XCTAssertEqual(store.model?.cue(fade)?.name, "", "Return on the untouched cell writes nothing back")
+        // Stop Target When Done changes it.
+        guard
+            case .success = await store.send(
+                command: .setProperty(fade, .kindFields(["stop_target_when_done": .bool(true)])))
+        else { return XCTFail("kind") }
+        await assertEventually { self.cell(self.fade, "name") == "Fade and stop intro" }
+    }
+
+    func testAnUnnamedStopCueIsNamedAfterItsTarget() async throws {
+        try await editWorkspace()
+        let added = await wc.editor.add(.stop, after: [fade])
+        let stop = try XCTUnwrap(added)
+        guard case .success = await store.send(command: .setProperty(stop, .target(cues[1]))) else {
+            return XCTFail("target")
+        }
+        await assertEventually("named after cue 2, whose name is its file's") {
+            self.cell(stop, "name") == "Stop b.wav"
+        }
+    }
+
+    /// N or Q on a row scrolled out of sight scrolls it into view: the editor is never off screen.
+    func testTheEditorOpensOnAScrolledAwayRow() async throws {
+        try await editWorkspace()
+        let more = await wc.editor.addFiles(try tempFiles((0..<83).map { "x\($0).wav" }), parent: nil, index: 0)
+        XCTAssertEqual(more.count, 83)
+        try await focusList(on: cues[1])
+        let ov = wc.cueList.outlineView
+        try XCTUnwrap(wc.window).setFrame(NSRect(x: 0, y: 0, width: 1400, height: 500), display: true)
+        try XCTUnwrap(wc.window).contentView?.layoutSubtreeIfNeeded()
+        ov.scrollRowToVisible(0)
+        let row = ov.row(forItem: try XCTUnwrap(wc.cueList.node(cues[1])))
+        XCTAssertFalse(ov.visibleRect.intersects(ov.rect(ofRow: row)), "the row is scrolled away")
+        try press("n", code: 45)
+        XCTAssertEqual(wc.cueList.editingCell?.id, cues[1])
+        // The list can be one row tall on a small screen (CI: 40 pt in this window), so part of the
+        // editor in view is what a row scrolled to can promise.
+        XCTAssertTrue(ov.visibleRect.intersects(wc.cueList.cellEditor.frame), "the editor is on screen")
+    }
+
+    /// A letter held with fn is not the plain key (an arrow key carries fn).
+    func testALetterHeldWithFnDoesNotOpenAnEditor() async throws {
+        try await editWorkspace()
+        let window = try XCTUnwrap(wc.window)
+        let event = try key("n", code: 45, [.function], windowNumber: window.windowNumber)
+        if let passed = app.handleKeyDown(event) { window.sendEvent(passed) }
+        XCTAssertNil(wc.cueList.editingCell)
     }
 
     // MARK: Typing while the playhead moves
@@ -2383,6 +2822,251 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
         window.sendEvent(try XCTUnwrap(app.handleKeyDown(try downArrow)))
         try await assertAllOn(cues[1])
+    }
+
+    // MARK: Notes the engine refuses or that are not delivered: a sheet with Copy Text, nothing held
+
+    private let tooLongNotes = String(repeating: "x", count: 64 * 1024 + 1)
+
+    /// Copy Text puts the text on a pasteboard of this test's own.
+    private func notesPasteboard() -> NSPasteboard {
+        let board = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
+        wc.notesPasteboard = board
+        return board
+    }
+
+    /// Two characters by key, then a paste past the engine's 64 KiB limit.
+    private func typeTooLong(into view: NSTextView) throws {
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        try typeKeys("ab", in: window)
+        view.insertText(tooLongNotes, replacementRange: view.selectedRange())
+    }
+
+    /// The panel names the cue (unless `cue` is nil) and says the notes were not saved; it never takes
+    /// the keys. Copy Text puts `text` on the pasteboard and closes it.
+    private func answerNotice(
+        _ board: NSPasteboard, containing reason: String, cue: String? = "1.wav", text: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        await assertEventually("a panel", file: file, line: line) { !NotesNoticePanel.open.isEmpty }
+        let panel = try XCTUnwrap(NotesNoticePanel.open.last?.panel, file: file, line: line)
+        XCTAssertFalse(panel.canBecomeKey, "never key", file: file, line: line)
+        XCTAssertFalse(panel.isKeyWindow, file: file, line: line)
+        let said = sheetText(panel)
+        XCTAssertTrue(said.contains("not saved"), said, file: file, line: line)
+        XCTAssertTrue(said.contains(reason), said, file: file, line: line)
+        if let cue { XCTAssertTrue(said.contains(cue), "names the cue: \(said)", file: file, line: line) }
+        XCTAssertTrue(pressButton(loc("alert.copyText"), in: panel), file: file, line: line)
+        await assertEventually("the panel closed", file: file, line: line) { NotesNoticePanel.open.isEmpty }
+        XCTAssertEqual(board.string(forType: .string), text, "Copy Text", file: file, line: line)
+    }
+
+    /// Nothing is held: the fields show what the cue holds, and Save and Show Mode work.
+    private func assertNothingHeld(file: StaticString = #filePath, line: UInt = #line) async {
+        XCTAssertEqual(wc.masthead.notesView.string, "", file: file, line: line)
+        XCTAssertEqual(wc.inspector.notesView.string, "", file: file, line: line)
+        let ok = await wc.commitPendingEdits()
+        XCTAssertTrue(ok, "Save is not blocked", file: file, line: line)
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode, "Show Mode is not blocked", file: file, line: line)
+    }
+
+    func testMastheadNotesTheEngineRefusesGiveANoticeWithCopyTextAndHoldNothing() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        try typeTooLong(into: wc.masthead.notesView)
+        try typeKeys("\r", in: try XCTUnwrap(wc.window), code: 36)
+        try await answerNotice(board, containing: "refused", text: "ab" + tooLongNotes)
+        await assertEventually { self.wc.masthead.notesView.string == "" }
+        await assertNothingHeld()
+    }
+
+    func testInspectorNotesTheEngineRefusesGiveANoticeWithCopyTextAndHoldNothing() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        try typeTooLong(into: wc.inspector.notesView)
+        try typeKeys("\t", in: try XCTUnwrap(wc.window), code: 48)
+        try await answerNotice(board, containing: "refused", text: "ab" + tooLongNotes)
+        await assertEventually { self.wc.inspector.notesView.string == "" }
+        await assertNothingHeld()
+    }
+
+    func testMastheadNotesThatCouldNotBeSentGiveANotice() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        try typeKeys("short", in: window)
+        store.client.stop()
+        try typeKeys("\r", in: window, code: 36)
+        try await answerNotice(board, containing: "did not receive", text: "short")
+    }
+
+    func testInspectorNotesThatCouldNotBeSentGiveANotice() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.notesView))
+        try typeKeys("short", in: window)
+        store.client.stop()
+        try typeKeys("\r", in: window, code: 36)
+        try await answerNotice(board, containing: "did not receive", text: "short")
+    }
+
+    private func deleteCueElsewhere(_ id: ModelID) async {
+        let other = Rig(engine: engine, workspace: doc)
+        guard await other.connect(),
+            let remove = Command.transaction([.removeCue(id)]),
+            case .success = await other.store.send(command: remove)
+        else { return XCTFail("delete elsewhere") }
+        other.client.stop()
+        await assertEventually { self.store.model?.cue(id) == nil }
+    }
+
+    /// The cue is deleted (from another client) while its notes are typed in the masthead.
+    func testMastheadNotesTypedForACueDeletedMeanwhileGiveANotice() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        try typeKeys("lost", in: window)
+        await deleteCueElsewhere(cues[0])
+        try typeKeys("\r", in: window, code: 36)
+        try await answerNotice(board, containing: "no longer exists", cue: nil, text: "lost")
+    }
+
+    /// The same for the inspector's notes.
+    func testInspectorNotesTypedForACueDeletedMeanwhileGiveANotice() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.notesView))
+        try typeKeys("lost", in: window)
+        await deleteCueElsewhere(cues[0])
+        window.makeFirstResponder(nil)
+        try await answerNotice(board, containing: "no longer exists", cue: nil, text: "lost")
+    }
+
+    /// Notes refused with the playhead moved meanwhile: afterwards the standby line and selection
+    /// are on the playhead, and Save and Show Mode work.
+    func testNotesRefusedWithThePlayheadMovedLeaveTheStandbyOnThePlayhead() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        try typeTooLong(into: wc.masthead.notesView)
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        window.makeFirstResponder(nil)
+        try await answerNotice(board, containing: "refused", text: "ab" + tooLongNotes)
+        try await assertAllOn(cues[2])
+        XCTAssertEqual(wc.masthead.cueID, cues[2])
+        let ok = await wc.commitPendingEdits()
+        XCTAssertTrue(ok, "Save is not blocked")
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode, "Show Mode is not blocked")
+    }
+
+    /// A refusal arriving in Show Mode raises no panel, no modal and no sheet: the footer has the message and
+    /// the log the message and the text.
+    func testANotesRefusalInShowModeRaisesNothingAndIsLogged() async throws {
+        try await threeCues()
+        _ = notesPasteboard()
+        wc.setShowMode(true)
+        await wc.editor.reportNotesNotSaved(
+            of: cues[0], text: "typed text", .engine(code: .commandRefused, message: "too big"))
+        XCTAssertNil(wc.window?.attachedSheet, "no sheet")
+        XCTAssertTrue(NotesNoticePanel.open.isEmpty, "no panel")
+        XCTAssertNil(NSApp.modalWindow, "nothing modal")
+        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains("not saved"))
+        XCTAssertTrue(
+            store.logEntries.contains { $0.message.contains("not saved") && $0.message.contains("typed text") })
+    }
+
+    /// Save with notes the engine refuses still being typed: the sheet, the typing ends and the field
+    /// shows what the cue holds; a Return after it raises no second notice.
+    func testSaveWithMastheadNotesTheEngineRefusesEndsTheTypingAfterOneNotice() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        try typeTooLong(into: wc.masthead.notesView)
+        let ok = await wc.commitPendingEdits()
+        XCTAssertTrue(ok, "Save goes on")
+        try await answerNotice(board, containing: "refused", text: "ab" + tooLongNotes)
+        XCTAssertEqual(wc.masthead.notesView.string, "")
+        XCTAssertFalse(window.firstResponder === wc.masthead.notesView, "the typing ended")
+        try typeKeys("\r", in: window, code: 36)
+        await sync()
+        XCTAssertTrue(NotesNoticePanel.open.isEmpty, "no second notice")
+    }
+
+    /// Notes being typed while another typed edit is invalid: the notice says so and Save stops.
+    func testMastheadNotesWithAnInvalidTypedEditGiveANoticeAndSaveStops() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.preWaitField))
+        try typeKeys("zz", in: window)  // not a time: invalid when committed
+        wc.masthead.notesView.string = "typed"
+        wc.masthead.textDidBeginEditing(Notification(name: NSText.didBeginEditingNotification))
+        let ok = await wc.commitPendingEdits()
+        XCTAssertFalse(ok, "Save stops")
+        try await answerNotice(board, containing: "not valid", cue: nil, text: "typed")
+    }
+
+    /// Close with refused notes still being typed: the panel comes up and Close goes on without anyone
+    /// answering it; the window closing leaves the panel, whose Copy Text still works.
+    func testCloseWithNotesTheEngineRefusesGoesOnAndTheNoticeOutlivesTheWindow() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let alerts = ScriptedAlerts()
+        alerts.saveChoices = [.dontSave]
+        app.alerts = alerts
+        try typeTooLong(into: wc.masthead.notesView)
+        let closed = await app.closeWorkspace(doc)
+        XCTAssertTrue(closed, "Close goes on")
+        XCTAssertNil(app.windows[doc], "the window is gone")
+        try await answerNotice(board, containing: "refused", text: "ab" + tooLongNotes)
+    }
+
+    /// The inspector's notes, the same on Close.
+    func testCloseWithInspectorNotesTheEngineRefusesGoesOnAndTheNoticeStays() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let alerts = ScriptedAlerts()
+        alerts.saveChoices = [.dontSave]
+        app.alerts = alerts
+        try typeTooLong(into: wc.inspector.notesView)
+        let closed = await app.closeWorkspace(doc)
+        XCTAssertTrue(closed, "Close goes on")
+        try await answerNotice(board, containing: "refused", text: "ab" + tooLongNotes)
+    }
+
+    /// With the notice up, Space is still GO and the panel is not key.
+    func testGoStillFiresWithTheNotesNoticeUp() async throws {
+        try await threeCues()
+        _ = notesPasteboard()
+        try typeTooLong(into: wc.masthead.notesView)
+        try typeKeys("\r", in: try XCTUnwrap(wc.window), code: 36)
+        await assertEventually("the notice is up") { !NotesNoticePanel.open.isEmpty }
+        try await space()
+        XCTAssertEqual(goes(), 1, "GO fired")
+        XCTAssertEqual(NotesNoticePanel.open.count, 1)
+        XCTAssertFalse(try XCTUnwrap(NotesNoticePanel.open.first).panel.isKeyWindow)
+    }
+
+    /// Asking for Show Mode with refused notes still being typed enters it: no sheet, no panel, and the
+    /// footer and the log carry the notice.
+    func testShowModeWithNotesTheEngineRefusesEntersAndLogsTheNotice() async throws {
+        try await threeCues()
+        _ = notesPasteboard()
+        try typeTooLong(into: wc.masthead.notesView)
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode)
+        XCTAssertNil(wc.window?.attachedSheet)
+        XCTAssertTrue(NotesNoticePanel.open.isEmpty)
+        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains("not saved"))
+        XCTAssertTrue(store.logEntries.contains { $0.message.contains("not saved") })
     }
 
     // MARK: Loading a list: the highlight goes with the playhead
