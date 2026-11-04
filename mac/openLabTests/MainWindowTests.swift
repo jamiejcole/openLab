@@ -48,12 +48,26 @@ final class MainWindowTests: XCTestCase {
             let report = stderrText(body)
             if !report.isEmpty { problems.append("\(what): \(report.prefix(200))") }
         }
-        step("shown") { window.orderFront(nil); layout() }
-        for size in [window.minSize, NSSize(width: 1024, height: 700), NSSize(width: 1800, height: 1000), window.minSize] {
-            step("size \(size)") { window.setContentSize(size); layout() }
+        step("shown") {
+            window.orderFront(nil)
+            layout()
+        }
+        for size in [
+            window.minSize, NSSize(width: 1024, height: 700), NSSize(width: 1800, height: 1000), window.minSize,
+        ] {
+            step("size \(size)") {
+                window.setContentSize(size)
+                layout()
+            }
             for area in LayoutArea.allCases {
-                step("\(area) toggled") { wc.setVisible(area, !wc.isVisible(area)); layout() }
-                step("\(area) toggled back") { wc.setVisible(area, !wc.isVisible(area)); layout() }
+                step("\(area) toggled") {
+                    wc.setVisible(area, !wc.isVisible(area))
+                    layout()
+                }
+                step("\(area) toggled back") {
+                    wc.setVisible(area, !wc.isVisible(area))
+                    layout()
+                }
             }
         }
         window.close()

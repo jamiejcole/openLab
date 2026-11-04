@@ -2901,7 +2901,13 @@ final class AppControllerTests: XCTestCase {
         var presses = 0
         let targets: [(String, (WorkspaceWindowController) -> NSResponder)] = [
             ("GO button", { $0.masthead.goButton }),
-            ("sidebar list", { $0.setVisible(.sidebar, true); return $0.sidebar.listTable }),
+            (
+                "sidebar list",
+                {
+                    $0.setVisible(.sidebar, true)
+                    return $0.sidebar.listTable
+                }
+            ),
             ("footer control", { $0.footer.settingsButton }),
         ]
         for (name, focus) in targets {
