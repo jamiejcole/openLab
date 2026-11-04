@@ -142,8 +142,8 @@ final class MastheadView: NSView, NSTextViewDelegate {
     /// Escape and Return end editing (the text is committed by the end-of-editing that follows) and
     /// give focus back, so Space fires GO again. Option-Return still types a new line.
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        guard selector == #selector(NSResponder.cancelOperation(_:)) || selector == #selector(NSResponder.insertNewline(_:))
-        else { return false }
+        let endsTyping = [#selector(NSResponder.cancelOperation(_:)), #selector(NSResponder.insertNewline(_:))]
+        guard endsTyping.contains(selector) else { return false }
         window?.makeFirstResponder(nil)
         return true
     }
