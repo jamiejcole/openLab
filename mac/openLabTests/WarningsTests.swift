@@ -195,6 +195,21 @@ final class WarningsTests: XCTestCase {
         XCTAssertTrue(side.updatedWarningRows.isEmpty)
     }
 
+    /// A warned Fade's title carries its default name, which follows its target: renaming the target
+    /// (a cue with no warning of its own) retitles the row.
+    func testAWarnedCuesTitleFollowsItsTargetsRename() async throws {
+        try await make()
+        let fade = TestSnapshots.fade
+        try missingMedia(fade)
+        XCTAssertTrue(side.warningRows.contains { $0.title.hasSuffix("Fade and stop Intro") }, "\(side.warningRows)")
+        var intro = try XCTUnwrap(store.model?.cue(TestSnapshots.intro)).raw
+        intro.set("name", .string("entrance"))
+        let upsert = try CueListHarness.upsertJSON(intro, index: 0)
+        try receive(
+            #"{"type":"model_changed","revision":\#(store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#)
+        XCTAssertTrue(side.warningRows.contains { $0.title.hasSuffix("Fade and stop entrance") }, "\(side.warningRows)")
+    }
+
     func testWorkspaceWarningsAreReplacedAndRuntimeWarningsAppended() async throws {
         try await make()
         try receive(#"{"type":"warnings","warnings":[]}"#)
