@@ -33,6 +33,9 @@ final class CueEditor {
     var commitPending: () async -> Bool = { true }
     /// Tells the operator why an edit was refused (a sheet in the app; recorded by tests).
     var notify: (String) -> Void = { _ in NSSound.beep() }
+    /// Typed notes that were not saved: tells the operator and offers the text (Copy Text). Nothing
+    /// is held afterwards; the fields show what the cue holds.
+    var notesNotSaved: (NotesNotice) -> Void = { _ in NSSound.beep() }
     /// Tells the inspector a kind edit is in flight, so its own kind edits build on it; the result
     /// is called when the engine has answered.
     var trackPending: (Command, ModelID) -> () -> Void = { _, _ in {} }
@@ -321,19 +324,47 @@ final class CueEditor {
     }
 
     /// Sets a cue's notes from the masthead, through the inspector's notes command. Refused in
-    /// Show Mode like every edit.
-    /// False when the notes were not saved (cue gone, edit refused), so Save, Close and Quit stop.
+    /// Show Mode like every edit. Notes the engine refuses or cannot receive, or whose cue is gone,
+    /// raise the notice with Copy Text (`notesNotSaved`) and are `.notSaved`; `.blocked`: another
+    /// typed edit is invalid, so the edit never started (Save must stop), and the notice says so.
+    enum NotesOutcome { case saved, notSaved, blocked }
+
     @discardableResult
-    func setNotes(of id: ModelID, text: String) async -> Bool {
-        guard await begin() else { return false }
+    func setNotes(of id: ModelID, text: String) async -> NotesOutcome {
+        guard await begin() else {
+            if !isLocked() {
+                notesNotSaved(NotesNotice(message: loc("notes.notSaved.blocked"), text: text))
+            }
+            return .blocked
+        }
         guard let cue = store.model?.cue(id), let model = store.model else {
-            notify(loc("masthead.notes.cueGone"))
-            return false
+            notesNotSaved(NotesNotice(message: loc("notes.notSaved.cueGone"), text: text))
+            return .notSaved
         }
         if case .success(let command?) = InspectorEdit.command(.notes, text: text, cue: cue, model: model) {
-            return report(await store.send(command: command))
+            if case .failure(let error) = await store.send(command: command) {
+                reportNotesNotSaved(of: id, text: text, error)
+                return .notSaved
+            }
         }
-        return true
+        return .saved
+    }
+
+    /// The notice for notes typed for `id` that `error` kept from being saved. Both notes fields use it.
+    func reportNotesNotSaved(of id: ModelID, text: String, _ error: EngineError) {
+        guard let model = store.model, let cue = model.cue(id) else {
+            return notesNotSaved(NotesNotice(message: loc("notes.notSaved.cueGone"), text: text))
+        }
+        let name = [cue.number, model.listName(cue)].compactMap { $0 }.filter { !$0.isEmpty }
+            .joined(separator: " \u{00B7} ")
+        let label = String(format: loc("notes.cueLabel"), name.isEmpty ? CueKindStyle.kindLabel(cue.kindType) : name)
+        let message: String
+        if case .engine(_, let reason) = error {
+            message = String(format: loc("notes.notSaved.refused"), label, reason)
+        } else {
+            message = String(format: loc("notes.notSaved.notDelivered"), label)
+        }
+        notesNotSaved(NotesNotice(message: message, text: text))
     }
 
     func undo() async {
