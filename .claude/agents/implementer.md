@@ -32,4 +32,4 @@ If the brief gives a report file path, write the full report there before ending
 
 What was done; files touched; tests added and the result summary lines; checklist boxes ticked and any left open (why); deviations from ARCHITECTURE.md (should be none — if any, why); extra work found; QLab rows added; open questions.
 
-If you are later sent review findings: fix every High and Medium (or argue concretely why a finding is wrong) and every Low in the reviewer's "fix now" list; one regression test per fixed defect; re-run `make prepush`; commit; report per finding.
+If you are later sent review findings: fix every finding you are sent (or argue concretely why it is wrong); one regression test per fixed defect; re-run `make prepush`; commit; report per finding.

@@ -89,7 +89,10 @@ enum HotkeyRules {
     /// Key equivalents of the menu bar except the Transport items (their keys are the workspace's
     /// transport keys, checked separately and dynamic).
     @MainActor
-    static func currentMenuChords() -> Set<KeyChord> {
+    static func currentMenuChords() -> Set<KeyChord> { NSApp?.mainMenu.map(menuChords(in:)) ?? [] }
+
+    @MainActor
+    static func menuChords(in menu: NSMenu) -> Set<KeyChord> {
         var out: Set<KeyChord> = []
         func walk(_ menu: NSMenu) {
             for item in menu.items {
@@ -97,13 +100,16 @@ enum HotkeyRules {
                 guard !item.keyEquivalent.isEmpty, item.action != #selector(AppDelegate.transportCommand(_:)) else {
                     continue
                 }
+                // macOS adds items of its own that need the fn key (Enter Full Screen is fn-F). A chord has
+                // no fn, so such an item would otherwise read as the plain key and take it from cues.
+                if item.keyEquivalentModifierMask.contains(.function) { continue }
                 // AppKit reads an upper-case letter as Shift (Redo "Z", Save As "S", Pre-Show "W").
                 var mods = item.keyEquivalentModifierMask
                 if item.keyEquivalent.lowercased() != item.keyEquivalent { mods.insert(.shift) }
                 out.insert(KeyChord(item.keyEquivalent, mods))
             }
         }
-        if let main = NSApp?.mainMenu { walk(main) }
+        walk(menu)
         return out
     }
 }

@@ -59,7 +59,7 @@ This file is the only copy of every rule below; other files link here instead of
 - **High:** a show can stop, sound wrong, fire or stop the wrong cue, lose data, or the process can crash, panic or hang, on any input (fuzzers and property tests included; any input from outside the process is reachable).
 - **Medium:** wrong behaviour; a false or stale claim in a contract doc, ARCHITECTURE.md or this file; a missing test on a changed path; debug/release difference; duplication, dead code or a parallel harness the change adds.
 - **Low:** everything else.
-- High and Medium block merge; only the user downgrades a Medium (quote it in the PR). Lows are fixed in the same PR or dropped with one line in the PR; they are never filed as issues.
+- High and Medium block merge, within the review limit in "Review"; otherwise only the user downgrades a Medium (quote it in the PR). Lows are fixed in the same PR or dropped with one line in the PR; they are never filed as issues.
 - Review covers the diff. A pre-existing problem in a touched file is reported only if High (fixed in this PR, or the PR waits for its fix) or Medium (a `severity:medium` issue in the current milestone; blocks the milestone, not the PR, unless the PR makes it worse). Milestone audits file only Highs and Mediums.
 - More than 30 open issues labelled `low` or `severity:*` (all milestones): batches take only those issues until the count is 30 or fewer. Existing `low` issues are worked down, not added to.
 - Every known exception (an allowlist or known-failure entry, an accepted finding) cites an open issue, or says why it is permanent (a dropped Low's one-line reason in the PR counts).
@@ -69,6 +69,7 @@ This file is the only copy of every rule below; other files link here instead of
 - Every change is reviewed by a `pr-reviewer` agent on a different model or a fresh context from its implementer (Sonnet work: Opus review; Opus work: a fresh Opus review). The orchestrator never reviews its own change.
 - For a feature or other user-visible change (not a simple fix), review also covers the issue's flows: what the user sees after each step, including reactions that should exist but are missing (no diff shows those).
 - A High or Medium finding comes with the test or command the reviewer ran and its output. The orchestrator re-runs it before acting, and checks reports by running the named tests, not by reading summaries.
+- Review limit (user decision 2026-11-04): two full rounds per PR. After round 2 the reviewer checks only the fix commits, and only a High or a bug those commits cause blocks the PR. Any other Medium becomes a `severity:medium` issue in the current milestone, which blocks the milestone, not the PR.
 
 ## Work and git
 - Work only on assigned issues. Tick an issue's Checklist box when that part is implemented **and tested**; say what is missing for any left open. Report extra work found; don't expand scope. Niche QLab parity not needed for v0.0.1 → `v0.0.2` milestone; what QLab users do every rehearsal (GO, panic, playhead, editing in the list, targeting) is never niche.
