@@ -40,10 +40,12 @@ impl Default for LevelLimits {
 
 impl LevelLimits {
     /// [`Self::apply`] for a level a command or a sweep puts within the limits: a value outside
-    /// what a level may be at all (not a number, above [`MAX_DB`], below silence) is returned as
-    /// it is, for validation to refuse, so garbage is never quietly turned into a level.
+    /// what a level may be at all (not a number, above [`MAX_DB`], below both silence and the
+    /// minimum) is returned as it is, for validation to refuse, so garbage is never quietly turned
+    /// into a level. A minimum below silence (down to -180 dB, QLab's lowest) makes every level
+    /// from it up to [`SILENCE_DB`] silence.
     pub fn limit(self, db: f64) -> f64 {
-        if (SILENCE_DB..=MAX_DB).contains(&db) {
+        if (self.min_db.min(SILENCE_DB)..=MAX_DB).contains(&db) {
             self.apply(db)
         } else {
             db

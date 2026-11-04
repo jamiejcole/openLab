@@ -1659,6 +1659,7 @@ fn loading_clamps_the_limits_and_every_level_to_the_maximum() {
             field: "settings.output_max_db"
         }));
     // The example's patch and cue levels at 0 dB are now above the maximum.
+    assert!(loaded.workspace.patches[0].master_db <= -30.0);
     assert!(
         loaded.workspace.patches[0]
             .outputs
@@ -1675,4 +1676,78 @@ fn loading_clamps_the_limits_and_every_level_to_the_maximum() {
             })
             .all(|l| l.master_db <= -30.0 && l.outputs.iter().all(|o| o.db <= -30.0))
     );
+}
+
+/// One rule for the whole file: a level at or below the minimum is silence from the moment it
+/// opens, with one warning for all of them, so no later edit of something else silences it.
+#[test]
+fn loading_silences_levels_at_or_below_the_minimum_with_one_warning() {
+    let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    doc["workspace"]["patches"][0]["master_db"] = (-70.0).into();
+    doc["workspace"]["patches"][0]["outputs"][0]["level_db"] = (-60.0).into();
+    let loaded = load_show(&doc.to_string()).unwrap();
+    assert_eq!(
+        loaded
+            .warnings
+            .iter()
+            .map(|w| w.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![IssueKind::LevelsBelowMinimum]
+    );
+    let patch = &loaded.workspace.patches[0];
+    assert_eq!(patch.master_db, SILENCE_DB);
+    assert_eq!(patch.outputs[0].level_db, SILENCE_DB);
+    let text = save_show(&loaded.workspace).unwrap();
+    assert_eq!(load_show(&text).unwrap().warnings, vec![]);
+}
+
+/// A Fade aimed at an Audio cue holds levels; aimed at a Group, changes in dB that the limits do
+/// not touch. Aimed anywhere else (nothing yet) it counts as levels: it cannot end up louder.
+#[test]
+fn loading_clamps_a_fade_unless_it_is_aimed_at_a_group() {
+    let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    doc["workspace"]["settings"]["output_max_db"] = (-3.0).into();
+    let raw = load_show(EXAMPLE).unwrap().workspace;
+    let audio = raw
+        .cues()
+        .find(|c| matches!(c.kind, CueKind::Audio { .. }))
+        .unwrap()
+        .id;
+    let group = raw
+        .cues()
+        .find(|c| matches!(c.kind, CueKind::Group { .. }))
+        .unwrap()
+        .id;
+    let fades = doc["workspace"]["cue_lists"][0]["cues"]
+        .as_array_mut()
+        .unwrap();
+    let template = fades
+        .iter()
+        .find(|c| c["kind"]["type"] == "fade")
+        .unwrap()
+        .clone();
+    for (n, target) in [
+        ("a1", Some(audio.to_string())),
+        ("a2", Some(group.to_string())),
+        ("a3", None),
+    ] {
+        let mut fade = template.clone();
+        fade["id"] = format!("00000000-0000-4000-8000-0000000000{n}").into();
+        fade["number"] = serde_json::Value::Null;
+        fade["kind"]["target"] = target.into();
+        fade["kind"]["levels"]["master_db"] = 6.0.into();
+        fades.push(fade);
+    }
+    let loaded = load_show(&doc.to_string()).unwrap();
+    let master = |n: &str| {
+        let id = serde_json::from_value(format!("00000000-0000-4000-8000-0000000000{n}").into())
+            .unwrap();
+        match &loaded.workspace.find_cue(id).unwrap().kind {
+            CueKind::Fade { levels, .. } => levels.master_db,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(master("a1"), Some(-3.0), "aimed at an Audio cue");
+    assert_eq!(master("a2"), Some(6.0), "aimed at a Group: a change in dB");
+    assert_eq!(master("a3"), Some(-3.0), "aimed at nothing");
 }

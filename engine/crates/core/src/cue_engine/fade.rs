@@ -119,12 +119,12 @@ impl CueEngine {
                     .or_else(|| level::model_gain(base, param))
                     .unwrap_or(0.0);
                 // Relative: the level moves by the fade's dB from where it is now (so a silent
-                // level stays silent and is left alone), never above the workspace maximum.
+                // level stays silent and is left alone), within the workspace limits.
                 let gain = if relative {
                     if from == 0.0 {
                         continue;
                     }
-                    (from * gain).min(level::db_to_gain(limits.max_db))
+                    level::limit_gain(limits, from * gain)
                 } else {
                     gain
                 };

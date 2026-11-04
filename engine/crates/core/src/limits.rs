@@ -4,12 +4,31 @@
 //! command is put within the limits first (QLab 5 limits levels set by fades, scripts and OSC
 //! as well as by the faders); changing a limit puts the levels already there within it, as the
 //! commands [`Workspace::limit_clamps`] returns, so each is one undoable edit and each reaches
-//! clients as an ordinary change of that cue or patch.
+//! clients as an ordinary change of that cue or patch. A file's levels are put within them on
+//! load (`validate.rs`), so the model always holds levels within the limits, except a Fade
+//! re-aimed from a Group, whose values were changes in dB; the cue engine ends that within them.
+
+use std::collections::HashSet;
 
 use crate::command::{Command, CueProperty};
 use crate::command_model::PatchProperty;
-use crate::cue::{CueKind, LevelLimits};
-use crate::model::Workspace;
+use crate::cue::{Cue, CueKind, LevelLimits};
+use crate::model::{CueId, Workspace};
+use crate::tree::{descendants, walk_mut};
+
+/// Whether a Fade aimed at `target` holds levels; aimed at one of `groups` it holds changes in dB.
+pub(crate) fn fade_holds_levels(target: Option<CueId>, groups: &HashSet<CueId>) -> bool {
+    target.is_none_or(|t| !groups.contains(&t))
+}
+
+/// The ids of every Group among `cues`, at any depth.
+pub(crate) fn group_ids<'a>(cues: impl IntoIterator<Item = &'a Cue>, out: &mut HashSet<CueId>) {
+    out.extend(
+        cues.into_iter()
+            .filter(|c| matches!(c.kind, CueKind::Group { .. }))
+            .map(|c| c.id),
+    );
+}
 
 impl Workspace {
     /// Whether `kind` holds levels the limits apply to. A Fade aimed at a Group holds changes in
@@ -27,6 +46,22 @@ impl Workspace {
     pub(crate) fn clamp_kind(&self, kind: &mut CueKind) {
         let fades = self.limits_apply_to_fades(kind);
         kind.clamp_levels(self.settings.limits(), fades);
+    }
+
+    /// Puts the levels of cues about to be added within the limits. A Fade may be aimed at a Group
+    /// of the workspace or among the new cues.
+    pub(crate) fn clamp_new_cues(&self, cues: &mut [Cue]) {
+        let mut groups = HashSet::new();
+        group_ids(self.cues(), &mut groups);
+        group_ids(descendants(cues), &mut groups);
+        let limits = self.settings.limits();
+        walk_mut(cues, &mut |cue| {
+            let fades = match &cue.kind {
+                CueKind::Fade { target, .. } => fade_holds_levels(*target, &groups),
+                _ => true,
+            };
+            cue.kind.clamp_levels(limits, fades);
+        });
     }
 
     /// The commands that put every level of the workspace within `limits`: Audio cues and Fade

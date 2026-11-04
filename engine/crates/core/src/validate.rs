@@ -17,14 +17,16 @@ use crate::cue::{
     CueKind, CueLevels, LevelLimits, MAX_CHANNELS, MAX_DB, MAX_SLICE_MARKERS, MAX_TIME,
     OUTPUT_MAX_DB_RANGE, OUTPUT_MIN_DB_RANGE, OscArg, SILENCE_DB, SliceMarker,
 };
+use crate::limits::{fade_holds_levels, group_ids};
 use crate::model::{
-    CueId, CueListId, NetworkPatchId, OutputPatch, PatchId, PatchOutput, Workspace,
+    CueId, CueList, CueListId, NetworkPatchId, OutputPatch, PatchId, PatchOutput, Workspace,
     WorkspaceSettings, hotkey_field,
 };
 use crate::network::MAX_HOST_BYTES;
 use crate::osc_access::{
     MAX_OSC_PASSCODE_BYTES, MAX_OSC_PASSCODES, OscAccess, is_valid_new_passcode,
 };
+use crate::tree::walk_mut;
 
 /// Longest name of a workspace, cue list, patch or network patch, in Unicode scalar values (not
 /// bytes: a name in any script gets the same room, and a UI text field counts characters).
@@ -204,6 +206,9 @@ pub enum IssueKind {
     /// other than 0 dB. Version 9 has none (QLab 5 has no global master), so the level was removed
     /// and the show plays as its cue and patch levels say.
     GlobalMasterRemoved,
+    /// Warning, once, on load: levels in the file were between silence and the workspace's minimum
+    /// volume limit. At or below the minimum is silence (QLab 5), so they were made silent.
+    LevelsBelowMinimum,
     /// Warning: the file's `show_mode` is not `true` or `false`, so the workspace opens in Edit
     /// Mode.
     ShowModeUnreadable,
@@ -324,6 +329,11 @@ impl fmt::Display for ValidationIssue {
                  removed and the show plays at its cue and patch levels: set the patch main \
                  levels in the patch editor if you need the old overall level"
             ),
+            IssueKind::LevelsBelowMinimum => write!(
+                f,
+                "some levels in this show were at or below the workspace's minimum volume limit, \
+                 so they are now silent: lower the limit and set them again if you need them"
+            ),
             IssueKind::ShowModeUnreadable => write!(
                 f,
                 "the show file's Show Mode setting is damaged, so the workspace opened in Edit Mode"
@@ -397,7 +407,11 @@ pub fn repair(workspace: &mut Workspace) -> Vec<ValidationIssue> {
     for list in &mut workspace.cue_lists {
         checker.cues(&mut list.cues, 1);
     }
+    checker.fades_within_limits(&mut workspace.cue_lists);
     checker.references(workspace);
+    if checker.below_minimum {
+        checker.warn(None, IssueKind::LevelsBelowMinimum);
+    }
     checker.issues
 }
 
@@ -504,6 +518,8 @@ struct Checker {
     patch_outputs: HashMap<PatchId, usize>,
     /// The workspace's volume limits, once `settings` has checked them.
     limits: LevelLimits,
+    /// A level between silence and the minimum was made silent: one warning for the whole file.
+    below_minimum: bool,
 }
 
 impl Checker {
@@ -551,6 +567,48 @@ impl Checker {
         if *value > self.limits.max_db {
             *value = self.limits.max_db;
             self.warn(cue_id, IssueKind::InvalidLevel { field });
+        }
+        self.silence_below_minimum(value);
+    }
+
+    /// Every level at or below the minimum is silence, so the file is told once and no later edit
+    /// of something else silences it (one rule everywhere: `LevelLimits::apply`).
+    fn silence_below_minimum(&mut self, value: &mut f64) {
+        if *value > SILENCE_DB && *value <= self.limits.min_db {
+            *value = SILENCE_DB;
+            self.below_minimum = true;
+        }
+    }
+
+    /// A Fade aimed at anything but a Group holds levels, which obey the limits like any other
+    /// (aimed at a Group, `fade_levels` kept them as changes in dB). Runs once every cue is in
+    /// shape, since a Fade's target may come later in the file.
+    fn fades_within_limits(&mut self, lists: &mut [CueList]) {
+        let mut groups = HashSet::new();
+        for list in lists.iter() {
+            group_ids(crate::tree::descendants(&list.cues), &mut groups);
+        }
+        let limits = self.limits;
+        let no_floor = LevelLimits {
+            max_db: limits.max_db,
+            min_db: SILENCE_DB,
+        };
+        for list in lists.iter_mut() {
+            walk_mut(&mut list.cues, &mut |cue| {
+                let CueKind::Fade { target, .. } = &cue.kind else {
+                    return;
+                };
+                if !fade_holds_levels(*target, &groups) {
+                    return;
+                }
+                let id = cue.id;
+                if cue.kind.clamp_levels(no_floor, true) {
+                    self.warn(Some(id), IssueKind::InvalidLevel { field: "levels" });
+                }
+                if cue.kind.clamp_levels(limits, true) {
+                    self.below_minimum = true;
+                }
+            });
         }
     }
 
@@ -714,6 +772,7 @@ impl Checker {
             patch.master_db = self.limits.max_db;
             bad.push("master_db");
         }
+        self.silence_below_minimum(&mut patch.master_db);
         for output in &mut patch.outputs {
             if output.level_db.is_nan() || output.level_db > MAX_DB {
                 bad.push("outputs.level_db");
@@ -723,6 +782,7 @@ impl Checker {
                 output.level_db = self.limits.max_db;
                 bad.push("outputs.level_db");
             }
+            self.silence_below_minimum(&mut output.level_db);
         }
         for field in bad {
             self.warn(None, IssueKind::InvalidPatchValue { patch: id, field });
@@ -1001,8 +1061,8 @@ impl Checker {
     }
 
     fn fade_levels(&mut self, id: Option<CueId>, levels: &mut FadeLevels) {
-        // A Fade aimed at a Group holds changes in dB, not levels, so the workspace limits are
-        // not applied here; the cue engine limits what a fade ends at.
+        // A Fade aimed at a Group holds changes in dB, not levels, and which it is is known once
+        // every cue is in shape: `fades_within_limits` applies the limits to the others.
         let limits = std::mem::replace(
             &mut self.limits,
             LevelLimits {

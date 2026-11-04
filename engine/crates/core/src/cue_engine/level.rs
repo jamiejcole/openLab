@@ -134,6 +134,19 @@ pub(super) fn level_edits(
         .collect()
 }
 
+/// `gain` (linear) within `limits`: above the maximum is the maximum, at or below the minimum is
+/// silence (the same rule as [`LevelLimits::apply`], for a gain worked out from others).
+pub(super) fn limit_gain(limits: LevelLimits, gain: f32) -> f32 {
+    let max = db_to_gain(limits.max_db);
+    if gain > max {
+        max
+    } else if gain <= db_to_gain(limits.min_db) {
+        0.0
+    } else {
+        gain
+    }
+}
+
 /// dB to linear amplitude, exactly as the mixer converts it: at or below [`SILENCE_DB`] (and
 /// NaN) is exactly 0.0.
 pub fn db_to_gain(db: f64) -> f32 {

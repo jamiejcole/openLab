@@ -251,7 +251,7 @@ out[d]       = dev[d] · global_master(t)
 | `SetMaster { gain }` | the mixer's own master. The control loop does not send it: a workspace has no global master (PB-11), so it stays at unity |
 
 - Gains are linear `f32`. Use `db_to_linear` and `linear_to_db`, where −120 dB and below is exactly 0.0 (ARCHITECTURE §4).
-- Every gain the mixer applies is clamped to ±`MAX_GAIN` (+24 dB, `MAX_GAIN_DB`). This is a safety net; the show model stops at +12 dB. NaN counts as 0.0. A patch matrix gain carries the workspace master × patch master × output level (M4.15b, docs/control.md "Patches"), so the clamp applies to their sum in dB: settings adding up to more than +24 dB (each at most +12) are heard at +24 dB. Before M4.15b the workspace master was a separate mixer stage with its own clamp.
+- Every gain the mixer applies is clamped to ±`MAX_GAIN` (+24 dB, `MAX_GAIN_DB`). This is a safety net; the show model stops at +12 dB. NaN counts as 0.0. A patch matrix gain carries patch master × output level (docs/control.md "Patches"), so the clamp applies to their sum in dB: settings adding up to more than +24 dB (each at most +12) are heard at +24 dB.
 - Commands that name an unknown voice, an index out of range, or an input beyond the voice's channel count are ignored.
 - Silent crosspoints, cue outputs and patch entries (constant 0) are skipped per block, so cost scales with the routes in use.
 

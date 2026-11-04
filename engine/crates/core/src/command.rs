@@ -565,7 +565,7 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
                 cue.number = Some(next_auto_number(ws)?);
             }
             if !restoring {
-                clamp_new_cues(ws, std::slice::from_mut(&mut cue));
+                ws.clamp_new_cues(std::slice::from_mut(&mut cue));
             }
             let id = cue.id;
             insert(ws, &at, vec![cue], restoring)?;
@@ -573,7 +573,7 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
         }
         Command::Paste { at, mut cues } => {
             if !restoring {
-                clamp_new_cues(ws, &mut cues);
+                ws.clamp_new_cues(&mut cues);
             }
             let ids: Vec<CueId> = cues.iter().map(|c| c.id).collect();
             insert(ws, &at, cues, restoring)?;
@@ -630,16 +630,6 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
         Command::Transaction { .. } => Err(CommandError::NestedTransaction),
         other => apply_model(ws, &other, restoring).unwrap_or(Err(CommandError::Internal)),
     }
-}
-
-/// Puts the levels of cues about to be added within the workspace limits. A Fade is left to the
-/// cue engine: its target may be a group among the new cues, which makes its levels changes in
-/// dB, not levels.
-fn clamp_new_cues(ws: &Workspace, cues: &mut [Cue]) {
-    let limits = ws.settings.limits();
-    walk_mut(cues, &mut |cue| {
-        cue.kind.clamp_levels(limits, false);
-    });
 }
 
 // ---------------------------------------------------------------------------------------------

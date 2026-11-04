@@ -42,7 +42,7 @@ pub use timers::{Timer, TimerProgress};
 pub use transport::PANIC_CURVE;
 pub use types::*;
 
-use crate::cue::{Cue, CueKind};
+use crate::cue::{Cue, CueKind, LevelLimits};
 use crate::model::{CueId, CueListId, Workspace};
 
 use playhead::Playhead;
@@ -62,6 +62,8 @@ pub(super) const PLAYLIST_RESERVE: usize = 8;
 /// Runtime state of every cue and playhead of one workspace.
 #[derive(Clone, Debug)]
 pub struct CueEngine {
+    /// The volume limits last followed (`follow_limits`).
+    limits: LevelLimits,
     config: EngineConfig,
     /// Ordered maps so every scan, and so the order of actions, is deterministic.
     slots: BTreeMap<CueId, Slot>,
@@ -170,6 +172,7 @@ impl CueEngine {
             batch_panicked: BTreeSet::new(),
             next_preview: 0,
             limit: 0,
+            limits: LevelLimits::default(),
             lengths: BTreeMap::new(),
             model_syncs: 0,
             whole_show_passes: 0,
@@ -322,7 +325,8 @@ impl CueEngine {
         // After the deadlines due in this call: a fade ending in it has let go of its levels,
         // so an edit of one is not left to it.
         if follow_edits {
-            self.follow_level_edits(&mut cx);
+            let tightened = self.follow_limits(&mut cx);
+            self.follow_level_edits(tightened, &mut cx);
         }
         self.apply(input, &mut cx);
         self.drain(&mut cx);

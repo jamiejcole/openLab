@@ -161,7 +161,7 @@ fn a_mapped_patch_routes_its_outputs_with_level_mute_and_polarity() {
     assert!(!r.iter().any(|&(_, o, d, g)| o == 2 && d == 1 && g != 0.0));
     // Patch 1 is unused: silent.
     assert!(r.contains(&(1, 1, 1, 0.0)));
-    // The workspace master is in the matrices: the mixer's own master stays at unity.
+    // The levels are in the matrices: the mixer's own master stays at unity.
     assert!(
         !cmds
             .iter()
