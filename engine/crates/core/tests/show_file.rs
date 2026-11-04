@@ -1580,6 +1580,19 @@ fn a_damaged_show_mode_opens_in_edit_mode_with_a_warning() {
         let text = save_show(&loaded.workspace).unwrap();
         assert_eq!(load_show(&text).unwrap().warnings, vec![]);
     }
+    // Values a JSON tree cannot hold must not refuse the show either: text, not a Value.
+    let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+    for raw in ["1e999", "-1e999", deep.as_str()] {
+        let text = EXAMPLE.replacen(
+            "\"workspace\": {",
+            &format!("\"workspace\": {{\n    \"show_mode\": {raw},"),
+            1,
+        );
+        assert_ne!(text, EXAMPLE);
+        let loaded = load_show(&text).unwrap_or_else(|e| panic!("{raw}: {e}"));
+        assert!(!loaded.workspace.show_mode, "{raw}");
+        assert_eq!(loaded.warnings, vec![show_mode_unreadable()], "{raw}");
+    }
     let loaded = load_show(&example_with_show_mode(serde_json::Value::Null)).unwrap();
     assert!(!loaded.workspace.show_mode);
     assert_eq!(loaded.warnings, vec![]);

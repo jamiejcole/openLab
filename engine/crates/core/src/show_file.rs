@@ -77,14 +77,15 @@ struct ModeProbe {
 #[derive(Deserialize)]
 struct ModeProbeWorkspace {
     #[serde(default)]
-    show_mode: Option<Value>,
+    show_mode: Option<Box<serde_json::value::RawValue>>,
 }
 
+/// Raw text again (see `bool_or_false`), so a value no tree can hold still counts as damage.
 fn show_mode_damaged(text: &str) -> bool {
     serde_json::from_str::<ModeProbe>(text)
         .ok()
         .and_then(|p| p.workspace.show_mode)
-        .is_some_and(|v| !v.is_boolean())
+        .is_some_and(|raw| !matches!(raw.get(), "true" | "false"))
 }
 
 #[derive(Deserialize)]

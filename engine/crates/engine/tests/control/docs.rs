@@ -2313,6 +2313,14 @@ fn show_mode_is_saved_with_the_workspace_and_restored_on_open() {
     assert!(!r.s.control().is_unsaved(), "opening is not an edit");
 
     // Back to Edit Mode and a Save: the file says Edit Mode.
+    // A plain Save of a clean workspace writes the new mode: no edit is needed.
+    set_show_mode(&mut r, false);
+    assert!(!r.s.control().is_unsaved());
+    ok_result(&request(&mut r.s, Request::Save));
+    assert!(!saved_show_mode(&a));
+    set_show_mode(&mut r, true);
+    ok_result(&request(&mut r.s, Request::Save));
+    assert!(saved_show_mode(&a));
     set_show_mode(&mut r, false);
     rename(&mut r.s, 1, "edited");
     ok_result(&request(&mut r.s, Request::Save));
@@ -2397,4 +2405,17 @@ fn a_recovered_workspace_opens_in_the_mode_it_was_autosaved_in() {
     );
     ok_result(&replies);
     assert!(snapshot(&replies).document.show_mode, "open_recovery");
+}
+
+/// The recovery file written at shutdown carries the mode too (the engine is stopped in the
+/// middle of a show, in Show Mode, with unsaved edits).
+#[test]
+fn the_shutdown_recovery_write_carries_the_show_mode() {
+    let mut r = saved_rig(memo_ws("one", &[1]));
+    let path = r.env.show_path();
+    rename(&mut r.s, 1, "unsaved work");
+    set_show_mode(&mut r, true);
+    let id = r.s.control().workspace().id;
+    r.s.shutdown();
+    assert!(saved_show_mode(&r.env.dirs.recovery_path(id, Some(&path))));
 }

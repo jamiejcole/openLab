@@ -698,6 +698,7 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(locked.window?.title, String(format: loc("window.main.title.showMode"), "Saved In Show Mode"))
         XCTAssertEqual(editable.window?.title, "Saved In Edit Mode")
         XCTAssertTrue(locked.cueToolbar.isHidden)
+        XCTAssertFalse(locked.isVisible(.inspector))
         XCTAssertFalse(editable.cueToolbar.isHidden)
         XCTAssertTrue(locked.cueList.isEditLocked)
         XCTAssertFalse(editable.cueList.isEditLocked)

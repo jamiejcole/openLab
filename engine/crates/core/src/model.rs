@@ -74,11 +74,12 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// A boolean, or `false` for any other value: a damaged `show_mode` must not refuse the show.
+/// `true` for a `true`, `false` for anything else: a damaged `show_mode` must not refuse the
+/// show. Read as raw text, not as a `Value`, which would refuse a number out of range or
+/// nesting past the parser's limit (the same value under an unknown key loads fine).
 fn bool_or_false<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
-    Ok(serde_json::Value::deserialize(deserializer)?
-        .as_bool()
-        .unwrap_or(false))
+    let raw = Option::<Box<serde_json::value::RawValue>>::deserialize(deserializer)?;
+    Ok(raw.is_some_and(|r| r.get() == "true"))
 }
 
 impl Workspace {
