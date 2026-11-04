@@ -170,6 +170,8 @@ pub struct DocParts {
     indexed: Indexed,
     /// The slice-plan checks, every audio cue walked once (no file is probed yet).
     checks: PlanChecks,
+    /// The file was saved in Show Mode (SM-01).
+    show_mode: bool,
 }
 
 impl fmt::Debug for DocParts {
@@ -184,11 +186,13 @@ impl fmt::Debug for DocParts {
 /// Builds a doc's parts from a workspace read (on the document worker).
 fn build_parts(loaded: Loaded, config: EngineConfig) -> DocParts {
     let Loaded {
-        workspace,
+        mut workspace,
         path,
         dirty,
         notices,
     } = loaded;
+    // The live mode is the doc's; the model's workspace never carries it (`Workspace::show_mode`).
+    let show_mode = std::mem::take(&mut workspace.show_mode);
     let mut model = DocModel::new(workspace, CueEngine::new(config));
     // Sample 0: nothing runs yet, so what this decides (problems, playheads) does not depend
     // on the time; the control thread hands the engine the real time from its next call on.
@@ -205,6 +209,7 @@ fn build_parts(loaded: Loaded, config: EngineConfig) -> DocParts {
         actions,
         indexed,
         checks,
+        show_mode,
     }
 }
 
@@ -1264,7 +1269,7 @@ impl DocCx<'_> {
         let moved = self.doc.show_path.as_deref() != Some(path.as_path())
             && new_dir.is_some()
             && new_dir != old_dir;
-        let mut copy = self.doc.model.ws().clone();
+        let mut copy = self.doc.saved_workspace();
         let mut rebased = false;
         let mut respelled_relative = false;
         let mut relink_failure = None;
@@ -1281,7 +1286,7 @@ impl DocCx<'_> {
                 if !rebased {
                     // A refusal changes nothing, but a failed rollback leaves some relinks in
                     // the copy: save the workspace as it is.
-                    copy = self.doc.model.ws().clone();
+                    copy = self.doc.saved_workspace();
                 }
             }
         }
@@ -1529,7 +1534,7 @@ impl DocCx<'_> {
             return;
         };
         let rx = writer.autosave(
-            self.doc.model.ws().clone(),
+            self.doc.saved_workspace(),
             self.doc.show_path.clone(),
             self.doc.revision,
         );
@@ -2136,6 +2141,7 @@ impl Control {
             actions,
             indexed,
             checks,
+            show_mode,
         } = parts;
         // A copy of an open show (a Finder duplicate) has its workspace id: QLab 5 gives the
         // copy a fresh one and marks it unsaved. Ids must be unique: autosaves, OSC
@@ -2167,6 +2173,7 @@ impl Control {
         let _ = media.take_plan_changes();
         let mut doc = Doc::new(&self.eng, doc_id, model, path, media);
         doc.checks = checks;
+        doc.show_mode = show_mode;
         doc.file.notices = notices;
         doc.revision = 1;
         doc.saved_revision = if dirty { 0 } else { 1 };
@@ -2414,6 +2421,7 @@ impl Control {
                 continue;
             }
             let name = doc.model.ws().name.clone();
+            let copy = doc.saved_workspace();
             let file = &mut doc.file;
             let current = file.autosaved_revision == Some(doc.revision);
             match (file.autosave.take(), current) {
@@ -2421,11 +2429,7 @@ impl Control {
                 (None, true) => counts.written += 1,
                 (_, false) => match &self.eng.docs.writer {
                     Some(writer) => {
-                        let rx = writer.autosave(
-                            doc.model.ws().clone(),
-                            doc.show_path.clone(),
-                            doc.revision,
-                        );
+                        let rx = writer.autosave(copy, doc.show_path.clone(), doc.revision);
                         file.autosaved_revision = Some(doc.revision);
                         waiting.push_back((index, name, rx, false));
                     }
@@ -2469,11 +2473,8 @@ impl Control {
                             "could not write the recovery file of \"{name}\" at shutdown: {e}; trying once more"
                         ),
                     ));
-                    let rx = writer.autosave(
-                        doc.model.ws().clone(),
-                        doc.show_path.clone(),
-                        doc.revision,
-                    );
+                    let rx =
+                        writer.autosave(doc.saved_workspace(), doc.show_path.clone(), doc.revision);
                     waiting.push_back((index, name, rx, true));
                 }
                 Ok(Err(e)) => {

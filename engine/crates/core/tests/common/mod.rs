@@ -150,6 +150,7 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
             port: 53000,
             protocol: NetworkProtocol::Udp,
         }],
+        show_mode: false,
         cue_lists: vec![CueList {
             id: list_id(1),
             name: "Main".into(),

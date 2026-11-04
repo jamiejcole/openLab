@@ -54,8 +54,32 @@ pub struct Workspace {
     pub settings: WorkspaceSettings,
     pub patches: Vec<OutputPatch>,
     pub network_patches: Vec<NetworkPatch>,
+    /// The workspace was in Show Mode when saved (SM-01): it reopens in Show Mode. Only the saved
+    /// copy carries it: the engine keeps the live mode beside the model (not undoable, and a
+    /// change does not mark the workspace unsaved) and writes it into each copy it saves, and
+    /// takes it back out when a file is opened, so a workspace on the wire or in the model is
+    /// always `false`. Absent from the file means Edit Mode; a value that is not a boolean reads
+    /// as Edit Mode (`load_show` warns).
+    #[serde(
+        default,
+        skip_serializing_if = "is_false",
+        deserialize_with = "bool_or_false"
+    )]
+    pub show_mode: bool,
     /// Last so the readable parts of the file come first.
     pub cue_lists: Vec<CueList>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// `true` for a `true`, `false` for anything else: a damaged `show_mode` must not refuse the
+/// show. Read as raw text, not as a `Value`, which would refuse a number out of range or
+/// nesting past the parser's limit (the same value under an unknown key loads fine).
+fn bool_or_false<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    let raw = Option::<Box<serde_json::value::RawValue>>::deserialize(deserializer)?;
+    Ok(raw.is_some_and(|r| r.get() == "true"))
 }
 
 impl Workspace {
@@ -101,6 +125,7 @@ impl Workspace {
                 port: 53000,
                 protocol: NetworkProtocol::Udp,
             }],
+            show_mode: false,
             cue_lists: vec![CueList {
                 id: list,
                 name: "Main Cue List".to_owned(),
