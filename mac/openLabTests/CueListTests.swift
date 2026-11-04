@@ -2412,7 +2412,9 @@ final class PlayheadFlowTests: XCTestCase {
     ) async {
         await assertEventually("a notice", file: file, line: line) { alerts.notesNotices.count == 1 }
         let notice = alerts.notesNotices.first
-        XCTAssertTrue(notice?.message.contains("1.wav") == true, "names the cue: \(notice?.message ?? "")", file: file, line: line)
+        XCTAssertTrue(
+            notice?.message.contains("1.wav") == true, "names the cue: \(notice?.message ?? "")", file: file,
+            line: line)
         XCTAssertTrue(notice?.message.contains("not saved") == true, file: file, line: line)
         XCTAssertTrue(notice?.message.contains(reason) == true, file: file, line: line)
         XCTAssertEqual(alerts.pasteboard.string(forType: .string), text, "Copy Text", file: file, line: line)
