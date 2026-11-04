@@ -1137,10 +1137,11 @@ final class AppControllerTests: XCTestCase {
 
         try await setHotkeys(
             "1",
-            #"{"go":\#(Self.hotkey("g", ["command"]))}"#)
+            #"{"go":\#(Self.hotkey("g", ["control"]))}"#)
+        await assertEventually { self.app.frontKeys.chord(for: .go) == KeyChord("g", [.control]) }
         MainMenu.applyKeys(to: menus.transport, app.frontKeys)
         XCTAssertEqual(item(.go)?.keyEquivalent, "g")
-        XCTAssertEqual(item(.go)?.keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(item(.go)?.keyEquivalentModifierMask, [.control])
     }
 
     /// Select Next / Select Previous are fixed View-menu items (Cmd-Down / Cmd-Up), not in the key
