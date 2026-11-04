@@ -1159,6 +1159,59 @@ final class WindowLayoutTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(saved), tall, accuracy: 1, "the shrink did not overwrite it")
     }
 
+    func testAWindowSqueezeKeepsTheDraggedSidebarWidth() async throws {
+        let url = try showFile("SqueezeSide")
+        let (doc, wc) = try await open(url)
+        let big = frame(wc)
+        wc.window?.setFrame(big, display: true)
+        try toggle(.sidebar, in: wc)
+        let across = wc.horizontalSplit.bounds.width - wc.horizontalSplit.dividerThickness
+        // As wide as the inspector's own width allows the cue list to be squeezed to.
+        let wide = min(481, across - 520).rounded(.down)
+        wc.horizontalSplit.setPosition(across - wide, ofDividerAt: 0)
+        settle(wc)
+        XCTAssertEqual(wc.sidebar.view.frame.width, wide, accuracy: 1, "the drag took")
+        wc.window?.setFrame(NSRect(origin: big.origin, size: wc.window?.minSize ?? big.size), display: true)
+        settle(wc)
+        wc.window?.setFrame(big, display: true)
+        settle(wc)
+        XCTAssertEqual(wc.sidebar.view.frame.width, wide, accuracy: 1, "the dragged width came back")
+        let path = try XCTUnwrap(app.session.workspaces.first { $0.doc == doc }?.path)
+        let saved = WindowLayoutStore(defaults: defaults).layout(forPath: path).sidebarWidth
+        XCTAssertEqual(try XCTUnwrap(saved), wide, accuracy: 1, "the squeeze did not overwrite it")
+    }
+
+    /// The size of a hidden inspector is part of the layout too: Save As keeps it.
+    func testSaveAsKeepsTheSizeOfAHiddenInspector() async throws {
+        let old = try showFile("HiddenSize")
+        let new = engine.folder.appendingPathComponent("hidden-\(UUID().uuidString).openlab")
+        let (doc, wc) = try await open(old)
+        wc.window?.setFrame(frame(wc), display: true)
+        let room = wc.verticalSplit.bounds.height - wc.verticalSplit.dividerThickness
+        let tall = min(330, room - 250).rounded(.down)
+        wc.verticalSplit.setPosition(room - tall, ofDividerAt: 0)
+        settle(wc)
+        try toggle(.inspector, in: wc)
+        app.pickSaveURL = { _ in new }
+        let saved = await app.saveWorkspace(wc.store, asNew: true)
+        XCTAssertTrue(saved)
+        await assertEventually { self.app.session.workspaces.first { $0.doc == doc }?.path == new.path }
+        await close(doc)
+
+        let (_, again) = try await open(new)
+        XCTAssertFalse(again.isVisible(.inspector))
+        try toggle(.inspector, in: again)
+        XCTAssertEqual(again.inspector.view.frame.height, tall, accuracy: 1)
+    }
+
+    /// An engine restart numbers docs again: a new untitled workspace must not inherit the file an
+    /// earlier doc with the same id was opened from.
+    func testAnOpenedPathIsUsedOnceByItsWindow() async throws {
+        let url = try showFile("Once")
+        _ = try await open(url)
+        XCTAssertEqual(app.session.openedPathCount, 0, "the window took it")
+    }
+
     func testTheMinimumWindowKeepsItsListAndInspectorSizes() async throws {
         let (_, wc) = try await open(try showFile("Small"))
         wc.window?.setFrame(NSRect(origin: frame(wc).origin, size: wc.window?.minSize ?? .zero), display: true)

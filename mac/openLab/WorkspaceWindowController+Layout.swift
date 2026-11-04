@@ -13,8 +13,9 @@ extension WorkspaceWindowController {
         guard let window else { return }
         isRestoringLayout = true
         defer { isRestoringLayout = false }
-        layoutPersistence = (store, path)
-        let layout = store.layout(forPath: path)
+        let entry = store.key(for: path)
+        layoutPersistence = (store, path, entry)
+        let layout = store.layout(forEntry: entry)
         if let saved = layout.frame,
             let fitted = WindowLayout.fit(saved, screens: NSScreen.screens.map(\.visibleFrame), minSize: window.minSize)
         {
@@ -23,6 +24,9 @@ extension WorkspaceWindowController {
         window.contentView?.layoutSubtreeIfNeeded()
         pendingInspectorHeight = layout.inspectorHeight
         pendingSidebarWidth = layout.sidebarWidth
+        // The preferred sizes are part of the layout whether or not their area is shown now.
+        if let h = layout.inspectorHeight { inspectorHeightConstraint?.constant = max(h, 120) }
+        if let w = layout.sidebarWidth { sidebarWidthConstraint?.constant = max(w, 200) }
         for area in LayoutArea.allCases {
             if let on = layout.shown[area] { setVisible(area, on) }
         }
@@ -36,8 +40,11 @@ extension WorkspaceWindowController {
     /// the window is already up: what is on screen now is the layout, kept under the file's path.
     /// Nothing is applied, so the window never moves.
     func bindLayout(to store: WindowLayoutStore, path: String) {
-        if let current = layoutPersistence, store.key(for: current.path) == store.key(for: path) { return }
-        layoutPersistence = (store, path)
+        // Raw strings first, and the resolved name is kept: resolving can touch a slow volume.
+        if let current = layoutPersistence, current.path == path { return }
+        let entry = store.key(for: path)
+        if let current = layoutPersistence, current.key == entry { return }
+        layoutPersistence = (store, path, entry)
         startSavingLayout()
         saveLayout()
     }
@@ -48,29 +55,26 @@ extension WorkspaceWindowController {
         let center = NotificationCenter.default
         layoutObservers = [verticalSplit, horizontalSplit].map { split in
             center.addObserver(forName: NSSplitView.didResizeSubviewsNotification, object: split, queue: .main) {
-                [weak self] _ in
-                MainActor.assumeIsolated { self?.splitMoved() }
+                [weak self] note in
+                // A divider moved by the user carries NSSplitViewUserResizeKey; a layout pass after a
+                // window resize carries at most the divider's index.
+                let dragged = note.userInfo?["NSSplitViewUserResizeKey"] != nil
+                MainActor.assumeIsolated { self?.splitMoved(byDrag: dragged, vertical: split === self?.verticalSplit) }
             }
         }
     }
 
-    /// A divider moved: what the split is now is what it keeps (the soft size constraints would pull it
-    /// back at the next layout pass). Except when the cue list is down to its minimum and the area came
-    /// out smaller than it was asked to be: a window too small for both squeezed it, and the size the
-    /// user dragged stays.
-    private func splitMoved() {
+    /// A divider moved. A drag sets the preferred size of the area beside it (the soft size
+    /// constraints would pull it back at the next layout pass); a window resize, which squeezes an
+    /// area without the user choosing that, leaves what the user dragged.
+    private func splitMoved(byDrag: Bool, vertical: Bool) {
         guard !isRestoringLayout else { return }
-        let list = cueList.view.frame
-        if isVisible(.inspector), !isShowMode, let kept = inspectorHeightConstraint?.constant {
-            let height = inspector.view.frame.height
-            if height > 0, !(height < kept && list.height <= Self.minCueListHeight + 0.5) {
-                inspectorHeightConstraint?.constant = height
+        if byDrag {
+            if vertical, isVisible(.inspector), !isShowMode, inspector.view.frame.height > 0 {
+                inspectorHeightConstraint?.constant = inspector.view.frame.height
             }
-        }
-        if isVisible(.sidebar), let kept = sidebarWidthConstraint?.constant {
-            let width = sidebar.view.frame.width
-            if width > 0, !(width < kept && list.width <= Self.minCueListWidth + 0.5) {
-                sidebarWidthConstraint?.constant = width
+            if !vertical, isVisible(.sidebar), sidebar.view.frame.width > 0 {
+                sidebarWidthConstraint?.constant = sidebar.view.frame.width
             }
         }
         saveLayout()
@@ -80,16 +84,14 @@ extension WorkspaceWindowController {
     /// shown areas are what the user asked for (`wanted`), and the split sizes are the preferred ones
     /// (what was dragged), so a window too small to show them does not overwrite them.
     func saveLayout() {
-        guard !isRestoringLayout, let (store, path) = layoutPersistence, let window else { return }
-        var layout = store.layout(forPath: path)
+        guard !isRestoringLayout, let (store, _, entry) = layoutPersistence, let window else { return }
+        var layout = store.layout(forEntry: entry)
         if !window.isMiniaturized, !window.styleMask.contains(.fullScreen) { layout.frame = window.frame }
         for area in LayoutArea.allCases { layout.shown[area] = wanted[area] ?? true }
-        if isVisible(.inspector), !isShowMode, let h = inspectorHeightConstraint?.constant, h > 0 {
-            layout.inspectorHeight = h
-        }
-        if isVisible(.sidebar), let w = sidebarWidthConstraint?.constant, w > 0 { layout.sidebarWidth = w }
+        if let h = inspectorHeightConstraint?.constant, h > 0 { layout.inspectorHeight = h }
+        if let w = sidebarWidthConstraint?.constant, w > 0 { layout.sidebarWidth = w }
         layout.sidebarTab = sidebar.tabs.selectedSegment
-        store.save(layout, forPath: path)
+        store.save(layout, forEntry: entry)
     }
 
     /// Gives a just-shown area the split size that was saved for it.

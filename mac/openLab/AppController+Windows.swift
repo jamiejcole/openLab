@@ -43,7 +43,7 @@ extension AppController {
             if let listed { wc.workspaceName = listed.name }
             // The path of a file just opened is known before the engine's list names it: the layout
             // is applied now, before the window is shown, so it never jumps under the operator.
-            if let path = doc.flatMap({ session.openedPaths[$0] }) ?? listed?.path, let defaults = layoutDefaults {
+            if let path = doc.flatMap({ session.takeOpenedPath($0) }) ?? listed?.path, let defaults = layoutDefaults {
                 wc.restoreLayout(from: WindowLayoutStore(defaults: defaults), path: path)
             }
             show(wc)

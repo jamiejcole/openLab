@@ -121,7 +121,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var inspectorHeightConstraint: NSLayoutConstraint?
     var sidebarWidthConstraint: NSLayoutConstraint?
     /// Where this window's layout is remembered, once `restoreLayout` has set it (`+Layout`).
-    var layoutPersistence: (store: WindowLayoutStore, path: String)?
+    var layoutPersistence: (store: WindowLayoutStore, path: String, key: String)?
     /// Saved split sizes waiting for their area to be shown.
     var pendingInspectorHeight: CGFloat?
     var pendingSidebarWidth: CGFloat?

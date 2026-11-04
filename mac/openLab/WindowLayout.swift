@@ -108,15 +108,20 @@ struct WindowLayoutStore {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().path
     }
 
-    func layout(forPath path: String) -> WindowLayout {
-        WindowLayout(stored: defaults.dictionary(forKey: Self.key)?[key(for: path)])
+    func layout(forPath path: String) -> WindowLayout { layout(forEntry: key(for: path)) }
+
+    func save(_ layout: WindowLayout, forPath path: String) { save(layout, forEntry: key(for: path)) }
+
+    /// The same by an entry name already resolved by `key(for:)`: resolving can touch the disk, so
+    /// the window resolves once and saves by entry.
+    func layout(forEntry entry: String) -> WindowLayout {
+        WindowLayout(stored: defaults.dictionary(forKey: Self.key)?[entry])
     }
 
-    func save(_ layout: WindowLayout, forPath path: String) {
-        let path = key(for: path)
+    func save(_ layout: WindowLayout, forEntry entry: String) {
         var all = defaults.dictionary(forKey: Self.key) ?? [:]
-        all[path] = layout.stored
-        if all.count > Self.limit, let drop = all.keys.filter({ $0 != path }).sorted().first { all[drop] = nil }
+        all[entry] = layout.stored
+        if all.count > Self.limit, let drop = all.keys.filter({ $0 != entry }).sorted().first { all[drop] = nil }
         defaults.set(all, forKey: Self.key)
     }
 }

@@ -264,7 +264,12 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
 
     /// The path each just-opened doc was asked for, known before the engine's workspace list names
     /// it: a window made at that moment can restore its layout before it is shown.
-    private(set) var openedPaths: [ModelID: String] = [:]
+    private var openedPaths: [ModelID: String] = [:]
+
+    /// The path `doc` was opened from, once: the window that reads it owns it, so a doc id the
+    /// engine hands out again later never inherits it.
+    func takeOpenedPath(_ doc: ModelID) -> String? { openedPaths.removeValue(forKey: doc) }
+    var openedPathCount: Int { openedPaths.count }
 
     /// The engine's path equality, close enough: NFC and case-insensitive. A false "same" only
     /// defers a store to the end of the reattach.
@@ -324,6 +329,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         stores = [:]
         order = []
         pendingCovers = [:]  // doc ids of the old run
+        openedPaths = [:]
         listed = []
         events.send(.newEngineRun)
         storesChanged.send()
