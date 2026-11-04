@@ -89,7 +89,10 @@ enum HotkeyRules {
     /// Key equivalents of the menu bar except the Transport items (their keys are the workspace's
     /// transport keys, checked separately and dynamic).
     @MainActor
-    static func currentMenuChords() -> Set<KeyChord> {
+    static func currentMenuChords() -> Set<KeyChord> { NSApp?.mainMenu.map(menuChords(in:)) ?? [] }
+
+    @MainActor
+    static func menuChords(in menu: NSMenu) -> Set<KeyChord> {
         var out: Set<KeyChord> = []
         func walk(_ menu: NSMenu) {
             for item in menu.items {
@@ -106,7 +109,7 @@ enum HotkeyRules {
                 out.insert(KeyChord(item.keyEquivalent, mods))
             }
         }
-        if let main = NSApp?.mainMenu { walk(main) }
+        walk(menu)
         return out
     }
 }

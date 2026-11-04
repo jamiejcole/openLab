@@ -1716,10 +1716,11 @@ final class PlayheadFlowTests: XCTestCase {
     func testAMenuItemNeedingTheFnKeyDoesNotTakeThePlainKey() async throws {
         try await threeCues()
         let letter = try unusedLetter()
-        let menu = try XCTUnwrap(NSApp.mainMenu?.items.first?.submenu)
-        let item = FnMenuItem(title: "fn key", action: nil, keyEquivalent: letter)
-        menu.addItem(item)
-        defer { menu.removeItem(item) }
+        let menu = NSMenu()
+        menu.addItem(FnMenuItem(title: "fn key", action: nil, keyEquivalent: letter))
+        let chords: @MainActor () -> Set<KeyChord> = { HotkeyRules.menuChords(in: menu) }
+        wc.inspector.menuChords = chords
+        app.menuChords = chords
         XCTAssertTrue(wc.inspector.record(KeyChord(letter)), wc.inspector.messageLabel.stringValue)
         await assertEventually("recorded") {
             self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == letter
