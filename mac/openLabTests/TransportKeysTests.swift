@@ -52,9 +52,10 @@ final class TransportKeysTests: XCTestCase {
         XCTAssertEqual(keys.chord(for: .go), KeyChord("a"))
         XCTAssertNil(keys.chord(for: .stopAll))
         XCTAssertEqual(keys.chord(for: .pauseAll), KeyChord("p"))
-        XCTAssertNil(keys.chord(for: .pauseResumeSelected), "the fixed P key yields to the show's key")
+        XCTAssertNil(keys.chord(for: .pauseResumeSelected), "its default P is Pause All's here: the later field loses")
         XCTAssertEqual(keys.chord(for: .resumeAll), KeyChord("]"), "cue hotkeys do not take transport keys")
         XCTAssertEqual(keys.warnings.count, 2, "\(keys.warnings)")
+        XCTAssertTrue(keys.warnings[1].contains(loc("menu.transport.pauseResumeSelected")), "\(keys.warnings)")
         // The show log reads them: localised words and menu titles, never field names (L26).
         XCTAssertEqual(
             keys.warnings.first,
@@ -62,6 +63,33 @@ final class TransportKeysTests: XCTestCase {
                 format: loc("hotkeys.warn.unusable"), loc("menu.transport.stopAll"),
                 String(format: loc("hotkeys.reason.duplicate"), loc("menu.transport.go"))))
         XCTAssertFalse(keys.warnings.contains { $0.contains("hotkeys.") || $0.contains("_") }, "\(keys.warnings)")
+    }
+
+    func testSelectedCueKeysAreTheModelsAndOnlyPreviewAndPanicAreFixed() throws {
+        let keys = TransportKeys(
+            settings: try settings(
+                #"{"load_selected":\#(hk("k")),"pause_resume_selected":null,"start_selected":\#(hk("j")),"stop_selected":\#(hk("i", ["shift"])),"reset_selected":\#(hk("u"))}"#
+            ))
+        XCTAssertEqual(keys.chord(for: .loadSelected), KeyChord("k"))
+        XCTAssertNil(keys.chord(for: .pauseResumeSelected))
+        XCTAssertEqual(keys.chord(for: .startSelected), KeyChord("j"))
+        XCTAssertEqual(keys.chord(for: .stopSelected), KeyChord("i", [.shift]))
+        XCTAssertEqual(keys.chord(for: .resetSelected), KeyChord("u"))
+        XCTAssertNil(keys.command(for: KeyChord("l")), "the old default is not kept")
+        XCTAssertEqual(keys.chord(for: .previewSelected), KeyChord("v"), "no model field: fixed")
+        XCTAssertEqual(keys.chord(for: .panicSelected), KeyChord("s"), "no model field: fixed")
+        XCTAssertTrue(keys.warnings.isEmpty, "\(keys.warnings)")
+        // Absent fields take the engine's new-workspace defaults.
+        let defaults = TransportKeys(settings: try settings("{}"))
+        XCTAssertEqual(defaults.chord(for: .loadSelected), KeyChord("l"))
+        XCTAssertEqual(defaults.chord(for: .pauseResumeSelected), KeyChord("p"))
+        XCTAssertNil(defaults.chord(for: .startSelected))
+    }
+
+    func testAModelSelectedCueKeyBeatsACueHotkeyOnTheSameChordLikeTheEngine() throws {
+        let keys = TransportKeys(settings: try settings("{}"), cueChords: [KeyChord("l"), KeyChord("v")])
+        XCTAssertEqual(keys.chord(for: .loadSelected), KeyChord("l"), "the engine's map owns L: the cue never starts")
+        XCTAssertNil(keys.chord(for: .previewSelected), "V is the app's own: it yields to the cue")
     }
 
     func testUnsupportedAndMalformedHotkeysWarnNotCrash() throws {
