@@ -151,6 +151,10 @@
 "cuelist.col.preWait" = "Pre-Wait";
 "cuelist.col.duration" = "Duration";
 "cuelist.durationEditor.label" = "Edit duration";
+"cuelist.numberEditor.label" = "Edit number";
+"cuelist.nameEditor.label" = "Edit name";
+"cuelist.name.fadeDefault" = "Fade %@";
+"cuelist.edit.cueGone" = "The cue you were editing no longer exists.";
 "cuelist.col.postWait" = "Post-Wait";
 
 "cue.target.missing" = "Missing target";
