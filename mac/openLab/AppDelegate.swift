@@ -205,6 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor @objc func showLog(_ sender: Any?) { appController.showLog() }
     @MainActor @objc func revealCrashReports(_ sender: Any?) { appController.revealCrashReports() }
     @MainActor @objc func showWorkspaceSettings(_ sender: Any?) { appController.frontController?.showSettings() }
+    @MainActor @objc func showOverrideControls(_ sender: Any?) { appController.showOverrideControls() }
     @MainActor @objc func showPreshowCheck(_ sender: Any?) { appController.frontController?.showPreshowCheck() }
 
     @MainActor @objc func relinkMedia(_ sender: Any?) {

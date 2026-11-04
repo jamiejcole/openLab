@@ -33,7 +33,7 @@ enum Icon: CaseIterable {
     // Engine status levels.
     case statusWaiting, statusNormal, statusWarning, statusAlarm
     // Cue list markers.
-    case playhead, playheadInside, preview, flagged, flaggedInside, warningMarker, engineAlarm
+    case playhead, playheadInside, preview, outputOverridden, flagged, flaggedInside, warningMarker, engineAlarm
     // Time column header toggle (elapsed / remaining).
     case timeToggle, timeToggleUp
     // Reserved for screens that do not exist yet; they resolve and are tested already.
@@ -103,6 +103,7 @@ enum Icon: CaseIterable {
         case .playhead: return Self.row("arrowtriangle.right.fill")
         case .playheadInside: return Self.row("arrowtriangle.right")
         case .preview: return Self.row("headphones")
+        case .outputOverridden: return Self.row("circle.fill")
         case .flagged: return Self.row("flag.fill")
         case .flaggedInside: return Self.row("flag")
         case .warningMarker: return Self.row("exclamationmark.triangle.fill")

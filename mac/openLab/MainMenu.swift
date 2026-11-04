@@ -33,6 +33,7 @@ enum MainMenu {
                 .separator(),
                 logItem(),
                 preshowItem(),
+                item("menu.window.overrides", #selector(AppDelegate.showOverrideControls(_:)), "O"),
                 item("menu.window.bringAllToFront", #selector(NSApplication.arrangeInFront(_:))),
             ]
         )
