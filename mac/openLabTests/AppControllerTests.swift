@@ -2009,7 +2009,8 @@ final class AppControllerTests: XCTestCase {
         let quit = await app.prepareToQuit()
         XCTAssertFalse(quit)
         XCTAssertFalse(
-            FileManager.default.fileExists(atPath: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName).path))
+            FileManager.default.fileExists(atPath: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName).path)
+        )
     }
 
     /// A notes folder that cannot be written (a file stands where the folder should be) is logged and
