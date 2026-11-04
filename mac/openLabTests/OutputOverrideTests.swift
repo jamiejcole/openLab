@@ -19,7 +19,9 @@ private final class UDPListener {
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")
         addr.sin_port = 0
         let bound = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
         }
         var len = socklen_t(MemoryLayout<sockaddr_in>.size)
         let named = withUnsafeMutablePointer(to: &addr) {
@@ -173,7 +175,8 @@ final class OutputOverrideTests: XCTestCase {
     }
 
     private func overridesMenuItem() throws -> NSMenuItem {
-        let window = try XCTUnwrap(MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.window") })
+        let window = try XCTUnwrap(
+            MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == loc("menu.window") })
         return try XCTUnwrap(window.items.first { $0.title == loc("menu.window.overrides") })
     }
 
@@ -215,7 +218,8 @@ final class OutputOverrideTests: XCTestCase {
 
         XCTAssertTrue(wc.isShowMode, "the override changes no mode")
         XCTAssertFalse(wc.footer.isHidden)
-        XCTAssertEqual(wc.footer.overrideBadge.attributedTitle.string.trimmingCharacters(in: .whitespaces),
+        XCTAssertEqual(
+            wc.footer.overrideBadge.attributedTitle.string.trimmingCharacters(in: .whitespaces),
             loc("footer.override.badge"))
         XCTAssertEqual(app.overrides.networkSwitch.state, .off)
         XCTAssertNil(NSApp.modalWindow)

@@ -164,7 +164,8 @@ final class FooterBar: NSView {
         settingsButton.action = #selector(settingsClicked)
         settingsButton.bezelStyle = .texturedRounded
 
-        let left = NSStackView(views: [modeSwitch, showModeLabel, overrideBadge] + [.toolbar, .masthead].compactMap { toggles[$0] })
+        let left = NSStackView(
+            views: [modeSwitch, showModeLabel, overrideBadge] + [.toolbar, .masthead].compactMap { toggles[$0] })
         let right = NSStackView(views: [clock] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
         let bar = NSStackView(views: [left, NSStackView(views: [countLabel, statusButton, noticeLabel]), right])
         bar.distribution = .equalCentering
