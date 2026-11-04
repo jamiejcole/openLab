@@ -120,7 +120,7 @@ extension AppController {
             return true
         }
         for doc in session.order {
-            if await !commitEdits(doc, closing: true) { return false }
+            if await !commitEdits(doc) { return false }
         }
         if session.stores.values.contains(where: isPlaying) {
             if !alerts.confirmQuitWhilePlaying() { return false }
@@ -205,7 +205,7 @@ extension AppController {
     /// The unsaved-changes prompt. nil: cancelled (or the save failed or was cancelled). Otherwise
     /// the `discard_changes` flag to send: true after Don't Save, false when clean or saved.
     private func resolveUnsaved(_ doc: ModelID) async -> Bool? {
-        guard await commitEdits(doc, closing: true) else { return nil }
+        guard await commitEdits(doc) else { return nil }
         guard let store = session.stores[doc], store.document?.dirty == true else { return false }
         switch alerts.unsavedChanges(workspace: name(of: doc)) {
         case .cancel: return nil
@@ -215,10 +215,8 @@ extension AppController {
     }
 
     /// Typed-in inspector edits go to the engine before a save, close or quit looks at the workspace.
-    /// `closing`: Close and Quit wait for a notice about unsaved notes to be answered, as the window
-    /// is about to go with the only copy of the text.
-    private func commitEdits(_ doc: ModelID, closing: Bool = false) async -> Bool {
-        await windows[doc]?.commitPendingEdits(awaitNotices: closing) ?? true
+    private func commitEdits(_ doc: ModelID) async -> Bool {
+        await windows[doc]?.commitPendingEdits() ?? true
     }
 
     /// File > Save / Save As (allowed in Show Mode, as in QLab). `asNew`: always ask for a path.

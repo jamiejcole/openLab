@@ -216,6 +216,7 @@ final class AppControllerTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        NotesNoticePanel.closeAll()
         app?.closeAllWindows()
         app = nil
         engine?.releaseResults()
@@ -1398,9 +1399,9 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(quit)
     }
 
-    /// Quit with notes the engine refuses still being typed: the sheet with Copy Text, which Quit waits
-    /// for, then it goes on.
-    func testQuitWithMastheadNotesTheEngineRefusesWaitsForTheNoticeThenQuits() async throws {
+    /// Quit with notes the engine refuses still being typed: the panel with Copy Text comes up and Quit
+    /// goes on without anyone answering it.
+    func testQuitWithMastheadNotesTheEngineRefusesGoesOnAndTheNoticeStays() async throws {
         try await quiet("1")
         let wc = try XCTUnwrap(app.windows["1"])
         let window = try XCTUnwrap(wc.window)
@@ -1412,13 +1413,12 @@ final class AppControllerTests: XCTestCase {
         notes.insertText(tooLong, replacementRange: notes.selectedRange())
         let typed = notes.string
         alerts.saveChoices = [.dontSave]
-        let quitting = Task { await self.app.prepareToQuit() }
-        await assertEventually("the sheet") { window.attachedSheet != nil }
-        let sheet = try XCTUnwrap(window.attachedSheet)
-        XCTAssertTrue(sheetText(sheet).contains("not saved"))
-        XCTAssertTrue(pressButton(loc("alert.copyText"), in: sheet))
-        let quit = await quitting.value
+        let quit = await app.prepareToQuit()
         XCTAssertTrue(quit, "Quit goes on")
+        await assertEventually("the panel") { !NotesNoticePanel.open.isEmpty }
+        let panel = try XCTUnwrap(NotesNoticePanel.open.last?.panel)
+        XCTAssertTrue(sheetText(panel).contains("not saved"))
+        XCTAssertTrue(pressButton(loc("alert.copyText"), in: panel))
         XCTAssertEqual(board.string(forType: .string), typed, "Copy Text")
     }
 

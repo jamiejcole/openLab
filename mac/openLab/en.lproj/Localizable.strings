@@ -124,6 +124,7 @@
 "notes.notSaved.cueGone" = "The notes were not saved: the cue they were typed for no longer exists.";
 "notes.notSaved.blocked" = "The notes were not saved: another edit you typed is not valid. Fix it and try again.";
 "alert.copyText" = "Copy Text";
+"notes.notice.title" = "Notes not saved";
 "masthead.notes.label" = "Notes for the standing-by cue";
 
 "cue.type.group.timeline" = "Group (timeline)";

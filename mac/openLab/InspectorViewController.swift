@@ -525,7 +525,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private var refusalOutlivesFollow = false
 
     /// Notes that were refused or not delivered (cue, typed text, why); the window raises the notice.
-    var onNotesNotSaved: ((ModelID, String, EngineError) async -> Void)?
+    var onNotesNotSaved: ((ModelID, String, EngineError) -> Void)?
     /// The cue the notes being typed are for, kept from the first keystroke: the cue can be deleted
     /// before typing ends, and the text must still be offered.
     private var notesTypedFor: ModelID?
@@ -696,7 +696,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             // The cue went while its notes were typed: the text is offered, not dropped.
             if wasDirty, !isLocked, let typedFor {
                 let text = notesView.string
-                Task { await onNotesNotSaved?(typedFor, text, .notConnected) }
+                onNotesNotSaved?(typedFor, text, .notConnected)
             }
             return true
         }
@@ -777,7 +777,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 if key == "\(InspectorField.notes)", let text = property?["value"]?.stringValue {
                     // The notice carries the text (Copy Text); the field shows what the cue holds, and
                     // Close and Save go on.
-                    await onNotesNotSaved?(cue, text, error)
+                    onNotesNotSaved?(cue, text, error)
                     guard selection == [cue], editSeq[seqKey] == n else { return }
                     render(force: revert.subtracting(dirty))
                     return
