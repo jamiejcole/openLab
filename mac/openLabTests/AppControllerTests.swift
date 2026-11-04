@@ -232,12 +232,7 @@ final class AppControllerTests: XCTestCase {
     /// Changes the workspace's key map through the engine (`set_workspace_setting hotkeys`): the
     /// fields of `hotkeys` over the ones it has.
     private func setHotkeys(_ doc: ModelID, _ hotkeys: String) async throws {
-        let store = try XCTUnwrap(app.session.stores[doc])
-        var map = try XCTUnwrap(store.model?.settings["hotkeys"])
-        for (key, value) in try XCTUnwrap(JSONValue.parse(hotkeys)?.objectValue) { map.set(key, value) }
-        let result = await store.send(command: .setKeyMap(map))
-        guard case .success = result else { return XCTFail("set_key_map: \(result)") }
-        await assertEventually { store.model?.settings["hotkeys"] == map }
+        try await XCTUnwrap(app.session.stores[doc]).setHotkeys(hotkeys)
     }
 
     /// Opens a copy of the demo show whose file holds `hotkeys` (a hand edit can hold a map the
@@ -922,6 +917,52 @@ final class AppControllerTests: XCTestCase {
         let none = try keyEvent("[")
         XCTAssertTrue(app.handleKeyDown(none) === none, "null: no key")
         XCTAssertNil(app.handleKeyDown(try keyEvent("]")), "absent resume_all: QLab default")
+    }
+
+    /// A show reopened from its file has the keys the file holds: Load Selected on K, L nothing.
+    func testReopenedWorkspaceTakesItsSelectedCueKeysFromTheModel() async throws {
+        let doc = try await openShow(
+            withHotkeys: #"{"load_selected":\#(Self.hotkey("k")),"pause_resume_selected":null}"#)
+        keyDoc = doc
+        let wc = try XCTUnwrap(app.windows[doc])
+        await assertEventually {
+            wc.cueList.select([self.intro])
+            return wc.cueList.selectedIDs() == [self.intro]
+        }
+        XCTAssertEqual(app.frontKeys.chord(for: .loadSelected), KeyChord("k"))
+        XCTAssertNil(app.frontKeys.chord(for: .pauseResumeSelected), "null: no key, not the old P")
+        XCTAssertNil(app.handleKeyDown(try keyEvent("k")))
+        await assertEventually { transports(.load(cue: intro, at: 0)) == [doc] }
+        for old in ["l", "p"] {
+            let event = try keyEvent(old)
+            XCTAssertTrue(app.handleKeyDown(event) === event, "\(old) is no transport key here")
+        }
+        await settle()
+        XCTAssertEqual(transports(.load(cue: intro, at: 0)).count, 1)
+        XCTAssertTrue(transports(.pause(cue: intro)).isEmpty)
+    }
+
+    /// Typing into a field keeps the remapped key; Show Mode leaves it working, as for every
+    /// transport key.
+    func testRemappedSelectedCueKeyKeepsTheTypingAndShowModeRules() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        try await setHotkeys("1", #"{"load_selected":\#(Self.hotkey("k"))}"#)
+        await assertEventually {
+            wc.cueList.select([self.intro])
+            return wc.cueList.selectedIDs() == [self.intro]
+        }
+        await assertEventually { self.app.frontKeys.chord(for: .loadSelected) == KeyChord("k") }
+        app.isTextEditing = { true }
+        let typed = try keyEvent("k")
+        XCTAssertTrue(app.handleKeyDown(typed) === typed, "K types a k")
+        await settle()
+        XCTAssertTrue(transports(.load(cue: intro, at: 0)).isEmpty)
+        app.isTextEditing = { false }
+        wc.setShowMode(true)
+        await assertEventually { wc.isShowMode }
+        XCTAssertNil(app.handleKeyDown(try keyEvent("k")))
+        await assertEventually { transports(.load(cue: intro, at: 0)) == ["1"] }
     }
 
     func testEachWindowUsesItsOwnWorkspacesKeys() async throws {
