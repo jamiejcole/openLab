@@ -144,8 +144,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cueList.onSelectionChange = { [weak inspector, weak cueList] in
             inspector?.setSelection($0, byFollow: cueList?.followingPlayhead == true)
         }
-        cueList.onGestureLost = { [weak inspector] in inspector?.endGestures() }
-        window.onPress = { [weak cueList] in cueList?.setFollowHold(.press, $0) }
+        window.onPress = { [weak inspector, weak cueList] down in
+            // The next press means any drag before it is over.
+            if down { inspector?.endGestures() }
+            cueList?.setFollowHold(.press, down)
+        }
+        inspector.isFollowHeld = { [weak cueList] in cueList?.followHeld == true }
         inspector.onGestureHold = { [weak cueList] in cueList?.setFollowHold(.gesture, $0) }
         window.keyTarget = cueList.outlineView
         editor.isLocked = { [weak self] in self?.isShowMode ?? true }
@@ -489,6 +493,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// Commits what is typed in the inspector and in the cue list's Duration cell and the masthead notes, and waits for the
     /// engine's answers; false when an edit was invalid or refused (Save, Close, Quit stop).
     func commitPendingEdits() async -> Bool {
+        endLostGesture()
         var ok = true
         if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
         if let notes = masthead.pendingNotes() {
@@ -501,7 +506,17 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// A report about a workspace that is gone must not float on over the next one.
+    /// A key with the left button up: key and mouse events share one queue, so a mouse-up that was
+    /// coming has been handled by now, and a drag still under way lost its release. It ends here,
+    /// and a follow it held runs at once, before the key acts on the selection.
+    func endLostGesture() {
+        guard cueList.isGestureHeld, !cueList.isLeftButtonDown() else { return }
+        inspector.endGestures()
+        cueList.followHeldNow()
+    }
+
     func windowWillClose(_ notification: Notification) {
+        inspector.endGestures()
         preshowController?.close()
         settingsController?.close()
     }
@@ -526,7 +541,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             // While Find holds the row, the toggle only decides what comes back when it closes.
             if find.isOpen { find.toolbarWasHidden = !visible } else { cueToolbar.isHidden = !visible }
         case .masthead: masthead.isHidden = !visible
-        case .inspector: inspector.view.isHidden = !visible
+        case .inspector:
+            if !visible { inspector.endGestures() }
+            inspector.view.isHidden = !visible
         case .sidebar: sidebar.view.isHidden = !visible
         }
         footer.toggles[area]?.state = visible ? .on : .off

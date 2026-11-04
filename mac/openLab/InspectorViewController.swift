@@ -92,8 +92,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             guard isLocked != oldValue else { return }
             applyLock()
             if isLocked {
-                // The panels go with Show Mode, so a drag under way never sees its mouse-up.
-                endGestures()
+                endGestures(commit: false)
             } else {
                 render()
             }
@@ -154,11 +153,13 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         onGestureHold?(on)
     }
 
-    /// Gives up every drag under way: its mouse-up is not coming, and later events of it do nothing.
-    func endGestures() {
+    /// Ends any drag under way, for every part of it at once: the panels, the cue it is bound to and
+    /// the selection's hold. What was dragged goes to its cue, so a lost release drops nothing, and
+    /// later events of the drag do nothing. Only Show Mode gives an uncommitted drag up (`commit`).
+    func endGestures(commit: Bool = true) {
+        if commit { timeLoops.waveform.endDrag() } else { timeLoops.waveform.cancelDrag() }
         audioLevels.endGesture()
         fadeLevels.endGesture()
-        timeLoops.waveform.cancelDrag()
         gestureHold(false)
     }
 
@@ -514,13 +515,15 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     // MARK: Showing the model
 
-    /// A refusal lasts through the one follow it may have been held behind (the typing it ended was
-    /// holding that follow, which runs at once); any other change of cue clears it.
+    /// A follow of the playhead is waiting for the typing to end.
+    var isFollowHeld: (() -> Bool)?
+    /// A refusal made while a follow was held outlasts that follow, which runs as the typing ends;
+    /// any other change of cue clears it.
     private var refusalOutlivesFollow = false
 
     func showRefusal(_ message: String) {
         messageLabel.stringValue = message
-        refusalOutlivesFollow = true
+        refusalOutlivesFollow = isFollowHeld?() == true
     }
 
     func setSelection(_ ids: [ModelID], byFollow: Bool = false) {
@@ -913,7 +916,8 @@ extension NSTextView {
 final class NotesTextView: NSTextView {
     override func keyDown(with event: NSEvent) {
         let isReturn = event.keyCode == 36 || event.keyCode == 76
-        if isReturn, isEditable, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .shift {
+        // Only the modifiers: Caps Lock and the keypad's flag say nothing about what was meant.
+        if isReturn, isEditable, event.modifierFlags.intersection([.shift, .option, .control, .command]) == .shift {
             insertText("\n", replacementRange: selectedRange())
         } else {
             super.keyDown(with: event)

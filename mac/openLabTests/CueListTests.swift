@@ -816,21 +816,19 @@ final class CueListTests: XCTestCase {
     }
 
     /// The highlighted row clicked again while the playhead is elsewhere (it was moved while text
-    /// was typed) puts the playhead back on it; a click on a row the playhead is on sends nothing.
+    /// was typed) puts the playhead back on it.
     func testClickingTheHighlightedRowPutsThePlayheadBackOnIt() async throws {
         let h = try await live()
         h.vc.selectAsUser([H.intro])
         await assertEventually { self.playhead(h) == H.intro }
-        h.vc.rowClicked(h.spy.row(forItem: h.vc.node(H.intro)))
         await settle()
-        XCTAssertEqual(sentPlayheads(h), [], "the show opens with the playhead on Intro")
         // A playhead the selection did not follow (a hold), here set without the list hearing it.
         h.vc.sub = nil
         try await moveElsewhere(h, to: H.group)
         XCTAssertEqual(h.vc.selectedIDs(), [H.intro])
         h.vc.rowClicked(h.spy.row(forItem: h.vc.node(H.intro)))
         await assertEventually { self.playhead(h) == H.intro }
-        XCTAssertEqual(sentPlayheads(h), [H.intro])
+        XCTAssertEqual(sentPlayheads(h).last, H.intro)
     }
 
     /// A `set_playhead` the engine would not act on leaves no echo to clear what was last sent: the
@@ -1370,7 +1368,8 @@ final class PlayheadFlowTests: XCTestCase {
         wire.sent.filter { if case .transport(_, .go) = $0 { return true } else { return false } }.count
     }
 
-    /// Everything the engine sent the window so far is applied.
+    /// The engine has answered a request sent now: replies sent before it are in. A broadcast can be
+    /// overtaken by a reply (`hub::distribute`), so what it brings is waited for, not assumed.
     private func sync() async { _ = await store.client.send({ .request(id: $0, .listPatchMappings) }) }
 
     /// `seconds` of device time.
@@ -1450,8 +1449,15 @@ final class PlayheadFlowTests: XCTestCase {
         cues = await wc.editor.addFiles(files, parent: nil, index: 0)
         XCTAssertEqual(cues.count, 3)
         try await play(0)
+        await playheadSettled(on: cues[2])
         click(cues[0])
         try await assertAllOn(cues[0])
+    }
+
+    /// The engine's move of the playhead onto a cue just made has arrived: a click before it would be
+    /// followed away from.
+    private func playheadSettled(on id: ModelID, line: UInt = #line) async {
+        await assertEventually("the playhead arrived", line: line) { self.store.playheads[self.list] == id }
     }
 
     /// Another client of the workspace (an OSC peer's `/playhead`, another Mac) moves the playhead.
@@ -1466,7 +1472,7 @@ final class PlayheadFlowTests: XCTestCase {
     func testGoMovesTheHighlight() async throws {
         try await threeCues()
         try await space()
-        XCTAssertTrue(running(cues[0]))
+        await assertEventually { running(cues[0]) }
         try await assertAllOn(cues[1])
     }
 
@@ -1474,7 +1480,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await threeCues()
         try await space()
         try await space()
-        XCTAssertTrue(running(cues[0]) && running(cues[1]))
+        await assertEventually { running(cues[0]) && running(cues[1]) }
         try await assertAllOn(cues[2])
     }
 
@@ -1505,7 +1511,7 @@ final class PlayheadFlowTests: XCTestCase {
         click(cues[0])
         try await assertAllOn(cues[0])
         try await space()
-        XCTAssertTrue(running(cues[0]))
+        await assertEventually { running(cues[0]) }
         try await assertAllOn(cues[1])
     }
 
@@ -1558,7 +1564,7 @@ final class PlayheadFlowTests: XCTestCase {
         click(cues[2])
         try await assertAllOn(cues[2])
         try await space()
-        XCTAssertTrue(running(cues[2]))
+        await assertEventually { running(cues[2]) }
         try await assertAllOn(nil)
     }
 
@@ -1866,7 +1872,7 @@ final class PlayheadFlowTests: XCTestCase {
     func testRowMenuPanicAfterThePlayheadMoves() async throws {
         try await threeCues()
         try await space()
-        XCTAssertTrue(running(cues[0]))
+        await assertEventually { running(cues[0]) }
         let menu = rowMenu(on: cues[0])
         await sync()
         await whileOpen(menu, in: wc.cueList.outlineView) { [self] in
@@ -2053,7 +2059,7 @@ final class PlayheadFlowTests: XCTestCase {
         await assertEventually("Load Selected") { self.status(self.cues[0], 1) == loc("cue.state.loaded") }
         XCTAssertNil(status(cues[2], 1))
         try await space()
-        XCTAssertTrue(running(cues[2]))
+        await assertEventually { running(cues[2]) }
         nonisolated(unsafe) let panic = item(.panicSelected)
         wire.forgetSent()
         try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[1]) { [self] in menuBar.transportCommand(panic) }
@@ -2133,7 +2139,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await space()
         click(cues[0])
         try await assertAllOn(cues[0])
-        XCTAssertTrue(running(cues[0]))
+        await assertEventually { running(cues[0]) }
         wc.cueList.sub = nil
         try await moveElsewhere(to: cues[2])
         await assertEventually { self.store.playheads[self.list] == self.cues[2] }
@@ -2475,7 +2481,7 @@ final class PlayheadFlowTests: XCTestCase {
         try pressKey(try downArrow)
         try await assertAllOn(cues[2])
         try await space()
-        XCTAssertTrue(running(cues[2]), "GO fired the cue the display stood by")
+        await assertEventually("GO fired the cue the display stood by") { running(cues[2]) }
         XCTAssertFalse(running(cues[1]))
     }
 
@@ -2492,15 +2498,46 @@ final class PlayheadFlowTests: XCTestCase {
         try await assertAllOn(cues[2])
     }
 
-    /// With no key either, the next word from the engine notices.
-    func testAGestureWhoseReleaseWasLostEndsOnTheNextEngineUpdate() async throws {
+    /// A release lost with nothing pressed since: the highlight waits, whatever the engine says, and
+    /// nothing wrong can fire, as GO and the arrows are keys and the key ends the gesture first.
+    func testALostReleaseWaitsThroughEngineUpdatesAndTheNextKeysActOnTheRightCue() async throws {
         try await threeCues()
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
         wc.inspector.audioLevels.beginGesture()
         try await moveElsewhere(to: cues[1])
         await assertHeldOnFirstCue(playheadOn: cues[1])
         mouseIsDown = false
         wc.cueList.handle(.progress([]))
+        wc.cueList.handle(.runtime(cues: [], playheads: []))
+        await settle()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]], "the highlight waits")
+        try pressKey(try downArrow)
+        try await assertAllOn(cues[2])
+        try await space()
+        await assertEventually("GO ran the cue standing by") { running(cues[2]) }
+        XCTAssertFalse(running(cues[0]) || running(cues[1]))
+    }
+
+    /// The next press ends the lost gesture everywhere: click cue 2, edit, and it lands on cue 2.
+    func testTheNextPressAfterALostReleaseLeavesNothingOfTheGesture() async throws {
+        try await threeCues()
+        showTab("levels")
+        let p = wc.inspector.audioLevels
+        p.beginGesture()
+        p.fader.doubleValue = -12
+        _ = p.fader.target?.perform(p.fader.action, with: p.fader)
+        await assertEventually { self.master(self.cues[0]) == -12 }
+        try await pressOnTrackingView {}
+        XCTAssertNil(p.gesture, "the panel's gesture is over")
+        click(cues[1])
         try await assertAllOn(cues[1])
+        XCTAssertEqual(p.levels?.db(.master), master(cues[1]) ?? 0, "the panel shows cue 2")
+        wire.forgetSent()
+        p.fader.doubleValue = -3
+        _ = p.fader.target?.perform(p.fader.action, with: p.fader)
+        await assertEventually("the edit landed on cue 2") { self.master(self.cues[1]) == -3 }
+        XCTAssertEqual(master(cues[0]), -12)
+        XCTAssertEqual(commands(on: cues[0]), 0)
     }
 
     /// While the button really is down, neither a key nor an update ends the hold.
@@ -2547,7 +2584,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await moveElsewhere(to: cues[1])
         await assertHeldOnFirstCue(playheadOn: cues[1])
         mouseIsDown = false
-        wc.cueList.handle(.progress([]))
+        _ = app.handleKeyDown(try key("z", code: 6))
         try await assertAllOn(cues[1])
         XCTAssertEqual(p.levels?.db(.master), master(cues[1]) ?? 0, "the panel shows cue 2")
         p.select(.output(0))
@@ -2574,7 +2611,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await moveElsewhere(to: cues[1])
         await assertHeldOnFirstCue(playheadOn: cues[1])
         mouseIsDown = false
-        wc.cueList.handle(.progress([]))
+        _ = app.handleKeyDown(try key("z", code: 6))
         try await assertAllOn(cues[1])
         wire.forgetSent()
         matrix.mouseDragged(with: try matrixEvent(.leftMouseDragged, dy: 60))
@@ -2584,53 +2621,114 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(commands(on: cues[1]), 0, "nothing went to the cue it never started on")
     }
 
-    /// The button is up but its mouse-up is still queued: the gesture is not over, and its last edit
-    /// still reaches its own cue.
-    func testAQueuedMouseUpMeansTheGestureIsNotOverYet() async throws {
-        try await threeCues()
-        let window = try XCTUnwrap(wc.window)
-        window.makeKeyAndOrderFront(nil)
-        showTab("levels")
-        let matrix = wc.inspector.audioLevels.matrix
-        matrix.mouseDown(with: try matrixEvent(.leftMouseDown))
-        matrix.mouseDragged(with: try matrixEvent(.leftMouseDragged, dy: 40))
-        try await moveElsewhere(to: cues[1])
-        await assertHeldOnFirstCue(playheadOn: cues[1])
-        mouseIsDown = false
-        NSApp.postEvent(try matrixEvent(.leftMouseUp, dy: 60), atStart: false)
-        wc.cueList.handle(.progress([]))
-        let heldOn = wc.cueList.selectedIDs()
-        let gesture = wc.inspector.audioLevels.gesture
-        let queued = NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .default, dequeue: true)
-        XCTAssertNotNil(queued, "the event was still queued")
-        XCTAssertEqual(heldOn, [cues[0]], "still held")
-        XCTAssertNotNil(gesture)
-        matrix.mouseDragged(with: try matrixEvent(.leftMouseDragged, dy: 60))
-        matrix.mouseUp(with: try matrixEvent(.leftMouseUp, dy: 60))
-        await assertEventually("its own cue took all of it") { self.master(self.cues[0]) == -15 }
-        try await assertAllOn(cues[1])
-        XCTAssertEqual(master(cues[1]), 0)
-    }
-
-    func testAWaveformDragWhoseReleaseWasLostCommitsNothing() async throws {
-        try await threeCues()
+    private func dragTrim(to seconds: Double) async throws -> WaveformView {
         let wave = wc.inspector.timeLoops.waveform
         await assertEventually { wave.duration != nil }
         wave.frame = NSRect(x: 0, y: 0, width: 600, height: 100)
+        wire.forgetSent()
         XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(0)))
-        wave.drag(toX: wave.scale.x(0.3))
+        wave.drag(toX: wave.scale.x(seconds))
+        return wave
+    }
+
+    private func assertTrim(of id: ModelID, is seconds: Double, line: UInt = #line) async {
+        await assertEventually("the trim landed", line: line) {
+            abs((self.kind(id)?["start_time"]?.doubleValue ?? 0) - seconds) < 0.01
+        }
+    }
+
+    /// A lost release never drops the operator's trim: it lands on its own cue and only there, and the
+    /// late mouse-up does nothing.
+    func testAWaveformTrimWhoseReleaseWasLostLandsOnItsCue() async throws {
+        try await threeCues()
+        let wave = try await dragTrim(to: 0.3)
         try await moveElsewhere(to: cues[1])
         await assertHeldOnFirstCue(playheadOn: cues[1])
         mouseIsDown = false
-        wc.cueList.handle(.progress([]))
+        _ = app.handleKeyDown(try key("z", code: 6))
+        await assertTrim(of: cues[0], is: 0.3)
         try await assertAllOn(cues[1])
-        wire.forgetSent()
         wave.drag(toX: wave.scale.x(0.4))
         wave.endDrag()
         await sync()
         await settle()
-        XCTAssertEqual(commands(on: cues[1]), 0)
+        await assertTrim(of: cues[0], is: 0.3)
         XCTAssertEqual(kind(cues[1])?["start_time"]?.doubleValue ?? 0, 0)
+        XCTAssertEqual(commands(on: cues[1]), 0)
+    }
+
+    /// Save and Close commit first: a menu command after a lost release, with no key and no press in
+    /// the window, finds the trim saved.
+    func testCommittingPendingEditsFinishesADragWhoseReleaseWasLost() async throws {
+        try await threeCues()
+        _ = try await dragTrim(to: 0.3)
+        mouseIsDown = false
+        let committed = await wc.commitPendingEdits()
+        XCTAssertTrue(committed)
+        await assertTrim(of: cues[0], is: 0.3)
+    }
+
+    /// The drag's view going away ends the gesture and commits what was dragged.
+    func testATabChangeEndsAWaveformDragAndCommitsIt() async throws {
+        try await threeCues()
+        showTab("timeLoops")
+        _ = try await dragTrim(to: 0.3)
+        showTab("basics")
+        await assertTrim(of: cues[0], is: 0.3)
+        XCTAssertNil(wc.inspector.timeLoops.waveform.dragging)
+    }
+
+    func testHidingTheInspectorEndsAWaveformDragAndCommitsIt() async throws {
+        try await threeCues()
+        _ = try await dragTrim(to: 0.3)
+        wc.setVisible(.inspector, false)
+        await assertTrim(of: cues[0], is: 0.3)
+        XCTAssertNil(wc.inspector.timeLoops.waveform.dragging)
+    }
+
+    func testClosingTheWindowEndsAWaveformDragAndCommitsIt() async throws {
+        try await threeCues()
+        _ = try await dragTrim(to: 0.3)
+        wc.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        await assertTrim(of: cues[0], is: 0.3)
+        XCTAssertNil(wc.inspector.timeLoops.waveform.dragging)
+    }
+
+    /// Show Mode is the one exception: it locks the show, so a drag not yet committed is given up.
+    func testShowModeGivesUpAWaveformDrag() async throws {
+        try await threeCues()
+        let wave = try await dragTrim(to: 0.3)
+        wc.setShowMode(true)
+        await assertEventually { self.store.showMode }
+        XCTAssertNil(wave.dragging)
+        await settle()
+        await sync()
+        XCTAssertEqual(commands(on: cues[0]), 0)
+    }
+
+    // MARK: A click while the engine's move is on its way
+
+    /// The store still shows the old playhead because the engine's move has not arrived: a click on
+    /// that row must still send, or the move lands and GO fires another cue.
+    func testAClickDuringAnEngineMoveStillMovesThePlayhead() async throws {
+        try await threeCues()
+        wire.holdRuntime = true
+        let other = Rig(engine: engine, workspace: doc)
+        guard await other.connect(),
+            case .success = await other.store.transport(.setPlayhead(list: list, cue: cues[1]))
+        else { return XCTFail("set_playhead elsewhere") }
+        other.client.stop()
+        XCTAssertEqual(store.playheads[list], cues[0], "the move has not arrived here")
+        wc.cueList.rowClicked(wc.cueList.outlineView.row(forItem: wc.cueList.node(cues[0])))
+        await sync()
+        wire.holdRuntime = false
+        wire.releaseResults()
+        try await assertAllOn(cues[0])
+        await sync()
+        await settle()
+        try await assertAllOn(cues[0])
+        try await space()
+        await assertEventually("GO ran the clicked cue") { running(cues[0]) }
     }
 
     /// The selection moved under a gesture by anything but the follow (a menu key, another client
@@ -2707,6 +2805,22 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(wc.inspector.messageLabel.stringValue, "", "it does not follow the show for good")
     }
 
+    /// No follow was held behind the typing: a later GO's follow clears the refusal, as it is about
+    /// cue 1 and the inspector now shows cue 2.
+    func testARefusalWithNoFollowHeldClearsOnTheNextGo() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.preWaitField))
+        wc.inspector.preWaitField.currentEditor()?.selectAll(nil)
+        try typeKeys("abc", in: window)
+        try typeKeys("\r", in: window, code: 36)
+        XCTAssertFalse(wc.inspector.messageLabel.stringValue.isEmpty)
+        try await space()
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(wc.inspector.messageLabel.stringValue, "")
+    }
+
     func testAnInvalidReturnWithAHeldFollowKeepsItsMessage() async throws {
         try await threeCues()
         try await assertRefusalSurvivesTheHeldFollow(field: wc.inspector.preWaitField, to: cues[1], next: cues[2])
@@ -2747,7 +2861,7 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
         try await assertAllOn(cues[1])
         try await space()
-        XCTAssertTrue(running(cues[1]))
+        await assertEventually { running(cues[1]) }
         XCTAssertEqual(store.model?.cue(cues[0])?.name, "Storm")
     }
 
@@ -2851,6 +2965,34 @@ final class PlayheadFlowTests: XCTestCase {
         }
     }
 
+    /// Caps Lock and the keypad's flags are not modifiers here: Shift-Return is still a line, and the
+    /// next Space types rather than fires GO. Keypad Enter is a Return.
+    private func assertShiftReturnWithOtherFlagsTypesALine(in notes: NSTextView) async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        try typeKeys("a", in: window)
+        try pressKey(try key("\r", code: 36, [.shift, .capsLock]))
+        XCTAssertTrue(window.firstResponder === notes, "Caps Lock")
+        try pressKey(try key("\u{3}", code: 76, [.shift, .numericPad]))
+        XCTAssertTrue(window.firstResponder === notes, "keypad Enter with Shift")
+        try typeKeys(" ", in: window)
+        await settle()
+        XCTAssertEqual(goes(), 0, "Space typed")
+        XCTAssertEqual(notes.string, "a\n\n ")
+        try pressKey(try key("\u{3}", code: 76, [.numericPad]))
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "keypad Enter ends the typing")
+    }
+
+    func testShiftReturnWithCapsLockOrKeypadTypesALineInTheInspectorNotes() async throws {
+        try await assertShiftReturnWithOtherFlagsTypesALine(in: wc.inspector.notesView)
+    }
+
+    func testShiftReturnWithCapsLockOrKeypadTypesALineInTheMastheadNotes() async throws {
+        try await assertShiftReturnWithOtherFlagsTypesALine(in: wc.masthead.notesView)
+    }
+
     func testOnlyShiftReturnTypesALineInTheInspectorNotes() async throws {
         try await assertOnlyShiftReturnTypesALine(in: wc.inspector.notesView)
     }
@@ -2922,8 +3064,9 @@ final class PlayheadFlowTests: XCTestCase {
         let after = await wc.editor.addFiles([files[2]], parent: nil, index: 1)
         cue2 = try XCTUnwrap(after.first)
         try await play(0)  // the files are probed
-        XCTAssertEqual(wc.cueList.roots.map(\.id), [group, cue2])
-        XCTAssertEqual(wc.cueList.node(group)?.children.map(\.id), [child1, child2])
+        await playheadSettled(on: cue2)
+        await assertEventually { wc.cueList.roots.map(\.id) == [group, cue2] }
+        await assertEventually { wc.cueList.node(group)?.children.map(\.id) == [child1, child2] }
         click(group)
         try await assertAllOn(group)
         for m in modes { try await choose(m) }
@@ -2943,10 +3086,11 @@ final class PlayheadFlowTests: XCTestCase {
         let kids = await wc.editor.addFiles(files, parent: group, index: 0)
         (child1, child2) = (kids[0], kids[1])
         try await play(0)
+        await playheadSettled(on: child2)
         click(group)
         try await assertAllOn(group)
         try await space()
-        XCTAssertTrue(running(child1) && running(child2))
+        await assertEventually { running(child1) && running(child2) }
         try await assertAllOn(nil)
         XCTAssertEqual(wc.inspector.emptyLabel.stringValue, loc("inspector.empty"), "the inspector shows no cue")
         try await play(2)
@@ -2955,7 +3099,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await assertAllOn(group)
         try await choose("playlist")
         try await space()
-        XCTAssertTrue(running(group) && running(child1), "the group plays in its new mode")
+        await assertEventually("the group plays in its new mode") { running(group) && running(child1) }
         XCTAssertFalse(running(child2))
         try await assertAllOn(nil)
     }
@@ -2965,7 +3109,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await groupWorkspace([])
         XCTAssertEqual(mode(group), "timeline", "a new group")
         try await space()
-        for id in [group, child1, child2] { XCTAssertTrue(running(id)) }
+        await assertEventually { [group, child1, child2].allSatisfy { running($0) } }
         XCTAssertFalse(running(cue2))
         try await assertAllOn(cue2)
     }
@@ -2974,7 +3118,7 @@ final class PlayheadFlowTests: XCTestCase {
     func testPlaylistSpaceRunsTheChildrenOneAfterTheOtherAndStandsByCue2() async throws {
         try await groupWorkspace(["playlist"])
         try await space()
-        XCTAssertTrue(running(group) && running(child1))
+        await assertEventually { running(group) && running(child1) }
         XCTAssertFalse(running(child2))
         try await assertAllOn(cue2)
         try await play(1)
@@ -2988,11 +3132,11 @@ final class PlayheadFlowTests: XCTestCase {
     func testStartFirstChildAndEnterSpaceRuns1Then12AndStandsByCue2() async throws {
         try await groupWorkspace(["start_first_and_enter"])
         try await space()
-        XCTAssertTrue(running(child1))
+        await assertEventually { running(child1) }
         XCTAssertFalse(running(child2))
         try await assertAllOn(child2)
         try await space()
-        XCTAssertTrue(running(child2))
+        await assertEventually { running(child2) }
         try await assertAllOn(cue2)
     }
 
@@ -3000,7 +3144,7 @@ final class PlayheadFlowTests: XCTestCase {
     func testStartFirstChildAndGoToNextSpaceRunsOnly11AndStandsByCue2() async throws {
         try await groupWorkspace(["start_first_and_go_to_next"])
         try await space()
-        XCTAssertTrue(running(child1))
+        await assertEventually { running(child1) }
         try await assertAllOn(cue2)
         try await play(0.5)
         XCTAssertFalse(running(child2), "1.2 does not start")
@@ -3031,7 +3175,7 @@ final class PlayheadFlowTests: XCTestCase {
     func testModeChangeRoundTripRunsBothChildren() async throws {
         try await groupWorkspace(["playlist", "timeline"])
         try await space()
-        XCTAssertTrue(running(child1) && running(child2))
+        await assertEventually { running(child1) && running(child2) }
         try await assertAllOn(cue2)
     }
 }

@@ -49,7 +49,10 @@ extension InspectorViewController {
         timeLoops.isActive = timeLoopsItem != nil && tabView.selectedTabViewItem === timeLoopsItem
     }
 
-    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) { updateTimeLoopsActive() }
+    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        endGestures()
+        updateTimeLoopsActive()
+    }
 
     /// The playhead line follows the selected cue's progress.
     func updateTimeLoopsProgress() {

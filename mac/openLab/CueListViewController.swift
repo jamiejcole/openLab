@@ -396,10 +396,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         sendPlayhead(node.id)
     }
 
-    /// Moves the playhead to `id` for the selection. Compared with what was last sent, not only what
-    /// the engine echoed: A, B, A within one round trip must still end on A.
+    /// Moves the playhead to `id` for the selection. Compared only with what was last sent: A, B, A
+    /// within one round trip must still end on A, and the store's playhead can be behind the engine's
+    /// (a move on its way), where a click that sent nothing would leave GO on another cue.
     private func sendPlayhead(_ id: ModelID) {
-        guard let list = listID, (sentPlayhead ?? store.playheads[list]) != id else { return }
+        guard let list = listID, sentPlayhead != id else { return }
         sentPlayhead = id
         lastSentHead = id
         playheadSends += 1
@@ -422,12 +423,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// own playhead (another list's, or a runtime batch that leaves it, must not reopen groups).
     private var seenHead: ModelID?
     /// The selection did not follow a playhead move because of `isTextEditing` or a `FollowHold`.
-    private var followHeld = false
+    private(set) var followHeld = false
     private var followHolds = Set<FollowHold>()
-    /// Whether the left mouse button is down now (tests: the mouse they stand in for).
+    /// Whether the left mouse button is down as a key arrives (tests: the mouse they stand in for).
     var isLeftButtonDown: () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
-    /// A gesture's release was lost: whatever it holds is to be given up.
-    var onGestureLost: (() -> Void)?
 
     /// What holds the selection where it is while the playhead moves, as typing does: the inspector
     /// edits the selected cue, so moving the selection under one of these would send the rest of an
@@ -442,29 +441,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case menu
     }
 
-    /// A drag's release can be lost (its view taken away under it): the button being up, with no drag
-    /// or mouse-up still queued for delivery, says it is over. The gesture is ended for the panels too,
-    /// and a follow it held runs at once. Called on each key, so the key acts on the moved selection,
-    /// and on each word from the engine, so it needs no further playhead move. A control tracking the
-    /// mouse inside its own `mouseDown` (`.press`) is not lost: it returns when the button comes up.
-    func noticeLostGesture() {
-        guard followHolds.contains(.gesture), !followHolds.contains(.press), !isLeftButtonDown(),
-            NSApp.nextEvent(
-                matching: [.leftMouseDragged, .leftMouseUp], until: .distantPast, inMode: .default, dequeue: false)
-                == nil
-        else { return }
-        followHolds.remove(.gesture)
-        onGestureLost?()
-        guard followHeld, !isTextEditing, followHolds.isEmpty else { return }
-        followHeld = false
-        followPlayhead()
-    }
+    var isGestureHeld: Bool { followHolds.contains(.gesture) }
 
-    /// Starts or ends a hold; the end of the last one follows a playhead move held meanwhile. A new
-    /// press means any drag before it is over, so a release that never came cannot hold for good.
+    /// Starts or ends a hold; the end of the last one follows a playhead move held meanwhile.
     func setFollowHold(_ hold: FollowHold, _ on: Bool) {
         if on {
-            if hold == .press { followHolds.remove(.gesture) }
             followHolds.insert(hold)
         } else {
             followHolds.remove(hold)
@@ -529,11 +510,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// action, which edits the selected cue, comes after its menu reports the end.
     private func resumeHeldFollow() {
         guard followHeld else { return }
-        Task { @MainActor [weak self] in
-            guard let self, self.followHeld, !self.isTextEditing, self.followHolds.isEmpty else { return }
-            self.followHeld = false
-            self.followPlayhead()
-        }
+        Task { @MainActor [weak self] in self?.followHeldNow() }
+    }
+
+    /// Follows a playhead move held until now, if nothing holds it any more.
+    func followHeldNow() {
+        guard followHeld, !isTextEditing, followHolds.isEmpty else { return }
+        followHeld = false
+        followPlayhead()
     }
 
     /// The playhead and the selection stay together (QLab 5's default, its workspace setting that
@@ -544,7 +528,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// is being typed in the window, or a `FollowHold` lasts, the selection stays, and follows once
     /// that ends.
     private func followPlayhead() {
-        noticeLostGesture()
         guard playheadSends == 0, let list = listID else { return }
         if isTextEditing || !followHolds.isEmpty {
             followHeld = true
@@ -588,12 +571,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             applyModel(upserts: upserts, deletes: deletes)
             onModelApplied?()
         case .runtime(let cues, let heads):
-            noticeLostGesture()
             refresh(cues, playheads: heads)
             if !heads.isEmpty { playheadChanged() }
-        case .progress(let ids):
-            noticeLostGesture()
-            refresh(ids, columns: ["duration"])
+        case .progress(let ids): refresh(ids, columns: ["duration"])
         case .waits(let ids): refresh(ids, columns: ["preWait", "postWait"])
         case .notices: break
         }
