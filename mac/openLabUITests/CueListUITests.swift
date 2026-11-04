@@ -124,6 +124,48 @@ final class PlayheadClickUITests: XCTestCase {
         assertAllOn("Two", in: app)
     }
 
+    // MARK: Editing a cell in place (#493)
+
+    /// Double-clicking cue Two's Number cell, typing and Return: the cell, the highlight and the
+    /// inspector show the new number. The single click before it only selects.
+    func testDoubleClickNumber() {
+        let app = launchThree()
+        let number = app.staticTexts["2"]
+        number.click()
+        assertAllOn("Two", in: app)
+        XCTAssertFalse(app.textFields["cue-number-editor"].exists, "a single click edits nothing")
+        number.doubleClick()
+        app.typeText("2.5\r")
+        XCTAssertTrue(app.staticTexts["2.5"].waitForExistence(timeout: 10), "the cell shows 2.5")
+        XCTAssertTrue(waitFor("value == '2.5'", app.textFields["inspector-number"]), "the inspector follows")
+        XCTAssertTrue(row("Two", in: app).isSelected, "Two stays highlighted")
+        XCTAssertTrue(
+            waitFor("value == '2.5 \u{00B7} Two'", app.staticTexts["standby-field"]), "standby is still on Two")
+    }
+
+    /// Double-clicking Intro's Name cell, typing and Return: the cell shows the name and the Fade cue
+    /// of Intro, which has its default name, follows it.
+    func testDoubleClickName() {
+        let app = launchDemo()
+        XCTAssertTrue(app.staticTexts["Fade and stop Intro"].waitForExistence(timeout: 10), "the fade follows Intro")
+        app.staticTexts["Intro"].doubleClick()
+        app.typeText("entrance\r")
+        XCTAssertTrue(app.staticTexts["entrance"].waitForExistence(timeout: 10), "the cell shows entrance")
+        XCTAssertTrue(
+            app.staticTexts["Fade and stop entrance"].waitForExistence(timeout: 10), "the fade's name follows")
+        XCTAssertFalse(cueState("Running", of: "entrance", in: app).exists, "Return did not fire GO")
+    }
+
+    /// In Show Mode a double-click edits nothing.
+    func testDoubleClickInShowModeDoesNothing() {
+        let app = launchThree()
+        app.radioGroups["mode-switch"].radioButtons["Show"].click()
+        XCTAssertTrue(app.staticTexts["show-mode-indicator"].waitForExistence(timeout: 5))
+        app.staticTexts["2"].doubleClick()
+        XCTAssertFalse(app.textFields["cue-number-editor"].waitForExistence(timeout: 1), "no editor opens")
+        XCTAssertTrue(app.staticTexts["2"].exists, "the number is unchanged")
+    }
+
     func testClickingTheStatusColumn() {
         let app = launchThree()
         // The status column is the row's first 80 points; its images only show state.

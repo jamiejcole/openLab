@@ -80,6 +80,10 @@ final class HotkeyRulesTests: XCTestCase {
         XCTAssertEqual(validate(KeyChord(" ")), .duplicate(of: .go))
         XCTAssertEqual(validate(KeyChord("[")), .duplicate(of: .pauseAll))
         XCTAssertNil(validate(KeyChord("p")), "a fixed app default (L, P, V) yields to a cue hotkey")
+        XCTAssertEqual(validate(KeyChord("n")), .editKey, "N and Q edit the highlighted cue's number and name")
+        XCTAssertEqual(validate(KeyChord("q")), .editKey)
+        XCTAssertNil(validate(KeyChord("n", .shift)), "only the plain keys")
+        XCTAssertEqual(HotkeyRules.messageKey(.editKey), "inspector.hotkey.editKey")
         XCTAssertEqual(validate(KeyChord("\u{7F}")), .unsupported)
         XCTAssertEqual(validate(KeyChord("q", [.command]), menu: [KeyChord("q", [.command])]), .menuKey)
     }

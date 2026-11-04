@@ -126,12 +126,13 @@ final class MastheadView: NSView, NSTextViewDelegate {
     /// Shows `cue` as standing by. While notes are being typed for another cue the masthead keeps
     /// showing that cue, the text and the focus: a Space typed next must go into the text, not fire
     /// GO. The new standby cue is shown once typing ends.
-    func show(standby cue: Cue?) {
+    func show(standby cue: Cue?, name: String? = nil) {
         if let editing = editingID, editing != cue?.id { return }
         let changed = cueID != cue?.id
         cueID = cue?.id
         if let cue {
-            standbyField.stringValue = [cue.number, cue.listName].compactMap { $0 }.filter { !$0.isEmpty }
+            standbyField.stringValue = [cue.number, name ?? CueKindStyle.kindLabel(cue.kindType)].compactMap { $0 }
+                .filter { !$0.isEmpty }
                 .joined(separator: " \u{00B7} ")
         } else {
             standbyField.stringValue = loc("masthead.standby.none")
