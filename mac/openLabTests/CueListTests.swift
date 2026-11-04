@@ -2350,6 +2350,8 @@ final class PlayheadFlowTests: XCTestCase {
         await assertEventually("Paste goes after it") { self.wc.cueList.roots.count == 4 }
         XCTAssertEqual(wc.cueList.roots[0].id, cues[0])
         XCTAssertEqual(wc.cueList.roots[2].id, cues[1], "the copy is between cue 1 and cue 2")
+        // The list shows the copy before paste's reply; paste then selects it, which moves the playhead.
+        try await assertAllOn(wc.cueList.roots[1].id)
         menu = rowMenu(on: cues[0])
         try await moveElsewhere(to: cues[2])
         try await assertAllOn(cues[2])
