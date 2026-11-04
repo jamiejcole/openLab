@@ -157,6 +157,7 @@ final class AppController {
     /// swallow Space before the menu's key equivalent sees it; a text field being edited keeps its
     /// typing keys (`canPerform`).
     func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        frontController?.endLostGesture()
         if Self.isPanicKey(event) {
             firePanic()
             return event
@@ -164,7 +165,7 @@ final class AppController {
         guard !isRecordingKey(), let chord = KeyChord(event: event) else { return event }
         if let command = frontKeys.command(for: chord), canPerform(command) {
             let isRepeat = event.isARepeat
-            Task { await perform(command, isRepeat: isRepeat) }
+            performNow(command, isRepeat: isRepeat)
             return nil
         }
         return fireCueHotkeys(chord, event: event) ? nil : event

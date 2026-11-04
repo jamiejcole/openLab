@@ -1419,3 +1419,335 @@ async fn a_realtime_virtual_engine_refuses_advance() {
     }
     end(engine);
 }
+
+// ---------------------------------------------------------------------------------------------
+// GO on a group after a mode change (#496): the app's own messages to the real engine
+
+/// Sends `message` (a client message as JSON, without its `id`) as the app builds it.
+async fn app_message(ws: &mut Ws, mut message: Value) -> Outcome {
+    ws.call(|id| {
+        message["id"] = Value::from(id.0);
+        openlab_core::protocol::decode_client(&message.to_string()).unwrap()
+    })
+    .await
+}
+
+fn uuid(n: u128) -> String {
+    id(n).0.to_string()
+}
+
+async fn app_ok(ws: &mut Ws, message: Value) {
+    let o = app_message(ws, message).await;
+    assert!(matches!(o, Outcome::Ok(_)), "{o:?}");
+}
+
+/// A new cue as the app makes it (`NewCueKind.cueJSON`), with `kind`.
+fn app_cue(n: u128, kind: Value) -> Value {
+    serde_json::json!({
+        "id": uuid(n), "number": null, "name": "", "notes": "", "color": "none",
+        "flagged": false, "armed": true, "pre_wait": 0.0, "post_wait": 0.0,
+        "continue_mode": "do_not_continue", "triggers": {"hotkey": null, "osc": null},
+        "second_trigger": "nothing", "second_trigger_on_release": false, "kind": kind,
+    })
+}
+
+/// An Audio cue on `media` as a Finder drop makes it (`CueEditor.addFiles`): the workspace's
+/// first patch `patch` (two outputs), one cue output per patch output, the diagonal crosspoints.
+fn app_audio(n: u128, media: &std::path::Path, patch: &str) -> Value {
+    let fade = serde_json::json!({"duration": 0.0, "curve": "linear"});
+    app_cue(
+        n,
+        serde_json::json!({
+            "type": "audio", "media": media.to_str().unwrap(), "patch": patch,
+            "start_time": 0.0, "end_time": null, "fade_in": fade, "fade_out": fade,
+            "slices": [], "last_slice_play_count": 1,
+            "levels": {
+                "master_db": 0.0,
+                "outputs": [{"db": 0.0, "mute": false}, {"db": 0.0, "mute": false}],
+                "crosspoints": [
+                    {"input": 0, "output": 0, "db": 0.0, "mute": false},
+                    {"input": 1, "output": 1, "db": 0.0, "mute": false},
+                ],
+                "gangs": [],
+            },
+            "preload": false,
+        }),
+    )
+}
+
+/// The app's session on the issue's workspace: the doc connection and the list id.
+struct GroupShow {
+    engine: Engine,
+    _support: tempfile::TempDir,
+    _app: App,
+    ws: Ws,
+    list: String,
+}
+
+impl GroupShow {
+    /// `Command.addCue`.
+    async fn add(&mut self, cue: Value, parent: Option<u128>, index: usize) {
+        let at = serde_json::json!({"list": self.list, "parent": parent.map(uuid), "index": index});
+        let add = serde_json::json!({"type": "add_cue", "at": at, "cue": cue, "auto_number": true});
+        app_ok(
+            &mut self.ws,
+            serde_json::json!({"type": "command", "command": add}),
+        )
+        .await;
+    }
+
+    /// A click on cue `n`'s row (`outlineViewSelectionDidChange`).
+    async fn click(&mut self, n: u128) {
+        let action = serde_json::json!({"type": "set_playhead", "list": self.list, "cue": uuid(n)});
+        app_ok(
+            &mut self.ws,
+            serde_json::json!({"type": "transport", "action": action}),
+        )
+        .await;
+    }
+
+    /// The Mode tab's popup choosing `mode` for the group (`InspectorViewController.sendGroupMode`).
+    async fn choose_mode(&mut self, mode: &str) {
+        let mut value = serde_json::json!({"type": mode});
+        if mode == "playlist" {
+            value["loop"] = Value::from(false);
+            value["shuffle"] = Value::from(false);
+        }
+        let set = serde_json::json!({
+            "type": "set_cue_property", "id": uuid(GROUP),
+            "property": {"type": "group_mode", "value": value},
+        });
+        app_ok(
+            &mut self.ws,
+            serde_json::json!({"type": "command", "command": set}),
+        )
+        .await;
+    }
+
+    /// Space (`AppController.go`), then a tenth of a second of device time; the index in `seen`
+    /// from which what followed the GO was read.
+    async fn space(&mut self) -> usize {
+        let from = self.ws.seen.len();
+        let action = serde_json::json!({"type": "go", "list": self.list});
+        app_ok(
+            &mut self.ws,
+            serde_json::json!({"type": "transport", "action": action}),
+        )
+        .await;
+        self.play(VRATE / 10).await;
+        from
+    }
+
+    /// `frames` of device time, then a command as a barrier: every broadcast they made is in.
+    async fn play(&mut self, frames: u64) {
+        ok_call(&mut self.ws, advance_by(frames)).await;
+        let o = self.ws.command(rename(GROUP, "Group")).await;
+        assert!(matches!(o, Outcome::Ok(_)), "{o:?}");
+    }
+
+    fn running(&self, n: u128) -> bool {
+        self.ws.state(n) == Some(WireCueState::Running)
+    }
+
+    /// The cues whose meters showed sound in what was read from `from` on.
+    fn heard(&self, from: usize) -> Vec<u128> {
+        let mut heard: Vec<u128> = self.ws.seen[from..]
+            .iter()
+            .filter_map(|m| match m {
+                ServerMessage::Meters { cues, .. } => Some(cues),
+                _ => None,
+            })
+            .flatten()
+            .filter(|c| c.peaks.iter().any(|p| *p > 0.1))
+            .map(|c| c.cue.0.as_u128())
+            .collect();
+        heard.sort_unstable();
+        heard.dedup();
+        heard
+    }
+
+    fn standby(&self) -> Option<u128> {
+        self.ws.playhead.map(|p| p.0.as_u128())
+    }
+}
+
+const GROUP: u128 = 10;
+const CHILD_1: u128 = 11;
+const CHILD_2: u128 = 12;
+const CUE_2: u128 = 20;
+
+/// The issue's workspace, made as the user makes it in the app, on a stepped engine: a new
+/// workspace; a new Group cue 1 (selected, so it takes the playhead); two Audio cues dropped into
+/// it, 1.1 and 1.2, each 2 s; Audio cue 2 after the group; then the group's row clicked and its
+/// mode chosen in the Mode tab (`modes`, in order).
+async fn group_workspace(modes: &[&str]) -> GroupShow {
+    let (engine, support, port, token) = spawn_virtual("stepped");
+    let (mut app, _) = App::connect_to(port, &token).await;
+    let doc = match app.call(1, request(RequestId(1), Request::New {})).await {
+        Outcome::Ok(ok) => match ok.data {
+            Some(ResultData::Opened { doc }) => doc,
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    };
+    let (mut ws, snapshot) = Ws::connect_to(port, &token, doc).await;
+    ws.next_id = 100;
+    let list = snapshot.workspace.cue_lists[0].id.0.to_string();
+    let patch = snapshot.workspace.patches[0].id.0.to_string();
+    let mut show = GroupShow {
+        engine,
+        _support: support,
+        _app: app,
+        ws,
+        list,
+    };
+    let files: Vec<_> = (0..3).map(|_| wav(&dc(16_000, 0.25))).collect();
+    let group = serde_json::json!({"type": "group", "mode": {"type": "timeline"}, "children": []});
+    show.add(app_cue(GROUP, group), None, 0).await;
+    show.click(GROUP).await;
+    show.add(app_audio(CHILD_1, &files[0], &patch), Some(GROUP), 0)
+        .await;
+    show.add(app_audio(CHILD_2, &files[1], &patch), Some(GROUP), 1)
+        .await;
+    show.click(CHILD_2).await;
+    show.add(app_audio(CUE_2, &files[2], &patch), None, 1).await;
+    show.click(CUE_2).await;
+    // The media probes are taken in.
+    ok_call(&mut show.ws, advance_by(0)).await;
+    show.click(GROUP).await;
+    for mode in modes {
+        show.choose_mode(mode).await;
+    }
+    show.play(0).await;
+    assert_eq!(show.standby(), Some(GROUP));
+    show
+}
+
+/// #496, the engine's half: the user played the group (the last cue then) once, changed its mode
+/// in the Mode tab with the group still highlighted, and pressed Space. The first GO left no cue
+/// standing by, so the second plays nothing, as it should; the app did not show that (its
+/// selection stayed on the group, the fix is there: `CueListTests`, the selection follows the
+/// playhead). Selecting the group again puts it back on standby and Space plays it in the new mode.
+#[tokio::test]
+async fn a_group_played_to_the_end_plays_again_in_its_new_mode_once_selected() {
+    let mut show = group_workspace(&[]).await;
+    let remove = serde_json::json!({"type": "remove_cue", "id": uuid(CUE_2)});
+    app_ok(
+        &mut show.ws,
+        serde_json::json!({"type": "command", "command": remove}),
+    )
+    .await;
+    show.space().await;
+    assert!(show.running(CHILD_1) && show.running(CHILD_2));
+    assert_eq!(show.standby(), None, "past the end of the list");
+    show.play(VRATE * 3).await;
+    assert!(show.ws.states.is_empty(), "{:?}", show.ws.states);
+    show.choose_mode("playlist").await;
+    let from = show.space().await;
+    assert!(
+        show.ws.states.is_empty(),
+        "no cue standing by: nothing plays"
+    );
+    assert_eq!(show.heard(from), Vec::<u128>::new());
+    show.click(GROUP).await;
+    let from = show.space().await;
+    assert!(show.running(GROUP) && show.running(CHILD_1) && !show.running(CHILD_2));
+    assert_eq!(show.heard(from), [CHILD_1]);
+    end(show.engine);
+}
+
+/// #496 Timeline (QLab 5 manual p. 138): both children run and are heard, the group runs, cue 2
+/// stands by.
+#[tokio::test]
+async fn timeline_space_runs_both_children_and_stands_by_cue_2() {
+    // A new group is a Timeline: choosing it again in the popup sends nothing (the app's guard).
+    let mut show = group_workspace(&[]).await;
+    let from = show.space().await;
+    assert!(show.running(GROUP) && show.running(CHILD_1) && show.running(CHILD_2));
+    assert_eq!(show.heard(from), [CHILD_1, CHILD_2]);
+    assert_eq!(show.standby(), Some(CUE_2));
+    end(show.engine);
+}
+
+/// #496 Playlist (p. 138): 1.1 runs, then 1.2 once 1.1 ends; cue 2 stands by.
+#[tokio::test]
+async fn playlist_space_runs_the_children_one_after_the_other_and_stands_by_cue_2() {
+    let mut show = group_workspace(&["playlist"]).await;
+    let from = show.space().await;
+    assert!(show.running(GROUP) && show.running(CHILD_1) && !show.running(CHILD_2));
+    assert_eq!(show.heard(from), [CHILD_1]);
+    assert_eq!(show.standby(), Some(CUE_2));
+    // Past 1.1's end (2 s).
+    let from = show.ws.seen.len();
+    show.play(VRATE * 2).await;
+    assert!(show.running(GROUP) && !show.running(CHILD_1) && show.running(CHILD_2));
+    assert!(show.heard(from).contains(&CHILD_2));
+    assert_eq!(show.standby(), Some(CUE_2));
+    end(show.engine);
+}
+
+/// #496 Start first child and enter (pp. 138-139): 1.1 runs and 1.2 stands by; a second Space
+/// runs 1.2 and cue 2 stands by.
+#[tokio::test]
+async fn start_first_and_enter_space_runs_1_1_then_1_2_and_stands_by_cue_2() {
+    let mut show = group_workspace(&["start_first_and_enter"]).await;
+    let from = show.space().await;
+    assert!(show.running(CHILD_1) && !show.running(CHILD_2));
+    assert_eq!(show.heard(from), [CHILD_1]);
+    assert_eq!(show.standby(), Some(CHILD_2));
+    let from = show.space().await;
+    assert!(show.running(CHILD_2));
+    assert_eq!(show.heard(from), [CHILD_1, CHILD_2]);
+    assert_eq!(show.standby(), Some(CUE_2));
+    end(show.engine);
+}
+
+/// #496 Start first child and go to the next cue (p. 139): 1.1 runs, 1.2 does not start, cue 2
+/// stands by.
+#[tokio::test]
+async fn start_first_and_go_to_next_space_runs_only_1_1_and_stands_by_cue_2() {
+    let mut show = group_workspace(&["start_first_and_go_to_next"]).await;
+    let from = show.space().await;
+    assert!(show.running(CHILD_1) && !show.running(CHILD_2));
+    show.play(VRATE).await;
+    assert!(!show.running(CHILD_2), "1.2 does not start");
+    assert_eq!(show.heard(from), [CHILD_1]);
+    assert_eq!(show.standby(), Some(CUE_2));
+    end(show.engine);
+}
+
+/// #496 Start a random child (p. 139): exactly one child runs and cue 2 stands by; once it has
+/// stopped, a click on the group's row and Space run the other (round robin).
+#[tokio::test]
+async fn start_random_space_runs_one_child_then_the_other_after_a_click_on_the_group() {
+    let mut show = group_workspace(&["start_random"]).await;
+    let from = show.space().await;
+    let first = show.heard(from);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(
+        [CHILD_1, CHILD_2].map(|c| show.running(c)),
+        [first[0] == CHILD_1, first[0] == CHILD_2]
+    );
+    assert_eq!(show.standby(), Some(CUE_2));
+    show.play(VRATE * 3).await;
+    assert!(show.ws.states.is_empty(), "{:?}", show.ws.states);
+    show.click(GROUP).await;
+    let from = show.space().await;
+    let second = show.heard(from);
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert_ne!(first, second, "round robin");
+    assert_eq!(show.standby(), Some(CUE_2));
+    end(show.engine);
+}
+
+/// #496 Mode change round trip: Timeline, Playlist, back to Timeline; the last mode chosen is the
+/// one Space uses.
+#[tokio::test]
+async fn a_mode_changed_to_playlist_and_back_to_timeline_runs_both_children() {
+    let mut show = group_workspace(&["playlist", "timeline"]).await;
+    let from = show.space().await;
+    assert!(show.running(CHILD_1) && show.running(CHILD_2));
+    assert_eq!(show.heard(from), [CHILD_1, CHILD_2]);
+    assert_eq!(show.standby(), Some(CUE_2));
+    end(show.engine);
+}

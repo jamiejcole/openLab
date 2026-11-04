@@ -41,8 +41,12 @@ struct KeyChord: Hashable, Sendable {
     }()
 
     /// The chord of a pressed key (`charactersIgnoringModifiers` and the event's modifiers).
+    /// Nil for a key held with fn (fn-F is not F, and belongs to the menus). Arrows and F-keys always
+    /// carry the fn flag, whoever presses them: their characters are in the function-key range.
     init?(event: NSEvent) {
         guard let key = event.charactersIgnoringModifiers, !key.isEmpty else { return nil }
+        let isFunctionKey = key.unicodeScalars.first.map { (0xF700...0xF8FF).contains($0.value) } ?? false
+        if event.modifierFlags.contains(.function), !isFunctionKey { return nil }
         self.init(key, event.modifierFlags)
     }
 
