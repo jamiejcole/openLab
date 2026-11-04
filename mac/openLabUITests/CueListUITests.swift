@@ -56,3 +56,85 @@ final class CueListUITests: XCTestCase {
         XCTAssertTrue(waitFor("value == '01:30.00'", inspector, timeout: 5), "the inspector follows")
     }
 }
+
+/// #489's click flows with real presses, on a show of three looping Audio cues: the table's mouse
+/// tracking, its action and a press that ends an edit (QLab 5: pp. 91, 99-102).
+@MainActor
+final class PlayheadClickUITests: XCTestCase {
+    private func launchThree() -> XCUIApplication {
+        let app = launchApp(opening: ["Three"])
+        XCTAssertTrue(waitFor("isHittable == true", app.staticTexts["One"]), "the show is ready")
+        selectCue("One", in: app)
+        assertAllOn("One", in: app)
+        return app
+    }
+
+    private func row(_ title: String, in app: XCUIApplication) -> XCUIElement { cueRow(title, in: app) }
+
+    /// The highlighted rows are `highlighted` (default: `title`), and the marker and the standby
+    /// display are on `title`.
+    private func assertAllOn(
+        _ title: String, highlighted: [String]? = nil, in app: XCUIApplication, line: UInt = #line
+    ) {
+        let number = ["One": "1", "Two": "2", "Three": "3"][title] ?? ""
+        let standby = app.staticTexts["standby-field"]
+        XCTAssertTrue(waitFor("value == '\(number) \u{00B7} \(title)'", standby), "standby on \(title)", line: line)
+        XCTAssertTrue(waitFor("isSelected == true", row(title, in: app)), "\(title) highlighted", line: line)
+        for name in ["One", "Two", "Three"] {
+            let on = (highlighted ?? [title]).contains(name)
+            XCTAssertEqual(row(name, in: app).isSelected, on, "\(name) highlight", line: line)
+            let marker = row(name, in: app).images.matching(identifier: "cue-playhead").firstMatch
+            XCTAssertEqual(marker.exists, name == title, "\(name) marker", line: line)
+        }
+    }
+
+    func testGoPanicClickTheFirstCueGo() {
+        let app = launchThree()
+        app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
+        XCTAssertTrue(cueState("Running", of: "One", in: app).waitForExistence(timeout: 10))
+        assertAllOn("Two", in: app)
+        app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+        XCTAssertTrue(waitFor("exists == false", cueState("Running", of: "One", in: app)), "One fades out and stops")
+        assertAllOn("Two", in: app)
+        row("One", in: app).click()
+        assertAllOn("One", in: app)
+        app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
+        XCTAssertTrue(cueState("Running", of: "One", in: app).waitForExistence(timeout: 10), "One runs again")
+        assertAllOn("Two", in: app)
+    }
+
+    /// The press ends an edit: the field held the highlight on Two while the GO button moved the
+    /// playhead on, and ending the edit must not move the highlight under the press.
+    func testClickingTheHighlightedRowResetsThePlayhead() {
+        let app = launchThree()
+        row("Two", in: app).click()
+        assertAllOn("Two", in: app)
+        let name = app.textFields["inspector-name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click()
+        XCTAssertTrue(waitFor("hasKeyboardFocus == true", name), "the field takes focus")
+        // A button takes no focus, so the field keeps it (Space would type there).
+        app.buttons["go-button"].click()
+        XCTAssertTrue(cueState("Running", of: "Two", in: app).waitForExistence(timeout: 10))
+        XCTAssertTrue(waitFor("hasKeyboardFocus == true", name), "the field kept the focus")
+        let standby = app.staticTexts["standby-field"]
+        XCTAssertTrue(waitFor("value == '3 \u{00B7} Three'", standby), "the playhead moved on")
+        XCTAssertTrue(row("Two", in: app).isSelected, "held while the field has focus")
+        row("Two", in: app).click()
+        assertAllOn("Two", in: app)
+    }
+
+    func testClickingTheStatusColumn() {
+        let app = launchThree()
+        // The status column is the row's first 80 points; its images only show state.
+        row("Three", in: app).coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: 60, dy: 12)).click()
+        assertAllOn("Three", in: app)
+    }
+
+    func testMultiSelection() {
+        let app = launchThree()
+        XCUIElement.perform(withKeyModifiers: .command) { row("Three", in: app).click() }
+        assertAllOn("Three", highlighted: ["One", "Three"], in: app)
+    }
+}
