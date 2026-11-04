@@ -667,6 +667,50 @@ final class EngineCrashFlowTests: XCTestCase {
         check.stop()
     }
 
+    /// SM-01 (QLab row 14): a workspace saved in Show Mode opens locked, as if the operator had
+    /// just entered Show Mode; one saved in Edit Mode opens editable. Both files are opened by
+    /// the real engine, which reads the mode from the file.
+    func testAWorkspaceSavedInShowModeOpensInShowMode() async throws {
+        try await launch()
+        let savedInShowMode = try runs.show("Demo", named: "Saved In Show Mode")
+        var file = try XCTUnwrap(JSONValue.parse(try String(contentsOfFile: savedInShowMode, encoding: .utf8)))
+        // A v7 file has no mode (the engine would drop one): the file is a v8 one.
+        file.set("format_version", .int(8))
+        file["workspace"]?.set("show_mode", .bool(true))
+        try file.text().write(toFile: savedInShowMode, atomically: true, encoding: .utf8)
+        let savedInEditMode = try runs.show("Demo", named: "Saved In Edit Mode")
+        for path in [savedInShowMode, savedInEditMode] { _ = await app.session.open(path: path) }
+        func window(_ name: String) -> WorkspaceWindowController? {
+            app.allWindows.first { $0.store.model?.name == name }
+        }
+        await assertEventually {
+            self.app.allWindows.count == 2 && self.app.session.stores.values.allSatisfy { $0.model != nil }
+        }
+        let locked = try XCTUnwrap(window("Saved In Show Mode"))
+        let editable = try XCTUnwrap(window("Saved In Edit Mode"))
+
+        await assertEventually { locked.isShowMode }
+        XCTAssertFalse(editable.isShowMode)
+        // What the operator sees: the footer's indicator, the title, the hidden cue-type row and
+        // inspector, locked editing, and the same cue standing by as the editable copy shows.
+        XCTAssertFalse(locked.footer.showModeLabel.isHidden)
+        XCTAssertTrue(editable.footer.showModeLabel.isHidden)
+        XCTAssertEqual(locked.window?.title, String(format: loc("window.main.title.showMode"), "Saved In Show Mode"))
+        XCTAssertEqual(editable.window?.title, "Saved In Edit Mode")
+        XCTAssertTrue(locked.cueToolbar.isHidden)
+        XCTAssertFalse(locked.isVisible(.inspector))
+        XCTAssertFalse(editable.cueToolbar.isHidden)
+        XCTAssertTrue(locked.cueList.isEditLocked)
+        XCTAssertFalse(editable.cueList.isEditLocked)
+        XCTAssertTrue(locked.inspector.isLocked)
+        XCTAssertTrue(locked.masthead.isLocked)
+        XCTAssertNotEqual(locked.masthead.standbyField.stringValue, loc("masthead.standby.none"))
+        XCTAssertEqual(locked.masthead.standbyField.stringValue, editable.masthead.standbyField.stringValue)
+        XCTAssertEqual(locked.cueList.selectedIDs(), editable.cueList.selectedIDs())
+        XCTAssertEqual(locked.store.document?.showMode, true)
+        XCTAssertEqual(locked.store.document?.dirty, false, "opening in Show Mode is not an edit")
+    }
+
     /// The crashed run's cues stopped with it: a window waiting to be reopened shows none playing.
     func testAWindowWaitingForItsShowShowsNoCuePlaying() async throws {
         try await launch()
