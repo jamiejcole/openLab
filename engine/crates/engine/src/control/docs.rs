@@ -2283,7 +2283,7 @@ impl Control {
         self.mark_warnings_dirty();
         self.eng.voice_ids.retain(|_, owner| owner != doc);
         self.eng.observe.reset(doc);
-        self.eng.watch.leave(doc);
+        let unwatched = self.eng.watch.leave(doc);
         self.eng.pool.leave(doc);
         self.eng.waveform_reader.forget(doc);
         self.eng.mapping_warned.retain(|(d, _, _, _)| *d != doc);
@@ -2293,6 +2293,7 @@ impl Control {
             .orphans
             .extend(std::mem::take(&mut closed.file.saves));
         self.eng.docs.discard(Box::new(closed));
+        self.eng.docs.discard(unwatched);
         self.eng.mixer.pump();
         Ok(())
     }

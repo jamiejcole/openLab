@@ -10,6 +10,7 @@
 //! With one doc open this is the watch as it was: a doc's reset is the watch's reset (a new
 //! generation, so batches of the old one are dropped).
 
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
@@ -27,6 +28,15 @@ struct Watched {
     id: u64,
     /// Every doc key that names this file, with that doc's watch id for it.
     subs: BTreeMap<Sub, u64>,
+}
+
+/// What a doc's reset took off the share's maps. A close hands it to the document worker: the
+/// fields are only there to be dropped.
+#[derive(Default)]
+struct Gone {
+    keys: HashMap<Sub, String>,
+    subs: Vec<Sub>,
+    files: Vec<Watched>,
 }
 
 pub struct WatchShare {
@@ -72,7 +82,7 @@ impl WatchShare {
         self.files.reserve(watches);
         for change in changes {
             match change {
-                KeyChange::Reset => self.reset_doc(doc, &mut out),
+                KeyChange::Reset => self.reset_doc(doc, &mut out, &mut Gone::default()),
                 KeyChange::Watch { key, path, id } => {
                     let sub = (doc, key);
                     self.unsubscribe(&sub, &mut out);
@@ -97,26 +107,34 @@ impl WatchShare {
         self.watch.apply(out);
     }
 
-    /// Everything doc `doc` watched is let go (the doc closed).
-    pub fn leave(&mut self, doc: DocId) {
+    /// Everything doc `doc` watched is let go (the doc closed). What came off the maps is
+    /// returned for the caller to drop off the control thread: closing a 2,000-file doc beside
+    /// another must fit in an audio block, and freeing it is a third of that.
+    pub fn leave(&mut self, doc: DocId) -> Box<dyn Send> {
         let mut out = Vec::new();
-        self.reset_doc(doc, &mut out);
+        let mut gone = Gone::default();
+        self.reset_doc(doc, &mut out, &mut gone);
         self.watch.apply(out);
+        Box::new(gone)
     }
 
     /// A doc's reset. When no other doc watches anything, the watch's own reset (a new
     /// generation, the old one's batches dropped); else only this doc's files are let go.
-    fn reset_doc(&mut self, doc: DocId, out: &mut Vec<KeyChange>) {
+    fn reset_doc(&mut self, doc: DocId, out: &mut Vec<KeyChange>, gone: &mut Gone) {
         if self.keys.keys().all(|(d, _)| *d == doc) {
-            self.files.clear();
-            self.keys.clear();
+            gone.files
+                .extend(std::mem::take(&mut self.files).into_values());
+            gone.keys = std::mem::take(&mut self.keys);
             out.push(KeyChange::Reset);
             return;
         }
-        // Taken out in one pass, with no copy of its thousands of keys: closing a 2,000-file
-        // doc beside another must fit in an audio block (M4.15i).
+        // Taken out in one pass, with no copy of its thousands of keys.
+        out.reserve(self.keys.len());
+        gone.subs.reserve(self.keys.len());
+        gone.files.reserve(self.keys.len());
         for (sub, key) in self.keys.extract_if(|(d, _), _| *d == doc) {
-            release(&mut self.files, &sub, key, out);
+            gone.files.extend(release(&mut self.files, &sub, key, out));
+            gone.subs.push(sub);
         }
     }
 
@@ -181,16 +199,25 @@ impl WatchShare {
 }
 
 /// `sub`, no longer in the share's keys, lets go of its file `key`; the last one to do so
-/// stops the file's watch.
-fn release(files: &mut HashMap<String, Watched>, sub: &Sub, key: String, out: &mut Vec<KeyChange>) {
-    let Some(file) = files.get_mut(&key) else {
-        return;
+/// stops the file's watch and gets the file back.
+fn release(
+    files: &mut HashMap<String, Watched>,
+    sub: &Sub,
+    key: String,
+    out: &mut Vec<KeyChange>,
+) -> Option<Watched> {
+    // One hash of the path, whatever becomes of the file, and no walk of `subs` for its last sub
+    // (`sub` is in them: it was still in the share's keys).
+    let Entry::Occupied(mut file) = files.entry(key) else {
+        return None;
     };
-    file.subs.remove(sub);
-    if file.subs.is_empty() {
-        files.remove(&key);
-        out.push(KeyChange::Unwatch { key });
+    if file.get().subs.len() > 1 {
+        file.get_mut().subs.remove(sub);
+        return None;
     }
+    let (key, file) = file.remove_entry();
+    out.push(KeyChange::Unwatch { key });
+    Some(file)
 }
 
 fn watch_key_of(keys: &HashMap<Sub, String>, sub: &Sub) -> String {
@@ -311,7 +338,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, B);
         // B closes: nothing is watched.
-        s.leave(B);
+        drop(s.leave(B));
         assert_eq!(s.watched_files(), 0);
         fs.put("/show/a.wav", 2);
         assert!(pass(&mut s).is_empty());
@@ -334,7 +361,7 @@ mod tests {
         s.apply(B, b);
         assert_eq!(s.watched_files(), 100);
         assert!(pass(&mut s).is_empty());
-        s.leave(B);
+        drop(s.leave(B));
         assert_eq!(s.watched_files(), 60);
         // No reset: A's watches go on, B's own files are no longer watched.
         for n in [10, 50, 80] {
@@ -348,8 +375,43 @@ mod tests {
             .collect();
         assert_eq!(keys, vec![(A, "10.wav".into()), (A, "50.wav".into())]);
         // And A can close too.
-        s.leave(A);
+        drop(s.leave(A));
         assert_eq!(s.watched_files(), 0);
+    }
+
+    /// A file's last sub takes it along with no look at who the sub is: with two subs of one doc
+    /// each counts, whichever way they go.
+    #[test]
+    fn a_file_one_doc_names_twice_is_watched_until_both_names_go() {
+        let (mut s, fs) = share();
+        fs.put("/show/a.wav", 1);
+        fs.put("/show/b.wav", 1);
+        s.apply(B, vec![watch("b.wav", "/show/b.wav", 1)]);
+        let twice = |n| {
+            vec![
+                watch("a.wav", "/show/a.wav", n),
+                watch("/show/a.wav", "/show/a.wav", n + 1),
+            ]
+        };
+        // One name by an edit, then the other.
+        s.apply(A, twice(1));
+        assert_eq!(s.watched_files(), 2);
+        let unwatch = |key: &str| KeyChange::Unwatch { key: key.into() };
+        s.apply(A, vec![unwatch("a.wav")]);
+        assert_eq!(s.watched_files(), 2, "the other name still watches it");
+        s.apply(A, vec![unwatch("/show/a.wav")]);
+        assert_eq!(s.watched_files(), 1);
+        // Both at once, by the close; B's file stays and is still reported.
+        s.apply(A, twice(3));
+        assert_eq!(s.watched_files(), 2);
+        drop(s.leave(A));
+        assert_eq!(s.watched_files(), 1);
+        pass(&mut s);
+        fs.remove("/show/a.wav");
+        fs.remove("/show/b.wav");
+        let events = pass(&mut s);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].0, B);
     }
 
     #[test]

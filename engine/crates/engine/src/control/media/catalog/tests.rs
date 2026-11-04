@@ -258,6 +258,69 @@ fn an_index_resolved_elsewhere_is_resolved_against_the_catalogs_folder() {
     }
 }
 
+/// What is worked out off the control thread for a doc opening is what a sync works out: each
+/// file's users and preloaders, its probes in workspace order, and on a later sync the same counts
+/// for the files that stay, the rest let go.
+#[test]
+fn a_doc_opening_counts_each_files_cues_and_a_later_sync_follows_them() {
+    let (mut ws, template) = template();
+    let cue = |n: u128, file: &str, preload: bool| {
+        let mut c = template.clone();
+        c.id = CueId(uuid::Uuid::from_u128(n));
+        c.number = None;
+        set_media(&mut c, file, preload);
+        c
+    };
+    ws.cue_lists[0].cues = vec![
+        cue(921, "/m/b.wav", false),
+        cue(922, "/m/a.wav", true),
+        cue(923, "/m/b.wav", true),
+        cue(924, "/m/b.wav", false),
+    ];
+    let (mut opened, _opened_rx) = catalog(0);
+    opened.sync_indexed(index_workspace(&ws, None));
+    let counts = |cat: &MediaCatalog, key: &str| {
+        cat.entries
+            .get(key)
+            .map(|e| (e.users, e.preloaders, e.wants_preload))
+    };
+    assert_eq!(counts(&opened, "/m/b.wav"), Some((3, 1, true)));
+    assert_eq!(counts(&opened, "/m/a.wav"), Some((1, 1, true)));
+    let watched: Vec<String> = opened
+        .take_key_changes()
+        .into_iter()
+        .filter_map(|c| match c {
+            KeyChange::Watch { key, .. } => Some(key),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(watched, ["/m/b.wav", "/m/a.wav"], "in workspace order");
+
+    // One cue of b goes, a goes with its only cue, c is new.
+    ws.cue_lists[0].cues = vec![
+        cue(921, "/m/b.wav", false),
+        cue(923, "/m/b.wav", false),
+        cue(925, "/m/c.wav", false),
+    ];
+    opened.sync_indexed(index_workspace(&ws, None));
+    assert_eq!(counts(&opened, "/m/b.wav"), Some((2, 0, false)));
+    assert_eq!(counts(&opened, "/m/a.wav"), None);
+    assert_eq!(counts(&opened, "/m/c.wav"), Some((1, 0, false)));
+    let changes = opened.take_key_changes();
+    assert!(
+        changes
+            .iter()
+            .any(|c| matches!(c, KeyChange::Unwatch { key } if key == "/m/a.wav")),
+        "{changes:?}"
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|c| matches!(c, KeyChange::Watch { key, .. } if key == "/m/c.wav")),
+        "{changes:?}"
+    );
+}
+
 #[test]
 fn a_file_marked_missing_fails_at_once_and_ignores_its_probe_in_flight() {
     let dir = tempfile::tempdir().unwrap();

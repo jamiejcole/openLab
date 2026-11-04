@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::lock;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, hash_map};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,29 +84,41 @@ pub(super) struct Entry {
 pub struct Indexed {
     index: CueIndex,
     uses: HashMap<CueId, Use>,
-    /// Files in workspace order (the order their probes go out), each with its path resolved
-    /// against `show_dir` ([`media_path`]): resolving 2,000 references took about 40% of a
-    /// doc's install on the control thread (M4.15i).
-    order: Vec<(String, Option<PathBuf>)>,
+    /// Files in workspace order (the order their probes go out).
+    order: Vec<IndexedFile>,
     show_dir: Option<PathBuf>,
     visited: u64,
+}
+
+/// One file of [`Indexed`], with what the control thread would otherwise work out for each file
+/// while a doc opens: resolving 2,000 references took about 40% of a doc's install there, and
+/// hashing their long paths most of the rest.
+struct IndexedFile {
+    key: String,
+    /// Resolved against `show_dir` ([`media_path`]).
+    path: Option<PathBuf>,
+    /// How many cues use the file, and how many of them ask for it to be preloaded.
+    users: usize,
+    preloaders: usize,
 }
 
 /// Reads every cue of `ws` once: the cue index and each audio cue's file, resolved against
 /// `show_dir`.
 pub fn index_workspace(ws: &Workspace, show_dir: Option<&Path>) -> Indexed {
     let mut uses: HashMap<CueId, Use> = HashMap::new();
-    let mut order: Vec<(String, Option<PathBuf>)> = Vec::new();
+    let mut order: Vec<IndexedFile> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut visited = 0;
     let index = CueIndex::build_visiting(ws, |cue| {
         visited += 1;
         if let Some((key, preload)) = media_use(cue) {
             if seen.insert(key.to_owned()) {
-                order.push((
-                    key.to_owned(),
-                    media_path(&MediaRef::new(key.to_owned()), show_dir),
-                ));
+                order.push(IndexedFile {
+                    key: key.to_owned(),
+                    path: media_path(&MediaRef::new(key.to_owned()), show_dir),
+                    users: 0,
+                    preloaders: 0,
+                });
             }
             uses.insert(
                 cue.id,
@@ -117,6 +129,15 @@ pub fn index_workspace(ws: &Workspace, show_dir: Option<&Path>) -> Indexed {
             );
         }
     });
+    let mut counts: HashMap<&str, (usize, usize)> = HashMap::with_capacity(order.len());
+    for u in uses.values() {
+        let n = counts.entry(u.key.as_str()).or_default();
+        n.0 += 1;
+        n.1 += usize::from(u.preload);
+    }
+    for file in &mut order {
+        (file.users, file.preloaders) = counts.get(file.key.as_str()).copied().unwrap_or_default();
+    }
     Indexed {
         index,
         uses,
@@ -324,46 +345,43 @@ impl MediaCatalog {
         let resolved = show_dir == self.show_dir;
         self.index = index;
         self.cues_read += visited;
-        let mut counts: HashMap<&str, (usize, usize)> = HashMap::with_capacity(order.len());
-        for u in uses.values() {
-            let n = counts.entry(u.key.as_str()).or_default();
-            n.0 += 1;
-            n.1 += usize::from(u.preload);
+        // A fresh catalog (a doc opening, with thousands of files) has nothing to compare: each
+        // file goes straight in below.
+        let fresh = self.entries.is_empty();
+        if !fresh {
+            let counts: HashMap<&str, (usize, usize)> = order
+                .iter()
+                .map(|f| (f.key.as_str(), (f.users, f.preloaders)))
+                .collect();
+            let mut freed = 0;
+            self.entries.retain(|k, e| match counts.get(k.as_str()) {
+                Some(&(users, preloaders)) => {
+                    e.users = users;
+                    e.preloaders = preloaders;
+                    true
+                }
+                None => {
+                    freed += e.reserved;
+                    self.key_changes.push(KeyChange::Unwatch { key: k.clone() });
+                    false
+                }
+            });
+            give_back(&mut self.reserved, &self.pool.preloads, freed);
         }
-        let mut freed = 0;
-        self.entries.retain(|k, e| match counts.get(k.as_str()) {
-            Some(&(users, preloaders)) => {
-                e.users = users;
-                e.preloaders = preloaders;
-                true
-            }
-            None => {
-                freed += e.reserved;
-                self.key_changes.push(KeyChange::Unwatch { key: k.clone() });
-                false
-            }
-        });
-        give_back(&mut self.reserved, &self.pool.preloads, freed);
-        let mut asked = Vec::new();
         self.entries
             .reserve(order.len().saturating_sub(self.entries.len()));
-        for (key, path) in &order {
-            if !self.entries.contains_key(key.as_str()) {
-                if resolved {
-                    self.request_at(key.clone(), path.clone());
-                } else {
-                    self.request(key.clone());
-                }
-                asked.push(key.as_str());
+        for file in order {
+            if !fresh && self.entries.contains_key(&file.key) {
+                continue;
             }
-        }
-        for key in asked {
-            if let (Some(e), Some(&(users, preloaders))) =
-                (self.entries.get_mut(key), counts.get(key))
-            {
-                e.users = users;
-                e.preloaders = preloaders;
-            }
+            let path = if resolved {
+                file.path
+            } else {
+                media_path(&MediaRef::new(file.key.clone()), self.show_dir.as_deref())
+            };
+            let entry = self.request_at(file.key, path);
+            entry.users = file.users;
+            entry.preloaders = file.preloaders;
         }
         // `settle_preload` of a file not probed yet only notes whether a cue wants it
         // preloaded: done in place, so a fresh catalog's thousands of keys are not copied.
@@ -628,8 +646,8 @@ impl MediaCatalog {
         self.request_at(key, path);
     }
 
-    /// [`Self::request`] of `key`, already resolved to `path`.
-    fn request_at(&mut self, key: String, path: Option<PathBuf>) {
+    /// [`Self::request`] of `key`, already resolved to `path`; its entry.
+    fn request_at(&mut self, key: String, path: Option<PathBuf>) -> &mut Entry {
         self.next_ticket += 1;
         let ticket = self.next_ticket;
         let asked = match &path {
@@ -655,8 +673,9 @@ impl MediaCatalog {
         if !self.plan_changes.all && (!asked || !self.entries.contains_key(&key)) {
             self.plan_changes.keys.insert(key.clone());
         }
-        match self.entries.get_mut(&key) {
-            Some(e) => {
+        match self.entries.entry(key) {
+            hash_map::Entry::Occupied(e) => {
+                let e = e.into_mut();
                 e.ticket = ticket;
                 e.asking = asked;
                 e.urgent = false;
@@ -664,35 +683,33 @@ impl MediaCatalog {
                 if !asked {
                     e.probe = Probe::Failed;
                 }
+                e
             }
-            None => {
+            hash_map::Entry::Vacant(e) => {
                 // Watched from its first use; a reference with no place on disk cannot be.
                 if let Some(path) = path {
                     self.key_changes.push(KeyChange::Watch {
-                        key: key.clone(),
+                        key: e.key().clone(),
                         path,
                         id: ticket,
                     });
                 }
-                self.entries.insert(
-                    key,
-                    Entry {
-                        probe: if asked { Probe::Pending } else { Probe::Failed },
-                        ticket,
-                        asking: asked,
-                        urgent: false,
-                        timed_out: false,
-                        users: 0,
-                        preloaders: 0,
-                        wants_preload: false,
-                        preload_ticket: 0,
-                        preloaded: None,
-                        reserved: 0,
-                        over_budget: false,
-                        preload_failed: false,
-                        watch: ticket,
-                    },
-                );
+                e.insert(Entry {
+                    probe: if asked { Probe::Pending } else { Probe::Failed },
+                    ticket,
+                    asking: asked,
+                    urgent: false,
+                    timed_out: false,
+                    users: 0,
+                    preloaders: 0,
+                    wants_preload: false,
+                    preload_ticket: 0,
+                    preloaded: None,
+                    reserved: 0,
+                    over_budget: false,
+                    preload_failed: false,
+                    watch: ticket,
+                })
             }
         }
     }
