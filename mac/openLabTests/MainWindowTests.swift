@@ -1212,6 +1212,32 @@ final class WindowLayoutTests: XCTestCase {
         XCTAssertEqual(app.session.openedPathCount, 0, "the window took it")
     }
 
+    /// Showing a hidden area in a window too small for it is not a drag: its saved size stays.
+    func testShowingAHiddenInspectorInASmallWindowKeepsItsSavedSize() async throws {
+        let url = try showFile("ShowSmall")
+        let (doc, wc) = try await open(url)
+        let big = frame(wc)
+        wc.window?.setFrame(big, display: true)
+        settle(wc)
+        let room = wc.verticalSplit.bounds.height - wc.verticalSplit.dividerThickness
+        let tall = min(400, room - 200).rounded(.down)
+        wc.verticalSplit.setPosition(room - tall, ofDividerAt: 0)
+        settle(wc)
+        try toggle(.inspector, in: wc)
+        await close(doc)
+
+        let (second, again) = try await open(url)
+        again.window?.setFrame(NSRect(origin: big.origin, size: again.window?.minSize ?? big.size), display: true)
+        settle(again)
+        try toggle(.inspector, in: again)
+        again.window?.setFrame(big, display: true)
+        settle(again)
+        XCTAssertEqual(again.inspector.view.frame.height, tall, accuracy: 1, "back to the saved size")
+        let path = try XCTUnwrap(app.session.workspaces.first { $0.doc == second }?.path)
+        let saved = WindowLayoutStore(defaults: defaults).layout(forPath: path).inspectorHeight
+        XCTAssertEqual(try XCTUnwrap(saved), tall, accuracy: 1, "and still saved")
+    }
+
     func testTheMinimumWindowKeepsItsListAndInspectorSizes() async throws {
         let (_, wc) = try await open(try showFile("Small"))
         wc.window?.setFrame(NSRect(origin: frame(wc).origin, size: wc.window?.minSize ?? .zero), display: true)

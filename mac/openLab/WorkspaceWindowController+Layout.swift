@@ -58,8 +58,13 @@ extension WorkspaceWindowController {
                 [weak self] note in
                 // A divider moved by the user carries NSSplitViewUserResizeKey; a layout pass after a
                 // window resize carries at most the divider's index.
-                let dragged = note.userInfo?["NSSplitViewUserResizeKey"] != nil
-                MainActor.assumeIsolated { self?.splitMoved(byDrag: dragged, vertical: split === self?.verticalSplit) }
+                let keyed = note.userInfo?["NSSplitViewUserResizeKey"] != nil
+                MainActor.assumeIsolated {
+                    // The key is not documented. Without it a move still counts as a drag while the
+                    // left button is down outside a live window resize (the window's own edge drag).
+                    let mouse = NSEvent.pressedMouseButtons & 1 != 0 && self?.window?.inLiveResize != true
+                    self?.splitMoved(byDrag: keyed || mouse, vertical: split === self?.verticalSplit)
+                }
             }
         }
     }
@@ -94,6 +99,15 @@ extension WorkspaceWindowController {
         store.save(layout, forEntry: entry)
     }
 
+    /// Moves a divider to a saved place. That is the layout being restored, not the user dragging: the
+    /// split's notification carries the user-resize key, which must not change the preferred sizes.
+    private func placeDivider(_ split: NSSplitView, at position: CGFloat) {
+        let was = isRestoringLayout
+        isRestoringLayout = true
+        defer { isRestoringLayout = was }
+        split.setPosition(position, ofDividerAt: 0)
+    }
+
     /// Gives a just-shown area the split size that was saved for it.
     func applyPendingSplit(_ area: LayoutArea) {
         switch area {
@@ -106,7 +120,7 @@ extension WorkspaceWindowController {
             guard most >= 120 else { return }  // no room for a usable inspector
             // The preferred size stays what was saved even where this window cannot show it yet.
             inspectorHeightConstraint?.constant = max(target, 120)
-            verticalSplit.setPosition(room - min(max(target, 120), most), ofDividerAt: 0)
+            placeDivider(verticalSplit, at: room - min(max(target, 120), most))
         case .sidebar:
             guard let target = pendingSidebarWidth else { return }
             pendingSidebarWidth = nil
@@ -115,7 +129,7 @@ extension WorkspaceWindowController {
             let most = room - Self.minCueListWidth
             guard most >= 200 else { return }
             sidebarWidthConstraint?.constant = max(target, 200)
-            horizontalSplit.setPosition(room - min(max(target, 200), most), ofDividerAt: 0)
+            placeDivider(horizontalSplit, at: room - min(max(target, 200), most))
         case .toolbar, .masthead:
             break
         }
