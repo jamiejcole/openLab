@@ -11,13 +11,15 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 **Tokens** (correctness comes first, see CLAUDE.md; within that, spend tokens on review and save them on re-runs, re-reads and long reports):
 - Implementers default to **Sonnet**; pass `model: "opus"` for the issue's `model:opus` label (mixer/audio thread, lock-free queues, the cue-engine state machine, engine process lifecycle). The `pr-reviewer` runs on **Opus** (frontmatter); for Opus-written work it is a fresh agent that never saw the implementer's context (CLAUDE.md "Review").
 - At most 2 implementers at once, on disjoint files. Fewer, smaller batches keep branches close to `main`.
-- Review once per batch. Re-review the fix commits after any High or Medium fix. Max 3 rounds, then escalate.
+- Review once per batch, within the limit in CLAUDE.md "Review". Re-review only the fix commits; a re-review brief states the limit and invites no new hunting. If a fix keeps producing new faults, simplify the design instead of patching it again.
+- A CI failure gets one agent per failure, with a 30-minute limit. Stress repeats only for a failure that reproduces; one that doesn't is pushed with a diagnostic and CI decides.
 - Briefs name the exact ARCHITECTURE sections, files and IDs to read so agents don't read whole docs.
 
 **CI** (macOS runners are scarce; CI waits cost more than anything else):
 - Push a branch **once**, after the local review and fixes. Every push is a full CI run.
-- `main` requires the branch to be up to date. Before merging a green PR that is behind, update it (`gh pr update-branch N`, a merge commit), wait for CI, then merge. Merge one PR at a time; that is why batches are few and combined.
-- Combine related reviewed batches into one PR (merge their branches into one combined branch, prepush once, list every `Closes #N`) instead of one PR per batch.
+- `main` requires the branch to be up to date. Before merging a green PR that is behind, update it (`gh pr update-branch N`, a merge commit), wait for CI, then merge. Merge one PR at a time.
+- A mac PR holds one issue, or two that touch the same code (user decision 2026-11-04): on mac work a bigger PR costs more in review rounds than it saves in CI. Elsewhere, combine related reviewed batches into one PR (merge their branches into one combined branch, prepush once, list every `Closes #N`).
+- Never wait idle on CI: while a PR or agent is in flight, run a recurring 10-minute check-in (user decision 2026-11-04), merge what is green, fix what is red, and start the next issues up to the agent limit.
 - The `changes` job runs only what a diff needs (`.github/workflows/ci.yml`). A `.github/` or `Makefile` change runs everything.
 
 ## 0. Re-orient (every session start or after a reset)
@@ -29,7 +31,7 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 - A feature issue without acceptance flows gets them first (CLAUDE.md "Tests"): a separate `general-purpose` agent (never the batch's implementer) writes them from `~/qlab-ref` behaviour pages (not only the layout map), cites pages, and adds them as the issue's Checklist.
 - First count open `low` + `severity:*` issues (`gh issue list --state open --limit 1000 --label low --json number --jq length`, same for each `severity:*` label). Above 30, the batch is only those issues (CLAUDE.md "Findings policy").
 - Pick from the current milestone's open task issues, skipping issues blocked by an open issue (`gh api repos/jamiejcole/openLab/issues/N/dependencies/blocked_by`). Prefer finishing a milestone over starting several, and show-safety issues first. Model from the `model:*` label, size from `size:*`.
-- Batch 1–4 closely related issues per implementer (same files, same concepts). Split unrelated areas into separate implementers. An issue's text may say what to batch it with.
+- Batch 1–4 closely related issues per implementer (same files, same concepts), at most two for mac work. Split unrelated areas into separate implementers. An issue's text may say what to batch it with.
 - Every implementer works in its own worktree (`isolation: "worktree"`) on a task branch, never on `main`. Parallel implementers only when they touch disjoint files (e.g. `engine/` vs `mac/`; two `mac/` tasks rarely qualify: `AppController`, `WorkspaceStore` and the window controllers are shared).
 
 ## 2. Brief an implementer
@@ -60,14 +62,14 @@ Never paste large file contents into briefs — point at paths. Agent hand-back 
 - Spawn a fresh `subagent_type: "pr-reviewer"` with: issue numbers, base and branch/commit range, and any area you're suspicious of. Every PR gets one (CLAUDE.md "Review").
 - Re-run each High and Medium's command or test before sending it on; a finding that doesn't reproduce goes back to the reviewer or to a second reviewer, not to the implementer.
 - Triage per CLAUDE.md "Findings policy". Niche QLab parity → the `v0.0.2` milestone.
-- Send findings to the **same implementer** via `SendMessage` (it keeps its context), then re-review the fix commits. Max 3 rounds; then stop and escalate to the user with the disagreement.
+- Send findings to the **same implementer** via `SendMessage` (it keeps its context), then re-review the fix commits, within the limit in CLAUDE.md "Review". A reviewer-implementer disagreement still unresolved after that goes to the user.
 
 ## 5. Land it (PR into `main`)
 Review traffic stays local (implementer report files, reviewer replies, `SendMessage`); GitHub is only the merge gate.
 - Branch named after the tasks (e.g. `m5-2-engine-lifecycle`). Push once: `git push origin <worktree-branch>:<task-branch>`.
 - `gh pr create --base main` with the body from `.github/pull_request_template.md`: `Closes #N` for each issue, task IDs + one line each, requirement IDs, the `PREPUSH PASS` line, the review summary and docs-claims lines of the template, QLab rows added. No full review text.
-- Check CI on the PR **once** when you would otherwise merge (`gh pr checks N`); fetch job logs only if red (`gh run view <id> --log-failed`). If GitHub reports a conflict, merge `main` into the branch (merge commit, never rebase a pushed branch), re-run `make prepush`, push.
-- Merge only when: CI green, no open High or Medium (or the user's downgrade is quoted in the PR), Lows fixed or dropped with a line in the PR. `gh pr merge N --merge --delete-branch --subject "Merge <task IDs>: <summary>"`.
+- Check CI on the PR at each check-in until it finishes (`gh pr checks N`); fetch job logs only if red (`gh run view <id> --log-failed`). If GitHub reports a conflict, merge `main` into the branch (merge commit, never rebase a pushed branch), re-run `make prepush`, push.
+- Merge only when: CI green, no open High or Medium that blocks under CLAUDE.md "Review" (or the user's downgrade is quoted in the PR), Lows fixed or dropped with a line in the PR. `gh pr merge N --merge --delete-branch --subject "Merge <task IDs>: <summary>"`.
 - Afterwards: `git fetch origin main`, fast-forward the local `main`, remove the worktree (and its `engine/target`).
 - Orchestrator-only PRs that touch `CLAUDE.md`, `.claude/`, `.github/`, `Makefile`, `scripts/` or docs claims get a `pr-reviewer` pass whose brief says: check for contradictions with the other instruction files and for claims that don't match the repo. Land them only while no agent is running, so no agent works under old rules. Small handoff-note commits may ride along in the next batch's PR.
 

@@ -10,7 +10,7 @@ You are an adversarial reviewer for **openLab**, theatre show-playback software 
 ## Before reviewing
 1. `CLAUDE.md` is loaded already (rules, "Findings policy"). Read the issue (`gh issue view N`: text, requirement IDs, Checklist), the `docs/ARCHITECTURE.md` sections relevant to the diff and the requirement IDs (plus §21) it cites (grep, don't read whole files).
 2. Get the diff: `git diff <base>...<branch>` (or the commit range you were given). Read every file the diff touches **in full**, plus callers of changed APIs. For each new check, limit or helper, grep for the other places that create the same data or do the same job (sibling entry points, copies, existing test helpers). Pre-existing problems in touched files are reported only when High or Medium (CLAUDE.md "Findings policy").
-3. On a re-review, review the fix commits and confirm each prior finding.
+3. On a re-review, review the fix commits and confirm each prior finding. Your brief says which round this is; apply the limit in CLAUDE.md "Review".
 4. For a feature or user-visible change, walk the issue's acceptance flows against the code and their tests: after each step, what does the user see, and which reaction should happen but has no code (the selection following the playhead, a key being consumed, a control being enabled)? Compare with QLab 5 (`~/qlab-ref`), not only with the issue text.
 
 ## What to hunt for (in priority order)
@@ -55,6 +55,6 @@ L1. <file>:<line> — <issue> → <suggestion> (fix now | drop: <why>)
 Not reviewed / uncertain: <anything you couldn't verify>
 ```
 
-Write "none" under an empty severity. VERDICT is CHANGES REQUIRED if there is any High, Medium, or fix-now Low.
+Write "none" under an empty severity. VERDICT is CHANGES REQUIRED if there is any High, blocking Medium (CLAUDE.md "Review"), or fix-now Low. Mark a Medium that doesn't block as "issue, not blocking".
 
 QLab behaviour claims: check them per CLAUDE.md "Behaviour" (cite pages, never paste text) before rating a behaviour finding.
