@@ -446,9 +446,8 @@ final class EngineSessionTests: XCTestCase {
         XCTAssertTrue(answered, "the first reopen was answered")
         tap.holdResults = false
         let opened = Task { await s.open(path: bPath) }
-        await assertEventually("the open was sent") {
-            self.tap.sent.contains { if case .request(_, .open(bPath, _)) = $0 { return true } else { return false } }
-        }
+        // The open waits behind the reopen whose answer is held (#499): it is sent once that is released.
+        for _ in 0..<100 { await Task.yield() }
         tap.releaseResults()
         let result = await opened.value
         guard case .success = result else {
@@ -461,6 +460,85 @@ final class EngineSessionTests: XCTestCase {
         await assertEventually { s.stores.count == 3 }
         XCTAssertTrue(before.allSatisfy { b in s.stores.values.contains { $0 === b } }, "the same windows")
         await assertEventually { s.workspaces.count == 3 }
+    }
+
+    /// #499: document requests (open, scan_recovery) go to the engine one at a time, in the order
+    /// asked, so the engine never refuses one for another's sake: the second is not sent until the
+    /// first is answered.
+    func testDocumentRequestsAreSentOneAtATime() async throws {
+        let (s, runs) = try await started([("Hamlet", "Demo")])
+        let bPath = try runs.show("Demo", named: "B")
+        func count(_ match: (Request) -> Bool) -> Int { tap.requestCount(match) }
+        func isOpen(_ r: Request) -> Bool { if case .open = r { return true } else { return false } }
+        func isScan(_ r: Request) -> Bool { if case .scanRecovery = r { return true } else { return false } }
+        tap.holdResults = true
+        tap.forgetSent()
+        let opened = Task { await s.open(path: bPath) }
+        await assertEventually("the open was sent") { count(isOpen) == 1 }
+        let scanned = Task { await s.scanRecovery() }
+        await assertEventually("the open's answer is held") { self.tap.heldCount >= 1 }
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(count(isScan), 0, "the scan waits for the open's answer")
+        tap.holdResults = false
+        tap.releaseResults()
+        guard case .success = await opened.value else { return XCTFail("the open failed") }
+        guard case .success = await scanned.value else { return XCTFail("the scan was refused") }
+        XCTAssertEqual(count(isScan), 1)
+    }
+
+    /// #499: the document queue lets go on an error (a missing file shows at once and the next
+    /// request is not held up), on a dropped connection and on an engine that dies under it.
+    func testTheDocumentQueueIsReleasedByAnErrorADropAndACrash() async throws {
+        let (s, runs) = try await started([("Hamlet", "Demo")])
+        let missing = await s.open(path: runs.folder.path + "/nothing.openlab")
+        guard case .failure(.engine(let code, _)) = missing else { return XCTFail("\(missing)") }
+        XCTAssertNotEqual(code, .commandRefused, "a missing file is reported as it is, not retried")
+        guard case .success = await s.scanRecovery() else { return XCTFail("the scan after an error") }
+
+        // A drop with an open in flight and a scan behind it: both end.
+        tap.holdResults = true
+        var ended = 0
+        let bPath = try runs.show("Demo", named: "B")
+        let first = Task {
+            _ = await s.open(path: bPath)
+            ended += 1
+        }
+        let second = Task {
+            _ = await s.scanRecovery()
+            ended += 1
+        }
+        await assertEventually("the open was answered, held") { self.tap.heldCount >= 1 }
+        tap.dropConnections()
+        tap.holdResults = false
+        tap.releaseResults()
+        await assertEventually("both requests ended") { ended == 2 }
+        _ = (first, second)
+        let reconnected = await pump { s.connectionState == .connected }
+        XCTAssertTrue(reconnected, "the app is connected again")
+        guard case .success = await s.scanRecovery() else { return XCTFail("the scan after a drop") }
+
+        // The engine dies with an open held and a scan behind it.
+        tap.holdResults = true
+        ended = 0
+        let cPath = try runs.show("Demo", named: "C")
+        let third = Task {
+            _ = await s.open(path: cPath)
+            ended += 1
+        }
+        let fourth = Task {
+            _ = await s.scanRecovery()
+            ended += 1
+        }
+        await assertEventually("the open was answered, held") { self.tap.heldCount >= 1 }
+        try await runs.crash()
+        tap.holdResults = false
+        tap.releaseResults()
+        await assertEventually("both requests ended") { ended == 2 }
+        _ = (third, fourth)
+        try await runs.start()
+        let back = await pump { s.connectionState == .connected }
+        XCTAssertTrue(back)
+        guard case .success = await s.scanRecovery() else { return XCTFail("the scan after a restart") }
     }
 
     /// A new run with no window open: the docs the old run's lists named are forgotten, so a list

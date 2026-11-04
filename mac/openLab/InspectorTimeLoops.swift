@@ -8,7 +8,8 @@ import AppKit
 extension InspectorViewController {
     func buildTimeLoopsTab() {
         timeLoops.onChange = { [weak self] change in self?.sendTimeLoops(change) }
-        timeLoops.onInvalid = { [weak self] key in self?.messageLabel.stringValue = loc(key) }
+        timeLoops.onHold = { [weak self] in self?.gestureHold($0) }
+        timeLoops.onInvalid = { [weak self] key in self?.showRefusal(loc(key)) }
         timeLoops.loadPeaks = { [weak self] cue, start, end, buckets in
             guard let self else { return .failure(.notConnected) }
             return await self.store.waveform(cue: cue, start: start, end: end, buckets: buckets)
@@ -48,7 +49,10 @@ extension InspectorViewController {
         timeLoops.isActive = timeLoopsItem != nil && tabView.selectedTabViewItem === timeLoopsItem
     }
 
-    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) { updateTimeLoopsActive() }
+    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        endGestures()
+        updateTimeLoopsActive()
+    }
 
     /// The playhead line follows the selected cue's progress.
     func updateTimeLoopsProgress() {

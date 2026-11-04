@@ -526,7 +526,8 @@ extension Rig {
         await sync()
     }
 
-    /// Returns once every frame the engine sent this connection before now has been applied.
+    /// Returns once the engine has answered a request sent now: replies sent before it are applied. A
+    /// broadcast can be overtaken by a reply (`hub::distribute`), so wait for what it brings.
     func sync() async {
         _ = await client.send({ .request(id: $0, .listPatchMappings) })
     }
@@ -552,6 +553,8 @@ final class WireTap: EngineTransport {
     /// Results are unreadable when they reach the app (a held one when it is released).
     var garbleResults = false
     var holdFlush = false
+    /// Hold `runtime` broadcasts (the engine's playhead moves) until `releaseResults`.
+    var holdRuntime = false
     fileprivate var connections: [TapConnection] = []
     fileprivate var held: [(TapConnection, String)] = []
 
@@ -630,6 +633,7 @@ final class TapConnection: EngineConnection {
 
     private func arrived(_ text: String) {
         let type = JSONValue.parse(text)?["type"]?.stringValue
+        if type == "runtime" && tap.holdRuntime { return tap.held.append((self, text)) }
         if type == "result" ? tap.holdResults : (type == "workspaces" && tap.holdLists) {
             return tap.held.append((self, text))
         }

@@ -7,3 +7,5 @@ openLabUITests/LaunchTests/testLaunchShowsOneWindowPerWorkspace
 openLabUITests/TransportUITests/testSpaceStartsTheCueAtThePlayhead
 # Panic: GO starts a cue and its panic button stops it.
 openLabUITests/SidebarUITests/testRunningCueAppearsInActiveCuesAndItsPanicButtonStopsIt
+# A press on the highlighted row that ends an edit: the table's tracking, action and the follow.
+openLabUITests/PlayheadClickUITests/testClickingTheHighlightedRowResetsThePlayhead

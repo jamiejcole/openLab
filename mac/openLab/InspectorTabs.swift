@@ -24,6 +24,8 @@ extension InspectorViewController {
     func syncTabs(forKind kind: String) {
         let wanted = InspectorTabs.ids(forKind: kind)
         guard tabView.tabViewItems.compactMap({ $0.identifier as? String }) != wanted else { return }
+        endGestures()  // a drag's view may be about to go; this may render, and so may do what follows
+        guard tabView.tabViewItems.compactMap({ $0.identifier as? String }) != wanted else { return }
         let selected = tabView.selectedTabViewItem
         let byID = Dictionary(
             tabView.tabViewItems.compactMap { i in (i.identifier as? String).map { ($0, i) } },
