@@ -199,6 +199,12 @@ final class LevelMatrixView: NSView {
         onPress?(false)
     }
 
+    /// The gesture is over, mouse-up or not: later events of this press do nothing.
+    func forgetPress() {
+        dragging = false
+        dragSlot = nil
+    }
+
     override func keyDown(with event: NSEvent) {
         let (dc, dr): (Int, Int)
         switch event.keyCode {

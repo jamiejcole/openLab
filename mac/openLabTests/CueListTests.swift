@@ -2518,6 +2518,218 @@ final class PlayheadFlowTests: XCTestCase {
         try await assertAllOn(cues[1])
     }
 
+    // MARK: A gesture's edits land on the cue it began on, whatever arrives when
+
+    private func matrixEvent(_ type: NSEvent.EventType, dy: CGFloat = 0) throws -> NSEvent {
+        let matrix = wc.inspector.audioLevels.matrix
+        let master = matrix.rect(of: .master)
+        return try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: type, location: matrix.convert(NSPoint(x: master.midX, y: master.midY + dy), to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: try XCTUnwrap(wc.window).windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1))
+    }
+
+    private func master(_ id: ModelID) -> Double? { kind(id)?["levels"]?["master_db"]?.doubleValue }
+
+    /// A release lost after the fader moved: the panel must show the new cue, and an edit there must
+    /// not carry the old cue's master with it.
+    func testALostGestureLeavesThePanelOnTheCueNowShown() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        showTab("levels")
+        let p = wc.inspector.audioLevels
+        p.beginGesture()
+        p.fader.doubleValue = -12
+        _ = p.fader.target?.perform(p.fader.action, with: p.fader)
+        await assertEventually { self.master(self.cues[0]) == -12 }
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        mouseIsDown = false
+        wc.cueList.handle(.progress([]))
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(p.levels?.db(.master), master(cues[1]) ?? 0, "the panel shows cue 2")
+        p.select(.output(0))
+        XCTAssertTrue(window.makeFirstResponder(p.levelField))
+        p.levelField.currentEditor()?.selectAll(nil)
+        try typeKeys("-20", in: window)
+        try typeKeys("\r", in: window, code: 36)
+        await assertEventually("the edit landed") {
+            self.kind(self.cues[1])?["levels"]?["outputs"]?.arrayValue?.first?["db"]?.doubleValue == -20
+        }
+        XCTAssertEqual(master(cues[1]), 0, "cue 1's master did not leak to cue 2")
+    }
+
+    /// The tail of a drag delivered after its gesture was given up goes nowhere.
+    func testADragsTailAfterALostReleaseNeverReachesAnotherCue() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        showTab("levels")
+        let matrix = wc.inspector.audioLevels.matrix
+        matrix.mouseDown(with: try matrixEvent(.leftMouseDown))
+        matrix.mouseDragged(with: try matrixEvent(.leftMouseDragged, dy: 40))
+        await assertEventually { self.master(self.cues[0]) == -10 }
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        mouseIsDown = false
+        wc.cueList.handle(.progress([]))
+        try await assertAllOn(cues[1])
+        wire.forgetSent()
+        matrix.mouseDragged(with: try matrixEvent(.leftMouseDragged, dy: 60))
+        matrix.mouseUp(with: try matrixEvent(.leftMouseUp, dy: 60))
+        await sync()
+        await settle()
+        XCTAssertEqual(commands(on: cues[1]), 0, "nothing went to the cue it never started on")
+    }
+
+    /// The button is up but its mouse-up is still queued: the gesture is not over, and its last edit
+    /// still reaches its own cue.
+    func testAQueuedMouseUpMeansTheGestureIsNotOverYet() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        showTab("levels")
+        let matrix = wc.inspector.audioLevels.matrix
+        matrix.mouseDown(with: try matrixEvent(.leftMouseDown))
+        matrix.mouseDragged(with: try matrixEvent(.leftMouseDragged, dy: 40))
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        mouseIsDown = false
+        NSApp.postEvent(try matrixEvent(.leftMouseUp, dy: 60), atStart: false)
+        wc.cueList.handle(.progress([]))
+        let heldOn = wc.cueList.selectedIDs()
+        let gesture = wc.inspector.audioLevels.gesture
+        let queued = NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .default, dequeue: true)
+        XCTAssertNotNil(queued, "the event was still queued")
+        XCTAssertEqual(heldOn, [cues[0]], "still held")
+        XCTAssertNotNil(gesture)
+        matrix.mouseDragged(with: try matrixEvent(.leftMouseDragged, dy: 60))
+        matrix.mouseUp(with: try matrixEvent(.leftMouseUp, dy: 60))
+        await assertEventually("its own cue took all of it") { self.master(self.cues[0]) == -15 }
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(master(cues[1]), 0)
+    }
+
+    func testAWaveformDragWhoseReleaseWasLostCommitsNothing() async throws {
+        try await threeCues()
+        let wave = wc.inspector.timeLoops.waveform
+        await assertEventually { wave.duration != nil }
+        wave.frame = NSRect(x: 0, y: 0, width: 600, height: 100)
+        XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(0)))
+        wave.drag(toX: wave.scale.x(0.3))
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        mouseIsDown = false
+        wc.cueList.handle(.progress([]))
+        try await assertAllOn(cues[1])
+        wire.forgetSent()
+        wave.drag(toX: wave.scale.x(0.4))
+        wave.endDrag()
+        await sync()
+        await settle()
+        XCTAssertEqual(commands(on: cues[1]), 0)
+        XCTAssertEqual(kind(cues[1])?["start_time"]?.doubleValue ?? 0, 0)
+    }
+
+    /// The selection moved under a gesture by anything but the follow (a menu key, another client
+    /// deleting a cue): the edits stay bound to the cue the gesture began on.
+    func testAFaderDragStaysOnItsCueWhenTheSelectionMovesUnderIt() async throws {
+        try await threeCues()
+        let p = wc.inspector.audioLevels
+        wire.forgetSent()
+        p.beginGesture()
+        p.fader.doubleValue = -6
+        _ = p.fader.target?.perform(p.fader.action, with: p.fader)
+        wc.cueList.selectAsUser([cues[1]])
+        p.fader.doubleValue = -12
+        _ = p.fader.target?.perform(p.fader.action, with: p.fader)
+        p.endGesture()
+        await assertEventually { self.master(self.cues[0]) == -12 }
+        await sync()
+        XCTAssertEqual(commands(on: cues[1]), 0)
+        XCTAssertEqual(p.levels?.db(.master), master(cues[1]) ?? 0, "the panel shows cue 2 after the gesture")
+    }
+
+    func testALevelMatrixPressStaysOnItsCueWhenTheSelectionMovesUnderIt() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        showTab("levels")
+        let matrix = wc.inspector.audioLevels.matrix
+        wire.forgetSent()
+        matrix.mouseDown(with: try matrixEvent(.leftMouseDown))
+        wc.cueList.selectAsUser([cues[1]])
+        await settle()
+        matrix.mouseDragged(with: try matrixEvent(.leftMouseDragged, dy: 40))
+        matrix.mouseUp(with: try matrixEvent(.leftMouseUp, dy: 40))
+        await assertEventually { self.master(self.cues[0]) == -10 }
+        await sync()
+        XCTAssertEqual(commands(on: cues[1]), 0)
+    }
+
+    func testAWaveformDragStaysOnItsCueWhenTheSelectionMovesUnderIt() async throws {
+        try await threeCues()
+        let wave = wc.inspector.timeLoops.waveform
+        await assertEventually { wave.duration != nil }
+        wave.frame = NSRect(x: 0, y: 0, width: 600, height: 100)
+        wire.forgetSent()
+        XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(0)))
+        wave.drag(toX: wave.scale.x(0.3))
+        wc.cueList.selectAsUser([cues[1]])
+        wave.endDrag()
+        await assertEventually { abs((self.kind(self.cues[0])?["start_time"]?.doubleValue ?? 0) - 0.3) < 0.01 }
+        await sync()
+        XCTAssertEqual(commands(on: cues[1]), 0)
+    }
+
+    // MARK: A refusal outlives the follow it was held behind
+
+    /// Text refused on Return with a follow held: the follow runs at once and the operator must still
+    /// see why the text went back. The next follow clears it.
+    private func assertRefusalSurvivesTheHeldFollow(
+        field: NSTextField, to head: ModelID, next: ModelID
+    ) async throws {
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        field.currentEditor()?.selectAll(nil)
+        try typeKeys("abc", in: window)
+        try await moveElsewhere(to: head)
+        await assertEventually { self.store.playheads[self.list] == head }
+        try typeKeys("\r", in: window, code: 36)
+        await assertEventually { self.wc.cueList.selectedIDs() == [head] }
+        await settle()
+        XCTAssertFalse(wc.inspector.messageLabel.stringValue.isEmpty, "the refusal is still on screen")
+        try await moveElsewhere(to: next)
+        await assertEventually { self.wc.cueList.selectedIDs() == [next] }
+        XCTAssertEqual(wc.inspector.messageLabel.stringValue, "", "it does not follow the show for good")
+    }
+
+    func testAnInvalidReturnWithAHeldFollowKeepsItsMessage() async throws {
+        try await threeCues()
+        try await assertRefusalSurvivesTheHeldFollow(field: wc.inspector.preWaitField, to: cues[1], next: cues[2])
+    }
+
+    func testAnInvalidReturnInATimeAndLoopsFieldKeepsItsMessage() async throws {
+        try await threeCues()
+        showTab("timeLoops")
+        await assertEventually { self.wc.inspector.timeLoops.waveform.duration != nil }
+        try await assertRefusalSurvivesTheHeldFollow(
+            field: wc.inspector.timeLoops.startField, to: cues[1], next: cues[2])
+    }
+
+    func testAnInvalidReturnInAFadeDurationFieldKeepsItsMessage() async throws {
+        try await threeCues()
+        let made = await wc.editor.add(.fade)
+        let fade = try XCTUnwrap(made)
+        await assertEventually { self.wc.inspector.cueForEdit?.id == fade }
+        showTab("curve")
+        try await assertRefusalSurvivesTheHeldFollow(
+            field: wc.inspector.fadeSettings.durationField, to: cues[1], next: cues[2])
+    }
+
     // MARK: Return and Esc in the inspector give the keys back
 
     /// QLab 5.2.2 and 5.2.4 (pp. 36-37): Return in a text field sends focus to the cue list. The held
@@ -2609,21 +2821,38 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
     }
 
-    /// As in the masthead (rows 62, 69): Return ends the typing, Option-Return types a new line.
-    func testReturnInTheInspectorNotesEndsTypingAndOptionReturnTypesALine() async throws {
+    /// The user's answer (rows 62, 69): Return ends the typing and only Shift-Return types a new line.
+    private func assertOnlyShiftReturnTypesALine(in notes: NSTextView) async throws {
         try await threeCues()
         let window = try XCTUnwrap(wc.window)
         window.makeKeyAndOrderFront(nil)
-        let notes = wc.inspector.notesView
         XCTAssertTrue(window.makeFirstResponder(notes))
         try typeKeys("one", in: window)
-        let optionReturn = try key("\r", code: 36, [.option])
-        window.sendEvent(optionReturn)
-        XCTAssertTrue(window.firstResponder === notes)
+        try pressKey(try key("\r", code: 36, [.shift]))
+        XCTAssertTrue(window.firstResponder === notes, "Shift-Return keeps typing")
         try typeKeys("two", in: window)
+        XCTAssertEqual(notes.string, "one\ntwo")
+        try pressKey(try key("\r", code: 36, [.option]))
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "Option-Return ends it, as Return does")
+        await assertEventually("saved, with no line from Option-Return") {
+            self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "one\ntwo"
+        }
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        try typeKeys("!", in: window)
         try typeKeys("\r", in: window, code: 36)
-        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
-        await assertEventually("saved") { self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "one\ntwo" }
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "Return ends it")
+        await assertEventually("saved, with no line from Return") {
+            !(self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue ?? "").hasSuffix("\n")
+                && (self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue ?? "").contains("!")
+        }
+    }
+
+    func testOnlyShiftReturnTypesALineInTheInspectorNotes() async throws {
+        try await assertOnlyShiftReturnTypesALine(in: wc.inspector.notesView)
+    }
+
+    func testOnlyShiftReturnTypesALineInTheMastheadNotes() async throws {
+        try await assertOnlyShiftReturnTypesALine(in: wc.masthead.notesView)
     }
 
     /// Esc drops the text and leaves the keys with the list: Down moves the highlight.

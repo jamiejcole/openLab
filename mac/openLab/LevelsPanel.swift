@@ -90,11 +90,14 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         matrix.onSelect = { [weak self] slot in self?.select(slot) }
         matrix.onDrag = { [weak self] slot, db, first in
             guard let self else { return }
-            if first { self.beginGesture() }
+            if first, self.gesture == nil { self.beginGesture() }
             self.edit(gesture: self.gesture) { $0.set(slot, db: db, drag: true) }
         }
         matrix.onDragEnd = { [weak self] in self?.endGesture() }
-        matrix.onPress = { [weak self] in self?.onHold?($0) }
+        // From the press: a drag can start at any moment, and must start from this cue's values.
+        matrix.onPress = { [weak self] on in
+            if on { self?.beginGesture() } else { self?.endGesture() }
+        }
 
         scroll.documentView = matrix
         scroll.hasVerticalScroller = true
@@ -215,6 +218,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     func endGesture() {
         guard gesture != nil else { return }
         gesture = nil
+        matrix.forgetPress()
         onGestureEnd?()
         onHold?(false)
     }

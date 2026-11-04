@@ -68,7 +68,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let loadTimeField = NSTextField()
     var loadTimeItem: NSTabViewItem?
     let kindIcon = NSImageView()
-    let notesView = NSTextView()
+    let notesView = NotesTextView()
     let colourPopup = NSPopUpButton()
     let continuePopup = NSPopUpButton()
     let flaggedCheck = NSButton(checkboxWithTitle: loc("inspector.flagged"), target: nil, action: nil)
@@ -93,9 +93,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             applyLock()
             if isLocked {
                 // The panels go with Show Mode, so a drag under way never sees its mouse-up.
-                audioLevels.endGesture()
-                fadeLevels.endGesture()
-                onGestureHold?(false)
+                endGestures()
             } else {
                 render()
             }
@@ -131,11 +129,37 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     private var pendingTriggers: [ModelID: JSONValue] = [:]
 
     /// The selected cue as edits should see it: the model's, with unanswered triggers applied.
-    var cueForEdit: Cue? {
-        guard var c = cue else { return nil }
+    var cueForEdit: Cue? { cue.map(withPendingEdits) }
+
+    private func withPendingEdits(_ cue: Cue) -> Cue {
+        var c = cue
         if let t = pendingTriggers[c.id] { c.raw.set("triggers", t) }
         if let k = pendingKinds[c.id] { c.raw.set("kind", k) }
         return c
+    }
+
+    /// The cue a drag under way began on. A panel holds that cue's values through the drag, so every
+    /// edit of the drag goes to it, whatever is selected by the time it arrives.
+    private var gestureCue: ModelID?
+
+    /// The cue a kind edit is for: the drag's, gone if that cue has gone; else the selected one.
+    var cueForKindEdit: Cue? {
+        guard let gestureCue else { return cueForEdit }
+        return store.model?.cue(gestureCue).map(withPendingEdits)
+    }
+
+    /// A panel's drag begins or ends.
+    func gestureHold(_ on: Bool) {
+        gestureCue = on ? (gestureCue ?? cue?.id) : nil
+        onGestureHold?(on)
+    }
+
+    /// Gives up every drag under way: its mouse-up is not coming, and later events of it do nothing.
+    func endGestures() {
+        audioLevels.endGesture()
+        fadeLevels.endGesture()
+        timeLoops.waveform.cancelDrag()
+        gestureHold(false)
     }
 
     func field(_ f: InspectorField) -> NSTextField? {
@@ -456,7 +480,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             chord, for: cue.id, in: model, keys: transportKeys?() ?? TransportKeys(settings: model.settings),
             menuChords: menuChords())
         {
-            messageLabel.stringValue = loc(HotkeyRules.messageKey(error))
+            showRefusal(loc(HotkeyRules.messageKey(error)))
             return false
         }
         messageLabel.stringValue = ""
@@ -490,7 +514,16 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     // MARK: Showing the model
 
-    func setSelection(_ ids: [ModelID]) {
+    /// A refusal lasts through the one follow it may have been held behind (the typing it ended was
+    /// holding that follow, which runs at once); any other change of cue clears it.
+    private var refusalOutlivesFollow = false
+
+    func showRefusal(_ message: String) {
+        messageLabel.stringValue = message
+        refusalOutlivesFollow = true
+    }
+
+    func setSelection(_ ids: [ModelID], byFollow: Bool = false) {
         // The list re-announces an unchanged selection after model changes; that must not wipe
         // what the user is typing or the message they are reading.
         if ids == selection { return }
@@ -505,7 +538,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             window.makeFirstResponder(nil)
         }
         selection = ids
-        messageLabel.stringValue = ""
+        if !(byFollow && refusalOutlivesFollow) { messageLabel.stringValue = "" }
+        refusalOutlivesFollow = false
         dirty = []
         render(force: Set(InspectorField.allCases))
         keepKeyTarget()
@@ -715,9 +749,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             if case .failure(let error) = outcome {
                 sendFailures += 1
                 if case .engine(_, let message) = error {
-                    messageLabel.stringValue = String(format: loc("inspector.refused"), message)
+                    showRefusal(String(format: loc("inspector.refused"), message))
                 } else {
-                    messageLabel.stringValue = loc("inspector.failed")
+                    showRefusal(loc("inspector.failed"))
                 }
                 // A newer edit of the same thing is in flight or being typed: it decides what shows.
                 guard selection == [cue], editSeq[seqKey] == n else { return }
@@ -740,7 +774,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     private func show(rejection: InspectorEdit.Rejection) {
-        messageLabel.stringValue = loc(rejection.messageKey)
+        showRefusal(loc(rejection.messageKey))
     }
 
     /// The kind `cue` will have once `property` lands, when the property replaces it (`kind`) or a
@@ -865,9 +899,24 @@ extension NSControl {
 }
 
 extension NSTextView {
-    /// Return and Tab end typing in a cue's notes, wherever they are shown; Option-Return types a
-    /// new line.
+    /// Return in any form but Shift-Return (`NotesTextView`), and Tab, end typing in a cue's notes.
     func endsNotesTyping(_ selector: Selector) -> Bool {
-        selector == #selector(NSResponder.insertNewline(_:)) || selector == #selector(NSResponder.insertTab(_:))
+        [
+            #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)),
+            #selector(NSResponder.insertLineBreak(_:)), #selector(NSResponder.insertTab(_:)),
+        ].contains(selector)
+    }
+}
+
+/// A cue's notes, wherever they are shown: only Shift-Return types a new line (the user's answer, in
+/// QLab 5). AppKit gives it no selector of its own, so it is taken here from the key.
+final class NotesTextView: NSTextView {
+    override func keyDown(with event: NSEvent) {
+        let isReturn = event.keyCode == 36 || event.keyCode == 76
+        if isReturn, isEditable, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .shift {
+            insertText("\n", replacementRange: selectedRange())
+        } else {
+            super.keyDown(with: event)
+        }
     }
 }

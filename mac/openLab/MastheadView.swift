@@ -7,7 +7,7 @@ import AppKit
 final class MastheadView: NSView, NSTextViewDelegate {
     let goButton = NSButton(title: loc("masthead.go"), target: nil, action: nil)
     let standbyField = NSTextField(labelWithString: loc("masthead.standby.none"))
-    let notesView = NSTextView()
+    let notesView = NotesTextView()
     /// The cue the masthead shows; nil when nothing stands by.
     private(set) var cueID: ModelID?
     /// Show Mode (or no cue): the notes cannot be typed in.
@@ -142,8 +142,8 @@ final class MastheadView: NSView, NSTextViewDelegate {
     }
 
     /// Escape, Return and Tab end editing (the text is committed by the end-of-editing that follows)
-    /// and give focus back, so Space fires GO again and the arrow keys work. Option-Return still
-    /// types a new line.
+    /// and give focus back, so Space fires GO again and the arrow keys work. Shift-Return types a
+    /// new line.
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         guard selector == #selector(NSResponder.cancelOperation(_:)) || textView.endsNotesTyping(selector) else {
             return false

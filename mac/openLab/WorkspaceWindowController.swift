@@ -141,7 +141,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.logController?.close() }
         }
-        cueList.onSelectionChange = { [weak inspector] in inspector?.setSelection($0) }
+        cueList.onSelectionChange = { [weak inspector, weak cueList] in
+            inspector?.setSelection($0, byFollow: cueList?.followingPlayhead == true)
+        }
+        cueList.onGestureLost = { [weak inspector] in inspector?.endGestures() }
         window.onPress = { [weak cueList] in cueList?.setFollowHold(.press, $0) }
         inspector.onGestureHold = { [weak cueList] in cueList?.setFollowHold(.gesture, $0) }
         window.keyTarget = cueList.outlineView

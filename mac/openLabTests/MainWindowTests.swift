@@ -310,10 +310,10 @@ final class MainWindowTests: XCTestCase {
         XCTAssertFalse(window.firstResponder === wc.masthead.notesView)
         await assertEventually { !self.setNotesCommands(rig).isEmpty }
         XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed then escape")
-        XCTAssertFalse(
+        XCTAssertTrue(
             wc.masthead.textView(
                 wc.masthead.notesView, doCommandBy: #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:))),
-            "Option-Return types a new line")
+            "Option-Return ends the typing as Return does")
     }
 
     // MARK: Find (ED-09)

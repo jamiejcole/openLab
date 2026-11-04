@@ -286,6 +286,13 @@ class WaveformView: NSView {
         }
     }
 
+    /// Gives the drag up, committing nothing: its mouse-up is not coming.
+    func cancelDrag() {
+        guard dragging != nil else { return }
+        dragging = nil
+        onDragEnded?()
+    }
+
     /// Commits the drag when it moved the handle from where it was taken. An end at the file's end
     /// is no trim at all (nil), as if never set. A slice marker let go outside the view is deleted.
     func endDrag() {

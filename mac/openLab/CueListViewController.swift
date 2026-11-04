@@ -410,7 +410,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     /// The selection is being moved to the playhead: the inspector follows, nothing is sent.
-    private var followingPlayhead = false
+    private(set) var followingPlayhead = false
     /// `set_playhead`s sent for the selection and not yet answered. Until they are, the engine may
     /// still echo an earlier one, so the selection does not follow the playhead meanwhile.
     private var playheadSends = 0
@@ -426,6 +426,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private var followHolds = Set<FollowHold>()
     /// Whether the left mouse button is down now (tests: the mouse they stand in for).
     var isLeftButtonDown: () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
+    /// A gesture's release was lost: whatever it holds is to be given up.
+    var onGestureLost: (() -> Void)?
 
     /// What holds the selection where it is while the playhead moves, as typing does: the inspector
     /// edits the selected cue, so moving the selection under one of these would send the rest of an
@@ -440,12 +442,19 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case menu
     }
 
-    /// A drag's release can be lost (its view taken away under it): the button being up says it is
-    /// over, and a follow it held runs at once. Called on each key, so the key acts on the moved
-    /// selection, and on each word from the engine, so it needs no further playhead move.
+    /// A drag's release can be lost (its view taken away under it): the button being up, with no drag
+    /// or mouse-up still queued for delivery, says it is over. The gesture is ended for the panels too,
+    /// and a follow it held runs at once. Called on each key, so the key acts on the moved selection,
+    /// and on each word from the engine, so it needs no further playhead move. A control tracking the
+    /// mouse inside its own `mouseDown` (`.press`) is not lost: it returns when the button comes up.
     func noticeLostGesture() {
-        guard followHolds.contains(.gesture), !isLeftButtonDown() else { return }
+        guard followHolds.contains(.gesture), !followHolds.contains(.press), !isLeftButtonDown(),
+            NSApp.nextEvent(
+                matching: [.leftMouseDragged, .leftMouseUp], until: .distantPast, inMode: .default, dequeue: false)
+                == nil
+        else { return }
         followHolds.remove(.gesture)
+        onGestureLost?()
         guard followHeld, !isTextEditing, followHolds.isEmpty else { return }
         followHeld = false
         followPlayhead()
