@@ -80,6 +80,15 @@
 "inspector.preview" = "Preview";
 "inspector.stopPreview" = "Stop Preview";
 "cue.previewing" = "Previewing";
+"cue.outputOverridden" = "Network output is disabled";
+"menu.window.overrides" = "Output Overrides";
+"overrides.window" = "Output Overrides";
+"overrides.network" = "Network output";
+"overrides.note" = "For every open workspace. Off: Network cues run but send nothing.";
+"overrides.noWorkspace" = "Open a workspace to change the overrides.";
+"footer.override.badge" = "NETWORK OUTPUT OFF";
+"footer.override.tooltip" = "Network cues run but send nothing. Turn it back on in Window > Output Overrides.";
+"status.detail.networkOff" = "Network output is disabled: Network cues run but send nothing.";
 "menu.transport.stopSelected" = "Stop Selected";
 "menu.transport.resetSelected" = "Reset Selected";
 

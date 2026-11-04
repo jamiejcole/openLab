@@ -27,6 +27,9 @@ final class AppController {
         }
     }
     let launcher = LauncherWindowController()
+    /// The Override Controls panel and what feeds it (`AppController+Overrides`).
+    let overrides = OutputOverridesPanel()
+    var statusSubs: [ObjectIdentifier: AnyCancellable] = [:]
 
     // Seams for tests (no modal loops, no panels, no real recents list or key window).
     var alerts: WorkspaceAlerts = AppKitAlerts()
