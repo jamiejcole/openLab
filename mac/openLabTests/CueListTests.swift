@@ -1715,47 +1715,67 @@ final class PlayheadFlowTests: XCTestCase {
     /// plain key: that key can still be recorded, and still fires.
     func testAMenuItemNeedingTheFnKeyDoesNotTakeThePlainKey() async throws {
         try await threeCues()
-        let letter = try unusedLetter()
         let menu = NSMenu()
-        menu.addItem(FnMenuItem(title: "fn key", action: nil, keyEquivalent: letter))
+        menu.addItem(FnMenuItem(title: "fn key", action: nil, keyEquivalent: "f"))
         let chords: @MainActor () -> Set<KeyChord> = { HotkeyRules.menuChords(in: menu) }
         wc.inspector.menuChords = chords
         app.menuChords = chords
-        XCTAssertTrue(wc.inspector.record(KeyChord(letter)), wc.inspector.messageLabel.stringValue)
+        XCTAssertTrue(wc.inspector.record(KeyChord("f")), wc.inspector.messageLabel.stringValue)
         await assertEventually("recorded") {
-            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == letter
+            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
         }
-        XCTAssertNil(app.handleKeyDown(try key(letter, code: 3)), "the key fires the cue's hotkey")
+        XCTAssertNil(app.handleKeyDown(try key("f", code: 3)), "the key goes to the cue's hotkey")
+        try await play(0.1)
+        await assertEventually("the cue runs") { running(cues[0]) }
     }
 
-    /// A letter free for a hotkey on this Mac: the OS's own menu items differ from one macOS to the
-    /// next, and the first CI failure on one was a refused letter. Any taken is named in the log.
-    private func unusedLetter() throws -> String {
-        let taken = HotkeyRules.currentMenuChords()
-        let keys = TransportKeys(settings: store.model?.settings)
-        let free = "fghjkmnqtuwxyz".map(String.init).first {
-            !taken.contains(KeyChord($0)) && keys.command(for: KeyChord($0)) == nil
+    /// fn-F is not F: the recorder does not take it for F, and a cue with hotkey F does not run; the
+    /// key goes on to the menus. Keys that always carry the fn flag still count.
+    func testAKeyHeldWithFnIsNotThePlainKey() async throws {
+        try await threeCues()
+        let fnF = try key("f", code: 3, [.function])
+        let recorder = wc.inspector.hotkeyField
+        showTab("triggers")
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(recorder))
+        wire.forgetSent()
+        recorder.keyDown(with: fnF)
+        await sync()
+        await settle()
+        XCTAssertEqual(commands(on: cues[0]), 0, "the recorder took nothing")
+        XCTAssertTrue(wc.inspector.record(KeyChord("f")), wc.inspector.messageLabel.stringValue)
+        await assertEventually("recorded") {
+            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
         }
-        if free != "f" { print("menu keys with no modifier here: \(taken.filter { $0.mask == 0 }.map(\.key))") }
-        return try XCTUnwrap(free)
+        XCTAssertTrue(app.handleKeyDown(fnF) === fnF, "the key passes on")
+        try await play(0.1)
+        await sync()
+        await settle()
+        XCTAssertFalse(running(cues[0]), "the cue does not run")
+        XCTAssertNotNil(KeyChord(event: try downArrow), "an arrow carries the flag and is still a key")
+    }
+
+    /// The system's own items vary by macOS: an unmodified key among them would be refused as a hotkey
+    /// and never fire, and this names it.
+    func testTheMenuBarTakesNoUnmodifiedKey() {
+        let unmodified = HotkeyRules.currentMenuChords().filter { $0.mask == 0 }.map(\.key)
+        XCTAssertEqual(unmodified, [])
     }
 
     /// A key being recorded for a cue goes to that cue.
     func testAHotkeyBeingRecordedStaysOnItsCueWhileThePlayheadMoves() async throws {
         try await threeCues()
         let recorder = wc.inspector.hotkeyField
-        let letter = try unusedLetter()
         showTab("triggers")
         XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(recorder))
         XCTAssertTrue(wc.window?.firstResponder === recorder)
         wire.forgetSent()
         try await moveElsewhere(to: cues[2])
         await assertHeldOnFirstCue(playheadOn: cues[2])
-        recorder.keyDown(with: try key(letter, code: 3))
+        recorder.keyDown(with: try key("f", code: 3))
         XCTAssertEqual(wc.inspector.messageLabel.stringValue, "", "the key was not refused")
         XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, "the keys go back to the list")
         await assertEventually("recorded on its own cue") {
-            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == letter
+            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
         }
         try await assertAllOn(cues[2])
         XCTAssertEqual(commands(on: cues[2]), 0)
