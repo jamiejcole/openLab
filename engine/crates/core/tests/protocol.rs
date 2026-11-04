@@ -113,6 +113,7 @@ fn snapshot() -> Snapshot {
             file: Some(62.5),
             trimmed: Some(60.0),
             duration: Some(120.0),
+            channels: Some(2),
         }],
     }
 }
@@ -911,12 +912,14 @@ fn fixtures() -> Vec<(String, Sample)> {
                     file: Some(62.5),
                     trimmed: Some(60.25),
                     duration: None,
+                    channels: Some(6),
                 }),
                 RuntimeChange::MediaDuration(CueMediaDuration {
                     cue: cue_id(11),
                     file: None,
                     trimmed: None,
                     duration: None,
+                    channels: None,
                 }),
             ],
         }),

@@ -1141,29 +1141,28 @@ final class TimeLoopsTests: XCTestCase {
 
 // MARK: Show-file helpers (also used by the other inspector and window tests)
 
-/// A 16-bit stereo WAV of `seconds` at 8 kHz: a quiet tone, the right channel at half the left.
-func writeWAV(_ url: URL, seconds: Double, rate: Int = 8000) throws {
+/// A 16-bit WAV of `seconds` at 8 kHz with `channels` channels (stereo by default): a quiet tone, each channel at half the one before.
+func writeWAV(_ url: URL, seconds: Double, rate: Int = 8000, channels: Int = 2) throws {
     let frames = Int((seconds * Double(rate)).rounded())
     var d = Data()
     func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
     func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
     d.append(contentsOf: Array("RIFF".utf8))
-    u32(UInt32(36 + frames * 4))
+    u32(UInt32(36 + frames * 2 * channels))
     d.append(contentsOf: Array("WAVEfmt ".utf8))
     u32(16)
     u16(1)
-    u16(2)
+    u16(UInt16(channels))
     u32(UInt32(rate))
-    u32(UInt32(rate * 4))
-    u16(4)
+    u32(UInt32(rate * 2 * channels))
+    u16(UInt16(2 * channels))
     u16(16)
     d.append(contentsOf: Array("data".utf8))
-    u32(UInt32(frames * 4))
-    d.reserveCapacity(d.count + frames * 4)
+    u32(UInt32(frames * 2 * channels))
+    d.reserveCapacity(d.count + frames * 2 * channels)
     for i in 0..<frames {
         let v = Int16(3000 * sin(2 * Double.pi * 440 * Double(i) / Double(rate)))
-        u16(UInt16(bitPattern: v))
-        u16(UInt16(bitPattern: v / 2))
+        for c in 0..<channels { u16(UInt16(bitPattern: v / Int16(1 << min(c, 14)))) }
     }
     try d.write(to: url)
 }

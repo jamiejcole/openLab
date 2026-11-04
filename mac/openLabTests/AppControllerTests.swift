@@ -169,38 +169,6 @@ final class AppControllerTests: XCTestCase {
         XCTFail("no attempt was refused: the retry was never exercised")
     }
 
-    /// Notes the engine refuses stop a Close, and stop it again: the text is not lost by asking twice.
-    func testMastheadNotesTheEngineRefusesStopEveryClose() async throws {
-        let wc = try XCTUnwrap(app.windows["1"])
-        let window = try XCTUnwrap(wc.window)
-        keyDoc = "1"
-        let notes = wc.masthead.notesView
-        XCTAssertTrue(window.makeFirstResponder(notes))
-        let tooLong = String(repeating: "x", count: 64 * 1024 + 1)
-        notes.insertText(tooLong, replacementRange: notes.selectedRange())
-        func dismissNotice() async {
-            await assertEventually("a notice") { window.attachedSheet != nil }
-            if let sheet = window.attachedSheet { window.endSheet(sheet) }
-            await assertEventually { window.attachedSheet == nil }
-        }
-        alerts.saveChoices = [.dontSave, .dontSave]  // the prompt must not be what stops it
-        let first = await app.closeWorkspace("1")
-        XCTAssertFalse(first, "stopped")
-        await dismissNotice()
-        let second = await app.closeWorkspace("1")
-        XCTAssertFalse(second, "stopped again: the text was never saved")
-        await dismissNotice()
-        XCTAssertNotNil(app.windows["1"])
-        XCTAssertTrue(notes.string.hasSuffix(tooLong), "the text is still there")
-        // Cut down, the same typing saves.
-        notes.setSelectedRange(NSRange(location: 0, length: notes.string.utf16.count))
-        notes.insertText("short", replacementRange: notes.selectedRange())
-        let cue = try XCTUnwrap(wc.masthead.cueID)
-        let saved = await wc.commitPendingEdits()
-        XCTAssertTrue(saved)
-        await assertEventually { wc.store.model?.cue(cue)?.raw["notes"]?.stringValue == "short" }
-    }
-
     /// A real engine of this test's own with the demo show open as doc 1 (the engine numbers
     /// docs from 0: a first one is opened and closed), Intro playing (GO, which moves the playhead
     /// to the Fade cue below it) and unsaved changes, and the app connected to it with one window.
@@ -248,6 +216,7 @@ final class AppControllerTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        NotesNoticePanel.closeAll()
         app?.closeAllWindows()
         app = nil
         engine?.releaseResults()
@@ -1555,6 +1524,29 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(quit)
     }
 
+    /// Quit with notes the engine refuses still being typed: the panel with Copy Text comes up and Quit
+    /// goes on without anyone answering it.
+    func testQuitWithMastheadNotesTheEngineRefusesGoesOnAndTheNoticeStays() async throws {
+        try await quiet("1")
+        let wc = try XCTUnwrap(app.windows["1"])
+        let window = try XCTUnwrap(wc.window)
+        let board = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
+        wc.notesPasteboard = board
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        let tooLong = String(repeating: "x", count: 64 * 1024 + 1)
+        notes.insertText(tooLong, replacementRange: notes.selectedRange())
+        let typed = notes.string
+        alerts.saveChoices = [.dontSave]
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit, "Quit goes on")
+        await assertEventually("the panel") { !NotesNoticePanel.open.isEmpty }
+        let panel = try XCTUnwrap(NotesNoticePanel.open.last?.panel)
+        XCTAssertTrue(sheetText(panel).contains("not saved"))
+        XCTAssertTrue(pressButton(loc("alert.copyText"), in: panel))
+        XCTAssertEqual(board.string(forType: .string), typed, "Copy Text")
+    }
+
     func testQuitWhilePlayingInShowModeIsOnePrompt() async throws {
         app.windows["1"]?.setShowMode(true)
         alerts.quitPlaying = false
@@ -1839,6 +1831,58 @@ final class AppControllerTests: XCTestCase {
         wc.inspector.controlTextDidChange(
             Notification(name: NSControl.textDidChangeNotification, object: wc.inspector.nameField))
         return wc
+    }
+
+    /// Types -6 in the master level field of Intro's Levels tab in "1" without committing it.
+    private func typePendingLevel() throws -> WorkspaceWindowController {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.inspector.setSelection([TestSnapshots.intro])
+        wc.inspector.tabView.selectTabViewItem(withIdentifier: "levels")
+        let field = wc.inspector.audioLevels.levelField
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(field))
+        try XCTUnwrap(field.currentEditor()).string = "-6"
+        wc.inspector.audioLevels.controlTextDidChange(
+            Notification(name: NSControl.textDidChangeNotification, object: field))
+        return wc
+    }
+
+    /// The master level of Intro in the show file the engine wrote.
+    private func savedMaster(at path: String) throws -> JSONValue? {
+        let file = try XCTUnwrap(JSONValue.parse(try String(contentsOfFile: path, encoding: .utf8)))
+        let cue = file["workspace"]?["cue_lists"]?.arrayValue?.first?["cues"]?.arrayValue?.first
+        return normalised(cue?["kind"]?["levels"]?["master_db"])
+    }
+
+    func testEnteringShowModeWhileTypingALevelCommitsItToTheCue() async throws {
+        let wc = try typePendingLevel()
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode)
+        await assertEventually("the cue holds the level") {
+            wc.store.model?.cue(TestSnapshots.intro)?.raw["kind"]?["levels"]?["master_db"].map { normalised($0) }
+                == .double(-6)
+        }
+        XCTAssertEqual(wc.inspector.audioLevels.levels?.master, -6)
+        XCTAssertEqual(wc.inspector.audioLevels.levelField.stringValue, LevelText.format(-6))
+        XCTAssertFalse(wc.inspector.audioLevels.levelField.isEnabled)
+    }
+
+    func testSaveWhileTypingALevelWritesItToTheFile() async throws {
+        _ = try typePendingLevel()
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let path = try XCTUnwrap(store.document?.path)
+        let saved = await app.saveWorkspace(store)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(try savedMaster(at: path), .double(-6))
+    }
+
+    func testCloseWhileTypingALevelSavesItWithTheWorkspace() async throws {
+        _ = try typePendingLevel()
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let path = try XCTUnwrap(store.document?.path)
+        alerts.saveChoices = [.save]
+        let closed = await app.closeWorkspace("1")
+        XCTAssertTrue(closed)
+        XCTAssertEqual(try savedMaster(at: path), .double(-6))
     }
 
     private func index(of match: (ClientMessage) -> Bool) -> Int? { engine.sent.firstIndex(where: match) }

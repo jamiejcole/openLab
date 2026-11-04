@@ -350,7 +350,7 @@ fn a_doc_whose_last_edit_is_autosaved_is_not_written_again() {
     assert_eq!(*writes.lock().unwrap(), 1);
 }
 
-/// SM-07, SM-01: Show Mode is the engine's (per doc, in memory, in `document` and the
+/// SM-07, SM-01: Show Mode is the engine's (per doc, in `document` and the
 /// snapshot), and the loop asks to keep the computer awake while a doc is in it or a cue runs.
 #[test]
 fn show_mode_and_running_cues_keep_the_computer_awake() {

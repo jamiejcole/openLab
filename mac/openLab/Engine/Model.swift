@@ -84,6 +84,19 @@ struct Cue: Hashable, Sendable, Decodable {
             shown)
     }
 
+    /// Whether the name this cue shows follows one of `ids`: one of them is further along its chain
+    /// of targets (a default name is made from its target's, which may be a default name too).
+    func followsName(of ids: Set<ModelID>, lookup: (ModelID) -> Cue?) -> Bool {
+        var seen: Set<ModelID> = [id]
+        var next = raw["kind"]?["target"]?.stringValue.map { ModelID($0) }
+        while let t = next, seen.insert(t).inserted {
+            if ids.contains(t) { return true }
+            guard let target = lookup(t), Self.namedAfterTarget.contains(target.kindType) else { return false }
+            next = target.raw["kind"]?["target"]?.stringValue.map { ModelID($0) }
+        }
+        return false
+    }
+
     /// The name every surface shows for the cue (list, standby, Find, messages): its own name, an
     /// Audio cue's file name, else the default name of a cue that acts on another; empty for none.
     func shownName(lookup: (ModelID) -> Cue?) -> String {
@@ -124,6 +137,14 @@ struct CueMediaDuration: Hashable, Sendable, Decodable {
     let file: Double?
     let trimmed: Double?
     let duration: Double?
+    /// How many channels the probed file has, as the engine sent it (nil: not known).
+    let channels: Int?
+
+    /// The matrix rows this file gives: `channels` when it is a count a file can have, else nil. The
+    /// engine only sends 1 to 64; anything else from a peer is treated as not known.
+    var fileChannels: Int? {
+        channels.flatMap { (1...LevelSet.maxChannels).contains($0) ? $0 : nil }
+    }
 }
 
 struct CueList: Hashable, Sendable, Decodable {

@@ -4,6 +4,19 @@ import AppKit
 
 enum SaveChoice: Equatable { case save, dontSave, cancel }
 
+/// Typed notes that were not saved: what to tell the operator, and the text itself so it can be
+/// copied out instead of lost. Nothing is held afterwards.
+struct NotesNotice: Equatable {
+    let message: String
+    let text: String
+
+    /// The Copy Text button.
+    func copyText(to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+}
+
 /// Every prompt the window/quit flows can raise. A protocol so tests script the answers instead
 /// of running a modal loop.
 @MainActor

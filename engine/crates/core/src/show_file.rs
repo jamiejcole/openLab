@@ -11,7 +11,7 @@ use crate::model::Workspace;
 use crate::validate::{IssueKind, Severity, ValidationIssue, repair};
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 /// Larger inputs are refused before parsing.
 pub const MAX_SHOW_FILE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -66,6 +66,28 @@ struct VersionProbe {
     format_version: Option<u64>,
 }
 
+/// Reads only the workspace's `show_mode`, to tell a damaged value from an absent one (the
+/// model reads a damaged one as `false`). A file that is not shaped like this fails the model
+/// parse with a better message, so a failure here is ignored.
+#[derive(Deserialize)]
+struct ModeProbe {
+    workspace: ModeProbeWorkspace,
+}
+
+#[derive(Deserialize)]
+struct ModeProbeWorkspace {
+    #[serde(default)]
+    show_mode: Option<Box<serde_json::value::RawValue>>,
+}
+
+/// Raw text again (see `bool_or_false`), so a value no tree can hold still counts as damage.
+fn show_mode_damaged(text: &str) -> bool {
+    serde_json::from_str::<ModeProbe>(text)
+        .ok()
+        .and_then(|p| p.workspace.show_mode)
+        .is_some_and(|raw| !matches!(raw.get(), "true" | "false"))
+}
+
 #[derive(Deserialize)]
 struct ShowFileIn {
     workspace: Workspace,
@@ -93,9 +115,13 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
     let mut from = FORMAT_VERSION;
     let mut had_playhead_keys = false;
     let mut had_output_delays = false;
+    let mut had_bad_show_mode = false;
     let file: ShowFileIn = match u32::try_from(version) {
         // Parse straight from text so errors carry line and column.
-        Ok(FORMAT_VERSION) => serde_json::from_str(text).map_err(LoadError::Model)?,
+        Ok(FORMAT_VERSION) => {
+            had_bad_show_mode = show_mode_damaged(text);
+            serde_json::from_str(text).map_err(LoadError::Model)?
+        }
         Ok(old) if old < FORMAT_VERSION => {
             from = old;
             let value = serde_json::from_str(text).map_err(LoadError::Syntax)?;
@@ -126,6 +152,13 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
             severity: Severity::Warning,
             cue_id: None,
             kind: IssueKind::PlayheadKeysRemoved,
+        });
+    }
+    if had_bad_show_mode {
+        issues.push(ValidationIssue {
+            severity: Severity::Warning,
+            cue_id: None,
+            kind: IssueKind::ShowModeUnreadable,
         });
     }
     if had_output_delays {
@@ -204,6 +237,7 @@ fn migrate_to(mut document: Value, from: u32, to: u32) -> Result<Value, LoadErro
             4 => v4_to_v5(document),
             5 => v5_to_v6(document),
             6 => v6_to_v7(document),
+            7 => v7_to_v8(document),
             _ => Err(format!("no upgrade step from version {version}")),
         }
         .map_err(|reason| LoadError::Migration {
@@ -407,6 +441,19 @@ fn v6_to_v7(mut document: Value) -> Result<Value, String> {
         .flatten();
     for output in outputs.filter_map(Value::as_object_mut) {
         output.remove("delay_ms");
+    }
+    Ok(document)
+}
+
+/// v8 added the workspace's `show_mode` (SM-01). A v7 reader ignored unknown keys, so every v7
+/// workspace was in Edit Mode: a hand-added value is removed, and the file opens in Edit Mode.
+fn v7_to_v8(mut document: Value) -> Result<Value, String> {
+    let root = document
+        .as_object_mut()
+        .ok_or("top level is not an object")?;
+    root.insert("format_version".into(), 8.into());
+    if let Some(workspace) = root.get_mut("workspace").and_then(Value::as_object_mut) {
+        workspace.remove("show_mode");
     }
     Ok(document)
 }

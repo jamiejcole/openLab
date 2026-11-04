@@ -442,6 +442,10 @@ pub struct CueMediaDuration {
     /// The cue's action: `trimmed` with every slice's play count.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    /// How many channels the probed file has (1 to [`crate::MAX_CHANNELS`]): the rows of the
+    /// routing matrix (AUD-06). Absent with the lengths: not probed, missing or unplayable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u16>,
 }
 
 impl RuntimeChange {

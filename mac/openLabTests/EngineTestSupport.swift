@@ -843,3 +843,30 @@ extension WorkspaceStore {
         await assertEventually { self.model?.settings["hotkeys"] == map }
     }
 }
+
+/// The texts shown in a sheet (an alert's message).
+@MainActor
+func sheetText(_ sheet: NSWindow) -> String {
+    var found: [String] = []
+    func walk(_ view: NSView) {
+        if let field = view as? NSTextField { found.append(field.stringValue) }
+        view.subviews.forEach(walk)
+    }
+    if let content = sheet.contentView { walk(content) }
+    return found.joined(separator: " ")
+}
+
+/// Clicks the button titled `title` in `sheet`, as the operator would; false when it has none.
+@MainActor
+func pressButton(_ title: String, in sheet: NSWindow) -> Bool {
+    var pressed = false
+    func walk(_ view: NSView) {
+        if let button = view as? NSButton, button.title == title, !pressed {
+            button.performClick(nil)
+            pressed = true
+        }
+        view.subviews.forEach(walk)
+    }
+    if let content = sheet.contentView { walk(content) }
+    return pressed
+}

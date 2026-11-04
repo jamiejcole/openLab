@@ -1,6 +1,6 @@
 # openLab show file format
 
-Status: format version **7** (openLab v0.0.1). Requirements: NFR-40, NFR-32, DOC-03.
+Status: format version **8** (openLab v0.0.1). Requirements: NFR-40, NFR-32, DOC-03.
 
 An openLab workspace is one UTF-8 JSON text file with the extension **`.openlab`**. It is meant to be
 readable, diffable and safe to keep under version control. The source of truth for the format is the
@@ -69,7 +69,8 @@ The top level of every file is:
 | 4 | v0.0.1 (development) | Identical to v5 except that `settings.hotkeys` had no selected-cue keys and its defaults were Esc for `stop_all` and bare Down / Up for `playhead_next` / `playhead_previous`, which the app never bound (Esc is its fixed panic; bare Up / Down move the selection). (A v4 key that was not reserved, `playhead_next` / `playhead_previous` included, is kept by this step; v6 then drops those two.) Upgrading (M5.11c) keeps what the app did: a transport key that is reserved (§4.2) becomes `null`; `load_selected` becomes `l` and `pause_resume_selected` `p` (the app's fixed keys), each `null` instead where a cue hotkey or a remaining transport key is that key (the app gave it up there, so no cue loses its hotkey); `start_selected`, `stop_selected`, `reset_selected` become `null`. Hand-added selected-cue keys are replaced. Old-version fixture: `v4-example.openlab`. |
 | 5 | v0.0.1 (development) | Identical to v6 except that `settings.hotkeys` also had `playhead_next` and `playhead_previous` (Next / Previous Cue; defaults Shift-Command-Down / Up). Upgrading removes both keys. If either held anything but `null` or its default, loading warns once (`PlayheadKeysRemoved`): the user's own key is gone, because QLab 5's key map has no such action and takes no Up or Down arrow (the arrows and the fixed Select Next / Previous items move the selection, and the playhead follows it). Old-version fixture: `v5-example.openlab`. |
 | 6 | v0.0.1 (development) | Identical to v7 except that each patch output also had `delay_ms` (0–1000 ms of speaker-alignment delay on the device output it was mapped to). Upgrading removes it from every output of every patch: QLab 5 has no per-output delay. If any output's delay was anything but 0 (a value that is not a number counts), loading warns once (`OutputDelaysRemoved`, no cue): those outputs now play undelayed, so speakers aligned in openLab must be aligned in a processor or the audio interface. Old-version fixture: `v6-example.openlab` (2.5 ms on one output). |
-| 7 | v0.0.1 | Current. Removes `delay_ms` from patch outputs (§4.4). |
+| 7 | v0.0.1 (development) | Identical to v8 except that the workspace had no `show_mode`: every v7 workspace opens in Edit Mode. Upgrading removes a `show_mode` a hand edit may have added (a v7 reader ignored it), so the file opens in Edit Mode, with no warning. Old-version fixture: `v7-example.openlab`. |
+| 8 | v0.0.1 | Current. Adds the workspace's `show_mode` (§4.1). |
 
 ## 3. Loading, validation and refusal
 
@@ -108,6 +109,7 @@ cue, and the cue shows as broken where it cannot run.
 | A Fade cue aimed at a Group, in a file older than version 3 | Warning (`GroupFadeNowRelative`); kept: such a Fade now moves each child relative to its level (see §2, version 2) |
 | A file older than version 6 whose Next Cue or Previous Cue key (`playhead_next`, `playhead_previous`) held anything but none or v5's default Shift-Command-Down / Up | Warning (`PlayheadKeysRemoved`, once, no cue); the migration removes both keys (version 6 has none) |
 | A file older than version 7 with a patch output `delay_ms` other than 0 | Warning (`OutputDelaysRemoved`, once, no cue); the migration removes every `delay_ms` (version 7 has none) |
+| `show_mode` is not a boolean (and not `null`) | Warning (`ShowModeUnreadable`, once, no cue); the workspace opens in Edit Mode |
 | A cue hotkey that is one of the workspace's keys (`settings.hotkeys`, transport or selected-cue, e.g. Space = GO) | Warning (`HotkeyUsedByWorkspace`, QLab 5's "Hotkey used by workspace"); kept, but the workspace action wins and the key never starts the cue (M2.28) |
 | OSC rights with Edit or Control but no View | Warning (`OscRightsNeedView`); Edit and Control are cleared |
 | An empty, over-long (256 bytes), repeated (the first stays) or 17th and later OSC passcode row | Warning (`OscPasscodeDropped`); the row is removed. Warnings never contain the passcode |
@@ -130,6 +132,7 @@ Playlist group; every other targeting cue may target any cue except itself.
 | `settings` | object | §4.2. |
 | `patches` | array of output patches | §4.4. |
 | `network_patches` | array of network patches | §4.5. |
+| `show_mode` | boolean, optional | `true`: the workspace was in Show Mode when saved and opens in Show Mode (QLab 5 reopens a workspace in the mode it was saved in). Absent or `false`: Edit Mode, which is what every file older than version 8 gets. Written only when `true`. Changing the mode does not mark the workspace unsaved, so the mode in a file is the one in force at the last Save, Save As or autosave (a plain Save of an unchanged workspace writes it) (a recovered workspace opens in the mode it was autosaved in). A value that is neither `true`, `false` nor `null` is damage: the workspace opens in Edit Mode with a warning (§3), and the next save writes it right. |
 | `cue_lists` | array of cue lists | §4.6. Written last so the short sections come first. |
 
 ### 4.2 `settings`
@@ -307,12 +310,12 @@ Option on macOS).
 
 ## 6. Annotated example
 
-An excerpt of `engine/fixtures/show/v7-example.openlab`, which contains every cue kind and group
+An excerpt of `engine/fixtures/show/v8-example.openlab`, which contains every cue kind and group
 mode. The notes after the listing refer to the numbered lines.
 
 ```json
 {
-  "format_version": 7,                                   // (1)
+  "format_version": 8,                                   // (1)
   "workspace": {
     "id": "0b5e0000-0000-4000-8000-000000000001",
     "name": "Example Show",

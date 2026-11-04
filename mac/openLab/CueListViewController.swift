@@ -674,8 +674,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         }
         if selectedIDs() != selected { select(selected) }
         // Cues that point at a changed cue (or anything in a changed group) show its name and number.
-        let pointing = batchTouched.flatMap { targeters[$0] ?? [] }
-        if !pointing.isEmpty { refresh(Set(pointing), columns: ["target", "name"]) }
+        // A default name follows its target's, which may itself be a default name: walk the chain
+        // (targets can loop, so each cue once).
+        var pointing = Set<ModelID>()
+        var pending = Array(batchTouched)
+        while let id = pending.popLast() {
+            for t in targeters[id] ?? [] where pointing.insert(t).inserted { pending.append(t) }
+        }
+        if !pointing.isEmpty { refresh(pointing, columns: ["target", "name"]) }
         // Groups that gained or lost the playhead show or clear their "inside" marker.
         let flipped = oldAncestors.symmetricDifference(playheadAncestors)
         let flagRows = flagGroups.union(flipped).filter { nodes[$0] != nil }

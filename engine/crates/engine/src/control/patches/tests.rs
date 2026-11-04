@@ -87,6 +87,7 @@ fn ws_with(outputs: Vec<PatchOutput>) -> Workspace {
             outputs,
         }],
         network_patches: vec![],
+        show_mode: false,
         cue_lists: vec![CueList {
             id: CueListId(Uuid::from_u128(2)),
             name: String::new(),
