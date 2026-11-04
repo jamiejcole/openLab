@@ -163,7 +163,7 @@ final class CueEditor {
     }
 
     @discardableResult
-    func add(_ kind: NewCueKind) async -> ModelID? {
+    func add(_ kind: NewCueKind, after cues: [ModelID]? = nil) async -> ModelID? {
         guard await begin(), let list = cueList?.listID else { return nil }
         let id = ModelID(UUID().uuidString.lowercased())
         // A Network cue needs a destination. A workspace with none gets a default one in the same
@@ -179,7 +179,7 @@ final class CueEditor {
             notify(loc("edit.error.noPatch"))
             return nil
         }
-        let selected = selectedNodes()
+        let selected = selectedNodes(of: cues)
         let roots = cueList?.roots ?? []
         let command: Command
         if kind == .group,
@@ -220,9 +220,9 @@ final class CueEditor {
         if selectionGoes, let successor, cueList?.node(successor) != nil { cueList?.selectAsUser([successor]) }
     }
 
-    func renumberSelection(start: Double, increment: Double) async {
+    func renumberSelection(of cues: [ModelID]? = nil, start: Double, increment: Double) async {
         guard await begin() else { return }
-        let ids = (cueList?.selectedIDs() ?? [])
+        let ids = selectedNodes(of: cues).map(\.id)
         guard !ids.isEmpty else { return }
         guard start.isFinite, increment.isFinite, start >= 0, increment > 0 else {
             notify(loc("edit.error.renumberValues"))
@@ -233,9 +233,9 @@ final class CueEditor {
 
     /// Moves the selected cues one place up (`by` -1) or down (+1) among their siblings. A cue
     /// already at the end of its group stays; the others of the selection still move.
-    func moveSelection(by step: Int) async {
+    func moveSelection(by step: Int, of cues: [ModelID]? = nil) async {
         guard await begin() else { return }
-        let nodes = Self.topLevel(selectedNodes())
+        let nodes = Self.topLevel(selectedNodes(of: cues))
         var commands: [Command] = []
         let ordered = step < 0 ? nodes : nodes.reversed()
         for node in ordered {

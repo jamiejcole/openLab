@@ -182,9 +182,9 @@ extension CueEditor {
     // MARK: Delete numbers
 
     /// Clears the number of every selected cue (QLab: Tools > Delete Numbers of Selected Cues, Cmd-D).
-    func deleteNumbers() async {
+    func deleteNumbers(of cues: [ModelID]? = nil) async {
         guard await begin() else { return }
-        let ids = (cueList?.selectedIDs() ?? []).filter { cueList?.node($0)?.cue.number != nil }
+        let ids = selectedNodes(of: cues).filter { $0.cue.number != nil }.map(\.id)
         guard !ids.isEmpty else { return }
         _ = report(await store.send(command: .clearNumbers(ids)))
     }

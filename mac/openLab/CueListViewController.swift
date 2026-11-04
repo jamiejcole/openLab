@@ -310,6 +310,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard id != listID, store.model?.cueLists.contains(where: { $0.id == id }) == true else { return }
         chosenList = id
         rebuild()
+        followPlayhead()  // the list shown has its own playhead, and the selection goes with it
         onModelApplied?()
     }
 

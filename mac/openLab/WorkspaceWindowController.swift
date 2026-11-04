@@ -157,7 +157,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             guard let self, let url = self.pickAudioFile() else { return }
             Task { await self.editor.replaceFile(of: id, with: url) }
         }
-        cueToolbar.onAdd = { [weak self] kind in Task { await self?.editor.add(kind) } }
+        cueToolbar.onAdd = { [weak self] kind in
+            let cues = self?.cueList.selectedIDs()
+            Task { await self?.editor.add(kind, after: cues) }
+        }
         window.contentView = buildContent()
         window.initialFirstResponder = cueList.outlineView
         window.center()
@@ -333,7 +336,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Asks for the first number and increment, then renumbers the selected cues (ED-08).
     func promptRenumber() {
-        guard !isShowMode, let window, !cueList.selectedIDs().isEmpty else { return NSSound.beep() }
+        let cues = cueList.selectedIDs()
+        guard !isShowMode, let window, !cues.isEmpty else { return NSSound.beep() }
         let settings = store.model?.settings
         let start = NSTextField(string: Self.plain(settings?["auto_number_start"]?.doubleValue ?? 1))
         let step = NSTextField(string: Self.plain(settings?["auto_number_increment"]?.doubleValue ?? 1))
@@ -354,7 +358,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             guard let a = Double(start.stringValue), let b = Double(step.stringValue) else {
                 return self.showNotice(loc("edit.error.renumberValues"))
             }
-            Task { await self.editor.renumberSelection(start: a, increment: b) }
+            Task { await self.editor.renumberSelection(of: cues, start: a, increment: b) }
         }
     }
 

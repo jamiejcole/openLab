@@ -79,6 +79,15 @@ extension AppController {
         return true
     }
 
+    /// `perform` for a key or menu item, with the front window and its selection as of now: the
+    /// selection can move with the playhead before the Task runs, and the command is for what the
+    /// operator saw.
+    func performNow(_ command: TransportCommand, isRepeat: Bool) {
+        let front = frontController
+        let cues = front?.cueList.selectedIDs()
+        Task { await perform(command, isRepeat: isRepeat, on: front, cues: cues) }
+    }
+
     /// Runs `command` on `target`, else the key window's workspace (Panic: every workspace). A held key is ignored
     /// after its first press: a repeating GO would fire cue after cue.
     func perform(

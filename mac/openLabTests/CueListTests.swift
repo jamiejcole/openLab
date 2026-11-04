@@ -1967,6 +1967,176 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
     }
 
+    // MARK: The menu bar and the keys act on the selection at the moment they are used
+
+    private lazy var menuBar: AppDelegate = {
+        let delegate = AppDelegate()
+        delegate.appController = app
+        return delegate
+    }()
+
+    private func panicked() -> [ModelID] {
+        wire.sent.compactMap { m -> ModelID? in
+            if case .transport(_, .panicCue(let c)) = m { return c }
+            return nil
+        }
+    }
+
+    /// A menu is open on cue 1 while the playhead moves to `head`; `action` is what the chosen item
+    /// runs, where an item's action runs (no real menu bar: opening one needs a real mouse).
+    private func chooseFromOpenMenu(
+        afterPlayheadMovesTo head: ModelID, _ action: @escaping @MainActor @Sendable () -> Void
+    ) async throws {
+        click(cues[0])
+        try await assertAllOn(cues[0])
+        let menu = NSMenu()
+        menu.addItem(withTitle: "item", action: nil, keyEquivalent: "")
+        await whileOpen(menu, in: wc.cueList.outlineView, chosen: action) { [self] in
+            try await moveElsewhere(to: head)
+            await assertHeldOn(cues[0], playheadOn: head)
+        }
+    }
+
+    func testMainMenuDeleteAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.deleteCues(nil) }
+        await assertEventually { self.wc.cueList.roots.count == 2 }
+        XCTAssertNil(wc.cueList.node(cues[0]), "the cue highlighted when the menu was used went")
+        XCTAssertNotNil(wc.cueList.node(cues[2]))
+        await sync()
+        await settle()
+        try await assertAllOn(cues[2])
+    }
+
+    func testMainMenuTransportAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        func item(_ command: TransportCommand) -> NSMenuItem {
+            let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            item.representedObject = command.rawValue
+            return item
+        }
+        nonisolated(unsafe) let load = item(.loadSelected)
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.transportCommand(load) }
+        await assertEventually("Load Selected") { self.status(self.cues[0], 1) == loc("cue.state.loaded") }
+        XCTAssertNil(status(cues[2], 1))
+        try await space()
+        XCTAssertTrue(running(cues[2]))
+        nonisolated(unsafe) let panic = item(.panicSelected)
+        wire.forgetSent()
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[1]) { [self] in menuBar.transportCommand(panic) }
+        await assertEventually("Panic Selected") { !self.panicked().isEmpty }
+        XCTAssertEqual(panicked(), [cues[0]])
+    }
+
+    func testMainMenuOtherEditsAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
+        addTeardownBlock { @MainActor in pasteboard.releaseGlobally() }
+        wc.editor.pasteboard = pasteboard
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
+        func index(_ id: ModelID) -> Int? { wc.cueList.roots.firstIndex { $0.id == id } }
+
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.copyCues(nil) }
+        await assertEventually("Copy") { pasteboard.string(forType: CueEditor.pasteType) != nil }
+        let copied = try XCTUnwrap(JSONValue.parse(try XCTUnwrap(pasteboard.string(forType: CueEditor.pasteType))))
+        XCTAssertEqual(copied["cues"]?.arrayValue?.first?["id"]?.stringValue, cues[0].raw)
+
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.pasteCues(nil) }
+        await assertEventually("Paste") { self.wc.cueList.roots.count == 4 }
+        XCTAssertEqual(index(cues[1]), 2, "the copy is right after cue 1")
+        await assertEventually("the copy is selected") {
+            self.wc.cueList.selectedIDs() == [self.wc.cueList.roots[1].id]
+        }
+
+        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        item.representedObject = NewCueKind.memo.rawValue
+        nonisolated(unsafe) let memo = item
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.newCue(memo) }
+        await assertEventually("New cue") { self.wc.cueList.roots.count == 5 }
+        XCTAssertEqual(index(cues[0]), 0)
+        XCTAssertEqual(wc.cueList.roots[1].cue.kindType, "memo", "the new cue is right after cue 1")
+        await assertEventually("the new cue is selected") {
+            self.wc.cueList.selectedIDs() == [self.wc.cueList.roots[1].id]
+        }
+
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.moveCuesDown(nil) }
+        await assertEventually("Move Down") { index(self.cues[0]) == 1 }
+        XCTAssertEqual(index(cues[2]), 4)
+
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.deleteNumbers(nil) }
+        await assertEventually("Delete Numbers") { self.store.model?.cue(self.cues[0])?.number == nil }
+        XCTAssertNotNil(store.model?.cue(cues[2])?.number)
+
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in menuBar.cutCues(nil) }
+        await assertEventually("Cut") { self.wc.cueList.node(self.cues[0]) == nil }
+        XCTAssertNotNil(wc.cueList.node(cues[2]))
+    }
+
+    /// The renumber dialog names the cues selected when it opened, whatever moves while it is up.
+    func testRenumberDialogAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        wc.promptRenumber()
+        await assertEventually("the dialog") { window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        func field(_ view: NSView) -> NSTextField? {
+            if let f = view as? NSTextField, f.accessibilityIdentifier() == "renumber-start" { return f }
+            return view.subviews.lazy.compactMap(field).first
+        }
+        try XCTUnwrap(field(try XCTUnwrap(sheet.contentView))).stringValue = "10"
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+        await assertEventually("renumbered its own cue") { self.store.model?.cue(self.cues[0])?.number == "10" }
+        XCTAssertEqual(store.model?.cue(cues[2])?.number, "3")
+    }
+
+    /// A key acts on what was highlighted when it was pressed: a playhead update already queued ahead
+    /// of the key's work moves the highlight first, with the screen not yet showing it. The list is
+    /// detached so that update can be put in that place.
+    func testASelectedKeyActsOnTheCueHighlightedWhenItWasPressed() async throws {
+        try await threeCues()
+        try await space()
+        click(cues[0])
+        try await assertAllOn(cues[0])
+        XCTAssertTrue(running(cues[0]))
+        wc.cueList.sub = nil
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        wire.forgetSent()
+        let queued = Task { @MainActor in
+            self.wc.cueList.handle(.runtime(cues: [], playheads: [self.list]))
+        }
+        XCTAssertNil(app.handleKeyDown(try key("s", code: 1)), "S is Panic Selected")
+        await queued.value
+        await assertEventually("Panic Selected") { !self.panicked().isEmpty }
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[2]], "the update did come in between")
+        XCTAssertEqual(panicked(), [cues[0]])
+    }
+
+    /// The list shown has its playhead's cue highlighted (the playhead and selection stay together).
+    func testAnotherListShowsItsPlayheadHighlighted() async throws {
+        try await threeCues()
+        let other: ModelID = "00000000-0000-0000-0000-0000000000c1"
+        let cue: ModelID = "00000000-0000-0000-0000-0000000000c2"
+        var memo = try XCTUnwrap(NewCueKind.memo.cueJSON(id: cue, patch: nil))
+        memo.set("name", .string("Elsewhere"))
+        guard
+            let add = Command.transaction([
+                .addCueList(id: other, name: "Other", index: 1), .addCue(memo, list: other, parent: nil, index: 0),
+            ]), case .success = await store.send(command: add),
+            case .success = await store.transport(.setPlayhead(list: other, cue: cue))
+        else { return XCTFail("other") }
+        await sync()
+        wc.cueList.showList(other)
+        await settle()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cue], "standby and highlight agree after switching list")
+        XCTAssertEqual(wc.inspector.cueForEdit?.id, cue)
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cue))
+        XCTAssertEqual(status(cue, 0), loc("cue.playhead"))
+    }
+
     // MARK: #496: GO on a group after a mode change
 
     private var group: ModelID = "none"
