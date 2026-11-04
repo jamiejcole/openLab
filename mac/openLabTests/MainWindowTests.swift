@@ -52,7 +52,8 @@ final class MainWindowTests: XCTestCase {
         try? pipe.fileHandleForWriting.close()
         collected.wait()
         return String(decoding: collected.data, as: UTF8.self).split(separator: "\n").filter {
-            $0.contains("Conflicting constraints") || $0.contains("width is negative")
+            // macOS 27 also logs a negative view width from window creation: #530.
+            $0.contains("Conflicting constraints")
         }.joined(separator: "\n")
     }
 
