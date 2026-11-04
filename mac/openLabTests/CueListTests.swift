@@ -2678,6 +2678,20 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertNil(wc.inspector.timeLoops.waveform.dragging)
     }
 
+    /// The selection moves to a cue without the tab: the tabs change under the drag.
+    func testASelectionThatChangesTheTabsEndsAWaveformDragAndCommitsIt() async throws {
+        try await threeCues()
+        let made = await wc.editor.add(.group)
+        let group = try XCTUnwrap(made)
+        await assertEventually { self.wc.cueList.selectedIDs() == [group] }
+        click(cues[0])
+        await assertEventually { self.wc.inspector.cueForEdit?.id == self.cues[0] }
+        let wave = try await dragTrim(to: 0.3)
+        wc.cueList.selectAsUser([group])
+        XCTAssertNil(wave.dragging)
+        await assertTrim(of: cues[0], is: 0.3)
+    }
+
     func testHidingTheInspectorEndsAWaveformDragAndCommitsIt() async throws {
         try await threeCues()
         _ = try await dragTrim(to: 0.3)

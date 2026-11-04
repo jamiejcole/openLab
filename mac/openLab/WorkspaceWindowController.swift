@@ -505,16 +505,17 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         return await inspector.commitPendingEdits() && ok
     }
 
-    /// A report about a workspace that is gone must not float on over the next one.
-    /// A key with the left button up: key and mouse events share one queue, so a mouse-up that was
-    /// coming has been handled by now, and a drag still under way lost its release. It ends here,
-    /// and a follow it held runs at once, before the key acts on the selection.
+    /// A key with the left button up: key and mouse events share one queue, so a mouse-up queued before
+    /// this key has been handled, and a drag still under way has lost its release. It ends here, and a
+    /// follow it held runs at once, before the key acts on the selection. A mouse-up queued just after
+    /// this key finds the drag over: its last movement is dropped, and what was dragged so far stays.
     func endLostGesture() {
         guard cueList.isGestureHeld, !cueList.isLeftButtonDown() else { return }
         inspector.endGestures()
         cueList.followHeldNow()
     }
 
+    /// A report about a workspace that is gone must not float on over the next one.
     func windowWillClose(_ notification: Notification) {
         inspector.endGestures()
         preshowController?.close()

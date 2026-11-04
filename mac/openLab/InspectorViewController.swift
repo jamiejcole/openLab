@@ -92,7 +92,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             guard isLocked != oldValue else { return }
             applyLock()
             if isLocked {
-                endGestures(commit: false)
+                endGestures()
             } else {
                 render()
             }
@@ -155,9 +155,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     /// Ends any drag under way, for every part of it at once: the panels, the cue it is bound to and
     /// the selection's hold. What was dragged goes to its cue, so a lost release drops nothing, and
-    /// later events of the drag do nothing. Only Show Mode gives an uncommitted drag up (`commit`).
-    func endGestures(commit: Bool = true) {
-        if commit { timeLoops.waveform.endDrag() } else { timeLoops.waveform.cancelDrag() }
+    /// later events of the drag do nothing. Under Show Mode's lock the panels refuse the commit, so a
+    /// drag not yet committed is given up.
+    func endGestures() {
+        timeLoops.waveform.endDrag()
         audioLevels.endGesture()
         fadeLevels.endGesture()
         gestureHold(false)
