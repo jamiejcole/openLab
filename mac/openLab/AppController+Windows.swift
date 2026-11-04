@@ -40,6 +40,7 @@ extension AppController {
             }
             if let doc = session.doc(of: store), let n = session.workspaces.first(where: { $0.doc == doc }) {
                 wc.workspaceName = n.name
+                restoreLayout(of: wc, path: n.path)
             }
             show(wc)
             if !previousRunAnnounced {
@@ -50,6 +51,13 @@ extension AppController {
         let liveIDs = Set(live.map(ObjectIdentifier.init))
         for id in controllers.keys where !liveIDs.contains(id) { dropWindow(id) }
         showLauncherIfNoWindows()
+    }
+
+    /// The engine names a workspace's file after its window exists (`ensureStore` runs first), so
+    /// this runs at the first list that has the path; it does nothing again once the layout is set.
+    private func restoreLayout(of wc: WorkspaceWindowController, path: String?) {
+        guard let path, let defaults = layoutDefaults, wc.layoutPersistence == nil else { return }
+        wc.restoreLayout(from: WindowLayoutStore(defaults: defaults), path: path)
     }
 
     func dropWindow(_ id: ObjectIdentifier) {
@@ -64,6 +72,7 @@ extension AppController {
             guard let wc = windows[info.doc], let window = wc.window else { continue }
             wc.workspaceName = info.name
             window.isDocumentEdited = info.dirty
+            restoreLayout(of: wc, path: info.path)
         }
     }
 

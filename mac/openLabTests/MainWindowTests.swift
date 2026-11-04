@@ -807,3 +807,299 @@ final class InspectorWindowFrameTests: XCTestCase {
         XCTAssertEqual(layout().frame, userFrame)
     }
 }
+
+/// Window layout remembered per workspace file (UI-02), on the real engine: each flow closes the
+/// workspace through the app and opens its file again, and checks the window the user then sees.
+/// The layout is kept in a UserDefaults suite of the test's own.
+@MainActor
+final class WindowLayoutTests: XCTestCase {
+    private var app: AppController!
+    private var engine: TestEngine!
+    private var alerts: ScriptedAlerts!
+    private var defaults: UserDefaults!
+    private var suite = ""
+
+    override func setUp() async throws {
+        engine = try await TestEngine.start()
+        suite = "openlab-layout-test-\(UUID().uuidString)"
+        defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let url = engine.infoURL
+        let session = EngineSession(
+            transport: WebSocketTransport(), infoProvider: { EngineConnectionInfo.load(from: url) },
+            scheduler: ManualScheduler())
+        app = AppController(session: session, scheduler: ManualScheduler(), layoutDefaults: defaults)
+        alerts = ScriptedAlerts()
+        app.alerts = alerts
+        session.start()
+        await assertEventually { session.appClient.state == .connected }
+    }
+
+    override func tearDown() async throws {
+        app?.closeAllWindows()
+        app = nil
+        defaults?.removePersistentDomain(forName: suite)
+        engine?.stop()
+    }
+
+    // MARK: Doing what the operator does
+
+    /// A show file at a path of its own.
+    private func showFile(_ name: String) throws -> URL {
+        let source = try XCTUnwrap(
+            Bundle(for: WindowLayoutTests.self).url(forResource: "TestShows", withExtension: nil)?
+                .appendingPathComponent("Second/Second.openlab"))
+        var show = try XCTUnwrap(JSONValue.parse(try String(contentsOf: source, encoding: .utf8)))
+        show["workspace"]?.set("id", .string(UUID().uuidString.lowercased()))
+        show["workspace"]?.set("name", .string(name))
+        let dir = engine.folder.appendingPathComponent("layout-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("\(name).openlab")
+        try show.text().write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    /// File > Open of `url`: the window it gets, loaded.
+    private func open(_ url: URL) async throws -> (doc: ModelID, wc: WorkspaceWindowController) {
+        let before = Set(app.windows.keys)
+        await app.openWorkspace(url: url)
+        await assertEventually { app.windows.count == before.count + 1 }
+        let doc = try XCTUnwrap(Set(app.windows.keys).subtracting(before).first)
+        let wc = try XCTUnwrap(app.windows[doc])
+        await assertEventually { wc.store.model != nil && wc.cueList.listID != nil }
+        wc.window?.layoutIfNeeded()
+        return (doc, wc)
+    }
+
+    /// The window's close button, answered: the workspace is closed.
+    private func close(_ doc: ModelID) async {
+        let closed = await app.closeWorkspace(doc)
+        XCTAssertTrue(closed)
+        await assertEventually { app.windows[doc] == nil }
+    }
+
+    /// The path the engine knows the file by: the layout is kept under it.
+    private func knownPath(_ url: URL) async throws -> String {
+        let (doc, _) = try await open(url)
+        let path = try XCTUnwrap(app.session.workspaces.first { $0.doc == doc }?.path)
+        await close(doc)
+        return path
+    }
+
+    /// A frame the user might pick, inside the main screen so AppKit leaves it alone (CI screens are small).
+    private func frame(shift: CGFloat = 0, _ wc: WorkspaceWindowController) -> NSRect {
+        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 700)
+        let min = wc.window?.minSize ?? NSSize(width: 800, height: 500)
+        let width = max(min.width, Swift.min(1000, screen.width - 80 - shift)).rounded(.down)
+        let height = max(min.height, Swift.min(780, screen.height - 80 - shift)).rounded(.down)
+        return NSRect(x: screen.minX + 20 + shift, y: screen.minY + 20 + shift, width: width, height: height)
+    }
+
+    private func settle(_ wc: WorkspaceWindowController) {
+        wc.window?.layoutIfNeeded()
+        wc.window?.displayIfNeeded()
+        wc.window?.layoutIfNeeded()
+    }
+
+    private func toggle(_ area: LayoutArea, in wc: WorkspaceWindowController) throws {
+        try XCTUnwrap(wc.footer.toggles[area]).performClick(nil)
+        settle(wc)
+    }
+
+    private func onScreen(_ frame: NSRect) -> Bool {
+        NSScreen.screens.contains { $0.visibleFrame.insetBy(dx: -1, dy: -1).contains(frame) }
+    }
+
+    // MARK: Flows
+
+    func testWindowFrameComesBack() async throws {
+        let url = try showFile("Frame")
+        let (doc, wc) = try await open(url)
+        let wanted = frame(wc)
+        wc.window?.setFrame(wanted, display: true)
+        await close(doc)
+        let (_, again) = try await open(url)
+        XCTAssertEqual(again.window?.frame, wanted)
+        XCTAssertTrue(
+            again.window?.firstResponder === again.cueList.outlineView, "restoring left the keys with the cue list")
+    }
+
+    func testSplittersComeBack() async throws {
+        let url = try showFile("Splits")
+        let (doc, wc) = try await open(url)
+        wc.window?.setFrame(frame(wc), display: true)
+        try toggle(.sidebar, in: wc)
+        let room = wc.verticalSplit.bounds.height - wc.verticalSplit.dividerThickness
+        let inspector = min(room - 250, 330).rounded(.down)
+        wc.verticalSplit.setPosition(room - inspector, ofDividerAt: 0)
+        settle(wc)
+        let across = wc.horizontalSplit.bounds.width - wc.horizontalSplit.dividerThickness
+        let sidebar: CGFloat = 360
+        wc.horizontalSplit.setPosition(across - sidebar, ofDividerAt: 0)
+        settle(wc)
+        XCTAssertEqual(wc.inspector.view.frame.height, inspector, accuracy: 1, "the drag took")
+        XCTAssertEqual(wc.sidebar.view.frame.width, sidebar, accuracy: 1, "the drag took")
+        await close(doc)
+
+        let (_, again) = try await open(url)
+        settle(again)
+        XCTAssertEqual(again.inspector.view.frame.height, inspector, accuracy: 1)
+        XCTAssertEqual(again.sidebar.view.frame.width, sidebar, accuracy: 1)
+        let split = again.horizontalSplit
+        XCTAssertEqual(
+            again.verticalSplit.frame.width + split.dividerThickness + again.sidebar.view.frame.width,
+            split.bounds.width, accuracy: 1, "the cue list keeps the rest of the width")
+    }
+
+    func testShownAreasAndSidebarTabComeBack() async throws {
+        let url = try showFile("Areas")
+        let (doc, wc) = try await open(url)
+        try toggle(.inspector, in: wc)
+        try toggle(.sidebar, in: wc)
+        wc.sidebar.tabs.selectedSegment = 1
+        wc.sidebar.tabs.performClick(nil)
+        XCTAssertFalse(wc.isVisible(.inspector))
+        XCTAssertFalse(try XCTUnwrap(wc.sidebar.activeTable.enclosingScrollView).isHidden)
+        await close(doc)
+
+        let (_, again) = try await open(url)
+        XCTAssertFalse(again.isVisible(.inspector))
+        XCTAssertEqual(again.footer.toggles[.inspector]?.state, .off)
+        XCTAssertTrue(again.isVisible(.sidebar))
+        XCTAssertEqual(again.sidebar.tabs.selectedSegment, 1)
+        XCTAssertFalse(try XCTUnwrap(again.sidebar.activeTable.enclosingScrollView).isHidden, "the active cues show")
+        XCTAssertTrue(try XCTUnwrap(again.sidebar.listTable.enclosingScrollView).isHidden)
+    }
+
+    func testShowModeIsNotSavedAsLayout() async throws {
+        let url = try showFile("Mode")
+        let (doc, wc) = try await open(url)
+        wc.window?.setFrame(frame(wc), display: true)
+        let room = wc.verticalSplit.bounds.height - wc.verticalSplit.dividerThickness
+        let inspector = min(room - 250, 320).rounded(.down)
+        wc.verticalSplit.setPosition(room - inspector, ofDividerAt: 0)
+        settle(wc)
+        await wc.requestShowMode(true)
+        await assertEventually { wc.isShowMode && !wc.isVisible(.inspector) && !wc.isVisible(.toolbar) }
+        settle(wc)
+        await close(doc)  // the Show Mode confirmation is answered yes
+
+        let (_, again) = try await open(url)
+        settle(again)
+        XCTAssertFalse(again.isShowMode, "Show Mode itself is not restored")
+        XCTAssertTrue(again.isVisible(.inspector))
+        XCTAssertTrue(again.isVisible(.toolbar))
+        XCTAssertEqual(again.inspector.view.frame.height, inspector, accuracy: 1)
+    }
+
+    func testEachWorkspaceFileKeepsItsOwnFrame() async throws {
+        let a = try showFile("Alpha")
+        let b = try showFile("Beta")
+        let (docA, wcA) = try await open(a)
+        let frameA = frame(wcA)
+        wcA.window?.setFrame(frameA, display: true)
+        let (docB, wcB) = try await open(b)
+        let frameB = frame(shift: 40, wcB)
+        XCTAssertNotEqual(frameA, frameB)
+        wcB.window?.setFrame(frameB, display: true)
+        await close(docA)
+        await close(docB)
+
+        let (_, againA) = try await open(a)
+        let (_, againB) = try await open(b)
+        XCTAssertEqual(againA.window?.frame, frameA)
+        XCTAssertEqual(againB.window?.frame, frameB)
+    }
+
+    func testASavedFrameThatNoLongerFitsIsBroughtOntoAScreen() async throws {
+        let url = try showFile("Gone")
+        let path = try await knownPath(url)
+        // Saved while a second display was to the right of every screen there is now, and larger.
+        let right = NSScreen.screens.map { $0.frame.maxX }.max() ?? 0
+        var layout = WindowLayout()
+        layout.frame = NSRect(x: right + 3000, y: 200, width: 9000, height: 7000)
+        WindowLayoutStore(defaults: defaults).save(layout, forPath: path)
+
+        let (_, wc) = try await open(url)
+        let shown = try XCTUnwrap(wc.window?.frame)
+        XCTAssertTrue(onScreen(shown), "\(shown) is on a connected screen")
+        let screen = try XCTUnwrap(NSScreen.screens.first { $0.visibleFrame.insetBy(dx: -1, dy: -1).contains(shown) })
+        XCTAssertLessThanOrEqual(shown.width, screen.visibleFrame.width)
+        XCTAssertLessThanOrEqual(shown.height, screen.visibleFrame.height)
+    }
+
+    func testDamagedSavedLayoutOpensWithTheDefaultLayout() async throws {
+        let url = try showFile("Damaged")
+        let first = try await open(url)
+        let defaultFrame = try XCTUnwrap(first.wc.window?.frame)
+        let defaultInspector = first.wc.inspector.view.frame.height
+        let path = try XCTUnwrap(app.session.workspaces.first { $0.doc == first.doc }?.path)
+        await close(first.doc)
+        defaults.removeObject(forKey: WindowLayoutStore.key)
+
+        let nonsense: [String: Any] = [
+            "frame": [-5.0, -5.0, -100.0, "x"], "inspectorHeight": -3.0, "sidebarWidth": "wide",
+            "shown": 7, "sidebarTab": 99,
+        ]
+        for stored: Any in [nonsense, "text", [String: Any]()] {
+            defaults.set([path: stored], forKey: WindowLayoutStore.key)
+            let (doc, wc) = try await open(url)
+            settle(wc)
+            XCTAssertEqual(wc.window?.frame, defaultFrame)
+            XCTAssertEqual(wc.inspector.view.frame.height, defaultInspector, accuracy: 1)
+            XCTAssertTrue(wc.isVisible(.inspector))
+            XCTAssertFalse(wc.isVisible(.sidebar))
+            XCTAssertEqual(wc.sidebar.tabs.selectedSegment, 0)
+            XCTAssertNil(wc.window?.attachedSheet, "no dialog")
+            XCTAssertTrue(alerts.errors.isEmpty)
+            await close(doc)
+            defaults.removeObject(forKey: WindowLayoutStore.key)
+        }
+        defaults.set("not even a table", forKey: WindowLayoutStore.key)
+        let (_, wc) = try await open(url)
+        XCTAssertEqual(wc.window?.frame, defaultFrame)
+    }
+
+    // MARK: Logic
+
+    func testFitBringsAFrameOntoTheScreenAndKeepsAGoodOneAsItIs() {
+        let screens = [NSRect(x: 0, y: 0, width: 1440, height: 800), NSRect(x: 1440, y: 0, width: 1000, height: 700)]
+        let minSize = NSSize(width: 800, height: 500)
+        let good = NSRect(x: 100, y: 100, width: 900, height: 600)
+        XCTAssertEqual(WindowLayout.fit(good, screens: screens, minSize: minSize), good)
+        XCTAssertEqual(
+            WindowLayout.fit(NSRect(x: 5000, y: 5000, width: 900, height: 600), screens: screens, minSize: minSize),
+            NSRect(x: 270, y: 100, width: 900, height: 600), "no screen: centred on the first")
+        XCTAssertEqual(
+            WindowLayout.fit(NSRect(x: 1300, y: -50, width: 3000, height: 3000), screens: screens, minSize: minSize),
+            NSRect(x: 1440, y: 0, width: 1000, height: 700), "larger than the screen it mostly sits on")
+        XCTAssertEqual(
+            WindowLayout.fit(NSRect(x: 100, y: 100, width: 10, height: 10), screens: screens, minSize: minSize)?.size,
+            minSize)
+        XCTAssertNil(WindowLayout.fit(good, screens: [], minSize: minSize))
+    }
+
+    func testStoredLayoutRoundTripsAndDropsOnlyItsBadFields() {
+        var layout = WindowLayout()
+        layout.frame = NSRect(x: 1, y: 2, width: 900, height: 600)
+        layout.inspectorHeight = 300
+        layout.sidebarWidth = 350
+        layout.shown = [.inspector: false, .sidebar: true]
+        layout.sidebarTab = 2
+        XCTAssertEqual(WindowLayout(stored: layout.stored), layout)
+        var damaged = layout.stored
+        damaged["frame"] = [Double.nan, 0, 10, 10]
+        damaged["sidebarTab"] = -1
+        let read = WindowLayout(stored: damaged)
+        XCTAssertNil(read.frame)
+        XCTAssertNil(read.sidebarTab)
+        XCTAssertEqual(read.inspectorHeight, 300)
+        XCTAssertEqual(read.shown, layout.shown)
+    }
+
+    func testTheStoredTableIsCapped() {
+        let store = WindowLayoutStore(defaults: defaults)
+        for i in 0..<(WindowLayoutStore.limit + 20) { store.save(WindowLayout(), forPath: "/f\(i)") }
+        let count = defaults.dictionary(forKey: WindowLayoutStore.key)?.count ?? 0
+        XCTAssertLessThanOrEqual(count, WindowLayoutStore.limit)
+    }
+}

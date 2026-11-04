@@ -369,7 +369,13 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
-    @objc private func tabChanged() { showTab(tabs.selectedSegment) }
+    /// The user chose a tab (not a restored one).
+    var onTabChange: (() -> Void)?
+
+    @objc private func tabChanged() {
+        showTab(tabs.selectedSegment)
+        onTabChange?()
+    }
 
     func showTab(_ index: Int) {
         tabs.selectedSegment = index

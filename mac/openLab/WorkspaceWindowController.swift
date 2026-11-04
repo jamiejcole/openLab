@@ -115,8 +115,18 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     let footer = FooterBar()
     /// The audio file chosen for an Audio cue (nil: cancelled). A seam for tests.
     var pickAudioFile: @MainActor () -> URL? = WorkspaceWindowController.audioPanel
-    private let verticalSplit = NSSplitView()
-    private let horizontalSplit = NSSplitView()
+    let verticalSplit = NSSplitView()
+    let horizontalSplit = NSSplitView()
+    /// The preferred inspector height and sidebar width (the splits' soft constraints).
+    var inspectorHeightConstraint: NSLayoutConstraint?
+    var sidebarWidthConstraint: NSLayoutConstraint?
+    /// Where this window's layout is remembered, once `restoreLayout` has set it (`+Layout`).
+    var layoutPersistence: (store: WindowLayoutStore, path: String)?
+    /// Saved split sizes waiting for their area to be shown.
+    var pendingInspectorHeight: CGFloat?
+    var pendingSidebarWidth: CGFloat?
+    var isRestoringLayout = false
+    var layoutObservers: [NSObjectProtocol] = []
 
     init(store: WorkspaceStore) {
         self.store = store
@@ -325,7 +335,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// The areas Show Mode takes away.
     static let hiddenInShowMode: [LayoutArea] = [.toolbar, .inspector]
     /// What the footer toggles last asked for. In Show Mode the shown state differs from it.
-    private var wanted: [LayoutArea: Bool] = [:]
+    var wanted: [LayoutArea: Bool] = [:]
 
     private func refreshMasthead() {
         let size = window?.contentView?.bounds.size ?? NSSize(width: 1200, height: 800)
@@ -334,6 +344,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidResize(_ notification: Notification) {
         refreshMasthead()
+        saveLayout()
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        saveLayout()
     }
 
     /// A notice without an interruption: a log record and the footer line.
@@ -534,6 +549,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         if isShowMode, Self.hiddenInShowMode.contains(area) { return }
         wanted[area] = visible
         show(area, visible)
+        saveLayout()
     }
 
     private func show(_ area: LayoutArea, _ visible: Bool) {
@@ -547,6 +563,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             inspector.view.isHidden = !visible
         case .sidebar: sidebar.view.isHidden = !visible
         }
+        if visible { applyPendingSplit(area) }
         footer.toggles[area]?.state = visible ? .on : .off
         footer.toggles[area]?.isEnabled = !(isShowMode && Self.hiddenInShowMode.contains(area))
     }
@@ -568,8 +585,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         verticalSplit.setHoldingPriority(NSLayoutConstraint.Priority(250), forSubviewAt: 0)
         verticalSplit.setHoldingPriority(NSLayoutConstraint.Priority(251), forSubviewAt: 1)
         let inspectorHeight = inspector.view.heightAnchor.constraint(equalToConstant: 240)
-        inspectorHeight.priority = NSLayoutConstraint.Priority(750)
+        // Like the sidebar's: below what a divider drag needs, so a dragged height stays.
+        inspectorHeight.priority = NSLayoutConstraint.Priority(300)
         inspectorHeight.isActive = true
+        inspectorHeightConstraint = inspectorHeight
 
         horizontalSplit.isVertical = true
         horizontalSplit.dividerStyle = .thin
@@ -579,6 +598,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let sidebarWidth = sidebar.view.widthAnchor.constraint(equalToConstant: 280)
         sidebarWidth.priority = NSLayoutConstraint.Priority(300)
         sidebarWidth.isActive = true
+        sidebarWidthConstraint = sidebarWidth
 
         findBar.isHidden = true
         let stack = NSStackView(views: [masthead, cueToolbar, findBar, horizontalSplit, footer])
