@@ -180,7 +180,8 @@ final class FooterBar: NSView {
         let left = NSStackView(
             views: [modeSwitch, showModeLabel, overrideBadge] + [.toolbar, .masthead].compactMap { toggles[$0] })
         let right = NSStackView(views: [clock] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
-        let bar = NSStackView(views: [left, NSStackView(views: [countLabel, warningsButton, statusButton, noticeLabel]), right])
+        let centre = NSStackView(views: [countLabel, warningsButton, statusButton, noticeLabel])
+        let bar = NSStackView(views: [left, centre, right])
         bar.distribution = .equalCentering
         bar.translatesAutoresizingMaskIntoConstraints = false
         addSubview(bar)
