@@ -1600,6 +1600,33 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertFalse(running(cues[0]))
     }
 
+    /// Cues with their hotkeys on L and P, which the workspace still maps to Load and Pause/Resume
+    /// Selected: the keys do the workspace's job, neither cue runs, and the log says so for both.
+    func testACueHotkeyOnAStillMappedSelectedCueKeyNeverStartsTheCue() async throws {
+        try await threeCues()
+        for (cue, chord) in [(cues[1], "l"), (cues[2], "p")] {
+            _ = await store.send(command: .setProperty(cue, .triggers(hotkey: KeyChord(chord).hotkeyJSON, osc: nil)))
+        }
+        await assertEventually { self.store.model?.cueHotkeys.count == 2 }
+        XCTAssertNil(app.handleKeyDown(try key("l", code: 37)), "L is Load Selected")
+        await assertEventually("L loaded the selected cue") { self.isLoaded(self.cues[0]) }
+        XCTAssertFalse(running(cues[1]))
+        try await space()
+        await assertEventually { running(cues[0]) }
+        click(cues[0])
+        XCTAssertNil(app.handleKeyDown(try key("p", code: 35)), "P is Pause/Resume Selected")
+        await assertEventually("P paused the selected cue") { self.status(self.cues[0], 1) == loc("cue.state.paused") }
+        try await play(0.1)
+        XCTAssertFalse(running(cues[1]))
+        XCTAssertFalse(running(cues[2]))
+        XCTAssertNil(status(cues[2], 1))
+        for chord in ["L", "P"] {
+            let warning = String(format: loc("hotkeys.warn.shadowed"), chord)
+            XCTAssertTrue(
+                store.logEntries.contains { $0.level == .warn && $0.message == warning }, "\(chord): \(warning)")
+        }
+    }
+
     /// Another client changes the mapping while this workspace is open: the next key press follows
     /// it, and the Transport menu shows the new key; no reopen.
     func testAMappingChangedByAnotherClientIsFollowedByTheNextKeyPress() async throws {

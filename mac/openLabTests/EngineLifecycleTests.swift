@@ -302,8 +302,14 @@ final class EngineSupervisorTests: XCTestCase {
         processes.info = .success(EngineConnectionInfo(port: deadPort, token: "t", pid: silent))
         processes.alive = [silent]
         processes.diesOn = ["kill"]
+        // The replacement is up (its file not written yet), so no further attempt spawns another.
+        processes.onSpawn = { [unowned self] in
+            processes.alive.insert(enginePid)
+            return enginePid
+        }
         supervisor.start()
-        _ = await pump { self.processes.spawns == 1 }
+        let spawned = await pump { self.processes.spawns == 1 }
+        XCTAssertTrue(spawned)
         XCTAssertEqual(processes.signals.map(\.signal), [.terminate, .kill])
         XCTAssertEqual(processes.spawns, 1)
     }
