@@ -287,6 +287,34 @@ final class AppControllerTests: XCTestCase {
     }
 
     /// A second, clean workspace.
+    /// `prepareToQuit`, with a bound of its own. The app bounds each wait of a quit on `quitScheduler`, and
+    /// here only a test fires that, so an engine that never answered would hold the whole test job: this
+    /// fails by name instead, saying what the quit had sent and whether it was on one of those bounds, then
+    /// fires them so that it ends.
+    private func quitApp(within timeout: Double = 15, file: StaticString = #filePath, line: UInt = #line) async -> Bool
+    {
+        let app = app!
+        let done = Counter()
+        let task = Task {
+            let result = await app.prepareToQuit()
+            done.count = 1
+            return result
+        }
+        if await eventually(timeout: timeout, { done.count == 1 }) { return await task.value }
+        let bounds = await quitScheduler.waitingCount
+        let sent = engine.sent.suffix(3).map { String(describing: $0) }.joined(separator: " | ")
+        let state = app.session.connectionState
+        let ended = await eventually(timeout: timeout) {
+            await self.quitScheduler.fire()
+            return done.count == 1
+        }
+        XCTFail(
+            "the quit did not finish: \(bounds) bound(s) waiting, connection \(state), last sent: \(sent); "
+                + (ended ? "it ended when its bounds fired" : "still stuck with its bounds fired: an unbounded wait"),
+            file: file, line: line)
+        return ended ? await task.value : false
+    }
+
     private func addWorkspace() async throws -> ModelID {
         guard case .success(let doc) = await app.session.newWorkspace() else {
             XCTFail("new")
@@ -1103,7 +1131,7 @@ final class AppControllerTests: XCTestCase {
             try await makeLive(state, cue)
             alerts.quitPlaying = false
             alerts.closePlaying = false
-            let quit = await app.prepareToQuit()
+            let quit = await quitApp()
             XCTAssertFalse(quit, "\(state)")
             let closed = await app.closeWorkspace("1")
             XCTAssertFalse(closed, "\(state)")
@@ -1389,13 +1417,13 @@ final class AppControllerTests: XCTestCase {
         try await quiet("1")
         app.windows["1"]?.setShowMode(true)
         alerts.quitShowMode = false
-        let cancelled = await app.prepareToQuit()
+        let cancelled = await quitApp()
         XCTAssertFalse(cancelled)
         XCTAssertEqual(alerts.log, ["quitShowMode"])
         XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
         alerts.quitShowMode = true
         alerts.saveChoices = [.dontSave]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
     }
 
@@ -1413,7 +1441,7 @@ final class AppControllerTests: XCTestCase {
         notes.insertText(tooLong, replacementRange: notes.selectedRange())
         let typed = notes.string
         alerts.saveChoices = [.dontSave]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit, "Quit goes on")
         await assertEventually("the panel") { !NotesNoticePanel.open.isEmpty }
         let panel = try XCTUnwrap(NotesNoticePanel.open.last?.panel)
@@ -1425,7 +1453,7 @@ final class AppControllerTests: XCTestCase {
     func testQuitWhilePlayingInShowModeIsOnePrompt() async throws {
         app.windows["1"]?.setShowMode(true)
         alerts.quitPlaying = false
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log, ["quitPlaying"])
     }
@@ -1484,7 +1512,7 @@ final class AppControllerTests: XCTestCase {
     func testQuitIdleInEditModeAsksNoConfirmation() async throws {
         try await quiet("1")
         alerts.saveChoices = [.dontSave]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         XCTAssertFalse(alerts.log.contains("quitShowMode"))
         XCTAssertFalse(alerts.log.contains("quitPlaying"))
@@ -1795,7 +1823,7 @@ final class AppControllerTests: XCTestCase {
     func testQuitSendsThePendingEditBeforeGoodbye() async throws {
         _ = try typePendingName()
         alerts.saveChoices = [.dontSave]  // the edit made the workspace dirty
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit, "\(alerts.log) \(alerts.errors)")
         await assertEventually { self.index { if case .goodbye = $0 { return true } else { return false } } != nil }
         let edit = try XCTUnwrap(index { self.isCommand($0) })
@@ -1816,7 +1844,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(closed)
         XCTAssertNotNil(app.windows["1"])
         typeBadTime()
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
         XCTAssertFalse(engine.sent.contains { isCommand($0) })
@@ -1829,7 +1857,7 @@ final class AppControllerTests: XCTestCase {
         await makeDirty(b)
         _ = c  // clean: no prompt
         alerts.saveChoices = [.dontSave, .dontSave]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         XCTAssertEqual(alerts.log, ["quitPlaying", "unsaved:Demo", "unsaved:Untitled"])
         let goodbyes = engine.sent.filter { if case .goodbye(true) = $0 { return true } else { return false } }
@@ -1843,7 +1871,7 @@ final class AppControllerTests: XCTestCase {
         await makeDirty(b)  // the demo show is dirty already
         saveURL = savePath("x")
         alerts.saveChoices = [.dontSave, .save]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         let sent = engine.sent
         let closes = sent.enumerated().compactMap { i, m -> (Int, ModelID, Bool)? in
@@ -1864,7 +1892,7 @@ final class AppControllerTests: XCTestCase {
         await makeDirty(b)
         alerts.saveChoices = [.dontSave, .dontSave]
         engine.garbleResults = true
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         let closes = engine.sent.filter { if case .close = $0 { return true } else { return false } }
         XCTAssertEqual(closes.count, 1)
@@ -1875,7 +1903,7 @@ final class AppControllerTests: XCTestCase {
         let b = try await addWorkspace()
         await makeDirty(b)
         alerts.saveChoices = [.dontSave, .cancel]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log.filter { $0.hasPrefix("unsaved") }.count, 2)
         XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
@@ -1885,7 +1913,7 @@ final class AppControllerTests: XCTestCase {
 
     func testQuitWhilePlayingAsksFirstAndCancelAsksNothingMore() async throws {
         alerts.quitPlaying = false
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log, ["quitPlaying"])
         XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
@@ -1894,7 +1922,7 @@ final class AppControllerTests: XCTestCase {
     func testSaveFailureDuringQuitAbortsWithALocalisedAlertAndNoGoodbye() async throws {
         alerts.saveChoices = [.save]
         engine.garbleResults = true
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.errors.count, 1)
         XCTAssertFalse(alerts.errors[0].contains("encoding("))
@@ -1927,6 +1955,17 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(quit)
     }
 
+    /// A quit stuck on a wait only a test can end fails by name, and the test goes on to its end.
+    func testAQuitThatNeverFinishesFailsByNameInsteadOfHolding() async throws {
+        alerts.saveChoices = [.dontSave]
+        engine.holdFlush = true
+        let options = XCTExpectedFailure.Options()
+        options.issueMatcher = { $0.compactDescription.contains("the quit did not finish") }
+        XCTExpectFailure("the flush is held", options: options)
+        let quit = await quitApp(within: 0.5)
+        XCTAssertTrue(quit, "the bound ended it")
+    }
+
     private func disconnect() async {
         engine.dropConnections()
         await assertEventually { app.session.connectionState != .connected }
@@ -1935,7 +1974,7 @@ final class AppControllerTests: XCTestCase {
     func testQuitWhileDisconnectedCancelKeepsRunning() async throws {
         await disconnect()
         alerts.quitDisconnected = false
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log, ["quitDisconnected"])
     }
@@ -1943,7 +1982,7 @@ final class AppControllerTests: XCTestCase {
     func testQuitWhileDisconnectedQuitAnywayQuitsWithoutPrompts() async throws {
         await disconnect()
         alerts.quitDisconnected = true
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         XCTAssertEqual(alerts.log, ["quitDisconnected"])
     }
@@ -1961,7 +2000,7 @@ final class AppControllerTests: XCTestCase {
             return self.app.session.connectionState == .retrying(.engineStopping)
         }
         XCTAssertTrue(refused)
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         XCTAssertEqual(alerts.log, [])
         XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
@@ -1984,7 +2023,7 @@ final class AppControllerTests: XCTestCase {
         engine.holdResults = true
         let closeTask = Task { await app.closeWorkspace(second) }
         await assertEventually { closeMessages().count == 1 }
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertTrue(alerts.log.isEmpty)
         engine.holdResults = false
@@ -2005,7 +2044,7 @@ final class AppControllerTests: XCTestCase {
 
         engine.holdResults = false
         alerts.saveChoices = [.dontSave]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         engine.releaseResults()
     }
@@ -2560,7 +2599,7 @@ final class AppControllerTests: XCTestCase {
         wc.setShowMode(true)
         alerts.saveChoices = [.save]
         engine.garbleResults = true
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log.first, "quitPlaying", "the one quit confirmation stays (playing outranks Show Mode)")
         XCTAssertTrue(alerts.errors.isEmpty)
