@@ -139,10 +139,11 @@ final class MastheadView: NSView, NSTextViewDelegate {
         applyEditable()
     }
 
-    /// Escape ends editing (the text is committed by the end-of-editing that follows) and gives
-    /// focus back, so Space fires GO again.
+    /// Escape and Return end editing (the text is committed by the end-of-editing that follows) and
+    /// give focus back, so Space fires GO again. Option-Return still types a new line.
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        guard selector == #selector(NSResponder.cancelOperation(_:)) || selector == #selector(NSResponder.insertNewline(_:))
+        else { return false }
         window?.makeFirstResponder(nil)
         return true
     }

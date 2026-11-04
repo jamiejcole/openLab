@@ -311,7 +311,9 @@ final class MainWindowTests: XCTestCase {
         await assertEventually { !self.setNotesCommands(rig).isEmpty }
         XCTAssertEqual(setNotesCommands(rig).last?["property"]?["value"]?.stringValue, "typed then escape")
         XCTAssertFalse(
-            wc.masthead.textView(wc.masthead.notesView, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+            wc.masthead.textView(
+                wc.masthead.notesView, doCommandBy: #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:))),
+            "Option-Return types a new line")
     }
 
     // MARK: Find (ED-09)
