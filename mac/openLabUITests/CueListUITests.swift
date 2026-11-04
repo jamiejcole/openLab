@@ -64,7 +64,7 @@ final class PlayheadClickUITests: XCTestCase {
     private func launchThree() -> XCUIApplication {
         let app = launchApp(opening: ["Three"])
         XCTAssertTrue(waitFor("isHittable == true", app.staticTexts["One"]), "the show is ready")
-        selectCue("One", in: app)
+        // A real open: no first click, the playhead's cue is already highlighted.
         assertAllOn("One", in: app)
         return app
     }

@@ -855,6 +855,27 @@ final class CueListTests: XCTestCase {
         await assertEventually("the click moved it") { self.playhead(h) == H.fade }
     }
 
+    /// A, B, A within a round trip: the echo of A arriving before the second click must not make
+    /// that click look like a repeat, or the engine ends on B with the highlight on A.
+    func testClickingBackWithinARoundTripEndsOnThatCue() async throws {
+        let h = try await live()
+        h.vc.sub = nil
+        h.rig.wire.holdResults = true
+        h.vc.selectAsUser([H.fade])
+        await assertEventually { self.playhead(h) == H.fade }
+        h.vc.selectAsUser([H.group])
+        XCTAssertEqual(playhead(h), H.fade, "the second click's echo is not in yet")
+        h.vc.handle(.runtime(cues: [], playheads: [ModelID(H.list)]))
+        h.vc.selectAsUser([H.fade])
+        await assertEventually("all three went out") { self.sentPlayheads(h).count == 3 }
+        h.rig.wire.holdResults = false
+        h.rig.wire.releaseResults()
+        await assertEventually { self.playhead(h) == H.fade }
+        await h.rig.sync()
+        XCTAssertEqual(playhead(h), H.fade)
+        XCTAssertEqual(h.vc.selectedIDs(), [H.fade])
+    }
+
     /// A playhead inside a collapsed group has no row: Move Playhead Next / Previous steps from the
     /// group's row, not from the top or bottom of the list (the next GO would fire the first cue).
     func testMovePlayheadFromInsideACollapsedGroupStepsFromTheGroup() async throws {
@@ -1297,6 +1318,7 @@ final class PlayheadFlowTests: XCTestCase {
     private var app: AppController!
     private var engine: TestEngine!
     private let wire = WireTap()
+    private let sessionScheduler = ManualScheduler()
     private var doc: ModelID = "none"
     private var wc: WorkspaceWindowController { app.windows[doc]! }
     private var store: WorkspaceStore { wc.store }
@@ -1306,7 +1328,7 @@ final class PlayheadFlowTests: XCTestCase {
         engine = try await TestEngine.start()
         let url = engine.infoURL
         let session = EngineSession(
-            transport: wire, infoProvider: { EngineConnectionInfo.load(from: url) }, scheduler: ManualScheduler())
+            transport: wire, infoProvider: { EngineConnectionInfo.load(from: url) }, scheduler: sessionScheduler)
         app = AppController(session: session, scheduler: ManualScheduler())
         app.keyWindow = { [unowned self] in app.windows[doc]?.window }
         session.start()
@@ -2213,6 +2235,201 @@ final class PlayheadFlowTests: XCTestCase {
             self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "for one"
         }
         XCTAssertNotEqual(store.model?.cue(cues[1])?.raw["notes"]?.stringValue, "for one")
+    }
+
+    // MARK: Typing in the masthead goes on after a command takes the text
+
+    /// Save, and every edit command, sends the notes typed so far; the focus stays, and what is typed
+    /// next must reach the cue as well.
+    func testMastheadNotesTypedAfterASaveAreSavedToo() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        try typeKeys("one", in: window)
+        let saved = await wc.commitPendingEdits()
+        XCTAssertTrue(saved)
+        await assertEventually { self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "one" }
+        XCTAssertTrue(window.firstResponder === notes, "the focus stays")
+        try typeKeys(" two", in: window)
+        window.makeFirstResponder(nil)
+        await assertEventually("every character reached the cue") {
+            self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "one two"
+        }
+    }
+
+    /// The same with the playhead moving meanwhile: the masthead keeps the cue being typed for, and
+    /// shows the new standby cue only when the typing ends.
+    func testMastheadNotesTypedAfterASaveStayOnTheirCueWhenThePlayheadMoves() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        try typeKeys("one", in: window)
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        let saved = await wc.commitPendingEdits()
+        XCTAssertTrue(saved)
+        XCTAssertEqual(wc.masthead.cueID, cues[0], "still the cue being typed for")
+        XCTAssertEqual(notes.string, "one")
+        try typeKeys("xyz", in: window)
+        window.makeFirstResponder(nil)
+        await assertEventually("saved to the cue it was typed for") {
+            self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "onexyz"
+        }
+        XCTAssertEqual(store.model?.cue(cues[2])?.raw["notes"]?.stringValue ?? "", "")
+        XCTAssertEqual(wc.masthead.cueID, cues[2])
+    }
+
+    func testTabInMastheadNotesEndsTyping() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        try typeKeys("half", in: window)
+        try typeKeys("\t", in: window, code: 48)
+        XCTAssertFalse(window.firstResponder === notes, "Tab ended the typing")
+        await assertEventually("saved, with no tab character") {
+            self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "half" && notes.string == "half"
+        }
+    }
+
+    /// Return with no selection change to follow: the arrow keys work straight away.
+    func testReturnInMastheadNotesLeavesTheKeysWithTheList() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        try typeKeys("note", in: window)
+        try typeKeys("\r", in: window, code: 36)
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
+        window.sendEvent(try XCTUnwrap(app.handleKeyDown(try downArrow)))
+        try await assertAllOn(cues[1])
+    }
+
+    // MARK: Loading a list: the highlight goes with the playhead
+
+    private func setPlayheads() -> Int {
+        wire.sent.filter { if case .transport(_, .setPlayhead) = $0 { return true } else { return false } }.count
+    }
+
+    /// A show as it opens: the playhead's cue is highlighted and in the inspector, nothing is sent,
+    /// and the first Down goes to the next row.
+    func testOpeningAShowHighlightsThePlayheadCue() async throws {
+        wire.forgetSent()
+        doc = try await engine.open("Three")
+        await assertEventually { self.app.windows[self.doc]?.cueList.roots.count == 3 }
+        cues = wc.cueList.roots.map(\.id)
+        try await assertAllOn(cues[0])
+        XCTAssertEqual(wc.inspector.cueForEdit?.id, cues[0])
+        XCTAssertEqual(setPlayheads(), 0, "opening moves nothing")
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
+        window.sendEvent(try XCTUnwrap(app.handleKeyDown(try downArrow)))
+        try await assertAllOn(cues[1])
+    }
+
+    func testAnEmptyListOpensWithNothingHighlighted() async throws {
+        XCTAssertEqual(wc.cueList.selectedIDs(), [])
+        XCTAssertNil(wc.inspector.cueForEdit)
+        XCTAssertEqual(wc.inspector.emptyLabel.stringValue, loc("inspector.empty"))
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, loc("masthead.standby.none"))
+    }
+
+    /// A reload in Show Mode highlights the same way and edits nothing.
+    func testAReloadInShowModeHighlightsThePlayheadCueAndSendsNothing() async throws {
+        try await threeCues()
+        wc.setShowMode(true)
+        await assertEventually { self.store.document?.showMode == true }
+        wc.cueList.sub = nil
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        wire.forgetSent()
+        wc.cueList.handle(.reset)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[2]])
+        await settle()
+        XCTAssertEqual(setPlayheads(), 0)
+    }
+
+    /// A snapshot after a reconnect that moved the playhead: the highlight and the inspector follow.
+    func testAReconnectThatMovedThePlayheadFollows() async throws {
+        try await threeCues()
+        wire.dropConnections()
+        await assertEventually { self.store.connectionState != .connected }
+        try await moveElsewhere(to: cues[2])
+        await assertEventually("back and following") {
+            await self.sessionScheduler.fire()
+            return self.store.connectionState == .connected && self.wc.cueList.selectedIDs() == [self.cues[2]]
+        }
+        try await assertAllOn(cues[2])
+        XCTAssertEqual(wc.inspector.cueForEdit?.id, cues[2])
+    }
+
+    /// A lagged client's resync arrives as the same reset: here with typing under way, which holds it.
+    func testAResyncThatMovedThePlayheadFollowsOnceTypingEnds() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.nameField))
+        wc.cueList.sub = nil
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        wc.cueList.handle(.reset)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]], "held by the typing")
+        window.makeFirstResponder(nil)
+        await assertEventually { self.wc.cueList.selectedIDs() == [self.cues[2]] }
+    }
+
+    /// Adds a list holding one Memo cue with the playhead on `head` (nil: past its end).
+    private func addOtherList(playheadOn head: Bool) async throws -> (list: ModelID, cue: ModelID) {
+        let other: ModelID = "00000000-0000-0000-0000-0000000000c1"
+        let cue: ModelID = "00000000-0000-0000-0000-0000000000c2"
+        let memo = try XCTUnwrap(NewCueKind.memo.cueJSON(id: cue, patch: nil))
+        guard
+            let add = Command.transaction([
+                .addCueList(id: other, name: "Other", index: 1), .addCue(memo, list: other, parent: nil, index: 0),
+            ]), case .success = await store.send(command: add),
+            case .success = await store.transport(.setPlayhead(list: other, cue: head ? cue : nil))
+        else {
+            XCTFail("other list")
+            return (other, cue)
+        }
+        await sync()
+        return (other, cue)
+    }
+
+    /// A list with nothing standing by: nothing highlighted, and the inspector must not go on
+    /// showing and editing a cue of the list left behind.
+    func testSwitchingToAListWithNoPlayheadEmptiesTheInspector() async throws {
+        try await threeCues()
+        let other = try await addOtherList(playheadOn: false)
+        wc.cueList.showList(other.list)
+        await settle()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [])
+        XCTAssertNil(wc.inspector.cueForEdit)
+        XCTAssertEqual(wc.inspector.emptyLabel.stringValue, loc("inspector.empty"))
+        XCTAssertFalse(wc.inspector.emptyLabel.isHidden)
+    }
+
+    /// A list switch while a click's `set_playhead` is unanswered: the new list is followed once it is.
+    func testAListSwitchWithinARoundTripOfAClickFollowsTheNewList() async throws {
+        try await threeCues()
+        let other = try await addOtherList(playheadOn: true)
+        wire.holdResults = true
+        click(cues[1])
+        wc.cueList.showList(other.list)
+        wire.holdResults = false
+        wire.releaseResults()
+        await assertEventually { self.wc.cueList.selectedIDs() == [other.cue] }
+    }
+
+    /// The toolbar adds after what was highlighted when it was used.
+    func testToolbarAddAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        try await chooseFromOpenMenu(afterPlayheadMovesTo: cues[2]) { [self] in wc.cueToolbar.onAdd?(.memo) }
+        await assertEventually("the new cue") { self.wc.cueList.roots.count == 4 }
+        XCTAssertEqual(wc.cueList.roots[0].id, cues[0])
+        XCTAssertEqual(wc.cueList.roots[1].cue.kindType, "memo", "right after cue 1")
     }
 
     // MARK: #496: GO on a group after a mode change

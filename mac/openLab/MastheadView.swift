@@ -120,6 +120,10 @@ final class MastheadView: NSView, NSTextViewDelegate {
     /// Typing ended (or its text was taken): the masthead may now show the standby cue that came
     /// while the operator typed. The window re-reads it, since the cue may have changed or gone.
     var onEditingEnded: (() -> Void)?
+    /// A key ended the typing, leaving nothing focused: the window gives the keys to the cue list.
+    var onKeysGivenBack: (() -> Void)?
+    /// The text last handed over by `pendingNotes`.
+    private var handedOver: String?
 
     /// Shows `cue` as standing by. While notes are being typed for another cue the masthead keeps
     /// showing that cue, the text and the focus: a Space typed next must go into the text, not fire
@@ -139,17 +143,23 @@ final class MastheadView: NSView, NSTextViewDelegate {
         applyEditable()
     }
 
-    /// Escape and Return end editing (the text is committed by the end-of-editing that follows) and
-    /// give focus back, so Space fires GO again. Option-Return still types a new line.
+    /// Escape, Return and Tab end editing (the text is committed by the end-of-editing that follows)
+    /// and give focus back, so Space fires GO again and the arrow keys work. Option-Return still
+    /// types a new line.
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        let endsTyping = [#selector(NSResponder.cancelOperation(_:)), #selector(NSResponder.insertNewline(_:))]
+        let endsTyping = [
+            #selector(NSResponder.cancelOperation(_:)), #selector(NSResponder.insertNewline(_:)),
+            #selector(NSResponder.insertTab(_:)),
+        ]
         guard endsTyping.contains(selector) else { return false }
         window?.makeFirstResponder(nil)
+        onKeysGivenBack?()
         return true
     }
 
     func textDidBeginEditing(_ notification: Notification) {
         editingID = cueID
+        handedOver = nil
     }
 
     func textDidEndEditing(_ notification: Notification) {
@@ -159,11 +169,13 @@ final class MastheadView: NSView, NSTextViewDelegate {
         onEditingEnded?()
     }
 
-    /// Notes typed and not yet sent, handed over (and forgotten) for Show Mode, Save, Close and Quit.
-    func takePendingNotes() -> (id: ModelID, text: String)? {
-        guard let id = editingID, !isLocked else { return nil }
-        editingID = nil
-        defer { onEditingEnded?() }
+    /// Notes typed and not yet handed over, for Show Mode, Save, Close, Quit and every edit command.
+    /// The typing goes on (the focus stays, and AppKit reports no new start of editing), so the cue
+    /// being typed for stays too: what is typed next goes to it, and the end of editing sends the
+    /// whole text. Nil once handed over and unchanged, as sending it runs this again.
+    func pendingNotes() -> (id: ModelID, text: String)? {
+        guard let id = editingID, !isLocked, notesView.string != handedOver else { return nil }
+        handedOver = notesView.string
         return (id, notesView.string)
     }
 

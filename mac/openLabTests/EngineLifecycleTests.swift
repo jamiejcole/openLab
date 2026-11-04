@@ -784,7 +784,7 @@ final class EngineCrashFlowTests: XCTestCase {
 
         try await launch()
         // The launch's recovery scan (it finds B's and C's autosaves) holds the engine's document
-        // worker; an open sent meanwhile is refused. Its offer means it is done.
+        // worker; the app's open waits behind it (#499). Its offer means it is done.
         let scanned = await pump { self.presenter.restore != nil }
         XCTAssertTrue(scanned, "the launch offered the autosaves")
         presenter.dismiss()
@@ -928,8 +928,8 @@ final class EngineCrashFlowTests: XCTestCase {
         try await runs.crash()
 
         try await launch()
-        // The launch's recovery scan holds the engine's document worker: an open sent meanwhile is
-        // refused ("another document request is still being handled"). Its offer means it is done.
+        // The launch's recovery scan holds the engine's document worker: the app's open waits behind
+        // it (#499). Its offer means it is done.
         let scanned = await pump { self.presenter.restore != nil }
         XCTAssertTrue(scanned, "the launch offered the copy's autosave")
         let opened = await app.session.open(path: bPath)

@@ -126,6 +126,31 @@ final class AppControllerTests: XCTestCase {
 
     override func setUp() async throws { try await build() }
 
+    /// Another client holds the engine's document gate: an open from the app is refused, tried again
+    /// after the scheduler's wait, and opens once the gate is free, with no error for the operator.
+    /// The other client's open reads and parses a large file. The engine has no switch to hold its
+    /// worker, so the file only has to take longer than the round trip that follows it; if it ever
+    /// did not, the refusal below never comes and the test fails rather than passes.
+    func testAnOpenRefusedBecauseAnotherClientHoldsTheGateIsTriedAgain() async throws {
+        let big = real.folder.appendingPathComponent("big-\(UUID().uuidString).openlab")
+        try Data(repeating: 0x20, count: 64 * 1024 * 1024).write(to: big)
+        addTeardownBlock { try? FileManager.default.removeItem(at: big) }
+        let harness = real!
+        let held = Task { await harness.request(.open(path: big.path)) }
+        // Answered in order on that connection: the engine has taken the open when this returns.
+        _ = await harness.request(.listPatchMappings)
+        let session = app.session
+        let opening = Task { await session.newWorkspace() }
+        await assertEventually("the app's request was refused and waits to try again") {
+            await self.sessionScheduler.waitingCount >= 1
+        }
+        guard case .failure = await held.value else { return XCTFail("the big file is not a show") }
+        await sessionScheduler.fire()
+        guard case .success = await opening.value else { return XCTFail("the retry should have opened") }
+        let requests = engine.requestCount { if case .new = $0 { return true } else { return false } }
+        XCTAssertEqual(requests, 2, "refused once, then tried again")
+    }
+
     /// A real engine of this test's own with the demo show open as doc 1 (the engine numbers
     /// docs from 0: a first one is opened and closed), Intro playing (GO, which moves the playhead
     /// to the Fade cue below it) and unsaved changes, and the app connected to it with one window.

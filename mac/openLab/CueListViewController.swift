@@ -310,7 +310,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard id != listID, store.model?.cueLists.contains(where: { $0.id == id }) == true else { return }
         chosenList = id
         rebuild()
-        followPlayhead()  // the list shown has its own playhead, and the selection goes with it
+        followAfterLoad()
         onModelApplied?()
     }
 
@@ -456,12 +456,21 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         // Any echo is in by now. A send that failed, or that the engine only warned about (a cue
         // deleted meanwhile), has none: the next click on that row must send again.
         sentPlayhead = nil
-        guard list == listID else { return }
         let moved = headMovedWhileSending
         headMovedWhileSending = false
+        // The list changed meanwhile: its follow waited for this answer.
+        guard list == listID else { return followPlayhead() }
         // On the cue sent last: its echo is in and the selection is already there. Elsewhere, it
         // moved on by itself after the click (a GO straight after it, another client): follow.
         if moved, store.playheads[list] != lastSentHead { followPlayhead() }
+    }
+
+    /// The tree was replaced (a show loaded, a reconnect's or a resync's snapshot, another list shown):
+    /// the selection goes to the list's playhead, as for any other move, and the inspector is told
+    /// even if that moves nothing, as a rebuild's own restore of the selection does not tell it.
+    func followAfterLoad() {
+        if playheadSends > 0 { headMovedWhileSending = true } else { followPlayhead() }
+        onSelectionChange?(selectedIDs())
     }
 
     /// This list's playhead may have moved (a runtime change): follow it if it did.
@@ -550,12 +559,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         switch change {
         case .reset:
             rebuild()
+            followAfterLoad()
             onModelApplied?()
         case .model(let upserts, let deletes):
             applyModel(upserts: upserts, deletes: deletes)
             onModelApplied?()
         case .runtime(let cues, let heads):
-            if !heads.isEmpty { sentPlayhead = nil }  // the engine's echo is the truth again
             refresh(cues, playheads: heads)
             if !heads.isEmpty { playheadChanged() }
         case .progress(let ids): refresh(ids, columns: ["duration"])

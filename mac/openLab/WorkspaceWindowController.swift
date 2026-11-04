@@ -163,6 +163,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
         window.contentView = buildContent()
         window.initialFirstResponder = cueList.outlineView
+        cueList.followAfterLoad()  // a show already loaded: the reset that would do it has passed
         window.center()
         // Combine does not deliver in subscription order, so whatever reads the cue list's own
         // state (the shown list, its tree) waits for `onModelApplied`, which it calls once it has
@@ -179,6 +180,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
         wireFind()
         masthead.onEditingEnded = { [weak self] in self?.syncMasthead() }
+        masthead.onKeysGivenBack = { [weak self] in self?.window?.makeFirstResponder(self?.cueList.outlineView) }
         masthead.onCommitNotes = { [weak self] id, text in Task { await self?.editor.setNotes(of: id, text: text) } }
         sidebar.shownProvider = { [weak self] in self?.cueList.listID }
         sidebar.onSelectList = { [weak self] id in
@@ -477,7 +479,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func commitPendingEdits() async -> Bool {
         var ok = true
         if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
-        if let notes = masthead.takePendingNotes() {
+        if let notes = masthead.pendingNotes() {
             ok = await editor.setNotes(of: notes.id, text: notes.text) && ok
         }
         return await inspector.commitPendingEdits() && ok
