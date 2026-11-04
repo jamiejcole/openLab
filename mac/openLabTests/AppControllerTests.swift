@@ -2585,7 +2585,6 @@ final class AppControllerTests: XCTestCase {
         return counter
     }
 
-
     private func assertNoBeep(_ tap: CancelTap, _ presses: Int, _ beeps: Counter, _ message: String) {
         XCTAssertEqual(
             tap.taken, presses, "every Esc that reached the window found a handler (no system beep): \(message)")
