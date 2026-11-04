@@ -284,6 +284,10 @@ jobs:
       # test-mac-unit`, where the real-engine tests report a skip). The full UI suite is slow and flaky,
       # so it runs on the nightly schedule (and on demand), where a failure turns the run red and the
       # `alert` job opens the ci-red issue.
+      # Nightly the core flows run first, so a broken everyday flow is named by its own step (the full suite
+      # below runs them again).
+      - run: make test-mac-core-flows
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       - run: make ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'test-mac-ui-full' || (needs.changes.outputs.app_engine == 'true' && 'test-mac' || 'test-mac-unit') }}
       - run: make mac
         if: needs.changes.outputs.bundle == 'true'
