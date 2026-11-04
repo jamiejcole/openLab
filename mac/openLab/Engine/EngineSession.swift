@@ -258,8 +258,13 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
             return
         }
         makeStore(doc)
+        if let openedPath { openedPaths[doc] = openedPath }
         storesChanged.send()
     }
+
+    /// The path each just-opened doc was asked for, known before the engine's workspace list names
+    /// it: a window made at that moment can restore its layout before it is shown.
+    private(set) var openedPaths: [ModelID: String] = [:]
 
     /// The engine's path equality, close enough: NFC and case-insensitive. A false "same" only
     /// defers a store to the end of the reattach.
@@ -295,6 +300,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
 
     private func dropStore(_ doc: ModelID) {
         guard let store = stores.removeValue(forKey: doc) else { return }
+        openedPaths[doc] = nil
         order.removeAll { $0 == doc }
         store.client.stop()
     }

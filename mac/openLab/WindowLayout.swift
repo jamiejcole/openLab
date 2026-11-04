@@ -102,11 +102,18 @@ struct WindowLayoutStore {
     static let limit = 200
     let defaults: UserDefaults
 
+    /// The entry's name: the path as the filesystem resolves it, so the path a file was asked for
+    /// and the one the engine reports name the same entry.
+    func key(for path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+    }
+
     func layout(forPath path: String) -> WindowLayout {
-        WindowLayout(stored: defaults.dictionary(forKey: Self.key)?[path])
+        WindowLayout(stored: defaults.dictionary(forKey: Self.key)?[key(for: path)])
     }
 
     func save(_ layout: WindowLayout, forPath path: String) {
+        let path = key(for: path)
         var all = defaults.dictionary(forKey: Self.key) ?? [:]
         all[path] = layout.stored
         if all.count > Self.limit, let drop = all.keys.filter({ $0 != path }).sorted().first { all[drop] = nil }

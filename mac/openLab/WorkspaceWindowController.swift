@@ -126,6 +126,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var pendingInspectorHeight: CGFloat?
     var pendingSidebarWidth: CGFloat?
     var isRestoringLayout = false
+    /// The least the cue list keeps: its height (the baseline of a minimum-size window) and width.
+    static let minCueListHeight: CGFloat = 56
+    static let minCueListWidth: CGFloat = 200
     var layoutObservers: [NSObjectProtocol] = []
 
     init(store: WorkspaceStore) {
@@ -581,6 +584,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     private func buildContent() -> NSView {
         verticalSplit.isVertical = false
+        cueList.view.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.minCueListHeight).isActive = true
         verticalSplit.dividerStyle = .thin
         verticalSplit.addArrangedSubview(cueList.view)
         verticalSplit.addArrangedSubview(inspector.view)
@@ -593,6 +597,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         inspectorHeightConstraint = inspectorHeight
 
         horizontalSplit.isVertical = true
+        verticalSplit.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minCueListWidth).isActive = true
         horizontalSplit.dividerStyle = .thin
         horizontalSplit.addArrangedSubview(verticalSplit)
         horizontalSplit.addArrangedSubview(sidebar.view)

@@ -7,7 +7,8 @@ import AppKit
 /// responder, the selection or the key state.
 extension WorkspaceWindowController {
     /// Applies what is saved for `path` and starts saving changes under it. Saved data that is
-    /// damaged or does not fit the screens is corrected or skipped field by field.
+    /// damaged or does not fit the screens is corrected or skipped field by field. Called before
+    /// the window is shown, so it never moves a window the operator can already see.
     func restoreLayout(from store: WindowLayoutStore, path: String) {
         guard let window else { return }
         isRestoringLayout = true
@@ -28,6 +29,21 @@ extension WorkspaceWindowController {
         // An area shown by default has no entry to show it again: its split is applied now.
         for area in [LayoutArea.inspector, .sidebar] where isVisible(area) { applyPendingSplit(area) }
         if let tab = layout.sidebarTab { sidebar.showTab(tab) }
+        startSavingLayout()
+    }
+
+    /// The window's file became known (or changed: Save As, the first Save of a new workspace) while
+    /// the window is already up: what is on screen now is the layout, kept under the file's path.
+    /// Nothing is applied, so the window never moves.
+    func bindLayout(to store: WindowLayoutStore, path: String) {
+        if let current = layoutPersistence, store.key(for: current.path) == store.key(for: path) { return }
+        layoutPersistence = (store, path)
+        startSavingLayout()
+        saveLayout()
+    }
+
+    private func startSavingLayout() {
+        guard layoutObservers.isEmpty else { return }
         sidebar.onTabChange = { [weak self] in self?.saveLayout() }
         let center = NotificationCenter.default
         layoutObservers = [verticalSplit, horizontalSplit].map { split in
@@ -38,31 +54,40 @@ extension WorkspaceWindowController {
         }
     }
 
-    /// A divider moved (a drag, or the window's size): what the split is now is what it keeps, or the
-    /// soft size constraints pull it back at the next layout pass.
+    /// A divider moved: what the split is now is what it keeps (the soft size constraints would pull it
+    /// back at the next layout pass). Except when the cue list is down to its minimum and the area came
+    /// out smaller than it was asked to be: a window too small for both squeezed it, and the size the
+    /// user dragged stays.
     private func splitMoved() {
         guard !isRestoringLayout else { return }
-        if isVisible(.inspector), !isShowMode, inspector.view.frame.height > 0 {
-            inspectorHeightConstraint?.constant = inspector.view.frame.height
+        let list = cueList.view.frame
+        if isVisible(.inspector), !isShowMode, let kept = inspectorHeightConstraint?.constant {
+            let height = inspector.view.frame.height
+            if height > 0, !(height < kept && list.height <= Self.minCueListHeight + 0.5) {
+                inspectorHeightConstraint?.constant = height
+            }
         }
-        if isVisible(.sidebar), sidebar.view.frame.width > 0 {
-            sidebarWidthConstraint?.constant = sidebar.view.frame.width
+        if isVisible(.sidebar), let kept = sidebarWidthConstraint?.constant {
+            let width = sidebar.view.frame.width
+            if width > 0, !(width < kept && list.width <= Self.minCueListWidth + 0.5) {
+                sidebarWidthConstraint?.constant = width
+            }
         }
         saveLayout()
     }
 
     /// Writes the current layout. Show Mode's hidden inspector and toolbar are not layout: the
-    /// shown areas are what the user asked for (`wanted`), and the inspector's height is only read
-    /// while it is shown.
+    /// shown areas are what the user asked for (`wanted`), and the split sizes are the preferred ones
+    /// (what was dragged), so a window too small to show them does not overwrite them.
     func saveLayout() {
         guard !isRestoringLayout, let (store, path) = layoutPersistence, let window else { return }
         var layout = store.layout(forPath: path)
         if !window.isMiniaturized, !window.styleMask.contains(.fullScreen) { layout.frame = window.frame }
         for area in LayoutArea.allCases { layout.shown[area] = wanted[area] ?? true }
-        if isVisible(.inspector), !isShowMode, inspector.view.frame.height > 0 {
-            layout.inspectorHeight = inspector.view.frame.height
+        if isVisible(.inspector), !isShowMode, let h = inspectorHeightConstraint?.constant, h > 0 {
+            layout.inspectorHeight = h
         }
-        if isVisible(.sidebar), sidebar.view.frame.width > 0 { layout.sidebarWidth = sidebar.view.frame.width }
+        if isVisible(.sidebar), let w = sidebarWidthConstraint?.constant, w > 0 { layout.sidebarWidth = w }
         layout.sidebarTab = sidebar.tabs.selectedSegment
         store.save(layout, forPath: path)
     }
@@ -75,19 +100,20 @@ extension WorkspaceWindowController {
             pendingInspectorHeight = nil
             window?.contentView?.layoutSubtreeIfNeeded()
             let room = verticalSplit.bounds.height - verticalSplit.dividerThickness
-            guard room >= 270 else { return }  // not enough room to keep 150 for the cue list and 120 here
-            let height = min(max(target, 120), room - 150)
-            inspectorHeightConstraint?.constant = height
-            verticalSplit.setPosition(room - height, ofDividerAt: 0)
+            let most = room - Self.minCueListHeight
+            guard most >= 120 else { return }  // no room for a usable inspector
+            // The preferred size stays what was saved even where this window cannot show it yet.
+            inspectorHeightConstraint?.constant = max(target, 120)
+            verticalSplit.setPosition(room - min(max(target, 120), most), ofDividerAt: 0)
         case .sidebar:
             guard let target = pendingSidebarWidth else { return }
             pendingSidebarWidth = nil
             window?.contentView?.layoutSubtreeIfNeeded()
             let room = horizontalSplit.bounds.width - horizontalSplit.dividerThickness
-            guard room >= 600 else { return }  // 400 for the cue list, 200 here
-            let width = min(max(target, 200), room - 400)
-            sidebarWidthConstraint?.constant = width
-            horizontalSplit.setPosition(room - width, ofDividerAt: 0)
+            let most = room - Self.minCueListWidth
+            guard most >= 200 else { return }
+            sidebarWidthConstraint?.constant = max(target, 200)
+            horizontalSplit.setPosition(room - min(max(target, 200), most), ofDividerAt: 0)
         case .toolbar, .masthead:
             break
         }

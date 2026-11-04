@@ -1061,6 +1061,108 @@ final class WindowLayoutTests: XCTestCase {
         XCTAssertEqual(wc.window?.frame, defaultFrame)
     }
 
+    // MARK: Review findings
+
+    /// Save As: the layout follows the document to its new file, and the old file's entry stays as it was.
+    func testSaveAsMovesTheLayoutToTheNewFile() async throws {
+        let old = try showFile("Old")
+        let new = engine.folder.appendingPathComponent("saved-\(UUID().uuidString).openlab")
+        let (doc, wc) = try await open(old)
+        let oldFrame = frame(wc)
+        wc.window?.setFrame(oldFrame, display: true)
+        app.pickSaveURL = { _ in new }
+        let saved = await app.saveWorkspace(wc.store, asNew: true)
+        XCTAssertTrue(saved)
+        await assertEventually { self.app.session.workspaces.first { $0.doc == doc }?.path == new.path }
+        let newFrame = frame(shift: 40, wc)
+        wc.window?.setFrame(newFrame, display: true)
+        await close(doc)
+
+        let (_, again) = try await open(new)
+        XCTAssertEqual(again.window?.frame, newFrame, "the new file opens where the window was left")
+        let (_, original) = try await open(old)
+        XCTAssertEqual(original.window?.frame, oldFrame, "the old file's entry was not overwritten")
+    }
+
+    /// File > New, arrange, save for the first time: the arrangement is kept, not replaced by the defaults.
+    func testTheFirstSaveOfANewWorkspaceKeepsItsLayout() async throws {
+        await app.newWorkspace()
+        await assertEventually { self.app.windows.count == 1 }
+        let (doc, wc) = try XCTUnwrap(app.windows.first)
+        await assertEventually { wc.store.model != nil }
+        let arranged = frame(wc)
+        wc.window?.setFrame(arranged, display: true)
+        try toggle(.inspector, in: wc)
+        let url = engine.folder.appendingPathComponent("first-\(UUID().uuidString).openlab")
+        app.pickSaveURL = { _ in url }
+        let saved = await app.saveWorkspace(wc.store)
+        XCTAssertTrue(saved)
+        await assertEventually { self.app.session.workspaces.first { $0.doc == doc }?.path == url.path }
+        await close(doc)
+
+        let (_, again) = try await open(url)
+        XCTAssertEqual(again.window?.frame, arranged)
+        XCTAssertFalse(again.isVisible(.inspector))
+    }
+
+    /// The window is put where it was saved before it is shown, so a click on it never meets a window that moves.
+    func testAReopenedWindowDoesNotMoveOrResizeOnceItIsShown() async throws {
+        let url = try showFile("Still")
+        let (doc, wc) = try await open(url)
+        let wanted = frame(wc)
+        wc.window?.setFrame(wanted, display: true)
+        await close(doc)
+
+        var moves: [NSRect] = []
+        let tokens = [NSWindow.didMoveNotification, NSWindow.didResizeNotification].map {
+            NotificationCenter.default.addObserver(forName: $0, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    for w in NSApp.windows where w is WorkspaceWindow && w.isVisible { moves.append(w.frame) }
+                }
+            }
+        }
+        defer { tokens.forEach(NotificationCenter.default.removeObserver) }
+        let (_, again) = try await open(url)
+        await assertEventually { self.app.session.workspaces.count == self.app.windows.count }
+        await openLabTests.settle()
+        XCTAssertEqual(again.window?.frame, wanted)
+        XCTAssertTrue(moves.isEmpty, "moved after it was shown: \(moves)")
+    }
+
+    func testTheCueListNeverCollapsesAndAWindowResizeKeepsTheDraggedHeight() async throws {
+        let url = try showFile("Squeeze")
+        let (doc, wc) = try await open(url)
+        let big = frame(wc)
+        wc.window?.setFrame(big, display: true)
+        settle(wc)
+        let room = wc.verticalSplit.bounds.height - wc.verticalSplit.dividerThickness
+        // The divider dragged to the very top.
+        wc.verticalSplit.setPosition(0, ofDividerAt: 0)
+        settle(wc)
+        XCTAssertGreaterThanOrEqual(wc.cueList.view.frame.height, 56, "the list is not squeezed out")
+        let tall = min(400, room - 200).rounded(.down)
+        wc.verticalSplit.setPosition(room - tall, ofDividerAt: 0)
+        settle(wc)
+        XCTAssertEqual(wc.inspector.view.frame.height, tall, accuracy: 1)
+        wc.window?.setFrame(NSRect(origin: big.origin, size: wc.window?.minSize ?? big.size), display: true)
+        settle(wc)
+        XCTAssertGreaterThanOrEqual(wc.cueList.view.frame.height, 56, "a small window keeps the list")
+        wc.window?.setFrame(big, display: true)
+        settle(wc)
+        XCTAssertEqual(wc.inspector.view.frame.height, tall, accuracy: 1, "the dragged height came back")
+        let path = try XCTUnwrap(app.session.workspaces.first { $0.doc == doc }?.path)
+        let saved = WindowLayoutStore(defaults: defaults).layout(forPath: path).inspectorHeight
+        XCTAssertEqual(try XCTUnwrap(saved), tall, accuracy: 1, "the shrink did not overwrite it")
+    }
+
+    func testTheMinimumWindowKeepsItsListAndInspectorSizes() async throws {
+        let (_, wc) = try await open(try showFile("Small"))
+        wc.window?.setFrame(NSRect(origin: frame(wc).origin, size: wc.window?.minSize ?? .zero), display: true)
+        settle(wc)
+        XCTAssertGreaterThanOrEqual(wc.cueList.view.frame.height, 56)
+        XCTAssertEqual(wc.inspector.view.frame.height, 240, accuracy: 1)
+    }
+
     // MARK: Logic
 
     func testFitBringsAFrameOntoTheScreenAndKeepsAGoodOneAsItIs() {
