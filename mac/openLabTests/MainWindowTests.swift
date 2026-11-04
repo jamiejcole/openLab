@@ -1113,11 +1113,14 @@ final class WindowLayoutTests: XCTestCase {
         wc.window?.setFrame(wanted, display: true)
         await close(doc)
 
-        var moves: [NSRect] = []
+        var moves: [(window: ObjectIdentifier, frame: NSRect)] = []
         let tokens = [NSWindow.didMoveNotification, NSWindow.didResizeNotification].map {
-            NotificationCenter.default.addObserver(forName: $0, object: nil, queue: .main) { _ in
+            NotificationCenter.default.addObserver(forName: $0, object: nil, queue: .main) { note in
+                guard let sender = note.object.map({ ObjectIdentifier($0 as AnyObject) }) else { return }
                 MainActor.assumeIsolated {
-                    for w in NSApp.windows where w is WorkspaceWindow && w.isVisible { moves.append(w.frame) }
+                    if let w = NSApp.windows.first(where: { ObjectIdentifier($0) == sender }), w.isVisible {
+                        moves.append((sender, w.frame))
+                    }
                 }
             }
         }
@@ -1126,7 +1129,8 @@ final class WindowLayoutTests: XCTestCase {
         await assertEventually { self.app.session.workspaces.count == self.app.windows.count }
         await openLabTests.settle()
         XCTAssertEqual(again.window?.frame, wanted)
-        XCTAssertTrue(moves.isEmpty, "moved after it was shown: \(moves)")
+        let mine = ObjectIdentifier(try XCTUnwrap(again.window))
+        XCTAssertTrue(moves.filter { $0.window == mine }.isEmpty, "moved after it was shown: \(moves)")
     }
 
     func testTheCueListNeverCollapsesAndAWindowResizeKeepsTheDraggedHeight() async throws {
