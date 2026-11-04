@@ -29,6 +29,7 @@ extension AppController {
             wc.onCueAction = { [weak self] action in Task { await self?.run(action, on: store) } }
             wc.onRelink = { [weak self] in Task { await self?.relinkMedia(on: store) } }
             controllers[ObjectIdentifier(store)] = wc
+            watchOverride(of: store)
             // Hotkey warnings are logged when the settings arrive, not at the first key press.
             _ = keys(for: store)
             // Only model changes can move keys (runtime ticks must not walk every cue).
@@ -61,7 +62,9 @@ extension AppController {
         guard let wc = controllers.removeValue(forKey: id) else { return }
         keyCache[id] = nil
         keySubs[id] = nil
+        statusSubs[id] = nil
         wc.window?.close()
+        syncOverridePanel()
     }
 
     func updateTitles(_ list: [WorkspaceInfo]) {

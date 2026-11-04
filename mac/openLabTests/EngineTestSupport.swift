@@ -555,6 +555,8 @@ final class WireTap: EngineTransport {
     var holdFlush = false
     /// Hold `runtime` broadcasts (the engine's playhead moves) until `releaseResults`.
     var holdRuntime = false
+    /// Hold `model_changed` broadcasts until `releaseResults`: the app's model lags behind the engine's.
+    var holdModel = false
     fileprivate var connections: [TapConnection] = []
     fileprivate var held: [(TapConnection, String)] = []
 
@@ -634,6 +636,7 @@ final class TapConnection: EngineConnection {
     private func arrived(_ text: String) {
         let type = JSONValue.parse(text)?["type"]?.stringValue
         if type == "runtime" && tap.holdRuntime { return tap.held.append((self, text)) }
+        if type == "model_changed" && tap.holdModel { return tap.held.append((self, text)) }
         if type == "result" ? tap.holdResults : (type == "workspaces" && tap.holdLists) {
             return tap.held.append((self, text))
         }

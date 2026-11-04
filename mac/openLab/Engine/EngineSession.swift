@@ -157,6 +157,11 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         await appClient.send { .panic(id: $0) }
     }
 
+    /// Engine-wide: with `networkDisabled`, Network cues run but send nothing (PB-10).
+    func setOutputOverrides(networkDisabled: Bool) async -> Result<OkBody, EngineError> {
+        await appClient.send { .request(id: $0, .setOutputOverrides(networkDisabled: networkDisabled)) }
+    }
+
     /// App-scope cue hotkey: the engine matches it in every open workspace.
     func hotkey(key: String, modifiers: HotkeyModifiers, up: Bool) async -> Result<OkBody, EngineError> {
         await appClient.send { .hotkey(id: $0, key: key, modifiers: modifiers, up: up) }
