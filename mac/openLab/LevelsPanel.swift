@@ -131,8 +131,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     /// the text never lands on a slot that moved under the cursor.
     private var heldSize: (inputs: Int, outputs: Int)?
 
-    /// Text has been typed in a field and not yet committed (an open but untouched field editor is
-    /// not: Return leaves one open).
+    /// Text has been typed in a field and not yet committed or dropped (a field that was only
+    /// clicked into is not: nothing of it is held or written).
     private var isDirty = false
 
     /// Shows `levels` over `inputs` file channels and `outputs` cue outputs. Ignored while a
@@ -288,32 +288,41 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     func replace(with new: LevelSet) { edit { $0 = new } }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        control.endTyping(by: selector)
+        // Esc aborts the editor, which posts no end of editing: the typing ends here.
+        if selector == #selector(NSResponder.cancelOperation(_:)) { finishTyping(commit: nil) }
+        return control.endTyping(by: selector)
     }
 
     func controlTextDidChange(_ obj: Notification) { isDirty = true }
 
-    func controlTextDidEndEditing(_ obj: Notification) {
+    func controlTextDidEndEditing(_ obj: Notification) { finishTyping(commit: obj.object as? NSTextField) }
+
+    /// Every way out of typing ends here: Return, Tab and a click elsewhere (`commit` is the field),
+    /// Esc (nil). Only text that was typed is committed, so leaving a field untouched writes nothing
+    /// (a level that does not round-trip through its text, -6.25 shown as -6.2, stays as it is). The
+    /// grid size a `show` held meanwhile is applied, and the strip shows the levels as they now are.
+    private func finishTyping(commit field: NSTextField?) {
+        let wasDirty = isDirty
         isDirty = false
-        defer {
-            // The edit below went to the slot that was selected; now the grid may change.
-            if let held = heldSize, gesture == nil { place(levels, inputs: held.inputs, outputs: held.outputs) }
+        if wasDirty, let field { commitText(of: field) }
+        if let held = heldSize, gesture == nil {
+            place(levels, inputs: held.inputs, outputs: held.outputs)
+        } else {
+            refreshStrip()
         }
+    }
+
+    private func commitText(of field: NSTextField) {
         let slot = selection
-        if obj.object as? NSTextField === levelField {
+        if field === levelField {
             let text = levelField.stringValue
             // An empty field on a level a Fade is not moving leaves it alone.
-            if text.trimmingCharacters(in: .whitespaces).isEmpty, levels?.isActive(slot) == false {
-                refreshStrip()
-                return
-            }
+            if text.trimmingCharacters(in: .whitespaces).isEmpty, levels?.isActive(slot) == false { return }
             let db = LevelText.parse(text)
             edit { $0.set(slot, db: db) }
-            levelField.stringValue = levels?.db(slot).map(LevelText.format) ?? ""
-        } else if obj.object as? NSTextField === gangField, case .output(let o) = slot {
+        } else if field === gangField, case .output(let o) = slot {
             let text = gangField.stringValue
             edit { $0.setGang(of: o, letter: text) }
-            refreshStrip()
         }
     }
 }

@@ -79,6 +79,7 @@ final class InspectorLevelsTests: XCTestCase {
     private func tabs() -> [String] { vc.tabView.tabViewItems.compactMap { $0.identifier as? String } }
 
     private func endEditing(_ field: NSTextField, _ owner: NSTextFieldDelegate) {
+        owner.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
         owner.controlTextDidEndEditing?(Notification(name: NSControl.textDidEndEditingNotification, object: field))
     }
 
@@ -335,7 +336,19 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(lastKind?["levels"]?["outputs"]?.arrayValue?.count, 2)
     }
 
-    func testRowsFollowTheFileAfterReturnLeavesTheFieldOpen() async throws {
+    /// A key the field editor turns into a command (Return, Esc), through the panel's delegate as
+    /// the real editor does.
+    private func press(_ selector: Selector, in field: NSTextField) throws {
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView, "the field is being edited")
+        let handled = (field.delegate as? NSTextFieldDelegate)?.control?(
+            field, textView: editor, doCommandBy: selector)
+        XCTAssertEqual(handled, true)
+    }
+
+    private var escape: Selector { #selector(NSResponder.cancelOperation(_:)) }
+    private var returnKey: Selector { #selector(NSResponder.insertNewline(_:)) }
+
+    func testRowsFollowTheFileAfterAReturnCommit() async throws {
         try await reopen {
             try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6)
             try writeWAV(self.media($0, "d.wav"), seconds: 1, channels: 1)
@@ -345,13 +358,73 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually { p.matrix.inputs == 6 }
         p.select(.cross(input: 1, output: 0))
         try typeInto(p.levelField, "-6")
-        // Return commits and leaves the editor open.
-        p.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: p.levelField))
-        XCTAssertNotNil(p.levelField.currentEditor(), "the editor is still there")
+        try press(returnKey, in: p.levelField)
+        await assertEventually { self.sent.contains { self.kindOf($0.command) != nil } }
+        XCTAssertEqual(lastKind?["levels"]?["crosspoints"]?.arrayValue?.first?["db"], .double(-6))
         try await relink(Self.intro, to: "media/d.wav")
         await assertEventually { p.matrix.inputs == 1 }
-        XCTAssertNotNil(p.levelField.currentEditor())
         XCTAssertEqual(p.selection, .master)
+    }
+
+    /// Types "-6" in the master field and presses Esc: the text is dropped and typing is over.
+    private func typeAndEscape(_ p: LevelsPanel) throws {
+        try typeInto(p.levelField, "-6")
+        try press(escape, in: p.levelField)
+        XCTAssertEqual(p.levelField.stringValue, LevelText.format(p.levels?.master ?? 0), "the typed text is gone")
+    }
+
+    func testAfterEscTheFaderAndTheFieldAgreeAndLeavingTheFieldWritesNothingMore() async throws {
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        try typeAndEscape(p)
+        drag(p, to: [-10])
+        await assertEventually { self.sent.contains { self.kindOf($0.command) != nil } }
+        XCTAssertEqual(p.levelField.stringValue, LevelText.format(-10), "the field follows the fader")
+        let before = sent.count
+        window.makeFirstResponder(p.levelField)
+        window.makeFirstResponder(nil)
+        await rig.sync()
+        XCTAssertEqual(sent.count, before, "clicking in and out with nothing typed sends nothing")
+        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["master_db"], .double(-10))
+    }
+
+    func testAfterEscAPeersChangeIsTakenAndNotWrittenBack() async throws {
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        try typeAndEscape(p)
+        try await peerSetsMaster(-20)
+        await assertEventually { p.levelField.stringValue == LevelText.format(-20) }
+        window.makeFirstResponder(p.levelField)
+        window.makeFirstResponder(nil)
+        await rig.sync()
+        XCTAssertFalse(sent.contains { kindOf($0.command) != nil })
+        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["master_db"], .double(-20))
+    }
+
+    func testAfterEscTheRowsFollowTheFile() async throws {
+        try await reopen {
+            try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6)
+            try writeWAV(self.media($0, "d.wav"), seconds: 1, channels: 1)
+        }
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        await assertEventually { p.matrix.inputs == 6 }
+        try typeAndEscape(p)
+        try await relink(Self.intro, to: "media/d.wav")
+        await assertEventually { p.matrix.inputs == 1 }
+    }
+
+    func testLeavingAFieldWhoseLevelDoesNotRoundTripThroughItsTextWritesNothing() async throws {
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        try await peerSetsMaster(-6.25)
+        await assertEventually { p.levels?.master == -6.25 }
+        XCTAssertEqual(p.levelField.stringValue, LevelText.format(-6.25), "shown to one decimal")
+        window.makeFirstResponder(p.levelField)
+        window.makeFirstResponder(nil)
+        await rig.sync()
+        XCTAssertFalse(sent.contains { kindOf($0.command) != nil }, "nothing was typed, nothing is sent")
+        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["master_db"], .double(-6.25))
     }
 
     func testTheModelsLevelsReplaceAnEditThatIsTakenBack() async throws {
@@ -359,7 +432,7 @@ final class InspectorLevelsTests: XCTestCase {
         let p = vc.audioLevels
         let before = try XCTUnwrap(p.levels)
         try typeInto(p.levelField, "-6")
-        p.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: p.levelField))
+        try press(returnKey, in: p.levelField)
         XCTAssertEqual(p.levels?.master, -6)
         // What the inspector does when the engine refuses the edit: show the model's levels again.
         p.show(before, inputs: p.matrix.inputs, outputs: p.matrix.outputCount)
