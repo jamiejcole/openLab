@@ -149,7 +149,10 @@ final class CueEditor {
         return !isLocked()
     }
 
-    func selectedNodes() -> [CueNode] { (cueList?.selectedIDs() ?? []).compactMap { cueList?.node($0) } }
+    /// `cues` (nil: the selection) that are still in the list.
+    func selectedNodes(of cues: [ModelID]? = nil) -> [CueNode] {
+        (cues ?? cueList?.selectedIDs() ?? []).compactMap { cueList?.node($0) }
+    }
 
     /// The destination a Network cue gets in a workspace with none: this Mac's OSC port over UDP.
     static func defaultNetworkPatch(id: ModelID) -> JSONValue {
@@ -194,9 +197,10 @@ final class CueEditor {
         return id
     }
 
-    func deleteSelection() async {
+    /// Deletes `cues` (nil: the selection). The selection moves on only if it was on them.
+    func deleteSelection(of cues: [ModelID]? = nil) async {
         guard await begin() else { return }
-        let nodes = Self.topLevel(selectedNodes())
+        let nodes = Self.topLevel(selectedNodes(of: cues))
         guard !nodes.isEmpty else { return }
         if nodes.contains(where: isBusy) {
             notify(loc("edit.error.deleteBusy"))
@@ -210,9 +214,10 @@ final class CueEditor {
         let after = siblings.dropFirst(last + 1).first { !gone.contains($0.id) }
         let before = siblings.prefix(first).last { !gone.contains($0.id) }
         let successor = (after ?? before ?? nodes[0].parent)?.id
+        let selectionGoes = !gone.isDisjoint(with: cueList?.selectedIDs() ?? [])
         guard let command = Command.transaction(nodes.map { .removeCue($0.id) }) else { return }
         guard report(await store.send(command: command)) else { return }
-        if let successor, cueList?.node(successor) != nil { cueList?.selectAsUser([successor]) }
+        if selectionGoes, let successor, cueList?.node(successor) != nil { cueList?.selectAsUser([successor]) }
     }
 
     func renumberSelection(start: Double, increment: Double) async {

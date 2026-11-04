@@ -141,6 +141,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     private var editingMark: Double?
 
     var onChange: ((Change) -> Void)?
+    /// A drag on the waveform starts or ends: its commit must reach the cue it started on.
+    var onHold: ((Bool) -> Void)?
     /// A typed value was refused here (its `Localizable.strings` key); the field shows the model's again.
     var onInvalid: ((String) -> Void)?
     /// Fetches peaks (the store's `waveform`).
@@ -239,7 +241,11 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             guard let self, !isLocked else { return }
             onChange?(.fades(fadeIn: fadeIn, fadeOut: fadeOut, curve: nil))
         }
-        waveform.onDragEnded = { [weak self] in self?.syncWaveform() }
+        waveform.onDragBegan = { [weak self] in self?.onHold?(true) }
+        waveform.onDragEnded = { [weak self] in
+            self?.syncWaveform()
+            self?.onHold?(false)
+        }
         waveform.onInsertion = { [weak self] in self?.applyLock() }
         waveform.onEditCount = { [weak self] i in self?.editSliceCount(i) }
         waveform.onResize = { [weak self] in self?.reload() }

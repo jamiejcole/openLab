@@ -42,6 +42,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     /// A gesture ended: the model may be shown again.
     var onGestureEnd: (() -> Void)?
     var onSetFromTarget: (() -> Void)?
+    /// A drag starts or ends, or the mouse goes down or up on the matrix: the edit must stay on this
+    /// cue until it is over.
+    var onHold: ((Bool) -> Void)?
 
     private(set) var levels: LevelSet?
     private(set) var selection: LevelSet.Slot = .master
@@ -91,6 +94,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             self.edit(gesture: self.gesture) { $0.set(slot, db: db, drag: true) }
         }
         matrix.onDragEnd = { [weak self] in self?.endGesture() }
+        matrix.onPress = { [weak self] in self?.onHold?($0) }
 
         scroll.documentView = matrix
         scroll.hasVerticalScroller = true
@@ -205,12 +209,14 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         guard !isLocked else { return }
         Self.gestureSeq += 1
         gesture = Self.gestureSeq
+        onHold?(true)
     }
 
     func endGesture() {
         guard gesture != nil else { return }
         gesture = nil
         onGestureEnd?()
+        onHold?(false)
     }
 
     /// Applies `change` to the panel's levels and reports the result, unless it changes nothing.

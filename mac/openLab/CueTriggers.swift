@@ -112,6 +112,8 @@ enum HotkeyRules {
 /// (also Cmd chords, which would otherwise reach the menus) and hands the event on. Esc leaves
 /// without recording (the app-level monitor has already panicked, as everywhere).
 final class HotkeyRecorder: NSTextField {
+    /// Recording ended, as the field editor's end of editing says for a text field.
+    static let didEndRecording = Notification.Name("HotkeyRecorder.didEndRecording")
     var onRecord: ((NSEvent) -> Void)?
 
     override var acceptsFirstResponder: Bool { isEnabled }
@@ -122,6 +124,7 @@ final class HotkeyRecorder: NSTextField {
     }
     override func resignFirstResponder() -> Bool {
         placeholderString = loc("inspector.hotkey.click")
+        NotificationCenter.default.post(name: Self.didEndRecording, object: self)
         return super.resignFirstResponder()
     }
 

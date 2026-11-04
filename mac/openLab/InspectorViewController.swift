@@ -79,6 +79,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// Choose... next to an Audio cue's file: opens the file chooser (set by the window controller).
     let chooseButton = NSButton(title: loc("inspector.target.choose"), target: nil, action: nil)
     var onChooseFile: ((ModelID) -> Void)?
+    /// A drag in the Levels or Time & Loops tabs starts or ends: it edits the selected cue all the way.
+    var onGestureHold: ((Bool) -> Void)?
+    /// Showing another cue left no control to take the keys.
+    var onKeyTargetLost: (() -> Void)?
     /// Sends a transport action (set by the window controller).
     var onTransport: ((TransportAction) -> Void)?
     private var connectionSub: AnyCancellable?
@@ -489,7 +493,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // selection while it lasts (`CueListViewController.followPlayhead`); a selection the app
         // changes itself (a menu command, Find) can find it still under way. It is committed to the
         // cue it was typed for before another cue is shown, never dropped or written to the new one.
-        if let window = view.window, let responder = window.firstResponder as? NSView, responder.isDescendant(of: view)
+        // A hotkey being recorded is dropped the same way. Other controls keep the focus.
+        if let window = view.window, let responder = window.firstResponder as? NSView,
+            responder is NSText || responder is HotkeyRecorder, responder.isDescendant(of: view)
         {
             window.makeFirstResponder(nil)
         }
@@ -497,6 +503,16 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         messageLabel.stringValue = ""
         dirty = []
         render(force: Set(InspectorField.allCases))
+        keepKeyTarget()
+    }
+
+    /// The window itself, or a control this cue's tabs no longer show, would leave the arrow keys
+    /// driving nothing.
+    private func keepKeyTarget() {
+        guard let window = view.window else { return }
+        let responder = window.firstResponder
+        let hidden = (responder as? NSView).map { $0.isDescendant(of: view) && $0.isHiddenOrHasHiddenAncestor }
+        if responder === window || hidden == true { onKeyTargetLost?() }
     }
 
     func isEditing(_ f: InspectorField) -> Bool { dirty.contains(f) }

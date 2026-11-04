@@ -11,6 +11,17 @@ import UniformTypeIdentifiers
 /// responder chain, so it overrides both and takes Esc.
 @MainActor
 final class WorkspaceWindow: NSWindow {
+    /// Told when a press starts and when its `mouseDown` has returned: a standard control tracks the
+    /// mouse inside that call, and sends its action there too.
+    var onPress: ((Bool) -> Void)?
+
+    override func sendEvent(_ event: NSEvent) {
+        guard event.type == .leftMouseDown else { return super.sendEvent(event) }
+        onPress?(true)
+        defer { onPress?(false) }
+        super.sendEvent(event)
+    }
+
     override func cancelOperation(_ sender: Any?) {}
 
     override func keyDown(with event: NSEvent) {
@@ -35,7 +46,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var onPanic: (() -> Void)?
     var onResetAll: (() -> Void)?
     /// A transport command from the cue row menu, for this window.
-    var onCommand: ((TransportCommand) -> Void)? {
+    var onCommand: ((TransportCommand, [ModelID]) -> Void)? {
         didSet { cueList.onCommand = onCommand }
     }
     /// Pause, resume or panic of one cue, from the Active Cues panel.
@@ -118,6 +129,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             MainActor.assumeIsolated { self?.logController?.close() }
         }
         cueList.onSelectionChange = { [weak inspector] in inspector?.setSelection($0) }
+        window.onPress = { [weak cueList] in cueList?.setFollowHold(.press, $0) }
+        inspector.onGestureHold = { [weak cueList] in cueList?.setFollowHold(.gesture, $0) }
+        inspector.onKeyTargetLost = { [weak window, weak cueList] in
+            window?.makeFirstResponder(cueList?.outlineView)
+        }
         editor.isLocked = { [weak self] in self?.isShowMode ?? true }
         editor.commitPending = { [weak self] in await self?.commitPendingEdits() ?? true }
         editor.notify = { [weak self] message in self?.showNotice(message) }

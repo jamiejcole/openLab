@@ -824,13 +824,35 @@ final class CueListTests: XCTestCase {
         h.vc.rowClicked(h.spy.row(forItem: h.vc.node(H.intro)))
         await settle()
         XCTAssertEqual(sentPlayheads(h), [], "the show opens with the playhead on Intro")
-        // A playhead the selection did not follow (H1 hold), here set without the list hearing it.
+        // A playhead the selection did not follow (a hold), here set without the list hearing it.
         h.vc.sub = nil
         try await moveElsewhere(h, to: H.group)
         XCTAssertEqual(h.vc.selectedIDs(), [H.intro])
         h.vc.rowClicked(h.spy.row(forItem: h.vc.node(H.intro)))
         await assertEventually { self.playhead(h) == H.intro }
         XCTAssertEqual(sentPlayheads(h), [H.intro])
+    }
+
+    /// A `set_playhead` the engine would not act on leaves no echo to clear what was last sent: the
+    /// next click on that row must send again. Here the cue was deleted elsewhere, the list has not
+    /// heard (its row is still there, as in the moment before the news arrives), and it comes back.
+    func testAClickAfterARefusedPlayheadMoveStillMovesThePlayhead() async throws {
+        let h = try await live()
+        h.vc.sub = nil
+        let other = Rig(engine: h.rig.testEngine, workspace: h.rig.doc)
+        guard await other.connect(), let remove = Command.transaction([.removeCue(H.fade)]),
+            case .success = await other.store.send(command: remove)
+        else { return XCTFail("delete elsewhere") }
+        h.vc.selectAsUser([H.fade])
+        await assertEventually("sent and refused") { self.sentPlayheads(h) == [H.fade] }
+        await h.rig.sync()
+        await settle()
+        guard case .success = await other.store.undo() else { return XCTFail("undo elsewhere") }
+        other.client.stop()
+        await h.rig.sync()
+        XCTAssertNotEqual(playhead(h), H.fade)
+        h.vc.rowClicked(h.spy.row(forItem: h.vc.node(H.fade)))
+        await assertEventually("the click moved it") { self.playhead(h) == H.fade }
     }
 
     /// A playhead inside a collapsed group has no row: Move Playhead Next / Previous steps from the
@@ -1228,8 +1250,8 @@ extension CueListTests {
         editorB.pasteboard = pbB
         var commandsA: [TransportCommand] = []
         var commandsB: [TransportCommand] = []
-        a.vc.onCommand = { commandsA.append($0) }
-        b.vc.onCommand = { commandsB.append($0) }
+        a.vc.onCommand = { command, _ in commandsA.append(command) }
+        b.vc.onCommand = { command, _ in commandsB.append(command) }
         a.vc.select([H.intro])  // A holds a selection, as the key window
         let m = try menu(b, H.fade, pasteboard: privatePasteboard())
         func fire(_ item: CueRowMenu.Item) throws {
@@ -1337,7 +1359,8 @@ final class PlayheadFlowTests: XCTestCase {
         try await play(0.1)
     }
 
-    /// A click on `id`'s row.
+    /// What a click on `id`'s row does to the selection, without a press (real presses, with the
+    /// table's mouse tracking, are in `PlayheadClickUITests`).
     private func click(_ id: ModelID) { wc.cueList.selectAsUser([id]) }
 
     /// The Mode tab's popup set to `mode`, as the operator picks it.
@@ -1423,7 +1446,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await assertAllOn(cues[2])
     }
 
-    func testGoPanicClickTheFirstCueGo() async throws {
+    func testGoPanicSelectTheFirstCueGoFindsEscAHandler() async throws {
         try await threeCues()
         try await space()
         try await assertAllOn(cues[1])
@@ -1456,7 +1479,7 @@ final class PlayheadFlowTests: XCTestCase {
 
     /// Typing in the inspector holds the highlight while the playhead moves; the click on the
     /// highlighted row (which ends the typing) puts the playhead back on it.
-    func testClickingTheHighlightedRowResetsThePlayhead() async throws {
+    func testTheTableActionOnTheHighlightedRowResetsThePlayhead() async throws {
         try await threeCues()
         click(cues[1])
         try await assertAllOn(cues[1])
@@ -1484,13 +1507,6 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertTrue(ov.visibleRect.intersects(ov.rect(ofRow: row)), "scrolled into view")
     }
 
-    /// A click in the status column is a click on the row.
-    func testClickingTheStatusColumn() async throws {
-        try await threeCues()
-        click(cues[2])
-        try await assertAllOn(cues[2])
-    }
-
     func testArrowKeysMoveBoth() async throws {
         try await threeCues()
         let ov = wc.cueList.outlineView
@@ -1503,18 +1519,6 @@ final class PlayheadFlowTests: XCTestCase {
         try await assertAllOn(cues[1])
         try press(String(UnicodeScalar(NSUpArrowFunctionKey)!), 126)
         try await assertAllOn(cues[0])
-    }
-
-    func testMultiSelection() async throws {
-        try await threeCues()
-        let ov = wc.cueList.outlineView
-        ov.selectRowIndexes(IndexSet(integer: ov.row(forItem: wc.cueList.node(cues[2]))), byExtendingSelection: true)
-        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
-        await settle()
-        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0], cues[2]])
-        XCTAssertEqual(status(cues[2], 0), loc("cue.playhead"))
-        XCTAssertNil(status(cues[0], 0))
-        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standbyText(cues[2]))
     }
 
     func testGoAtTheEndOfTheList() async throws {
@@ -1573,6 +1577,396 @@ final class PlayheadFlowTests: XCTestCase {
         window.makeFirstResponder(nil)
         try await assertAllOn(cues[1])
         await assertEventually { self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "cue line" }
+    }
+
+    // MARK: A gesture while the playhead moves
+
+    /// The inspector tab, as a click on it shows it.
+    private func showTab(_ id: String) { wc.inspector.tabView.selectTabViewItem(withIdentifier: id) }
+
+    private func kind(_ id: ModelID) -> JSONValue? { store.model?.cue(id)?.raw["kind"] }
+
+    /// Commands sent for cue `id` since the last `forgetSent`.
+    private func commands(on id: ModelID) -> Int {
+        wire.commands.filter { $0.json["id"]?.stringValue == id.raw }.count
+    }
+
+    /// The playhead moved off cue 1 and the highlight has stayed for the gesture.
+    private func assertHeldOnFirstCue(playheadOn head: ModelID, line: UInt = #line) async {
+        await assertEventually("the playhead moved", line: line) { self.store.playheads[self.list] == head }
+        await settle()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]], "held", line: line)
+        XCTAssertEqual(wc.inspector.cueForEdit?.id, cues[0], "the inspector stays on the cue", line: line)
+    }
+
+    /// The whole of a fader drag lands on the cue it started on, and the highlight follows at the end.
+    func testAFaderDragStaysOnItsCueWhileThePlayheadMoves() async throws {
+        try await threeCues()
+        let p = wc.inspector.audioLevels
+        wire.forgetSent()
+        p.beginGesture()
+        p.fader.doubleValue = -6
+        _ = p.fader.target?.perform(p.fader.action, with: p.fader)
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        p.fader.doubleValue = -12
+        _ = p.fader.target?.perform(p.fader.action, with: p.fader)
+        p.endGesture()
+        await assertEventually("the drag's cue took all of it") {
+            self.kind(self.cues[0])?["levels"]?["master_db"]?.doubleValue == -12
+        }
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(commands(on: cues[1]), 0, "no edit went to the other cue")
+    }
+
+    /// A press in the level matrix can become a drag at any moment until the button is up.
+    func testALevelMatrixDragStaysOnItsCueWhileThePlayheadMoves() async throws {
+        try await threeCues()
+        let matrix = wc.inspector.audioLevels.matrix
+        let window = try XCTUnwrap(wc.window)
+        let master = matrix.rect(of: .master)
+        let start = NSPoint(x: master.midX, y: master.midY)
+        func event(_ type: NSEvent.EventType, _ p: NSPoint) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: type, location: matrix.convert(p, to: nil), modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        wire.forgetSent()
+        matrix.mouseDown(with: try event(.leftMouseDown, start))
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        // The view is flipped: down the screen is a larger y, and quieter.
+        matrix.mouseDragged(with: try event(.leftMouseDragged, NSPoint(x: start.x, y: start.y + 40)))
+        matrix.mouseUp(with: try event(.leftMouseUp, NSPoint(x: start.x, y: start.y + 40)))
+        await assertEventually("the drag's cue took it") {
+            self.kind(self.cues[0])?["levels"]?["master_db"]?.doubleValue == -10
+        }
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(commands(on: cues[1]), 0)
+    }
+
+    /// A trim is sent only when the handle is let go: it must go to the cue it was dragged on.
+    func testAWaveformTrimDragStaysOnItsCueWhileThePlayheadMoves() async throws {
+        try await threeCues()
+        let wave = wc.inspector.timeLoops.waveform
+        await assertEventually { wave.duration != nil }
+        wave.frame = NSRect(x: 0, y: 0, width: 600, height: 100)
+        wire.forgetSent()
+        XCTAssertTrue(wave.beginDrag(atX: wave.scale.x(0)))
+        wave.drag(toX: wave.scale.x(0.3))
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        wave.endDrag()
+        await assertEventually("the drag's cue took it") {
+            abs((self.kind(self.cues[0])?["start_time"]?.doubleValue ?? 0) - 0.3) < 0.01
+        }
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(commands(on: cues[1]), 0)
+    }
+
+    /// A key being recorded for a cue goes to that cue.
+    func testAHotkeyBeingRecordedStaysOnItsCueWhileThePlayheadMoves() async throws {
+        try await threeCues()
+        let recorder = wc.inspector.hotkeyField
+        showTab("triggers")
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(recorder))
+        XCTAssertTrue(wc.window?.firstResponder === recorder)
+        wire.forgetSent()
+        try await moveElsewhere(to: cues[2])
+        await assertHeldOnFirstCue(playheadOn: cues[2])
+        recorder.keyDown(with: try key("f", code: 3))
+        await assertEventually("recorded on its own cue") {
+            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
+        }
+        try await assertAllOn(cues[2])
+        XCTAssertEqual(commands(on: cues[2]), 0)
+    }
+
+    /// Stands in for a control that tracks the mouse inside its `mouseDown` (a checkbox, a slider, a
+    /// table row), as driving a real one needs a real mouse: the press goes through the window.
+    private final class TrackingView: NSView {
+        var whileTracking: () -> Void = {}
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) { whileTracking() }
+    }
+
+    /// A press on a `TrackingView`, from the run loop as a real event comes (a nested loop does not
+    /// run the main queue from inside a main-queue job, and so not this test's own Tasks).
+    private func pressOnTrackingView(whileTracking: @escaping () -> Void) async throws {
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        let content = try XCTUnwrap(window.contentView)
+        // Away from the window's edges, which track a resize until a real mouse-up.
+        let view = TrackingView(frame: NSRect(x: content.bounds.midX, y: content.bounds.midY, width: 20, height: 20))
+        content.addSubview(view)
+        defer { view.removeFromSuperview() }
+        view.whileTracking = whileTracking
+        let point = content.convert(NSPoint(x: view.frame.midX, y: view.frame.midY), to: nil)
+        guard content.hitTest(point) === view else { return XCTFail("the press would land elsewhere") }
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            RunLoop.main.perform(inModes: [.common]) {
+                MainActor.assumeIsolated {
+                    let down = NSEvent.mouseEvent(
+                        with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
+                        windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+                    if let down { window.sendEvent(down) } else { XCTFail("no event") }
+                }
+                done.resume()
+            }
+        }
+    }
+
+    /// Runs the main queue as a control's tracking loop does, until `done` or a long deadline.
+    private func track(until done: () -> Bool) {
+        let deadline = Date(timeIntervalSinceNow: 20)
+        while !done(), Date() < deadline {
+            RunLoop.main.run(mode: .eventTracking, before: Date(timeIntervalSinceNow: 0.01))
+        }
+    }
+
+    /// A checkbox acts when the button comes up: pressed on cue 1, it must not flag the cue the
+    /// playhead moved to meanwhile.
+    func testACheckboxHeldDownStaysOnItsCueWhileThePlayheadMoves() async throws {
+        try await threeCues()
+        wire.forgetSent()
+        let moved = Counter()
+        Task {
+            try await moveElsewhere(to: cues[2])
+            moved.count = 1
+        }
+        var heldOn: [ModelID] = []
+        try await pressOnTrackingView { [self] in
+            track { moved.count == 1 }
+            heldOn = wc.cueList.selectedIDs()
+            wc.inspector.flaggedCheck.performClick(nil)  // the mouse-up
+        }
+        XCTAssertEqual(moved.count, 1)
+        XCTAssertEqual(heldOn, [cues[0]], "held while the button is down")
+        await assertEventually("flagged its own cue") {
+            self.store.model?.cue(self.cues[0])?.raw["flagged"] == .bool(true)
+        }
+        try await assertAllOn(cues[2])
+        XCTAssertEqual(commands(on: cues[2]), 0)
+    }
+
+    /// A drag whose release never came (its view was taken away under it) must not hold for good:
+    /// the next press ends it.
+    func testTheNextPressEndsAGestureWhoseReleaseNeverCame() async throws {
+        try await threeCues()
+        wc.inspector.audioLevels.beginGesture()
+        try await moveElsewhere(to: cues[2])
+        await assertHeldOnFirstCue(playheadOn: cues[2])
+        try await pressOnTrackingView {}
+        try await assertAllOn(cues[2])
+    }
+
+    /// Opens `menu` for real (no mouse: the menu is closed from code), from the run loop as a real
+    /// press does (`pressOnTrackingView`), runs `body` while it tracks, and returns when it has
+    /// closed; `chosen` runs where a chosen item's action does, on the way out of the tracking. A
+    /// timer closes it if `body` never finishes.
+    private func whileOpen(
+        _ menu: NSMenu, in view: NSView, chosen: @escaping @MainActor @Sendable () -> Void = {},
+        _ body: @escaping @MainActor @Sendable () async throws -> Void
+    ) async {
+        nonisolated(unsafe) let menu = menu
+        nonisolated(unsafe) let view = view
+        nonisolated(unsafe) let finished = Counter()
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            RunLoop.main.perform(inModes: [.common]) {
+                MainActor.assumeIsolated {
+                    Task { @MainActor in
+                        do { try await body() } catch { XCTFail("while the menu is open: \(error)") }
+                        finished.count = 1
+                        menu.cancelTracking()
+                    }
+                    let watchdog = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 30_000_000_000)
+                        if !Task.isCancelled { menu.cancelTracking() }
+                    }
+                    menu.popUp(positioning: nil, at: .zero, in: view)
+                    watchdog.cancel()
+                    chosen()
+                }
+                done.resume()
+            }
+        }
+        XCTAssertEqual(finished.count, 1, "the engine's updates apply while a menu is open")
+    }
+
+    /// An inspector popup acts when its menu closes: the choice goes to the cue it was opened on.
+    func testAPopupMenuStaysOnItsCueWhileThePlayheadMoves() async throws {
+        try await threeCues()
+        wire.forgetSent()
+        let popup = wc.inspector.continuePopup
+        let menu = try XCTUnwrap(popup.menu)
+        await whileOpen(
+            menu, in: popup,
+            chosen: {
+                popup.selectItem(at: 1)
+                XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
+            }
+        ) { [self] in
+            try await moveElsewhere(to: cues[2])
+            await assertHeldOnFirstCue(playheadOn: cues[2])
+        }
+        await assertEventually("set on its own cue") {
+            self.store.model?.cue(self.cues[0])?.raw["continue_mode"]?.stringValue
+                == InspectorViewController.continueModes[1]
+        }
+        try await assertAllOn(cues[2])
+        XCTAssertEqual(commands(on: cues[2]), 0)
+    }
+
+    // MARK: The row menu acts on what it was opened on
+
+    private func rowMenu(on id: ModelID) -> NSMenu {
+        let menu = NSMenu()
+        wc.cueList.prepareRowMenu(menu, row: wc.cueList.outlineView.row(forItem: wc.cueList.node(id)))
+        return menu
+    }
+
+    private func item(_ item: CueRowMenu.Item, in menu: NSMenu) throws -> NSMenuItem {
+        try XCTUnwrap(menu.items.first { $0.tag == CueRowMenu.Item.allCases.firstIndex(of: item) })
+    }
+
+    /// Right-click running cue 1; the playhead moves while the menu is open; Panic fades cue 1, the
+    /// cue the menu was opened on, and no other; the highlight then follows the playhead.
+    func testRowMenuPanicAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        try await space()
+        XCTAssertTrue(running(cues[0]))
+        let menu = rowMenu(on: cues[0])
+        await sync()
+        await whileOpen(menu, in: wc.cueList.outlineView) { [self] in
+            try await moveElsewhere(to: cues[2])
+            await assertHeldOn(cues[0], playheadOn: cues[2])
+        }
+        wire.forgetSent()
+        wc.cueList.rowCommand(try item(.panic, in: menu))
+        await assertEventually("cue 1 fades out and stops") {
+            try? await self.play(0.5)
+            return !self.running(self.cues[0]) && self.store.cueStates[self.cues[0]]?.state.isActive != true
+        }
+        let panicked = wire.sent.compactMap { m -> ModelID? in
+            if case .transport(_, .panicCue(let c)) = m { return c }
+            return nil
+        }
+        XCTAssertEqual(panicked.first, cues[0])
+        XCTAssertFalse(panicked.contains(cues[2]))
+        try await assertAllOn(cues[2])
+    }
+
+    private func assertHeldOn(_ id: ModelID, playheadOn head: ModelID, line: UInt = #line) async {
+        await assertEventually("the playhead moved", line: line) { self.store.playheads[self.list] == head }
+        await settle()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [id], "held", line: line)
+    }
+
+    /// Delete removes the cue the menu was opened on; the highlight and the playhead, which have
+    /// moved elsewhere, stay where they are.
+    func testRowMenuDeleteAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        let menu = rowMenu(on: cues[0])
+        try await moveElsewhere(to: cues[2])
+        try await assertAllOn(cues[2])
+        wc.cueList.rowDelete(try item(.delete, in: menu))
+        await assertEventually { self.wc.cueList.roots.count == 2 }
+        XCTAssertNil(wc.cueList.node(cues[0]), "the right-clicked cue went")
+        await sync()
+        await settle()
+        try await assertAllOn(cues[2])
+    }
+
+    /// Load, Preview, Copy, Paste and Cut, each with the selection moved after the menu opened.
+    func testRowMenuOtherCommandsAfterThePlayheadMoves() async throws {
+        try await threeCues()
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
+        addTeardownBlock { @MainActor in pasteboard.releaseGlobally() }
+        wc.editor.pasteboard = pasteboard
+        wc.cueList.pasteboard = pasteboard
+        var menu = rowMenu(on: cues[0])
+        try await moveElsewhere(to: cues[2])
+        try await assertAllOn(cues[2])
+        wc.cueList.rowCommand(try item(.load, in: menu))
+        await assertEventually("Load") { self.status(self.cues[0], 1) == loc("cue.state.loaded") }
+        XCTAssertNil(status(cues[2], 1))
+        wc.cueList.rowCommand(try item(.preview, in: menu))
+        await assertEventually("Preview") { self.store.previewing == [self.cues[0]] }
+        wc.cueList.rowCommand(try item(.preview, in: menu))
+        await assertEventually("Preview stops") { self.store.previewing.isEmpty }
+        wc.cueList.rowCopy(try item(.copy, in: menu))
+        await assertEventually("Copy") { pasteboard.string(forType: CueEditor.pasteType) != nil }
+        let copied = try XCTUnwrap(JSONValue.parse(try XCTUnwrap(pasteboard.string(forType: CueEditor.pasteType))))
+        XCTAssertEqual(copied["cues"]?.arrayValue?.first?["id"]?.stringValue, cues[0].raw)
+        wc.cueList.rowPaste(try item(.paste, in: menu))
+        await assertEventually("Paste goes after it") { self.wc.cueList.roots.count == 4 }
+        XCTAssertEqual(wc.cueList.roots[0].id, cues[0])
+        XCTAssertEqual(wc.cueList.roots[2].id, cues[1], "the copy is between cue 1 and cue 2")
+        menu = rowMenu(on: cues[0])
+        try await moveElsewhere(to: cues[2])
+        try await assertAllOn(cues[2])
+        wc.cueList.rowCut(try item(.cut, in: menu))
+        await assertEventually("Cut") { self.wc.cueList.node(self.cues[0]) == nil }
+        XCTAssertNotNil(wc.cueList.node(cues[2]))
+        try await assertAllOn(cues[2])
+    }
+
+    // MARK: The keys after the selection moves
+
+    private var downArrow: NSEvent {
+        get throws { try key(String(UnicodeScalar(NSDownArrowFunctionKey)!), code: 125, [.numericPad, .function]) }
+    }
+
+    /// Focus in the level matrix stays there when GO moves to a cue that shows it too, so the arrows
+    /// go on moving the matrix's selected cell and nothing beeps.
+    func testFocusInTheLevelMatrixSurvivesGoAndTheArrowKeysStillAct() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        let panel = wc.inspector.audioLevels
+        showTab("levels")
+        XCTAssertTrue(window.makeFirstResponder(panel.matrix))
+        let beeps = Counter()
+        app.beep = { beeps.count += 1 }
+        try await space()
+        try await assertAllOn(cues[1])
+        XCTAssertTrue(window.firstResponder === panel.matrix)
+        let before = panel.cellLabel.stringValue
+        window.sendEvent(try XCTUnwrap(app.handleKeyDown(try downArrow)))
+        XCTAssertNotEqual(panel.cellLabel.stringValue, before, "the matrix took the key")
+        XCTAssertEqual(beeps.count, 0)
+    }
+
+    /// When the next cue does not show the focused control, the list takes the keys: Down moves the
+    /// highlight rather than driving nothing.
+    func testFocusOnAControlTheNextCueHidesGoesToTheList() async throws {
+        try await threeCues()
+        let made = await wc.editor.add(.group)
+        let group = try XCTUnwrap(made)
+        await sync()
+        click(cues[0])
+        try await assertAllOn(cues[0])
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        showTab("levels")
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.audioLevels.matrix))
+        XCTAssertTrue(window.firstResponder === wc.inspector.audioLevels.matrix)
+        try await moveElsewhere(to: group)
+        await assertEventually { self.wc.cueList.selectedIDs() == [group] }
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
+        window.sendEvent(try XCTUnwrap(app.handleKeyDown(try downArrow)))
+        await assertEventually("Down moved the highlight") { self.wc.cueList.selectedIDs() != [group] }
+    }
+
+    /// Typing ended by a selection the app changes: the list takes the keys, not the window.
+    func testASelectionThatEndsTypingLeavesTheKeysWithTheList() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.nameField))
+        click(cues[1])
+        try await assertAllOn(cues[1])
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
     }
 
     // MARK: #496: GO on a group after a mode change

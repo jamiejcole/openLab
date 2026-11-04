@@ -8,6 +8,7 @@ import AppKit
 extension InspectorViewController {
     func buildTimeLoopsTab() {
         timeLoops.onChange = { [weak self] change in self?.sendTimeLoops(change) }
+        timeLoops.onHold = { [weak self] in self?.onGestureHold?($0) }
         timeLoops.onInvalid = { [weak self] key in self?.messageLabel.stringValue = loc(key) }
         timeLoops.loadPeaks = { [weak self] cue, start, end, buckets in
             guard let self else { return .failure(.notConnected) }
