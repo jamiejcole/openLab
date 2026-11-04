@@ -281,7 +281,6 @@ final class AppControllerTests: XCTestCase {
         return dir.appendingPathComponent("\(name).openlab")
     }
 
-    /// A second, clean workspace.
     /// `prepareToQuit`, with a bound of its own. The app bounds each wait of a quit on `quitScheduler`, and
     /// here only a test fires that, so an engine that never answered would hold the whole test job: this
     /// fails by name instead, saying what the quit had sent and whether it was on one of those bounds, then
@@ -304,12 +303,13 @@ final class AppControllerTests: XCTestCase {
             return done.count == 1
         }
         XCTFail(
-            "the quit did not finish: \(bounds) bound(s) waiting, connection \(state), last sent: \(sent); "
+            "the quit did not finish: \(bounds) scheduler waiter(s), connection \(state), last sent: \(sent); "
                 + (ended ? "it ended when its bounds fired" : "still stuck with its bounds fired: an unbounded wait"),
             file: file, line: line)
         return ended ? await task.value : false
     }
 
+    /// A second, clean workspace.
     private func addWorkspace() async throws -> ModelID {
         guard case .success(let doc) = await app.session.newWorkspace() else {
             XCTFail("new")
@@ -1973,9 +1973,17 @@ final class AppControllerTests: XCTestCase {
     func testHungSaveTimesOutAndAbortsQuit() async throws {
         alerts.saveChoices = [.save]
         engine.holdResults = true
-        let task = Task { await app.prepareToQuit() }
-        await assertEventually { await quitScheduler.waitingCount > 0 }
-        await quitScheduler.fire()
+        let done = Counter()
+        let task = Task {
+            let result = await app.prepareToQuit()
+            done.count = 1
+            return result
+        }
+        // Fired until it ends: a finished bound's sleeper stays on the scheduler, so one fire can land on it.
+        await assertEventually("the quit ended when its bound fired") {
+            await self.quitScheduler.fire()
+            return done.count == 1
+        }
         let quit = await task.value
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.errors.count, 1)
@@ -1986,12 +1994,19 @@ final class AppControllerTests: XCTestCase {
     func testHungGoodbyeFlushStillQuits() async throws {
         alerts.saveChoices = [.dontSave]
         engine.holdFlush = true
-        let task = Task { await app.prepareToQuit() }
+        let done = Counter()
+        let task = Task {
+            let result = await app.prepareToQuit()
+            done.count = 1
+            return result
+        }
         await assertEventually {
             self.engine.sent.contains { if case .goodbye = $0 { return true } else { return false } }
         }
-        await assertEventually { await quitScheduler.waitingCount > 0 }
-        await quitScheduler.fire()
+        await assertEventually("the quit ended when its bound fired") {
+            await self.quitScheduler.fire()
+            return done.count == 1
+        }
         let quit = await task.value
         XCTAssertTrue(quit)
     }

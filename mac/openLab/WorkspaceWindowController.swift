@@ -576,10 +576,24 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         case .inspector:
             if !visible { inspector.endGestures() }
             inspector.view.isHidden = !visible
-        case .sidebar: sidebar.view.isHidden = !visible
+        case .sidebar: setSidebarInSplit(visible)
         }
         footer.toggles[area]?.state = visible ? .on : .off
         footer.toggles[area]?.isEnabled = !(isShowMode && Self.hiddenInShowMode.contains(area))
+    }
+
+    /// Hiding the last arranged subview of a split view (`isHidden`) makes AppKit pin the one before it to
+    /// the trailing edge twice, with offsets that contradict ("Conflicting constraints detected", one
+    /// constraint broken). The sidebar leaves the split instead, and comes back at its end.
+    private func setSidebarInSplit(_ shown: Bool) {
+        let view = sidebar.view
+        if shown, view.superview == nil {
+            horizontalSplit.addArrangedSubview(view)
+            horizontalSplit.setHoldingPriority(NSLayoutConstraint.Priority(251), forSubviewAt: 1)
+        } else if !shown, view.superview != nil {
+            horizontalSplit.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
     }
 
     func isVisible(_ area: LayoutArea) -> Bool {
@@ -587,7 +601,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         case .toolbar: return find.isOpen ? !find.toolbarWasHidden : !cueToolbar.isHidden
         case .masthead: return !masthead.isHidden
         case .inspector: return !inspector.view.isHidden
-        case .sidebar: return !sidebar.view.isHidden
+        case .sidebar: return sidebar.view.superview != nil
         }
     }
 
@@ -605,8 +619,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         horizontalSplit.isVertical = true
         horizontalSplit.dividerStyle = .thin
         horizontalSplit.addArrangedSubview(verticalSplit)
-        horizontalSplit.addArrangedSubview(sidebar.view)
-        horizontalSplit.setHoldingPriority(NSLayoutConstraint.Priority(251), forSubviewAt: 1)
         let sidebarWidth = sidebar.view.widthAnchor.constraint(equalToConstant: 280)
         sidebarWidth.priority = NSLayoutConstraint.Priority(300)
         sidebarWidth.isActive = true

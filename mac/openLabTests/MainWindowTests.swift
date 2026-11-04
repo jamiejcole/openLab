@@ -19,8 +19,50 @@ final class MainWindowTests: XCTestCase {
         WorkspaceWindowController(store: try Rig.offline().store)
     }
 
+    /// Runs `body` with stderr captured: AppKit reports a broken layout there.
+    private func stderrText(_ body: () -> Void) -> String {
+        let pipe = Pipe()
+        let saved = dup(STDERR_FILENO)
+        fflush(stderr)
+        dup2(pipe.fileHandleForWriting.fileDescriptor, STDERR_FILENO)
+        body()
+        fflush(stderr)
+        dup2(saved, STDERR_FILENO)
+        close(saved)
+        try? pipe.fileHandleForWriting.close()
+        return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    }
+
+    /// A real window, shown at the smallest size it allows, at a small screen's size and at a large one,
+    /// with each area hidden and shown, lays out without AppKit reporting a conflicting constraint (the
+    /// report is read from stderr: AppKit offers nothing else to assert on).
+    func testWindowLaysOutCleanlyAtEverySize() throws {
+        var made: WorkspaceWindowController?
+        // The window is built inside the capture: its first layout is where a conflict used to show.
+        let first = stderrText { made = try? controller() }
+        let wc = try XCTUnwrap(made)
+        let window = try XCTUnwrap(wc.window)
+        func layout() { window.contentView?.layoutSubtreeIfNeeded() }
+        var problems: [String] = first.isEmpty ? [] : ["built: \(first.prefix(200))"]
+        func step(_ what: String, _ body: () -> Void) {
+            let report = stderrText(body)
+            if !report.isEmpty { problems.append("\(what): \(report.prefix(200))") }
+        }
+        step("shown") { window.orderFront(nil); layout() }
+        for size in [window.minSize, NSSize(width: 1024, height: 700), NSSize(width: 1800, height: 1000), window.minSize] {
+            step("size \(size)") { window.setContentSize(size); layout() }
+            for area in LayoutArea.allCases {
+                step("\(area) toggled") { wc.setVisible(area, !wc.isVisible(area)); layout() }
+                step("\(area) toggled back") { wc.setVisible(area, !wc.isVisible(area)); layout() }
+            }
+        }
+        window.close()
+        XCTAssertEqual(problems, [], "AppKit reported a layout problem")
+    }
+
     func testAllAreasPresent() throws {
         let wc = try controller()
+        wc.setVisible(.sidebar, true)  // hidden, the sidebar is out of the split
         let root = try XCTUnwrap(wc.window?.contentView)
         for id in [
             AX.masthead, AX.goButton, AX.standbyField, AX.standbyNotes, AX.cueToolbar, AX.cueList,
