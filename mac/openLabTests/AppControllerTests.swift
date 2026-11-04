@@ -62,6 +62,46 @@ final class ScriptedAlerts: WorkspaceAlerts {
     }
 }
 
+/// Counts the Esc a workspace window takes (`cancelOperation(_:)` or `keyDown`) while it is installed:
+/// the Esc that reached the end of the responder chain and found a handler instead of the beep.
+final class CancelTap {
+    private final class Box: @unchecked Sendable { var n = 0 }
+    private let count = Box()
+    var taken: Int { count.n }
+    private var restores: [() -> Void] = []
+
+    /// Wraps `cancelOperation:` and `keyDown:` of the workspace window: Esc reaches one of them
+    /// (a table's key bindings the first, a button or tab view the second) or it beeps.
+    init() throws {
+        let cancel = #selector(NSResponder.cancelOperation(_:))
+        let count = count
+        let cancelMethod = try XCTUnwrap(class_getInstanceMethod(WorkspaceWindow.self, cancel))
+        let cancelOriginal = method_getImplementation(cancelMethod)
+        let cancelBlock: @convention(block) (AnyObject, Any?) -> Void = { object, sender in
+            count.n += 1
+            typealias Call = @convention(c) (AnyObject, Selector, Any?) -> Void
+            unsafeBitCast(cancelOriginal, to: Call.self)(object, cancel, sender)
+        }
+        method_setImplementation(cancelMethod, imp_implementationWithBlock(cancelBlock))
+        restores.append { method_setImplementation(cancelMethod, cancelOriginal) }
+
+        let key = #selector(NSResponder.keyDown(with:))
+        let keyMethod = try XCTUnwrap(class_getInstanceMethod(WorkspaceWindow.self, key))
+        let keyOriginal = method_getImplementation(keyMethod)
+        let keyBlock: @convention(block) (AnyObject, NSEvent) -> Void = { object, event in
+            if event.keyCode == 53 { count.n += 1 }
+            typealias Call = @convention(c) (AnyObject, Selector, NSEvent) -> Void
+            unsafeBitCast(keyOriginal, to: Call.self)(object, key, event)
+        }
+        method_setImplementation(keyMethod, imp_implementationWithBlock(keyBlock))
+        restores.append { method_setImplementation(keyMethod, keyOriginal) }
+    }
+
+    func restore() { for undo in restores { undo() } }
+}
+
+final class Counter { var count = 0 }
+
 @MainActor
 final class AppControllerTests: XCTestCase {
     private var app: AppController!
@@ -2507,44 +2547,6 @@ final class AppControllerTests: XCTestCase {
 
     // MARK: Esc without the system beep
 
-    /// Counts the Esc a workspace window takes (`cancelOperation(_:)` or `keyDown`) while it is installed:
-    /// the Esc that reached the end of the responder chain and found a handler instead of the beep.
-    private final class CancelTap {
-        private final class Box: @unchecked Sendable { var n = 0 }
-        private let count = Box()
-        var taken: Int { count.n }
-        private var restores: [() -> Void] = []
-
-        /// Wraps `cancelOperation:` and `keyDown:` of the workspace window: Esc reaches one of them
-        /// (a table's key bindings the first, a button or tab view the second) or it beeps.
-        init() throws {
-            let cancel = #selector(NSResponder.cancelOperation(_:))
-            let count = count
-            let cancelMethod = try XCTUnwrap(class_getInstanceMethod(WorkspaceWindow.self, cancel))
-            let cancelOriginal = method_getImplementation(cancelMethod)
-            let cancelBlock: @convention(block) (AnyObject, Any?) -> Void = { object, sender in
-                count.n += 1
-                typealias Call = @convention(c) (AnyObject, Selector, Any?) -> Void
-                unsafeBitCast(cancelOriginal, to: Call.self)(object, cancel, sender)
-            }
-            method_setImplementation(cancelMethod, imp_implementationWithBlock(cancelBlock))
-            restores.append { method_setImplementation(cancelMethod, cancelOriginal) }
-
-            let key = #selector(NSResponder.keyDown(with:))
-            let keyMethod = try XCTUnwrap(class_getInstanceMethod(WorkspaceWindow.self, key))
-            let keyOriginal = method_getImplementation(keyMethod)
-            let keyBlock: @convention(block) (AnyObject, NSEvent) -> Void = { object, event in
-                if event.keyCode == 53 { count.n += 1 }
-                typealias Call = @convention(c) (AnyObject, Selector, NSEvent) -> Void
-                unsafeBitCast(keyOriginal, to: Call.self)(object, key, event)
-            }
-            method_setImplementation(keyMethod, imp_implementationWithBlock(keyBlock))
-            restores.append { method_setImplementation(keyMethod, keyOriginal) }
-        }
-
-        func restore() { for undo in restores { undo() } }
-    }
-
     /// The front workspace window, key, with `focus` the first responder.
     private func keyWindow(focus: (WorkspaceWindowController) -> NSResponder) throws -> (
         WorkspaceWindowController, NSWindow
@@ -2583,7 +2585,6 @@ final class AppControllerTests: XCTestCase {
         return counter
     }
 
-    private final class Counter { var count = 0 }
 
     private func assertNoBeep(_ tap: CancelTap, _ presses: Int, _ beeps: Counter, _ message: String) {
         XCTAssertEqual(

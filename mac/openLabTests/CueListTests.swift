@@ -1427,8 +1427,20 @@ final class PlayheadFlowTests: XCTestCase {
         try await threeCues()
         try await space()
         try await assertAllOn(cues[1])
+        // Esc as the key path takes it: the key monitor, then the window's dispatch to the focused
+        // table. It must find a handler (cancelOperation) rather than fall off the chain and beep.
+        let tap = try CancelTap()
+        defer { tap.restore() }
+        let beeps = Counter()
+        app.beep = { beeps.count += 1 }
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
         let esc = try key("\u{1B}", code: 53)
-        XCTAssertTrue(app.handleKeyDown(esc) === esc, "Esc goes on to the responder too")
+        let passed = try XCTUnwrap(app.handleKeyDown(esc), "Esc goes on to the responder too")
+        window.sendEvent(passed)
+        XCTAssertEqual(tap.taken, 1, "the window found a handler for Esc: no system beep")
+        XCTAssertEqual(beeps.count, 0, "the app did not beep")
         try await play(0.05)
         await assertEventually("panic stopped cue 1") {
             try? await self.play(0.5)
