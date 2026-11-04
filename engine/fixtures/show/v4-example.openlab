@@ -24,7 +24,7 @@
           }
         ]
       },
-      "master_db": 0.0,
+      "master_db": -2.0,
       "hotkeys": {
         "go": {
           "key": "space",

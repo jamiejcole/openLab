@@ -19,7 +19,6 @@ use proptest::{collection::vec, option};
 /// The current format (golden: saved files must match it byte for byte).
 const EXAMPLE: &str = include_str!("../../../fixtures/show/v9-example.openlab");
 const V8_EXAMPLE: &str = include_str!("../../../fixtures/show/v8-example.openlab");
-const V8_GLOBAL_MASTER: &str = include_str!("../../../fixtures/show/v8-global-master.openlab");
 const V7_EXAMPLE: &str = include_str!("../../../fixtures/show/v7-example.openlab");
 const V6_EXAMPLE: &str = include_str!("../../../fixtures/show/v6-example.openlab");
 const V5_EXAMPLE: &str = include_str!("../../../fixtures/show/v5-example.openlab");
@@ -89,7 +88,7 @@ fn golden_fixture_is_in_canonical_form() {
 #[test]
 fn v3_fixture_with_a_passcode_migrates_to_a_row_with_all_rights() {
     let loaded = load_show(V3_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     let current = load_show(EXAMPLE).unwrap().workspace;
     assert_eq!(loaded.workspace, current);
     assert_eq!(
@@ -108,7 +107,7 @@ fn v3_fixture_with_a_passcode_migrates_to_a_row_with_all_rights() {
 #[test]
 fn v3_fixture_without_a_passcode_migrates_to_open_no_passcode_rights() {
     let loaded = load_show(V3_NO_PASSCODE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     assert_eq!(loaded.workspace.settings.osc_access, OscAccess::default());
     assert_eq!(
         loaded.workspace.settings.osc_access.no_passcode,
@@ -127,7 +126,7 @@ fn v3_fixture_without_a_passcode_migrates_to_open_no_passcode_rights() {
 #[test]
 fn v4_fixture_migrates_to_the_selected_cue_keys() {
     let loaded = load_show(V4_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     let keys = &loaded.workspace.settings.hotkeys;
     assert_eq!(keys.stop_all, None);
     assert_eq!(keys.go.as_ref().unwrap().key, "space");
@@ -154,7 +153,7 @@ fn v4_fixture_migrates_to_the_selected_cue_keys() {
 #[test]
 fn v5_fixture_migrates_by_dropping_the_playhead_keys() {
     let loaded = load_show(V5_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
     let migrated = migrate(serde_json::from_str(V5_EXAMPLE).unwrap(), 5).unwrap();
     let keys = &migrated["workspace"]["settings"]["hotkeys"];
@@ -164,6 +163,15 @@ fn v5_fixture_migrates_by_dropping_the_playhead_keys() {
 }
 
 /// The one warning a show older than v7 whose patches delayed an output loads with.
+/// Every old fixture has a global master of -2 dB, which v9 dropped.
+fn master_removed() -> ValidationIssue {
+    ValidationIssue {
+        severity: Severity::Warning,
+        cue_id: None,
+        kind: IssueKind::GlobalMasterRemoved,
+    }
+}
+
 fn delays_removed() -> ValidationIssue {
     ValidationIssue {
         severity: Severity::Warning,
@@ -178,8 +186,8 @@ fn delays_removed() -> ValidationIssue {
 #[test]
 fn v6_fixture_migrates_by_dropping_the_output_delays_with_one_warning() {
     let loaded = load_show(V6_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
-    assert!(loaded.warnings[0].to_string().contains("undelayed"));
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
+    assert!(loaded.warnings[1].to_string().contains("undelayed"));
     assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
     let migrated = migrate(serde_json::from_str(V6_EXAMPLE).unwrap(), 6).unwrap();
     let outputs = &migrated["workspace"]["patches"][0]["outputs"];
@@ -221,9 +229,9 @@ fn a_v6_output_delay_warns_only_when_it_was_set() {
     ] {
         let show = load(delay.clone());
         let want = if warned {
-            vec![delays_removed()]
+            vec![master_removed(), delays_removed()]
         } else {
-            vec![]
+            vec![master_removed()]
         };
         assert_eq!(show.warnings, want, "{delay:?}");
         assert_eq!(show.workspace, current, "{delay:?}");
@@ -418,7 +426,7 @@ fn cue_named<'a>(ws: &'a Workspace, name: &str) -> &'a Cue {
 #[test]
 fn v1_fixture_migrates_with_default_second_triggers() {
     let loaded = load_show(V1_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     let mut ws = loaded.workspace;
     let mut count = 0;
     for list in &ws.cue_lists {
@@ -480,7 +488,7 @@ fn devamp_modes(ws: &Workspace) -> Vec<DevampMode> {
 #[test]
 fn v2_fixture_migrates_with_devamp_mode_current_slice() {
     let loaded = load_show(V2_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     let mut ws = loaded.workspace;
     assert_eq!(devamp_modes(&ws), vec![DevampMode::CurrentSlice]);
     let current = load_show(EXAMPLE).unwrap().workspace;
@@ -581,6 +589,7 @@ fn v2_fades_aimed_at_groups_are_pointed_out_on_load() {
                 Some(cue_id(0xf1)),
                 IssueKind::GroupFadeNowRelative
             ),
+            (Severity::Warning, None, IssueKind::GlobalMasterRemoved),
             (Severity::Warning, None, IssueKind::OutputDelaysRemoved),
         ]
     );
@@ -597,7 +606,7 @@ fn v2_fades_aimed_at_groups_are_pointed_out_on_load() {
     // The unchanged v2 example's only Fade targets an audio cue.
     assert_eq!(
         load_show(V2_EXAMPLE).unwrap().warnings,
-        vec![delays_removed()]
+        vec![master_removed(), delays_removed()]
     );
 }
 
@@ -1524,7 +1533,7 @@ fn show_mode_unreadable() -> ValidationIssue {
 #[test]
 fn v7_fixture_migrates_to_edit_mode() {
     let loaded = load_show(V7_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.warnings, vec![master_removed()]);
     assert!(!loaded.workspace.show_mode);
     assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
     let migrated = migrate(serde_json::from_str(V7_EXAMPLE).unwrap(), 7).unwrap();
@@ -1540,7 +1549,7 @@ fn a_show_mode_in_a_v7_file_is_not_read() {
     doc["workspace"]["show_mode"] = true.into();
     let loaded = load_show(&doc.to_string()).unwrap();
     assert!(!loaded.workspace.show_mode);
-    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.warnings, vec![master_removed()]);
 }
 
 /// Saved in Show Mode, reopened in Show Mode; saved in Edit Mode, reopened in Edit Mode and the
@@ -1603,12 +1612,17 @@ fn a_damaged_show_mode_opens_in_edit_mode_with_a_warning() {
 }
 
 /// v9 dropped the global master (QLab 5 has none) and added the workspace volume limits. The v8
-/// example, whose master is 0 dB, loads as the current example with no warning and the limits at
-/// their defaults; saved, it is the current format.
+/// example has a master of -2 dB: it opens with one warning that the master is gone, plays as its
+/// cue and patch levels say (nothing is folded into them), its limits are at their defaults, and
+/// saved, it is the current format with no trace of the master.
 #[test]
-fn v8_fixture_migrates_to_the_default_volume_limits() {
+fn v8_fixture_drops_the_global_master_with_one_warning_and_no_level_changes() {
     let loaded = load_show(V8_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(
+        loaded.warnings.iter().map(|w| &w.kind).collect::<Vec<_>>(),
+        vec![&IssueKind::GlobalMasterRemoved]
+    );
+    assert!(loaded.warnings[0].to_string().contains("global master"));
     assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
     let settings = &loaded.workspace.settings;
     assert_eq!(
@@ -1618,23 +1632,15 @@ fn v8_fixture_migrates_to_the_default_volume_limits() {
     let migrated = migrate(serde_json::from_str(V8_EXAMPLE).unwrap(), 8).unwrap();
     assert!(migrated["workspace"]["settings"].get("master_db").is_none());
     assert_eq!(migrated["format_version"], FORMAT_VERSION);
-    assert_eq!(save_show(&loaded.workspace).unwrap(), EXAMPLE);
+    let text = save_show(&loaded.workspace).unwrap();
+    assert_eq!(text, EXAMPLE);
+    assert_eq!(load_show(&text).unwrap().warnings, vec![]);
 }
 
-/// No master control anywhere: a file with a global master of -2 dB opens, the show plays as its
-/// cue and patch levels say (nothing is folded into them), and one warning says the master is
-/// gone. Saved, no trace of it is left.
+/// A v8 master of 0 dB was no master at all: nothing to warn about.
 #[test]
-fn a_v8_global_master_is_dropped_with_one_warning_and_no_level_changes() {
-    let loaded = load_show(V8_GLOBAL_MASTER).unwrap();
-    assert_eq!(
-        loaded.warnings.iter().map(|w| &w.kind).collect::<Vec<_>>(),
-        vec![&IssueKind::GlobalMasterRemoved]
-    );
-    assert!(loaded.warnings[0].to_string().contains("global master"));
-    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
-    let text = save_show(&loaded.workspace).unwrap();
-    assert!(!text.contains("\"master_db\": -2"));
+fn a_v8_global_master_at_0_db_opens_with_no_warning() {
+    let text = V8_EXAMPLE.replacen("\"master_db\": -2.0,", "\"master_db\": 0.0,", 1);
     assert_eq!(load_show(&text).unwrap().warnings, vec![]);
 }
 

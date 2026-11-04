@@ -8,7 +8,7 @@
       "panic_duration": 3.0,
       "autosave_interval": 30.0,
       "osc_passcode": null,
-      "master_db": 0.0,
+      "master_db": -2.0,
       "hotkeys": {
         "go": {
           "key": "space",
