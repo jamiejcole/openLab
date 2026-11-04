@@ -2385,6 +2385,142 @@ final class PlayheadFlowTests: XCTestCase {
         try await assertAllOn(cues[1])
     }
 
+    // MARK: Notes the engine refuses or that are not delivered: a notice with Copy Text, nothing held
+
+    private let tooLongNotes = String(repeating: "x", count: 64 * 1024 + 1)
+
+    private func scriptedNotesAlerts() -> ScriptedAlerts {
+        let alerts = ScriptedAlerts()
+        alerts.pressCopyText = true
+        app.alerts = alerts
+        return alerts
+    }
+
+    /// Two characters by key, then a paste past the engine's 64 KiB limit.
+    private func typeTooLong(into view: NSTextView) throws {
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        try typeKeys("ab", in: window)
+        view.insertText(tooLongNotes, replacementRange: view.selectedRange())
+    }
+
+    /// The one notice raised: it names the cue and says the notes were not saved, and Copy Text put
+    /// what was typed on the pasteboard.
+    private func assertNotice(
+        _ alerts: ScriptedAlerts, containing reason: String, text: String, file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        await assertEventually("a notice", file: file, line: line) { alerts.notesNotices.count == 1 }
+        let notice = alerts.notesNotices.first
+        XCTAssertTrue(notice?.message.contains("1.wav") == true, "names the cue: \(notice?.message ?? "")", file: file, line: line)
+        XCTAssertTrue(notice?.message.contains("not saved") == true, file: file, line: line)
+        XCTAssertTrue(notice?.message.contains(reason) == true, file: file, line: line)
+        XCTAssertEqual(alerts.pasteboard.string(forType: .string), text, "Copy Text", file: file, line: line)
+    }
+
+    /// Nothing is held: the fields show what the cue holds, and Save and Show Mode work.
+    private func assertNothingHeld(file: StaticString = #filePath, line: UInt = #line) async {
+        XCTAssertEqual(wc.masthead.notesView.string, "", file: file, line: line)
+        XCTAssertEqual(wc.inspector.notesView.string, "", file: file, line: line)
+        let ok = await wc.commitPendingEdits()
+        XCTAssertTrue(ok, "Save is not blocked", file: file, line: line)
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode, "Show Mode is not blocked", file: file, line: line)
+    }
+
+    func testMastheadNotesTheEngineRefusesGiveANoticeWithCopyTextAndHoldNothing() async throws {
+        try await threeCues()
+        let alerts = scriptedNotesAlerts()
+        try typeTooLong(into: wc.masthead.notesView)
+        try typeKeys("\r", in: try XCTUnwrap(wc.window), code: 36)
+        await assertNotice(alerts, containing: "refused", text: "ab" + tooLongNotes)
+        await assertEventually { self.wc.masthead.notesView.string == "" }
+        await assertNothingHeld()
+    }
+
+    func testInspectorNotesTheEngineRefusesGiveANoticeWithCopyTextAndHoldNothing() async throws {
+        try await threeCues()
+        let alerts = scriptedNotesAlerts()
+        try typeTooLong(into: wc.inspector.notesView)
+        try typeKeys("\t", in: try XCTUnwrap(wc.window), code: 48)
+        await assertNotice(alerts, containing: "refused", text: "ab" + tooLongNotes)
+        await assertEventually { self.wc.inspector.notesView.string == "" }
+        await assertNothingHeld()
+    }
+
+    func testMastheadNotesThatCouldNotBeSentGiveANotice() async throws {
+        try await threeCues()
+        let alerts = scriptedNotesAlerts()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        try typeKeys("short", in: window)
+        store.client.stop()
+        try typeKeys("\r", in: window, code: 36)
+        await assertNotice(alerts, containing: "did not receive", text: "short")
+    }
+
+    func testInspectorNotesThatCouldNotBeSentGiveANotice() async throws {
+        try await threeCues()
+        let alerts = scriptedNotesAlerts()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.notesView))
+        try typeKeys("short", in: window)
+        store.client.stop()
+        try typeKeys("\r", in: window, code: 36)
+        await assertNotice(alerts, containing: "did not receive", text: "short")
+    }
+
+    /// The cue is deleted (from another client) while its notes are typed.
+    func testNotesTypedForACueDeletedMeanwhileGiveANotice() async throws {
+        try await threeCues()
+        let alerts = scriptedNotesAlerts()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        try typeKeys("lost", in: window)
+        let other = Rig(engine: engine, workspace: doc)
+        guard await other.connect(),
+            let remove = Command.transaction([.removeCue(cues[0])]),
+            case .success = await other.store.send(command: remove)
+        else { return XCTFail("delete elsewhere") }
+        other.client.stop()
+        await assertEventually { self.store.model?.cue(self.cues[0]) == nil }
+        try typeKeys("\r", in: window, code: 36)
+        await assertEventually("a notice") { alerts.notesNotices.count == 1 }
+        XCTAssertEqual(alerts.notesNotices.first?.message, loc("notes.notSaved.cueGone"))
+        XCTAssertEqual(alerts.pasteboard.string(forType: .string), "lost", "Copy Text")
+    }
+
+    /// Notes refused with the playhead moved meanwhile: afterwards the standby line and selection
+    /// are on the playhead, and Save and Show Mode work.
+    func testNotesRefusedWithThePlayheadMovedLeaveTheStandbyOnThePlayhead() async throws {
+        try await threeCues()
+        let alerts = scriptedNotesAlerts()
+        let window = try XCTUnwrap(wc.window)
+        try typeTooLong(into: wc.masthead.notesView)
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        window.makeFirstResponder(nil)
+        await assertNotice(alerts, containing: "refused", text: "ab" + tooLongNotes)
+        try await assertAllOn(cues[2])
+        XCTAssertEqual(wc.masthead.cueID, cues[2])
+        let ok = await wc.commitPendingEdits()
+        XCTAssertTrue(ok, "Save is not blocked")
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode, "Show Mode is not blocked")
+    }
+
+    /// Close with refused notes still being typed: the same notice during its commit, then it goes on.
+    func testCloseWithNotesTheEngineRefusesShowsTheNoticeThenCloses() async throws {
+        try await threeCues()
+        let alerts = scriptedNotesAlerts()
+        alerts.saveChoices = [.dontSave]
+        try typeTooLong(into: wc.masthead.notesView)
+        let closed = await app.closeWorkspace(doc)
+        XCTAssertTrue(closed, "Close goes on")
+        XCTAssertEqual(alerts.notesNotices.count, 1)
+        XCTAssertEqual(alerts.pasteboard.string(forType: .string), "ab" + tooLongNotes)
+    }
+
     // MARK: Loading a list: the highlight goes with the playhead
 
     private func setPlayheads() -> Int {

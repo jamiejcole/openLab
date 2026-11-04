@@ -174,9 +174,6 @@ final class MastheadView: NSView, NSTextViewDelegate {
         return (id, notesView.string)
     }
 
-    /// The text handed over was refused or not delivered: the next command must send it again.
-    func notesNotSaved() { handedOver = nil }
-
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 }

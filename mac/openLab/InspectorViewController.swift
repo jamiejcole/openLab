@@ -522,6 +522,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// any other change of cue clears it.
     private var refusalOutlivesFollow = false
 
+    /// Notes that were refused or not delivered (cue, typed text, why); the window raises the notice.
+    var onNotesNotSaved: ((ModelID, String, EngineError) -> Void)?
+
     func showRefusal(_ message: String) {
         messageLabel.stringValue = message
         refusalOutlivesFollow = isFollowHeld?() == true
@@ -751,6 +754,14 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 if selection == [cue] { render() }
             }
             if case .failure(let error) = outcome {
+                if key == "\(InspectorField.notes)", let text = property?["value"]?.stringValue {
+                    // The notice carries the text (Copy Text); the field shows what the cue holds, and
+                    // Close and Save go on.
+                    onNotesNotSaved?(cue, text, error)
+                    guard selection == [cue], editSeq[seqKey] == n else { return }
+                    render(force: revert.subtracting(dirty))
+                    return
+                }
                 sendFailures += 1
                 if case .engine(_, let message) = error {
                     showRefusal(String(format: loc("inspector.refused"), message))

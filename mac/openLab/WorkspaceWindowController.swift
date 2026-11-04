@@ -155,6 +155,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         editor.isLocked = { [weak self] in self?.isShowMode ?? true }
         editor.commitPending = { [weak self] in await self?.commitPendingEdits() ?? true }
         editor.notify = { [weak self] message in self?.showNotice(message) }
+        inspector.onNotesNotSaved = { [weak self] id, text, error in
+            self?.editor.reportNotesNotSaved(of: id, text: text, error)
+        }
         editor.trackPending = { [weak inspector] command, cue in inspector?.trackPending(command, cue: cue) ?? {} }
         cueList.onMove = { [weak self] ids, parent, index in
             Task { await self?.editor.move(ids, to: parent, at: index) }
@@ -497,10 +500,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         var ok = true
         if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
         if let notes = masthead.pendingNotes() {
-            if await !editor.setNotes(of: notes.id, text: notes.text) {
-                masthead.notesNotSaved()
-                ok = false
-            }
+            // Refused notes raise their notice there and are not held: Close and Save go on.
+            await editor.setNotes(of: notes.id, text: notes.text)
         }
         return await inspector.commitPendingEdits() && ok
     }

@@ -18,6 +18,7 @@ extension AppController {
                 guard let self, let store else { return }
                 Task { await self.closeWorkspace(store) }
             }
+            wc.editor.notesNotSaved = { [weak self] notice in self?.alerts.notesNotSaved(notice) }
             wc.onGo = { [weak self] in Task { await self?.go(store) } }
             wc.onPauseAll = { [weak self] in Task { await self?.run(.pauseAll, on: store) } }
             wc.onResumeAll = { [weak self] in Task { await self?.run(.resumeAll, on: store) } }
