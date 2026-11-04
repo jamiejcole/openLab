@@ -952,7 +952,8 @@ final class AppControllerTests: XCTestCase {
 
     /// A show reopened from its file has the keys the file holds: Load Selected on K, L nothing.
     func testReopenedWorkspaceTakesItsSelectedCueKeysFromTheModel() async throws {
-        let doc = try await openShow(withHotkeys: #"{"load_selected":\#(Self.hotkey("k")),"pause_resume_selected":null}"#)
+        let doc = try await openShow(
+            withHotkeys: #"{"load_selected":\#(Self.hotkey("k")),"pause_resume_selected":null}"#)
         keyDoc = doc
         let wc = try XCTUnwrap(app.windows[doc])
         await assertEventually {

@@ -110,7 +110,9 @@ struct TransportKeys: Equatable {
     /// The two selected-cue keys the model has no field for (QLab remaps both; that needs a show-file
     /// change): app defaults the engine knows nothing of, so a cue hotkey on one starts its cue in the
     /// engine and the app yields the key (`init`).
-    static let fixed: [(TransportCommand, KeyChord)] = [(.previewSelected, KeyChord("v")), (.panicSelected, KeyChord("s"))]
+    static let fixed: [(TransportCommand, KeyChord)] = [
+        (.previewSelected, KeyChord("v")), (.panicSelected, KeyChord("s")),
+    ]
 
     private static let fields: [(String, TransportCommand, KeyChord?)] = [
         ("go", .go, KeyChord(" ")), ("stop_all", .stopAll, nil), ("pause_all", .pauseAll, KeyChord("[")),
