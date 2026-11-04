@@ -11,7 +11,7 @@ use crate::model::Workspace;
 use crate::validate::{IssueKind, Severity, ValidationIssue, repair};
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 /// Larger inputs are refused before parsing.
 pub const MAX_SHOW_FILE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -115,6 +115,7 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
     let mut from = FORMAT_VERSION;
     let mut had_playhead_keys = false;
     let mut had_output_delays = false;
+    let mut had_global_master = false;
     let mut had_bad_show_mode = false;
     let file: ShowFileIn = match u32::try_from(version) {
         // Parse straight from text so errors carry line and column.
@@ -132,7 +133,10 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
             had_playhead_keys = old < 6 && custom_playhead_keys(&v5);
             let v6 = migrate_to(v5, old.max(5), 6)?;
             had_output_delays = output_delays(&v6);
-            serde_json::from_value(migrate_to(v6, old.max(6), FORMAT_VERSION)?)
+            // Version 9 dropped the global master.
+            let v8 = migrate_to(v6, old.max(6), 8)?;
+            had_global_master = global_master_set(&v8);
+            serde_json::from_value(migrate_to(v8, old.max(8), FORMAT_VERSION)?)
                 .map_err(LoadError::Model)?
         }
         _ => {
@@ -152,6 +156,13 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
             severity: Severity::Warning,
             cue_id: None,
             kind: IssueKind::PlayheadKeysRemoved,
+        });
+    }
+    if had_global_master {
+        issues.push(ValidationIssue {
+            severity: Severity::Warning,
+            cue_id: None,
+            kind: IssueKind::GlobalMasterRemoved,
         });
     }
     if had_bad_show_mode {
@@ -238,6 +249,7 @@ fn migrate_to(mut document: Value, from: u32, to: u32) -> Result<Value, LoadErro
             5 => v5_to_v6(document),
             6 => v6_to_v7(document),
             7 => v7_to_v8(document),
+            8 => v8_to_v9(document),
             _ => Err(format!("no upgrade step from version {version}")),
         }
         .map_err(|reason| LoadError::Migration {
@@ -456,6 +468,38 @@ fn v7_to_v8(mut document: Value) -> Result<Value, String> {
         workspace.remove("show_mode");
     }
     Ok(document)
+}
+
+/// v9 removed `settings.master_db` (the global master: QLab 5 has none) and added the workspace
+/// volume limits `settings.output_max_db` and `settings.output_min_db`, which start at QLab's
+/// defaults (+12 and -60 dB). The master is dropped, not folded into the patches: the show plays
+/// as its cue and patch levels say, and `load_show` warns when it was not 0 dB. A v8 reader
+/// ignored unknown keys, so hand-added limits are replaced. A document not shaped like this is
+/// left for the model parse to refuse.
+fn v8_to_v9(mut document: Value) -> Result<Value, String> {
+    let root = document
+        .as_object_mut()
+        .ok_or("top level is not an object")?;
+    root.insert("format_version".into(), 9.into());
+    if let Some(settings) = root
+        .get_mut("workspace")
+        .and_then(|w| w.get_mut("settings"))
+        .and_then(Value::as_object_mut)
+    {
+        settings.remove("master_db");
+        settings.insert("output_max_db".into(), crate::DEFAULT_OUTPUT_MAX_DB.into());
+        settings.insert("output_min_db".into(), crate::DEFAULT_OUTPUT_MIN_DB.into());
+    }
+    Ok(document)
+}
+
+/// Whether a version-8 document had a global master other than 0 dB (a value that is not even a
+/// number counts), which v9 drops.
+fn global_master_set(v8: &Value) -> bool {
+    v8.get("workspace")
+        .and_then(|w| w.get("settings"))
+        .and_then(|s| s.get("master_db"))
+        .is_some_and(|m| m.as_f64() != Some(0.0))
 }
 
 /// Whether a version-6 document delayed any patch output: a `delay_ms` that is anything but 0

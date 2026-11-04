@@ -44,7 +44,7 @@ The top level of every file is:
 
 ```json
 {
-  "format_version": 6,
+  "format_version": 9,
   "workspace": { … }
 }
 ```
@@ -70,7 +70,8 @@ The top level of every file is:
 | 5 | v0.0.1 (development) | Identical to v6 except that `settings.hotkeys` also had `playhead_next` and `playhead_previous` (Next / Previous Cue; defaults Shift-Command-Down / Up). Upgrading removes both keys. If either held anything but `null` or its default, loading warns once (`PlayheadKeysRemoved`): the user's own key is gone, because QLab 5's key map has no such action and takes no Up or Down arrow (the arrows and the fixed Select Next / Previous items move the selection, and the playhead follows it). Old-version fixture: `v5-example.openlab`. |
 | 6 | v0.0.1 (development) | Identical to v7 except that each patch output also had `delay_ms` (0–1000 ms of speaker-alignment delay on the device output it was mapped to). Upgrading removes it from every output of every patch: QLab 5 has no per-output delay. If any output's delay was anything but 0 (a value that is not a number counts), loading warns once (`OutputDelaysRemoved`, no cue): those outputs now play undelayed, so speakers aligned in openLab must be aligned in a processor or the audio interface. Old-version fixture: `v6-example.openlab` (2.5 ms on one output). |
 | 7 | v0.0.1 (development) | Identical to v8 except that the workspace had no `show_mode`: every v7 workspace opens in Edit Mode. Upgrading removes a `show_mode` a hand edit may have added (a v7 reader ignored it), so the file opens in Edit Mode, with no warning. Old-version fixture: `v7-example.openlab`. |
-| 8 | v0.0.1 | Current. Adds the workspace's `show_mode` (§4.1). |
+| 8 | v0.0.1 (development) | Identical to v9 except that the settings had the global master `master_db` (a level) and no volume limits. Upgrading removes `master_db` and adds `output_max_db` 12 and `output_min_db` -60 (a v8 reader ignored unknown keys, so hand-added limits are replaced). The master is dropped, not folded into the patches: QLab 5 has no global master, and the show plays as its cue and patch levels say. A master other than 0 dB gives one warning (`GlobalMasterRemoved`, once, no cue). |
+| 9 | v0.0.1 | Current. Adds the workspace volume limits `settings.output_max_db` and `settings.output_min_db` and drops the global master (§4.2). |
 
 ## 3. Loading, validation and refusal
 
@@ -92,6 +93,9 @@ cue, and the cue shows as broken where it cannot run.
 | A time below its minimum or above its maximum (24 h unless stated) | Warning; clamped |
 | A level above `+12` | Warning; set to `+12` |
 | A level below `-120` | Set to `-120` silently (same meaning) |
+| A level above the workspace's `output_max_db` | Warning; set to it (a Fade cue aimed at a Group holds changes in dB and is not limited) |
+| `output_max_db` or `output_min_db` outside its range | Warning; clamped into it |
+| A file older than version 9 with a global `master_db` other than 0 | Warning (`GlobalMasterRemoved`, once, no cue); the migration removes it (version 9 has none) |
 | An OSC `float` argument too large for 32 bits | Warning; set to `0` |
 | A Network cue's `address` is not a valid OSC address, or its arguments are too many or too large (docs/osc.md, "Sending") | Kept; the cue shows as broken until it is edited |
 | An Audio cue's `end_time` not after its `start_time` | Warning; `end_time` cleared (play to end) |
@@ -146,7 +150,8 @@ patch plays through, are stored on each machine, not in the show file (WS-07).
 | `panic_duration` | seconds, 0–60 | Fade-out time of Panic. |
 | `autosave_interval` | seconds, 5–3600 | How often unsaved changes are written to the recovery file. |
 | `osc_access` | object | The OSC passcode table (NET-02, `docs/osc.md` "Rights"): `no_passcode` (the rights of a peer that has not connected or connects without a passcode) and `passcodes` (rows). Rights are `{"view": bool, "edit": bool, "control": bool}`; a row is `{"passcode": string, "rights": rights}`. Edit and Control need View. A new workspace: `no_passcode` all false and one random 4-digit passcode with all rights. |
-| `master_db` | level | Global master. |
+| `output_max_db` | number, -30 to +12 | The loudest level any fader in the workspace may hold (QLab 5: the maximum volume limit, +12 by default; QLab allows more than +12, openLab's levels stop at +12). A level set above it by any command, and a level in a file above it, is put at it. Lowering it puts every Audio cue level, patch main and output level, and every Fade cue level that is not aimed at a Group (those are changes in dB, which it does not limit) above it at it, in the same undo step; the cue engine also ends every fade within the limits. There is no global master (version 9). |
+| `output_min_db` | number, -180 to -40 | Levels at or below it are silent (`-120`, shown as -inf). -60 by default. A level set at or below it by a command is put at silence; raising it silences the levels at or below the new value, as lowering the maximum does. A file level between `-120` and it is kept as written. |
 | `hotkeys` | object | The workspace's key map (TRG-01, QLab 5's Workspace Settings → Controls → Keyboard). Transport keys `go`, `stop_all`, `pause_all`, `resume_all`, and selected-cue keys `load_selected`, `pause_resume_selected`, `start_selected`, `stop_selected`, `reset_selected`. Each is `null` (no key) or a hotkey object (§5.1). New workspaces get Space, none, `[`, `]`, `l`, `p`, none, none, none. There is no Next / Previous Cue key (v6): as in QLab, Select Next and Select Previous are fixed menu items (Command-Down, Command-Up). **Reserved** (refused by the edit command, `docs/commands.md`): Esc with any modifiers (always panic, outside the map) and Up / Down with any modifiers (QLab 5 refuses the arrows whatever is held). A cue hotkey equal to any key of the map never starts the cue (`HotkeyUsedByWorkspace`, §3). The loader keeps a reserved or repeated key a hand edit put here; the app binds no reserved key and only the first of a repeated one. |
 | `auto_number_start` | number, 0–1 000 000 | Number given to the first auto-numbered cue. |
 | `auto_number_increment` | number, above 0 up to 1 000 000 | Step between auto-numbered cues. |
@@ -310,12 +315,12 @@ Option on macOS).
 
 ## 6. Annotated example
 
-An excerpt of `engine/fixtures/show/v8-example.openlab`, which contains every cue kind and group
+An excerpt of `engine/fixtures/show/v9-example.openlab`, which contains every cue kind and group
 mode. The notes after the listing refer to the numbered lines.
 
 ```json
 {
-  "format_version": 8,                                   // (1)
+  "format_version": 9,                                   // (1)
   "workspace": {
     "id": "0b5e0000-0000-4000-8000-000000000001",
     "name": "Example Show",
@@ -327,7 +332,8 @@ mode. The notes after the listing refer to the numbered lines.
         "no_passcode": { "view": false, "edit": false, "control": false },
         "passcodes": [{ "passcode": "1234", "rights": { "view": true, "edit": true, "control": true } }]
       },
-      "master_db": -2.0,
+      "output_max_db": 12.0,
+      "output_min_db": -60.0,
       "hotkeys": {
         "go": { "key": "space", "modifiers": { "shift": false, "control": false, "alt": false, "command": false } },
         "stop_all": null,

@@ -13,6 +13,56 @@ use crate::model::{CueId, NetworkPatchId, PatchId};
 pub const SILENCE_DB: f64 = -120.0;
 /// Highest level a fader may hold. Validation clamps anything above it.
 pub const MAX_DB: f64 = 12.0;
+/// The workspace's volume limits (PB-11; QLab 5 Workspace Settings, Audio, Volume Limits): the
+/// range every level in the workspace lives in. Above the maximum is clamped to it; at or below
+/// the minimum is silence.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LevelLimits {
+    pub max_db: f64,
+    pub min_db: f64,
+}
+
+/// The default limits, and the ranges a limit may be set in (QLab 5 manual pp. 105-108). The
+/// maximum may not exceed [`MAX_DB`], the highest level a fader can hold.
+pub const DEFAULT_OUTPUT_MAX_DB: f64 = 12.0;
+pub const DEFAULT_OUTPUT_MIN_DB: f64 = -60.0;
+pub const OUTPUT_MAX_DB_RANGE: (f64, f64) = (-30.0, MAX_DB);
+pub const OUTPUT_MIN_DB_RANGE: (f64, f64) = (-180.0, -40.0);
+
+impl Default for LevelLimits {
+    fn default() -> Self {
+        Self {
+            max_db: DEFAULT_OUTPUT_MAX_DB,
+            min_db: DEFAULT_OUTPUT_MIN_DB,
+        }
+    }
+}
+
+impl LevelLimits {
+    /// [`Self::apply`] for a level a command or a sweep puts within the limits: a value outside
+    /// what a level may be at all (not a number, above [`MAX_DB`], below silence) is returned as
+    /// it is, for validation to refuse, so garbage is never quietly turned into a level.
+    pub fn limit(self, db: f64) -> f64 {
+        if (SILENCE_DB..=MAX_DB).contains(&db) {
+            self.apply(db)
+        } else {
+            db
+        }
+    }
+
+    /// `db` within the limits: above the maximum is the maximum; at or below the minimum (or
+    /// [`SILENCE_DB`], or not a number) is [`SILENCE_DB`].
+    pub fn apply(self, db: f64) -> f64 {
+        if db.is_nan() || db <= self.min_db.max(SILENCE_DB) {
+            SILENCE_DB
+        } else if db > self.max_db {
+            self.max_db
+        } else {
+            db
+        }
+    }
+}
+
 /// Longest time any time field may hold (24 h). Validation clamps anything above it.
 pub const MAX_TIME: f64 = 24.0 * 60.0 * 60.0;
 /// Most channels a patch, cue or media file may have (AUD-03).
@@ -272,6 +322,36 @@ pub struct CueLevels {
     pub crosspoints: Vec<Crosspoint>,
     /// Sets of cue output indices whose levels move together.
     pub gangs: Vec<Vec<u32>>,
+}
+
+impl CueKind {
+    /// Puts every level this cue holds within `limits`. Whether anything changed. A Fade's
+    /// levels are left alone unless `fades` (they are changes in dB when the Fade targets a
+    /// Group, which a limit on levels does not apply to; the cue engine limits the result).
+    pub fn clamp_levels(&mut self, limits: LevelLimits, fades: bool) -> bool {
+        let mut changed = false;
+        let mut set = |db: &mut f64| {
+            let new = limits.limit(*db);
+            if new != *db {
+                *db = new;
+                changed = true;
+            }
+        };
+        match self {
+            Self::Audio { levels, .. } => {
+                set(&mut levels.master_db);
+                levels.outputs.iter_mut().for_each(|o| set(&mut o.db));
+                levels.crosspoints.iter_mut().for_each(|c| set(&mut c.db));
+            }
+            Self::Fade { levels, .. } if fades => {
+                levels.master_db.iter_mut().for_each(&mut set);
+                levels.output_db.iter_mut().flatten().for_each(&mut set);
+                levels.crosspoints.iter_mut().for_each(|c| set(&mut c.db));
+            }
+            _ => {}
+        }
+        changed
+    }
 }
 
 /// A crosspoint level a Fade cue moves to.

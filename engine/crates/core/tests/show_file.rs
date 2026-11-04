@@ -17,7 +17,9 @@ use proptest::prelude::*;
 use proptest::{collection::vec, option};
 
 /// The current format (golden: saved files must match it byte for byte).
-const EXAMPLE: &str = include_str!("../../../fixtures/show/v8-example.openlab");
+const EXAMPLE: &str = include_str!("../../../fixtures/show/v9-example.openlab");
+const V8_EXAMPLE: &str = include_str!("../../../fixtures/show/v8-example.openlab");
+const V8_GLOBAL_MASTER: &str = include_str!("../../../fixtures/show/v8-global-master.openlab");
 const V7_EXAMPLE: &str = include_str!("../../../fixtures/show/v7-example.openlab");
 const V6_EXAMPLE: &str = include_str!("../../../fixtures/show/v6-example.openlab");
 const V5_EXAMPLE: &str = include_str!("../../../fixtures/show/v5-example.openlab");
@@ -700,18 +702,18 @@ fn migrate_is_identity_from_current_version() {
 
 #[test]
 fn too_new_format_version_is_refused_naming_both_versions() {
-    let text = EXAMPLE.replacen("\"format_version\": 8", "\"format_version\": 9", 1);
+    let text = EXAMPLE.replacen("\"format_version\": 9", "\"format_version\": 10", 1);
     let err = load_show(&text).unwrap_err();
     assert!(matches!(
         err,
         LoadError::TooNew {
-            found: 9,
+            found: 10,
             supported: FORMAT_VERSION
         }
     ));
     let message = err.to_string();
     assert!(
-        message.contains('9') && message.contains(&FORMAT_VERSION.to_string()),
+        message.contains("10") && message.contains(&FORMAT_VERSION.to_string()),
         "{message}"
     );
 
@@ -1236,7 +1238,6 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
     (
         (num(0.0..=10.0), num(0.0..=60.0), num(5.0..=3600.0)),
         any_access(),
-        level(),
         hotkeys,
         (num(0.0..=100.0), num(0.1..=10.0)),
     )
@@ -1244,7 +1245,6 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
             |(
                 (min_go_interval, panic_duration, autosave_interval),
                 osc_access,
-                master_db,
                 hotkeys,
                 (start, step),
             )| {
@@ -1253,7 +1253,9 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
                     panic_duration,
                     autosave_interval,
                     osc_access,
-                    master_db,
+                    // The levels above are anywhere in range, so the limits are the widest default.
+                    output_max_db: 12.0,
+                    output_min_db: -60.0,
                     hotkeys,
                     auto_number_start: start,
                     auto_number_increment: step,
@@ -1598,4 +1600,73 @@ fn a_damaged_show_mode_opens_in_edit_mode_with_a_warning() {
     assert_eq!(loaded.warnings, vec![]);
     let loaded = load_show(&example_with_show_mode(false.into())).unwrap();
     assert_eq!(loaded.warnings, vec![]);
+}
+
+/// v9 dropped the global master (QLab 5 has none) and added the workspace volume limits. The v8
+/// example, whose master is 0 dB, loads as the current example with no warning and the limits at
+/// their defaults; saved, it is the current format.
+#[test]
+fn v8_fixture_migrates_to_the_default_volume_limits() {
+    let loaded = load_show(V8_EXAMPLE).unwrap();
+    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+    let settings = &loaded.workspace.settings;
+    assert_eq!(
+        (settings.output_max_db, settings.output_min_db),
+        (12.0, -60.0)
+    );
+    let migrated = migrate(serde_json::from_str(V8_EXAMPLE).unwrap(), 8).unwrap();
+    assert!(migrated["workspace"]["settings"].get("master_db").is_none());
+    assert_eq!(migrated["format_version"], FORMAT_VERSION);
+    assert_eq!(save_show(&loaded.workspace).unwrap(), EXAMPLE);
+}
+
+/// No master control anywhere: a file with a global master of -2 dB opens, the show plays as its
+/// cue and patch levels say (nothing is folded into them), and one warning says the master is
+/// gone. Saved, no trace of it is left.
+#[test]
+fn a_v8_global_master_is_dropped_with_one_warning_and_no_level_changes() {
+    let loaded = load_show(V8_GLOBAL_MASTER).unwrap();
+    assert_eq!(
+        loaded.warnings.iter().map(|w| &w.kind).collect::<Vec<_>>(),
+        vec![&IssueKind::GlobalMasterRemoved]
+    );
+    assert!(loaded.warnings[0].to_string().contains("global master"));
+    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+    let text = save_show(&loaded.workspace).unwrap();
+    assert!(!text.contains("\"master_db\": -2"));
+    assert_eq!(load_show(&text).unwrap().warnings, vec![]);
+}
+
+/// A limit a hand edit put out of range is brought back into it with a warning, and a level above
+/// the maximum is put at it (the loudest the workspace allows), never left louder.
+#[test]
+fn loading_clamps_the_limits_and_every_level_to_the_maximum() {
+    let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    doc["workspace"]["settings"]["output_max_db"] = (-40.0).into();
+    doc["workspace"]["settings"]["output_min_db"] = (-20.0).into();
+    let loaded = load_show(&doc.to_string()).unwrap();
+    let s = &loaded.workspace.settings;
+    assert_eq!((s.output_max_db, s.output_min_db), (-30.0, -40.0));
+    assert!(loaded.warnings.iter().any(|w| w.kind
+        == IssueKind::InvalidValue {
+            field: "settings.output_max_db"
+        }));
+    // The example's patch and cue levels at 0 dB are now above the maximum.
+    assert!(
+        loaded.workspace.patches[0]
+            .outputs
+            .iter()
+            .all(|o| o.level_db <= -30.0)
+    );
+    assert!(
+        loaded
+            .workspace
+            .cues()
+            .filter_map(|c| match &c.kind {
+                CueKind::Audio { levels, .. } => Some(levels),
+                _ => None,
+            })
+            .all(|l| l.master_db <= -30.0 && l.outputs.iter().all(|o| o.db <= -30.0))
+    );
 }

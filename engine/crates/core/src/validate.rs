@@ -14,8 +14,8 @@ use std::hash::Hash;
 
 use crate::cue::{Cue, FadeLevels, GroupMode, Hotkey};
 use crate::cue::{
-    CueKind, CueLevels, MAX_CHANNELS, MAX_DB, MAX_SLICE_MARKERS, MAX_TIME, OscArg, SILENCE_DB,
-    SliceMarker,
+    CueKind, CueLevels, LevelLimits, MAX_CHANNELS, MAX_DB, MAX_SLICE_MARKERS, MAX_TIME,
+    OUTPUT_MAX_DB_RANGE, OUTPUT_MIN_DB_RANGE, OscArg, SILENCE_DB, SliceMarker,
 };
 use crate::model::{
     CueId, CueListId, NetworkPatchId, OutputPatch, PatchId, PatchOutput, Workspace,
@@ -200,6 +200,10 @@ pub enum IssueKind {
     /// Version 7 has none (QLab 5 has no per-output delay), so the delays were removed and those
     /// outputs now play undelayed.
     OutputDelaysRemoved,
+    /// Warning, only when loading a show file older than version 9: it had a global master level
+    /// other than 0 dB. Version 9 has none (QLab 5 has no global master), so the level was removed
+    /// and the show plays as its cue and patch levels say.
+    GlobalMasterRemoved,
     /// Warning: the file's `show_mode` is not `true` or `false`, so the workspace opens in Edit
     /// Mode.
     ShowModeUnreadable,
@@ -314,6 +318,12 @@ impl fmt::Display for ValidationIssue {
                  the delays were removed and those outputs play undelayed: align speakers in a \
                  processor or the audio interface"
             ),
+            IssueKind::GlobalMasterRemoved => write!(
+                f,
+                "this show had a global master level; workspaces no longer have one, so it was \
+                 removed and the show plays at its cue and patch levels: set the patch main \
+                 levels in the patch editor if you need the old overall level"
+            ),
             IssueKind::ShowModeUnreadable => write!(
                 f,
                 "the show file's Show Mode setting is damaged, so the workspace opened in Edit Mode"
@@ -401,7 +411,10 @@ pub(crate) fn subtree_issues(
     cues: &[Cue],
     depth: usize,
 ) -> Vec<ValidationIssue> {
-    let mut checker = Checker::default();
+    let mut checker = Checker {
+        limits: workspace.settings.limits(),
+        ..Checker::default()
+    };
     for patch in &workspace.patches {
         checker.patch_outputs.insert(patch.id, patch.outputs.len());
     }
@@ -433,9 +446,12 @@ pub(crate) fn settings_problems(settings: &WorkspaceSettings) -> Vec<ValidationI
 }
 
 /// As [`settings_problems`], for one output patch.
-pub(crate) fn patch_problems(patch: &OutputPatch) -> Vec<ValidationIssue> {
+pub(crate) fn patch_problems(patch: &OutputPatch, limits: LevelLimits) -> Vec<ValidationIssue> {
     let mut repaired = patch.clone();
-    let mut checker = Checker::default();
+    let mut checker = Checker {
+        limits,
+        ..Checker::default()
+    };
     checker.patch(&mut repaired);
     if checker.issues.is_empty() && repaired != *patch {
         checker.warn(
@@ -486,6 +502,8 @@ struct Checker {
     numbers: HashMap<String, CueId>,
     /// Output count of each patch, after repair.
     patch_outputs: HashMap<PatchId, usize>,
+    /// The workspace's volume limits, once `settings` has checked them.
+    limits: LevelLimits,
 }
 
 impl Checker {
@@ -529,6 +547,10 @@ impl Checker {
         } else if *value < SILENCE_DB {
             // Anything below silence is silence; normalise without a warning.
             *value = SILENCE_DB;
+        }
+        if *value > self.limits.max_db {
+            *value = self.limits.max_db;
+            self.warn(cue_id, IssueKind::InvalidLevel { field });
         }
     }
 
@@ -624,7 +646,23 @@ impl Checker {
             5.0,
             3600.0,
         );
-        self.level(None, "settings.master_db", &mut s.master_db);
+        for (field, value, (lo, hi)) in [
+            (
+                "settings.output_max_db",
+                &mut s.output_max_db,
+                OUTPUT_MAX_DB_RANGE,
+            ),
+            (
+                "settings.output_min_db",
+                &mut s.output_min_db,
+                OUTPUT_MIN_DB_RANGE,
+            ),
+        ] {
+            if clamp(value, lo, hi) {
+                self.warn(None, IssueKind::InvalidValue { field });
+            }
+        }
+        self.limits = s.limits();
         self.osc_access(&mut s.osc_access);
         for (name, key) in s.hotkeys.slots() {
             self.hotkey(None, hotkey_field(name), key.as_ref());
@@ -672,11 +710,19 @@ impl Checker {
             bad.push("master_db");
         }
         clamp(&mut patch.master_db, SILENCE_DB, MAX_DB);
+        if patch.master_db > self.limits.max_db {
+            patch.master_db = self.limits.max_db;
+            bad.push("master_db");
+        }
         for output in &mut patch.outputs {
             if output.level_db.is_nan() || output.level_db > MAX_DB {
                 bad.push("outputs.level_db");
             }
             clamp(&mut output.level_db, SILENCE_DB, MAX_DB);
+            if output.level_db > self.limits.max_db {
+                output.level_db = self.limits.max_db;
+                bad.push("outputs.level_db");
+            }
         }
         for field in bad {
             self.warn(None, IssueKind::InvalidPatchValue { patch: id, field });
@@ -955,6 +1001,15 @@ impl Checker {
     }
 
     fn fade_levels(&mut self, id: Option<CueId>, levels: &mut FadeLevels) {
+        // A Fade aimed at a Group holds changes in dB, not levels, so the workspace limits are
+        // not applied here; the cue engine limits what a fade ends at.
+        let limits = std::mem::replace(
+            &mut self.limits,
+            LevelLimits {
+                max_db: MAX_DB,
+                min_db: SILENCE_DB,
+            },
+        );
         if let Some(db) = &mut levels.master_db {
             self.level(id, "levels.master_db", db);
         }
@@ -974,6 +1029,7 @@ impl Checker {
         for crosspoint in &mut levels.crosspoints {
             self.level(id, "levels.crosspoints.db", &mut crosspoint.db);
         }
+        self.limits = limits;
     }
 
     /// Warns about each odd name or host kind; one warning per field kind, not per item, so a

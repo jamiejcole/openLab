@@ -19,8 +19,8 @@ use openlab_core::protocol::{
 };
 use openlab_core::{
     Command, CueKind, CueProperty, NetworkPatch, NetworkPatchProperty, NetworkProtocol,
-    OutputPatch, PatchId, PatchMapping, PatchOutput, PatchProperty, TransportKey, Workspace,
-    WorkspaceSetting,
+    OutputPatch, PatchId, PatchMapping, PatchOutput, PatchProperty, SILENCE_DB, TransportKey,
+    Workspace, WorkspaceSetting,
 };
 use openlab_engine::control::offline::OfflineShow;
 
@@ -126,7 +126,7 @@ fn patch(n: u128) -> OutputPatch {
 
 fn master(db: f64) -> Command {
     Command::SetWorkspaceSetting {
-        setting: WorkspaceSetting::MasterDb { value: db },
+        setting: WorkspaceSetting::OutputMinDb { value: db - 60.0 },
     }
 }
 
@@ -209,7 +209,7 @@ fn settings_patches_and_lists_reach_clients_as_model_changed() {
     }
     assert_eq!(s.control().workspace().patches.len(), 2);
     assert!(s.control().workspace().network_patches.is_empty());
-    assert_eq!(s.control().workspace().settings.master_db, 0.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -60.0);
     assert_eq!(
         s.control().workspace().settings.osc_access,
         openlab_core::OscAccess::default()
@@ -567,47 +567,160 @@ fn a_paused_voice_keeps_its_slot_and_resumes_as_routed() {
     heard_as_routed_since(&s, resumed);
 }
 
-#[test]
-fn the_workspace_master_scales_each_sample_exactly() {
-    let samples = ramp(RATE as usize);
-    let path = wav(&samples);
-    for db in [0.0, -6.0, -20.0] {
-        let mut ws = workspace(vec![audio(1, &path, 0)]);
-        ws.settings.master_db = db;
-        let mut s = show(ws);
-        // Past the matrices' de-zipper ramp from the mixer's identity start.
-        s.run(BLOCK * 4);
-        start(&mut s, 1);
-        s.run(RATE as u64 / 2);
-        let out = s.channel(0);
-        let first = first_nonzero(&out).unwrap();
-        let g = openlab_core::db_to_gain(db);
-        let n = RATE as usize / 4;
-        for (i, (y, x)) in out[first..first + n].iter().zip(&samples).enumerate() {
-            assert_eq!(y.to_bits(), (g * x).to_bits(), "{db} dB, sample {i}");
-        }
-        if db == 0.0 {
-            // Bit for bit the file: what the mixer's own master at unity gave before.
-            assert_eq!(&out[first..first + n], &samples[..n]);
-        }
+// ---- Patch main and output faders, and the workspace volume limits (PB-11) ----
+
+/// The loudest sample of the last two blocks of output channel `ch`.
+fn peak(s: &OfflineShow, ch: usize) -> f32 {
+    let out = s.channel(ch);
+    out[out.len() - BLOCK as usize * 2..]
+        .iter()
+        .fold(0.0f32, |m, x| m.max(x.abs()))
+}
+
+fn near(a: f32, b: f32) -> bool {
+    (a - b).abs() <= b.abs() * 0.01 + 1e-6
+}
+
+/// A show playing a steady 0.2 on both output channels (file channel 1 to cue outputs 1 and 2).
+fn steady_show(edit: impl FnOnce(&mut Workspace)) -> OfflineShow {
+    let path = wav(&dc(RATE as usize * 20, 0.2));
+    let mut cue = audio(1, &path, 0);
+    if let CueKind::Audio { levels, .. } = &mut cue.kind {
+        levels.crosspoints.push(openlab_core::Crosspoint {
+            input: 0,
+            output: 1,
+            db: 0.0,
+            mute: false,
+        });
+    }
+    let mut ws = workspace(vec![cue]);
+    edit(&mut ws);
+    let mut s = show(ws);
+    start(&mut s, 1);
+    s.run(BLOCK * 8);
+    s
+}
+
+fn master_of_patch(db: f64) -> Command {
+    Command::SetPatchProperty {
+        id: patch_id(),
+        property: PatchProperty::MasterDb { value: db },
+    }
+}
+
+fn output_of_patch(output: usize, db: f64) -> Command {
+    Command::SetPatchProperty {
+        id: patch_id(),
+        property: PatchProperty::OutputLevel { output, value: db },
+    }
+}
+
+fn cue_master(s: &OfflineShow) -> f64 {
+    match &s.control().workspace().find_cue(id(1)).unwrap().kind {
+        CueKind::Audio { levels, .. } => levels.master_db,
+        other => panic!("{other:?}"),
     }
 }
 
 #[test]
-fn the_master_level_setting_changes_what_is_heard() {
-    let path = wav(&dc(RATE as usize * 4, 0.5));
-    let mut s = show(workspace(vec![audio(1, &path, 0)]));
-    start(&mut s, 1);
+fn the_patch_main_level_changes_what_is_heard_and_leaves_the_cue_alone() {
+    let mut s = steady_show(|_| {});
+    assert!(near(peak(&s, 0), 0.2) && near(peak(&s, 1), 0.2));
+    command(&mut s, master_of_patch(-12.0));
     s.run(BLOCK * 8);
-    let loud = s.channel(0).iter().fold(0.0f32, |m, x| m.max(x.abs()));
-    assert!(loud > 0.4, "{loud}");
-    command(&mut s, master(-20.0));
+    let drop = openlab_core::db_to_gain(-12.0);
+    assert!(near(peak(&s, 0), 0.2 * drop), "{}", peak(&s, 0));
+    assert!(near(peak(&s, 1), 0.2 * drop), "{}", peak(&s, 1));
+    assert_eq!(cue_master(&s), 0.0, "the cue's own levels are untouched");
+    // Still playing: the next block has sound in it.
     s.run(BLOCK * 8);
-    let tail: Vec<f32> = s.channel(0);
-    let quiet = tail[tail.len() - BLOCK as usize..]
-        .iter()
-        .fold(0.0f32, |m, x| m.max(x.abs()));
-    assert!(quiet < 0.1 && quiet > 0.01, "{quiet}");
+    assert!(peak(&s, 0) > 0.0);
+}
+
+#[test]
+fn one_patch_output_fader_silences_that_output_only() {
+    let mut s = steady_show(|_| {});
+    command(&mut s, output_of_patch(1, SILENCE_DB));
+    s.run(BLOCK * 8);
+    assert_eq!(peak(&s, 1), 0.0, "output 2 is silent");
+    assert!(near(peak(&s, 0), 0.2), "output 1 plays at its level");
+}
+
+#[test]
+fn a_patch_level_above_the_maximum_is_put_at_it_and_no_louder_is_heard() {
+    let mut s = steady_show(|_| {});
+    command(
+        &mut s,
+        Command::SetWorkspaceSetting {
+            setting: WorkspaceSetting::OutputMaxDb { value: 0.0 },
+        },
+    );
+    command(&mut s, master_of_patch(6.0));
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().workspace().patches[0].master_db, 0.0);
+    assert!(near(peak(&s, 0), 0.2), "{}", peak(&s, 0));
+    // A peer's level in a file or command can be nothing but within the limits.
+    command(&mut s, output_of_patch(0, 12.0));
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().workspace().patches[0].outputs[0].level_db, 0.0);
+    assert!(near(peak(&s, 0), 0.2), "{}", peak(&s, 0));
+}
+
+#[test]
+fn lowering_the_maximum_pulls_playing_levels_down_and_is_one_undo_step() {
+    let mut s = steady_show(|ws| {
+        ws.patches[0].master_db = 6.0;
+        if let CueKind::Audio { levels, .. } = &mut ws.cue_lists[0].cues[0].kind {
+            levels.master_db = 6.0;
+        }
+    });
+    let loud = 0.2 * openlab_core::db_to_gain(12.0);
+    assert!(near(peak(&s, 0), loud), "{}", peak(&s, 0));
+    let mut mirror = Mirror::new(&s);
+    command(
+        &mut s,
+        Command::SetWorkspaceSetting {
+            setting: WorkspaceSetting::OutputMaxDb { value: 0.0 },
+        },
+    );
+    s.run(BLOCK * 8);
+    assert_eq!(
+        cue_master(&s),
+        0.0,
+        "the cue's level reads the clamped value"
+    );
+    assert_eq!(s.control().workspace().patches[0].master_db, 0.0);
+    assert!(near(peak(&s, 0), 0.2), "{}", peak(&s, 0));
+    // Clients follow every level the change moved, as ordinary edits of them.
+    assert_eq!(mirror.catch_up(&mut s), 1);
+    // One step gives it all back.
+    let undo = s.request_id();
+    let replies = s.send(ClientMessage::Undo { id: undo });
+    assert!(refusal(&replies).is_none(), "{replies:?}");
+    s.run(BLOCK * 8);
+    assert_eq!(cue_master(&s), 6.0);
+    assert_eq!(s.control().workspace().settings.output_max_db, 12.0);
+    assert!(near(peak(&s, 0), loud), "{}", peak(&s, 0));
+    assert_eq!(mirror.catch_up(&mut s), 1);
+}
+
+#[test]
+fn a_limit_out_of_range_is_refused_and_the_old_one_stays() {
+    let mut s = steady_show(|_| {});
+    for bad in [
+        WorkspaceSetting::OutputMaxDb { value: -31.0 },
+        WorkspaceSetting::OutputMaxDb { value: 13.0 },
+        WorkspaceSetting::OutputMinDb { value: -39.0 },
+        WorkspaceSetting::OutputMinDb { value: -181.0 },
+    ] {
+        let replies = send(&mut s, Command::SetWorkspaceSetting { setting: bad }, None);
+        assert!(refusal(&replies).is_some(), "{replies:?}");
+    }
+    let settings = &s.control().workspace().settings;
+    assert_eq!(
+        (settings.output_max_db, settings.output_min_db),
+        (12.0, -60.0)
+    );
 }
 
 #[test]
@@ -667,7 +780,7 @@ fn a_fader_drag_with_one_key_is_one_undo_step_but_every_value_reaches_clients() 
         assert_eq!(mirror.catch_up(&mut s), 1, "each value is shown at once");
     }
     assert_eq!(s.control().revision(), revision + 4);
-    assert_eq!(s.control().workspace().settings.master_db, -4.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -64.0);
     assert!(s.control().snapshot().document.can_undo);
 
     // A second gesture is its own step.
@@ -675,10 +788,10 @@ fn a_fader_drag_with_one_key_is_one_undo_step_but_every_value_reaches_clients() 
     mirror.catch_up(&mut s);
     undo(&mut s);
     mirror.catch_up(&mut s);
-    assert_eq!(s.control().workspace().settings.master_db, -4.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -64.0);
     undo(&mut s);
     mirror.catch_up(&mut s);
-    assert_eq!(s.control().workspace().settings.master_db, 0.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -60.0);
     assert!(!s.control().snapshot().document.can_undo);
 }
 
@@ -688,7 +801,7 @@ fn a_command_without_a_key_never_merges_and_a_long_key_is_refused() {
     send(&mut s, master(-1.0), None);
     send(&mut s, master(-2.0), None);
     undo(&mut s);
-    assert_eq!(s.control().workspace().settings.master_db, -1.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -61.0);
 
     let revision = s.control().revision();
     let replies = send(&mut s, master(-5.0), Some(&"k".repeat(129)));
@@ -704,11 +817,11 @@ fn a_command_without_a_key_never_merges_and_a_long_key_is_refused() {
         .expect("refused");
     assert_eq!(error.code, ErrorCode::BadRequest);
     assert_eq!(s.control().revision(), revision);
-    assert_eq!(s.control().workspace().settings.master_db, -1.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -61.0);
     // The longest allowed key works.
     let replies = send(&mut s, master(-5.0), Some(&"k".repeat(128)));
     assert!(refusal(&replies).is_none());
-    assert_eq!(s.control().workspace().settings.master_db, -5.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -65.0);
 }
 
 #[test]
@@ -778,7 +891,7 @@ fn undo_and_redo_of_a_merged_multi_slot_gesture_reach_a_mirror() {
     let after = s.control().workspace().clone();
     undo(&mut s);
     assert_eq!(mirror.catch_up(&mut s), 1);
-    assert_eq!(s.control().workspace().settings.master_db, 0.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -60.0);
     assert!(!s.control().snapshot().document.can_undo);
     let rid = s.request_id();
     s.send(ClientMessage::Redo { id: rid });

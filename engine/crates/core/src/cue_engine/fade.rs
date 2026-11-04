@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::cue::{Cue, CueKind, MAX_DB};
+use crate::cue::{Cue, CueKind};
 use crate::model::CueId;
 
 use super::group;
@@ -51,6 +51,7 @@ impl CueEngine {
             return cx.warn(EngineWarning::TargetMissing { cue, target });
         };
         let relative = matches!(target_model.kind, CueKind::Group { .. });
+        let limits = ws.settings.limits();
         let candidates: Vec<&Cue> = match &target_model.kind {
             CueKind::Audio { .. } => vec![target_model],
             // A group fades the audio cues inside it (any depth) that are playing now.
@@ -81,7 +82,7 @@ impl CueEngine {
             let CueKind::Audio { levels: base, .. } = &c.kind else {
                 continue;
             };
-            let wanted = level::fade_targets(levels, &c.kind);
+            let wanted = level::fade_targets(levels, &c.kind, (!relative).then_some(limits));
             let before = self.state(c.id);
             let Some(Slot::Active(run)) = self.slots.get_mut(&c.id) else {
                 continue;
@@ -118,13 +119,12 @@ impl CueEngine {
                     .or_else(|| level::model_gain(base, param))
                     .unwrap_or(0.0);
                 // Relative: the level moves by the fade's dB from where it is now (so a silent
-                // level stays silent and is left alone), never above the loudest level a cue
-                // may have.
+                // level stays silent and is left alone), never above the workspace maximum.
                 let gain = if relative {
                     if from == 0.0 {
                         continue;
                     }
-                    (from * gain).min(level::db_to_gain(MAX_DB))
+                    (from * gain).min(level::db_to_gain(limits.max_db))
                 } else {
                     gain
                 };

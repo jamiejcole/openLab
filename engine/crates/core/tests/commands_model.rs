@@ -116,7 +116,7 @@ fn every_setting_can_be_set_and_undone() {
         setting(WorkspaceSetting::PanicDuration { value: 0.0 }),
         setting(WorkspaceSetting::PanicDuration { value: 60.0 }),
         setting(WorkspaceSetting::AutosaveInterval { value: 300.0 }),
-        setting(WorkspaceSetting::MasterDb { value: -12.0 }),
+        setting(WorkspaceSetting::OutputMinDb { value: -72.0 }),
         setting(WorkspaceSetting::AutoNumberStart { value: 100.0 }),
         setting(WorkspaceSetting::AutoNumberIncrement { value: 0.5 }),
         setting(WorkspaceSetting::Hotkey {
@@ -674,8 +674,8 @@ fn out_of_range_settings_are_refused_whole() {
         },
         WorkspaceSetting::AutosaveInterval { value: 4.0 },
         WorkspaceSetting::AutosaveInterval { value: 3601.0 },
-        WorkspaceSetting::MasterDb { value: 30.0 },
-        WorkspaceSetting::MasterDb { value: f64::NAN },
+        WorkspaceSetting::OutputMinDb { value: 30.0 },
+        WorkspaceSetting::OutputMinDb { value: f64::NAN },
         WorkspaceSetting::AutoNumberStart { value: -1.0 },
         WorkspaceSetting::AutoNumberIncrement { value: 0.0 },
         WorkspaceSetting::AutoNumberIncrement { value: 2_000_000.0 },
@@ -696,8 +696,8 @@ fn master_level_below_silence_is_refused_not_silently_repaired() {
     let ws = workspace(vec![]);
     let error = refused(
         &ws,
-        setting(WorkspaceSetting::MasterDb {
-            value: SILENCE_DB - 10.0,
+        setting(WorkspaceSetting::OutputMinDb {
+            value: -180.0 - 10.0,
         }),
     );
     assert!(matches!(error, CommandError::InvalidModel(_)));
@@ -1404,7 +1404,7 @@ fn one_step_can_change_settings_patches_lists_and_cues_together() {
                 id: list_id(2),
                 name: "B".into(),
             },
-            setting(WorkspaceSetting::MasterDb { value: -3.0 }),
+            setting(WorkspaceSetting::OutputMinDb { value: -63.0 }),
             Command::SetCueProperty {
                 id: cue_id(1),
                 property: CueProperty::Name { value: "x".into() },
@@ -1421,7 +1421,7 @@ fn one_step_can_change_settings_patches_lists_and_cues_together() {
     // A refused command in the middle undoes the rest.
     let bad = Command::Transaction {
         commands: vec![
-            setting(WorkspaceSetting::MasterDb { value: -9.0 }),
+            setting(WorkspaceSetting::OutputMinDb { value: -69.0 }),
             Command::RemovePatch {
                 id: patch_id(9),
                 even_if_used: false,
@@ -1439,7 +1439,7 @@ fn one_step_can_change_settings_patches_lists_and_cues_together() {
 // ---- Coalescing ----
 
 fn level(db: f64) -> Command {
-    setting(WorkspaceSetting::MasterDb { value: db })
+    setting(WorkspaceSetting::OutputMinDb { value: db - 60.0 })
 }
 
 #[test]
@@ -1453,7 +1453,7 @@ fn edits_with_the_same_key_are_one_undo_step() {
                 .unwrap()
         );
     }
-    assert_eq!(ws.settings.master_db, -4.0);
+    assert_eq!(ws.settings.output_min_db, -64.0);
     assert_eq!(history.undo_len(), 1);
     // The merged step is still one command: a long drag does not grow the history.
     assert!(matches!(
@@ -1461,10 +1461,10 @@ fn edits_with_the_same_key_are_one_undo_step() {
         Some(Command::SetWorkspaceSetting { .. })
     ));
     assert!(history.undo(&mut ws).unwrap());
-    assert_eq!(ws.settings.master_db, 0.0);
+    assert_eq!(ws.settings.output_min_db, -60.0);
     assert!(!history.can_undo());
     assert!(history.redo(&mut ws).unwrap());
-    assert_eq!(ws.settings.master_db, -4.0);
+    assert_eq!(ws.settings.output_min_db, -64.0);
 }
 
 #[test]
@@ -1536,7 +1536,7 @@ fn clearing_the_history_forgets_an_open_gesture() {
     assert_eq!(history.undo_len(), 1);
     history.undo(&mut ws).unwrap();
     // Only the second edit was undone: the history never reached back before the clear.
-    assert_eq!(ws.settings.master_db, -1.0);
+    assert_eq!(ws.settings.output_min_db, -61.0);
 }
 
 #[test]
@@ -1569,7 +1569,7 @@ fn a_refused_edit_changes_neither_the_workspace_nor_the_gesture() {
             .execute_coalescing(&mut ws, level(99.0), Some("k"))
             .is_err()
     );
-    assert_eq!(ws.settings.master_db, -1.0);
+    assert_eq!(ws.settings.output_min_db, -61.0);
     history
         .execute_coalescing(&mut ws, level(-2.0), Some("k"))
         .unwrap();
@@ -1794,7 +1794,7 @@ fn model_changed_for_model_edits_names_just_what_changed() {
     let (upserts, deletes) = sent(&ws, &c);
     assert!(deletes.is_empty());
     assert!(
-        matches!(upserts.as_slice(), [Upsert::Settings { settings, .. }] if settings.master_db == -3.0)
+        matches!(upserts.as_slice(), [Upsert::Settings { settings, .. }] if settings.output_min_db == -63.0)
     );
 
     let c = patch_prop(
@@ -1927,7 +1927,7 @@ fn a_warning_the_show_was_loaded_with_does_not_block_settings_or_undo() {
     assert!(history.undo(&mut ws).unwrap());
     assert_eq!(ws.settings.hotkeys.go.as_ref().unwrap().key, "Space");
     assert!(history.undo(&mut ws).unwrap());
-    assert_eq!(ws.settings.master_db, 0.0);
+    assert_eq!(ws.settings.output_min_db, -60.0);
     assert!(history.redo(&mut ws).unwrap());
     assert!(history.redo(&mut ws).unwrap());
     assert_eq!(ws.settings.hotkeys.go.as_ref().unwrap().key, "space");
@@ -1939,8 +1939,8 @@ fn a_warning_the_show_was_loaded_with_does_not_block_settings_or_undo() {
     assert!(matches!(error, CommandError::InvalidModel(_)));
     let error = refused(
         &with_bad_hotkey(),
-        setting(WorkspaceSetting::MasterDb {
-            value: SILENCE_DB - 5.0,
+        setting(WorkspaceSetting::OutputMinDb {
+            value: -180.0 - 5.0,
         }),
     );
     assert!(matches!(error, CommandError::InvalidModel(_)));
@@ -2323,4 +2323,259 @@ fn a_hotkey_being_set_is_judged_on_its_own_value() {
     }
     let mut work = ws.clone();
     assert!(History::new().execute(&mut work, level(-3.0)).unwrap());
+}
+
+// ---- Volume limits (PB-11) ----
+
+fn prepared(ws: &Workspace, command: Command) -> Command {
+    command
+        .prepare(
+            ws,
+            &MediaPaths {
+                show_dir: None,
+                style: PathStyle::Posix,
+            },
+            &mut || cue_id(9999),
+        )
+        .unwrap()
+}
+
+fn audio_at(n: u128, master: f64, output: f64) -> Cue {
+    let mut c = cue(n, audio());
+    if let CueKind::Audio { levels, .. } = &mut c.kind {
+        levels.master_db = master;
+        levels.outputs[0].db = output;
+    }
+    c
+}
+
+/// Audio cue 1 at +6 (output 1 at +3), a Fade cue 2 aimed at it to +6, a Fade cue 4 aimed at a
+/// group to +6 (a change in dB), and patch 1 with its main and first output at +6.
+fn loud_show() -> Workspace {
+    let mut fade_to_6 = fade(1);
+    if let CueKind::Fade { levels, .. } = &mut fade_to_6 {
+        levels.master_db = Some(6.0);
+    }
+    let mut fade_group = fade(5);
+    if let CueKind::Fade { levels, .. } = &mut fade_group {
+        levels.master_db = Some(6.0);
+    }
+    let mut ws = workspace(vec![
+        audio_at(1, 6.0, 3.0),
+        cue(2, fade_to_6),
+        cue(5, group(vec![audio_at(6, -3.0, -3.0)])),
+        cue(4, fade_group),
+    ]);
+    ws.patches[0].master_db = 6.0;
+    ws.patches[0].outputs[0].level_db = 6.0;
+    ws
+}
+
+fn audio_levels(ws: &Workspace, n: u128) -> (f64, f64) {
+    match &ws.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Audio { levels, .. } => (levels.master_db, levels.outputs[0].db),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn fade_master(ws: &Workspace, n: u128) -> Option<f64> {
+    match &ws.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Fade { levels, .. } => levels.master_db,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_limit_outside_its_range_is_refused_and_one_inside_is_taken() {
+    let ws = workspace(vec![]);
+    for bad in [
+        WorkspaceSetting::OutputMaxDb { value: -30.5 },
+        WorkspaceSetting::OutputMaxDb { value: 12.5 },
+        WorkspaceSetting::OutputMaxDb { value: f64::NAN },
+        WorkspaceSetting::OutputMinDb { value: -39.5 },
+        WorkspaceSetting::OutputMinDb { value: -180.5 },
+        WorkspaceSetting::OutputMinDb { value: f64::NAN },
+    ] {
+        let error = refused(&ws, prepared(&ws, setting(bad.clone())));
+        assert!(matches!(error, CommandError::InvalidModel(_)), "{bad:?}");
+    }
+    for good in [
+        WorkspaceSetting::OutputMaxDb { value: -30.0 },
+        WorkspaceSetting::OutputMaxDb { value: 11.0 },
+        WorkspaceSetting::OutputMinDb { value: -40.0 },
+        WorkspaceSetting::OutputMinDb { value: -180.0 },
+    ] {
+        round_trip(&ws, prepared(&ws, setting(good)));
+    }
+}
+
+#[test]
+fn lowering_the_maximum_puts_every_level_within_it_in_one_undoable_step() {
+    let ws = loud_show();
+    let after = round_trip(
+        &ws,
+        prepared(&ws, setting(WorkspaceSetting::OutputMaxDb { value: 0.0 })),
+    );
+    assert_eq!(after.settings.output_max_db, 0.0);
+    assert_eq!(audio_levels(&after, 1), (0.0, 0.0));
+    assert_eq!(
+        fade_master(&after, 2),
+        Some(0.0),
+        "a Fade aimed above 0 ends at 0"
+    );
+    assert_eq!(after.patches[0].master_db, 0.0);
+    assert_eq!(after.patches[0].outputs[0].level_db, 0.0);
+    assert_eq!(
+        audio_levels(&after, 6),
+        (-3.0, -3.0),
+        "levels below it stay"
+    );
+    assert_eq!(
+        fade_master(&after, 4),
+        Some(6.0),
+        "a Fade aimed at a group holds a change in dB, which the maximum does not limit"
+    );
+}
+
+#[test]
+fn a_maximum_change_inside_a_transaction_brings_levels_down_in_the_same_step() {
+    let ws = loud_show();
+    let command = Command::Transaction {
+        commands: vec![setting(WorkspaceSetting::OutputMaxDb { value: -3.0 })],
+    };
+    let after = round_trip(&ws, prepared(&ws, command));
+    assert_eq!(audio_levels(&after, 1), (-3.0, -3.0));
+}
+
+#[test]
+fn a_maximum_that_skips_the_levels_is_refused() {
+    // Only `prepare` brings the levels down; an edit that did not go through it is refused, so
+    // the workspace never holds a level above its own maximum.
+    let ws = loud_show();
+    let error = refused(&ws, setting(WorkspaceSetting::OutputMaxDb { value: 0.0 }));
+    assert!(matches!(error, CommandError::InvalidValue(_)), "{error}");
+}
+
+#[test]
+fn raising_the_minimum_makes_the_levels_at_or_below_it_silent() {
+    let mut ws = workspace(vec![audio_at(1, -50.0, -41.0), audio_at(2, -39.0, 0.0)]);
+    ws.patches[0].outputs[1].level_db = -45.0;
+    let after = round_trip(
+        &ws,
+        prepared(&ws, setting(WorkspaceSetting::OutputMinDb { value: -40.0 })),
+    );
+    assert_eq!(audio_levels(&after, 1), (SILENCE_DB, SILENCE_DB));
+    assert_eq!(audio_levels(&after, 2), (-39.0, 0.0), "above it stays");
+    assert_eq!(after.patches[0].outputs[1].level_db, SILENCE_DB);
+}
+
+#[test]
+fn a_level_set_beyond_the_limits_is_put_at_them_on_every_path() {
+    let mut ws = workspace(vec![audio_at(1, 0.0, 0.0)]);
+    ws.settings.output_max_db = -2.0;
+    ws.settings.output_min_db = -40.0;
+    ws.patches[0].master_db = -2.0;
+    ws.patches[0].outputs[0].level_db = -2.0;
+    ws.patches[0].outputs[1].level_db = -2.0;
+    // The cue is loaded at 0 dB inside a workspace whose maximum is -2: load would clamp it.
+    ws.cue_lists[0].cues.clear();
+    ws.cue_lists[0].cues.push(audio_at(1, -2.0, -2.0));
+
+    // A cue's own levels (the inspector, a peer, OSC).
+    let mut loud = audio_at(1, 12.0, -40.0).kind;
+    if let CueKind::Audio { levels, .. } = &mut loud {
+        levels.crosspoints.push(Crosspoint {
+            input: 0,
+            output: 0,
+            db: 5.0,
+            mute: false,
+        });
+    }
+    let set = Command::SetCueProperty {
+        id: cue_id(1),
+        property: CueProperty::Kind { value: loud },
+    };
+    let mut work = ws.clone();
+    let mut history = History::new();
+    history.execute(&mut work, set).unwrap();
+    assert_eq!(
+        audio_levels(&work, 1),
+        (-2.0, SILENCE_DB),
+        "at the maximum; at the minimum is -inf"
+    );
+    match &work.find_cue(cue_id(1)).unwrap().kind {
+        CueKind::Audio { levels, .. } => assert_eq!(levels.crosspoints[0].db, -2.0),
+        other => panic!("{other:?}"),
+    }
+    history.undo(&mut work).unwrap();
+    assert_eq!(work, ws, "undo restores exactly");
+
+    // A new cue, and a pasted one.
+    let new = Command::AddCue {
+        at: Position {
+            list: list_id(1),
+            parent: None,
+            index: 0,
+        },
+        cue: audio_at(7, 12.0, 12.0),
+        auto_number: false,
+    };
+    history.execute(&mut work, new).unwrap();
+    assert_eq!(audio_levels(&work, 7), (-2.0, -2.0));
+
+    // The patch's main and output faders (the patch editor, a peer).
+    history
+        .execute(
+            &mut work,
+            patch_prop(1, PatchProperty::MasterDb { value: 12.0 }),
+        )
+        .unwrap();
+    history
+        .execute(
+            &mut work,
+            patch_prop(
+                1,
+                PatchProperty::OutputLevel {
+                    output: 1,
+                    value: 6.0,
+                },
+            ),
+        )
+        .unwrap();
+    history
+        .execute(
+            &mut work,
+            patch_prop(
+                1,
+                PatchProperty::OutputLevel {
+                    output: 0,
+                    value: -45.0,
+                },
+            ),
+        )
+        .unwrap();
+    assert_eq!(work.patches[0].master_db, -2.0);
+    assert_eq!(work.patches[0].outputs[1].level_db, -2.0);
+    assert_eq!(work.patches[0].outputs[0].level_db, SILENCE_DB);
+
+    // A new patch.
+    let mut patch = patch(2, 2);
+    patch.master_db = 12.0;
+    history
+        .execute(&mut work, Command::AddPatch { index: 1, patch })
+        .unwrap();
+    assert_eq!(work.patches[1].master_db, -2.0);
+    // More outputs start at 0 dB, which is above the maximum: they start at it.
+    history
+        .execute(
+            &mut work,
+            patch_prop(2, PatchProperty::ChannelCount { value: 4 }),
+        )
+        .unwrap();
+    assert_eq!(work.patches[1].outputs[3].level_db, -2.0);
+    assert!(
+        validate(&work)
+            .iter()
+            .all(|i| i.severity != Severity::Error)
+    );
 }

@@ -7,7 +7,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::cue::{Cue, Hotkey, Modifiers};
+use crate::cue::{
+    Cue, DEFAULT_OUTPUT_MAX_DB, DEFAULT_OUTPUT_MIN_DB, Hotkey, LevelLimits, Modifiers,
+};
 use crate::osc_access::OscAccess;
 
 macro_rules! id_type {
@@ -107,7 +109,8 @@ impl Workspace {
                 panic_duration: 1.0,
                 autosave_interval: 30.0,
                 osc_access: OscAccess::default(),
-                master_db: 0.0,
+                output_max_db: DEFAULT_OUTPUT_MAX_DB,
+                output_min_db: DEFAULT_OUTPUT_MIN_DB,
                 hotkeys: TransportHotkeys::default(),
                 auto_number_start: 1.0,
                 auto_number_increment: 1.0,
@@ -195,6 +198,16 @@ pub struct OutputPatch {
     pub outputs: Vec<PatchOutput>,
 }
 
+impl OutputPatch {
+    /// Puts the master and every output level within `limits`.
+    pub fn limit_levels(&mut self, limits: LevelLimits) {
+        self.master_db = limits.limit(self.master_db);
+        for output in &mut self.outputs {
+            output.level_db = limits.limit(output.level_db);
+        }
+    }
+}
+
 /// One output of a patch. Muting keeps `level_db`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PatchOutput {
@@ -231,13 +244,25 @@ pub struct WorkspaceSettings {
     pub autosave_interval: f64,
     /// Who may do what over OSC (NET-02): the passcode table with each passcode's rights.
     pub osc_access: OscAccess,
-    /// Global master level (PB-11).
-    pub master_db: f64,
+    /// Highest level any fader in the workspace may hold, -30 to +12 dB (PB-11).
+    pub output_max_db: f64,
+    /// Levels at or below this are silent (-inf), -180 to -40 dB (PB-11).
+    pub output_min_db: f64,
     pub hotkeys: TransportHotkeys,
     /// Number given to the first auto-numbered cue (ED-08).
     pub auto_number_start: f64,
     /// Step between auto-numbered cues; greater than 0.
     pub auto_number_increment: f64,
+}
+
+impl WorkspaceSettings {
+    /// The volume limits every level in the workspace lives in.
+    pub fn limits(&self) -> LevelLimits {
+        LevelLimits {
+            max_db: self.output_max_db,
+            min_db: self.output_min_db,
+        }
+    }
 }
 
 /// Remappable workspace keys (TRG-01): the transport keys and the selected-cue keys of QLab 5's
