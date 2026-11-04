@@ -100,7 +100,8 @@ enum WarningRows {
                     if let reason { reasons.append(ProblemText.reason(reason)) }
                     rows.append(
                         WarningRow(
-                            id: "c:\(cue.id.raw)", cue: cue.id, title: cueTitle(cue, name: model?.listName(cue) ?? CueKindStyle.kindLabel(cue.kindType)),
+                            id: "c:\(cue.id.raw)", cue: cue.id,
+                            title: cueTitle(cue, name: model?.listName(cue) ?? CueKindStyle.kindLabel(cue.kindType)),
                             detail: reasons.joined(separator: "\n"),
                             canRelink: problems.contains { $0.type == "media_missing" }))
                 }

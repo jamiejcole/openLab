@@ -194,7 +194,9 @@ final class MainWindowTests: XCTestCase {
         // An unnumbered, unnamed cue: its name alone, from its kind.
         try await standBy(rig, TestSnapshots.fade)
         XCTAssertEqual(wc.masthead.cueID, TestSnapshots.fade)
-        XCTAssertEqual(wc.masthead.standbyField.stringValue, "Fade and stop Intro", "an unnamed Fade is named after the cue it fades")
+        XCTAssertEqual(
+            wc.masthead.standbyField.stringValue, "Fade and stop Intro",
+            "an unnamed Fade is named after the cue it fades")
     }
 
     func testMastheadNotesEditSendsTheInspectorNotesCommand() async throws {

@@ -1856,8 +1856,9 @@ final class PlayheadFlowTests: XCTestCase {
         await settle()
         XCTAssertEqual(store.model?.cue(fade)?.name, "", "Return on the untouched cell writes nothing back")
         // Stop Target When Done changes it.
-        guard case .success = await store.send(
-            command: .setProperty(fade, .kindFields(["stop_target_when_done": .bool(true)])))
+        guard
+            case .success = await store.send(
+                command: .setProperty(fade, .kindFields(["stop_target_when_done": .bool(true)])))
         else { return XCTFail("kind") }
         await assertEventually { self.cell(self.fade, "name") == "Fade and stop intro" }
     }
@@ -1869,7 +1870,9 @@ final class PlayheadFlowTests: XCTestCase {
         guard case .success = await store.send(command: .setProperty(stop, .target(cues[1]))) else {
             return XCTFail("target")
         }
-        await assertEventually("named after cue 2, whose name is its file's") { self.cell(stop, "name") == "Stop b.wav" }
+        await assertEventually("named after cue 2, whose name is its file's") {
+            self.cell(stop, "name") == "Stop b.wav"
+        }
     }
 
     /// N or Q on a row scrolled out of sight scrolls it into view: the editor is never off screen.

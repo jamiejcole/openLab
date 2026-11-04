@@ -28,7 +28,8 @@ enum CueFinder {
 
     static func matches(_ text: String, cue: Cue, shownName: String) -> Bool {
         let fields =
-            [cue.number ?? "", cue.name, shownName, cue.raw["notes"]?.stringValue ?? "", fileName(of: cue)] + message(of: cue)
+            [cue.number ?? "", cue.name, shownName, cue.raw["notes"]?.stringValue ?? "", fileName(of: cue)]
+            + message(of: cue)
         return fields.contains { $0.range(of: text, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
     }
 

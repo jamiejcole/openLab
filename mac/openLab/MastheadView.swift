@@ -131,7 +131,8 @@ final class MastheadView: NSView, NSTextViewDelegate {
         let changed = cueID != cue?.id
         cueID = cue?.id
         if let cue {
-            standbyField.stringValue = [cue.number, name ?? CueKindStyle.kindLabel(cue.kindType)].compactMap { $0 }.filter { !$0.isEmpty }
+            standbyField.stringValue = [cue.number, name ?? CueKindStyle.kindLabel(cue.kindType)].compactMap { $0 }
+                .filter { !$0.isEmpty }
                 .joined(separator: " \u{00B7} ")
         } else {
             standbyField.stringValue = loc("masthead.standby.none")

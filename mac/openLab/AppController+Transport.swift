@@ -216,7 +216,9 @@ extension AppController {
             // the log, with one log record for every cue that still needs attention.
             let clean = ambiguous.isEmpty && unmatched.isEmpty
             _ = store.receive(.log(clean ? .info : .warn, message))
-            func name(_ id: ModelID) -> String { store.model.flatMap { m in m.cue(id).map { WarningRows.cueTitle($0, name: m.listName($0)) } } ?? id.raw }
+            func name(_ id: ModelID) -> String {
+                store.model.flatMap { m in m.cue(id).map { WarningRows.cueTitle($0, name: m.listName($0)) } } ?? id.raw
+            }
             for a in ambiguous {
                 let text = String(
                     format: loc("relink.log.ambiguous"), name(a.cue), a.candidates.joined(separator: ", "))

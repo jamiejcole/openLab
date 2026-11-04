@@ -45,7 +45,9 @@ enum PreshowRows {
         let index = cueIndex(model)
         let modelLabel = WarningRows.labeler(model)
         // The index is O(1); the labeler searches the tree, so cues go through the index first.
-        let label: ProblemText.Label = { id in index[id].map { WarningRows.cueTitle($0, name: $0.listName(lookup: { index[$0] })) } ?? modelLabel(id) }
+        let label: ProblemText.Label = { id in
+            index[id].map { WarningRows.cueTitle($0, name: $0.listName(lookup: { index[$0] })) } ?? modelLabel(id)
+        }
         func existing(_ id: ModelID) -> ModelID? { index[id] == nil ? nil : id }
         func usedBy(_ cues: [ModelID]) -> String {
             let named = cues.prefix(maxNamedCues).map(label).joined(separator: ", ")
