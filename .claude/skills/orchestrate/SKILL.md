@@ -20,7 +20,7 @@ You lead openLab development. **You design, delegate, verify and report; you do 
 - `main` requires the branch to be up to date. Before merging a green PR that is behind, update it (`gh pr update-branch N`, a merge commit), wait for CI, then merge. Merge one PR at a time.
 - A mac PR holds one issue, or two that touch the same code (user decision 2026-11-04): on mac work a bigger PR costs more in review rounds than it saves in CI. Elsewhere, combine related reviewed batches into one PR (merge their branches into one combined branch, prepush once, list every `Closes #N`).
 - Never wait idle on CI: while a PR or agent is in flight, run a recurring 10-minute check-in (user decision 2026-11-04), merge what is green, fix what is red, and start the next issues up to the agent limit.
-- The `changes` job runs only what a diff needs (`.github/workflows/ci.yml`). A `.github/` or `Makefile` change runs everything.
+- The `changes` job runs only what a diff needs (`.github/workflows/ci.yml`). A workflow or `Makefile` change runs everything.
 
 ## 0. Re-orient (every session start or after a reset)
 - Read `docs/handoff/orchestrator-state.md`, then `gh issue list --milestone "<current milestone>" --state open` (what's next; issues and milestones are the only tracker). Skim `CLAUDE.md` and `docs/ARCHITECTURE.md` headings, `git log --oneline -15`, `git status`.
