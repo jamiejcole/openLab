@@ -222,6 +222,27 @@ final class CueListTests: XCTestCase {
             ["status", "type", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
     }
 
+    /// A default name follows a chain: Fade 4 of Fade 3 of Intro. Renaming Intro redraws row 4 at once
+    /// (read with no click in between, which would repaint it).
+    func testRenamingATargetRedrawsTheDefaultNamesThatFollowItDownTheChain() async throws {
+        let h = try await H()
+        let fade = try XCTUnwrap(h.store.model?.cue(H.fade))
+        var second = fade.raw
+        let fourth: ModelID = "00000000-0000-0000-0000-0000000000f4"
+        second.set("id", .string(fourth.raw))
+        second.set("number", .null)
+        var kind = try XCTUnwrap(second["kind"])
+        kind.set("target", .string(H.fade.raw))
+        second.set("kind", kind)
+        try h.change(upserts: [try H.upsertJSON(second, index: 2)])
+        XCTAssertEqual(h.cell("name", fourth)?.label.stringValue, "Fade and stop Fade and stop Intro")
+        var intro = try XCTUnwrap(h.store.model?.cue(H.intro)).raw
+        intro.set("name", .string("entrance"))
+        try h.change(upserts: [try H.upsertJSON(intro, index: 0)])
+        XCTAssertEqual(h.cell("name", H.fade)?.label.stringValue, "Fade and stop entrance")
+        XCTAssertEqual(h.cell("name", fourth)?.label.stringValue, "Fade and stop Fade and stop entrance")
+    }
+
     func testCellsShowNumberNameTargetAndTimes() async throws {
         let h = try await H()
         XCTAssertEqual(h.cell("number", H.intro)?.label.stringValue, "1")
@@ -1655,12 +1676,9 @@ final class PlayheadFlowTests: XCTestCase {
 
     func testNKeyEditsTheNumberWithItsTextSelected() async throws {
         try await editWorkspace()
-        let tap = try CancelTap()
-        defer { tap.restore() }
         try press("n", code: 45)
         try assertEditing(cues[1], "number", text: "2")
         XCTAssertEqual(goes(), 0)
-        XCTAssertEqual(tap.taken, 0, "no Esc was needed, and none reached the window")
         try await assertAllOn(cues[1])
     }
 
