@@ -84,6 +84,7 @@ extension CueListViewController: NSMenuDelegate {
         menu.removeAllItems()
         guard row >= 0, let node = outlineView.item(atRow: row) as? CueNode else { return }
         if !selectedIDs().contains(node.id) { selectAsUser([node.id]) }
+        rowMenuCues = selectedIDs()
         let selected = selectedIDs().compactMap { self.node($0) }
         let context = CueRowMenu.Context(
             selectedCount: selected.count,
@@ -132,14 +133,14 @@ extension CueListViewController: NSMenuDelegate {
         guard let raw = sender.representedObject as? String, let command = TransportCommand(rawValue: raw) else {
             return
         }
-        onCommand?(command)
+        onCommand?(command, rowMenuCues ?? selectedIDs())
     }
 
     // The editor's own methods, as the Edit menu calls them, but never the text field in focus.
-    @objc func rowCut(_ sender: Any?) { Task { await editor?.cutSelection() } }
-    @objc func rowCopy(_ sender: Any?) { Task { await editor?.copySelection() } }
-    @objc func rowPaste(_ sender: Any?) { Task { await editor?.paste() } }
-    @objc func rowDelete(_ sender: Any?) { Task { await editor?.deleteSelection() } }
+    @objc func rowCut(_ sender: Any?) { Task { [rowMenuCues] in await editor?.cutSelection(of: rowMenuCues) } }
+    @objc func rowCopy(_ sender: Any?) { Task { [rowMenuCues] in await editor?.copySelection(of: rowMenuCues) } }
+    @objc func rowPaste(_ sender: Any?) { Task { [rowMenuCues] in await editor?.paste(after: rowMenuCues) } }
+    @objc func rowDelete(_ sender: Any?) { Task { [rowMenuCues] in await editor?.deleteSelection(of: rowMenuCues) } }
 
     @objc func movePlayheadToCue(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String else { return }

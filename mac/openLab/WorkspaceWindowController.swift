@@ -11,6 +11,30 @@ import UniformTypeIdentifiers
 /// responder chain, so it overrides both and takes Esc.
 @MainActor
 final class WorkspaceWindow: NSWindow {
+    /// Told when a press starts and when its `mouseDown` has returned: a standard control tracks the
+    /// mouse inside that call, and sends its action there too.
+    var onPress: ((Bool) -> Void)?
+
+    /// Takes the keys when nothing else is focused (typing ended, a focused control went): the window
+    /// itself would leave the arrow keys driving nothing.
+    weak var keyTarget: NSView?
+
+    @discardableResult
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        guard super.makeFirstResponder(responder) else { return false }
+        if responder == nil || responder === self, let keyTarget, keyTarget.window === self {
+            return super.makeFirstResponder(keyTarget)
+        }
+        return true
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        guard event.type == .leftMouseDown else { return super.sendEvent(event) }
+        onPress?(true)
+        defer { onPress?(false) }
+        super.sendEvent(event)
+    }
+
     override func cancelOperation(_ sender: Any?) {}
 
     override func keyDown(with event: NSEvent) {
@@ -35,7 +59,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var onPanic: (() -> Void)?
     var onResetAll: (() -> Void)?
     /// A transport command from the cue row menu, for this window.
-    var onCommand: ((TransportCommand) -> Void)? {
+    var onCommand: ((TransportCommand, [ModelID]) -> Void)? {
         didSet { cueList.onCommand = onCommand }
     }
     /// Pause, resume or panic of one cue, from the Active Cues panel.
@@ -117,7 +141,17 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.logController?.close() }
         }
-        cueList.onSelectionChange = { [weak inspector] in inspector?.setSelection($0) }
+        cueList.onSelectionChange = { [weak inspector, weak cueList] in
+            inspector?.setSelection($0, byFollow: cueList?.followingPlayhead == true)
+        }
+        window.onPress = { [weak inspector, weak cueList] down in
+            // The next press means any drag before it is over.
+            if down { inspector?.endGestures() }
+            cueList?.setFollowHold(.press, down)
+        }
+        inspector.isFollowHeld = { [weak cueList] in cueList?.followHeld == true }
+        inspector.onGestureHold = { [weak cueList] in cueList?.setFollowHold(.gesture, $0) }
+        window.keyTarget = cueList.outlineView
         editor.isLocked = { [weak self] in self?.isShowMode ?? true }
         editor.commitPending = { [weak self] in await self?.commitPendingEdits() ?? true }
         editor.notify = { [weak self] message in self?.showNotice(message) }
@@ -141,7 +175,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             guard let self, let url = self.pickAudioFile() else { return }
             Task { await self.editor.replaceFile(of: id, with: url) }
         }
-        cueToolbar.onAdd = { [weak self] kind in Task { await self?.editor.add(kind) } }
+        cueToolbar.onAdd = { [weak self] kind in
+            let cues = self?.cueList.selectedIDs()
+            Task { await self?.editor.add(kind, after: cues) }
+        }
         window.contentView = buildContent()
         window.initialFirstResponder = cueList.outlineView
         window.center()
@@ -159,6 +196,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         wireFind()
+        masthead.onEditingEnded = { [weak self] in self?.syncMasthead() }
         masthead.onCommitNotes = { [weak self] id, text in Task { await self?.editor.setNotes(of: id, text: text) } }
         sidebar.shownProvider = { [weak self] in self?.cueList.listID }
         sidebar.onSelectList = { [weak self] id in
@@ -317,7 +355,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Asks for the first number and increment, then renumbers the selected cues (ED-08).
     func promptRenumber() {
-        guard !isShowMode, let window, !cueList.selectedIDs().isEmpty else { return NSSound.beep() }
+        let cues = cueList.selectedIDs()
+        guard !isShowMode, let window, !cues.isEmpty else { return NSSound.beep() }
         let settings = store.model?.settings
         let start = NSTextField(string: Self.plain(settings?["auto_number_start"]?.doubleValue ?? 1))
         let step = NSTextField(string: Self.plain(settings?["auto_number_increment"]?.doubleValue ?? 1))
@@ -338,7 +377,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             guard let a = Double(start.stringValue), let b = Double(step.stringValue) else {
                 return self.showNotice(loc("edit.error.renumberValues"))
             }
-            Task { await self.editor.renumberSelection(start: a, increment: b) }
+            Task { await self.editor.renumberSelection(of: cues, start: a, increment: b) }
         }
     }
 
@@ -454,16 +493,31 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// Commits what is typed in the inspector and in the cue list's Duration cell and the masthead notes, and waits for the
     /// engine's answers; false when an edit was invalid or refused (Save, Close, Quit stop).
     func commitPendingEdits() async -> Bool {
+        endLostGesture()
         var ok = true
         if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
-        if let notes = masthead.takePendingNotes() {
-            ok = await editor.setNotes(of: notes.id, text: notes.text) && ok
+        if let notes = masthead.pendingNotes() {
+            if await !editor.setNotes(of: notes.id, text: notes.text) {
+                masthead.notesNotSaved()
+                ok = false
+            }
         }
         return await inspector.commitPendingEdits() && ok
     }
 
+    /// A key with the left button up: key and mouse events share one queue, so a mouse-up queued before
+    /// this key has been handled, and a drag still under way has lost its release. It ends here, and a
+    /// follow it held runs at once, before the key acts on the selection. A mouse-up queued just after
+    /// this key finds the drag over: its last movement is dropped, and what was dragged so far stays.
+    func endLostGesture() {
+        guard cueList.isGestureHeld, !cueList.isLeftButtonDown() else { return }
+        inspector.endGestures()
+        cueList.followHeldNow()
+    }
+
     /// A report about a workspace that is gone must not float on over the next one.
     func windowWillClose(_ notification: Notification) {
+        inspector.endGestures()
         preshowController?.close()
         settingsController?.close()
     }
@@ -488,7 +542,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             // While Find holds the row, the toggle only decides what comes back when it closes.
             if find.isOpen { find.toolbarWasHidden = !visible } else { cueToolbar.isHidden = !visible }
         case .masthead: masthead.isHidden = !visible
-        case .inspector: inspector.view.isHidden = !visible
+        case .inspector:
+            if !visible { inspector.endGestures() }
+            inspector.view.isHidden = !visible
         case .sidebar: sidebar.view.isHidden = !visible
         }
         footer.toggles[area]?.state = visible ? .on : .off

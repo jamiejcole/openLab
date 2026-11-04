@@ -10,7 +10,9 @@ final class InspectorUITests: XCTestCase {
         let app = launchDemo()
 
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["No cue selected"].exists)
+        XCTAssertTrue(
+            waitFor("value == 'Intro'", app.textFields["inspector-name"]),
+            "the playhead cue is in the inspector at open")
         app.staticTexts["Intro"].click()
         let name = app.textFields["inspector-name"]
         XCTAssertTrue(name.waitForExistence(timeout: 5))

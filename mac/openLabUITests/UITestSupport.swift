@@ -12,7 +12,8 @@ import XCTest
 /// The demo show ("Demo"): 1 Intro (a looping audio cue, a.wav), an unnamed Fade cue of Intro
 /// (5 s), and a group 2 Act One of 2.1 Door slam (d.wav, plays once), 2.2 Rain
 /// (looping, blue, flagged, auto-follow) and 2.3 Radio (its file o.wav is missing: broken). "Second"
-/// is an empty show. Nothing plays when a show opens.
+/// is an empty show. "Three" is three looping audio cues, 1 One, 2 Two and 3 Three. Nothing plays when
+/// a show opens.
 extension XCTestCase {
     private final class Anchor {}
 
