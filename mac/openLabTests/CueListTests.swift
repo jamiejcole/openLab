@@ -2790,8 +2790,12 @@ final class PlayheadFlowTests: XCTestCase {
         let panel = wc.inspector.timeLoops
         await assertEventually { panel.waveform.duration != nil }
         wc.inspector.sendTimeLoops(.addSlice(0.5))
-        await assertEventually("a slice to count") { !panel.waveform.sliceMarks.isEmpty }
+        // The engine's answer, not only the panel's own preview of the edit: that answer redraws it.
+        await assertEventually("a slice to count") {
+            self.kind(self.cues[0])?["slices"]?.arrayValue?.isEmpty == false && !panel.waveform.sliceMarks.isEmpty
+        }
         await sync()
+        await settle()
         wire.forgetSent()
         panel.waveform.onEditCount?(0)
         XCTAssertFalse(panel.sliceCountField.isHidden)
