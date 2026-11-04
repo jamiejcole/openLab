@@ -20,8 +20,8 @@ enum LaunchBehavior: String, CaseIterable {
 /// nil in tests that do not look at it: nothing is read or written then.
 struct LaunchPreferences {
     let defaults: UserDefaults?
-    private static let behaviorKey = "launch.behavior"
-    private static let filesKey = "launch.openFiles"
+    private static let behaviorKey = "launch-behavior"
+    private static let filesKey = "launch-open-files"
 
     var behavior: LaunchBehavior {
         get { defaults?.string(forKey: Self.behaviorKey).flatMap(LaunchBehavior.init) ?? .launcher }

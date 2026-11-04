@@ -1012,7 +1012,7 @@ final class EngineCrashFlowTests: XCTestCase {
         let name = "openlab-launch-\(UUID().uuidString)"
         prefs = UserDefaults(suiteName: name)
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
-        if let behavior { prefs.set(behavior.rawValue, forKey: "launch.behavior") }
+        if let behavior { prefs.set(behavior.rawValue, forKey: "launch-behavior") }
     }
 
     /// The app started afresh on the preference suite: what the delegate does once the engine is up.
@@ -1131,7 +1131,7 @@ final class EngineCrashFlowTests: XCTestCase {
         alerts.saveChoices = [.dontSave]
         try await quit()
 
-        prefs.set(LaunchBehavior.nothing.rawValue, forKey: "launch.behavior")
+        prefs.set(LaunchBehavior.nothing.rawValue, forKey: "launch-behavior")
         try await startApp()
         await settle()
         XCTAssertTrue(app.allWindows.isEmpty)
