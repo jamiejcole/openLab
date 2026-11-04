@@ -12,11 +12,6 @@ final class ScriptedAlerts: WorkspaceAlerts {
     var closeShowMode = true
     var quitShowMode = true
     var saveChoices: [SaveChoice] = []
-    /// The notices about unsaved notes, and a pasteboard of this test's own for Copy Text, which
-    /// is pressed when `pressCopyText`.
-    private(set) var notesNotices: [NotesNotice] = []
-    var pressCopyText = false
-    let pasteboard = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
     private(set) var log: [String] = []
     private(set) var errors: [String] = []
 
@@ -48,11 +43,6 @@ final class ScriptedAlerts: WorkspaceAlerts {
     func unsavedChanges(workspace: String) -> SaveChoice {
         log.append("unsaved:\(workspace)")
         return saveChoices.isEmpty ? .cancel : saveChoices.removeFirst()
-    }
-
-    func notesNotSaved(_ notice: NotesNotice) {
-        notesNotices.append(notice)
-        if pressCopyText { notice.copyText(to: pasteboard) }
     }
 
     func showError(_ message: String) { errors.append(message) }
@@ -1406,6 +1396,30 @@ final class AppControllerTests: XCTestCase {
         alerts.saveChoices = [.dontSave]
         let quit = await app.prepareToQuit()
         XCTAssertTrue(quit)
+    }
+
+    /// Quit with notes the engine refuses still being typed: the sheet with Copy Text, which Quit waits
+    /// for, then it goes on.
+    func testQuitWithMastheadNotesTheEngineRefusesWaitsForTheNoticeThenQuits() async throws {
+        try await quiet("1")
+        let wc = try XCTUnwrap(app.windows["1"])
+        let window = try XCTUnwrap(wc.window)
+        let board = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
+        wc.notesPasteboard = board
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        let tooLong = String(repeating: "x", count: 64 * 1024 + 1)
+        notes.insertText(tooLong, replacementRange: notes.selectedRange())
+        let typed = notes.string
+        alerts.saveChoices = [.dontSave]
+        let quitting = Task { await self.app.prepareToQuit() }
+        await assertEventually("the sheet") { window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        XCTAssertTrue(sheetText(sheet).contains("not saved"))
+        XCTAssertTrue(pressButton(loc("alert.copyText"), in: sheet))
+        let quit = await quitting.value
+        XCTAssertTrue(quit, "Quit goes on")
+        XCTAssertEqual(board.string(forType: .string), typed, "Copy Text")
     }
 
     func testQuitWhilePlayingInShowModeIsOnePrompt() async throws {

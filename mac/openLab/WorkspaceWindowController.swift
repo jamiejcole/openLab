@@ -156,8 +156,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         editor.commitPending = { [weak self] in await self?.commitPendingEdits() ?? true }
         editor.notify = { [weak self] message in self?.showNotice(message) }
         inspector.onNotesNotSaved = { [weak self] id, text, error in
-            self?.editor.reportNotesNotSaved(of: id, text: text, error)
+            await self?.editor.reportNotesNotSaved(of: id, text: text, error)
         }
+        editor.notesNotSaved = { [weak self] notice in await self?.showNotesNotice(notice) }
         editor.trackPending = { [weak inspector] command, cue in inspector?.trackPending(command, cue: cue) ?? {} }
         cueList.onMove = { [weak self] ids, parent, index in
             Task { await self?.editor.move(ids, to: parent, at: index) }
@@ -345,6 +346,38 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         footer.showNotice(message, error: error)
     }
 
+    /// Where Copy Text puts the typed notes.
+    var notesPasteboard = NSPasteboard.general
+    /// Close and Quit wait for the notice's sheet to be answered: the window is about to go, and with it
+    /// the only copy of the text.
+    private var awaitNotices = false
+
+    /// Notes that were not saved: a sheet on this window with Copy Text, which waits only for Close and
+    /// Quit. In Show Mode nothing is raised (NFR-10): the show log carries the text, the footer the message.
+    func showNotesNotice(_ notice: NotesNotice) async {
+        if isShowMode {
+            let kept = notice.text.count > 4000 ? String(notice.text.prefix(4000)) + "\u{2026}" : notice.text
+            _ = store.receive(.log(.error, "\(notice.message) \(kept)"))
+            footer.showNotice(notice.message, error: true)
+            return
+        }
+        guard let window else { return NSSound.beep() }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = notice.message
+        for key in ["alert.ok", "alert.copyText"] { alert.addButton(withTitle: loc(key)) }
+        let copy: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            if response == .alertSecondButtonReturn { notice.copyText(to: self?.notesPasteboard ?? .general) }
+        }
+        guard awaitNotices else { return alert.beginSheetModal(for: window, completionHandler: copy) }
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            alert.beginSheetModal(for: window) {
+                copy($0)
+                done.resume()
+            }
+        }
+    }
+
     /// Why an edit was refused: a sheet on this window (beep when it has none).
     func showNotice(_ message: String) {
         // Show Mode raises nothing modal (NFR-10): the footer and the show log carry it.
@@ -495,13 +528,22 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// (Save, Close, Quit) must stop.
     /// Commits what is typed in the inspector and in the cue list's Duration cell and the masthead notes, and waits for the
     /// engine's answers; false when an edit was invalid or refused (Save, Close, Quit stop).
-    func commitPendingEdits() async -> Bool {
+    func commitPendingEdits(awaitNotices: Bool = false) async -> Bool {
+        if awaitNotices { self.awaitNotices = true }
+        defer { if awaitNotices { self.awaitNotices = false } }
         endLostGesture()
         var ok = true
         if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
         if let notes = masthead.pendingNotes() {
-            // Refused notes raise their notice there and are not held: Close and Save go on.
-            await editor.setNotes(of: notes.id, text: notes.text)
+            // Refused notes raise their notice there and are not held: Close and Save go on. An
+            // edit that never started (another typed edit is invalid) stops them.
+            switch await editor.setNotes(of: notes.id, text: notes.text) {
+            case .saved: break
+            case .notSaved: masthead.endTypingAfterRefusal()
+            case .blocked:
+                masthead.endTypingAfterRefusal()
+                ok = false
+            }
         }
         return await inspector.commitPendingEdits() && ok
     }

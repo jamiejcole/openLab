@@ -31,8 +31,6 @@ protocol WorkspaceAlerts {
     /// The engine is not answering at quit. True: quit anyway.
     func confirmQuitDisconnected() -> Bool
     func unsavedChanges(workspace: String) -> SaveChoice
-    /// Notes the engine refused or could not receive; the notice offers to copy the typed text.
-    func notesNotSaved(_ notice: NotesNotice)
     func showError(_ message: String)
     func showInfo(_ message: String)
     /// `open` found an autosave newer than the show file (NFR-05). nil: Cancel, nothing opens.
@@ -76,14 +74,6 @@ struct AppKitAlerts: WorkspaceAlerts {
         case .alertThirdButtonReturn: return .dontSave
         default: return .cancel
         }
-    }
-
-    func notesNotSaved(_ notice: NotesNotice) {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = notice.message
-        for key in ["alert.ok", "alert.copyText"] { alert.addButton(withTitle: loc(key)) }
-        if alert.runModal() == .alertSecondButtonReturn { notice.copyText(to: .general) }
     }
 
     func showError(_ message: String) {
@@ -164,7 +154,6 @@ struct ShowModeGatedAlerts: WorkspaceAlerts {
     func confirmQuitInShowMode() -> Bool { base.confirmQuitInShowMode() }
     func confirmQuitDisconnected() -> Bool { base.confirmQuitDisconnected() }
     func unsavedChanges(workspace: String) -> SaveChoice { base.unsavedChanges(workspace: workspace) }
-    func notesNotSaved(_ notice: NotesNotice) { base.notesNotSaved(notice) }
     func recoveryOffer(workspace: String, modifiedMs: Int64) -> RecoveryChoice? {
         base.recoveryOffer(workspace: workspace, modifiedMs: modifiedMs)
     }

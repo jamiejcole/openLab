@@ -174,6 +174,15 @@ final class MastheadView: NSView, NSTextViewDelegate {
         return (id, notesView.string)
     }
 
+    /// The text handed over was refused or could not be sent, and the operator has the notice with
+    /// Copy Text: the typing ends and the field shows what the cue holds, as the inspector's does.
+    func endTypingAfterRefusal() {
+        editingID = nil
+        handedOver = nil
+        if window?.firstResponder === notesView { window?.makeFirstResponder(nil) }
+        onEditingEnded?()
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 }

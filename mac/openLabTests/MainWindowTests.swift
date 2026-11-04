@@ -293,8 +293,8 @@ final class MainWindowTests: XCTestCase {
         let (wc, _) = try await demoController()
         var notices: [NotesNotice] = []
         wc.editor.notesNotSaved = { notices.append($0) }
-        let saved = await wc.editor.setNotes(of: "00000000-0000-0000-0000-0000000000ff", text: "x")
-        XCTAssertFalse(saved)
+        let outcome = await wc.editor.setNotes(of: "00000000-0000-0000-0000-0000000000ff", text: "x")
+        XCTAssertEqual(outcome, .notSaved)
         XCTAssertEqual(notices, [NotesNotice(message: loc("notes.notSaved.cueGone"), text: "x")])
     }
 
