@@ -169,38 +169,6 @@ final class AppControllerTests: XCTestCase {
         XCTFail("no attempt was refused: the retry was never exercised")
     }
 
-    /// Notes the engine refuses stop a Close, and stop it again: the text is not lost by asking twice.
-    func testMastheadNotesTheEngineRefusesStopEveryClose() async throws {
-        let wc = try XCTUnwrap(app.windows["1"])
-        let window = try XCTUnwrap(wc.window)
-        keyDoc = "1"
-        let notes = wc.masthead.notesView
-        XCTAssertTrue(window.makeFirstResponder(notes))
-        let tooLong = String(repeating: "x", count: 64 * 1024 + 1)
-        notes.insertText(tooLong, replacementRange: notes.selectedRange())
-        func dismissNotice() async {
-            await assertEventually("a notice") { window.attachedSheet != nil }
-            if let sheet = window.attachedSheet { window.endSheet(sheet) }
-            await assertEventually { window.attachedSheet == nil }
-        }
-        alerts.saveChoices = [.dontSave, .dontSave]  // the prompt must not be what stops it
-        let first = await app.closeWorkspace("1")
-        XCTAssertFalse(first, "stopped")
-        await dismissNotice()
-        let second = await app.closeWorkspace("1")
-        XCTAssertFalse(second, "stopped again: the text was never saved")
-        await dismissNotice()
-        XCTAssertNotNil(app.windows["1"])
-        XCTAssertTrue(notes.string.hasSuffix(tooLong), "the text is still there")
-        // Cut down, the same typing saves.
-        notes.setSelectedRange(NSRange(location: 0, length: notes.string.utf16.count))
-        notes.insertText("short", replacementRange: notes.selectedRange())
-        let cue = try XCTUnwrap(wc.masthead.cueID)
-        let saved = await wc.commitPendingEdits()
-        XCTAssertTrue(saved)
-        await assertEventually { wc.store.model?.cue(cue)?.raw["notes"]?.stringValue == "short" }
-    }
-
     /// A real engine of this test's own with the demo show open as doc 1 (the engine numbers
     /// docs from 0: a first one is opened and closed), Intro playing (GO, which moves the playhead
     /// to the Fade cue below it) and unsaved changes, and the app connected to it with one window.
@@ -248,6 +216,7 @@ final class AppControllerTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        NotesNoticePanel.closeAll()
         app?.closeAllWindows()
         app = nil
         engine?.releaseResults()
@@ -1428,6 +1397,29 @@ final class AppControllerTests: XCTestCase {
         alerts.saveChoices = [.dontSave]
         let quit = await app.prepareToQuit()
         XCTAssertTrue(quit)
+    }
+
+    /// Quit with notes the engine refuses still being typed: the panel with Copy Text comes up and Quit
+    /// goes on without anyone answering it.
+    func testQuitWithMastheadNotesTheEngineRefusesGoesOnAndTheNoticeStays() async throws {
+        try await quiet("1")
+        let wc = try XCTUnwrap(app.windows["1"])
+        let window = try XCTUnwrap(wc.window)
+        let board = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
+        wc.notesPasteboard = board
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        let tooLong = String(repeating: "x", count: 64 * 1024 + 1)
+        notes.insertText(tooLong, replacementRange: notes.selectedRange())
+        let typed = notes.string
+        alerts.saveChoices = [.dontSave]
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit, "Quit goes on")
+        await assertEventually("the panel") { !NotesNoticePanel.open.isEmpty }
+        let panel = try XCTUnwrap(NotesNoticePanel.open.last?.panel)
+        XCTAssertTrue(sheetText(panel).contains("not saved"))
+        XCTAssertTrue(pressButton(loc("alert.copyText"), in: panel))
+        XCTAssertEqual(board.string(forType: .string), typed, "Copy Text")
     }
 
     func testQuitWhilePlayingInShowModeIsOnePrompt() async throws {
