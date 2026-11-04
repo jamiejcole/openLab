@@ -305,7 +305,7 @@ soak_classifier() {
 # rename cannot silently drop it from the per-PR set or the core-flows set.
 test_list() {
   # Sets LIST_N (not echoed: fail must run in this shell to keep its flag).
-  local list=$1 check=$2 prefix=$3 line target cls name n=0 f
+  local list=$1 check=$2 prefix=$3 line target cls name n=0
   while IFS= read -r line; do
     case "$line" in ''|'#'*) continue ;; esac
     n=$((n + 1))
@@ -314,9 +314,12 @@ test_list() {
       *) fail "$check" "'$line' is not <target>/<Class>/<test>"; continue ;;
     esac
     target=$(printf '%s' "$line" | cut -d/ -f1); cls=$(printf '%s' "$line" | cut -d/ -f2); name=$(printf '%s' "$line" | cut -d/ -f3)
-    # The class and the test must be in the same file.
-    f=$(grep -lE "^(final )?class $cls\\b" mac/"$target"/*.swift 2>/dev/null | head -n 1)
-    if [ -z "$f" ] || ! grep -qE "func $name\\(\\)" "$f"; then
+    # The test must be declared in the class named, not merely in the same file: xcodebuild runs
+    # nothing, silently, for an identifier whose class does not hold the test.
+    if ! awk -v cls="$cls" -v fn="func $name()" '
+        /^(final )?class [A-Za-z0-9_]+/ { c = $0; sub(/^(final )?class /, "", c); sub(/[^A-Za-z0-9_].*/, "", c); cur = c }
+        index($0, fn) && cur == cls { found = 1 }
+        END { exit !found }' mac/"$target"/*.swift; then
       fail "$check" "'$line' names no test in mac/$target"
     fi
   done <"$list"
