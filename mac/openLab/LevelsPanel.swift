@@ -261,6 +261,10 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     /// Replaces the levels with `new` as one edit (Set Levels from Target).
     func replace(with new: LevelSet) { edit { $0 = new } }
 
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        control.endTyping(by: selector)
+    }
+
     func controlTextDidEndEditing(_ obj: Notification) {
         let slot = selection
         if obj.object as? NSTextField === levelField {

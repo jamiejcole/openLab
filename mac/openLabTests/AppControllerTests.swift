@@ -128,27 +128,77 @@ final class AppControllerTests: XCTestCase {
 
     /// Another client holds the engine's document gate: an open from the app is refused, tried again
     /// after the scheduler's wait, and opens once the gate is free, with no error for the operator.
-    /// The other client's open reads and parses a large file. The engine has no switch to hold its
-    /// worker, so the file only has to take longer than the round trip that follows it; if it ever
-    /// did not, the refusal below never comes and the test fails rather than passes.
+    /// The other client's open reads and parses a large file, as the engine has no switch to hold its
+    /// worker. If the app's request lost that race and simply opened, the attempt proves nothing and
+    /// another is made; running out of attempts fails.
     func testAnOpenRefusedBecauseAnotherClientHoldsTheGateIsTriedAgain() async throws {
         let big = real.folder.appendingPathComponent("big-\(UUID().uuidString).openlab")
         try Data(repeating: 0x20, count: 64 * 1024 * 1024).write(to: big)
         addTeardownBlock { try? FileManager.default.removeItem(at: big) }
         let harness = real!
-        let held = Task { await harness.request(.open(path: big.path)) }
-        // Answered in order on that connection: the engine has taken the open when this returns.
-        _ = await harness.request(.listPatchMappings)
         let session = app.session
-        let opening = Task { await session.newWorkspace() }
-        await assertEventually("the app's request was refused and waits to try again") {
-            await self.sessionScheduler.waitingCount >= 1
+        for _ in 1...10 {
+            engine.forgetSent()
+            let held = Task { await harness.request(.open(path: big.path)) }
+            // Answered in order on that connection: the engine has taken the open when this returns.
+            _ = await harness.request(.listPatchMappings)
+            let answered = Counter()
+            let opening = Task {
+                let result = await session.newWorkspace()
+                answered.count = 1
+                return result
+            }
+            await assertEventually("the request was refused, or opened") {
+                let waiting = await self.sessionScheduler.waitingCount
+                return waiting >= 1 || answered.count == 1
+            }
+            guard answered.count == 0 else {
+                // Lost the race: the gate was free already.
+                guard case .success(let doc) = await opening.value else { return XCTFail("new failed") }
+                _ = await session.close(doc: doc, discardChanges: true)
+                _ = await held.value
+                continue
+            }
+            guard case .failure = await held.value else { return XCTFail("the big file is not a show") }
+            await sessionScheduler.fire()
+            guard case .success = await opening.value else { return XCTFail("the retry should have opened") }
+            let requests = engine.requestCount { if case .new = $0 { return true } else { return false } }
+            XCTAssertEqual(requests, 2, "refused once, then tried again")
+            return
         }
-        guard case .failure = await held.value else { return XCTFail("the big file is not a show") }
-        await sessionScheduler.fire()
-        guard case .success = await opening.value else { return XCTFail("the retry should have opened") }
-        let requests = engine.requestCount { if case .new = $0 { return true } else { return false } }
-        XCTAssertEqual(requests, 2, "refused once, then tried again")
+        XCTFail("no attempt was refused: the retry was never exercised")
+    }
+
+    /// Notes the engine refuses stop a Close, and stop it again: the text is not lost by asking twice.
+    func testMastheadNotesTheEngineRefusesStopEveryClose() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let window = try XCTUnwrap(wc.window)
+        keyDoc = "1"
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        let tooLong = String(repeating: "x", count: 64 * 1024 + 1)
+        notes.insertText(tooLong, replacementRange: notes.selectedRange())
+        func dismissNotice() async {
+            await assertEventually("a notice") { window.attachedSheet != nil }
+            if let sheet = window.attachedSheet { window.endSheet(sheet) }
+            await assertEventually { window.attachedSheet == nil }
+        }
+        alerts.saveChoices = [.dontSave, .dontSave]  // the prompt must not be what stops it
+        let first = await app.closeWorkspace("1")
+        XCTAssertFalse(first, "stopped")
+        await dismissNotice()
+        let second = await app.closeWorkspace("1")
+        XCTAssertFalse(second, "stopped again: the text was never saved")
+        await dismissNotice()
+        XCTAssertNotNil(app.windows["1"])
+        XCTAssertTrue(notes.string.hasSuffix(tooLong), "the text is still there")
+        // Cut down, the same typing saves.
+        notes.setSelectedRange(NSRange(location: 0, length: notes.string.utf16.count))
+        notes.insertText("short", replacementRange: notes.selectedRange())
+        let cue = try XCTUnwrap(wc.masthead.cueID)
+        let saved = await wc.commitPendingEdits()
+        XCTAssertTrue(saved)
+        await assertEventually { wc.store.model?.cue(cue)?.raw["notes"]?.stringValue == "short" }
     }
 
     /// A real engine of this test's own with the demo show open as doc 1 (the engine numbers

@@ -1440,9 +1440,12 @@ final class PlayheadFlowTests: XCTestCase {
     // MARK: #489: the selection follows the playhead
 
     private var cues: [ModelID] = []
+    /// The left mouse button, as the cue list reads it: these tests drive gestures with no real mouse.
+    private var mouseIsDown = true
 
     /// The issue's workspace: Audio cues 1, 2, 3 dropped into a new list, cue 1 clicked.
     private func threeCues() async throws {
+        wc.cueList.isLeftButtonDown = { [unowned self] in mouseIsDown }
         let files = try tempFiles(["1.wav", "2.wav", "3.wav"])
         cues = await wc.editor.addFiles(files, parent: nil, index: 0)
         XCTAssertEqual(cues.count, 3)
@@ -1705,6 +1708,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await moveElsewhere(to: cues[2])
         await assertHeldOnFirstCue(playheadOn: cues[2])
         recorder.keyDown(with: try key("f", code: 3))
+        XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, "the keys go back to the list")
         await assertEventually("recorded on its own cue") {
             self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
         }
@@ -2437,6 +2441,177 @@ final class PlayheadFlowTests: XCTestCase {
         await assertEventually("the new cue") { self.wc.cueList.roots.count == 4 }
         XCTAssertEqual(wc.cueList.roots[0].id, cues[0])
         XCTAssertEqual(wc.cueList.roots[1].cue.kindType, "memo", "right after cue 1")
+    }
+
+    // MARK: A drag whose release never comes
+
+    private func pressKey(_ event: NSEvent) throws {
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        if let passed = app.handleKeyDown(event) { window.sendEvent(passed) }
+    }
+
+    /// Show Mode comes on under a press in the level matrix: the matrix goes, its mouse-up never comes,
+    /// and the highlight must not stay behind, or Down steps from a stale row and GO fires the wrong cue.
+    func testShowModeDuringALevelMatrixPressLetsTheHighlightFollow() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        showTab("levels")
+        let matrix = wc.inspector.audioLevels.matrix
+        let master = matrix.rect(of: .master)
+        let down = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown, location: matrix.convert(NSPoint(x: master.midX, y: master.midY), to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                clickCount: 1, pressure: 1))
+        matrix.mouseDown(with: down)
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        wc.setShowMode(true)
+        await assertEventually { self.store.showMode }
+        await settle()
+        try await assertAllOn(cues[1])
+        try pressKey(try downArrow)
+        try await assertAllOn(cues[2])
+        try await space()
+        XCTAssertTrue(running(cues[2]), "GO fired the cue the display stood by")
+        XCTAssertFalse(running(cues[1]))
+    }
+
+    /// A release lost any other way: the button is up, and the next key both ends the hold and acts on
+    /// the row the playhead is on. No further playhead move is needed.
+    func testAGestureWhoseReleaseWasLostEndsOnTheNextKey() async throws {
+        try await threeCues()
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
+        wc.inspector.audioLevels.beginGesture()
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        mouseIsDown = false
+        try pressKey(try downArrow)
+        try await assertAllOn(cues[2])
+    }
+
+    /// With no key either, the next word from the engine notices.
+    func testAGestureWhoseReleaseWasLostEndsOnTheNextEngineUpdate() async throws {
+        try await threeCues()
+        wc.inspector.audioLevels.beginGesture()
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        mouseIsDown = false
+        wc.cueList.handle(.progress([]))
+        try await assertAllOn(cues[1])
+    }
+
+    /// While the button really is down, neither a key nor an update ends the hold.
+    func testAHeldGestureHoldsThroughKeysAndUpdates() async throws {
+        try await threeCues()
+        let p = wc.inspector.audioLevels
+        p.beginGesture()
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        wc.cueList.handle(.progress([]))
+        try pressKey(try key("[", code: 33))  // Pause All: a key the monitor takes
+        await settle()
+        XCTAssertEqual(wc.cueList.selectedIDs(), [cues[0]], "still held")
+        p.endGesture()
+        try await assertAllOn(cues[1])
+    }
+
+    // MARK: Return and Esc in the inspector give the keys back
+
+    /// QLab 5.2.2 and 5.2.4 (pp. 36-37): Return in a text field sends focus to the cue list. The held
+    /// follow runs, Space fires GO and types nothing.
+    func testReturnInAnInspectorFieldEndsTypingAndSpaceFiresGo() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.nameField))
+        try typeKeys("Storm", in: window)
+        try await moveElsewhere(to: cues[1])
+        await assertHeldOnFirstCue(playheadOn: cues[1])
+        try typeKeys("\r", in: window, code: 36)
+        await assertEventually("saved") { self.store.model?.cue(self.cues[0])?.name == "Storm" }
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
+        try await assertAllOn(cues[1])
+        try await space()
+        XCTAssertTrue(running(cues[1]))
+        XCTAssertEqual(store.model?.cue(cues[0])?.name, "Storm")
+    }
+
+    /// The audio matrix's text fields are the ones QLab's change log names (p. 37).
+    func testReturnInALevelFieldEndsTyping() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        showTab("levels")
+        let field = wc.inspector.audioLevels.levelField
+        XCTAssertTrue(window.makeFirstResponder(field))
+        field.currentEditor()?.selectAll(nil)
+        try typeKeys("-9", in: window)
+        try typeKeys("\r", in: window, code: 36)
+        await assertEventually("saved") { self.kind(self.cues[0])?["levels"]?["master_db"]?.doubleValue == -9 }
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
+    }
+
+    /// As in the masthead (rows 62, 69): Return ends the typing, Option-Return types a new line.
+    func testReturnInTheInspectorNotesEndsTypingAndOptionReturnTypesALine() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        let notes = wc.inspector.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        try typeKeys("one", in: window)
+        let optionReturn = try key("\r", code: 36, [.option])
+        window.sendEvent(optionReturn)
+        XCTAssertTrue(window.firstResponder === notes)
+        try typeKeys("two", in: window)
+        try typeKeys("\r", in: window, code: 36)
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
+        await assertEventually("saved") { self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "one\ntwo" }
+    }
+
+    /// Esc drops the text and leaves the keys with the list: Down moves the highlight.
+    private func assertEscDropsTheTextAndDownMovesTheHighlight(typingIn view: NSView) async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        try typeKeys("dropped", in: window)
+        try typeKeys("\u{1B}", in: window, code: 53)
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
+        try pressKey(try downArrow)
+        try await assertAllOn(cues[1])
+        await sync()
+        XCTAssertNotEqual(store.model?.cue(cues[0])?.name, "dropped")
+        XCTAssertNotEqual(store.model?.cue(cues[0])?.raw["notes"]?.stringValue, "dropped")
+    }
+
+    func testEscInAnInspectorFieldDropsTheTextAndDownMovesTheHighlight() async throws {
+        try await assertEscDropsTheTextAndDownMovesTheHighlight(typingIn: wc.inspector.nameField)
+    }
+
+    func testEscInTheInspectorNotesDropsTheTextAndDownMovesTheHighlight() async throws {
+        try await assertEscDropsTheTextAndDownMovesTheHighlight(typingIn: wc.inspector.notesView)
+    }
+
+    func testEscInALevelFieldDropsTheTextAndDownMovesTheHighlight() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        showTab("levels")
+        let field = wc.inspector.audioLevels.levelField
+        XCTAssertTrue(window.makeFirstResponder(field))
+        field.currentEditor()?.selectAll(nil)
+        try typeKeys("-9", in: window)
+        try typeKeys("\u{1B}", in: window, code: 53)
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
+        XCTAssertEqual(field.stringValue, LevelText.format(0), "the level it had")
+        await settle()
+        try await play(0)
+        XCTAssertEqual(kind(cues[0])?["levels"]?["master_db"]?.doubleValue, 0)
+        try pressKey(try downArrow)
+        try await assertAllOn(cues[1])
     }
 
     // MARK: #496: GO on a group after a mode change

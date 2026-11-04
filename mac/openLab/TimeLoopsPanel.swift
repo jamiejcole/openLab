@@ -598,6 +598,13 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         }
     }
 
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard control.endTyping(by: selector) else { return false }
+        // Esc reports no end of editing, and that is what puts this field away.
+        if control === sliceCountField, !sliceCountField.isHidden { endSliceCountEdit() }
+        return true
+    }
+
     func controlTextDidEndEditing(_ obj: Notification) {
         guard !isLocked, let field = obj.object as? NSTextField else { return }
         let text = field.stringValue.trimmingCharacters(in: .whitespaces)

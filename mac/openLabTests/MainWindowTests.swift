@@ -62,7 +62,6 @@ final class MainWindowTests: XCTestCase {
 
     func testInspectorShowsNoCueSelected() throws {
         let wc = try controller()
-        wc.cueList.outlineView.deselectAll(nil)
         XCTAssertEqual(wc.inspector.emptyLabel.stringValue, "No cue selected")
         XCTAssertFalse(wc.inspector.emptyLabel.isHidden)
     }

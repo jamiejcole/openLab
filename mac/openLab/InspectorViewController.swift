@@ -81,8 +81,6 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     var onChooseFile: ((ModelID) -> Void)?
     /// A drag in the Levels or Time & Loops tabs starts or ends: it edits the selected cue all the way.
     var onGestureHold: ((Bool) -> Void)?
-    /// Showing another cue left no control to take the keys.
-    var onKeyTargetLost: (() -> Void)?
     /// Sends a transport action (set by the window controller).
     var onTransport: ((TransportAction) -> Void)?
     private var connectionSub: AnyCancellable?
@@ -93,7 +91,14 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         didSet {
             guard isLocked != oldValue else { return }
             applyLock()
-            if !isLocked { render() }
+            if isLocked {
+                // The panels go with Show Mode, so a drag under way never sees its mouse-up.
+                audioLevels.endGesture()
+                fadeLevels.endGesture()
+                onGestureHold?(false)
+            } else {
+                render()
+            }
         }
     }
 
@@ -512,7 +517,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         guard let window = view.window else { return }
         let responder = window.firstResponder
         let hidden = (responder as? NSView).map { $0.isDescendant(of: view) && $0.isHiddenOrHasHiddenAncestor }
-        if responder === window || hidden == true { onKeyTargetLost?() }
+        // The workspace window gives the keys to the cue list when nothing is focused.
+        if responder === window || hidden == true { window.makeFirstResponder(nil) }
     }
 
     func isEditing(_ f: InspectorField) -> Bool { dirty.contains(f) }
@@ -765,12 +771,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        guard selector == #selector(NSResponder.cancelOperation(_:)), let f = inspectorField(of: control) else {
-            return false
+        if selector == #selector(NSResponder.cancelOperation(_:)), let f = inspectorField(of: control) {
+            cancel(f)
+            view.window?.makeFirstResponder(nil)
+            return true
         }
-        cancel(f)
-        view.window?.makeFirstResponder(nil)
-        return true
+        return control.endTyping(by: selector)
     }
 
     func controlTextDidChange(_ obj: Notification) {
@@ -782,8 +788,11 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     func textDidEndEditing(_ notification: Notification) { commit(.notes) }
 
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
-        cancel(.notes)
+        if selector == #selector(NSResponder.cancelOperation(_:)) {
+            cancel(.notes)
+        } else if !textView.endsNotesTyping(selector) {
+            return false
+        }
         view.window?.makeFirstResponder(nil)
         return true
     }
@@ -834,5 +843,31 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         send(
             .setProperty(cue.id, sender === flaggedCheck ? .flagged(on) : .armed(on)), cue: cue.id,
             key: sender === flaggedCheck ? "flagged" : "armed", revert: [])
+    }
+}
+
+extension NSControl {
+    /// Return and Esc in an inspector text field: the typing ends and the focus goes back, so Space
+    /// fires GO (QLab 5.2.2 and 5.2.4, pp. 36-37: focus returns to the cue list). Return commits, by
+    /// the end of editing that follows; Esc drops the text.
+    func endTyping(by selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            window?.makeFirstResponder(nil)
+        case #selector(NSResponder.cancelOperation(_:)):
+            abortEditing()
+            window?.makeFirstResponder(nil)
+        default:
+            return false
+        }
+        return true
+    }
+}
+
+extension NSTextView {
+    /// Return and Tab end typing in a cue's notes, wherever they are shown; Option-Return types a
+    /// new line.
+    func endsNotesTyping(_ selector: Selector) -> Bool {
+        selector == #selector(NSResponder.insertNewline(_:)) || selector == #selector(NSResponder.insertTab(_:))
     }
 }

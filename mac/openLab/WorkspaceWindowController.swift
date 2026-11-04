@@ -15,6 +15,19 @@ final class WorkspaceWindow: NSWindow {
     /// mouse inside that call, and sends its action there too.
     var onPress: ((Bool) -> Void)?
 
+    /// Takes the keys when nothing else is focused (typing ended, a focused control went): the window
+    /// itself would leave the arrow keys driving nothing.
+    weak var keyTarget: NSView?
+
+    @discardableResult
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        guard super.makeFirstResponder(responder) else { return false }
+        if responder == nil || responder === self, let keyTarget, keyTarget.window === self {
+            return super.makeFirstResponder(keyTarget)
+        }
+        return true
+    }
+
     override func sendEvent(_ event: NSEvent) {
         guard event.type == .leftMouseDown else { return super.sendEvent(event) }
         onPress?(true)
@@ -131,9 +144,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cueList.onSelectionChange = { [weak inspector] in inspector?.setSelection($0) }
         window.onPress = { [weak cueList] in cueList?.setFollowHold(.press, $0) }
         inspector.onGestureHold = { [weak cueList] in cueList?.setFollowHold(.gesture, $0) }
-        inspector.onKeyTargetLost = { [weak window, weak cueList] in
-            window?.makeFirstResponder(cueList?.outlineView)
-        }
+        window.keyTarget = cueList.outlineView
         editor.isLocked = { [weak self] in self?.isShowMode ?? true }
         editor.commitPending = { [weak self] in await self?.commitPendingEdits() ?? true }
         editor.notify = { [weak self] message in self?.showNotice(message) }
@@ -163,7 +174,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
         window.contentView = buildContent()
         window.initialFirstResponder = cueList.outlineView
-        cueList.followAfterLoad()  // a show already loaded: the reset that would do it has passed
         window.center()
         // Combine does not deliver in subscription order, so whatever reads the cue list's own
         // state (the shown list, its tree) waits for `onModelApplied`, which it calls once it has
@@ -180,7 +190,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
         wireFind()
         masthead.onEditingEnded = { [weak self] in self?.syncMasthead() }
-        masthead.onKeysGivenBack = { [weak self] in self?.window?.makeFirstResponder(self?.cueList.outlineView) }
         masthead.onCommitNotes = { [weak self] id, text in Task { await self?.editor.setNotes(of: id, text: text) } }
         sidebar.shownProvider = { [weak self] in self?.cueList.listID }
         sidebar.onSelectList = { [weak self] id in
@@ -480,7 +489,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         var ok = true
         if let edit = cueList.takeDurationEdit() { ok = await editor.setDuration(of: edit.id, text: edit.text) }
         if let notes = masthead.pendingNotes() {
-            ok = await editor.setNotes(of: notes.id, text: notes.text) && ok
+            if await !editor.setNotes(of: notes.id, text: notes.text) {
+                masthead.notesNotSaved()
+                ok = false
+            }
         }
         return await inspector.commitPendingEdits() && ok
     }

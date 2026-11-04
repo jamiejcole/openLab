@@ -571,7 +571,7 @@ final class InspectorTests: XCTestCase {
         vc.setSelection([Self.intro])
         XCTAssertTrue(window.makeFirstResponder(vc.nameField))
         typed(.name, "A")
-        vc.commit(.name)  // Return: sent, field stays focused
+        vc.commit(.name)  // a Save's commit: sent, field stays focused
         await assertEventually { self.commands.count == 1 }
         await assertEventually { self.store.model?.cue(Self.intro)?.name == "A" }
         try await elsewhere(.setProperty(Self.intro, .name("B")))

@@ -157,6 +157,7 @@ final class AppController {
     /// swallow Space before the menu's key equivalent sees it; a text field being edited keeps its
     /// typing keys (`canPerform`).
     func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        frontController?.cueList.noticeLostGesture()
         if Self.isPanicKey(event) {
             firePanic()
             return event

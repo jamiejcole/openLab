@@ -120,8 +120,6 @@ final class MastheadView: NSView, NSTextViewDelegate {
     /// Typing ended (or its text was taken): the masthead may now show the standby cue that came
     /// while the operator typed. The window re-reads it, since the cue may have changed or gone.
     var onEditingEnded: (() -> Void)?
-    /// A key ended the typing, leaving nothing focused: the window gives the keys to the cue list.
-    var onKeysGivenBack: (() -> Void)?
     /// The text last handed over by `pendingNotes`.
     private var handedOver: String?
 
@@ -147,13 +145,10 @@ final class MastheadView: NSView, NSTextViewDelegate {
     /// and give focus back, so Space fires GO again and the arrow keys work. Option-Return still
     /// types a new line.
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        let endsTyping = [
-            #selector(NSResponder.cancelOperation(_:)), #selector(NSResponder.insertNewline(_:)),
-            #selector(NSResponder.insertTab(_:)),
-        ]
-        guard endsTyping.contains(selector) else { return false }
+        guard selector == #selector(NSResponder.cancelOperation(_:)) || textView.endsNotesTyping(selector) else {
+            return false
+        }
         window?.makeFirstResponder(nil)
-        onKeysGivenBack?()
         return true
     }
 
@@ -178,6 +173,9 @@ final class MastheadView: NSView, NSTextViewDelegate {
         handedOver = notesView.string
         return (id, notesView.string)
     }
+
+    /// The text handed over was refused or not delivered: the next command must send it again.
+    func notesNotSaved() { handedOver = nil }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
