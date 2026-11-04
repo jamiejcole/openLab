@@ -133,6 +133,8 @@ final class FooterBar: NSView {
         warningsButton.isBordered = false
         warningsButton.imagePosition = .imageLeading
         warningsButton.refusesFirstResponder = true
+        // Like the notice, it gives way before the footer widens the window past its minimum.
+        warningsButton.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(749), for: .horizontal)
         warningsButton.setAX(AX.warningsButton)
         warningsButton.toolTip = loc("footer.warnings.tooltip")
         warningsButton.target = self
@@ -208,7 +210,9 @@ final class FooterBar: NSView {
     func showWarnings(count: Int) {
         warningsButton.isHidden = count == 0
         let text = String(format: loc(count == 1 ? "warnings.one" : "warnings.many"), count)
-        warningsButton.title = text
+        // Icon and number only: the footer is nearly full at the minimum window width. The icon is
+        // not the only signal (the number is text), and VoiceOver reads the full words.
+        warningsButton.title = String(count)
         warningsButton.image = Icon.statusWarning.image(text, compact: true)
         warningsButton.contentTintColor = .systemOrange
         warningsButton.font = .systemFont(ofSize: 12, weight: .semibold)

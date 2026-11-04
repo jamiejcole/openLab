@@ -75,7 +75,8 @@ final class FooterWarningsTests: XCTestCase {
         XCTAssertEqual(rowCount(rig), 1)
         XCTAssertFalse(wc.isVisible(.sidebar))
         XCTAssertTrue(shown(wc))
-        XCTAssertEqual(wc.footer.warningsButton.title, title(1))
+        XCTAssertEqual(wc.footer.warningsButton.title, "1")
+        XCTAssertEqual(wc.footer.warningsButton.accessibilityLabel(), title(1))
         assertOnScreen(wc)
 
         let before = wc.window?.firstResponder
@@ -90,7 +91,7 @@ final class FooterWarningsTests: XCTestCase {
     func testTheCountFollowsWarningsComingAndGoingInEditAndShowMode() async throws {
         let (rig, wc) = try await open()
         await setMedia(door, "media/gone.wav", in: rig, rows: 2)
-        await assertEventually("two") { wc.footer.warningsButton.title == self.title(2) }
+        await assertEventually("two") { wc.footer.warningsButton.title == "2" }
         assertOnScreen(wc)
 
         // Show Mode: the footer stays, the button follows, and it still opens the tab.
@@ -98,7 +99,7 @@ final class FooterWarningsTests: XCTestCase {
         await assertEventually { wc.isShowMode }
         XCTAssertTrue(shown(wc))
         await setMedia(door, "media/d.wav", in: rig, rows: 1)
-        await assertEventually("one") { wc.footer.warningsButton.title == self.title(1) }
+        await assertEventually("one") { wc.footer.warningsButton.title == "1" }
         assertOnScreen(wc)
         wc.setVisible(.sidebar, false)
         wc.footer.warningsButton.performClick(nil)
