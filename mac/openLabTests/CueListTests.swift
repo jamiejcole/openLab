@@ -228,7 +228,7 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.cell("name", H.intro)?.label.stringValue, "Intro")
         XCTAssertEqual(h.cell("target", H.intro)?.label.stringValue, "a.wav")
         // The fade cue has no name and no number: its default name follows the cue it fades, and it points at cue 1.
-        XCTAssertEqual(h.cell("name", H.fade)?.label.stringValue, "Fade Intro")
+        XCTAssertEqual(h.cell("name", H.fade)?.label.stringValue, "Fade and stop Intro")
         XCTAssertEqual(h.cell("duration", H.fade)?.label.stringValue, "00:05.00")
         XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "1 Intro")
         // Zero waits show as a dimmed 00:00.00, a non-zero one in the normal colour.
@@ -1356,10 +1356,13 @@ final class PlayheadFlowTests: XCTestCase {
 
     // MARK: Doing what the operator does
 
-    private func key(_ chars: String, code: UInt16, _ flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
+    private func key(
+        _ chars: String, code: UInt16, _ flags: NSEvent.ModifierFlags = [], windowNumber: Int = 0
+    ) throws -> NSEvent {
         try XCTUnwrap(
             NSEvent.keyEvent(
-                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: windowNumber,
+                context: nil,
                 characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code))
     }
 
@@ -1421,7 +1424,7 @@ final class PlayheadFlowTests: XCTestCase {
     private func standbyText(_ id: ModelID?) throws -> String {
         guard let id else { return loc("masthead.standby.none") }
         let cue = try XCTUnwrap(store.model?.cue(id))
-        return [cue.number, cue.listName].compactMap { $0 }.joined(separator: " \u{00B7} ")
+        return [cue.number, store.model?.listName(cue)].compactMap { $0 }.joined(separator: " \u{00B7} ")
     }
 
     /// The highlighted rows, the playhead marker and the standby display are all on `id` (nil:
@@ -1615,10 +1618,7 @@ final class PlayheadFlowTests: XCTestCase {
     /// A key as the app takes it: the key monitor, then the window's dispatch to the first responder.
     private func press(_ chars: String, code: UInt16 = 0) throws {
         let window = try XCTUnwrap(wc.window)
-        let event = try XCTUnwrap(
-            NSEvent.keyEvent(
-                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
-                context: nil, characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code))
+        let event = try key(chars, code: code, windowNumber: window.windowNumber)
         if let passed = app.handleKeyDown(event) { window.sendEvent(passed) }
     }
 
@@ -1655,12 +1655,12 @@ final class PlayheadFlowTests: XCTestCase {
 
     func testNKeyEditsTheNumberWithItsTextSelected() async throws {
         try await editWorkspace()
-        let beeps = Counter()
-        app.beep = { beeps.count += 1 }
+        let tap = try CancelTap()
+        defer { tap.restore() }
         try press("n", code: 45)
         try assertEditing(cues[1], "number", text: "2")
         XCTAssertEqual(goes(), 0)
-        XCTAssertEqual(beeps.count, 0)
+        XCTAssertEqual(tap.taken, 0, "no Esc was needed, and none reached the window")
         try await assertAllOn(cues[1])
     }
 
@@ -1705,15 +1705,15 @@ final class PlayheadFlowTests: XCTestCase {
         try await editWorkspace()
         let tap = try CancelTap()
         defer { tap.restore() }
-        let beeps = Counter()
-        app.beep = { beeps.count += 1 }
         try press("n", code: 45)
         try type("99")
         try press("\u{1B}", code: 53)
         assertNotEditing()
+        // The field's editor took Esc (cancelling the edit), so it never ended up at the window, where
+        // an Esc nothing handles would beep.
+        XCTAssertEqual(tap.taken, 0)
         XCTAssertEqual(cell(cues[1], "number"), "2", "the old number")
         XCTAssertEqual(store.model?.cue(cues[1])?.number, "2")
-        XCTAssertEqual(beeps.count, 0)
         try await assertAllOn(cues[1])
     }
 
@@ -1834,6 +1834,68 @@ final class PlayheadFlowTests: XCTestCase {
         }
         XCTAssertTrue(sheetTexts(window).contains(loc("cuelist.edit.cueGone")), "\(sheetTexts(window))")
         window.endSheet(try XCTUnwrap(window.attachedSheet))
+    }
+
+    // MARK: Default names of cues that act on another
+
+    /// An unnamed Fade, Stop and the rest are named after the cue they act on, on every surface: list,
+    /// standby, Find, the inspector (a hint over an empty field) and the editor over the cell.
+    func testAnUnnamedFadeIsNamedAfterItsTargetEverywhere() async throws {
+        try await editWorkspace()
+        try await focusList(on: fade)
+        XCTAssertEqual(cell(fade, "name"), "Fade intro")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, "3 \u{00B7} Fade intro")
+        XCTAssertEqual(wc.inspector.nameField.stringValue, "", "nothing is stored")
+        XCTAssertEqual(wc.inspector.nameField.placeholderString, "Fade intro")
+        wc.setFindQuery("fade intro")
+        XCTAssertEqual(wc.find.matches, [fade])
+        try press("q", code: 12)
+        XCTAssertEqual(wc.cueList.cellEditor.stringValue, "", "the editor starts empty for an unnamed cue")
+        XCTAssertEqual(wc.cueList.cellEditor.placeholderString, "Fade intro")
+        try pressReturn()
+        await settle()
+        XCTAssertEqual(store.model?.cue(fade)?.name, "", "Return on the untouched cell writes nothing back")
+        // Stop Target When Done changes it.
+        guard case .success = await store.send(
+            command: .setProperty(fade, .kindFields(["stop_target_when_done": .bool(true)])))
+        else { return XCTFail("kind") }
+        await assertEventually { self.cell(self.fade, "name") == "Fade and stop intro" }
+    }
+
+    func testAnUnnamedStopCueIsNamedAfterItsTarget() async throws {
+        try await editWorkspace()
+        let added = await wc.editor.add(.stop, after: [fade])
+        let stop = try XCTUnwrap(added)
+        guard case .success = await store.send(command: .setProperty(stop, .target(cues[1]))) else {
+            return XCTFail("target")
+        }
+        await assertEventually("named after cue 2, whose name is its file's") { self.cell(stop, "name") == "Stop b.wav" }
+    }
+
+    /// N or Q on a row scrolled out of sight scrolls it into view: the editor is never off screen.
+    func testTheEditorOpensOnAScrolledAwayRow() async throws {
+        try await editWorkspace()
+        let more = await wc.editor.addFiles(try tempFiles((0..<83).map { "x\($0).wav" }), parent: nil, index: 0)
+        XCTAssertEqual(more.count, 83)
+        try await focusList(on: cues[1])
+        let ov = wc.cueList.outlineView
+        try XCTUnwrap(wc.window).setFrame(NSRect(x: 0, y: 0, width: 1400, height: 500), display: true)
+        try XCTUnwrap(wc.window).contentView?.layoutSubtreeIfNeeded()
+        ov.scrollRowToVisible(0)
+        let row = ov.row(forItem: try XCTUnwrap(wc.cueList.node(cues[1])))
+        XCTAssertFalse(ov.visibleRect.intersects(ov.rect(ofRow: row)), "the row is scrolled away")
+        try press("n", code: 45)
+        XCTAssertEqual(wc.cueList.editingCell?.id, cues[1])
+        XCTAssertTrue(ov.visibleRect.contains(wc.cueList.cellEditor.frame), "the editor is on screen")
+    }
+
+    /// A letter held with fn is not the plain key (an arrow key carries fn).
+    func testALetterHeldWithFnDoesNotOpenAnEditor() async throws {
+        try await editWorkspace()
+        let window = try XCTUnwrap(wc.window)
+        let event = try key("n", code: 45, [.function], windowNumber: window.windowNumber)
+        if let passed = app.handleKeyDown(event) { window.sendEvent(passed) }
+        XCTAssertNil(wc.cueList.editingCell)
     }
 
     // MARK: Typing while the playhead moves

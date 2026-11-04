@@ -583,8 +583,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             }
         }
         let kind = cue.kindType
-        // An unnamed cue with no file shows its kind as a hint; otherwise the field holds the shown name.
-        nameField.placeholderString = CueKindStyle.kindLabel(kind)
+        // An unnamed cue shows the name it defaults to as a hint (the field stays empty: nothing is stored),
+        // its kind when it has none; an Audio cue's file name is the field's text.
+        let followed = store.model.map { m in cue.targetDefaultName(lookup: { m.cue($0) }) } ?? ""
+        nameField.placeholderString = followed.isEmpty ? CueKindStyle.kindLabel(kind) : followed
         let style = CueKindStyle.kinds[kind]
         kindIcon.image = style.map { $0.icon.image(CueKindStyle.kindLabel(kind), compact: true) }
         let isTarget = InspectorEdit.targetKinds.contains(kind)

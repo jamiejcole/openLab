@@ -189,12 +189,12 @@ final class MainWindowTests: XCTestCase {
         let cue = try XCTUnwrap(rig.store.model?.cue(TestSnapshots.intro))
         XCTAssertEqual(
             wc.masthead.standbyField.stringValue,
-            [cue.number, cue.listName].compactMap { $0 }.joined(separator: " \u{00B7} "))
+            [cue.number, rig.store.model?.listName(cue)].compactMap { $0 }.joined(separator: " \u{00B7} "))
         XCTAssertTrue(wc.masthead.notesView.isEditable)
         // An unnumbered, unnamed cue: its name alone, from its kind.
         try await standBy(rig, TestSnapshots.fade)
         XCTAssertEqual(wc.masthead.cueID, TestSnapshots.fade)
-        XCTAssertEqual(wc.masthead.standbyField.stringValue, "Fade")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, "Fade and stop Intro", "an unnamed Fade is named after the cue it fades")
     }
 
     func testMastheadNotesEditSendsTheInspectorNotesCommand() async throws {

@@ -172,14 +172,13 @@ final class AppController {
         return beginCellEdit(for: chord, event: event) ? nil : event
     }
 
-    /// QLab 5's edit-number (N) and edit-name (Q) keys, by their default keys. They come after the
-    /// cue hotkeys: a cue whose hotkey is one of them fires, and the key opens no editor.
-    private static let editKeys = ["n": "number", "q": "name"]
-
+    /// QLab 5's edit-number (N) and edit-name (Q) keys (`TransportKeys.editKeys`). They come after the
+    /// cue hotkeys: a cue whose hotkey is one of them (a loaded show's) fires, and the key opens no editor.
     /// The key opens the selected cue's cell in the front workspace's list when the list has the
     /// focus: a field being typed in, Show Mode (the list is locked) and a held key take nothing.
     private func beginCellEdit(for chord: KeyChord, event: NSEvent) -> Bool {
-        guard chord.mask == 0, !event.isARepeat, let column = Self.editKeys[chord.key],
+        // fn is not part of a chord, so a letter held with it would read as the plain key.
+        guard !event.isARepeat, !event.modifierFlags.contains(.function), let column = TransportKeys.editKeys[chord],
             let list = frontController?.cueList
         else { return false }
         return list.beginEditFromKey(column)

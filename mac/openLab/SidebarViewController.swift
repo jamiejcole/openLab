@@ -659,7 +659,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     func fill(_ cell: ActiveCueCell, _ id: ModelID) {
         let cue = store.model?.cue(id)
         let state = store.cueStates[id]?.state ?? .idle
-        let name = cue?.listName ?? ""
+        let name = cue.flatMap { store.model?.listName($0) } ?? ""
         cell.title.stringValue = [cue?.number, name].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "  ")
         let paused = state == .paused
         cell.pauseButton.cue = id

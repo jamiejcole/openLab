@@ -459,7 +459,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// The shown list's playhead cue, with its notes.
     func syncMasthead() {
         let id = cueList.listID.flatMap { store.playheads[$0] }
-        masthead.show(standby: id.flatMap { store.model?.cue($0) })
+        let cue = id.flatMap { store.model?.cue($0) }
+        masthead.show(standby: cue, name: cue.flatMap { store.model?.listName($0) })
     }
 
     /// The cue list has applied a change: the syncs that read its shown list and tree run now.

@@ -147,11 +147,11 @@ final class PlayheadClickUITests: XCTestCase {
     /// of Intro, which has its default name, follows it.
     func testDoubleClickName() {
         let app = launchDemo()
-        XCTAssertTrue(app.staticTexts["Fade Intro"].waitForExistence(timeout: 10), "the fade follows Intro")
+        XCTAssertTrue(app.staticTexts["Fade and stop Intro"].waitForExistence(timeout: 10), "the fade follows Intro")
         app.staticTexts["Intro"].doubleClick()
         app.typeText("entrance\r")
         XCTAssertTrue(app.staticTexts["entrance"].waitForExistence(timeout: 10), "the cell shows entrance")
-        XCTAssertTrue(app.staticTexts["Fade entrance"].waitForExistence(timeout: 10), "the fade's name follows")
+        XCTAssertTrue(app.staticTexts["Fade and stop entrance"].waitForExistence(timeout: 10), "the fade's name follows")
         XCTAssertFalse(cueState("Running", of: "entrance", in: app).exists, "Return did not fire GO")
     }
 

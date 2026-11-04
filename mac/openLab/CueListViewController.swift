@@ -139,7 +139,7 @@ final class CueCell: NSTableCellView {
 /// It mirrors the store's tree in `CueNode`s and applies `StoreChange`s as row inserts, removals,
 /// moves and reloads; it reloads the whole table only for a snapshot or when it has lost sync.
 /// Editing goes through `CueEditor`; this class only offers the drag and drop, which it hands to `onMove`,
-/// and the in-place Duration edit, which it hands to `onEditDuration`.
+/// and the in-place Number, Name and Duration edit, which it hands to `onEditCell`.
 @MainActor
 final class CueListViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate,
     NSTextFieldDelegate
@@ -1008,11 +1008,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         if let pending = takeCellEdit() { onEditCell?(pending.id, pending.column, pending.text) }
         editingCell = (id, column)
         cellEditor.stringValue = InspectorEdit.display(field, cue: node.cue, model: model)
+        // An unnamed cue's editor starts empty, with the name it follows as a hint.
+        cellEditor.placeholderString = column == "name" ? node.cue.targetDefaultName(lookup: cueLookup) : nil
         switch column {
         case "number": cellEditor.setAX(AX.cueNumberEditor, label: loc("cuelist.numberEditor.label"))
         case "name": cellEditor.setAX(AX.cueNameEditor, label: loc("cuelist.nameEditor.label"))
         default: cellEditor.setAX(AX.cueDurationEditor, label: loc("cuelist.durationEditor.label"))
         }
+        outlineView.scrollRowToVisible(outlineView.row(forItem: node))
         placeCellEditor()
         outlineView.addSubview(cellEditor)
         view.window?.makeFirstResponder(cellEditor)
@@ -1213,13 +1216,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             }
         case "name":
             let kind = cue.kindType
-            if let shown = followedName(cue) {
-                text(shown)
-            } else if cue.displayName.isEmpty {
+            let shown = shownName(cue)
+            if shown.isEmpty {
                 text(CueKindStyle.kindLabel(kind))
                 cell.label.textColor = .secondaryLabelColor
             } else {
-                text(cue.displayName)
+                text(shown)
             }
         case "target": text(targetText(cue))
         case "preWait", "postWait":
@@ -1245,15 +1247,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
-    /// An unnamed Fade cue's default name: it follows the name of the cue it fades (QLab 5, manual
-    /// pp. 93, 126). Drawn only; the cue's `name` stays empty, so it keeps following.
-    private func followedName(_ cue: Cue) -> String? {
-        guard cue.kindType == "fade", cue.displayName.isEmpty,
-            let id = cue.raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }),
-            let target = nodes[id]?.cue ?? store.model?.cue(id)
-        else { return nil }
-        return String(format: loc("cuelist.name.fadeDefault"), target.listName)
-    }
+    /// The name the list shows for `cue` (see `Cue.shownName`), found through the list's own tree.
+    func shownName(_ cue: Cue) -> String { cue.shownName(lookup: cueLookup) }
+
+    private var cueLookup: (ModelID) -> Cue? { { [weak self] in self?.nodes[$0]?.cue ?? self?.store.model?.cue($0) } }
 
     private func targetText(_ cue: Cue) -> String {
         if cue.kindType == "audio" {
@@ -1263,7 +1260,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         if cue.kindType == "network" { return cue.raw["kind"]?["address"]?.stringValue ?? "" }
         guard let target = cue.raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }) else { return "" }
         guard let t = nodes[target]?.cue ?? store.model?.cue(target) else { return loc("cue.target.missing") }
-        let label = [t.number, t.listName]
+        let label = [t.number, t.listName(lookup: cueLookup)]
         return label.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
     }
 
