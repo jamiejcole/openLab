@@ -91,8 +91,8 @@ pub struct Indexed {
 }
 
 /// One file of [`Indexed`], with what the control thread would otherwise work out for each file
-/// while a doc opens: resolving 2,000 references took about 40% of a doc's install there (M4.15i),
-/// and hashing their long paths most of the rest.
+/// while a doc opens: resolving 2,000 references took about 40% of a doc's install there, and
+/// hashing their long paths most of the rest.
 struct IndexedFile {
     key: String,
     /// Resolved against `show_dir` ([`media_path`]).
