@@ -290,7 +290,7 @@ impl CueEngine {
                 // `resume_one`). Holding it rather than sending it to the paused segment as well
                 // gives the mixer one devamp, after the resume, instead of two.
                 if run.paused_at.is_none() {
-                    let at = run.commit(at.max(now).max(started), cx.horizon);
+                    let at = run.commit(at.max(now).max(started), cx.committed_by);
                     cx.out.push(Action::DevampVoice {
                         cue: target,
                         run: run.run,

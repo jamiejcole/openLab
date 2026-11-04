@@ -387,7 +387,8 @@ impl Run {
     }
 
     /// The earliest sample a new command for the voice may be dated on, for a call that commits
-    /// up to `horizon`. A committed sample beyond the horizon can only come from a clock that went
+    /// up to `horizon` (`Ctx::committed_by`). A committed sample beyond it can only come from a
+    /// clock that went
     /// back (device restart); it is then ignored, as double-GO ignores such a GO.
     pub fn floor(&self, horizon: SampleTime) -> SampleTime {
         after_restart(self.committed, horizon)

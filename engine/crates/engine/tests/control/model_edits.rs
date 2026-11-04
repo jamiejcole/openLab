@@ -930,6 +930,130 @@ fn raising_the_minimum_silences_a_level_a_fade_has_set_at_or_below_it() {
     assert_eq!(peak(&s, 0), 0.0);
 }
 
+/// A paused Fade that was shortened ends where its planned curve is at the new length, which from
+/// a level above a lowered maximum is above it too: the resume is limited as well.
+#[test]
+fn a_shortened_paused_fade_resumes_within_a_lowered_maximum() {
+    let mut s = steady_show(|ws| {
+        if let CueKind::Audio { levels, .. } = &mut ws.cue_lists[0].cues[0].kind {
+            levels.master_db = 6.0;
+        }
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, SILENCE_DB, 4.0, false));
+    });
+    start(&mut s, 2);
+    s.run(u64::from(RATE) / 4);
+    s.transport(TransportAction::Pause { cue: id(2) });
+    s.run(BLOCK * 8);
+    command(
+        &mut s,
+        Command::SetCueProperty {
+            id: id(2),
+            property: CueProperty::Duration { value: 1.0 },
+        },
+    );
+    set_maximum(&mut s, 0.0);
+    s.run(BLOCK * 8);
+    s.transport(TransportAction::Resume { cue: id(2) });
+    let resumed = s.channel(0).len();
+    s.run(u64::from(RATE));
+    assert!(
+        peak_since(&s, resumed) <= 0.2 * 1.01,
+        "{}",
+        peak_since(&s, resumed)
+    );
+}
+
+/// A fade-out above the new maximum goes to it in 10 ms and on down from there; whatever comes in
+/// those 10 ms (from a second client or OSC) comes after both steps and is what stays.
+fn narrowed_during_a_fade_out(blocks_before: u64) -> OfflineShow {
+    let mut s = steady_show(|ws| {
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, 6.0, 0.0, false));
+        let mut out = fade_of_steady(3, SILENCE_DB, 4.0, true);
+        out.continue_mode = openlab_core::ContinueMode::AutoFollow;
+        ws.cue_lists[0].cues.push(out);
+        ws.cue_lists[0]
+            .cues
+            .push(cue(4, CueKind::Wait { duration: 60.0 }));
+    });
+    start(&mut s, 2);
+    s.run(BLOCK * 8);
+    start(&mut s, 3);
+    s.run(BLOCK * 8);
+    set_maximum(&mut s, 0.0);
+    s.run(BLOCK * blocks_before);
+    s
+}
+
+#[test]
+fn an_edit_just_after_a_narrowing_wins_over_the_fade_it_interrupted() {
+    for blocks in [0, 1] {
+        let mut s = narrowed_during_a_fade_out(blocks);
+        let mut kind = s
+            .control()
+            .workspace()
+            .find_cue(id(1))
+            .unwrap()
+            .kind
+            .clone();
+        if let CueKind::Audio { levels, .. } = &mut kind {
+            levels.master_db = -6.0;
+        }
+        command(
+            &mut s,
+            Command::SetCueProperty {
+                id: id(1),
+                property: CueProperty::Kind { value: kind },
+            },
+        );
+        let want = 0.2 * openlab_core::db_to_gain(-6.0);
+        s.run(BLOCK * 8);
+        assert!(near(peak(&s, 0), want), "soon, {blocks}: {}", peak(&s, 0));
+        s.run(u64::from(RATE) * 5);
+        assert!(near(peak(&s, 0), want), "late, {blocks}: {}", peak(&s, 0));
+        assert_eq!(
+            s.control().engine().state(id(1)),
+            openlab_core::CueState::Running,
+            "the edit took the level over: its stop does not apply"
+        );
+        // The Fade completed at once, so its auto-follow fired.
+        assert_eq!(
+            s.control().engine().state(id(4)),
+            openlab_core::CueState::Running
+        );
+    }
+}
+
+#[test]
+fn stopping_a_fade_just_after_a_narrowing_holds_its_level() {
+    for blocks in [0, 1] {
+        let mut s = narrowed_during_a_fade_out(blocks);
+        s.transport(TransportAction::Stop {
+            cue: id(3),
+            fade_out: None,
+        });
+        s.run(BLOCK * 8);
+        assert!(near(peak(&s, 0), 0.2), "soon, {blocks}: {}", peak(&s, 0));
+        s.run(u64::from(RATE) * 5);
+        assert!(near(peak(&s, 0), 0.2), "late, {blocks}: {}", peak(&s, 0));
+        assert_eq!(
+            s.control().engine().state(id(1)),
+            openlab_core::CueState::Running
+        );
+    }
+}
+
+#[test]
+fn a_stop_of_the_cue_just_after_a_narrowing_is_not_overtaken() {
+    let mut s = narrowed_during_a_fade_out(0);
+    s.transport(TransportAction::HardStop { cue: id(1) });
+    s.run(BLOCK * 8);
+    assert_eq!(peak(&s, 0), 0.0);
+}
+
 #[test]
 fn a_limit_out_of_range_is_refused_and_the_old_one_stays() {
     let mut s = steady_show(|_| {});

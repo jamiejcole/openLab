@@ -610,6 +610,32 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually { p.levelField.stringValue == "-6.0" }
     }
 
+    /// Space in a playing cue's level box (the GO habit) clears the text; leaving it changes nothing.
+    func testABlankLevelBoxIsNoChangeOnAPlayingCue() async throws {
+        guard case .success = await store.transport(.start(cue: Self.intro)) else { return XCTFail("start") }
+        vc.setSelection([Self.intro])
+        let p = vc.audioLevels
+        p.select(.master)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(p.levelField)
+        let editor = try XCTUnwrap(p.levelField.currentEditor())
+        editor.selectAll(nil)
+        window.sendEvent(
+            try XCTUnwrap(
+                NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, characters: " ",
+                    charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49)))
+        XCTAssertEqual(p.levelField.currentEditor()?.string, " ", "the key reached the box")
+        let before = sent.count
+        window.makeFirstResponder(nil)
+        await settle()
+        XCTAssertEqual(sent.count, before, "a blank sends nothing")
+        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["master_db"], .double(0))
+        XCTAssertEqual(p.levelField.stringValue, "0.0", "the box shows the level again")
+        XCTAssertEqual(store.cueStates[Self.intro]?.state, .running)
+    }
+
     func testFaderDragIsOneUndoStep() async throws {
         vc.setSelection([Self.intro])
         let p = vc.audioLevels

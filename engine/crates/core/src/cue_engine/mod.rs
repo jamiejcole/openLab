@@ -129,6 +129,10 @@ struct Ctx<'w> {
     now: SampleTime,
     /// Deadlines up to here are carried out in this call.
     horizon: SampleTime,
+    /// The latest sample a command can have been dated on by now: the horizon, or a little past it
+    /// for the second step a narrowed volume limit gives a fade (`follow_limits`). Anything later
+    /// on a run means the clock went back (`after_restart`).
+    committed_by: SampleTime,
     /// Cue starts left at this `now` (what earlier calls at the same `now` left).
     budget: usize,
     limit: usize,
@@ -287,6 +291,10 @@ impl CueEngine {
             ws,
             now,
             horizon: self.config.horizon(now),
+            committed_by: self
+                .config
+                .horizon(now)
+                .saturating_add(level::edit_frames(self.config.sample_rate().get())),
             budget: 0,
             limit: self.limit,
             limit_verified: follow_edits,
@@ -610,7 +618,7 @@ fn release(cue: CueId, slot: &Slot, cx: &mut Ctx) {
                 cue,
                 run: run.run,
                 // Never before a command already committed for the voice.
-                at: cx.now.max(at).max(run.floor(cx.horizon)),
+                at: cx.now.max(at).max(run.floor(cx.committed_by)),
                 fade: None,
             }),
             Voice::Loaded => cx.out.push(Action::UnloadVoice { cue, run: run.run }),

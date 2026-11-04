@@ -153,7 +153,7 @@ impl CueEngine {
                 if run.stop_end.is_some_and(|e| e <= end) {
                     return;
                 }
-                let at = run.commit(now.max(started), cx.horizon);
+                let at = run.commit(now.max(started), cx.committed_by);
                 if at >= end {
                     return self.stop_one(cue, None, cx);
                 }
