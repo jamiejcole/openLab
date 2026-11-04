@@ -60,6 +60,16 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(problems, [], "AppKit reported a layout problem")
     }
 
+    /// A cue-list column dragged to nothing leaves its cells zero wide: they lay out without a conflict.
+    func testCueListCellsLayOutAtZeroWidth() {
+        let cell = CueCell(identifier: NSUserInterfaceItemIdentifier("continue"))
+        cell.translatesAutoresizingMaskIntoConstraints = false
+        cell.widthAnchor.constraint(equalToConstant: 0).isActive = true
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 20))
+        host.addSubview(cell)
+        XCTAssertEqual(stderrText { host.layoutSubtreeIfNeeded() }, "")
+    }
+
     func testAllAreasPresent() throws {
         let wc = try controller()
         wc.setVisible(.sidebar, true)  // hidden, the sidebar is out of the split

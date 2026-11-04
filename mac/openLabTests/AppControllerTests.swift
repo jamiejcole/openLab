@@ -221,6 +221,10 @@ final class AppControllerTests: XCTestCase {
         app = nil
         engine?.releaseResults()
         real?.stop()
+        // Measured over this class (151 tests): the controllers, stores and the app are freed at once, but the
+        // windows were not closed, and NSApp.windows grew from 5 to 48 with up to 4 left on screen. Every
+        // test now ends with none left showing.
+        for window in NSApp.windows where window.isVisible { window.close() }
     }
 
     static func hotkey(_ key: String, _ mods: [String] = []) -> String {
@@ -2897,7 +2901,7 @@ final class AppControllerTests: XCTestCase {
         var presses = 0
         let targets: [(String, (WorkspaceWindowController) -> NSResponder)] = [
             ("GO button", { $0.masthead.goButton }),
-            ("sidebar list", { $0.sidebar.listTable }),
+            ("sidebar list", { $0.setVisible(.sidebar, true); return $0.sidebar.listTable }),
             ("footer control", { $0.footer.settingsButton }),
         ]
         for (name, focus) in targets {

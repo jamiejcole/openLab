@@ -85,9 +85,13 @@ final class CueCell: NSTableCellView {
         stack.spacing = 4
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
+        // A column dragged to zero width gives the cell zero width: a required trailing inset then
+        // contradicts the stack's own minimum ("Conflicting constraints detected").
+        let trailing = stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2)
+        trailing.priority = .defaultHigh
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            trailing,
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
         for image in images {
