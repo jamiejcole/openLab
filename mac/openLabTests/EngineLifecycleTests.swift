@@ -674,6 +674,8 @@ final class EngineCrashFlowTests: XCTestCase {
         try await launch()
         let savedInShowMode = try runs.show("Demo", named: "Saved In Show Mode")
         var file = try XCTUnwrap(JSONValue.parse(try String(contentsOfFile: savedInShowMode, encoding: .utf8)))
+        // A v7 file has no mode (the engine would drop one): the file is a v8 one.
+        file.set("format_version", .int(8))
         file["workspace"]?.set("show_mode", .bool(true))
         try file.text().write(toFile: savedInShowMode, atomically: true, encoding: .utf8)
         let savedInEditMode = try runs.show("Demo", named: "Saved In Edit Mode")
