@@ -311,6 +311,17 @@
 "settings.audio.problem.deviceMissing" = "%@ is not connected. Cues that use this patch are silent.";
 "settings.audio.problem.channelsMissing" = "The device does not have the channels this patch uses.";
 "settings.audio.problem.outputCount" = "The number of channels does not match the patch's outputs.";
+"settings.audio.edit" = "Edit";
+"settings.audio.limits" = "Volume limits";
+"settings.audio.limitMax" = "Maximum";
+"settings.audio.limitMin" = "Minimum";
+"settings.audio.limitOutOfRange" = "The maximum is from -30 to 12 dB and the minimum from -180 to -40 dB.";
+"settings.db" = "dB";
+"patchEditor.title" = "Patch Editor: %@";
+"patchEditor.tab.routing" = "Routing";
+"patchEditor.main" = "Main";
+"patchEditor.output" = "%ld";
+"patchEditor.done" = "Done";
 
 "menu.help" = "Help";
 "menu.help.openLabHelp" = "openLab Help";

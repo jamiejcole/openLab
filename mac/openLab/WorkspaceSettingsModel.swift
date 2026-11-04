@@ -95,13 +95,14 @@ final class WorkspaceSettingsModel: ObservableObject {
         var message: String?
         var panic: Double?
         var goInterval: Double?
+        var limits: VolumeLimits
     }
 
     var displayState: DisplayState {
         DisplayState(
             devices: devices, chosen: chosenDevice, patches: patches, playingName: playing?.name,
             playingState: playing?.state.raw, loaded: loaded, message: message, panic: panicDuration,
-            goInterval: minGoInterval)
+            goInterval: minGoInterval, limits: limits)
     }
 
     /// The playing device is lost, failed or absent: patches on it are silent until it is back.
@@ -201,6 +202,39 @@ final class WorkspaceSettingsModel: ObservableObject {
     @discardableResult
     func setMinGoInterval(_ text: String) async -> Bool {
         await setNumber("min_go_interval", text, Self.goIntervalRange)
+    }
+
+    // MARK: Volume limits (PB-11)
+
+    /// The workspace's volume limits, as the engine has them.
+    var limits: VolumeLimits {
+        let settings = store.model?.settings
+        return VolumeLimits(
+            max: settings?["output_max_db"]?.doubleValue ?? VolumeLimits().max,
+            min: settings?["output_min_db"]?.doubleValue ?? VolumeLimits().min)
+    }
+
+    /// Sets the maximum volume limit (-30 to +12 dB) from typed text. False, with a message, when it
+    /// is not a number in range: the engine's value stays. The engine puts every level above the new
+    /// maximum at it, in the same undo step.
+    @discardableResult
+    func setOutputMax(_ text: String) async -> Bool {
+        await setLimit("output_max_db", text, VolumeLimits.maxRange)
+    }
+
+    /// Sets the minimum volume limit (-180 to -40 dB): levels at or below it are silent.
+    @discardableResult
+    func setOutputMin(_ text: String) async -> Bool {
+        await setLimit("output_min_db", text, VolumeLimits.minRange)
+    }
+
+    private func setLimit(_ type: String, _ text: String, _ range: ClosedRange<Double>) async -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(trimmed), value.isFinite, range.contains(value) else {
+            message = loc("settings.audio.limitOutOfRange")
+            return false
+        }
+        return await setNumber(type, trimmed, range)
     }
 
     private func setNumber(_ type: String, _ text: String, _ range: ClosedRange<Double>) async -> Bool {

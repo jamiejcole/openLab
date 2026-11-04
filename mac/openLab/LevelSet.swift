@@ -4,6 +4,15 @@ import Foundation
 
 /// Levels as the inspector shows and types them (AUD-06, AUD-08). The wire holds dB with
 /// -120 meaning silence (docs/file-format.md); the UI shows that as "-inf".
+/// The workspace volume limits (PB-11, `settings.output_max_db` and `output_min_db`): a level above the
+/// maximum is held at it, one at or below the minimum is silent.
+struct VolumeLimits: Equatable {
+    var max = 12.0
+    var min = -60.0
+    static let maxRange = -30.0...12.0
+    static let minRange = -180.0...(-40.0)
+}
+
 enum LevelText {
     static let silence = -120.0
     static let maxDb = 12.0
@@ -20,18 +29,18 @@ enum LevelText {
     /// sign is negative (`6` is -6 dB, `+6` is +6 dB); a value at or below the lower limit, or text
     /// that is not a number, is -inf. Above +12 is held at +12 (QLab limits it to the workspace
     /// maximum). A decimal comma is read as a point.
-    static func parse(_ text: String) -> Double {
+    static func parse(_ text: String, limits: VolumeLimits = VolumeLimits()) -> Double {
         var t = text.trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: ",", with: ".")
         t = t.replacingOccurrences(of: "db", with: "").trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty, let v = Double(t), !v.isNaN else { return silence }
         let signed = t.hasPrefix("+") || t.hasPrefix("-")
-        return clamp(signed || v == 0 ? v : -v)
+        return clamp(signed || v == 0 ? v : -v, limits: limits)
     }
 
     /// Held to what the engine accepts: at most +12, and at or below the floor means silent.
-    static func clamp(_ db: Double) -> Double {
-        if db.isNaN || db <= floorDb { return silence }
-        return min(db, maxDb)
+    static func clamp(_ db: Double, limits: VolumeLimits = VolumeLimits()) -> Double {
+        if db.isNaN || db <= limits.min { return silence }
+        return min(db, limits.max)
     }
 }
 
