@@ -15,7 +15,7 @@ Acceptance flows passing on the real engine: n/n (tests: …), or "none: simple 
 
 ## Review
 R1: H n fixed · M n fixed · M downgraded by the user: <quote + link, or none> · Lows fixed n · Lows dropped: <one line each, or none>
-Pre-existing findings filed: #… (or none)
+Findings filed (pre-existing, or Mediums past the review limit): #… (or none)
 
 ## Docs claims
 Claims about CI/lints/tests/versions changed: none / <files>, checked against <ci.yml/Cargo.toml/code>
