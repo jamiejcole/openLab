@@ -1909,7 +1909,10 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(wc.cueList.editingCell?.id, cues[1])
         // The cell's middle is in view (its edges can sit under a scroller on a small screen).
         let editor = wc.cueList.cellEditor.frame
-        XCTAssertTrue(ov.visibleRect.contains(NSPoint(x: editor.midX, y: editor.midY)), "the editor is on screen")
+        let middle = NSPoint(x: editor.midX, y: editor.midY)
+        // Failed only on the CI runner, never here: the frames say whether it is the scroll or the width.
+        print("editor \(editor) visible \(ov.visibleRect) window \(String(describing: wc.window?.frame))")
+        await assertEventually("the editor is on screen") { ov.visibleRect.contains(middle) }
     }
 
     /// A letter held with fn is not the plain key (an arrow key carries fn).
