@@ -139,7 +139,7 @@ final class CueCell: NSTableCellView {
 /// It mirrors the store's tree in `CueNode`s and applies `StoreChange`s as row inserts, removals,
 /// moves and reloads; it reloads the whole table only for a snapshot or when it has lost sync.
 /// Editing goes through `CueEditor`; this class only offers the drag and drop, which it hands to `onMove`,
-/// and the in-place Duration edit, which it hands to `onEditDuration`.
+/// and the in-place Number, Name and Duration edit, which it hands to `onEditCell`.
 @MainActor
 final class CueListViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate,
     NSTextFieldDelegate
@@ -257,10 +257,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let menu = NSMenu()
         menu.delegate = self
         outlineView.menu = menu
-        durationEditor.setAX(AX.cueDurationEditor, label: loc("cuelist.durationEditor.label"))
-        durationEditor.delegate = self
-        durationEditor.usesSingleLineMode = true
-        durationEditor.font = .systemFont(ofSize: NSFont.systemFontSize)
+        cellEditor.delegate = self
+        cellEditor.usesSingleLineMode = true
+        cellEditor.font = .systemFont(ofSize: NSFont.systemFontSize)
         let scroll = NSScrollView()
         scroll.documentView = outlineView
         scroll.hasVerticalScroller = true
@@ -329,9 +328,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     /// Show Mode: rows cannot be dragged, nothing can be dropped and no cell can be edited; a
-    /// Duration being typed is dropped (callers commit it first, as the inspector's fields).
+    /// cell being typed in is dropped (callers commit it first, as the inspector's fields).
     var isEditLocked = false {
-        didSet { if isEditLocked { cancelDurationEdit() } }
+        didSet { if isEditLocked { cancelCellEdit() } }
     }
     /// A validated drop: the cues go before child `index` of the parent (nil: top level).
     var onMove: (([ModelID], ModelID?, Int) -> Void)?
@@ -504,7 +503,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     /// Text is being typed in this window (an inspector field, the notes, the masthead's notes, a
-    /// Duration being edited in the list), or a hotkey is being recorded: moving the selection would
+    /// cell being edited in the list), or a hotkey is being recorded: moving the selection would
     /// take the operator's focus, and their next Space would fire GO.
     private var isTextEditing: Bool {
         let responder = view.window?.firstResponder
@@ -618,7 +617,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         }
         roots.forEach(expand)
         select(selected)
-        placeDurationEditor()
+        placeCellEditor()
     }
 
     private func makeNode(_ cue: Cue, parent: CueNode?) -> CueNode {
@@ -689,13 +688,19 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         }
         if selectedIDs() != selected { select(selected) }
         // Cues that point at a changed cue (or anything in a changed group) show its name and number.
-        let pointing = batchTouched.flatMap { targeters[$0] ?? [] }
-        if !pointing.isEmpty { refresh(Set(pointing), columns: ["target"]) }
+        // A default name follows its target's, which may itself be a default name: walk the chain
+        // (targets can loop, so each cue once).
+        var pointing = Set<ModelID>()
+        var pending = Array(batchTouched)
+        while let id = pending.popLast() {
+            for t in targeters[id] ?? [] where pointing.insert(t).inserted { pending.append(t) }
+        }
+        if !pointing.isEmpty { refresh(pointing, columns: ["target", "name"]) }
         // Groups that gained or lost the playhead show or clear their "inside" marker.
         let flipped = oldAncestors.symmetricDifference(playheadAncestors)
         let flagRows = flagGroups.union(flipped).filter { nodes[$0] != nil }
         if !flagRows.isEmpty { refresh(flagRows, columns: ["status"]) }
-        placeDurationEditor()
+        placeCellEditor()
     }
 
     private func remove(_ id: ModelID, expanded: inout Set<ModelID>) {
@@ -968,77 +973,105 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return true
     }
 
-    // MARK: In-place Duration (QLab 5, manual pp. 94-95: double-click the Duration column of a cue
-    // whose duration can be edited)
+    // MARK: In-place cell editing (QLab 5: double-click a cell of the Number, Name or Duration column,
+    // manual pp. 92-95; the edit-number and edit-name keys open the same fields)
 
-    /// The field laid over the Duration cell being edited. It lives in the outline, not in the cell,
-    /// so the per-tick refresh of that column (progress) and model echoes cannot replace it mid-typing.
-    let durationEditor = NSTextField()
-    /// The cue whose Duration is being typed.
-    private(set) var editingDuration: ModelID?
-    /// A Duration typed and committed (Return, Tab or clicking away): the window controller sends it
+    /// The columns that edit in place, and the inspector field each one is.
+    static let editableColumns: [String: InspectorField] = ["number": .number, "name": .name, "duration": .duration]
+
+    /// The field laid over the cell being edited. It lives in the outline, not in the cell, so the
+    /// per-tick refresh of the Duration column (progress) and model echoes cannot replace it mid-typing.
+    let cellEditor = NSTextField()
+    /// The cue and column being typed in.
+    private(set) var editingCell: (id: ModelID, column: String)?
+    /// A cell typed in and committed (Return, Tab or clicking away): the window controller sends it
     /// through `CueEditor`, which checks it as the inspector does.
-    var onEditDuration: ((ModelID, String) -> Void)?
+    var onEditCell: ((ModelID, String, String) -> Void)?
+    /// The cue being edited was deleted: the edit is dropped, and the operator told.
+    var onEditedCueGone: (() -> Void)?
 
     @objc private func doubleClicked() {
         let row = outlineView.clickedRow
         let column = outlineView.clickedColumn
         guard row >= 0, outlineView.tableColumns.indices.contains(column),
-            outlineView.tableColumns[column].identifier.rawValue == "duration",
             let node = outlineView.item(atRow: row) as? CueNode
         else { return }
+        let name = outlineView.tableColumns[column].identifier.rawValue
+        guard Self.editableColumns[name] != nil else { return }
         // After the click is handled: the outline takes first responder back when its mouse
         // tracking ends, which would close a field opened from inside it.
         let id = node.id
-        Task { @MainActor [weak self] in self?.beginDurationEdit(id) }
+        Task { @MainActor [weak self] in self?.beginCellEdit(id, column: name) }
     }
 
-    /// Opens the Duration cell of `id` for typing. False (nothing happens) in Show Mode or for a cue
-    /// whose duration is not set by hand. A Duration already open elsewhere is committed first.
+    /// The edit-number and edit-name keys (N, Q): the selected cue's cell opens for typing. Only
+    /// with the list itself focused and exactly one cue highlighted; false (the key is not taken)
+    /// otherwise, in Show Mode, and while text is being typed (the key is a letter then).
     @discardableResult
-    func beginDurationEdit(_ id: ModelID) -> Bool {
-        guard !isEditLocked, let node = nodes[id], InspectorEdit.durationKinds.contains(node.cue.kindType),
-            outlineView.row(forItem: node) >= 0
+    func beginEditFromKey(_ column: String) -> Bool {
+        guard !isTextEditing, view.window?.firstResponder === outlineView else { return false }
+        let selected = selectedIDs()
+        guard selected.count == 1, let id = selected.first else { return false }
+        return beginCellEdit(id, column: column)
+    }
+
+    /// Opens `column` ("number", "name" or "duration") of `id` for typing, its text selected. False
+    /// (nothing happens) in Show Mode or for a Duration that is not set by hand. A cell already open
+    /// elsewhere is committed first.
+    @discardableResult
+    func beginCellEdit(_ id: ModelID, column: String = "duration") -> Bool {
+        guard !isEditLocked, let field = Self.editableColumns[column], let node = nodes[id],
+            outlineView.row(forItem: node) >= 0,
+            field != .duration || InspectorEdit.durationKinds.contains(node.cue.kindType),
+            let model = store.model
         else { return false }
-        if let pending = takeDurationEdit() { onEditDuration?(pending.id, pending.text) }
-        editingDuration = id
-        durationEditor.stringValue = CueTime.format(node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
-        placeDurationEditor()
-        outlineView.addSubview(durationEditor)
-        view.window?.makeFirstResponder(durationEditor)
+        if let pending = takeCellEdit() { onEditCell?(pending.id, pending.column, pending.text) }
+        editingCell = (id, column)
+        cellEditor.stringValue = InspectorEdit.display(field, cue: node.cue, model: model)
+        // An unnamed cue's editor starts empty, with the name it follows as a hint.
+        cellEditor.placeholderString = column == "name" ? node.cue.targetDefaultName(lookup: cueLookup) : nil
+        switch column {
+        case "number": cellEditor.setAX(AX.cueNumberEditor, label: loc("cuelist.numberEditor.label"))
+        case "name": cellEditor.setAX(AX.cueNameEditor, label: loc("cuelist.nameEditor.label"))
+        default: cellEditor.setAX(AX.cueDurationEditor, label: loc("cuelist.durationEditor.label"))
+        }
+        outlineView.scrollRowToVisible(outlineView.row(forItem: node))
+        placeCellEditor()
+        outlineView.addSubview(cellEditor)
+        view.window?.makeFirstResponder(cellEditor)
         return true
     }
 
     /// Ends the in-place edit and returns what was typed, to be sent (nil when none was open).
-    func takeDurationEdit() -> (id: ModelID, text: String)? {
-        guard let id = editingDuration else { return nil }
-        editingDuration = nil
-        let text = durationEditor.stringValue
-        closeDurationEditor()
-        return (id, text)
+    func takeCellEdit() -> (id: ModelID, column: String, text: String)? {
+        guard let cell = editingCell else { return nil }
+        editingCell = nil
+        let text = cellEditor.stringValue
+        closeCellEditor()
+        return (cell.id, cell.column, text)
     }
 
     /// Ends the in-place edit without sending anything (Esc, Show Mode, the cue gone).
-    func cancelDurationEdit() {
-        guard editingDuration != nil else { return }
-        editingDuration = nil
-        closeDurationEditor()
+    func cancelCellEdit() {
+        guard editingCell != nil else { return }
+        editingCell = nil
+        closeCellEditor()
     }
 
-    private func closeDurationEditor() {
-        // `editingDuration` is already nil, so the end-of-editing this causes sends nothing.
-        if durationEditor.currentEditor() != nil { view.window?.makeFirstResponder(outlineView) }
-        durationEditor.removeFromSuperview()
+    private func closeCellEditor() {
+        // `editingCell` is already nil, so the end-of-editing this causes sends nothing.
+        if cellEditor.currentEditor() != nil { view.window?.makeFirstResponder(outlineView) }
+        cellEditor.removeFromSuperview()
         outlineView.setAccessibilityChildren(nil)  // back to the rows alone
     }
 
     /// The outline reports only its rows to accessibility; the open field is added to them (and made
     /// to name the outline as its parent) so VoiceOver and UI tests can reach it (#355).
-    private func exposeDurationEditor() {
+    private func exposeCellEditor() {
         outlineView.setAccessibilityChildren(nil)
         let rows = outlineView.accessibilityChildren() ?? []
-        durationEditor.setAccessibilityParent(outlineView)
-        outlineView.setAccessibilityChildren(rows + [durationEditor])
+        cellEditor.setAccessibilityParent(outlineView)
+        outlineView.setAccessibilityChildren(rows + [cellEditor])
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
@@ -1068,29 +1101,34 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
     func outlineViewColumnDidResize(_ notification: Notification) { replaceEditorAfterLayoutChange() }
     func outlineViewColumnDidMove(_ notification: Notification) { replaceEditorAfterLayoutChange() }
-    private func replaceEditorAfterLayoutChange() { if !rebuilding && !batching { placeDurationEditor() } }
+    private func replaceEditorAfterLayoutChange() { if !rebuilding && !batching { placeCellEditor() } }
 
-    /// Keeps the open editor over its cue's cell after rows moved; closes it if the cue is gone or no
-    /// longer has a duration to set (another client deleted it or changed its kind).
-    private func placeDurationEditor() {
-        guard let id = editingDuration else { return }
-        guard let node = nodes[id], InspectorEdit.durationKinds.contains(node.cue.kindType),
-            let column = outlineView.tableColumns.firstIndex(where: { $0.identifier.rawValue == "duration" })
-        else { return cancelDurationEdit() }
+    /// Keeps the open editor over its cue's cell after rows moved; closes it if the cue is gone (the
+    /// operator is told) or no longer has a duration to set (another client changed its kind).
+    private func placeCellEditor() {
+        guard let cell = editingCell else { return }
+        guard let node = nodes[cell.id] else {
+            cancelCellEdit()
+            onEditedCueGone?()
+            return
+        }
+        guard cell.column != "duration" || InspectorEdit.durationKinds.contains(node.cue.kindType),
+            let column = outlineView.tableColumns.firstIndex(where: { $0.identifier.rawValue == cell.column })
+        else { return cancelCellEdit() }
         let row = outlineView.row(forItem: node)
-        guard row >= 0 else { return cancelDurationEdit() }
-        durationEditor.frame = outlineView.frameOfCell(atColumn: column, row: row)
-        exposeDurationEditor()
+        guard row >= 0 else { return cancelCellEdit() }
+        cellEditor.frame = outlineView.frameOfCell(atColumn: column, row: row)
+        exposeCellEditor()
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
-        guard obj.object as? NSTextField === durationEditor, let edit = takeDurationEdit() else { return }
-        onEditDuration?(edit.id, edit.text)
+        guard obj.object as? NSTextField === cellEditor, let edit = takeCellEdit() else { return }
+        onEditCell?(edit.id, edit.column, edit.text)
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        guard control === durationEditor, selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
-        cancelDurationEdit()
+        guard control === cellEditor, selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        cancelCellEdit()
         return true
     }
 
@@ -1141,7 +1179,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         if rows > 0 {
             outlineView.reloadData(forRowIndexes: IndexSet(0..<rows), columnIndexes: IndexSet(integer: index))
         }
-        placeDurationEditor()
+        placeCellEditor()
     }
 
     private func updateTimeHeader(_ column: NSTableColumn) {
@@ -1203,11 +1241,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             }
         case "name":
             let kind = cue.kindType
-            if cue.displayName.isEmpty {
+            let shown = shownName(cue)
+            if shown.isEmpty {
                 text(CueKindStyle.kindLabel(kind))
                 cell.label.textColor = .secondaryLabelColor
             } else {
-                text(cue.displayName)
+                text(shown)
             }
         case "target": text(targetText(cue))
         case "preWait", "postWait":
@@ -1233,6 +1272,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
+    /// The name the list shows for `cue` (see `Cue.shownName`), found through the list's own tree.
+    func shownName(_ cue: Cue) -> String { cue.shownName(lookup: cueLookup) }
+
+    private var cueLookup: (ModelID) -> Cue? { { [weak self] in self?.nodes[$0]?.cue ?? self?.store.model?.cue($0) } }
+
     private func targetText(_ cue: Cue) -> String {
         if cue.kindType == "audio" {
             let media = cue.raw["kind"]?["media"]?.stringValue ?? ""
@@ -1241,7 +1285,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         if cue.kindType == "network" { return cue.raw["kind"]?["address"]?.stringValue ?? "" }
         guard let target = cue.raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }) else { return "" }
         guard let t = nodes[target]?.cue ?? store.model?.cue(target) else { return loc("cue.target.missing") }
-        let label = [t.number, t.listName]
+        let label = [t.number, t.listName(lookup: cueLookup)]
         return label.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
     }
 

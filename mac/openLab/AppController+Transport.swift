@@ -20,7 +20,7 @@ extension AppController {
             ? (cached?.keys ?? TransportKeys(settings: settings, cueChords: cueChords))
             : TransportKeys(settings: settings, cueChords: cueChords)
         // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire); the
-        // fixed app defaults (L, P, V, S) already yielded to cue hotkeys inside `TransportKeys`.
+        // fixed app defaults (V, S) already yielded to cue hotkeys inside `TransportKeys`.
         // A menu command's key (Cmd-J, Shift-Cmd-Down, ...) is taken before a cue hotkey is looked
         // at (`fireCueHotkeys`), so a cue on one never fires either: warn for it the same way.
         let transportShadowed = cueChords.intersection(keys.chords.values)
@@ -216,7 +216,9 @@ extension AppController {
             // the log, with one log record for every cue that still needs attention.
             let clean = ambiguous.isEmpty && unmatched.isEmpty
             _ = store.receive(.log(clean ? .info : .warn, message))
-            func name(_ id: ModelID) -> String { store.model?.cue(id).map(WarningRows.cueTitle) ?? id.raw }
+            func name(_ id: ModelID) -> String {
+                store.model.flatMap { m in m.cue(id).map { WarningRows.cueTitle($0, name: m.listName($0)) } } ?? id.raw
+            }
             for a in ambiguous {
                 let text = String(
                     format: loc("relink.log.ambiguous"), name(a.cue), a.candidates.joined(separator: ", "))

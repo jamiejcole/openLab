@@ -7,13 +7,13 @@ import Foundation
 enum CueFinder {
     /// The cues of `roots` (depth first, in list order, collapsed groups included) whose number,
     /// name, notes, audio file name or Network message contain `query`, ignoring case. Blank text finds nothing.
-    static func matches(_ query: String, in roots: [CueNode]) -> [ModelID] {
+    static func matches(_ query: String, in roots: [CueNode], shownName: (Cue) -> String) -> [ModelID] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return [] }
         var found: [ModelID] = []
         func walk(_ nodes: [CueNode]) {
             for node in nodes {
-                if matches(text, cue: node.cue) { found.append(node.id) }
+                if matches(text, cue: node.cue, shownName: shownName(node.cue)) { found.append(node.id) }
                 walk(node.children)
             }
         }
@@ -26,9 +26,10 @@ enum CueFinder {
         roots.flatMap { [$0.id] + order(of: $0.children) }
     }
 
-    static func matches(_ text: String, cue: Cue) -> Bool {
+    static func matches(_ text: String, cue: Cue, shownName: String) -> Bool {
         let fields =
-            [cue.number ?? "", cue.name, cue.raw["notes"]?.stringValue ?? "", fileName(of: cue)] + message(of: cue)
+            [cue.number ?? "", cue.name, shownName, cue.raw["notes"]?.stringValue ?? "", fileName(of: cue)]
+            + message(of: cue)
         return fields.contains { $0.range(of: text, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
     }
 
