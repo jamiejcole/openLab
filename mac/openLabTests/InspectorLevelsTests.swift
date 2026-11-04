@@ -385,7 +385,8 @@ final class InspectorLevelsTests: XCTestCase {
         window.makeFirstResponder(nil)
         await rig.sync()
         XCTAssertEqual(sent.count, before, "clicking in and out with nothing typed sends nothing")
-        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["master_db"], .double(-10))
+        // The drag's own broadcast may still be on its way: a sync doesn't wait for broadcasts.
+        await assertEventually { self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(-10) }
     }
 
     func testADragStartedWhileTypingCommitsTheTextFirstAndLeavingTheFieldWritesNothingOverIt() async throws {

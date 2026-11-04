@@ -3,7 +3,7 @@
 import AppKit
 
 /// A panel that never takes the keys: Space, Return and every hotkey go on to the workspace window.
-private final class NonKeyPanel: NSPanel {
+final class NonKeyPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
