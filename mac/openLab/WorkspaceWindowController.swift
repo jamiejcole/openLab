@@ -195,8 +195,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             MainActor.assumeIsolated {
                 switch change {
                 case .reset, .model: self?.syncFooterCount()
-                // Runtime ticks cannot change the shown list: only the standby cue moves.
-                case .runtime, .progress, .waits, .notices: self?.syncMasthead()
+                // Runtime ticks cannot change the shown list: only the standby cue moves. They do
+                // bring broken cues, problems and warnings.
+                case .runtime:
+                    self?.syncMasthead()
+                    self?.syncFooterWarnings()
+                case .progress, .waits, .notices: self?.syncMasthead()
                 }
             }
         }
@@ -224,6 +228,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         footer.onModeChange = { [weak self] show in Task { await self?.requestShowMode(show) } }
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         footer.onSettings = { [weak self] in self?.showSettings() }
+        footer.onWarnings = { [weak self] in self?.showWarnings() }
         setVisible(.sidebar, false)
         wire(masthead.goButton, #selector(goClicked))
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
@@ -497,6 +502,18 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func syncFooterCount() {
         let model = store.model
         footer.showCount(cues: model?.cueCount ?? 0, lists: model?.cueLists.count ?? 0)
+        syncFooterWarnings()
+    }
+
+    /// The footer's warnings button counts the rows the Warnings tab lists.
+    func syncFooterWarnings() {
+        footer.showWarnings(count: WarningRows.make(store: store).count)
+    }
+
+    /// The footer's warnings button: the sidebar opens on the Warnings tab (Show Mode keeps the sidebar).
+    func showWarnings() {
+        setVisible(.sidebar, true)
+        sidebar.showTab(2)
     }
 
     private func syncSidebarList() {
