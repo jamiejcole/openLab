@@ -590,13 +590,17 @@ final class InspectorLevelsTests: XCTestCase {
         let p = vc.audioLevels
         p.select(.output(0))
         type(p, "-70")
-        await assertEventually { self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?.first?["db"] == .double(-70) }
+        await assertEventually {
+            self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?.first?["db"] == .double(-70)
+        }
         await assertEventually { p.levelField.stringValue == "-70.0" }
         XCTAssertEqual(p.fader.minValue, -80, "the fader goes down to the minimum")
         XCTAssertEqual(p.fader.doubleValue, -70, "and shows the level")
         XCTAssertEqual(p.matrix.limits.min, -80, "as does the matrix")
         drag(p, to: [-75, -80])
-        await assertEventually { self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?.first?["db"] == .double(-120) }
+        await assertEventually {
+            self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?.first?["db"] == .double(-120)
+        }
         // A maximum below 0 dB stops the fader there.
         let capped = await settings.setOutputMax("-6")
         XCTAssertTrue(capped)
