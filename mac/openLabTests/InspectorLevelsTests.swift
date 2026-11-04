@@ -616,6 +616,7 @@ final class InspectorLevelsTests: XCTestCase {
         vc.setSelection([Self.intro])
         let p = vc.audioLevels
         p.select(.master)
+        vc.tabView.selectTabViewItem(withIdentifier: "levels")
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(p.levelField)
         let editor = try XCTUnwrap(p.levelField.currentEditor())

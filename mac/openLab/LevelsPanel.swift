@@ -340,8 +340,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         let slot = selection
         if field === levelField {
             let text = levelField.stringValue
-            // An empty field on a level a Fade is not moving leaves it alone.
-            if text.trimmingCharacters(in: .whitespaces).isEmpty, levels?.isActive(slot) == false { return }
+            // Blank is no change: Space in the box clears its text (docs/todo/open-qlab-questions.md
+            // row 103). Silencing a level is typing -inf; a Fade lets go of one with its checkbox.
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
             let limits = limits
             let db = LevelText.parse(text, limits: limits)
             edit { $0.set(slot, db: db, limits: limits) }
