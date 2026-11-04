@@ -32,6 +32,7 @@ final class InspectorLevelsTests: XCTestCase {
     private static let engineFree = [
         "testLevelsTabIsForAudioCuesAndFadeTabForFadeCues", "testMatrixShowsTheCueRouting", "testMatrixHitTesting",
         "testFadeTabShowsTheFadeSettings", "testSixtyFourOutputMatrixStaysResponsive",
+        "testADragDoesNotEditARowTheMatrixNoLongerHas",
     ]
 
     override func setUp() async throws {
@@ -127,40 +128,85 @@ final class InspectorLevelsTests: XCTestCase {
         window.contentView = vc.view
     }
 
+    /// Selects the cue and brings its levels tab on screen (a tab that is not shown draws nothing and
+    /// has no field editor).
+    private func showCue(_ id: ModelID) {
+        vc.setSelection([id])
+        let tab = store.model?.cue(id)?.kindType == "fade" ? "fadeLevels" : "levels"
+        vc.tabView.selectTabViewItem(withIdentifier: tab)
+        vc.view.layoutSubtreeIfNeeded()
+    }
+
     private func media(_ show: URL, _ name: String) -> URL { show.appendingPathComponent("media/\(name)") }
 
-    /// The input rows the matrix draws: the last row a point inside it hits, and nothing below it.
-    private func drawnRows(_ m: LevelMatrixView) -> Int {
+    /// Draws the matrix into a bitmap and checks the cell of each file-channel row is painted.
+    /// Reads what is on screen, not what the view believes.
+    private func renderedInputRows(_ m: LevelMatrixView) throws -> Int {
+        let scale: CGFloat = 1
+        let rep = try XCTUnwrap(
+            NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: Int(m.bounds.width), pixelsHigh: Int(m.bounds.height),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                bytesPerRow: 0, bitsPerPixel: 0))
+        let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
+        context.cgContext.setFillColor(NSColor(white: 0.5, alpha: 1).cgColor)
+        context.cgContext.fill(CGRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh))
+        context.cgContext.scaleBy(x: scale, y: scale)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        m.draw(m.bounds)  // a view in a window that is not on screen cannot display itself
+        NSGraphicsContext.restoreGraphicsState()
+        // The bitmap is not flipped, the view is: view y counts from the top, pixel rows from the top
+        // of the drawn image, which is the view's bottom.
+        func isDrawn(_ slot: LevelSet.Slot) -> Bool {
+            let r = m.rect(of: slot)
+            let (x, y) = (Int(r.minX) + 6, rep.pixelsHigh - 1 - Int(r.minY + 6))
+            guard x >= 0, y >= 0, x < rep.pixelsWide, y < rep.pixelsHigh,
+                let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB)
+            else { return false }
+            return abs(c.redComponent + c.greenComponent + c.blueComponent - 1.5) > 0.03  // not the grey behind it
+        }
         var rows = 0
-        while case .cross(let i, _)? = m.slot(
-            at: NSPoint(
-                x: m.rect(of: .cross(input: rows, output: 0)).midX,
-                y: m.rect(of: .cross(input: rows, output: 0)).midY)), i == rows
-        { rows += 1 }
+        while rows <= LevelSet.maxChannels, isDrawn(.cross(input: rows, output: 0)) { rows += 1 }
         return rows
+    }
+
+    /// The rows the matrix shows: drawn, and as tall as that many rows (the frame is what scrolls).
+    private func assertRows(
+        _ n: Int, _ m: LevelMatrixView, file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        XCTAssertEqual(try renderedInputRows(m), n, "rows drawn", file: file, line: line)
+        XCTAssertEqual(
+            m.frame.height, LevelMatrixView.headerH + LevelMatrixView.cellH * CGFloat(n + 1), "frame", file: file,
+            line: line)
+    }
+
+    private func relink(_ cue: ModelID, to path: String) async throws {
+        guard case .success = await store.send(command: .setProperty(cue, .media(path))) else {
+            return XCTFail("the relink was refused")
+        }
     }
 
     func testAMultiChannelFileGivesTheMatrixOneRowPerChannel() async throws {
         try await reopen { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6) }
-        vc.setSelection([Self.intro])
+        showCue(Self.intro)
         await assertEventually { self.vc.audioLevels.matrix.inputs == 6 }
-        XCTAssertEqual(drawnRows(vc.audioLevels.matrix), 6, "six rows can be hit, the seventh is outside")
+        try assertRows(6, vc.audioLevels.matrix)
         XCTAssertEqual(vc.audioLevels.matrix.outputCount, 2, "the columns still come from the cue's outputs")
     }
 
     func testAMonoFileGivesTheMatrixOneRow() async throws {
         try await reopen { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 1) }
-        vc.setSelection([Self.intro])
+        showCue(Self.intro)
         await assertEventually { self.vc.audioLevels.matrix.inputs == 1 }
-        XCTAssertEqual(drawnRows(vc.audioLevels.matrix), 1)
+        try assertRows(1, vc.audioLevels.matrix)
     }
 
     func testAMissingFileKeepsTheStereoRowsAndNeverCrashes() async throws {
-        vc.setSelection([TestSnapshots.radio])
+        showCue(TestSnapshots.radio)
         await rig.sync()
         XCTAssertNil(store.mediaDurations[TestSnapshots.radio], "its file is missing")
-        XCTAssertEqual(vc.audioLevels.matrix.inputs, InspectorViewController.defaultInputs)
-        XCTAssertEqual(drawnRows(vc.audioLevels.matrix), InspectorViewController.defaultInputs)
+        try assertRows(InspectorViewController.defaultInputs, vc.audioLevels.matrix)
     }
 
     func testPointingTheCueAtAnotherFileChangesTheRows() async throws {
@@ -168,23 +214,122 @@ final class InspectorLevelsTests: XCTestCase {
             try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6)
             try writeWAV(self.media($0, "d.wav"), seconds: 1, channels: 1)
         }
-        vc.setSelection([Self.intro])
+        showCue(Self.intro)
         await assertEventually { self.vc.audioLevels.matrix.inputs == 6 }
-        guard case .success = await store.send(command: .setProperty(Self.intro, .media("media/d.wav"))) else {
-            return XCTFail("the relink was refused")
-        }
+        try await relink(Self.intro, to: "media/d.wav")
         await assertEventually { self.vc.audioLevels.matrix.inputs == 1 }
+        try assertRows(1, vc.audioLevels.matrix)
         // The file going away leaves the rows for an unknown file, not the old file's six or one.
-        guard case .success = await store.send(command: .setProperty(Self.intro, .media("media/gone.wav"))) else {
-            return XCTFail("the relink was refused")
-        }
+        try await relink(Self.intro, to: "media/gone.wav")
         await assertEventually { self.vc.audioLevels.matrix.inputs == InspectorViewController.defaultInputs }
+        try assertRows(InspectorViewController.defaultInputs, vc.audioLevels.matrix)
     }
 
     func testAFadeShowsTheRowsOfTheCueItFades() async throws {
         try await reopen { try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6) }
-        vc.setSelection([Self.fade])
+        showCue(Self.fade)
         await assertEventually { self.vc.fadeLevels.matrix.inputs == 6 }
+        try assertRows(6, vc.fadeLevels.matrix)
+    }
+
+    func testAFadeFollowsItsTargetWhenTheTargetsFileChangesAfterItWasSelected() async throws {
+        try await reopen {
+            try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6)
+            try writeWAV(self.media($0, "d.wav"), seconds: 1, channels: 3)
+        }
+        showCue(Self.fade)
+        await assertEventually { self.vc.fadeLevels.matrix.inputs == 6 }
+        try await relink(Self.intro, to: "media/d.wav")
+        await assertEventually { self.vc.fadeLevels.matrix.inputs == 3 }
+        try assertRows(3, vc.fadeLevels.matrix)
+    }
+
+    func testAFadeOfAGroupShowsTheMostChannelsOfTheCuesInsideIt() async throws {
+        try await reopen {
+            try writeWAV(self.media($0, "d.wav"), seconds: 1, channels: 3)
+            try writeWAV(self.media($0, "r.wav"), seconds: 1, channels: 5)
+            try editShow($0.appendingPathComponent("Demo.openlab")) { ws in
+                guard var lists = ws["cue_lists"]?.arrayValue, var cues = lists.first?["cues"]?.arrayValue,
+                    var kind = cues[1]["kind"]
+                else { return XCTFail("the demo show has no fade") }
+                kind.set("target", .string(TestSnapshots.group.raw))
+                cues[1].set("kind", kind)
+                lists[0].set("cues", .array(cues))
+                ws.set("cue_lists", .array(lists))
+            }
+        }
+        showCue(Self.fade)
+        await assertEventually { self.vc.fadeLevels.matrix.inputs == 5 }
+        try assertRows(5, vc.fadeLevels.matrix)
+    }
+
+    func testRowsHoldDuringAGestureAndFollowTheFileWhenItEnds() async throws {
+        try await reopen {
+            try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6)
+            try writeWAV(self.media($0, "d.wav"), seconds: 1, channels: 1)
+        }
+        showCue(Self.intro)
+        await assertEventually { self.vc.audioLevels.matrix.inputs == 6 }
+        vc.audioLevels.beginGesture()
+        try await relink(Self.intro, to: "media/d.wav")
+        await assertEventually { self.store.mediaDurations[Self.intro]?.fileChannels == 1 }
+        await rig.sync()
+        XCTAssertEqual(vc.audioLevels.matrix.inputs, 6, "the grid does not move under a drag")
+        vc.audioLevels.endGesture()
+        await assertEventually { self.vc.audioLevels.matrix.inputs == 1 }
+    }
+
+    func testATypedLevelStaysOnItsCrosspointWhenTheFileLosesThatRow() async throws {
+        try await reopen {
+            try writeWAV(self.media($0, "a.wav"), seconds: 1, channels: 6)
+            try writeWAV(self.media($0, "d.wav"), seconds: 1, channels: 1)
+        }
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        await assertEventually { p.matrix.inputs == 6 }
+        p.select(.cross(input: 1, output: 0))
+        window.makeFirstResponder(p.levelField)
+        let editor = try XCTUnwrap(p.levelField.currentEditor(), "the field is being edited")
+        editor.string = "-6"
+        try await relink(Self.intro, to: "media/d.wav")
+        await assertEventually { self.store.mediaDurations[Self.intro]?.fileChannels == 1 }
+        await rig.sync()
+        XCTAssertEqual(p.selection, .cross(input: 1, output: 0), "the selection did not move under the text")
+        XCTAssertEqual(p.matrix.inputs, 6, "the grid waits for the end of the edit")
+        window.makeFirstResponder(nil)
+        await assertEventually { self.sent.contains { self.kindOf($0.command) != nil } }
+        let levels = lastKind?["levels"]
+        XCTAssertNotEqual(levels?["master_db"], .double(-6), "the master did not take the text")
+        XCTAssertEqual(levels?["crosspoints"]?.arrayValue?.first?["db"], .double(-6))
+        await assertEventually { p.matrix.inputs == 1 }
+        XCTAssertEqual(p.selection, .master)
+    }
+
+    func testACrosspointBeyondTheFilesChannelsSurvivesAnEdit() async throws {
+        try await reopen { show in
+            try editShow(show.appendingPathComponent("Demo.openlab")) { ws in
+                guard var lists = ws["cue_lists"]?.arrayValue, var cues = lists.first?["cues"]?.arrayValue,
+                    var kind = cues[0]["kind"], var levels = kind["levels"]
+                else { return XCTFail("the demo show has no first cue") }
+                levels.set(
+                    "crosspoints",
+                    .array([.object(["input": .int(4), "output": .int(0), "db": .double(-3), "mute": .bool(false)])]))
+                kind.set("levels", levels)
+                cues[0].set("kind", kind)
+                lists[0].set("cues", .array(cues))
+                ws.set("cue_lists", .array(lists))
+            }
+        }
+        showCue(Self.intro)
+        await assertEventually { self.store.mediaDurations[Self.intro]?.fileChannels == 2 }
+        let p = vc.audioLevels
+        XCTAssertEqual(p.matrix.inputs, 2, "the saved route to channel 5 has no row in a stereo file")
+        type(p, "-6")
+        await assertEventually { self.sent.contains { self.kindOf($0.command) != nil } }
+        XCTAssertEqual(lastKind?["levels"]?["master_db"], .double(-6))
+        let points = lastKind?["levels"]?["crosspoints"]?.arrayValue ?? []
+        XCTAssertEqual(points.first?["input"], .double(4), "the hidden route is kept")
+        XCTAssertEqual(points.first?["db"], .double(-3))
     }
 
     // MARK: Audio levels
@@ -300,6 +445,25 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually { self.sent.count == 3 }
         XCTAssertEqual(Set(sent.map { $0.coalesce }).count, 1)
         XCTAssertNotNil(sent.first?.coalesce)
+    }
+
+    func testADragDoesNotEditARowTheMatrixNoLongerHas() throws {
+        vc.setSelection([Self.intro])
+        let m = vc.audioLevels.matrix
+        m.resize(inputs: 6, outputs: 2)
+        var edited = false
+        m.onDrag = { _, _, _ in edited = true }
+        func event(_ type: NSEvent.EventType, _ p: NSPoint) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: type, location: m.convert(p, to: nil), modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        let cell = m.rect(of: .cross(input: 4, output: 0))
+        m.mouseDown(with: try event(.leftMouseDown, NSPoint(x: cell.midX, y: cell.midY)))
+        m.resize(inputs: 1, outputs: 2)
+        m.mouseDragged(with: try event(.leftMouseDragged, NSPoint(x: cell.midX, y: cell.midY - 30)))
+        XCTAssertFalse(edited, "the row was removed under the mouse")
     }
 
     func testMatrixHitTesting() {

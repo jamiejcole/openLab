@@ -46,7 +46,17 @@ final class LevelMatrixView: NSView {
             NSSize(
                 width: Self.headW + CGFloat(outputCount) * Self.cellW,
                 height: Self.headerH + Self.cellH * CGFloat(self.inputs + 1)))
+        // A drag that began on a row the file no longer has must not keep editing it.
+        if let s = dragSlot, !isInGrid(s) { dragSlot = nil }
         needsDisplay = true
+    }
+
+    private func isInGrid(_ slot: LevelSet.Slot) -> Bool {
+        switch slot {
+        case .master: return true
+        case .output(let o): return o < outputCount
+        case .cross(let i, let o): return i < inputs && o < outputCount
+        }
     }
 
     // MARK: Geometry

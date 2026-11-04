@@ -120,10 +120,26 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     // MARK: Showing the model
 
+    /// The grid size a `show` asked for while a level was being typed; applied when editing ends, so
+    /// the text never lands on a slot that moved under the cursor.
+    private var heldSize: (inputs: Int, outputs: Int)?
+
+    private var isTyping: Bool { levelField.currentEditor() != nil || gangField.currentEditor() != nil }
+
     /// Shows `levels` over `inputs` file channels and `outputs` cue outputs. Ignored while a
-    /// gesture is under way, so the fader does not jump under the mouse.
+    /// gesture is under way, so the fader does not jump under the mouse, and held while a level is
+    /// being typed.
     func show(_ levels: LevelSet?, inputs: Int, outputs: Int) {
         guard gesture == nil else { return }
+        if isTyping, levels != nil {
+            heldSize = (inputs, outputs)
+            return
+        }
+        place(levels, inputs: inputs, outputs: outputs)
+    }
+
+    private func place(_ levels: LevelSet?, inputs: Int, outputs: Int) {
+        heldSize = nil
         self.levels = levels
         matrix.levels = levels
         matrix.resize(inputs: levels == nil ? 0 : inputs, outputs: levels == nil ? 0 : outputs)
@@ -256,6 +272,10 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     func replace(with new: LevelSet) { edit { $0 = new } }
 
     func controlTextDidEndEditing(_ obj: Notification) {
+        defer {
+            // The edit below went to the slot that was selected; now the grid may change.
+            if let held = heldSize, gesture == nil { place(levels, inputs: held.inputs, outputs: held.outputs) }
+        }
         let slot = selection
         if obj.object as? NSTextField === levelField {
             let text = levelField.stringValue
