@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use openlab_audio::total_frames;
 use openlab_core::protocol::CueMediaDuration;
-use openlab_core::{Cue, CueId, CueKind, SampleTime, SliceMarker, Workspace};
+use openlab_core::{Cue, CueId, CueKind, MAX_CHANNELS, SampleTime, SliceMarker, Workspace};
 
 use super::media::{MediaCatalog, PlanChanges, Ready};
 use super::plan::{PlanFailure, PlanSpec, cue_slices};
@@ -323,6 +323,8 @@ impl PlanChecks {
                     file: seconds(info.frames, info.sample_rate),
                     trimmed: e.trimmed.zip(rate).and_then(|(f, r)| seconds(f, r.get())),
                     duration: e.length.zip(rate).and_then(|(f, r)| seconds(f, r.get())),
+                    // The probe already refuses other counts; a wrong one is dropped, not sent.
+                    channels: Some(info.channels).filter(|c| (1..=MAX_CHANNELS as u16).contains(c)),
                 }
             });
             if self.sent.get(&id) == media.as_ref() {
@@ -340,6 +342,7 @@ impl PlanChecks {
                         file: None,
                         trimmed: None,
                         duration: None,
+                        channels: None,
                     });
                 }
             }

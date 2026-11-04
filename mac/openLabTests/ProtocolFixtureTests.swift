@@ -134,7 +134,10 @@ final class ProtocolFixtureTests: XCTestCase {
         }
         XCTAssertEqual(
             snap.mediaDurations,
-            [CueMediaDuration(cue: "00000000-0000-0000-0000-00000000000a", file: 62.5, trimmed: 60, duration: 120)])
+            [
+                CueMediaDuration(
+                    cue: "00000000-0000-0000-0000-00000000000a", file: 62.5, trimmed: 60, duration: 120, channels: 2)
+            ])
         guard
             case .runtime(let seq, let changes) = try ServerMessage.decode(
                 try Fixtures.text("server", "runtime_media_duration"))
@@ -148,14 +151,30 @@ final class ProtocolFixtureTests: XCTestCase {
             decoded,
             [
                 CueMediaDuration(
-                    cue: "00000000-0000-0000-0000-00000000000a", file: 62.5, trimmed: 60.25, duration: nil),
-                CueMediaDuration(cue: "00000000-0000-0000-0000-00000000000b", file: nil, trimmed: nil, duration: nil),
+                    cue: "00000000-0000-0000-0000-00000000000a", file: 62.5, trimmed: 60.25, duration: nil, channels: 6),
+                CueMediaDuration(
+                    cue: "00000000-0000-0000-0000-00000000000b", file: nil, trimmed: nil, duration: nil, channels: nil),
             ])
         // A snapshot without the field (none known) still decodes.
         var bare = try Fixtures.json("server", "snapshot")
         bare["snapshot"]?["media_durations"] = nil
         guard case .snapshot(let old) = try ServerMessage.decode(try bare.text()) else { return XCTFail("bare") }
         XCTAssertNil(old.mediaDurations)
+    }
+
+    /// A channel count outside what a file can have (1 to 64) is a peer's mistake: not known, never a
+    /// matrix of 0 or 100 000 rows.
+    func testAnImpossibleChannelCountFromAPeerIsNotKnown() throws {
+        func lengths(_ channels: String) throws -> CueMediaDuration {
+            let json = "{\"cue\":\"00000000-0000-0000-0000-00000000000a\",\"file\":1.0\(channels)}"
+            return try JSONDecoder().decode(CueMediaDuration.self, from: Data(json.utf8))
+        }
+        XCTAssertEqual(try lengths(",\"channels\":6").fileChannels, 6)
+        XCTAssertEqual(try lengths(",\"channels\":64").fileChannels, 64)
+        for bad in ["0", "-1", "65", "100000"] {
+            XCTAssertNil(try lengths(",\"channels\":\(bad)").fileChannels, bad)
+        }
+        XCTAssertNil(try lengths("").fileChannels, "an engine that sends no count")
     }
 
     /// The real engine probes the demo show's files and the store holds what it reports: Door slam
@@ -167,6 +186,7 @@ final class ProtocolFixtureTests: XCTestCase {
         let d = rig.store.mediaDurations
         XCTAssertEqual(d[TestSnapshots.door]?.file, 1.25)
         XCTAssertEqual(d[TestSnapshots.door]?.duration, 1.25)
+        XCTAssertEqual(d[TestSnapshots.door]?.channels, 2, "the demo files are stereo")
         XCTAssertEqual(d[TestSnapshots.intro]?.file, 1.0)
         XCTAssertNil(d[TestSnapshots.intro]?.duration, "a cue that loops until devamped has no duration")
         XCTAssertEqual(d[TestSnapshots.rain]?.file, 2.0)
