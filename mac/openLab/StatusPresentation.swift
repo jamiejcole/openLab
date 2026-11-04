@@ -70,6 +70,8 @@ struct StatusPresentation: Equatable {
 
     private static func details(_ s: SystemStatus, _ problems: [(Level, String)]) -> [String] {
         var out = problems.map(\.1)
+        // An override changes what the show does: it is the first line, not buried among the figures.
+        if s.networkOutputDisabled { out.insert(loc("status.detail.networkOff"), at: 0) }
         let d = s.device
         let deviceName = d.name ?? loc("status.detail.none")
         out.append(String(format: loc("status.detail.device"), deviceName, deviceStateText(d.state)))

@@ -77,13 +77,17 @@ final class FooterBar: NSView {
         trackingMode: .selectOne, target: nil, action: nil)
     /// The engine's health in one line (DX-03); clicking it opens the details.
     let statusButton = NSButton()
+    /// Red "NETWORK OUTPUT OFF" while the engine's output override is on (PB-10). Always in the
+    /// footer, Show Mode included; words and a filled red pill, never colour alone. Opens the same
+    /// details as the status line.
+    let overrideBadge = NSButton()
     private(set) var presentation = StatusPresentation.make(nil)
     /// A result the operator asked for that needs no answer (a relink); clears after a while (`noticeLifetime`) unless replaced.
     let noticeLabel = NSTextField(labelWithString: "")
     /// "12 cues in 2 lists", from the model (QLab's footer centre).
     let countLabel = NSTextField(labelWithString: "")
     private var lastXruns: UInt64?
-    private var popover: NSPopover?
+    private(set) var popover: NSPopover?
     let clock = WallClockLabel()
     let settingsButton = NSButton()
     private(set) var toggles: [LayoutArea: NSButton] = [:]
@@ -109,6 +113,18 @@ final class FooterBar: NSView {
         showModeLabel.font = .systemFont(ofSize: 12, weight: .bold)
         showModeLabel.textColor = .systemOrange
         showModeLabel.isHidden = true
+        overrideBadge.isBordered = false
+        overrideBadge.wantsLayer = true
+        overrideBadge.layer?.backgroundColor = NSColor.systemRed.cgColor
+        overrideBadge.layer?.cornerRadius = 4
+        overrideBadge.attributedTitle = NSAttributedString(
+            string: " " + loc("footer.override.badge") + " ",
+            attributes: [.foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 12, weight: .bold)])
+        overrideBadge.setAX(AX.overrideBadge, label: loc("footer.override.badge"))
+        overrideBadge.toolTip = loc("footer.override.tooltip")
+        overrideBadge.target = self
+        overrideBadge.action = #selector(showStatusDetails)
+        overrideBadge.isHidden = true
         statusButton.isBordered = false
         statusButton.imagePosition = .imageLeading
         statusButton.setAX(AX.statusLabel)
@@ -148,7 +164,8 @@ final class FooterBar: NSView {
         settingsButton.action = #selector(settingsClicked)
         settingsButton.bezelStyle = .texturedRounded
 
-        let left = NSStackView(views: [modeSwitch, showModeLabel] + [.toolbar, .masthead].compactMap { toggles[$0] })
+        let left = NSStackView(
+            views: [modeSwitch, showModeLabel, overrideBadge] + [.toolbar, .masthead].compactMap { toggles[$0] })
         let right = NSStackView(views: [clock] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
         let bar = NSStackView(views: [left, NSStackView(views: [countLabel, statusButton, noticeLabel]), right])
         bar.distribution = .equalCentering
@@ -208,6 +225,8 @@ final class FooterBar: NSView {
             p = StatusPresentation.make(status, xrunsIncreased: increased)
         }
         presentation = p
+        // Stale status (no connection) is not shown as an override either.
+        overrideBadge.isHidden = !(connected && status?.networkOutputDisabled == true)
         statusButton.title = p.summary
         statusButton.image = p.icon.image(p.summary, compact: true)
         statusButton.contentTintColor = p.level == .alarm ? .systemRed : p.level == .warning ? .systemOrange : nil
