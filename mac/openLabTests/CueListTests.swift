@@ -1703,6 +1703,22 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(commands(on: cues[1]), 0)
     }
 
+    /// A menu item whose key equivalent needs the fn key (macOS adds such items itself: Enter Full
+    /// Screen is fn-F) is not the plain key: F can still be recorded, and still fires.
+    func testAMenuItemNeedingTheFnKeyDoesNotTakeThePlainKey() async throws {
+        try await threeCues()
+        let menu = try XCTUnwrap(NSApp.mainMenu?.items.first?.submenu)
+        let item = NSMenuItem(title: "fn-F", action: nil, keyEquivalent: "f")
+        item.keyEquivalentModifierMask = .function
+        menu.addItem(item)
+        defer { menu.removeItem(item) }
+        XCTAssertTrue(wc.inspector.record(KeyChord("f")), wc.inspector.messageLabel.stringValue)
+        await assertEventually("recorded") {
+            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
+        }
+        XCTAssertNil(app.handleKeyDown(try key("f", code: 3)), "the key fires the cue's hotkey")
+    }
+
     /// A key being recorded for a cue goes to that cue.
     func testAHotkeyBeingRecordedStaysOnItsCueWhileThePlayheadMoves() async throws {
         try await threeCues()
@@ -1714,6 +1730,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await moveElsewhere(to: cues[2])
         await assertHeldOnFirstCue(playheadOn: cues[2])
         recorder.keyDown(with: try key("f", code: 3))
+        XCTAssertEqual(wc.inspector.messageLabel.stringValue, "", "the key was not refused")
         XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, "the keys go back to the list")
         await assertEventually("recorded on its own cue") {
             self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
