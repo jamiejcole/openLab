@@ -324,8 +324,7 @@ impl PlanChecks {
                     trimmed: e.trimmed.zip(rate).and_then(|(f, r)| seconds(f, r.get())),
                     duration: e.length.zip(rate).and_then(|(f, r)| seconds(f, r.get())),
                     // The probe already refuses other counts; a wrong one is dropped, not sent.
-                    channels: Some(info.channels)
-                        .filter(|c| (1..=MAX_CHANNELS as u16).contains(c)),
+                    channels: Some(info.channels).filter(|c| (1..=MAX_CHANNELS as u16).contains(c)),
                 }
             });
             if self.sent.get(&id) == media.as_ref() {
