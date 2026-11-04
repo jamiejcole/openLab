@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Darwin
 import XCTest
 
 @testable import openLab
@@ -650,5 +651,470 @@ final class InspectorTests: XCTestCase {
         XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.decimalComma"))
         edit(.preWait, "1,x")
         XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.time"))
+    }
+}
+
+/// The Network message line: address, then space-separated typed arguments (CT-30).
+final class NetworkMessageTests: XCTestCase {
+    private func arg(_ type: String, _ value: JSONValue) -> JSONValue { .object(["type": .string(type), "value": value]) }
+
+    func testParsesEachArgumentType() throws {
+        let parsed = try NetworkMessage.parse(#"/x 2 10.5 "two words" \T \F word -3 .5 7."#).get()
+        XCTAssertEqual(parsed.address, "/x")
+        XCTAssertEqual(
+            parsed.args,
+            [
+                arg("int", .int(2)), arg("float", .double(10.5)), arg("string", .string("two words")),
+                arg("bool", .bool(true)), arg("bool", .bool(false)), arg("string", .string("word")),
+                arg("int", .int(-3)), arg("float", .double(0.5)), arg("float", .double(7)),
+            ])
+    }
+
+    func testAddressIsKeptAsTypedEvenWhenBad() throws {
+        let parsed = try NetworkMessage.parse("no-slash 1").get()
+        XCTAssertEqual(parsed.address, "no-slash")
+        XCTAssertEqual(parsed.args, [arg("int", .int(1))])
+        XCTAssertEqual(try NetworkMessage.parse("   ").get().address, "")
+    }
+
+    func testUnreadableArgumentsAreRejected() {
+        XCTAssertEqual(NetworkMessage.parse(#"/x "open"#), .failure(.unterminatedQuote))
+        XCTAssertEqual(NetworkMessage.parse(#"/x \I"#), .failure(.unsupportedArgument))
+        XCTAssertEqual(NetworkMessage.parse(#"/x 1 \N"#), .failure(.unsupportedArgument))
+    }
+
+    func testAnIntegerTooBigForThirtyTwoBitsStaysAString() throws {
+        let args = try NetworkMessage.parse("/x 99999999999").get().args
+        XCTAssertEqual(args, [arg("string", .string("99999999999"))])
+        XCTAssertEqual(NetworkMessage.format(address: "/x", args: args), #"/x "99999999999""#)
+    }
+
+    func testFormatReadsBackAsTheSameMessage() throws {
+        let args = [
+            arg("int", .int(5)), arg("float", .double(5)), arg("float", .double(0.1)),
+            arg("string", .string("5")), arg("string", .string("")), arg("string", .string(#"say "hi" \ now"#)),
+            arg("string", .string(#"\T"#)), arg("string", .string("plain")), arg("bool", .bool(false)),
+        ]
+        let text = NetworkMessage.format(address: "/a", args: args)
+        let back = try NetworkMessage.parse(text).get()
+        XCTAssertEqual(back.address, "/a")
+        XCTAssertEqual(NetworkMessage.format(address: back.address, args: back.args), text)
+        XCTAssertEqual(back.args.map { $0["type"]?.stringValue }, args.map { $0["type"]?.stringValue })
+        XCTAssertEqual(back.args[5]["value"]?.stringValue, #"say "hi" \ now"#)
+        XCTAssertEqual(NetworkMessage.format(address: "", args: []), "")
+    }
+}
+
+/// A UDP socket the test owns on the loopback interface: a Network patch's destination, so what the
+/// engine really sends is what the test reads.
+private final class UDPListener {
+    let fd: Int32
+    let port: UInt16
+
+    init() throws {
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        guard fd >= 0 else { throw TestEngineError.refused("socket") }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        addr.sin_port = 0
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) }
+        }
+        guard bound == 0, named == 0, fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else {
+            close(fd)
+            throw TestEngineError.refused("bind")
+        }
+        self.fd = fd
+        port = UInt16(bigEndian: addr.sin_port)
+    }
+
+    deinit { close(fd) }
+
+    /// The next OSC message that has arrived, as "address arg arg" with typed arguments (`i:5`,
+    /// `f:10.5`, `s:text`, `T`, `F`); nil when none has.
+    func receive() -> String? {
+        var buffer = [UInt8](repeating: 0, count: 65536)
+        let n = recv(fd, &buffer, buffer.count, 0)
+        guard n > 0 else { return nil }
+        let bytes = Array(buffer.prefix(n))
+        var at = 0
+        func string() -> String {
+            let start = at
+            while at < bytes.count, bytes[at] != 0 { at += 1 }
+            let text = String(decoding: bytes[start..<min(at, bytes.count)], as: UTF8.self)
+            at = (at / 4 + 1) * 4
+            return text
+        }
+        func word() -> UInt32 {
+            defer { at += 4 }
+            guard at + 4 <= bytes.count else { return 0 }
+            return bytes[at..<at + 4].reduce(0) { $0 << 8 | UInt32($1) }
+        }
+        var parts = [string()]
+        for tag in string().dropFirst() {
+            switch tag {
+            case "i": parts.append("i:\(Int32(bitPattern: word()))")
+            case "f": parts.append("f:\(Float(bitPattern: word()))")
+            case "s": parts.append("s:\(string())")
+            case "T": parts.append("T")
+            case "F": parts.append("F")
+            default: parts.append("?\(tag)")
+            }
+        }
+        return parts.joined(separator: " ")
+    }
+}
+
+/// The Network cue's Settings tab (CT-30; QLab 5, manual pp. 366-367, 371-372) on the real engine: the
+/// operator picks a patch, types the message with real key events, clicks Send, and a socket the test
+/// owns reads what really goes out. Each test is one flow of the issue's checklist.
+@MainActor
+final class NetworkInspectorTests: XCTestCase {
+    private var app: AppController!
+    private var engine: TestEngine!
+    private let wire = WireTap()
+    private let sessionScheduler = ManualScheduler()
+    private var doc: ModelID = "none"
+    private var wc: WorkspaceWindowController { app.windows[doc]! }
+    private var store: WorkspaceStore { wc.store }
+    private var inspector: InspectorViewController { wc.inspector }
+    private var list: ModelID { wc.cueList.listID! }
+    private var one: UDPListener!
+    private var two: UDPListener!
+    private var net: ModelID = "none"
+    private var memo: ModelID = "none"
+    private let patch1: ModelID = "00000000-0000-0000-0000-0000000000b1"
+    private let patch2: ModelID = "00000000-0000-0000-0000-0000000000b2"
+
+    override func setUp() async throws {
+        engine = try await TestEngine.start()
+        one = try UDPListener()
+        two = try UDPListener()
+        let url = engine.infoURL
+        let session = EngineSession(
+            transport: wire, infoProvider: { EngineConnectionInfo.load(from: url) }, scheduler: sessionScheduler)
+        app = AppController(session: session, scheduler: ManualScheduler())
+        app.keyWindow = { [unowned self] in app.windows[doc]?.window }
+        session.start()
+        await assertEventually { session.appClient.state == .connected }
+        guard case .success(let new) = await session.newWorkspace() else { return XCTFail("new") }
+        doc = new
+        await assertEventually {
+            self.app.windows[new]?.store.model != nil && self.app.windows[new]?.cueList.listID != nil
+        }
+        app.isTextEditing = { [unowned self] in (wc.window?.firstResponder as? NSText)?.isEditable == true }
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 1400, height: 900), display: false)
+        wc.window?.makeKeyAndOrderFront(nil)
+        // The workspace has the patches "Network 1" and "Network 2", each to one of the test's sockets.
+        func patch(_ id: ModelID, _ name: String, _ port: UInt16) -> JSONValue {
+            .object([
+                "id": .string(id.raw), "name": .string(name), "host": .string("127.0.0.1"),
+                "port": .int(Int64(port)), "protocol": .string("udp"),
+            ])
+        }
+        var setup: [Command] = (store.model?.networkPatches ?? []).map {
+            Command(.object(["type": .string("remove_network_patch"), "id": .string($0.id.raw)]))
+        }
+        setup += [
+            .addNetworkPatch(patch(patch1, "Network 1", one.port), index: 0),
+            .addNetworkPatch(patch(patch2, "Network 2", two.port), index: 1),
+        ]
+        guard let all = Command.transaction(setup), case .success = await store.send(command: all) else {
+            return XCTFail("patches")
+        }
+        await assertEventually { self.store.model?.networkPatches.count == 2 }
+        // A Network cue (what Cmd-8 adds) with a memo after it, the cue selected, the Settings tab shown.
+        let addedNet = await wc.editor.add(.network)
+        net = try XCTUnwrap(addedNet)
+        let addedMemo = await wc.editor.add(.memo)
+        memo = try XCTUnwrap(addedMemo)
+        await assertEventually { self.store.model?.cue(self.memo) != nil && self.store.model?.cue(self.net) != nil }
+        click(net)
+        await assertEventually { self.inspector.cue?.id == self.net && self.store.playheads[self.list] == self.net }
+        inspector.tabView.selectTabViewItem(withIdentifier: "network")
+    }
+
+    override func tearDown() async throws {
+        app?.closeAllWindows()
+        app = nil
+        engine?.stop()
+    }
+
+    // MARK: Doing what the operator does
+
+    private func key(_ chars: String, code: UInt16 = 0) throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: wc.window?.windowNumber ?? 0, context: nil, characters: chars,
+                charactersIgnoringModifiers: chars, isARepeat: false, keyCode: chars == " " ? 49 : code))
+    }
+
+    /// Types `text` one key at a time through the app's key path and the window to its first responder.
+    private func type(_ text: String) throws {
+        let window = try XCTUnwrap(wc.window)
+        for ch in text {
+            if let passed = app.handleKeyDown(try key(String(ch))) { window.sendEvent(passed) }
+        }
+    }
+
+    private func press(_ chars: String, code: UInt16) throws {
+        let window = try XCTUnwrap(wc.window)
+        if let passed = app.handleKeyDown(try key(chars, code: code)) { window.sendEvent(passed) }
+    }
+
+    private func tab() throws { try press("\t", code: 48) }
+    private func returnKey() throws { try press("\r", code: 36) }
+
+    /// A click in the message field, then `text` replacing what is there.
+    private func typeMessage(_ text: String) throws {
+        let field = inspector.networkMessageField
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        field.currentEditor()?.selectAll(nil)
+        if text.isEmpty { try press("\u{7f}", code: 51) } else { try type(text) }
+    }
+
+    private func click(_ id: ModelID) { wc.cueList.selectAsUser([id]) }
+
+    /// The Space key as the key monitor gets it, with the focus on the cue list.
+    private func go() throws {
+        wc.window?.makeFirstResponder(nil)
+        XCTAssertNil(app.handleKeyDown(try key(" ")), "Space is GO")
+    }
+
+    /// The next message `listener` got, running the engine's clock on until it comes.
+    private func received(_ listener: UDPListener) async -> String? {
+        var got: String?
+        _ = await eventually {
+            try? await self.engine.advance(seconds: 0.1)
+            got = got ?? listener.receive()
+            return got != nil
+        }
+        return got
+    }
+
+    /// Runs the clock on for a while and says whether either socket heard anything.
+    private func quiet() async throws -> Bool {
+        for _ in 0..<5 { try await engine.advance(seconds: 0.1) }
+        await settle()
+        return one.receive() == nil && two.receive() == nil
+    }
+
+    // MARK: What the window shows
+
+    private func status(_ id: ModelID, _ index: Int) -> NSImageView? {
+        let ov = wc.cueList.outlineView
+        guard let node = wc.cueList.node(id) else { return nil }
+        let row = ov.row(forItem: node)
+        let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier("status"))
+        guard row >= 0, col >= 0, let cell = ov.view(atColumn: col, row: row, makeIfNecessary: true) as? CueCell,
+            !cell.images[index].isHidden
+        else { return nil }
+        return cell.images[index]
+    }
+
+    private func isBroken(_ id: ModelID) -> Bool { status(id, 1)?.accessibilityLabel() == loc("cue.state.broken") }
+
+    private func targetCell(_ id: ModelID) -> String? {
+        let ov = wc.cueList.outlineView
+        guard let node = wc.cueList.node(id) else { return nil }
+        let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier("target"))
+        return (ov.view(atColumn: col, row: ov.row(forItem: node), makeIfNecessary: true) as? CueCell)?.label
+            .stringValue
+    }
+
+    private var kind: JSONValue? { store.model?.cue(net)?.raw["kind"] }
+
+    private func choosePatch(at index: Int) {
+        let popup = inspector.networkPatchPopup
+        popup.selectItem(at: index)
+        XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
+    }
+
+    /// Types `text` in the message field, ends the typing with Tab and waits for the cue to hold it.
+    private func setMessageAndWait(_ text: String) async throws {
+        try typeMessage(text)
+        try tab()
+        let parsed = try NetworkMessage.parse(text).get()
+        await assertEventually("the cue holds the message") {
+            self.kind?["address"]?.stringValue == parsed.address
+                && NetworkMessage.format(address: "/", args: self.kind?["args"]?.arrayValue ?? [])
+                    == NetworkMessage.format(address: "/", args: parsed.args)
+        }
+    }
+
+    // MARK: Flows
+
+    func testSettingsTabExists() {
+        XCTAssertEqual(
+            inspector.tabView.tabViewItems.map(\.label),
+            [loc("inspector.tab.basics"), loc("inspector.tab.triggers"), loc("inspector.tab.network")])
+        XCTAssertEqual(inspector.tabView.selectedTabViewItem?.identifier as? String, "network")
+        XCTAssertEqual(inspector.networkPatchPopup.titleOfSelectedItem, "Network 1")
+        XCTAssertEqual(inspector.networkMessageField.stringValue, "")
+        XCTAssertEqual(inspector.networkSendButton.title, loc("inspector.network.send"))
+        XCTAssertTrue(inspector.networkSendButton.isEnabled)
+        XCTAssertTrue(isBroken(net), "a new cue has no message yet")
+    }
+
+    func testChooseADestination() async throws {
+        let popup = inspector.networkPatchPopup
+        XCTAssertEqual(
+            popup.itemArray.filter { !$0.isSeparatorItem }.map(\.title),
+            ["Network 1", "Network 2", loc("inspector.network.unpatched")])
+        XCTAssertEqual(targetCell(net), "Network 1")
+        try await setMessageAndWait("/lights/go 5")
+        choosePatch(at: 1)
+        await assertEventually { self.kind?["destination"]?.stringValue == self.patch2.raw }
+        XCTAssertEqual(popup.titleOfSelectedItem, "Network 2")
+        await assertEventually { self.targetCell(self.net) == "Network 2" }
+        // GO sends to Network 2's host and port.
+        try go()
+        let got = await received(two)
+        XCTAssertEqual(got, "/lights/go i:5")
+        XCTAssertNil(one.receive(), "nothing went to Network 1")
+        // Undo puts Network 1 back.
+        await wc.editor.undo()
+        await assertEventually { self.kind?["destination"]?.stringValue == self.patch1.raw }
+        // GO moved the playhead and the selection with it: select the cue again.
+        click(net)
+        await assertEventually { self.inspector.cue?.id == self.net }
+        await assertEventually { popup.titleOfSelectedItem == "Network 1" }
+        await assertEventually { self.targetCell(self.net) == "Network 1" }
+    }
+
+    func testUnpatchedCueIsBroken() async throws {
+        try await setMessageAndWait("/lights/go 5")
+        await assertEventually { !self.isBroken(self.net) }
+        let popup = inspector.networkPatchPopup
+        choosePatch(at: popup.numberOfItems - 1)
+        await assertEventually { self.isBroken(self.net) }
+        XCTAssertEqual(popup.titleOfSelectedItem, loc("inspector.network.unpatched"))
+        XCTAssertEqual(targetCell(net), loc("cue.target.unpatched"))
+        let tip = try XCTUnwrap(status(net, 1)?.toolTip)
+        XCTAssertTrue(tip.contains(loc("problem.network_patch_missing.none")), tip)
+        // GO sends nothing and the playhead moves on.
+        try go()
+        await assertEventually { self.store.playheads[self.list] == self.memo }
+        let silent = try await quiet()
+        XCTAssertTrue(silent, "the broken cue sent nothing")
+    }
+
+    func testTypeAMessageAndTestSendIt() async throws {
+        try typeMessage("/lights/go 5")
+        XCTAssertTrue(inspector.dirty.contains(.message))
+        try tab()
+        await assertEventually("the message is stored") { self.kind?["address"]?.stringValue == "/lights/go" }
+        await assertEventually { !self.isBroken(self.net) }
+        inspector.networkSendButton.performClick(nil)
+        let got = await received(one)
+        XCTAssertEqual(got, "/lights/go i:5")
+        // Reselecting another cue and back shows the same text.
+        click(memo)
+        await assertEventually { self.inspector.cue?.id == self.memo }
+        click(net)
+        await assertEventually { self.inspector.cue?.id == self.net }
+        XCTAssertEqual(inspector.networkMessageField.stringValue, "/lights/go 5")
+    }
+
+    func testSendCommitsTextStillBeingTyped() async throws {
+        try typeMessage("/typed 1")
+        XCTAssertTrue(inspector.dirty.contains(.message), "still typing: no Tab, no Return")
+        inspector.networkSendButton.performClick(nil)
+        let got = await received(one)
+        XCTAssertEqual(got, "/typed i:1", "what the field shows is what goes out")
+    }
+
+    func testTypedArguments() async throws {
+        let text = #"/x 2 10.5 "two words" \T"#
+        try await setMessageAndWait(text)
+        click(memo)
+        await assertEventually { self.inspector.cue?.id == self.memo }
+        click(net)
+        await assertEventually { self.inspector.cue?.id == self.net }
+        XCTAssertEqual(inspector.networkMessageField.stringValue, text)
+        inspector.networkSendButton.performClick(nil)
+        let got = await received(one)
+        XCTAssertEqual(got, "/x i:2 f:10.5 s:two words T")
+    }
+
+    func testUnreadableArgumentsAreAVisibleWarningNotACrash() async throws {
+        try await setMessageAndWait("/ok 1")
+        try typeMessage(#"/ok "unclosed"#)
+        try tab()
+        XCTAssertEqual(inspector.messageLabel.stringValue, loc("inspector.invalid.networkMessage"))
+        XCTAssertEqual(inspector.networkMessageField.stringValue, "/ok 1", "the cue's own text is back")
+        XCTAssertEqual(kind?["address"]?.stringValue, "/ok")
+    }
+
+    func testInvalidMessageIsAcceptedButBroken() async throws {
+        try await setMessageAndWait("/fine 1")
+        await assertEventually { !self.isBroken(self.net) }
+        try typeMessage("no-slash 1")
+        try tab()
+        await assertEventually("broken") { self.isBroken(self.net) }
+        XCTAssertEqual(inspector.networkMessageField.stringValue, "no-slash 1", "the text stays")
+        let tip = try XCTUnwrap(status(net, 1)?.toolTip)
+        XCTAssertTrue(tip.contains("The OSC message cannot be sent"), tip)
+        inspector.networkSendButton.performClick(nil)
+        let silent = try await quiet()
+        XCTAssertTrue(silent, "Send does nothing")
+        // Fixed: the broken marker clears.
+        try typeMessage("/ok")
+        try tab()
+        await assertEventually("fixed") { !self.isBroken(self.net) && self.kind?["address"]?.stringValue == "/ok" }
+        // Over the size bounds: refused, the field goes back, a notice says why.
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(inspector.networkMessageField))
+        let huge = "/ok \"" + String(repeating: "a", count: 64 * 1024 + 1) + "\""
+        let editor = try XCTUnwrap(inspector.networkMessageField.currentEditor() as? NSTextView)
+        editor.selectAll(nil)
+        editor.insertText(huge, replacementRange: editor.selectedRange())
+        try tab()
+        await assertEventually("refused") {
+            self.inspector.messageLabel.stringValue.hasPrefix(String(format: loc("inspector.refused"), ""))
+                && self.inspector.networkMessageField.stringValue == "/ok"
+        }
+        XCTAssertEqual(kind?["args"], .array([]))
+    }
+
+    func testShowModeLocksTheSettings() async throws {
+        let controls: [NSControl] = [
+            inspector.networkPatchPopup, inspector.networkMessageField, inspector.networkSendButton,
+        ]
+        XCTAssertTrue(controls.allSatisfy(\.isEnabled))
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode)
+        XCTAssertTrue(controls.allSatisfy { !$0.isEnabled })
+        await wc.requestShowMode(false)
+        XCTAssertTrue(controls.allSatisfy(\.isEnabled), "Edit Mode re-enables them")
+    }
+
+    /// The playhead moves while the message is typed: the selection stays put, Space types a space,
+    /// and the follow happens when the typing ends.
+    func testAPlayheadMoveWhileTypingTheMessageIsHeldUntilTheTypingEnds() async throws {
+        try typeMessage("/held")
+        let moved = await store.transport(.setPlayhead(list: list, cue: memo))
+        guard case .success = moved else { return XCTFail("\(moved)") }
+        await assertEventually { self.store.playheads[self.list] == self.memo }
+        XCTAssertEqual(inspector.cue?.id, net, "the selection stays while typing")
+        XCTAssertEqual(inspector.networkMessageField.stringValue, "/held")
+        try type(" 7")  // Space types a space; it does not fire GO
+        XCTAssertEqual(inspector.networkMessageField.stringValue, "/held 7")
+        try returnKey()
+        await assertEventually("the held follow ran") { self.wc.cueList.selectedIDs() == [self.memo] }
+        await assertEventually("the text went to the cue it was typed for") {
+            self.store.model?.cue(self.net)?.raw["kind"]?["address"]?.stringValue == "/held"
+        }
+        let silent = try await quiet()
+        XCTAssertTrue(silent, "no GO was fired by the typed Space")
     }
 }

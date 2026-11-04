@@ -13,6 +13,7 @@ enum InspectorTabs {
         case "group": return common + ["mode"]
         case "load": return common + ["loadTime"]
         case "devamp": return common + ["devamp"]
+        case "network": return common + ["network"]
         default: return common
         }
     }
