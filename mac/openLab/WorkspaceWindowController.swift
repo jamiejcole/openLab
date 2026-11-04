@@ -591,8 +591,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             horizontalSplit.addArrangedSubview(view)
             horizontalSplit.setHoldingPriority(NSLayoutConstraint.Priority(251), forSubviewAt: 1)
         } else if !shown, view.superview != nil {
+            // Removing a view does not go through `WorkspaceWindow.makeFirstResponder`: focus inside it would
+            // fall to the window, and the keys would drive nothing. Asking for nil sends it to the cue list.
+            let held = (window?.firstResponder as? NSView)?.isDescendant(of: view) == true
             horizontalSplit.removeArrangedSubview(view)
             view.removeFromSuperview()
+            if held { _ = window?.makeFirstResponder(nil) }
         }
     }
 

@@ -221,9 +221,9 @@ final class AppControllerTests: XCTestCase {
         app = nil
         engine?.releaseResults()
         real?.stop()
-        // Measured over this class (151 tests): the controllers, stores and the app are freed at once, but the
-        // windows were not closed, and NSApp.windows grew from 5 to 48 with up to 4 left on screen. Every
-        // test now ends with none left showing.
+        // Leaves nothing showing. (NSApp.windows still grows over the class, 5 to 52 in 158 tests: the windows
+        // are held by an autorelease pool an async XCTest never drains between tests. A turn of the main run
+        // loop here did not free them, so this is a test-process effect, not a product leak.)
         for window in NSApp.windows where window.isVisible { window.close() }
     }
 

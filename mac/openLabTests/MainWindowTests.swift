@@ -4,6 +4,19 @@ import XCTest
 
 @testable import openLab
 
+/// What a reader thread read, handed back to the test thread.
+private final class Collected: @unchecked Sendable {
+    private let lock = NSLock()
+    private let done = DispatchSemaphore(value: 0)
+    private var bytes = Data()
+    var data: Data { lock.withLock { bytes } }
+    func set(_ data: Data) {
+        lock.withLock { bytes = data }
+        done.signal()
+    }
+    func wait() { done.wait() }
+}
+
 @MainActor
 final class MainWindowTests: XCTestCase {
     /// The rigs of tests that build their own show, kept alive for the test.
@@ -19,9 +32,16 @@ final class MainWindowTests: XCTestCase {
         WorkspaceWindowController(store: try Rig.offline().store)
     }
 
-    /// Runs `body` with stderr captured: AppKit reports a broken layout there.
+    /// Runs `body` with stderr captured and returns the layout reports AppKit made there (other lines, from
+    /// other threads, are not this test's business). The pipe is drained on a thread so a noisy body cannot
+    /// block on a full pipe.
     private func stderrText(_ body: () -> Void) -> String {
         let pipe = Pipe()
+        let collected = Collected()
+        let reader = Thread {
+            collected.set(pipe.fileHandleForReading.readDataToEndOfFile())
+        }
+        reader.start()
         let saved = dup(STDERR_FILENO)
         fflush(stderr)
         dup2(pipe.fileHandleForWriting.fileDescriptor, STDERR_FILENO)
@@ -30,7 +50,10 @@ final class MainWindowTests: XCTestCase {
         dup2(saved, STDERR_FILENO)
         close(saved)
         try? pipe.fileHandleForWriting.close()
-        return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        collected.wait()
+        return String(decoding: collected.data, as: UTF8.self).split(separator: "\n").filter {
+            $0.contains("Conflicting constraints") || $0.contains("width is negative")
+        }.joined(separator: "\n")
     }
 
     /// A real window, shown at the smallest size it allows, at a small screen's size and at a large one,
