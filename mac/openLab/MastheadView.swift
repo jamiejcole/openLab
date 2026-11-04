@@ -117,15 +117,15 @@ final class MastheadView: NSView, NSTextViewDelegate {
     /// the cue it was typed for even if the playhead moves meanwhile.
     private var editingID: ModelID?
 
-    /// Shows `cue` as standing by. Notes being typed for another cue are committed to that cue first.
+    /// Typing ended (or its text was taken): the masthead may now show the standby cue that came
+    /// while the operator typed. The window re-reads it, since the cue may have changed or gone.
+    var onEditingEnded: (() -> Void)?
+
+    /// Shows `cue` as standing by. While notes are being typed for another cue the masthead keeps
+    /// showing that cue, the text and the focus: a Space typed next must go into the text, not fire
+    /// GO. The new standby cue is shown once typing ends.
     func show(standby cue: Cue?) {
-        if let editing = editingID, editing != cue?.id {
-            editingID = nil
-            onCommitNotes?(editing, notesView.string)
-            // AppKit announces the start of typing once per focus session: leave the field so the
-            // next keystroke starts a new session for the new cue instead of typing unseen.
-            if notesView.window?.firstResponder === notesView { notesView.window?.makeFirstResponder(nil) }
-        }
+        if let editing = editingID, editing != cue?.id { return }
         let changed = cueID != cue?.id
         cueID = cue?.id
         if let cue {
@@ -155,12 +155,14 @@ final class MastheadView: NSView, NSTextViewDelegate {
         guard let id = editingID else { return }
         editingID = nil
         if !isLocked { onCommitNotes?(id, notesView.string) }
+        onEditingEnded?()
     }
 
     /// Notes typed and not yet sent, handed over (and forgotten) for Show Mode, Save, Close and Quit.
     func takePendingNotes() -> (id: ModelID, text: String)? {
         guard let id = editingID, !isLocked else { return nil }
         editingID = nil
+        defer { onEditingEnded?() }
         return (id, notesView.string)
     }
 

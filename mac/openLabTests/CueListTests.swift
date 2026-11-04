@@ -1575,6 +1575,54 @@ final class PlayheadFlowTests: XCTestCase {
         await assertEventually { self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "cue line" }
     }
 
+    /// The masthead's notes of the standing-by cue are being typed and the playhead moves from
+    /// outside: the field keeps its focus and text, and Space types a space instead of firing GO.
+    func testAPlayheadMoveWhileTypingMastheadNotesKeepsTheFocusAndSpaceDoesNotGo() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        notes.insertText("half", replacementRange: notes.selectedRange())
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        XCTAssertTrue(window.firstResponder === notes, "still typing")
+        XCTAssertEqual(notes.string, "half")
+        XCTAssertEqual(wc.masthead.cueID, cues[0], "the masthead keeps the cue being typed for")
+        let space = try key(" ", code: 49)
+        XCTAssertTrue(app.handleKeyDown(space) === space, "Space goes to the field")
+        notes.insertText(" ", replacementRange: notes.selectedRange())
+        let letter = try key("g", code: 5)
+        XCTAssertTrue(app.handleKeyDown(letter) === letter, "letters type, they fire no hotkey")
+        notes.insertText("typed", replacementRange: notes.selectedRange())
+        await settle()
+        try await play(0.1)
+        XCTAssertEqual(goes(), 0, "no GO")
+        for id in cues { XCTAssertFalse(running(id)) }
+        XCTAssertEqual(store.playheads[list], cues[2], "standby unchanged")
+        XCTAssertEqual(notes.string, "half typed")
+    }
+
+    /// Typing ends (here a click away): the notes go to the cue they were typed for and the
+    /// masthead then shows the new standby cue.
+    func testMastheadNotesTypedDuringAPlayheadMoveSaveToTheirOwnCue() async throws {
+        try await threeCues()
+        let window = try XCTUnwrap(wc.window)
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        notes.insertText("for one", replacementRange: notes.selectedRange())
+        try await moveElsewhere(to: cues[1])
+        await assertEventually { self.store.playheads[self.list] == self.cues[1] }
+        XCTAssertEqual(wc.masthead.cueID, cues[0])
+        window.makeFirstResponder(nil)
+        try await assertAllOn(cues[1])
+        XCTAssertEqual(wc.masthead.cueID, cues[1])
+        XCTAssertEqual(notes.string, "", "the new standby cue's own notes")
+        await assertEventually("the notes went to the cue they were typed for") {
+            self.store.model?.cue(self.cues[0])?.raw["notes"]?.stringValue == "for one"
+        }
+        XCTAssertNotEqual(store.model?.cue(cues[1])?.raw["notes"]?.stringValue, "for one")
+    }
+
     // MARK: #496: GO on a group after a mode change
 
     private var group: ModelID = "none"
