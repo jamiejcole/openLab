@@ -709,12 +709,22 @@ final class EngineCrashFlowTests: XCTestCase {
         let waiting = await pump { self.app.session.detached.count == 2 && self.app.session.isReattaching }
         XCTAssertTrue(waiting)
         try await reopenAnswered()
+        // The New waits behind the reopen whose answer is held (#499), then goes before the next one.
+        tap.forgetSent()
+        let making = Task { await app.newWorkspace() }
+        for _ in 0..<100 { await Task.yield() }
         tap.holdResults = false
-        await app.newWorkspace()
-        XCTAssertEqual(app.session.orderedStores.count, 1, "the new workspace has its store while the others wait")
-        XCTAssertTrue(app.session.isReattaching)
-        XCTAssertEqual(app.allWindows.count, 3)
         tap.releaseResults()
+        await making.value
+        let docRequests = tap.sent.compactMap { m -> Request? in
+            if case .request(_, let r) = m { return r } else { return nil }
+        }.filter {
+            switch $0 {
+            case .new, .open, .openRecovery: return true
+            default: return false
+            }
+        }
+        XCTAssertEqual(docRequests.first, .new, "the New went before the remaining reopens")
         let done = await pump { self.app.windows.count == 3 && !self.app.session.isReattaching }
         XCTAssertTrue(done)
     }
@@ -789,6 +799,60 @@ final class EngineCrashFlowTests: XCTestCase {
         let store = try XCTUnwrap(app.session.orderedStores.first?.store)
         await assertEventually { store.model?.cue(self.intro)?.name == "Autosaved" }
         XCTAssertEqual(store.document?.dirty, true, "the autosave was opened")
+    }
+
+    /// The crashed run left autosaves of B and C. Returns with the new run's launch scan sent and
+    /// its answer held, so the engine's document request is still the app's to finish.
+    private func relaunchWithScanInFlight() async throws {
+        try await runs.start()
+        for name in ["B", "C"] {
+            let doc = try await runs.open(try runs.show("Demo", named: name))
+            try await runs.rename(intro, in: doc, to: "Autosaved")
+        }
+        try await runs.advance(31)
+        await runs.autosaved("B", "C")
+        try await runs.crash()
+        tap.holdResults = true
+        try await launch()
+        await assertEventually("the launch scan was sent") {
+            self.tap.requestCount { if case .scanRecovery = $0 { return true } else { return false } } == 1
+        }
+    }
+
+    private func openRequests() -> Int {
+        tap.requestCount { if case .open = $0 { return true } else { return false } }
+    }
+
+    /// #499 (a): the engine restarted after a crash and the operator opens a show while the launch
+    /// recovery scan is still under way: the show opens, with no error.
+    func testOpeningAShowDuringTheLaunchRecoveryScanOpensItWithoutAnError() async throws {
+        try await relaunchWithScanInFlight()
+        let d = try runs.show("Demo", named: "D")
+        let opening = Task { await app.openWorkspace(url: URL(fileURLWithPath: d)) }
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(openRequests(), 0, "the open waits for the scan's answer")
+        tap.holdResults = false
+        tap.releaseResults()
+        await opening.value
+        await assertEventually("the show's window opens") { self.app.windows.count == 1 }
+        XCTAssertTrue(alerts.errors.isEmpty, "no error: \(alerts.errors)")
+    }
+
+    /// #499 (b): the same open, and the crashed run's autosaves are offered all the same.
+    func testOpeningAShowDuringTheLaunchRecoveryScanStillOffersTheAutosaves() async throws {
+        try await relaunchWithScanInFlight()
+        let d = try runs.show("Demo", named: "D")
+        let opening = Task { await app.openWorkspace(url: URL(fileURLWithPath: d)) }
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(openRequests(), 0, "the open is not sent while the scan is being answered")
+        tap.holdResults = false
+        tap.releaseResults()
+        await opening.value
+        let offered = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(offered, "the crashed run's autosaves are offered")
+        XCTAssertTrue(presenter.detail.contains(String(format: loc("engine.alarm.autosaves"), 2)), presenter.detail)
+        XCTAssertEqual(app.windows.count, 1)
+        XCTAssertTrue(alerts.errors.isEmpty)
     }
 
     /// #264: the engine dies while Hamlet has unsaved edits whose autosave is not newer than the
