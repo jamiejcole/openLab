@@ -214,7 +214,8 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually { self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(-5) }
         _ = await store.undo()
         await assertEventually { self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(0) }
-        XCTAssertEqual(store.document?.canUndo, false)
+        // Its own message, after the model's.
+        await assertEventually { self.store.document?.canUndo == false }
     }
 
     func testMatrixDragIsOneGesture() async throws {

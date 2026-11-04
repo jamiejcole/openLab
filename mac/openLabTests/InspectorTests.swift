@@ -329,7 +329,13 @@ final class InspectorTests: XCTestCase {
             choose(vc.groupModePopup, index)
             await assertEventually { self.commands.count == n + 1 }
             XCTAssertEqual(commands.last, groupMode(mode), mode)
-            await assertEventually("the model answers") { self.vc.groupModePopup.indexOfSelectedItem == index }
+            // The popup alone proves nothing: it shows the choice before the engine has answered. And
+            // the next choice must meet the new mode: the old one chosen again changes nothing.
+            let type = JSONValue.parse(mode)?["type"]
+            await assertEventually("the model answers") {
+                self.store.model?.cue(Self.group)?.raw["kind"]?["mode"]?["type"] == type
+                    && self.vc.groupModePopup.indexOfSelectedItem == index
+            }
         }
     }
 

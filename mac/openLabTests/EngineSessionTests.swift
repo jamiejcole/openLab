@@ -476,6 +476,9 @@ final class EngineSessionTests: XCTestCase {
         let oldToken = s.runToken
         let connected = await pump { s.connectionState == .connected && s.runToken != oldToken }
         XCTAssertTrue(connected, "the session reached the new run")
+        // The list naming the new doc follows the answer on the wire. It waits, or this test's older
+        // list could come after it, which rightly closes the doc.
+        tap.holdLists = true
         guard case .success(let doc) = await s.open(path: try runs.show("Second", named: "Other")) else {
             return XCTFail("open")
         }
@@ -483,7 +486,9 @@ final class EngineSessionTests: XCTestCase {
         // The list the engine sent before it opened the show, arriving after its answer.
         _ = s.engineClient(s.appClient, didReceive: .workspaces([]))
         XCTAssertNotNil(s.stores[doc], "the just-opened show keeps its window")
-        await assertEventually { s.stores[doc]?.model?.name == "Other" }
+        tap.holdLists = false
+        tap.releaseResults()
+        await assertEventually { s.workspaces.map(\.doc) == [doc] && s.stores[doc]?.model?.name == "Other" }
     }
 
     func testAnOldDocIdIsNeverUsedInANewRun() async throws {

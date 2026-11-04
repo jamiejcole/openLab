@@ -212,6 +212,12 @@ final class AppControllerTests: XCTestCase {
         return doc
     }
 
+    /// The failure among a store's log records: the engine's own lines keep arriving around it, so
+    /// it need not be the last.
+    private func reportedError(_ store: WorkspaceStore) -> LogEntry? {
+        store.logEntries.last { $0.level == .error }
+    }
+
     /// Unsaved changes: an edit through the engine (the panic fade time, which nothing here shows).
     private func makeDirty(_ doc: ModelID) async {
         guard let store = app.session.stores[doc] else { return XCTFail("no store \(doc)") }
@@ -1976,8 +1982,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(
             app.windows[doc]?.footer.noticeLabel.stringValue,
             AppController.relinkSummary(relinked: 1, ambiguous: 0, unmatched: 0))
-        XCTAssertEqual(store.logEntries.last?.level, .info)
-        XCTAssertEqual(store.logEntries.last?.message, "Relinked 1 cue(s).")
+        XCTAssertTrue(store.logEntries.contains { $0.level == .info && $0.message == "Relinked 1 cue(s)." })
         // The engine changed the cue: Radio plays the found file and is no longer broken.
         await assertEventually {
             store.model?.cue(TestSnapshots.radio)?.raw["kind"]?["media"]?.stringValue?.hasSuffix("Hamlet/o.wav") == true
@@ -2026,7 +2031,7 @@ final class AppControllerTests: XCTestCase {
         app.pickFolderURL = { URL(fileURLWithPath: "/m") }
         await app.relinkMedia(on: store)
         XCTAssertEqual(alerts.errors.count, 1)
-        XCTAssertEqual(store.logEntries.last?.level, .error)
+        XCTAssertNotNil(reportedError(store))
     }
 
     func testRelinkButtonInTheWarningsTabRunsTheRelink() async throws {
@@ -2354,8 +2359,7 @@ final class AppControllerTests: XCTestCase {
         wc.setShowMode(true)
         wc.showNotice("Could not do that")
         XCTAssertNil(wc.window?.attachedSheet)
-        XCTAssertEqual(wc.store.logEntries.last?.message, "Could not do that")
-        XCTAssertEqual(wc.store.logEntries.last?.level, .warn)
+        XCTAssertTrue(wc.store.logEntries.contains { $0.level == .warn && $0.message == "Could not do that" })
         XCTAssertEqual(wc.footer.noticeLabel.stringValue, "Could not do that")
     }
 
@@ -2365,7 +2369,7 @@ final class AppControllerTests: XCTestCase {
         wc.setShowMode(true)
         app.revealCrashReports()
         XCTAssertFalse(alerts.log.contains { $0.hasPrefix("info:") })
-        XCTAssertEqual(wc.store.logEntries.last?.message, loc("crash.none"))
+        XCTAssertTrue(wc.store.logEntries.contains { $0.message == loc("crash.none") })
         XCTAssertEqual(wc.footer.noticeLabel.stringValue, loc("crash.none"))
     }
 
@@ -2385,9 +2389,8 @@ final class AppControllerTests: XCTestCase {
         let closed = await task.value
         XCTAssertFalse(closed)
         XCTAssertTrue(alerts.errors.isEmpty, "no modal about the failure: \(alerts.errors)")
-        // The engine's own log lines keep arriving: the failure is the error among them.
         let failure = try XCTUnwrap(
-            show.store.logEntries.last { $0.level == .error },
+            reportedError(show.store),
             "\(show.store.logEntries.map(\.message)) footer \(show.footer.noticeLabel.stringValue)")
         XCTAssertEqual(show.footer.noticeLabel.stringValue, failure.message)
         engine.releaseResults()
@@ -2402,7 +2405,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log.first, "quitPlaying", "the one quit confirmation stays (playing outranks Show Mode)")
         XCTAssertTrue(alerts.errors.isEmpty)
-        XCTAssertEqual(wc.store.logEntries.last?.level, .error)
+        XCTAssertNotNil(reportedError(wc.store))
     }
 
     func testEditModeStillShowsErrorsAsAlerts() async throws {
@@ -2419,8 +2422,8 @@ final class AppControllerTests: XCTestCase {
         engine.garbleResults = true
         await app.openWorkspace(url: try showFile("X"))
         XCTAssertTrue(alerts.errors.isEmpty)
-        XCTAssertEqual(wc.store.logEntries.last?.level, .error)
-        XCTAssertEqual(wc.footer.noticeLabel.stringValue, wc.store.logEntries.last?.message)
+        let failure = try XCTUnwrap(reportedError(wc.store))
+        XCTAssertEqual(wc.footer.noticeLabel.stringValue, failure.message)
     }
 
     func testCloseRefusalNamingNoWindowGoesToTheShowModeFooter() async throws {
@@ -2428,10 +2431,20 @@ final class AppControllerTests: XCTestCase {
         let show = try XCTUnwrap(app.windows["1"])
         show.setShowMode(true)
         engine.garbleResults = true
-        let closed = await app.closeWorkspace(second)
+        engine.holdResults = true
+        let task = Task { await app.closeWorkspace(second) }
+        // The engine closed it (its window is gone); only then does the unreadable answer come, for
+        // a failure that names no window. The engine sends the answer first, so without the hold
+        // which of the two the app takes first is a matter of scheduling.
+        await assertEventually { app.windows[second] == nil }
+        // The two come on different connections: the answer may still be on its way.
+        engine.holdResults = false
+        engine.releaseResults()
+        let closed = await task.value
         XCTAssertFalse(closed)
         XCTAssertTrue(alerts.errors.isEmpty)
-        XCTAssertEqual(show.store.logEntries.last?.level, .error)
+        let failure = try XCTUnwrap(reportedError(show.store))
+        XCTAssertEqual(show.footer.noticeLabel.stringValue, failure.message)
     }
 
     func testShowModeSuppressesTheSaveTimeoutAlert() async throws {
@@ -2444,7 +2457,7 @@ final class AppControllerTests: XCTestCase {
         let saved = await task.value
         XCTAssertFalse(saved)
         XCTAssertTrue(alerts.errors.isEmpty)
-        XCTAssertEqual(wc.store.logEntries.last?.level, .error)
+        XCTAssertNotNil(reportedError(wc.store))
         engine.releaseResults()
     }
 
@@ -2502,7 +2515,7 @@ final class AppControllerTests: XCTestCase {
         wc.setShowMode(true)
         delegate.alarmAlerts.showError("boom")
         XCTAssertTrue(alerts.errors.isEmpty)
-        XCTAssertEqual(wc.store.logEntries.last?.message, "boom")
+        XCTAssertTrue(wc.store.logEntries.contains { $0.message == "boom" })
     }
 
     // MARK: Esc without the system beep

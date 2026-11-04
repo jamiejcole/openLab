@@ -629,7 +629,7 @@ final class EngineCrashFlowTests: XCTestCase {
         wc.setShowMode(true)
         await quiet.recoverAutosaves()
         XCTAssertTrue(alerts.log.isEmpty, "\(alerts.log)")
-        XCTAssertEqual(wc.store.logEntries.last?.message, loc("recover.none"))
+        XCTAssertTrue(wc.store.logEntries.contains { $0.message == loc("recover.none") })
     }
 
     func testRecoverAutosavesIsInTheFileMenuAndWaitsForTheEngine() throws {

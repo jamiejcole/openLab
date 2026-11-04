@@ -534,9 +534,9 @@ extension Rig {
 
 /// The real engine's connections as the app opens them (every `Rig` on an engine uses one), with
 /// what the app sent on each (the order of messages is part of several flows: an edit before a
-/// close, everything before `goodbye`) and the wire faults the real engine cannot be asked for: results held or made
-/// unreadable, a flush that never returns, the connections dropped. No cue model: every frame the
-/// app reads came from the engine.
+/// close, everything before `goodbye`) and the wire faults the real engine cannot be asked for: results or
+/// `workspaces` lists held, results made unreadable, a flush that never returns, the connections dropped. No cue
+/// model: every frame the app reads came from the engine.
 @MainActor
 final class WireTap: EngineTransport {
     private let inner = WebSocketTransport()
@@ -547,6 +547,9 @@ final class WireTap: EngineTransport {
     /// The commands sent, in order.
     var commands: [Command] { sent.compactMap { if case .command(_, let c, _) = $0 { return c } else { return nil } } }
     var holdResults = false
+    /// The engine's `workspaces` lists wait too, for a test that puts its own list ahead of them.
+    var holdLists = false
+    /// Results are unreadable when they reach the app (a held one when it is released).
     var garbleResults = false
     var holdFlush = false
     fileprivate var connections: [TapConnection] = []
@@ -570,11 +573,21 @@ final class WireTap: EngineTransport {
         connections = []
     }
 
-    /// Delivers the held results, in the order they came or (`reversed`) newest first.
+    /// Delivers what is held, in the order it came or (`reversed`) newest first.
     func releaseResults(reversed: Bool = false) {
         let all = reversed ? held.reversed() : held
         held = []
-        for (c, text) in all { c.deliver(text) }
+        for (c, text) in all { c.deliver(garbled(text)) }
+    }
+
+    /// `text`, unreadable if it is a result and results are to be.
+    fileprivate func garbled(_ text: String) -> String {
+        guard garbleResults, let v = JSONValue.parse(text), v["type"]?.stringValue == "result",
+            var o = v.objectValue
+        else { return text }
+        o["error"] = nil
+        o["ok"] = .string("garbled")
+        return (try? JSONValue.object(o).text()) ?? text
     }
 
     /// How many results are held (`holdResults`).
@@ -616,15 +629,11 @@ final class TapConnection: EngineConnection {
     }
 
     private func arrived(_ text: String) {
-        guard var v = JSONValue.parse(text), v["type"]?.stringValue == "result" else { return deliver(text) }
-        if tap.garbleResults, var o = v.objectValue {
-            o["error"] = nil
-            o["ok"] = .string("garbled")
-            v = .object(o)
-            return deliver((try? v.text()) ?? text)
+        let type = JSONValue.parse(text)?["type"]?.stringValue
+        if type == "result" ? tap.holdResults : (type == "workspaces" && tap.holdLists) {
+            return tap.held.append((self, text))
         }
-        if tap.holdResults { return tap.held.append((self, text)) }
-        deliver(text)
+        deliver(tap.garbled(text))
     }
 
     fileprivate func deliver(_ text: String) {
