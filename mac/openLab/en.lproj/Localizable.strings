@@ -127,7 +127,13 @@
 "masthead.go" = "GO";
 "masthead.go.label" = "Go";
 "masthead.standby.none" = "No cue standing by";
-"masthead.notes.cueGone" = "The notes could not be saved: the cue no longer exists.";
+"notes.cueLabel" = "the cue \u201C%@\u201D";
+"notes.notSaved.refused" = "The notes for %1$@ were not saved: the engine refused them (%2$@).";
+"notes.notSaved.notDelivered" = "The notes for %@ were not saved: the engine did not receive them.";
+"notes.notSaved.cueGone" = "The notes were not saved: the cue they were typed for no longer exists.";
+"notes.notSaved.blocked" = "The notes were not saved: another edit you typed is not valid. Fix it and try again.";
+"alert.copyText" = "Copy Text";
+"notes.notice.title" = "Notes not saved";
 "masthead.notes.label" = "Notes for the standing-by cue";
 
 "cue.type.group.timeline" = "Group (timeline)";

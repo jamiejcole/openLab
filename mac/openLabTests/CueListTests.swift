@@ -1349,6 +1349,7 @@ final class PlayheadFlowTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        NotesNoticePanel.closeAll()
         app?.closeAllWindows()
         app = nil
         engine?.stop()
@@ -2383,6 +2384,251 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === wc.cueList.outlineView)
         window.sendEvent(try XCTUnwrap(app.handleKeyDown(try downArrow)))
         try await assertAllOn(cues[1])
+    }
+
+    // MARK: Notes the engine refuses or that are not delivered: a sheet with Copy Text, nothing held
+
+    private let tooLongNotes = String(repeating: "x", count: 64 * 1024 + 1)
+
+    /// Copy Text puts the text on a pasteboard of this test's own.
+    private func notesPasteboard() -> NSPasteboard {
+        let board = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
+        wc.notesPasteboard = board
+        return board
+    }
+
+    /// Two characters by key, then a paste past the engine's 64 KiB limit.
+    private func typeTooLong(into view: NSTextView) throws {
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        try typeKeys("ab", in: window)
+        view.insertText(tooLongNotes, replacementRange: view.selectedRange())
+    }
+
+    /// The panel names the cue (unless `cue` is nil) and says the notes were not saved; it never takes
+    /// the keys. Copy Text puts `text` on the pasteboard and closes it.
+    private func answerNotice(
+        _ board: NSPasteboard, containing reason: String, cue: String? = "1.wav", text: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        await assertEventually("a panel", file: file, line: line) { !NotesNoticePanel.open.isEmpty }
+        let panel = try XCTUnwrap(NotesNoticePanel.open.last?.panel, file: file, line: line)
+        XCTAssertFalse(panel.canBecomeKey, "never key", file: file, line: line)
+        XCTAssertFalse(panel.isKeyWindow, file: file, line: line)
+        let said = sheetText(panel)
+        XCTAssertTrue(said.contains("not saved"), said, file: file, line: line)
+        XCTAssertTrue(said.contains(reason), said, file: file, line: line)
+        if let cue { XCTAssertTrue(said.contains(cue), "names the cue: \(said)", file: file, line: line) }
+        XCTAssertTrue(pressButton(loc("alert.copyText"), in: panel), file: file, line: line)
+        await assertEventually("the panel closed", file: file, line: line) { NotesNoticePanel.open.isEmpty }
+        XCTAssertEqual(board.string(forType: .string), text, "Copy Text", file: file, line: line)
+    }
+
+    /// Nothing is held: the fields show what the cue holds, and Save and Show Mode work.
+    private func assertNothingHeld(file: StaticString = #filePath, line: UInt = #line) async {
+        XCTAssertEqual(wc.masthead.notesView.string, "", file: file, line: line)
+        XCTAssertEqual(wc.inspector.notesView.string, "", file: file, line: line)
+        let ok = await wc.commitPendingEdits()
+        XCTAssertTrue(ok, "Save is not blocked", file: file, line: line)
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode, "Show Mode is not blocked", file: file, line: line)
+    }
+
+    func testMastheadNotesTheEngineRefusesGiveANoticeWithCopyTextAndHoldNothing() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        try typeTooLong(into: wc.masthead.notesView)
+        try typeKeys("\r", in: try XCTUnwrap(wc.window), code: 36)
+        try await answerNotice(board, containing: "refused", text: "ab" + tooLongNotes)
+        await assertEventually { self.wc.masthead.notesView.string == "" }
+        await assertNothingHeld()
+    }
+
+    func testInspectorNotesTheEngineRefusesGiveANoticeWithCopyTextAndHoldNothing() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        try typeTooLong(into: wc.inspector.notesView)
+        try typeKeys("\t", in: try XCTUnwrap(wc.window), code: 48)
+        try await answerNotice(board, containing: "refused", text: "ab" + tooLongNotes)
+        await assertEventually { self.wc.inspector.notesView.string == "" }
+        await assertNothingHeld()
+    }
+
+    func testMastheadNotesThatCouldNotBeSentGiveANotice() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        try typeKeys("short", in: window)
+        store.client.stop()
+        try typeKeys("\r", in: window, code: 36)
+        try await answerNotice(board, containing: "did not receive", text: "short")
+    }
+
+    func testInspectorNotesThatCouldNotBeSentGiveANotice() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.notesView))
+        try typeKeys("short", in: window)
+        store.client.stop()
+        try typeKeys("\r", in: window, code: 36)
+        try await answerNotice(board, containing: "did not receive", text: "short")
+    }
+
+    private func deleteCueElsewhere(_ id: ModelID) async {
+        let other = Rig(engine: engine, workspace: doc)
+        guard await other.connect(),
+            let remove = Command.transaction([.removeCue(id)]),
+            case .success = await other.store.send(command: remove)
+        else { return XCTFail("delete elsewhere") }
+        other.client.stop()
+        await assertEventually { self.store.model?.cue(id) == nil }
+    }
+
+    /// The cue is deleted (from another client) while its notes are typed in the masthead.
+    func testMastheadNotesTypedForACueDeletedMeanwhileGiveANotice() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.masthead.notesView))
+        try typeKeys("lost", in: window)
+        await deleteCueElsewhere(cues[0])
+        try typeKeys("\r", in: window, code: 36)
+        try await answerNotice(board, containing: "no longer exists", cue: nil, text: "lost")
+    }
+
+    /// The same for the inspector's notes.
+    func testInspectorNotesTypedForACueDeletedMeanwhileGiveANotice() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.notesView))
+        try typeKeys("lost", in: window)
+        await deleteCueElsewhere(cues[0])
+        window.makeFirstResponder(nil)
+        try await answerNotice(board, containing: "no longer exists", cue: nil, text: "lost")
+    }
+
+    /// Notes refused with the playhead moved meanwhile: afterwards the standby line and selection
+    /// are on the playhead, and Save and Show Mode work.
+    func testNotesRefusedWithThePlayheadMovedLeaveTheStandbyOnThePlayhead() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        try typeTooLong(into: wc.masthead.notesView)
+        try await moveElsewhere(to: cues[2])
+        await assertEventually { self.store.playheads[self.list] == self.cues[2] }
+        window.makeFirstResponder(nil)
+        try await answerNotice(board, containing: "refused", text: "ab" + tooLongNotes)
+        try await assertAllOn(cues[2])
+        XCTAssertEqual(wc.masthead.cueID, cues[2])
+        let ok = await wc.commitPendingEdits()
+        XCTAssertTrue(ok, "Save is not blocked")
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode, "Show Mode is not blocked")
+    }
+
+    /// A refusal arriving in Show Mode raises no panel, no modal and no sheet: the footer has the message and
+    /// the log the message and the text.
+    func testANotesRefusalInShowModeRaisesNothingAndIsLogged() async throws {
+        try await threeCues()
+        _ = notesPasteboard()
+        wc.setShowMode(true)
+        await wc.editor.reportNotesNotSaved(
+            of: cues[0], text: "typed text", .engine(code: .commandRefused, message: "too big"))
+        XCTAssertNil(wc.window?.attachedSheet, "no sheet")
+        XCTAssertTrue(NotesNoticePanel.open.isEmpty, "no panel")
+        XCTAssertNil(NSApp.modalWindow, "nothing modal")
+        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains("not saved"))
+        XCTAssertTrue(
+            store.logEntries.contains { $0.message.contains("not saved") && $0.message.contains("typed text") })
+    }
+
+    /// Save with notes the engine refuses still being typed: the sheet, the typing ends and the field
+    /// shows what the cue holds; a Return after it raises no second notice.
+    func testSaveWithMastheadNotesTheEngineRefusesEndsTheTypingAfterOneNotice() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        try typeTooLong(into: wc.masthead.notesView)
+        let ok = await wc.commitPendingEdits()
+        XCTAssertTrue(ok, "Save goes on")
+        try await answerNotice(board, containing: "refused", text: "ab" + tooLongNotes)
+        XCTAssertEqual(wc.masthead.notesView.string, "")
+        XCTAssertFalse(window.firstResponder === wc.masthead.notesView, "the typing ended")
+        try typeKeys("\r", in: window, code: 36)
+        await sync()
+        XCTAssertTrue(NotesNoticePanel.open.isEmpty, "no second notice")
+    }
+
+    /// Notes being typed while another typed edit is invalid: the notice says so and Save stops.
+    func testMastheadNotesWithAnInvalidTypedEditGiveANoticeAndSaveStops() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.preWaitField))
+        try typeKeys("zz", in: window)  // not a time: invalid when committed
+        wc.masthead.notesView.string = "typed"
+        wc.masthead.textDidBeginEditing(Notification(name: NSText.didBeginEditingNotification))
+        let ok = await wc.commitPendingEdits()
+        XCTAssertFalse(ok, "Save stops")
+        try await answerNotice(board, containing: "not valid", cue: nil, text: "typed")
+    }
+
+    /// Close with refused notes still being typed: the panel comes up and Close goes on without anyone
+    /// answering it; the window closing leaves the panel, whose Copy Text still works.
+    func testCloseWithNotesTheEngineRefusesGoesOnAndTheNoticeOutlivesTheWindow() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let alerts = ScriptedAlerts()
+        alerts.saveChoices = [.dontSave]
+        app.alerts = alerts
+        try typeTooLong(into: wc.masthead.notesView)
+        let closed = await app.closeWorkspace(doc)
+        XCTAssertTrue(closed, "Close goes on")
+        XCTAssertNil(app.windows[doc], "the window is gone")
+        try await answerNotice(board, containing: "refused", text: "ab" + tooLongNotes)
+    }
+
+    /// The inspector's notes, the same on Close.
+    func testCloseWithInspectorNotesTheEngineRefusesGoesOnAndTheNoticeStays() async throws {
+        try await threeCues()
+        let board = notesPasteboard()
+        let alerts = ScriptedAlerts()
+        alerts.saveChoices = [.dontSave]
+        app.alerts = alerts
+        try typeTooLong(into: wc.inspector.notesView)
+        let closed = await app.closeWorkspace(doc)
+        XCTAssertTrue(closed, "Close goes on")
+        try await answerNotice(board, containing: "refused", text: "ab" + tooLongNotes)
+    }
+
+    /// With the notice up, Space is still GO and the panel is not key.
+    func testGoStillFiresWithTheNotesNoticeUp() async throws {
+        try await threeCues()
+        _ = notesPasteboard()
+        try typeTooLong(into: wc.masthead.notesView)
+        try typeKeys("\r", in: try XCTUnwrap(wc.window), code: 36)
+        await assertEventually("the notice is up") { !NotesNoticePanel.open.isEmpty }
+        try await space()
+        XCTAssertEqual(goes(), 1, "GO fired")
+        XCTAssertEqual(NotesNoticePanel.open.count, 1)
+        XCTAssertFalse(try XCTUnwrap(NotesNoticePanel.open.first).panel.isKeyWindow)
+    }
+
+    /// Asking for Show Mode with refused notes still being typed enters it: no sheet, no panel, and the
+    /// footer and the log carry the notice.
+    func testShowModeWithNotesTheEngineRefusesEntersAndLogsTheNotice() async throws {
+        try await threeCues()
+        _ = notesPasteboard()
+        try typeTooLong(into: wc.masthead.notesView)
+        await wc.requestShowMode(true)
+        XCTAssertTrue(wc.isShowMode)
+        XCTAssertNil(wc.window?.attachedSheet)
+        XCTAssertTrue(NotesNoticePanel.open.isEmpty)
+        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains("not saved"))
+        XCTAssertTrue(store.logEntries.contains { $0.message.contains("not saved") })
     }
 
     // MARK: Loading a list: the highlight goes with the playhead
