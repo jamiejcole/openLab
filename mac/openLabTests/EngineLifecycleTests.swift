@@ -448,7 +448,7 @@ final class EngineCrashFlowTests: XCTestCase {
 
     /// The app with Hamlet (the demo show, a cue playing and an unsaved edit) and A (an empty show)
     /// open. `before`: what happens in the folder before the app starts its engine.
-    private func launch() async throws {
+    private func launch(launchDefaults: UserDefaults? = nil) async throws {
         let support = runs.support
         processes = SystemEngineProcesses(
             infoURL: runs.infoURL, watchStderr: false,
@@ -456,13 +456,14 @@ final class EngineCrashFlowTests: XCTestCase {
         let processes = processes!
         let session = EngineSession(transport: tap, infoProvider: { processes.readInfo() }, scheduler: scheduler)
         supervisor = EngineSupervisor(processes: processes, session: session, scheduler: ImmediateScheduler())
-        app = AppController(session: session, scheduler: ManualScheduler())
+        app = AppController(session: session, scheduler: ManualScheduler(), launchDefaults: launchDefaults)
         alerts = ScriptedAlerts()
         app.alerts = alerts
         app.recentURLs = { [] }
         presenter = RecordingPresenter()
         alarm = EngineAlarmController(
             session: session, supervisor: supervisor, presenter: presenter, alerts: { [unowned self] in alerts })
+        app.beginLaunch()
         supervisor.start()
         // engine.json appears once the engine is up: the reconnect backoff is fired until then.
         let up = await pump { session.connectionState == .connected }
@@ -1000,6 +1001,162 @@ final class EngineCrashFlowTests: XCTestCase {
         alerts.restoreAutosaves = false
         await alarm.recoverAutosaves()
         XCTAssertEqual(alerts.log.filter { $0.hasPrefix("autosave") || $0.hasPrefix("setAside") }, ["autosave:Copy"])
+    }
+
+    // MARK: Launch behaviour
+
+    private var prefs: UserDefaults!
+
+    /// A preference suite of this test's own, set to `behavior`.
+    private func makePrefs(_ behavior: LaunchBehavior? = nil) {
+        let name = "openlab-launch-\(UUID().uuidString)"
+        prefs = UserDefaults(suiteName: name)
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        if let behavior { prefs.set(behavior.rawValue, forKey: "launch.behavior") }
+    }
+
+    /// The app started afresh on the preference suite: what the delegate does once the engine is up.
+    private func startApp() async throws {
+        try await launch(launchDefaults: prefs)
+        await alarm.offerTask?.value
+        await app.applyLaunchBehavior()
+    }
+
+    /// Quit as the operator does (nothing unsaved): the engine ends with the app.
+    private func quit() async throws {
+        guard case .success(let info) = processes.readInfo() else { return XCTFail("no engine.json") }
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        await assertEventually("the engine ended with the app") { !self.processes.isEngine(info.pid) }
+        app.closeAllWindows()
+        app.session.stop()
+    }
+
+    private func openNames() -> [String] {
+        app.allWindows.compactMap { $0.store.model?.name }.sorted()
+    }
+
+    private var launcherShown: Bool { app.launcher.window?.isVisible == true }
+
+    /// Saved workspaces A and B, open.
+    private func openTwo() async throws -> [String] {
+        let paths = [try runs.show("Demo", named: "A"), try runs.show("Demo", named: "B")]
+        for path in paths { await app.openWorkspace(url: URL(fileURLWithPath: path)) }
+        await assertEventually { self.openNames() == ["A", "B"] }
+        return paths
+    }
+
+    func testDefaultIsTheLauncher() async throws {
+        makePrefs()
+        try await startApp()
+        XCTAssertTrue(launcherShown)
+        XCTAssertTrue(app.allWindows.isEmpty)
+    }
+
+    func testRestoreReopensWhatWasOpen() async throws {
+        makePrefs(.restore)
+        try await startApp()
+        _ = try await openTwo()
+        try await quit()
+        try await startApp()
+        await assertEventually("both reopen") { self.openNames() == ["A", "B"] }
+        XCTAssertFalse(launcherShown, "no launcher appears")
+        XCTAssertTrue(app.allWindows.allSatisfy { $0.window?.isVisible == true })
+        // Restoring only opens: nothing plays and no dialog came up.
+        XCTAssertTrue(app.session.stores.values.allSatisfy { $0.cueStates.values.allSatisfy { !$0.state.isActive } })
+        XCTAssertTrue(alerts.errors.isEmpty)
+    }
+
+    func testClosedWorkspacesAreNotRestored() async throws {
+        makePrefs(.restore)
+        try await startApp()
+        _ = try await openTwo()
+        let b = try XCTUnwrap(app.session.orderedStores.first { $0.store.model?.name == "B" }?.doc)
+        let closed = await app.closeWorkspace(b)
+        XCTAssertTrue(closed)
+        try await quit()
+        try await startApp()
+        await assertEventually { self.openNames() == ["A"] }
+        XCTAssertFalse(launcherShown)
+    }
+
+    func testAMissingFileIsReportedAndTheOtherStillOpens() async throws {
+        makePrefs(.restore)
+        try await startApp()
+        let paths = try await openTwo()
+        try await quit()
+        try FileManager.default.removeItem(atPath: paths[0])
+        try await startApp()
+        await assertEventually { self.openNames() == ["B"] }
+        XCTAssertTrue(alerts.errors.isEmpty, "no dialog: \(alerts.errors)")
+        let window = try XCTUnwrap(app.allWindows.first)
+        await assertEventually("the footer says which file did not open") {
+            window.footer.noticeLabel.stringValue.contains("A.openlab")
+        }
+        XCTAssertTrue(window.store.logEntries.contains { $0.level == .error && $0.message.contains("A.openlab") })
+        XCTAssertFalse(launcherShown)
+    }
+
+    func testARestoredWorkspaceSavedInShowModeOpensInShowMode() async throws {
+        makePrefs(.restore)
+        let path = try runs.show("Demo", named: "Live")
+        var file = try XCTUnwrap(JSONValue.parse(try String(contentsOfFile: path, encoding: .utf8)))
+        file.set("format_version", .int(8))
+        file["workspace"]?.set("show_mode", .bool(true))
+        try file.text().write(toFile: path, atomically: true, encoding: .utf8)
+        try await startApp()
+        await app.openWorkspace(url: URL(fileURLWithPath: path))
+        await assertEventually { self.app.allWindows.first?.isShowMode == true }
+        try await quit()
+        try await startApp()
+        await assertEventually("it reopens in Show Mode") {
+            self.app.allWindows.count == 1 && self.app.allWindows[0].isShowMode
+        }
+        XCTAssertFalse(launcherShown)
+    }
+
+    func testNothingToRestoreShowsTheLauncher() async throws {
+        makePrefs(.restore)
+        try await startApp()
+        XCTAssertTrue(app.allWindows.isEmpty)
+        XCTAssertTrue(launcherShown)
+    }
+
+    func testNewBlankAndDoNothing() async throws {
+        makePrefs(.newBlank)
+        try await startApp()
+        await assertEventually("one untitled workspace") { self.app.allWindows.count == 1 }
+        XCTAssertNil(app.session.workspaces.first?.path)
+        XCTAssertFalse(launcherShown)
+        alerts.saveChoices = [.dontSave]
+        try await quit()
+
+        prefs.set(LaunchBehavior.nothing.rawValue, forKey: "launch.behavior")
+        try await startApp()
+        await settle()
+        XCTAssertTrue(app.allWindows.isEmpty)
+        XCTAssertFalse(launcherShown, "no window at all")
+    }
+
+    func testThePreferenceIsReachableFromTheAppMenuAndKept() async throws {
+        makePrefs()
+        let appMenu = try XCTUnwrap(MainMenu.make().bar.items.first?.submenu)
+        let item = try XCTUnwrap(appMenu.items.first { $0.action == #selector(AppDelegate.showPreferences(_:)) })
+        XCTAssertEqual(item.keyEquivalent, "", "Command-comma stays Workspace Settings")
+        try await startApp()
+        let window = app.preferencesWindow
+        window.showWindow(nil)
+        XCTAssertEqual(window.launchPopup.titleOfSelectedItem, loc(LaunchBehavior.launcher.titleKey))
+        window.launchPopup.selectItem(withTitle: loc(LaunchBehavior.newBlank.titleKey))
+        _ = window.launchPopup.sendAction(window.launchPopup.action, to: window.launchPopup.target)
+        alerts.saveChoices = [.dontSave]
+        try await quit()
+        try await startApp()
+        await assertEventually("the new choice is obeyed") { self.app.allWindows.count == 1 }
+        XCTAssertFalse(launcherShown)
+        app.preferencesWindow.reload()
+        XCTAssertEqual(
+            app.preferencesWindow.launchPopup.titleOfSelectedItem, loc(LaunchBehavior.newBlank.titleKey))
     }
 }
 

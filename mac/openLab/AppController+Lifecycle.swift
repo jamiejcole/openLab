@@ -16,8 +16,9 @@ extension AppController {
         await openWorkspace(url: url)
     }
 
-    func openWorkspace(url: URL) async {
-        let result = await opened {
+    /// `onFailure`: told of a failed open instead of the error alert (the launch restore).
+    func openWorkspace(url: URL, onFailure: ((EngineError) -> Void)? = nil) async {
+        let result = await opened(onFailure: onFailure) {
             let first = await self.session.open(path: url.path)
             // An autosave newer than the file (NFR-05): the engine opened nothing; ask, then open.
             guard case .failure(.recoveryOffered(_, let name, let modified)) = first else { return first }
@@ -36,12 +37,19 @@ extension AppController {
     /// Runs a new/open call: another workspace opens beside the ones open (protocol 2), so nothing
     /// unsaved is in the way.
     @discardableResult
-    private func opened(_ call: () async -> Result<ModelID, EngineError>) async -> Result<ModelID, EngineError> {
+    private func opened(
+        onFailure: ((EngineError) -> Void)? = nil, _ call: () async -> Result<ModelID, EngineError>
+    ) async -> Result<ModelID, EngineError> {
         let result = await call()
         switch result {
         case .success(let doc): show(doc)
         case .failure(.engine(.alreadyOpen, _)), .failure(.recoveryOffered): break  // shown; or Cancel
-        case .failure(let e): gatedAlerts.showError(String(format: loc("error.openFailed"), describe(e)))
+        case .failure(let e):
+            if let onFailure {
+                onFailure(e)
+            } else {
+                gatedAlerts.showError(String(format: loc("error.openFailed"), describe(e)))
+            }
         }
         return result
     }
@@ -127,6 +135,7 @@ extension AppController {
         } else if controllers.values.contains(where: \.isShowMode), !alerts.confirmQuitInShowMode() {
             return false
         }
+        recordOpenWorkspaces()
         var discarded: [ModelID] = []
         for info in session.workspaces where session.stores[info.doc]?.document?.dirty == true {
             show(info.doc)

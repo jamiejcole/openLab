@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import AppKit
+import Combine
 
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     /// The shipping engine, or in Debug builds the test engine (`EngineMode`).
     @MainActor private(set) lazy var engine = launch.makeEngine()
     @MainActor var engineSession: EngineSession { engine.0 }
-    @MainActor lazy var appController = AppController(session: engineSession, supervisor: engine.1)
+    @MainActor lazy var appController = AppController(session: engineSession, supervisor: engine.1, launchDefaults: .standard)
     @MainActor private(set) lazy var alarmController = EngineAlarmController(
         session: engineSession, supervisor: engine.1, presenter: EngineAlarmPanel(),
         alerts: { [unowned self] in alarmAlerts })
     /// What the engine alarm raises errors and notices through: quiet in Show Mode (NFR-10).
     @MainActor var alarmAlerts: WorkspaceAlerts { appController.gatedAlerts }
+
+    private var launchSub: AnyCancellable?
 
     /// The system pieces launching uses (tests inject them).
     private let launch: AppLaunch
@@ -57,9 +60,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return launch.terminate()
         }
         // The launcher shows until the engine reports a workspace.
-        appController.showLauncher()
+        appController.beginLaunch()
         appController.installKeyMonitor()
         _ = alarmController
+        // The first time the engine is up: after its recovery check was asked, do what the launch
+        // choice says. (Later runs are engine restarts, which reattach the windows.)
+        launchSub = engine.1.ready.first().sink { [unowned self] in
+            Task { @MainActor in
+                await alarmController.offerTask?.value
+                await appController.applyLaunchBehavior()
+            }
+        }
         // Finds the engine (or starts one) and connects; the engine opens nothing by itself.
         engine.1.start()
         NSApp.activate(ignoringOtherApps: true)
@@ -183,6 +194,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor @objc func loadToTime(_ sender: Any?) { appController.frontController?.promptLoadToTime() }
     @MainActor @objc func revealTargetFile(_ sender: Any?) {
         appController.frontController?.cueList.revealSelectedTarget()
+    }
+    @MainActor @objc func showPreferences(_ sender: Any?) {
+        appController.preferencesWindow.reload()
+        appController.preferencesWindow.showWindow(nil)
     }
     @MainActor @objc func showLauncherWindow(_ sender: Any?) { appController.showLauncher() }
     @MainActor @objc func selectNextCue(_ sender: Any?) { appController.selectAdjacentCue(by: 1) }

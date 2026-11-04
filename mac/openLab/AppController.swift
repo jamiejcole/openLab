@@ -112,10 +112,18 @@ final class AppController {
     /// Ends, at quit, an engine it started that was never reached (nil in tests of the windows).
     let supervisor: EngineSupervisor?
 
+    /// Where the launch choice and the files open at quit are kept; nil: nothing is (tests that
+    /// do not look at it).
+    let launchDefaults: UserDefaults?
+    /// The app is starting and has not yet done what the launch choice says: no launcher meanwhile.
+    var launching = false
+    lazy var preferencesWindow = PreferencesWindowController(preferences: launchPreferences)
+
     init(
         session: EngineSession, supervisor: EngineSupervisor? = nil, scheduler: Scheduler = SystemScheduler(),
-        timeout: Double = 5
+        timeout: Double = 5, launchDefaults: UserDefaults? = nil
     ) {
+        self.launchDefaults = launchDefaults
         self.session = session
         self.supervisor = supervisor
         self.scheduler = scheduler

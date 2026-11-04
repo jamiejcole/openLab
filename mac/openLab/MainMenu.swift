@@ -65,6 +65,8 @@ enum MainMenu {
             [
                 item("menu.app.about", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
                 .separator(),
+                item("menu.app.preferences", #selector(AppDelegate.showPreferences(_:))),
+                .separator(),
                 item("menu.app.hide", #selector(NSApplication.hide(_:)), "h"),
                 hideOthers,
                 item("menu.app.showAll", #selector(NSApplication.unhideAllApplications(_:))),

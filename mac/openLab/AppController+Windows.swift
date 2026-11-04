@@ -85,7 +85,7 @@ extension AppController {
     }
 
     func showLauncherIfNoWindows() {
-        if !hasWorkspaceWindow { showLauncher() }
+        if !hasWorkspaceWindow, !launching { showLauncher() }
     }
 
     func showLauncher() {
