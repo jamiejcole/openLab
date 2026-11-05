@@ -21,6 +21,7 @@ enum AX {
     static let engineAlarmRestore = "engine-alarm-restore"
     static let engineAlarmDismiss = "engine-alarm-dismiss"
     static let launcherNew = "launcher-new"
+    static let launcherNotice = "launcher-notice"
     static let launcherOpen = "launcher-open"
     static let launcherRecentPrefix = "launcher-recent-"
     static let goButton = "go-button"

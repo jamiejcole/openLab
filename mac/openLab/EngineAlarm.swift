@@ -225,13 +225,20 @@ final class EngineAlarmController {
             }
             let offer = self.unheld(entries)
             guard !offer.isEmpty else { return }
+            // Offered when the button is pressed: a workspace opened since (the launch choice
+            // reopened it) is not opened a second time.
             if !self.isShown {
                 self.presenter.show(title: loc("engine.alarm.unclean"), message: loc("engine.alarm.uncleanMessage"))
             }
             self.summary = self.reattachSummary(setAside: Set(offer.filter(\.stale).map(\.workspaceId)))
             let line = String(format: loc("engine.alarm.autosaves"), offer.count)
             self.presenter.setDetail(self.summary.isEmpty ? line : self.summary + "\n" + line)
-            self.presenter.setRestoreAction { [weak self] in Task { await self?.restore(offer) } }
+            self.presenter.setRestoreAction { [weak self] in
+                Task {
+                    guard let self else { return }
+                    await self.restore(self.unheld(entries))
+                }
+            }
         }
     }
 
@@ -284,6 +291,8 @@ final class EngineAlarmController {
     func restore(_ entries: [RecoveryEntryInfo]) async {
         for entry in entries {
             guard session.stores.count < 8 else { break }
+            // The prompts are modal one after another: a workspace opened meanwhile is not offered.
+            guard !unheld([entry]).isEmpty else { continue }
             let name = entry.showName ?? loc("engine.alarm.untitled")
             guard alerts().offerAutosave(name: name, modifiedMs: entry.modifiedMs, setAside: entry.stale) else {
                 continue

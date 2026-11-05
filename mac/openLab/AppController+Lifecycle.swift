@@ -135,13 +135,16 @@ extension AppController {
         } else if controllers.values.contains(where: \.isShowMode), !alerts.confirmQuitInShowMode() {
             return false
         }
-        recordOpenWorkspaces()
         var discarded: [ModelID] = []
         for info in session.workspaces where session.stores[info.doc]?.document?.dirty == true {
             show(info.doc)
             guard let discard = await resolveUnsaved(info.doc) else { return false }
             if discard { discarded.append(info.doc) }
         }
+        // The quit is going ahead (no prompt was cancelled): what is open now, saved or not, is what
+        // the next launch reopens. Not while launching, or with an engine not reached: the list
+        // would be an incomplete one.
+        if session.connectionState == .connected, !launching { recordOpenWorkspaces() }
         // Don't Save is answered only now that no later prompt cancelled the quit. The shutdown
         // writes a recovery file for every dirty workspace, so the dropped edits are discarded
         // first (the engine removes their autosave too). A stalled or failed close must not trap

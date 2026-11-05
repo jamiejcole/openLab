@@ -1046,11 +1046,36 @@ final class EngineCrashFlowTests: XCTestCase {
         if let behavior { prefs.set(behavior.rawValue, forKey: "launch-behavior") }
     }
 
-    /// The app started afresh on the preference suite: what the delegate does once the engine is up.
+    private var delegate: AppDelegate?
+
+    /// The app started as the system starts it: the delegate's launch, on a real engine run (an
+    /// engine already running is attached to), until the launch choice has been carried out.
     private func startApp() async throws {
-        try await launch(launchDefaults: prefs)
-        await alarm.offerTask?.value
-        await app.applyLaunchBehavior()
+        let support = runs.support
+        processes = SystemEngineProcesses(
+            infoURL: runs.infoURL, watchStderr: false,
+            arguments: TestEngineOptions(clock: .stepped, appSupport: support).engineArguments, watchStdin: true)
+        let processes = processes!
+        let session = EngineSession(transport: tap, infoProvider: { processes.readInfo() }, scheduler: scheduler)
+        supervisor = EngineSupervisor(processes: processes, session: session, scheduler: ImmediateScheduler())
+        let supervisor = supervisor!
+        let delegate = AppDelegate(
+            launch: AppLaunch(
+                runningFirst: { nil }, makeEngine: { (session, supervisor) }, installMenu: { _ in },
+                activation: HandOverActivation(cooperative: false) { _ in }, terminate: {},
+                launchDefaults: prefs))
+        self.delegate = delegate
+        app = delegate.appController
+        alerts = ScriptedAlerts()
+        app.alerts = alerts
+        app.recentURLs = { [] }
+        alarm = delegate.alarmController
+        delegate.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
+        delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        let wanted = LaunchPreferences(defaults: prefs).behavior == .launcher
+        XCTAssertEqual(launcherShown, wanted, "the launcher shows at once only when it is the choice")
+        let up = await pump { session.connectionState == .connected && !self.app.launching }
+        XCTAssertTrue(up, "the app reached the engine and carried out the launch choice")
     }
 
     /// Quit as the operator does (nothing unsaved): the engine ends with the app.
@@ -1146,6 +1171,102 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertFalse(launcherShown)
     }
 
+    func testALaunchToAnEngineAlreadyRunningAShowOpensNothingBeside() async throws {
+        makePrefs(.newBlank)
+        try await runs.start()
+        _ = try await runs.open(try runs.show("Demo", named: "Live"))
+        try await startApp()
+        await assertEventually("the running show has its window") { self.openNames() == ["Live"] }
+        await settle()
+        XCTAssertEqual(openNames(), ["Live"], "no blank workspace in front of the show")
+        XCTAssertFalse(launcherShown)
+        XCTAssertEqual(app.session.workspaces.count, 1)
+    }
+
+    func testACancelledQuitKeepsTheListOfFilesToReopen() async throws {
+        makePrefs(.restore)
+        try await startApp()
+        let paths = try await openTwo()
+        try await quit()
+        try await startApp()
+        await assertEventually { self.openNames() == ["A", "B"] }
+        let b = try XCTUnwrap(app.session.orderedStores.first { $0.store.model?.name == "B" }?.doc)
+        let closed = await app.closeWorkspace(b)
+        XCTAssertTrue(closed)
+        let a = try XCTUnwrap(app.session.orderedStores.first?.store)
+        _ = await a.send(command: .setProperty(intro, .name("Edited")))
+        await assertEventually { a.document?.dirty == true }
+        alerts.saveChoices = [.cancel]
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit)
+        XCTAssertEqual(LaunchPreferences(defaults: prefs).openFiles, paths)
+    }
+
+    func testAQuitWithTheEngineNotReachedKeepsTheListOfFilesToReopen() async throws {
+        makePrefs(.restore)
+        LaunchPreferences(defaults: prefs).openFiles = ["/Shows/Hamlet.openlab"]
+        let session = EngineSession(
+            transport: tap, infoProvider: { .failure(.missing) }, scheduler: ManualScheduler())
+        let unreached = AppController(session: session, scheduler: ManualScheduler(), launchDefaults: prefs)
+        unreached.alerts = ScriptedAlerts()
+        let quit = await unreached.prepareToQuit()
+        XCTAssertTrue(quit)
+        XCTAssertEqual(LaunchPreferences(defaults: prefs).openFiles, ["/Shows/Hamlet.openlab"])
+    }
+
+    func testAnUntitledWorkspaceSavedAtTheQuitPromptIsReopenedNextTime() async throws {
+        makePrefs(.restore)
+        try await startApp()
+        await app.newWorkspace()
+        await assertEventually { self.app.allWindows.count == 1 && self.app.session.stores.values.first?.model != nil }
+        let store = try XCTUnwrap(app.session.orderedStores.first?.store)
+        _ = await store.send(command: .renameWorkspace("Edited"))
+        await assertEventually { store.document?.dirty == true }
+        let target = URL(fileURLWithPath: runs.folder.appendingPathComponent("Saved At Quit.openlab").path)
+        app.pickSaveURL = { _ in target }
+        alerts.saveChoices = [.save]
+        try await quit()
+        XCTAssertEqual(LaunchPreferences(defaults: prefs).openFiles, [target.path])
+    }
+
+    func testTheAutosaveOfferAtLaunchSkipsAWorkspaceTheLaunchChoiceReopened() async throws {
+        makePrefs(.restore)
+        try await runs.start()
+        let b = try runs.show("Demo", named: "B")
+        let c = try runs.show("Demo", named: "C")
+        for path in [b, c] {
+            let doc = try await runs.open(path)
+            try await runs.rename(intro, in: doc, to: "Autosaved")
+        }
+        try await runs.advance(31)
+        await runs.autosaved("B", "C")
+        try await runs.crash()
+        LaunchPreferences(defaults: prefs).openFiles = [b]
+
+        try await launch(launchDefaults: prefs)
+        let offered = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(offered)
+        alerts.recoveryChoice = .restore  // the launch choice's own prompt for B
+        await app.applyLaunchBehavior()
+        await assertEventually { self.openNames() == ["B"] }
+        presenter.restore?()
+        await assertEventually("C is opened from the alarm") { self.openNames() == ["B", "C"] }
+        await settle()
+        XCTAssertEqual(openNames(), ["B", "C"], "B is not opened a second time")
+        XCTAssertEqual(alerts.log.filter { $0.hasPrefix("autosave:") }, ["autosave:C"])
+    }
+
+    func testAFailedRestoreWithNoWorkspaceIsShownOnTheLauncher() async throws {
+        makePrefs(.restore)
+        LaunchPreferences(defaults: prefs).openFiles = [runs.folder.appendingPathComponent("gone.openlab").path]
+        try await startApp()
+        XCTAssertTrue(app.allWindows.isEmpty)
+        XCTAssertTrue(launcherShown)
+        let notice = app.launcher.noticeLabel
+        XCTAssertFalse(notice.isHidden)
+        XCTAssertTrue(notice.stringValue.contains("gone.openlab"), notice.stringValue)
+    }
+
     func testNothingToRestoreShowsTheLauncher() async throws {
         makePrefs(.restore)
         try await startApp()
@@ -1176,7 +1297,8 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(item.keyEquivalent, "", "Command-comma stays Workspace Settings")
         try await startApp()
         let window = app.preferencesWindow
-        window.showWindow(nil)
+        delegate?.showPreferences(nil)
+        XCTAssertEqual(window.window?.isVisible, true)
         XCTAssertEqual(window.launchPopup.titleOfSelectedItem, loc(LaunchBehavior.launcher.titleKey))
         window.launchPopup.selectItem(withTitle: loc(LaunchBehavior.newBlank.titleKey))
         _ = window.launchPopup.sendAction(window.launchPopup.action, to: window.launchPopup.target)

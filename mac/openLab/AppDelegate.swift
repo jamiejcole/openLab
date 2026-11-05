@@ -9,7 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor private(set) lazy var engine = launch.makeEngine()
     @MainActor var engineSession: EngineSession { engine.0 }
     @MainActor lazy var appController = AppController(
-        session: engineSession, supervisor: engine.1, launchDefaults: .standard)
+        session: engineSession, supervisor: engine.1, launchDefaults: launch.launchDefaults)
     @MainActor private(set) lazy var alarmController = EngineAlarmController(
         session: engineSession, supervisor: engine.1, presenter: EngineAlarmPanel(),
         alerts: { [unowned self] in alarmAlerts })
@@ -69,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         launchSub = engine.1.ready.first().sink { [unowned self] in
             Task { @MainActor in
                 await alarmController.offerTask?.value
-                await appController.applyLaunchBehavior()
+                await appController.applyLaunchBehavior(attached: engine.1.attachedToLiveEngine)
             }
         }
         // Finds the engine (or starts one) and connects; the engine opens nothing by itself.

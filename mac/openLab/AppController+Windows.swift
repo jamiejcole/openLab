@@ -81,6 +81,7 @@ extension AppController {
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
         launcher.window?.orderOut(nil)
+        launcher.showNotice(nil)
     }
 
     private var hasWorkspaceWindow: Bool {
