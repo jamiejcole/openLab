@@ -199,8 +199,10 @@ fn a_final_write_on_a_hung_disk_is_bounded_and_logged() {
     let env = env();
     let (release, gate) = mpsc::channel::<()>();
     let gate = Arc::new(Mutex::new(gate));
+    let (entered_tx, entered) = mpsc::channel::<()>();
     let hook = SaveHook(Arc::new(move |kind: JobKind| {
         if kind == JobKind::Autosave {
+            let _ = entered_tx.send(());
             let _ = gate.lock().unwrap().recv_timeout(Duration::from_secs(30));
         }
     }));
@@ -230,6 +232,12 @@ fn a_final_write_on_a_hung_disk_is_bounded_and_logged() {
             .any(|e| e.contains("\"Stuck\"") && e.contains("still being written")),
         "{errors:?}"
     );
+    // The writer drops autosaves it has not started when it closes, so the write must be under
+    // way before the engine goes; how soon a thread starts it depends on machine load (a
+    // sanitizer build on a busy runner is slow), so wait for the thread, not for a time.
+    entered
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the writer never started the final write");
     // The disk answers: the writer, still running, finishes the write as the engine goes.
     release.send(()).unwrap();
     drop(s);
