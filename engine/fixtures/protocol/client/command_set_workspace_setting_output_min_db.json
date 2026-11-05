@@ -4,8 +4,8 @@
   "command": {
     "type": "set_workspace_setting",
     "setting": {
-      "type": "master_db",
-      "value": -6.0
+      "type": "output_min_db",
+      "value": -80.0
     }
   }
 }

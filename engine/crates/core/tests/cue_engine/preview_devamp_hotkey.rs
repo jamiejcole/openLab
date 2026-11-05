@@ -381,6 +381,52 @@ fn relative_from_the_current_level_capped_and_absolute_for_an_audio_target() {
     assert!(close(ramps(&out, 11)[0].1, db_to_gain(MAX_DB)));
 }
 
+/// The workspace maximum limits where a fade ends, whatever the Fade cue holds (a show file or a
+/// hand edit can leave it louder): an absolute fade ends at the maximum, a level at or below the
+/// minimum is silence, and a relative fade is held at the maximum.
+#[test]
+fn a_fade_ends_within_the_workspace_limits() {
+    let fade_by = |n: u128, target: u128, db: f64| {
+        let mut k = fade(target);
+        if let CueKind::Fade {
+            duration,
+            levels,
+            stop_target_when_done,
+            ..
+        } = &mut k
+        {
+            *duration = 0.0;
+            *stop_target_when_done = false;
+            levels.master_db = Some(db);
+        }
+        cue(n, k)
+    };
+    let mut ws = workspace(vec![
+        grp(1, GroupMode::Timeline, vec![sound_at(11, 0.0, 0.0)]),
+        sound_at(12, 0.0, 0.0),
+        fade_by(2, 12, 6.0),
+        fade_by(3, 12, -70.0),
+        fade_by(4, 1, 12.0),
+    ]);
+    ws.settings.panic_duration = 1.0;
+    ws.settings.output_max_db = -3.0;
+    ws.settings.output_min_db = -60.0;
+    let mut rig = Rig::on(ws, EngineConfig::new(RATE, 0, 1).unwrap());
+    rig.start(0, 1);
+    rig.start(10, 12);
+    let out = rig.start(100, 2);
+    assert!(close(ramps(&out, 12)[0].1, db_to_gain(-3.0)), "{out:?}");
+    let out = rig.start(200, 3);
+    assert_eq!(
+        ramps(&out, 12)[0].1,
+        0.0,
+        "at or below the minimum is silent"
+    );
+    // Relative: +12 from 0 dB is held at the maximum, not at +12.
+    let out = rig.start(300, 4);
+    assert!(close(ramps(&out, 11)[0].1, db_to_gain(-3.0)), "{out:?}");
+}
+
 // ----- S1: a second trigger on a paused cue resumes it -----
 
 #[test]
