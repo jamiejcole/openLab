@@ -214,7 +214,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         previewButton.action = #selector(previewClicked)
         chooseButton.setAX(AX.inspectorChoose)
         chooseButton.image = Icon.fieldChoose.image(loc("inspector.target.choose"), compact: true)
-        chooseButton.imagePosition = .imageLeading
+        // Glyph only (the Inspector keeps its width); the title stays as the name and tooltip.
+        chooseButton.imagePosition = .imageOnly
+        chooseButton.toolTip = loc("inspector.target.choose")
+        chooseButton.setAccessibilityLabel(loc("inspector.target.choose"))
         chooseButton.target = self
         chooseButton.action = #selector(chooseClicked)
         messageLabel.setAX(AX.inspectorMessage)
