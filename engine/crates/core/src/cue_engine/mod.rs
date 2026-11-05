@@ -347,9 +347,9 @@ impl CueEngine {
         out
     }
 
-    /// The clock went back (a device restart): samples dated on the old clock mean nothing on the
-    /// new one, and must not hold back what is dated from now on. A mixer that restarted has no
-    /// command left from before.
+    /// A caller's clock went back. The engine's never does (it keeps one mixer and count across a
+    /// device reopen), so this guards the API: samples dated on the old clock mean nothing on the
+    /// new one, and must not hold back what is dated from now on.
     fn clock_went_back(&mut self, now: SampleTime) {
         for slot in self.slots.values_mut() {
             let Slot::Active(run) = slot else { continue };
