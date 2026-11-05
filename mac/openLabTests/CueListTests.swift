@@ -4215,7 +4215,8 @@ final class CueListDrawingTests: XCTestCase {
             return wav
         }
         await assertEventually { self.targetCell(wc, empty) != nil }
-        XCTAssertTrue(try XCTUnwrap(targetCell(wc, H.intro)).chooseButton.isHidden, "a cue with a file offers no choose")
+        let withFile = try XCTUnwrap(targetCell(wc, H.intro))
+        XCTAssertTrue(withFile.chooseButton.isHidden, "a cue with a file offers no choose")
         let button = try XCTUnwrap(targetCell(wc, empty)).chooseButton
         XCTAssertFalse(button.isHidden)
         XCTAssertNotNil(button.image)
@@ -4245,7 +4246,9 @@ final class CueListDrawingTests: XCTestCase {
         let clear = wc.inspector.clearTargetButton
         XCTAssertFalse(clear.isHidden)
         XCTAssertEqual(clear.image?.accessibilityDescription, loc("inspector.target.clear"))
-        XCTAssertEqual(clear.image?.tiffRepresentation, Icon.fieldClear.image(loc("inspector.target.clear")).tiffRepresentation)
+        XCTAssertEqual(
+            clear.image?.tiffRepresentation,
+            Icon.fieldClear.image(loc("inspector.target.clear"), compact: true).tiffRepresentation)
         XCTAssertEqual(
             wc.inspector.chooseButton.image?.tiffRepresentation,
             Icon.fieldChoose.image(loc("inspector.target.choose")).tiffRepresentation)
