@@ -2496,6 +2496,22 @@ final class PlayheadFlowTests: XCTestCase {
         await assertEventually("Down moved the highlight") { self.wc.cueList.selectedIDs() != [group] }
     }
 
+    /// Hiding the sidebar while a control in it has the focus hands the keys to the list: Down moves the
+    /// highlight rather than driving nothing.
+    func testHidingTheSidebarWithFocusInItGivesTheKeysToTheList() async throws {
+        try await threeCues()
+        click(cues[0])
+        try await assertAllOn(cues[0])
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        wc.setVisible(.sidebar, true)
+        XCTAssertTrue(window.makeFirstResponder(wc.sidebar.listTable))
+        wc.setVisible(.sidebar, false)
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "the keys went to the list")
+        window.sendEvent(try XCTUnwrap(app.handleKeyDown(try downArrow)))
+        await assertEventually("Down moved the highlight") { self.wc.cueList.selectedIDs() != [self.cues[0]] }
+    }
+
     /// Typing ended by a selection the app changes: the list takes the keys, not the window.
     func testASelectionThatEndsTypingLeavesTheKeysWithTheList() async throws {
         try await threeCues()
