@@ -284,7 +284,16 @@ jobs:
       # test-mac-unit`, where the real-engine tests report a skip). The full UI suite is slow and flaky,
       # so it runs on the nightly schedule (and on demand), where a failure turns the run red and the
       # `alert` job opens the ci-red issue.
-      - run: make ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'test-mac-ui-full' || (needs.changes.outputs.app_engine == 'true' && 'test-mac' || 'test-mac-unit') }}
+      # Below the job's 45 minutes, so a hung run is cancelled here and the step below still uploads its results.
+      - timeout-minutes: 38
+        run: make ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'test-mac-ui-full' || (needs.changes.outputs.app_engine == 'true' && 'test-mac' || 'test-mac-unit') }}
+      # A hung or crashed test run leaves its result bundle (stacks, per-test logs) here; keep it a few days.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: mac-xcresult
+          path: build/Logs/Test/*.xcresult
+          retention-days: 5
       - run: make mac
         if: needs.changes.outputs.bundle == 'true'
       - run: make verify-bundle
