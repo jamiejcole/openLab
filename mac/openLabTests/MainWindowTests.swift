@@ -4,6 +4,19 @@ import XCTest
 
 @testable import openLab
 
+/// What a reader thread read, handed back to the test thread.
+private final class Collected: @unchecked Sendable {
+    private let lock = NSLock()
+    private let done = DispatchSemaphore(value: 0)
+    private var bytes = Data()
+    var data: Data { lock.withLock { bytes } }
+    func set(_ data: Data) {
+        lock.withLock { bytes = data }
+        done.signal()
+    }
+    func wait() { done.wait() }
+}
+
 @MainActor
 final class MainWindowTests: XCTestCase {
     /// The rigs of tests that build their own show, kept alive for the test.
@@ -19,8 +32,85 @@ final class MainWindowTests: XCTestCase {
         WorkspaceWindowController(store: try Rig.offline().store)
     }
 
+    /// Runs `body` with stderr captured and returns the layout reports AppKit made there (other lines, from
+    /// other threads, are not this test's business). The pipe is drained on a thread so a noisy body cannot
+    /// block on a full pipe.
+    private func stderrText(_ body: () -> Void) -> String {
+        let pipe = Pipe()
+        let collected = Collected()
+        let reader = Thread {
+            collected.set(pipe.fileHandleForReading.readDataToEndOfFile())
+        }
+        reader.start()
+        let saved = dup(STDERR_FILENO)
+        fflush(stderr)
+        dup2(pipe.fileHandleForWriting.fileDescriptor, STDERR_FILENO)
+        body()
+        fflush(stderr)
+        dup2(saved, STDERR_FILENO)
+        close(saved)
+        try? pipe.fileHandleForWriting.close()
+        collected.wait()
+        return String(decoding: collected.data, as: UTF8.self).split(separator: "\n").filter {
+            // macOS 27 also logs a negative view width from window creation: #530.
+            $0.contains("Conflicting constraints")
+        }.joined(separator: "\n")
+    }
+
+    /// A real window, shown at the smallest size it allows, at a small screen's size and at a large one,
+    /// with each area hidden and shown, lays out without AppKit reporting a conflicting constraint (the
+    /// report is read from stderr: AppKit offers nothing else to assert on).
+    func testWindowLaysOutCleanlyAtEverySize() throws {
+        var made: WorkspaceWindowController?
+        // The window is built inside the capture: its first layout is where a conflict used to show.
+        let first = stderrText { made = try? controller() }
+        let wc = try XCTUnwrap(made)
+        let window = try XCTUnwrap(wc.window)
+        func layout() { window.contentView?.layoutSubtreeIfNeeded() }
+        var problems: [String] = first.isEmpty ? [] : ["built: \(first.prefix(200))"]
+        func step(_ what: String, _ body: () -> Void) {
+            let report = stderrText(body)
+            if !report.isEmpty { problems.append("\(what): \(report.prefix(200))") }
+        }
+        step("shown") {
+            window.orderFront(nil)
+            layout()
+        }
+        for size in [
+            window.minSize, NSSize(width: 1024, height: 700), NSSize(width: 1800, height: 1000), window.minSize,
+        ] {
+            step("size \(size)") {
+                window.setContentSize(size)
+                layout()
+            }
+            for area in LayoutArea.allCases {
+                step("\(area) toggled") {
+                    wc.setVisible(area, !wc.isVisible(area))
+                    layout()
+                }
+                step("\(area) toggled back") {
+                    wc.setVisible(area, !wc.isVisible(area))
+                    layout()
+                }
+            }
+        }
+        window.close()
+        XCTAssertEqual(problems, [], "AppKit reported a layout problem")
+    }
+
+    /// A cue-list column dragged to nothing leaves its cells zero wide: they lay out without a conflict.
+    func testCueListCellsLayOutAtZeroWidth() {
+        let cell = CueCell(identifier: NSUserInterfaceItemIdentifier("continue"))
+        cell.translatesAutoresizingMaskIntoConstraints = false
+        cell.widthAnchor.constraint(equalToConstant: 0).isActive = true
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 20))
+        host.addSubview(cell)
+        XCTAssertEqual(stderrText { host.layoutSubtreeIfNeeded() }, "")
+    }
+
     func testAllAreasPresent() throws {
         let wc = try controller()
+        wc.setVisible(.sidebar, true)  // hidden, the sidebar is out of the split
         let root = try XCTUnwrap(wc.window?.contentView)
         for id in [
             AX.masthead, AX.goButton, AX.standbyField, AX.standbyNotes, AX.cueToolbar, AX.cueList,

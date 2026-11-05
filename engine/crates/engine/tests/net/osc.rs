@@ -3106,5 +3106,10 @@ async fn held_input_is_bounded_and_goes_once_the_copy_is_in() {
             seen.iter().filter(|m| is_input(m)).count() >= MAX_HELD_INPUTS
         })
         .await;
-    assert_eq!(f.stats().held_inputs, 0);
+    // The listener hands the events on and only then publishes its stats, so the count reaches
+    // 0 a moment after the control side has seen the GOs: wait for it, don't read it at once.
+    f.wait_stats("the held input to be published as gone", |s| {
+        s.held_inputs == 0
+    })
+    .await;
 }
