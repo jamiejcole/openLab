@@ -118,12 +118,14 @@ extension AppController {
             // the recovery file of every workspace with unsaved changes itself. Nothing is left
             // running behind the app, so there is nothing to confirm (#386).
             engineLog.notice("quit while the engine is shutting down: no save prompts")
+            keepUnsentNotes()
             supervisor?.appWillQuit()
             return true
         }
         if engineUnreachable {
             // An engine still coming up plays nothing and is ended at quit: nothing to warn about.
             if supervisor?.engineNotReached == nil, !alerts.confirmQuitDisconnected() { return false }
+            keepUnsentNotes()
             supervisor?.appWillQuit()
             return true
         }
@@ -163,6 +165,11 @@ extension AppController {
     }
 
     // MARK: Helpers
+
+    /// Quit with the engine lost: notes still being typed go to the notes file.
+    private func keepUnsentNotes() {
+        for wc in controllers.values { wc.keepUnsentNotes() }
+    }
 
     /// Not connected although an engine may be running (so quitting would orphan it). No engine
     /// file / never connected is a normal state and quits freely.
