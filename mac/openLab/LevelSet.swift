@@ -37,6 +37,11 @@ enum LevelText {
         return clamp(signed || v == 0 ? v : -v, limits: limits)
     }
 
+    /// Text that is only white space, what a Space pressed in a selected level box leaves.
+    static func isStraySpace(_ text: String) -> Bool {
+        !text.isEmpty && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// Held to what the engine accepts: at most the maximum, and at or below the minimum means silent,
     /// as does anything at or below our silence when the minimum is lower still.
     static func clamp(_ db: Double, limits: VolumeLimits = VolumeLimits()) -> Double {

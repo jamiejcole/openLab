@@ -340,9 +340,10 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         let slot = selection
         if field === levelField {
             let text = levelField.stringValue
-            // Blank is no change: Space in the box clears its text (docs/todo/open-qlab-questions.md
-            // row 103). Silencing a level is typing -inf; a Fade lets go of one with its checkbox.
-            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
+            // Emptied is -inf (QLab 5 manual p. 204), except on a level a Fade is not moving, which
+            // it leaves alone. Only white space is no change: a stray Space, the GO key, leaves that
+            // (ours; docs/todo/open-qlab-questions.md row 103).
+            if LevelText.isStraySpace(text) || (text.isEmpty && levels?.isActive(slot) == false) { return }
             let limits = limits
             let db = LevelText.parse(text, limits: limits)
             edit { $0.set(slot, db: db, limits: limits) }

@@ -241,9 +241,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             render()
             return
         }
-        // Blank is no change: Space in a box clears its text (QLab's -inf is for text that is not a
-        // number, manual p. 200; docs/todo/open-qlab-questions.md row 103).
-        if field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // Emptied is -inf (QLab 5 manual p. 204). Only white space is no change: a stray Space, the
+        // GO key, leaves that (ours; docs/todo/open-qlab-questions.md row 103).
+        if LevelText.isStraySpace(field.stringValue) {
             drawn = nil
             render()
             return

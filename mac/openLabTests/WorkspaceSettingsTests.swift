@@ -606,6 +606,14 @@ final class WorkspaceSettingsTests: XCTestCase {
         await assertEventually { editor.mainField.stringValue == "-inf" }
     }
 
+    /// Emptied is -inf, as in QLab (manual p. 204).
+    func testAnEmptiedLevelBoxInThePatchEditorIsSilence() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        try type("", into: editor.mainField)
+        await assertEventually { self.patchLevels(rig).main == -120 }
+        await assertEventually { editor.mainField.stringValue == "-inf" }
+    }
+
     func testALevelTypedBetweenALowMinimumAndSilenceIsSilent() async throws {
         let (rig, sc, editor) = try await playing(sounding())
         try type("-180", into: sc.minLimitField)

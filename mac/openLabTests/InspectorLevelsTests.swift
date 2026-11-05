@@ -637,6 +637,16 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(store.cueStates[Self.intro]?.state, .running)
     }
 
+    /// Emptied is -inf, as in QLab (manual p. 204).
+    func testAnEmptiedLevelBoxIsSilence() async throws {
+        vc.setSelection([Self.intro])
+        let p = vc.audioLevels
+        p.select(.master)
+        type(p, "")
+        await assertEventually { self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(-120) }
+        await assertEventually { p.levelField.stringValue == "-inf" }
+    }
+
     func testFaderDragIsOneUndoStep() async throws {
         vc.setSelection([Self.intro])
         let p = vc.audioLevels
