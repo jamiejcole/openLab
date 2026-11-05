@@ -216,6 +216,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         chooseButton.image = Icon.fieldChoose.image(loc("inspector.target.choose"), compact: true)
         // Glyph only (the Inspector keeps its width); the title stays as the name and tooltip.
         chooseButton.imagePosition = .imageOnly
+        chooseButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true  // a usable click target
         chooseButton.toolTip = loc("inspector.target.choose")
         chooseButton.setAccessibilityLabel(loc("inspector.target.choose"))
         chooseButton.target = self
