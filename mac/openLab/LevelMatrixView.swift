@@ -10,6 +10,10 @@ import AppKit
 /// level up or down changes it, as in QLab (manual p. 181); a drag never goes above 0 dB.
 @MainActor
 final class LevelMatrixView: NSView {
+    /// The workspace volume limits the levels live in.
+    var limits = VolumeLimits() {
+        didSet { if limits != oldValue { needsDisplay = true } }
+    }
     static let cellW: CGFloat = 46
     static let cellH: CGFloat = 20
     static let headW: CGFloat = 56
@@ -139,7 +143,7 @@ final class LevelMatrixView: NSView {
             NSColor.systemYellow.withAlphaComponent(0.55).setFill()
         } else if let db, db > LevelText.silence {
             // Louder routes are denser; -inf and a muted route stay plain.
-            let t = CGFloat((max(db, LevelText.floorDb) - LevelText.floorDb) / (LevelText.maxDb - LevelText.floorDb))
+            let t = CGFloat((max(db, limits.min) - limits.min) / (limits.max - limits.min))
             NSColor.controlAccentColor.withAlphaComponent(muted ? 0.1 : 0.12 + 0.5 * t).setFill()
         } else {
             NSColor.controlBackgroundColor.setFill()
@@ -187,7 +191,7 @@ final class LevelMatrixView: NSView {
         onSelect?(s)
         dragStartY = p.y
         // From -inf a drag starts at the bottom of the fader's travel.
-        dragStartDb = max(levels?.db(s) ?? LevelText.floorDb, LevelText.floorDb)
+        dragStartDb = max(levels?.db(s) ?? limits.min, limits.min)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -197,7 +201,8 @@ final class LevelMatrixView: NSView {
         let first = !dragging
         dragging = true
         // QLab keeps a drag from passing 0 dB (manual p. 181); a level already above it may move down.
-        let ceiling = max(0, dragStartDb)
+        // No drag passes the workspace's maximum.
+        let ceiling = min(max(0, dragStartDb), limits.max)
         let db = min(ceiling, (dragStartDb + Double(dy) * 0.25).rounded(toPlaces: 1))
         onDrag?(s, db, first)
     }

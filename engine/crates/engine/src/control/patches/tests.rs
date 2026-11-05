@@ -75,7 +75,8 @@ fn ws_with(outputs: Vec<PatchOutput>) -> Workspace {
             panic_duration: 1.0,
             autosave_interval: 30.0,
             osc_access: openlab_core::OscAccess::default(),
-            master_db: 0.0,
+            output_max_db: 12.0,
+            output_min_db: -60.0,
             hotkeys: TransportHotkeys::default(),
             auto_number_start: 1.0,
             auto_number_increment: 1.0,
@@ -160,7 +161,7 @@ fn a_mapped_patch_routes_its_outputs_with_level_mute_and_polarity() {
     assert!(!r.iter().any(|&(_, o, d, g)| o == 2 && d == 1 && g != 0.0));
     // Patch 1 is unused: silent.
     assert!(r.contains(&(1, 1, 1, 0.0)));
-    // The workspace master is in the matrices: the mixer's own master stays at unity.
+    // The levels are in the matrices: the mixer's own master stays at unity.
     assert!(
         !cmds
             .iter()
@@ -307,25 +308,6 @@ fn a_removed_patch_keeps_its_routing_while_a_voice_uses_its_slot() {
 }
 
 #[test]
-fn a_retired_slot_still_follows_the_workspace_master() {
-    let mut p = Patches::new(2, 2);
-    let ws = ws_of(&[10, 11]);
-    let s = mapped(&ws, |n| (n - 10) as u32);
-    p.sync(D0, &ws, &s, &device(2), &idle());
-    let routed = p.sent[0].clone();
-    let mut ws2 = ws_of(&[11]);
-    p.sync(D0, &ws2, &s, &device(2), &busy(&[0]));
-    ws2.settings.master_db = -6.0;
-    p.sync(D0, &ws2, &s, &device(2), &busy(&[0]));
-    let m = db_to_gain(-6.0);
-    let scaled: Vec<f32> = routed.iter().map(|&g| m * g).collect();
-    assert_eq!(p.sent[0], scaled);
-    ws2.settings.master_db = 0.0;
-    p.sync(D0, &ws2, &s, &device(2), &busy(&[0]));
-    assert_eq!(p.sent[0], routed);
-}
-
-#[test]
 fn a_removed_patch_that_comes_back_takes_its_retired_slot_again() {
     let mut p = Patches::new(3, 2);
     let ws = ws_of(&[10, 11]);
@@ -436,36 +418,15 @@ fn more_patches_than_slots_are_unmapped_with_no_panic_until_one_frees() {
 }
 
 #[test]
-fn the_workspace_master_is_folded_into_the_matrix_gains() {
-    let mut ws = ws_with(vec![out(-3.0, false, false), out(-1.5, false, true)]);
+fn the_matrix_gains_are_patch_master_times_output_level() {
+    let ws = ws_with(vec![out(-3.0, false, false), out(-1.5, false, true)]);
     let s = settings(&ws, vec![0, 1]);
     let mut p = Patches::new(1, 2);
     p.sync(D0, &ws, &s, &device(2), &idle());
-    // At 0 dB the gains are bit for bit patch master × level (as before M4.15b).
+    // Bit for bit patch master × level, with polarity.
     let pm = db_to_gain(-6.0);
     assert_eq!(p.sent[0][0].to_bits(), (pm * db_to_gain(-3.0)).to_bits());
     assert_eq!(p.sent[0][3].to_bits(), (-(pm * db_to_gain(-1.5))).to_bits());
-    ws.settings.master_db = -10.0;
-    let (cmds, changed) = p.sync(D0, &ws, &s, &device(2), &idle());
-    assert!(changed.is_empty());
-    let m = db_to_gain(-10.0);
-    assert_eq!(
-        p.sent[0][0].to_bits(),
-        (m * (pm * db_to_gain(-3.0))).to_bits()
-    );
-    assert_eq!(
-        p.sent[0][3].to_bits(),
-        (m * -(pm * db_to_gain(-1.5))).to_bits()
-    );
-    assert!(
-        !cmds
-            .iter()
-            .any(|c| matches!(c, CommandKind::SetMaster { .. }))
-    );
-    // Silence (-inf or below the floor) mutes every route.
-    ws.settings.master_db = f64::NEG_INFINITY;
-    p.sync(D0, &ws, &s, &device(2), &idle());
-    assert!(p.sent[0].iter().all(|&g| g == 0.0));
 }
 
 const D1: DocId = DocId(1);

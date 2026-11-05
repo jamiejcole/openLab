@@ -6,7 +6,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::cue::{CueKind, CueLevels, FadeCurve, FadeLevels, MAX_CHANNELS, SILENCE_DB};
+use crate::cue::{
+    CueKind, CueLevels, FadeCurve, FadeLevels, LevelLimits, MAX_CHANNELS, SILENCE_DB,
+};
 use crate::model::CueId;
 
 use super::time::SampleTime;
@@ -130,6 +132,19 @@ pub(super) fn level_edits(
             (was != is).then_some(LevelEdit { param, to: is })
         })
         .collect()
+}
+
+/// `gain` (linear) within `limits`: above the maximum is the maximum, at or below the minimum is
+/// silence (the same rule as [`LevelLimits::apply`], for a gain worked out from others).
+pub(super) fn limit_gain(limits: LevelLimits, gain: f32) -> f32 {
+    let max = db_to_gain(limits.max_db);
+    if gain > max {
+        max
+    } else if gain <= db_to_gain(limits.min_db) {
+        0.0
+    } else {
+        gain
+    }
 }
 
 /// dB to linear amplitude, exactly as the mixer converts it: at or below [`SILENCE_DB`] (and
@@ -282,7 +297,11 @@ pub(super) fn model_gain(levels: &CueLevels, param: LevelParam) -> Option<f32> {
 /// that names a parameter the cue has and that is not muted. Outputs (and crosspoint outputs)
 /// beyond the cue's outputs, and crosspoint inputs of [`MAX_CHANNELS`] or more, are ignored;
 /// crosspoint inputs beyond the file's channels are ignored by the mixer.
-pub(super) fn fade_targets(fade: &FadeLevels, target: &CueKind) -> Vec<(LevelParam, f32)> {
+pub(super) fn fade_targets(
+    fade: &FadeLevels,
+    target: &CueKind,
+    limits: Option<LevelLimits>,
+) -> Vec<(LevelParam, f32)> {
     let CueKind::Audio { levels, .. } = target else {
         return Vec::new();
     };
@@ -290,7 +309,9 @@ pub(super) fn fade_targets(fade: &FadeLevels, target: &CueKind) -> Vec<(LevelPar
     let mut out = Vec::new();
     let mut add = |param: LevelParam, db: f64| {
         if model_gain(levels, param).is_some() {
-            out.push((param, db_to_gain(db)));
+            // An absolute level ends within the workspace limits whatever the Fade holds; a change
+            // in dB (`None`) is limited where it is applied.
+            out.push((param, db_to_gain(limits.map_or(db, |l| l.apply(db)))));
         }
     };
     if let Some(db) = fade.master_db {
