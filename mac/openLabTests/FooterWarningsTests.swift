@@ -158,7 +158,8 @@ final class FooterWarningsTests: XCTestCase {
         XCTAssertEqual(wc.footer.warningsButton.title, "1")
         XCTAssertEqual(wc.footer.warningsButton.accessibilityLabel(), title(1))
 
-        let runtime = #"{"type":"runtime","seq":\#(rig.store.runtimeSeq + 1),"changes":[{"type":"warning","warning":\#(late)}]}"#
+        let seq = rig.store.runtimeSeq + 1
+        let runtime = #"{"type":"runtime","seq":\#(seq),"changes":[{"type":"warning","warning":\#(late)}]}"#
         XCTAssertEqual(rig.store.receive(try ServerMessage.decode(runtime)), .applied)
         XCTAssertEqual(rowCount(rig), 2)
         XCTAssertEqual(wc.footer.warningsButton.title, "2")
