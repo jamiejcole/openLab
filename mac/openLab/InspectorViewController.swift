@@ -721,6 +721,14 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         return true
     }
 
+    /// The notes typed and not yet committed, for a Quit that cannot reach the engine (they are then
+    /// written to the notes file). Taking them clears the pending state.
+    func takePendingNotes() -> String? {
+        guard dirty.contains(.notes), !isLocked else { return nil }
+        dirty.remove(.notes)
+        return notesView.string
+    }
+
     /// Commits every field typed in and not yet committed, then waits for the sends to be answered.
     /// False when an edit was invalid or refused: the caller (Save, Close, Quit) must not go on.
     func commitPendingEdits() async -> Bool {
