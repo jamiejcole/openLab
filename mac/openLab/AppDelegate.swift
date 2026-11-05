@@ -69,7 +69,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         launchSub = engine.1.ready.first().sink { [unowned self] in
             Task { @MainActor in
                 await alarmController.offerTask?.value
-                await appController.applyLaunchBehavior(attached: engine.1.attachedToLiveEngine)
+                await appController.applyLaunchBehavior()
+                alarmController.refreshOffer()
             }
         }
         // Finds the engine (or starts one) and connects; the engine opens nothing by itself.

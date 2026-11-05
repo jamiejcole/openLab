@@ -32,9 +32,6 @@ final class EngineSupervisor {
     /// An unclean exit was seen (a stale `engine.json` at launch, a crash, an engine ended by
     /// signal): the next engine's autosaves are worth offering. Cleared by whoever offers them.
     var recoveryPending = false
-    /// This launch found an engine already running and attached to it (the app was restarted
-    /// under a running show): the launch choice must not open anything beside its workspaces.
-    private(set) var attachedToLiveEngine = false
 
     /// Failed connection attempts to a live but silent engine before it is ended, at launch.
     var probeAttempts = 3
@@ -100,7 +97,6 @@ final class EngineSupervisor {
                 awaitStop(info.pid)
             } else if processes.isEngine(info.pid) {
                 engineLog.notice("attaching to the engine with pid \(info.pid, privacy: .public)")
-                attachedToLiveEngine = true
             } else {
                 // The last engine did not exit cleanly (its file is left): offer its autosaves.
                 engineLog.notice("stale engine.json (pid \(info.pid, privacy: .public) is gone): starting an engine")

@@ -1183,6 +1183,41 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(app.session.workspaces.count, 1)
     }
 
+    func testAnIdleEngineWithNoWorkspacesStillGetsTheLaunchChoice() async throws {
+        makePrefs(.newBlank)
+        try await runs.start()
+        try await startApp()
+        await assertEventually("the blank workspace opens") { self.app.allWindows.count == 1 }
+        XCTAssertFalse(launcherShown)
+    }
+
+    func testARestoreNeverRaisesAModalOverAWindowInShowMode() async throws {
+        makePrefs(.restore)
+        try await runs.start()
+        let b = try runs.show("Demo", named: "B")
+        let doc = try await runs.open(b)
+        try await runs.rename(intro, in: doc, to: "Autosaved")
+        try await runs.advance(31)
+        await runs.autosaved("B")
+        try await runs.crash()
+        let a = try runs.show("Demo", named: "A")
+        var file = try XCTUnwrap(JSONValue.parse(try String(contentsOfFile: a, encoding: .utf8)))
+        file.set("format_version", .int(8))
+        file["workspace"]?.set("show_mode", .bool(true))
+        try file.text().write(toFile: a, atomically: true, encoding: .utf8)
+        LaunchPreferences(defaults: prefs).openFiles = [a, b]
+        try await startApp()
+        await assertEventually { self.openNames() == ["A"] }
+        await settle()
+        XCTAssertEqual(app.allWindows.first?.isShowMode, true)
+        XCTAssertEqual(alerts.log.filter { $0.hasPrefix("recoveryOffer") }, [], "no modal in Show Mode")
+        XCTAssertEqual(openNames(), ["A"], "B stays closed, with its autosave")
+        let window = try XCTUnwrap(app.allWindows.first)
+        let expected = String(format: loc("error.restoreAutosave"), "B.openlab")
+        await assertEventually { window.footer.noticeLabel.stringValue == expected }
+        XCTAssertTrue(window.store.logEntries.contains { $0.message == expected })
+    }
+
     func testACancelledQuitKeepsTheListOfFilesToReopen() async throws {
         makePrefs(.restore)
         try await startApp()
@@ -1249,6 +1284,10 @@ final class EngineCrashFlowTests: XCTestCase {
         alerts.recoveryChoice = .restore  // the launch choice's own prompt for B
         await app.applyLaunchBehavior()
         await assertEventually { self.openNames() == ["B"] }
+        alarm.refreshOffer()
+        XCTAssertTrue(
+            presenter.detail.contains(String(format: loc("engine.alarm.autosaves"), 1)),
+            "the alarm counts what is left after the launch choice: \(presenter.detail)")
         presenter.restore?()
         await assertEventually("C is opened from the alarm") { self.openNames() == ["B", "C"] }
         await settle()

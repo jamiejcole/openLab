@@ -231,8 +231,8 @@ final class EngineAlarmController {
                 self.presenter.show(title: loc("engine.alarm.unclean"), message: loc("engine.alarm.uncleanMessage"))
             }
             self.summary = self.reattachSummary(setAside: Set(offer.filter(\.stale).map(\.workspaceId)))
-            let line = String(format: loc("engine.alarm.autosaves"), offer.count)
-            self.presenter.setDetail(self.summary.isEmpty ? line : self.summary + "\n" + line)
+            self.offered = entries
+            self.showAutosaveLine(count: offer.count)
             self.presenter.setRestoreAction { [weak self] in
                 Task {
                     guard let self else { return }
@@ -240,6 +240,22 @@ final class EngineAlarmController {
                 }
             }
         }
+    }
+
+    /// The scan result behind the alarm's autosave line (nil: none was offered).
+    private var offered: [RecoveryEntryInfo]?
+
+    private func showAutosaveLine(count: Int) {
+        let line = count == 0 ? loc("recover.none") : String(format: loc("engine.alarm.autosaves"), count)
+        presenter.setDetail(summary.isEmpty ? line : summary + "\n" + line)
+    }
+
+    /// The launch choice may have opened workspaces the offer named: count again what is left.
+    func refreshOffer() {
+        guard let entries = offered else { return }
+        let left = unheld(entries).count
+        showAutosaveLine(count: left)
+        if left == 0 { presenter.setRestoreAction(nil) }
     }
 
     /// File > Recover Autosaves…: the autosaves no window holds, whenever the operator asks, so

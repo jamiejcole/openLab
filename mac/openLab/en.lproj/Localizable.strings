@@ -107,6 +107,7 @@
 "prefs.launch.restore" = "Reopen the last workspaces";
 "prefs.launch.newBlank" = "Open a new blank workspace";
 "prefs.launch.nothing" = "Do nothing";
+"error.restoreAutosave" = "%@ was not reopened at launch: it has a newer autosave. Use File > Recover Autosaves to choose.";
 "error.restoreFailed" = "Could not reopen %@ at launch: %@";
 "menu.app.preferences" = "Preferences…";
 "alert.closePlaying.title" = "Close this workspace?";
