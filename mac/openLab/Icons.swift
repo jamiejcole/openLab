@@ -36,8 +36,10 @@ enum Icon: CaseIterable {
     case playhead, playheadInside, preview, outputOverridden, flagged, flaggedInside, warningMarker, engineAlarm
     // Time column header toggle (elapsed / remaining).
     case timeToggle, timeToggleUp
-    // Reserved for screens that do not exist yet; they resolve and are tested already.
-    case reservedTargetCue, reservedTargetFile, reservedFieldClear, reservedFieldChoose, reservedPopOut
+    // Target column marker (cue versus file) and the Target field's clear and choose glyphs.
+    case targetCue, targetFile, fieldClear, fieldChoose
+    // Reserved for a screen that does not exist yet; it resolves and is tested already.
+    case reservedPopOut
 
     struct Entry {
         let symbol: String
@@ -110,10 +112,10 @@ enum Icon: CaseIterable {
         case .engineAlarm: return Self.row("exclamationmark.triangle.fill")
         case .timeToggle: return Self.row("chevron.down")
         case .timeToggleUp: return Self.row("chevron.up")
-        case .reservedTargetCue: return Self.row("scope")
-        case .reservedTargetFile: return Self.row("doc")
-        case .reservedFieldClear: return Self.row("xmark.circle.fill")
-        case .reservedFieldChoose: return Self.row("magnifyingglass")
+        case .targetCue: return Self.row("scope")
+        case .targetFile: return Self.row("doc")
+        case .fieldClear: return Self.row("xmark.circle.fill")
+        case .fieldChoose: return Self.row("magnifyingglass")
         case .reservedPopOut: return Self.row("arrow.up.forward.square", 11, fallback: "rectangle.on.rectangle")
         }
     }

@@ -176,10 +176,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
                 }
             }
         }
-        inspector.onChooseFile = { [weak self] id in
+        let chooseFile: (ModelID) -> Void = { [weak self] id in
             guard let self, let url = self.pickAudioFile() else { return }
             Task { await self.editor.replaceFile(of: id, with: url) }
         }
+        inspector.onChooseFile = chooseFile
+        cueList.onChooseFile = chooseFile
         cueToolbar.onAdd = { [weak self] kind in
             let cues = self?.cueList.selectedIDs()
             Task { await self?.editor.add(kind, after: cues) }
