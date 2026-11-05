@@ -362,17 +362,31 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// Show Mode was asked for: its commit raises nothing, as Show Mode itself does not.
     private var enteringShowMode = false
 
-    /// Notes that were not saved: a small panel with Copy Text that blocks and waits for nothing. In
-    /// Show Mode, and while it is being entered, nothing is raised (NFR-10): the show log carries the
-    /// message and the text, the footer the message.
+    /// Notes that were not saved: the whole text goes to the notes file first (`NotesKeeper`), then a
+    /// small panel with Copy Text that blocks and waits for nothing names it. In Show Mode, and while
+    /// it is being entered, nothing is raised (NFR-10): the show log carries the message and the text,
+    /// the footer the message. A panel already up when Show Mode starts stays (it cannot take keys).
     func showNotesNotice(_ notice: NotesNotice) {
+        let kept = NotesKeeper.keep(notice.text, reason: "\(window?.title ?? "workspace"): \(notice.message)")
+        let message = kept.map { String(format: loc("notes.kept"), notice.message, $0.path) } ?? notice.message
         if isShowMode || enteringShowMode {
-            let kept = notice.text.count > 4000 ? String(notice.text.prefix(4000)) + "\u{2026}" : notice.text
-            _ = store.receive(.log(.error, "\(notice.message) \(kept)"))
-            footer.showNotice(notice.message, error: true)
+            _ = store.receive(.log(.error, "\(message) \(notice.text)"))
+            // The reason would push the file name out of the label: it leads with the file, and the
+            // tooltip has the whole message.
+            let short = kept.map { String(format: loc("notes.kept.footer"), $0.lastPathComponent) } ?? notice.message
+            footer.showNotice(short, error: true, tooltip: message)
             return
         }
-        NotesNoticePanel.show(notice, near: window, pasteboard: notesPasteboard)
+        NotesNoticePanel.show(
+            NotesNotice(message: message, text: notice.text), near: window, pasteboard: notesPasteboard)
+    }
+
+    /// Quit with the engine lost: what is still being typed in the masthead or the inspector can no
+    /// longer be sent, so it is written to the notes file. Nothing is raised and nothing waits.
+    func keepUnsentNotes() {
+        let reason = "\(window?.title ?? "workspace"): the engine was lost at quit"
+        if let notes = masthead.pendingNotes() { NotesKeeper.keep(notes.text, reason: reason) }
+        if let text = inspector.takePendingNotes() { NotesKeeper.keep(text, reason: reason) }
     }
 
     /// Why an edit was refused: a sheet on this window (beep when it has none).
@@ -609,10 +623,28 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         case .inspector:
             if !visible { inspector.endGestures() }
             inspector.view.isHidden = !visible
-        case .sidebar: sidebar.view.isHidden = !visible
+        case .sidebar: setSidebarInSplit(visible)
         }
         footer.toggles[area]?.state = visible ? .on : .off
         footer.toggles[area]?.isEnabled = !(isShowMode && Self.hiddenInShowMode.contains(area))
+    }
+
+    /// Hiding the last arranged subview of a split view (`isHidden`) makes AppKit pin the one before it to
+    /// the trailing edge twice, with offsets that contradict ("Conflicting constraints detected", one
+    /// constraint broken). The sidebar leaves the split instead, and comes back at its end.
+    private func setSidebarInSplit(_ shown: Bool) {
+        let view = sidebar.view
+        if shown, view.superview == nil {
+            horizontalSplit.addArrangedSubview(view)
+            horizontalSplit.setHoldingPriority(NSLayoutConstraint.Priority(251), forSubviewAt: 1)
+        } else if !shown, view.superview != nil {
+            // Removing a view does not go through `WorkspaceWindow.makeFirstResponder`: focus inside it would
+            // fall to the window, and the keys would drive nothing. Asking for nil sends it to the cue list.
+            let held = (window?.firstResponder as? NSView)?.isDescendant(of: view) == true
+            horizontalSplit.removeArrangedSubview(view)
+            view.removeFromSuperview()
+            if held { _ = window?.makeFirstResponder(nil) }
+        }
     }
 
     func isVisible(_ area: LayoutArea) -> Bool {
@@ -620,7 +652,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         case .toolbar: return find.isOpen ? !find.toolbarWasHidden : !cueToolbar.isHidden
         case .masthead: return !masthead.isHidden
         case .inspector: return !inspector.view.isHidden
-        case .sidebar: return !sidebar.view.isHidden
+        case .sidebar: return sidebar.view.superview != nil
         }
     }
 
@@ -638,8 +670,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         horizontalSplit.isVertical = true
         horizontalSplit.dividerStyle = .thin
         horizontalSplit.addArrangedSubview(verticalSplit)
-        horizontalSplit.addArrangedSubview(sidebar.view)
-        horizontalSplit.setHoldingPriority(NSLayoutConstraint.Priority(251), forSubviewAt: 1)
         let sidebarWidth = sidebar.view.widthAnchor.constraint(equalToConstant: 280)
         sidebarWidth.priority = NSLayoutConstraint.Priority(300)
         sidebarWidth.isActive = true

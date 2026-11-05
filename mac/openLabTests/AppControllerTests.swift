@@ -176,6 +176,7 @@ final class AppControllerTests: XCTestCase {
         app?.closeAllWindows()
         real = try await TestEngine.start()
         let real = real!
+        NotesKeeper.folder = real.folder.appendingPathComponent("kept-notes", isDirectory: true)
         infoURL = real.infoURL
         let scratch = try await real.open("Second")
         _ = await real.app.send({ .close(id: $0, doc: scratch, discardChanges: true) })
@@ -221,6 +222,10 @@ final class AppControllerTests: XCTestCase {
         app = nil
         engine?.releaseResults()
         real?.stop()
+        // Leaves nothing showing. (NSApp.windows still grows over the class, 5 to 52 in 158 tests: the windows
+        // are held by an autorelease pool an async XCTest never drains between tests. A turn of the main run
+        // loop here did not free them, so this is a test-process effect, not a product leak.)
+        for window in NSApp.windows where window.isVisible { window.close() }
     }
 
     static func hotkey(_ key: String, _ mods: [String] = []) -> String {
@@ -279,6 +284,34 @@ final class AppControllerTests: XCTestCase {
         let dir = real.folder.appendingPathComponent("saved", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("\(name).openlab")
+    }
+
+    /// `prepareToQuit`, with a bound of its own. The app bounds each wait of a quit on `quitScheduler`, and
+    /// here only a test fires that, so an engine that never answered would hold the whole test job: this
+    /// fails by name instead, saying what the quit had sent and whether it was on one of those bounds, then
+    /// fires them so that it ends.
+    private func quitApp(within timeout: Double = 15, file: StaticString = #filePath, line: UInt = #line) async -> Bool
+    {
+        let app = app!
+        let done = Counter()
+        let task = Task {
+            let result = await app.prepareToQuit()
+            done.count = 1
+            return result
+        }
+        if await eventually(timeout: timeout, { done.count == 1 }) { return await task.value }
+        let bounds = await quitScheduler.waitingCount
+        let sent = engine.sent.suffix(3).map { String(describing: $0) }.joined(separator: " | ")
+        let state = app.session.connectionState
+        let ended = await eventually(timeout: timeout) {
+            await self.quitScheduler.fire()
+            return done.count == 1
+        }
+        XCTFail(
+            "the quit did not finish: \(bounds) scheduler waiter(s), connection \(state), last sent: \(sent); "
+                + (ended ? "it ended when its bounds fired" : "still stuck with its bounds fired: an unbounded wait"),
+            file: file, line: line)
+        return ended ? await task.value : false
     }
 
     /// A second, clean workspace.
@@ -1228,7 +1261,7 @@ final class AppControllerTests: XCTestCase {
             try await makeLive(state, cue)
             alerts.quitPlaying = false
             alerts.closePlaying = false
-            let quit = await app.prepareToQuit()
+            let quit = await quitApp()
             XCTAssertFalse(quit, "\(state)")
             let closed = await app.closeWorkspace("1")
             XCTAssertFalse(closed, "\(state)")
@@ -1514,13 +1547,13 @@ final class AppControllerTests: XCTestCase {
         try await quiet("1")
         app.windows["1"]?.setShowMode(true)
         alerts.quitShowMode = false
-        let cancelled = await app.prepareToQuit()
+        let cancelled = await quitApp()
         XCTAssertFalse(cancelled)
         XCTAssertEqual(alerts.log, ["quitShowMode"])
         XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
         alerts.quitShowMode = true
         alerts.saveChoices = [.dontSave]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
     }
 
@@ -1538,19 +1571,21 @@ final class AppControllerTests: XCTestCase {
         notes.insertText(tooLong, replacementRange: notes.selectedRange())
         let typed = notes.string
         alerts.saveChoices = [.dontSave]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit, "Quit goes on")
         await assertEventually("the panel") { !NotesNoticePanel.open.isEmpty }
         let panel = try XCTUnwrap(NotesNoticePanel.open.last?.panel)
         XCTAssertTrue(sheetText(panel).contains("not saved"))
         XCTAssertTrue(pressButton(loc("alert.copyText"), in: panel))
         XCTAssertEqual(board.string(forType: .string), typed, "Copy Text")
+        let kept = try String(contentsOf: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName))
+        XCTAssertTrue(kept.contains(typed), "the whole refused text is in the file")
     }
 
     func testQuitWhilePlayingInShowModeIsOnePrompt() async throws {
         app.windows["1"]?.setShowMode(true)
         alerts.quitPlaying = false
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log, ["quitPlaying"])
     }
@@ -1609,7 +1644,7 @@ final class AppControllerTests: XCTestCase {
     func testQuitIdleInEditModeAsksNoConfirmation() async throws {
         try await quiet("1")
         alerts.saveChoices = [.dontSave]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         XCTAssertFalse(alerts.log.contains("quitShowMode"))
         XCTAssertFalse(alerts.log.contains("quitPlaying"))
@@ -1981,7 +2016,7 @@ final class AppControllerTests: XCTestCase {
     func testQuitSendsThePendingEditBeforeGoodbye() async throws {
         _ = try typePendingName()
         alerts.saveChoices = [.dontSave]  // the edit made the workspace dirty
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit, "\(alerts.log) \(alerts.errors)")
         await assertEventually { self.index { if case .goodbye = $0 { return true } else { return false } } != nil }
         let edit = try XCTUnwrap(index { self.isCommand($0) })
@@ -2002,7 +2037,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(closed)
         XCTAssertNotNil(app.windows["1"])
         typeBadTime()
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
         XCTAssertFalse(engine.sent.contains { isCommand($0) })
@@ -2015,7 +2050,7 @@ final class AppControllerTests: XCTestCase {
         await makeDirty(b)
         _ = c  // clean: no prompt
         alerts.saveChoices = [.dontSave, .dontSave]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         XCTAssertEqual(alerts.log, ["quitPlaying", "unsaved:Demo", "unsaved:Untitled"])
         let goodbyes = engine.sent.filter { if case .goodbye(true) = $0 { return true } else { return false } }
@@ -2029,7 +2064,7 @@ final class AppControllerTests: XCTestCase {
         await makeDirty(b)  // the demo show is dirty already
         saveURL = savePath("x")
         alerts.saveChoices = [.dontSave, .save]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         let sent = engine.sent
         let closes = sent.enumerated().compactMap { i, m -> (Int, ModelID, Bool)? in
@@ -2050,7 +2085,7 @@ final class AppControllerTests: XCTestCase {
         await makeDirty(b)
         alerts.saveChoices = [.dontSave, .dontSave]
         engine.garbleResults = true
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         let closes = engine.sent.filter { if case .close = $0 { return true } else { return false } }
         XCTAssertEqual(closes.count, 1)
@@ -2061,7 +2096,7 @@ final class AppControllerTests: XCTestCase {
         let b = try await addWorkspace()
         await makeDirty(b)
         alerts.saveChoices = [.dontSave, .cancel]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log.filter { $0.hasPrefix("unsaved") }.count, 2)
         XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
@@ -2071,7 +2106,7 @@ final class AppControllerTests: XCTestCase {
 
     func testQuitWhilePlayingAsksFirstAndCancelAsksNothingMore() async throws {
         alerts.quitPlaying = false
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log, ["quitPlaying"])
         XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
@@ -2080,7 +2115,7 @@ final class AppControllerTests: XCTestCase {
     func testSaveFailureDuringQuitAbortsWithALocalisedAlertAndNoGoodbye() async throws {
         alerts.saveChoices = [.save]
         engine.garbleResults = true
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.errors.count, 1)
         XCTAssertFalse(alerts.errors[0].contains("encoding("))
@@ -2090,9 +2125,17 @@ final class AppControllerTests: XCTestCase {
     func testHungSaveTimesOutAndAbortsQuit() async throws {
         alerts.saveChoices = [.save]
         engine.holdResults = true
-        let task = Task { await app.prepareToQuit() }
-        await assertEventually { await quitScheduler.waitingCount > 0 }
-        await quitScheduler.fire()
+        let done = Counter()
+        let task = Task {
+            let result = await app.prepareToQuit()
+            done.count = 1
+            return result
+        }
+        // Fired until it ends: a finished bound's sleeper stays on the scheduler, so one fire can land on it.
+        await assertEventually("the quit ended when its bound fired") {
+            await self.quitScheduler.fire()
+            return done.count == 1
+        }
         let quit = await task.value
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.errors.count, 1)
@@ -2103,14 +2146,32 @@ final class AppControllerTests: XCTestCase {
     func testHungGoodbyeFlushStillQuits() async throws {
         alerts.saveChoices = [.dontSave]
         engine.holdFlush = true
-        let task = Task { await app.prepareToQuit() }
+        let done = Counter()
+        let task = Task {
+            let result = await app.prepareToQuit()
+            done.count = 1
+            return result
+        }
         await assertEventually {
             self.engine.sent.contains { if case .goodbye = $0 { return true } else { return false } }
         }
-        await assertEventually { await quitScheduler.waitingCount > 0 }
-        await quitScheduler.fire()
+        await assertEventually("the quit ended when its bound fired") {
+            await self.quitScheduler.fire()
+            return done.count == 1
+        }
         let quit = await task.value
         XCTAssertTrue(quit)
+    }
+
+    /// A quit stuck on a wait only a test can end fails by name, and the test goes on to its end.
+    func testAQuitThatNeverFinishesFailsByNameInsteadOfHolding() async throws {
+        alerts.saveChoices = [.dontSave]
+        engine.holdFlush = true
+        let options = XCTExpectedFailure.Options()
+        options.issueMatcher = { $0.compactDescription.contains("the quit did not finish") }
+        XCTExpectFailure("the flush is held", options: options)
+        let quit = await quitApp(within: 0.5)
+        XCTAssertTrue(quit, "the bound ended it")
     }
 
     private func disconnect() async {
@@ -2121,15 +2182,77 @@ final class AppControllerTests: XCTestCase {
     func testQuitWhileDisconnectedCancelKeepsRunning() async throws {
         await disconnect()
         alerts.quitDisconnected = false
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log, ["quitDisconnected"])
+    }
+
+    /// Notes being typed when the engine is lost: Quit anyway writes them whole to the notes file and
+    /// quits, with no panel, sheet or other prompt.
+    func testQuitWithTheEngineLostKeepsTheNotesBeingTyped() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.masthead.notesView))
+        let typed = "private line one\n" + String(repeating: "y", count: 5000)
+        wc.masthead.notesView.insertText(typed, replacementRange: wc.masthead.notesView.selectedRange())
+        await disconnect()
+        alerts.quitDisconnected = true
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit, "quits")
+        XCTAssertEqual(alerts.log, ["quitDisconnected"])
+        XCTAssertTrue(NotesNoticePanel.open.isEmpty)
+        let kept = try String(contentsOf: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName))
+        XCTAssertTrue(kept.contains(typed), "the whole text is in the file")
+    }
+
+    /// Notes being typed in the inspector are kept the same way.
+    func testQuitWithTheEngineLostKeepsTheInspectorNotesBeingTyped() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.inspector.setSelection([TestSnapshots.intro])
+        let notes = wc.inspector.notesView
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(notes))
+        let typed = "inspector words " + String(repeating: "z", count: 100)
+        notes.insertText(typed, replacementRange: notes.selectedRange())
+        await disconnect()
+        alerts.quitDisconnected = true
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        let kept = try String(contentsOf: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName))
+        XCTAssertTrue(kept.contains(typed))
+    }
+
+    /// Quit cancelled at the disconnected prompt keeps typing going: nothing is written.
+    func testCancellingQuitWithTheEngineLostWritesNothing() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.masthead.notesView))
+        wc.masthead.notesView.insertText("still typing", replacementRange: wc.masthead.notesView.selectedRange())
+        await disconnect()
+        alerts.quitDisconnected = false
+        let quit = await app.prepareToQuit()
+        XCTAssertFalse(quit)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName).path)
+        )
+    }
+
+    /// A notes folder that cannot be written (a file stands where the folder should be) is logged and
+    /// Quit still goes on.
+    func testQuitWithTheEngineLostGoesOnWhenTheNotesFileCannotBeWritten() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let blocker = real.folder.appendingPathComponent("not-a-folder-\(UUID().uuidString)")
+        try Data().write(to: blocker)
+        NotesKeeper.folder = blocker
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.masthead.notesView))
+        wc.masthead.notesView.insertText("lost", replacementRange: wc.masthead.notesView.selectedRange())
+        await disconnect()
+        alerts.quitDisconnected = true
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit, "a failed write does not stop Quit")
     }
 
     func testQuitWhileDisconnectedQuitAnywayQuitsWithoutPrompts() async throws {
         await disconnect()
         alerts.quitDisconnected = true
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         XCTAssertEqual(alerts.log, ["quitDisconnected"])
     }
@@ -2147,7 +2270,7 @@ final class AppControllerTests: XCTestCase {
             return self.app.session.connectionState == .retrying(.engineStopping)
         }
         XCTAssertTrue(refused)
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         XCTAssertEqual(alerts.log, [])
         XCTAssertFalse(engine.sent.contains { if case .goodbye = $0 { return true } else { return false } })
@@ -2170,7 +2293,7 @@ final class AppControllerTests: XCTestCase {
         engine.holdResults = true
         let closeTask = Task { await app.closeWorkspace(second) }
         await assertEventually { closeMessages().count == 1 }
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertTrue(alerts.log.isEmpty)
         engine.holdResults = false
@@ -2191,7 +2314,7 @@ final class AppControllerTests: XCTestCase {
 
         engine.holdResults = false
         alerts.saveChoices = [.dontSave]
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertTrue(quit)
         engine.releaseResults()
     }
@@ -2746,7 +2869,7 @@ final class AppControllerTests: XCTestCase {
         wc.setShowMode(true)
         alerts.saveChoices = [.save]
         engine.garbleResults = true
-        let quit = await app.prepareToQuit()
+        let quit = await quitApp()
         XCTAssertFalse(quit)
         XCTAssertEqual(alerts.log.first, "quitPlaying", "the one quit confirmation stays (playing outranks Show Mode)")
         XCTAssertTrue(alerts.errors.isEmpty)
@@ -2988,7 +3111,13 @@ final class AppControllerTests: XCTestCase {
         var presses = 0
         let targets: [(String, (WorkspaceWindowController) -> NSResponder)] = [
             ("GO button", { $0.masthead.goButton }),
-            ("sidebar list", { $0.sidebar.listTable }),
+            (
+                "sidebar list",
+                {
+                    $0.setVisible(.sidebar, true)
+                    return $0.sidebar.listTable
+                }
+            ),
             ("footer control", { $0.footer.settingsButton }),
         ]
         for (name, focus) in targets {

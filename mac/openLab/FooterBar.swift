@@ -220,8 +220,9 @@ final class FooterBar: NSView {
     @objc private func warningsClicked() { onWarnings?() }
 
     /// Redraws the status line. The alarm state differs in symbol and wording as well as colour.
-    func showNotice(_ text: String, error: Bool = false) {
+    func showNotice(_ text: String, error: Bool = false, tooltip: String? = nil) {
         noticeLabel.stringValue = text
+        noticeLabel.toolTip = tooltip
         noticeLabel.textColor = error ? .systemRed : .secondaryLabelColor
         // An old notice must not stay up for the whole show. Each notice has its own generation, so
         // an earlier timer never clears a later notice, even one with the same text.
@@ -230,6 +231,7 @@ final class FooterBar: NSView {
         scheduleClear(noticeLifetime) { [weak self] in
             guard let self, self.noticeGeneration == mine else { return }
             self.noticeLabel.stringValue = ""
+            self.noticeLabel.toolTip = nil
             self.noticeLabel.textColor = .secondaryLabelColor
         }
     }
