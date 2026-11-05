@@ -310,6 +310,7 @@ test_list() {
     case "$line" in ''|'#'*) continue ;; esac
     n=$((n + 1))
     case "$line" in
+      */*/*/*) fail "$check" "'$line' has more than <target>/<Class>/<test>"; continue ;;
       openLabUITests/*/*|"$prefix"/*/*) ;;
       *) fail "$check" "'$line' is not <target>/<Class>/<test>"; continue ;;
     esac
