@@ -133,8 +133,9 @@ final class FooterBar: NSView {
         warningsButton.isBordered = false
         warningsButton.imagePosition = .imageLeading
         warningsButton.refusesFirstResponder = true
-        // Like the notice, it gives way before the footer widens the window past its minimum.
-        warningsButton.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(749), for: .horizontal)
+        // The notice has no minimum width (it truncates): its old 120 pt minimum is what made a new
+        // footer control widen the window. At the minimum width the button does not widen it, in Edit
+        // and Show Mode; Show Mode with the override badge is already wider than the minimum.
         warningsButton.setAX(AX.warningsButton)
         warningsButton.toolTip = loc("footer.warnings.tooltip")
         warningsButton.target = self
@@ -153,9 +154,6 @@ final class FooterBar: NSView {
         noticeLabel.textColor = .secondaryLabelColor
         noticeLabel.lineBreakMode = .byTruncatingTail
         noticeLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let minNotice = noticeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 120)
-        minNotice.priority = NSLayoutConstraint.Priority(749)
-        minNotice.isActive = true
         show(status: nil, connected: true)
 
         for spec in Self.specs {

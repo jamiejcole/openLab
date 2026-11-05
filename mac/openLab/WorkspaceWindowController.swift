@@ -197,10 +197,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
                 case .reset, .model: self?.syncFooterCount()
                 // Runtime ticks cannot change the shown list: only the standby cue moves. They do
                 // bring broken cues, problems and warnings.
-                case .runtime:
+                case .runtime(let cues, _):
+                    self?.syncMasthead()
+                    self?.syncFooterWarnings(changed: cues)
+                case .notices:
                     self?.syncMasthead()
                     self?.syncFooterWarnings()
-                case .progress, .waits, .notices: self?.syncMasthead()
+                case .progress, .waits: self?.syncMasthead()
                 }
             }
         }
@@ -506,9 +509,22 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The footer's warnings button counts the rows the Warnings tab lists.
-    func syncFooterWarnings() {
-        footer.showWarnings(count: WarningRows.make(store: store).count)
+    /// With `changed` (a runtime change), only a cue that has a row, problems or a runtime reason can
+    /// change the count, so a busy show does not rescan the cue tree for every tick (as the sidebar).
+    func syncFooterWarnings(changed: Set<ModelID>? = nil) {
+        if let changed,
+            !changed.contains(where: {
+                footerWarned.contains($0) || store.problems[$0] != nil || store.cueStates[$0]?.reason != nil
+            })
+        {
+            return
+        }
+        let rows = WarningRows.make(store: store)
+        footerWarned = Set(rows.compactMap(\.cue))
+        footer.showWarnings(count: rows.count)
     }
+
+    private var footerWarned: Set<ModelID> = []
 
     /// The footer's warnings button: the sidebar opens on the Warnings tab (Show Mode keeps the sidebar).
     func showWarnings() {

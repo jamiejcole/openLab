@@ -113,13 +113,54 @@ final class FooterWarningsTests: XCTestCase {
         XCTAssertFalse(shown(wc))
     }
 
-    func testTheButtonDoesNotOverlapTheBadgeOrOtherControlsAtTheMinimumWidth() async throws {
-        let (rig, wc) = try await open()
-        await setMedia(door, "media/gone.wav", in: rig, rows: 2)
+    /// Shows the window at its minimum size and returns whether it kept that size.
+    private func atMinimum(_ wc: WorkspaceWindowController) throws -> NSSize {
+        let window = try XCTUnwrap(wc.window)
+        window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true)
+        window.makeKeyAndOrderFront(nil)
+        window.layoutIfNeeded()
+        window.displayIfNeeded()
+        window.layoutIfNeeded()
+        return window.frame.size
+    }
+
+    func testTheButtonDoesNotOverlapTheBadgeOrOtherControlsOrWidenTheWindowAtTheMinimumWidth() async throws {
+        let (_, wc) = try await open()
+        // The window's size at its minimum, with the button shown and without it: showing it
+        // must not widen the window.
+        func compare(_ label: String, widens: Bool = false) throws {
+            wc.footer.showWarnings(count: 0)
+            let without = try atMinimum(wc)
+            wc.footer.showWarnings(count: 12)
+            let with = try atMinimum(wc)
+            if !widens { XCTAssertEqual(with, without, "showing the button widens the window: \(label)") }
+            assertOnScreen(wc)
+        }
+        try compare("Edit Mode")
         await wc.requestShowMode(true)
         await assertEventually { wc.isShowMode }
+        try compare("Show Mode")
         wc.footer.overrideBadge.isHidden = false  // the widest footer: Show Mode and the override badge
-        wc.window?.setContentSize(wc.window?.minSize ?? NSSize(width: 800, height: 500))
-        assertOnScreen(wc)
+        // The footer alone is wider than the minimum here (the badge, the mode label and the right
+        // controls cannot shrink), so the window is already wider; only overlap is checked.
+        try compare("Show Mode with the override badge", widens: true)
+    }
+
+    /// A workspace warning (a `warnings` message) and a runtime warning each reach the footer.
+    func testWorkspaceAndRuntimeWarningsReachTheFooterCount() async throws {
+        let (rig, wc) = try await open("Second")
+        XCTAssertFalse(shown(wc))
+        let late = #"{"type":"late_start","cue":"\#(door)","late_ms":120}"#
+        let message = #"{"type":"warnings","warnings":[\#(late)]}"#
+        XCTAssertEqual(rig.store.receive(try ServerMessage.decode(message)), .applied)
+        XCTAssertEqual(rowCount(rig), 1)
+        XCTAssertTrue(shown(wc))
+        XCTAssertEqual(wc.footer.warningsButton.title, "1")
+        XCTAssertEqual(wc.footer.warningsButton.accessibilityLabel(), title(1))
+
+        let runtime = #"{"type":"runtime","seq":\#(rig.store.runtimeSeq + 1),"changes":[{"type":"warning","warning":\#(late)}]}"#
+        XCTAssertEqual(rig.store.receive(try ServerMessage.decode(runtime)), .applied)
+        XCTAssertEqual(rowCount(rig), 2)
+        XCTAssertEqual(wc.footer.warningsButton.title, "2")
     }
 }
