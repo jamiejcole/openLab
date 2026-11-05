@@ -986,6 +986,16 @@ final class WindowLayoutTests: XCTestCase {
         return NSRect(x: screen.minX + 20 + shift, y: screen.minY + 20 + shift, width: width, height: height)
     }
 
+    /// A height to drag the inspector to: clearly above the least its content allows on this screen
+    /// (the divider pushed to the bottom shows that least), and leaving the cue list its room.
+    private func draggedInspectorHeight(_ wc: WorkspaceWindowController) -> CGFloat {
+        let room = wc.verticalSplit.bounds.height - wc.verticalSplit.dividerThickness
+        wc.verticalSplit.setPosition(room, ofDividerAt: 0)
+        settle(wc)
+        let least = wc.inspector.view.frame.height
+        return min(least + 90, room - 60).rounded(.down)
+    }
+
     private func settle(_ wc: WorkspaceWindowController) {
         wc.window?.layoutIfNeeded()
         wc.window?.displayIfNeeded()
@@ -1021,7 +1031,7 @@ final class WindowLayoutTests: XCTestCase {
         wc.window?.setFrame(frame(wc), display: true)
         try toggle(.sidebar, in: wc)
         let room = wc.verticalSplit.bounds.height - wc.verticalSplit.dividerThickness
-        let inspector = min(room - 250, 330).rounded(.down)
+        let inspector = draggedInspectorHeight(wc)
         wc.verticalSplit.setPosition(room - inspector, ofDividerAt: 0)
         settle(wc)
         let across = wc.horizontalSplit.bounds.width - wc.horizontalSplit.dividerThickness
@@ -1067,7 +1077,7 @@ final class WindowLayoutTests: XCTestCase {
         let (doc, wc) = try await open(url)
         wc.window?.setFrame(frame(wc), display: true)
         let room = wc.verticalSplit.bounds.height - wc.verticalSplit.dividerThickness
-        let inspector = min(room - 250, 320).rounded(.down)
+        let inspector = draggedInspectorHeight(wc)
         wc.verticalSplit.setPosition(room - inspector, ofDividerAt: 0)
         settle(wc)
         await wc.requestShowMode(true)
@@ -1234,7 +1244,7 @@ final class WindowLayoutTests: XCTestCase {
         wc.verticalSplit.setPosition(0, ofDividerAt: 0)
         settle(wc)
         XCTAssertGreaterThanOrEqual(wc.cueList.view.frame.height, 56, "the list is not squeezed out")
-        let tall = min(400, room - 200).rounded(.down)
+        let tall = draggedInspectorHeight(wc)
         wc.verticalSplit.setPosition(room - tall, ofDividerAt: 0)
         settle(wc)
         XCTAssertEqual(wc.inspector.view.frame.height, tall, accuracy: 1)
@@ -1278,7 +1288,7 @@ final class WindowLayoutTests: XCTestCase {
         let (doc, wc) = try await open(old)
         wc.window?.setFrame(frame(wc), display: true)
         let room = wc.verticalSplit.bounds.height - wc.verticalSplit.dividerThickness
-        let tall = min(330, room - 250).rounded(.down)
+        let tall = draggedInspectorHeight(wc)
         wc.verticalSplit.setPosition(room - tall, ofDividerAt: 0)
         settle(wc)
         try toggle(.inspector, in: wc)
@@ -1310,7 +1320,7 @@ final class WindowLayoutTests: XCTestCase {
         wc.window?.setFrame(big, display: true)
         settle(wc)
         let room = wc.verticalSplit.bounds.height - wc.verticalSplit.dividerThickness
-        let tall = min(400, room - 200).rounded(.down)
+        let tall = draggedInspectorHeight(wc)
         wc.verticalSplit.setPosition(room - tall, ofDividerAt: 0)
         settle(wc)
         try toggle(.inspector, in: wc)
