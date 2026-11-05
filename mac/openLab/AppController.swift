@@ -27,6 +27,9 @@ final class AppController {
         }
     }
     let launcher = LauncherWindowController()
+    /// The Override Controls panel and what feeds it (`AppController+Overrides`).
+    let overrides = OutputOverridesPanel()
+    var statusSubs: [ObjectIdentifier: AnyCancellable] = [:]
 
     // Seams for tests (no modal loops, no panels, no real recents list or key window).
     var alerts: WorkspaceAlerts = AppKitAlerts()
@@ -85,7 +88,8 @@ final class AppController {
     var keySubs: [ObjectIdentifier: AnyCancellable] = [:]
     var keyCache:
         [ObjectIdentifier: (
-            settings: JSONValue?, cueChords: Set<KeyChord>, shadowed: Set<KeyChord>, keys: TransportKeys
+            hotkeys: JSONValue?, cueChords: Set<KeyChord>, shadowed: Set<KeyChord>,
+            lost: [TransportCommand: KeyChord], keys: TransportKeys
         )] =
             [:]
     /// A hotkey recorder has the focus: the key goes to it, not to cues or transport (Esc still panics).

@@ -555,6 +555,8 @@ final class WireTap: EngineTransport {
     var holdFlush = false
     /// Hold `runtime` broadcasts (the engine's playhead moves) until `releaseResults`.
     var holdRuntime = false
+    /// Hold `model_changed` broadcasts until `releaseResults`: the app's model lags behind the engine's.
+    var holdModel = false
     fileprivate var connections: [TapConnection] = []
     fileprivate var held: [(TapConnection, String)] = []
 
@@ -634,6 +636,7 @@ final class TapConnection: EngineConnection {
     private func arrived(_ text: String) {
         let type = JSONValue.parse(text)?["type"]?.stringValue
         if type == "runtime" && tap.holdRuntime { return tap.held.append((self, text)) }
+        if type == "model_changed" && tap.holdModel { return tap.held.append((self, text)) }
         if type == "result" ? tap.holdResults : (type == "workspaces" && tap.holdLists) {
             return tap.held.append((self, text))
         }
@@ -830,4 +833,43 @@ enum TestSnapshots {
             "cue_lists", .array([.object(["id": .string(mainList.raw), "name": .string("Main"), "cues": .array(top)])]))
         return s
     }
+}
+
+extension WorkspaceStore {
+    /// Merges `hotkeys` (a JSON object of key-map fields) into the workspace's key map through the
+    /// engine (`set_key_map`) and waits until this store's model shows it.
+    func setHotkeys(_ hotkeys: String) async throws {
+        var map = try XCTUnwrap(model?.settings["hotkeys"])
+        for (key, value) in try XCTUnwrap(JSONValue.parse(hotkeys)?.objectValue) { map.set(key, value) }
+        let result = await send(command: .setKeyMap(map))
+        guard case .success = result else { return XCTFail("set_key_map: \(result)") }
+        await assertEventually { self.model?.settings["hotkeys"] == map }
+    }
+}
+
+/// The texts shown in a sheet (an alert's message).
+@MainActor
+func sheetText(_ sheet: NSWindow) -> String {
+    var found: [String] = []
+    func walk(_ view: NSView) {
+        if let field = view as? NSTextField { found.append(field.stringValue) }
+        view.subviews.forEach(walk)
+    }
+    if let content = sheet.contentView { walk(content) }
+    return found.joined(separator: " ")
+}
+
+/// Clicks the button titled `title` in `sheet`, as the operator would; false when it has none.
+@MainActor
+func pressButton(_ title: String, in sheet: NSWindow) -> Bool {
+    var pressed = false
+    func walk(_ view: NSView) {
+        if let button = view as? NSButton, button.title == title, !pressed {
+            button.performClick(nil)
+            pressed = true
+        }
+        view.subviews.forEach(walk)
+    }
+    if let content = sheet.contentView { walk(content) }
+    return pressed
 }

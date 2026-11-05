@@ -169,38 +169,6 @@ final class AppControllerTests: XCTestCase {
         XCTFail("no attempt was refused: the retry was never exercised")
     }
 
-    /// Notes the engine refuses stop a Close, and stop it again: the text is not lost by asking twice.
-    func testMastheadNotesTheEngineRefusesStopEveryClose() async throws {
-        let wc = try XCTUnwrap(app.windows["1"])
-        let window = try XCTUnwrap(wc.window)
-        keyDoc = "1"
-        let notes = wc.masthead.notesView
-        XCTAssertTrue(window.makeFirstResponder(notes))
-        let tooLong = String(repeating: "x", count: 64 * 1024 + 1)
-        notes.insertText(tooLong, replacementRange: notes.selectedRange())
-        func dismissNotice() async {
-            await assertEventually("a notice") { window.attachedSheet != nil }
-            if let sheet = window.attachedSheet { window.endSheet(sheet) }
-            await assertEventually { window.attachedSheet == nil }
-        }
-        alerts.saveChoices = [.dontSave, .dontSave]  // the prompt must not be what stops it
-        let first = await app.closeWorkspace("1")
-        XCTAssertFalse(first, "stopped")
-        await dismissNotice()
-        let second = await app.closeWorkspace("1")
-        XCTAssertFalse(second, "stopped again: the text was never saved")
-        await dismissNotice()
-        XCTAssertNotNil(app.windows["1"])
-        XCTAssertTrue(notes.string.hasSuffix(tooLong), "the text is still there")
-        // Cut down, the same typing saves.
-        notes.setSelectedRange(NSRange(location: 0, length: notes.string.utf16.count))
-        notes.insertText("short", replacementRange: notes.selectedRange())
-        let cue = try XCTUnwrap(wc.masthead.cueID)
-        let saved = await wc.commitPendingEdits()
-        XCTAssertTrue(saved)
-        await assertEventually { wc.store.model?.cue(cue)?.raw["notes"]?.stringValue == "short" }
-    }
-
     /// A real engine of this test's own with the demo show open as doc 1 (the engine numbers
     /// docs from 0: a first one is opened and closed), Intro playing (GO, which moves the playhead
     /// to the Fade cue below it) and unsaved changes, and the app connected to it with one window.
@@ -248,6 +216,7 @@ final class AppControllerTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        NotesNoticePanel.closeAll()
         app?.closeAllWindows()
         app = nil
         engine?.releaseResults()
@@ -263,12 +232,7 @@ final class AppControllerTests: XCTestCase {
     /// Changes the workspace's key map through the engine (`set_workspace_setting hotkeys`): the
     /// fields of `hotkeys` over the ones it has.
     private func setHotkeys(_ doc: ModelID, _ hotkeys: String) async throws {
-        let store = try XCTUnwrap(app.session.stores[doc])
-        var map = try XCTUnwrap(store.model?.settings["hotkeys"])
-        for (key, value) in try XCTUnwrap(JSONValue.parse(hotkeys)?.objectValue) { map.set(key, value) }
-        let result = await store.send(command: .setKeyMap(map))
-        guard case .success = result else { return XCTFail("set_key_map: \(result)") }
-        await assertEventually { store.model?.settings["hotkeys"] == map }
+        try await XCTUnwrap(app.session.stores[doc]).setHotkeys(hotkeys)
     }
 
     /// Opens a copy of the demo show whose file holds `hotkeys` (a hand edit can hold a map the
@@ -955,6 +919,52 @@ final class AppControllerTests: XCTestCase {
         XCTAssertNil(app.handleKeyDown(try keyEvent("]")), "absent resume_all: QLab default")
     }
 
+    /// A show reopened from its file has the keys the file holds: Load Selected on K, L nothing.
+    func testReopenedWorkspaceTakesItsSelectedCueKeysFromTheModel() async throws {
+        let doc = try await openShow(
+            withHotkeys: #"{"load_selected":\#(Self.hotkey("k")),"pause_resume_selected":null}"#)
+        keyDoc = doc
+        let wc = try XCTUnwrap(app.windows[doc])
+        await assertEventually {
+            wc.cueList.select([self.intro])
+            return wc.cueList.selectedIDs() == [self.intro]
+        }
+        XCTAssertEqual(app.frontKeys.chord(for: .loadSelected), KeyChord("k"))
+        XCTAssertNil(app.frontKeys.chord(for: .pauseResumeSelected), "null: no key, not the old P")
+        XCTAssertNil(app.handleKeyDown(try keyEvent("k")))
+        await assertEventually { transports(.load(cue: intro, at: 0)) == [doc] }
+        for old in ["l", "p"] {
+            let event = try keyEvent(old)
+            XCTAssertTrue(app.handleKeyDown(event) === event, "\(old) is no transport key here")
+        }
+        await settle()
+        XCTAssertEqual(transports(.load(cue: intro, at: 0)).count, 1)
+        XCTAssertTrue(transports(.pause(cue: intro)).isEmpty)
+    }
+
+    /// Typing into a field keeps the remapped key; Show Mode leaves it working, as for every
+    /// transport key.
+    func testRemappedSelectedCueKeyKeepsTheTypingAndShowModeRules() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        try await setHotkeys("1", #"{"load_selected":\#(Self.hotkey("k"))}"#)
+        await assertEventually {
+            wc.cueList.select([self.intro])
+            return wc.cueList.selectedIDs() == [self.intro]
+        }
+        await assertEventually { self.app.frontKeys.chord(for: .loadSelected) == KeyChord("k") }
+        app.isTextEditing = { true }
+        let typed = try keyEvent("k")
+        XCTAssertTrue(app.handleKeyDown(typed) === typed, "K types a k")
+        await settle()
+        XCTAssertTrue(transports(.load(cue: intro, at: 0)).isEmpty)
+        app.isTextEditing = { false }
+        wc.setShowMode(true)
+        await assertEventually { wc.isShowMode }
+        XCTAssertNil(app.handleKeyDown(try keyEvent("k")))
+        await assertEventually { transports(.load(cue: intro, at: 0)) == ["1"] }
+    }
+
     func testEachWindowUsesItsOwnWorkspacesKeys() async throws {
         let second = try await addWorkspace()
         try await setHotkeys(second, #"{"go":\#(Self.hotkey("g"))}"#)
@@ -968,6 +978,89 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(app.handleKeyDown(g) === g)
         await settle()
         XCTAssertEqual(gos(), [second])
+    }
+
+    /// Save in the menu bar of the real app is wired to this test's engine: a key goes to the key
+    /// monitor first, and whatever it leaves goes to the menu, as in the running app.
+    @objc func saveWorkspace(_ sender: Any?) {
+        guard let store = app.frontController?.store else { return }
+        Task { await app.saveWorkspace(store) }
+    }
+
+    private func realMenuBar() -> NSMenu {
+        let bar = MainMenu.make().bar
+        for menu in bar.items.compactMap(\.submenu) {
+            for item in menu.items where item.action == #selector(AppDelegate.saveWorkspace(_:)) {
+                item.action = #selector(AppControllerTests.saveWorkspace(_:))
+                item.target = self
+            }
+        }
+        app.menuChords = { HotkeyRules.menuChords(in: bar) }
+        return bar
+    }
+
+    private func lostText(_ command: String, _ chord: KeyChord) -> String {
+        String(format: loc("hotkeys.warn.menuLost"), loc(command), chord.display)
+    }
+
+    /// What the Warnings tab lists for the window, as the operator reads it.
+    private func tabTitles(_ doc: ModelID) -> [String] {
+        app.windows[doc]?.sidebar.warningRows.map(\.title) ?? []
+    }
+
+    /// A workspace whose file maps Go to Cmd-S, opened: the key runs GO and Save does not run, and the
+    /// Warnings tab says the Save command lost its key, once.
+    func testAFileKeyMapNamingAMenuChordRunsTheMapsCommandAndTheWarningsTabSaysSo() async throws {
+        let bar = realMenuBar()
+        let cmdS = KeyChord("s", [.command])
+        let doc = try await openShow(withHotkeys: #"{"go":\#(Self.hotkey("s", ["command"]))}"#)
+        keyDoc = doc
+        let text = lostText("menu.transport.go", cmdS)
+        await assertEventually { self.tabTitles(doc).filter { $0 == text }.count == 1 }
+        XCTAssertEqual(app.frontKeys.chord(for: .go), cmdS)
+        let save = try XCTUnwrap(
+            bar.items.compactMap(\.submenu).flatMap(\.items).first { $0.action == #selector(self.saveWorkspace(_:)) })
+        XCTAssertEqual(save.keyEquivalent, "s", "the menu still shows its key")
+        XCTAssertNil(app.handleKeyDown(try keyEvent("s", [.command])), "the key monitor takes it first")
+        await assertEventually { self.gos() == [doc] }
+        await settle()
+        XCTAssertEqual(saveRequests().save, 0, "Save did not run")
+        _ = app.frontKeys
+        XCTAssertEqual(tabTitles(doc).filter { $0 == text }.count, 1, "once")
+    }
+
+    /// A peer changes the key map to a menu chord and back: the warning follows each change, once.
+    func testAPeerKeyMapChangeToAMenuChordWarnsInTheTabAndClearsWhenItMovesOn() async throws {
+        _ = realMenuBar()
+        keyDoc = "1"
+        let text = lostText("menu.transport.go", KeyChord("s", [.command]))
+        try await setHotkeys("1", #"{"go":\#(Self.hotkey("s", ["command"]))}"#)
+        await assertEventually { self.tabTitles("1").filter { $0 == text }.count == 1 }
+        XCTAssertNil(app.handleKeyDown(try keyEvent("s", [.command])))
+        await assertEventually { !gos().isEmpty }
+        try await setHotkeys("1", #"{"go":\#(Self.hotkey("g"))}"#)
+        await assertEventually { !self.tabTitles("1").contains(text) }
+        XCTAssertNil(app.handleKeyDown(try keyEvent("g")))
+        await assertEventually { gos().count == 2 }
+    }
+
+    /// Editing another setting does not say the key map's warnings again.
+    func testEditingAnotherSettingDoesNotRepeatTheKeyWarnings() async throws {
+        _ = realMenuBar()
+        keyDoc = "1"
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let text = lostText("menu.transport.go", KeyChord("s", [.command]))
+        try await setHotkeys("1", #"{"go":\#(Self.hotkey("s", ["command"])),"pause_all":\#(Self.hotkey("f13"))}"#)
+        await assertEventually { store.logEntries.contains { $0.message == text } }
+        let logged = store.logEntries.filter { $0.level == .warn }.count
+        guard case .success = await store.send(command: .setWorkspaceNumber("panic_duration", 3)) else {
+            return XCTFail("setting")
+        }
+        await assertEventually { store.model?.settings["panic_duration"]?.doubleValue == 3 }
+        _ = app.frontKeys
+        await settle()
+        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, logged)
+        XCTAssertEqual(store.logEntries.filter { $0.message == text }.count, 1)
     }
 
     func testConflictingHotkeysInAShowWarnInTheLogAndDoNotCrash() async throws {
@@ -1028,6 +1121,7 @@ final class AppControllerTests: XCTestCase {
         try await setHotkeys(
             "1",
             #"{"go":\#(Self.hotkey("g", ["command"]))}"#)
+        await assertEventually { self.app.frontKeys.chord(for: .go) == KeyChord("g", [.command]) }
         MainMenu.applyKeys(to: menus.transport, app.frontKeys)
         XCTAssertEqual(item(.go)?.keyEquivalent, "g")
         XCTAssertEqual(item(.go)?.keyEquivalentModifierMask, [.command])
@@ -1430,6 +1524,29 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(quit)
     }
 
+    /// Quit with notes the engine refuses still being typed: the panel with Copy Text comes up and Quit
+    /// goes on without anyone answering it.
+    func testQuitWithMastheadNotesTheEngineRefusesGoesOnAndTheNoticeStays() async throws {
+        try await quiet("1")
+        let wc = try XCTUnwrap(app.windows["1"])
+        let window = try XCTUnwrap(wc.window)
+        let board = NSPasteboard(name: NSPasteboard.Name("openlab-test-\(UUID().uuidString)"))
+        wc.notesPasteboard = board
+        let notes = wc.masthead.notesView
+        XCTAssertTrue(window.makeFirstResponder(notes))
+        let tooLong = String(repeating: "x", count: 64 * 1024 + 1)
+        notes.insertText(tooLong, replacementRange: notes.selectedRange())
+        let typed = notes.string
+        alerts.saveChoices = [.dontSave]
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit, "Quit goes on")
+        await assertEventually("the panel") { !NotesNoticePanel.open.isEmpty }
+        let panel = try XCTUnwrap(NotesNoticePanel.open.last?.panel)
+        XCTAssertTrue(sheetText(panel).contains("not saved"))
+        XCTAssertTrue(pressButton(loc("alert.copyText"), in: panel))
+        XCTAssertEqual(board.string(forType: .string), typed, "Copy Text")
+    }
+
     func testQuitWhilePlayingInShowModeIsOnePrompt() async throws {
         app.windows["1"]?.setShowMode(true)
         alerts.quitPlaying = false
@@ -1729,11 +1846,24 @@ final class AppControllerTests: XCTestCase {
         return wc
     }
 
-    /// The master level of Intro in the show file the engine wrote.
-    private func savedMaster(at path: String) throws -> JSONValue? {
+    /// Types -6 in the master level field of the Fade's Fade tab in "1" without committing it.
+    private func typePendingFadeLevel() throws -> WorkspaceWindowController {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.inspector.setSelection([fade])
+        wc.inspector.tabView.selectTabViewItem(withIdentifier: "fadeLevels")
+        let field = wc.inspector.fadeLevels.levelField
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(field))
+        try XCTUnwrap(field.currentEditor()).string = "-6"
+        wc.inspector.fadeLevels.controlTextDidChange(
+            Notification(name: NSControl.textDidChangeNotification, object: field))
+        return wc
+    }
+
+    /// The master level of the cue at `index` (0: Intro, 1: the Fade) in the show file the engine wrote.
+    private func savedMaster(at path: String, cue index: Int = 0) throws -> JSONValue? {
         let file = try XCTUnwrap(JSONValue.parse(try String(contentsOfFile: path, encoding: .utf8)))
-        let cue = file["workspace"]?["cue_lists"]?.arrayValue?.first?["cues"]?.arrayValue?.first
-        return normalised(cue?["kind"]?["levels"]?["master_db"])
+        let cues = file["workspace"]?["cue_lists"]?.arrayValue?.first?["cues"]?.arrayValue
+        return normalised(cues?[index]["kind"]?["levels"]?["master_db"])
     }
 
     func testEnteringShowModeWhileTypingALevelCommitsItToTheCue() async throws {
@@ -1756,6 +1886,54 @@ final class AppControllerTests: XCTestCase {
         let saved = await app.saveWorkspace(store)
         XCTAssertTrue(saved)
         XCTAssertEqual(try savedMaster(at: path), .double(-6))
+    }
+
+    func testSaveWhileTypingALevelForAFadeWritesItToTheFile() async throws {
+        _ = try typePendingFadeLevel()
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let path = try XCTUnwrap(store.document?.path)
+        let saved = await app.saveWorkspace(store)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(try savedMaster(at: path, cue: 1), .double(-6))
+    }
+
+    /// A level typed for Intro in "1", then another client removes Intro while the app has not yet heard of it:
+    /// the commit finds Intro still there and the engine refuses the write.
+    private func typePendingLevelOfARemovedCue() async throws -> WorkspaceWindowController {
+        let wc = try typePendingLevel()
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let other = Rig(engine: real, workspace: "1")
+        let connected = await other.connect()
+        XCTAssertTrue(connected)
+        defer { other.client.stop() }
+        engine.holdModel = true
+        guard case .success = await other.store.send(command: .removeCue(intro)) else {
+            XCTFail("remove")
+            return wc
+        }
+        XCTAssertNotNil(store.model?.cue(intro), "the app has not heard of the removal")
+        return wc
+    }
+
+    func testARefusedTypedLevelFailsTheCommit() async throws {
+        let wc = try await typePendingLevelOfARemovedCue()
+        let committed = await wc.commitPendingEdits()
+        XCTAssertFalse(committed)
+    }
+
+    func testARefusedTypedLevelStopsSave() async throws {
+        _ = try await typePendingLevelOfARemovedCue()
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let saved = await app.saveWorkspace(store)
+        XCTAssertFalse(saved)
+    }
+
+    func testARefusedTypedLevelStopsClose() async throws {
+        _ = try await typePendingLevelOfARemovedCue()
+        alerts.saveChoices = [.save]  // if the commit went through, Close would save and finish
+        let closed = await app.closeWorkspace("1")
+        XCTAssertFalse(closed)
+        XCTAssertNotNil(app.windows["1"])
     }
 
     func testCloseWhileTypingALevelSavesItWithTheWorkspace() async throws {

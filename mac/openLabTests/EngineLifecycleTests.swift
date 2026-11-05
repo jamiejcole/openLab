@@ -302,8 +302,14 @@ final class EngineSupervisorTests: XCTestCase {
         processes.info = .success(EngineConnectionInfo(port: deadPort, token: "t", pid: silent))
         processes.alive = [silent]
         processes.diesOn = ["kill"]
+        // The replacement is up (its file not written yet), so no further attempt spawns another.
+        processes.onSpawn = { [unowned self] in
+            processes.alive.insert(enginePid)
+            return enginePid
+        }
         supervisor.start()
-        _ = await pump { self.processes.spawns == 1 }
+        let spawned = await pump { self.processes.spawns == 1 }
+        XCTAssertTrue(spawned)
         XCTAssertEqual(processes.signals.map(\.signal), [.terminate, .kill])
         XCTAssertEqual(processes.spawns, 1)
     }
@@ -555,6 +561,31 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertTrue(presenter.isVisible)
         // Nothing modal ran by itself.
         XCTAssertTrue(alerts.log.isEmpty)
+    }
+
+    /// The output override lives in the engine only: after a crash and restart the app follows the
+    /// new engine's status (the override is off again), its panel and badge with it.
+    func testAnEngineRestartTheAppSurvivesLeavesPanelAndBadgeMatchingTheNewEngine() async throws {
+        try await launch()
+        try await openShows()
+        let hamlet = try XCTUnwrap(hamletStore)
+        let wc = try XCTUnwrap(app.controllers[ObjectIdentifier(hamlet)])
+        app.showOverrideControls()
+        _ = await app.session.setOutputOverrides(networkDisabled: true)
+        let shown = await eventually {
+            try? await self.advance(0.3)
+            return !wc.footer.overrideBadge.isHidden && self.app.overrides.networkSwitch.state == .off
+        }
+        XCTAssertTrue(shown, "the badge and the switch follow the engine")
+        try await crash()
+        let back = await pump { self.presenter.detail.contains(loc("engine.alarm.back")) }
+        XCTAssertTrue(back)
+        let matched = await eventually {
+            try? await self.advance(0.3)
+            return wc.footer.overrideBadge.isHidden && self.app.overrides.networkSwitch.state == .on
+                && wc.store.status != nil
+        }
+        XCTAssertTrue(matched, "the new engine has no override, so neither badge nor switch shows one")
     }
 
     /// An unclean exit before this launch (the last engine was killed with an untitled workspace

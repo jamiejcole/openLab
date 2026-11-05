@@ -120,6 +120,9 @@ enum WarningRows {
                         title: ProblemText.warning(w, label: label), detail: "", canRelink: false))
             }
         }
+        for text in store.appNotices {
+            rows.append(WarningRow(id: "k:\(text)", cue: nil, title: text, detail: "", canRelink: false))
+        }
         return rows
     }
 

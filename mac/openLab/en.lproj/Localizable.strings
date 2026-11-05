@@ -80,6 +80,15 @@
 "inspector.preview" = "Preview";
 "inspector.stopPreview" = "Stop Preview";
 "cue.previewing" = "Previewing";
+"cue.outputOverridden" = "Network output is disabled";
+"menu.window.overrides" = "Output Overrides";
+"overrides.window" = "Output Overrides";
+"overrides.network" = "Network output";
+"overrides.note" = "For every open workspace. Off: Network cues run but send nothing.";
+"overrides.noWorkspace" = "Open a workspace to change the overrides.";
+"footer.override.badge" = "NETWORK OUTPUT OFF";
+"footer.override.tooltip" = "Network cues run but send nothing. Turn it back on in Window > Output Overrides.";
+"status.detail.networkOff" = "Network output is disabled: Network cues run but send nothing.";
 "menu.transport.stopSelected" = "Stop Selected";
 "menu.transport.resetSelected" = "Reset Selected";
 
@@ -127,7 +136,13 @@
 "masthead.go" = "GO";
 "masthead.go.label" = "Go";
 "masthead.standby.none" = "No cue standing by";
-"masthead.notes.cueGone" = "The notes could not be saved: the cue no longer exists.";
+"notes.cueLabel" = "the cue \u201C%@\u201D";
+"notes.notSaved.refused" = "The notes for %1$@ were not saved: the engine refused them (%2$@).";
+"notes.notSaved.notDelivered" = "The notes for %@ were not saved: the engine did not receive them.";
+"notes.notSaved.cueGone" = "The notes were not saved: the cue they were typed for no longer exists.";
+"notes.notSaved.blocked" = "The notes were not saved: another edit you typed is not valid. Fix it and try again.";
+"alert.copyText" = "Copy Text";
+"notes.notice.title" = "Notes not saved";
 "masthead.notes.label" = "Notes for the standing-by cue";
 
 "cue.type.group.timeline" = "Group (timeline)";
@@ -222,6 +237,7 @@
 "inspector.hotkey.unsupported" = "That key cannot be used as a hotkey.";
 "hotkeys.warn.unusable" = "%1$@ key: %2$@, so no key is bound.";
 "hotkeys.warn.yields" = "%1$@ key: %2$@ is a cue hotkey in this show, so the cue keeps it and no key is bound.";
+"hotkeys.warn.menuLost" = "%1$@ key %2$@ is also a menu command's key: the key runs %1$@ here, and that menu command has no key in this workspace.";
 "hotkeys.warn.menuShadowed" = "Cue hotkey %@ is also a menu command's key, so the cue does not fire from it.";
 "hotkeys.warn.shadowed" = "Cue hotkey %@ is a transport key in this workspace, so the cue does not fire from it.";
 "hotkeys.reason.reserved" = "the key is reserved";
