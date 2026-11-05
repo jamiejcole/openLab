@@ -86,11 +86,15 @@ test-mac-unit: project
 # that changes the engine, the protocol, the app's engine client, its tests or project runs (scripts/paths.sh).
 test-mac: project
 	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
-	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -only-testing:openLabTests $(UI_SMOKE) test
+	# A hung test fails by name in minutes, not as a job stuck until the runner's limit.
+	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -test-timeouts-enabled YES \
+		-default-test-execution-time-allowance 180 -only-testing:openLabTests $(UI_SMOKE) test
 
 # Every unit test and the whole UI suite: what the nightly run does.
 test-mac-ui-full: project
-	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" test
+	# A hung test fails by name in minutes, not as a job stuck until the runner's limit.
+	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -test-timeouts-enabled YES \
+		-default-test-execution-time-allowance 180 test
 
 mac: project
 	$(XCODEBUILD) -configuration Release build
