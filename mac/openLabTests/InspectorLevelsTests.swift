@@ -581,6 +581,72 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually { self.modelKind(Self.intro)?["levels"]?["crosspoints"]?.arrayValue?.isEmpty == true }
     }
 
+    /// The strip and the matrix live in the workspace's limits, not the default ones.
+    func testTheLevelsFollowTheWorkspaceVolumeLimits() async throws {
+        let settings = WorkspaceSettingsModel(store: store)
+        let lowered = await settings.setOutputMin("-80")
+        XCTAssertTrue(lowered)
+        await assertEventually { self.store.model?.settings["output_min_db"]?.doubleValue == -80 }
+        vc.setSelection([Self.intro])
+        let p = vc.audioLevels
+        p.select(.output(0))
+        type(p, "-70")
+        await assertEventually {
+            self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?.first?["db"] == .double(-70)
+        }
+        await assertEventually { p.levelField.stringValue == "-70.0" }
+        XCTAssertEqual(p.fader.minValue, -80, "the fader goes down to the minimum")
+        XCTAssertEqual(p.fader.doubleValue, -70, "and shows the level")
+        XCTAssertEqual(p.matrix.limits.min, -80, "as does the matrix")
+        drag(p, to: [-75, -80])
+        await assertEventually {
+            self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?.first?["db"] == .double(-120)
+        }
+        // A maximum below 0 dB stops the fader there.
+        let capped = await settings.setOutputMax("-6")
+        XCTAssertTrue(capped)
+        await assertEventually { p.fader.maxValue == -6 }
+        type(p, "+6")
+        await assertEventually { p.levelField.stringValue == "-6.0" }
+    }
+
+    /// Space in a playing cue's level box (the GO habit) clears the text; leaving it changes nothing.
+    func testABlankLevelBoxIsNoChangeOnAPlayingCue() async throws {
+        guard case .success = await store.transport(.start(cue: Self.intro)) else { return XCTFail("start") }
+        vc.setSelection([Self.intro])
+        let p = vc.audioLevels
+        p.select(.master)
+        vc.tabView.selectTabViewItem(withIdentifier: "levels")
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(p.levelField)
+        let editor = try XCTUnwrap(p.levelField.currentEditor())
+        editor.selectAll(nil)
+        window.sendEvent(
+            try XCTUnwrap(
+                NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, characters: " ",
+                    charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49)))
+        XCTAssertEqual(p.levelField.currentEditor()?.string, " ", "the key reached the box")
+        let before = sent.count
+        window.makeFirstResponder(nil)
+        await settle()
+        XCTAssertEqual(sent.count, before, "a blank sends nothing")
+        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["master_db"], .double(0))
+        XCTAssertEqual(p.levelField.stringValue, "0.0", "the box shows the level again")
+        XCTAssertEqual(store.cueStates[Self.intro]?.state, .running)
+    }
+
+    /// Emptied is -inf, as in QLab (manual p. 204).
+    func testAnEmptiedLevelBoxIsSilence() async throws {
+        vc.setSelection([Self.intro])
+        let p = vc.audioLevels
+        p.select(.master)
+        type(p, "")
+        await assertEventually { self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(-120) }
+        await assertEventually { p.levelField.stringValue == "-inf" }
+    }
+
     func testFaderDragIsOneUndoStep() async throws {
         vc.setSelection([Self.intro])
         let p = vc.audioLevels

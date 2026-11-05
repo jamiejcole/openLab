@@ -17,7 +17,8 @@ use proptest::prelude::*;
 use proptest::{collection::vec, option};
 
 /// The current format (golden: saved files must match it byte for byte).
-const EXAMPLE: &str = include_str!("../../../fixtures/show/v8-example.openlab");
+const EXAMPLE: &str = include_str!("../../../fixtures/show/v9-example.openlab");
+const V8_EXAMPLE: &str = include_str!("../../../fixtures/show/v8-example.openlab");
 const V7_EXAMPLE: &str = include_str!("../../../fixtures/show/v7-example.openlab");
 const V6_EXAMPLE: &str = include_str!("../../../fixtures/show/v6-example.openlab");
 const V5_EXAMPLE: &str = include_str!("../../../fixtures/show/v5-example.openlab");
@@ -87,7 +88,7 @@ fn golden_fixture_is_in_canonical_form() {
 #[test]
 fn v3_fixture_with_a_passcode_migrates_to_a_row_with_all_rights() {
     let loaded = load_show(V3_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     let current = load_show(EXAMPLE).unwrap().workspace;
     assert_eq!(loaded.workspace, current);
     assert_eq!(
@@ -106,7 +107,7 @@ fn v3_fixture_with_a_passcode_migrates_to_a_row_with_all_rights() {
 #[test]
 fn v3_fixture_without_a_passcode_migrates_to_open_no_passcode_rights() {
     let loaded = load_show(V3_NO_PASSCODE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     assert_eq!(loaded.workspace.settings.osc_access, OscAccess::default());
     assert_eq!(
         loaded.workspace.settings.osc_access.no_passcode,
@@ -125,7 +126,7 @@ fn v3_fixture_without_a_passcode_migrates_to_open_no_passcode_rights() {
 #[test]
 fn v4_fixture_migrates_to_the_selected_cue_keys() {
     let loaded = load_show(V4_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     let keys = &loaded.workspace.settings.hotkeys;
     assert_eq!(keys.stop_all, None);
     assert_eq!(keys.go.as_ref().unwrap().key, "space");
@@ -152,7 +153,7 @@ fn v4_fixture_migrates_to_the_selected_cue_keys() {
 #[test]
 fn v5_fixture_migrates_by_dropping_the_playhead_keys() {
     let loaded = load_show(V5_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
     let migrated = migrate(serde_json::from_str(V5_EXAMPLE).unwrap(), 5).unwrap();
     let keys = &migrated["workspace"]["settings"]["hotkeys"];
@@ -162,6 +163,15 @@ fn v5_fixture_migrates_by_dropping_the_playhead_keys() {
 }
 
 /// The one warning a show older than v7 whose patches delayed an output loads with.
+/// Every old fixture has a global master of -2 dB, which v9 dropped.
+fn master_removed() -> ValidationIssue {
+    ValidationIssue {
+        severity: Severity::Warning,
+        cue_id: None,
+        kind: IssueKind::GlobalMasterRemoved,
+    }
+}
+
 fn delays_removed() -> ValidationIssue {
     ValidationIssue {
         severity: Severity::Warning,
@@ -176,8 +186,8 @@ fn delays_removed() -> ValidationIssue {
 #[test]
 fn v6_fixture_migrates_by_dropping_the_output_delays_with_one_warning() {
     let loaded = load_show(V6_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
-    assert!(loaded.warnings[0].to_string().contains("undelayed"));
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
+    assert!(loaded.warnings[1].to_string().contains("undelayed"));
     assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
     let migrated = migrate(serde_json::from_str(V6_EXAMPLE).unwrap(), 6).unwrap();
     let outputs = &migrated["workspace"]["patches"][0]["outputs"];
@@ -219,9 +229,9 @@ fn a_v6_output_delay_warns_only_when_it_was_set() {
     ] {
         let show = load(delay.clone());
         let want = if warned {
-            vec![delays_removed()]
+            vec![master_removed(), delays_removed()]
         } else {
-            vec![]
+            vec![master_removed()]
         };
         assert_eq!(show.warnings, want, "{delay:?}");
         assert_eq!(show.workspace, current, "{delay:?}");
@@ -416,7 +426,7 @@ fn cue_named<'a>(ws: &'a Workspace, name: &str) -> &'a Cue {
 #[test]
 fn v1_fixture_migrates_with_default_second_triggers() {
     let loaded = load_show(V1_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     let mut ws = loaded.workspace;
     let mut count = 0;
     for list in &ws.cue_lists {
@@ -478,7 +488,7 @@ fn devamp_modes(ws: &Workspace) -> Vec<DevampMode> {
 #[test]
 fn v2_fixture_migrates_with_devamp_mode_current_slice() {
     let loaded = load_show(V2_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![delays_removed()]);
+    assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     let mut ws = loaded.workspace;
     assert_eq!(devamp_modes(&ws), vec![DevampMode::CurrentSlice]);
     let current = load_show(EXAMPLE).unwrap().workspace;
@@ -579,6 +589,7 @@ fn v2_fades_aimed_at_groups_are_pointed_out_on_load() {
                 Some(cue_id(0xf1)),
                 IssueKind::GroupFadeNowRelative
             ),
+            (Severity::Warning, None, IssueKind::GlobalMasterRemoved),
             (Severity::Warning, None, IssueKind::OutputDelaysRemoved),
         ]
     );
@@ -595,7 +606,7 @@ fn v2_fades_aimed_at_groups_are_pointed_out_on_load() {
     // The unchanged v2 example's only Fade targets an audio cue.
     assert_eq!(
         load_show(V2_EXAMPLE).unwrap().warnings,
-        vec![delays_removed()]
+        vec![master_removed(), delays_removed()]
     );
 }
 
@@ -700,18 +711,18 @@ fn migrate_is_identity_from_current_version() {
 
 #[test]
 fn too_new_format_version_is_refused_naming_both_versions() {
-    let text = EXAMPLE.replacen("\"format_version\": 8", "\"format_version\": 9", 1);
+    let text = EXAMPLE.replacen("\"format_version\": 9", "\"format_version\": 10", 1);
     let err = load_show(&text).unwrap_err();
     assert!(matches!(
         err,
         LoadError::TooNew {
-            found: 9,
+            found: 10,
             supported: FORMAT_VERSION
         }
     ));
     let message = err.to_string();
     assert!(
-        message.contains('9') && message.contains(&FORMAT_VERSION.to_string()),
+        message.contains("10") && message.contains(&FORMAT_VERSION.to_string()),
         "{message}"
     );
 
@@ -1236,7 +1247,6 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
     (
         (num(0.0..=10.0), num(0.0..=60.0), num(5.0..=3600.0)),
         any_access(),
-        level(),
         hotkeys,
         (num(0.0..=100.0), num(0.1..=10.0)),
     )
@@ -1244,7 +1254,6 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
             |(
                 (min_go_interval, panic_duration, autosave_interval),
                 osc_access,
-                master_db,
                 hotkeys,
                 (start, step),
             )| {
@@ -1253,7 +1262,9 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
                     panic_duration,
                     autosave_interval,
                     osc_access,
-                    master_db,
+                    // The levels above are anywhere in range, so the limits are the widest default.
+                    output_max_db: 12.0,
+                    output_min_db: -60.0,
                     hotkeys,
                     auto_number_start: start,
                     auto_number_increment: step,
@@ -1522,7 +1533,7 @@ fn show_mode_unreadable() -> ValidationIssue {
 #[test]
 fn v7_fixture_migrates_to_edit_mode() {
     let loaded = load_show(V7_EXAMPLE).unwrap();
-    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.warnings, vec![master_removed()]);
     assert!(!loaded.workspace.show_mode);
     assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
     let migrated = migrate(serde_json::from_str(V7_EXAMPLE).unwrap(), 7).unwrap();
@@ -1538,7 +1549,7 @@ fn a_show_mode_in_a_v7_file_is_not_read() {
     doc["workspace"]["show_mode"] = true.into();
     let loaded = load_show(&doc.to_string()).unwrap();
     assert!(!loaded.workspace.show_mode);
-    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.warnings, vec![master_removed()]);
 }
 
 /// Saved in Show Mode, reopened in Show Mode; saved in Edit Mode, reopened in Edit Mode and the
@@ -1598,4 +1609,145 @@ fn a_damaged_show_mode_opens_in_edit_mode_with_a_warning() {
     assert_eq!(loaded.warnings, vec![]);
     let loaded = load_show(&example_with_show_mode(false.into())).unwrap();
     assert_eq!(loaded.warnings, vec![]);
+}
+
+/// v9 dropped the global master (QLab 5 has none) and added the workspace volume limits. The v8
+/// example has a master of -2 dB: it opens with one warning that the master is gone, plays as its
+/// cue and patch levels say (nothing is folded into them), its limits are at their defaults, and
+/// saved, it is the current format with no trace of the master.
+#[test]
+fn v8_fixture_drops_the_global_master_with_one_warning_and_no_level_changes() {
+    let loaded = load_show(V8_EXAMPLE).unwrap();
+    assert_eq!(
+        loaded.warnings.iter().map(|w| &w.kind).collect::<Vec<_>>(),
+        vec![&IssueKind::GlobalMasterRemoved]
+    );
+    assert!(loaded.warnings[0].to_string().contains("global master"));
+    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+    let settings = &loaded.workspace.settings;
+    assert_eq!(
+        (settings.output_max_db, settings.output_min_db),
+        (12.0, -60.0)
+    );
+    let migrated = migrate(serde_json::from_str(V8_EXAMPLE).unwrap(), 8).unwrap();
+    assert!(migrated["workspace"]["settings"].get("master_db").is_none());
+    assert_eq!(migrated["format_version"], FORMAT_VERSION);
+    let text = save_show(&loaded.workspace).unwrap();
+    assert_eq!(text, EXAMPLE);
+    assert_eq!(load_show(&text).unwrap().warnings, vec![]);
+}
+
+/// A v8 master of 0 dB was no master at all: nothing to warn about.
+#[test]
+fn a_v8_global_master_at_0_db_opens_with_no_warning() {
+    let text = V8_EXAMPLE.replacen("\"master_db\": -2.0,", "\"master_db\": 0.0,", 1);
+    assert_eq!(load_show(&text).unwrap().warnings, vec![]);
+}
+
+/// A limit a hand edit put out of range is brought back into it with a warning, and a level above
+/// the maximum is put at it (the loudest the workspace allows), never left louder.
+#[test]
+fn loading_clamps_the_limits_and_every_level_to_the_maximum() {
+    let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    doc["workspace"]["settings"]["output_max_db"] = (-40.0).into();
+    doc["workspace"]["settings"]["output_min_db"] = (-20.0).into();
+    let loaded = load_show(&doc.to_string()).unwrap();
+    let s = &loaded.workspace.settings;
+    assert_eq!((s.output_max_db, s.output_min_db), (-30.0, -40.0));
+    assert!(loaded.warnings.iter().any(|w| w.kind
+        == IssueKind::InvalidValue {
+            field: "settings.output_max_db"
+        }));
+    // The example's patch and cue levels at 0 dB are now above the maximum.
+    assert!(loaded.workspace.patches[0].master_db <= -30.0);
+    assert!(
+        loaded.workspace.patches[0]
+            .outputs
+            .iter()
+            .all(|o| o.level_db <= -30.0)
+    );
+    assert!(
+        loaded
+            .workspace
+            .cues()
+            .filter_map(|c| match &c.kind {
+                CueKind::Audio { levels, .. } => Some(levels),
+                _ => None,
+            })
+            .all(|l| l.master_db <= -30.0 && l.outputs.iter().all(|o| o.db <= -30.0))
+    );
+}
+
+/// One rule for the whole file: a level at or below the minimum is silence from the moment it
+/// opens, with one warning for all of them, so no later edit of something else silences it.
+#[test]
+fn loading_silences_levels_at_or_below_the_minimum_with_one_warning() {
+    let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    doc["workspace"]["patches"][0]["master_db"] = (-70.0).into();
+    doc["workspace"]["patches"][0]["outputs"][0]["level_db"] = (-60.0).into();
+    let loaded = load_show(&doc.to_string()).unwrap();
+    assert_eq!(
+        loaded
+            .warnings
+            .iter()
+            .map(|w| w.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![IssueKind::LevelsBelowMinimum]
+    );
+    let patch = &loaded.workspace.patches[0];
+    assert_eq!(patch.master_db, SILENCE_DB);
+    assert_eq!(patch.outputs[0].level_db, SILENCE_DB);
+    let text = save_show(&loaded.workspace).unwrap();
+    assert_eq!(load_show(&text).unwrap().warnings, vec![]);
+}
+
+/// A Fade aimed at an Audio cue holds levels; aimed at a Group, changes in dB that the limits do
+/// not touch. Aimed anywhere else (nothing yet) it counts as levels: it cannot end up louder.
+#[test]
+fn loading_clamps_a_fade_unless_it_is_aimed_at_a_group() {
+    let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    doc["workspace"]["settings"]["output_max_db"] = (-3.0).into();
+    let raw = load_show(EXAMPLE).unwrap().workspace;
+    let audio = raw
+        .cues()
+        .find(|c| matches!(c.kind, CueKind::Audio { .. }))
+        .unwrap()
+        .id;
+    let group = raw
+        .cues()
+        .find(|c| matches!(c.kind, CueKind::Group { .. }))
+        .unwrap()
+        .id;
+    let fades = doc["workspace"]["cue_lists"][0]["cues"]
+        .as_array_mut()
+        .unwrap();
+    let template = fades
+        .iter()
+        .find(|c| c["kind"]["type"] == "fade")
+        .unwrap()
+        .clone();
+    for (n, target) in [
+        ("a1", Some(audio.to_string())),
+        ("a2", Some(group.to_string())),
+        ("a3", None),
+    ] {
+        let mut fade = template.clone();
+        fade["id"] = format!("00000000-0000-4000-8000-0000000000{n}").into();
+        fade["number"] = serde_json::Value::Null;
+        fade["kind"]["target"] = target.into();
+        fade["kind"]["levels"]["master_db"] = 6.0.into();
+        fades.push(fade);
+    }
+    let loaded = load_show(&doc.to_string()).unwrap();
+    let master = |n: &str| {
+        let id = serde_json::from_value(format!("00000000-0000-4000-8000-0000000000{n}").into())
+            .unwrap();
+        match &loaded.workspace.find_cue(id).unwrap().kind {
+            CueKind::Fade { levels, .. } => levels.master_db,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(master("a1"), Some(-3.0), "aimed at an Audio cue");
+    assert_eq!(master("a2"), Some(6.0), "aimed at a Group: a change in dB");
+    assert_eq!(master("a3"), Some(-3.0), "aimed at nothing");
 }

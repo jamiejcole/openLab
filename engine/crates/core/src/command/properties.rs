@@ -250,6 +250,12 @@ pub(super) fn set_property(
         }
         other => other,
     };
+    // A level beyond the workspace limits is put at them, as QLab does for every way a level is
+    // set; an undo or redo puts back a value that was within them.
+    let mut property = property;
+    if !restoring && let CueProperty::Kind { value } = &mut property {
+        ws.clamp_kind(value);
+    }
     if let CueProperty::Kind { value } = &property
         && (matches!(cue.kind, CueKind::Group { .. }) || matches!(value, CueKind::Group { .. }))
     {

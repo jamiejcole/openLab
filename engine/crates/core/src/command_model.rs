@@ -71,8 +71,13 @@ pub enum WorkspaceSetting {
     AutosaveInterval {
         value: f64,
     },
-    /// Global master level (PB-11).
-    MasterDb {
+    /// Highest level any fader may hold (PB-11), -30 to +12 dB. Applied to a client by
+    /// [`Command::prepare`], which puts the levels above the new maximum at it first.
+    OutputMaxDb {
+        value: f64,
+    },
+    /// Levels at or below this are silent (PB-11), -180 to -40 dB.
+    OutputMinDb {
         value: f64,
     },
     /// One workspace key (TRG-01).
@@ -157,7 +162,12 @@ impl WorkspaceSetting {
             Self::AutosaveInterval { .. } => Self::AutosaveInterval {
                 value: s.autosave_interval,
             },
-            Self::MasterDb { .. } => Self::MasterDb { value: s.master_db },
+            Self::OutputMaxDb { .. } => Self::OutputMaxDb {
+                value: s.output_max_db,
+            },
+            Self::OutputMinDb { .. } => Self::OutputMinDb {
+                value: s.output_min_db,
+            },
             Self::Hotkey { key, .. } => Self::Hotkey {
                 key: *key,
                 value: hotkey_slot(s, *key).clone(),
@@ -179,7 +189,8 @@ impl WorkspaceSetting {
             Self::MinGoInterval { value } => s.min_go_interval = *value,
             Self::PanicDuration { value } => s.panic_duration = *value,
             Self::AutosaveInterval { value } => s.autosave_interval = *value,
-            Self::MasterDb { value } => s.master_db = *value,
+            Self::OutputMaxDb { value } => s.output_max_db = *value,
+            Self::OutputMinDb { value } => s.output_min_db = *value,
             Self::Hotkey { key, value } => hotkey_slot_mut(s, *key).clone_from(value),
             Self::Hotkeys { value } => s.hotkeys.clone_from(&**value),
             Self::AutoNumberStart { value } => s.auto_number_start = *value,
@@ -354,6 +365,19 @@ fn set_setting(
     }
     if old == *setting {
         return Ok(no_change());
+    }
+    // A limit does not pass over levels outside it: `Command::prepare` puts them within it
+    // first, in the same step, and an edit that skipped that is refused.
+    if !restoring
+        && matches!(
+            setting,
+            WorkspaceSetting::OutputMaxDb { .. } | WorkspaceSetting::OutputMinDb { .. }
+        )
+        && !ws.limit_clamps(candidate.limits()).is_empty()
+    {
+        return Err(CommandError::InvalidValue(
+            "levels outside the new limit must be put within it in the same step",
+        ));
     }
     ws.settings = candidate;
     Ok(Command::SetWorkspaceSetting { setting: old })
@@ -610,7 +634,12 @@ fn add_patch(
     if !restoring {
         check_name(&patch.name)?;
     }
-    let issues = patch_problems(patch);
+    let limits = ws.settings.limits();
+    let mut patch = patch.clone();
+    if !restoring {
+        patch.limit_levels(limits);
+    }
+    let issues = patch_problems(&patch, limits);
     if !issues.is_empty() {
         return Err(CommandError::InvalidModel(issues));
     }
@@ -645,6 +674,7 @@ fn set_patch_property(
     property: &PatchProperty,
     restoring: bool,
 ) -> Result<Inverse, CommandError> {
+    let limits = ws.settings.limits();
     let patch = ws
         .patches
         .iter_mut()
@@ -659,7 +689,12 @@ fn set_patch_property(
     }
     let mut candidate = patch.clone();
     property.write(&mut candidate)?;
-    let issues = patch_problems(&candidate);
+    // A level beyond the workspace limits is put at them (QLab limits every way a level is
+    // set); an undo or redo puts back a level that was within them.
+    if !restoring {
+        candidate.limit_levels(limits);
+    }
+    let issues = patch_problems(&candidate, limits);
     if !issues.is_empty() {
         return Err(CommandError::InvalidModel(issues));
     }

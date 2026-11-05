@@ -46,6 +46,14 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     /// cue until it is over.
     var onHold: ((Bool) -> Void)?
 
+    /// The workspace volume limits the levels live in (the store's).
+    var limits = VolumeLimits() {
+        didSet {
+            guard limits != oldValue else { return }
+            matrix.limits = limits
+            refreshStrip()
+        }
+    }
     private(set) var levels: LevelSet?
     private(set) var selection: LevelSet.Slot = .master
     /// The gesture a drag in progress belongs to; model updates wait until it ends.
@@ -91,7 +99,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         matrix.onDrag = { [weak self] slot, db, first in
             guard let self else { return }
             if first, self.gesture == nil { self.beginGesture() }
-            self.edit(gesture: self.gesture) { $0.set(slot, db: db, drag: true) }
+            let limits = self.limits
+            self.edit(gesture: self.gesture) { $0.set(slot, db: db, drag: true, limits: limits) }
         }
         matrix.onDragEnd = { [weak self] in self?.endGesture() }
         // From the press: a drag can start at any moment, and must start from this cue's values.
@@ -196,8 +205,11 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         let active = levels.isActive(slot)
         let db = levels.db(slot)
         if !isDirty { levelField.stringValue = db.map(LevelText.format) ?? "" }
-        // The fader stops at 0 dB (QLab manual p. 181); a level above it shows pinned there.
-        fader.doubleValue = min(max(db ?? LevelText.floorDb, LevelText.floorDb), 0)
+        // The fader runs from the minimum limit and stops at 0 dB (QLab manual p. 181), or at the
+        // maximum if that is lower; a level above it shows pinned there.
+        fader.minValue = limits.min
+        fader.maxValue = min(limits.max, 0)
+        fader.doubleValue = min(max(db ?? limits.min, limits.min), fader.maxValue)
         activeCheck.state = active ? .on : .off
         muteCheck.state = levels.isMuted(slot) ? .on : .off
         var isOutput = false
@@ -268,9 +280,10 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     @objc private func faderMoved() {
         let v = fader.doubleValue
-        let db = v <= LevelText.floorDb ? LevelText.silence : (v * 10).rounded() / 10
+        let limits = limits
+        let db = v <= limits.min ? LevelText.silence : (v * 10).rounded() / 10
         let slot = selection
-        edit(gesture: gesture) { $0.set(slot, db: db, drag: true) }
+        edit(gesture: gesture) { $0.set(slot, db: db, drag: true, limits: limits) }
     }
 
     @objc private func muteToggled() {
@@ -283,7 +296,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         let slot = selection
         if activeCheck.state == .on {
             // Activating takes the level it shows; a silent default is -inf, as in QLab.
-            edit { $0.set(slot, db: $0.db(slot) ?? LevelText.silence) }
+            let limits = limits
+            edit { $0.set(slot, db: $0.db(slot) ?? LevelText.silence, limits: limits) }
         } else {
             edit { $0.deactivate(slot) }
         }
@@ -326,10 +340,13 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         let slot = selection
         if field === levelField {
             let text = levelField.stringValue
-            // An empty field on a level a Fade is not moving leaves it alone.
-            if text.trimmingCharacters(in: .whitespaces).isEmpty, levels?.isActive(slot) == false { return }
-            let db = LevelText.parse(text)
-            edit { $0.set(slot, db: db) }
+            // Emptied is -inf (QLab 5 manual p. 204), except on a level a Fade is not moving, which
+            // it leaves alone. Only white space is no change: a stray Space, the GO key, leaves that
+            // (ours; docs/todo/open-qlab-questions.md row 103).
+            if LevelText.isStraySpace(text) || (text.isEmpty && levels?.isActive(slot) == false) { return }
+            let limits = limits
+            let db = LevelText.parse(text, limits: limits)
+            edit { $0.set(slot, db: db, limits: limits) }
         } else if field === gangField, case .output(let o) = slot {
             let text = gangField.stringValue
             edit { $0.setGang(of: o, letter: text) }

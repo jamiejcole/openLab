@@ -456,11 +456,6 @@ fn levels_routing_and_mutes_are_heard_to_the_hundredth_of_a_db() {
         (-6.0, -6.0),
         "patch master -6",
     );
-    check(
-        measure(|_| {}, |ws| ws.settings.master_db = -6.0),
-        (-6.0, -6.0),
-        "workspace master -6",
-    );
     // A mute is silence, exactly, and leaves the other side alone.
     let (l, r) = measure(|c| levels(c).outputs[1].mute = true, |_| {});
     close(l, l0, 0.01, "cue output 2 muted: left");

@@ -88,8 +88,8 @@ impl DocCx<'_> {
         inputs
     }
 
-    /// Resolves the patches against the playable devices and brings the mixer's matrices (with
-    /// the workspace master folded in) up to date. Returns the
+    /// Resolves the patches against the playable devices and brings the mixer's matrices up to
+    /// date. Returns the
     /// `Availability` for the patches whose resolution changed (`all`: every patch).
     pub(super) fn sync_patches(&mut self, all: bool) -> Vec<Input> {
         self.map_unmapped_patches();
@@ -104,7 +104,7 @@ impl DocCx<'_> {
             &busy,
         );
         let now = self.now();
-        // One batch (split only past the queue's size), so a master move changes every patch
+        // One batch (split only past the queue's size), so a limit change moves every patch
         // on the same sample.
         self.send_commands(cmds.into_iter().map(|cmd| (now, cmd)).collect());
         // After the routing: a voice whose cue now names another patch follows it (#293).
