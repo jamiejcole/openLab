@@ -363,18 +363,22 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let message = kept.map { String(format: loc("notes.kept"), notice.message, $0.path) } ?? notice.message
         if isShowMode || enteringShowMode {
             _ = store.receive(.log(.error, "\(message) \(notice.text)"))
-            footer.showNotice(message, error: true)
+            // The reason would push the file name out of the label: it leads with the file, and the
+            // tooltip has the whole message.
+            let short = kept.map { String(format: loc("notes.kept.footer"), $0.lastPathComponent) } ?? notice.message
+            footer.showNotice(short, error: true, tooltip: message)
             return
         }
         NotesNoticePanel.show(
             NotesNotice(message: message, text: notice.text), near: window, pasteboard: notesPasteboard)
     }
 
-    /// Quit with the engine lost: what is still being typed in the masthead can no longer be sent, so it
-    /// is written to the notes file. Nothing is raised and nothing waits.
+    /// Quit with the engine lost: what is still being typed in the masthead or the inspector can no
+    /// longer be sent, so it is written to the notes file. Nothing is raised and nothing waits.
     func keepUnsentNotes() {
-        guard let notes = masthead.pendingNotes() else { return }
-        NotesKeeper.keep(notes.text, reason: "\(window?.title ?? "workspace"): the engine was lost at quit")
+        let reason = "\(window?.title ?? "workspace"): the engine was lost at quit"
+        if let notes = masthead.pendingNotes() { NotesKeeper.keep(notes.text, reason: reason) }
+        if let text = inspector.takePendingNotes() { NotesKeeper.keep(text, reason: reason) }
     }
 
     /// Why an edit was refused: a sheet on this window (beep when it has none).

@@ -133,6 +133,7 @@
 "notes.notSaved.cueGone" = "The notes were not saved: the cue they were typed for no longer exists.";
 "notes.notSaved.blocked" = "The notes were not saved: another edit you typed is not valid. Fix it and try again.";
 "notes.kept" = "%1$@ The text is also kept in %2$@.";
+"notes.kept.footer" = "Notes kept in %@";
 "alert.copyText" = "Copy Text";
 "notes.notice.title" = "Notes not saved";
 "masthead.notes.label" = "Notes for the standing-by cue";

@@ -4,8 +4,8 @@ import Foundation
 import os
 
 /// Typed notes that cannot reach the engine are appended in full to one small local text file, so
-/// they outlive the notice panel, Quit and Show Mode. The text can be private: it goes to this file
-/// only, never to the OS log, and a failed write is logged without it and never stops anything.
+/// they outlive the notice panel, Quit and Show Mode. The text can be private: it is never put in
+/// the OS log (Show Mode also puts it in the in-app show log), and a failed write is logged without it and never stops anything.
 @MainActor
 enum NotesKeeper {
     static let fileName = "unsaved-notes.txt"

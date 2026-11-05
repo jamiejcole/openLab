@@ -2979,7 +2979,7 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertNil(wc.window?.attachedSheet, "no sheet")
         XCTAssertTrue(NotesNoticePanel.open.isEmpty, "no panel")
         XCTAssertNil(NSApp.modalWindow, "nothing modal")
-        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains("not saved"))
+        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains(NotesKeeper.fileName))
         XCTAssertTrue(
             store.logEntries.contains { $0.message.contains("not saved") && $0.message.contains("typed text") })
     }
@@ -3066,11 +3066,16 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertTrue(wc.isShowMode)
         XCTAssertNil(wc.window?.attachedSheet)
         XCTAssertTrue(NotesNoticePanel.open.isEmpty)
-        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains("not saved"))
+        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains(NotesKeeper.fileName))
         XCTAssertTrue(store.logEntries.contains { $0.message.contains("not saved") })
         let kept = try String(contentsOf: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName))
         XCTAssertTrue(kept.contains("ab" + tooLongNotes), "the whole text, past 4000 characters, is in the file")
-        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains(NotesKeeper.fileName), "the footer names the file")
+        let label = wc.footer.noticeLabel
+        XCTAssertTrue(label.stringValue.contains(NotesKeeper.fileName), "the footer names the file")
+        XCTAssertTrue(label.toolTip?.contains(NotesKeeper.folder.path) == true, "the tooltip has the path")
+        wc.window?.layoutIfNeeded()
+        XCTAssertLessThanOrEqual(
+            label.attributedStringValue.size().width, label.frame.width, "the file name is drawn, not cut off")
     }
 
     /// The notice in Edit Mode names the file, and the file has the whole text.

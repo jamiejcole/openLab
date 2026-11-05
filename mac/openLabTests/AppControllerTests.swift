@@ -1546,6 +1546,8 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(sheetText(panel).contains("not saved"))
         XCTAssertTrue(pressButton(loc("alert.copyText"), in: panel))
         XCTAssertEqual(board.string(forType: .string), typed, "Copy Text")
+        let kept = try String(contentsOf: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName))
+        XCTAssertTrue(kept.contains(typed), "the whole refused text is in the file")
     }
 
     func testQuitWhilePlayingInShowModeIsOnePrompt() async throws {
@@ -2142,6 +2144,22 @@ final class AppControllerTests: XCTestCase {
         XCTAssertTrue(NotesNoticePanel.open.isEmpty)
         let kept = try String(contentsOf: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName))
         XCTAssertTrue(kept.contains(typed), "the whole text is in the file")
+    }
+
+    /// Notes being typed in the inspector are kept the same way.
+    func testQuitWithTheEngineLostKeepsTheInspectorNotesBeingTyped() async throws {
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.inspector.setSelection([TestSnapshots.intro])
+        let notes = wc.inspector.notesView
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(notes))
+        let typed = "inspector words " + String(repeating: "z", count: 100)
+        notes.insertText(typed, replacementRange: notes.selectedRange())
+        await disconnect()
+        alerts.quitDisconnected = true
+        let quit = await app.prepareToQuit()
+        XCTAssertTrue(quit)
+        let kept = try String(contentsOf: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName))
+        XCTAssertTrue(kept.contains(typed))
     }
 
     /// Quit cancelled at the disconnected prompt keeps typing going: nothing is written.
