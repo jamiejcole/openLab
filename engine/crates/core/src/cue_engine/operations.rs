@@ -6,7 +6,7 @@
 use crate::cue::{CueKind, FadeSpec};
 use crate::model::CueId;
 
-use super::run::{self, Exit, GroupRun, Loaded, Phase, Run, Slot, Voice};
+use super::run::{Exit, GroupRun, Loaded, Phase, Run, Slot, Voice};
 use super::time::SampleTime;
 use super::types::{Action, EngineWarning, StopFade};
 use super::{Ctx, CueEngine, release};
@@ -190,7 +190,7 @@ impl CueEngine {
                 if let (Voice::Started { at: started, .. }, Some(curve)) =
                     (run.voice, fade_out.map(|f| f.curve))
                 {
-                    let at = run.commit(now.max(started), cx.committed_by);
+                    let at = run.commit(now.max(started));
                     cx.out.push(Action::StopVoice {
                         cue,
                         run: run.run,
@@ -224,10 +224,10 @@ impl CueEngine {
         }
         // Not before a command already committed for the voice in the lookahead window (a ramp,
         // a devamp): the pause comes after it, and the timers freeze there.
-        let now = now.max(run.floor(cx.committed_by));
+        let now = now.max(run.committed);
         run.paused_at = Some(now);
         if let (Voice::Started { at: started, .. }, Phase::Action { .. }) = (run.voice, run.phase) {
-            let at = run.commit(now.max(started), cx.committed_by);
+            let at = run.commit(now.max(started));
             cx.out.push(Action::PauseVoice {
                 cue,
                 run: run.run,
@@ -261,12 +261,17 @@ impl CueEngine {
         // Where the action was frozen. A resume dated before the pause (a trigger from a late
         // deadline, or an input before a pause committed in the lookahead window) resumes as of
         // the pause: nothing for the voice goes backwards in time.
-        let at = at.max(run::after_restart(paused_at, cx.committed_by));
+        // A pause from before the clock went back says where the action froze, not when.
+        let at = if std::mem::take(&mut run.paused_on_old_clock) {
+            at
+        } else {
+            at.max(paused_at)
+        };
         let offset = run.position(paused_at);
         run.shift(at.saturating_sub(paused_at));
         let mut devamp = None;
         if let (Voice::Started { .. }, Phase::Action { .. }) = (run.voice, run.phase) {
-            let voice_at = run.commit(at.max(now), cx.committed_by);
+            let voice_at = run.commit(at.max(now));
             // The resumed voice is a new segment with its own id: feedback still on its way for
             // the paused one (e.g. the end report of a pause carried out as a stop) is then
             // stale and ignored, whenever it arrives.

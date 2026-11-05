@@ -1339,3 +1339,81 @@ fn the_cue_slice_marker_limit_fits_the_mixers_slice_table() {
         openlab_audio::MAX_SLICES
     );
 }
+
+/// Each narrowing under a fade-out above it can date its steps past the one before, so they can
+/// lie further ahead than any one call commits. Whatever comes after still comes last, at any
+/// block size.
+fn narrowed_twice_during_a_fade_out(rate: u32, block: u64) -> OfflineShow {
+    let path = wav(&dc(RATE as usize * 20, 0.2));
+    let mut steady = audio(1, &path, 0);
+    if let CueKind::Audio { levels, .. } = &mut steady.kind {
+        levels.master_db = 0.0;
+    }
+    let mut ws = workspace(vec![steady]);
+    ws.cue_lists[0]
+        .cues
+        .push(fade_of_steady(2, 6.0, 0.0, false));
+    ws.cue_lists[0]
+        .cues
+        .push(fade_of_steady(3, SILENCE_DB, 4.0, true));
+    let mut s = show_at(ws, rate, block);
+    start(&mut s, 1);
+    s.run(block * 8);
+    start(&mut s, 2);
+    s.run(block * 8);
+    start(&mut s, 3);
+    s.run(block * 8);
+    set_maximum(&mut s, 3.0);
+    set_maximum(&mut s, 0.0);
+    s
+}
+
+const NARROWING_CASES: [(u32, u64); 2] = [(RATE, BLOCK), (48_000, 512)];
+
+#[test]
+fn a_stop_after_two_narrowings_holds_the_fades_level() {
+    for (rate, block) in NARROWING_CASES {
+        let mut s = narrowed_twice_during_a_fade_out(rate, block);
+        s.transport(TransportAction::Stop {
+            cue: id(3),
+            fade_out: None,
+        });
+        s.run(u64::from(rate) / 2);
+        assert!(near(peak(&s, 0), 0.2), "soon, {rate}: {}", peak(&s, 0));
+        s.run(u64::from(rate) * 5);
+        assert!(near(peak(&s, 0), 0.2), "late, {rate}: {}", peak(&s, 0));
+        assert_eq!(
+            s.control().engine().state(id(1)),
+            openlab_core::CueState::Running
+        );
+    }
+}
+
+#[test]
+fn an_edit_after_two_narrowings_wins_over_the_fade() {
+    for (rate, block) in NARROWING_CASES {
+        let mut s = narrowed_twice_during_a_fade_out(rate, block);
+        let mut kind = s
+            .control()
+            .workspace()
+            .find_cue(id(1))
+            .unwrap()
+            .kind
+            .clone();
+        if let CueKind::Audio { levels, .. } = &mut kind {
+            levels.master_db = -6.0;
+        }
+        command(
+            &mut s,
+            Command::SetCueProperty {
+                id: id(1),
+                property: CueProperty::Kind { value: kind },
+            },
+        );
+        let want = 0.2 * openlab_core::db_to_gain(-6.0);
+        s.run(u64::from(rate) / 2);
+        assert!(near(peak(&s, 0), want), "soon, {rate}: {}", peak(&s, 0));
+        s.run(u64::from(rate) * 5);
+        assert!(near(peak(&s, 0), want), "late, {rate}: {}", peak(&s, 0));
+    }
+}

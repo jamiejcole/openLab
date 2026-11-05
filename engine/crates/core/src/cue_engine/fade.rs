@@ -11,7 +11,7 @@ use crate::model::CueId;
 
 use super::group;
 use super::level::{self, Level, LevelParam, LevelRamp};
-use super::run::{FadeRamp, FadeRun, Phase, Slot, Voice, after_restart};
+use super::run::{FadeRamp, FadeRun, Phase, Slot, Voice};
 use super::time::SampleTime;
 use super::types::{Action, EngineWarning};
 use super::{Ctx, CueEngine};
@@ -99,7 +99,7 @@ impl CueEngine {
             fade.targets.push((c.id, run.seq));
             // Never before the voice exists in the mixer or before a command already committed
             // for it (another fade's ramp in the lookahead window); the end stays on the fade's.
-            let start = run.commit(at.max(now).max(started), cx.committed_by);
+            let start = run.commit(at.max(now).max(started));
             let frames = end.saturating_sub(start);
             // What the mixer makes of the ramp (a 0-frame one is de-zippered), so the tracked
             // level is the sound's.
@@ -221,7 +221,7 @@ impl CueEngine {
                 continue;
             }
             let voice = run.run;
-            let committed = run.floor(cx.committed_by);
+            let committed = run.committed;
             let Some(level) = run.levels.get_mut(&r.param) else {
                 continue;
             };
@@ -230,9 +230,7 @@ impl CueEngine {
             }
             // Not before the ramp's own start, nor any other command committed for the voice:
             // one committed for a later sample would otherwise overtake the hold in the mixer.
-            let when = at
-                .max(after_restart(level.start, cx.committed_by))
-                .max(committed);
+            let when = at.max(level.start).max(committed);
             if when >= level.end() {
                 level.owner = None;
                 continue;
@@ -286,17 +284,14 @@ impl CueEngine {
                 continue;
             }
             let voice = target.run;
-            let committed = target.floor(cx.committed_by);
+            let committed = target.committed;
             let Some(level) = target.levels.get_mut(&r.param) else {
                 continue;
             };
             if level.owner != Some((cue, seq)) {
                 continue;
             }
-            let start = at
-                .max(now)
-                .max(after_restart(level.start, cx.committed_by))
-                .max(committed);
+            let start = at.max(now).max(level.start).max(committed);
             target.committed = start;
             // Each ramp keeps its planned rate: it ends where its plan ends (moved on by the
             // pauses, as the action start is), or with the action if that is earlier (a fade

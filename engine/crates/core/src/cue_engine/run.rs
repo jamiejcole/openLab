@@ -102,6 +102,8 @@ pub(super) struct Run {
     /// binary knows it (`Input::ActionLength`); the action then ends when the voice gets there.
     pub length: Option<SampleTime>,
     pub paused_at: Option<SampleTime>,
+    /// `paused_at` is on a clock that has since gone back.
+    pub paused_on_old_clock: bool,
     /// Stopping with a fade-out that ends on this sample.
     pub stop_end: Option<SampleTime>,
     /// The latest sample a command for this run's voice was sent for. Commands in the lookahead
@@ -306,6 +308,7 @@ impl Run {
             length: None,
             paused_at: None,
             stop_end: None,
+            paused_on_old_clock: false,
             committed: 0,
             broken: None,
             static_broken: false,
@@ -386,18 +389,10 @@ impl Run {
         }
     }
 
-    /// The earliest sample a new command for the voice may be dated on, for a call that commits
-    /// up to `horizon` (`Ctx::committed_by`). A committed sample beyond it can only come from a
-    /// clock that went
-    /// back (device restart); it is then ignored, as double-GO ignores such a GO.
-    pub fn floor(&self, horizon: SampleTime) -> SampleTime {
-        after_restart(self.committed, horizon)
-    }
-
     /// Dates a command for this run's voice: no earlier than `at` nor than any command already
-    /// committed for it (see `floor`).
-    pub fn commit(&mut self, at: SampleTime, horizon: SampleTime) -> SampleTime {
-        self.committed = at.max(self.floor(horizon));
+    /// committed for it. The engine lowers `committed` when the clock goes back.
+    pub fn commit(&mut self, at: SampleTime) -> SampleTime {
+        self.committed = at.max(self.committed);
         self.committed
     }
 
@@ -430,9 +425,4 @@ impl Run {
             d.at = d.at.map(later);
         }
     }
-}
-
-/// `t` if a call that commits up to `horizon` can have committed it, else 0 (the clock went back).
-pub(super) fn after_restart(t: SampleTime, horizon: SampleTime) -> SampleTime {
-    if t <= horizon { t } else { 0 }
 }

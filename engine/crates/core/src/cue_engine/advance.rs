@@ -184,7 +184,7 @@ impl CueEngine {
         }
         match act {
             Act::Voice => {
-                let voice_at = run.commit(at.max(now), cx.committed_by);
+                let voice_at = run.commit(at.max(now));
                 if at < now {
                     cx.warn(EngineWarning::LateStart {
                         cue,

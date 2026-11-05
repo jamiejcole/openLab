@@ -89,7 +89,7 @@ impl CueEngine {
                 if let Some(given) = run.given.as_mut() {
                     given.played.insert(param, to);
                 }
-                let at = run.commit(cx.now.max(started), cx.committed_by);
+                let at = run.commit(cx.now.max(started));
                 cx.out.push(Action::Ramp {
                     cue: *id,
                     run: run.run,
@@ -134,7 +134,7 @@ impl CueEngine {
                 continue;
             };
             let voice = run.run;
-            let at = run.floor(cx.committed_by).max(cx.now).max(started);
+            let at = run.committed.max(cx.now).max(started);
             let frames = if at <= first { 0 } else { edit };
             let mut last = at;
             for (param, held) in &mut run.levels {
@@ -166,9 +166,8 @@ impl CueEngine {
                         curve: FadeCurve::Linear,
                     };
                     if first_stop != to {
-                        // Then the rest of the way, on the fade's own time. This can be dated past
-                        // the call's horizon, which `Ctx::committed_by` allows for, so a later
-                        // command for the voice still comes after it and wins.
+                        // Then the rest of the way, on the fade's own time. It may be dated past
+                        // the call's horizon; `committed` keeps later commands after it.
                         let on = at.saturating_add(frames);
                         let rest = left.saturating_sub(frames);
                         ramp(on, to, rest, curve_left);

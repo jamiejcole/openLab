@@ -2115,3 +2115,23 @@ fn wake_rule_ticks_a_deadline_at_now_on_time() {
     assert!(!rig.engine.is_due(1590));
     assert!(rig.engine.is_due(1591));
 }
+
+/// Commands after a restart are dated on the new clock, not held behind samples of the old one.
+#[test]
+fn a_clock_that_went_back_leaves_no_floor_behind() {
+    let mut rig = Rig::new(vec![sound(1)]);
+    rig.start(0, 1);
+    rig.at(9000, Input::Pause { cue: id(1) });
+    let stop = rig.at(
+        100,
+        Input::Stop {
+            cue: id(1),
+            fade_out: None,
+        },
+    );
+    let at = stop.iter().find_map(|a| match a {
+        Action::StopVoice { at, .. } => Some(*at),
+        _ => None,
+    });
+    assert_eq!(at, Some(100), "{stop:?}");
+}

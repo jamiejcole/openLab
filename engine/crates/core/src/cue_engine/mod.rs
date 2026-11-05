@@ -62,6 +62,8 @@ pub(super) const PLAYLIST_RESERVE: usize = 8;
 /// Runtime state of every cue and playhead of one workspace.
 #[derive(Clone, Debug)]
 pub struct CueEngine {
+    /// The `now` of the last `handle` call: an earlier one means the clock went back.
+    last_now: SampleTime,
     /// The volume limits last followed (`follow_limits`).
     limits: LevelLimits,
     config: EngineConfig,
@@ -129,10 +131,6 @@ struct Ctx<'w> {
     now: SampleTime,
     /// Deadlines up to here are carried out in this call.
     horizon: SampleTime,
-    /// The latest sample a command can have been dated on by now: the horizon, or a little past it
-    /// for the second step a narrowed volume limit gives a fade (`follow_limits`). Anything later
-    /// on a run means the clock went back (`after_restart`).
-    committed_by: SampleTime,
     /// Cue starts left at this `now` (what earlier calls at the same `now` left).
     budget: usize,
     limit: usize,
@@ -176,6 +174,7 @@ impl CueEngine {
             batch_panicked: BTreeSet::new(),
             next_preview: 0,
             limit: 0,
+            last_now: 0,
             limits: LevelLimits::default(),
             lengths: BTreeMap::new(),
             model_syncs: 0,
@@ -264,6 +263,10 @@ impl CueEngine {
     /// Applies one input at scheduling time `now` (the earliest sample a command can still hit).
     /// `ws` is the current workspace; edits since the last call are taken into account first.
     pub fn handle(&mut self, ws: &Workspace, input: Input, now: SampleTime) -> Vec<Action> {
+        if now < self.last_now {
+            self.clock_went_back(now);
+        }
+        self.last_now = now;
         // Whole-tree passes (the chain limit, following edits) only after `model_changed`, so a
         // Tick on a big show costs nothing extra. Without the signal the workspace's outline is
         // compared and, if it changed, the change is counted and followed as if signalled. The
@@ -291,10 +294,6 @@ impl CueEngine {
             ws,
             now,
             horizon: self.config.horizon(now),
-            committed_by: self
-                .config
-                .horizon(now)
-                .saturating_add(level::edit_frames(self.config.sample_rate().get())),
             budget: 0,
             limit: self.limit,
             limit_verified: follow_edits,
@@ -346,6 +345,20 @@ impl CueEngine {
         let out = cx.out;
         self.cross_check_edits(ws, signalled, counted_at_start);
         out
+    }
+
+    /// The clock went back (a device restart): samples dated on the old clock mean nothing on the
+    /// new one, and must not hold back what is dated from now on. A mixer that restarted has no
+    /// command left from before.
+    fn clock_went_back(&mut self, now: SampleTime) {
+        for slot in self.slots.values_mut() {
+            let Slot::Active(run) = slot else { continue };
+            run.committed = run.committed.min(now);
+            run.paused_on_old_clock |= run.paused_at.is_some_and(|at| at > now);
+            for level in run.levels.values_mut() {
+                level.start = level.start.min(now);
+            }
+        }
     }
 
     /// Safety net: ends groups left running with no busy child (see `sweep_groups`) and carries
@@ -618,7 +631,7 @@ fn release(cue: CueId, slot: &Slot, cx: &mut Ctx) {
                 cue,
                 run: run.run,
                 // Never before a command already committed for the voice.
-                at: cx.now.max(at).max(run.floor(cx.committed_by)),
+                at: cx.now.max(at).max(run.committed),
                 fade: None,
             }),
             Voice::Loaded => cx.out.push(Action::UnloadVoice { cue, run: run.run }),
