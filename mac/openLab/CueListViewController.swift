@@ -1286,7 +1286,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             let media = cue.raw["kind"]?["media"]?.stringValue ?? ""
             return (media as NSString).lastPathComponent
         }
-        if cue.kindType == "network" { return cue.raw["kind"]?["address"]?.stringValue ?? "" }
+        if cue.kindType == "network" { return InspectorViewController.networkTargetText(cue, model: store.model) }
         guard let target = cue.raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }) else { return "" }
         guard let t = nodes[target]?.cue ?? store.model?.cue(target) else { return loc("cue.target.missing") }
         let label = [t.number, t.listName(lookup: cueLookup)]
