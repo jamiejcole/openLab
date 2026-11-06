@@ -79,7 +79,9 @@ enum NetworkMessage {
 
     /// `address` and `args` as the line the user would type, so parsing it gives them back.
     static func format(address: String, args: [JSONValue]) -> String {
-        var parts = [address.contains(where: \.isWhitespace) || address.contains("\"") ? quoted(address) : address]
+        // An empty address is quoted when arguments follow, or the line would read back shifted.
+        let quoteAddress = address.isEmpty ? !args.isEmpty : address.contains(where: \.isWhitespace) || address.contains("\"")
+        var parts = [quoteAddress ? quoted(address) : address]
         for a in args {
             switch (a["type"]?.stringValue, a["value"]) {
             case ("int", let v?): parts.append(v.doubleValue.map { String(Int64($0)) } ?? "0")
@@ -111,8 +113,11 @@ enum NetworkMessage {
     private static func floatText(_ d: Double) -> String {
         // A float is held in 32 bits: show the shortest text that reads back as the same one.
         let text = "\(Float(d))"
-        // Exponent form would read back as a string; spell it out.
-        return text.contains("e") ? String(format: "%.10f", d) : text
+        guard text.contains("e") else { return text }
+        // Exponent form would read back as a string; spell the same digits out in plain notation
+        // (a fixed number of decimals would turn a tiny value into zero).
+        let plain = Decimal(string: text).map { "\($0)" } ?? text
+        return plain.contains(".") ? plain : plain + ".0"
     }
 
     private static func quoted(_ s: String) -> String {

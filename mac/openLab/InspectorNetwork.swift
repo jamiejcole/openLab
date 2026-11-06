@@ -83,6 +83,9 @@ extension InspectorViewController {
     @objc func networkSendClicked() {
         guard !isLocked, let cue, cue.kindType == "network" else { return }
         let id = cue.id
+        // The click ends the typing, as Return does, so Space fires GO next (the field would keep
+        // the focus and take the space as text otherwise).
+        view.window?.makeFirstResponder(nil)
         Task { @MainActor [weak self] in
             guard let self, await commitPendingEdits(), !isLocked else { return }
             onTransport?(.preview(cue: id))

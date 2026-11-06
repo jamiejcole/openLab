@@ -691,6 +691,24 @@ final class NetworkMessageTests: XCTestCase {
         XCTAssertEqual(NetworkMessage.format(address: "/x", args: args), #"/x "99999999999""#)
     }
 
+    func testSmallAndLargeFloatsReadBackAsTheSameNumber() throws {
+        for value in [1e-5, 1.5e-12, 1e-30, 3.0e20, 1.0e30] {
+            let sent = Double(Float(value))
+            let text = NetworkMessage.format(address: "/x", args: [arg("float", .double(sent))])
+            let back = try NetworkMessage.parse(text).get().args
+            XCTAssertEqual(back.first?["type"]?.stringValue, "float", text)
+            XCTAssertEqual(back.first?["value"]?.doubleValue, sent, text)
+        }
+    }
+
+    func testAnEmptyAddressWithArgumentsReadsBackAsEmpty() throws {
+        let args = [arg("int", .int(5)), arg("string", .string("a"))]
+        let text = NetworkMessage.format(address: "", args: args)
+        let back = try NetworkMessage.parse(text).get()
+        XCTAssertEqual(back.address, "")
+        XCTAssertEqual(back.args, args)
+    }
+
     func testFormatReadsBackAsTheSameMessage() throws {
         let args = [
             arg("int", .int(5)), arg("float", .double(5)), arg("float", .double(0.1)),
@@ -966,6 +984,48 @@ final class NetworkInspectorTests: XCTestCase {
         inspector.networkSendButton.performClick(nil)
         let got = await received(one)
         XCTAssertEqual(got, "/typed i:1", "what the field shows is what goes out")
+    }
+
+    func testSendEndsTheTypingSoSpaceFiresGo() async throws {
+        try typeMessage("/typed 1")
+        inspector.networkSendButton.performClick(nil)
+        let first = await received(one)
+        XCTAssertEqual(first, "/typed i:1")
+        XCTAssertFalse(wc.window?.firstResponder is NSText, "the field no longer has the focus")
+        XCTAssertNil(app.handleKeyDown(try key(" ")), "Space is GO, not a space in the field")
+        let second = await received(one)
+        XCTAssertEqual(second, "/typed i:1", "GO sent the cue")
+        XCTAssertEqual(inspector.networkMessageField.stringValue, "/typed 1")
+    }
+
+    func testSendFromADisarmedCueSendsNothing() async throws {
+        try await setMessageAndWait("/lights/go 5")
+        inspector.armedCheck.performClick(nil)
+        await assertEventually("disarmed") { self.store.model?.cue(self.net)?.raw["armed"] == .bool(false) }
+        inspector.networkSendButton.performClick(nil)
+        let silent = try await quiet()
+        XCTAssertTrue(silent, "a disarmed cue sends nothing, by hand or by GO")
+    }
+
+    func testSendWithNetworkOutputDisabledSendsNothingThenWorksAgain() async throws {
+        try await setMessageAndWait("/lights/go 5")
+        app.showOverrideControls()
+        app.overrides.networkSwitch.performClick(nil)
+        await assertEventually("network output is off") {
+            try? await self.engine.advance(seconds: 0.3)
+            return !self.wc.footer.overrideBadge.isHidden
+        }
+        inspector.networkSendButton.performClick(nil)
+        let silent = try await quiet()
+        XCTAssertTrue(silent, "Send respects the output override")
+        app.overrides.networkSwitch.performClick(nil)
+        await assertEventually("network output is back on") {
+            try? await self.engine.advance(seconds: 0.3)
+            return self.wc.footer.overrideBadge.isHidden
+        }
+        inspector.networkSendButton.performClick(nil)
+        let got = await received(one)
+        XCTAssertEqual(got, "/lights/go i:5")
     }
 
     func testTypedArguments() async throws {
