@@ -211,4 +211,7 @@ extension CueListViewController: NSMenuDelegate {
     var canRevealSelectedTarget: Bool {
         selectedIDs().last.flatMap { node($0) }.flatMap { revealURL($0) } != nil
     }
+
+    /// The selected cues' cue targets, in row order (an Audio cue's file is not one).
+    var selectedTargets: [ModelID] { selectedIDs().compactMap { node($0)?.targetID } }
 }

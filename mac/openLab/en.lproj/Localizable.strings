@@ -549,6 +549,7 @@
 "menu.view.toolbar" = "Cue Toolbar";
 "menu.view.masthead" = "GO Area";
 "menu.view.sidebar" = "Sidebar";
+"menu.view.warnings" = "Warnings";
 "menu.view.selectCue" = "Select Cue…";
 "menu.view.selectCue.title" = "Select Cue";
 "menu.view.selectCue.ok" = "Select";
@@ -568,6 +569,7 @@
 "menu.tools.loadToTime.title" = "Load to Time";
 "menu.tools.loadToTime.ok" = "Load";
 "menu.tools.revealTarget" = "Reveal Target File in Finder";
+"menu.tools.jumpToTargets" = "Jump to Targets of Selected Cues";
 "menu.window.launcher" = "Launcher Window";
 
 /* Audio levels and routing matrix, Fade cue settings (AUD-06, AUD-08, CT-10, AUD-09) */
