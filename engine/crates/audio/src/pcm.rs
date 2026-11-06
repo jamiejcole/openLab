@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! In-house reader for many-channel uncompressed WAV and AIFF (M3.23). symphonia 0.6.1 reads WAV
+//! In-house reader for many-channel uncompressed WAV and AIFF. symphonia 0.6.1 reads WAV
 //! only up to a channel layout it knows (about 18 to 26 channels, 16 for ambisonic layouts), but
 //! voices carry up to [`MAX_VOICE_CHANNELS`]. Files with more channels than
 //! [`NATIVE_MAX_CHANNELS`](crate::decode::NATIVE_MAX_CHANNELS) are read here; fewer channels, and

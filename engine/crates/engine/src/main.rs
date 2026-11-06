@@ -9,8 +9,8 @@ use std::process::ExitCode;
 use openlab_engine::host::Options;
 use openlab_engine::platform::relaunch;
 
-/// Debug builds forbid allocation where `assert_no_alloc` guards (the device callback, M3.12):
-/// without this global allocator the guard sees nothing (M3.21). Violations are counted, not
+/// Debug builds forbid allocation where `assert_no_alloc` guards (the device callback):
+/// without this global allocator the guard sees nothing. Violations are counted, not
 /// fatal (`warn_debug`), and the control loop reports them as errors.
 #[cfg(debug_assertions)]
 #[global_allocator]
@@ -121,7 +121,7 @@ mod tests {
         list.iter().map(|s| (*s).to_owned()).collect()
     }
 
-    /// M4.15g: no positional show file any more; `--open` (repeatable) is the dev/test path.
+    /// No positional show file any more; `--open` (repeatable) is the dev/test path.
     #[test]
     fn options_parse_and_anything_else_is_a_usage_error() {
         let Mode::Run(o) = mode(&args(&[
@@ -181,7 +181,7 @@ mod tests {
         mode(&args(list))
     }
 
-    /// M3.21: the debug binary's global allocator is `assert_no_alloc`'s, so an allocation
+    /// The debug binary's global allocator is `assert_no_alloc`'s, so an allocation
     /// inside a guarded section is detected (counted: `warn_debug`).
     #[cfg(debug_assertions)]
     #[test]

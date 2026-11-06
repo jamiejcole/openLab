@@ -2,7 +2,7 @@
 
 import AppKit
 
-/// Finder drops, copy / cut / paste and Delete Numbers (M5.10b). Same rules as `CueEditor`: refuse in
+/// Finder drops, copy / cut / paste and Delete Numbers. Same rules as `CueEditor`: refuse in
 /// Show Mode, commit the inspector first, one transaction per gesture.
 extension CueEditor {
     static let pasteType = NSPasteboard.PasteboardType("dev.openlab.cue-data")
@@ -101,7 +101,7 @@ extension CueEditor {
             }
             kind.set("media", .string(Self.mediaPath(url)))
             cue.set("kind", kind)
-            // No name: the cue follows its file (M2.29c), so a renamed file shows at once.
+            // No name: the cue follows its file, so a renamed file shows at once.
             commands.append(.addCue(cue, list: list, parent: parent, index: index + n))
             ids.append(id)
         }

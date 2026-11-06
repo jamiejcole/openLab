@@ -398,7 +398,7 @@ fn set_setting(
 }
 
 // ---------------------------------------------------------------------------------------------
-// OSC passcode table (NET-02, M4.5c)
+// OSC passcode table (NET-02)
 
 /// Which row of the OSC passcode table [`Command::SetOscRights`] sets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

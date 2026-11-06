@@ -143,7 +143,7 @@ impl CueEngine {
     /// Called once the problems follow the edits, so the engine's cue index is in step with the
     /// workspace. A playhead that keeps its list's positions (after a full rebuild, or while the
     /// index has duplicate ids) compares them with the list's positions now, as it always did.
-    /// One that leaves them to the index follows an edit from its footprint (M4.12c): the
+    /// One that leaves them to the index follows an edit from its footprint: the
     /// index, before it followed the edit, said what the edit touched around the playhead
     /// ([`playhead::Followed`]); with nothing added, removed or moved nothing is read at all.
     /// Both ways place the playhead alike (property-tested against `model_changed`).

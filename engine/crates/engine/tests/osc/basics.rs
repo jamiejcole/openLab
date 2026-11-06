@@ -3676,8 +3676,7 @@ fn each_message_class_needs_its_right_over_udp_and_tcp() {
 
 #[test]
 fn a_peer_that_has_not_connected_has_the_no_passcode_rights() {
-    // Nothing: everything but /connect, /version and /workspaces is denied (as with a passcode
-    //.
+    // Nothing: everything but /connect, /version and /workspaces is denied.
     let show = Show::with_access(table(OscRights::NONE));
     for peer in [udp(), tcp_peer(1)] {
         let mut osc = quiet_osc();

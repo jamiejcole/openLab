@@ -1946,7 +1946,7 @@ mod tests {
             .join(name)
     }
 
-    /// M3.14 L1: the part of a damaged stretch inside the priming is not reported.
+    /// The part of a damaged stretch inside the priming is not reported.
     #[test]
     fn origin_shift_trims_warnings_to_what_is_left() {
         let w = |at, frames| MediaWarning {
@@ -2044,7 +2044,7 @@ mod tests {
         }
     }
 
-    /// M3.14: with the encoder's priming trimmed, a seek to frame F lands on real frame F (the
+    /// With the encoder's priming trimmed, a seek to frame F lands on real frame F (the
     /// signal's frame F), not F plus the priming, and a straight read yields the same frames.
     #[test]
     fn aac_seeks_and_streams_land_on_real_frames() {

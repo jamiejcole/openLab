@@ -47,7 +47,7 @@ pub enum PlanError {
     Start,
     /// More than [`MAX_SLICES`] entries.
     TooManySlices,
-    /// A slice that plays more than once is shorter than [`min_loop_frames`] (M3.17; only
+    /// A slice that plays more than once is shorter than [`min_loop_frames`] (only
     /// [`plan_at_rate`] and [`check_loop_lengths`] check this).
     LoopTooShort { slice: u32, frames: u64, min: u64 },
 }
@@ -140,7 +140,7 @@ pub fn plan(
     Ok(out)
 }
 
-/// Shortest slice that may play more than once, in milliseconds of device time (M3.17). Every
+/// Shortest slice that may play more than once, in milliseconds of device time. Every
 /// play of a loop is one `LoopReached` event and one boundary for the voice, so a loop of a few
 /// frames would flood the event queue (1024 entries) and keep the mixer at its boundaries.
 /// At 50 ms, 128 looping voices raise at most about 13 loop events per 5 ms control tick. The

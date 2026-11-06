@@ -4,7 +4,7 @@ import XCTest
 
 @testable import openLab
 
-/// Add, delete, reorder, renumber, undo and redo (M5.10 part 1) on the real engine: where cues go
+/// Add, delete, reorder, renumber, undo and redo on the real engine: where cues go
 /// once the engine has made the edit, what the app refuses before sending, what the engine refuses,
 /// and that Show Mode blocks every path.
 @MainActor

@@ -126,7 +126,7 @@ pub fn fuzz_osc(data: &[u8]) -> Result<(), String> {
             OscAccess::default()
         },
     };
-    // A second doc, open to everyone: every un-prefixed message goes to both (M4.15h).
+    // A second doc, open to everyone: every un-prefixed message goes to both.
     let other = FuzzShow {
         id: 9,
         access: OscAccess::default(),

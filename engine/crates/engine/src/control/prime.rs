@@ -64,7 +64,7 @@ impl Engine {
     /// Primed streams the whole engine may hold (ARCHITECTURE §3.5): `max_primes`, and never
     /// more than half the disk streamer's open-stream limit, which is the engine's. A start
     /// that finds no permit fails (`stream_failed`), and primes are only a head start, so the
-    /// other half is always left for starts (M4.15e review M3). 64 with the defaults.
+    /// other half is always left for starts. 64 with the defaults.
     fn prime_pool(&self) -> usize {
         self.config
             .max_primes

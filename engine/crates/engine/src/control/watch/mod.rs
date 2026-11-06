@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The media watch (M2.25, ARCHITECTURE §3.1; docs/control.md "Media watch", docs/persistence.md
+//! The media watch (ARCHITECTURE §3.1; docs/control.md "Media watch", docs/persistence.md
 //! "Media watch and follow"): the `openlab-watch` thread stats every media file the catalog
 //! knows, metadata only, and tells the control thread which went missing, came back, changed or
 //! became unreadable. No file watcher: a stat per file per pass works the same on every OS and
@@ -19,7 +19,7 @@
 //!   the watchers (locked only between stats, never during one), so a fresh watcher carries on
 //!   where the stuck one stopped and nothing it found is lost.
 //!
-//! Following a moved file (`locate`, M2.29b) is not done yet: a file that is gone is `Gone`.
+//! Following a moved file (`locate`) is not done yet: a file that is gone is `Gone`.
 
 use crate::lock;
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,7 +63,7 @@ pub struct Stat {
     pub fp: Fingerprint,
     /// A regular file (a folder or a device at the path is not media).
     pub regular: bool,
-    /// The path itself is a symbolic link (it is never followed to a new place, M2.29b).
+    /// The path itself is a symbolic link (it is never followed to a new place).
     pub symlink: bool,
 }
 
@@ -73,7 +73,7 @@ pub trait WatchFs: Send + Sync {
     /// no file; any other error: it cannot be read.
     fn stat(&self, path: &Path) -> io::Result<Stat>;
 
-    /// Where the file last seen as `fp` is now, if the platform can tell (M2.29b). `None` here.
+    /// Where the file last seen as `fp` is now, if the platform can tell. `None` here.
     fn locate(&self, _fp: &Fingerprint) -> Option<PathBuf> {
         None
     }
@@ -120,7 +120,7 @@ fn identity(meta: &std::fs::Metadata) -> (u64, u64) {
     (meta.dev(), meta.ino())
 }
 
-/// std has no stable file id on Windows: size and modified time tell changes there (M2.29f).
+/// std has no stable file id on Windows: size and modified time tell changes there.
 #[cfg(not(unix))]
 fn identity(_meta: &std::fs::Metadata) -> (u64, u64) {
     (0, 0)

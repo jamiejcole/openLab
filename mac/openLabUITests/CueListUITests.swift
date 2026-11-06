@@ -40,7 +40,7 @@ final class CueListUITests: XCTestCase {
         XCTAssertTrue(waitFor("exists == false", app.staticTexts["Door slam"], timeout: 5))
     }
 
-    /// M5.6b: double-clicking a Fade cue's Duration cell edits it in place (QLab 5, manual pp. 94-95);
+    /// Double-clicking a Fade cue's Duration cell edits it in place (QLab 5, manual pp. 94-95);
     /// the engine stores it and the cell and the inspector show the new duration.
     func testFadeDurationIsEditedInTheDurationColumn() {
         let app = launchDemo()

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The output device behind the control loop (M4.2b, NFR-08; docs/control.md "Devices"): the
+//! The output device behind the control loop (NFR-08; docs/control.md "Devices"): the
 //! device list, loss detection, and close/reopen with backoff.
 //!
 //! Opening, closing and listing a device can block in the host's audio system (CoreAudio holds
@@ -11,7 +11,7 @@
 //! thread never calls the device layer. [`Device`] is the control thread's side: it decides
 //! when to list, close and reopen, and watches for jobs that never finish, from a wall clock
 //! that tests inject ([`WallClock`]). What the show does when the device goes (stopping the cues
-//! that play on it, M4.2g) is the control loop's (`control/device_events.rs`).
+//! that play on it) is the control loop's (`control/device_events.rs`).
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -34,7 +34,7 @@ pub const STABLE_UP: Duration = Duration::from_secs(5);
 /// How often the device list is read (hot-plug; a device the host stops calling back for
 /// without an error shows as gone from the list).
 pub const DEVICE_POLL: Duration = Duration::from_secs(1);
-/// Stall watchdog, first stage (M4.2g): a running stream silent for the longer of this and
+/// Stall watchdog, first stage: a running stream silent for the longer of this and
 /// [`STALL_WARN_PERIODS`] buffer periods raises the `device_stalled` warning. Nothing stops.
 pub const STALL_WARN_MIN: Duration = Duration::from_millis(500);
 /// Buffer periods of silence for the warning, for big buffers.
@@ -700,7 +700,7 @@ impl Device {
         self.listing.is_some()
     }
 
-    /// Allocation violations on the audio thread over every stream so far (M3.21).
+    /// Allocation violations on the audio thread over every stream so far.
     pub fn alloc_violations(&self) -> u64 {
         let current = match self.stream {
             Stream::Up => self.info.monitor.alloc_violations(),
@@ -849,7 +849,7 @@ impl Device {
         self.stall = Stall::new(&self.info, now, (self.sleep_clock)());
     }
 
-    /// The stall watchdog (M4.2g), for a stream that is up (not one being closed, reopened or
+    /// The stall watchdog, for a stream that is up (not one being closed, reopened or
     /// down). Silence in the callback count, with the device still listed and no host error,
     /// has two stages: a warning at `warn_limit` (cleared when callbacks resume), a loss like
     /// an unplug at `loss_limit`. Only silence the supervisor watched counts: a gap between two

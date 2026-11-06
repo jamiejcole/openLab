@@ -105,7 +105,7 @@ final class EditCommandTests: XCTestCase {
             JSONValue.parse(#"{"type":"set_cue_numbers","numbers":[{"id":"\#(id)","number":null}]}"#))
     }
 
-    /// The Wait/Fade duration and Load time properties (M5.6b) encode as the engine's golden fixtures.
+    /// The Wait/Fade duration and Load time properties encode as the engine's golden fixtures.
     func testDurationAndLoadTimeMatchTheFixtures() throws {
         let id: ModelID = "00000000-0000-0000-0000-00000000000c"
         let cases: [(String, CueProperty)] = [("duration", .duration(12.5)), ("load_to_time", .loadToTime(90.25))]

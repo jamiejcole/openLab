@@ -150,7 +150,7 @@ pub struct VoiceRec {
 impl VoiceRec {
     /// The failure to report for this voice: `StartFailed` if it never produced any audio (a
     /// start not yet in the mixer, or a stream that failed before writing a frame), so the cue
-    /// engine skips the cue (M4.14, QLab P5/G2); else `ActionFailed`. A loaded voice that was
+    /// engine skips the cue (QLab P5/G2); else `ActionFailed`. A loaded voice that was
     /// never started stays `ActionFailed` (the cue is loaded, not playing).
     fn failure(&self, reason: BrokenReason) -> Input {
         let unplayed = match &self.phase {
@@ -572,7 +572,7 @@ mod tests {
         assert_eq!(rest_after_loop(&t, 0), None);
     }
 
-    /// M2.34: a voice the mixer reports ended on its pause sample is gone (the engine takes it
+    /// A voice the mixer reports ended on its pause sample is gone (the engine takes it
     /// as the end and sends no resume); one ended after it is kept for the resume. Show cues and
     /// previews alike: a kept show-cue record would block its cue's prime.
     #[test]

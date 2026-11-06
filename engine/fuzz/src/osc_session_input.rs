@@ -7,7 +7,7 @@
 //! table, the reply byte budget. Shared by the `osc_session` fuzz target and the engine's
 //! `fuzz_osc_session` test; public APIs only, no `unwrap`, `expect`, `panic!` or indexing.
 //!
-//! Two docs are open (M4.15h: an un-prefixed message goes to each). Input: byte 0 picks whether
+//! Two docs are open (an un-prefixed message goes to each). Input: byte 0 picks whether
 //! the first has the passcode `1234` (bit 0) and whether the second has its own, `5678` (bit 1;
 //! else it is open). The passcodes differ so that a peer with rights in one doc and a leak into
 //! the other cannot hide. The rest is records separated by 0x1e; a record is `[op][peer][delay][payload...]`:

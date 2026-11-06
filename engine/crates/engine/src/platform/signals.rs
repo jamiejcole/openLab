@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Graceful shutdown on `SIGTERM`, `SIGINT` and `SIGHUP` (M4.9, ARCHITECTURE §8): the signals
+//! Graceful shutdown on `SIGTERM`, `SIGINT` and `SIGHUP` (ARCHITECTURE §8): the signals
 //! are blocked in every thread ([`block`], called before any thread starts, so each inherits
 //! the mask) and one thread takes them with `sigwait` ([`spawn_waiter`]) and asks the control
 //! loop to shut down, which stops the show and writes the recovery files before the process

@@ -5,7 +5,7 @@
 //! cue and recomputed only when the cue's trims and markers or its file's probe change: an edit
 //! of one cue in a show of thousands builds one plan, not thousands (docs/control.md).
 //!
-//! Only those cues are looked at, too (M4.12c): the media catalog notes the cues each edit
+//! Only those cues are looked at, too: the media catalog notes the cues each edit
 //! touched and the files whose probe changed ([`PlanChanges`]), and the checks keep the files'
 //! cues, so a check after an edit costs the edit, not a walk of every audio cue. A newly
 //! followed workspace (and an index with duplicate ids) walks every cue as before:
@@ -15,7 +15,7 @@
 //! What changed is taken with [`PlanChecks::take_changes`]: the cues whose slices became
 //! unplayable or playable again, which the cue engine is told (`Input::SliceProblems`); each
 //! cue's nominal length, which it is told too (`Input::CueLengths`); and its media lengths,
-//! which clients are told (`media_duration`, M5.4d). Only cues whose plan was rebuilt or
+//! which clients are told (`media_duration`). Only cues whose plan was rebuilt or
 //! dropped are looked at for them, so a probe answer costs the cues on that file.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

@@ -83,8 +83,8 @@ fn golden_fixture_is_in_canonical_form() {
 }
 
 /// v3 had one passcode: it becomes the one row of the table with all rights, and No Passcode
-/// has none, so a show that needed `/connect` still does and what it grants is what it did
-///. Apart from the table the show is the current example.
+/// has none, so a show that needed `/connect` still does and what it grants is what it did.
+/// Apart from the table the show is the current example.
 #[test]
 fn v3_fixture_with_a_passcode_migrates_to_a_row_with_all_rights() {
     let loaded = load_show(V3_EXAMPLE).unwrap();

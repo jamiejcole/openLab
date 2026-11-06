@@ -233,7 +233,7 @@ impl CueEngine {
     }
 
     /// [`Self::model_changed`] for an edit that changed only the cues `footprint` names (a
-    /// command, undo or redo: `Command::footprint`, M4.1a): the static problems are brought up
+    /// command, undo or redo: `Command::footprint`): the static problems are brought up
     /// to date for those cues and the cues that depend on them (targets, group membership), not
     /// for the whole workspace, so an edit costs what it touched (NFR-24). The footprint must
     /// name every cue the edit added, removed, moved or changed; a change to patches, cue lists
@@ -252,7 +252,7 @@ impl CueEngine {
     }
 
     /// How many times following edits walked the whole workspace: counting its cues, reading a
-    /// list's positions for its playhead, collecting the cue ids present (M4.12c). The engine's
+    /// list's positions for its playhead, collecting the cue ids present. The engine's
     /// cue index answers these, so an edit told with `model_changed_cues` adds none; a full
     /// rebuild (`model_changed`, a newly opened workspace) and an index that cannot be trusted
     /// (duplicate ids) do.

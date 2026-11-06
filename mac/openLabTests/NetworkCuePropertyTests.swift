@@ -4,7 +4,7 @@ import XCTest
 
 @testable import openLab
 
-/// The Network cue properties (M4.6a) encode exactly as the engine's golden fixtures.
+/// The Network cue properties encode exactly as the engine's golden fixtures.
 final class NetworkCuePropertyTests: XCTestCase {
     private let cue: ModelID = "00000000-0000-0000-0000-00000000000c"
 

@@ -9,7 +9,7 @@
 //! the edit's cues and their sibling lists, not the whole show. A cue is found by walking its
 //! recorded ancestors and checking each step against the workspace (so a stale record can never
 //! give a wrong answer). Each cue's position in its container is recorded too, so a step costs
-//! one id comparison, not a scan of the siblings (M4.12c: a flat list of 2,000 cues used to cost
+//! one id comparison, not a scan of the siblings (a flat list of 2,000 cues used to cost
 //! up to 2,000 per lookup); a cue an edit shifted along its level is found by scanning that
 //! level, and only a cue the index cannot place that way (it moved, or is gone) costs one
 //! allocation-free scan of the cue ids. [`CueIndex::build`] is the reference: after any edit the reconciled index equals
