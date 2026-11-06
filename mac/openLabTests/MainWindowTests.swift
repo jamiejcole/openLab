@@ -52,9 +52,26 @@ final class MainWindowTests: XCTestCase {
         try? pipe.fileHandleForWriting.close()
         collected.wait()
         return String(decoding: collected.data, as: UTF8.self).split(separator: "\n").filter {
-            // macOS 27 also logs a negative view width from window creation: #530.
+            // macOS 27 also logs a negative view width from window creation: #530. NegativeFrameProbe names
+            // the view in CI's log; this filter takes the message back once it is fixed.
             $0.contains("Conflicting constraints")
         }.joined(separator: "\n")
+    }
+
+    /// Every view under `root` (itself included) whose frame or bounds has a negative size, named by its class
+    /// path and accessibility identifier: AppKit's own "width is negative" report (#530) names no view.
+    private func negativeViews(_ root: NSView) -> [String] {
+        func walk(_ view: NSView, _ path: String) -> [String] {
+            let id = view.accessibilityIdentifier()
+            let here = path + "/" + String(describing: type(of: view)) + (id.isEmpty ? "" : "[\(id)]")
+            var found: [String] = []
+            if view.frame.width < 0 || view.frame.height < 0 || view.bounds.width < 0 || view.bounds.height < 0 {
+                found.append("\(here) frame \(view.frame) bounds \(view.bounds)")
+            }
+            for sub in view.subviews { found += walk(sub, here) }
+            return found
+        }
+        return walk(root, "")
     }
 
     /// A real window, shown at the smallest size it allows, at a small screen's size and at a large one,
@@ -68,9 +85,11 @@ final class MainWindowTests: XCTestCase {
         let window = try XCTUnwrap(wc.window)
         func layout() { window.contentView?.layoutSubtreeIfNeeded() }
         var problems: [String] = first.isEmpty ? [] : ["built: \(first.prefix(200))"]
+        if let root = window.contentView { problems += negativeViews(root).map { "built, negative: \($0)" } }
         func step(_ what: String, _ body: () -> Void) {
             let report = stderrText(body)
             if !report.isEmpty { problems.append("\(what): \(report.prefix(200))") }
+            if let root = window.contentView { problems += negativeViews(root).map { "\(what), negative: \($0)" } }
         }
         step("shown") {
             window.orderFront(nil)

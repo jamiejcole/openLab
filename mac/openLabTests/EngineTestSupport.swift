@@ -107,6 +107,7 @@ final class Rig {
     /// Bound to `workspace` on `engine` (nil: the app connection); reads its `engine.json` afresh
     /// for every connection, as the app does.
     init(engine real: TestEngine, workspace: ModelID?) {
+        NegativeFrameProbe.install()
         realEngine = real
         let box = box
         let url = real.infoURL
@@ -124,6 +125,7 @@ final class Rig {
     /// Bound to `workspace` on the wire stub (EngineClientTests' `StubEngine`) at `port`; a test
     /// points `box.port` elsewhere to make the engine go away or come back.
     init(port: UInt16, token: String, workspace: ModelID?) {
+        NegativeFrameProbe.install()
         box.port = port
         box.token = token
         let box = box
@@ -140,6 +142,7 @@ final class Rig {
 
     /// A client that never connects (`Rig.offline`).
     fileprivate init(offlineDoc: ModelID) {
+        NegativeFrameProbe.install()
         client = EngineClient(
             transport: WebSocketTransport(), infoProvider: { .failure(.missing) }, scheduler: scheduler,
             handshakeScheduler: handshakeScheduler, requestScheduler: requestScheduler, workspace: offlineDoc)
