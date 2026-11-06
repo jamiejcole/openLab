@@ -443,6 +443,20 @@ final class EngineSupervisorTests: XCTestCase {
         withExtendedLifetime(controller) {}
     }
 
+    /// The app stalled past the deadline with attempts still to fail: the end is announced all the
+    /// same, by the alarm that says what is happening, and the other is not raised after it.
+    func testASpawnedEngineEndedBeforeItsAttemptsHaveFailedIsStillAnnounced() async throws {
+        spawnsSilentEngines()
+        supervisor.start()
+        let firstFailed = await eventually { await self.scheduler.waitingCount > 0 }
+        XCTAssertTrue(firstFailed)
+        clock += supervisor.startDeadline
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertEqual(processes.signals.map(\.pid), [901])
+        XCTAssertEqual(alarms, [.startTimedOut])
+    }
+
     /// A slow valid start: the control loop has not sent its first welcome. Nothing is said before
     /// the third handshake timeout (about 30 s after the file), and it answers with no signal.
     func testASpawnedEngineSlowToItsFirstWelcomeIsNotAlarmedBeforeItsAttemptsAndNeverSignalled() async throws {
@@ -808,7 +822,7 @@ private struct WaitsForFirstEngineExit: openLab.Scheduler {
 private final class HidesFirstRunFile: EngineProcesses {
     let real: SystemEngineProcesses
     /// When set, the first run's file is seen, naming this port nobody answers on.
-    private let closedPort: UInt16?
+    let closedPort: UInt16?
     private(set) var spawned: [Int32] = []
     private(set) var signalled: [Int32] = []
     init(_ real: SystemEngineProcesses, closedPort: UInt16? = nil) {
@@ -959,7 +973,12 @@ final class EngineCrashFlowTests: XCTestCase {
             if condition() { return true }
             // Only once the first engine's own file exists: SIGTERM must reach an engine that holds
             // the lock and has its signal handling up.
-            if let hiding = self.hiding, hiding.signalled.isEmpty, case .success = hiding.real.readInfo() {
+            // An engine whose file the app can see is first reported: how many attempts fail per
+            // poll depends on the machine, so the clock waits for what the panel shows.
+            if let hiding = self.hiding, hiding.signalled.isEmpty, case .success = hiding.real.readInfo(),
+                hiding.closedPort == nil
+                    || self.presenter.shown.last?.message == loc("engine.alarm.newEngineNotAnswering")
+            {
                 self.stepClock += 5
             }
             await self.scheduler.fire()
