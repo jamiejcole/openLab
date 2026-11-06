@@ -70,7 +70,7 @@ final class SystemEngineProcesses: EngineProcesses {
         self.stderrSink = stderrSink
         // An engine already running (this app was relaunched after a crash) writes to the same
         // file; read what it prints from here on, as for an engine this run starts.
-        if watchStderr, case .success(let info) = readInfo(), isEngine(info.pid), stderrTail.prepare() {
+        if watchStderr, case .success(let info) = readInfo(), isEngine(info.pid), stderrTail.attach() {
             watchStderrFile()
         }
     }

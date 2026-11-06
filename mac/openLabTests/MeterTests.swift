@@ -43,6 +43,7 @@ final class MeterTests: XCTestCase {
         view = MeterView(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
         view.source = .cue(Self.intro)
         view.bank = bank
+        view.windowIsCovered = { _, _ in false }  // the host may not be the active app
         window.contentView?.addSubview(view)
         window.orderFront(nil)
         view.updateLive()
@@ -178,10 +179,15 @@ final class MeterTests: XCTestCase {
         let late = MeterView(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
         late.source = .cue(Self.intro)
         late.bank = bank
-        late.windowIsCovered = { _ in true }  // a headless host cannot cover a window
+        var covering = true
+        late.windowIsCovered = { _, _ in covering }  // a headless host cannot cover a window
         covered.contentView?.addSubview(late)
         XCTAssertEqual(bank.visibleCount, 0, "covered: not registered, no 60 Hz tick")
         XCTAssertFalse(ticker.running)
+        covering = false
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: covered)
+        XCTAssertEqual(bank.visibleCount, 1, "uncovered: the meter runs")
+        XCTAssertTrue(ticker.running)
     }
 
     func testOneTimerServesAllViews() {

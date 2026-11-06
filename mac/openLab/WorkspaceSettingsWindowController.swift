@@ -46,7 +46,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     private(set) var renderCount = 0
     private var lastDrawn: WorkspaceSettingsModel.DisplayState?
     /// A popup's menu is open: rebuilding its items would close it under the operator's hand.
-    private(set) var menuOpen = false
+    private var menuOpen = false
     private var shownPatch: ModelID?
 
     init(store: WorkspaceStore) {
@@ -64,7 +64,6 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         subs.append(store.$status.sink { [weak self] _ in self?.renderSoon() })
         subs.append(store.$model.sink { [weak self] _ in self?.renderSoon() })
         window.delegate = self
-        trackMenus()
         render()
     }
 
@@ -90,10 +89,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             })
     }
 
-    /// A menu that began tracking while the window was closed never reports its end here.
+    /// The observers live from showing to closing.
     override func showWindow(_ sender: Any?) {
         trackMenus()
-        menuOpen = false
         super.showWindow(sender)
     }
 

@@ -52,6 +52,27 @@ final class EngineStderrTail: @unchecked Sendable {
         return true
     }
 
+    /// Attaching to an engine already running: reading begins at the file's end, and the file is
+    /// left alone (a new file would leave the engine's descriptor writing to an unlinked one).
+    func attach() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let fm = FileManager.default
+        if fm.fileExists(atPath: url.path) {
+            guard let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? NSNumber else { return false }
+            offset = size.uint64Value
+        } else {
+            guard fm.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+                return false
+            }
+            offset = 0
+        }
+        partial = Data()
+        returned = 0
+        budgetSaid = false
+        return true
+    }
+
     /// The complete lines written since the last call.
     func read() -> [String] {
         lock.lock()

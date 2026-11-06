@@ -1617,10 +1617,15 @@ final class SystemEngineProcessesTests: XCTestCase {
         let handle = try FileHandle(forWritingTo: log)
         try handle.seekToEnd()
         try handle.write(contentsOf: Data("said before the app came\n".utf8))
+        // Over the size the app empties between runs: a running engine's file is not replaced.
+        try handle.write(contentsOf: Data(count: Int(EngineStderrTail.fileLimit) + 1))
+        try handle.write(contentsOf: Data("\n".utf8))
+        let inode = try FileManager.default.attributesOfItem(atPath: log.path)[.systemFileNumber] as? Int
         let lines = Lines()
         let p = SystemEngineProcesses(infoURL: engine.infoURL, stderrURL: log, stderrSink: { lines.add($0) })
         try handle.write(contentsOf: Data("thread panicked at engine\n".utf8))
         try handle.close()
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: log.path)[.systemFileNumber] as? Int, inode)
         await assertEventually("the attached engine's later output is logged") {
             lines.value == ["thread panicked at engine"]
         }
