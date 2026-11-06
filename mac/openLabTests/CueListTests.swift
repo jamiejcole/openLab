@@ -1233,12 +1233,14 @@ extension CueListTests {
     func testRowMenuItemsFollowSelectionStateAndClipboard() async throws {
         let h = try await H()
         let pb = privatePasteboard()
-        // A fade: no audio to preview, no file to reveal, nothing running to panic.
+        // A group: V previews it; it has no file to reveal and nothing is running to panic.
         for (id, run) in h.store.cueStates where run.state.isActive {
             try h.runtime(#"{"type":"cue_state","cue":"\#(id)","state":"idle"}"#)
         }
         var e = enabled(try menu(h, H.group, pasteboard: pb))
-        XCTAssertEqual(e[.preview], false)
+        XCTAssertEqual(e[.preview], true, "a group previews")
+        XCTAssertEqual(enabled(try menu(h, H.fade, pasteboard: pb))[.preview], false, "a fade has nothing to preview")
+        e = enabled(try menu(h, H.group, pasteboard: pb))
         XCTAssertEqual(e[.panic], false)
         XCTAssertEqual(e[.revealTarget], false)
         XCTAssertEqual(e[.paste], false)
@@ -1321,7 +1323,7 @@ extension CueListTests {
         MainMenu.lockEditItems(in: edit, locked: true)
         XCTAssertTrue(edit.items.allSatisfy { !$0.isEnabled })
         let context = CueRowMenu.Context(
-            selectedCount: 1, anyAudioSelected: true, clickedIsPlayhead: false, clickedHasMedia: true,
+            selectedCount: 1, anyPreviewable: true, clickedIsPlayhead: false, clickedHasMedia: true,
             anyActive: true, canPaste: true, showMode: true)
         for item in CueRowMenu.Item.allCases {
             XCTAssertEqual(
@@ -2485,8 +2487,12 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertNil(status(cues[2], 1))
         wc.cueList.rowCommand(try item(.preview, in: menu))
         await assertEventually("Preview") { self.store.previewing == [self.cues[0]] }
+        // A second Preview on a cue being previewed does nothing (QLab check V3).
         wc.cueList.rowCommand(try item(.preview, in: menu))
-        await assertEventually("Preview stops") { self.store.previewing.isEmpty }
+        await sync()
+        XCTAssertEqual(store.previewing, [cues[0]], "the preview plays on")
+        _ = await store.transport(.stopPreview(cue: cues[0]))
+        await assertEventually("Preview stopped") { self.store.previewing.isEmpty }
         wc.cueList.rowCopy(try item(.copy, in: menu))
         await assertEventually("Copy") { pasteboard.string(forType: CueEditor.pasteType) != nil }
         let copied = try XCTUnwrap(JSONValue.parse(try XCTUnwrap(pasteboard.string(forType: CueEditor.pasteType))))

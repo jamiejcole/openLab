@@ -64,9 +64,16 @@ extension AppController {
         }
     }
 
-    /// A window just opened has its mode with the snapshot, a moment after the open returned: the
-    /// next file's prompt must know whether Show Mode is up. Bounded (200 ms): a stalled engine
-    /// must not hold the restore.
+    /// Whether the restore may raise its modal prompt: every window is known to be out of Show Mode.
+    /// A window with no document yet has no known mode (it has its mode with the snapshot) and could
+    /// enter Show Mode under the prompt, where the transport keys would do nothing until it is answered.
+    var restorePromptIsSafe: Bool {
+        allWindows.allSatisfy { !$0.isShowMode && $0.store.document != nil }
+    }
+
+    /// A window just opened has its mode with the snapshot, a moment after the open returned. Giving
+    /// it a moment spares a needless skip of the next file's prompt; `restorePromptIsSafe` decides
+    /// whether that prompt comes up. Bounded (200 ms): a stalled engine must not hold the restore.
     private func windowsKnowTheirMode() async {
         for _ in 0..<100 {
             if allWindows.allSatisfy({ $0.store.document != nil }) { return await Task.yield() }

@@ -76,7 +76,7 @@
 "menu.transport.loadSelected" = "Load Selected";
 "menu.transport.startSelected" = "Start Selected";
 "menu.transport.pauseResumeSelected" = "Pause or Resume Selected";
-"menu.transport.previewSelected" = "Preview or Stop Preview Selected";
+"menu.transport.previewSelected" = "Preview Selected";
 "inspector.preview" = "Preview";
 "inspector.stopPreview" = "Stop Preview";
 "cue.previewing" = "Previewing";
@@ -108,7 +108,7 @@
 "prefs.launch.restore" = "Reopen the last workspaces";
 "prefs.launch.newBlank" = "Open a new blank workspace";
 "prefs.launch.nothing" = "Do nothing";
-"error.restoreAutosave" = "%@ was not reopened at launch: it has a newer autosave. Use File > Recover Autosaves to choose.";
+"error.restoreAutosave" = "%@ was not reopened at launch: it has a newer autosave. Open the file with File > Open to choose.";
 "error.restoreFailed" = "Could not reopen %@ at launch: %@";
 "menu.app.preferences" = "Preferences…";
 "alert.closePlaying.title" = "Close this workspace?";
@@ -657,6 +657,7 @@
 "engine.alarm.version" = "The engine speaks another protocol version (%@). Reinstall openLab.";
 "engine.alarm.crashLoop" = "The engine keeps stopping. openLab will try again in a minute.";
 "engine.alarm.unkillable" = "An engine that does not answer could not be ended. Restart the computer.";
+"engine.alarm.startTimeout" = "The engine did not start in time. openLab is ending it and trying again.";
 "engine.alarm.missing" = "The engine program is missing: %@. Reinstall openLab.";
 "engine.alarm.spawnFailed" = "The engine program could not be started (error %@).";
 "engine.reattach.reopened" = "The engine was restarted: this workspace was reopened from its file.";

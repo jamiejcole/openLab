@@ -28,7 +28,7 @@ enum CueRowMenu {
     /// What the rules need to know; the view controller fills it from the store.
     struct Context {
         var selectedCount: Int
-        var anyAudioSelected: Bool
+        var anyPreviewable: Bool
         var clickedIsPlayhead: Bool
         var clickedHasMedia: Bool
         var anyActive: Bool
@@ -39,7 +39,7 @@ enum CueRowMenu {
     /// Show Mode locks the same four editing items as the Edit menu does (SM-01).
     static func isEnabled(_ item: Item, _ c: Context) -> Bool {
         switch item {
-        case .preview: return c.anyAudioSelected
+        case .preview: return c.anyPreviewable
         case .load: return c.selectedCount > 0
         case .cut, .copy, .delete: return c.selectedCount > 0 && !locked(item, c)
         case .panic: return c.anyActive  // greyed unless something plays
@@ -88,7 +88,7 @@ extension CueListViewController: NSMenuDelegate {
         let selected = selectedIDs().compactMap { self.node($0) }
         let context = CueRowMenu.Context(
             selectedCount: selected.count,
-            anyAudioSelected: selected.contains { $0.cue.kindType == "audio" },
+            anyPreviewable: selected.contains { ["audio", "group", "network"].contains($0.cue.kindType) },
             clickedIsPlayhead: isPlayheadRow(node.id),
             clickedHasMedia: revealURL(node) != nil,
             anyActive: store.cueStates.values.contains { $0.state.isActive } || !store.previewing.isEmpty,

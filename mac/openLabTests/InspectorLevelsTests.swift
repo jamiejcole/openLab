@@ -613,6 +613,8 @@ final class InspectorLevelsTests: XCTestCase {
     /// Space in a playing cue's level box (the GO habit) clears the text; leaving it changes nothing.
     func testABlankLevelBoxIsNoChangeOnAPlayingCue() async throws {
         guard case .success = await store.transport(.start(cue: Self.intro)) else { return XCTFail("start") }
+        // The cue's state reaches the store as its own message after the start's result.
+        await assertEventually("the cue is running") { self.store.cueStates[Self.intro]?.state == .running }
         vc.setSelection([Self.intro])
         let p = vc.audioLevels
         p.select(.master)

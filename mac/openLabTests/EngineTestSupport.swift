@@ -560,6 +560,9 @@ final class WireTap: EngineTransport {
     var holdModel = false
     /// Hold `document` broadcasts until `releaseResults`: a store learns its path after the save's reply.
     var holdDocument = false
+    /// Hold everything a workspace connection receives, its `welcome` (which carries the snapshot) first and
+    /// in order, until `releaseResults`: a big show's snapshot is slow to reach the app. Clear it before releasing.
+    var holdSnapshots = false
     fileprivate var connections: [TapConnection] = []
     fileprivate var held: [(TapConnection, String)] = []
 
@@ -637,6 +640,7 @@ final class TapConnection: EngineConnection {
     }
 
     private func arrived(_ text: String) {
+        if tap.holdSnapshots && doc != nil { return tap.held.append((self, text)) }
         let type = JSONValue.parse(text)?["type"]?.stringValue
         if type == "runtime" && tap.holdRuntime { return tap.held.append((self, text)) }
         if type == "model_changed" && tap.holdModel { return tap.held.append((self, text)) }
