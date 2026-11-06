@@ -192,17 +192,29 @@ final class MeterView: NSView {
         didSet { if oldValue != source { invalidate() } }
     }
     private var attachedTo: MeterBank?
-    /// Redraws requested so far (tests count them: a view that cannot draw ignores `needsDisplay`).
-    private(set) var invalidations = 0
+    #if DEBUG
+        /// Redraws requested so far (tests count them: a view that cannot draw ignores `needsDisplay`).
+        private(set) var invalidations = 0
+    #endif
 
     func invalidate() {
-        invalidations += 1
+        #if DEBUG
+            invalidations += 1
+        #endif
         needsDisplay = true
+    }
+    /// Whether a window is covered: asked when the view joins a window (`atJoin`) and on each
+    /// occlusion change. At join only an active app is believed, as a headless host reports a
+    /// non-visible state for windows that are on screen.
+    var windowIsCovered = MeterView.defaultWindowIsCovered
+    /// What new views ask (a test host overrides it for every view it makes).
+    static var defaultWindowIsCovered: (_ window: NSWindow, _ atJoin: Bool) -> Bool = { w, atJoin in
+        (!atJoin || NSApp.isActive) && !w.occlusionState.contains(.visible)
     }
     private var observer: NSObjectProtocol?
     private var closeObserver: NSObjectProtocol?
-    /// The window says it is covered or off screen (set by its occlusion notification, so a window
-    /// that never reports one counts as showing).
+    /// The window is covered or off screen: seeded when the view joins it, then set by its
+    /// occlusion notification (a window that reports nothing counts as showing).
     private var occluded = false
 
     static let rangeDb: Float = 60
@@ -219,6 +231,9 @@ final class MeterView: NSView {
         closeObserver = nil
         occluded = false
         if let w = window {
+            // A meter added to a window that is already covered must not run until the next
+            // occlusion change.
+            occluded = windowIsCovered(w, true)
             closeObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.willCloseNotification, object: w, queue: .main
             ) { [weak self] _ in
@@ -232,7 +247,7 @@ final class MeterView: NSView {
             ) { [weak self, weak w] _ in
                 MainActor.assumeIsolated {
                     guard let w else { return }
-                    self?.occluded = !w.occlusionState.contains(.visible)
+                    if let self { self.occluded = self.windowIsCovered(w, false) }
                     self?.updateLive()
                 }
             }
