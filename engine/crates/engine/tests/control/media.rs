@@ -171,7 +171,8 @@ fn a_failed_stream_probes_the_file_it_read_not_the_cues_current_one() {
     // old file is the one that failed, so it is the one probed again.
     let a = wav(&dc(2000, 0.5));
     let b = wav(&dc(40_000, 0.5));
-    let ws = workspace(vec![audio(1, &a, 0), audio(2, &b, 1)]);
+    // Cue 3 still uses `a`: it is the one that keeps a stale answer.
+    let ws = workspace(vec![audio(1, &a, 0), audio(2, &b, 1), audio(3, &a, 2)]);
     let mut c = config(&ws);
     c.prime_cues = 0;
     c.probe = recording_probe;
@@ -202,7 +203,65 @@ fn a_failed_stream_probes_the_file_it_read_not_the_cues_current_one() {
         s.settle_media();
     }
     let probed = PROBED.lock().unwrap().clone();
-    assert!(probed.contains(&a), "the failed file is probed: {probed:?}");
+    assert_eq!(probed, vec![a], "only the file that failed is probed");
+}
+
+/// The file `probe_then_change` overwrites right after its first probe of it.
+static CHANGE_AFTER_PROBE: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
+
+fn probe_then_change(
+    p: &std::path::Path,
+) -> Result<openlab_audio::Probed, openlab_audio::MediaError> {
+    let probed = gated_probe(p);
+    if let Ok(mut target) = CHANGE_AFTER_PROBE.lock()
+        && target.as_deref() == Some(p)
+    {
+        *target = None;
+        let _ = std::fs::write(p, std::fs::read(wav(&dc(1500, 0.5))).unwrap_or_default());
+    }
+    probed
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn a_stream_prepared_after_a_relink_probes_the_file_it_read() {
+    // Cue 1 waits for `a`'s probe, is relinked to `b`, and its stream is prepared from `b`
+    // when b's probe lands. b changes right after that probe, so the stream fails: `b` is
+    // probed again, not `a` (the file the record was made for).
+    let a = wav(&dc(2000, 0.5));
+    let b = wav(&dc(40_000, 0.5));
+    let ws = workspace(vec![audio(1, &a, 0), audio(2, &a, 1)]);
+    let mut c = config(&ws);
+    c.prime_cues = 0;
+    c.probe = probe_then_change;
+    // The watchdog's clock stands still: the held probe of `a` is never given up on.
+    c.probe_clock = ProbeTime::new().clock();
+    gate(&a);
+    let mut s = openlab_engine::control::offline::OfflineShow::new(ws, mixer_config(), c).unwrap();
+    wait_probed(std::slice::from_ref(&a), 1);
+    *CHANGE_AFTER_PROBE.lock().unwrap() = Some(b.clone());
+    go(&mut s);
+    let mut kind = s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .kind
+        .clone();
+    if let CueKind::Audio { media, .. } = &mut kind {
+        *media = Some(openlab_core::MediaRef::new(b.to_str().unwrap()));
+    }
+    set_kind(&mut s, 1, kind);
+    // b's probe lands while a's is still held; the failed stream is seen by the next ticks.
+    wait_probed(std::slice::from_ref(&b), 1);
+    s.run_unsettled(BLOCK * 16);
+    release(&a);
+    s.settle_media();
+    s.run(BLOCK * 4);
+    s.settle_media();
+    let order = probe_order(&[a.clone(), b.clone()]);
+    assert_eq!(order, vec![a, b.clone(), b], "b is probed again");
 }
 
 #[test]

@@ -621,12 +621,12 @@ impl MediaCatalog {
     /// Probes `key` again (a stream of it failed: the file may have gone or changed). The last
     /// answer stands until the new one comes, so cues on it keep their primes meanwhile.
     pub fn reprobe(&mut self, key: &str) {
-        if self
-            .entries
-            .get(key)
-            .is_some_and(|e| e.asking && !e.timed_out)
-        {
-            return;
+        // A file no cue uses any more (a relink took its last user) has no entry: asking would
+        // make a user-less one that lives until the next full sync.
+        match self.entries.get(key) {
+            None => return,
+            Some(e) if e.asking && !e.timed_out => return,
+            Some(_) => {}
         }
         self.request(key.to_owned());
     }
