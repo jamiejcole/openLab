@@ -301,6 +301,101 @@ soak_classifier() {
   rm -rf "$d"
 }
 
+# 11b. The app-test wrapper retries a hang only when the spindump proves the runner's WindowServer is
+# stuck in the GPU driver and every failure is such a hang. Canned reports and summaries.
+wedged_report() { # samples in the driver, samples waiting on WindowServer, waiting thread, waiting process
+  local main='DispatchQueue "com.apple.main-thread"(1)'
+  printf 'Command: openLab\nProcess: %s [1]\nNum samples: 9 (1-9)\n  Thread 0x1 %s\n  *%s ??? (kernel) (blocked by turnstile waiting for WindowServer [2] after 2 hops) 1-9\n' "${4:-openLab}" "${3:-$main}" "$2"
+  printf 'Process: WindowServer [2]\nNum samples: 9 (1-9)\n  Thread 0x3 Thread name "ws_main_thread"\n  *%s AppleParavirtDevice::createObjectInternal 1-9\n' "$1"
+}
+wedged_classifier() {
+  local d out timeout other
+  d=$(mktemp -d)
+  timeout='{"failureText":"Test exceeded execution time allowance of 3 minutes","targetName":"openLabTests","testIdentifierString":"Flow/testHung()"}'
+  other='{"failureText":"XCTAssertEqual failed","targetName":"openLabTests","testIdentifierString":"Flow/testBad()"}'
+  printf '{"testFailures":[%s]}' "$timeout" >"$d/hung.json"
+  printf '{"testFailures":[%s,%s]}' "$timeout" "$other" >"$d/mixed.json"
+  printf '{"testFailures":[]}' >"$d/none.json"
+  printf '[{"testIdentifier":"Flow/testHung()","attachments":[{"exportedFileName":"s.txt","isAssociatedWithFailure":true,"suggestedHumanReadableName":"x-Spindump_0.txt"}]}]' >"$d/manifest.json"
+  wedged_report 9 9 >"$d/s.txt"
+  out=$(scripts/run-mac-tests.sh --classify "$d/hung.json" "$d") || fail wedged-classifier "a proven hang must be retried"
+  [ "$out" = "-only-testing:openLabTests/Flow/testHung" ] || fail wedged-classifier "wrong retry arguments: '$out'"
+  scripts/run-mac-tests.sh --classify "$d/mixed.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a hang beside another failure must not be retried"
+  scripts/run-mac-tests.sh --classify "$d/none.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a run with no test failure (a build error) must not be retried"
+  wedged_report 3 9 >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "WindowServer only passing through the driver must not excuse a hang"
+  wedged_report 9 3 >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a process not waiting on WindowServer must not be excused"
+  wedged_report 9 9 'Thread name "com.apple.NSEventThread"' >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "only a background thread waiting must not excuse a hung main thread"
+  wedged_report 9 9 '' other >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "another process waiting must not excuse the tested one"
+  wedged_report 9 9 >"$d/s.txt"
+  printf '[]' >"$d/manifest.json"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a hang with no spindump must not be retried"
+  (cd "$d" && rm -f hung.json mixed.json none.json manifest.json s.txt) && rmdir "$d"
+}
+
+# 11c. The wrapper's run path, with a fake xcodebuild and xcrun on PATH. Each case: exit code, number of
+# xcodebuild calls. Settings for the fakes come from the caller's environment. The folder stays in the
+# temporary folder, as the wrapper's own do.
+wedged_case() { # name, wanted exit code, wanted calls, xcodebuild's exit codes, selection
+  local c="$WEDGED/$1" rc n
+  mkdir -p "$c/build/Logs/Test"
+  printf '%s\n' $4 >"$c/rcs"
+  [ -z "${OLD_BUNDLE:-}" ] || mkdir "$c/build/Logs/Test/Old.xcresult"
+  # The summary is CI's real one: a fake wedge must not be reported there.
+  (cd "$c" && GITHUB_STEP_SUMMARY= TMPDIR="$c" PATH="$WEDGED/bin:$PATH" "$OLDPWD/scripts/run-mac-tests.sh" fakexb base -- ${5:-}) >"$c/out" 2>&1
+  rc=$?
+  n=$(wc -l <"$c/calls" | tr -d ' ')
+  { [ "$rc" = "$2" ] && [ "$n" = "$3" ]; } || fail wedged-run "$1: want exit $2 and $3 call(s), got exit $rc and $n"
+}
+wedged_run() {
+  local d
+  d=$(mktemp -d)
+  WEDGED=$d
+  mkdir "$d/bin" "$d/att"
+  cat >"$d/bin/fakexb" <<'FAKE'
+#!/bin/sh
+echo "$*" >>calls
+n=$(wc -l <calls | tr -d ' ')
+if [ -z "$NO_BUNDLE" ] && { [ "$n" = 1 ] || [ -z "$NO_RETRY_BUNDLE" ]; }; then mkdir "build/Logs/Test/Test-$n.xcresult"; fi
+exit "$(sed -n "${n}p" rcs)"
+FAKE
+  cat >"$d/bin/xcrun" <<'FAKE'
+#!/bin/sh
+case "$*" in
+  # An old bundle reads as a proven wedge, and passes enough tests: only the wrapper's choice of bundle can save it.
+  *"test-results summary"*Test-1.xcresult* | *"test-results summary"*Old.xcresult*) [ -z "$BAD_SUMMARY" ] || exit 9; cat "$FIRST_SUMMARY" ;;
+  *"test-results summary"*) printf '{"passedTests":%s}' "${PASSED:-1}" ;;
+  *"export attachments"*) [ -z "$BAD_EXPORT" ] || exit 9; for a; do p=$a; done; cp -R "$WEDGED_ATT" "$p" ;;
+esac
+FAKE
+  chmod +x "$d/bin/fakexb" "$d/bin/xcrun"
+  printf '{"passedTests":5,"testFailures":[{"failureText":"Test exceeded execution time allowance of 3 minutes","targetName":"openLabTests","testIdentifierString":"Flow/testHung()"}]}' >"$d/hung.json"
+  printf '{"testFailures":[{"failureText":"Test exceeded execution time allowance of 3 minutes","targetName":"openLabTests","testIdentifierString":"Flow/testHung()"},{"failureText":"XCTAssertEqual failed","targetName":"openLabTests","testIdentifierString":"Flow/testBad()"}]}' >"$d/mixed.json"
+  printf '[{"testIdentifier":"Flow/testHung()","attachments":[{"exportedFileName":"s.txt","isAssociatedWithFailure":true,"suggestedHumanReadableName":"x-Spindump_0.txt"}]}]' >"$d/att/manifest.json"
+  wedged_report 9 9 >"$d/att/s.txt"
+  export WEDGED_ATT="$d/att" FIRST_SUMMARY="$d/hung.json"
+
+  wedged_case proven 0 2 "65 0" -only-testing:everything
+  grep -q '::warning' "$d/proven/out" || fail wedged-run "a retry must warn"
+  [ "$(sed -n 2p "$d/proven/calls")" = "base -only-testing:openLabTests/Flow/testHung test" ] \
+    || fail wedged-run "the retry must select the one test: $(sed -n 2p "$d/proven/calls")"
+  wedged_case retry-fails 65 2 "65 65"
+  wedged_case retry-other-code 70 2 "65 70"
+  NO_BUNDLE=1 wedged_case no-bundle 70 1 "70"
+  NO_BUNDLE=1 OLD_BUNDLE=1 wedged_case old-bundle-only 70 1 "70"
+  BAD_SUMMARY=1 wedged_case bad-summary 65 1 "65"
+  BAD_EXPORT=1 wedged_case bad-export 65 1 "65"
+  FIRST_SUMMARY="$d/mixed.json" wedged_case mixed 65 1 "65"
+  wedged_case passes 0 1 "0"
+  [ "$(cat "$d/passes/calls")" = "base test" ] || fail wedged-run "an empty selection: $(cat "$d/passes/calls")"
+  PASSED=0 wedged_case retry-ran-nothing 65 2 "65 0"
+  NO_RETRY_BUNDLE=1 wedged_case retry-left-no-bundle 65 2 "65 0"
+  unset WEDGED_ATT FIRST_SUMMARY
+}
+
 # 12. Every UI smoke identifier (scripts/ui-smoke.txt) names an existing test, so a rename cannot
 # silently drop it from the per-PR set.
 ui_smoke() {
@@ -333,6 +428,8 @@ wall_clock
 one_gate
 prepush_no_stamp
 soak_classifier
+wedged_classifier
+wedged_run
 ui_smoke
 
 if [ "$failed" = 0 ]; then
