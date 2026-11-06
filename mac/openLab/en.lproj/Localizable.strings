@@ -176,9 +176,8 @@
 "cuelist.edit.cueGone" = "The cue you were editing no longer exists.";
 "cuelist.col.postWait" = "Post-Wait";
 
-"cue.target.missing" = "Missing target";
+"cue.target.missing" = "?";
 "cue.target.file" = "File";
-"cue.target.cue" = "Cue";
 "cue.playhead" = "Playhead";
 "cue.playhead.inside" = "Playhead is inside this group";
 "cue.flagged" = "Flagged";

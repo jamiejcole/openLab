@@ -70,7 +70,7 @@ final class CueCell: NSTableCellView {
     let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView()]
     let label = NSTextField(labelWithString: "")
     let progress = ProgressFillView()
-    /// An Audio cue's marker in the Target cell, with or without a file; clicking it calls `onChoose`.
+    /// An Audio cue's button in the Target cell, with or without a file; clicking it calls `onChoose`.
     let chooseButton = NSButton(title: "", target: nil, action: nil)
     var onChoose: (() -> Void)?
 
@@ -135,7 +135,7 @@ final class CueCell: NSTableCellView {
     /// Shows the Target cell's button: `label` names it for VoiceOver, the tooltip says what a click does.
     func showChoose(icon: Icon, label: String, onChoose: @escaping () -> Void) {
         let image = icon.image(label, compact: true)
-        // Plain, not a template, for the same reason as `setImage`, and to match the cue marker.
+        // Plain, not a template, for the same reason as `setImage`.
         chooseButton.image = TimeHeaderCell.tinted(
             image, .secondaryLabelColor, size: image.size, description: label)
         chooseButton.setAccessibilityLabel(label)
@@ -1287,8 +1287,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 text(shown)
             }
         case "target":
-            text(targetText(cue))
-            fillTargetMarker(cell, cue)
+            if cue.kindType == "audio" {
+                fillFileTargetButton(cell, cue)
+            } else if InspectorEdit.targetKinds.contains(cue.kindType) {
+                let shown = targetText(cue)
+                text(shown ?? loc("cue.target.missing"))
+                if shown == nil { cell.label.textColor = .systemYellow }
+            }
         case "preWait", "postWait":
             // A wait in progress counts down what is left, as QLab's columns do.
             if let wait = store.waits[cue.id]?[column == "preWait" ? .preWait : .postWait] {
@@ -1317,35 +1322,28 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     private var cueLookup: (ModelID) -> Cue? { { [weak self] in self?.nodes[$0]?.cue ?? self?.store.model?.cue($0) } }
 
-    /// A marker before the Target text. An Audio cue's is a button that chooses its file, whether it
-    /// holds one or not, and is gone in a locked (Show Mode) list, as QLab's Target column button is.
-    private func fillTargetMarker(_ cell: CueCell, _ cue: Cue) {
-        if cue.kindType == "audio" {
-            guard !isEditLocked else { return }
-            let hasFile = !(cue.raw["kind"]?["media"]?.stringValue ?? "").isEmpty
-            let id = cue.id
-            cell.showChoose(
-                icon: hasFile ? .targetFile : .fieldChoose,
-                label: loc(hasFile ? "cue.target.file" : "inspector.target.choose")
-            ) { [weak self] in
-                guard let self, !self.isEditLocked else { return }
-                self.onChooseFile?(id)
-            }
-        } else if cue.kindType != "network", cue.raw["kind"]?["target"]?.stringValue != nil {
-            cell.setImage(0, icon: .targetCue, label: loc("cue.target.cue"), tint: .secondaryLabelColor)
+    /// An Audio cue's Target cell is one button that chooses its file, whether it holds one or not, and
+    /// is empty in a locked (Show Mode) list, as QLab's Target column is.
+    private func fillFileTargetButton(_ cell: CueCell, _ cue: Cue) {
+        guard !isEditLocked else { return }
+        let hasFile = !(cue.raw["kind"]?["media"]?.stringValue ?? "").isEmpty
+        let id = cue.id
+        cell.showChoose(
+            icon: hasFile ? .targetFile : .fieldChoose,
+            label: loc(hasFile ? "cue.target.file" : "inspector.target.choose")
+        ) { [weak self] in
+            guard let self, !self.isEditLocked else { return }
+            self.onChooseFile?(id)
         }
     }
 
-    private func targetText(_ cue: Cue) -> String {
-        if cue.kindType == "audio" {
-            let media = cue.raw["kind"]?["media"]?.stringValue ?? ""
-            return (media as NSString).lastPathComponent
-        }
-        if cue.kindType == "network" { return cue.raw["kind"]?["address"]?.stringValue ?? "" }
-        guard let target = cue.raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }) else { return "" }
-        guard let t = nodes[target]?.cue ?? store.model?.cue(target) else { return loc("cue.target.missing") }
-        let label = [t.number, t.listName(lookup: cueLookup)]
-        return label.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
+    /// The target's number, or its name if it has none; nil with no target or one that is gone.
+    private func targetText(_ cue: Cue) -> String? {
+        guard let id = cue.raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }),
+            let target = cueLookup(id)
+        else { return nil }
+        if let number = target.number, !number.isEmpty { return number }
+        return target.listName(lookup: cueLookup)
     }
 
     /// The Duration column's text: the cue's duration, or while it runs and the column shows the time

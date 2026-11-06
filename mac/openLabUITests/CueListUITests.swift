@@ -10,7 +10,8 @@ final class CueListUITests: XCTestCase {
         let app = launchDemo()
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Act One"].exists)
-        XCTAssertTrue(app.staticTexts["a.wav"].exists, "the audio cue's target column shows its file")
+        XCTAssertTrue(app.buttons["cue-target-choose"].firstMatch.exists, "the audio cue's target column shows its button")
+        XCTAssertFalse(app.staticTexts["a.wav"].exists, "and not its file name")
     }
 
     func testRunningCueShowsAStateIconWithALabel() {
