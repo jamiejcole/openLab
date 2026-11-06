@@ -87,6 +87,8 @@ enum WorkspaceKey: String, CaseIterable, Hashable, Sendable {
     case startSelected = "start_selected"
     case stopSelected = "stop_selected"
     case resetSelected = "reset_selected"
+    case previewSelected = "preview_selected"
+    case panicSelected = "panic_selected"
 }
 
 extension Command {

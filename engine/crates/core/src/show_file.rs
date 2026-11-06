@@ -490,7 +490,46 @@ fn v8_to_v9(mut document: Value) -> Result<Value, String> {
         settings.insert("output_max_db".into(), crate::DEFAULT_OUTPUT_MAX_DB.into());
         settings.insert("output_min_db".into(), crate::DEFAULT_OUTPUT_MIN_DB.into());
     }
+    add_preview_and_panic_selected_keys(&mut document)?;
     Ok(document)
+}
+
+/// v9 also added Preview Selected and Panic Selected to `settings.hotkeys` (QLab remaps both).
+/// Older shows had them as the app's fixed V and S, which yielded to a cue hotkey or a workspace
+/// key on the same chord: each becomes that key, or null where the app gave it up, so no cue
+/// loses its hotkey to the new workspace key. A reader that predates them ignored unknown keys, so
+/// a hand-added value is replaced. A document without a key map is left for the model parse.
+fn add_preview_and_panic_selected_keys(document: &mut Value) -> Result<(), String> {
+    let mut taken = document
+        .get("workspace")
+        .map(cue_hotkeys)
+        .unwrap_or_default();
+    let Some(keys) = document
+        .get_mut("workspace")
+        .and_then(|w| w.get_mut("settings"))
+        .and_then(|s| s.get_mut("hotkeys"))
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+    taken.extend(
+        keys.iter()
+            .filter(|(k, _)| !matches!(k.as_str(), "preview_selected" | "panic_selected"))
+            .filter_map(|(_, v)| Hotkey::deserialize(v).ok()),
+    );
+    for (field, key) in [("preview_selected", "v"), ("panic_selected", "s")] {
+        let hotkey = Hotkey {
+            key: key.into(),
+            modifiers: Modifiers::default(),
+        };
+        let value = if taken.contains(&hotkey) {
+            Value::Null
+        } else {
+            serde_json::to_value(&hotkey).map_err(|e| e.to_string())?
+        };
+        keys.insert(field.into(), value);
+    }
+    Ok(())
 }
 
 /// Whether a version-8 document had a global master other than 0 dB (a value that is not even a

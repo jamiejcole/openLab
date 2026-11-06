@@ -81,6 +81,7 @@ impl Voices {
                     queue: Vec::new(),
                 },
                 offset,
+                media: cue_media(env.ws, cue),
                 ..rec(cue, run, false)
             },
         );
@@ -123,6 +124,7 @@ impl Voices {
                             queue: Vec::new(),
                         },
                         offset,
+                        media: cue_media(env.ws, cue),
                         ..rec(cue, run, preview)
                     },
                 );
@@ -155,12 +157,13 @@ impl Voices {
         if prepared.is_none() {
             match self.prepare(cue, offset, env, fx) {
                 Ok(p) => {
-                    if let Some(VoiceRec {
-                        phase: Phase::Waiting { prepared, .. },
-                        ..
-                    }) = self.recs.get_mut(&id)
+                    if let Some(r) = self.recs.get_mut(&id)
+                        && let Phase::Waiting { prepared, .. } = &mut r.phase
                     {
                         *prepared = Some(p);
+                        // The file read now, which a relink since the record was made may
+                        // have changed: a failure probes this one.
+                        r.media = cue_media(env.ws, cue);
                     }
                 }
                 Err(PrepError::Pending) => {

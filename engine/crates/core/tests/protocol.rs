@@ -3989,23 +3989,37 @@ fn a_partial_or_misspelt_key_map_is_bad_request() {
             r#"{{"type":"command","id":1,"command":{{"type":"set_workspace_setting","setting":{{"type":"hotkeys","value":{value}}}}}}}"#
         ))
     };
+    let keys = [
+        "go",
+        "stop_all",
+        "pause_all",
+        "resume_all",
+        "load_selected",
+        "pause_resume_selected",
+        "start_selected",
+        "stop_selected",
+        "reset_selected",
+        "preview_selected",
+        "panic_selected",
+    ];
     let all = |extra: &str| {
-        let keys = [
-            "go",
-            "stop_all",
-            "pause_all",
-            "resume_all",
-            "load_selected",
-            "pause_resume_selected",
-            "start_selected",
-            "stop_selected",
-            "reset_selected",
-        ];
         let body: Vec<String> = keys.iter().map(|k| format!(r#""{k}":null"#)).collect();
         format!("{{{}{extra}}}", body.join(","))
     };
     assert!(frame(&all("")).is_ok());
     assert!(frame(r#"{"go":null,"pause_all":null}"#).is_err(), "missing");
+    // Each key is required on its own: leaving out any one is refused.
+    for left_out in keys {
+        let body: Vec<String> = keys
+            .iter()
+            .filter(|k| **k != left_out)
+            .map(|k| format!(r#""{k}":null"#))
+            .collect();
+        assert!(
+            frame(&format!("{{{}}}", body.join(","))).is_err(),
+            "{left_out} left out"
+        );
+    }
     assert!(frame(&all(r#","load_selcted":null"#)).is_err(), "unknown");
     assert!(frame("{}").is_err());
 }

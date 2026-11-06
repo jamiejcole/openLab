@@ -267,7 +267,7 @@ impl WorkspaceSettings {
 
 /// Remappable workspace keys (TRG-01): the transport keys and the selected-cue keys of QLab 5's
 /// keyboard map (Workspace Settings, Controls, Keyboard). `None` = no key. Esc is not among them:
-/// it is the fixed panic key, as in QLab. Neither is a Next / Previous Cue key (format v6
+/// Panic All is the fixed panic key, as in QLab. Neither is a Next / Previous Cue key (format v6
 /// dropped them): QLab's key map has none and takes no Up or Down arrow, which move the
 /// selection (and with it the playhead).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -284,11 +284,15 @@ pub struct TransportHotkeys {
     pub start_selected: Option<Hotkey>,
     pub stop_selected: Option<Hotkey>,
     pub reset_selected: Option<Hotkey>,
+    /// Preview the selected cue (QLab: Preview, `V`).
+    pub preview_selected: Option<Hotkey>,
+    /// Panic the selected cue (QLab: Panic Selected, `S`). Panic All (Esc) stays outside the map.
+    pub panic_selected: Option<Hotkey>,
 }
 
 impl TransportHotkeys {
     /// Every key with its field name (`"go"`, `"stop_all"`, ...), in declaration order.
-    pub fn slots(&self) -> [(&'static str, &Option<Hotkey>); 9] {
+    pub fn slots(&self) -> [(&'static str, &Option<Hotkey>); 11] {
         [
             ("go", &self.go),
             ("stop_all", &self.stop_all),
@@ -299,6 +303,8 @@ impl TransportHotkeys {
             ("start_selected", &self.start_selected),
             ("stop_selected", &self.stop_selected),
             ("reset_selected", &self.reset_selected),
+            ("preview_selected", &self.preview_selected),
+            ("panic_selected", &self.panic_selected),
         ]
     }
 
@@ -324,6 +330,8 @@ pub(crate) fn hotkey_field(name: &str) -> &'static str {
         "start_selected" => "settings.hotkeys.start_selected",
         "stop_selected" => "settings.hotkeys.stop_selected",
         "reset_selected" => "settings.hotkeys.reset_selected",
+        "preview_selected" => "settings.hotkeys.preview_selected",
+        "panic_selected" => "settings.hotkeys.panic_selected",
         _ => "settings.hotkeys",
     }
 }
@@ -353,6 +361,8 @@ impl Default for TransportHotkeys {
             start_selected: None,
             stop_selected: None,
             reset_selected: None,
+            preview_selected: key("v"),
+            panic_selected: key("s"),
         }
     }
 }

@@ -125,10 +125,14 @@ impl Voices {
             }
             return;
         }
-        let failed = faulted
-            || r.stream_failed
-            || (reason == FinishReason::EndOfStream
-                && r.stream.as_ref().is_some_and(|h| h.error().is_some()));
+        // A stream error first seen here (the end came before the tick's poll): the file is
+        // probed again, once per failure (`poll_streams` asks when it sees one first).
+        let errored = r.stream.as_ref().is_some_and(|h| h.error().is_some());
+        let seen_now = first_seen_at_end(reason, r.stream_failed, errored);
+        if seen_now && let Some(m) = r.media.clone() {
+            fx.reprobe.push(m);
+        }
+        let failed = faulted || r.stream_failed || seen_now;
         // Ended after a pending pause: the engine ignores the report (a paused voice cannot
         // end), so keep the record for the resume to report the end afresh. An end on the pause
         // sample left nothing to pause: the engine takes it as the end and resumes
@@ -265,5 +269,30 @@ impl Voices {
             }
             self.finished(id, at, FinishReason::Faulted, fx);
         }
+    }
+}
+
+/// Whether a stream failure is first seen as the voice ends: the file is then probed again
+/// here. A failure the tick's poll already flagged asked for its probe; a fault is not the
+/// file's.
+fn first_seen_at_end(reason: FinishReason, already_flagged: bool, errored: bool) -> bool {
+    reason == FinishReason::EndOfStream && !already_flagged && errored
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_failure_nobody_flagged_yet_asks_for_a_probe_at_the_end() {
+        let end = FinishReason::EndOfStream;
+        assert!(first_seen_at_end(end, false, true));
+        assert!(
+            !first_seen_at_end(end, true, true),
+            "the poll asked already"
+        );
+        assert!(!first_seen_at_end(end, false, false), "a clean end");
+        assert!(!first_seen_at_end(FinishReason::Faulted, false, true));
+        assert!(!first_seen_at_end(FinishReason::Stopped, false, true));
     }
 }

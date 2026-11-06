@@ -385,7 +385,7 @@ soak_classifier() {
 
 # 11b. The app-test wrapper retries a hang only when the spindump proves the runner's WindowServer is
 # stuck in the GPU driver and every failure is such a hang. Canned reports and summaries.
-wedged_report() { # samples in the driver; samples waiting on WindowServer: several ranges, `/` starts a second tree of the thread, `=N` is not a kernel frame; waiting thread; waiting process; samples another thread waits
+wedged_report() { # samples in the driver; samples waiting on WindowServer: several ranges, `/` starts a second tree of the thread, `=N` is not a kernel frame, and a stack with no wait named: `qN` QuartzCore, `sN` SkyLight, `oN` our code, `fN` our code with a framework in its name, `mN` libsystem_malloc, `nN` mach_msg alone, `tN` mach_msg down to the trap, then kernel frames `bN` waiting on launchd, `pN` on this process, `uN` suspended, `wN` on WindowServer; waiting thread; waiting process; samples another thread waits
   local main='DispatchQueue "com.apple.main-thread"(1)' n
   local wait='  %s%s ??? (kernel) (blocked by turnstile waiting for WindowServer [2] after 2 hops) 1-9\n'
   printf 'Command: openLab\nPID: 1\nProcess: %s\nNum samples: 9 (1-9)\n  Thread 0x1 %s\n' "${4:-openLab [1]}" "${3:-$main}"
@@ -393,6 +393,17 @@ wedged_report() { # samples in the driver; samples waiting on WindowServer: seve
     case "$n" in
       /) printf '  Thread 0x1 %s\n' "${3:-$main}" ;;
       =*) printf "$wait" '' "${n#=}" ;;
+      q*) printf '  %s _CASCreateFencePort + 1 (QuartzCore + 1)\n' "${n#q}" ;;
+      s*) printf '  %s SLSNewWindow + 1 (SkyLight + 1)\n' "${n#s}" ;;
+      o*) printf '  %s ourCode + 1 (openLab.debug.dylib + 1)\n' "${n#o}" ;;
+      f*) printf '  %s QuartzCoreHelper + 1 (openLab.debug.dylib + 1)\n' "${n#f}" ;;
+      m*) printf '  %s malloc + 1 (libsystem_malloc.dylib + 1)\n' "${n#m}" ;;
+      n*) printf '  %s mach_msg + 1 (libsystem_kernel.dylib + 1)\n' "${n#n}" ;;
+      b*) printf '  *%s ??? (kernel + 1) (blocked by turnstile waiting for launchd [9] after 2 hops)\n' "${n#b}" ;;
+      p*) printf '  *%s ??? (kernel + 1) (blocked by turnstile waiting for openLab [1] thread 0x4)\n' "${n#p}" ;;
+      u*) printf '  *%s ??? (kernel + 1) (suspended)\n' "${n#u}" ;;
+      w*) printf '  *%s ??? (kernel + 1) (blocked by turnstile with priority 31 waiting for WindowServer [2])\n' "${n#w}" ;;
+      t*) printf '  %s mach_msg + 1 (libsystem_kernel.dylib + 1)\n  %s mach_msg2_trap + 1 (libsystem_kernel.dylib + 1)\n  *%s ??? (kernel + 1)\n' "${n#t}" "${n#t}" "${n#t}" ;;
       *) printf "$wait" '*' "$n" ;;
     esac
   done
@@ -438,6 +449,23 @@ wedged_classifier() {
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 || fail wedged-classifier "a whole wait followed by a Swift task's copy of the tree is proven"
   wedged_report 9 '' | sed '4s/: 9 /: 0 /' >"$d/s.txt"
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a section with no samples and no wait must not excuse a hang"
+  wedged_report 9 "q9 t9" >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 || fail wedged-classifier "QuartzCore's message to WindowServer for all samples is proven"
+  wedged_report 9 "s9 t9" >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 || fail wedged-classifier "SkyLight's message to WindowServer for all samples is proven"
+  local refused
+  wedged_report 9 "q9 t9 w9" >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 || fail wedged-classifier "a kernel frame under the trap that names WindowServer is proven"
+  for refused in "t9" "o9 t9" "q9 o9 t9" "q5 t5" "q9 t5" "q5 t9" "q9 / t9" "f9 t9" "q9 m9 t9" "q9 t9 b9" "q9 t9 p9" "q9 t9 u9" "q9 t9 b9 / q9 t9" "q9 n9"; do
+    wedged_report 9 "$refused" >"$d/s.txt"
+    scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a main thread in mach_msg ($refused) must not excuse a hang"
+  done
+  wedged_report 3 "q9 t9" >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "QuartzCore's message with WindowServer only passing through the driver must not excuse a hang"
+  wedged_report 9 "q9 t9" 'Thread name "com.apple.NSEventThread"' >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "QuartzCore's message on a background thread must not excuse a hang"
+  wedged_report 9 "q9 t9" '' 'openLab [7]' >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "QuartzCore's message in another process must not excuse a hang"
   wedged_report 9 9 '' 'other [7]' >"$d/s.txt"
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "another process waiting must not excuse the tested one"
   wedged_report 9 9 '' 'openLab [7]' >"$d/s.txt"

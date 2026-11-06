@@ -225,14 +225,37 @@ final class EngineAlarmController {
             }
             let offer = self.unheld(entries)
             guard !offer.isEmpty else { return }
+            // Offered when the button is pressed: a workspace opened since (the launch choice
+            // reopened it) is not opened a second time.
             if !self.isShown {
                 self.presenter.show(title: loc("engine.alarm.unclean"), message: loc("engine.alarm.uncleanMessage"))
             }
             self.summary = self.reattachSummary(setAside: Set(offer.filter(\.stale).map(\.workspaceId)))
-            let line = String(format: loc("engine.alarm.autosaves"), offer.count)
-            self.presenter.setDetail(self.summary.isEmpty ? line : self.summary + "\n" + line)
-            self.presenter.setRestoreAction { [weak self] in Task { await self?.restore(offer) } }
+            self.offered = entries
+            self.showAutosaveLine(count: offer.count)
+            self.presenter.setRestoreAction { [weak self] in
+                Task {
+                    guard let self else { return }
+                    await self.restore(self.unheld(entries))
+                }
+            }
         }
+    }
+
+    /// The scan result behind the alarm's autosave line (nil: none was offered).
+    private var offered: [RecoveryEntryInfo]?
+
+    private func showAutosaveLine(count: Int) {
+        let line = count == 0 ? loc("recover.none") : String(format: loc("engine.alarm.autosaves"), count)
+        presenter.setDetail(summary.isEmpty ? line : summary + "\n" + line)
+    }
+
+    /// The launch choice may have opened workspaces the offer named: count again what is left.
+    func refreshOffer() {
+        guard let entries = offered else { return }
+        let left = unheld(entries).count
+        showAutosaveLine(count: left)
+        if left == 0 { presenter.setRestoreAction(nil) }
     }
 
     /// File > Recover Autosaves…: the autosaves no window holds, whenever the operator asks, so
@@ -284,6 +307,8 @@ final class EngineAlarmController {
     func restore(_ entries: [RecoveryEntryInfo]) async {
         for entry in entries {
             guard session.stores.count < 8 else { break }
+            // The prompts are modal one after another: a workspace opened meanwhile is not offered.
+            guard !unheld([entry]).isEmpty else { continue }
             let name = entry.showName ?? loc("engine.alarm.untitled")
             guard alerts().offerAutosave(name: name, modifiedMs: entry.modifiedMs, setAside: entry.stale) else {
                 continue

@@ -55,6 +55,8 @@ struct AppLaunch {
     var installMenu: @MainActor (_ delegate: NSMenuDelegate) -> Void
     var activation: HandOverActivation
     var terminate: @MainActor () -> Void
+    /// Where the launch choice and the files open at quit are kept (nil: nowhere).
+    var launchDefaults: UserDefaults? = nil
 
     static var live: AppLaunch {
         let mode = EngineMode.fromLaunchArguments()
@@ -76,6 +78,8 @@ struct AppLaunch {
                 NSApp.helpMenu = menu.help
             },
             activation: .live,
-            terminate: { NSApp.terminate(nil) })
+            terminate: { NSApp.terminate(nil) },
+            // The test engine (tests and the unit-test host) must not touch the user's preferences.
+            launchDefaults: mode == .real ? .standard : nil)
     }
 }

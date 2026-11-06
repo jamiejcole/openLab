@@ -998,6 +998,33 @@ final class NetworkInspectorTests: XCTestCase {
         XCTAssertEqual(kind?["address"]?.stringValue, "/typed", "no space went into the message")
     }
 
+    /// V on a selected Network cue sends its message once and changes no state.
+    func testPreviewSelectedKeySendsTheNetworkCueMessageOnce() async throws {
+        try await setMessageAndWait("/lights/go 5")
+        await assertEventually("the cue is no longer broken") { !self.isBroken(self.net) }
+        wc.window?.makeFirstResponder(nil)
+        let before = store.cueStates[net]?.state
+        XCTAssertEqual(before, .idle)
+        XCTAssertNil(app.handleKeyDown(try key("v", code: 9)), "V is Preview Selected")
+        let got = await received(one)
+        XCTAssertEqual(got, "/lights/go i:5")
+        let again = try await quiet()
+        XCTAssertTrue(again, "sent once")
+        XCTAssertEqual(store.cueStates[net]?.state, before, "no state change")
+        XCTAssertTrue(store.previewing.isEmpty)
+        XCTAssertEqual(store.playheads[list], net, "the playhead stays")
+    }
+
+    func testPreviewSelectedKeyOnADisarmedNetworkCueSendsNothing() async throws {
+        try await setMessageAndWait("/lights/go 5")
+        inspector.armedCheck.performClick(nil)
+        await assertEventually("disarmed") { self.store.model?.cue(self.net)?.raw["armed"] == .bool(false) }
+        wc.window?.makeFirstResponder(nil)
+        XCTAssertNil(app.handleKeyDown(try key("v", code: 9)))
+        let silent = try await quiet()
+        XCTAssertTrue(silent, "a disarmed cue sends nothing")
+    }
+
     func testSendFromADisarmedCueSendsNothing() async throws {
         try await setMessageAndWait("/lights/go 5")
         inspector.armedCheck.performClick(nil)

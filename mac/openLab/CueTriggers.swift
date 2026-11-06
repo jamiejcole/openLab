@@ -68,8 +68,7 @@ enum HotkeyRules {
         if chord.key == KeyChord.escape || TransportKeys.isArrow(chord) { return .reserved }
         if chord.hotkeyJSON == nil { return .unsupported }
         if TransportKeys.editKeys[chord] != nil { return .editKey }
-        // The fixed app defaults (V, S) yield to a cue hotkey, so they do not refuse it.
-        if let command = keys.command(for: chord), !TransportKeys.fixed.contains(where: { $0.0 == command }) {
+        if let command = keys.command(for: chord) {
             return .duplicate(of: command)
         }
         if menuChords.contains(chord) { return .menuKey }

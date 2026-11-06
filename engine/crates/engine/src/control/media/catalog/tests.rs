@@ -72,6 +72,23 @@ fn a_reprobe_keeps_the_last_answer_until_the_new_one() {
     assert_eq!(cat.pending(), 0);
 }
 
+#[test]
+fn a_reprobe_of_a_file_no_cue_uses_does_nothing() {
+    let (tx, _rx) = crossbeam_channel::unbounded();
+    let mut cat = MediaCatalog::with_own_pool(
+        tx,
+        None,
+        0,
+        fake,
+        Duration::from_secs(30),
+        ProbeClock::system(),
+    )
+    .unwrap();
+    cat.reprobe("/abs/gone.wav");
+    assert_eq!(cat.pending(), 0);
+    assert!(cat.get("/abs/gone.wav").is_none());
+}
+
 // ----- following edits from their footprints and preload changes -----
 
 use openlab_core::{Command, CueProperty, GroupMode, History, Position, load_show};
