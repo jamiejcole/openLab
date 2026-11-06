@@ -101,6 +101,7 @@ enum AX {
     static let overrideNote = "override-note"
     static let footerNotice = "footer-notice"
     static let footerCount = "footer-count"
+    static let warningsButton = "footer-warnings"
     static let sidebarWarnings = "sidebar-warnings"
     static let warningsCount = "warnings-count"
     static let warningRelink = "warning-relink"

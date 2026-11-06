@@ -283,7 +283,8 @@ jobs:
       # (`changes.app_engine`, scripts/paths.sh); otherwise the engine-free unit tests (`make
       # test-mac-unit`, where the real-engine tests report a skip). The full UI suite is slow and flaky,
       # so it runs on the nightly schedule (and on demand), where a failure turns the run red and the
-      # `alert` job opens the ci-red issue.
+      # `alert` job opens the ci-red issue, unless its spindump proves the runner's WindowServer wedged
+      # and a retry passes (scripts/run-mac-tests.sh).
       # Below the job's 45 minutes, so a hung run is cancelled here and the step below still uploads its results.
       - timeout-minutes: 38
         run: make ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'test-mac-ui-full' || (needs.changes.outputs.app_engine == 'true' && 'test-mac' || 'test-mac-unit') }}

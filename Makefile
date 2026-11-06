@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 XCODEBUILD := xcodebuild -project mac/openLab.xcodeproj -scheme openLab -derivedDataPath build
+# A hung test fails by name in minutes, not as a job stuck until the runner's limit; a hang the spindump
+# proves is the runner's WindowServer, not the test, runs again once (scripts/run-mac-tests.sh).
+MAC_TESTS_WITH_LIMIT := scripts/run-mac-tests.sh $(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" \
+	-test-timeouts-enabled YES -default-test-execution-time-allowance 180
 # The per-PR UI tests (scripts/ui-smoke.txt) as -only-testing arguments.
 UI_SMOKE := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/ui-smoke.txt),-only-testing:$(t))
 
@@ -80,21 +84,17 @@ miri:
 # The engine-free unit tests: what every app PR runs. The tests that start the real engine report a
 # skip (OPENLAB_ENGINE_TESTS=skip reaches the test process through xcodebuild's TEST_RUNNER_ prefix).
 test-mac-unit: project
-	TEST_RUNNER_OPENLAB_ENGINE_TESTS=skip $(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -only-testing:openLabTests test
+	TEST_RUNNER_OPENLAB_ENGINE_TESTS=skip $(MAC_TESTS_WITH_LIMIT) -- -only-testing:openLabTests
 
 # Every unit test, real-engine ones included, plus the UI smoke set (scripts/ui-smoke.txt): what a PR
 # that changes the engine, the protocol, the app's engine client, its tests or project runs (scripts/paths.sh).
 test-mac: project
 	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
-	# A hung test fails by name in minutes, not as a job stuck until the runner's limit.
-	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -test-timeouts-enabled YES \
-		-default-test-execution-time-allowance 180 -only-testing:openLabTests $(UI_SMOKE) test
+	$(MAC_TESTS_WITH_LIMIT) -- -only-testing:openLabTests $(UI_SMOKE)
 
 # Every unit test and the whole UI suite: what the nightly run does.
 test-mac-ui-full: project
-	# A hung test fails by name in minutes, not as a job stuck until the runner's limit.
-	$(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -test-timeouts-enabled YES \
-		-default-test-execution-time-allowance 180 test
+	$(MAC_TESTS_WITH_LIMIT) --
 
 mac: project
 	$(XCODEBUILD) -configuration Release build

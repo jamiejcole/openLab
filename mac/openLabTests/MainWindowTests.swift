@@ -815,7 +815,8 @@ final class InspectorWindowFrameTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        wc.window?.close()
+        // Nil when setUp skipped or threw before making the window.
+        wc?.window?.close()
         wc = nil
     }
 
