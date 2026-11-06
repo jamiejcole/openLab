@@ -105,10 +105,12 @@ impl DocCx<'_> {
         // playhead behind a hundred others).
         let keys: Vec<String> = wanted
             .iter()
-            .filter_map(|c| match &self.doc.model.ws().find_cue(*c)?.kind {
-                CueKind::Audio { media: Some(m), .. } => Some(m.as_str().to_owned()),
-                _ => None,
-            })
+            .filter_map(
+                |c| match &self.doc.media.index().locate(self.doc.model.ws(), *c)?.kind {
+                    CueKind::Audio { media: Some(m), .. } => Some(m.as_str().to_owned()),
+                    _ => None,
+                },
+            )
             .collect();
         self.doc.media.prioritize(keys.iter().map(String::as_str));
         let floor = self.stop_floor();
@@ -151,20 +153,18 @@ impl DocCx<'_> {
     }
 }
 
-/// The cues to keep primed: from each list's playhead the next `per_list` audio cues, the
-/// targets of those cues, then every cue with a hotkey or OSC trigger (ARCHITECTURE §3.5).
-/// Disarmed and running cues are left out (a start of a running cue makes a new voice anyway).
+/// The cues to keep primed: from each list's playhead the next `per_list` cues (any kind; the
+/// audio ones count), the targets of those cues, then every cue with a hotkey or OSC trigger
+/// (ARCHITECTURE §3.5). Disarmed and running cues are left out (a start of a running cue makes
+/// a new voice anyway).
 ///
 /// Reads the playhead window and the targets through the cue index, so they cost the cues
 /// named and their depth, not the length of the lists (#411). The trigger pass still tests
-/// every cue's two trigger fields: a flag test with no allocation, which a trigger set kept up
-/// from edit footprints would save only at the price of a second index that could go stale.
-/// The same answer as [`prime_set_walk`], which also covers a workspace with duplicate cue ids
-/// (the index places only the first of them).
+/// every cue's two trigger fields (a walk that allocates a small stack, no per-cue search),
+/// which a trigger set kept up from edit footprints would save only at the price of a second
+/// index that could go stale. Cue ids are unique (commands and opening refuse duplicates); if
+/// they were not, the index places the first cue with an id, as `find_cue` does.
 fn prime_set(ws: &Workspace, engine: &CueEngine, index: &CueIndex, per_list: usize) -> Vec<CueId> {
-    if index.has_duplicates() {
-        return prime_set_walk(ws, engine, per_list);
-    }
     let mut wanted = Wanted::default();
     let mut targets = Vec::new();
     for list in &ws.cue_lists {
@@ -201,7 +201,8 @@ fn prime_set(ws: &Workspace, engine: &CueEngine, index: &CueIndex, per_list: usi
 }
 
 /// [`prime_set`] by walking each list's positions and searching the workspace for every cue:
-/// the reference it is tested against, and the answer when cue ids repeat.
+/// the reference it is tested against.
+#[cfg(test)]
 fn prime_set_walk(ws: &Workspace, engine: &CueEngine, per_list: usize) -> Vec<CueId> {
     let mut wanted = Wanted::default();
     let mut targets = Vec::new();
@@ -337,7 +338,8 @@ mod tests {
     }
 
     /// The indexed priming set equals the walk's for random shows (groups, targets, triggers,
-    /// disarmed and running cues, two lists, playheads anywhere).
+    /// disarmed and running cues, two lists, a playhead on a random cue of each list or past the
+    /// end).
     #[test]
     fn prime_set_equals_a_full_walk() {
         let (mut base, template) = example();
@@ -382,20 +384,87 @@ mod tests {
         assert!(with_targets > 50, "starts with a target: {with_targets}");
     }
 
-    /// Cue ids repeating (an invalid show) give the walk's answer, not the index's.
-    #[test]
-    fn prime_set_with_duplicate_ids_is_the_walk() {
-        let (mut ws, template) = example();
-        if let Some(list) = ws.cue_lists.first_mut() {
-            list.cues = vec![template.clone(), template];
+    fn audio(template: &Cue, n: u128) -> Cue {
+        let mut c = template.clone();
+        c.id = cue_id(n);
+        c.number = None;
+        c.armed = true;
+        c.continue_mode = openlab_core::ContinueMode::DoNotContinue;
+        c.triggers.hotkey = None;
+        c.triggers.osc = None;
+        if let CueKind::Audio { media, .. } = &mut c.kind {
+            *media = Some(MediaRef::new("a.wav"));
         }
+        c
+    }
+
+    /// Exact answers for the cases the property test cannot name: a running cue and a disarmed
+    /// one in the window are left out, a cue with only an OSC trigger or only a hotkey is
+    /// added after the window, and a playhead standing on a cue of another list starts the
+    /// list at its first cue.
+    #[test]
+    fn prime_set_leaves_out_running_and_disarmed_and_adds_triggers() {
+        let (mut ws, template) = example();
+        let mut second = ws.cue_lists[0].clone();
+        second.id = CueListId(uuid::Uuid::from_u128(9_999_999));
+        ws.cue_lists.push(second);
+        let n = |k: u128| audio(&template, k);
+        let (mut disarmed, mut osc, mut hotkey) = (n(2), n(4), n(6));
+        disarmed.armed = false;
+        osc.triggers.osc = Some("/x".to_owned());
+        hotkey.triggers.hotkey = Some(Hotkey {
+            key: "a".into(),
+            modifiers: Modifiers::default(),
+        });
+        ws.cue_lists[0].cues = vec![n(1), disarmed, n(3), osc, n(5), hotkey, n(10)];
+        ws.cue_lists[1].cues = vec![n(10), n(11), n(12), n(13)];
+        let first = ws.cue_lists[0].id;
         let mut engine = CueEngine::new(EngineConfig::new(1000, 5, 1).unwrap());
         let _ = engine.handle(&ws, Input::Tick, 0);
-        let index = CueIndex::build(&ws);
-        assert!(index.has_duplicates());
-        assert_eq!(
-            prime_set(&ws, &engine, &index, 3),
-            prime_set_walk(&ws, &engine, 3)
+        let at = Some(cue_id(1));
+        let _ = engine.handle(
+            &ws,
+            Input::SetPlayhead {
+                list: first,
+                cue: at,
+            },
+            0,
         );
+        let _ = engine.handle(&ws, Input::Start { cue: cue_id(1) }, 0);
+        assert!(engine.run_of(cue_id(1)).is_some(), "cue 1 runs");
+        // Cue 10 moves from the second list to the end of the first: the second list's
+        // playhead is on it still.
+        let moved = ws.cue_lists[1].cues.remove(0);
+        ws.cue_lists[0].cues.pop();
+        ws.cue_lists[0].cues.push(moved);
+        assert_eq!(engine.playhead(ws.cue_lists[1].id), Some(cue_id(10)));
+        let index = CueIndex::build(&ws);
+        let got = prime_set(&ws, &engine, &index, 3);
+        let ids = |ks: &[u128]| ks.iter().map(|k| cue_id(*k)).collect::<Vec<_>>();
+        assert_eq!(got, ids(&[3, 11, 12, 13, 4, 6]));
+        assert_eq!(got, prime_set_walk(&ws, &engine, 3));
+    }
+
+    /// A pass reads the cues it names, not the length of the list: the index lookups it makes
+    /// are the same in a show of 100 cues and one of 2,000, playhead near the far end.
+    #[test]
+    fn prime_set_lookups_do_not_grow_with_the_show() {
+        let (base, template) = example();
+        let steps = |cues: u128| {
+            let mut ws = base.clone();
+            ws.cue_lists[0].cues = (1..=cues).map(|k| audio(&template, k)).collect();
+            let mut engine = CueEngine::new(EngineConfig::new(1000, 5, 1).unwrap());
+            let _ = engine.handle(&ws, Input::Tick, 0);
+            let list = ws.cue_lists[0].id;
+            let cue = Some(cue_id(cues - 10));
+            let _ = engine.handle(&ws, Input::SetPlayhead { list, cue }, 0);
+            let index = CueIndex::build(&ws);
+            let got = prime_set(&ws, &engine, &index, 8);
+            assert_eq!(got.len(), 8);
+            index.lookup_steps()
+        };
+        let small = steps(100);
+        assert!(small > 0, "the pass looks cues up through the index");
+        assert_eq!(steps(2000), small);
     }
 }
