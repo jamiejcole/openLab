@@ -16,14 +16,11 @@ extension AppController {
         let cueChords = Set((store.model?.cueHotkeys ?? []).map(\.chord))
         let menu = menuChords()
         let cached = keyCache[id]
-        // Only the key map and the cue hotkeys move keys: another setting changing re-warns nothing.
-        let same = cached?.hotkeys == hotkeys && cached?.cueChords == cueChords
-        let keys =
-            same
-            ? (cached?.keys ?? TransportKeys(settings: settings, cueChords: cueChords))
-            : TransportKeys(settings: settings, cueChords: cueChords)
-        // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire); the
-        // fixed app defaults (V, S) already yielded to cue hotkeys inside `TransportKeys`.
+        // Only the key map moves keys: another setting or a cue hotkey changing re-reads and re-warns nothing
+        // about the map (a cue hotkey moving is told through `shadowed` below).
+        let same = cached?.hotkeys == hotkeys
+        let keys = same ? (cached?.keys ?? TransportKeys(settings: settings)) : TransportKeys(settings: settings)
+        // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire), V and S included.
         // A menu command's key (Cmd-J, Shift-Cmd-Down, ...) is taken before a cue hotkey is looked
         // at (`fireCueHotkeys`), so a cue on one never fires either: warn for it the same way.
         let transportShadowed = cueChords.intersection(keys.chords.values)
@@ -33,7 +30,7 @@ extension AppController {
         // QLab does): the menu command has lost its key in this workspace, and the operator is told.
         let lost = keys.chords.filter { menu.contains($0.value) }
         if let cached, same, cached.shadowed == shadowed, cached.lost == lost { return cached.keys }
-        keyCache[id] = (hotkeys, cueChords, shadowed, lost, keys)
+        keyCache[id] = (hotkeys, shadowed, lost, keys)
         if !same {
             for warning in keys.warnings { _ = store.receive(.log(.warn, warning)) }
         }
@@ -140,10 +137,13 @@ extension AppController {
             let roots = CueEditor.topLevel(selected.compactMap { wc.cueList.node($0) })
             await runAll(roots.map { .panicCue(cue: $0.id) }, on: store)
         case .previewSelected:
-            // Audio cues only (the engine ignores other kinds); each toggles on its own preview state.
-            let audio = selected.filter { store.model?.cue($0)?.kindType == "audio" }
+            // Audio cues toggle on their own preview state; a Network cue's preview sends its message once
+            // (the inspector's Send) and holds no state, so it is never in `previewing`. Only these kinds are
+            // sent: groups and the rest are left out for now (#556).
+            let previewable = selected.filter { ["audio", "network"].contains(store.model?.cue($0)?.kindType) }
             await runAll(
-                audio.map { store.previewing.contains($0) ? .stopPreview(cue: $0) : .preview(cue: $0) }, on: store)
+                previewable.map { store.previewing.contains($0) ? .stopPreview(cue: $0) : .preview(cue: $0) },
+                on: store)
         case .pauseResumeSelected:
             let actions: [TransportAction] = selected.compactMap { id in
                 switch store.cueStates[id]?.state {

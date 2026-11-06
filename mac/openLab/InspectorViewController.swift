@@ -342,6 +342,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         {
             if let id = i.identifier as? String { tabItems[id] = i }
         }
+        // A zero-wide tab view lays its tab strip out at a negative width as tabs are added (AppKit logs
+        // "Invalid view geometry" on macOS 27); Auto Layout sizes it for real below.
+        tabView.frame = NSRect(x: 0, y: 0, width: 320, height: 240)
         syncTabs(forKind: "")
         tabView.setAX(AX.inspectorTabs)
         tabView.delegate = self

@@ -10,7 +10,8 @@ import Combine
 @MainActor
 final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDelegate, NSWindowDelegate {
     let model: WorkspaceSettingsModel
-    let tabs = NSTabView()
+    /// Sized before its tabs are added: a zero-sized tab view lays its tab strip out at a negative width.
+    let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
 
     // General
     let panicField = NSTextField()

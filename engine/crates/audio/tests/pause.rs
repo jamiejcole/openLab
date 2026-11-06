@@ -645,7 +645,7 @@ fn check_stream_no_drift(
         assert_eq!(events(&mut ctl), ended(id, total + shift));
         assert_eq!(ctl.underrun_frames(), 0);
         // `pump` has already freed the returned start.
-        assert_eq!(ctl.leaked_starts(), 0);
+        assert_eq!(ctl.leaked_returns(), 0);
         out
     };
     let reference = run(false);

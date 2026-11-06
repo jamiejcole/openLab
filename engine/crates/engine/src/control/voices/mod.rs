@@ -110,6 +110,9 @@ pub struct VoiceRec {
     /// The sample of the latest resume (a re-key).
     resumed_at: Option<SampleTime>,
     stream_failed: bool,
+    /// The file its stream reads (the cue's file when the record was made, which a relink
+    /// since does not change): probed again when the stream fails.
+    media: Option<String>,
     /// The id it had before its latest resume: the only old id the mixer can still report an
     /// event under (an end before that resume applied). Older ones go with the next meter read.
     prev_id: Option<VoiceId>,
@@ -352,6 +355,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         paused_frames: 0,
         resumed_at: None,
         stream_failed: false,
+        media: None,
         prev_id: None,
         absent: 0,
         listed: false,

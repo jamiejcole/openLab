@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rtrb::{Consumer, RingBuffer};
 
 use crate::controller::MixerController;
-use crate::gain::{Fade, Param};
+use crate::gain::{Fade, Param, Shapes};
 use crate::meter::{Meters, XrunNotifier};
 use crate::plan::{Slice, StreamLink};
 
@@ -40,6 +40,9 @@ pub const MAX_SAMPLE_RATE: u32 = 384_000;
 pub const MAX_BLOCK_FRAMES: usize = 8192;
 /// Capacity of the command queue; also the largest atomic batch.
 pub const COMMAND_CAPACITY: usize = 1024;
+/// The most gains one [`CommandKind::RampSet`] the engine sends holds: every gain of a voice at the
+/// largest size. A longer run of ramps (several Fades of one voice sent together) is split.
+pub const MAX_RAMP_SET: usize = 1 + MAX_OUTPUT_CHANNELS + MAX_VOICE_CHANNELS * MAX_OUTPUT_CHANNELS;
 /// Capacity of the mixer's time-ordered pending set.
 pub const PENDING_CAPACITY: usize = 4096;
 const EVENT_CAPACITY: usize = 1024;
@@ -195,6 +198,15 @@ pub enum CommandKind {
         gain: f32,
         fade: Fade,
     },
+    /// Many [`CommandKind::Ramp`]s of one voice as one command: every gain starts its ramp on the
+    /// same sample, so a block never renders part of a whole-matrix edit (and the edit takes one
+    /// queue slot, so nothing behind it waits). Applied in order, with `fade` meaning what it
+    /// means for `Ramp`. The list goes back on the return queue to be freed on the control thread.
+    RampSet {
+        voice: VoiceId,
+        gains: Box<[(GainTarget, f32)]>,
+        fade: Fade,
+    },
     SetPatchRouting {
         patch: u16,
         cue_output: u16,
@@ -248,6 +260,13 @@ pub enum CommandKind {
         voice: VoiceId,
         new_id: VoiceId,
     },
+}
+
+/// What the audio thread hands back for the control thread to free.
+#[derive(Debug)]
+pub(crate) enum Returned {
+    Start(Box<VoiceStart>),
+    Gains(Box<[(GainTarget, f32)]>),
 }
 
 /// A command on its way to the mixer: applied at sample `at` (or at the start of the next block
@@ -358,7 +377,7 @@ pub(crate) struct Shared {
     pub(crate) disabled: DisabledFlags,
     pub(crate) underrun_frames: AtomicU64,
     pub(crate) dropped_events: AtomicU64,
-    pub(crate) leaked_starts: AtomicU64,
+    pub(crate) leaked_returns: AtomicU64,
     pub(crate) pending_full_blocks: AtomicU64,
     pub(crate) xruns: AtomicU64,
     pub(crate) meters: Meters,
@@ -372,6 +391,8 @@ struct Scratch {
     master: Vec<f32>,
     /// One voice's contribution to one cue output, for its meter.
     acc: Vec<f32>,
+    /// The curve progress of the ramps being rendered.
+    shapes: Shapes,
     /// Frames summed into `acc` (what metering costs per sample).
     #[cfg(test)]
     metered: u64,
@@ -486,7 +507,8 @@ impl Mixer {
 
         let (cmd_tx, cmd_rx) = RingBuffer::new(COMMAND_CAPACITY);
         let (ev_tx, ev_rx) = RingBuffer::new(EVENT_CAPACITY);
-        // Every start the mixer can hold at once: queued, pending, playing, plus one in flight.
+        // Every box the mixer can hold at once: queued, pending, playing, plus one in flight. A
+        // `RampSet`'s list takes the queue or pending slot of its command.
         let (ret_tx, ret_rx) =
             RingBuffer::new(COMMAND_CAPACITY + PENDING_CAPACITY + max_voices + 1);
         let shared = Arc::new(Shared {
@@ -536,6 +558,7 @@ impl Mixer {
                 tmp: vec![0.0; block],
                 master: vec![0.0; block],
                 acc: vec![0.0; block],
+                shapes: Shapes::new(block),
                 #[cfg(test)]
                 metered: 0,
             },

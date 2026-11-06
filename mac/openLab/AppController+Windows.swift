@@ -91,6 +91,7 @@ extension AppController {
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
         launcher.window?.orderOut(nil)
+        launcher.showNotice(nil)
     }
 
     private var hasWorkspaceWindow: Bool {
@@ -98,7 +99,7 @@ extension AppController {
     }
 
     func showLauncherIfNoWindows() {
-        if !hasWorkspaceWindow { showLauncher() }
+        if !hasWorkspaceWindow, !launching { showLauncher() }
     }
 
     func showLauncher() {
