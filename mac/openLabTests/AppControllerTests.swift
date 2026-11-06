@@ -850,7 +850,7 @@ final class AppControllerTests: XCTestCase {
     }
 
     /// Audio and Network cues selected, V twice: each press sends the message once, and the audio cue's
-    /// preview starts, then stops.
+    /// preview starts on the first press and plays on through the second (QLab check V3).
     func testPreviewSelectedWithAudioAndNetworkCuesSelectedSendsOncePerPress() async throws {
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])
@@ -887,19 +887,20 @@ final class AppControllerTests: XCTestCase {
             }
             return got
         }
-        await app.perform(.previewSelected)
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
         let first = await received()
         XCTAssertEqual(first, "/lights/go i:5")
         await assertEventually("the audio cue previews") { store.previewing == [self.intro] }
-        await app.perform(.previewSelected)
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
         let second = await received()
         XCTAssertEqual(second, "/lights/go i:5", "the second press sends again")
-        await assertEventually("the audio preview stops") { store.previewing.isEmpty }
+        XCTAssertTrue(transports(.stopPreview(cue: intro)).isEmpty, "V never stops a preview")
+        XCTAssertEqual(store.previewing, [intro], "the audio preview plays on")
         for _ in 0..<3 { try await advance(0.1) }
         XCTAssertNil(udp.receiveMessage(), "one message per press")
     }
 
-    func testPreviewSelectedTogglesAudioCuesOfTheKeyWindowOnly() async throws {
+    func testPreviewSelectedStartsAudioCuesOfTheKeyWindowOnlyAndNeverStopsThem() async throws {
         let audio = intro
         let wc = try XCTUnwrap(app.windows["1"])
         let store = try XCTUnwrap(app.session.stores["1"])
@@ -909,17 +910,230 @@ final class AppControllerTests: XCTestCase {
         await app.perform(.previewSelected)
         XCTAssertTrue(transports(.preview(cue: audio)).isEmpty)
         keyDoc = "1"
-        await app.perform(.previewSelected)
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        await assertEventually { !transports(.preview(cue: audio)).isEmpty }
         XCTAssertEqual(transports(.preview(cue: audio)), ["1"])
         try await advance()
         await assertEventually("the engine previews it") { store.previewing.contains(audio) }
-        await app.perform(.previewSelected)
-        XCTAssertEqual(transports(.stopPreview(cue: audio)), ["1"])
-        try await advance()
-        await assertEventually("and stops") { !store.previewing.contains(audio) }
+        // A second V on the cue being previewed does nothing (QLab check V3): no stop, no second start.
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        for _ in 0..<3 { try await advance() }
+        XCTAssertTrue(transports(.stopPreview(cue: audio)).isEmpty)
+        XCTAssertEqual(transports(.preview(cue: audio)), ["1"], "the second press sent nothing")
+        XCTAssertTrue(store.previewing.contains(audio), "it plays on")
         wc.cueList.select([fade])
         await app.perform(.previewSelected)
-        XCTAssertTrue(transports(.preview(cue: fade)).isEmpty, "only audio and Network cues")
+        XCTAssertTrue(transports(.preview(cue: fade)).isEmpty, "only audio, group and Network cues")
+    }
+
+    /// A group holding one audio cue, as a show file holds cues (every field), added to the Demo workspace.
+    private func addPreviewGroup(armed: Bool = true) async throws -> (group: ModelID, child: ModelID, other: ModelID) {
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let listID = try XCTUnwrap(wc.cueList.listID)
+        func cue(_ id: String, _ kind: JSONValue) -> JSONValue {
+            var c = TestSnapshots.cueJSON(id: id, number: nil, name: id, kind: kind)
+            c.set("triggers", .object(["hotkey": .null, "osc": .null]))
+            c.set("second_trigger", .string("nothing"))
+            c.set("second_trigger_on_release", .bool(false))
+            return c
+        }
+        let media = try XCTUnwrap(store.model?.cue(intro)?.raw["kind"]?["media"]?.stringValue)
+        let g = ModelID("00000000-0000-0000-0000-0000000000f1")
+        let child = ModelID("00000000-0000-0000-0000-0000000000f3")
+        let other = ModelID("00000000-0000-0000-0000-0000000000f4")
+        var group = cue(
+            g.raw,
+            TestSnapshots.groupKind([
+                cue(child.raw, TestSnapshots.audioKind(media)), cue(other.raw, TestSnapshots.audioKind(media)),
+            ]))
+        group.set("armed", .bool(armed))
+        let added = await store.send(command: .addCue(group, list: listID, parent: nil, index: 0))
+        guard case .success = added else {
+            XCTFail("add_cue refused: \(added)")
+            throw CancellationError()
+        }
+        await assertEventually { wc.cueList.node(child) != nil }
+        wc.cueList.reveal(child)
+        return (g, child, other)
+    }
+
+    /// The label of the preview mark drawn in `id`'s row, nil when it shows none.
+    private func previewMark(_ id: ModelID) -> String? {
+        guard let wc = app.windows["1"], let node = wc.cueList.node(id) else { return nil }
+        let ov = wc.cueList.outlineView
+        let row = ov.row(forItem: node)
+        let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier("status"))
+        guard row >= 0, col >= 0, let cell = ov.view(atColumn: col, row: row, makeIfNecessary: true) as? CueCell,
+            !cell.images[2].isHidden
+        else { return nil }
+        return cell.images[2].accessibilityLabel()
+    }
+
+    /// QLab check V1: a Group previews. Its armed audio cues play and the group and its children show as
+    /// previewing; a second V changes nothing (check V3).
+    func testPreviewSelectedOnAGroupPreviewsItsAudioChildren() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let (g, child, _) = try await addPreviewGroup()
+        wc.cueList.select([g])
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        try await advance()
+        await assertEventually("the group and its child preview") { store.previewing.isSuperset(of: [g, child]) }
+        await assertEventually("both rows draw the mark") {
+            self.previewMark(g) == loc("cue.previewing") && self.previewMark(child) == loc("cue.previewing")
+        }
+        let before = transports(.preview(cue: g)).count
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        for _ in 0..<3 { try await advance() }
+        XCTAssertEqual(transports(.preview(cue: g)).count, before, "the second press sent nothing")
+        XCTAssertTrue(transports(.stopPreview(cue: g)).isEmpty)
+        XCTAssertTrue(store.previewing.isSuperset(of: [g, child]), "it plays on")
+    }
+
+    /// V previews a Group, so the row menu's Preview is live on one, and a click on its entry previews it.
+    func testRowMenuPreviewIsEnabledOnAGroupAndPreviewsIt() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let (g, child, _) = try await addPreviewGroup()
+        wc.cueList.select([g])
+        let menu = NSMenu()
+        wc.cueList.prepareRowMenu(menu, row: wc.cueList.outlineView.row(forItem: wc.cueList.node(g)))
+        let tag = try XCTUnwrap(CueRowMenu.Item.allCases.firstIndex(of: .preview))
+        let preview = try XCTUnwrap(menu.items.first { $0.tag == tag })
+        XCTAssertTrue(preview.isEnabled, "a group previews")
+        wc.cueList.rowCommand(preview)
+        try await advance()
+        await assertEventually("the group previews") { store.previewing.isSuperset(of: [g, child]) }
+    }
+
+    /// A group's stop ends only the previews it started. S and Stop Selected on a group plus a child
+    /// previewed on its own stop both; and a child stopped alone is previewed again by V on the pair.
+    func testStopSelectedEndsAChildPreviewedOnItsOwnAndVRestartsAStoppedChild() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let (g, c, d) = try await addPreviewGroup()
+        wc.cueList.select([c])
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        try await advance()
+        await assertEventually("C previews on its own") { store.previewing == [c] }
+        wc.cueList.select([g])
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        try await advance()
+        await assertEventually("the group starts D") { store.previewing.isSuperset(of: [g, c, d]) }
+        wc.cueList.select([g, c])
+        XCTAssertNil(app.handleKeyDown(try keyEvent("s")))
+        await assertEventually("S ends C as well as the group's previews") { store.previewing.isEmpty }
+
+        // V on the group, D stopped alone, then V on group and D: D plays again.
+        wc.cueList.select([g])
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        try await advance()
+        await assertEventually { store.previewing.isSuperset(of: [g, c, d]) }
+        _ = await store.transport(.stopPreview(cue: d))
+        await assertEventually("D stopped alone") { !store.previewing.contains(d) && store.previewing.contains(g) }
+        wc.cueList.select([g, d])
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        try await advance()
+        await assertEventually("V restarts D") { store.previewing.contains(d) }
+        wc.cueList.select([g, d])
+        await app.perform(.stopSelected)
+        await assertEventually("Stop Selected ends D too") { !store.previewing.contains(d) }
+    }
+
+    /// A Group and its child both selected: V names the group only, so the engine has nothing to refuse.
+    /// A child under a disarmed group is named too, as the group's preview leaves it out.
+    func testPreviewSelectedWithAGroupAndItsChildWarnsOfNothing() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let (g, child, _) = try await addPreviewGroup()
+        wc.cueList.select([g, child])
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        try await advance()
+        await assertEventually { store.previewing.isSuperset(of: [g, child]) }
+        XCTAssertTrue(transports(.preview(cue: child)).isEmpty, "the group's preview covers the child")
+        XCTAssertFalse(store.logEntries.contains { $0.message.contains("already being previewed") })
+        _ = await store.transport(.stopPreview(cue: g))
+        await assertEventually { store.previewing.isEmpty }
+        let disarmed = await store.send(command: .setProperty(g, .armed(false)))
+        guard case .success = disarmed else { return XCTFail("armed") }
+        await assertEventually { store.model?.cue(g)?.raw["armed"] == .bool(false) }
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        try await advance()
+        await assertEventually("the child under the disarmed group previews") { store.previewing.contains(child) }
+        XCTAssertFalse(store.previewing.contains(g), "a disarmed group does not preview")
+    }
+
+    /// The inspector button on a Group: Preview, Stop Preview, Preview again, with the row marks and the
+    /// button title following.
+    func testInspectorPreviewButtonOnAGroupPreviewsStopsAndPreviewsAgain() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let (g, child, _) = try await addPreviewGroup()
+        wc.cueList.select([g])
+        wc.inspector.setSelection([g])
+        let button = wc.inspector.previewButton
+        await assertEventually("enabled for a group") { button.isEnabled }
+        XCTAssertEqual(button.title, loc("inspector.preview"))
+        for round in 1...2 {
+            button.performClick(nil)
+            try await advance()
+            await assertEventually("round \(round): previewing") { store.previewing.isSuperset(of: [g, child]) }
+            await assertEventually("round \(round): marks") {
+                self.previewMark(g) == loc("cue.previewing") && self.previewMark(child) == loc("cue.previewing")
+            }
+            await assertEventually("round \(round): title") { button.title == loc("inspector.stopPreview") }
+            button.performClick(nil)
+            try await advance()
+            await assertEventually("round \(round): stopped") { store.previewing.isEmpty }
+            await assertEventually("round \(round): marks clear") {
+                self.previewMark(g) == nil && self.previewMark(child) == nil
+            }
+            await assertEventually("round \(round): title back") { button.title == loc("inspector.preview") }
+        }
+        button.performClick(nil)
+        await assertEventually("a third Preview") { store.previewing.contains(g) }
+    }
+
+    /// In Show Mode the inspector button is hidden, so S, Stop Selected and the row's Panic must end a
+    /// preview, whether the cue is only previewing (a group) or also playing in the show.
+    func testPanicAndStopSelectedEndPreviewsInShowMode() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let (g, child, _) = try await addPreviewGroup()
+        wc.setShowMode(true)
+        await assertEventually { store.showMode }
+        func preview(_ id: ModelID) async throws {
+            wc.cueList.select([id])
+            XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+            try await advance()
+            await assertEventually("previewing \(id.raw)") { store.previewing.contains(id) }
+        }
+        try await preview(g)
+        XCTAssertNil(app.handleKeyDown(try keyEvent("s")), "S")
+        await assertEventually("S ends the group's preview") { store.previewing.isEmpty }
+        await assertEventually("and its marks") { self.previewMark(g) == nil && self.previewMark(child) == nil }
+
+        try await preview(g)
+        await app.perform(.stopSelected)
+        await assertEventually("Stop Selected ends it") { store.previewing.isEmpty }
+
+        try await preview(g)
+        await app.perform(.panicSelected)  // the row menu's Panic runs this command
+        await assertEventually("the row's Panic ends it") { store.previewing.isEmpty }
+
+        // A cue both playing in the show and previewing: the batch cannot name it twice, so the stop is apart.
+        try await preview(intro)
+        XCTAssertNil(app.handleKeyDown(try keyEvent("s")))
+        await assertEventually("S ends the preview and panics the cue") {
+            !store.previewing.contains(self.intro) && store.cueStates[self.intro]?.state == .stopping
+        }
     }
 
     func testDisconnectClearsPreviewMarksAndInspectorButton() async throws {
