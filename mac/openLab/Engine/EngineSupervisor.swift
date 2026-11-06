@@ -22,11 +22,14 @@ final class EngineSupervisor {
         case engineStopped(crashed: Bool)
         /// No engine could be started (or several in a row died at once).
         case cannotStart(String)
-        /// A live engine accepts connections but sends no `welcome`, `probeAttempts` times in a
-        /// row at launch, or the engine this app spawned wrote its file and failed `probeAttempts`
-        /// attempts. It is not signalled for this (its audio may be playing): the operator is
-        /// told. Taken down when an engine answers.
+        /// A live engine this app did not spawn accepts connections but sends no `welcome`,
+        /// `probeAttempts` times in a row at launch. It is not signalled (its audio may be
+        /// playing): the operator is told. Taken down when an engine answers.
         case notResponding
+        /// The engine this app spawned wrote its file and failed `probeAttempts` attempts. No
+        /// connection has reached it, so nothing plays on it: it is ended at its deadline
+        /// (`startTimedOut`) unless it answers first. Taken down when an engine answers.
+        case newEngineNotAnswering
         /// The engine this app spawned wrote no `engine.json` in time, or wrote it and did not
         /// answer in time: it is being ended and replaced (within the spawn limit). Taken down
         /// when an engine answers.
@@ -43,7 +46,8 @@ final class EngineSupervisor {
     /// signal): the next engine's autosaves are worth offering. Cleared by whoever offers them.
     var recoveryPending = false
 
-    /// Failed connection attempts to a live but silent engine before it is ended, at launch.
+    /// Failed connection attempts before something is done about a live engine: one not spawned
+    /// here is ended at launch if silent, or alarmed if busy; one spawned here is alarmed.
     var probeAttempts = 3
     /// How long an engine gets to exit after SIGTERM (its shutdown is bounded under 20 s on a
     /// hung disk), and after SIGKILL.
@@ -244,7 +248,7 @@ final class EngineSupervisor {
             unansweredAttempts += 1
             guard unansweredAttempts == probeAttempts else { return }
             engineLog.error("engine pid \(pid, privacy: .public) wrote engine.json but does not answer")
-            alarms.send(.notResponding)
+            alarms.send(.newEngineNotAnswering)
         default: break
         }
     }

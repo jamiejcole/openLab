@@ -365,7 +365,7 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     /// Spawned here, its file naming a port nobody answers on: alive, no connection can reach it.
-    private func spawnsSilentEngines(from first: Int32 = 900, silent: Int = 1) {
+    private func spawnsSilentEngines(silent: Int = 1) {
         var count = 0
         processes.onSpawn = { [unowned self] in
             count += 1
@@ -374,7 +374,7 @@ final class EngineSupervisorTests: XCTestCase {
                 processes.info = .success(engineInfo)
                 return enginePid
             }
-            let pid = first + Int32(count)
+            let pid = 900 + Int32(count)
             processes.alive.insert(pid)
             processes.info = .success(EngineConnectionInfo(port: deadPort, token: engine.token, pid: pid))
             return pid
@@ -396,19 +396,20 @@ final class EngineSupervisorTests: XCTestCase {
         supervisor.start()
         let alarmed = await pump { !self.alarms.isEmpty }
         XCTAssertTrue(alarmed)
-        XCTAssertEqual(alarms, [.notResponding])
+        XCTAssertEqual(alarms, [.newEngineNotAnswering])
         XCTAssertTrue(presenter.isVisible)
         XCTAssertEqual(presenter.shown.last?.title, loc("engine.alarm.notResponding"))
+        XCTAssertEqual(presenter.shown.last?.message, loc("engine.alarm.newEngineNotAnswering"))
         clock += supervisor.startDeadline - 1
         await spin(5)
-        XCTAssertEqual(alarms, [.notResponding], "raised once")
+        XCTAssertEqual(alarms, [.newEngineNotAnswering], "raised once")
         XCTAssertTrue(processes.signals.isEmpty, "within the deadline")
         XCTAssertEqual(processes.spawns, 1)
         processes.info = .success(EngineConnectionInfo(port: engine.port, token: engine.token, pid: 901))
         let ok = await pump { self.session.connectionState == .connected }
         XCTAssertTrue(ok)
         await assertEventually { !presenter.isVisible }
-        XCTAssertEqual(alarms, [.notResponding])
+        XCTAssertEqual(alarms, [.newEngineNotAnswering])
         XCTAssertTrue(processes.signals.isEmpty)
         withExtendedLifetime(controller) {}
     }
@@ -425,10 +426,10 @@ final class EngineSupervisorTests: XCTestCase {
         _ = await pump { self.processes.spawns == 2 }
         XCTAssertEqual(processes.signals.map(\.pid), [901])
         XCTAssertEqual(processes.signals.map(\.signal), [.terminate])
-        XCTAssertEqual(alarms, [.notResponding, .startTimedOut])
+        XCTAssertEqual(alarms, [.newEngineNotAnswering, .startTimedOut])
         XCTAssertEqual(presenter.shown.last?.message, loc("engine.alarm.startTimeout"))
         _ = await pump { self.alarms.count == 3 }
-        XCTAssertEqual(alarms.last, .notResponding, "the new engine's own attempts")
+        XCTAssertEqual(alarms.last, .newEngineNotAnswering, "the new engine's own attempts")
         clock += supervisor.startDeadline
         await spin(5)
         XCTAssertEqual(processes.signals.map(\.pid), [901], "its deadline is twice the first")
@@ -437,7 +438,7 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertTrue(ok)
         XCTAssertEqual(processes.signals.map(\.pid), [901, 902])
         XCTAssertEqual(processes.spawns, 3)
-        XCTAssertEqual(alarms, [.notResponding, .startTimedOut, .notResponding, .startTimedOut])
+        XCTAssertEqual(alarms, [.newEngineNotAnswering, .startTimedOut, .newEngineNotAnswering, .startTimedOut])
         await assertEventually { !presenter.isVisible }
         withExtendedLifetime(controller) {}
     }
@@ -461,7 +462,7 @@ final class EngineSupervisorTests: XCTestCase {
                 XCTAssertTrue(next)
             }
         }
-        await assertEventually { self.alarms == [.notResponding] }
+        await assertEventually { self.alarms == [.newEngineNotAnswering] }
         engine.welcomeFault = .none
         let ok = await pump { self.session.connectionState == .connected }
         XCTAssertTrue(ok)
@@ -477,7 +478,7 @@ final class EngineSupervisorTests: XCTestCase {
         supervisor.start()
         let alarmed = await pump { !self.alarms.isEmpty }
         XCTAssertTrue(alarmed)
-        XCTAssertEqual(alarms, [.notResponding])
+        XCTAssertEqual(alarms, [.newEngineNotAnswering])
         XCTAssertTrue(processes.signals.isEmpty)
     }
 
@@ -524,13 +525,13 @@ final class EngineSupervisorTests: XCTestCase {
         engine.dropConnections()
         let alarmed = await pump { self.alarms.count == 2 }
         XCTAssertTrue(alarmed)
-        XCTAssertEqual(alarms, [.engineStopped(crashed: false), .notResponding])
+        XCTAssertEqual(alarms, [.engineStopped(crashed: false), .newEngineNotAnswering])
         XCTAssertTrue(processes.signals.isEmpty)
         clock += supervisor.startDeadline
         let ok = await pump { self.session.connectionState == .connected }
         XCTAssertTrue(ok)
         XCTAssertEqual(processes.signals.map(\.pid), [901])
-        XCTAssertEqual(alarms, [.engineStopped(crashed: false), .notResponding, .startTimedOut])
+        XCTAssertEqual(alarms, [.engineStopped(crashed: false), .newEngineNotAnswering, .startTimedOut])
     }
 
     /// The attempts that ended an engine not spawned here say nothing about the one that replaces it.
@@ -545,7 +546,7 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(alarms, [], "the replacement has failed no attempt yet")
         let alarmed = await pump { !self.alarms.isEmpty }
         XCTAssertTrue(alarmed)
-        XCTAssertEqual(alarms, [.notResponding])
+        XCTAssertEqual(alarms, [.newEngineNotAnswering])
         XCTAssertEqual(processes.signals.map(\.pid), [old], "the replacement is left alone within its deadline")
     }
 
@@ -576,6 +577,7 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(alarms, [.notResponding], "the operator is told once, the engine is left alone")
         XCTAssertTrue(presenter.isVisible, "the alarm is up")
         XCTAssertEqual(presenter.shown.last?.title, loc("engine.alarm.notResponding"))
+        XCTAssertEqual(presenter.shown.last?.message, loc("engine.alarm.notRespondingMessage"))
         // It answers in the end: attached, nothing was lost, and the alarm (which says to quit the
         // engine) goes away.
         engine.welcomeFault = .none
@@ -990,7 +992,9 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertFalse(processes.isEngine(first), "the first engine exited on SIGTERM")
         XCTAssertEqual(
             presenter.shown.map(\.title), [loc("engine.alarm.notResponding"), loc("engine.alarm.cannotStart")])
-        XCTAssertEqual(presenter.shown.last?.message, loc("engine.alarm.startTimeout"))
+        XCTAssertEqual(
+            presenter.shown.map(\.message),
+            [loc("engine.alarm.newEngineNotAnswering"), loc("engine.alarm.startTimeout")])
         await assertEventually { !self.presenter.isVisible }
     }
 
