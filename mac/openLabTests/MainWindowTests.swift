@@ -56,25 +56,9 @@ final class MainWindowTests: XCTestCase {
         }.joined(separator: "\n")
     }
 
-    /// Every view under `root` (itself included) whose frame or bounds has a negative size, named by its class
-    /// path and accessibility identifier: AppKit's own "width is negative" report (#530) names no view.
-    private func negativeViews(_ root: NSView) -> [String] {
-        func walk(_ view: NSView, _ path: String) -> [String] {
-            let id = view.accessibilityIdentifier()
-            let here = path + "/" + String(describing: type(of: view)) + (id.isEmpty ? "" : "[\(id)]")
-            var found: [String] = []
-            if view.frame.width < 0 || view.frame.height < 0 || view.bounds.width < 0 || view.bounds.height < 0 {
-                found.append("\(here) frame \(view.frame) bounds \(view.bounds)")
-            }
-            for sub in view.subviews { found += walk(sub, here) }
-            return found
-        }
-        return walk(root, "")
-    }
-
     /// A real window, shown at the smallest size it allows, at a small screen's size and at a large one,
-    /// with each area hidden and shown, lays out without AppKit reporting a conflicting constraint (the
-    /// report is read from stderr: AppKit offers nothing else to assert on).
+    /// with each area hidden and shown, lays out without AppKit reporting a conflicting constraint or an invalid view
+    /// geometry (both are read from stderr: AppKit offers nothing else to assert on).
     func testWindowLaysOutCleanlyAtEverySize() throws {
         var made: WorkspaceWindowController?
         // The window is built inside the capture: its first layout is where a conflict used to show.
@@ -83,11 +67,9 @@ final class MainWindowTests: XCTestCase {
         let window = try XCTUnwrap(wc.window)
         func layout() { window.contentView?.layoutSubtreeIfNeeded() }
         var problems: [String] = first.isEmpty ? [] : ["built: \(first.prefix(200))"]
-        if let root = window.contentView { problems += negativeViews(root).map { "built, negative: \($0)" } }
         func step(_ what: String, _ body: () -> Void) {
             let report = stderrText(body)
             if !report.isEmpty { problems.append("\(what): \(report.prefix(200))") }
-            if let root = window.contentView { problems += negativeViews(root).map { "\(what), negative: \($0)" } }
         }
         step("shown") {
             window.orderFront(nil)
@@ -115,13 +97,20 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(problems, [], "AppKit reported a layout problem")
     }
 
-    /// The inspector's tab view is given a size before its tabs are added, so its tab strip is never laid out
-    /// at a negative width (macOS 27 reports that, #530).
-    func testInspectorTabViewStartsWithRoomForItsTabStrip() throws {
-        let wc = try controller()
-        let tabs = wc.inspector.tabView
-        XCTAssertGreaterThan(tabs.frame.width, 0)
-        XCTAssertEqual(negativeViews(tabs), [])
+    /// Windows whose tab views gain their tabs while being built (the inspector's, the settings window's and
+    /// the patch editor's) build without AppKit reporting an invalid view geometry: a tab view with no size
+    /// lays its tab strip out at a negative width on macOS 27 (#530).
+    func testTabViewsAreSizedBeforeTheirTabsAreAdded() throws {
+        let store = try Rig.offline(TestSnapshots.show()).store
+        let patch = try XCTUnwrap(store.model?.patches.first?.id)
+        var built: [AnyObject] = []
+        XCTAssertEqual(
+            stderrText {
+                built.append(WorkspaceWindowController(store: store))
+                built.append(WorkspaceSettingsWindowController(store: store))
+                built.append(PatchEditorWindowController(store: store, patch: patch))
+            }, "")
+        XCTAssertEqual(built.count, 3)
     }
 
     /// A cue-list column dragged to nothing leaves its cells zero wide: they lay out without a conflict.
