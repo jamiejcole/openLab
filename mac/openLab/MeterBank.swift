@@ -206,7 +206,9 @@ final class MeterView: NSView {
     /// Whether a window is covered: asked when the view joins a window (`atJoin`) and on each
     /// occlusion change. At join only an active app is believed, as a headless host reports a
     /// non-visible state for windows that are on screen.
-    var windowIsCovered: (_ window: NSWindow, _ atJoin: Bool) -> Bool = { w, atJoin in
+    var windowIsCovered = MeterView.defaultWindowIsCovered
+    /// What new views ask (a test host overrides it for every view it makes).
+    static var defaultWindowIsCovered: (_ window: NSWindow, _ atJoin: Bool) -> Bool = { w, atJoin in
         (!atJoin || NSApp.isActive) && !w.occlusionState.contains(.visible)
     }
     private var observer: NSObjectProtocol?

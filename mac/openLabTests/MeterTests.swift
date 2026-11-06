@@ -32,7 +32,11 @@ final class MeterTests: XCTestCase {
     private var window: NSWindow!
     private var view: MeterView!
 
+    private static let shippedCoverCheck = MeterView.defaultWindowIsCovered
+
     override func setUp() async throws {
+        // A host that is the active app reports its on-screen windows as covered.
+        MeterView.defaultWindowIsCovered = { _, _ in false }
         ticker = FakeTicker()
         let t = ticker!
         bank = MeterBank(startTicker: { t.start($0) })
@@ -50,6 +54,7 @@ final class MeterTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        MeterView.defaultWindowIsCovered = Self.shippedCoverCheck
         view?.removeFromSuperview()
         window?.orderOut(nil)
     }
