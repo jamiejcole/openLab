@@ -4195,10 +4195,40 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(col("number"), col("type") + 1)
     }
 
-    /// Columns of the cell's left (marker) or right (trailing glyph) 18 points.
-    private func edge(_ p: Pixels, trailing: Bool) -> Pixels {
-        let x = trailing ? p.region.maxX - 18 : p.region.minX
-        return Pixels(rep: p.rep, region: NSRect(x: x, y: 0, width: 18, height: p.region.height), scale: p.scale)
+    /// Columns of the cell's left 18 points, where its marker is.
+    private func edge(_ p: Pixels) -> Pixels {
+        Pixels(rep: p.rep, region: NSRect(x: p.region.minX, y: 0, width: 18, height: p.region.height), scale: p.scale)
+    }
+
+    private func drawnMask(_ p: Pixels) -> [Bool] { p.all.map { Self.drawn($0.r, $0.g, $0.b) } }
+
+    /// `wc`'s cue list in a window of its own, so clicks can reach it through the window.
+    private func show(_ wc: WorkspaceWindowController) -> NSWindow {
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 400), styleMask: [.titled, .resizable],
+            backing: .buffered, defer: false)
+        w.isReleasedWhenClosed = false
+        w.contentView = wc.cueList.view
+        w.makeKeyAndOrderFront(nil)
+        w.layoutIfNeeded()
+        window = w
+        return w
+    }
+
+    /// A mouse press and release in the middle of `button`, delivered the way the window delivers a
+    /// real click, so a view that took the click instead would fail the test.
+    private func click(_ button: NSButton) throws {
+        let window = try XCTUnwrap(button.window)
+        let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+        XCTAssertTrue(window.contentView?.hitTest(point) === button, "the click would land elsewhere")
+        func event(_ type: NSEvent.EventType) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: type, location: point, modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        NSApp.postEvent(try event(.leftMouseUp), atStart: false)  // ends the button's tracking loop
+        window.sendEvent(try event(.leftMouseDown))
     }
 
     private static let drawn: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in r + g + b < 2.2 }
@@ -4226,49 +4256,85 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { h.vc.node(empty) != nil }
         let file = try XCTUnwrap(h.cell("target", H.intro))
         let fade = try XCTUnwrap(h.cell("target", H.fade))
-        XCTAssertFalse(file.images[0].isHidden)
+        XCTAssertFalse(file.chooseButton.isHidden)
         XCTAssertFalse(fade.images[0].isHidden)
-        XCTAssertEqual(file.images[0].accessibilityLabel(), loc("cue.target.file"))
+        XCTAssertEqual(file.chooseButton.accessibilityLabel(), loc("cue.target.file"))
         XCTAssertEqual(fade.images[0].accessibilityLabel(), loc("cue.target.cue"))
         XCTAssertEqual(file.label.stringValue, "a.wav")
-        let f = edge(try pixels(h, "target", H.intro), trailing: false)
-        let c = edge(try pixels(h, "target", H.fade), trailing: false)
+        let f = edge(try pixels(h, "target", H.intro))
+        let c = edge(try pixels(h, "target", H.fade))
         XCTAssertGreaterThan(f.count(Self.drawn), 8, "the file marker is drawn")
         XCTAssertGreaterThan(c.count(Self.drawn), 8, "the cue marker is drawn")
-        XCTAssertNotEqual(
-            f.all.map { Self.drawn($0.r, $0.g, $0.b) }, c.all.map { Self.drawn($0.r, $0.g, $0.b) }, "they differ")
-        let none = try XCTUnwrap(h.cell("target", empty))
+        XCTAssertNotEqual(drawnMask(f), drawnMask(c), "they differ")
+        let none = try XCTUnwrap(h.cell("target", H.group))
         XCTAssertTrue(none.images[0].isHidden, "no target: no marker")
-        XCTAssertEqual(edge(try pixels(h, "target", empty), trailing: false).count(Self.drawn), 0)
+        XCTAssertTrue(none.chooseButton.isHidden, "no target: no marker")
+        XCTAssertEqual(edge(try pixels(h, "target", H.group)).count(Self.drawn), 0)
     }
 
     func testNoFileAudioCueOffersChooseInItsTargetCell() async throws {
         let (rig, empty) = try await targetRig()
         let wc = WorkspaceWindowController(store: rig.store)
-        wc.cueList.view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
         let wav = try tempFiles(["chosen.wav"])[0]
         var asked = 0
         wc.pickAudioFile = {
             asked += 1
             return wav
         }
-        await assertEventually { self.targetCell(wc, empty) != nil }
-        let withFile = try XCTUnwrap(targetCell(wc, H.intro))
-        XCTAssertTrue(withFile.chooseButton.isHidden, "a cue with a file offers no choose")
-        let button = try XCTUnwrap(targetCell(wc, empty)).chooseButton
-        XCTAssertFalse(button.isHidden)
-        XCTAssertNotNil(button.image)
-        XCTAssertEqual(button.accessibilityLabel(), loc("inspector.target.choose"))
+        _ = show(wc)
+        await assertEventually { self.targetCell(wc, empty)?.chooseButton.isHidden == false }
+        let cell = try XCTUnwrap(targetCell(wc, empty))
+        XCTAssertNotNil(cell.chooseButton.image)
+        XCTAssertEqual(cell.chooseButton.accessibilityLabel(), loc("inspector.target.choose"))
+        XCTAssertEqual(cell.chooseButton.toolTip, loc("inspector.target.choose"))
         wc.cueList.selectAsUser([H.fade])
-        button.performClick(nil)
+        try click(cell.chooseButton)
         await assertEventually {
             rig.store.model?.cue(empty)?.raw["kind"]?["media"]?.stringValue == wav.standardizedFileURL.path
         }
         XCTAssertEqual(asked, 1)
         XCTAssertEqual(wc.cueList.selectedIDs(), [H.fade], "the click leaves the selection")
-        await assertEventually { self.targetCell(wc, empty)?.chooseButton.isHidden == true }
-        XCTAssertEqual(targetCell(wc, empty)?.label.stringValue, "chosen.wav")
-        XCTAssertEqual(targetCell(wc, empty)?.images[0].accessibilityLabel(), loc("cue.target.file"))
+        await assertEventually { self.targetCell(wc, empty)?.label.stringValue == "chosen.wav" }
+        XCTAssertEqual(targetCell(wc, empty)?.chooseButton.accessibilityLabel(), loc("cue.target.file"))
+    }
+
+    func testClickingTheFileMarkerChoosesANewFile() async throws {
+        let (rig, _) = try await targetRig()
+        let wc = WorkspaceWindowController(store: rig.store)
+        let wav = try tempFiles(["new.wav"])[0]
+        var picked: URL?
+        var asked = 0
+        wc.pickAudioFile = {
+            asked += 1
+            return picked
+        }
+        _ = show(wc)
+        await assertEventually { self.targetCell(wc, H.intro)?.chooseButton.isHidden == false }
+        let cell = try XCTUnwrap(targetCell(wc, H.intro))
+        XCTAssertEqual(cell.label.stringValue, "a.wav")
+        let other = rig.store.model?.cue(H.door)?.raw["kind"]?["media"]?.stringValue
+        // The chooser cancelled: nothing changes.
+        try click(cell.chooseButton)
+        XCTAssertEqual(asked, 1)
+        XCTAssertEqual(targetCell(wc, H.intro)?.label.stringValue, "a.wav")
+        // A file picked: this cue takes it, and only this cue.
+        picked = wav
+        try click(cell.chooseButton)
+        await assertEventually { self.targetCell(wc, H.intro)?.label.stringValue == "new.wav" }
+        XCTAssertEqual(asked, 2)
+        XCTAssertEqual(targetCell(wc, H.intro)?.chooseButton.accessibilityLabel(), loc("cue.target.file"))
+        XCTAssertEqual(rig.store.model?.cue(H.door)?.raw["kind"]?["media"]?.stringValue, other)
+    }
+
+    func testChooseGlyphIsAFolderDistinctFromTheFileMarkerAndTheGroupIcon() async throws {
+        XCTAssertTrue(Icon.fieldChoose.symbol.hasPrefix("folder"), Icon.fieldChoose.symbol)
+        XCTAssertNotEqual(Icon.fieldChoose.symbol, Icon.kindGroup.symbol)
+        let (rig, empty) = try await targetRig()
+        let h = try await harness(rig)
+        await assertEventually { h.vc.node(empty) != nil }
+        let choose = edge(try pixels(h, "target", empty))
+        XCTAssertGreaterThan(choose.count(Self.drawn), 8, "the choose glyph is drawn")
+        XCTAssertNotEqual(drawnMask(choose), drawnMask(edge(try pixels(h, "target", H.intro))))
     }
 
     func testInspectorTargetGlyphsComeFromTheIconTable() async throws {
@@ -4293,10 +4359,11 @@ final class CueListDrawingTests: XCTestCase {
         clear.performClick(nil)
         await assertEventually { (rig.store.model?.cue(H.door)?.raw["kind"]?["media"]?.stringValue ?? "").isEmpty }
         await assertEventually { self.targetCell(wc, H.door)?.label.stringValue == "" }
+        XCTAssertEqual(targetCell(wc, H.door)?.chooseButton.accessibilityLabel(), loc("inspector.target.choose"))
         await assertEventually { wc.inspector.clearTargetButton.isHidden }
     }
 
-    func testChooseGlyphIsGoneInShowMode() async throws {
+    func testTargetCellButtonIsGoneInShowMode() async throws {
         let (rig, empty) = try await targetRig()
         let wc = WorkspaceWindowController(store: rig.store)
         wc.cueList.view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
@@ -4306,8 +4373,16 @@ final class CueListDrawingTests: XCTestCase {
             return nil
         }
         await assertEventually { self.targetCell(wc, empty)?.chooseButton.isHidden == false }
+        let stale = try XCTUnwrap(targetCell(wc, H.intro))
+        let onChoose = try XCTUnwrap(stale.onChoose)
+        XCTAssertFalse(stale.chooseButton.isHidden)
         wc.setShowMode(true)
-        await assertEventually { self.targetCell(wc, empty)?.chooseButton.isHidden == true }
+        await assertEventually {
+            self.targetCell(wc, empty)?.chooseButton.isHidden == true
+                && self.targetCell(wc, H.intro)?.chooseButton.isHidden == true
+        }
+        XCTAssertEqual(targetCell(wc, H.intro)?.label.stringValue, "a.wav", "the file name stays")
+        onChoose()  // a click already on its way when the mode changed
         XCTAssertEqual(asked, 0)
     }
 

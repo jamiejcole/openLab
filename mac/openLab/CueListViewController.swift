@@ -70,7 +70,7 @@ final class CueCell: NSTableCellView {
     let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView()]
     let label = NSTextField(labelWithString: "")
     let progress = ProgressFillView()
-    /// The Target cell's choose glyph for an Audio cue with no file; clicking it calls `onChoose`.
+    /// An Audio cue's marker in the Target cell, with or without a file; clicking it calls `onChoose`.
     let chooseButton = NSButton(title: "", target: nil, action: nil)
     var onChoose: (() -> Void)?
 
@@ -83,7 +83,7 @@ final class CueCell: NSTableCellView {
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         label.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let views: [NSView] = [images[0], label, images[1], images[2], images[3], chooseButton]
+        let views: [NSView] = [chooseButton, images[0], label, images[1], images[2], images[3]]
         let stack = NSStackView(views: views)
         stack.spacing = 4
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -131,6 +131,18 @@ final class CueCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     @objc private func chooseClicked() { onChoose?() }
+
+    /// Shows the Target cell's button: `label` names it for VoiceOver, the tooltip says what a click does.
+    func showChoose(icon: Icon, label: String, onChoose: @escaping () -> Void) {
+        let image = icon.image(label, compact: true)
+        // Plain, not a template, for the same reason as `setImage`, and to match the cue marker.
+        chooseButton.image = TimeHeaderCell.tinted(
+            image, .secondaryLabelColor, size: image.size, description: label)
+        chooseButton.setAccessibilityLabel(label)
+        chooseButton.toolTip = loc("inspector.target.choose")
+        chooseButton.isHidden = false
+        self.onChoose = onChoose
+    }
 
     /// Shows `symbol` in image `i` (hidden when nil) with an accessibility label and tooltip.
     func setImage(_ i: Int, icon: Icon?, label: String?, tint: NSColor? = nil, tooltip: String? = nil) {
@@ -931,7 +943,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// The plan, and how many of the dragged files it leaves out (not audio).
     var onFileDrop: ((FileDrop, Int) -> Void)?
-    /// The Target cell's choose glyph of an Audio cue with no file was clicked.
+    /// The Target cell's button of an Audio cue was clicked.
     var onChooseFile: ((ModelID) -> Void)?
 
     /// The file URLs of a drag from Finder (empty for a drag of our own rows).
@@ -1305,24 +1317,19 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     private var cueLookup: (ModelID) -> Cue? { { [weak self] in self?.nodes[$0]?.cue ?? self?.store.model?.cue($0) } }
 
-    /// A marker before the Target text (a file or a cue), or for an Audio cue with no file the choose
-    /// glyph after it. A locked (Show Mode) list offers no choose.
+    /// A marker before the Target text. An Audio cue's is a button that chooses its file, whether it
+    /// holds one or not, and is gone in a locked (Show Mode) list, as QLab's Target column button is.
     private func fillTargetMarker(_ cell: CueCell, _ cue: Cue) {
         if cue.kindType == "audio" {
-            if (cue.raw["kind"]?["media"]?.stringValue ?? "").isEmpty {
-                guard !isEditLocked else { return }
-                let label = loc("inspector.target.choose")
-                cell.chooseButton.image = Icon.fieldChoose.image(label, compact: true)
-                cell.chooseButton.setAccessibilityLabel(label)
-                cell.chooseButton.toolTip = label
-                cell.chooseButton.isHidden = false
-                let id = cue.id
-                cell.onChoose = { [weak self] in
-                    guard let self, !self.isEditLocked else { return }
-                    self.onChooseFile?(id)
-                }
-            } else {
-                cell.setImage(0, icon: .targetFile, label: loc("cue.target.file"), tint: .secondaryLabelColor)
+            guard !isEditLocked else { return }
+            let hasFile = !(cue.raw["kind"]?["media"]?.stringValue ?? "").isEmpty
+            let id = cue.id
+            cell.showChoose(
+                icon: hasFile ? .targetFile : .fieldChoose,
+                label: loc(hasFile ? "cue.target.file" : "inspector.target.choose")
+            ) { [weak self] in
+                guard let self, !self.isEditLocked else { return }
+                self.onChooseFile?(id)
             }
         } else if cue.kindType != "network", cue.raw["kind"]?["target"]?.stringValue != nil {
             cell.setImage(0, icon: .targetCue, label: loc("cue.target.cue"), tint: .secondaryLabelColor)
