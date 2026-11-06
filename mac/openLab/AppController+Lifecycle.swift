@@ -22,9 +22,9 @@ extension AppController {
             let first = await self.session.open(path: url.path)
             // An autosave newer than the file (NFR-05): the engine opened nothing; ask, then open.
             guard case .failure(.recoveryOffered(_, let name, let modified)) = first else { return first }
-            // A restore at launch raises no modal over a window in Show Mode (NFR-10): the file stays
-            // closed, with its autosave, and the caller says so.
-            if let onFailure, self.controllers.values.contains(where: \.isShowMode) {
+            // A restore at launch raises no modal over a window in Show Mode (NFR-10), or one that may
+            // yet enter it: the file stays closed, with its autosave, and the caller says so.
+            if let onFailure, !self.restorePromptIsSafe {
                 onFailure(.recoveryOffered(path: url.path, workspaceName: name, modifiedMs: modified))
                 return first
             }
