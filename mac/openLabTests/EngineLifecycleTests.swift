@@ -187,6 +187,60 @@ final class EngineSupervisorTests: XCTestCase {
 
     /// An engine that accepts the connection but is slow to send its welcome (its control loop
     /// is busy while the audio thread plays) is never ended for it (#268).
+    /// An engine this app spawned that stays alive but never writes engine.json is given
+    /// `startDeadline` (a slow cold start is not killed), then alarmed, ended (that pid only) and
+    /// replaced (#486).
+    func testASpawnedEngineThatNeverWritesItsFileIsAlarmedEndedAndReplaced() async throws {
+        let wedged: Int32 = 200
+        var spawnCount = 0
+        processes.onSpawn = { [unowned self] in
+            spawnCount += 1
+            if spawnCount == 1 {
+                processes.alive.insert(wedged)  // alive, no engine.json
+                return wedged
+            }
+            processes.alive.insert(enginePid)
+            processes.info = .success(engineInfo)
+            return enginePid
+        }
+        supervisor.start()
+        clock += supervisor.startDeadline - 1
+        await spin(3)
+        XCTAssertTrue(processes.signals.isEmpty, "still within the deadline: a slow start is not ended")
+        XCTAssertEqual(processes.spawns, 1)
+        clock += 1
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertEqual(processes.signals.map(\.pid), [wedged])
+        XCTAssertEqual(processes.signals.map(\.signal), [.terminate])
+        XCTAssertEqual(processes.spawns, 2)
+        XCTAssertEqual(alarms, [.cannotStart(loc("engine.alarm.startTimeout"))])
+        // Connected: the deadline never applies to a running engine.
+        clock += 10 * supervisor.startDeadline
+        await spin(2)
+        XCTAssertEqual(processes.signals.map(\.pid), [wedged])
+    }
+
+    /// Replacements are within the spawn limit; past it the app stays alarmed, as for other
+    /// start failures.
+    func testEngineStartDeadlinesStayWithinTheSpawnLimit() async throws {
+        var next: Int32 = 300
+        supervisor.startDeadline = 10  // short enough that the spawns fall inside `spawnWindow`
+        processes.onSpawn = { [unowned self] in
+            next += 1
+            processes.alive.insert(next)  // always alive, never writes engine.json
+            return next
+        }
+        supervisor.start()
+        for _ in 0..<4 {
+            clock += supervisor.startDeadline
+            await spin(3)
+        }
+        XCTAssertEqual(processes.spawns, supervisor.maxSpawns)
+        XCTAssertEqual(alarms.last, .cannotStart(loc("engine.alarm.crashLoop")))
+        XCTAssertEqual(processes.signals.count, supervisor.maxSpawns, "each wedged engine is ended once")
+    }
+
     func testALaunchHandshakeTimeoutIsBusyNotSilence() async throws {
         processes.info = .success(engineInfo)
         processes.alive = [enginePid]

@@ -636,6 +636,7 @@
 "engine.alarm.version" = "The engine speaks another protocol version (%@). Reinstall openLab.";
 "engine.alarm.crashLoop" = "The engine keeps stopping. openLab will try again in a minute.";
 "engine.alarm.unkillable" = "An engine that does not answer could not be ended. Restart the computer.";
+"engine.alarm.startTimeout" = "The engine did not start in time. openLab is ending it and trying again.";
 "engine.alarm.missing" = "The engine program is missing: %@. Reinstall openLab.";
 "engine.alarm.spawnFailed" = "The engine program could not be started (error %@).";
 "engine.reattach.reopened" = "The engine was restarted: this workspace was reopened from its file.";
