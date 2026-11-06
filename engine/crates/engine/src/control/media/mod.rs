@@ -13,7 +13,7 @@
 //! answer keeps it, so its cues stay as they are, and may be re-probed afresh. A late answer
 //! still counts. The abandoned thread is leaked: it ends when its read returns, if it ever does.
 //!
-//! Probe scheduling per volume (M2.25b). A volume is the mount a path is on (`bucket_of`, as the
+//! Probe scheduling per volume. A volume is the mount a path is on (`bucket_of`, as the
 //! media watch names them: `/Volumes/<name>`, `/mnt/<name>`, a drive or share; everything else,
 //! the system disk included, is `/`, which is never gated: it mixes the local disk with
 //! automounts and cloud folders, so probes there run as ever, a stuck worker simply replaced).

@@ -89,7 +89,7 @@ fn a_reprobe_of_a_file_no_cue_uses_does_nothing() {
     assert!(cat.get("/abs/gone.wav").is_none());
 }
 
-// ----- following edits from their footprints (M4.12a) and preload changes (M4.12b) -----
+// ----- following edits from their footprints and preload changes -----
 
 use openlab_core::{Command, CueProperty, GroupMode, History, Position, load_show};
 use std::collections::{BTreeMap, BTreeSet};
@@ -281,7 +281,7 @@ fn the_watch_follows_the_files_the_catalog_knows() {
     assert!(matches!(cat.get("sounds/rel.wav"), Some(Probe::Failed)));
 }
 
-/// A doc's files are resolved off the control thread, against its show folder (M4.15i);
+/// A doc's files are resolved off the control thread, against its show folder;
 /// an index resolved against another folder than the catalog's is resolved again.
 #[test]
 fn an_index_resolved_elsewhere_is_resolved_against_the_catalogs_folder() {
@@ -937,7 +937,7 @@ fn a_preload_answer_that_arrives_after_its_release_is_ignored() {
     assert_eq!(cat.preload_reserved(), 0);
 }
 
-// ----- slice-plan checks followed from the catalog's notes (M4.12c) -----
+// ----- slice-plan checks followed from the catalog's notes -----
 
 use crate::control::checks::PlanChecks;
 use openlab_core::SliceMarker;

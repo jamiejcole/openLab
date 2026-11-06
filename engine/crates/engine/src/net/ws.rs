@@ -76,7 +76,7 @@ pub struct ServerConfig {
     pub refusal_log_interval: Duration,
     /// The OSC listeners (docs/osc.md), on this server's runtime. `None`: no OSC.
     pub osc: Option<OscConfig>,
-    /// What to do when an app connection ends without `goodbye` (the UI crashed; M4.9).
+    /// What to do when an app connection ends without `goodbye` (the UI crashed).
     /// `None`: only log it.
     pub relaunch: Option<Relaunch>,
     /// Set when the engine's shutdown begins (by a `goodbye { shutdown: true }` here, or by the
@@ -94,7 +94,7 @@ impl Default for ServerConfig {
             revision_wait: Duration::from_secs(2),
             snapshot_wait: Duration::from_secs(60),
             // Two per open workspace (its window and a spare) plus the app connections, with
-            // room for M4.15's 8 workspaces.
+            // room for 8 workspaces.
             max_connections: 32,
             max_handshaking: 8,
             refusal_log_interval: Duration::from_secs(10),
@@ -227,7 +227,7 @@ impl WsServer {
         self.osc.as_ref().map(osc::Running::stats)
     }
 
-    /// The token a client must present in `hello` (written to `engine.json` by M4.9).
+    /// The token a client must present in `hello` (written to `engine.json`).
     pub fn token(&self) -> &str {
         &self.token
     }

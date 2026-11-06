@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Unclean exits (DX-04, M4.7b): a "running" marker file per engine process, removed on a
+//! Unclean exits (DX-04): a "running" marker file per engine process, removed on a
 //! graceful shutdown. The next start turns a leftover marker into a show-log record, so a
 //! crash the panic hook could not see (an abort, SIGSEGV, SIGKILL, an out-of-memory kill, a
 //! power cut) still leaves a trace. Decision record: docs/handoff/decisions/m4-7b.md.
@@ -170,7 +170,7 @@ pub fn begin(
 }
 
 /// Whether the engine with process id `pid` is running: its marker in `dir` is held by a live
-/// process (M4.9, `engine.json`'s single-instance check). `false` for this process's own pid (a
+/// process (`engine.json`'s single-instance check). `false` for this process's own pid (a
 /// file left by an earlier run whose pid this one reuses), for no marker, and where locks are
 /// unsupported (as for leftovers: such a run cannot be told from a live one, and a start must
 /// not be refused for ever).

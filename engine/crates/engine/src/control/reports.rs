@@ -143,7 +143,7 @@ impl DocCx<'_> {
                 })
                 .collect();
             // Cues without a voice: their actions join the voices' (an audio cue's action is
-            // never among them), their pre-waits and post-waits go in `waits` (M4.2e).
+            // never among them), their pre-waits and post-waits go in `waits`.
             let mut waits: Vec<WaitProgress> = Vec::new();
             let voiced = items.len();
             for t in self.doc.model.engine().timers(rendered) {
@@ -356,7 +356,7 @@ impl DocCx<'_> {
         // The plans just checked give the cues whose slices cannot be played, which the cue
         // engine shows broken before a GO (`Input::SliceProblems`); the cues' nominal lengths,
         // which a playlist halted by a broken child times its auto-follow by
-        // (docs/cue-engine.md, "Playlist"); and the media lengths clients show (M5.4d): only
+        // (docs/cue-engine.md, "Playlist"); and the media lengths clients show: only
         // the cues whose plan changed.
         let changes = self.doc.checks.take_changes();
         if !changes.slices.is_empty() {

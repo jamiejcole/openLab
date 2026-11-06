@@ -16,7 +16,7 @@ pub(super) struct Playhead {
     pub cue: Option<CueId>,
     /// The list's positions when last synced, to find where a deleted cue stood. `None` while
     /// the engine's cue index holds them: it is then in step with what the playhead last saw,
-    /// and an edit is followed from its footprint (M4.12c, see `CueEngine::sync_playheads`).
+    /// and an edit is followed from its footprint (see `CueEngine::sync_playheads`).
     order: Option<Vec<CueId>>,
     /// What the edit being followed did around the playhead, read from the cue index before
     /// the index followed the edit.
@@ -30,7 +30,7 @@ pub(super) struct Playhead {
 
 /// What an edit did around a playhead whose positions the cue index holds, read from the index
 /// before it follows the edit: enough to place the playhead afterwards as [`Playhead::follow`]
-/// would from the whole list (M4.12c).
+/// would from the whole list.
 #[derive(Clone, Debug)]
 pub(super) struct Followed {
     /// The list had no cues.

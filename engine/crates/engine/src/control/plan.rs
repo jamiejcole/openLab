@@ -22,7 +22,7 @@ pub struct PlanSpec<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlanFailure {
     /// The trims, markers or counts do not make a table (`LoopTooShort` included: a looping
-    /// slice shorter than `MIN_LOOP_MS`, M3.17).
+    /// slice shorter than `MIN_LOOP_MS`).
     Plan(PlanError),
 }
 

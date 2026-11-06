@@ -120,7 +120,7 @@ impl Control {
     /// App-scope hotkey (ARCHITECTURE §6; QLab 5 fires a hotkey in every open workspace, in
     /// front or not): every cue of every doc with this hotkey starts, as the app's `start`
     /// for each would. A doc whose transport keys use it starts nothing (the workspace action
-    /// wins, M2.28); that action is the front window's, not the engine's.
+    /// wins); that action is the front window's, not the engine's.
     pub fn hotkey(&mut self, hotkey: &openlab_core::Hotkey) {
         self.each_doc(|cx| {
             let now = cx.now();

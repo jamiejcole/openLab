@@ -192,8 +192,8 @@ pub fn load_show(text: &str) -> Result<LoadedShow, LoadError> {
     })
 }
 
-/// Before v3 a Fade aimed at a group set each child's levels to its values; since v3 (M2.28,
-/// QLab check F2) it moves them by its values. No migration can keep the old meaning (it depends
+/// Before v3 a Fade aimed at a group set each child's levels to its values; since v3 (QLab
+/// check F2) it moves them by its values. No migration can keep the old meaning (it depends
 /// on each child's level when the Fade runs), so every such Fade of an older file is pointed
 /// out for the user to check. Iterative, so nesting depth cannot overflow the stack.
 fn group_fades_now_relative(workspace: &Workspace) -> Vec<ValidationIssue> {
@@ -277,7 +277,7 @@ fn v0_to_v1(mut document: Value) -> Result<Value, String> {
     Ok(document)
 }
 
-/// v2 added each cue's `second_trigger` and `second_trigger_on_release` (M2.14). A v1 reader
+/// v2 added each cue's `second_trigger` and `second_trigger_on_release`. A v1 reader
 /// ignored unknown keys, so every v1 cue meant the defaults: they are written over anything a
 /// hand edit may have put there.
 fn v1_to_v2(document: Value) -> Result<Value, String> {
@@ -287,7 +287,7 @@ fn v1_to_v2(document: Value) -> Result<Value, String> {
     })
 }
 
-/// v3 added each Devamp cue's `devamp_mode` (M2.28, QLab check D7). A v2 Devamp cue left
+/// v3 added each Devamp cue's `devamp_mode` (QLab check D7). A v2 Devamp cue left
 /// whatever loop was playing, which is the mode `current_slice` ("Devamp currently looping
 /// slice"); a v2 reader ignored unknown keys, so it is written over anything a hand edit put
 /// there.
@@ -301,7 +301,7 @@ fn v2_to_v3(document: Value) -> Result<Value, String> {
     })
 }
 
-/// v4 replaced the single `osc_passcode` by the rights table `osc_access` (M4.5c). A passcode
+/// v4 replaced the single `osc_passcode` by the rights table `osc_access`. A passcode
 /// becomes the one row of the table with all rights and No Passcode gets none, which is what the
 /// show did (nothing without `/connect`, everything with it); no passcode (null or empty) becomes
 /// No Passcode with all rights, an open show as before. A v3 reader ignored unknown keys, so a
@@ -352,7 +352,7 @@ fn was_reserved_in_v5(hotkey: &Hotkey) -> bool {
         || (matches!(hotkey.key.as_str(), "up" | "down") && !(m.command || m.control || m.alt))
 }
 
-/// v5 added the selected-cue keys to `settings.hotkeys` (M5.11c) and made Esc and the bare Up /
+/// v5 added the selected-cue keys to `settings.hotkeys` and made Esc and the bare Up /
 /// Down arrows reserved (`is_reserved_key`). The result keeps what the app bound before:
 /// - A transport key that is reserved becomes null. The app never bound one (Esc is its fixed
 ///   panic; bare Up / Down move the selection), and the v4 defaults were Esc for Stop All and

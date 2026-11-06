@@ -10,7 +10,7 @@
 //! runs on a `DocCx` (one doc and the engine); engine-wide work (the device, mixer events and
 //! meters, the watch, the probe watchdog, health, status) runs once per wake and hands each doc
 //! its part. The client protocol still addresses one doc, the first open (several connections,
-//! each bound to a doc, are M4.15f); [`Control::open_doc`], [`Control::close_doc`] and
+//! each bound to a doc, come later); [`Control::open_doc`], [`Control::close_doc`] and
 //! [`Control::handle_doc`] address any doc by its [`DocId`].
 //!
 //! [`Control`] is the loop's state and logic, with no thread or clock of its own: time is the
@@ -129,8 +129,8 @@ pub const PROBE_HOLD_LIMIT: Duration = Duration::from_secs(5);
 pub const STREAM_START_LIMIT: Duration = Duration::from_secs(5);
 /// A document read stuck this long fails with `io` and its worker is replaced.
 pub const DOC_TIMEOUT: Duration = Duration::from_secs(20);
-/// How long shutdown waits for the final recovery writes of the docs with unsaved changes
-/// (M4.15g): a whole-show serialisation on a slow machine plus a write to a slow disk, and
+/// How long shutdown waits for the final recovery writes of the docs with unsaved changes:
+/// a whole-show serialisation on a slow machine plus a write to a slow disk, and
 /// short enough that a hung volume does not keep a quitting engine alive.
 pub const SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
 /// A probe worker stuck on one file this long is replaced.
@@ -192,7 +192,7 @@ pub struct ControlConfig {
     pub show_path: Option<PathBuf>,
     pub machine: MachineSettings,
     /// False when `machine` is defaults standing in for a settings file that could not be read:
-    /// the engine then keeps default mappings in memory and never writes the file (M4.4c).
+    /// the engine then keeps default mappings in memory and never writes the file.
     pub machine_writable: bool,
     /// Devices present, for the offline backend (a device backend plays on its open stream's
     /// device and lists what the host lists).
@@ -245,7 +245,7 @@ pub struct ControlConfig {
     pub show_log: crate::diag::ShowLog,
     /// Send `status` messages (DX-03). `None`: never (offline tests; the host turns it on).
     pub status: Option<crate::diag::StatusConfig>,
-    /// Push each new show-log record as a `log_entry` message (DX-02, M4.7c). Off by default
+    /// Push each new show-log record as a `log_entry` message (DX-02). Off by default
     /// (offline tests); the host turns it on.
     pub push_log: bool,
     /// Process CPU seconds for `status` (tests inject a fake).
@@ -253,7 +253,7 @@ pub struct ControlConfig {
     /// What Network cues send through and host names are looked up with (tests inject a
     /// stand-in).
     pub net: NetTransport,
-    /// The media watch (M2.25): how files are statted, how often, and on which thread.
+    /// The media watch: how files are statted, how often, and on which thread.
     pub watch: watch::WatchConfig,
     /// Where the loop says whether the computer must stay awake (SM-07: a doc in Show Mode or
     /// a cue running; `platform::power`). `None`: nobody listens (offline tests).
@@ -379,7 +379,7 @@ struct MeterRound {
 struct Engine {
     mixer: MixerController,
     streamer: DiskStreamer,
-    /// Mixer voice ids: engine-wide, never reused (shared by every workspace with M4.15).
+    /// Mixer voice ids: engine-wide, never reused (shared by every workspace).
     voice_ids: VoiceIds,
     patches: Patches,
     /// What patches resolve against: the device the mixer plays on (none during an outage).
@@ -559,7 +559,7 @@ impl Control {
     /// Builds the control state for `ws` around a mixer controller whose mixer is driven by
     /// `backend`: [`Self::empty`] with `ws` installed as the first doc ([`DocId`] 0), its
     /// patches sent to the mixer and the cue engine, and every media file of the show probed.
-    /// The engine itself starts empty (M4.15g); this is for tests and the offline driver.
+    /// The engine itself starts empty; this is for tests and the offline driver.
     pub fn new(
         ws: Workspace,
         mixer: MixerController,
@@ -613,7 +613,7 @@ impl Control {
         Ok(control)
     }
 
-    /// The control state with no doc open, as the engine starts (M4.15g; ARCHITECTURE §8): the
+    /// The control state with no doc open, as the engine starts (ARCHITECTURE §8): the
     /// client opens what it wants (`new`, `open`, which offers recovery, `open_recovery`).
     /// Starts the disk workers, the probe workers and the document worker (which answer on
     /// `inbox`).
@@ -1113,7 +1113,7 @@ impl DocCx<'_> {
 impl Control {
     /// Stops the show for shutdown: a hard stop of everything in every doc, carried out by the
     /// mixer; then a final recovery write of every doc with unsaved changes, waited for at most
-    /// [`ControlConfig::shutdown_wait`] (M4.15g, ARCHITECTURE §8). With no doc open, only the
+    /// [`ControlConfig::shutdown_wait`] (ARCHITECTURE §8). With no doc open, only the
     /// mixer's queue is pumped.
     pub fn shutdown(&mut self) -> FinalWrites {
         self.each_doc(|cx| {

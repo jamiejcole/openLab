@@ -6,8 +6,8 @@
     clippy::indexing_slicing
 )]
 
-//! A refused transaction is rolled back with the inverses of the commands it already applied
-//!, not with a copy of the workspace: these check that every kind of command it can hold
+//! A refused transaction is rolled back with the inverses of the commands it already applied,
+//! not with a copy of the workspace: these check that every kind of command it can hold
 //! comes back exactly, and what the history does around it.
 
 mod common;

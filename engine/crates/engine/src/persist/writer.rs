@@ -39,7 +39,7 @@
 //! Dropping the writer finishes the running jobs and any pending manual saves and discards
 //! pending autosaves, so shutdown never waits behind a backlog. It waits for that at most
 //! [`DROP_WAIT`]: a save stuck on a hung volume must not keep the engine process alive, so the
-//! threads are then left to end by themselves (M4.15g). A final recovery write is queued and
+//! threads are then left to end by themselves. A final recovery write is queued and
 //! waited for before the drop (`Control::shutdown`), with a spare thread
 //! ([`SaveWriter::add_spare`]) so that one show's slow write does not hold up the others'.
 

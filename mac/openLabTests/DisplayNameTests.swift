@@ -4,7 +4,7 @@ import XCTest
 
 @testable import openLab
 
-/// `Cue.displayName` against the cases core's `display_name` is tested with (M2.29c, QLab check R2).
+/// `Cue.displayName` against the cases core's `display_name` is tested with (QLab check R2).
 final class DisplayNameTests: XCTestCase {
     private final class Anchor {}
 

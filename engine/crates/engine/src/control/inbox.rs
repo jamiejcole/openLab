@@ -17,18 +17,18 @@ use tokio::sync::mpsc::{self, error::TrySendError};
 /// Everything that wakes the control thread besides its timers.
 #[derive(Debug)]
 pub enum Inbox {
-    /// A client message, already decoded and authenticated by the network layer (M4.3). Every
+    /// A client message, already decoded and authenticated by the network layer. Every
     /// `command`, `transport`, `undo`, `redo` and `request` is answered on `reply` with exactly
     /// one `result` (a `snapshot` request also gets its `snapshot` there first); broadcasts go
     /// to the outbound channel.
     ///
     /// Addressed to the first open doc: the engine's tests and the offline driver. (The OSC
-    /// listeners send [`Inbox::Conn`], to each doc, since M4.15h.)
+    /// listeners send [`Inbox::Conn`], to each doc.)
     Client {
         message: ClientMessage,
         reply: ReplyTx,
     },
-    /// A message on a WebSocket connection (M4.15f): one bound to `doc` (`hello { workspace }`),
+    /// A message on a WebSocket connection: one bound to `doc` (`hello { workspace }`),
     /// or the app connection (`None`), which may send only the app-scope messages. Answered as
     /// [`Inbox::Client`] is.
     Conn {

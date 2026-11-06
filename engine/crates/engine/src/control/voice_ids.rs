@@ -2,7 +2,7 @@
 
 //! Mixer voice ids (docs/control.md "Voices"). One counter for the whole engine, outside the
 //! voice table, so an id is never reused whatever workspace or cue engine its voice belongs to:
-//! a voice of a replaced workspace (and, with several workspaces open, M4.15, another
+//! a voice of a replaced workspace (and, with several workspaces open, another
 //! workspace's) can never be taken for this one's.
 //!
 //! Each id is recorded with the doc it was taken for (ARCHITECTURE §3.5: `owner: VoiceId ->

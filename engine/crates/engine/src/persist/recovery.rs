@@ -98,7 +98,7 @@ pub enum RecoveryCheck {
     /// The recovery file is not newer than the show file. It was moved aside (not deleted) to
     /// `moved_to`, or left in place if the move failed (`None`).
     Stale { moved_to: Option<PathBuf> },
-    /// Offer to restore it (the prompt flow is the UI's, M4.4).
+    /// Offer to restore it (the prompt flow is the UI's).
     Offer(Box<RecoveryOffer>),
     /// There is a recovery file but it cannot be used. It was moved aside as `.corrupt` (or
     /// left in place if that failed); `warning` says why.
@@ -109,7 +109,7 @@ pub enum RecoveryCheck {
 pub struct RecoveryReport {
     pub check: RecoveryCheck,
     /// Recovery files for the same workspace id but another show path (a duplicated show, or
-    /// work from before the first save). Not offered and not touched; M4.4 can surface them.
+    /// work from before the first save). Not offered and not touched; a later change can surface them.
     pub other_copies: Vec<PathBuf>,
 }
 

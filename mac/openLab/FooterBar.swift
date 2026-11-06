@@ -62,7 +62,7 @@ final class WallClockLabel: NSTextField {
     }
 }
 
-/// Bottom bar: Edit/Show switch (Show Mode, M5.12), area toggles, status text, settings.
+/// Bottom bar: Edit/Show switch (Show Mode), area toggles, status text, settings.
 final class FooterBar: NSView {
     var onToggle: ((LayoutArea, Bool) -> Void)?
     /// The gear was used: open the workspace settings.

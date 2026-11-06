@@ -429,7 +429,7 @@ fn load_cue_loads_its_target_to_its_time() {
     )));
 }
 
-/// The load time edited with the inspector's `LoadToTime` command (M5.6b) is read when the Load
+/// The load time edited with the inspector's `LoadToTime` command is read when the Load
 /// cue's action starts, so an edit during its pre-wait applies.
 #[test]
 fn load_cue_uses_its_time_as_edited_up_to_its_action_start() {

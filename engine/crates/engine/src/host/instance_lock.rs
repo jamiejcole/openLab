@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! One engine per user (M4.9): `<app-support>/openLab/engine.lock`, locked exclusively as the
+//! One engine per user: `<app-support>/openLab/engine.lock`, locked exclusively as the
 //! first act of a start and held, with the open file, for the life of the process. A second
 //! engine that finds it held exits before it opens the log, a run marker, the audio device,
 //! the UI port or `engine.json`, so it touches nothing of the running one's. The lock goes with

@@ -1345,7 +1345,7 @@ fn edited_waits_apply_to_timers_not_yet_started() {
     assert_eq!(running_at(&rig.tick(3000), 2), Some(3000));
 }
 
-/// Sets a Wait or Fade cue's duration with the editing command the inspector sends (M5.6b).
+/// Sets a Wait or Fade cue's duration with the editing command the inspector sends.
 fn set_duration(ws: &mut Workspace, n: u128, value: f64) {
     ws.apply(Command::SetCueProperty {
         id: id(n),

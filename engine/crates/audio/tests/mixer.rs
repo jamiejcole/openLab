@@ -434,7 +434,7 @@ fn patch_routing_maps_cue_outputs_to_device_outputs() {
     assert_eq!(&out[1050 * 2..1051 * 2], &[0.0, 0.5]);
 }
 
-/// M3.11: each voice goes through its own patch.
+/// Each voice goes through its own patch.
 #[test]
 fn voices_route_through_their_own_patch() {
     let (mut ctl, mut r) = setup(config(2));

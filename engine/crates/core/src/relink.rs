@@ -93,8 +93,8 @@ pub fn plan_relinks(missing: &[MissingMedia], candidates: &[MediaRef]) -> Relink
     plan
 }
 
-/// The command that points each listed Audio cue at its new file, as one undo step (M1.5/M1.6
-/// command model). Cues that are gone or not Audio are skipped; applying the command to the
+/// The command that points each listed Audio cue at its new file, as one undo step
+/// (command model). Cues that are gone or not Audio are skipped; applying the command to the
 /// workspace it was built from cannot be refused for that reason. An empty result is an empty
 /// transaction, which `History` ignores.
 pub fn relink_command(workspace: &Workspace, relinks: &[Relink]) -> Command {

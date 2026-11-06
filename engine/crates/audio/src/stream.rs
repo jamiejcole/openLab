@@ -56,7 +56,7 @@ pub const DEFAULT_EXIT_MS: u32 = 250;
 /// Most memory one stream's loop exit buffers may hold (L-R2): 32 MiB is every exit of a
 /// 255-slice stereo table (about 96 KB each at 48 kHz), 43 exits at 16 channels, 10 at 64.
 pub const DEFAULT_EXIT_BYTES: usize = 32 << 20;
-/// Longest loop one stream keeps in its loop cache (M3.13): 16 MiB is about 43 s of stereo or
+/// Longest loop one stream keeps in its loop cache: 16 MiB is about 43 s of stereo or
 /// 1.3 s of 64 channels at 48 kHz. Longer loops seek once per play, which costs little next to
 /// their length.
 pub const DEFAULT_LOOP_CACHE_BYTES: usize = 16 << 20;
@@ -263,7 +263,7 @@ impl StreamHandle {
         self.shared.lock().cache_bytes
     }
 
-    /// Frames written to the ring from the loop cache rather than decoded (M3.13).
+    /// Frames written to the ring from the loop cache rather than decoded.
     pub fn cached_frames(&self) -> u64 {
         self.shared.lock().cached_frames
     }
@@ -961,7 +961,7 @@ enum ExitState {
 }
 
 /// The device-rate frames of one play of a loop entry, recorded as they were first written to
-/// the ring; once `complete`, later plays are written from here (M3.13).
+/// the ring; once `complete`, later plays are written from here.
 struct LoopCache {
     entry: usize,
     samples: Vec<f32>,
@@ -2068,7 +2068,7 @@ mod tests {
         assert_eq!(d.cache_bytes(), 0);
     }
 
-    /// M3.17 at the worker: with the loop cache, even a one-frame loop (which `plan` accepts;
+    /// At the worker: with the loop cache, even a one-frame loop (which `plan` accepts;
     /// `plan_at_rate` does not) is written a whole chunk per step, not a seek per play.
     #[test]
     fn a_one_frame_loop_fills_the_ring_in_whole_chunks() {

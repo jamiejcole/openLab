@@ -4,7 +4,7 @@ import XCTest
 
 @testable import openLab
 
-/// `RenameWorkspace` (M1.20) encodes exactly as the engine's golden fixture.
+/// `RenameWorkspace` encodes exactly as the engine's golden fixture.
 final class RenameWorkspaceTests: XCTestCase {
     func testEncodesAsTheFixture() throws {
         let encoded = JSONValue.parse(try Command.renameWorkspace("Hamlet").json.text())

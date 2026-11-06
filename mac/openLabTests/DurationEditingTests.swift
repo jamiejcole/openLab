@@ -5,7 +5,7 @@ import XCTest
 
 @testable import openLab
 
-/// M5.6b (CUE-02, CT-14, CT-20): a Wait or Fade cue's duration and a Load cue's time are typed in
+/// (CUE-02, CT-14, CT-20): a Wait or Fade cue's duration and a Load cue's time are typed in
 /// the inspector or, for the duration, in the cue list's Duration column (QLab 5, manual pp. 94-95,
 /// 124-127, 131-132, 680-681). Bad text is refused with a message and never sent; good text goes
 /// to the engine as the `duration` / `load_to_time` properties.

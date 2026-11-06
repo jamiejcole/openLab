@@ -57,7 +57,7 @@ final class ProtocolFixtureTests: XCTestCase {
         }
     }
 
-    /// M5.11g: a `batch` transport decodes to its items in order.
+    /// A `batch` transport decodes to its items in order.
     func testBatchTransportDecodesItsItemsInOrder() throws {
         let m = try JSONDecoder().decode(
             ClientMessage.self, from: Data(try Fixtures.text("client", "transport_batch").utf8))
@@ -127,7 +127,7 @@ final class ProtocolFixtureTests: XCTestCase {
             ])
     }
 
-    /// M5.4d: the snapshot's `media_durations` and the `media_duration` runtime change.
+    /// The snapshot's `media_durations` and the `media_duration` runtime change.
     func testMediaDurationsDecode() throws {
         guard case .snapshot(let snap) = try ServerMessage.decode(try Fixtures.text("server", "snapshot")) else {
             return XCTFail("snapshot")
@@ -246,7 +246,7 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertEqual(waits.first?.cue, items.first?.cue)
         XCTAssertEqual(waits.last?.elapsed, 0.5)
         XCTAssertEqual(waits.last?.remaining, 1.5)
-        // An engine before M4.2e sends no `waits`.
+        // An older engine sends no `waits`.
         guard case .progress(_, let none) = try ServerMessage.decode(try Fixtures.text("server", "progress")) else {
             return XCTFail("progress")
         }

@@ -61,7 +61,7 @@ impl CueEngine {
                         return cx.warn(EngineWarning::CueBroken { cue });
                     }
                 }
-                // A paused cue resumes whatever its option (QLab check S1, M2.28): the option
+                // A paused cue resumes whatever its option (QLab check S1): the option
                 // applies only to a cue that is playing (or waiting).
                 Some(Slot::Active(run)) if run.paused_at.is_none() => {
                     let option = model.second_trigger.effective(&model.kind);
@@ -133,7 +133,7 @@ impl CueEngine {
         new.started = at;
         new.started_in = super::group::ancestors(cx.ws, cue).first().copied();
         // A statically broken cue does not start, but keeps its timing as a disarmed cue does,
-        // so its auto-continue fires on schedule (user decision, M2.13).
+        // so its auto-continue fires on schedule (user decision).
         if self.refuses(cue, cx) {
             cx.warn(EngineWarning::CueBroken { cue });
             new.static_broken = true;
