@@ -170,9 +170,6 @@ pub struct MediaCatalog {
     plan_changes: PlanChanges,
     /// Files to start or stop watching (drained by the control loop into watch jobs).
     key_changes: Vec<KeyChange>,
-    /// Jobs sent to the workers (tests wait for exactly that many answers).
-    #[cfg(test)]
-    jobs: u64,
 }
 
 /// What may have changed a cue's slice-plan check (`checks.rs`) since the checks last looked
@@ -249,8 +246,6 @@ impl MediaCatalog {
             cues_read: 0,
             plan_changes: PlanChanges::default(),
             key_changes: Vec::new(),
-            #[cfg(test)]
-            jobs: 0,
         }
     }
 
@@ -575,11 +570,6 @@ impl MediaCatalog {
             give_back(&mut self.reserved, &self.pool.preloads, bytes);
             e.reserved = 0;
             e.preload_ticket = 0;
-        } else {
-            #[cfg(test)]
-            {
-                self.jobs += 1;
-            }
         }
     }
 
@@ -664,10 +654,6 @@ impl MediaCatalog {
             // A relative reference in a show that was never saved has no folder to be in.
             None => false,
         };
-        #[cfg(test)]
-        {
-            self.jobs += u64::from(asked);
-        }
         // A new entry, or one that fails at once: what `media` gives may change (when every
         // cue is to be checked again anyway, the checks do not read the keys).
         if !self.plan_changes.all && (!asked || !self.entries.contains_key(&key)) {
