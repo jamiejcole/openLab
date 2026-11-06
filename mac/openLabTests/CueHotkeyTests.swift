@@ -586,7 +586,11 @@ final class CueHotkeyFiringTests: XCTestCase {
         await assertEventually("the selected cue previews") { self.first.previewing.contains(self.intro) }
         XCTAssertNil(app.handleKeyDown(try event("w", code: 13)))
         try await run()
-        await assertEventually("a second press stops it") { !self.first.previewing.contains(self.intro) }
+        // A second press leaves it playing (QLab check V3); the preview is stopped by hand.
+        XCTAssertTrue(first.previewing.contains(intro), "a second press does not stop it")
+        _ = await first.transport(.stopPreview(cue: intro))
+        try await run()
+        await assertEventually("stopped") { !self.first.previewing.contains(self.intro) }
         // V now starts the cue that has it, and previews nothing.
         XCTAssertNil(app.handleKeyDown(try event("v", code: 9)))
         try await run()
@@ -669,7 +673,7 @@ final class CueHotkeyFiringTests: XCTestCase {
     }
 
     /// Old files keep V and S: the demo show is a version 7 file, and in it plain V previews the selected
-    /// cue (a second press stops the preview) and plain S panics it, with no setup.
+    /// cue (a second press leaves it playing) and plain S panics it, with no setup.
     func testOldFilesKeepVAndS() async throws {
         keyDoc = demoDoc
         let wc = try XCTUnwrap(app.windows[demoDoc])
@@ -679,7 +683,10 @@ final class CueHotkeyFiringTests: XCTestCase {
         await assertEventually("V previews") { self.first.previewing.contains(self.intro) }
         XCTAssertNil(app.handleKeyDown(try event("v", code: 9)))
         try await run()
-        await assertEventually("V again stops the preview") { !self.first.previewing.contains(self.intro) }
+        XCTAssertTrue(first.previewing.contains(intro), "V again leaves the preview playing")
+        _ = await first.transport(.stopPreview(cue: intro))
+        try await run()
+        await assertEventually("stopped") { !self.first.previewing.isEmpty == false }
         _ = await first.transport(.start(cue: intro))
         try await run()
         await assertEventually { self.playing(self.first, self.intro) }
