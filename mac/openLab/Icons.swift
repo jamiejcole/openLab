@@ -36,8 +36,8 @@ enum Icon: CaseIterable {
     case playhead, playheadInside, preview, outputOverridden, flagged, flaggedInside, warningMarker, engineAlarm
     // Time column header toggle (elapsed / remaining).
     case timeToggle, timeToggleUp
-    // The Target column's button for a file cue, and the Target field's clear and choose glyphs.
-    case targetFile, fieldClear, fieldChoose
+    // The Target column's button for a file cue, and the Target field's clear, choose and jump glyphs.
+    case targetFile, fieldClear, fieldChoose, fieldJump
     // Reserved for a screen that does not exist yet; it resolves and is tested already.
     case reservedPopOut
 
@@ -115,6 +115,7 @@ enum Icon: CaseIterable {
         case .targetFile: return Self.row("arrow.down.right.circle")
         case .fieldClear: return Self.row("xmark.circle.fill")
         case .fieldChoose: return Self.row("folder.fill")  // filled: the outline is the Group cue
+        case .fieldJump: return Self.row("arrow.right.circle.fill")  // filled: the outline is a Group mode
         case .reservedPopOut: return Self.row("arrow.up.forward.square", 11, fallback: "rectangle.on.rectangle")
         }
     }

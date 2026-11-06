@@ -176,6 +176,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cueList.onMove = { [weak self] ids, parent, index in
             Task { await self?.editor.move(ids, to: parent, at: index) }
         }
+        cueList.onDropTarget = { [weak self] cues, target in
+            Task { await self?.editor.setTarget(of: cues, to: target) }
+        }
         cueList.onEditCell = { [weak self] id, column, text in
             Task { await self?.editor.setCell(column, of: id, text: text) }
         }
@@ -194,6 +197,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             Task { await self.editor.replaceFile(of: id, with: url) }
         }
         inspector.onChooseFile = chooseFile
+        inspector.onJumpToTarget = { [weak self] id in self?.jumpToTarget(id) }
         cueList.onChooseFile = chooseFile
         cueToolbar.onAdd = { [weak self] kind in
             let cues = self?.cueList.selectedIDs()
@@ -482,6 +486,14 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         guard let id = cueList.cue(numbered: text) else { return String(format: loc("cue.prompt.notFound"), text) }
         if movePlayhead { cueList.setPlayhead(id) } else { cueList.selectAsUser([id]) }
         return nil
+    }
+
+    /// The inspector's jump button: the target becomes the selection as a click would make it (inspector
+    /// and playhead follow), in its own list if that is another one (QLab 5, manual p. 127).
+    func jumpToTarget(_ id: ModelID) {
+        guard let list = store.model?.cueLists.first(where: { Self.contains(id, in: $0.cues) }) else { return }
+        if cueList.listID != list.id { cueList.showList(list.id) }
+        cueList.selectAsUser([id])
     }
 
     /// Tools > Load to Time...: loads the last selected cue to a typed time, the engine's `load`

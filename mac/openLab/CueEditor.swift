@@ -20,8 +20,8 @@ import AppKit
 ///
 /// Part 2 (CueEditor+Clipboard.swift; QLab's pages are silent on drops): a Finder drop makes one audio
 /// cue per file in drop order (one undo step) and is refused whole if any item is a folder or not audio;
-/// one file dropped on an idle audio cue replaces its file; a cue dropped on a cue only reorders (targets
-/// are set in the inspector). Copy, cut and paste carry cue subtrees as JSON on a private pasteboard
+/// one file dropped on an idle audio cue replaces its file. A cue dropped on another's Target cell sets
+/// a target (`targetDrop`, QLab's p. 94); dropped anywhere else it only reorders. Copy, cut and paste carry cue subtrees as JSON on a private pasteboard
 /// type (versioned); paste goes where a new cue would, as core's `paste` with the cues prepared like `prepare_paste`. Cmd-D clears
 /// the selected cues' numbers (undoable, no prompt).
 @MainActor
@@ -269,6 +269,30 @@ final class CueEditor {
         guard Self.canDrop(dragged, into: parentNode) else { return }
         let commands = Self.moveCommands(
             list: list, dragged: dragged, parent: parentNode, index: index, roots: (cueList?.roots ?? []))
+        guard let command = Command.transaction(commands) else { return }
+        _ = report(await store.send(command: command))
+    }
+
+    /// Cues dropped on `onto`'s Target cell: which cues get a target and which cue that is, or nil when
+    /// neither way round can be done. If both could target each other the dragged cue becomes the target
+    /// of the one it is dropped on (QLab 5 change log, pp. 5-7). Several cues dragged can only all
+    /// target the one they land on: a cue holds one target.
+    static func targetDrop(_ dragged: [Cue], onto: Cue) -> (cues: [ModelID], target: ModelID)? {
+        if dragged.count == 1, let cue = dragged.first, InspectorEdit.targetRejection(of: onto, target: cue) == nil {
+            return ([onto.id], cue.id)
+        }
+        guard dragged.allSatisfy({ InspectorEdit.targetRejection(of: $0, target: onto) == nil }) else { return nil }
+        return (dragged.map(\.id), onto.id)
+    }
+
+    /// A drop on a Target cell (already validated; checked again here, as the commit before it may have
+    /// changed the model): `cues` now target `target`, as one undo step. Cues already on it send nothing.
+    func setTarget(of cues: [ModelID], to target: ModelID) async {
+        guard await begin(), let model = store.model, let targetCue = model.cue(target) else { return }
+        let commands = cues.compactMap { model.cue($0) }.filter { cue in
+            InspectorEdit.targetRejection(of: cue, target: targetCue) == nil
+                && cue.raw["kind"]?["target"]?.stringValue != target.raw
+        }.map { Command.setProperty($0.id, .target(target)) }
         guard let command = Command.transaction(commands) else { return }
         _ = report(await store.send(command: command))
     }

@@ -280,6 +280,7 @@
 "inspector.invalid.duplicateNumber" = "Another cue already has that number.";
 "inspector.invalid.unknownTarget" = "No cue has that number.";
 "inspector.invalid.selfTarget" = "A cue cannot target itself.";
+"inspector.invalid.wrongTargetKind" = "This cue cannot act on that kind of cue.";
 "inspector.invalid.notApplicable" = "This cue has no target.";
 "inspector.invalid.noDuration" = "This cue's duration cannot be edited: only Wait and Fade cues have one to set.";
 "inspector.invalid.noLoadTime" = "Only a Load cue has a load time.";
@@ -587,6 +588,8 @@
 "inspector.devampMode.current_slice" = "The loop now playing";
 "inspector.devampMode.looping_cue" = "The cue's own loop";
 "inspector.target.clear" = "Clear target";
+"inspector.target.jump" = "Select the target cue";
+"inspector.target.none" = "(no target)";
 "levels.matrix" = "Levels matrix";
 "levels.master" = "Cue master";
 "levels.output" = "Cue output %d";

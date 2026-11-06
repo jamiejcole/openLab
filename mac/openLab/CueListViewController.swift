@@ -376,6 +376,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
     /// A validated drop: the cues go before child `index` of the parent (nil: top level).
     var onMove: (([ModelID], ModelID?, Int) -> Void)?
+    /// A validated drop on a Target cell: the cues to set, and the cue they now target.
+    var onDropTarget: (([ModelID], ModelID) -> Void)?
     private var dragged: [CueNode] = []
     static let dragType = NSPasteboard.PasteboardType("dev.openlab.cue-id")
 
@@ -943,6 +945,42 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return (node.parent, (siblings.firstIndex { $0 === node } ?? siblings.count - 1) + 1)
     }
 
+    /// What a drop of the list's own rows would do.
+    enum CueDrop: Equatable {
+        /// These cues now target that one; the order is left alone.
+        case setTarget([ModelID], ModelID)
+        case move([ModelID], ModelID?, Int)
+    }
+
+    /// What dropping `dragged` does, or nil to refuse it. Only a drop on a row's Target cell sets a target
+    /// (QLab 5, manual p. 94, and 5.0's change log: it makes a target hard to change by accident while
+    /// reordering); where no target can be set, or anywhere else on the row, it reorders as ever.
+    func cueDrop(_ dragged: [CueNode], item: Any?, index: Int, inTargetColumn: Bool) -> CueDrop? {
+        guard !isEditLocked, !dragged.isEmpty else { return nil }
+        if inTargetColumn, index == NSOutlineViewDropOnItemIndex, let node = item as? CueNode,
+            let set = CueEditor.targetDrop(dragged.map(\.cue), onto: node.cue)
+        {
+            return .setTarget(set.cues, set.target)
+        }
+        let target = dropTarget(item, index)
+        guard CueEditor.canDrop(dragged, into: target.parent) else { return nil }
+        return .move(dragged.map(\.id), target.parent?.id, target.index)
+    }
+
+    func perform(_ drop: CueDrop) {
+        switch drop {
+        case .setTarget(let cues, let target): onDropTarget?(cues, target)
+        case .move(let ids, let parent, let at): onMove?(ids, parent, at)
+        }
+    }
+
+    /// Whether the drag is over the Target column.
+    private func overTargetColumn(_ info: NSDraggingInfo) -> Bool {
+        let column = outlineView.column(at: outlineView.convert(info.draggingLocation, from: nil))
+        return outlineView.tableColumns.indices.contains(column)
+            && outlineView.tableColumns[column].identifier.rawValue == "target"
+    }
+
     /// What a drop of files from Finder would do.
     enum FileDrop: Equatable {
         case replace(ModelID, URL)
@@ -994,11 +1032,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             }
             return .copy
         }
-        guard !isEditLocked, !dragged.isEmpty else { return [] }
-        let target = dropTarget(item, index)
-        guard CueEditor.canDrop(dragged, into: target.parent) else { return [] }
-        outlineView.setDropItem(target.parent, dropChildIndex: target.index)
-        return .move
+        switch cueDrop(dragged, item: item, index: index, inTargetColumn: overTargetColumn(info)) {
+        case nil: return []
+        case .setTarget?: return .move  // the row stays highlighted: the drop is on it, not between rows
+        case .move(_, let parent, let at)?:
+            outlineView.setDropItem(parent.flatMap { nodes[$0] }, dropChildIndex: at)
+            return .move
+        }
     }
 
     func outlineView(
@@ -1010,10 +1050,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             onFileDrop?(plan, Self.skipped(files, plan))
             return true
         }
-        guard !isEditLocked, !dragged.isEmpty else { return false }
-        let target = dropTarget(item, index)
-        guard CueEditor.canDrop(dragged, into: target.parent) else { return false }
-        onMove?(dragged.map(\.id), target.parent?.id, target.index)
+        guard let drop = cueDrop(dragged, item: item, index: index, inTargetColumn: overTargetColumn(info)) else {
+            return false
+        }
+        perform(drop)
         return true
     }
 
