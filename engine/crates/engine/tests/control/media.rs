@@ -105,6 +105,30 @@ fn a_stream_that_fails_breaks_its_cue_with_stream_failed() {
 }
 
 #[test]
+fn a_stream_failing_at_its_end_probes_the_file_once() {
+    // Regression: a failure first seen when the mixer reported the voice's end asked for no
+    // new probe (the file stayed "ready" on its old answer); one seen by the tick's poll did,
+    // and the two must not both ask.
+    let path = wav(&dc(2000, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let mut config = config(&ws);
+    config.prime_cues = 0;
+    let mut s = show_with(ws, config);
+    std::fs::write(&path, std::fs::read(wav(&dc(1500, 0.5))).unwrap()).unwrap();
+    let before = s.control().media_tickets();
+    go(&mut s);
+    s.run(1500);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
+    s.run(BLOCK * 4);
+    s.settle_media();
+    assert_eq!(
+        s.control().media_tickets(),
+        before + 1,
+        "one probe for one failure"
+    );
+}
+
+#[test]
 fn a_preview_plays_on_the_cue_patch_outside_the_show() {
     let path = wav(&dc(800, 0.5));
     let mut s = show(workspace(vec![audio(1, &path, 0)]));
@@ -1166,6 +1190,40 @@ fn a_cue_primed_from_disk_is_primed_again_from_memory_when_its_preload_lands() {
     let hits = s.control().prime_hits();
     go(&mut s);
     assert_eq!(s.control().prime_hits(), hits + 1, "GO used the prime");
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn an_edit_to_a_primed_cue_is_heard_at_go_not_the_old_prime() {
+    // A prime is reused only while its cue's signature (its own file, start, end, slices)
+    // matches: a signature that read the neighbouring cue would hand GO the stale prime.
+    let path = wav(&ramp(16000));
+    let mut s = show(workspace(vec![audio(1, &path, 0), audio(2, &path, 1)]));
+    s.settle_media();
+    s.run(BLOCK);
+    assert_eq!(s.control().primed(), vec![id(1), id(2)]);
+    let mut kind = s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .kind
+        .clone();
+    if let CueKind::Audio { start_time, .. } = &mut kind {
+        *start_time = 0.0625; // frame 500 at RATE
+    }
+    set_kind(&mut s, 1, kind);
+    let hits = s.control().prime_hits();
+    let at = go(&mut s) as usize;
+    s.run(BLOCK * 4);
+    let ch = s.channel(0);
+    let first = first_nonzero(&ch[at..]).map(|i| ch[at + i]);
+    assert_eq!(
+        first,
+        Some(501.0 / 1_048_576.0),
+        "the edited start is heard"
+    );
+    assert_eq!(s.control().prime_hits(), hits, "the old prime was not used");
 }
 
 #[test]

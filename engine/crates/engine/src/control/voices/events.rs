@@ -125,10 +125,16 @@ impl Voices {
             }
             return;
         }
-        let failed = faulted
-            || r.stream_failed
-            || (reason == FinishReason::EndOfStream
-                && r.stream.as_ref().is_some_and(|h| h.error().is_some()));
+        // A stream error first seen here (the end came before the tick's poll): the file is
+        // probed again, once per failure (`poll_streams` asks when it sees one first).
+        let seen_now = !faulted
+            && !r.stream_failed
+            && reason == FinishReason::EndOfStream
+            && r.stream.as_ref().is_some_and(|h| h.error().is_some());
+        if seen_now && let Some(m) = r.media.clone() {
+            fx.reprobe.push(m);
+        }
+        let failed = faulted || r.stream_failed || seen_now;
         // Ended after a pending pause: the engine ignores the report (a paused voice cannot
         // end), so keep the record for the resume to report the end afresh. An end on the pause
         // sample left nothing to pause: the engine takes it as the end (M2.34) and resumes

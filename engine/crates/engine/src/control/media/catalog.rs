@@ -877,6 +877,12 @@ impl MediaCatalog {
             .count()
     }
 
+    /// Jobs asked of the pool so far (probes and preloads): tests count the probes a failure
+    /// asked for by the difference.
+    pub fn tickets_issued(&self) -> u64 {
+        self.next_ticket
+    }
+
     /// Probes still running (re-probes included).
     pub fn pending(&self) -> usize {
         self.entries
