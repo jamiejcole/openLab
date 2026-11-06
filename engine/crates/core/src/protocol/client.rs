@@ -305,8 +305,9 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         recovery: Option<RecoveryChoice>,
     },
-    /// Open the autosave of a show that could not be opened (listed by `scan_recovery`) as an
-    /// untitled, unsaved workspace: saving it has to choose a path (`save_as`).
+    /// Open an autosave listed by `scan_recovery`, unsaved: bound to its show file when the
+    /// autosave names one and that file still holds this workspace (as `open` with `restore`),
+    /// else untitled, so saving it has to choose a path (`save_as`).
     OpenRecovery {
         workspace_id: WorkspaceId,
         /// Which file when several autosaves share the workspace id (a duplicated show):

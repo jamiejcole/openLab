@@ -161,7 +161,11 @@ id of a `Backups/<id>-<hash>` folder name). Anything else is skipped with a warn
 newest first by file mtime among the first 5000 directory entries (a folder with more is `truncated`, and
 which of the excess are seen depends on the file system); no recursion (`Recovery/` is flat); a file over
 `MAX_NAME_READ_BYTES` (4 MiB) is listed without a name instead of being parsed. Names are read by parsing
-files, so call it off the control thread: the `scan_recovery` request runs it on the document worker and `open_recovery` opens one entry as an untitled, dirty workspace (a save has to choose a path; the entry's autosave stays until then, and a save-as clears the never-saved autosave of the workspace id).
+files, so call it off the control thread: the `scan_recovery` request runs it on the document worker and `open_recovery` opens one entry, dirty.
+
+An autosave names the show file it belongs to (`core::save_recovery`: a top-level `show_path` beside `format_version`, UTF-8 paths only; a recovery file's name holds only a hash of the path, and a show file never has the key). `open_recovery` binds to that file, as `open` with `restore` does, so relative media resolves, Save goes to the file and the app reopens it next launch, when all of these hold: the `show_path` is absolute and hashes to the hash in the file's name; the file holds the entry's workspace id (it reads and loads); no other doc holds it; and, for an entry set aside as stale, no current autosave of that file exists (the bound doc's next autosave would replace it). Otherwise the workspace is **untitled** (a save has to choose a path; the entry's autosave stays until then, and a save-as clears the never-saved autosave of the workspace id), and when the autosave did name a file that could not be used, a `recovery_untitled` notice says why. A file that does not answer holds up the whole request, as an `open` of it would (`io`, past the read timeout).
+
+A workspace with no show folder cannot place a relative media reference: the catalog reports it `Missing` to the cue engine at once (`MediaCatalog::take_unresolved`), so the cue has a `media_missing` problem before any GO, on every path that makes one (a doc installed with it, in its first snapshot; an edit, within a tick), until a save gives it a folder.
 
 ## Per-machine settings (WS-06, WS-07)
 

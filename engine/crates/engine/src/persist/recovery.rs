@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use openlab_core::{
     LoadedShow, MAX_SHOW_FILE_BYTES, RecoveryDecision, Workspace, WorkspaceId, decide_recovery,
-    load_show, save_show,
+    load_show, save_recovery,
 };
 
 use super::atomic::rename_no_replace;
@@ -33,7 +33,8 @@ pub fn write_recovery(
     workspace: &Workspace,
     show_path: Option<&Path>,
 ) -> Result<PathBuf, PersistError> {
-    let text = save_show(workspace)?;
+    // A path that is not UTF-8 is not written: the autosave then restores untitled.
+    let text = save_recovery(workspace, show_path.and_then(Path::to_str))?;
     let path = dirs.recovery_path(workspace.id, show_path);
     let dir = dirs.recovery_dir();
     fs::create_dir_all(&dir).map_err(PersistError::io("create", &dir))?;

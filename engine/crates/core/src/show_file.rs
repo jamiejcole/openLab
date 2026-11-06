@@ -96,7 +96,17 @@ struct ShowFileIn {
 #[derive(Serialize)]
 struct ShowFileOut<'a> {
     format_version: u32,
+    /// Autosaves only ([`save_recovery`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    show_path: Option<&'a str>,
     workspace: &'a Workspace,
+}
+
+/// Reads only the show path an autosave names ([`save_recovery`]).
+#[derive(Deserialize)]
+struct ShowPathProbe {
+    #[serde(default)]
+    show_path: Option<String>,
 }
 
 /// Parses, migrates to [`FORMAT_VERSION`] and validates a show file. Never panics.
@@ -221,8 +231,26 @@ fn group_fades_now_relative(workspace: &Workspace) -> Vec<ValidationIssue> {
 /// Serialises a workspace: pretty-printed, fields in a fixed order, trailing newline, so equal
 /// workspaces give byte-identical files. Refuses a workspace whose file would not load back.
 pub fn save_show(workspace: &Workspace) -> Result<String, SaveError> {
+    show_text(workspace, None)
+}
+
+/// An autosave of `workspace`: a show file that also names the show file it belongs to (`None`
+/// before the first save), since a recovery file's name holds only a hash of that path and a
+/// restored workspace needs its folder to find its media. [`load_show`] ignores the key.
+pub fn save_recovery(workspace: &Workspace, show_path: Option<&str>) -> Result<String, SaveError> {
+    show_text(workspace, show_path)
+}
+
+/// The show path an autosave names ([`save_recovery`]), if it names one.
+pub fn recovery_show_path(text: &str) -> Option<String> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    serde_json::from_str::<ShowPathProbe>(text).ok()?.show_path
+}
+
+fn show_text(workspace: &Workspace, show_path: Option<&str>) -> Result<String, SaveError> {
     let file = ShowFileOut {
         format_version: FORMAT_VERSION,
+        show_path,
         workspace,
     };
     let mut text = serde_json::to_string_pretty(&file).map_err(SaveError::Serialize)?;

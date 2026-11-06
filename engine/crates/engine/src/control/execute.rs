@@ -41,6 +41,8 @@ impl DocCx<'_> {
     /// Hands the probe answers gathered since the last tick to the engine in one
     /// `Availability`, then starts the voices that waited for them.
     pub(super) fn flush_media(&mut self, now: SampleTime) {
+        let unresolved = self.doc.media.take_unresolved();
+        self.doc.pending_media.extend(unresolved);
         if !self.doc.pending_media.is_empty() {
             let media = std::mem::take(&mut self.doc.pending_media);
             self.feed(

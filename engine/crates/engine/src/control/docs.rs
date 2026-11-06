@@ -39,7 +39,7 @@ use openlab_core::protocol::{
 use openlab_core::{
     Action, CueEngine, CueListId, EngineConfig, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES,
     MediaRef, PatchId, PathStyle, Relink, Workspace, WorkspaceId, audio_media, autosave_due,
-    is_absolute, load_show, portable_ref, relink_command,
+    is_absolute, load_show, portable_ref, recovery_show_path, relink_command,
 };
 use openlab_core::{Command, CommandError, CueId, MediaPaths, RelinkPlan};
 
@@ -52,9 +52,9 @@ use super::{
     Scope, fail, notice, ok,
 };
 use crate::persist::{
-    AppDirs, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck, SaveReport, SaveWriter,
-    ScanLimits, check_recovery, file_key, find_in_folder, lexical_key, media_path, read_text,
-    scan_recovery,
+    AppDirs, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck, RecoveryEntry, SaveReport,
+    SaveWriter, ScanLimits, check_recovery, file_key, find_in_folder, lexical_key, media_path,
+    path_key, read_text, scan_recovery,
 };
 
 /// Most `load_repair` notices sent for one opened show; the rest are summed in one more.
@@ -147,7 +147,7 @@ impl fmt::Debug for DocHook {
 #[derive(Debug)]
 pub struct Loaded {
     workspace: Workspace,
-    /// The show file it came from; `None` for an autosave opened as untitled.
+    /// The show file it came from or is bound to; `None` for an autosave restored as untitled.
     path: Option<PathBuf>,
     /// Has changes the show file lacks (restored from an autosave).
     dirty: bool,
@@ -159,7 +159,7 @@ pub struct DocParts {
     /// The workspace and a cue engine that has followed it once (its static problems and
     /// playheads worked out) ...
     model: DocModel,
-    /// The show file it came from; `None` for an autosave opened as untitled.
+    /// The show file it came from or is bound to; `None` for an autosave restored as untitled.
     path: Option<PathBuf>,
     /// Has changes the show file lacks (restored from an autosave).
     dirty: bool,
@@ -223,7 +223,8 @@ pub enum DocSource {
         path: PathBuf,
         recovery: Option<RecoveryChoice>,
     },
-    /// An autosave listed by `scan_recovery`, opened untitled and dirty (as `open_recovery`).
+    /// An autosave listed by `scan_recovery`, opened dirty (as `open_recovery`): bound to its show
+    /// file when that is still there, else untitled.
     Recovery {
         workspace_id: WorkspaceId,
         path_hash: Option<String>,
@@ -317,6 +318,8 @@ enum DocJob {
         path_hash: Option<String>,
         modified_ms: Option<i64>,
         config: EngineConfig,
+        /// The show files open (or being saved) in other docs: never bound to one of them.
+        others: Vec<PathBuf>,
     },
     Scan {
         ticket: u64,
@@ -723,8 +726,16 @@ fn work(
                 path_hash,
                 modified_ms,
                 config,
+                others,
             } => built(
-                open_recovery(ticket, workspace, path_hash.as_deref(), modified_ms, dirs),
+                open_recovery(
+                    ticket,
+                    workspace,
+                    path_hash.as_deref(),
+                    modified_ms,
+                    &others,
+                    dirs,
+                ),
                 config,
             ),
             DocJob::Scan { ticket } => scan(ticket, dirs),
@@ -778,9 +789,9 @@ fn failed(ticket: u64, code: ErrorCode, message: String) -> DocAnswer {
     }
 }
 
-/// Reads and loads a show file; the error carries the protocol code.
-fn read_show(path: &Path) -> Result<LoadedShow, (ErrorCode, String)> {
-    let text = read_text(path, MAX_SHOW_FILE_BYTES).map_err(|e| {
+/// Reads a show file; the error carries the protocol code.
+fn read_show_text(path: &Path) -> Result<String, (ErrorCode, String)> {
+    read_text(path, MAX_SHOW_FILE_BYTES).map_err(|e| {
         let code = match &e {
             PersistError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => {
                 ErrorCode::NotFound
@@ -789,8 +800,16 @@ fn read_show(path: &Path) -> Result<LoadedShow, (ErrorCode, String)> {
             _ => ErrorCode::BadShowFile,
         };
         (code, e.to_string())
-    })?;
-    load_show(&text).map_err(|e| (ErrorCode::BadShowFile, format!("{}: {e}", path.display())))
+    })
+}
+
+fn load_show_text(path: &Path, text: &str) -> Result<LoadedShow, (ErrorCode, String)> {
+    load_show(text).map_err(|e| (ErrorCode::BadShowFile, format!("{}: {e}", path.display())))
+}
+
+/// Reads and loads a show file; the error carries the protocol code.
+fn read_show(path: &Path) -> Result<LoadedShow, (ErrorCode, String)> {
+    load_show_text(path, &read_show_text(path)?)
 }
 
 fn load_notices(shown: &LoadedShow) -> Vec<WireWarning> {
@@ -875,6 +894,7 @@ fn open_recovery(
     workspace: WorkspaceId,
     path_hash: Option<&str>,
     modified_ms: Option<i64>,
+    others: &[PathBuf],
     dirs: Option<&AppDirs>,
 ) -> DocAnswer {
     let Some(dirs) = dirs else {
@@ -897,7 +917,11 @@ fn open_recovery(
             format!("no autosave of workspace {workspace}"),
         );
     };
-    let shown = match read_show(&entry.path) {
+    let text = match read_show_text(&entry.path) {
+        Ok(text) => text,
+        Err((code, message)) => return failed(ticket, code, message),
+    };
+    let shown = match load_show_text(&entry.path, &text) {
         Ok(shown) if shown.workspace.id == workspace => shown,
         Ok(_) => {
             return failed(
@@ -908,14 +932,61 @@ fn open_recovery(
         }
         Err((code, message)) => return failed(ticket, code, message),
     };
+    let mut notices = load_notices(&shown);
+    let path = named_show_path(&text, entry).filter(|path| {
+        match why_not_bound(path, entry, others, dirs) {
+            None => true,
+            Some(why) => {
+                notices.push(notice(
+                    "recovery_untitled",
+                    format!("restored as an untitled workspace: {why}"),
+                    None,
+                ));
+                false
+            }
+        }
+    });
     DocAnswer::Loaded {
         ticket,
         loaded: Box::new(Loaded {
-            notices: load_notices(&shown),
+            notices,
             workspace: shown.workspace,
-            path: None,
+            path,
             dirty: true,
         }),
+    }
+}
+
+/// The show file an autosave says it belongs to, if the file's name agrees: the name is what
+/// ties an autosave to a path, so a file renamed or edited by hand binds to nothing.
+fn named_show_path(text: &str, entry: &RecoveryEntry) -> Option<PathBuf> {
+    let path = PathBuf::from(recovery_show_path(text)?);
+    (path.is_absolute() && entry.path_hash.as_deref() == Some(path_key(&path).as_str()))
+        .then_some(path)
+}
+
+/// Why a restored autosave stays untitled although it knows its show file `path`; `None`: it can
+/// be bound, as `open` with `restore` is. A save of a bound doc writes that file, so it must be
+/// this workspace's and no other doc's.
+fn why_not_bound(
+    path: &Path,
+    entry: &RecoveryEntry,
+    others: &[PathBuf],
+    dirs: &AppDirs,
+) -> Option<String> {
+    let shown = path.display();
+    let key = file_key(path);
+    if others.iter().any(|o| file_key(o) == key) {
+        return Some(format!("{shown} is open in another workspace"));
+    }
+    // A bound doc autosaves to the current autosave's name: that autosave's work is kept.
+    if entry.stale && dirs.recovery_path(entry.workspace_id, Some(path)).exists() {
+        return Some(format!("{shown} has a newer autosave"));
+    }
+    match read_show(path) {
+        Ok(show) if show.workspace.id == entry.workspace_id => None,
+        Ok(_) => Some(format!("{shown} now holds another workspace")),
+        Err((_, message)) => Some(format!("its show file cannot be opened: {message}")),
     }
 }
 
@@ -1865,6 +1936,7 @@ impl Control {
                     path_hash,
                     modified_ms,
                     config,
+                    others,
                 }
             }
             DocSource::New | DocSource::Workspace(_) => {
@@ -2202,6 +2274,8 @@ impl Control {
         for input in cx.execute(&actions, now) {
             cx.feed(input, now);
         }
+        // In the doc's first snapshot: a file no folder can place is a problem before any GO.
+        cx.flush_media(now);
         let mut inputs = vec![Input::Tick];
         inputs.extend(cx.sync_workspace(true));
         for input in inputs {
