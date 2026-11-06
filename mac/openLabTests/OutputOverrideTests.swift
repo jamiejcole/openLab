@@ -5,46 +5,6 @@ import XCTest
 
 @testable import openLab
 
-/// A UDP socket the test owns on the loopback interface: the Network cue's destination, so what the
-/// engine really sends (or does not send) is what the test reads.
-private final class UDPListener {
-    let fd: Int32
-    let port: UInt16
-
-    init() throws {
-        let fd = socket(AF_INET, SOCK_DGRAM, 0)
-        guard fd >= 0 else { throw TestEngineError.refused("socket") }
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-        addr.sin_port = 0
-        let bound = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let named = withUnsafeMutablePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) }
-        }
-        guard bound == 0, named == 0, fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else {
-            close(fd)
-            throw TestEngineError.refused("bind")
-        }
-        self.fd = fd
-        port = UInt16(bigEndian: addr.sin_port)
-    }
-
-    deinit { close(fd) }
-
-    /// The next datagram that has arrived, nil when none has.
-    func receive() -> Data? {
-        var buffer = [UInt8](repeating: 0, count: 2048)
-        let n = recv(fd, &buffer, buffer.count, 0)
-        return n > 0 ? Data(buffer.prefix(n)) : nil
-    }
-}
-
 /// PB-10: the output override panel, its footer badge and details line, the red mark on Network
 /// cues, and what the real engine sends while the override is on. Each flow is one test, run on a
 /// real engine through the app's own controller.
