@@ -114,9 +114,11 @@ final class EngineStderrWatcher: @unchecked Sendable {
     /// Called on the watcher's queue once the file descriptor is closed (after `stop`).
     var onClosed: (@Sendable () -> Void)?
 
+    static let logSink: @Sendable (String) -> Void = { engineLog.error("engine stderr: \($0, privacy: .public)") }
+
     init(
         tail: EngineStderrTail,
-        sink: @escaping @Sendable (String) -> Void = { engineLog.error("engine stderr: \($0, privacy: .public)") }
+        sink: @escaping @Sendable (String) -> Void = EngineStderrWatcher.logSink
     ) {
         self.tail = tail
         self.sink = sink

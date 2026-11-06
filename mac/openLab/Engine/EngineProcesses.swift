@@ -41,6 +41,7 @@ final class SystemEngineProcesses: EngineProcesses {
     let stderrTail: EngineStderrTail
     private let watchStderr: Bool
     private var stderrWatcher: EngineStderrWatcher?
+    private let stderrSink: @Sendable (String) -> Void
     /// The engine's arguments; nil: the shipping engine's `--relaunch-app BUNDLE_ID`.
     private let arguments: [String]?
     /// Added to the first start only (the test engine's `--open`s).
@@ -54,6 +55,7 @@ final class SystemEngineProcesses: EngineProcesses {
         executable: URL? = Bundle.main.url(forAuxiliaryExecutable: SystemEngineProcesses.engineName),
         bundleID: String = Bundle.main.bundleIdentifier ?? "dev.openlab.openLab",
         infoURL: URL = EngineConnectionInfo.defaultURL, stderrURL: URL? = nil, watchStderr: Bool = true,
+        stderrSink: @escaping @Sendable (String) -> Void = EngineStderrWatcher.logSink,
         arguments: [String]? = nil, firstSpawnArguments: [String] = [], watchStdin: Bool = false
     ) {
         self.executable = executable
@@ -65,6 +67,19 @@ final class SystemEngineProcesses: EngineProcesses {
         stderrTail = EngineStderrTail(
             url: stderrURL ?? infoURL.deletingLastPathComponent().appendingPathComponent("engine-stderr.log"))
         self.watchStderr = watchStderr
+        self.stderrSink = stderrSink
+        // An engine already running (this app was relaunched after a crash) writes to the same
+        // file; read what it prints from here on, as for an engine this run starts.
+        if watchStderr, case .success(let info) = readInfo(), isEngine(info.pid), stderrTail.prepare() {
+            watchStderrFile()
+        }
+    }
+
+    private func watchStderrFile() {
+        stderrWatcher?.stop()
+        let watcher = EngineStderrWatcher(tail: stderrTail, sink: stderrSink)
+        watcher.start()
+        stderrWatcher = watcher
     }
 
     func readInfo() -> Result<EngineConnectionInfo, EngineConnectionInfo.LoadError> {
@@ -158,10 +173,7 @@ final class SystemEngineProcesses: EngineProcesses {
             stdinWriter = stdinPipe[1]
         }
         if logged, watchStderr {
-            stderrWatcher?.stop()
-            let watcher = EngineStderrWatcher(tail: stderrTail)
-            watcher.start()
-            stderrWatcher = watcher
+            watchStderrFile()
         }
         return pid
     }
