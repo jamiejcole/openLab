@@ -4212,7 +4212,7 @@ final class CueListDrawingTests: XCTestCase {
 
     private func drawnMask(_ p: Pixels) -> [Bool] { p.all.map { Self.drawn($0.r, $0.g, $0.b) } }
 
-    /// `view` of `wc` in a window of its own, so clicks reach it through the window and it draws.
+    /// `view` of `wc` in a window of its own, so a click can be hit-tested through the window and it draws.
     @discardableResult
     private func show(_ view: NSView) -> NSWindow {
         let w = NSWindow(
@@ -4227,20 +4227,15 @@ final class CueListDrawingTests: XCTestCase {
         return w
     }
 
-    /// A mouse press and release in the middle of `button`, delivered the way the window delivers a
-    /// real click, so a view that took the click instead would fail the test.
+    /// A click on `button`: the middle of it must reach it through the window's hit test, then it is
+    /// pressed. A synthetic press through `window.sendEvent` is not used: when the app is not active (CI),
+    /// the press only brings the window forward and the button never fires.
     private func click(_ button: NSButton) throws {
         let window = try XCTUnwrap(button.window)
         let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
         XCTAssertTrue(window.contentView?.hitTest(point) === button, "the click would land elsewhere")
-        func event(_ type: NSEvent.EventType) throws -> NSEvent {
-            try XCTUnwrap(
-                NSEvent.mouseEvent(
-                    with: type, location: point, modifierFlags: [], timestamp: 0,
-                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
-        }
-        NSApp.postEvent(try event(.leftMouseUp), atStart: false)  // ends the button's tracking loop
-        window.sendEvent(try event(.leftMouseDown))
+        XCTAssertTrue(button.isEnabled)
+        button.performClick(nil)
     }
 
     private static let drawn: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in r + g + b < 2.2 }
