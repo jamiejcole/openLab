@@ -222,6 +222,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         previewButton.target = self
         previewButton.action = #selector(previewClicked)
         chooseButton.setAX(AX.inspectorChoose)
+        chooseButton.image = Icon.fieldChoose.image(loc("inspector.target.choose"), compact: true)
+        // Glyph only (the Inspector keeps its width); the title stays as the name and tooltip.
+        chooseButton.imagePosition = .imageOnly
+        chooseButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true  // a usable click target
+        chooseButton.toolTip = loc("inspector.target.choose")
+        chooseButton.setAccessibilityLabel(loc("inspector.target.choose"))
         chooseButton.target = self
         chooseButton.action = #selector(chooseClicked)
         messageLabel.setAX(AX.inspectorMessage)
@@ -295,8 +301,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             ], width: 152)
         clearTargetButton.setAX("inspector-target-clear")
         clearTargetButton.isBordered = false
-        clearTargetButton.image = NSImage(
-            systemSymbolName: "xmark.circle.fill", accessibilityDescription: loc("inspector.target.clear"))
+        clearTargetButton.image = Icon.fieldClear.image(loc("inspector.target.clear"), compact: true)
         clearTargetButton.toolTip = loc("inspector.target.clear")
         clearTargetButton.target = self
         clearTargetButton.action = #selector(clearTargetClicked)
@@ -619,6 +624,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let targetKey = kind == "audio" ? "media" : "target"
         let hasTarget = (isTarget || kind == "audio") && !(cue.raw["kind"]?[targetKey]?.stringValue ?? "").isEmpty
         clearTargetButton.isEnabled = hasTarget && !isLocked
+        clearTargetButton.isHidden = !hasTarget
         if kind == "audio" {
             targetField.stringValue = cue.raw["kind"]?["media"]?.stringValue ?? ""
         } else if !isTarget {
