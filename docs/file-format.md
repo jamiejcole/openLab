@@ -32,7 +32,8 @@ it, and `engine/fixtures/show/` holds a sample file for each format version so f
 - **Unknown keys are ignored**, so stray keys added by hand do not stop a file opening; they are
   dropped on the next save. (A file with a higher `format_version` is still refused. Until v1.0.0 a newer build still writes
   the same version, so its file is not detected as newer.)
-- **Missing keys are an error**: every field below is required unless it says otherwise.
+- **Missing keys are an error**: every field below is required unless it says otherwise. The
+  exception is a key inside `settings.hotkeys`: a missing one reads as no key (`null`).
 - A leading UTF-8 byte-order mark and `\r\n` line endings are accepted (files edited on Windows).
 - Windows absolute media paths are converted to forward slashes (see §4.3).
 - Files larger than 64 MiB, or nested deeper than the JSON parser's limit of 128 levels, are refused.

@@ -65,7 +65,7 @@ final class TransportKeysTests: XCTestCase {
         XCTAssertFalse(keys.warnings.contains { $0.contains("hotkeys.") || $0.contains("_") }, "\(keys.warnings)")
     }
 
-    func testSelectedCueKeysAreTheModelsAndOnlyPreviewAndPanicAreFixed() throws {
+    func testEverySelectedCueKeyComesFromTheModel() throws {
         let keys = TransportKeys(
             settings: try settings(
                 #"{"load_selected":\#(hk("k")),"pause_resume_selected":null,"start_selected":\#(hk("j")),"stop_selected":\#(hk("i", ["shift"])),"reset_selected":\#(hk("u")),"preview_selected":\#(hk("w")),"panic_selected":null}"#

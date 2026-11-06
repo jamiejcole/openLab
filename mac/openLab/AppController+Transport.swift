@@ -16,8 +16,9 @@ extension AppController {
         let cueChords = Set((store.model?.cueHotkeys ?? []).map(\.chord))
         let menu = menuChords()
         let cached = keyCache[id]
-        // Only the key map and the cue hotkeys move keys: another setting changing re-warns nothing.
-        let same = cached?.hotkeys == hotkeys && cached?.cueChords == cueChords
+        // Only the key map moves keys: another setting or a cue hotkey changing re-reads and re-warns nothing
+        // about the map (a cue hotkey moving is told through `shadowed` below).
+        let same = cached?.hotkeys == hotkeys
         let keys = same ? (cached?.keys ?? TransportKeys(settings: settings)) : TransportKeys(settings: settings)
         // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire), V and S included.
         // A menu command's key (Cmd-J, Shift-Cmd-Down, ...) is taken before a cue hotkey is looked
@@ -29,7 +30,7 @@ extension AppController {
         // QLab does): the menu command has lost its key in this workspace, and the operator is told.
         let lost = keys.chords.filter { menu.contains($0.value) }
         if let cached, same, cached.shadowed == shadowed, cached.lost == lost { return cached.keys }
-        keyCache[id] = (hotkeys, cueChords, shadowed, lost, keys)
+        keyCache[id] = (hotkeys, shadowed, lost, keys)
         if !same {
             for warning in keys.warnings { _ = store.receive(.log(.warn, warning)) }
         }
