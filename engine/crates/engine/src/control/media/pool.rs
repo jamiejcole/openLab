@@ -179,7 +179,8 @@ impl ProbePool {
     }
 
     /// Replaces workers stuck on one job for longer than the timeout. Returns the probes given
-    /// up on: their docs report the files unplayable until (if ever) the stuck probe answers.
+    /// up on ([`MediaCatalog::give_up`](super::MediaCatalog::give_up) says what that means for
+    /// the file).
     pub fn watchdog(&mut self) -> Vec<Stuck> {
         let mut out = Vec::new();
         let mut stuck = Vec::new();
