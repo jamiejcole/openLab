@@ -800,7 +800,7 @@ fn a_stuck_reprobe_of_a_ready_file_is_logged_and_changes_no_cue() {
     go(&mut s);
     go(&mut s);
     // Ticks with nothing rendered: the stream's failure is seen by the tick's poll, which asks
-    // for the re-probe, and not by the voice's end, which does not.
+    // for the re-probe (a failure first seen at the voice's end asks too, once).
     spin::spin_until("the stream to fail", || {
         s.tick();
         s.control().probes_pending() == 1
