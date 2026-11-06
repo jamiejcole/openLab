@@ -527,6 +527,79 @@ fn a_stuck_recheck_of_a_failed_file_keeps_its_failure_and_lets_a_later_reprobe_r
     HANG.open();
 }
 
+/// Re-probes `key` (answered once) until the catalog stops asking.
+#[cfg(unix)]
+fn stick_reprobes_to_the_cap(
+    cat: &mut MediaCatalog,
+    hang: &Hang,
+    ms: &std::sync::atomic::AtomicU64,
+    key: &str,
+) {
+    for stuck in 1..=MAX_STUCK_JOBS_PER_FILE {
+        cat.reprobe(key);
+        hang.wait_entered(stuck);
+        advance(ms, 31);
+        assert_eq!(cat.watchdog(), vec![]);
+        assert_eq!(cat.abandoned_workers(), stuck);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn at_the_cap_a_watch_event_still_asks_and_a_file_gone_starts_over() {
+    hanging_probe!(HANG, probe);
+    let (mut cat, rx, ms) = timed_catalog(probe);
+    let key = "/Volumes/hung/a.wav";
+    cat.request(key.to_owned());
+    assert!(cat.answer(next_answer(&rx)).is_some());
+    stick_reprobes_to_the_cap(&mut cat, &HANG, &ms, key);
+    let asked = cat.entries[key].ticket;
+    cat.reprobe(key);
+    assert_eq!(cat.entries[key].ticket, asked, "at the cap");
+
+    // The file changed on disk: the watch's word is not a stream failing again.
+    let watch = cat.entries[key].watch;
+    assert!(cat.recheck(key, watch));
+    assert!(cat.entries[key].ticket > asked);
+    HANG.wait_entered(MAX_STUCK_JOBS_PER_FILE + 1);
+
+    // The file is gone, so what stuck before says nothing about the next one there.
+    assert!(cat.mark_missing(key, watch).is_some());
+    let gone = cat.entries[key].ticket;
+    cat.reprobe(key);
+    assert!(cat.entries[key].ticket > gone);
+    HANG.wait_entered(MAX_STUCK_JOBS_PER_FILE + 2);
+    HANG.open();
+}
+
+#[test]
+fn a_stuck_jobs_log_line_says_what_stuck_and_names_a_long_file_by_its_end() {
+    let line = |key: String, probe| {
+        Stuck {
+            doc: DocId(0),
+            key,
+            ticket: 1,
+            probe,
+        }
+        .log_line(3)
+    };
+    assert_eq!(
+        line("/Volumes/hung/a.wav".to_owned(), true),
+        "media probe of \"/Volumes/hung/a.wav\" stuck; worker replaced (3 so far)"
+    );
+    assert_eq!(
+        line("/Volumes/hung/a.wav".to_owned(), false),
+        "media preload of \"/Volumes/hung/a.wav\" stuck; worker replaced (3 so far)"
+    );
+    // Exactly as long as a line shows: all of it. One more: the start goes, on a character's
+    // edge (these take two bytes each).
+    let fits = "é".repeat(200);
+    assert!(line(fits.clone(), true).contains(&format!("\"{fits}\"")));
+    let long = format!("/mnt/{}", "é".repeat(100_000));
+    let shown = line(long, true);
+    assert!(shown.contains(&format!("\"...{fits}\"")), "{shown}");
+}
+
 /// A stalled volume takes two files' stuck probes, so one hung file would otherwise take a worker
 /// for each failure of its stream until no volume had any left.
 #[cfg(unix)]
@@ -537,13 +610,7 @@ fn a_file_whose_reprobes_keep_sticking_stops_taking_workers_until_one_answers() 
     let key = "/Volumes/hung/a.wav";
     cat.request(key.to_owned());
     assert!(cat.answer(next_answer(&rx)).is_some());
-    for stuck in 1..=MAX_STUCK_JOBS_PER_FILE {
-        cat.reprobe(key);
-        HANG.wait_entered(stuck);
-        advance(&ms, 31);
-        assert_eq!(cat.watchdog(), vec![]);
-        assert_eq!(cat.abandoned_workers(), stuck);
-    }
+    stick_reprobes_to_the_cap(&mut cat, &HANG, &ms, key);
     let asked = cat.entries[key].ticket;
     cat.reprobe(key);
     assert_eq!(cat.entries[key].ticket, asked, "no more workers for it");

@@ -84,11 +84,32 @@ pub enum WorkerNote {
     Restored,
 }
 
-/// A probe the watchdog gave up on: the doc and file it was for.
+/// A job the watchdog gave up on: the doc and file it was for.
 pub struct Stuck {
     pub doc: DocId,
     pub key: String,
     pub ticket: u64,
+    /// A probe, not a preload.
+    pub probe: bool,
+}
+
+impl Stuck {
+    /// Most characters of the file a log line names: the end, which has the file's name. A
+    /// reference comes from the show file, so it can be any length.
+    const LOG_KEY_CHARS: usize = 200;
+
+    /// The error log's line for this job, with `abandoned` workers replaced so far.
+    pub fn log_line(&self, abandoned: usize) -> String {
+        let job = if self.probe { "probe" } else { "preload" };
+        let start = self
+            .key
+            .char_indices()
+            .rev()
+            .nth(Self::LOG_KEY_CHARS)
+            .and_then(|(at, c)| self.key.get(at + c.len_utf8()..));
+        let (dots, key) = start.map_or(("", self.key.as_str()), |end| ("...", end));
+        format!("media {job} of \"{dots}{key}\" stuck; worker replaced ({abandoned} so far)")
+    }
 }
 
 impl ProbePool {
@@ -210,7 +231,7 @@ impl ProbePool {
                 gate.timed_out(*epoch, bucket, key, *probe, *trial, now);
             }
         }
-        for (i, doc, key, ticket, ..) in stuck.into_iter().rev() {
+        for (i, doc, key, ticket, _, probe, ..) in stuck.into_iter().rev() {
             if self.abandoned >= MAX_ABANDONED_WORKERS {
                 if !self.limit_reported {
                     self.limit_reported = true;
@@ -221,7 +242,12 @@ impl ProbePool {
             let w = self.workers.remove(i);
             w.abandoned.store(true, Ordering::Release);
             self.abandoned += 1;
-            out.push(Stuck { doc, key, ticket });
+            out.push(Stuck {
+                doc,
+                key,
+                ticket,
+                probe,
+            });
         }
         self.replenish();
         // Jobs that waited for a stalled volume run when it works again, or one at a time as
