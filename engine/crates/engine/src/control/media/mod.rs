@@ -9,8 +9,9 @@
 //! Probes of files cues near a playhead need come first (a high-priority queue the workers
 //! always empty before the other one). A worker stuck on one file (a stalled network volume)
 //! longer than `probe_timeout` is abandoned and replaced, so later probes are not queued behind
-//! it for ever; its file is reported unplayable meanwhile (a late answer still counts). The
-//! abandoned thread is leaked: it ends when its read returns, if it ever does.
+//! it for ever. A file with no answer yet is reported unplayable meanwhile; one with a last
+//! answer keeps it, so its cues stay as they are, and may be re-probed afresh. A late answer
+//! still counts. The abandoned thread is leaked: it ends when its read returns, if it ever does.
 //!
 //! Probe scheduling per volume (M2.25b). A volume is the mount a path is on (`bucket_of`, as the
 //! media watch names them: `/Volumes/<name>`, `/mnt/<name>`, a drive or share; everything else,
@@ -50,6 +51,10 @@ pub const PROBE_WORKERS: usize = 2;
 /// Most workers abandoned (stuck) and replaced over a catalog's life: past it, stuck workers
 /// are not replaced any more, so a dead volume cannot make the engine start threads without end.
 pub const MAX_ABANDONED_WORKERS: usize = 16;
+/// Most of one file's probes given up on with no answer since, before a re-probe of it sends
+/// nothing: a share of [`MAX_ABANDONED_WORKERS`], so one hung file whose stream keeps failing
+/// cannot leave the other volumes without workers. A media watch event still asks, as ever.
+pub const MAX_STUCK_JOBS_PER_FILE: usize = 4;
 
 /// The monotonic clock the probe watchdog reads. Tests inject one that moves only when told to,
 /// so whether a worker counts as stuck never depends on how fast the machine runs.

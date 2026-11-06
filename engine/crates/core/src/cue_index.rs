@@ -15,7 +15,7 @@
 //! allocation-free scan of the cue ids. [`CueIndex::build`] is the reference: after any edit the reconciled index equals
 //! a freshly built one ([`CueIndex::matches`]).
 //!
-//! Cue ids are unique in a valid workspace (commands refuse duplicates, opening repairs them).
+//! Cue ids are unique in a valid workspace (commands and opening refuse duplicates).
 //! With duplicates the first cue (depth first) with an id counts, as for `Workspace::find_cue`,
 //! and the index says so ([`CueIndex::has_duplicates`]): it is then only ever rebuilt, never
 //! reconciled, because a footprint cannot say which of two cues with one id it means.
