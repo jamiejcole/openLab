@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
 //! A 64-channel audio file plays through the control loop (AUD-03, AUD-04): symphonia
 //! cannot read such WAVs, so this is the in-house PCM reader behind a real cue, with every file
 //! channel routed to its own output of a 64-output offline device.
