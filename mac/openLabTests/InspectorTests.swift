@@ -995,7 +995,7 @@ final class NetworkInspectorTests: XCTestCase {
         XCTAssertNil(app.handleKeyDown(try key(" ")), "Space is GO, not a space in the field")
         let second = await received(one)
         XCTAssertEqual(second, "/typed i:1", "GO sent the cue")
-        XCTAssertEqual(inspector.networkMessageField.stringValue, "/typed 1")
+        XCTAssertEqual(kind?["address"]?.stringValue, "/typed", "no space went into the message")
     }
 
     func testSendFromADisarmedCueSendsNothing() async throws {
@@ -1009,6 +1009,10 @@ final class NetworkInspectorTests: XCTestCase {
 
     func testSendWithNetworkOutputDisabledSendsNothingThenWorksAgain() async throws {
         try await setMessageAndWait("/lights/go 5")
+        await assertEventually("a status came") {
+            try? await self.engine.advance(seconds: 0.3)
+            return self.store.status != nil
+        }
         app.showOverrideControls()
         app.overrides.networkSwitch.performClick(nil)
         await assertEventually("network output is off") {
