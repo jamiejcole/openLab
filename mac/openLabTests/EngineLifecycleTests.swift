@@ -1260,6 +1260,8 @@ final class EngineCrashFlowTests: XCTestCase {
         let target = URL(fileURLWithPath: runs.folder.appendingPathComponent("Saved At Quit.openlab").path)
         app.pickSaveURL = { _ in target }
         alerts.saveChoices = [.save]
+        // The save's reply can overtake the message that gives the store its path: hold it so it always does.
+        tap.holdDocument = true
         try await quit()
         XCTAssertEqual(LaunchPreferences(defaults: prefs).openFiles, [target.path])
     }
