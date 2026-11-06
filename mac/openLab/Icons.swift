@@ -115,7 +115,7 @@ enum Icon: CaseIterable {
         case .targetCue: return Self.row("scope")
         case .targetFile: return Self.row("doc")
         case .fieldClear: return Self.row("xmark.circle.fill")
-        case .fieldChoose: return Self.row("magnifyingglass")
+        case .fieldChoose: return Self.row("folder.fill")  // filled: the outline is the Group cue
         case .reservedPopOut: return Self.row("arrow.up.forward.square", 11, fallback: "rectangle.on.rectangle")
         }
     }
