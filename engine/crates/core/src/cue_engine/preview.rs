@@ -86,6 +86,11 @@ impl CueEngine {
                 address,
                 args,
             } => {
+                // As the cue's action would: a disarmed cue (or one in a disarmed group) sends
+                // nothing, so Send can never reach a device the show would not.
+                if !self.is_armed(model) {
+                    return cx.warn(ignored(PreviewIgnoredReason::Disarmed));
+                }
                 if self.refuses(cue, cx) {
                     return cx.warn(EngineWarning::CueBroken { cue });
                 }

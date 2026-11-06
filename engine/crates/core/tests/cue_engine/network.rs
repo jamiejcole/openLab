@@ -421,3 +421,19 @@ fn send_now_from_a_broken_cue_sends_nothing() {
     let mut rig = Rig::checked(vec![network_to(1, 1, "no-slash", vec![])]);
     assert!(sends(&rig.preview(0, 1)).is_empty());
 }
+
+#[test]
+fn send_now_from_a_disarmed_cue_sends_nothing() {
+    let mut c = network(1);
+    c.armed = false;
+    let mut rig = Rig::checked(vec![c]);
+    let actions = rig.preview(0, 1);
+    assert!(sends(&actions).is_empty());
+    assert_eq!(
+        actions,
+        vec![Action::Warning(EngineWarning::PreviewIgnored {
+            cue: id(1),
+            reason: PreviewIgnoredReason::Disarmed
+        })]
+    );
+}
