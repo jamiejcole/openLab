@@ -129,8 +129,8 @@ pub const PROBE_HOLD_LIMIT: Duration = Duration::from_secs(5);
 pub const STREAM_START_LIMIT: Duration = Duration::from_secs(5);
 /// A document read stuck this long fails with `io` and its worker is replaced.
 pub const DOC_TIMEOUT: Duration = Duration::from_secs(20);
-/// How long shutdown waits for the final recovery writes of the docs with unsaved changes
-///: a whole-show serialisation on a slow machine plus a write to a slow disk, and
+/// How long shutdown waits for the final recovery writes of the docs with unsaved changes:
+/// a whole-show serialisation on a slow machine plus a write to a slow disk, and
 /// short enough that a hung volume does not keep a quitting engine alive.
 pub const SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
 /// A probe worker stuck on one file this long is replaced.

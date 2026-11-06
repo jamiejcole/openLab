@@ -658,8 +658,8 @@ pub struct Snapshot {
     pub previewing: Vec<CueId>,
     /// As in `warnings`.
     pub warnings: Vec<WireWarning>,
-    /// The media lengths of the audio cues whose file is probed and playable, by cue id
-    ///; later changes come as `media_duration` runtime changes. Absent: none.
+    /// The media lengths of the audio cues whose file is probed and playable, by cue id;
+    /// later changes come as `media_duration` runtime changes. Absent: none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub media_durations: Vec<CueMediaDuration>,
 }

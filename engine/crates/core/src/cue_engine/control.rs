@@ -119,8 +119,8 @@ impl CueEngine {
         cx.out.push(Action::SetArmed { cue: target, armed });
     }
 
-    /// A new call: the binary has applied the last call's `SetArmed` changes to the model
-    ///, so the model rules again, including any edit made since.
+    /// A new call: the binary has applied the last call's `SetArmed` changes to the model,
+    /// so the model rules again, including any edit made since.
     pub(super) fn sync_armed(&mut self) {
         self.armed.clear();
     }

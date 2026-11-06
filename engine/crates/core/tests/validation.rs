@@ -839,7 +839,7 @@ fn devamp_may_target_a_playlist_group() {
 
 #[test]
 fn long_start_chains_validate_in_linear_time() {
-    // Regression (review 2, H1): one search per cue made a 40k-cue chain take a minute.
+    // Regression: one search per cue made a 40k-cue chain take a minute.
     // 200k cues is about the most a 64 MiB file can hold.
     const N: u128 = 200_000;
     let start = |target| CueKind::Start {
@@ -849,8 +849,9 @@ fn long_start_chains_validate_in_linear_time() {
     cues.push(cue(N, start(1))); // close the loop: every cue is in one cycle
     let ws = workspace(cues);
     // No time bound: a wall-clock assert is flaky on a loaded or sanitised runner. The quadratic version
-    // never finished on this input, so a regression hangs the test and the CI job times out; the
-    // work bound is `strongly_connected_work_is_linear_in_nodes_and_edges` in validate.rs.
+    // never finished on this input, so a regression hangs the test and the CI job times out. Only
+    // that job timeout guards the bound: a 10x slowdown still passes (the work-count test #414 asked
+    // for was dropped: the counter only covered the component search, not the real regression site).
     let issues = validate(&ws);
     assert_eq!(issues.len(), N as usize);
     assert!(issues.iter().all(|i| i.kind == IssueKind::TriggerCycle));

@@ -159,8 +159,8 @@ impl CueEngine {
             return;
         }
         // Loaded to a time at or past its nominal span, a playlist or random group has nothing
-        // left to play: its action ends at once and its post-wait counts from the load time
-        //. A span that is unknown (unprobed audio) or endless (a looping playlist)
+        // left to play: its action ends at once and its post-wait counts from the load time.
+        // A span that is unknown (unprobed audio) or endless (a looping playlist)
         // clamps nothing.
         let offset = match self.slots.get(&group) {
             Some(Slot::Active(run)) => run.action_offset,
