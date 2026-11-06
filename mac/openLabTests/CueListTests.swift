@@ -1177,12 +1177,14 @@ extension CueListTests {
     func testRowMenuItemsFollowSelectionStateAndClipboard() async throws {
         let h = try await H()
         let pb = privatePasteboard()
-        // A fade: no audio to preview, no file to reveal, nothing running to panic.
+        // A group: V previews it; it has no file to reveal and nothing is running to panic.
         for (id, run) in h.store.cueStates where run.state.isActive {
             try h.runtime(#"{"type":"cue_state","cue":"\#(id)","state":"idle"}"#)
         }
         var e = enabled(try menu(h, H.group, pasteboard: pb))
-        XCTAssertEqual(e[.preview], false)
+        XCTAssertEqual(e[.preview], true, "a group previews")
+        XCTAssertEqual(enabled(try menu(h, H.fade, pasteboard: pb))[.preview], false, "a fade has nothing to preview")
+        e = enabled(try menu(h, H.group, pasteboard: pb))
         XCTAssertEqual(e[.panic], false)
         XCTAssertEqual(e[.revealTarget], false)
         XCTAssertEqual(e[.paste], false)
