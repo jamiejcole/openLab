@@ -114,6 +114,22 @@ extension Command {
         return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
     }
 
+    /// `SetPatchProperty` of a patch's main level (`output` nil) or one output's level, in dB (-120 is
+    /// silence). The engine puts it within the workspace volume limits.
+    static func setPatchLevel(_ patch: ModelID, output: Int?, db: Double) -> Command {
+        var property: [String: JSONValue] = ["value": .double(db)]
+        if let output {
+            property["type"] = .string("output_level")
+            property["output"] = .int(Int64(output))
+        } else {
+            property["type"] = .string("master_db")
+        }
+        return Command(
+            .object([
+                "type": .string("set_patch_property"), "id": .string(patch.raw), "property": .object(property),
+            ]))
+    }
+
     /// `RenameWorkspace { name }`: the show title, undoable. At most 1024 Unicode scalars; a newline
     /// is allowed, other control characters are not (docs/commands.md); the engine refuses anything
     /// else.

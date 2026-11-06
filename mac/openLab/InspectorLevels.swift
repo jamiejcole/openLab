@@ -66,6 +66,7 @@ extension InspectorViewController {
 
     /// Fills the Levels tab of an Audio cue and the Curve and Levels tabs of a Fade cue.
     func renderLevels(_ cue: Cue, model: WorkspaceModel) {
+        followVolumeLimits()
         let kind = cue.raw["kind"] ?? .null
         let audio = cue.kindType == "audio"
         let fade = cue.kindType == "fade"
@@ -80,6 +81,16 @@ extension InspectorViewController {
             fadeSettings.show(kind: kind)
             showFadeLevels(kind: kind, model: model)
         }
+    }
+
+    /// The panels draw and read levels in the workspace's limits, which a settings edit can change
+    /// under a shown cue. A Fade aimed at a Group holds changes in dB, which the maximum does not limit.
+    func followVolumeLimits() {
+        let limits = store.volumeLimits
+        audioLevels.limits = limits
+        let target = cue?.raw["kind"]?["target"]?.stringValue.flatMap { store.model?.cue(ModelID($0)) }
+        fadeLevels.limits =
+            target?.kindType == "group" ? VolumeLimits(max: LevelText.maxDb, min: limits.min) : limits
     }
 
     private func showFadeLevels(kind: JSONValue, model: WorkspaceModel, onlyIfRowsChange: Bool = false) {

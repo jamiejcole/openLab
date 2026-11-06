@@ -298,7 +298,7 @@ fn an_empty_footprint_emits_nothing_and_settings_style_upserts_apply() {
     // The non-cue upserts of the protocol apply too (no command edits them yet).
     let mut client = ws.clone();
     let mut settings = ws.settings.clone();
-    settings.master_db = -6.0;
+    settings.output_min_db = -66.0;
     let mut patch = ws.patches[0].clone();
     patch.name = "renamed".into();
     client

@@ -371,9 +371,9 @@ fn fixtures() -> Vec<(String, Sample)> {
         client(ClientMessage::Command {
             id: rid(3),
             command: Box::new(Command::SetWorkspaceSetting {
-                setting: WorkspaceSetting::MasterDb { value: -6.0 },
+                setting: WorkspaceSetting::AutosaveInterval { value: 60.0 },
             }),
-            coalesce: Some("master:1".into()),
+            coalesce: Some("autosave:1".into()),
         }),
     );
     add(
@@ -3293,7 +3293,8 @@ fn property_commands() -> Vec<(String, Command)> {
         WorkspaceSetting::MinGoInterval { value: 2.0 },
         WorkspaceSetting::PanicDuration { value: 1.5 },
         WorkspaceSetting::AutosaveInterval { value: 60.0 },
-        WorkspaceSetting::MasterDb { value: -6.0 },
+        WorkspaceSetting::OutputMaxDb { value: 0.0 },
+        WorkspaceSetting::OutputMinDb { value: -80.0 },
         WorkspaceSetting::Hotkey {
             key: TransportKey::StopAll,
             value: Some(Hotkey {

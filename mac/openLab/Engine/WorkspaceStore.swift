@@ -161,6 +161,14 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     func hardStopAll() async -> Result<OkBody, EngineError> { await transport(.hardStopAll) }
     func panicCue(_ cue: ModelID) async -> Result<OkBody, EngineError> { await transport(.panicCue(cue: cue)) }
 
+    /// The workspace's volume limits (PB-11), as the engine has them.
+    var volumeLimits: VolumeLimits {
+        let settings = model?.settings
+        return VolumeLimits(
+            max: settings?["output_max_db"]?.doubleValue ?? VolumeLimits().max,
+            min: settings?["output_min_db"]?.doubleValue ?? VolumeLimits().min)
+    }
+
     /// `coalesce`: edits sent with the same key join one undo step (a fader drag; docs/commands.md).
     func send(command: Command, coalesce: String? = nil) async -> Result<OkBody, EngineError> {
         await client.send { .command(id: $0, command, coalesce: coalesce) }
