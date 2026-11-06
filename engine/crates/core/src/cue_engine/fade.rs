@@ -6,12 +6,12 @@
 
 use std::collections::BTreeSet;
 
-use crate::cue::{Cue, CueKind, MAX_DB};
+use crate::cue::{Cue, CueKind};
 use crate::model::CueId;
 
 use super::group;
 use super::level::{self, Level, LevelParam, LevelRamp};
-use super::run::{FadeRamp, FadeRun, Phase, Slot, Voice, after_restart};
+use super::run::{FadeRamp, FadeRun, Phase, Slot, Voice};
 use super::time::SampleTime;
 use super::types::{Action, EngineWarning};
 use super::{Ctx, CueEngine};
@@ -51,6 +51,7 @@ impl CueEngine {
             return cx.warn(EngineWarning::TargetMissing { cue, target });
         };
         let relative = matches!(target_model.kind, CueKind::Group { .. });
+        let limits = ws.settings.limits();
         let candidates: Vec<&Cue> = match &target_model.kind {
             CueKind::Audio { .. } => vec![target_model],
             // A group fades the audio cues inside it (any depth) that are playing now.
@@ -81,7 +82,7 @@ impl CueEngine {
             let CueKind::Audio { levels: base, .. } = &c.kind else {
                 continue;
             };
-            let wanted = level::fade_targets(levels, &c.kind);
+            let wanted = level::fade_targets(levels, &c.kind, (!relative).then_some(limits));
             let before = self.state(c.id);
             let Some(Slot::Active(run)) = self.slots.get_mut(&c.id) else {
                 continue;
@@ -98,7 +99,7 @@ impl CueEngine {
             fade.targets.push((c.id, run.seq));
             // Never before the voice exists in the mixer or before a command already committed
             // for it (another fade's ramp in the lookahead window); the end stays on the fade's.
-            let start = run.commit(at.max(now).max(started), cx.horizon);
+            let start = run.commit(at.max(now).max(started));
             let frames = end.saturating_sub(start);
             // What the mixer makes of the ramp (a 0-frame one is de-zippered), so the tracked
             // level is the sound's.
@@ -118,13 +119,12 @@ impl CueEngine {
                     .or_else(|| level::model_gain(base, param))
                     .unwrap_or(0.0);
                 // Relative: the level moves by the fade's dB from where it is now (so a silent
-                // level stays silent and is left alone), never above the loudest level a cue
-                // may have.
+                // level stays silent and is left alone), within the workspace limits.
                 let gain = if relative {
                     if from == 0.0 {
                         continue;
                     }
-                    (from * gain).min(level::db_to_gain(MAX_DB))
+                    level::limit_gain(limits, from * gain)
                 } else {
                     gain
                 };
@@ -221,7 +221,7 @@ impl CueEngine {
                 continue;
             }
             let voice = run.run;
-            let committed = run.floor(cx.horizon);
+            let committed = run.committed;
             let Some(level) = run.levels.get_mut(&r.param) else {
                 continue;
             };
@@ -230,9 +230,7 @@ impl CueEngine {
             }
             // Not before the ramp's own start, nor any other command committed for the voice:
             // one committed for a later sample would otherwise overtake the hold in the mixer.
-            let when = at
-                .max(after_restart(level.start, cx.horizon))
-                .max(committed);
+            let when = at.max(level.start).max(committed);
             if when >= level.end() {
                 level.owner = None;
                 continue;
@@ -276,6 +274,7 @@ impl CueEngine {
         // planned curve is at its new end, not to the fade's levels.
         let length = end.saturating_sub(action_start).saturating_add(offset);
         let rate = self.config.sample_rate().get();
+        let limits = cx.ws.settings.limits();
         let mut moving = BTreeSet::new();
         for r in &fade.ramps {
             let Some(Slot::Active(target)) = self.slots.get_mut(&r.cue) else {
@@ -285,17 +284,14 @@ impl CueEngine {
                 continue;
             }
             let voice = target.run;
-            let committed = target.floor(cx.horizon);
+            let committed = target.committed;
             let Some(level) = target.levels.get_mut(&r.param) else {
                 continue;
             };
             if level.owner != Some((cue, seq)) {
                 continue;
             }
-            let start = at
-                .max(now)
-                .max(after_restart(level.start, cx.horizon))
-                .max(committed);
+            let start = at.max(now).max(level.start).max(committed);
             target.committed = start;
             // Each ramp keeps its planned rate: it ends where its plan ends (moved on by the
             // pauses, as the action start is), or with the action if that is earlier (a fade
@@ -310,7 +306,8 @@ impl CueEngine {
             let (heard_frames, heard_curve) =
                 level::heard(start, frames, fade.curve, voice_start, rate);
             let gain = if fade.retimed {
-                r.gain_at(length, fade.curve)
+                // The plan ran from where it started, perhaps above a limit lowered since.
+                level::limit_gain(limits, r.gain_at(length, fade.curve))
             } else {
                 r.gain
             };

@@ -7,7 +7,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// The shipping engine, or in Debug builds the test engine (`EngineMode`).
     @MainActor private(set) lazy var engine = launch.makeEngine()
     @MainActor var engineSession: EngineSession { engine.0 }
-    @MainActor lazy var appController = AppController(session: engineSession, supervisor: engine.1)
+    @MainActor lazy var appController = AppController(
+        session: engineSession, supervisor: engine.1, layoutDefaults: Self.layoutDefaults)
+
+    /// Where windows remember their layout: the user's settings, except under the test engine (Debug
+    /// builds), which must not fill or reorder the real ones.
+    @MainActor private static var layoutDefaults: UserDefaults? {
+        #if DEBUG
+            if EngineMode.fromLaunchArguments() != .real { return UserDefaults(suiteName: "openlab.test-engine") }
+        #endif
+        return .standard
+    }
     @MainActor private(set) lazy var alarmController = EngineAlarmController(
         session: engineSession, supervisor: engine.1, presenter: EngineAlarmPanel(),
         alerts: { [unowned self] in alarmAlerts })

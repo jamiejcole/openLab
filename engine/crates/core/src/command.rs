@@ -564,11 +564,17 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
             if auto_number {
                 cue.number = Some(next_auto_number(ws)?);
             }
+            if !restoring {
+                ws.clamp_new_cues(std::slice::from_mut(&mut cue));
+            }
             let id = cue.id;
             insert(ws, &at, vec![cue], restoring)?;
             Ok(Command::RemoveCue { id })
         }
-        Command::Paste { at, cues } => {
+        Command::Paste { at, mut cues } => {
+            if !restoring {
+                ws.clamp_new_cues(&mut cues);
+            }
             let ids: Vec<CueId> = cues.iter().map(|c| c.id).collect();
             insert(ws, &at, cues, restoring)?;
             Ok(Command::Transaction {

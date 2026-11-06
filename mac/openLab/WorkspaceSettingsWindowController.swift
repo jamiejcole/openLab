@@ -15,6 +15,12 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     // General
     let panicField = NSTextField()
     let goIntervalField = NSTextField()
+    // Volume limits (Audio tab)
+    let maxLimitField = NSTextField()
+    let minLimitField = NSTextField()
+    let patchEditButton = NSButton(title: loc("settings.audio.edit"), target: nil, action: nil)
+    /// The patch editor of the patch last edited; the window lives as long as this window does.
+    private(set) var patchEditor: PatchEditorWindowController?
 
     // Audio
     let devicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -45,7 +51,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     init(store: WorkspaceStore) {
         model = WorkspaceSettingsModel(store: store)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 540),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = loc("settings.title")
         window.identifier = NSUserInterfaceItemIdentifier(AX.settingsWindow)
@@ -102,6 +108,17 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             field.widthAnchor.constraint(equalToConstant: 70).isActive = true
         }
 
+        maxLimitField.setAX(AX.settingsLimitMax, label: loc("settings.audio.limitMax"))
+        minLimitField.setAX(AX.settingsLimitMin, label: loc("settings.audio.limitMin"))
+        for field in [maxLimitField, minLimitField] {
+            field.alignment = .right
+            field.delegate = self
+            field.widthAnchor.constraint(equalToConstant: 70).isActive = true
+        }
+        patchEditButton.setAX(AX.settingsPatchEdit, label: loc("settings.audio.edit"))
+        patchEditButton.target = self
+        patchEditButton.action = #selector(editPatchClicked)
+
         let general = NSStackView(views: [
             row(loc("settings.general.panic"), panicField, loc("settings.seconds")),
             row(loc("settings.general.goInterval"), goIntervalField, loc("settings.seconds")),
@@ -132,9 +149,12 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             heading(loc("settings.audio.device")),
             devicePopup, deviceStatusLabel, deviceNoteLabel,
             heading(loc("settings.audio.patches")),
-            patchPopup,
+            row(nil, patchPopup, patchEditButton),
             row(loc("settings.audio.patchDevice"), patchDevicePopup, nil),
             channelsStack, patchMeter, patchProblemLabel,
+            heading(loc("settings.audio.limits")),
+            row(loc("settings.audio.limitMax"), maxLimitField, loc("settings.db")),
+            row(loc("settings.audio.limitMin"), minLimitField, loc("settings.db")),
         ])
         patchMeter.bank = model.store.meters
         patchMeter.setAX("settings-patch-meter")
@@ -184,9 +204,13 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         return label
     }
 
-    private func row(_ title: String, _ control: NSView, _ suffix: String?) -> NSStackView {
-        var views: [NSView] = [NSTextField(labelWithString: title), control]
-        if let suffix { views.append(NSTextField(labelWithString: suffix)) }
+    private func row(_ title: String?, _ control: NSView, _ suffix: Any?) -> NSStackView {
+        var views: [NSView] = title.map { [NSTextField(labelWithString: $0), control] } ?? [control]
+        if let suffix = suffix as? String {
+            views.append(NSTextField(labelWithString: suffix))
+        } else if let suffix = suffix as? NSView {
+            views.append(suffix)
+        }
         let stack = NSStackView(views: views)
         stack.orientation = .horizontal
         stack.spacing = 8
@@ -209,7 +233,12 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
 
     private func renderGeneral() {
         let editing = window?.firstResponder
-        for (field, value) in [(panicField, model.panicDuration), (goIntervalField, model.minGoInterval)] {
+        let limits = model.limits
+        for (field, value) in [
+            (panicField, model.panicDuration), (goIntervalField, model.minGoInterval),
+            (maxLimitField, model.store.model == nil ? nil : limits.max),
+            (minLimitField, model.store.model == nil ? nil : limits.min),
+        ] {
             // A field being typed in keeps its text.
             if let editor = editing as? NSTextView, editor.delegate === field { continue }
             field.stringValue = value.map(Self.format) ?? ""
@@ -366,7 +395,22 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         }
     }
 
+    @objc private func editPatchClicked() {
+        guard let row = shownRow else { return }
+        let editor =
+            patchEditor?.patchID == row.id
+            ? patchEditor : PatchEditorWindowController(store: model.store, patch: row.id)
+        patchEditor = editor
+        editor?.present()
+    }
+
     @objc private func doneClicked() { window?.close() }
+
+    /// Goes with the workspace (and takes its patch editor along, which otherwise outlives them both).
+    override func close() {
+        patchEditor?.close()
+        super.close()
+    }
 
     /// A number field was committed (Return or leaving the field): sent when valid, else the
     /// engine's value comes back.
@@ -378,7 +422,13 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                 await model.setPanicDuration(text)
             } else if field === goIntervalField {
                 await model.setMinGoInterval(text)
+            } else if field === maxLimitField {
+                await model.setOutputMax(text)
+            } else if field === minLimitField {
+                await model.setOutputMin(text)
             }
+            // A refused or unchanged value must not leave the typed text in the field.
+            lastDrawn = nil
             render()
         }
     }
