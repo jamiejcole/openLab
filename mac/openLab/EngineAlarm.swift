@@ -148,7 +148,7 @@ final class EngineAlarmController {
         subs.append(session.events.sink { [weak self] in self?.sessionEvent($0) })
     }
 
-    /// The "not responding" or "still stopping" alarm is up: it tells the operator about an engine
+    /// The "not responding", "still stopping" or "did not start in time" alarm is up: it tells the operator about an engine
     /// that may still be running, so it goes away when an engine answers (no other alarm is taken
     /// down by a connection).
     private var notRespondingShown = false
@@ -165,6 +165,9 @@ final class EngineAlarmController {
         case .notResponding:
             notRespondingShown = true
             presenter.show(title: loc("engine.alarm.notResponding"), message: loc("engine.alarm.notRespondingMessage"))
+        case .startTimedOut:
+            notRespondingShown = true
+            presenter.show(title: loc("engine.alarm.cannotStart"), message: loc("engine.alarm.startTimeout"))
         case .stillStopping:
             notRespondingShown = true
             presenter.show(title: loc("engine.alarm.stillStopping"), message: loc("engine.alarm.stillStoppingMessage"))

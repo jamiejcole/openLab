@@ -185,6 +185,185 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertTrue(alarms.isEmpty, "nothing was bound: no alarm")
     }
 
+    /// An engine this app spawned that stays alive but never writes engine.json is given
+    /// `startDeadline` (a slow cold start is not killed), then alarmed, ended (that pid only) and
+    /// replaced (#486).
+    func testASpawnedEngineThatNeverWritesItsFileIsAlarmedEndedAndReplaced() async throws {
+        let wedged: Int32 = 200
+        var spawnCount = 0
+        processes.onSpawn = { [unowned self] in
+            spawnCount += 1
+            if spawnCount == 1 {
+                processes.alive.insert(wedged)  // alive, no engine.json
+                return wedged
+            }
+            processes.alive.insert(enginePid)
+            processes.info = .success(engineInfo)
+            return enginePid
+        }
+        supervisor.start()
+        clock += supervisor.startDeadline - 1
+        await spin(3)
+        XCTAssertTrue(processes.signals.isEmpty, "still within the deadline: a slow start is not ended")
+        XCTAssertEqual(processes.spawns, 1)
+        clock += 1
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertEqual(processes.signals.map(\.pid), [wedged])
+        XCTAssertEqual(processes.signals.map(\.signal), [.terminate])
+        XCTAssertEqual(processes.spawns, 2)
+        XCTAssertEqual(alarms, [.startTimedOut])
+    }
+
+    /// The deadline never applies to an engine this run reached: its connection drops and its file
+    /// is gone, long past the deadline, and it is neither signalled nor replaced while its pid lives.
+    func testAReachedEngineWithoutItsFileIsNeverEndedForTheDeadline() async throws {
+        spawnsTheFake()
+        supervisor.start()
+        _ = await pump { self.session.connectionState == .connected }
+        processes.info = .failure(.missing)
+        engine.dropConnections()
+        _ = await eventually { self.session.connectionState != .connected }
+        clock += 10 * supervisor.startDeadline
+        await spin(3)
+        XCTAssertTrue(processes.signals.isEmpty)
+        XCTAssertEqual(processes.spawns, 1)
+        XCTAssertEqual(alarms, [])
+    }
+
+    /// An engine that crashed and whose replacement is wedged: only the replacement's pid is signalled.
+    func testAWedgedReplacementAfterACrashIsEndedAfterTheDeadline() async throws {
+        let wedged: Int32 = 500
+        var spawnCount = 0
+        processes.info = .success(engineInfo)
+        processes.alive = [enginePid]
+        processes.onSpawn = { [unowned self] in
+            spawnCount += 1
+            processes.alive.insert(wedged + Int32(spawnCount))
+            return wedged + Int32(spawnCount)
+        }
+        supervisor.start()
+        _ = await pump { self.session.connectionState == .connected }
+        processes.alive = []
+        processes.info = .failure(.missing)
+        engine.dropConnections()
+        _ = await pump { self.processes.spawns == 1 }
+        clock += supervisor.startDeadline
+        _ = await pump { self.processes.spawns == 2 }
+        XCTAssertEqual(processes.signals.map(\.pid), [wedged + 1])
+        XCTAssertEqual(alarms, [.engineStopped(crashed: false), .startTimedOut])
+    }
+
+    /// A miss, then a connection: the deadline is the plain one again, not doubled. The engine dies
+    /// and its wedged replacement is ended at exactly `startDeadline` after its start.
+    func testAConnectionResetsTheDoubledStartDeadline() async throws {
+        var spawnCount = 0
+        var bornAt = 0.0
+        processes.onSpawn = { [unowned self] in
+            spawnCount += 1
+            bornAt = clock
+            if spawnCount == 2 {
+                processes.alive.insert(enginePid)
+                processes.info = .success(engineInfo)
+                return enginePid
+            }
+            let wedged = 600 + Int32(spawnCount)
+            processes.alive.insert(wedged)
+            return wedged
+        }
+        supervisor.start()
+        clock += supervisor.startDeadline  // the first engine misses its deadline
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertEqual(processes.signals.map(\.pid), [601])
+        processes.alive = []
+        processes.info = .failure(.missing)
+        engine.dropConnections()
+        _ = await pump { self.processes.spawns == 3 }
+        clock = bornAt + supervisor.startDeadline - 1
+        await spin(3)
+        XCTAssertEqual(processes.signals.map(\.pid), [601], "within the plain deadline")
+        clock += 1
+        _ = await pump { self.processes.signals.count == 2 }
+        XCTAssertEqual(processes.signals.map(\.pid), [601, 603], "ended at the plain deadline, not at twice it")
+    }
+
+    /// A start that needs longer than the first deadline still runs: each missed deadline doubles
+    /// the next, and a connection resets it.
+    func testAStartNeedingMoreThanTheFirstDeadlineEventuallyConnects() async throws {
+        var next: Int32 = 300
+        var current: Int32 = 0
+        var bornAt = 0.0
+        processes.onSpawn = { [unowned self] in
+            next += 1
+            current = next
+            bornAt = clock
+            processes.alive.insert(next)  // up, but writes its file only 100 s after its start
+            return next
+        }
+        supervisor.start()
+        for _ in 0..<40 where session.connectionState != .connected {
+            clock += 10
+            if processes.alive.contains(current), clock - bornAt >= 100 {
+                processes.alive = [current]
+                processes.info = .success(
+                    EngineConnectionInfo(port: engine.port, token: engine.token, pid: current))
+            }
+            await spin(2)
+        }
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertEqual(processes.spawns, 2, "the 90 s deadline ended the first; the second had 180 s")
+        XCTAssertEqual(processes.signals.map(\.pid), [301])
+    }
+
+    /// The alarm that the engine did not start in time goes away when the replacement answers.
+    func testTheStartTimeoutAlarmIsTakenDownWhenTheReplacementConnects() async throws {
+        let wedged: Int32 = 200
+        var spawnCount = 0
+        processes.onSpawn = { [unowned self] in
+            spawnCount += 1
+            if spawnCount == 1 {
+                processes.alive.insert(wedged)
+                return wedged
+            }
+            processes.alive.insert(enginePid)
+            processes.info = .success(engineInfo)
+            return enginePid
+        }
+        let presenter = RecordingPresenter()
+        let controller = EngineAlarmController(
+            session: session, supervisor: supervisor, presenter: presenter, alerts: { ScriptedAlerts() })
+        supervisor.start()
+        clock += supervisor.startDeadline
+        await assertEventually { presenter.isVisible }
+        XCTAssertEqual(presenter.shown.last?.message, loc("engine.alarm.startTimeout"))
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        await assertEventually { !presenter.isVisible }
+        withExtendedLifetime(controller) {}
+    }
+
+    /// Replacements are within the spawn limit; past it the app stays alarmed, as for other
+    /// start failures.
+    func testEngineStartDeadlinesStayWithinTheSpawnLimit() async throws {
+        var next: Int32 = 300
+        supervisor.startDeadline = 5  // short enough that the spawns fall inside `spawnWindow`
+        processes.onSpawn = { [unowned self] in
+            next += 1
+            processes.alive.insert(next)  // always alive, never writes engine.json
+            return next
+        }
+        supervisor.start()
+        for _ in 0..<8 {  // deadlines 5, 10, 20 s: the third spawn, at 15 s, ends at 35 s
+            clock += 5
+            await spin(3)
+        }
+        XCTAssertEqual(processes.spawns, supervisor.maxSpawns)
+        XCTAssertEqual(alarms.last, .cannotStart(loc("engine.alarm.crashLoop")))
+        XCTAssertEqual(processes.signals.count, supervisor.maxSpawns, "each wedged engine is ended once")
+    }
+
     /// An engine that accepts the connection but is slow to send its welcome (its control loop
     /// is busy while the audio thread plays) is never ended for it (#268).
     func testALaunchHandshakeTimeoutIsBusyNotSilence() async throws {
@@ -429,6 +608,37 @@ final class EngineSupervisorTests: XCTestCase {
     }
 }
 
+/// Each wait returns when the first engine (the one `HidesFirstRunFile` spawned) has exited.
+private struct WaitsForFirstEngineExit: openLab.Scheduler {
+    let exited: @MainActor @Sendable () async -> Void
+    func sleep(seconds: Double) async throws { await exited() }
+}
+
+/// The real process table with the first engine's `engine.json` out of the app's sight until the
+/// app has ended that engine: an engine that is alive and never reaches the app, as a wedged
+/// start looks to it.
+@MainActor
+private final class HidesFirstRunFile: EngineProcesses {
+    let real: SystemEngineProcesses
+    private(set) var spawned: [Int32] = []
+    private(set) var signalled: [Int32] = []
+    init(_ real: SystemEngineProcesses) { self.real = real }
+
+    func readInfo() -> Result<EngineConnectionInfo, EngineConnectionInfo.LoadError> {
+        signalled.isEmpty ? .failure(.missing) : real.readInfo()
+    }
+    func isEngine(_ pid: Int32) -> Bool { real.isEngine(pid) }
+    func signal(_ pid: Int32, _ signal: EngineSignal) {
+        signalled.append(pid)
+        real.signal(pid, signal)
+    }
+    func spawnEngine() throws -> Int32 {
+        let pid = try real.spawnEngine()
+        spawned.append(pid)
+        return pid
+    }
+}
+
 /// The whole path through the app on the real engine: the supervisor starts the bundled engine
 /// the way the app does (`SystemEngineProcesses`, here on the stepped virtual device in a folder
 /// of the test's own), the engine is killed (SIGKILL, as a crash ends it), and the alarm, the new
@@ -446,6 +656,9 @@ final class EngineCrashFlowTests: XCTestCase {
     private var alerts: ScriptedAlerts!
     private var supervisor: EngineSupervisor!
     private var spawned: [Int32] = []
+    private var hiding: HidesFirstRunFile?
+    /// The supervisor's clock: stepped by `pump` until the first engine has been ended.
+    private var stepClock = 0.0
     private let intro = TestSnapshots.intro
 
     override func setUp() async throws {
@@ -454,14 +667,25 @@ final class EngineCrashFlowTests: XCTestCase {
 
     /// The app with Hamlet (the demo show, a cue playing and an unsaved edit) and A (an empty show)
     /// open. `before`: what happens in the folder before the app starts its engine.
-    private func launch(launchDefaults: UserDefaults? = nil) async throws {
+    private func launch(hidingFirstRun: Bool = false, launchDefaults: UserDefaults? = nil) async throws {
         let support = runs.support
         processes = SystemEngineProcesses(
             infoURL: runs.infoURL, watchStderr: false,
             arguments: TestEngineOptions(clock: .stepped, appSupport: support).engineArguments, watchStdin: true)
-        let processes = processes!
-        let session = EngineSession(transport: tap, infoProvider: { processes.readInfo() }, scheduler: scheduler)
-        supervisor = EngineSupervisor(processes: processes, session: session, scheduler: ImmediateScheduler())
+        let supervised: EngineProcesses = hidingFirstRun ? HidesFirstRunFile(processes) : processes
+        hiding = supervised as? HidesFirstRunFile
+        let session = EngineSession(transport: tap, infoProvider: { supervised.readInfo() }, scheduler: scheduler)
+        // The real engine takes milliseconds to exit on SIGTERM: the supervisor's wait for it follows
+        // the process, not a count of yields.
+        let exitWait = WaitsForFirstEngineExit { [unowned self] in
+            _ = await eventually(timeout: 10) {
+                guard let first = self.hiding?.spawned.first else { return true }
+                return !self.processes.isEngine(first)
+            }
+        }
+        supervisor = EngineSupervisor(
+            processes: supervised, session: session, scheduler: hidingFirstRun ? exitWait : ImmediateScheduler(),
+            now: { [unowned self] in stepClock })
         app = AppController(session: session, scheduler: ManualScheduler(), launchDefaults: launchDefaults)
         alerts = ScriptedAlerts()
         app.alerts = alerts
@@ -532,9 +756,28 @@ final class EngineCrashFlowTests: XCTestCase {
     private func pump(_ condition: @MainActor () -> Bool) async -> Bool {
         await eventually {
             if condition() { return true }
+            // Only once the first engine's own file exists: SIGTERM must reach an engine that holds
+            // the lock and has its signal handling up.
+            if let hiding = self.hiding, hiding.signalled.isEmpty, case .success = hiding.real.readInfo() {
+                self.stepClock += 5
+            }
             await self.scheduler.fire()
             return condition()
         }
+    }
+
+    /// An engine that is alive but never shows the app an `engine.json` is ended after the start
+    /// deadline (SIGTERM: the real engine exits and releases its instance lock), and the replacement
+    /// takes the lock and connects (#486).
+    func testAnEngineTheAppNeverSeesStartIsEndedAndReplacedByOneThatConnects() async throws {
+        try await launch(hidingFirstRun: true)
+        let hiding = try XCTUnwrap(hiding)
+        let first = try XCTUnwrap(hiding.spawned.first)
+        XCTAssertEqual(hiding.signalled, [first], "only the engine that never came up was signalled")
+        XCTAssertEqual(hiding.spawned.count, 2)
+        XCTAssertFalse(processes.isEngine(first), "the first engine exited on SIGTERM")
+        guard case .success(let info) = processes.readInfo() else { return XCTFail("no engine.json") }
+        XCTAssertEqual(info.pid, hiding.spawned.last)
     }
 
     func testEngineCrashAlarmsStartsANewEngineReattachesAndOffersRecovery() async throws {
