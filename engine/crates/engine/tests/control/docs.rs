@@ -2598,6 +2598,25 @@ fn an_autosave_that_does_not_name_its_file_stays_untitled() {
     }
 }
 
+/// A hostile file can match its own name's hash: a path no file system holds binds to nothing,
+/// and is not repeated in a notice.
+#[test]
+fn an_autosave_naming_a_path_far_too_long_stays_untitled_without_a_notice() {
+    let (env, path, wid) = crash_with_relative_media();
+    let edited = load_show(&fs::read_to_string(env.dirs.recovery_path(wid, Some(&path))).unwrap())
+        .unwrap()
+        .workspace;
+    fs::remove_file(env.dirs.recovery_path(wid, Some(&path))).unwrap();
+    let long = env.show_dir().join("x".repeat(70_000));
+    write_recovery(&env.dirs, &edited, Some(&long)).unwrap();
+    let mut r = restart(env, memo_ws("blank", &[5]));
+    let replies = request(&mut r.s, newest_autosave(wid));
+    ok_result(&replies);
+    let snap = snapshot(&replies);
+    assert_eq!(snap.document.path, None);
+    assert!(!has_untitled_notice(snap), "{:?}", snap.warnings);
+}
+
 /// A Finder copy has the workspace id of its original, and its own autosave. Recovering that
 /// autosave beside the open original binds it to the copy (with a fresh id, as opening the copy
 /// does), and leaves the original alone.

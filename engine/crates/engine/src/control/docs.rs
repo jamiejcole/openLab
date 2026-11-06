@@ -33,8 +33,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossbeam_channel::Sender;
 use openlab_audio::{CommandKind, Fade};
 use openlab_core::protocol::{
-    ErrorBody, ErrorCode, LogKind, LogLevel, OkBody, Outcome, RecoveryChoice, RecoveryEntryInfo,
-    Request, RequestId, ResultData, ServerMessage, WireWarning,
+    ErrorBody, ErrorCode, LogKind, LogLevel, MAX_FOLDER_BYTES, OkBody, Outcome, RecoveryChoice,
+    RecoveryEntryInfo, Request, RequestId, ResultData, ServerMessage, WireWarning,
 };
 use openlab_core::{
     Action, CueEngine, CueListId, EngineConfig, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES,
@@ -960,7 +960,8 @@ fn open_recovery(
 /// The show file an autosave says it belongs to, if the file's name agrees: the name is what
 /// ties an autosave to a path, so a file renamed or edited by hand binds to nothing.
 fn named_show_path(text: &str, entry: &RecoveryEntry) -> Option<PathBuf> {
-    let path = PathBuf::from(recovery_show_path(text)?);
+    let path = recovery_show_path(text).filter(|p| p.len() <= MAX_FOLDER_BYTES)?;
+    let path = PathBuf::from(path);
     (path.is_absolute() && entry.path_hash.as_deref() == Some(path_key(&path).as_str()))
         .then_some(path)
 }
