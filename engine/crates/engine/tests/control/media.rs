@@ -129,6 +129,83 @@ fn a_stream_failing_at_its_end_probes_the_file_once() {
 }
 
 #[test]
+fn a_clean_end_asks_for_no_probe() {
+    // An 800-frame cue ends at its out point; a file shorter than its header says ends at the
+    // end of its stream (`EndOfStream`) without an error: neither probes again.
+    let full = std::fs::read(wav(&dc(2000, 0.5))).unwrap();
+    let cut = file("wav", &full[..44 + 1000 * 4]);
+    for path in [wav(&dc(800, 0.5)), cut] {
+        let ws = workspace(vec![audio(1, &path, 0)]);
+        let mut config = config(&ws);
+        config.prime_cues = 0;
+        let mut s = show_with(ws, config);
+        let before = s.control().media_tickets();
+        go(&mut s);
+        s.run(3000);
+        s.settle_media();
+        assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+        assert_eq!(
+            s.control().media_tickets(),
+            before,
+            "nothing failed: {path:?}"
+        );
+    }
+}
+
+/// Files the probe hook below was asked about.
+static PROBED: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn recording_probe(
+    p: &std::path::Path,
+) -> Result<openlab_audio::Probed, openlab_audio::MediaError> {
+    if let Ok(mut v) = PROBED.lock() {
+        v.push(p.to_owned());
+    }
+    openlab_audio::probe(p)
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn a_failed_stream_probes_the_file_it_read_not_the_cues_current_one() {
+    // The cue is relinked to another file while the old file's stream is still starting; the
+    // old file is the one that failed, so it is the one probed again.
+    let a = wav(&dc(2000, 0.5));
+    let b = wav(&dc(40_000, 0.5));
+    let ws = workspace(vec![audio(1, &a, 0), audio(2, &b, 1)]);
+    let mut c = config(&ws);
+    c.prime_cues = 0;
+    c.probe = recording_probe;
+    let mut s = show_with(ws, c);
+    s.settle_media();
+    std::fs::write(&a, std::fs::read(wav(&dc(1500, 0.5))).unwrap()).unwrap();
+    PROBED.lock().unwrap().clear();
+    let before = s.control().media_tickets();
+    go(&mut s);
+    let mut kind = s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .kind
+        .clone();
+    if let CueKind::Audio { media, .. } = &mut kind {
+        *media = Some(openlab_core::MediaRef::new(b.to_str().unwrap()));
+    }
+    set_kind(&mut s, 1, kind);
+    s.settle_media();
+    // Ticks with nothing rendered: only the stream poll can see the failure.
+    for _ in 0..1000 {
+        if s.control().media_tickets() > before + 1 {
+            break;
+        }
+        s.tick();
+        s.settle_media();
+    }
+    let probed = PROBED.lock().unwrap().clone();
+    assert!(probed.contains(&a), "the failed file is probed: {probed:?}");
+}
+
+#[test]
 fn a_preview_plays_on_the_cue_patch_outside_the_show() {
     let path = wav(&dc(800, 0.5));
     let mut s = show(workspace(vec![audio(1, &path, 0)]));

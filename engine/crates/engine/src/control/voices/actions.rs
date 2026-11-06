@@ -81,6 +81,7 @@ impl Voices {
                     queue: Vec::new(),
                 },
                 offset,
+                media: cue_media(env.ws, cue),
                 ..rec(cue, run, false)
             },
         );
@@ -123,6 +124,7 @@ impl Voices {
                             queue: Vec::new(),
                         },
                         offset,
+                        media: cue_media(env.ws, cue),
                         ..rec(cue, run, preview)
                     },
                 );
@@ -238,10 +240,7 @@ impl Voices {
                 let held = r.held.take().is_some();
                 r.start_id = Some(id);
                 r.slot = Some(vs.patch);
-                if let Some(CueKind::Audio { patch, media, .. }) =
-                    env.ws.find_cue(cue).map(|c| &c.kind)
-                {
-                    r.media = media.as_ref().map(|m| m.as_str().to_owned());
+                if let Some(CueKind::Audio { patch, .. }) = env.ws.find_cue(cue).map(|c| &c.kind) {
                     r.patch = Some(*patch);
                     r.levelled = env.patches.outputs(env.doc, *patch);
                 }

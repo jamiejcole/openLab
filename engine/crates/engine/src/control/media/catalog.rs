@@ -879,6 +879,7 @@ impl MediaCatalog {
 
     /// Jobs asked of the pool so far (probes and preloads): tests count the probes a failure
     /// asked for by the difference.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn tickets_issued(&self) -> u64 {
         self.next_ticket
     }

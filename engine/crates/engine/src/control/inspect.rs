@@ -203,6 +203,7 @@ impl Control {
     }
 
     /// Media jobs (probes, preloads) the first doc has asked for so far.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn media_tickets(&self) -> u64 {
         self.first().map_or(0, |d| d.media.tickets_issued())
     }

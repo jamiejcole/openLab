@@ -177,13 +177,7 @@ impl Voices {
     /// Checks the streams of live voices for failures: each failed run is reported once. A
     /// started voice whose stream is still not primed `limit` samples after its start (an open
     /// hung on a dead volume) is stopped now; its cue breaks when the mixer reports the end.
-    pub fn poll_streams(
-        &mut self,
-        now: SampleTime,
-        limit: SampleTime,
-        fx: &mut Effects,
-        ws: &Workspace,
-    ) {
+    pub fn poll_streams(&mut self, now: SampleTime, limit: SampleTime, fx: &mut Effects) {
         for (&id, r) in &mut self.recs {
             if r.stream_failed || !matches!(r.phase, Phase::Playing) || r.paused_at.is_some() {
                 continue;
@@ -231,7 +225,7 @@ impl Voices {
             if failed {
                 r.stream_failed = true;
                 fx.feedback.push(r.failure(BrokenReason::StreamFailed));
-                if let Some(m) = cue_media(ws, r.cue) {
+                if let Some(m) = r.media.clone() {
                     fx.reprobe.push(m);
                 }
             }
