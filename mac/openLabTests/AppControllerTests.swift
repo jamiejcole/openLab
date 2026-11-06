@@ -2927,13 +2927,17 @@ final class AppControllerTests: XCTestCase {
         let (gO, gI, gc, far, s1, s2) = (
             "00000000-0000-0000-0000-0000000000e1", "00000000-0000-0000-0000-0000000000e2",
             "00000000-0000-0000-0000-0000000000e3", "00000000-0000-0000-0000-0000000000e4",
-            "00000000-0000-0000-0000-0000000000e5", "00000000-0000-0000-0000-0000000000e6")
+            "00000000-0000-0000-0000-0000000000e5", "00000000-0000-0000-0000-0000000000e6"
+        )
         let audio = TestSnapshots.audioKind("media/a.wav")
         let inner = jumpCue(gI, TestSnapshots.groupKind([jumpCue(gc, audio)]))
-        _ = await store.send(command: .addCue(jumpCue(gO, TestSnapshots.groupKind([inner])), list: lst, parent: nil, index: 0))
+        _ = await store.send(
+            command: .addCue(jumpCue(gO, TestSnapshots.groupKind([inner])), list: lst, parent: nil, index: 0))
         for n in 0..<40 {
             _ = await store.send(
-                command: .addCue(jumpCue(String(format: "00000000-0000-0000-0000-0000000001%02d", n), audio), list: lst, parent: nil, index: 1))
+                command: .addCue(
+                    jumpCue(String(format: "00000000-0000-0000-0000-0000000001%02d", n), audio), list: lst, parent: nil,
+                    index: 1))
         }
         _ = await store.send(command: .addCue(jumpCue(far, audio), list: lst, parent: nil, index: 41))
         for (id, target) in [(s1, gc), (s2, far)] {
