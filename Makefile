@@ -6,6 +6,8 @@ MAC_TESTS_WITH_LIMIT := scripts/run-mac-tests.sh $(XCODEBUILD) -destination "pla
 	-test-timeouts-enabled YES -default-test-execution-time-allowance 180
 # The per-PR UI tests (scripts/ui-smoke.txt) as -only-testing arguments.
 UI_SMOKE := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/ui-smoke.txt),-only-testing:$(t))
+# The everyday-flow tests (scripts/core-flows.txt), unit and UI, as -only-testing arguments.
+CORE_FLOWS := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/core-flows.txt),-only-testing:$(t))
 
 FUZZ_TIME ?= 30
 FUZZ_TOOLCHAIN ?= nightly
@@ -13,7 +15,7 @@ FUZZ_TOOLCHAIN ?= nightly
 SAN_TOOLCHAIN ?= nightly-2026-10-15
 SAN_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 
-.PHONY: lint test test-rust test-mac test-mac-unit test-mac-ui-full mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
+.PHONY: lint test test-rust test-mac test-mac-unit test-mac-core-flows test-mac-ui-full mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
 
 lint:
 	scripts/check-repo.sh
@@ -91,6 +93,12 @@ test-mac-unit: project
 test-mac: project
 	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
 	$(MAC_TESTS_WITH_LIMIT) -- -only-testing:openLabTests $(UI_SMOKE)
+
+# The everyday QLab-user flows on the real engine (scripts/core-flows.txt): nightly before the full suite,
+# and on demand after a big feature change.
+test-mac-core-flows: project
+	@test -n "$(CORE_FLOWS)" || { echo "scripts/core-flows.txt lists no tests"; exit 1; }
+	$(MAC_TESTS_WITH_LIMIT) -- $(CORE_FLOWS)
 
 # Every unit test and the whole UI suite: what the nightly run does.
 test-mac-ui-full: project

@@ -396,24 +396,36 @@ FAKE
   unset WEDGED_ATT FIRST_SUMMARY
 }
 
-# 12. Every UI smoke identifier (scripts/ui-smoke.txt) names an existing test, so a rename cannot
-# silently drop it from the per-PR set.
-ui_smoke() {
-  local line cls name n=0
+# 12. Every identifier in scripts/ui-smoke.txt and scripts/core-flows.txt names an existing test, so a
+# rename cannot silently drop it from the per-PR set or the core-flows set.
+test_list() {
+  # Sets LIST_N (not echoed: fail must run in this shell to keep its flag).
+  local list=$1 check=$2 prefix=$3 line target cls name n=0
   while IFS= read -r line; do
     case "$line" in ''|'#'*) continue ;; esac
     n=$((n + 1))
     case "$line" in
-      openLabUITests/*/*) cls=$(printf '%s' "$line" | cut -d/ -f2); name=$(printf '%s' "$line" | cut -d/ -f3) ;;
-      *) fail ui-smoke "'$line' is not openLabUITests/<Class>/<test>"; continue ;;
+      */*/*/*) fail "$check" "'$line' has more than <target>/<Class>/<test>"; continue ;;
+      openLabUITests/*/*|"$prefix"/*/*) ;;
+      *) fail "$check" "'$line' is not <target>/<Class>/<test>"; continue ;;
     esac
-    # The class and the test must be in the same file.
-    f=$(grep -lE "^(final )?class $cls\\b" mac/openLabUITests/*.swift 2>/dev/null | head -n 1)
-    if [ -z "$f" ] || ! grep -qE "func $name\\(\\)" "$f"; then
-      fail ui-smoke "'$line' names no test in mac/openLabUITests"
+    target=$(printf '%s' "$line" | cut -d/ -f1); cls=$(printf '%s' "$line" | cut -d/ -f2); name=$(printf '%s' "$line" | cut -d/ -f3)
+    # The test must be declared in the class named, not merely in the same file: xcodebuild runs
+    # nothing, silently, for an identifier whose class does not hold the test.
+    if ! awk -v cls="$cls" -v fn="func $name()" '
+        /^(final )?class [A-Za-z0-9_]+/ { c = $0; sub(/^(final )?class /, "", c); sub(/[^A-Za-z0-9_].*/, "", c); cur = c }
+        index($0, fn) && cur == cls { found = 1 }
+        END { exit !found }' mac/"$target"/*.swift; then
+      fail "$check" "'$line' names no test in mac/$target"
     fi
-  done <scripts/ui-smoke.txt
-  [ "$n" -ge 3 ] || fail ui-smoke "scripts/ui-smoke.txt lists $n tests; the smoke set needs launch, GO and panic"
+  done <"$list"
+  LIST_N=$n
+}
+ui_smoke() {
+  test_list scripts/ui-smoke.txt ui-smoke openLabUITests
+  [ "$LIST_N" -ge 3 ] || fail ui-smoke "scripts/ui-smoke.txt lists $LIST_N tests; the smoke set needs launch, GO and panic"
+  test_list scripts/core-flows.txt core-flows openLabTests
+  [ "$LIST_N" -ge 10 ] || fail core-flows "scripts/core-flows.txt lists $LIST_N tests; the core-flows set is the everyday flows"
 }
 
 known_entries

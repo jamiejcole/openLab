@@ -244,8 +244,9 @@ jobs:
     # The app bundles the engine, so an engine change rebuilds it too.
     if: needs.changes.outputs.mac == 'true'
     runs-on: xcode-27
-    # Backstop: a hung test fails the job (seen holding a runner past 75 min; a run takes 15-20).
-    timeout-minutes: 45
+    # Backstop: a hung test fails the job (seen holding a runner past 75 min; a run takes 15-20). Above
+    # the core-flows (12) and test (38) step limits plus setup, so those steps are cancelled first.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - name: Select Xcode
@@ -285,8 +286,15 @@ jobs:
       # so it runs on the nightly schedule (and on demand), where a failure turns the run red and the
       # `alert` job opens the ci-red issue, unless its spindump proves the runner's WindowServer wedged
       # and a retry passes (scripts/run-mac-tests.sh).
-      # Below the job's 45 minutes, so a hung run is cancelled here and the step below still uploads its results.
+      # Nightly the core flows run first, so a broken everyday flow is named by its own step. The full suite
+      # below runs after them even when they fail (the run stays red), and runs them again.
+      - run: make test-mac-core-flows
+        timeout-minutes: 12
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      # 12 + 38 plus about 1.5 of setup fit the job's 60 minutes, so a hung run is cancelled here and the
+      # step below still uploads its results.
       - timeout-minutes: 38
+        if: ${{ !cancelled() }}
         run: make ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'test-mac-ui-full' || (needs.changes.outputs.app_engine == 'true' && 'test-mac' || 'test-mac-unit') }}
       # A hung or crashed test run leaves its result bundle (stacks, per-test logs) here; keep it a few days.
       - uses: actions/upload-artifact@v4
