@@ -18,12 +18,8 @@ extension AppController {
         let cached = keyCache[id]
         // Only the key map and the cue hotkeys move keys: another setting changing re-warns nothing.
         let same = cached?.hotkeys == hotkeys && cached?.cueChords == cueChords
-        let keys =
-            same
-            ? (cached?.keys ?? TransportKeys(settings: settings, cueChords: cueChords))
-            : TransportKeys(settings: settings, cueChords: cueChords)
-        // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire); the
-        // fixed app defaults (V, S) already yielded to cue hotkeys inside `TransportKeys`.
+        let keys = same ? (cached?.keys ?? TransportKeys(settings: settings)) : TransportKeys(settings: settings)
+        // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire), V and S included.
         // A menu command's key (Cmd-J, Shift-Cmd-Down, ...) is taken before a cue hotkey is looked
         // at (`fireCueHotkeys`), so a cue on one never fires either: warn for it the same way.
         let transportShadowed = cueChords.intersection(keys.chords.values)

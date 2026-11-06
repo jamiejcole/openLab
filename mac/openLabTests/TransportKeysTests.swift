@@ -68,28 +68,32 @@ final class TransportKeysTests: XCTestCase {
     func testSelectedCueKeysAreTheModelsAndOnlyPreviewAndPanicAreFixed() throws {
         let keys = TransportKeys(
             settings: try settings(
-                #"{"load_selected":\#(hk("k")),"pause_resume_selected":null,"start_selected":\#(hk("j")),"stop_selected":\#(hk("i", ["shift"])),"reset_selected":\#(hk("u"))}"#
+                #"{"load_selected":\#(hk("k")),"pause_resume_selected":null,"start_selected":\#(hk("j")),"stop_selected":\#(hk("i", ["shift"])),"reset_selected":\#(hk("u")),"preview_selected":\#(hk("w")),"panic_selected":null}"#
             ))
         XCTAssertEqual(keys.chord(for: .loadSelected), KeyChord("k"))
         XCTAssertNil(keys.chord(for: .pauseResumeSelected))
         XCTAssertEqual(keys.chord(for: .startSelected), KeyChord("j"))
         XCTAssertEqual(keys.chord(for: .stopSelected), KeyChord("i", [.shift]))
         XCTAssertEqual(keys.chord(for: .resetSelected), KeyChord("u"))
+        XCTAssertEqual(keys.chord(for: .previewSelected), KeyChord("w"), "remapped")
+        XCTAssertNil(keys.chord(for: .panicSelected), "cleared")
+        XCTAssertNil(keys.command(for: KeyChord("v")), "the old default is not kept")
         XCTAssertNil(keys.command(for: KeyChord("l")), "the old default is not kept")
-        XCTAssertEqual(keys.chord(for: .previewSelected), KeyChord("v"), "no model field: fixed")
-        XCTAssertEqual(keys.chord(for: .panicSelected), KeyChord("s"), "no model field: fixed")
         XCTAssertTrue(keys.warnings.isEmpty, "\(keys.warnings)")
         // Absent fields take the engine's new-workspace defaults.
         let defaults = TransportKeys(settings: try settings("{}"))
         XCTAssertEqual(defaults.chord(for: .loadSelected), KeyChord("l"))
         XCTAssertEqual(defaults.chord(for: .pauseResumeSelected), KeyChord("p"))
         XCTAssertNil(defaults.chord(for: .startSelected))
+        XCTAssertEqual(defaults.chord(for: .previewSelected), KeyChord("v"))
+        XCTAssertEqual(defaults.chord(for: .panicSelected), KeyChord("s"))
     }
 
-    func testAModelSelectedCueKeyBeatsACueHotkeyOnTheSameChordLikeTheEngine() throws {
-        let keys = TransportKeys(settings: try settings("{}"), cueChords: [KeyChord("l"), KeyChord("v")])
-        XCTAssertEqual(keys.chord(for: .loadSelected), KeyChord("l"), "the engine's map owns L: the cue never starts")
-        XCTAssertNil(keys.chord(for: .previewSelected), "V is the app's own: it yields to the cue")
+    func testAPreviewKeyRepeatedByAnotherKeyIsDroppedWithAWarning() throws {
+        let keys = TransportKeys(settings: try settings(#"{"preview_selected":\#(hk("s"))}"#))
+        XCTAssertEqual(keys.chord(for: .previewSelected), KeyChord("s"), "first field wins")
+        XCTAssertNil(keys.chord(for: .panicSelected))
+        XCTAssertEqual(keys.warnings.count, 1)
     }
 
     func testUnsupportedAndMalformedHotkeysWarnNotCrash() throws {
