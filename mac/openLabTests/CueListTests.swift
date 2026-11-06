@@ -1352,6 +1352,7 @@ final class PlayheadFlowTests: XCTestCase {
 
     override func setUp() async throws {
         engine = try await TestEngine.start()
+        NotesKeeper.folder = engine.folder.appendingPathComponent("kept-notes", isDirectory: true)
         let url = engine.infoURL
         let session = EngineSession(
             transport: wire, infoProvider: { EngineConnectionInfo.load(from: url) }, scheduler: sessionScheduler)
@@ -2496,6 +2497,22 @@ final class PlayheadFlowTests: XCTestCase {
         await assertEventually("Down moved the highlight") { self.wc.cueList.selectedIDs() != [group] }
     }
 
+    /// Hiding the sidebar while a control in it has the focus hands the keys to the list: Down moves the
+    /// highlight rather than driving nothing.
+    func testHidingTheSidebarWithFocusInItGivesTheKeysToTheList() async throws {
+        try await threeCues()
+        click(cues[0])
+        try await assertAllOn(cues[0])
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        wc.setVisible(.sidebar, true)
+        XCTAssertTrue(window.makeFirstResponder(wc.sidebar.listTable))
+        wc.setVisible(.sidebar, false)
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "the keys went to the list")
+        window.sendEvent(try XCTUnwrap(app.handleKeyDown(try downArrow)))
+        await assertEventually("Down moved the highlight") { self.wc.cueList.selectedIDs() != [self.cues[0]] }
+    }
+
     /// Typing ended by a selection the app changes: the list takes the keys, not the window.
     func testASelectionThatEndsTypingLeavesTheKeysWithTheList() async throws {
         try await threeCues()
@@ -2978,7 +2995,7 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertNil(wc.window?.attachedSheet, "no sheet")
         XCTAssertTrue(NotesNoticePanel.open.isEmpty, "no panel")
         XCTAssertNil(NSApp.modalWindow, "nothing modal")
-        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains("not saved"))
+        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains(NotesKeeper.fileName))
         XCTAssertTrue(
             store.logEntries.contains { $0.message.contains("not saved") && $0.message.contains("typed text") })
     }
@@ -3065,8 +3082,29 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertTrue(wc.isShowMode)
         XCTAssertNil(wc.window?.attachedSheet)
         XCTAssertTrue(NotesNoticePanel.open.isEmpty)
-        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains("not saved"))
+        XCTAssertTrue(wc.footer.noticeLabel.stringValue.contains(NotesKeeper.fileName))
         XCTAssertTrue(store.logEntries.contains { $0.message.contains("not saved") })
+        let kept = try String(contentsOf: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName))
+        XCTAssertTrue(kept.contains("ab" + tooLongNotes), "the whole text, past 4000 characters, is in the file")
+        let label = wc.footer.noticeLabel
+        XCTAssertTrue(label.stringValue.contains(NotesKeeper.fileName), "the footer names the file")
+        XCTAssertTrue(label.toolTip?.contains(NotesKeeper.folder.path) == true, "the tooltip has the path")
+        wc.window?.layoutIfNeeded()
+        XCTAssertLessThanOrEqual(
+            label.attributedStringValue.size().width, label.frame.width, "the file name is drawn, not cut off")
+    }
+
+    /// The notice in Edit Mode names the file, and the file has the whole text.
+    func testTheNotesNoticeNamesTheFileThatHoldsTheWholeText() async throws {
+        try await threeCues()
+        _ = notesPasteboard()
+        try typeTooLong(into: wc.masthead.notesView)
+        try typeKeys("\r", in: try XCTUnwrap(wc.window), code: 36)
+        await assertEventually("the notice is up") { !NotesNoticePanel.open.isEmpty }
+        let panel = try XCTUnwrap(NotesNoticePanel.open.last?.panel)
+        XCTAssertTrue(sheetText(panel).contains(NotesKeeper.fileName))
+        let kept = try String(contentsOf: NotesKeeper.folder.appendingPathComponent(NotesKeeper.fileName))
+        XCTAssertTrue(kept.contains("ab" + tooLongNotes))
     }
 
     // MARK: Loading a list: the highlight goes with the playhead

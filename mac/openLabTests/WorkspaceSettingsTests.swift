@@ -328,6 +328,359 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertFalse(tooLong)
     }
 
+    // MARK: Patch faders and volume limits (PB-11)
+
+    private let intro = TestSnapshots.intro
+    private let fadeCue: ModelID = "00000000-0000-0000-0000-00000000000b"
+
+    /// The demo show with its Intro cue routed file channels 1 and 2 to outputs 1 and 2 (so it sounds on
+    /// both) and, when given, a global master (a file of the old format), Intro's master level and
+    /// the Fade cue's master level.
+    private func sounding(globalMaster: Double? = nil, introMaster: Double? = nil, fadeMaster: Double? = nil)
+        -> (URL) throws -> Void
+    {
+        let intro = intro
+        let fadeCue = fadeCue
+        return { url in
+            try editShow(url.appendingPathComponent("Demo.openlab")) { ws in
+                if let globalMaster, var settings = ws["settings"] {
+                    settings.set("master_db", .double(globalMaster))
+                    ws.set("settings", settings)
+                }
+                guard var lists = ws["cue_lists"]?.arrayValue, var cues = lists.first?["cues"]?.arrayValue else {
+                    return
+                }
+                for i in cues.indices {
+                    guard var kind = cues[i]["kind"], var levels = kind["levels"] else { continue }
+                    if cues[i]["id"]?.stringValue == intro.raw {
+                        levels.set(
+                            "crosspoints",
+                            .array(
+                                (0..<2).map {
+                                    .object([
+                                        "input": .int(Int64($0)), "output": .int(Int64($0)), "db": .double(0),
+                                        "mute": .bool(false),
+                                    ])
+                                }))
+                        if let introMaster { levels.set("master_db", .double(introMaster)) }
+                    } else if cues[i]["id"]?.stringValue == fadeCue.raw, let fadeMaster {
+                        levels.set("master_db", .double(fadeMaster))
+                    } else {
+                        continue
+                    }
+                    kind.set("levels", levels)
+                    cues[i].set("kind", kind)
+                }
+                lists[0].set("cues", .array(cues))
+                ws.set("cue_lists", .array(lists))
+            }
+        }
+    }
+
+    /// Types `text` into `field` and ends the editing, as a user does with Return.
+    private func type(_ text: String, into field: NSTextField) throws {
+        let window = try XCTUnwrap(field.window)
+        window.makeFirstResponder(field)
+        let editor = try XCTUnwrap(field.currentEditor(), "the field is being edited")
+        editor.string = text
+        (field.delegate as? NSTextFieldDelegate)?.controlTextDidChange?(
+            Notification(name: NSControl.textDidChangeNotification, object: field))
+        window.makeFirstResponder(nil)
+    }
+
+    /// The settings window and the patch editor opened from its Edit button, on a show that is playing
+    /// Intro through the patch, with the meters on.
+    private func playing(_ edit: @escaping (URL) throws -> Void) async throws -> (
+        Rig, WorkspaceSettingsWindowController, PatchEditorWindowController
+    ) {
+        let (rig, sc) = try await open(edit: edit)
+        sc.tabs.selectTabViewItem(withIdentifier: "audio")
+        sc.patchMeter.updateLive()
+        sc.patchEditButton.performClick(nil)
+        let editor = try XCTUnwrap(sc.patchEditor, "the Edit button opened the patch editor")
+        guard case .success = await rig.store.transport(.start(cue: intro)) else { throw TestEngineError.notConnected }
+        try await rig.advance(1)
+        return (rig, sc, editor)
+    }
+
+    /// The loudest peak the engine reported for the patch's output `channel` over the next second of
+    /// device time, read as each report arrives (the meter's own display timer lets a level fall).
+    private func peak(_ rig: Rig, channel: Int) async throws -> Float {
+        // A change ramps in over a few blocks: the first half second is let go by.
+        try await rig.advance(0.5)
+        rig.store.meters.reset()
+        var loudest: Float = 0
+        for _ in 0..<5 {
+            try await rig.advance(0.1)
+            rig.store.meters.tick(0)
+            loudest = max(loudest, rig.store.meters.level(.output(patch), channel: channel))
+        }
+        return loudest
+    }
+
+    private func patchLevels(_ rig: Rig) -> (main: Double?, outputs: [Double]) {
+        let patch = rig.store.model?.patches.first
+        return (
+            patch?.raw["master_db"]?.doubleValue,
+            (patch?.raw["outputs"]?.arrayValue ?? []).compactMap { $0["level_db"]?.doubleValue }
+        )
+    }
+
+    private func cueMaster(_ rig: Rig, _ id: ModelID) -> Double? {
+        rig.store.model?.cue(id)?.raw["kind"]?["levels"]?["master_db"]?.doubleValue
+    }
+
+    func testMainAndOutputFadersInTheRoutingTab() async throws {
+        let (_, sc) = try await open()
+        sc.patchEditButton.performClick(nil)
+        let editor = try XCTUnwrap(sc.patchEditor)
+        XCTAssertTrue(editor.window?.isVisible == true)
+        XCTAssertEqual(editor.tabs.selectedTabViewItem?.label, loc("patchEditor.tab.routing"))
+        // One main fader, then one per output of the stereo patch, each with its dB box, all at 0 dB.
+        XCTAssertEqual(editor.outputFaders.count, 2)
+        editor.window?.contentView?.layoutSubtreeIfNeeded()
+        let faders = [editor.mainFader] + editor.outputFaders
+        let fields = [editor.mainField] + editor.outputFields
+        let xs = faders.map { $0.convert($0.bounds, to: nil).minX }
+        XCTAssertEqual(xs, xs.sorted(), "the main fader comes first")
+        XCTAssertEqual(Set(xs).count, 3, "three faders side by side")
+        for (fader, field) in zip(faders, fields) {
+            XCTAssertEqual(fader.doubleValue, 0)
+            XCTAssertEqual(field.stringValue, "0.0")
+            XCTAssertLessThan(field.convert(field.bounds, to: nil).maxY, fader.convert(fader.bounds, to: nil).maxY)
+        }
+    }
+
+    func testTheMainFaderChangesWhatPlays() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        let before = try await peak(rig, channel: 0)
+        XCTAssertGreaterThan(before, 0.05, "Intro is sounding through the patch")
+        try type("-12", into: editor.mainField)
+        await assertEventually { self.patchLevels(rig).main == -12 }
+        await assertEventually { editor.mainField.stringValue == "-12.0" }
+        let after = try await peak(rig, channel: 0)
+        XCTAssertEqual(Double(after), Double(before) * pow(10, -12 / 20), accuracy: Double(before) * 0.1)
+        XCTAssertEqual(cueMaster(rig, intro), 0, "the cue's own levels are untouched")
+        XCTAssertEqual(rig.store.cueStates[intro]?.state, .running, "the cue stays playing")
+    }
+
+    func testAnOutputFaderSilencesThatOutputAndLeavesTheOther() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        let before = try await peak(rig, channel: 0)
+        try type("-inf", into: editor.outputFields[1])
+        await assertEventually { self.patchLevels(rig).outputs == [0, -120] }
+        await assertEventually { editor.outputFields[1].stringValue == "-inf" }
+        let silent = try await peak(rig, channel: 1)
+        let kept = try await peak(rig, channel: 0)
+        XCTAssertEqual(silent, 0, accuracy: 0.0001)
+        XCTAssertEqual(Double(kept), Double(before), accuracy: Double(before) * 0.1)
+    }
+
+    func testTheFaderLevelsSurviveSaveAndReopen() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        try type("-6", into: editor.mainField)
+        try type("-3", into: editor.outputFields[1])
+        await assertEventually { self.patchLevels(rig).outputs == [0, -3] && self.patchLevels(rig).main == -6 }
+        guard case .success = await rig.store.save() else { return XCTFail("save") }
+        let path = try XCTUnwrap(rig.store.document?.path)
+        let doc = try XCTUnwrap(rig.doc)
+        guard case .success = await rig.client.send({ .close(id: $0, doc: doc, discardChanges: false) }) else {
+            return XCTFail("close")
+        }
+        guard case .success(let ok) = await rig.testEngine.request(.open(path: path, recovery: nil)),
+            case .opened(let reopenedDoc)? = ok.data
+        else { return XCTFail("reopen") }
+        let reopened = Rig(engine: rig.testEngine, workspace: reopenedDoc)
+        guard await reopened.connect() else { return XCTFail("reconnect") }
+        let sc = WorkspaceSettingsWindowController(store: reopened.store)
+        await sc.present().value
+        sc.patchEditButton.performClick(nil)
+        let again = try XCTUnwrap(sc.patchEditor)
+        await assertEventually { again.mainField.stringValue == "-6.0" }
+        XCTAssertEqual(again.outputFields.map(\.stringValue), ["0.0", "-3.0"])
+    }
+
+    func testTheWorkspaceLimitsFieldsClampTypedLevelsAndRefuseOutOfRangeLimits() async throws {
+        let (rig, sc, editor) = try await playing(sounding())
+        XCTAssertEqual(sc.maxLimitField.stringValue, "12")
+        XCTAssertEqual(sc.minLimitField.stringValue, "-60")
+        let before = try await peak(rig, channel: 0)
+        try type("0", into: sc.maxLimitField)
+        await assertEventually { sc.model.limits.max == 0 }
+        try type("+6", into: editor.mainField)
+        await assertEventually { editor.mainField.stringValue == "0.0" }
+        XCTAssertEqual(patchLevels(rig).main, 0)
+        let after = try await peak(rig, channel: 0)
+        XCTAssertLessThanOrEqual(Double(after), Double(before) * 1.1, "nothing louder is rendered")
+        // Out of range: refused, the old value stays.
+        let sent = commands(rig).count
+        try type("-31", into: sc.maxLimitField)
+        try type("-39", into: sc.minLimitField)
+        try type("-181", into: sc.minLimitField)
+        await assertEventually { sc.maxLimitField.stringValue == "0" && sc.minLimitField.stringValue == "-60" }
+        XCTAssertEqual(commands(rig).count, sent, "nothing out of range is sent")
+        XCTAssertEqual(sc.messageLabel.stringValue, loc("settings.audio.limitOutOfRange"))
+        // Inside the range they are taken.
+        try type("-180", into: sc.minLimitField)
+        await assertEventually { sc.model.limits.min == -180 }
+    }
+
+    func testLoweringTheMaximumPullsCueAndFadeLevelsDown() async throws {
+        let (rig, sc, _) = try await playing(sounding(introMaster: 6, fadeMaster: 6))
+        XCTAssertEqual(cueMaster(rig, intro), 6)
+        XCTAssertEqual(cueMaster(rig, fadeCue), 6)
+        try type("0", into: sc.maxLimitField)
+        await assertEventually { self.cueMaster(rig, self.intro) == 0 }
+        XCTAssertEqual(cueMaster(rig, fadeCue), 0, "a Fade aimed above 0 ends at 0")
+        // One undo gives it all back.
+        guard case .success = await rig.store.undo() else { return XCTFail("undo") }
+        await assertEventually { self.cueMaster(rig, self.intro) == 6 }
+        XCTAssertEqual(cueMaster(rig, fadeCue), 6)
+        XCTAssertEqual(sc.model.limits.max, 12)
+    }
+
+    func testThereIsNoGlobalMaster() async throws {
+        let (rig, sc, editor) = try await playing(sounding(globalMaster: -2))
+        XCTAssertNil(rig.store.model?.settings["master_db"], "the old file's master is gone from the model")
+        func texts(_ view: NSView?) -> [String] {
+            guard let view else { return [] }
+            var out = view.subviews.flatMap { texts($0) }
+            if let field = view as? NSTextField { out.append(field.stringValue) }
+            if let button = view as? NSButton { out.append(button.title) }
+            if let tabs = view as? NSTabView { out += tabs.tabViewItems.flatMap { [$0.label] + texts($0.view) } }
+            return out
+        }
+        let shown = texts(sc.window?.contentView) + texts(editor.window?.contentView)
+        XCTAssertFalse(shown.contains { $0.localizedCaseInsensitiveContains("master") }, "\(shown)")
+        // It plays as the file's levels say: the tone at its own level, not 2 dB down.
+        let level = try await peak(rig, channel: 0)
+        XCTAssertEqual(Double(level), 3000.0 / 32768, accuracy: 0.003)
+    }
+
+    // MARK: The patch editor during a show
+
+    /// A real key press, as the window receives it.
+    private func press(_ chars: String, keyCode: UInt16, in window: NSWindow) throws {
+        window.sendEvent(
+            try XCTUnwrap(
+                NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, characters: chars,
+                    charactersIgnoringModifiers: chars, isARepeat: false, keyCode: keyCode)))
+    }
+
+    func testOpeningThePatchEditorFocusesNoFieldAndSpaceEditsNoLevel() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        let window = try XCTUnwrap(editor.window)
+        window.makeKeyAndOrderFront(nil)
+        editor.present()
+        XCTAssertNil(editor.mainField.currentEditor(), "no caret in the main box")
+        XCTAssertFalse(window.firstResponder is NSText, "\(String(describing: window.firstResponder))")
+        // The GO habit, with nothing focused.
+        try press(" ", keyCode: 49, in: window)
+        window.makeFirstResponder(nil)
+        await settle()
+        XCTAssertEqual(editor.mainField.stringValue, "0.0")
+        XCTAssertEqual(patchLevels(rig).main, 0, "the patch is not silenced")
+        let sounding = try await peak(rig, channel: 0)
+        XCTAssertGreaterThan(sounding, 0.05, "and still sounds")
+    }
+
+    func testSpaceInAFocusedLevelBoxLeavesTheLevelAlone() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        let window = try XCTUnwrap(editor.window)
+        window.makeKeyAndOrderFront(nil)
+        // Clicked into, then Space: the text is replaced with a blank, and leaving it is no change.
+        window.makeFirstResponder(editor.mainField)
+        editor.mainField.currentEditor()?.selectAll(nil)
+        try press(" ", keyCode: 49, in: window)
+        XCTAssertEqual(editor.mainField.currentEditor()?.string, " ", "the key reached the field")
+        let sent = commands(rig).count
+        window.makeFirstResponder(nil)
+        await assertEventually { editor.mainField.stringValue == "0.0" }
+        XCTAssertEqual(commands(rig).count, sent, "a blank sends nothing")
+        XCTAssertEqual(patchLevels(rig).main, 0)
+        // Text that is not a number is still -inf (QLab 5 manual p. 200).
+        try type("x", into: editor.mainField)
+        await assertEventually { self.patchLevels(rig).main == -120 }
+        await assertEventually { editor.mainField.stringValue == "-inf" }
+    }
+
+    /// Emptied is -inf, as in QLab (manual p. 204).
+    func testAnEmptiedLevelBoxInThePatchEditorIsSilence() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        try type("", into: editor.mainField)
+        await assertEventually { self.patchLevels(rig).main == -120 }
+        await assertEventually { editor.mainField.stringValue == "-inf" }
+    }
+
+    func testALevelTypedBetweenALowMinimumAndSilenceIsSilent() async throws {
+        let (rig, sc, editor) = try await playing(sounding())
+        try type("-180", into: sc.minLimitField)
+        await assertEventually { sc.model.limits.min == -180 }
+        try type("-150", into: editor.mainField)
+        await assertEventually { self.patchLevels(rig).main == -120 }
+        await assertEventually { editor.mainField.stringValue == "-inf" }
+        XCTAssertEqual(LevelText.clamp(-150, limits: sc.model.limits), LevelText.silence)
+        // A level above silence is a level, however low the minimum.
+        try type("-100", into: editor.mainField)
+        await assertEventually { self.patchLevels(rig).main == -100 }
+    }
+
+    /// Each drag of a fader is its own undo step.
+    func testEachDragOfAPatchFaderIsItsOwnUndoStep() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        func drag(to values: [Double]) async {
+            editor.mainFader.onGestureBegin?()
+            for v in values {
+                editor.mainFader.doubleValue = v
+                _ = editor.mainFader.target?.perform(editor.mainFader.action, with: editor.mainFader)
+            }
+            await assertEventually { self.patchLevels(rig).main == values.last }
+            editor.mainFader.onGestureEnd?()
+        }
+        await drag(to: [-1, -2, -3])
+        await drag(to: [-7, -8])
+        guard case .success = await rig.store.undo() else { return XCTFail("undo") }
+        await assertEventually { self.patchLevels(rig).main == -3 }
+        XCTAssertEqual(editor.mainField.stringValue, "-3.0")
+        guard case .success = await rig.store.undo() else { return XCTFail("undo") }
+        await assertEventually { self.patchLevels(rig).main == 0 }
+    }
+
+    /// An edit that does not take says so; the old level stays on show.
+    func testALevelTheEngineDoesNotTakeSaysSoAndTheOldOneStays() async throws {
+        let (rig, _, editor) = try await playing(sounding())
+        XCTAssertEqual(editor.messageLabel.stringValue, "")
+        rig.client.stop()
+        try type("-12", into: editor.mainField)
+        await assertEventually { !editor.messageLabel.stringValue.isEmpty }
+        XCTAssertTrue(
+            editor.messageLabel.stringValue.contains(loc("error.detail.notConnected")),
+            editor.messageLabel.stringValue)
+        XCTAssertEqual(editor.mainField.stringValue, "0.0")
+    }
+
+    func testThePatchEditorClosesWithItsWorkspace() async throws {
+        let rig = try await Rig.open("Demo", on: engine)
+        let wc = WorkspaceWindowController(store: rig.store)
+        await wc.showSettings().value
+        wc.settingsWindow.patchEditButton.performClick(nil)
+        let editor = try XCTUnwrap(wc.settingsWindow.patchEditor)
+        XCTAssertTrue(editor.window?.isVisible == true)
+        wc.window?.close()
+        XCTAssertFalse(editor.window?.isVisible == true, "no dead window left behind")
+        XCTAssertFalse(wc.settingsWindow.window?.isVisible == true)
+    }
+
+    func testClosingTheSettingsControllerClosesThePatchEditor() async throws {
+        let (_, sc) = try await open()
+        sc.patchEditButton.performClick(nil)
+        let editor = try XCTUnwrap(sc.patchEditor)
+        sc.close()
+        XCTAssertFalse(editor.window?.isVisible == true)
+    }
+
     func testWithoutAnEngineNothingCanBeChanged() async throws {
         let rig = try Rig.offline()
         let sc = WorkspaceSettingsWindowController(store: rig.store)  // never connected

@@ -2,9 +2,9 @@
 
 //! Output patches (AUD-07) on the mixer: which mixer patch matrix (slot) each workspace patch
 //! uses, its resolution against the devices present (sent to the cue engine as `PatchStatus`),
-//! and the matrix gains (workspace master × patch master × output level, mute, polarity) on the
-//! mapped device outputs. The mixer's own master stays at unity (M4.15: the mixer is shared, the
-//! master level is the workspace's).
+//! and the matrix gains (patch master × output level, mute, polarity) on the mapped device
+//! outputs. The mixer's own master stays at unity (the mixer is shared by every open doc; a
+//! workspace has no global master).
 //!
 //! The mixer is shared by every open doc (ARCHITECTURE §3.5): slots are keyed by `(DocId,
 //! PatchId)`, not by a patch's place in a list, so adding, removing or moving a patch never
@@ -46,8 +46,7 @@ struct DocSlots {
     slots: HashMap<PatchId, (u16, usize)>,
     /// Slots a voice may still play through whose patch is gone or was resized, until no voice
     /// uses them. A removed patch's slot keeps its routing; a resized one keeps its layout but
-    /// follows the patch's settings ([`Patches::retired_base`]). Both stay under the workspace
-    /// master.
+    /// follows the patch's settings ([`Patches::retired_base`]).
     retired: BTreeMap<u16, Holder>,
     /// Workspace patches with no slot: every slot is taken.
     exhausted: Vec<PatchId>,
@@ -65,8 +64,7 @@ pub struct Patches {
     freed: bool,
     /// Gains sent to the mixer, per mixer slot, `[cue output][device output]` row-major.
     sent: Vec<Vec<f32>>,
-    /// The same before the workspace master (patch master × output level), so a retired slot
-    /// follows a master change too.
+    /// The same as sent, so a retired slot follows a change of its patch's levels too.
     bases: Vec<Vec<f32>>,
     device_outputs: usize,
     /// Slots the mixer disabled after repeated faults ([`Self::quarantine`]).
@@ -113,7 +111,6 @@ impl Patches {
         let mut commands = Vec::new();
         let mut changed = Vec::new();
         let mut given = self.allocate(&mut d, ws, busy, &mut commands);
-        let ws_master = db_to_gain(ws.settings.master_db);
         d.outputs.clear();
         let mut seen = HashMap::new();
         for patch in &ws.patches {
@@ -121,7 +118,7 @@ impl Patches {
                 Some(&(slot, _)) => {
                     let r = self.resolve(settings, ws, patch, devices);
                     let base = self.matrix(patch, &r);
-                    self.apply(slot, base, ws_master, &mut commands);
+                    self.apply(slot, base, &mut commands);
                     r
                 }
                 // Every mixer slot is taken: the patch cannot play.
@@ -141,7 +138,7 @@ impl Patches {
                 None => self.bases.get(usize::from(slot)).cloned(),
             };
             if let Some(base) = base {
-                self.apply(slot, base, ws_master, &mut commands);
+                self.apply(slot, base, &mut commands);
             }
         }
         // Slots just handed out (every slot of a doc's first sync, or one freed by another
@@ -174,7 +171,7 @@ impl Patches {
             .collect();
         slots.sort_unstable();
         for slot in slots {
-            self.diff(slot, &zero, 1.0, &mut commands);
+            self.diff(slot, &zero, &mut commands);
             if let Some(b) = self.bases.get_mut(usize::from(slot)) {
                 b.fill(0.0);
             }
@@ -224,9 +221,9 @@ impl Patches {
         Some(m)
     }
 
-    /// Sends slot `slot` the gains `base` × the workspace master (exactly `base` at 0 dB).
-    fn apply(&mut self, slot: u16, base: Vec<f32>, master: f32, commands: &mut Vec<CommandKind>) {
-        self.diff(slot, &base, master, commands);
+    /// Sends slot `slot` the gains `base`.
+    fn apply(&mut self, slot: u16, base: Vec<f32>, commands: &mut Vec<CommandKind>) {
+        self.diff(slot, &base, commands);
         if let Some(b) = self.bases.get_mut(usize::from(slot)) {
             *b = base;
         }
@@ -308,7 +305,7 @@ impl Patches {
         // Free slots are silent (the mixer starts them as identity; a freed one is zeroed).
         let free: Vec<u16> = self.free.iter().copied().collect();
         for slot in free {
-            self.diff(slot, &zero, 1.0, commands);
+            self.diff(slot, &zero, commands);
         }
         given
     }
@@ -375,10 +372,8 @@ impl Patches {
         r
     }
 
-    /// The matrix a patch should have before the workspace master: cue output `o` → its mapped
-    /// device channel at the patch's master × the output's level; silent when unmapped. The
-    /// workspace master multiplies it last ([`Self::apply`]), so at 0 dB (exactly 1.0) the
-    /// gains are bit for bit those sent when the master was the mixer's.
+    /// The matrix a patch should have: cue output `o` → its mapped device channel at the patch's
+    /// master × the output's level; silent when unmapped.
     fn matrix(&self, patch: &OutputPatch, r: &PatchResolution) -> Vec<f32> {
         let n = self.device_outputs;
         let mut m = vec![0.0; n * n];
@@ -398,14 +393,13 @@ impl Patches {
         m
     }
 
-    /// Sends slot `p` the entries of `want` × `scale` that differ from what it has.
-    fn diff(&mut self, p: u16, want: &[f32], scale: f32, commands: &mut Vec<CommandKind>) {
+    /// Sends slot `p` the entries of `want` that differ from what it has.
+    fn diff(&mut self, p: u16, want: &[f32], commands: &mut Vec<CommandKind>) {
         let n = self.device_outputs;
         let Some(sent) = self.sent.get_mut(usize::from(p)) else {
             return;
         };
         for (i, (s, &w)) in sent.iter_mut().zip(want).enumerate() {
-            let w = scale * w;
             if s.to_bits() == w.to_bits() {
                 continue;
             }
@@ -540,7 +534,7 @@ impl Patches {
         for slot in (0..self.sent.len()).filter_map(|s| u16::try_from(s).ok()) {
             self.resend_into(slot, &mut commands);
         }
-        // The mixer's master stays at unity (the workspace master is in the matrices).
+        // The mixer's master stays at unity.
         commands.push(CommandKind::SetMaster { gain: 1.0 });
         commands
     }
