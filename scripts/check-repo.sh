@@ -303,9 +303,21 @@ soak_classifier() {
 
 # 11b. The app-test wrapper retries a hang only when the spindump proves the runner's WindowServer is
 # stuck in the GPU driver and every failure is such a hang. Canned reports and summaries.
-wedged_report() { # samples in the driver, samples waiting on WindowServer, waiting thread, waiting process
-  local main='DispatchQueue "com.apple.main-thread"(1)'
-  printf 'Command: openLab\nProcess: %s [1]\nNum samples: 9 (1-9)\n  Thread 0x1 %s\n  *%s ??? (kernel) (blocked by turnstile waiting for WindowServer [2] after 2 hops) 1-9\n' "${4:-openLab}" "${3:-$main}" "$2"
+wedged_report() { # samples in the driver; samples waiting on WindowServer: several ranges, `/` starts a second tree of the thread, `=N` is not a kernel frame; waiting thread; waiting process; samples another thread waits
+  local main='DispatchQueue "com.apple.main-thread"(1)' n
+  local wait='  %s%s ??? (kernel) (blocked by turnstile waiting for WindowServer [2] after 2 hops) 1-9\n'
+  printf 'Command: openLab\nPID: 1\nProcess: %s\nNum samples: 9 (1-9)\n  Thread 0x1 %s\n' "${4:-openLab [1]}" "${3:-$main}"
+  for n in $2; do
+    case "$n" in
+      /) printf '  Thread 0x1 %s\n' "${3:-$main}" ;;
+      =*) printf "$wait" '' "${n#=}" ;;
+      *) printf "$wait" '*' "$n" ;;
+    esac
+  done
+  if [ -n "${5:-}" ]; then
+    printf '  Thread 0x2 Thread name "com.apple.NSEventThread"\n'
+    printf "$wait" '*' "$5"
+  fi
   printf 'Process: WindowServer [2]\nNum samples: 9 (1-9)\n  Thread 0x3 Thread name "ws_main_thread"\n  *%s AppleParavirtDevice::createObjectInternal 1-9\n' "$1"
 }
 wedged_classifier() {
@@ -326,10 +338,28 @@ wedged_classifier() {
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "WindowServer only passing through the driver must not excuse a hang"
   wedged_report 9 3 >"$d/s.txt"
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a process not waiting on WindowServer must not be excused"
+  wedged_report 9 "5 1 3" >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 || fail wedged-classifier "a wait split over sample ranges that add up to all samples is proven"
+  wedged_report 9 "5 1 2" >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "split ranges that add up short must not excuse a hang"
+  wedged_report 9 "5 5" >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "ranges that add up past the samples must not excuse a hang"
+  wedged_report 9 5 '' '' 4 >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a background thread's wait must not add to the main thread's"
   wedged_report 9 9 'Thread name "com.apple.NSEventThread"' >"$d/s.txt"
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "only a background thread waiting must not excuse a hung main thread"
-  wedged_report 9 9 '' other >"$d/s.txt"
+  wedged_report 9 "5 / 4" >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "two trees of the main thread must not add up"
+  wedged_report 9 "5 =4" >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a wait line that is not a kernel frame must not add up"
+  wedged_report 9 "9 / =9" >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 || fail wedged-classifier "a whole wait followed by a Swift task's copy of the tree is proven"
+  wedged_report 9 '' | sed '4s/: 9 /: 0 /' >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a section with no samples and no wait must not excuse a hang"
+  wedged_report 9 9 '' 'other [7]' >"$d/s.txt"
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "another process waiting must not excuse the tested one"
+  wedged_report 9 9 '' 'openLab [7]' >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "another process of the same name waiting must not excuse the tested one"
   wedged_report 9 9 >"$d/s.txt"
   printf '[]' >"$d/manifest.json"
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a hang with no spindump must not be retried"

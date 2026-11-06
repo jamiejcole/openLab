@@ -15,22 +15,27 @@ set -uo pipefail
 # A report whose every sample has WindowServer's main thread in the paravirtual GPU driver and the
 # tested process's main thread waiting on WindowServer. A moment in the driver in passing is not
 # enough, and nor is a background thread: those wait on a stalled WindowServer too, so one waiting
-# says nothing about what stopped the main thread (it may be a deadlock of our own).
+# says nothing about what stopped the main thread (it may be a deadlock of our own). The wait may be
+# split over sample ranges (353, 1, 142), so the kernel frames (`*`) carrying the wait add up, one thread
+# tree at a time: a report can hold a second tree of the same thread (a Swift task's), which must not
+# count twice. The tested process is the one with the header's PID: another may share its name.
 wedged() {
   awk '
-    /^Command:/ && target == "" { target = $2 }
-    /^Process:/ { process = $2; samples = "" }
+    function end_thread() {
+      if (waited > 0 && waited == samples) waiting = 1
+      waited = 0
+    }
+    /^PID:/ && pid == "" { pid = $2 }
+    /^Process:/ { end_thread(); tested = index($0, "[" pid "]") > 0; process = $2; samples = "" }
     /^Num samples:/ { samples = $3 }
-    /^  Thread 0x/ { thread = $0 }
+    /^  Thread 0x/ { end_thread(); thread = $0 }
     samples != "" {
       count = $1
-      sub(/^\*/, "", count)
-      if (count == samples) {
-        if (process == "WindowServer" && thread ~ /ws_main_thread/ && /AppleParavirt/) driver = 1
-        if (process == target && thread ~ /com\.apple\.main-thread/ && /blocked by turnstile waiting for WindowServer/) waiting = 1
-      }
+      in_kernel = sub(/^\*/, "", count)
+      if (count == samples && process == "WindowServer" && thread ~ /ws_main_thread/ && /AppleParavirt/) driver = 1
+      if (in_kernel && tested && thread ~ /com\.apple\.main-thread/ && /blocked by turnstile waiting for WindowServer/) waited += count
     }
-    END { exit !(driver && waiting) }
+    END { end_thread(); exit !(driver && waiting) }
   ' "$1"
 }
 
