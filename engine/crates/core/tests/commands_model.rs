@@ -198,12 +198,70 @@ fn every_selected_cue_key_can_be_set_and_undone() {
         (TransportKey::StartSelected, "f3", "start_selected"),
         (TransportKey::StopSelected, "f4", "stop_selected"),
         (TransportKey::ResetSelected, "f5", "reset_selected"),
+        (TransportKey::PreviewSelected, "f6", "preview_selected"),
+        (TransportKey::PanicSelected, "f7", "panic_selected"),
     ] {
         let after = round_trip(&ws, set_key(key, Some(plain(f))));
         assert_eq!(after.settings.hotkeys.action_of(&plain(f)), Some(action));
     }
     let after = round_trip(&ws, set_key(TransportKey::LoadSelected, None));
     assert_eq!(after.settings.hotkeys.load_selected, None);
+}
+
+/// QLab 5 remaps Preview and Panic Selected (only Panic All is fixed). The defaults are V and S;
+/// moving one frees its chord for a cue hotkey, in the edit rules and in the engine's lookup,
+/// and the chord it moves to is judged like any other workspace key.
+#[test]
+fn preview_and_panic_selected_remap_and_free_their_default_chords() {
+    let ws = workspace(vec![]);
+    assert_eq!(ws.settings.hotkeys.preview_selected, Some(plain("v")));
+    assert_eq!(ws.settings.hotkeys.panic_selected, Some(plain("s")));
+    let moved = round_trip(
+        &ws,
+        set_key(TransportKey::PreviewSelected, Some(plain("f6"))),
+    );
+    let moved = round_trip(&moved, set_key(TransportKey::PanicSelected, None));
+    assert_eq!(moved.settings.hotkeys.action_of(&plain("v")), None);
+    assert_eq!(moved.settings.hotkeys.action_of(&plain("s")), None);
+    assert_eq!(
+        moved.settings.hotkeys.action_of(&plain("f6")),
+        Some("preview_selected")
+    );
+    // The map refuses a duplicate, a reserved key and (on the new keys) a cue's hotkey.
+    let (field, reason, _) = refusal(
+        &ws,
+        set_key(TransportKey::PreviewSelected, Some(plain("space"))),
+    );
+    assert_eq!(field, "settings.hotkeys.preview_selected");
+    assert_eq!(
+        reason,
+        HotkeyClash::Workspace {
+            other: "settings.hotkeys.go"
+        }
+    );
+    let (_, reason, _) = refusal(
+        &ws,
+        set_key(TransportKey::PanicSelected, Some(plain("escape"))),
+    );
+    assert_eq!(reason, HotkeyClash::Reserved);
+    let (_, reason, _) = refusal(&ws, set_key(TransportKey::PanicSelected, Some(plain("v"))));
+    assert_eq!(
+        reason,
+        HotkeyClash::Workspace {
+            other: "settings.hotkeys.preview_selected"
+        }
+    );
+    // The whole-map command swaps them in one step, which one key at a time would refuse.
+    let mut swapped = ws.settings.hotkeys.clone();
+    swapped.preview_selected = Some(plain("s"));
+    swapped.panic_selected = Some(plain("v"));
+    let after = round_trip(
+        &ws,
+        setting(WorkspaceSetting::Hotkeys {
+            value: Box::new(swapped.clone()),
+        }),
+    );
+    assert_eq!(after.settings.hotkeys, swapped);
 }
 
 #[test]

@@ -4000,6 +4000,8 @@ fn a_partial_or_misspelt_key_map_is_bad_request() {
             "start_selected",
             "stop_selected",
             "reset_selected",
+            "preview_selected",
+            "panic_selected",
         ];
         let body: Vec<String> = keys.iter().map(|k| format!(r#""{k}":null"#)).collect();
         format!("{{{}{extra}}}", body.join(","))
