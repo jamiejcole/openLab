@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Darwin
 import XCTest
 
 @testable import openLab
@@ -872,4 +873,76 @@ func pressButton(_ title: String, in sheet: NSWindow) -> Bool {
     }
     if let content = sheet.contentView { walk(content) }
     return pressed
+}
+
+/// A UDP socket the test owns on the loopback interface: a Network cue's destination, so what the
+/// engine really sends (or does not send) is what the test reads.
+final class UDPListener {
+    let fd: Int32
+    let port: UInt16
+
+    init() throws {
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        guard fd >= 0 else { throw TestEngineError.refused("socket") }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        addr.sin_port = 0
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) }
+        }
+        guard bound == 0, named == 0, fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else {
+            close(fd)
+            throw TestEngineError.refused("bind")
+        }
+        self.fd = fd
+        port = UInt16(bigEndian: addr.sin_port)
+    }
+
+    deinit { close(fd) }
+
+    /// The next datagram that has arrived, nil when none has.
+    func receive() -> Data? {
+        var buffer = [UInt8](repeating: 0, count: 65536)
+        let n = recv(fd, &buffer, buffer.count, 0)
+        return n > 0 ? Data(buffer.prefix(n)) : nil
+    }
+
+    /// The next OSC message that has arrived, as "address arg arg" with typed arguments (`i:5`,
+    /// `f:10.5`, `s:text`, `T`, `F`); nil when none has.
+    func receiveMessage() -> String? {
+        guard let data = receive() else { return nil }
+        let bytes = Array(data)
+        var at = 0
+        func string() -> String {
+            let start = at
+            while at < bytes.count, bytes[at] != 0 { at += 1 }
+            let text = String(decoding: bytes[start..<min(at, bytes.count)], as: UTF8.self)
+            at = (at / 4 + 1) * 4
+            return text
+        }
+        func word() -> UInt32 {
+            defer { at += 4 }
+            guard at + 4 <= bytes.count else { return 0 }
+            return bytes[at..<at + 4].reduce(0) { $0 << 8 | UInt32($1) }
+        }
+        var parts = [string()]
+        for tag in string().dropFirst() {
+            switch tag {
+            case "i": parts.append("i:\(Int32(bitPattern: word()))")
+            case "f": parts.append("f:\(Float(bitPattern: word()))")
+            case "s": parts.append("s:\(string())")
+            case "T": parts.append("T")
+            case "F": parts.append("F")
+            default: parts.append("?\(tag)")
+            }
+        }
+        return parts.joined(separator: " ")
+    }
 }
