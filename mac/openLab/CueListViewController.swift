@@ -1301,6 +1301,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 let shown = targetText(cue)
                 text(shown ?? loc("cue.target.missing"))
                 if shown == nil { cell.label.textColor = .systemYellow }
+            } else if cue.kindType == "network" {
+                text(InspectorViewController.networkTargetText(cue, model: store.model))
             }
         case "preWait", "postWait":
             // A wait in progress counts down what is left, as QLab's columns do.

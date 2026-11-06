@@ -4294,10 +4294,9 @@ final class CueListDrawingTests: XCTestCase {
 
     func testTargetColumnForAFileCue() async throws {
         let (rig, empty) = try await targetRig()
-        let network = try await add(.network, rig)
         let memo = try await add(.memo, rig)
         let h = try await harness(rig)
-        await assertEventually { h.vc.node(empty) != nil && h.vc.node(network) != nil && h.vc.node(memo) != nil }
+        await assertEventually { h.vc.node(empty) != nil && h.vc.node(memo) != nil }
         let file = try XCTUnwrap(h.cell("target", H.intro))
         let none = try XCTUnwrap(h.cell("target", empty))
         for cell in [file, none] {
@@ -4317,8 +4316,8 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(f.count(Self.drawn), middle(f).count(Self.drawn), "centred, and all the cell holds")
         XCTAssertEqual(f.region.width, 60, accuracy: 1, "the column's default width")
         XCTAssertNotEqual(Icon.targetFile.symbol, Icon.fieldChoose.symbol)
-        // Cues that take no target: nothing, a Network cue's address included.
-        for id in [H.group, network, memo] {
+        // Cues that take no target: nothing.
+        for id in [H.group, memo] {
             let cell = try XCTUnwrap(h.cell("target", id))
             XCTAssertTrue(cell.chooseButton.isHidden)
             XCTAssertTrue(cell.images[0].isHidden)

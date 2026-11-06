@@ -67,6 +67,13 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// The Load Time tab's one field, in the tab view only while a Load cue is selected (CT-14).
     let loadTimeField = NSTextField()
     var loadTimeItem: NSTabViewItem?
+    /// The Network cue's Settings tab: its patch, message and Send. The pop-up's items follow the
+    /// workspace's network patches; `networkPatchIDs[i]` is item i's patch (nil: separator, no patch).
+    let networkPatchPopup = NSPopUpButton()
+    let networkMessageField = NSTextField()
+    let networkSendButton = NSButton(title: loc("inspector.network.send"), target: nil, action: nil)
+    var networkPatchIDs: [ModelID?] = []
+    var networkPatchNames: [String] = []
     let kindIcon = NSImageView()
     let notesView = NotesTextView()
     let colourPopup = NSPopUpButton()
@@ -174,6 +181,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .osc: return oscField
         case .duration: return durationField
         case .loadTime: return loadTimeField
+        case .message: return networkMessageField
         case .notes: return nil
         }
     }
@@ -190,6 +198,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             (numberField, AX.inspectorNumber), (nameField, AX.inspectorName), (preWaitField, AX.inspectorPreWait),
             (postWaitField, AX.inspectorPostWait), (targetField, AX.inspectorTarget), (oscField, AX.inspectorOSC),
             (durationField, AX.inspectorDuration), (loadTimeField, AX.inspectorLoadTime),
+            (networkMessageField, "inspector-network-message"),
         ] {
             f.setAX(id)
             f.delegate = self
@@ -330,9 +339,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         modeItem = modeTab(row: row, column: column)
         loadTimeItem = loadTimeTab(row: row, column: column)
         let devamp = devampTab(row: row, column: column)
+        let network = networkTab(row: row, column: column)
         buildLevelsTabs()
         buildTimeLoopsTab()
-        for i in [item, triggers, devamp]
+        for i in [item, triggers, devamp, network]
             + [modeItem, loadTimeItem, levelsItem, curveItem, fadeLevelsItem, timeLoopsItem].compactMap({ $0 })
         {
             if let id = i.identifier as? String { tabItems[id] = i }
@@ -639,6 +649,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         armedCheck.state = cue.raw["armed"] == .bool(false) ? .off : .on
         renderMode(cue)
         renderDevamp(cue)
+        renderNetwork(cue, model: model)
         renderLevels(cueForEdit ?? cue, model: model)
         renderTimeLoops(cueForEdit ?? cue)
         updatePreviewButton()
@@ -667,7 +678,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         [
             numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField, oscField,
             hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck,
-            devampModePopup,
+            devampModePopup, networkPatchPopup, networkMessageField, networkSendButton,
             secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck,
         ]

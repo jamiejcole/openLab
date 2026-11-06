@@ -311,3 +311,28 @@ fn setting_the_current_value_of_a_loaded_invalid_cue_is_a_no_op() {
     assert_eq!(inverse, Command::Transaction { commands: vec![] });
     assert_eq!(w, before);
 }
+
+#[test]
+fn paste_keeps_a_network_cue_with_no_patch_and_rehomes_one_with_a_missing_patch() {
+    let w = ws();
+    let mut unpatched = network_cue(5);
+    if let CueKind::Network { destination, .. } = &mut unpatched.kind {
+        *destination = NetworkPatchId(uuid::Uuid::nil());
+    }
+    let mut missing = network_cue(6);
+    if let CueKind::Network { destination, .. } = &mut missing.kind {
+        *destination = net_id(99);
+    }
+    let mut next = 1000;
+    let copy = prepare_paste(&w, &[unpatched, missing], || {
+        next += 1;
+        cue_id(next)
+    })
+    .unwrap();
+    let dest = |c: &Cue| match &c.kind {
+        CueKind::Network { destination, .. } => *destination,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(dest(&copy[0]), NetworkPatchId(uuid::Uuid::nil()));
+    assert_eq!(dest(&copy[1]), net_id(1));
+}

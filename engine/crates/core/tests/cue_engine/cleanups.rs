@@ -121,6 +121,28 @@ fn start_still_refuses_a_broken_cue_that_is_not_paused() {
     assert_eq!(rig.engine.next_deadline(), Some(2000));
 }
 
+#[test]
+fn resume_changes_nothing_on_a_broken_cue_that_is_not_paused() {
+    // Pause/Resume Selected sends resume for every selected broken cue: only a paused one reacts.
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 2.0, AC), memo(2)]);
+    rig.start(0, 1);
+    let run = rig.engine.run_of(id(1)).unwrap();
+    rig.at(
+        200,
+        Input::ActionFailed {
+            cue: id(1),
+            run,
+            reason: BrokenReason::StreamFailed,
+        },
+    );
+    let deadline = rig.engine.next_deadline();
+    let resume = rig.resume(300, 1);
+    assert!(resume.is_empty(), "{resume:?}");
+    assert_eq!(rig.engine.state(id(1)), CueState::Broken);
+    assert!(!rig.engine.is_paused(id(1)));
+    assert_eq!(rig.engine.next_deadline(), deadline);
+}
+
 // ----- run_of of a broken cue -----
 
 #[test]
