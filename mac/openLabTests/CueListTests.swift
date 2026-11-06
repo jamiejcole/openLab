@@ -4197,7 +4197,8 @@ final class CueListDrawingTests: XCTestCase {
 
     /// The cell's middle 18 points, where its button is.
     private func middle(_ p: Pixels) -> Pixels {
-        Pixels(rep: p.rep, region: NSRect(x: p.region.midX - 9, y: 0, width: 18, height: p.region.height), scale: p.scale)
+        let region = NSRect(x: p.region.midX - 9, y: 0, width: 18, height: p.region.height)
+        return Pixels(rep: p.rep, region: region, scale: p.scale)
     }
 
     private func drawnMask(_ p: Pixels) -> [Bool] { p.all.map { Self.drawn($0.r, $0.g, $0.b) } }
