@@ -86,8 +86,8 @@ impl CueEngine {
                 address,
                 args,
             } => {
-                // As the cue's action would: a disarmed cue (or one in a disarmed group) sends
-                // nothing, so Send can never reach a device the show would not.
+                // As the cue's action would: a disarmed cue sends nothing. Only the cue's own
+                // flag counts, the same check its action makes.
                 if !self.is_armed(model) {
                     return cx.warn(ignored(PreviewIgnoredReason::Disarmed));
                 }
