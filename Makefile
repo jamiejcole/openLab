@@ -84,7 +84,7 @@ miri:
 # The engine-free unit tests: what every app PR runs. The tests that start the real engine report a
 # skip (OPENLAB_ENGINE_TESTS=skip reaches the test process through xcodebuild's TEST_RUNNER_ prefix).
 test-mac-unit: project
-	TEST_RUNNER_OPENLAB_ENGINE_TESTS=skip $(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" -only-testing:openLabTests test
+	TEST_RUNNER_OPENLAB_ENGINE_TESTS=skip $(MAC_TESTS_WITH_LIMIT) -- -only-testing:openLabTests
 
 # Every unit test, real-engine ones included, plus the UI smoke set (scripts/ui-smoke.txt): what a PR
 # that changes the engine, the protocol, the app's engine client, its tests or project runs (scripts/paths.sh).
