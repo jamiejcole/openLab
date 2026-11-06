@@ -76,9 +76,9 @@ extension AppController {
 
     /// The saved files now open, for the next launch.
     func recordOpenWorkspaces() {
-        // The store's own path first: a workspace just saved at the quit prompt is not in the list yet.
+        // A workspace just saved at the quit prompt may not know its new path yet, and isn't in the list yet.
         launchPreferences.openFiles = session.orderedStores.compactMap {
-            session.info(of: $0.store, doc: $0.doc).path
+            savedAsPaths[ObjectIdentifier($0.store)] ?? session.info(of: $0.store, doc: $0.doc).path
         }
     }
 }

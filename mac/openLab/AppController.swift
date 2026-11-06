@@ -123,6 +123,9 @@ final class AppController {
     let layoutDefaults: UserDefaults?
     /// The app is starting and has not yet done what the launch choice says: no launcher meanwhile.
     var launching = false
+    /// Files just saved with Save As, by store: the store learns its new path from a later message
+    /// than the save's reply, and a quit records the open files before that message can arrive.
+    var savedAsPaths: [ObjectIdentifier: String] = [:]
     lazy var preferencesWindow = PreferencesWindowController(preferences: launchPreferences)
 
     init(
