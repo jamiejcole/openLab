@@ -10,6 +10,9 @@ import Foundation
 /// is alive but does not answer (SIGTERM, then SIGKILL) happens only at launch, before any
 /// connection, after `probeAttempts` refused or reset attempts (a slow `welcome` is busy, not silence). Later a dropped connection is retried for
 /// as long as the engine's pid lives; only once it is gone is it an alarm and a new engine.
+/// The one other engine ended is a spawned one that never wrote `engine.json` within its start
+/// deadline (nothing is bound to it, so nothing plays on it); the deadline doubles each time that
+/// happens, and starts again from `startDeadline` once a connection is made.
 @MainActor
 final class EngineSupervisor {
     enum Alarm: Equatable, Sendable {
@@ -21,6 +24,9 @@ final class EngineSupervisor {
         /// A live engine accepts connections but sends no `welcome`, `probeAttempts` times in a
         /// row at launch. It is not signalled (its audio may be playing): the operator is told.
         case notResponding
+        /// The engine this app spawned wrote no `engine.json` in time: it is being ended and
+        /// replaced (within the spawn limit). Taken down when an engine answers.
+        case startTimedOut
         /// An engine whose `engine.json` says it is stopping has not exited within `stoppingWait`.
         /// It is not signalled; a new engine starts once it has gone.
         case stillStopping
@@ -48,8 +54,9 @@ final class EngineSupervisor {
     var spawnWindow = 60.0
     /// How long an engine this app spawned gets to write `engine.json`. Generous: a cold start on
     /// a 2014 Mac mini with a hard disk (first exec checked by the system, audio devices
-    /// enumerated) takes tens of seconds, and a slow start must never be killed. It applies only
-    /// until the file exists: a running engine is never subject to it.
+    /// enumerated) takes tens of seconds. It applies only until the file exists, and doubles for
+    /// each consecutive engine that missed it (reset by a connection), so a start of any finite
+    /// length eventually runs.
     var startDeadline = 90.0
 
     private let processes: EngineProcesses
@@ -65,6 +72,8 @@ final class EngineSupervisor {
     private var handled: Set<Int32> = []
     private var spawned: Int32?
     private var spawnedAt = 0.0
+    /// Consecutive spawned engines that missed their deadline.
+    private var startTimeouts = 0
     private var spawnTimes: [Double] = []
     private var silentAttempts = 0
     private var busyAttempts = 0
@@ -124,6 +133,7 @@ final class EngineSupervisor {
             lastRun = run
             silentAttempts = 0
             busyAttempts = 0
+            startTimeouts = 0
             spawnLimitReported = false
             if newRun { ready.send() }
         case .retrying(let failure):
@@ -200,12 +210,14 @@ final class EngineSupervisor {
     /// replaced within the spawn limit, and this answers true: the replacement is that task's.
     private func stillStarting() -> Bool {
         guard let pid = spawned, processes.isEngine(pid) else { return false }
-        guard now() - spawnedAt >= startDeadline, !handled.contains(pid) else { return true }
+        let deadline = startDeadline * Double(1 << min(startTimeouts, 10))
+        guard now() - spawnedAt >= deadline, !handled.contains(pid) else { return true }
         handled.insert(pid)
+        startTimeouts += 1
         engineLog.error(
-            "engine pid \(pid, privacy: .public) wrote no engine.json within \(self.startDeadline, privacy: .public) s: ending it"
+            "engine pid \(pid, privacy: .public) wrote no engine.json within \(deadline, privacy: .public) s: ending it"
         )
-        alarms.send(.cannotStart(loc("engine.alarm.startTimeout")))
+        alarms.send(.startTimedOut)
         Task { await terminateThenSpawn(pid, silent: false) }
         return true
     }
