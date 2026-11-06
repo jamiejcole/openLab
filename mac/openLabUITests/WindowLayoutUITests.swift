@@ -49,7 +49,8 @@ final class WindowLayoutUITests: XCTestCase {
         let app = launchDemo()
         let before = divider(app, horizontal: true).frame.minY
         drag(divider(app, horizontal: true), dx: 0, dy: -60)
-        XCTAssertTrue(poll { divider(app, horizontal: true).frame.minY < before - 30 }, "the drag took: before \(before), \(scene(app, divider(app, horizontal: true)))")
+        let took = poll { divider(app, horizontal: true).frame.minY < before - 30 }
+        XCTAssertTrue(took, "the drag took: before \(before), \(scene(app, true))")
         let dragged = divider(app, horizontal: true).frame.minY
         relaunch(app)
         XCTAssertEqual(divider(app, horizontal: true).frame.minY, dragged, accuracy: 2)
@@ -61,7 +62,8 @@ final class WindowLayoutUITests: XCTestCase {
         XCTAssertTrue(divider(app, horizontal: false).waitForExistence(timeout: 10))
         let before = divider(app, horizontal: false).frame.minX
         drag(divider(app, horizontal: false), dx: -60, dy: 0)
-        XCTAssertTrue(poll { divider(app, horizontal: false).frame.minX < before - 30 }, "the drag took: before \(before), \(scene(app, divider(app, horizontal: false)))")
+        let took = poll { divider(app, horizontal: false).frame.minX < before - 30 }
+        XCTAssertTrue(took, "the drag took: before \(before), \(scene(app, false))")
         let dragged = divider(app, horizontal: false).frame.minX
         relaunch(app)
         XCTAssertEqual(divider(app, horizontal: false).frame.minX, dragged, accuracy: 2)
