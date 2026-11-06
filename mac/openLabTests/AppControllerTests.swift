@@ -3065,6 +3065,147 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(wc.isVisible(.inspector))
     }
 
+    // MARK: View > Warnings and Tools > Jump to Targets
+
+    private func menuItem(_ action: Selector) throws -> NSMenuItem {
+        try XCTUnwrap(
+            MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items).first { $0.action == action },
+            NSStringFromSelector(action))
+    }
+
+    /// The sidebar is hidden on Cue Lists: Cmd-B shows it on the Warnings tab with the broken cue
+    /// listed, and it works in Show Mode too.
+    func testWarningsFromTheViewMenu() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        let item = try menuItem(#selector(AppDelegate.showWarnings(_:)))
+        XCTAssertEqual(item.keyEquivalent, "b")
+        XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
+        for showMode in [false, true] {
+            wc.setShowMode(showMode)
+            wc.setVisible(.sidebar, false)
+            wc.sidebar.showTab(0)
+            XCTAssertTrue(delegate.validateMenuItem(item))
+            delegate.showWarnings(item)
+            XCTAssertTrue(wc.isVisible(.sidebar))
+            XCTAssertEqual(wc.sidebar.tabs.selectedSegment, 2)
+            XCTAssertFalse(wc.sidebar.warningsTable.isHiddenOrHasHiddenAncestor)
+            await assertEventually { !wc.sidebar.warningRows.isEmpty }
+        }
+        keyDoc = nil
+        XCTAssertFalse(delegate.validateMenuItem(item), "no workspace in front")
+    }
+
+    private func jumpCue(_ id: String, _ kind: JSONValue) -> JSONValue {
+        var c = TestSnapshots.cueJSON(id: id, number: nil, name: id, kind: kind)
+        c.set("triggers", .object(["hotkey": .null, "osc": .null]))
+        c.set("second_trigger", .string("nothing"))
+        c.set("second_trigger_on_release", .bool(false))
+        return c
+    }
+
+    /// A Fade cue targets Intro: with the Fade selected, the item selects Intro as a click would
+    /// (inspector and playhead follow). An Audio cue has no cue target: the item is off. Several
+    /// selected cues: every target is selected, the first scrolled into view, through two collapsed
+    /// groups, in a list taller than the window. Show Mode allows it; a cell being edited does not.
+    func testJumpToTargets() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let lst = try XCTUnwrap(wc.cueList.listID)
+        let item = try menuItem(#selector(AppDelegate.jumpToTargets(_:)))
+        XCTAssertEqual(item.keyEquivalent, "j")
+        XCTAssertEqual(item.keyEquivalentModifierMask, [.command, .option])
+        let list = wc.cueList
+        list.selectAsUser([TestSnapshots.door])
+        XCTAssertFalse(delegate.validateMenuItem(item), "an audio cue's file is not a cue target")
+
+        for showMode in [false, true] {
+            wc.setShowMode(showMode)
+            list.selectAsUser([intro])
+            list.selectAsUser([fade])
+            await assertEventually { store.playheads[lst] == self.fade }
+            XCTAssertTrue(delegate.validateMenuItem(item))
+            delegate.jumpToTargets(item)
+            XCTAssertEqual(list.selectedIDs(), [intro])
+            await assertEventually { wc.inspector.selection == [self.intro] && store.playheads[lst] == self.intro }
+        }
+        wc.setShowMode(false)
+
+        // A tall list: a group inside a group (both collapsed) holds the first target, a cue far
+        // below the window the second; two Start cues target them.
+        let (gO, gI, gc, far, s1, s2) = (
+            "00000000-0000-0000-0000-0000000000e1", "00000000-0000-0000-0000-0000000000e2",
+            "00000000-0000-0000-0000-0000000000e3", "00000000-0000-0000-0000-0000000000e4",
+            "00000000-0000-0000-0000-0000000000e5", "00000000-0000-0000-0000-0000000000e6"
+        )
+        let audio = TestSnapshots.audioKind("media/a.wav")
+        let inner = jumpCue(gI, TestSnapshots.groupKind([jumpCue(gc, audio)]))
+        _ = await store.send(
+            command: .addCue(jumpCue(gO, TestSnapshots.groupKind([inner])), list: lst, parent: nil, index: 0))
+        for n in 0..<40 {
+            _ = await store.send(
+                command: .addCue(
+                    jumpCue(String(format: "00000000-0000-0000-0000-0000000001%02d", n), audio), list: lst, parent: nil,
+                    index: 1))
+        }
+        _ = await store.send(command: .addCue(jumpCue(far, audio), list: lst, parent: nil, index: 41))
+        for (id, target) in [(s1, gc), (s2, far)] {
+            let kind = JSONValue.object(["type": .string("start"), "target": .string(target)])
+            _ = await store.send(command: .addCue(jumpCue(id, kind), list: lst, parent: nil, index: 42))
+        }
+        await assertEventually { list.node(ModelID(s2)) != nil && list.node(ModelID(far)) != nil }
+        wc.window?.setContentSize(NSSize(width: 800, height: 300))
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        let outline = list.outlineView
+        outline.collapseItem(list.node(ModelID(gI)))
+        outline.collapseItem(list.node(ModelID(gO)))
+        XCTAssertLessThan(outline.visibleRect.height, outline.rect(ofRow: outline.numberOfRows - 1).maxY)
+
+        list.selectAsUser([ModelID(s1), ModelID(s2)])
+        XCTAssertTrue(delegate.validateMenuItem(item))
+        delegate.jumpToTargets(item)
+        XCTAssertEqual(list.selectedIDs(), [ModelID(gc), ModelID(far)], "both targets, in row order")
+        let row = outline.row(forItem: list.node(ModelID(gc)))
+        XCTAssertTrue(row >= 0 && outline.rows(in: outline.visibleRect).contains(row), "the first target is in view")
+        await assertEventually { Set(wc.inspector.selection) == [ModelID(gc), ModelID(far)] }
+        await assertEventually { store.playheads[lst] == ModelID(far) }  // the last selected row
+
+        // A cell being edited keeps its focus: the item waits.
+        list.selectAsUser([ModelID(s1)])
+        XCTAssertTrue(list.beginCellEdit(ModelID(s1), column: "name"))
+        app.isTextEditing = { (wc.window?.firstResponder as? NSText)?.isEditable == true }
+        XCTAssertFalse(delegate.validateMenuItem(item), "not during a cell edit")
+    }
+
+    /// A target in another cue list: the item is on and shows that list with the target selected.
+    func testJumpToATargetInAnotherList() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let lst = try XCTUnwrap(wc.cueList.listID)
+        let item = try menuItem(#selector(AppDelegate.jumpToTargets(_:)))
+        let other = ModelID(UUID().uuidString.lowercased())
+        let (tgt, st) = ("00000000-0000-0000-0000-0000000000f1", "00000000-0000-0000-0000-0000000000f2")
+        _ = await store.send(command: .addCueList(id: other, name: "Other", index: 1))
+        _ = await store.send(
+            command: .addCue(jumpCue(tgt, TestSnapshots.audioKind("media/a.wav")), list: other, parent: nil, index: 0))
+        let kind = JSONValue.object(["type": .string("start"), "target": .string(tgt)])
+        _ = await store.send(command: .addCue(jumpCue(st, kind), list: lst, parent: nil, index: 2))
+        await assertEventually { wc.cueList.node(ModelID(st)) != nil }
+        wc.cueList.selectAsUser([ModelID(st)])
+        XCTAssertTrue(delegate.validateMenuItem(item))
+        delegate.jumpToTargets(item)
+        XCTAssertEqual(wc.cueList.listID, other)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [ModelID(tgt)])
+    }
+
     func testMastheadIsLargerAndHighContrastInShowModeAndFollowsTheWindowSize() async throws {
         let wc = try XCTUnwrap(app.windows["1"])
         let edit = wc.masthead.metrics
