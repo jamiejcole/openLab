@@ -1270,7 +1270,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             if store.previewing.contains(node.id) {
                 cell.setImage(2, icon: .preview, label: loc("cue.previewing"), tint: .systemTeal)
             } else if cue.kindType == "network" && networkOutputDisabled {
-                // Only an Audio cue previews, so a Network cue never needs that slot for both.
+                // A Network cue's preview holds no state, so it never takes that slot for a preview mark.
                 cell.images[2].setAccessibilityIdentifier("cue-override")
                 cell.setImage(2, icon: .outputOverridden, label: loc("cue.outputOverridden"), tint: .systemRed)
             }
