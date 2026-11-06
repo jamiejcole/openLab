@@ -83,7 +83,7 @@ final class CueCell: NSTableCellView {
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         label.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let views: [NSView] = [chooseButton, images[0], label, images[1], images[2], images[3]]
+        let views: [NSView] = [images[0], label, images[1], images[2], images[3]]
         let stack = NSStackView(views: views)
         stack.spacing = 4
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -108,8 +108,13 @@ final class CueCell: NSTableCellView {
         chooseButton.isHidden = true
         chooseButton.target = self
         chooseButton.action = #selector(chooseClicked)
-        chooseButton.setContentHuggingPriority(.required, for: .horizontal)
-        chooseButton.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        chooseButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(chooseButton)
+        NSLayoutConstraint.activate([
+            chooseButton.widthAnchor.constraint(equalToConstant: 16),
+            chooseButton.centerXAnchor.constraint(equalTo: centerXAnchor),
+            chooseButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
         chooseButton.setAccessibilityIdentifier("cue-target-choose")
         textField = label
         // Cell state is set on every reuse, so no stale identifier survives.
@@ -123,6 +128,8 @@ final class CueCell: NSTableCellView {
             images[0].setAccessibilityIdentifier("cue-type")
         case "continue":
             images[0].setAccessibilityIdentifier("cue-continue")
+        case "target":
+            label.alignment = .center
         default: break
         }
     }
@@ -177,7 +184,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// QLab order. The first and last columns carry no title.
     static let columns: [(id: String, titleKey: String?, width: CGFloat)] = [
         ("status", nil, 80), ("type", nil, 32), ("number", "cuelist.col.number", 60), ("name", "cuelist.col.name", 280),
-        ("target", "cuelist.col.target", 160), ("preWait", "cuelist.col.preWait", 80),
+        ("target", "cuelist.col.target", 60), ("preWait", "cuelist.col.preWait", 80),
         ("duration", "cuelist.col.duration", 120), ("postWait", "cuelist.col.postWait", 80),
         ("continue", nil, 36),
     ]

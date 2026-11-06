@@ -4195,9 +4195,9 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(col("number"), col("type") + 1)
     }
 
-    /// Columns of the cell's left 18 points, where its marker is.
-    private func edge(_ p: Pixels) -> Pixels {
-        Pixels(rep: p.rep, region: NSRect(x: p.region.minX, y: 0, width: 18, height: p.region.height), scale: p.scale)
+    /// The cell's middle 18 points, where its button is.
+    private func middle(_ p: Pixels) -> Pixels {
+        Pixels(rep: p.rep, region: NSRect(x: p.region.midX - 9, y: 0, width: 18, height: p.region.height), scale: p.scale)
     }
 
     private func drawnMask(_ p: Pixels) -> [Bool] { p.all.map { Self.drawn($0.r, $0.g, $0.b) } }
@@ -4275,10 +4275,11 @@ final class CueListDrawingTests: XCTestCase {
         // The glyphs are drawn and differ, and nothing is drawn after them.
         let f = try pixels(h, "target", H.intro)
         let n = try pixels(h, "target", empty)
-        XCTAssertGreaterThan(edge(f).count(Self.drawn), 8, "the file glyph is drawn")
-        XCTAssertGreaterThan(edge(n).count(Self.drawn), 8, "the folder glyph is drawn")
-        XCTAssertNotEqual(drawnMask(edge(f)), drawnMask(edge(n)), "they differ")
-        XCTAssertEqual(f.count(Self.drawn), edge(f).count(Self.drawn), "the button is all the cell holds")
+        XCTAssertGreaterThan(middle(f).count(Self.drawn), 8, "the file glyph is drawn")
+        XCTAssertGreaterThan(middle(n).count(Self.drawn), 8, "the folder glyph is drawn")
+        XCTAssertNotEqual(drawnMask(middle(f)), drawnMask(middle(n)), "they differ")
+        XCTAssertEqual(f.count(Self.drawn), middle(f).count(Self.drawn), "centred, and all the cell holds")
+        XCTAssertEqual(f.region.width, 60, accuracy: 1, "the column's default width")
         XCTAssertTrue(Icon.fieldChoose.symbol.hasPrefix("folder"), Icon.fieldChoose.symbol)
         XCTAssertNotEqual(Icon.fieldChoose.symbol, Icon.kindGroup.symbol)
         // Cues that take no target: nothing, a Network cue's address included.
@@ -4305,6 +4306,7 @@ final class CueListDrawingTests: XCTestCase {
             XCTAssertGreaterThan(try pixels(h, "target", id).count(Self.drawn), 8, "drawn", line: line)
         }
         try assertShows(H.fade, "1")
+        XCTAssertEqual(h.cell("target", H.fade)?.label.alignment, .center)
         XCTAssertEqual(h.cell("target", H.fade)?.label.textColor, .labelColor)
         // No target: a question mark, in the colour QLab draws it.
         try assertShows(stop, "?")
