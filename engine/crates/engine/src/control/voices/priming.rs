@@ -59,7 +59,7 @@ impl Voices {
         env: &mut Env<'_>,
         fx: &mut Effects,
     ) -> Result<(PreparedStream, Option<u64>), PrepError> {
-        let Some(c) = env.ws.find_cue(cue) else {
+        let Some(c) = super::cue_of(env, cue) else {
             return Err(PrepError::Failed);
         };
         let CueKind::Audio {

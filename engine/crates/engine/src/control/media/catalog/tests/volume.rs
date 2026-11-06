@@ -3,12 +3,12 @@
 #[cfg(unix)]
 use super::super::super::gate::tests::DEAD;
 #[cfg(unix)]
-use super::super::super::{MAX_ABANDONED_WORKERS, PROBE_WORKERS};
+use super::super::super::{MAX_ABANDONED_WORKERS, MAX_STUCK_JOBS_PER_FILE, PROBE_WORKERS};
 use super::*;
 #[cfg(unix)]
 use std::sync::Mutex;
 #[cfg(unix)]
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(unix)]
 use std::time::Instant;
 
@@ -402,4 +402,228 @@ fn the_catalog_exempts_the_volume_of_the_show_it_was_made_or_reset_with() {
     assert!(!exempt(&cat, "/Volumes/ShowDrive"));
     cat.reset(None, &template().0);
     assert!(!exempt(&cat, "/Volumes/Other"));
+}
+
+// ----- a re-probe that gets stuck -----
+
+/// Answers the first probe; later probes wait on `hang`. A path with "absent" in it finds no file
+/// the first time, one with "gone" finds none once the wait is over.
+#[cfg(unix)]
+fn first_answers_then_hangs(
+    path: &Path,
+    hang: &Hang,
+    calls: &AtomicUsize,
+) -> Result<Probed, MediaError> {
+    if calls.fetch_add(1, Ordering::AcqRel) == 0 {
+        if path.to_string_lossy().contains("absent") {
+            return Err(MediaError::NotFound(path.to_owned()));
+        }
+        return fake(path);
+    }
+    hang.block();
+    if path.to_string_lossy().contains("gone") {
+        return Err(MediaError::NotFound(path.to_owned()));
+    }
+    fake(path)
+}
+
+/// A probe stand-in of its own for one test: a probe is a plain `fn`, so its hang and its count
+/// are statics, and tests run side by side.
+#[cfg(unix)]
+macro_rules! hanging_probe {
+    ($hang:ident, $probe:ident) => {
+        static $hang: Hang = Hang::new();
+        fn $probe(path: &Path) -> Result<Probed, MediaError> {
+            static CALLS: AtomicUsize = AtomicUsize::new(0);
+            first_answers_then_hangs(path, &$hang, &CALLS)
+        }
+    };
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stuck_reprobe_of_a_ready_file_keeps_its_answer_and_lets_a_later_reprobe_run() {
+    hanging_probe!(HANG, probe);
+    let (mut cat, rx, ms) = timed_catalog(probe);
+    let key = "/Volumes/hung/a.wav";
+    cat.request(key.to_owned());
+    assert!(cat.answer(next_answer(&rx)).is_some());
+    let first = Arc::clone(cat.ready(key).expect("ready"));
+    cat.take_plan_changes();
+
+    cat.reprobe(key);
+    assert_eq!(cat.pending(), 1);
+    HANG.wait_entered(1);
+    advance(&ms, 31);
+    // No status goes to the cue engine: its cues stay available, what is playing plays on.
+    assert_eq!(cat.watchdog(), vec![]);
+    assert_eq!(cat.abandoned_workers(), 1);
+    assert_eq!(cat.pending(), 0, "the watchdog has given up on it");
+    assert!(Arc::ptr_eq(&first, cat.ready(key).expect("still ready")));
+    assert!(cat.media(key).is_some());
+    assert!(cat.take_plan_changes().is_empty());
+
+    // The next stream failure asks again, on a fresh worker.
+    let asked = cat.entries[key].ticket;
+    cat.reprobe(key);
+    assert!(cat.entries[key].ticket > asked);
+    assert_eq!(cat.pending(), 1);
+    HANG.wait_entered(2);
+    // Asked again while that one runs: it is not stuck yet, so nothing more goes out.
+    let asked = cat.entries[key].ticket;
+    cat.reprobe(key);
+    assert_eq!(cat.entries[key].ticket, asked);
+
+    // The reads return: the one given up on is stale, the newest counts.
+    HANG.open();
+    let answers = [next_answer(&rx), next_answer(&rx)];
+    let counted = answers.into_iter().filter_map(|a| cat.answer(a)).count();
+    assert_eq!(counted, 1);
+    assert_eq!(cat.pending(), 0);
+    assert!(!Arc::ptr_eq(&first, cat.ready(key).expect("ready")));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_late_answer_of_a_given_up_reprobe_still_counts() {
+    hanging_probe!(HANG, probe);
+    let (mut cat, rx, ms) = timed_catalog(probe);
+    let key = "/Volumes/hung/gone.wav";
+    cat.request(key.to_owned());
+    assert!(cat.answer(next_answer(&rx)).is_some());
+    cat.reprobe(key);
+    HANG.wait_entered(1);
+    advance(&ms, 31);
+    assert_eq!(cat.watchdog(), vec![]);
+    assert!(cat.ready(key).is_some());
+
+    // The read returns at last and finds the file gone: that is the file's state from now on.
+    HANG.open();
+    let (_, status) = cat.answer(next_answer(&rx)).expect("it counts");
+    assert_eq!(status, MediaStatus::Missing);
+    assert!(cat.ready(key).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stuck_recheck_of_a_failed_file_keeps_its_failure_and_lets_a_later_reprobe_run() {
+    hanging_probe!(HANG, probe);
+    let (mut cat, rx, ms) = timed_catalog(probe);
+    let key = "/Volumes/hung/absent.wav";
+    cat.request(key.to_owned());
+    let (_, status) = cat.answer(next_answer(&rx)).expect("answered");
+    assert_eq!(status, MediaStatus::Missing);
+    let watch = cat.entries[key].watch;
+    assert!(cat.recheck(key, watch));
+    HANG.wait_entered(1);
+    advance(&ms, 31);
+    // It stays reported missing: what is known is not replaced with a guess.
+    assert_eq!(cat.watchdog(), vec![]);
+    assert!(matches!(cat.get(key), Some(Probe::Failed)));
+    assert_eq!(cat.pending(), 0);
+    let asked = cat.entries[key].ticket;
+    cat.reprobe(key);
+    assert!(cat.entries[key].ticket > asked);
+    HANG.open();
+}
+
+/// Re-probes `key` (answered once) until the catalog stops asking.
+#[cfg(unix)]
+fn stick_reprobes_to_the_cap(
+    cat: &mut MediaCatalog,
+    hang: &Hang,
+    ms: &std::sync::atomic::AtomicU64,
+    key: &str,
+) {
+    for stuck in 1..=MAX_STUCK_JOBS_PER_FILE {
+        cat.reprobe(key);
+        hang.wait_entered(stuck);
+        advance(ms, 31);
+        assert_eq!(cat.watchdog(), vec![]);
+        assert_eq!(cat.abandoned_workers(), stuck);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn at_the_cap_a_watch_event_still_asks_and_a_file_gone_starts_over() {
+    hanging_probe!(HANG, probe);
+    let (mut cat, rx, ms) = timed_catalog(probe);
+    let key = "/Volumes/hung/a.wav";
+    cat.request(key.to_owned());
+    assert!(cat.answer(next_answer(&rx)).is_some());
+    stick_reprobes_to_the_cap(&mut cat, &HANG, &ms, key);
+    let asked = cat.entries[key].ticket;
+    cat.reprobe(key);
+    assert_eq!(cat.entries[key].ticket, asked, "at the cap");
+
+    // The file changed on disk: the watch's word is not a stream failing again.
+    let watch = cat.entries[key].watch;
+    assert!(cat.recheck(key, watch));
+    assert!(cat.entries[key].ticket > asked);
+    HANG.wait_entered(MAX_STUCK_JOBS_PER_FILE + 1);
+
+    // The file is gone, so what stuck before says nothing about the next one there.
+    assert!(cat.mark_missing(key, watch).is_some());
+    let gone = cat.entries[key].ticket;
+    cat.reprobe(key);
+    assert!(cat.entries[key].ticket > gone);
+    HANG.wait_entered(MAX_STUCK_JOBS_PER_FILE + 2);
+    HANG.open();
+}
+
+#[test]
+fn a_stuck_jobs_log_line_says_what_stuck_and_names_a_long_file_by_its_end() {
+    let line = |key: String, probe| {
+        Stuck {
+            doc: DocId(0),
+            key,
+            ticket: 1,
+            probe,
+        }
+        .log_line(3)
+    };
+    assert_eq!(
+        line("/Volumes/hung/a.wav".to_owned(), true),
+        "media probe of \"/Volumes/hung/a.wav\" stuck; worker replaced (3 so far)"
+    );
+    assert_eq!(
+        line("/Volumes/hung/a.wav".to_owned(), false),
+        "media preload of \"/Volumes/hung/a.wav\" stuck; worker replaced (3 so far)"
+    );
+    // Exactly as long as a line shows: all of it. One more: the start goes, on a character's
+    // edge (these take two bytes each).
+    let fits = "é".repeat(200);
+    assert!(line(fits.clone(), true).contains(&format!("\"{fits}\"")));
+    let long = format!("/mnt/{}", "é".repeat(100_000));
+    let shown = line(long, true);
+    assert!(shown.contains(&format!("\"...{fits}\"")), "{shown}");
+}
+
+/// A stalled volume takes two files' stuck probes, so one hung file would otherwise take a worker
+/// for each failure of its stream until no volume had any left.
+#[cfg(unix)]
+#[test]
+fn a_file_whose_reprobes_keep_sticking_stops_taking_workers_until_one_answers() {
+    hanging_probe!(HANG, probe);
+    let (mut cat, rx, ms) = timed_catalog(probe);
+    let key = "/Volumes/hung/a.wav";
+    cat.request(key.to_owned());
+    assert!(cat.answer(next_answer(&rx)).is_some());
+    stick_reprobes_to_the_cap(&mut cat, &HANG, &ms, key);
+    let asked = cat.entries[key].ticket;
+    cat.reprobe(key);
+    assert_eq!(cat.entries[key].ticket, asked, "no more workers for it");
+    assert_eq!(cat.pending(), 0);
+    assert!(cat.ready(key).is_some());
+
+    // The last job answers: the file may be asked about again.
+    HANG.open();
+    for _ in 0..MAX_STUCK_JOBS_PER_FILE {
+        let _ = cat.answer(next_answer(&rx));
+    }
+    cat.reprobe(key);
+    assert!(cat.entries[key].ticket > asked);
+    assert!(cat.answer(next_answer(&rx)).is_some());
+    assert_eq!(cat.abandoned_workers(), MAX_STUCK_JOBS_PER_FILE);
 }
