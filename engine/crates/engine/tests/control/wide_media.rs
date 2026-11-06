@@ -159,7 +159,13 @@ fn a_whole_matrix_edit_of_a_64x64_cue_moves_every_output_together() {
     start(&mut s, 1);
     s.run(800);
 
-    let mut kind = s.control().workspace().find_cue(id(1)).unwrap().kind.clone();
+    let mut kind = s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .kind
+        .clone();
     let CueKind::Audio { levels, .. } = &mut kind else {
         panic!("not audio");
     };
@@ -185,8 +191,7 @@ fn a_whole_matrix_edit_of_a_64x64_cue_moves_every_output_together() {
     // Halfway through the edit ramp each gain is halfway to its new value.
     let halfway = |a: f32, b: f32| (a + b) / 2.0;
     let unity_to_half = halfway(1.0, db_to_gain(-6.0));
-    let mid =
-        sum * halfway(db_to_gain(-40.0), db_to_gain(-30.0)) * unity_to_half * unity_to_half;
+    let mid = sum * halfway(db_to_gain(-40.0), db_to_gain(-30.0)) * unity_to_half * unity_to_half;
     let near = |a: f32, b: f32| (a - b).abs() <= 1e-4;
     let outputs: Vec<Vec<f32>> = (0..CHANNELS).map(|c| s.channel(c)).collect();
     for (c, x) in outputs.iter().enumerate() {

@@ -453,7 +453,10 @@ fn ramp_sets_allocate_nothing_and_every_list_goes_back() {
         output: 0,
     };
     let master = GainTarget::Master;
-    ctl.send(64, set(1, vec![(bad, 1.0), (master, f32::NAN), (master, 0.5)]));
+    ctl.send(
+        64,
+        set(1, vec![(bad, 1.0), (master, f32::NAN), (master, 0.5)]),
+    );
     ctl.send(64, set(9, vec![(master, 0.25), (master, 0.25)]));
     ctl.send(64, set(1, vec![(GainTarget::CueOutput(99), 0.25); 2]));
     let mut out = vec![0.0; 200];

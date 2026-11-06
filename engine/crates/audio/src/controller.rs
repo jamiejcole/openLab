@@ -198,10 +198,12 @@ impl MixerController {
                 .all(|c| matches!(c.kind, CommandKind::StopVoice { .. }))
             {
                 stops.push(key);
-            } else if !cmds
-                .iter()
-                .all(|c| matches!(c.kind, CommandKind::Ramp { .. } | CommandKind::RampSet { .. }))
-            {
+            } else if !cmds.iter().all(|c| {
+                matches!(
+                    c.kind,
+                    CommandKind::Ramp { .. } | CommandKind::RampSet { .. }
+                )
+            }) {
                 break;
             }
         }

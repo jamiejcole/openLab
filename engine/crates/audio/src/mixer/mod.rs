@@ -262,8 +262,8 @@ pub enum CommandKind {
 /// What the audio thread hands back for the control thread to free.
 #[derive(Debug)]
 pub(crate) enum Returned {
-    Start(#[allow(dead_code)] Box<VoiceStart>),
-    Gains(#[allow(dead_code)] Box<[(GainTarget, f32)]>),
+    Start(Box<VoiceStart>),
+    Gains(Box<[(GainTarget, f32)]>),
 }
 
 /// A command on its way to the mixer: applied at sample `at` (or at the start of the next block

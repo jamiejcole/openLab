@@ -63,8 +63,7 @@ use std::time::{Duration, SystemTime};
 use crossbeam_channel::Sender;
 use openlab_audio::{
     COMMAND_CAPACITY, CommandKind, DiskStreamer, Event, Fade, GainTarget, MediaError,
-    MixerController,
-    StreamerConfig, VoiceId,
+    MixerController, StreamerConfig, VoiceId,
 };
 use openlab_core::protocol::{
     CueProblems, CueStateEntry, DocumentState, ErrorBody, ErrorCode, LogKind, LogLevel, OkBody,
