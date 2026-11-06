@@ -137,13 +137,18 @@ extension AppController {
             let roots = CueEditor.topLevel(selected.compactMap { wc.cueList.node($0) })
             await runAll(roots.map { .panicCue(cue: $0.id) }, on: store)
         case .previewSelected:
-            // Audio cues toggle on their own preview state; a Network cue's preview sends its message once
-            // (the inspector's Send) and holds no state, so it is never in `previewing`. Only these kinds are
-            // sent: groups and the rest are left out for now (#556).
-            let previewable = selected.filter { ["audio", "network"].contains(store.model?.cue($0)?.kindType) }
-            await runAll(
-                previewable.map { store.previewing.contains($0) ? .stopPreview(cue: $0) : .preview(cue: $0) },
-                on: store)
+            // QLab starts a preview of every selected audio cue and group; a press on one already being
+            // previewed does nothing (checks V1, V3), so it is left out rather than sent for the engine to
+            // refuse. A Network cue's preview sends its message once (the inspector's Send) and holds no
+            // state, so it is never in `previewing` and goes out on every press.
+            let previewable = selected.filter { id in
+                switch store.model?.cue(id)?.kindType {
+                case "network": return true
+                case "audio", "group": return !store.previewing.contains(id)
+                default: return false
+                }
+            }
+            await runAll(previewable.map { .preview(cue: $0) }, on: store)
         case .pauseResumeSelected:
             let actions: [TransportAction] = selected.compactMap { id in
                 switch store.cueStates[id]?.state {
