@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rtrb::{Consumer, RingBuffer};
 
 use crate::controller::MixerController;
-use crate::gain::{Fade, Param};
+use crate::gain::{Fade, Param, Shapes};
 use crate::meter::{Meters, XrunNotifier};
 use crate::plan::{Slice, StreamLink};
 
@@ -40,6 +40,9 @@ pub const MAX_SAMPLE_RATE: u32 = 384_000;
 pub const MAX_BLOCK_FRAMES: usize = 8192;
 /// Capacity of the command queue; also the largest atomic batch.
 pub const COMMAND_CAPACITY: usize = 1024;
+/// The most gains one [`CommandKind::RampSet`] the engine sends holds: every gain of a voice at the
+/// largest size. A longer run of ramps (several Fades of one voice sent together) is split.
+pub const MAX_RAMP_SET: usize = 1 + MAX_OUTPUT_CHANNELS + MAX_VOICE_CHANNELS * MAX_OUTPUT_CHANNELS;
 /// Capacity of the mixer's time-ordered pending set.
 pub const PENDING_CAPACITY: usize = 4096;
 const EVENT_CAPACITY: usize = 1024;
@@ -388,6 +391,8 @@ struct Scratch {
     master: Vec<f32>,
     /// One voice's contribution to one cue output, for its meter.
     acc: Vec<f32>,
+    /// The curve progress of the ramps being rendered.
+    shapes: Shapes,
     /// Frames summed into `acc` (what metering costs per sample).
     #[cfg(test)]
     metered: u64,
@@ -553,6 +558,7 @@ impl Mixer {
                 tmp: vec![0.0; block],
                 master: vec![0.0; block],
                 acc: vec![0.0; block],
+                shapes: Shapes::new(block),
                 #[cfg(test)]
                 metered: 0,
             },

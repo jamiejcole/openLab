@@ -166,19 +166,25 @@ impl Mixer {
                 gain,
                 fade,
             } => {
-                if let Some(v) = self.voice_mut(voice) {
+                let Mixer {
+                    voices, scratch, ..
+                } = self;
+                if let Some(v) = voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
                     let (frames, curve) = ramp_shape(fade, v.fresh, dezip);
                     if let Some(p) = v.param_mut(target) {
-                        p.ramp_to(sanitize_gain(gain), frames, curve);
+                        p.ramp_to_in(sanitize_gain(gain), frames, curve, &mut scratch.shapes);
                     }
                 }
             }
             CommandKind::RampSet { voice, gains, fade } => {
-                if let Some(v) = self.voice_mut(voice) {
+                let Mixer {
+                    voices, scratch, ..
+                } = self;
+                if let Some(v) = voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
                     let (frames, curve) = ramp_shape(fade, v.fresh, dezip);
                     for &(target, gain) in &*gains {
                         if let Some(p) = v.param_mut(target) {
-                            p.ramp_to(sanitize_gain(gain), frames, curve);
+                            p.ramp_to_in(sanitize_gain(gain), frames, curve, &mut scratch.shapes);
                         }
                     }
                 }

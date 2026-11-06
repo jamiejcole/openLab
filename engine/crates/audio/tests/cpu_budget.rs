@@ -10,7 +10,8 @@
 )]
 
 //! CPU budget gate (NFR-23, QA-06): 64 stereo voices with fades must render at least
-//! 10x faster than real time. Wall-clock dependent, so it is `#[ignore]`d and never part of
+//! 10x faster than real time, and a whole-matrix edit or Fade on three dense 64x64 voices must
+//! keep every block within its time. Wall-clock dependent, so it is `#[ignore]`d and never part of
 //! `cargo test`; CI runs it on the Intel runner with
 //!
 //! `cargo test --release -p openlab-audio --test cpu_budget -- --ignored --nocapture`
@@ -380,6 +381,119 @@ fn run(block: usize, feed: Feed) -> Result<Stats, String> {
     })
 }
 
+/// Dense matrices: this many channels, each on every one of this many outputs.
+const DENSE_MATRIX: usize = 64;
+/// The block the dense cases are timed at, and what one may take: the whole block.
+const DENSE_BLOCK: usize = 512;
+const DENSE_BUDGET_MS: f64 = DENSE_BLOCK as f64 * 1000.0 / RATE as f64;
+
+struct Dense {
+    steady_ms: f64,
+    worst_ms: f64,
+    over_budget: usize,
+}
+
+/// `voices` voices of a dense matrix play; then one `RampSet` per voice, as the engine sends a
+/// whole-matrix change, moves every gain (master, each output, each crosspoint) over `fade`.
+/// Times every block of the ramp and a few after it. An edit's ramp is a block or two, so its
+/// worst block is the figure; a Fade's lasts dozens.
+fn dense(voices: usize, fade: Fade) -> Result<Dense, String> {
+    let (ch, outs) = (DENSE_MATRIX, DENSE_MATRIX);
+    let (mut ctl, mut r) = setup(MixerConfig {
+        sample_rate: RATE,
+        output_channels: outs,
+        max_block_frames: DENSE_BLOCK,
+        max_voices: 16,
+        max_voice_channels: ch,
+        ..MixerConfig::default()
+    });
+    const WARMUP_BLOCKS: usize = 20;
+    let blocks = fade.frames as usize / DENSE_BLOCK + 8;
+    let frames = (WARMUP_BLOCKS + blocks) * DENSE_BLOCK;
+    for id in 0..voices as u64 {
+        let rx = source(&vec![0.01; ch * frames]);
+        let mut v = openlab_audio::VoiceStart::new(VoiceId(id), rx, ch as u16, outs);
+        v.crosspoints.fill(0.5);
+        send_start(&mut ctl, 0, v);
+    }
+    let mut out = vec![0.0f32; DENSE_BLOCK * outs];
+    let mut steady_ms: f64 = 0.0;
+    for _ in 0..WARMUP_BLOCKS {
+        ctl.pump();
+        let t = Instant::now();
+        r.render_into(&mut out, &[DENSE_BLOCK]);
+        steady_ms = steady_ms.max(t.elapsed().as_secs_f64() * 1e3);
+    }
+    let mut gains = vec![(GainTarget::Master, 0.5)];
+    for o in 0..outs as u16 {
+        gains.push((GainTarget::CueOutput(o), 0.5));
+        for input in 0..ch as u16 {
+            gains.push((GainTarget::Crosspoint { input, output: o }, 0.25));
+        }
+    }
+    let at = ctl.samples_rendered();
+    for id in 0..voices as u64 {
+        let set = CommandKind::RampSet {
+            voice: VoiceId(id),
+            gains: gains.clone().into(),
+            fade,
+        };
+        ctl.send(at, set);
+    }
+    if ctl.held() != 0 {
+        return Err(format!("{} commands held", ctl.held()));
+    }
+    let (mut worst_ms, mut over_budget): (f64, usize) = (0.0, 0);
+    for _ in 0..blocks {
+        ctl.pump();
+        let t = Instant::now();
+        r.render_into(&mut out, &[DENSE_BLOCK]);
+        let ms = t.elapsed().as_secs_f64() * 1e3;
+        worst_ms = worst_ms.max(ms);
+        over_budget += usize::from(ms > DENSE_BUDGET_MS);
+    }
+    if ctl.faults() != 0 || ctl.underrun_frames() != 0 {
+        return Err(format!(
+            "{} faults, {} underrun frames",
+            ctl.faults(),
+            ctl.underrun_frames()
+        ));
+    }
+    // Each voice: 64 channels at 0.01 × crosspoint 0.25 × output 0.5 × master 0.5. The ramp
+    // arrived, on every output.
+    let arrived = voices as f32 * 0.04;
+    if !out.iter().all(|s| (s - arrived).abs() < 1e-4) {
+        return Err("the mix is not where the ramp ends".into());
+    }
+    Ok(Dense {
+        steady_ms,
+        worst_ms,
+        over_budget,
+    })
+}
+
+/// A dense case's worst block, best of [`GATE_RUNS`], against the block's own length: over it,
+/// the device hears a dropout on every output.
+fn gate_dense(name: &str, voices: usize, fade: Fade) -> f64 {
+    let mut best = f64::MAX;
+    for attempt in 1..=GATE_RUNS {
+        let d = dense(voices, fade).expect("the dense workload must run cleanly");
+        report_dense(&format!("{name} #{attempt}"), voices, &d);
+        best = best.min(d.worst_ms);
+        if best <= DENSE_BUDGET_MS {
+            break;
+        }
+    }
+    best
+}
+
+fn report_dense(name: &str, voices: usize, d: &Dense) {
+    println!(
+        "{name} {voices}x{DENSE_MATRIX}x{DENSE_MATRIX} block={DENSE_BLOCK}: worst {:.2} ms, steady {:.2} ms, budget {DENSE_BUDGET_MS:.2} ms, {} blocks over",
+        d.worst_ms, d.steady_ms, d.over_budget
+    );
+}
+
 /// Mean cost of the `Instant::now` + `elapsed` pair `OutputHost::render` adds per callback.
 fn instant_pair_ns() -> f64 {
     const PAIRS: u32 = 1_000_000;
@@ -438,6 +552,19 @@ fn sixty_four_stereo_voices_with_fades_render_at_least_ten_times_real_time() {
         }
     }
     println!("gate: best {best:.1}x, budget {MIN_REALTIME_RATIO}x");
+    // A whole-matrix edit (its 10 ms ramp, docs/cue-engine.md) and a half-second Fade of every
+    // gain on dense matrices: gated on the worst block, since one overrun is a dropout.
+    let edit = Fade::new(RATE as u64 / 100, Curve::Linear);
+    let fade = Fade::new(RATE as u64 / 2, Curve::SCurve);
+    let dense_edit = gate_dense("dense edit", 3, edit);
+    let dense_fade = gate_dense("dense fade", 3, fade);
+    println!(
+        "gate: dense edit {dense_edit:.2} ms, dense fade {dense_fade:.2} ms, budget {DENSE_BUDGET_MS:.2} ms"
+    );
+    match dense(10, fade) {
+        Ok(d) => report_dense("dense fade", 10, &d),
+        Err(e) => println!("dense fade 10 voices: not measured: {e}"),
+    }
     // Reported only, after the gate: smaller blocks cost more per second of audio, and
     // resampling runs on the disk workers, not the rendering thread.
     report_only("rings    ", 256, Feed::Rings);
@@ -452,6 +579,14 @@ fn sixty_four_stereo_voices_with_fades_render_at_least_ten_times_real_time() {
     assert!(
         pair_ns < block_64_ns / 100.0,
         "timing the callback must cost under 1 % of the smallest block: {pair_ns:.0} ns"
+    );
+    assert!(
+        dense_edit <= DENSE_BUDGET_MS,
+        "a whole-matrix edit of 3 dense voices overruns the block: {dense_edit:.2} ms"
+    );
+    assert!(
+        dense_fade <= DENSE_BUDGET_MS,
+        "a whole-matrix Fade of 3 dense voices overruns the block: {dense_fade:.2} ms"
     );
     assert!(
         best >= MIN_REALTIME_RATIO,

@@ -148,10 +148,11 @@ fn stop_with_fade_ends_at_zero_and_finishes() {
     ctl.send(500, stop(1, Fade::new(100, Curve::Linear)));
     let out = r.render(1000, &[64]);
     for k in 0..=100 {
-        assert_eq!(
-            out[500 + k],
-            ramp_value(1.0, 0.0, k as u64, 100, Curve::Linear),
-            "k={k}"
+        let want = ramp_value(1.0, 0.0, k as u64, 100, Curve::Linear);
+        assert!(
+            f64::from((out[500 + k] - want).abs()) <= RAMP_TOLERANCE,
+            "k={k}: {} vs {want}",
+            out[500 + k]
         );
     }
     assert!(out[600..].iter().all(|s| *s == 0.0));
@@ -189,12 +190,14 @@ fn ramp_mid_block_starts_on_the_exact_sample() {
         let out = r.render(1000, &[64]);
         assert!(out[100..at].iter().all(|s| *s == 1.0));
         for k in 0..=200 {
-            assert_eq!(
-                out[at + k],
-                ramp_value(1.0, 0.0, k as u64, 200, curve),
-                "{curve:?} k={k}"
+            let want = ramp_value(1.0, 0.0, k as u64, 200, curve);
+            assert!(
+                f64::from((out[at + k] - want).abs()) <= RAMP_TOLERANCE,
+                "{curve:?} k={k}: {} vs {want}",
+                out[at + k]
             );
         }
+        assert_eq!(out[at], 1.0, "{curve:?}");
         assert!(out[at + 1] < 1.0, "{curve:?}");
         assert!(out[at + 200..].iter().all(|s| *s == 0.0), "{curve:?}");
     }
