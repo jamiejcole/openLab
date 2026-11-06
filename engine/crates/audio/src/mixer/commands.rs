@@ -9,18 +9,18 @@ use std::sync::atomic::Ordering;
 
 use rtrb::{Producer, PushError};
 
-use crate::gain::{Curve, sanitize_gain};
+use crate::gain::{Curve, Fade, sanitize_gain};
 use crate::plan::{MAX_SLICES, Plays};
 
 use super::{
-    Command, CommandKind, Event, FinishReason, Mixer, PENDING_CAPACITY, RejectReason, SampleTime,
-    Shared, Voice, VoiceId, VoiceStart,
+    Command, CommandKind, Event, FinishReason, GainTarget, Mixer, PENDING_CAPACITY, RejectReason,
+    Returned, SampleTime, Shared, Voice, VoiceId, VoiceStart,
 };
 
 /// Audio-thread side of the queues back to the controller.
 pub(crate) struct Outbox {
     pub(crate) events: Producer<Event>,
-    pub(crate) returns: Producer<Box<VoiceStart>>,
+    pub(crate) returns: Producer<Returned>,
     pub(crate) shared: Arc<Shared>,
 }
 
@@ -32,11 +32,22 @@ impl Outbox {
     }
 
     pub(crate) fn give_back(&mut self, start: Box<VoiceStart>) {
-        if let Err(PushError::Full(start)) = self.returns.push(start) {
+        self.hand_back(Returned::Start(start));
+    }
+
+    fn give_back_gains(&mut self, gains: Box<[(GainTarget, f32)]>) {
+        self.hand_back(Returned::Gains(gains));
+    }
+
+    fn hand_back(&mut self, item: Returned) {
+        if let Err(PushError::Full(item)) = self.returns.push(item) {
             // The return queue is sized so this cannot happen while the controller drains it;
             // leaking is the RT-safe fallback to freeing here.
-            leak_start(start);
-            self.shared.leaked_starts.fetch_add(1, Ordering::Relaxed);
+            match item {
+                Returned::Start(start) => leak_start(start),
+                Returned::Gains(gains) => leak_gains(gains),
+            }
+            self.shared.leaked_returns.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -46,6 +57,7 @@ thread_local! {
     /// The start `leak_start` last gave up on, so a test can free it: LeakSanitizer fails the
     /// whole test binary on a deliberate leak.
     static LEAKED_START: std::cell::Cell<*mut VoiceStart> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    static LEAKED_GAINS: std::cell::Cell<Option<*mut [(GainTarget, f32)]>> = const { std::cell::Cell::new(None) };
 }
 
 /// Gives up on `start` without freeing it (the audio thread must not).
@@ -55,6 +67,24 @@ fn leak_start(start: Box<VoiceStart>) {
     let raw = Box::into_raw(start);
     #[cfg(test)]
     LEAKED_START.with(|c| c.set(raw));
+}
+
+/// Gives up on a ramp set's list without freeing it (the audio thread must not).
+fn leak_gains(gains: Box<[(GainTarget, f32)]>) {
+    #[cfg_attr(not(test), allow(unused_variables))]
+    let raw = Box::into_raw(gains);
+    #[cfg(test)]
+    LEAKED_GAINS.with(|c| c.set(Some(raw)));
+}
+
+/// A `fade` of a ramp as a voice takes it: no fade of its own is the de-zipper, or at once on the
+/// voice's start sample.
+fn ramp_shape(fade: Fade, fresh: bool, dezip: u64) -> (u64, Curve) {
+    match (fade.frames, fresh) {
+        (0, true) => (0, Curve::Linear),
+        (0, false) => (dezip, Curve::Linear),
+        _ => (fade.frames, fade.curve),
+    }
 }
 
 /// A command in the pending set, ordered so the heap's top is the earliest `(at, seq)`.
@@ -137,15 +167,22 @@ impl Mixer {
                 fade,
             } => {
                 if let Some(v) = self.voice_mut(voice) {
-                    let (frames, curve) = match (fade.frames, v.fresh) {
-                        (0, true) => (0, Curve::Linear),
-                        (0, false) => (dezip, Curve::Linear),
-                        _ => (fade.frames, fade.curve),
-                    };
+                    let (frames, curve) = ramp_shape(fade, v.fresh, dezip);
                     if let Some(p) = v.param_mut(target) {
                         p.ramp_to(sanitize_gain(gain), frames, curve);
                     }
                 }
+            }
+            CommandKind::RampSet { voice, gains, fade } => {
+                if let Some(v) = self.voice_mut(voice) {
+                    let (frames, curve) = ramp_shape(fade, v.fresh, dezip);
+                    for &(target, gain) in &*gains {
+                        if let Some(p) = v.param_mut(target) {
+                            p.ramp_to(sanitize_gain(gain), frames, curve);
+                        }
+                    }
+                }
+                self.outbox.give_back_gains(gains);
             }
             CommandKind::SetPatchRouting {
                 patch,
@@ -314,13 +351,26 @@ mod tests {
             outbox.emit(Event::PendingFull { at: 0 });
             outbox.emit(Event::PendingFull { at: 1 });
         });
-        assert_eq!(shared.leaked_starts.load(Ordering::Relaxed), 1);
+        assert_eq!(shared.leaked_returns.load(Ordering::Relaxed), 1);
         assert_eq!(shared.dropped_events.load(Ordering::Relaxed), 1);
         assert!(rx.pop().is_ok());
         let raw = LEAKED_START.with(|c| c.replace(std::ptr::null_mut()));
         assert!(!raw.is_null());
         // SAFETY: `raw` came from `Box::into_raw` in `leak_start` on this thread and nothing else
         // has freed or aliased it.
+        drop(unsafe { Box::from_raw(raw) });
+
+        // A ramp set's list the same way; what was queued first stays queued.
+        let gains = || -> Box<[(GainTarget, f32)]> { vec![(GainTarget::Master, 0.5)].into() };
+        let (a, b) = (gains(), gains());
+        crate::no_alloc_for_tests(|| {
+            outbox.give_back_gains(a);
+            outbox.give_back_gains(b);
+        });
+        assert_eq!(shared.leaked_returns.load(Ordering::Relaxed), 2);
+        assert!(matches!(rx.pop(), Ok(Returned::Gains(_))));
+        let raw = LEAKED_GAINS.with(|c| c.take()).unwrap();
+        // SAFETY: as above, from `leak_gains`.
         drop(unsafe { Box::from_raw(raw) });
     }
 }

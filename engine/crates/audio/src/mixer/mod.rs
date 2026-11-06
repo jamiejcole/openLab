@@ -195,6 +195,15 @@ pub enum CommandKind {
         gain: f32,
         fade: Fade,
     },
+    /// Many [`CommandKind::Ramp`]s of one voice as one command: every gain starts its ramp on the
+    /// same sample, so a block never renders part of a whole-matrix edit (and the edit takes one
+    /// queue slot, so nothing behind it waits). Applied in order, with `fade` meaning what it
+    /// means for `Ramp`. The list goes back on the return queue to be freed on the control thread.
+    RampSet {
+        voice: VoiceId,
+        gains: Box<[(GainTarget, f32)]>,
+        fade: Fade,
+    },
     SetPatchRouting {
         patch: u16,
         cue_output: u16,
@@ -248,6 +257,13 @@ pub enum CommandKind {
         voice: VoiceId,
         new_id: VoiceId,
     },
+}
+
+/// What the audio thread hands back for the control thread to free.
+#[derive(Debug)]
+pub(crate) enum Returned {
+    Start(#[allow(dead_code)] Box<VoiceStart>),
+    Gains(#[allow(dead_code)] Box<[(GainTarget, f32)]>),
 }
 
 /// A command on its way to the mixer: applied at sample `at` (or at the start of the next block
@@ -358,7 +374,7 @@ pub(crate) struct Shared {
     pub(crate) disabled: DisabledFlags,
     pub(crate) underrun_frames: AtomicU64,
     pub(crate) dropped_events: AtomicU64,
-    pub(crate) leaked_starts: AtomicU64,
+    pub(crate) leaked_returns: AtomicU64,
     pub(crate) pending_full_blocks: AtomicU64,
     pub(crate) xruns: AtomicU64,
     pub(crate) meters: Meters,
@@ -486,7 +502,8 @@ impl Mixer {
 
         let (cmd_tx, cmd_rx) = RingBuffer::new(COMMAND_CAPACITY);
         let (ev_tx, ev_rx) = RingBuffer::new(EVENT_CAPACITY);
-        // Every start the mixer can hold at once: queued, pending, playing, plus one in flight.
+        // Every box the mixer can hold at once: queued, pending, playing, plus one in flight. A
+        // `RampSet`'s list takes the queue or pending slot of its command.
         let (ret_tx, ret_rx) =
             RingBuffer::new(COMMAND_CAPACITY + PENDING_CAPACITY + max_voices + 1);
         let shared = Arc::new(Shared {

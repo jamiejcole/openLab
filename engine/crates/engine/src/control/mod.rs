@@ -62,7 +62,8 @@ use std::time::{Duration, SystemTime};
 
 use crossbeam_channel::Sender;
 use openlab_audio::{
-    COMMAND_CAPACITY, CommandKind, DiskStreamer, Event, MediaError, MixerController,
+    COMMAND_CAPACITY, CommandKind, DiskStreamer, Event, Fade, GainTarget, MediaError,
+    MixerController,
     StreamerConfig, VoiceId,
 };
 use openlab_core::protocol::{
@@ -846,7 +847,8 @@ impl Engine {
 
     /// Sends commands as batches the mixer applies whole (docs/audio.md, Scheduling horizon).
     fn send_commands(&mut self, commands: Vec<(SampleTime, CommandKind)>) {
-        for mut commands in stops_apart(commands) {
+        for commands in stops_apart(commands) {
+            let mut commands = ramps_together(commands);
             while !commands.is_empty() {
                 let rest = commands.split_off(commands.len().min(COMMAND_CAPACITY));
                 if self.mixer.send_batch(commands).is_err() {
@@ -875,6 +877,59 @@ fn stops_apart(commands: Vec<(SampleTime, CommandKind)>) -> Vec<Vec<(SampleTime,
         .into_iter()
         .filter(|b| !b.is_empty())
         .collect()
+}
+
+/// Each run of ramps of one voice with the same date and fade (a matrix edit, a Fade cue's start)
+/// becomes one `RampSet`, whatever made them: it fits the queue whole however large, so the mixer
+/// never renders part of it and nothing sent after it waits behind it.
+fn ramps_together(commands: Vec<(SampleTime, CommandKind)>) -> Vec<(SampleTime, CommandKind)> {
+    let mut out = Vec::with_capacity(commands.len());
+    let mut run = None;
+    let mut gains = Vec::new();
+    for (at, kind) in commands {
+        if let CommandKind::Ramp {
+            voice,
+            target,
+            gain,
+            fade,
+        } = kind
+        {
+            if run != Some((at, voice, fade)) {
+                end_ramp_run(run, &mut gains, &mut out);
+                run = Some((at, voice, fade));
+            }
+            gains.push((target, gain));
+        } else {
+            end_ramp_run(run.take(), &mut gains, &mut out);
+            out.push((at, kind));
+        }
+    }
+    end_ramp_run(run, &mut gains, &mut out);
+    out
+}
+
+/// Sends a run of ramps as the plain `Ramp` it is if there is only one.
+fn end_ramp_run(
+    run: Option<(SampleTime, VoiceId, Fade)>,
+    gains: &mut Vec<(GainTarget, f32)>,
+    out: &mut Vec<(SampleTime, CommandKind)>,
+) {
+    let Some((at, voice, fade)) = run else { return };
+    let kind = match gains.as_slice() {
+        [(target, gain)] => CommandKind::Ramp {
+            voice,
+            target: *target,
+            gain: *gain,
+            fade,
+        },
+        _ => CommandKind::RampSet {
+            voice,
+            gains: gains.as_slice().into(),
+            fade,
+        },
+    };
+    gains.clear();
+    out.push((at, kind));
 }
 
 impl Doc {
@@ -1155,7 +1210,6 @@ mod tests {
     /// overtake ramps held ahead of them; with anything else in the batch it is kept whole.
     #[test]
     fn stops_sent_with_only_ramps_go_first_in_a_batch_of_their_own() {
-        use openlab_audio::{Fade, GainTarget, VoiceId};
         let stop = |v| CommandKind::StopVoice {
             voice: VoiceId(v),
             fade: Fade::NONE,
@@ -1183,6 +1237,45 @@ mod tests {
         assert_eq!(shape(stops_apart(vec![(5, stop(1))])), [vec![(5, true)]]);
         let mixed = vec![(1, stop(1)), (1, CommandKind::SetMaster { gain: 1.0 })];
         assert_eq!(stops_apart(mixed).len(), 1);
+    }
+
+    /// Ramps of one voice, date and fade become one command, in order; anything else between or
+    /// different starts another.
+    #[test]
+    fn a_run_of_ramps_of_one_voice_date_and_fade_is_one_command() {
+        let a = GainTarget::Master;
+        let b = GainTarget::CueOutput(1);
+        let ramp = |v, target, gain, fade| CommandKind::Ramp {
+            voice: VoiceId(v),
+            target,
+            gain,
+            fade,
+        };
+        let long = Fade::new(100, openlab_audio::Curve::SCurve);
+        let got = ramps_together(vec![
+            (5, ramp(1, a, 0.1, Fade::NONE)),
+            (5, ramp(1, b, 0.2, Fade::NONE)),
+            // Other voice, date, fade: each its own.
+            (5, ramp(2, a, 0.3, Fade::NONE)),
+            (6, ramp(2, a, 0.4, Fade::NONE)),
+            (6, ramp(2, a, 0.5, long)),
+            (6, CommandKind::SetMaster { gain: 1.0 }),
+            // A run does not reach across another command.
+            (6, ramp(2, b, 0.6, long)),
+        ]);
+        assert_eq!(got.len(), 6, "{got:?}");
+        let CommandKind::RampSet { voice, gains, fade } = &got[0].1 else {
+            panic!("{got:?}");
+        };
+        assert_eq!(got[0].0, 5);
+        assert_eq!((*voice, *fade), (VoiceId(1), Fade::NONE));
+        assert_eq!(&**gains, [(a, 0.1), (b, 0.2)]);
+        assert!(
+            got[1..]
+                .iter()
+                .all(|(_, k)| !matches!(k, CommandKind::RampSet { .. }))
+        );
+        assert!(matches!(got[4].1, CommandKind::SetMaster { .. }));
     }
 
     pub(super) fn memo_show() -> crate::control::offline::OfflineShow {
