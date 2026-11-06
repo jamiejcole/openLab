@@ -77,13 +77,22 @@ final class FooterBar: NSView {
         trackingMode: .selectOne, target: nil, action: nil)
     /// The engine's health in one line (DX-03); clicking it opens the details.
     let statusButton = NSButton()
+    /// Red "NETWORK OUTPUT OFF" while the engine's output override is on (PB-10). Always in the
+    /// footer, Show Mode included; words and a filled red pill, never colour alone. Opens the same
+    /// details as the status line.
+    let overrideBadge = NSButton()
+    /// The footer's own entry to the Warnings tab: shown only while there is something to see, with
+    /// the count. Part of the footer in Show Mode too. Never takes the keys from the cue list.
+    let warningsButton = NSButton()
+    /// The warnings button was used: open the sidebar on the Warnings tab.
+    var onWarnings: (() -> Void)?
     private(set) var presentation = StatusPresentation.make(nil)
     /// A result the operator asked for that needs no answer (a relink); clears after a while (`noticeLifetime`) unless replaced.
     let noticeLabel = NSTextField(labelWithString: "")
     /// "12 cues in 2 lists", from the model (QLab's footer centre).
     let countLabel = NSTextField(labelWithString: "")
     private var lastXruns: UInt64?
-    private var popover: NSPopover?
+    private(set) var popover: NSPopover?
     let clock = WallClockLabel()
     let settingsButton = NSButton()
     private(set) var toggles: [LayoutArea: NSButton] = [:]
@@ -109,6 +118,29 @@ final class FooterBar: NSView {
         showModeLabel.font = .systemFont(ofSize: 12, weight: .bold)
         showModeLabel.textColor = .systemOrange
         showModeLabel.isHidden = true
+        overrideBadge.isBordered = false
+        overrideBadge.wantsLayer = true
+        overrideBadge.layer?.backgroundColor = NSColor.systemRed.cgColor
+        overrideBadge.layer?.cornerRadius = 4
+        overrideBadge.attributedTitle = NSAttributedString(
+            string: " " + loc("footer.override.badge") + " ",
+            attributes: [.foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 12, weight: .bold)])
+        overrideBadge.setAX(AX.overrideBadge, label: loc("footer.override.badge"))
+        overrideBadge.toolTip = loc("footer.override.tooltip")
+        overrideBadge.target = self
+        overrideBadge.action = #selector(showStatusDetails)
+        overrideBadge.isHidden = true
+        warningsButton.isBordered = false
+        warningsButton.imagePosition = .imageLeading
+        warningsButton.refusesFirstResponder = true
+        // The notice has no minimum width (it truncates): its old 120 pt minimum is what made a new
+        // footer control widen the window. At the minimum width the button does not widen it, in Edit
+        // and Show Mode; Show Mode with the override badge is already wider than the minimum.
+        warningsButton.setAX(AX.warningsButton)
+        warningsButton.toolTip = loc("footer.warnings.tooltip")
+        warningsButton.target = self
+        warningsButton.action = #selector(warningsClicked)
+        showWarnings(count: 0)
         statusButton.isBordered = false
         statusButton.imagePosition = .imageLeading
         statusButton.setAX(AX.statusLabel)
@@ -122,9 +154,6 @@ final class FooterBar: NSView {
         noticeLabel.textColor = .secondaryLabelColor
         noticeLabel.lineBreakMode = .byTruncatingTail
         noticeLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let minNotice = noticeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 120)
-        minNotice.priority = NSLayoutConstraint.Priority(749)
-        minNotice.isActive = true
         show(status: nil, connected: true)
 
         for spec in Self.specs {
@@ -148,9 +177,11 @@ final class FooterBar: NSView {
         settingsButton.action = #selector(settingsClicked)
         settingsButton.bezelStyle = .texturedRounded
 
-        let left = NSStackView(views: [modeSwitch, showModeLabel] + [.toolbar, .masthead].compactMap { toggles[$0] })
+        let left = NSStackView(
+            views: [modeSwitch, showModeLabel, overrideBadge] + [.toolbar, .masthead].compactMap { toggles[$0] })
         let right = NSStackView(views: [clock] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
-        let bar = NSStackView(views: [left, NSStackView(views: [countLabel, statusButton, noticeLabel]), right])
+        let centre = NSStackView(views: [countLabel, warningsButton, statusButton, noticeLabel])
+        let bar = NSStackView(views: [left, centre, right])
         bar.distribution = .equalCentering
         bar.translatesAutoresizingMaskIntoConstraints = false
         addSubview(bar)
@@ -173,9 +204,25 @@ final class FooterBar: NSView {
         countLabel.stringValue = Self.countText(cues: cues, lists: lists)
     }
 
+    /// Shows the warnings button with `count` (a broken cue or a warning each count once), or hides it at 0.
+    func showWarnings(count: Int) {
+        warningsButton.isHidden = count == 0
+        let text = String(format: loc(count == 1 ? "warnings.one" : "warnings.many"), count)
+        // Icon and number only: the footer is nearly full at the minimum window width. The icon is
+        // not the only signal (the number is text), and VoiceOver reads the full words.
+        warningsButton.title = String(count)
+        warningsButton.image = Icon.statusWarning.image(text, compact: true)
+        warningsButton.contentTintColor = .systemOrange
+        warningsButton.font = .systemFont(ofSize: 12, weight: .semibold)
+        warningsButton.setAccessibilityLabel(text)
+    }
+
+    @objc private func warningsClicked() { onWarnings?() }
+
     /// Redraws the status line. The alarm state differs in symbol and wording as well as colour.
-    func showNotice(_ text: String, error: Bool = false) {
+    func showNotice(_ text: String, error: Bool = false, tooltip: String? = nil) {
         noticeLabel.stringValue = text
+        noticeLabel.toolTip = tooltip
         noticeLabel.textColor = error ? .systemRed : .secondaryLabelColor
         // An old notice must not stay up for the whole show. Each notice has its own generation, so
         // an earlier timer never clears a later notice, even one with the same text.
@@ -184,6 +231,7 @@ final class FooterBar: NSView {
         scheduleClear(noticeLifetime) { [weak self] in
             guard let self, self.noticeGeneration == mine else { return }
             self.noticeLabel.stringValue = ""
+            self.noticeLabel.toolTip = nil
             self.noticeLabel.textColor = .secondaryLabelColor
         }
     }
@@ -208,6 +256,8 @@ final class FooterBar: NSView {
             p = StatusPresentation.make(status, xrunsIncreased: increased)
         }
         presentation = p
+        // Stale status (no connection) is not shown as an override either.
+        overrideBadge.isHidden = !(connected && status?.networkOutputDisabled == true)
         statusButton.title = p.summary
         statusButton.image = p.icon.image(p.summary, compact: true)
         statusButton.contentTintColor = p.level == .alarm ? .systemRed : p.level == .warning ? .systemOrange : nil

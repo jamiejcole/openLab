@@ -174,7 +174,7 @@ fn everything() -> Vec<Command> {
             },
         ),
         Command::SetWorkspaceSetting {
-            setting: WorkspaceSetting::MasterDb { value: -6.0 },
+            setting: WorkspaceSetting::OutputMinDb { value: -66.0 },
         },
         Command::AddPatch {
             index: 0,
@@ -343,7 +343,7 @@ fn a_refused_transaction_leaves_the_history_alone() {
     let mut ws = sample();
     let mut history = History::new();
     let level = |db: f64| Command::SetWorkspaceSetting {
-        setting: WorkspaceSetting::MasterDb { value: db },
+        setting: WorkspaceSetting::OutputMinDb { value: db - 60.0 },
     };
     history
         .execute(&mut ws, set(3, CueProperty::Flagged { value: true }))

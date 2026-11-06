@@ -85,9 +85,13 @@ final class CueCell: NSTableCellView {
         stack.spacing = 4
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
+        // A column dragged to zero width gives the cell zero width: a required trailing inset then
+        // contradicts the stack's own minimum ("Conflicting constraints detected").
+        let trailing = stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2)
+        trailing.priority = .defaultHigh
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            trailing,
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
         for image in images {
@@ -167,6 +171,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private var playheadAncestors: Set<ModelID> = []
     /// Internal so a test can detach it and deliver changes in a chosen order.
     var sub: AnyCancellable?
+    /// The engine's network output override (PB-10): Network cues show a red circle while it is on.
+    private(set) var networkOutputDisabled = false
+    private var overrideSub: AnyCancellable?
     /// While `applyModel` runs: every cue it touched (their targeters refresh), the groups it created
     /// (shown expanded, like QLab) and the existing groups that were collapsed (they stay so).
     private var batching = false
@@ -200,7 +207,18 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         sub = store.changes.sink { [weak self] change in
             MainActor.assumeIsolated { self?.handle(change) }
         }
+        // Published before it changes: use the delivered value.
+        overrideSub = store.$status.map { $0?.networkOutputDisabled ?? false }.removeDuplicates().sink {
+            [weak self] disabled in
+            MainActor.assumeIsolated { self?.outputOverrideChanged(disabled) }
+        }
         rebuild()
+    }
+
+    private func outputOverrideChanged(_ disabled: Bool) {
+        networkOutputDisabled = disabled
+        let network = Set(nodes.values.filter { $0.cue.kindType == "network" }.map(\.id))
+        if !network.isEmpty { refresh(network, columns: ["status"]) }
     }
 
     @available(*, unavailable)
@@ -1206,8 +1224,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                     tooltip: detail.map { "\(style.label): \($0)" })
             }
             // A preview is outside the show, so it has its own mark next to the cue's state.
+            cell.images[2].setAccessibilityIdentifier("cue-preview")
             if store.previewing.contains(node.id) {
                 cell.setImage(2, icon: .preview, label: loc("cue.previewing"), tint: .systemTeal)
+            } else if cue.kindType == "network" && networkOutputDisabled {
+                // Only an Audio cue previews, so a Network cue never needs that slot for both.
+                cell.images[2].setAccessibilityIdentifier("cue-override")
+                cell.setImage(2, icon: .outputOverridden, label: loc("cue.outputOverridden"), tint: .systemRed)
             }
             switch flagMarker(node, expanded: outlineView.isItemExpanded(node)) {
             case .solid: cell.setImage(3, icon: .flagged, label: loc("cue.flagged"), tint: .systemYellow)

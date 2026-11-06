@@ -157,6 +157,11 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         await appClient.send { .panic(id: $0) }
     }
 
+    /// Engine-wide: with `networkDisabled`, Network cues run but send nothing (PB-10).
+    func setOutputOverrides(networkDisabled: Bool) async -> Result<OkBody, EngineError> {
+        await appClient.send { .request(id: $0, .setOutputOverrides(networkDisabled: networkDisabled)) }
+    }
+
     /// App-scope cue hotkey: the engine matches it in every open workspace.
     func hotkey(key: String, modifiers: HotkeyModifiers, up: Bool) async -> Result<OkBody, EngineError> {
         await appClient.send { .hotkey(id: $0, key: key, modifiers: modifiers, up: up) }
@@ -258,8 +263,18 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
             return
         }
         makeStore(doc)
+        if let openedPath { openedPaths[doc] = openedPath }
         storesChanged.send()
     }
+
+    /// The path each just-opened doc was asked for, known before the engine's workspace list names
+    /// it: a window made at that moment can restore its layout before it is shown.
+    private var openedPaths: [ModelID: String] = [:]
+
+    /// The path `doc` was opened from, once: the window that reads it owns it, so a doc id the
+    /// engine hands out again later never inherits it.
+    func takeOpenedPath(_ doc: ModelID) -> String? { openedPaths.removeValue(forKey: doc) }
+    var openedPathCount: Int { openedPaths.count }
 
     /// The engine's path equality, close enough: NFC and case-insensitive. A false "same" only
     /// defers a store to the end of the reattach.
@@ -295,6 +310,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
 
     private func dropStore(_ doc: ModelID) {
         guard let store = stores.removeValue(forKey: doc) else { return }
+        openedPaths[doc] = nil
         order.removeAll { $0 == doc }
         store.client.stop()
     }
@@ -318,6 +334,7 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         stores = [:]
         order = []
         pendingCovers = [:]  // doc ids of the old run
+        openedPaths = [:]
         listed = []
         events.send(.newEngineRun)
         storesChanged.send()

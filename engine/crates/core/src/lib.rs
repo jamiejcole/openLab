@@ -15,6 +15,7 @@ mod cue;
 mod cue_engine;
 mod cue_index;
 mod history;
+mod limits;
 mod media_path;
 mod model;
 mod network;
