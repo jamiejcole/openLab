@@ -52,9 +52,7 @@ final class MainWindowTests: XCTestCase {
         try? pipe.fileHandleForWriting.close()
         collected.wait()
         return String(decoding: collected.data, as: UTF8.self).split(separator: "\n").filter {
-            // macOS 27 also logs a negative view width from window creation: #530. NegativeFrameProbe names
-            // the view in CI's log; this filter takes the message back once it is fixed.
-            $0.contains("Conflicting constraints")
+            $0.contains("Conflicting constraints") || $0.contains("Invalid view geometry")
         }.joined(separator: "\n")
     }
 
@@ -115,6 +113,15 @@ final class MainWindowTests: XCTestCase {
         }
         window.close()
         XCTAssertEqual(problems, [], "AppKit reported a layout problem")
+    }
+
+    /// The inspector's tab view is given a size before its tabs are added, so its tab strip is never laid out
+    /// at a negative width (macOS 27 reports that, #530).
+    func testInspectorTabViewStartsWithRoomForItsTabStrip() throws {
+        let wc = try controller()
+        let tabs = wc.inspector.tabView
+        XCTAssertGreaterThan(tabs.frame.width, 0)
+        XCTAssertEqual(negativeViews(tabs), [])
     }
 
     /// A cue-list column dragged to nothing leaves its cells zero wide: they lay out without a conflict.
