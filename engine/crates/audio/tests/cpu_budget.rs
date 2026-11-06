@@ -397,7 +397,11 @@ struct Dense {
 /// whole-matrix change, moves every gain (master, each output, each crosspoint) over `fade`.
 /// Times every block of the ramp and a few after it. An edit's ramp is a block or two, so its
 /// worst block is the figure; a Fade's lasts dozens.
-fn dense(voices: usize, fade: Fade) -> Result<Dense, String> {
+///
+/// With `shapes` above 1 the gains are shared out among that many sets of different lengths
+/// (Fade cues running together, each moving its own crosspoints), interleaved in the order the
+/// render walks them, so no two gains in a row are of one shape.
+fn dense(voices: usize, fade: Fade, shapes: usize) -> Result<Dense, String> {
     let (ch, outs) = (DENSE_MATRIX, DENSE_MATRIX);
     let (mut ctl, mut r) = setup(MixerConfig {
         sample_rate: RATE,
@@ -408,7 +412,7 @@ fn dense(voices: usize, fade: Fade) -> Result<Dense, String> {
         ..MixerConfig::default()
     });
     const WARMUP_BLOCKS: usize = 20;
-    let blocks = fade.frames as usize / DENSE_BLOCK + 8;
+    let blocks = (fade.frames as usize + shapes * 97) / DENSE_BLOCK + 8;
     let frames = (WARMUP_BLOCKS + blocks) * DENSE_BLOCK;
     for id in 0..voices as u64 {
         let rx = source(&vec![0.01; ch * frames]);
@@ -424,21 +428,27 @@ fn dense(voices: usize, fade: Fade) -> Result<Dense, String> {
         r.render_into(&mut out, &[DENSE_BLOCK]);
         steady_ms = steady_ms.max(t.elapsed().as_secs_f64() * 1e3);
     }
-    let mut gains = vec![(GainTarget::Master, 0.5)];
+    let mut sets = vec![vec![(GainTarget::Master, 0.5)]; 1];
+    sets.resize(shapes, Vec::new());
     for o in 0..outs as u16 {
-        gains.push((GainTarget::CueOutput(o), 0.5));
+        sets[0].push((GainTarget::CueOutput(o), 0.5));
         for input in 0..ch as u16 {
-            gains.push((GainTarget::Crosspoint { input, output: o }, 0.25));
+            let k = (usize::from(o) * ch + usize::from(input)) % shapes;
+            sets[k].push((GainTarget::Crosspoint { input, output: o }, 0.25));
         }
     }
     let at = ctl.samples_rendered();
     for id in 0..voices as u64 {
-        let set = CommandKind::RampSet {
-            voice: VoiceId(id),
-            gains: gains.clone().into(),
-            fade,
-        };
-        ctl.send(at, set);
+        for (k, gains) in sets.iter().enumerate() {
+            // The shortest ramp is `fade`, each later set a little longer.
+            let frames = fade.frames + k as u64 * 97;
+            let set = CommandKind::RampSet {
+                voice: VoiceId(id),
+                gains: gains.clone().into(),
+                fade: Fade::new(frames, fade.curve),
+            };
+            ctl.send(at, set);
+        }
     }
     if ctl.held() != 0 {
         return Err(format!("{} commands held", ctl.held()));
@@ -474,10 +484,10 @@ fn dense(voices: usize, fade: Fade) -> Result<Dense, String> {
 
 /// A dense case's worst block, best of [`GATE_RUNS`], against the block's own length: over it,
 /// the device hears a dropout on every output.
-fn gate_dense(name: &str, voices: usize, fade: Fade) -> f64 {
+fn gate_dense(name: &str, voices: usize, fade: Fade, shapes: usize) -> f64 {
     let mut best = f64::MAX;
     for attempt in 1..=GATE_RUNS {
-        let d = dense(voices, fade).expect("the dense workload must run cleanly");
+        let d = dense(voices, fade, shapes).expect("the dense workload must run cleanly");
         report_dense(&format!("{name} #{attempt}"), voices, &d);
         best = best.min(d.worst_ms);
         if best <= DENSE_BUDGET_MS {
@@ -556,12 +566,13 @@ fn sixty_four_stereo_voices_with_fades_render_at_least_ten_times_real_time() {
     // gain on dense matrices: gated on the worst block, since one overrun is a dropout.
     let edit = Fade::new(RATE as u64 / 100, Curve::Linear);
     let fade = Fade::new(RATE as u64 / 2, Curve::SCurve);
-    let dense_edit = gate_dense("dense edit", 3, edit);
-    let dense_fade = gate_dense("dense fade", 3, fade);
+    let dense_edit = gate_dense("dense edit", 3, edit, 1);
+    let dense_fade = gate_dense("dense fade", 3, fade, 1);
+    let dense_nine = gate_dense("dense nine Fades", 3, fade, 9);
     println!(
-        "gate: dense edit {dense_edit:.2} ms, dense fade {dense_fade:.2} ms, budget {DENSE_BUDGET_MS:.2} ms"
+        "gate: dense edit {dense_edit:.2} ms, dense fade {dense_fade:.2} ms, nine Fades {dense_nine:.2} ms, budget {DENSE_BUDGET_MS:.2} ms"
     );
-    match dense(10, fade) {
+    match dense(10, fade, 1) {
         Ok(d) => report_dense("dense fade", 10, &d),
         Err(e) => println!("dense fade 10 voices: not measured: {e}"),
     }
@@ -587,6 +598,10 @@ fn sixty_four_stereo_voices_with_fades_render_at_least_ten_times_real_time() {
     assert!(
         dense_fade <= DENSE_BUDGET_MS,
         "a whole-matrix Fade of 3 dense voices overruns the block: {dense_fade:.2} ms"
+    );
+    assert!(
+        dense_nine <= DENSE_BUDGET_MS,
+        "nine Fades at once on 3 dense voices overrun the block: {dense_nine:.2} ms"
     );
     assert!(
         best >= MIN_REALTIME_RATIO,

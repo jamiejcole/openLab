@@ -129,8 +129,9 @@ pub fn ramp_value(from: f32, to: f32, pos: u64, len: u64, curve: Curve) -> f32 {
 
 /// The mixer's gain along a ramp or fade from `from` to `to` differs from [`ramp_value`] by at
 /// most this times `max(|from|, |to|)`: −120 dB, the silence floor. One `f32` step of the
-/// result is up to 1.2e-7 of it and the mixer's recurrence adds about 1e-13 (docs/audio.md);
-/// the first frame and the end are exact.
+/// result is up to 1.2e-7 of it and the mixer's recurrence adds about 1e-13; a gain ramp's `f32`
+/// sum and product add up to about 4.2e-7 more in the worst case (docs/audio.md). The first frame
+/// and the end are exact.
 pub const RAMP_TOLERANCE: f64 = 1e-6;
 
 /// Ramp positions that are multiples of this are evaluated exactly; the frames between follow
@@ -446,9 +447,12 @@ impl CurveRamp {
     }
 }
 
-/// Curve progress buffers a mixer keeps at once. Ramps of one edit or Fade share one; more
-/// shapes than this in a segment only cost recomputing them.
-const SHAPE_SLOTS: usize = 8;
+/// Stretches of curve progress a mixer keeps at once, in sets of [`SHAPE_WAYS`], so a gain finds
+/// its stretch whatever order the render walks the gains in. Shapes past these only cost
+/// recomputing (docs/audio.md).
+const SHAPE_SLOTS: usize = 128;
+const SHAPE_WAYS: usize = 8;
+const SHAPE_SETS: usize = SHAPE_SLOTS / SHAPE_WAYS;
 
 /// One stretch of a curve's progress: what a gain ramp needs besides its own ends.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -460,6 +464,20 @@ struct ShapeKey {
     frames: usize,
 }
 
+impl ShapeKey {
+    /// The first slot of the set this key belongs in.
+    fn set(&self) -> usize {
+        const MIX: u64 = 0x9E37_79B9_7F4A_7C15;
+        let shape = (self.curve as u64) << 1 | u64::from(self.rising);
+        let bits = (self.len ^ shape.wrapping_mul(MIX))
+            .wrapping_mul(MIX)
+            .rotate_left(23)
+            ^ self.pos;
+        let top = bits.wrapping_mul(MIX) >> (u64::BITS - SHAPE_SETS.trailing_zeros());
+        top as usize * SHAPE_WAYS
+    }
+}
+
 /// The curve progress of the ramps being rendered, each stretch worked out once however many
 /// gains follow it: a whole-matrix edit or Fade is thousands of ramps of one shape, and a gain
 /// is then one multiply and one add per frame ([`Param::fill`]). A stretch is a pure function of
@@ -467,11 +485,11 @@ struct ShapeKey {
 #[derive(Debug)]
 pub(crate) struct Shapes {
     frames: usize,
-    keys: [Option<ShapeKey>; SHAPE_SLOTS],
-    evals: [CurveRamp; SHAPE_SLOTS],
+    keys: Vec<Option<ShapeKey>>,
     /// `SHAPE_SLOTS` stretches of `frames` each.
     values: Vec<f32>,
-    next: usize,
+    /// The way of each set to replace next.
+    next: [u8; SHAPE_SETS],
 }
 
 impl Shapes {
@@ -480,53 +498,49 @@ impl Shapes {
         let frames = frames.max(1);
         Shapes {
             frames,
-            keys: [None; SHAPE_SLOTS],
-            evals: [CurveRamp::progress(0, Curve::Linear, true); SHAPE_SLOTS],
+            keys: vec![None; SHAPE_SLOTS],
             values: vec![0.0; SHAPE_SLOTS * frames],
-            next: 0,
+            next: [0; SHAPE_SETS],
         }
     }
 
     /// The progress at positions `key.pos..key.pos + key.frames`; `key.frames` is at most
     /// [`Self::new`]'s. Empty if it were more.
     fn get(&mut self, key: ShapeKey) -> &[f32] {
-        let slot = match self.keys.iter().position(|k| *k == Some(key)) {
-            Some(hit) => hit,
-            None => self.compute(key),
+        let set = key.set();
+        let ways = self.keys.get(set..set + SHAPE_WAYS).unwrap_or(&[]);
+        let slot = match ways.iter().position(|k| *k == Some(key)) {
+            Some(way) => set + way,
+            None => self.compute(key, set),
         };
         let start = slot * self.frames;
         self.values.get(start..start + key.frames).unwrap_or(&[])
     }
 
-    /// Computes `key` into the slot following on from it (its evaluator is ready for this
-    /// position), else the next in turn. Returns the slot.
-    fn compute(&mut self, key: ShapeKey) -> usize {
-        let follows = self.keys.iter().position(|k| {
-            k.is_some_and(|k| {
-                (k.len, k.curve, k.rising) == (key.len, key.curve, key.rising)
-                    && k.pos.saturating_add(k.frames as u64) == key.pos
-            })
-        });
-        let slot = follows.unwrap_or_else(|| {
-            let slot = self.next;
-            self.next = (slot + 1) % SHAPE_SLOTS;
-            slot
-        });
+    /// Computes `key` into the next way of its set. Returns the slot.
+    fn compute(&mut self, key: ShapeKey, set: usize) -> usize {
+        let Some(next) = self.next.get_mut(set / SHAPE_WAYS) else {
+            return set;
+        };
+        let slot = set + usize::from(*next);
+        *next = (*next + 1) % SHAPE_WAYS as u8;
         let start = slot * self.frames;
-        if let (Some(k), Some(eval), Some(out)) = (
+        if let (Some(k), Some(out)) = (
             self.keys.get_mut(slot),
-            self.evals.get_mut(slot),
             self.values.get_mut(start..start + key.frames),
         ) {
             // Unset while it is written: a fault here must not leave half a stretch to be found.
             *k = None;
-            if follows.is_none() {
-                *eval = CurveRamp::progress(key.len, key.curve, key.rising);
-            }
-            eval.apply(key.pos, out, |o, v| *o = v);
+            CurveRamp::progress(key.len, key.curve, key.rising).apply(key.pos, out, |o, v| *o = v);
             *k = Some(key);
         }
         slot
+    }
+
+    /// As good as new, for a test to compare against nothing shared.
+    #[cfg(test)]
+    fn forget(&mut self) {
+        self.keys.fill(None);
     }
 }
 
@@ -1084,6 +1098,109 @@ mod tests {
                     "{c:?} {from}->{to}: {worst:e}"
                 );
                 assert_eq!(p.current(), to);
+            }
+        }
+    }
+
+    /// Random fills, skips, reads and new ramps of many gains through one `Shapes` give the bits
+    /// each gets through nothing shared: a stretch of another curve, direction, length or position
+    /// is never taken for its own.
+    #[test]
+    fn shared_shapes_vs_private() {
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, m: u64) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0 % m
+            }
+        }
+        const LENS: [u64; 10] = [1, 2, 63, 64, 65, 100, 1000, 4096, 48000, 1 << 31];
+        const GAINS: [f32; 6] = [0.0, 1.0, 0.25, MAX_GAIN, -1.0, 1e-5];
+        let mut r = Rng(0x9E37_79B9_7F4A_7C15);
+        for frames in [1usize, 7, 64, 512] {
+            let mut shared = Shapes::new(frames);
+            let mut private = Shapes::new(frames);
+            let (mut a, mut b) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+            for round in 0..40 {
+                shared.forget();
+                let lens = if round % 2 == 0 { 4 } else { 10 };
+                let mut ps: Vec<Param> = (0..12)
+                    .map(|_| Param::new(GAINS[r.below(6) as usize]))
+                    .collect();
+                let mut qs = ps.clone();
+                for _ in 0..600 {
+                    let i = r.below(12) as usize;
+                    private.forget();
+                    match r.below(10) {
+                        0 => {
+                            let to = GAINS[r.below(6) as usize];
+                            let len = LENS[r.below(lens) as usize];
+                            let curve = ALL[r.below(5) as usize];
+                            ps[i].ramp_to_in(to, len, curve, &mut shared);
+                            qs[i].ramp_to_in(to, len, curve, &mut private);
+                        }
+                        1 => {
+                            let n = r.below(200) as usize;
+                            ps[i].advance(n);
+                            qs[i].advance(n);
+                        }
+                        2 => {
+                            let got = ps[i].current_in(&mut shared);
+                            assert_eq!(got.to_bits(), qs[i].current_in(&mut private).to_bits());
+                            assert_eq!(got.to_bits(), qs[i].current().to_bits());
+                        }
+                        _ => {
+                            let n = 1 + r.below(frames as u64) as usize;
+                            ps[i].fill(&mut a[..n], &mut shared);
+                            qs[i].fill(&mut b[..n], &mut private);
+                            for k in 0..n {
+                                assert_eq!(a[k].to_bits(), b[k].to_bits(), "{frames} {round} {k}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Hour-long gain ramps at 192 kHz, sampled across their length, on every curve and on the
+    /// hard ends: within the bound throughout and exactly on target at the end.
+    #[test]
+    fn hour_long_gain_ramps_stay_within_the_bound() {
+        const LEN: u64 = 3600 * 192_000;
+        const WINDOW: usize = 1 << 11;
+        let ends = [
+            (MAX_GAIN, 0.0f32),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (MAX_GAIN, -MAX_GAIN),
+            (0.001, 1.0),
+            (MAX_GAIN, 1e-5),
+            (1e-5, 1e-6),
+        ];
+        let starts = [0, LEN / 7, LEN / 2, LEN * 9 / 10, LEN - WINDOW as u64];
+        let mut buf = vec![0.0f32; WINDOW];
+        let mut shapes = Shapes::new(512);
+        for c in ALL {
+            for (from, to) in ends {
+                let mut p = Param::new(from);
+                p.ramp_to(to, LEN, c);
+                for start in starts {
+                    let mut q = p;
+                    q.advance(start as usize);
+                    for stretch in buf.chunks_mut(512) {
+                        q.fill(stretch, &mut shapes);
+                    }
+                    for (k, v) in buf.iter().enumerate() {
+                        within_bound(from, to, LEN, c, start + k as u64, *v);
+                    }
+                    if start == LEN - WINDOW as u64 {
+                        assert_eq!(q.current().to_bits(), to.to_bits(), "{c:?}");
+                        assert!(q.steady().is_some(), "{c:?} finishes");
+                    }
+                }
             }
         }
     }
