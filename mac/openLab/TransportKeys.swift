@@ -77,7 +77,7 @@ enum KeyBindError: Error, Equatable {
     case menuKey
     /// The key has no show-file name (Delete, media keys, ...).
     case unsupported
-    /// N and Q edit the highlighted cue's number and name (QLab refuses a key that has a function).
+    /// N, Q and T edit the highlighted cue's number, name and target (QLab refuses a key that has a function).
     case editKey
 }
 

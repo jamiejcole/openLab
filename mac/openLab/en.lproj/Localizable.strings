@@ -181,6 +181,7 @@
 "cuelist.durationEditor.label" = "Edit duration";
 "cuelist.numberEditor.label" = "Edit number";
 "cuelist.nameEditor.label" = "Edit name";
+"cuelist.targetEditor.label" = "Edit target";
 "cue.name.afterTarget" = "%1$@ %2$@";
 "cue.name.fadeAndStop" = "%1$@ and stop %2$@";
 "cuelist.edit.cueGone" = "The cue you were editing no longer exists.";
@@ -238,7 +239,7 @@
 "inspector.hotkey.transport" = "That key is already a transport key in this workspace.";
 "inspector.hotkey.otherCue" = "Another cue already has that hotkey.";
 "inspector.hotkey.menu" = "That key belongs to a menu command.";
-"inspector.hotkey.editKey" = "That key edits the highlighted cue's number or name (N and Q).";
+"inspector.hotkey.editKey" = "That key edits the highlighted cue's number, name or target (N, Q and T).";
 "inspector.hotkey.unsupported" = "That key cannot be used as a hotkey.";
 "hotkeys.warn.unusable" = "%1$@ key: %2$@, so no key is bound.";
 "hotkeys.warn.menuLost" = "%1$@ key %2$@ is also a menu command's key: the key runs %1$@ here, and that menu command has no key in this workspace.";
@@ -248,7 +249,7 @@
 "hotkeys.reason.duplicate" = "it is the same key as %@";
 "hotkeys.reason.cueHotkey" = "it is the same key as a cue hotkey";
 "hotkeys.reason.menuKey" = "it is the same key as a menu command";
-"hotkeys.reason.editKey" = "the key edits a cue's number or name";
+"hotkeys.reason.editKey" = "the key edits a cue's number, name or target";
 "hotkeys.reason.unsupported" = "the key is not supported";
 "inspector.osc" = "OSC address";
 "inspector.osc.placeholder" = "/my/trigger";

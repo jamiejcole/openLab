@@ -1050,7 +1050,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         Task { @MainActor [weak self] in self?.beginCellEdit(id, column: name) }
     }
 
-    /// The edit-number and edit-name keys (N, Q): the selected cue's cell opens for typing. Only
+    /// The edit-number, edit-name and edit-target keys (N, Q, T): the selected cue's cell opens for typing,
+    /// or for T on a file cue the file chooser opens (after the key is consumed, not inside it). Only
     /// with the list itself focused and exactly one cue highlighted; false (the key is not taken)
     /// otherwise, in Show Mode, and while text is being typed (the key is a letter then).
     @discardableResult
@@ -1060,14 +1061,18 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard selected.count == 1, let id = selected.first else { return false }
         // A file cue's target is chosen in the file chooser, a cue target's typed as a cue number.
         if column == "target", store.model?.cue(id)?.kindType == "audio" {
-            guard !isEditLocked, let onChooseFile else { return false }
-            onChooseFile(id)
+            guard !isEditLocked, onChooseFile != nil else { return false }
+            // The chooser is modal: opening it inside the key monitor would nest its loop there.
+            Task { @MainActor [weak self] in
+                guard let self, !self.isEditLocked else { return }
+                self.onChooseFile?(id)
+            }
             return true
         }
         return beginCellEdit(id, column: column)
     }
 
-    /// Opens `column` ("number", "name" or "duration") of `id` for typing, its text selected. False
+    /// Opens `column` ("number", "name", "target" or "duration") of `id` for typing, its text selected. False
     /// (nothing happens) in Show Mode or for a Duration that is not set by hand. A cell already open
     /// elsewhere is committed first.
     @discardableResult
@@ -1086,6 +1091,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         switch column {
         case "number": cellEditor.setAX(AX.cueNumberEditor, label: loc("cuelist.numberEditor.label"))
         case "name": cellEditor.setAX(AX.cueNameEditor, label: loc("cuelist.nameEditor.label"))
+        case "target": cellEditor.setAX(AX.cueTargetEditor, label: loc("cuelist.targetEditor.label"))
         default: cellEditor.setAX(AX.cueDurationEditor, label: loc("cuelist.durationEditor.label"))
         }
         outlineView.scrollRowToVisible(outlineView.row(forItem: node))
@@ -1340,8 +1346,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     private var cueLookup: (ModelID) -> Cue? { { [weak self] in self?.nodes[$0]?.cue ?? self?.store.model?.cue($0) } }
 
-    /// An Audio cue's Target cell is one button that chooses its file, the same whether it holds one or not, and
-    /// is empty in a locked (Show Mode) list, as QLab's Target column is.
+    /// An Audio cue's Target cell is one button that chooses its file: a file glyph, or a trash can while the
+    /// file is missing. It is empty in a locked (Show Mode) list, as QLab's Target column is.
     private func fillFileTargetButton(_ cell: CueCell, _ cue: Cue) {
         guard !isEditLocked else { return }
         let id = cue.id

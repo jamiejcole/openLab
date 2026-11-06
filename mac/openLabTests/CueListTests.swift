@@ -1905,6 +1905,8 @@ final class PlayheadFlowTests: XCTestCase {
         try await focusList(on: fade)
         try press("t", code: 17)
         try assertEditing(fade, "target", text: "1")
+        XCTAssertEqual(wc.cueList.cellEditor.accessibilityLabel(), loc("cuelist.targetEditor.label"))
+        XCTAssertEqual(wc.cueList.cellEditor.accessibilityIdentifier(), AX.cueTargetEditor)
         XCTAssertEqual(goes(), 0)
         // T typed in the open cell is text, and the cell is not reopened.
         try press("t", code: 17)
@@ -1946,12 +1948,13 @@ final class PlayheadFlowTests: XCTestCase {
         }
         let before = store.model?.cue(cues[1])?.raw["kind"]?["media"]?.stringValue
         try press("t", code: 17)
-        XCTAssertEqual(asked, 1)
+        XCTAssertEqual(asked, 0, "the chooser opens after the key is consumed, not inside it")
+        await assertEventually { asked == 1 }
         XCTAssertNil(wc.cueList.editingCell, "a file target has no number to type")
         XCTAssertEqual(store.model?.cue(cues[1])?.raw["kind"]?["media"]?.stringValue, before, "cancelled")
         picked = wav
         try press("t", code: 17)
-        XCTAssertEqual(asked, 2)
+        await assertEventually { asked == 2 }
         await assertEventually {
             self.store.model?.cue(self.cues[1])?.raw["kind"]?["media"]?.stringValue == wav.standardizedFileURL.path
         }

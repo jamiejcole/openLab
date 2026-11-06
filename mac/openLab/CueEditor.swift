@@ -292,7 +292,7 @@ final class CueEditor {
         }
     }
 
-    /// Sends what was typed in a cue list cell (`column`: number, name or duration) for the cue the
+    /// Sends what was typed in a cue list cell (`column`: number, name, target or duration) for the cue the
     /// edit was begun for.
     @discardableResult
     func setCell(_ column: String, of id: ModelID, text: String) async -> Bool {
@@ -304,7 +304,7 @@ final class CueEditor {
         }
     }
 
-    /// Sets a cue's number or name (`field`) from the cue list's in-place editor, through the
+    /// Sets a cue's number, name or target (`field`) from the cue list's in-place editor, through the
     /// inspector's own check: a number another cue has is refused with the inspector's message,
     /// an emptied name goes back to the cue's default. The cue is the one the edit was begun for.
     /// True when there was nothing to send or the engine took it.
