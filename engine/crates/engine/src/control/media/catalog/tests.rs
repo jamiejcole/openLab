@@ -28,9 +28,14 @@ fn fake(_: &Path) -> Result<Probed, MediaError> {
 }
 
 fn answer(rx: &Receiver<Inbox>) -> ProbeAnswer {
-    match rx.recv_timeout(Duration::from_secs(30)).unwrap() {
-        Inbox::Probe(_, a) => a,
-        other => panic!("{other:?}"),
+    wait_for(rx, "a probe answer")
+}
+
+fn wait_for(rx: &Receiver<Inbox>, what: &str) -> ProbeAnswer {
+    match rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(Inbox::Probe(_, a)) => a,
+        Ok(other) => panic!("{other:?}"),
+        Err(e) => panic!("no answer in 30 s ({e}) while waiting for {what}"),
     }
 }
 
@@ -70,7 +75,7 @@ fn a_reprobe_keeps_the_last_answer_until_the_new_one() {
 // ----- following edits from their footprints (M4.12a) and preload changes (M4.12b) -----
 
 use openlab_core::{Command, CueProperty, GroupMode, History, Position, load_show};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A mono 32-bit float WAV of 100 frames (400 bytes preloaded).
 fn write_wav(dir: &Path, name: &str) -> String {
@@ -115,15 +120,43 @@ fn catalog(budget: u64) -> (MediaCatalog, Receiver<Inbox>) {
     (cat, rx)
 }
 
-/// Hands the catalog the answers of every job it has sent, in a fixed order (the two
-/// workers answer in any order, and the budget goes to whoever is answered first), until
-/// nothing is in flight: answers can start preloads.
-fn settle(cat: &mut MediaCatalog, rx: &Receiver<Inbox>, received: &mut u64) {
-    while *received < cat.jobs {
+/// The tickets of the answers the catalog still owes itself: each running probe's and each
+/// preload job's not answered yet (what `pending` and `preloads_pending` count). A job a
+/// worker dropped for its newer copy is not among them: only the newest ticket of a key is.
+fn owed_tickets(cat: &MediaCatalog) -> BTreeSet<u64> {
+    let mut owed = BTreeSet::new();
+    for e in cat.entries.values() {
+        if e.asking && !e.timed_out {
+            owed.insert(e.ticket);
+        }
+        if e.preload_ticket != 0 && e.preloaded.is_none() && !e.preload_failed {
+            owed.insert(e.preload_ticket);
+        }
+    }
+    owed
+}
+
+/// Hands the catalog the answers it is owed, in a fixed order (the two workers answer in any
+/// order, and the budget goes to whoever is answered first), until nothing is in flight:
+/// answers can start preloads. A round is gathered until every owed ticket is in hand, so the
+/// order does not depend on which answers came early; a stale answer met on the way joins the
+/// round and is ignored.
+fn settle(cat: &mut MediaCatalog, rx: &Receiver<Inbox>) {
+    loop {
+        let mut owed = owed_tickets(cat);
+        if owed.is_empty() {
+            return;
+        }
+        let what = format!("tickets {owed:?}");
         let mut round = Vec::new();
-        while *received < cat.jobs {
-            round.push(answer(rx));
-            *received += 1;
+        while !owed.is_empty() {
+            let a = wait_for(rx, &what);
+            owed.remove(match &a {
+                ProbeAnswer::Probed { ticket, .. } | ProbeAnswer::Preloaded { ticket, .. } => {
+                    ticket
+                }
+            });
+            round.push(a);
         }
         round.sort_by_key(|a| match a {
             ProbeAnswer::Probed { key, .. } => (key.clone(), 0),
@@ -133,6 +166,23 @@ fn settle(cat: &mut MediaCatalog, rx: &Receiver<Inbox>, received: &mut u64) {
             cat.answer(a);
         }
     }
+}
+
+#[test]
+fn settle_does_not_wait_for_a_job_a_worker_dropped_for_its_newer_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = write_wav(dir.path(), "a.wav");
+    let (mut cat, rx) = catalog(0);
+    // The newer ticket was taken first, as two workers may: the older job is dropped.
+    let older = cat.next_ticket + 1;
+    crate::lock(&cat.pool.gate)
+        .claimed
+        .insert((cat.pool.doc, true, key.clone()), older);
+    cat.request(key.clone());
+    cat.request(key.clone());
+    settle(&mut cat, &rx);
+    assert_eq!(cat.pending(), 0);
+    assert!(matches!(cat.get(&key), Some(Probe::Ready(_))));
 }
 
 /// Applies the catalog's key changes to `watched` as the watch would, and checks the watch
@@ -179,16 +229,15 @@ fn the_watch_follows_the_files_the_catalog_knows() {
     set_media(&mut c2, &b, false);
     ws.cue_lists[0].cues = vec![c1, c2];
     let (mut cat, rx) = catalog(0);
-    let mut got = 0;
     cat.sync(&ws);
     let mut watched = BTreeMap::new();
     follow_keys(&mut cat, &mut watched);
     assert_eq!(watched.len(), 2);
-    settle(&mut cat, &rx, &mut got);
+    settle(&mut cat, &rx);
     // A re-probe is not a new watch.
     cat.reprobe(&a);
     assert!(cat.take_key_changes().is_empty());
-    settle(&mut cat, &rx, &mut got);
+    settle(&mut cat, &rx);
     // A reset starts over: everything watched again under new ids.
     let old = watched.clone();
     cat.reset(None, &ws);
@@ -204,7 +253,7 @@ fn the_watch_follows_the_files_the_catalog_knows() {
     }
     assert_eq!(watched.len(), 2);
     assert!(watched.iter().all(|(k, id)| old.get(k) != Some(id)));
-    settle(&mut cat, &rx, &mut got);
+    settle(&mut cat, &rx);
     // A relative reference in a show never saved has no path: not watched.
     let mut c3 = template.clone();
     c3.id = CueId(uuid::Uuid::from_u128(903));
@@ -249,8 +298,7 @@ fn an_index_resolved_elsewhere_is_resolved_against_the_catalogs_folder() {
             .collect();
         let want = media_path(&MediaRef::new("a.wav"), Some(dir.path())).unwrap();
         assert_eq!(watched, vec![want], "resolved against {against:?}");
-        let mut got = 0;
-        settle(&mut cat, &rx, &mut got);
+        settle(&mut cat, &rx);
         assert!(
             matches!(cat.get("a.wav"), Some(Probe::Ready(_))),
             "resolved against {against:?}"
@@ -332,13 +380,12 @@ fn a_file_marked_missing_fails_at_once_and_ignores_its_probe_in_flight() {
     set_media(&mut c1, &a, true);
     ws.cue_lists[0].cues = vec![c1];
     let (mut cat, rx) = catalog(10_000);
-    let mut got = 0;
     cat.sync(&ws);
     let id = match cat.take_key_changes().as_slice() {
         [KeyChange::Watch { id, .. }] => *id,
         other => panic!("{other:?}"),
     };
-    settle(&mut cat, &rx, &mut got);
+    settle(&mut cat, &rx);
     assert!(cat.is_preloaded(&a));
     assert_eq!(cat.preload_reserved(), 400);
     // An event of another watch of the key changes nothing.
@@ -357,7 +404,6 @@ fn a_file_marked_missing_fails_at_once_and_ignores_its_probe_in_flight() {
     assert_eq!(cat.pending(), 0);
     assert!(cat.take_plan_changes().keys.contains(&a));
     let late = answer(&rx);
-    got += 1;
     assert_eq!(
         cat.answer(late),
         None,
@@ -366,7 +412,7 @@ fn a_file_marked_missing_fails_at_once_and_ignores_its_probe_in_flight() {
     assert!(matches!(cat.get(&a), Some(Probe::Failed)));
     // Back: probed afresh, and preloaded again.
     assert!(cat.recheck(&a, id));
-    settle(&mut cat, &rx, &mut got);
+    settle(&mut cat, &rx);
     assert!(cat.ready(&a).is_some());
     assert!(cat.is_preloaded(&a));
     assert_eq!(cat.preload_reserved(), 400);
@@ -583,7 +629,6 @@ fn following_footprints_equals_a_full_sync_after_any_edits() {
         // Room for two of the five files (400 bytes each): the rest are over budget.
         let (mut inc, rx_inc) = catalog(900);
         let (mut full, rx_full) = catalog(900);
-        let (mut got_inc, mut got_full) = (0, 0);
         let (mut ws, mut history, mut next) = (base.clone(), History::new(), 10_000u128);
         inc.sync(&ws);
         full.sync(&ws);
@@ -613,8 +658,8 @@ fn following_footprints_equals_a_full_sync_after_any_edits() {
             follow_keys(&mut inc, &mut watched);
             assert!(inc.index.matches(&ws), "seed {seed} step {step}");
             assert_eq!(view(&inc), view(&full), "seed {seed} step {step}");
-            settle(&mut inc, &rx_inc, &mut got_inc);
-            settle(&mut full, &rx_full, &mut got_full);
+            settle(&mut inc, &rx_inc);
+            settle(&mut full, &rx_full);
             let after = view(&inc);
             assert_eq!(after, view(&full), "seed {seed} step {step} after answers");
             // What the walk is meant to reach.
@@ -673,11 +718,10 @@ fn replaced_group(same_child_id: bool) {
     ws.cue_lists[0].cues = vec![group(10_001, old_child)];
     let (mut inc, rx_inc) = catalog(10_000);
     let (mut full, rx_full) = catalog(10_000);
-    let (mut got_inc, mut got_full) = (0, 0);
     inc.sync(&ws);
     full.sync(&ws);
-    settle(&mut inc, &rx_inc, &mut got_inc);
-    settle(&mut full, &rx_full, &mut got_full);
+    settle(&mut inc, &rx_inc);
+    settle(&mut full, &rx_full);
     assert_eq!(inc.preload_reserved(), 400);
     let command = Command::Transaction {
         commands: vec![
@@ -701,8 +745,8 @@ fn replaced_group(same_child_id: bool) {
     full.sync(&ws);
     assert!(inc.index.matches(&ws));
     assert_eq!(view(&inc), view(&full));
-    settle(&mut inc, &rx_inc, &mut got_inc);
-    settle(&mut full, &rx_full, &mut got_full);
+    settle(&mut inc, &rx_inc);
+    settle(&mut full, &rx_full);
     assert_eq!(view(&inc), view(&full));
     assert!(
         inc.get(&new_file).is_some(),
@@ -743,11 +787,10 @@ fn a_child_moved_out_of_a_re_added_group_in_the_same_edit_follows_its_new_file()
     ws.cue_lists[0].cues = vec![group(10_001, group(10_002, old_child))];
     let (mut inc, rx_inc) = catalog(10_000);
     let (mut full, rx_full) = catalog(10_000);
-    let (mut got_inc, mut got_full) = (0, 0);
     inc.sync(&ws);
     full.sync(&ws);
-    settle(&mut inc, &rx_inc, &mut got_inc);
-    settle(&mut full, &rx_full, &mut got_full);
+    settle(&mut inc, &rx_inc);
+    settle(&mut full, &rx_full);
     assert_eq!(inc.preload_reserved(), 400);
     let top = Position {
         list: ws.cue_lists[0].id,
@@ -776,8 +819,8 @@ fn a_child_moved_out_of_a_re_added_group_in_the_same_edit_follows_its_new_file()
     full.sync(&ws);
     assert!(inc.index.matches(&ws));
     assert_eq!(view(&inc), view(&full));
-    settle(&mut inc, &rx_inc, &mut got_inc);
-    settle(&mut full, &rx_full, &mut got_full);
+    settle(&mut inc, &rx_inc);
+    settle(&mut full, &rx_full);
     assert_eq!(view(&inc), view(&full));
     assert!(inc.get(&new_file).is_some(), "the new file is probed");
     assert!(inc.get(&old_file).is_none(), "the old file is forgotten");
@@ -796,9 +839,8 @@ fn switching_preload_on_for_a_probed_file_preloads_it_and_off_releases_it() {
     let id = cue.id;
     ws.cue_lists[0].cues = vec![cue, other];
     let (mut cat, rx) = catalog(10_000);
-    let mut got = 0;
     cat.sync(&ws);
-    settle(&mut cat, &rx, &mut got);
+    settle(&mut cat, &rx);
     assert_eq!(cat.preload_reserved(), 0, "nothing asks for a preload");
     assert!(cat.get(&file).is_some_and(|p| matches!(p, Probe::Ready(_))));
 
@@ -818,7 +860,7 @@ fn switching_preload_on_for_a_probed_file_preloads_it_and_off_releases_it() {
     let fp = set(&mut ws, id, true);
     cat.sync_cues(&ws, &fp);
     assert_eq!(cat.preload_reserved(), 400);
-    settle(&mut cat, &rx, &mut got);
+    settle(&mut cat, &rx);
     assert!(matches!(cat.media(&file), Some((_, Media::Preloaded(_)))));
     // A second cue asks too; the first stops asking: the file stays preloaded.
     let other_id = CueId(uuid::Uuid::from_u128(10_002));
@@ -837,7 +879,7 @@ fn switching_preload_on_for_a_probed_file_preloads_it_and_off_releases_it() {
     let fp = set(&mut ws, id, true);
     cat.sync_cues(&ws, &fp);
     assert_eq!(cat.preload_reserved(), 400);
-    settle(&mut cat, &rx, &mut got);
+    settle(&mut cat, &rx);
     assert!(matches!(cat.media(&file), Some((_, Media::Preloaded(_)))));
 }
 
@@ -851,12 +893,10 @@ fn a_preload_answer_that_arrives_after_its_release_is_ignored() {
     let id = cue.id;
     ws.cue_lists[0].cues = vec![cue];
     let (mut cat, rx) = catalog(10_000);
-    let mut got = 0;
     cat.sync(&ws);
     // The probe answers, which starts the preload job; before its answer is read, the
     // cue stops asking.
     let first = answer(&rx);
-    got += 1;
     cat.answer(first);
     assert_eq!(cat.preload_reserved(), 400);
     let mut c = ws.find_cue(id).unwrap().clone();
@@ -869,7 +909,10 @@ fn a_preload_answer_that_arrives_after_its_release_is_ignored() {
     ws.apply(command).unwrap();
     cat.sync_cues(&ws, &footprint);
     assert_eq!(cat.preload_reserved(), 0);
-    settle(&mut cat, &rx, &mut got);
+    assert_eq!(cat.preloads_pending(), 0);
+    let late = answer(&rx);
+    assert!(matches!(late, ProbeAnswer::Preloaded { .. }));
+    assert_eq!(cat.answer(late), None);
     assert!(
         matches!(cat.media(&file), Some((_, Media::Path(_)))),
         "the late answer did not bring the samples back"
@@ -935,7 +978,6 @@ fn plan_checks_following_changes_equal_a_full_walk() {
     for seed in 1..=sweep_seeds(30) {
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let (mut cat, rx) = catalog(900);
-        let mut got = 0;
         let (mut ws, mut history, mut next) = (base.clone(), History::new(), 20_000u128);
         cat.sync(&ws);
         let mut checks = PlanChecks::default();
@@ -976,7 +1018,7 @@ fn plan_checks_following_changes_equal_a_full_walk() {
                 cat.sync_cues(&ws, footprint);
             }
             if rng.below(2) == 0 {
-                settle(&mut cat, &rx, &mut got);
+                settle(&mut cat, &rx);
             }
             let got_now = checks.check(&ws, &mut cat, PLAN_RATE).clone();
             let mut reference = PlanChecks::default();
@@ -1035,9 +1077,8 @@ fn plan_checks_look_at_the_edit_not_the_show() {
     let first = cues[0].id;
     ws.cue_lists[0].cues = cues;
     let (mut cat, rx) = catalog(0);
-    let mut got = 0;
     cat.sync(&ws);
-    settle(&mut cat, &rx, &mut got);
+    settle(&mut cat, &rx);
     let mut checks = PlanChecks::default();
     checks.check(&ws, &mut cat, PLAN_RATE);
     let examined = checks.examined();
@@ -1063,7 +1104,7 @@ fn plan_checks_look_at_the_edit_not_the_show() {
 
     // One file probed again: its 100 cues.
     cat.reprobe(&files[1]);
-    settle(&mut cat, &rx, &mut got);
+    settle(&mut cat, &rx);
     let examined = checks.examined();
     checks.check(&ws, &mut cat, PLAN_RATE);
     assert_eq!(
