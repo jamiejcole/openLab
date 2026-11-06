@@ -116,10 +116,14 @@ final class AppController {
     /// Ends, at quit, an engine it started that was never reached (nil in tests of the windows).
     let supervisor: EngineSupervisor?
 
+    /// Where windows remember their layout (UI-02); nil: they do not (tests that do not look at it).
+    let layoutDefaults: UserDefaults?
+
     init(
         session: EngineSession, supervisor: EngineSupervisor? = nil, scheduler: Scheduler = SystemScheduler(),
-        timeout: Double = 5
+        timeout: Double = 5, layoutDefaults: UserDefaults? = nil
     ) {
+        self.layoutDefaults = layoutDefaults
         self.session = session
         self.supervisor = supervisor
         self.scheduler = scheduler
