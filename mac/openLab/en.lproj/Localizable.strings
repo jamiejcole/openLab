@@ -187,6 +187,7 @@
 "cuelist.col.postWait" = "Post-Wait";
 
 "cue.target.missing" = "?";
+"cuelist.target.fileMissing" = "File not found. Choose…";
 "cue.playhead" = "Playhead";
 "cue.playhead.inside" = "Playhead is inside this group";
 "cue.flagged" = "Flagged";
@@ -580,7 +581,6 @@
 "inspector.network.messageHint" = "/address 1 2.5 \"text\" \\T";
 "inspector.network.send" = "Send";
 "inspector.network.unpatched" = "No patch";
-"cue.target.unpatched" = "No patch";
 "inspector.devamp.startNext" = "Start next cue";
 "inspector.devamp.stopTarget" = "Stop target when its slice ends";
 "inspector.devampMode" = "Leaves";

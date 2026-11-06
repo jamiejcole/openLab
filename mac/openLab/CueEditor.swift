@@ -299,6 +299,7 @@ final class CueEditor {
         switch CueListViewController.editableColumns[column] {
         case .number?: return await setCellText(.number, of: id, text: text)
         case .name?: return await setCellText(.name, of: id, text: text)
+        case .target?: return await setCellText(.target, of: id, text: text)
         default: return await setDuration(of: id, text: text)
         }
     }

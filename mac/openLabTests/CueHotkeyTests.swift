@@ -85,6 +85,7 @@ final class HotkeyRulesTests: XCTestCase {
         XCTAssertEqual(validate(KeyChord("s")), .duplicate(of: .panicSelected))
         XCTAssertEqual(validate(KeyChord("n")), .editKey, "N and Q edit the highlighted cue's number and name")
         XCTAssertEqual(validate(KeyChord("q")), .editKey)
+        XCTAssertEqual(validate(KeyChord("t")), .editKey, "and T edits the target")
         XCTAssertNil(validate(KeyChord("n", .shift)), "only the plain keys")
         XCTAssertEqual(HotkeyRules.messageKey(.editKey), "inspector.hotkey.editKey")
         XCTAssertEqual(validate(KeyChord("\u{7F}")), .unsupported)

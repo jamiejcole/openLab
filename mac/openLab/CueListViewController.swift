@@ -140,9 +140,9 @@ final class CueCell: NSTableCellView {
     @objc private func chooseClicked() { onChoose?() }
 
     /// Shows the Target cell's button.
-    func showChoose(onChoose: @escaping () -> Void) {
-        let label = loc("inspector.target.choose")
-        let image = Icon.targetFile.image(label, compact: true)
+    func showChoose(missing: Bool, onChoose: @escaping () -> Void) {
+        let label = loc(missing ? "cuelist.target.fileMissing" : "inspector.target.choose")
+        let image = (missing ? Icon.targetFileMissing : Icon.targetFile).image(label, compact: true)
         // Plain, not a template, for the same reason as `setImage`.
         chooseButton.image = TimeHeaderCell.tinted(
             image, .secondaryLabelColor, size: image.size, description: label)
@@ -1021,7 +1021,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     // manual pp. 92-95; the edit-number and edit-name keys open the same fields)
 
     /// The columns that edit in place, and the inspector field each one is.
-    static let editableColumns: [String: InspectorField] = ["number": .number, "name": .name, "duration": .duration]
+    static let editableColumns: [String: InspectorField] = ["number": .number, "name": .name, "duration": .duration, "target": .target]
 
     /// The field laid over the cell being edited. It lives in the outline, not in the cell, so the
     /// per-tick refresh of the Duration column (progress) and model echoes cannot replace it mid-typing.
@@ -1056,6 +1056,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard !isTextEditing, view.window?.firstResponder === outlineView else { return false }
         let selected = selectedIDs()
         guard selected.count == 1, let id = selected.first else { return false }
+        // A file cue's target is chosen in the file chooser, a cue target's typed as a cue number.
+        if column == "target", store.model?.cue(id)?.kindType == "audio" {
+            guard !isEditLocked, let onChooseFile else { return false }
+            onChooseFile(id)
+            return true
+        }
         return beginCellEdit(id, column: column)
     }
 
@@ -1067,6 +1073,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard !isEditLocked, let field = Self.editableColumns[column], let node = nodes[id],
             outlineView.row(forItem: node) >= 0,
             field != .duration || InspectorEdit.durationKinds.contains(node.cue.kindType),
+            field != .target || InspectorEdit.targetKinds.contains(node.cue.kindType),
             let model = store.model
         else { return false }
         if let pending = takeCellEdit() { onEditCell?(pending.id, pending.column, pending.text) }
@@ -1157,6 +1164,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             return
         }
         guard cell.column != "duration" || InspectorEdit.durationKinds.contains(node.cue.kindType),
+            cell.column != "target" || InspectorEdit.targetKinds.contains(node.cue.kindType),
             let column = outlineView.tableColumns.firstIndex(where: { $0.identifier.rawValue == cell.column })
         else { return cancelCellEdit() }
         let row = outlineView.row(forItem: node)
@@ -1301,8 +1309,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 let shown = targetText(cue)
                 text(shown ?? loc("cue.target.missing"))
                 if shown == nil { cell.label.textColor = .systemYellow }
-            } else if cue.kindType == "network" {
-                text(InspectorViewController.networkTargetText(cue, model: store.model))
             }
         case "preWait", "postWait":
             // A wait in progress counts down what is left, as QLab's columns do.
@@ -1337,7 +1343,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private func fillFileTargetButton(_ cell: CueCell, _ cue: Cue) {
         guard !isEditLocked else { return }
         let id = cue.id
-        cell.showChoose { [weak self] in
+        // A file that is gone shows a trash can until it is back (the engine re-checks, so it clears itself).
+        let missing = (store.problems[id] ?? []).contains { $0.type == "media_missing" }
+        cell.showChoose(missing: missing) { [weak self] in
             guard let self, !self.isEditLocked else { return }
             self.onChooseFile?(id)
         }
