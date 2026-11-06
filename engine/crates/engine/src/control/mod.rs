@@ -62,7 +62,7 @@ use std::time::{Duration, SystemTime};
 
 use crossbeam_channel::Sender;
 use openlab_audio::{
-    COMMAND_CAPACITY, CommandKind, DiskStreamer, Event, Fade, GainTarget, MediaError,
+    COMMAND_CAPACITY, CommandKind, DiskStreamer, Event, Fade, GainTarget, MAX_RAMP_SET, MediaError,
     MixerController, StreamerConfig, VoiceId,
 };
 use openlab_core::protocol::{
@@ -880,7 +880,9 @@ fn stops_apart(commands: Vec<(SampleTime, CommandKind)>) -> Vec<Vec<(SampleTime,
 
 /// Each run of ramps of one voice with the same date and fade (a matrix edit, a Fade cue's start)
 /// becomes one `RampSet`, whatever made them: it fits the queue whole however large, so the mixer
-/// never renders part of it and nothing sent after it waits behind it.
+/// never renders part of it and nothing sent after it waits behind it. A longer run than any edit
+/// makes is split at `MAX_RAMP_SET`, the parts applying in order on the same date, so what one
+/// command costs the audio thread is bounded.
 fn ramps_together(commands: Vec<(SampleTime, CommandKind)>) -> Vec<(SampleTime, CommandKind)> {
     let mut out = Vec::with_capacity(commands.len());
     let mut run = None;
@@ -893,7 +895,7 @@ fn ramps_together(commands: Vec<(SampleTime, CommandKind)>) -> Vec<(SampleTime, 
             fade,
         } = kind
         {
-            if run != Some((at, voice, fade)) {
+            if run != Some((at, voice, fade)) || gains.len() >= MAX_RAMP_SET {
                 end_ramp_run(run, &mut gains, &mut out);
                 run = Some((at, voice, fade));
             }
@@ -1275,6 +1277,35 @@ mod tests {
                 .all(|(_, k)| !matches!(k, CommandKind::RampSet { .. }))
         );
         assert!(matches!(got[4].1, CommandKind::SetMaster { .. }));
+    }
+
+    /// A run longer than any edit (several Fades of one voice in one batch) is split, in order.
+    #[test]
+    fn a_run_of_ramps_is_split_at_the_largest_set() {
+        let ramp = |gain| CommandKind::Ramp {
+            voice: VoiceId(1),
+            target: GainTarget::Master,
+            gain,
+            fade: Fade::NONE,
+        };
+        let n = MAX_RAMP_SET * 2 + 3;
+        let got = ramps_together((0..n).map(|k| (7, ramp(k as f32))).collect());
+        let mut seen = 0.0;
+        let sizes: Vec<usize> = got
+            .iter()
+            .map(|(at, kind)| {
+                assert_eq!(*at, 7);
+                let CommandKind::RampSet { gains, .. } = kind else {
+                    panic!("{kind:?}");
+                };
+                for (_, g) in &**gains {
+                    assert_eq!(*g, seen);
+                    seen += 1.0;
+                }
+                gains.len()
+            })
+            .collect();
+        assert_eq!(sizes, [MAX_RAMP_SET, MAX_RAMP_SET, 3]);
     }
 
     pub(super) fn memo_show() -> crate::control::offline::OfflineShow {

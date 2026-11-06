@@ -138,8 +138,7 @@ fn a_64_channel_cue_plays_each_channel_on_its_own_output() {
     }
 }
 
-/// #377: an edit of every level of a playing 64x64 cue (a paste, or the undo of one: 1 + 64 +
-/// 4096 gains) reaches the mixer at once and is heard as one: every output starts the edit ramp on
+/// #377: an edit of every level of a playing 64x64 cue (1 + 64 + 4096 gains) reaches the mixer at once and is heard as one: every output starts the edit ramp on
 /// its date and ends it 10 ms later, and no output runs ahead of another.
 #[test]
 fn a_whole_matrix_edit_of_a_64x64_cue_moves_every_output_together() {
