@@ -113,6 +113,7 @@ extension AppController {
     /// prompt were answered without Cancel, and `goodbye { shutdown }` went out.
     func prepareToQuit() async -> Bool {
         guard !quitting else { return false }
+        savedAsPaths = [:]
         guard closing.isEmpty else {
             NSSound.beep()  // never a silent no-op: a close is still being answered
             return false
@@ -284,7 +285,10 @@ extension AppController {
         }
         switch reply {
         case .success?:
-            if let saveAsURL { noteRecent(saveAsURL) }
+            if let saveAsURL {
+                savedAsPaths[ObjectIdentifier(store)] = saveAsURL.path
+                noteRecent(saveAsURL)
+            }
             return true
         case .failure(let e)?:
             raise(String(format: loc("error.saveFailed"), describe(e)), from: store)
