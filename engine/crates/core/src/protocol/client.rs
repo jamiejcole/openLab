@@ -354,7 +354,7 @@ pub enum Request {
         on: bool,
     },
     /// Sets (`mapping`) or clears (`mapping` null or absent) where the connection's workspace's
-    /// `patch` plays on this machine (WS-07, M4.4g). Stored in the machine settings under this
+    /// `patch` plays on this machine (WS-07). Stored in the machine settings under this
     /// workspace's id, not in the show file. The device must be one `list_devices` names, there
     /// must be one channel per output of the patch, each below the device's channel count.
     /// Answers `ok` with no data, or `not_found` (patch or device unknown) / `bad_request`

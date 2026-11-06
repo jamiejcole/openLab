@@ -120,7 +120,7 @@ impl CueEngine {
     }
 
     /// A new call: the binary has applied the last call's `SetArmed` changes to the model
-    /// (M4.2 contract), so the model rules again, including any edit made since.
+    ///, so the model rules again, including any edit made since.
     pub(super) fn sync_armed(&mut self) {
         self.armed.clear();
     }

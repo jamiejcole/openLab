@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Documents (M4.4, M4.15; docs/control.md "Documents"): new, open, open-recovery, close, save,
+//! Documents (docs/control.md "Documents"): new, open, open-recovery, close, save,
 //! save-as and autosave.
 //!
 //! Nothing here touches the disk on the control thread. Saves and autosaves go to the
@@ -8,7 +8,7 @@
 //! tick); reading a show, the recovery check and the recovery scan run on one document worker
 //! thread, whose answer comes back through the inbox ([`DocAnswer`]) and is applied here.
 //!
-//! Several docs (M4.15e, M4.15f; ARCHITECTURE §3.1, §6): `new`, `open` and `open_recovery` add a
+//! Several docs (ARCHITECTURE §3.1, §6): `new`, `open` and `open_recovery` add a
 //! doc ([`Control::open_doc`]) beside the ones open, which keep playing. The document
 //! worker reads the file (or takes the workspace given) and builds everything the doc needs off
 //! the control thread ([`DocParts`]: the workspace, its cue engine with its static problems
@@ -1889,7 +1889,7 @@ impl Control {
     }
 
     /// The show files docs other than `except` hold or are writing (saves in flight), and the
-    /// one an `open` in flight reads: no other doc may open or save over them (M4.15f).
+    /// one an `open` in flight reads: no other doc may open or save over them.
     fn claimed_paths(&self, except: Option<DocId>) -> Vec<PathBuf> {
         let mut paths: Vec<PathBuf> = self
             .docs

@@ -33,7 +33,7 @@ impl CueEngine {
         }
         // A paused voice cannot end by itself; an end dated after the pause is the pause being
         // carried out (e.g. as a stop), not the action completing. An end dated on the pause
-        // sample is an end (M2.34): the mixer dates it on the first sample after the voice's
+        // sample is an end: the mixer dates it on the first sample after the voice's
         // last, so the voice had nothing left to play when the pause applied, and a known end
         // on that sample (`ActionLength`) is carried out before the pause, too.
         if run.paused_at.is_some_and(|paused| at > paused) {
@@ -49,7 +49,7 @@ impl CueEngine {
             return;
         };
         let at = at.max(start);
-        // Dated before or on the pause, arriving after it (M2.33): a paused show starts nothing,
+        // Dated before or on the pause, arriving after it: a paused show starts nothing,
         // so when this end would start a cue (its auto-follow, its Devamp cue's next cue, or the
         // next child of a playlist it was started in on its own), the end is held as a deadline
         // on the pause sample, which the resume moves to the resume sample, as for a failure
@@ -178,8 +178,8 @@ impl CueEngine {
             // cue's own): it was leaving anyway and the failure only ends that early. It ends as
             // its stop would have, but broken so the failure shows: its group hears a stop, and
             // nothing moves on from it (no continue, no playlist step, no halt), so a failure
-            // never starts a cue during a panic or after a stop (M2.31).
-            // A lost device (M4.2g, as QLab) ends the run the same way: the device loss stops
+            // never starts a cue during a panic or after a stop.
+            // A lost device (as QLab) ends the run the same way: the device loss stops
             // everything a moment later, so nothing may move on in between (its pre-wait and
             // post-wait are cancelled too, so nothing it scheduled starts after the device
             // returns). The binary's patch update can have marked every audio cue broken by

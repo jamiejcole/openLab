@@ -570,7 +570,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
-    // A Wait or Fade cue's duration and a Load cue's time, alone (M5.6b).
+    // A Wait or Fade cue's duration and a Load cue's time, alone.
     for (name, property) in [
         ("duration", CueProperty::Duration { value: 12.5 }),
         ("load_to_time", CueProperty::LoadToTime { value: 90.25 }),

@@ -419,12 +419,12 @@ pub enum RuntimeChange {
     },
     /// An audio cue's media lengths changed (a probe answered, the file went missing or was
     /// relinked, its trims or slices were edited, the cue went away): all fields absent = not
-    /// known now (M5.4d).
+    /// known now.
     MediaDuration(CueMediaDuration),
 }
 
 /// What an audio cue's file gives it to play, in seconds rounded down to the millisecond
-/// (M5.4d; the cue list's Duration column, CL-02). Derived from the media probe and the cue's
+/// (the cue list's Duration column, CL-02). Derived from the media probe and the cue's
 /// trims, never saved. Each field is absent when it is not known: the file is not probed yet,
 /// is missing or cannot be played (then all three), or its trims and slices cannot be played
 /// (`trimmed` and `duration`). QLab 5 counts a cue's duration as the time its action takes

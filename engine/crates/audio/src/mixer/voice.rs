@@ -1037,7 +1037,7 @@ impl Voice {
 mod tests {
     use super::*;
 
-    /// The per-frame envelope as it was before it was applied by stretches (M3.19): the
+    /// The per-frame envelope as it was before it was applied by stretches: the
     /// reference the mixer's must match bit for bit.
     fn envelope_per_frame(v: &mut Voice, gain: &mut [f32], pos0: u64, got: usize, rem: &Remaining) {
         let (fin, fout) = (v.fade_in, v.fade_out);

@@ -144,7 +144,7 @@ impl Patches {
         // Slots just handed out (every slot of a doc's first sync, or one freed by another
         // patch), which nothing plays through yet, take their gains at once instead of ramping
         // from what they held before: a voice started or moved onto one on this sample is heard
-        // on its own patch's outputs only (M4.15e review L1).
+        // on its own patch's outputs only.
         given.sort_unstable();
         commands.extend(
             given

@@ -1992,7 +1992,7 @@ fn a_session_of_edits_still_saves_and_loads_back_unchanged() {
     }
 }
 
-// ---- durations and load time (M5.6b; CUE-02, CT-14, CT-20) ----------------------------------
+// ---- durations and load time (CUE-02, CT-14, CT-20) ----------------------------------
 
 /// Wait 1 (2 s), Fade 2 of cue 4 (5 s), Load 3 of cue 4 (1.5 s), Audio 4, Memo 5, Group 6.
 fn timed_cues() -> Workspace {

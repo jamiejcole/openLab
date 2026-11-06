@@ -50,15 +50,15 @@ impl DocCx<'_> {
         self.feed(Input::Tick, now);
     }
 
-    /// Signals a workspace change to the clients (one `model_changed` for `footprint`'s cues,
-    /// M4.1a) and follows it on the audio side; the cue engine was told by the edit itself
+    /// Signals a workspace change to the clients (one `model_changed` for `footprint`'s cues)
+    /// and follows it on the audio side; the cue engine was told by the edit itself
     /// (`DocModel::edit`). Returns the inputs that must follow (patch resolutions).
     /// An Arm/Disarm change (`SetArmed`) goes through here too: it is saved with the show, so it
     /// makes the document dirty (as in QLab 5), but it is not an undo step.
     pub(super) fn model_changed(&mut self, footprint: &Footprint) -> Vec<Input> {
         self.doc.revision += 1;
         // The catalog's cue index follows the edit first; the changes are read through it, at
-        // the cost of the edit's cues (M4.12c). The walk is the fallback.
+        // the cost of the edit's cues. The walk is the fallback.
         self.doc.media.sync_cues(self.doc.model.ws(), footprint);
         let (upserts, deletes) =
             model_changes_indexed(self.doc.model.ws(), footprint, self.doc.media.index())

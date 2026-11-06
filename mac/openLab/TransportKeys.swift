@@ -166,7 +166,7 @@ struct TransportKeys: Equatable {
     func command(for chord: KeyChord) -> TransportCommand? { chords.first { $0.value == chord }?.key }
 
     /// Why `chord` cannot be bound to `command` next to `existing`; nil if it can. Pure, for the
-    /// loader above and the key-map editor (M5.11a). Up and Down are refused with any modifiers
+    /// loader above and the key-map editor. Up and Down are refused with any modifiers
     /// (QLab 5), as are Esc and the empty key.
     static func validate(
         _ chord: KeyChord, for command: TransportCommand, in existing: [TransportCommand: KeyChord],

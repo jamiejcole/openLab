@@ -160,7 +160,7 @@ impl CueEngine {
         }
         // Loaded to a time at or past its nominal span, a playlist or random group has nothing
         // left to play: its action ends at once and its post-wait counts from the load time
-        // (M4.11b). A span that is unknown (unprobed audio) or endless (a looping playlist)
+        //. A span that is unknown (unprobed audio) or endless (a looping playlist)
         // clamps nothing.
         let offset = match self.slots.get(&group) {
             Some(Slot::Active(run)) => run.action_offset,
@@ -440,7 +440,7 @@ impl CueEngine {
         }
         self.as_of(at, cx, |e, cx| {
             // "Previous" with no child before the current one (and no loop to wrap round) stops
-            // the playlist (QLab check S4, M2.28).
+            // the playlist (QLab check S4).
             if back && !e.playlist_rewind(group, &ids, &playable, loop_) {
                 return e.stop_tree(group, None, cx);
             }

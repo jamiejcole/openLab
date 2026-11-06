@@ -6,7 +6,7 @@ import os
 let engineLog = Logger(subsystem: "dev.openlab.openLab", category: "engine")
 
 /// `<app-support>/openLab/engine.json`: `{port, token, pid, stopping}`, written by the engine
-/// (M4.9; the other fields are ignored).
+/// (the other fields are ignored).
 struct EngineConnectionInfo: Equatable, Sendable, Decodable {
     var port: UInt16
     var token: String

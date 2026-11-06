@@ -4,7 +4,7 @@ import XCTest
 
 @testable import openLab
 
-/// Finder drops, copy / cut / paste and Delete Numbers (M5.10b) on the real engine: what the engine
+/// Finder drops, copy / cut / paste and Delete Numbers on the real engine: what the engine
 /// made of each, what is refused and that Show Mode blocks every path.
 @MainActor
 final class CueClipboardTests: XCTestCase {

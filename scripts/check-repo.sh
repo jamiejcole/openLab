@@ -509,6 +509,27 @@ ui_smoke() {
   [ "$LIST_N" -ge 10 ] || fail core-flows "scripts/core-flows.txt lists $LIST_N tests; the core-flows set is the everyday flows"
 }
 
+# 13. Milestone and task IDs (M5.4, M4.12c) stay out of code, comments and test names (CLAUDE.md, "Work and
+# git"); requirement IDs (AUD-07) are fine. They go stale, and the issue or PR holds the history.
+TASK_ID_RE='(^|[^A-Za-z0-9_.])M[0-9]+\.[0-9]+[a-z]?([^A-Za-z0-9_]|$)'
+task_ids_scan() { grep -nE "$TASK_ID_RE" "$@" 2>/dev/null || true; }
+task_ids() {
+  local hits d
+  d=$(mktemp -d)
+  printf '// fine: AUD-07, v1.2, Model3.5, an M4 Mac\nlet x = 1 // M5.4d\n' >"$d/a.swift"
+  printf '/// done in M4.12c\n' >"$d/b.rs"
+  printf '// (QLab check D6, M2.24)\n' >"$d/c.rs"
+  printf '// AUD-07 and v1.2 only, Apple M4\n' >"$d/d.rs"
+  [ "$(task_ids_scan "$d/a.swift" | wc -l | tr -d ' ')" = 1 ] || fail task-ids-cases "a task ID after code must be found, and requirement IDs, versions and chip names must not"
+  [ -n "$(task_ids_scan "$d/b.rs")" ] || fail task-ids-cases "a task ID with a letter suffix must be found"
+  [ -n "$(task_ids_scan "$d/c.rs")" ] || fail task-ids-cases "a task ID after a comma must be found"
+  [ -z "$(task_ids_scan "$d/d.rs")" ] || fail task-ids-cases "requirement IDs, versions and chip names must not be found"
+  rm -rf "$d"
+  hits=$(git ls-files -co --exclude-standard 'engine/*.rs' 'mac/*.swift' | sort -u | xargs grep -nE "$TASK_ID_RE" 2>/dev/null | head -n 20 || true)
+  [ -z "$hits" ] || fail task-ids "milestone/task IDs in code, comments or test names (describe the behaviour instead):
+$hits"
+}
+
 known_entries
 spdx
 strings_keys
@@ -526,6 +547,7 @@ wedged_classifier
 wedged_run
 test_list_cases
 ui_smoke
+task_ids
 
 if [ "$failed" = 0 ]; then
   echo "check-repo: ok"

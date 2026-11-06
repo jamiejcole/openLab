@@ -3,7 +3,7 @@
 //! Preview / audition (CUE-05, PB-09): the operator plays a cue to listen to it, outside the
 //! show. A preview has no cue state, no pre-wait, no post-wait, no continue and no effect on any
 //! playhead, on double-GO protection or on the groups around the cue; its start and stop carry
-//! their own variants so the binary can route them to the audition output (M4.2), and Pause All /
+//! their own variants so the binary can route them to the audition output, and Pause All /
 //! Resume All pause and resume it with the show's `PauseVoice` / `ResumeVoice` for its run.
 //! Rules: `docs/cue-engine.md`, "Preview".
 
@@ -34,12 +34,12 @@ pub(super) struct Preview {
     pub started: SampleTime,
     /// Where in the cue's action the voice is on `started` (0, or where a pause left it).
     pub offset: SampleTime,
-    /// Paused by Pause All on this sample (QLab check V4, M2.28).
+    /// Paused by Pause All on this sample (QLab check V4).
     pub paused_at: Option<SampleTime>,
 }
 
 /// The voice of a preview fading out in a Panic: no longer a preview (it is reported ended), but
-/// a second Panic during the fade still cuts it at once (QLab check V6, M2.28).
+/// a second Panic during the fade still cuts it at once (QLab check V6).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PanickedPreview {
     pub cue: CueId,
@@ -70,7 +70,7 @@ impl CueEngine {
     }
 
     /// Plays `cue` from its start, now. An audio cue plays itself; a group plays every armed
-    /// audio cue inside it at once (QLab check V1, M2.28). A disarmed cue is refused (check V2),
+    /// audio cue inside it at once (QLab check V1). A disarmed cue is refused (check V2),
     /// a cue with problems is refused as for any start, and one that is already being previewed
     /// is left alone.
     pub(super) fn preview(&mut self, cue: CueId, cx: &mut Ctx) {
@@ -127,7 +127,7 @@ impl CueEngine {
     ///
     /// A preview is named by its id from here on (`PreviewStart`, the host's media lookup,
     /// `sync_previews`), and an id names the first cue that has it. With duplicate ids (a load
-    /// error no command can make, M2.32) an audio cue whose id names another cue first (the
+    /// error no command can make) an audio cue whose id names another cue first (the
     /// group itself, a Start cue, another audio cue) is left out, so the engine never previews
     /// an id as audio that the workspace resolves to something else.
     fn previewable_children(&self, group: &Cue, ws: &Workspace) -> Vec<CueId> {
@@ -243,7 +243,7 @@ impl CueEngine {
         }
     }
 
-    /// Pause All: every playing preview pauses where it is (QLab check V4, M2.28).
+    /// Pause All: every playing preview pauses where it is (QLab check V4).
     pub(super) fn pause_previews(&mut self, cx: &mut Ctx) {
         let now = cx.now;
         for (&cue, preview) in &mut self.previews {
@@ -300,7 +300,7 @@ impl CueEngine {
         }
     }
 
-    /// Panic (QLab checks V4 and V6, M2.28): a playing preview fades out with the show, ending on
+    /// Panic (QLab checks V4 and V6): a playing preview fades out with the show, ending on
     /// `end`, and is over as of now; a paused one stops at once. With `end` `None` (a second
     /// Panic during the fade, or a panic time of 0) every preview stops at once, and so do the
     /// voices still fading out from the first Panic.
@@ -342,7 +342,7 @@ impl CueEngine {
 
     /// Feedback: the voice of a preview ended by itself. Returns whether `run` was a preview's.
     /// An end dated after a pause comes from carrying out the pause and is ignored, as for a show
-    /// cue; one dated on the pause sample is an end (M2.34, see `CueEngine::action_ended`).
+    /// cue; one dated on the pause sample is an end (see `CueEngine::action_ended`).
     pub(super) fn preview_ended(
         &mut self,
         cue: CueId,

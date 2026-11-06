@@ -158,9 +158,9 @@ impl Workspace {
 
     /// Every cue whose hotkey is `hotkey` (same key and modifiers), in workspace order (lists in
     /// order, cues depth-first). A press starts all of them: as in QLab 5, cues may share a
-    /// hotkey and that is not a problem (M2.24, QLab check K1). None when a workspace transport
+    /// hotkey and that is not a problem (QLab check K1). None when a workspace transport
     /// key is `hotkey`: the workspace action wins and no cue is started by that key (QLab check
-    /// K1b, M2.28; validation warns `HotkeyUsedByWorkspace`). Iterative, so nesting depth cannot
+    /// K1b; validation warns `HotkeyUsedByWorkspace`). Iterative, so nesting depth cannot
     /// overflow the stack.
     pub fn cues_with_hotkey(&self, hotkey: &Hotkey) -> Vec<CueId> {
         let mut out = Vec::new();

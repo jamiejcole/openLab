@@ -20,7 +20,7 @@ impl CueEngine {
     /// The action of Fade cue `cue` started on `at`: every playing audio cue it targets ramps
     /// from its current levels to the fade's, ending when the fade's action ends. A group
     /// target's audio cues move by the fade's levels instead (relative: each level's gain is
-    /// multiplied by the fade's, i.e. its dB are added), as QLab does (check F2, M2.28).
+    /// multiplied by the fade's, i.e. its dB are added), as QLab does (check F2).
     pub(super) fn fade_begin(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         let ws = cx.ws;
         let Some(CueKind::Fade {

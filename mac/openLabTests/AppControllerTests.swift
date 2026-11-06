@@ -781,7 +781,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.start(cue: running)).count, 1)
     }
 
-    /// M5.11g: Start, Stop and Reset Selected on N cues send one `batch` transport with every cue
+    /// Start, Stop and Reset Selected on N cues send one `batch` transport with every cue
     /// in selection order (the engine starts them on one sample, NFR-21), not N transports.
     func testSelectedCuesGoAsOneBatchInSelectionOrder() async throws {
         keyDoc = "1"
@@ -2578,7 +2578,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(rebound.footer.noticeLabel.stringValue, loc("crash.previousRun"))
     }
 
-    // MARK: Window order and engine restarts (M5.19a, M5.2)
+    // MARK: Window order and engine restarts
 
     func testWindowsAreInOpenOrderWithTenOrMoreWorkspaces() async throws {
         // The engine holds at most 8 docs and never reuses an id: open and close some first.

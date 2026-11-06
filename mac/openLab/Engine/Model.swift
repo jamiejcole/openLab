@@ -45,7 +45,7 @@ struct Cue: Hashable, Sendable, Decodable {
     var name: String { raw["name"]?.stringValue ?? "" }
     var kindType: String { raw["kind"]?["type"]?.stringValue ?? "" }
 
-    /// The name to show (core's `display_name`, M2.29c): the user's name if set, else an Audio cue's
+    /// The name to show (core's `display_name`): the user's name if set, else an Audio cue's
     /// file name with its extension (last `/` component, as stored), else empty. Editing writes `name`.
     var displayName: String {
         let typed = name
@@ -128,7 +128,7 @@ struct Cue: Hashable, Sendable, Decodable {
     }
 }
 
-/// An audio cue's media lengths in seconds (`media_duration`, M5.4d): each nil when not known (not
+/// An audio cue's media lengths in seconds (`media_duration`): each nil when not known (not
 /// probed, missing, unplayable; `trimmed` and `duration` also when its slices cannot play).
 /// `duration` counts the slices' play counts and is nil when one loops until devamped. Runtime data
 /// from the engine's probes, not part of the cue.

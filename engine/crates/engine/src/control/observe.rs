@@ -26,7 +26,7 @@ const DROP_NOTE_GAP_MS: i64 = 10_000;
 /// controller must not flush the GO history out of the 1000-entry ring).
 const TRIGGER_WINDOW_MS: i64 = 10_000;
 const TRIGGERS_LOGGED_PER_WINDOW: u32 = 5;
-/// Live `log_entry` pushes per window (M4.7c), on the same 10 s wall-clock window as the
+/// Live `log_entry` pushes per window, on the same 10 s wall-clock window as the
 /// trigger records: a burst (a GO that starts a hundred cues) goes out whole, a flood is cut
 /// to 20 a second on average. A record over the budget is not pushed (the client sees the gap
 /// in `seq` and reads `log_tail`); the newest one held back is pushed when the window ends.

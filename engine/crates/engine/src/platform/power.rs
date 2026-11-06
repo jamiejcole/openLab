@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Sleep prevention (SM-07, M4.9; ARCHITECTURE §8): while any open workspace is in Show Mode
+//! Sleep prevention (SM-07; ARCHITECTURE §8): while any open workspace is in Show Mode
 //! or any cue is running, the engine holds an assertion that keeps the system, the display and
 //! the screen saver from idling to sleep. The engine holds it, not the UI, so it stays while
 //! the UI restarts.

@@ -1266,7 +1266,7 @@ fn removing_a_patch_a_playing_cue_uses_is_still_refused_as_used() {
     assert!(message.contains("is used by cue"), "{message}");
 }
 
-/// M5.6b: a Wait's duration and a Load cue's time edited through the control loop (as the
+/// A Wait's duration and a Load cue's time edited through the control loop (as the
 /// inspector sends them) reach clients as `model_changed`, a bad value or a cue without the
 /// field is refused with nothing sent, undo restores, and a running Wait whose duration is
 /// edited takes the new duration (QLab 5).

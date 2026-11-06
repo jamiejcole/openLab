@@ -176,7 +176,7 @@ pub struct MediaCatalog {
 }
 
 /// What may have changed a cue's slice-plan check (`checks.rs`) since the checks last looked
-/// (M4.12c): kept here because the catalog sees every edit's cues and every probe change, so
+///: kept here because the catalog sees every edit's cues and every probe change, so
 /// the checks look only at those.
 #[derive(Debug, Default)]
 pub struct PlanChanges {

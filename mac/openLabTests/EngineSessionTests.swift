@@ -337,7 +337,7 @@ final class EngineSessionTests: XCTestCase {
         XCTAssertEqual(s.connectionState, .idle)
     }
 
-    // MARK: Reconnect and reattach (M5.2)
+    // MARK: Reconnect and reattach
 
     /// A dropped socket to the same engine run (the stub drops it; the engine never does on purpose)
     /// reconnects the same store without reopening anything.

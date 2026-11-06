@@ -223,7 +223,7 @@ impl Control {
     }
 
     /// Reports counters that must never rise (lost events, mixer faults, allocations on the
-    /// audio thread (M3.21), dropped outbound messages) once for the engine, and lets each doc
+    /// audio thread, dropped outbound messages) once for the engine, and lets each doc
     /// send again what its clients missed.
     fn health(&mut self) {
         let eng = &mut self.eng;

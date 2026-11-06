@@ -452,7 +452,7 @@ impl OutputHost {
     }
 
     /// Fills one host buffer (interleaved, `device_channels` per frame). Real-time safe; in
-    /// debug builds it runs under `assert_no_alloc` (M3.12). Never panics: a panic outside the
+    /// debug builds it runs under `assert_no_alloc`. Never panics: a panic outside the
     /// mixer's own guard leaves the buffer silent and counts a callback fault.
     pub fn render<S: OutputSample>(&mut self, out: &mut [S], time: Option<CallbackTime>) {
         let frames = (out.len() / self.device_channels) as u64;
@@ -580,7 +580,7 @@ impl OutputHost {
     }
 }
 
-/// `f` under `assert_no_alloc` in debug builds (M3.12); just `f` in release.
+/// `f` under `assert_no_alloc` in debug builds; just `f` in release.
 fn no_alloc_in_debug<T>(f: impl FnOnce() -> T) -> T {
     #[cfg(debug_assertions)]
     return assert_no_alloc::assert_no_alloc(f);
@@ -686,7 +686,7 @@ mod tests {
         assert!(buf.iter().all(|x| *x == 0.0));
         // The mixer's catch_unwind handled it: not a callback fault.
         assert_eq!(link.monitor().callback_faults(), 0);
-        // The panic payload allocates inside the callback: debug builds count it (M3.12).
+        // The panic payload allocates inside the callback: debug builds count it.
         if cfg!(debug_assertions) {
             assert!(link.monitor().alloc_violations() > 0);
         }
