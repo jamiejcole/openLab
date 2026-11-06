@@ -558,6 +558,8 @@ final class WireTap: EngineTransport {
     var holdRuntime = false
     /// Hold `model_changed` broadcasts until `releaseResults`: the app's model lags behind the engine's.
     var holdModel = false
+    /// Hold `document` broadcasts until `releaseResults`: a store learns its path after the save's reply.
+    var holdDocument = false
     fileprivate var connections: [TapConnection] = []
     fileprivate var held: [(TapConnection, String)] = []
 
@@ -638,6 +640,7 @@ final class TapConnection: EngineConnection {
         let type = JSONValue.parse(text)?["type"]?.stringValue
         if type == "runtime" && tap.holdRuntime { return tap.held.append((self, text)) }
         if type == "model_changed" && tap.holdModel { return tap.held.append((self, text)) }
+        if type == "document" && tap.holdDocument { return tap.held.append((self, text)) }
         if type == "result" ? tap.holdResults : (type == "workspaces" && tap.holdLists) {
             return tap.held.append((self, text))
         }

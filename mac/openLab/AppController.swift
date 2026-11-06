@@ -88,7 +88,7 @@ final class AppController {
     var keySubs: [ObjectIdentifier: AnyCancellable] = [:]
     var keyCache:
         [ObjectIdentifier: (
-            hotkeys: JSONValue?, cueChords: Set<KeyChord>, shadowed: Set<KeyChord>,
+            hotkeys: JSONValue?, shadowed: Set<KeyChord>,
             lost: [TransportCommand: KeyChord], keys: TransportKeys
         )] =
             [:]
@@ -116,13 +116,23 @@ final class AppController {
     /// Ends, at quit, an engine it started that was never reached (nil in tests of the windows).
     let supervisor: EngineSupervisor?
 
+    /// Where the launch choice and the files open at quit are kept; nil: nothing is (tests that
+    /// do not look at it).
+    let launchDefaults: UserDefaults?
     /// Where windows remember their layout (UI-02); nil: they do not (tests that do not look at it).
     let layoutDefaults: UserDefaults?
+    /// The app is starting and has not yet done what the launch choice says: no launcher meanwhile.
+    var launching = false
+    /// Files just saved with Save As, by store: the save's reply may overtake the message that gives
+    /// the store its new path, and a quit records the open files before that message can arrive.
+    var savedAsPaths: [ObjectIdentifier: String] = [:]
+    lazy var preferencesWindow = PreferencesWindowController(preferences: launchPreferences)
 
     init(
         session: EngineSession, supervisor: EngineSupervisor? = nil, scheduler: Scheduler = SystemScheduler(),
-        timeout: Double = 5, layoutDefaults: UserDefaults? = nil
+        timeout: Double = 5, launchDefaults: UserDefaults? = nil, layoutDefaults: UserDefaults? = nil
     ) {
+        self.launchDefaults = launchDefaults
         self.layoutDefaults = layoutDefaults
         self.session = session
         self.supervisor = supervisor

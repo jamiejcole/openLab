@@ -319,7 +319,7 @@ fn collection<T, Id: Ord + Copy>(
 }
 
 /// [`model_changes`] read through `index`, an index of `workspace` brought up to date with the
-/// edit (M4.12c): it finds each named cue where the index has it instead of walking the cue
+/// edit: it finds each named cue where the index has it instead of walking the cue
 /// lists, so it costs the footprint, not the show. `None` when the index cannot serve (it has
 /// duplicate ids, or it disagrees with the workspace): the caller then uses [`model_changes`],
 /// which is the reference this must equal (property-tested).

@@ -110,6 +110,9 @@ pub struct VoiceRec {
     /// The sample of the latest resume (a re-key).
     resumed_at: Option<SampleTime>,
     stream_failed: bool,
+    /// The file its stream reads (the cue's file when the record was made, which a relink
+    /// since does not change): probed again when the stream fails.
+    media: Option<String>,
     /// The id it had before its latest resume: the only old id the mixer can still report an
     /// event under (an end before that resume applied). Older ones go with the next meter read.
     prev_id: Option<VoiceId>,
@@ -147,7 +150,7 @@ pub struct VoiceRec {
 impl VoiceRec {
     /// The failure to report for this voice: `StartFailed` if it never produced any audio (a
     /// start not yet in the mixer, or a stream that failed before writing a frame), so the cue
-    /// engine skips the cue (M4.14, QLab P5/G2); else `ActionFailed`. A loaded voice that was
+    /// engine skips the cue (QLab P5/G2); else `ActionFailed`. A loaded voice that was
     /// never started stays `ActionFailed` (the cue is loaded, not playing).
     fn failure(&self, reason: BrokenReason) -> Input {
         let unplayed = match &self.phase {
@@ -352,6 +355,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         paused_frames: 0,
         resumed_at: None,
         stream_failed: false,
+        media: None,
         prev_id: None,
         absent: 0,
         listed: false,
@@ -568,7 +572,7 @@ mod tests {
         assert_eq!(rest_after_loop(&t, 0), None);
     }
 
-    /// M2.34: a voice the mixer reports ended on its pause sample is gone (the engine takes it
+    /// A voice the mixer reports ended on its pause sample is gone (the engine takes it
     /// as the end and sends no resume); one ended after it is kept for the resume. Show cues and
     /// previews alike: a kept show-cue record would block its cue's prime.
     #[test]

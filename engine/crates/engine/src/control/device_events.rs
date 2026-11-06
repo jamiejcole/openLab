@@ -114,7 +114,7 @@ impl Control {
         }
     }
 
-    /// The device went away (M4.2g, as QLab 5): every doc's cues on it stop at once
+    /// The device went away (as QLab 5): every doc's cues on it stop at once
     /// ([`DocCx::device_lost`]); the loss is logged once, and each doc's clients get a
     /// `device_lost` notice with its own count.
     fn device_lost(&mut self, name: &str, why: &str) {
@@ -198,7 +198,7 @@ impl Control {
 }
 
 impl DocCx<'_> {
-    /// This doc's part of a device loss (M4.2g, as QLab 5; [`Control::device_lost`]): the
+    /// This doc's part of a device loss (as QLab 5; [`Control::device_lost`]): the
     /// patches on it are reported missing (loaded cues on them unload, starts are refused as
     /// broken, idle cues show broken), every run with a voice on it ends at once with
     /// `ActionFailed { device_lost }` (hard stop, no fade; the voice and its stream are

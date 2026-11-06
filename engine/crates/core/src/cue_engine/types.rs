@@ -276,7 +276,7 @@ pub enum Input {
         media: Vec<(MediaRef, MediaStatus)>,
         patches: Vec<(PatchId, PatchResolution)>,
     },
-    /// The output device went away (M4.2g, as QLab 5). The binary has already failed the audio
+    /// The output device went away (as QLab 5). The binary has already failed the audio
     /// runs with `ActionFailed { device_lost }`; this hard-stops every other active run (memo,
     /// Wait, control, Fade and group cues, and runs broken earlier), so no pre-wait, post-wait,
     /// auto-continue or auto-follow set before the loss fires after the device returns. Loaded
@@ -626,7 +626,7 @@ pub enum PreviewIgnoredReason {
     NotAudio,
     /// The cue is being previewed already.
     AlreadyPreviewing,
-    /// The cue is disarmed: a disarmed cue cannot be previewed (QLab check V2, M2.28).
+    /// The cue is disarmed: a disarmed cue cannot be previewed (QLab check V2).
     Disarmed,
     /// A group with no audio cue that can be previewed (armed, without problems, not being
     /// previewed already) inside it.

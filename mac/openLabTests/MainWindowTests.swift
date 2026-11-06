@@ -52,14 +52,13 @@ final class MainWindowTests: XCTestCase {
         try? pipe.fileHandleForWriting.close()
         collected.wait()
         return String(decoding: collected.data, as: UTF8.self).split(separator: "\n").filter {
-            // macOS 27 also logs a negative view width from window creation: #530.
-            $0.contains("Conflicting constraints")
+            $0.contains("Conflicting constraints") || $0.contains("Invalid view geometry")
         }.joined(separator: "\n")
     }
 
     /// A real window, shown at the smallest size it allows, at a small screen's size and at a large one,
-    /// with each area hidden and shown, lays out without AppKit reporting a conflicting constraint (the
-    /// report is read from stderr: AppKit offers nothing else to assert on).
+    /// with each area hidden and shown, lays out without AppKit reporting a conflicting constraint or an invalid view
+    /// geometry (both are read from stderr: AppKit offers nothing else to assert on).
     func testWindowLaysOutCleanlyAtEverySize() throws {
         var made: WorkspaceWindowController?
         // The window is built inside the capture: its first layout is where a conflict used to show.
@@ -96,6 +95,22 @@ final class MainWindowTests: XCTestCase {
         }
         window.close()
         XCTAssertEqual(problems, [], "AppKit reported a layout problem")
+    }
+
+    /// Windows whose tab views gain their tabs while being built (the inspector's, the settings window's and
+    /// the patch editor's) build without AppKit reporting an invalid view geometry: a tab view with no size
+    /// lays its tab strip out at a negative width on macOS 27 (#530).
+    func testTabViewsAreSizedBeforeTheirTabsAreAdded() throws {
+        let store = try Rig.offline(TestSnapshots.show()).store
+        let patch = try XCTUnwrap(store.model?.patches.first?.id)
+        var built: [AnyObject] = []
+        XCTAssertEqual(
+            stderrText {
+                built.append(WorkspaceWindowController(store: store))
+                built.append(WorkspaceSettingsWindowController(store: store))
+                built.append(PatchEditorWindowController(store: store, patch: patch))
+            }, "")
+        XCTAssertEqual(built.count, 3)
     }
 
     /// A cue-list column dragged to nothing leaves its cells zero wide: they lay out without a conflict.
@@ -959,6 +974,8 @@ final class WindowLayoutTests: XCTestCase {
         let doc = try XCTUnwrap(Set(app.windows.keys).subtracting(before).first)
         let wc = try XCTUnwrap(app.windows[doc])
         await assertEventually { wc.store.model != nil && wc.cueList.listID != nil }
+        // The workspace list is its own message and can arrive after the window's snapshot.
+        await assertEventually { app.session.workspaces.first { $0.doc == doc }?.path != nil }
         wc.window?.layoutIfNeeded()
         return (doc, wc)
     }

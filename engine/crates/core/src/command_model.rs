@@ -53,6 +53,8 @@ pub enum TransportKey {
     StartSelected,
     StopSelected,
     ResetSelected,
+    PreviewSelected,
+    PanicSelected,
 }
 
 /// One workspace setting. Each variant is the whole new value.
@@ -124,6 +126,10 @@ struct StrictHotkeys {
     stop_selected: Option<Hotkey>,
     #[serde(deserialize_with = "required")]
     reset_selected: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    preview_selected: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    panic_selected: Option<Hotkey>,
 }
 
 /// A key that must be in the map, as a value or `null`. (Serde treats a missing `Option` field
@@ -146,6 +152,8 @@ fn strict_hotkeys<'de, D: serde::Deserializer<'de>>(
         start_selected: w.start_selected,
         stop_selected: w.stop_selected,
         reset_selected: w.reset_selected,
+        preview_selected: w.preview_selected,
+        panic_selected: w.panic_selected,
     }))
 }
 
@@ -219,6 +227,8 @@ fn key_name(key: TransportKey) -> &'static str {
         TransportKey::StartSelected => "start_selected",
         TransportKey::StopSelected => "stop_selected",
         TransportKey::ResetSelected => "reset_selected",
+        TransportKey::PreviewSelected => "preview_selected",
+        TransportKey::PanicSelected => "panic_selected",
     }
 }
 
@@ -234,6 +244,8 @@ fn hotkey_slot(s: &WorkspaceSettings, key: TransportKey) -> &Option<Hotkey> {
         TransportKey::StartSelected => &keys.start_selected,
         TransportKey::StopSelected => &keys.stop_selected,
         TransportKey::ResetSelected => &keys.reset_selected,
+        TransportKey::PreviewSelected => &keys.preview_selected,
+        TransportKey::PanicSelected => &keys.panic_selected,
     }
 }
 
@@ -249,6 +261,8 @@ fn hotkey_slot_mut(s: &mut WorkspaceSettings, key: TransportKey) -> &mut Option<
         TransportKey::StartSelected => &mut keys.start_selected,
         TransportKey::StopSelected => &mut keys.stop_selected,
         TransportKey::ResetSelected => &mut keys.reset_selected,
+        TransportKey::PreviewSelected => &mut keys.preview_selected,
+        TransportKey::PanicSelected => &mut keys.panic_selected,
     }
 }
 
@@ -384,7 +398,7 @@ fn set_setting(
 }
 
 // ---------------------------------------------------------------------------------------------
-// OSC passcode table (NET-02, M4.5c)
+// OSC passcode table (NET-02)
 
 /// Which row of the OSC passcode table [`Command::SetOscRights`] sets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

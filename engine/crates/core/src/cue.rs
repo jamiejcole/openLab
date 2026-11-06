@@ -106,7 +106,7 @@ impl Cue {
         }
     }
 
-    /// The name to show for the cue (M2.29c, QLab check R2). Assigning a file never writes
+    /// The name to show for the cue (QLab check R2). Assigning a file never writes
     /// `name`: an empty `name` means "named after the file", so a rename of the file shows at
     /// once and a name the user typed is never touched. The file name keeps its extension and
     /// is shown as stored (no case or Unicode-form change). OSC and the model still see `name`.
@@ -154,7 +154,7 @@ pub enum ContinueMode {
 }
 
 /// Which loop of an Audio target a Devamp cue leaves: QLab 5's "Devamp currently looping slice"
-/// and "Devamp looping cue" (check D7, M2.28). openLab has no play count for the whole cue: a
+/// and "Devamp looping cue" (check D7). openLab has no play count for the whole cue: a
 /// cue without slice markers loops as a whole through `last_slice_play_count`, which is the
 /// cue's loop; with markers, every loop is a slice's. Rules: `docs/cue-engine.md`, "Devamp".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -144,7 +144,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             backing: .buffered, defer: false)
         window.title = loc("window.main.title")
         window.identifier = NSUserInterfaceItemIdentifier(AX.mainWindow)
-        window.isReleasedWhenClosed = false  // closing must never destroy the window (M5.17)
+        window.isReleasedWhenClosed = false  // closing must never destroy the window
         window.minSize = NSSize(width: 800, height: 500)
         super.init(window: window)
         window.delegate = self

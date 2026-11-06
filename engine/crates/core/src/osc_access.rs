@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The OSC passcode table (NET-02, M4.5c): which rights a remote that sends `/connect` gets.
+//! The OSC passcode table (NET-02): which rights a remote that sends `/connect` gets.
 //! As in QLab 5, every passcode carries View / Edit / Control rights, and a "No Passcode" row
 //! holds the rights of a peer that has not connected (or connected without a passcode). Edit and
 //! Control require View. Pure data; the engine's OSC layer decides what each right allows

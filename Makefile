@@ -116,7 +116,7 @@ test-bundle-rebuild:
 	mac/scripts/check-incremental-bundle.sh
 
 dmg:
-	@echo "dmg: not yet implemented (M6.1)"; exit 1
+	@echo "dmg: not yet implemented"; exit 1
 
 project:
 	cd mac && xcodegen --quiet

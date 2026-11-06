@@ -2,7 +2,7 @@
 
 //! The socket-free OSC layer (ARCHITECTURE section 7, `docs/osc.md`): decoding, address
 //! dispatch onto the inputs the UI sends, per-peer passcode and updates state, and QLab-style
-//! replies. The UDP and TCP listeners (M4.5a) call [`Osc`] with what they read and send what
+//! replies. The UDP and TCP listeners call [`Osc`] with what they read and send what
 //! comes back; nothing in here opens a socket, reads a clock or spawns a thread.
 
 mod codec;

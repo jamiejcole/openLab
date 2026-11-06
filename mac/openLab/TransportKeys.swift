@@ -84,13 +84,13 @@ enum KeyBindError: Error, Equatable {
 /// The transport keys of one workspace, read from its `settings.hotkeys` (QLab keeps them per
 /// workspace). How each model field maps:
 /// - `go`, `pause_all`, `resume_all` and the selected-cue keys `load_selected`, `pause_resume_selected`,
-///   `start_selected`, `stop_selected`, `reset_selected`: bound as given, the engine's own map. Absent:
-///   the default (Space, `[`, `]`, `l`, `p`, none, none, none); `null`: no key.
+///   `start_selected`, `stop_selected`, `reset_selected`, `preview_selected`, `panic_selected`: bound as
+///   given, the engine's own map. Absent: the default (Space, `[`, `]`, `l`, `p`, none, none, none, `v`,
+///   `s`); `null`: no key.
 /// - `stop_all`: Esc is the fixed app-wide panic, so it binds nothing; any other key binds Stop All.
 /// - There are no Next / Previous Cue keys (format v6): QLab's key map has none and takes no Up or
 ///   Down arrow; the arrows and the fixed Select Next / Select Previous items move the selection.
-/// - The model has no fields for Preview Selected `V` and Panic Selected `S` (QLab's keys): they are
-///   fixed app defaults, dropped if a show's key or a cue hotkey already uses the chord.
+/// - Panic All (Esc) is the only fixed key; Preview Selected and Panic Selected are remappable like the rest.
 /// - Reset All has no key (QLab has none); it is the sidebar button and the Transport menu item.
 ///
 /// Conflict precedence: (1) Esc is always panic, even while typing, and cannot be bound; (2) a
@@ -104,27 +104,19 @@ struct TransportKeys: Equatable {
     private(set) var warnings: [String] = []
 
     /// QLab 5's edit-number and edit-name keys, by default: key to the cue-list column they open.
-    /// Fixed like the selected-cue keys, but a cue hotkey cannot take them (`HotkeyRules`).
+    /// Not in the key map; a cue hotkey cannot take them (`HotkeyRules`).
     static let editKeys: [KeyChord: String] = [KeyChord("n"): "number", KeyChord("q"): "name"]
-
-    /// The two selected-cue keys the model has no field for (QLab remaps both; that needs a show-file
-    /// change): app defaults the engine knows nothing of, so a cue hotkey on one starts its cue in the
-    /// engine and the app yields the key (`init`).
-    static let fixed: [(TransportCommand, KeyChord)] = [
-        (.previewSelected, KeyChord("v")), (.panicSelected, KeyChord("s")),
-    ]
 
     private static let fields: [(String, TransportCommand, KeyChord?)] = [
         ("go", .go, KeyChord(" ")), ("stop_all", .stopAll, nil), ("pause_all", .pauseAll, KeyChord("[")),
         ("resume_all", .resumeAll, KeyChord("]")), ("load_selected", .loadSelected, KeyChord("l")),
         ("pause_resume_selected", .pauseResumeSelected, KeyChord("p")), ("start_selected", .startSelected, nil),
         ("stop_selected", .stopSelected, nil), ("reset_selected", .resetSelected, nil),
+        ("preview_selected", .previewSelected, KeyChord("v")), ("panic_selected", .panicSelected, KeyChord("s")),
     ]
 
     /// `settings` is the workspace's `settings` object (nil or without `hotkeys`: all defaults).
-    /// `cueChords` are the cue hotkeys of the workspace: a fixed default (V, S) that one of them
-    /// uses yields to it, so an app default never silently takes a show's key.
-    init(settings: JSONValue?, cueChords: Set<KeyChord> = []) {
+    init(settings: JSONValue?) {
         let hotkeys = settings?["hotkeys"]
         for (field, command, fallback) in Self.fields {
             var chord = fallback
@@ -150,23 +142,13 @@ struct TransportKeys: Equatable {
             }
             chords[command] = chord
         }
-        for (command, chord) in Self.fixed {
-            if cueChords.contains(chord) {
-                warnings.append(String(format: loc("hotkeys.warn.yields"), loc(command.titleKey), chord.display))
-            } else if let error = Self.validate(chord, for: command, in: chords) {
-                warnings.append(
-                    String(format: loc("hotkeys.warn.unusable"), loc(command.titleKey), Self.describe(error)))
-            } else {
-                chords[command] = chord
-            }
-        }
     }
 
     func chord(for command: TransportCommand) -> KeyChord? { chords[command] }
     func command(for chord: KeyChord) -> TransportCommand? { chords.first { $0.value == chord }?.key }
 
     /// Why `chord` cannot be bound to `command` next to `existing`; nil if it can. Pure, for the
-    /// loader above and the key-map editor (M5.11a). Up and Down are refused with any modifiers
+    /// loader above and the key-map editor. Up and Down are refused with any modifiers
     /// (QLab 5), as are Esc and the empty key.
     static func validate(
         _ chord: KeyChord, for command: TransportCommand, in existing: [TransportCommand: KeyChord],

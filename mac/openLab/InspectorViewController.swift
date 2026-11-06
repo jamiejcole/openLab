@@ -81,7 +81,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let flaggedCheck = NSButton(checkboxWithTitle: loc("inspector.flagged"), target: nil, action: nil)
     let armedCheck = NSButton(checkboxWithTitle: loc("inspector.armed"), target: nil, action: nil)
     let messageLabel = NSTextField(labelWithString: "")
-    /// Preview / Stop Preview of the selected audio cue. M5.8 (Time & Loops tab) should host it.
+    /// Preview / Stop Preview of the selected audio cue. The Time & Loops tab should host it.
     let previewButton = NSButton(title: loc("inspector.preview"), target: nil, action: nil)
     /// Choose... next to an Audio cue's file: opens the file chooser (set by the window controller).
     let chooseButton = NSButton(title: loc("inspector.target.choose"), target: nil, action: nil)
@@ -342,6 +342,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         {
             if let id = i.identifier as? String { tabItems[id] = i }
         }
+        // A zero-wide tab view lays its tab strip out at a negative width as tabs are added (AppKit logs
+        // "Invalid view geometry" on macOS 27); Auto Layout sizes it for real below.
+        tabView.frame = NSRect(x: 0, y: 0, width: 320, height: 240)
         syncTabs(forKind: "")
         tabView.setAX(AX.inspectorTabs)
         tabView.delegate = self

@@ -26,7 +26,7 @@ impl Control {
     }
 
     /// The docs [`Self::open_doc`] installed since the last call, with the request each
-    /// answered (the protocol's `opened { doc }` is M4.15f).
+    /// answered (the protocol's `opened { doc }` will come later).
     pub fn take_opened(&mut self) -> Vec<(openlab_core::protocol::RequestId, DocId)> {
         std::mem::take(&mut self.eng.opened)
     }
@@ -108,19 +108,19 @@ impl Control {
     }
 
     /// Cues the slice-plan checks have looked at so far (a cost measure: an edit looks at the
-    /// cues it touched, M4.12c), in the first doc.
+    /// cues it touched), in the first doc.
     pub fn plan_cues_examined(&self) -> u64 {
         self.first().map_or(0, |d| d.checks.examined())
     }
 
     /// Walks of every audio cue the slice-plan checks made so far (a newly followed workspace;
-    /// an edit or a probe answer makes none, M4.12c), in the first doc.
+    /// an edit or a probe answer makes none), in the first doc.
     pub fn plan_walks(&self) -> u64 {
         self.first().map_or(0, |d| d.checks.walks())
     }
 
     /// Edits whose `model_changed` walked the workspace instead of reading the cue index (a
-    /// cost measure; none for a valid workspace, M4.12c), in the first doc.
+    /// cost measure; none for a valid workspace), in the first doc.
     pub fn model_change_walks(&self) -> u64 {
         self.first().map_or(0, |d| d.model_change_walks)
     }
@@ -146,7 +146,7 @@ impl Control {
         self.first().map_or(&self.none.engine, |d| d.model.engine())
     }
 
-    /// The machine settings in force, including mappings the engine added (M4.4c).
+    /// The machine settings in force, including mappings the engine added.
     pub fn machine(&self) -> &MachineSettings {
         &self.eng.config.machine
     }
@@ -200,6 +200,12 @@ impl Control {
             .unwrap_or_default();
         v.sort();
         v
+    }
+
+    /// Media jobs (probes, preloads) the first doc has asked for so far.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn media_tickets(&self) -> u64 {
+        self.first().map_or(0, |d| d.media.tickets_issued())
     }
 
     /// Probes still running, every doc's.

@@ -584,7 +584,7 @@ fn sixty_four_stereo_voices_with_fades_render_at_least_ten_times_real_time() {
     let pair_ns = instant_pair_ns();
     let block_64_ns = 64.0 / f64::from(RATE) * 1e9;
     println!(
-        "engine_load timing (M4.7a): {pair_ns:.0} ns per Instant pair, {:.3} % of a 64-frame block",
+        "engine_load timing: {pair_ns:.0} ns per Instant pair, {:.3} % of a 64-frame block",
         pair_ns / block_64_ns * 100.0
     );
     assert!(

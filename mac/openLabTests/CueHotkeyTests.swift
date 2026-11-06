@@ -81,7 +81,8 @@ final class HotkeyRulesTests: XCTestCase {
         XCTAssertEqual(validate(KeyChord("[")), .duplicate(of: .pauseAll))
         XCTAssertEqual(validate(KeyChord("p")), .duplicate(of: .pauseResumeSelected), "the model's key")
         XCTAssertEqual(validate(KeyChord("l")), .duplicate(of: .loadSelected))
-        XCTAssertNil(validate(KeyChord("v")), "a fixed app default (V, S) yields to a cue hotkey")
+        XCTAssertEqual(validate(KeyChord("v")), .duplicate(of: .previewSelected), "Preview Selected is a model key")
+        XCTAssertEqual(validate(KeyChord("s")), .duplicate(of: .panicSelected))
         XCTAssertEqual(validate(KeyChord("n")), .editKey, "N and Q edit the highlighted cue's number and name")
         XCTAssertEqual(validate(KeyChord("q")), .editKey)
         XCTAssertNil(validate(KeyChord("n", .shift)), "only the plain keys")
@@ -563,22 +564,128 @@ final class CueHotkeyFiringTests: XCTestCase {
         XCTAssertEqual(first.logEntries.filter { $0.message == message }.count, 1)
     }
 
-    func testFixedDefaultKeysYieldToACueHotkey() async throws {
+    private let doorSlam: ModelID = "00000000-0000-0000-0000-000000000021"
+    private let rain: ModelID = "00000000-0000-0000-0000-000000000022"
+
+    private func chordJSON(_ key: String) throws -> String { try (KeyChord(key).hotkeyJSON ?? .null).text() }
+
+    /// Preview Selected remapped (issue flow): with the key moved to W, W previews the selected cue and V
+    /// is free, so a cue whose hotkey is V starts from it, in the app and in the engine.
+    func testPreviewSelectedFollowsItsRemappedKeyAndFreesV() async throws {
         keyDoc = demoDoc
-        for (n, key) in ["v", "s"].enumerated() {
-            _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord(key).hotkeyJSON, osc: nil)))
-            await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == KeyChord(key) } == true }
-            XCTAssertNil(app.handleKeyDown(try event(key, code: key == "v" ? 9 : 1)), "\(key) fires the cue")
-            await assertEventually { await self.hotkeys() == n + 1 }
-            XCTAssertNil(app.frontKeys.chord(for: key == "v" ? .previewSelected : .panicSelected))
-            XCTAssertTrue(
-                first.logEntries.contains { $0.level == .warn && $0.message.contains("the cue keeps it") })
-        }
+        try await first.setHotkeys(#"{"preview_selected":\#(try chordJSON("w"))}"#)
+        let wc = try XCTUnwrap(app.windows[demoDoc])
+        wc.inspector.setSelection([doorSlam])
+        XCTAssertTrue(wc.inspector.record(KeyChord("v")), "the freed chord is accepted as a cue hotkey")
+        await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == KeyChord("v") } == true }
+        wc.cueList.select([intro])
+        XCTAssertEqual(app.frontKeys.chord(for: .previewSelected), KeyChord("w"))
+        XCTAssertNil(app.frontKeys.command(for: KeyChord("v")), "V is free")
+        XCTAssertNil(app.handleKeyDown(try event("w", code: 13)), "the key is taken")
+        try await run()
+        await assertEventually("the selected cue previews") { self.first.previewing.contains(self.intro) }
+        XCTAssertNil(app.handleKeyDown(try event("w", code: 13)))
+        try await run()
+        await assertEventually("a second press stops it") { !self.first.previewing.contains(self.intro) }
+        // V now starts the cue that has it, and previews nothing.
+        XCTAssertNil(app.handleKeyDown(try event("v", code: 9)))
+        try await run()
+        await assertEventually("the cue hotkey starts its cue") { self.playing(self.first, self.doorSlam) }
+        XCTAssertFalse(first.previewing.contains(intro))
+        let warned = first.logEntries.contains { $0.level == .warn && $0.message.contains("transport key") }
+        XCTAssertFalse(warned, "no shadowing warning for a free key")
+    }
+
+    /// Panic Selected remapped (issue flow): K panics the selected running cue (it fades out), and S is free
+    /// for a cue hotkey.
+    func testPanicSelectedFollowsItsRemappedKeyAndFreesS() async throws {
+        keyDoc = demoDoc
+        try await first.setHotkeys(#"{"panic_selected":\#(try chordJSON("k"))}"#)
+        let wc = try XCTUnwrap(app.windows[demoDoc])
+        wc.inspector.setSelection([rain])
+        XCTAssertTrue(wc.inspector.record(KeyChord("s")), "the freed chord is accepted as a cue hotkey")
+        await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == KeyChord("s") } == true }
+        _ = await first.transport(.start(cue: intro))
         try await run()
         await assertEventually { self.playing(self.first, self.intro) }
-        XCTAssertEqual(first.logEntries.filter { $0.message.contains("the cue keeps it") }.count, 2, "once each")
-        _ = app.frontKeys
-        XCTAssertEqual(first.logEntries.filter { $0.message.contains("the cue keeps it") }.count, 2)
+        wc.cueList.select([intro])
+        XCTAssertEqual(app.frontKeys.chord(for: .panicSelected), KeyChord("k"))
+        XCTAssertNil(app.handleKeyDown(try event("k", code: 40)), "the key is taken")
+        try await run()
+        await assertEventually("the selected cue fades out") { self.first.cueStates[self.intro]?.state == .stopping }
+        try await engine.advance(seconds: 1)  // past the panic fade
+        await assertEventually("and is stopped") { self.first.cueStates[self.intro]?.state.isActive != true }
+        XCTAssertFalse(playing(first, rain))
+        XCTAssertNil(app.handleKeyDown(try event("s", code: 1)))
+        try await run()
+        await assertEventually("S starts the cue that has it") { self.playing(self.first, self.rain) }
+        XCTAssertNotEqual(first.cueStates[rain]?.state, .stopping, "and does not panic it")
+    }
+
+    /// A remapped selected-cue key typed in a text field is text, not a command.
+    func testARemappedPreviewKeyTypedInATextFieldPreviewsNothing() async throws {
+        keyDoc = demoDoc
+        try await first.setHotkeys(#"{"preview_selected":\#(try chordJSON("w"))}"#)
+        let wc = try XCTUnwrap(app.windows[demoDoc])
+        wc.cueList.select([intro])
+        app.isTextEditing = { true }
+        let e = try event("w", code: 13)
+        XCTAssertTrue(app.handleKeyDown(e) === e, "left to the field")
+        try await run()
+        XCTAssertFalse(first.previewing.contains(intro))
+    }
+
+    /// The keys of the default map are model keys: the recorder refuses V and S, and a cue a loaded show
+    /// gave one of them is the shadowed one. The press previews or panics the selected cue, the other
+    /// cue stays idle, and the show log says so once each.
+    func testACueHotkeyOnTheDefaultPreviewAndPanicKeysIsShadowedAndWarned() async throws {
+        keyDoc = demoDoc
+        let wc = try XCTUnwrap(app.windows[demoDoc])
+        wc.inspector.setSelection([doorSlam])
+        XCTAssertFalse(wc.inspector.record(KeyChord("v")), "the recorder refuses a workspace key")
+        _ = await first.transport(.start(cue: intro))
+        try await run()
+        await assertEventually { self.playing(self.first, self.intro) }
+        for (n, key) in ["v", "s"].enumerated() {
+            let shadowed = n == 0 ? doorSlam : rain
+            _ = await first.send(command: .setProperty(shadowed, .triggers(hotkey: KeyChord(key).hotkeyJSON, osc: nil)))
+            await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == KeyChord(key) } == true }
+            await assertEventually {
+                _ = self.app.frontKeys
+                return self.first.logEntries.filter { $0.message.contains("transport key") }.count == n + 1
+            }
+            XCTAssertEqual(first.logEntries.filter { $0.message.contains("transport key") }.count, n + 1, "once each")
+        }
+        wc.cueList.select([intro])
+        XCTAssertNil(app.handleKeyDown(try event("v", code: 9)))
+        try await run()
+        await assertEventually("V previews the selected cue") { self.first.previewing.contains(self.intro) }
+        XCTAssertNil(app.handleKeyDown(try event("s", code: 1)))
+        try await run()
+        await assertEventually("S panics the selected cue") { self.first.cueStates[self.intro]?.state == .stopping }
+        for cue in [doorSlam, rain] {
+            XCTAssertFalse(first.cueStates[cue]?.state.isActive ?? false, "the shadowed cue stays idle")
+        }
+    }
+
+    /// Old files keep V and S: the demo show is a version 7 file, and in it plain V previews the selected
+    /// cue (a second press stops the preview) and plain S panics it, with no setup.
+    func testOldFilesKeepVAndS() async throws {
+        keyDoc = demoDoc
+        let wc = try XCTUnwrap(app.windows[demoDoc])
+        wc.cueList.select([intro])
+        XCTAssertNil(app.handleKeyDown(try event("v", code: 9)))
+        try await run()
+        await assertEventually("V previews") { self.first.previewing.contains(self.intro) }
+        XCTAssertNil(app.handleKeyDown(try event("v", code: 9)))
+        try await run()
+        await assertEventually("V again stops the preview") { !self.first.previewing.contains(self.intro) }
+        _ = await first.transport(.start(cue: intro))
+        try await run()
+        await assertEventually { self.playing(self.first, self.intro) }
+        XCTAssertNil(app.handleKeyDown(try event("s", code: 1)))
+        try await run()
+        await assertEventually("S panics it") { self.first.cueStates[self.intro]?.state == .stopping }
     }
 
     func testTransportKeyWinsOverACueHotkeyOnTheSameChord() async throws {

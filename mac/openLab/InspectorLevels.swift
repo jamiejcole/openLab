@@ -163,7 +163,7 @@ extension InspectorViewController {
     }
 
     func sendFade(_ change: FadeSettingsPanel.Change) {
-        // The duration has its own property (M5.6b): the rest of the kind is not resent.
+        // The duration has its own property: the rest of the kind is not resent.
         if case .duration(let seconds) = change {
             guard !isLocked, let cue = cueForEdit else { return }
             messageLabel.stringValue = ""

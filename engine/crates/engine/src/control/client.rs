@@ -74,7 +74,7 @@ impl Control {
         Flow::Continue
     }
 
-    /// A client message for doc `doc` (what a connection bound to it sends, M4.15f). An unknown
+    /// A client message for doc `doc` (what a connection bound to it sends). An unknown
     /// or closed doc answers `no_workspace`.
     pub fn handle_doc(&mut self, doc: DocId, message: ClientMessage, to: &ReplyTx) -> Flow {
         self.client(Addr::Doc(Some(doc)), message, to)
@@ -469,7 +469,7 @@ impl DocCx<'_> {
                 request => self.doc_request(id, request, to, Vec::new()),
             },
             ClientMessage::Goodbye { shutdown: true } => return Flow::Shutdown,
-            // The network layer handles the handshake and closing (M4.3).
+            // The network layer handles the handshake and closing.
             ClientMessage::Hello { .. } | ClientMessage::Goodbye { .. } => {}
             // App-scope: [`Control::app_scope`] takes them before any doc does.
             ClientMessage::Close { id, .. }

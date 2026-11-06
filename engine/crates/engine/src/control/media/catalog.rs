@@ -174,8 +174,8 @@ pub struct MediaCatalog {
     key_changes: Vec<KeyChange>,
 }
 
-/// What may have changed a cue's slice-plan check (`checks.rs`) since the checks last looked
-/// (M4.12c): kept here because the catalog sees every edit's cues and every probe change, so
+/// What may have changed a cue's slice-plan check (`checks.rs`) since the checks last looked:
+/// kept here because the catalog sees every edit's cues and every probe change, so
 /// the checks look only at those.
 #[derive(Debug, Default)]
 pub struct PlanChanges {
@@ -625,12 +625,14 @@ impl MediaCatalog {
     /// nothing while a probe of it runs, or once too many of them got stuck
     /// ([`MAX_STUCK_JOBS_PER_FILE`]).
     pub fn reprobe(&mut self, key: &str) {
-        if self
-            .entries
-            .get(key)
-            .is_some_and(|e| e.asking && !e.timed_out || e.stuck_jobs >= MAX_STUCK_JOBS_PER_FILE)
-        {
-            return;
+        // A file no cue uses any more (a relink took its last user) has no entry: asking would
+        // make a user-less one that lives until the next full sync.
+        match self.entries.get(key) {
+            None => return,
+            Some(e) if e.asking && !e.timed_out || e.stuck_jobs >= MAX_STUCK_JOBS_PER_FILE => {
+                return;
+            }
+            Some(_) => {}
         }
         self.request(key.to_owned());
     }
@@ -889,6 +891,13 @@ impl MediaCatalog {
             .values()
             .filter(|e| e.preload_ticket != 0 && e.preloaded.is_none() && !e.preload_failed)
             .count()
+    }
+
+    /// Jobs asked of the pool so far (probes and preloads): tests count the probes a failure
+    /// asked for by the difference.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn tickets_issued(&self) -> u64 {
+        self.next_ticket
     }
 
     /// Probes still running (re-probes included).

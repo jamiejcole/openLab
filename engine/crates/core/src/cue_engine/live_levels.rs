@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Level edits on a playing audio cue (AUD-06, AUD-08, M5.9b): an edit of the levels, mutes or
+//! Level edits on a playing audio cue (AUD-06, AUD-08): an edit of the levels, mutes or
 //! crosspoints of an audio cue whose voice has started reaches the voice as short `Ramp`s, one
 //! per changed gain, the way Fade cues reach it. Rules: `docs/cue-engine.md`, "Level edits on a
 //! playing cue".

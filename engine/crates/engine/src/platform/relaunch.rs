@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Starting the app again after it crashed (M4.9, ARCHITECTURE §8): `open -b <bundle id>` on
+//! Starting the app again after it crashed (ARCHITECTURE §8): `open -b <bundle id>` on
 //! macOS, through Launch Services, so the app is not this process's child and does not inherit
 //! anything from it. Plain `open` activates the app, which the operator needs after a crash
 //! (keyboard GO must reach it; on macOS 14+ an app launched in the background cannot reliably

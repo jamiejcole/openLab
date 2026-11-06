@@ -3127,8 +3127,7 @@ fn the_generator_reaches_what_the_rules_are_about() {
             *seen.entry(name).or_default() += 1;
         }
     }
-    // DeviceLost reaches running groups, paused runs and broken runs with a continue pending
-    //.
+    // DeviceLost reaches running groups, paused runs and broken runs with a continue pending.
     for what in ["group", "paused", "broken run"] {
         let n = lost.iter().filter(|l| **l == what).count();
         assert!(n >= 10, "DeviceLost found {what} only {n} times");

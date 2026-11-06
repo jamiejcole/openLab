@@ -70,7 +70,7 @@ impl AppDirs {
 
     /// `~/Library/Application Support` on macOS, `%APPDATA%` on Windows. `None` if the
     /// platform does not say. On macOS the logs and crash reports go to
-    /// `~/Library/Logs/openLab`, where Console.app and people look for them (M4.7c).
+    /// `~/Library/Logs/openLab`, where Console.app and people look for them.
     pub fn system() -> Option<Self> {
         dirs::data_dir().map(|data| Self::layout(data, dirs::home_dir(), cfg!(target_os = "macos")))
     }
@@ -86,12 +86,12 @@ impl AppDirs {
         dirs
     }
 
-    /// `engine.json`: how a client finds the running engine (M4.9, ARCHITECTURE §6, §8).
+    /// `engine.json`: how a client finds the running engine (ARCHITECTURE §6, §8).
     pub fn engine_file_path(&self) -> PathBuf {
         self.root.join("engine.json")
     }
 
-    /// The single-instance lock a running engine holds (M4.9, `host::instance_lock`).
+    /// The single-instance lock a running engine holds (`host::instance_lock`).
     pub fn engine_lock_path(&self) -> PathBuf {
         self.root.join("engine.lock")
     }
@@ -174,7 +174,7 @@ pub enum PersistError {
         "a write of this show did not finish within {secs} s; its volume may have stopped answering"
     )]
     Stalled { secs: u64 },
-    /// A save would write a show file another open workspace has (M4.15f): refused, nothing
+    /// A save would write a show file another open workspace has: refused, nothing
     /// written.
     #[error("{} is open in another workspace", .0.display())]
     OpenElsewhere(PathBuf),

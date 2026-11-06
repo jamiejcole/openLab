@@ -4,7 +4,7 @@ import XCTest
 
 @testable import openLab
 
-/// M5.11c (TRG-01): the key-map commands encode as the engine's golden fixtures, and the
+/// (TRG-01): the key-map commands encode as the engine's golden fixtures, and the
 /// snapshot's `settings.hotkeys` (format v5, with the selected-cue keys) decodes.
 final class WorkspaceKeyMapTests: XCTestCase {
     private func key(_ name: String) -> JSONValue {

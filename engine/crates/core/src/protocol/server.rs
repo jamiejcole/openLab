@@ -75,7 +75,7 @@ pub enum ServerMessage {
     },
     /// Elapsed and remaining time of running cues, at most 30 Hz, only while something runs or
     /// waits. `items`: actions (audio cues' voices, and cues without a voice); `waits`: pre-wait
-    /// and post-wait countdowns (absent when there are none, M4.2e).
+    /// and post-wait countdowns (absent when there are none).
     Progress {
         items: Vec<ProgressItem>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -90,7 +90,7 @@ pub enum ServerMessage {
         level: LogLevel,
         message: String,
     },
-    /// One new show-log record, as it is made (DX-02, M4.7c): for a live log view. Lossy like
+    /// One new show-log record, as it is made (DX-02): for a live log view. Lossy like
     /// `meters`, and rate-limited: `seq` rises by one per record the engine makes, pushed or
     /// not, so a gap means records to fetch with `log_tail` (whose `seq` says where it ends).
     LogEntry {
@@ -658,8 +658,8 @@ pub struct Snapshot {
     pub previewing: Vec<CueId>,
     /// As in `warnings`.
     pub warnings: Vec<WireWarning>,
-    /// The media lengths of the audio cues whose file is probed and playable, by cue id
-    /// (M5.4d); later changes come as `media_duration` runtime changes. Absent: none.
+    /// The media lengths of the audio cues whose file is probed and playable, by cue id;
+    /// later changes come as `media_duration` runtime changes. Absent: none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub media_durations: Vec<CueMediaDuration>,
 }

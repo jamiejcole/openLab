@@ -3,7 +3,7 @@
 //! The engine <-> UI protocol (ARCHITECTURE section 6): message types, the codec and the version.
 //! These types are the single source of truth; `docs/protocol.md` is the spec and
 //! `engine/fixtures/protocol/` holds one golden JSON file per message, which the Swift app
-//! decodes too. No sockets or threads here: the server is the binary's (M4.3).
+//! decodes too. No sockets or threads here: the server is the binary's.
 //!
 //! Compatibility rules (see the spec): unknown **fields** are ignored, so a newer peer may add
 //! optional fields without a version bump; unknown message **types** are an error
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 /// Version a peer sends in `hello` and the engine answers in `welcome`. The engine accepts a
 /// client only on an equal version.
-/// 2: connections bind to one of several open workspaces (M4.15f).
+/// 2: connections bind to one of several open workspaces.
 /// 3: the key map lost `playhead_next` and `playhead_previous` (show-file format 6).
 pub const PROTOCOL_VERSION: u32 = 4;
 

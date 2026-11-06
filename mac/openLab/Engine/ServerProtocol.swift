@@ -8,7 +8,7 @@ import Foundation
 
 /// `MAX_SERVER_FRAME_BYTES`: the largest frame the engine sends (a whole snapshot).
 let maxServerFrameBytes = 32 * 1024 * 1024
-/// 2: connections bind to one of several open workspaces (M4.15f).
+/// 2: connections bind to one of several open workspaces.
 let protocolVersion: UInt32 = 4
 
 /// A tagged object the UI shows but does not branch on yet (warnings, problems, resolutions).
@@ -134,7 +134,7 @@ struct ProgressItem: Hashable, Sendable, Decodable {
     let remaining: Double?
 }
 
-/// A pre-wait or post-wait counting down (M4.2e), in seconds; it always has an end.
+/// A pre-wait or post-wait counting down, in seconds; it always has an end.
 struct WaitProgress: Hashable, Sendable, Decodable {
     enum Kind: String, Hashable, Sendable, Decodable {
         case preWait = "pre_wait"
@@ -555,7 +555,7 @@ enum ServerMessage: Sendable, Decodable {
     case progress([ProgressItem], waits: [WaitProgress])
     case meters(outputs: [OutputMeter], cues: [CueMeter])
     case log(LogLevel, String)
-    /// One new show-log record (M4.7c). Lossy and rate-limited: a gap in `seq` means records to
+    /// One new show-log record. Lossy and rate-limited: a gap in `seq` means records to
     /// read with `log_tail`.
     case logEntry(seq: UInt64, ShowLogEntry)
     case status(SystemStatus)

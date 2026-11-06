@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The `relink` request (M1.17; WS-03, NFR-04): the folder is walked on a thread of its own, the
+//! The `relink` request (WS-03, NFR-04): the folder is walked on a thread of its own, the
 //! matches are applied as one undoable edit, and a scan limit is reported as `truncated`.
 
 mod common;
@@ -496,7 +496,7 @@ fn present_probe(path: &Path) -> Result<openlab_audio::Probed, openlab_audio::Me
 
 #[test]
 fn a_relinked_cue_gets_its_new_files_lengths() {
-    // M5.4d: a missing file has no lengths; once relinked and probed, the cue has the new file's.
+    // A missing file has no lengths; once relinked and probed, the cue has the new file's.
     let mut r = rig_with(&["a.wav"], |c| c.probe = present_probe);
     assert!(r.s.control().snapshot().media_durations.is_empty());
     touch(&r.lib.join("a.wav"));

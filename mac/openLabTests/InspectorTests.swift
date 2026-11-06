@@ -105,7 +105,7 @@ final class EditCommandTests: XCTestCase {
             JSONValue.parse(#"{"type":"set_cue_numbers","numbers":[{"id":"\#(id)","number":null}]}"#))
     }
 
-    /// The Wait/Fade duration and Load time properties (M5.6b) encode as the engine's golden fixtures.
+    /// The Wait/Fade duration and Load time properties encode as the engine's golden fixtures.
     func testDurationAndLoadTimeMatchTheFixtures() throws {
         let id: ModelID = "00000000-0000-0000-0000-00000000000c"
         let cases: [(String, CueProperty)] = [("duration", .duration(12.5)), ("load_to_time", .loadToTime(90.25))]
@@ -996,6 +996,33 @@ final class NetworkInspectorTests: XCTestCase {
         let second = await received(one)
         XCTAssertEqual(second, "/typed i:1", "GO sent the cue")
         XCTAssertEqual(kind?["address"]?.stringValue, "/typed", "no space went into the message")
+    }
+
+    /// V on a selected Network cue sends its message once and changes no state.
+    func testPreviewSelectedKeySendsTheNetworkCueMessageOnce() async throws {
+        try await setMessageAndWait("/lights/go 5")
+        await assertEventually("the cue is no longer broken") { !self.isBroken(self.net) }
+        wc.window?.makeFirstResponder(nil)
+        let before = store.cueStates[net]?.state
+        XCTAssertEqual(before, .idle)
+        XCTAssertNil(app.handleKeyDown(try key("v", code: 9)), "V is Preview Selected")
+        let got = await received(one)
+        XCTAssertEqual(got, "/lights/go i:5")
+        let again = try await quiet()
+        XCTAssertTrue(again, "sent once")
+        XCTAssertEqual(store.cueStates[net]?.state, before, "no state change")
+        XCTAssertTrue(store.previewing.isEmpty)
+        XCTAssertEqual(store.playheads[list], net, "the playhead stays")
+    }
+
+    func testPreviewSelectedKeyOnADisarmedNetworkCueSendsNothing() async throws {
+        try await setMessageAndWait("/lights/go 5")
+        inspector.armedCheck.performClick(nil)
+        await assertEventually("disarmed") { self.store.model?.cue(self.net)?.raw["armed"] == .bool(false) }
+        wc.window?.makeFirstResponder(nil)
+        XCTAssertNil(app.handleKeyDown(try key("v", code: 9)))
+        let silent = try await quiet()
+        XCTAssertTrue(silent, "a disarmed cue sends nothing")
     }
 
     func testSendFromADisarmedCueSendsNothing() async throws {
