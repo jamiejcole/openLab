@@ -32,7 +32,11 @@ final class MeterTests: XCTestCase {
     private var window: NSWindow!
     private var view: MeterView!
 
+    private static let shippedCoverCheck = MeterView.defaultWindowIsCovered
+
     override func setUp() async throws {
+        // A host that is the active app reports its on-screen windows as covered.
+        MeterView.defaultWindowIsCovered = { _, _ in false }
         ticker = FakeTicker()
         let t = ticker!
         bank = MeterBank(startTicker: { t.start($0) })
@@ -43,12 +47,14 @@ final class MeterTests: XCTestCase {
         view = MeterView(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
         view.source = .cue(Self.intro)
         view.bank = bank
+        view.windowIsCovered = { _, _ in false }  // the host may not be the active app
         window.contentView?.addSubview(view)
         window.orderFront(nil)
         view.updateLive()
     }
 
     override func tearDown() async throws {
+        MeterView.defaultWindowIsCovered = Self.shippedCoverCheck
         view?.removeFromSuperview()
         window?.orderOut(nil)
     }
@@ -163,6 +169,30 @@ final class MeterTests: XCTestCase {
         view.removeFromSuperview()
         XCTAssertEqual(bank.visibleCount, 0)
         XCTAssertEqual(ticker.started, ticker.stopped)
+    }
+
+    /// #452: a meter added to a window that is already covered does not run the tick.
+    func testAMeterAddedToACoveredWindowDoesNotRun() {
+        let covered = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 100), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        covered.isReleasedWhenClosed = false
+        covered.orderFront(nil)
+        defer { covered.orderOut(nil) }
+        view.removeFromSuperview()  // the fixture's own meter is not the one under test
+        XCTAssertFalse(ticker.running)
+        let late = MeterView(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
+        late.source = .cue(Self.intro)
+        late.bank = bank
+        var covering = true
+        late.windowIsCovered = { _, _ in covering }  // a headless host cannot cover a window
+        covered.contentView?.addSubview(late)
+        XCTAssertEqual(bank.visibleCount, 0, "covered: not registered, no 60 Hz tick")
+        XCTAssertFalse(ticker.running)
+        covering = false
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: covered)
+        XCTAssertEqual(bank.visibleCount, 1, "uncovered: the meter runs")
+        XCTAssertTrue(ticker.running)
     }
 
     func testOneTimerServesAllViews() {

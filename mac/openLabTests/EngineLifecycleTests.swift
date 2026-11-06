@@ -1434,7 +1434,11 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertFalse(launcherShown)
     }
 
-    func testARestoreNeverRaisesAModalOverAWindowInShowMode() async throws {
+    /// The list to reopen is [A, B]: A saved in Show Mode (or Edit Mode), B with an autosave newer
+    /// than its file. The engine that held them has crashed; the app is up, the launch choice not
+    /// yet carried out and the alarm's offer made.
+    @discardableResult
+    private func launchWithAnAutosaveAfterAWorkspace(showMode: Bool) async throws -> (a: String, b: String) {
         makePrefs(.restore)
         try await runs.start()
         let b = try runs.show("Demo", named: "B")
@@ -1446,19 +1450,96 @@ final class EngineCrashFlowTests: XCTestCase {
         let a = try runs.show("Demo", named: "A")
         var file = try XCTUnwrap(JSONValue.parse(try String(contentsOfFile: a, encoding: .utf8)))
         file.set("format_version", .int(8))
-        file["workspace"]?.set("show_mode", .bool(true))
+        file["workspace"]?.set("show_mode", .bool(showMode))
         try file.text().write(toFile: a, atomically: true, encoding: .utf8)
         LaunchPreferences(defaults: prefs).openFiles = [a, b]
-        try await startApp()
-        await assertEventually { self.openNames() == ["A"] }
-        await settle()
-        XCTAssertEqual(app.allWindows.first?.isShowMode, true)
-        XCTAssertEqual(alerts.log.filter { $0.hasPrefix("recoveryOffer") }, [], "no modal in Show Mode")
-        XCTAssertEqual(openNames(), ["A"], "B stays closed, with its autosave")
+        try await launch(launchDefaults: prefs)
+        let offered = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(offered)
+        return (a, b)
+    }
+
+    /// Carries out the launch choice with B's answer held until A's window knows its mode, however
+    /// long that takes: what the prompt's check finds does not depend on the bounded wait.
+    private func restoreOnceTheFirstWindowKnowsItsMode() async throws {
+        tap.holdResults = true
+        let restore = Task { await self.app.applyLaunchBehavior() }
+        // B's open is sent only after A's has made its window, so this releases A's answer and not B's.
+        await assertEventually("A's window opens") {
+            if self.app.allWindows.isEmpty { self.tap.releaseResults() }
+            return !self.app.allWindows.isEmpty
+        }
         let window = try XCTUnwrap(app.allWindows.first)
+        await assertEventually("A's snapshot arrives") { window.store.document != nil }
+        tap.holdResults = false
+        tap.releaseResults()
+        await restore.value
+    }
+
+    private var restorePrompts: [String] { alerts.log.filter { $0.hasPrefix("recoveryOffer") } }
+
+    /// B stays closed and the footer and the log tell the operator how to reach its autosave.
+    private func assertToldToRecover(
+        _ window: WorkspaceWindowController, file: StaticString = #filePath, line: UInt = #line
+    ) {
         let expected = String(format: loc("error.restoreAutosave"), "B.openlab")
-        await assertEventually { window.footer.noticeLabel.stringValue == expected }
-        XCTAssertTrue(window.store.logEntries.contains { $0.message == expected })
+        XCTAssertEqual(window.footer.noticeLabel.stringValue, expected, file: file, line: line)
+        XCTAssertTrue(window.store.logEntries.contains { $0.message == expected }, file: file, line: line)
+    }
+
+    func testARestoreNeverRaisesAModalOverAWindowInShowMode() async throws {
+        try await launchWithAnAutosaveAfterAWorkspace(showMode: true)
+        try await restoreOnceTheFirstWindowKnowsItsMode()
+        let window = try XCTUnwrap(app.allWindows.first)
+        XCTAssertTrue(window.isShowMode)
+        XCTAssertEqual(restorePrompts, [], "no modal in Show Mode")
+        XCTAssertEqual(app.allWindows.count, 1, "B stays closed, with its autosave")
+        assertToldToRecover(window)
+    }
+
+    func testARestorePromptsOnceEveryWindowIsKnownToBeInEditMode() async throws {
+        try await launchWithAnAutosaveAfterAWorkspace(showMode: false)
+        alerts.recoveryChoice = .restore
+        try await restoreOnceTheFirstWindowKnowsItsMode()
+        XCTAssertEqual(restorePrompts.count, 1, "the same prompt a manual Open gives")
+        await assertEventually { self.openNames() == ["A", "B"] }
+    }
+
+    /// A's snapshot is later than any wait (a big show, a loaded machine), so its mode is unknown
+    /// when B's autosave is found: no modal may come up under which A could enter Show Mode.
+    func testASlowSnapshotRaisesNoRestorePromptAndLosesNothing() async throws {
+        let paths = try await launchWithAnAutosaveAfterAWorkspace(showMode: true)
+        tap.holdSnapshots = true
+        await app.applyLaunchBehavior()
+
+        let window = try XCTUnwrap(app.allWindows.first)
+        XCTAssertNil(window.store.document, "the snapshot is still held")
+        XCTAssertEqual(restorePrompts, [], "no modal while a window's mode is unknown")
+        XCTAssertEqual(app.allWindows.count, 1, "B stays closed, with its autosave")
+        assertToldToRecover(window)
+        // Offered from the menu even now; the operator leaves it for later.
+        alerts.restoreAutosaves = false
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log, ["autosave:B"])
+
+        tap.holdSnapshots = false
+        tap.releaseResults()
+        await assertEventually("A comes up in Show Mode") { window.isShowMode && window.store.model?.name == "A" }
+        XCTAssertEqual(restorePrompts, [], "the snapshot's arrival raises nothing either")
+        assertToldToRecover(window)
+
+        // The route the notice names: bound to B's file, so its relative media plays and it reopens next launch.
+        alerts.recoveryChoice = .restore
+        await app.openWorkspace(url: URL(fileURLWithPath: paths.b))
+        XCTAssertEqual(restorePrompts, ["recoveryOffer:B"], "the prompt comes when the operator asks")
+        await assertEventually { self.openNames() == ["A", "B"] }
+        let b = try XCTUnwrap(app.allWindows.first { $0.store.model?.name == "B" })
+        await assertEventually("B has the autosave's edit") {
+            b.store.model?.cue(self.intro)?.name == "Autosaved"
+        }
+        await assertEventually("B is bound to its file") { b.store.document?.path == paths.b }
+        XCTAssertTrue(window.isShowMode)
+        XCTAssertTrue(alerts.errors.isEmpty, "\(alerts.errors)")
     }
 
     func testACancelledQuitKeepsTheListOfFilesToReopen() async throws {
@@ -1836,6 +1917,45 @@ final class SystemEngineProcessesTests: XCTestCase {
         XCTAssertEqual(reap(try p.spawnEngine()), 0, "it ran and exited 0")
         XCTAssertEqual(p.stderrTail.read(), ["second line", "no audio device"], "stdout is not read")
         XCTAssertEqual(p.stderrTail.read(), [], "each line once")
+    }
+
+    /// #376: an app relaunched after a crash attaches to the engine still running; what that engine
+    /// prints on stderr afterwards (not what it printed before) reaches the app's log.
+    @MainActor
+    func testTheStderrOfAnEngineAlreadyRunningIsReadBack() async throws {
+        final class Lines: @unchecked Sendable {
+            private let lock = NSLock()
+            private var all: [String] = []
+            func add(_ line: String) {
+                lock.lock()
+                all.append(line)
+                lock.unlock()
+            }
+            var value: [String] {
+                lock.lock()
+                defer { lock.unlock() }
+                return all
+            }
+        }
+        let engine = try await TestEngine.start()
+        defer { engine.stop() }
+        let log = engine.support.appendingPathComponent("engine-stderr.log")
+        let handle = try FileHandle(forWritingTo: log)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("said before the app came\n".utf8))
+        // Over the size the app empties between runs: a running engine's file is not replaced.
+        try handle.write(contentsOf: Data(count: Int(EngineStderrTail.fileLimit) + 1))
+        try handle.write(contentsOf: Data("\n".utf8))
+        let inode = try FileManager.default.attributesOfItem(atPath: log.path)[.systemFileNumber] as? Int
+        let lines = Lines()
+        let p = SystemEngineProcesses(infoURL: engine.infoURL, stderrURL: log, stderrSink: { lines.add($0) })
+        try handle.write(contentsOf: Data("thread panicked at engine\n".utf8))
+        try handle.close()
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: log.path)[.systemFileNumber] as? Int, inode)
+        await assertEventually("the attached engine's later output is logged") {
+            lines.value == ["thread panicked at engine"]
+        }
+        withExtendedLifetime(p) {}
     }
 
     /// A stderr log the app cannot open (read-only, a directory) costs the engine its log, never
