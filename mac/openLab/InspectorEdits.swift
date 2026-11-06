@@ -3,9 +3,9 @@
 import Foundation
 
 /// The inspector's text fields: the Basics tab's, the Triggers tab's OSC address and the Load Time
-/// tab's time.
+/// tab's time, and the Network cue's message.
 enum InspectorField: Hashable, CaseIterable {
-    case number, name, notes, preWait, postWait, target, osc, duration, loadTime
+    case number, name, notes, preWait, postWait, target, osc, duration, loadTime, message
 }
 
 /// Turns what the user typed into a model command, or rejects it locally so nothing is sent.
@@ -25,6 +25,10 @@ enum InspectorEdit {
         case noLoadTime
         /// QLab loads to that long before the end; openLab has no end time for every target yet.
         case negativeLoadTime
+        /// Only Network cues have a message.
+        case noMessage
+        /// The typed arguments cannot be read: an open quote, or an argument type the engine cannot send.
+        case invalidMessage
 
         /// The `Localizable.strings` key of the message shown for it.
         var messageKey: String {
@@ -39,6 +43,8 @@ enum InspectorEdit {
             case .noEditableDuration: return "inspector.invalid.noDuration"
             case .noLoadTime: return "inspector.invalid.noLoadTime"
             case .negativeLoadTime: return "inspector.invalid.negativeLoadTime"
+            case .noMessage: return "inspector.invalid.noMessage"
+            case .invalidMessage: return "inspector.invalid.networkMessage"
             }
         }
     }
@@ -69,6 +75,11 @@ enum InspectorEdit {
         case .loadTime:
             guard cue.kindType == "load" else { return "" }
             return CueTime.format(cue.raw["kind"]?["load_to_time"]?.doubleValue ?? 0)
+        case .message:
+            guard cue.kindType == "network" else { return "" }
+            let kind = cue.raw["kind"]
+            return NetworkMessage.format(
+                address: kind?["address"]?.stringValue ?? "", args: kind?["args"]?.arrayValue ?? [])
         case .target:
             guard let id = cue.raw["kind"]?["target"]?.stringValue else { return "" }
             guard let target = model.cue(ModelID(id)) else { return loc("inspector.target.missing") }
@@ -115,6 +126,7 @@ enum InspectorEdit {
                 if seconds == (cue.raw["kind"]?["load_to_time"]?.doubleValue ?? 0) { return .success(nil) }
                 return .success(.setProperty(cue.id, .loadToTime(seconds)))
             }
+        case .message: return messageCommand(text: text, cue: cue)
         case .osc:
             let a = text.trimmingCharacters(in: .whitespaces)
             if a.isEmpty { return .success(setTriggers(cue, osc: .some(nil))) }
@@ -150,6 +162,26 @@ extension InspectorEdit {
             if seconds == (cue.raw["kind"]?["duration"]?.doubleValue ?? 0) { return .success(nil) }
             return .success(.setProperty(cue.id, .duration(seconds)))
         }
+    }
+
+    /// A Network cue's message from typed text: the address and the arguments, each sent only if it
+    /// changed. A malformed address is accepted (the cue shows broken until fixed, as in QLab);
+    /// arguments that cannot be read are rejected, since the model has no way to hold them.
+    static func messageCommand(text: String, cue: Cue) -> Result<Command?, Rejection> {
+        guard cue.kindType == "network" else { return .failure(.noMessage) }
+        guard case .success(let message) = NetworkMessage.parse(text) else { return .failure(.invalidMessage) }
+        let kind = cue.raw["kind"]
+        var commands: [Command] = []
+        if message.address != (kind?["address"]?.stringValue ?? "") {
+            commands.append(.setProperty(cue.id, .address(message.address)))
+        }
+        // Compared as the text they show, so 5 and 5.0 are told apart and an echo's number form is not.
+        if NetworkMessage.format(address: "/", args: message.args)
+            != NetworkMessage.format(address: "/", args: kind?["args"]?.arrayValue ?? [])
+        {
+            commands.append(.setProperty(cue.id, .args(message.args)))
+        }
+        return .success(Command.transaction(commands))
     }
 
     /// An OSC address that starts a cue: `/`, then printable ASCII with no spaces (QLab's OSC is
