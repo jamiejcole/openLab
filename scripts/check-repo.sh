@@ -301,6 +301,36 @@ soak_classifier() {
   rm -rf "$d"
 }
 
+# 11b. The app-test wrapper retries a hang only when the spindump proves the runner's WindowServer is
+# stuck in the GPU driver and every failure is such a hang. Canned reports and summaries.
+wedged_report() { # samples in the driver, samples waiting on WindowServer
+  printf 'Command: openLab\nProcess: openLab [1]\nNum samples: 9 (1-9)\n  Thread 0x1 "main"\n  *%s ??? (kernel) (blocked by turnstile waiting for WindowServer [2] after 2 hops) 1-9\n' "$2"
+  printf 'Process: WindowServer [2]\nNum samples: 9 (1-9)\n  Thread 0x3 Thread name "ws_main_thread"\n  *%s AppleParavirtDevice::createObjectInternal 1-9\n' "$1"
+}
+wedged_classifier() {
+  local d out timeout other
+  d=$(mktemp -d)
+  timeout='{"failureText":"Test exceeded execution time allowance of 3 minutes","targetName":"openLabTests","testIdentifierString":"Flow/testHung()"}'
+  other='{"failureText":"XCTAssertEqual failed","targetName":"openLabTests","testIdentifierString":"Flow/testBad()"}'
+  printf '{"testFailures":[%s]}' "$timeout" >"$d/hung.json"
+  printf '{"testFailures":[%s,%s]}' "$timeout" "$other" >"$d/mixed.json"
+  printf '{"testFailures":[]}' >"$d/none.json"
+  printf '[{"testIdentifier":"Flow/testHung()","attachments":[{"exportedFileName":"s.txt","isAssociatedWithFailure":true,"suggestedHumanReadableName":"x-Spindump_0.txt"}]}]' >"$d/manifest.json"
+  wedged_report 9 9 >"$d/s.txt"
+  out=$(scripts/run-mac-tests.sh --classify "$d/hung.json" "$d") || fail wedged-classifier "a proven hang must be retried"
+  [ "$out" = "-only-testing:openLabTests/Flow/testHung" ] || fail wedged-classifier "wrong retry arguments: '$out'"
+  scripts/run-mac-tests.sh --classify "$d/mixed.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a hang beside another failure must not be retried"
+  scripts/run-mac-tests.sh --classify "$d/none.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a run with no test failure (a build error) must not be retried"
+  wedged_report 3 9 >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "WindowServer only passing through the driver must not excuse a hang"
+  wedged_report 9 3 >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a process not waiting on WindowServer must not be excused"
+  wedged_report 9 9 >"$d/s.txt"
+  printf '[]' >"$d/manifest.json"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a hang with no spindump must not be retried"
+  (cd "$d" && rm -f hung.json mixed.json none.json manifest.json s.txt) && rmdir "$d"
+}
+
 # 12. Every UI smoke identifier (scripts/ui-smoke.txt) names an existing test, so a rename cannot
 # silently drop it from the per-PR set.
 ui_smoke() {
@@ -333,6 +363,7 @@ wall_clock
 one_gate
 prepush_no_stamp
 soak_classifier
+wedged_classifier
 ui_smoke
 
 if [ "$failed" = 0 ]; then
