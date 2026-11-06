@@ -18,6 +18,15 @@ final class WindowLayoutUITests: XCTestCase {
         start.press(forDuration: 0.2, thenDragTo: start.withOffset(CGVector(dx: dx, dy: dy)))
     }
 
+    /// What the drag saw, for the failure message: every splitter's frame, the window's frame and
+    /// what the press point hit. A drag that does not take is otherwise a bare "the drag took".
+    private func scene(_ app: XCUIApplication, _ divider: XCUIElement) -> String {
+        let window = app.windows["main-window"]
+        let splitters = window.splitters.allElementsBoundByIndex.map { "\($0.frame)" }
+        let hit = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).screenPoint
+        return "window \(window.frame), splitters \(splitters), divider \(divider.frame), press at \(hit)"
+    }
+
     /// True once `condition` holds, false after ten seconds.
     private func poll(_ condition: () -> Bool) -> Bool {
         for _ in 0..<20 {
@@ -40,7 +49,7 @@ final class WindowLayoutUITests: XCTestCase {
         let app = launchDemo()
         let before = divider(app, horizontal: true).frame.minY
         drag(divider(app, horizontal: true), dx: 0, dy: -60)
-        XCTAssertTrue(poll { divider(app, horizontal: true).frame.minY < before - 30 }, "the drag took")
+        XCTAssertTrue(poll { divider(app, horizontal: true).frame.minY < before - 30 }, "the drag took: before \(before), \(scene(app, divider(app, horizontal: true)))")
         let dragged = divider(app, horizontal: true).frame.minY
         relaunch(app)
         XCTAssertEqual(divider(app, horizontal: true).frame.minY, dragged, accuracy: 2)
@@ -52,7 +61,7 @@ final class WindowLayoutUITests: XCTestCase {
         XCTAssertTrue(divider(app, horizontal: false).waitForExistence(timeout: 10))
         let before = divider(app, horizontal: false).frame.minX
         drag(divider(app, horizontal: false), dx: -60, dy: 0)
-        XCTAssertTrue(poll { divider(app, horizontal: false).frame.minX < before - 30 }, "the drag took")
+        XCTAssertTrue(poll { divider(app, horizontal: false).frame.minX < before - 30 }, "the drag took: before \(before), \(scene(app, divider(app, horizontal: false)))")
         let dragged = divider(app, horizontal: false).frame.minX
         relaunch(app)
         XCTAssertEqual(divider(app, horizontal: false).frame.minX, dragged, accuracy: 2)
