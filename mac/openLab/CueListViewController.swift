@@ -1021,7 +1021,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     // manual pp. 92-95; the edit-number and edit-name keys open the same fields)
 
     /// The columns that edit in place, and the inspector field each one is.
-    static let editableColumns: [String: InspectorField] = ["number": .number, "name": .name, "duration": .duration, "target": .target]
+    static let editableColumns: [String: InspectorField] = [
+        "number": .number, "name": .name, "duration": .duration, "target": .target,
+    ]
 
     /// The field laid over the cell being edited. It lives in the outline, not in the cell, so the
     /// per-tick refresh of the Duration column (progress) and model echoes cannot replace it mid-typing.
