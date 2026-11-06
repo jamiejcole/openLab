@@ -344,7 +344,8 @@ wedged_case() { # name, wanted exit code, wanted calls, xcodebuild's exit codes,
   mkdir -p "$c/build/Logs/Test"
   printf '%s\n' $4 >"$c/rcs"
   [ -z "${OLD_BUNDLE:-}" ] || mkdir "$c/build/Logs/Test/Old.xcresult"
-  (cd "$c" && PATH="$WEDGED/bin:$PATH" "$OLDPWD/scripts/run-mac-tests.sh" fakexb base -- ${5:-}) >"$c/out" 2>&1
+  # The summary is CI's real one: a fake wedge must not be reported there.
+  (cd "$c" && GITHUB_STEP_SUMMARY= TMPDIR="$c" PATH="$WEDGED/bin:$PATH" "$OLDPWD/scripts/run-mac-tests.sh" fakexb base -- ${5:-}) >"$c/out" 2>&1
   rc=$?
   n=$(wc -l <"$c/calls" | tr -d ' ')
   { [ "$rc" = "$2" ] && [ "$n" = "$3" ]; } || fail wedged-run "$1: want exit $2 and $3 call(s), got exit $rc and $n"
@@ -364,13 +365,14 @@ FAKE
   cat >"$d/bin/xcrun" <<'FAKE'
 #!/bin/sh
 case "$*" in
-  *"test-results summary"*Test-1.xcresult*) [ -z "$BAD_SUMMARY" ] || exit 9; cat "$FIRST_SUMMARY" ;;
+  # An old bundle reads as a proven wedge, and passes enough tests: only the wrapper's choice of bundle can save it.
+  *"test-results summary"*Test-1.xcresult* | *"test-results summary"*Old.xcresult*) [ -z "$BAD_SUMMARY" ] || exit 9; cat "$FIRST_SUMMARY" ;;
   *"test-results summary"*) printf '{"passedTests":%s}' "${PASSED:-1}" ;;
   *"export attachments"*) [ -z "$BAD_EXPORT" ] || exit 9; for a; do p=$a; done; cp -R "$WEDGED_ATT" "$p" ;;
 esac
 FAKE
   chmod +x "$d/bin/fakexb" "$d/bin/xcrun"
-  printf '{"testFailures":[{"failureText":"Test exceeded execution time allowance of 3 minutes","targetName":"openLabTests","testIdentifierString":"Flow/testHung()"}]}' >"$d/hung.json"
+  printf '{"passedTests":5,"testFailures":[{"failureText":"Test exceeded execution time allowance of 3 minutes","targetName":"openLabTests","testIdentifierString":"Flow/testHung()"}]}' >"$d/hung.json"
   printf '{"testFailures":[{"failureText":"Test exceeded execution time allowance of 3 minutes","targetName":"openLabTests","testIdentifierString":"Flow/testHung()"},{"failureText":"XCTAssertEqual failed","targetName":"openLabTests","testIdentifierString":"Flow/testBad()"}]}' >"$d/mixed.json"
   printf '[{"testIdentifier":"Flow/testHung()","attachments":[{"exportedFileName":"s.txt","isAssociatedWithFailure":true,"suggestedHumanReadableName":"x-Spindump_0.txt"}]}]' >"$d/att/manifest.json"
   wedged_report 9 9 >"$d/att/s.txt"
