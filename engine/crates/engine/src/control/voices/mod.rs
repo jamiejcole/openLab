@@ -18,7 +18,7 @@ use openlab_audio::{
     Slice, StreamHandle, StreamRequest, VoiceId, VoiceStart, total_frames,
 };
 use openlab_core::{
-    Action, BrokenReason, CueEngine, CueId, CueKind, FadeCurve, FadeSpec, Input, LevelParam,
+    Action, BrokenReason, Cue, CueEngine, CueId, CueKind, FadeCurve, FadeSpec, Input, LevelParam,
     PatchId, RunId, SampleTime, StopFade, Workspace, db_to_gain, seconds_to_samples,
 };
 
@@ -427,8 +427,17 @@ fn cue_media(ws: &Workspace, cue: CueId) -> Option<String> {
     }
 }
 
+/// The cue `id`, through the catalog's cue index (a step per level, not a search of the show);
+/// a cue the index does not place is looked for in the workspace.
+pub(super) fn cue_of<'a>(env: &Env<'a>, id: CueId) -> Option<&'a Cue> {
+    env.media
+        .index()
+        .locate(env.ws, id)
+        .or_else(|| env.ws.find_cue(id))
+}
+
 fn sig_of(env: &Env<'_>, cue: CueId) -> Option<Sig> {
-    let c = env.ws.find_cue(cue)?;
+    let c = cue_of(env, cue)?;
     let CueKind::Audio {
         media: Some(media),
         start_time,

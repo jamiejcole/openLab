@@ -14,8 +14,8 @@ use openlab_core::{
 use crate::persist::media_path;
 
 use super::super::inbox::ProbeAnswer;
-use super::Job;
 use super::pool::*;
+use super::{Job, MAX_STUCK_JOBS_PER_FILE};
 
 #[cfg(test)]
 use super::super::DocId;
@@ -57,6 +57,8 @@ pub(super) struct Entry {
     urgent: bool,
     /// The watchdog gave up on its job (a late answer still counts).
     timed_out: bool,
+    /// Its probes the watchdog gave up on with no answer since.
+    stuck_jobs: usize,
     /// How many cues use the file, and how many of them ask for it to be preloaded.
     users: usize,
     preloaders: usize,
@@ -170,9 +172,6 @@ pub struct MediaCatalog {
     plan_changes: PlanChanges,
     /// Files to start or stop watching (drained by the control loop into watch jobs).
     key_changes: Vec<KeyChange>,
-    /// Jobs sent to the workers (tests wait for exactly that many answers).
-    #[cfg(test)]
-    jobs: u64,
 }
 
 /// What may have changed a cue's slice-plan check (`checks.rs`) since the checks last looked
@@ -249,8 +248,6 @@ impl MediaCatalog {
             cues_read: 0,
             plan_changes: PlanChanges::default(),
             key_changes: Vec::new(),
-            #[cfg(test)]
-            jobs: 0,
         }
     }
 
@@ -575,11 +572,6 @@ impl MediaCatalog {
             give_back(&mut self.reserved, &self.pool.preloads, bytes);
             e.reserved = 0;
             e.preload_ticket = 0;
-        } else {
-            #[cfg(test)]
-            {
-                self.jobs += 1;
-            }
         }
     }
 
@@ -629,12 +621,14 @@ impl MediaCatalog {
     }
 
     /// Probes `key` again (a stream of it failed: the file may have gone or changed). The last
-    /// answer stands until the new one comes, so cues on it keep their primes meanwhile.
+    /// answer stands until the new one comes, so cues on it keep their primes meanwhile. Sends
+    /// nothing while a probe of it runs, or once too many of them got stuck
+    /// ([`MAX_STUCK_JOBS_PER_FILE`]).
     pub fn reprobe(&mut self, key: &str) {
         if self
             .entries
             .get(key)
-            .is_some_and(|e| e.asking && !e.timed_out)
+            .is_some_and(|e| e.asking && !e.timed_out || e.stuck_jobs >= MAX_STUCK_JOBS_PER_FILE)
         {
             return;
         }
@@ -664,10 +658,6 @@ impl MediaCatalog {
             // A relative reference in a show that was never saved has no folder to be in.
             None => false,
         };
-        #[cfg(test)]
-        {
-            self.jobs += u64::from(asked);
-        }
         // A new entry, or one that fails at once: what `media` gives may change (when every
         // cue is to be checked again anyway, the checks do not read the keys).
         if !self.plan_changes.all && (!asked || !self.entries.contains_key(&key)) {
@@ -700,6 +690,7 @@ impl MediaCatalog {
                     asking: asked,
                     urgent: false,
                     timed_out: false,
+                    stuck_jobs: 0,
                     users: 0,
                     preloaders: 0,
                     wants_preload: false,
@@ -714,16 +705,23 @@ impl MediaCatalog {
         }
     }
 
-    /// Reports `key`'s probe `ticket` unplayable, if it is still the one asked and not answered
-    /// (the pool's watchdog gave up on it).
+    /// The pool's watchdog gave up on `key`'s probe `ticket`, if it is still the one asked and
+    /// not answered: a later [`Self::reprobe`] may ask afresh. A file never answered is reported
+    /// unplayable. One with a last answer keeps it: a probe past the timeout says nothing about
+    /// the file (a long MP3 on a slow disk gets there too), its preload may be in memory, and a
+    /// start on a volume that really hangs fails by itself (`STREAM_START_LIMIT`).
     pub fn give_up(&mut self, key: &str, ticket: u64, out: &mut Vec<(MediaRef, MediaStatus)>) {
-        if let Some(e) = self.entries.get_mut(key)
-            && e.ticket == ticket
-            && e.asking
-            && matches!(e.probe, Probe::Pending)
-        {
+        let Some(e) = self
+            .entries
+            .get_mut(key)
+            .filter(|e| e.ticket == ticket && e.asking && !e.timed_out)
+        else {
+            return;
+        };
+        e.timed_out = true;
+        e.stuck_jobs += 1;
+        if matches!(e.probe, Probe::Pending) {
             e.probe = Probe::Failed;
-            e.timed_out = true;
             self.plan_changes.keys.insert(key.to_owned());
             out.push((
                 MediaRef::new(key),
@@ -750,6 +748,7 @@ impl MediaCatalog {
                     .get_mut(&key)
                     .filter(|e| e.ticket == ticket && e.asking)?;
                 entry.asking = false;
+                entry.stuck_jobs = 0;
                 let (probe, status) = match result {
                     Ok((path, probed)) => (
                         Probe::Ready(Arc::new(Ready { path, probed })),
@@ -815,6 +814,7 @@ impl MediaCatalog {
         entry.asking = false;
         entry.urgent = false;
         entry.timed_out = false;
+        entry.stuck_jobs = 0;
         entry.probe = Probe::Failed;
         give_back(&mut self.reserved, &self.pool.preloads, entry.reserved);
         entry.reserved = 0;

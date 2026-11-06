@@ -593,7 +593,7 @@ impl<D: Driver> Soak<D> {
                 m.underrun_frames(),
                 m.faults(),
                 m.dropped_events(),
-                m.leaked_starts(),
+                m.leaked_returns(),
             ]
         });
         let block = self.block;
