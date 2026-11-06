@@ -275,6 +275,8 @@
 "inspector.invalid.noDuration" = "This cue's duration cannot be edited: only Wait and Fade cues have one to set.";
 "inspector.invalid.noLoadTime" = "Only a Load cue has a load time.";
 "inspector.invalid.negativeLoadTime" = "Loading to a time before the end is not supported yet: enter a time from the start.";
+"inspector.invalid.noMessage" = "Only a Network cue has a message.";
+"inspector.invalid.networkMessage" = "The arguments cannot be read: put text with spaces in double quotes, and use \\T or \\F for true or false.";
 "inspector.refused" = "The change was refused: %@";
 "inspector.failed" = "The change could not be sent.";
 
@@ -386,6 +388,7 @@
 "problem.device_unavailable.channels_missing" = "Audio device {device} has {available} outputs; patch {patch} needs {needed}.";
 "problem.device_unavailable.output_count_mismatch" = "Patch {patch} has {outputs} outputs but its device mapping lists {mapped}.";
 "problem.network_patch_missing" = "Its network patch, {patch}, does not exist.";
+"problem.network_patch_missing.none" = "It has no network patch.";
 "problem.network_host_invalid" = "Network patch {patch} cannot be used: {reason}.";
 "problem.network_message_invalid" = "The OSC message cannot be sent: {reason}.";
 "problem.slices_unplayable" = "Its slices and loops cannot be played with this file: {reason}.";
@@ -562,6 +565,13 @@
 "inspector.tab.levels" = "Levels";
 "inspector.tab.curve" = "Curve";
 "inspector.tab.devamp" = "Devamp";
+"inspector.tab.network" = "Settings";
+"inspector.network.patch" = "Patch";
+"inspector.network.message" = "Message";
+"inspector.network.messageHint" = "/address 1 2.5 \"text\" \\T";
+"inspector.network.send" = "Send";
+"inspector.network.unpatched" = "No patch";
+"cue.target.unpatched" = "No patch";
 "inspector.devamp.startNext" = "Start next cue";
 "inspector.devamp.stopTarget" = "Stop target when its slice ends";
 "inspector.devampMode" = "Leaves";
