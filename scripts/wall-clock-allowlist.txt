@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Engine test code allowed to read the wall clock (Instant::now, .elapsed(), SystemTime), checked by
+# Engine test code allowed to read the wall clock (Instant::now, .elapsed(), SystemTime, recv_timeout), checked by
 # scripts/check-repo.sh: `path | reason`. Same rules as scripts/debug-assertions-allowlist.txt: a reason is
 # `permanent: ...` quoting code in backticks, or cites the open issue (#N) that removes the use; an entry
 # whose file no longer reads the clock fails the check, so delete it with the fix.
@@ -17,3 +17,18 @@ engine/crates/engine/tests/persist/writer.rs | permanent: `let t0 = std::time::I
 engine/crates/engine/tests/show/device.rs | permanent: `let base = Instant::now();` is only the origin of the fake clock the test moves by hand
 engine/crates/engine/tests/show/mod.rs | permanent: `base: std::time::Instant::now()` is only the origin of the probe clock the test moves by hand; `t.elapsed()` ages old temp dirs for cleanup
 engine/crates/engine/tests/soak.rs | permanent: the 24 h virtual soak asserts the last hours are not 3x slower than the first (`let started = Instant::now();`); ignored test, release only
+engine/crates/audio/src/stream.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/audio/tests/decode.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/src/control/media/catalog/tests.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/src/control/netout/tests.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/src/host/engine_file.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/src/host/stop.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/src/persist/files.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/src/persist/settings.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/tests/common/mod.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/tests/control/network.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/tests/control/shutdown.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/tests/control_relink.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/tests/net/session.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/tests/net/ws.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time
+engine/crates/engine/tests/persist/save_robust.rs | permanent: `recv_timeout` is only a hang guard bounding a wait for another thread; the test passes the moment the message arrives and asserts nothing about elapsed time

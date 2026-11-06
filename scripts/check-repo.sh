@@ -244,26 +244,58 @@ path_filters() {
   done
 }
 
-# 8. Tests do not depend on the wall clock (CLAUDE.md, "Tests"): Instant::now, .elapsed() and SystemTime
-# are allowed in engine test code only in files listed, with a reason, in scripts/wall-clock-allowlist.txt.
-# Test code is everything under a tests/ directory or in a tests.rs, and a source file's part after its
-# first #[cfg(test)].
+# 8. Tests do not depend on the wall clock (CLAUDE.md, "Tests"): Instant::now, .elapsed(), SystemTime and
+# recv_timeout (a hang guard is still a real-time wait) are allowed in engine test code only in files listed,
+# with a reason, in scripts/wall-clock-allowlist.txt. Test code is everything under a tests/ directory or in a
+# tests.rs, plus any item under #[cfg(test)] at any indent: a one-line item, or a block that runs to the
+# closing brace at the attribute's own indent (production code after a test helper is not test code).
+wall_clock_scan() { # files: prints each one that reads the clock in test code
+  awk '
+    FNR == 1 { t = 0; arm = 0; once = 0; ind = -1; whole = (FILENAME ~ /\/tests\// || FILENAME ~ /\/tests\.rs$/) }
+    {
+      match($0, /^[ \t]*/); n = RLENGTH; body = substr($0, n + 1)
+      if (arm && body != "" && body !~ /^#\[/) {
+        arm = 0
+        if (body ~ /\{/ ? body ~ /\}[ \t]*;?[ \t]*$/ : body ~ /[;,][ \t]*$/) once = 1; else { t = 1; ind = aind }
+      }
+      if (body ~ /^#\[cfg\(test\)\]/) { arm = 1; aind = n; next }
+      if ((whole || t || once) && body !~ /^\/\// && $0 ~ /Instant::now|\.elapsed\(\)|SystemTime|recv_timeout/) { print FILENAME; nextfile }
+      once = 0
+      if (t && n == ind && body ~ /^[})\]]/) t = 0
+    }
+  ' "$@"
+}
 wall_clock() {
   local hits f
-  hits=$(git ls-files -co --exclude-standard 'engine/*.rs' | sort -u | xargs awk '
-    FNR == 1 { t = (FILENAME ~ /\/tests\// || FILENAME ~ /\/tests\.rs$/) }
-    /^#\[cfg\(test\)\]/ { t = 1 }
-    t && $0 !~ /^[[:space:]]*\/\// && /Instant::now|\.elapsed\(\)|SystemTime/ { print FILENAME; nextfile }
-  ')
+  hits=$(wall_clock_scan $(git ls-files -co --exclude-standard 'engine/*.rs' | sort -u))
   allowlist_entries wall-clock "$CLOCK_ALLOW"
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     allowlisted "$CLOCK_ALLOW" "$f" && continue
-    fail wall-clock "$f reads the wall clock (Instant::now, .elapsed(), SystemTime) in test code; drive time from the virtual clock, or list the file in $CLOCK_ALLOW with an open issue"
+    fail wall-clock "$f reads the wall clock (Instant::now, .elapsed(), SystemTime, recv_timeout) in test code; drive time from the virtual clock, or list the file in $CLOCK_ALLOW with an open issue"
   done <<<"$hits"
   for f in $(allowlist_paths "$CLOCK_ALLOW"); do
     printf '%s\n' "$hits" | grep -qxF "$f" || fail wall-clock "$CLOCK_ALLOW lists $f, which no longer reads the wall clock in test code; delete the entry"
   done
+}
+
+wall_clock_cases() { # the scan must see an indented #[cfg(test)], and stop at the end of a test helper
+  local d
+  d=$(mktemp -d)
+  printf 'struct S;\nimpl S {\n    #[cfg(test)]\n    mod t {\n        fn f() { let _ = std::time::Instant::now(); }\n    }\n}\n' >"$d/indented.rs"
+  printf '#[cfg(test)]\nfn helper() {\n    let _ = 1;\n}\n\nfn prod() { let _ = Instant::now(); }\n' >"$d/after_helper.rs"
+  printf 'struct S {\n    #[cfg(test)]\n    flag: bool,\n}\nfn prod() { let _ = Instant::now(); }\n' >"$d/field.rs"
+  printf '#[cfg(test)]\nmod tests {\n    fn f() { rx.recv_timeout(D); }\n}\n' >"$d/guard.rs"
+  printf 'fn prod() { let _ = SystemTime::now(); }\n#[cfg(test)]\nmod tests {\n    fn f() {}\n}\n' >"$d/clean.rs"
+  mkdir "$d/tests"
+  printf 'fn f() { rx.recv_timeout(D); }\n' >"$d/tests/dir.rs"
+  [ "$(wall_clock_scan "$d/indented.rs")" = "$d/indented.rs" ] || fail wall-clock-cases "an indented #[cfg(test)] block must count as test code"
+  [ -z "$(wall_clock_scan "$d/after_helper.rs")" ] || fail wall-clock-cases "production code after a test helper must not count as test code"
+  [ -z "$(wall_clock_scan "$d/field.rs")" ] || fail wall-clock-cases "a cfg(test) field must not make the rest of the file test code"
+  [ "$(wall_clock_scan "$d/guard.rs")" = "$d/guard.rs" ] || fail wall-clock-cases "recv_timeout in test code must be flagged"
+  [ -z "$(wall_clock_scan "$d/clean.rs")" ] || fail wall-clock-cases "a clock read before the test module is production code"
+  [ "$(wall_clock_scan "$d/tests/dir.rs")" = "$d/tests/dir.rs" ] || fail wall-clock-cases "recv_timeout under a tests/ directory must be flagged"
+  rm -rf "$d"
 }
 
 # 9. The Rust fmt/clippy/test command lines live only in scripts/rust-checks.sh, which CI, `make` and
@@ -428,6 +460,16 @@ FAKE
 
 # 12. Every identifier in scripts/ui-smoke.txt and scripts/core-flows.txt names an existing test, so a
 # rename cannot silently drop it from the per-PR set or the core-flows set.
+# test_in_class <class> <test> <files...>: true when the test function is declared inside that class.
+test_in_class() {
+  local cls=$1 name=$2
+  shift 2
+  awk -v cls="$cls" -v fn="func $name()" '
+    FNR == 1 { cur = "" }
+    /^(final )?class [A-Za-z0-9_]+/ { c = $0; sub(/^(final )?class /, "", c); sub(/[^A-Za-z0-9_].*/, "", c); cur = c }
+    index($0, fn) && cur == cls { found = 1 }
+    END { exit !found }' "$@"
+}
 test_list() {
   # Sets LIST_N (not echoed: fail must run in this shell to keep its flag).
   local list=$1 check=$2 prefix=$3 line target cls name n=0
@@ -442,14 +484,23 @@ test_list() {
     target=$(printf '%s' "$line" | cut -d/ -f1); cls=$(printf '%s' "$line" | cut -d/ -f2); name=$(printf '%s' "$line" | cut -d/ -f3)
     # The test must be declared in the class named, not merely in the same file: xcodebuild runs
     # nothing, silently, for an identifier whose class does not hold the test.
-    if ! awk -v cls="$cls" -v fn="func $name()" '
-        /^(final )?class [A-Za-z0-9_]+/ { c = $0; sub(/^(final )?class /, "", c); sub(/[^A-Za-z0-9_].*/, "", c); cur = c }
-        index($0, fn) && cur == cls { found = 1 }
-        END { exit !found }' mac/"$target"/*.swift; then
+    if ! test_in_class "$cls" "$name" mac/"$target"/*.swift; then
       fail "$check" "'$line' names no test in mac/$target"
     fi
   done <"$list"
   LIST_N=$n
+}
+test_list_cases() { # a class and a test of another class in the same file must not pair
+  local d
+  d=$(mktemp -d)
+  printf 'final class A: XCTestCase {\n    func testOne() {}\n}\nfinal class B: XCTestCase {\n    func testTwo() {}\n}\n' >"$d/two.swift"
+  printf 'func testOrphan() {}\n' >"$d/orphan.swift"
+  test_in_class A testOne "$d/two.swift" || fail ui-smoke-cases "a test must pair with its own class"
+  test_in_class B testTwo "$d/two.swift" || fail ui-smoke-cases "the second class's test must pair with the second class"
+  test_in_class A testTwo "$d/two.swift" && fail ui-smoke-cases "A/testTwo must not pass: testTwo is in class B"
+  test_in_class B testOne "$d/two.swift" && fail ui-smoke-cases "B/testOne must not pass: testOne is in class A"
+  test_in_class B testOrphan "$d/two.swift" "$d/orphan.swift" && fail ui-smoke-cases "a function before any class in the next file must not pair with the last class of the previous file"
+  rm -rf "$d"
 }
 ui_smoke() {
   test_list scripts/ui-smoke.txt ui-smoke openLabUITests
@@ -467,11 +518,13 @@ real_engine_tests
 one_home
 path_filters
 wall_clock
+wall_clock_cases
 one_gate
 prepush_no_stamp
 soak_classifier
 wedged_classifier
 wedged_run
+test_list_cases
 ui_smoke
 
 if [ "$failed" = 0 ]; then
