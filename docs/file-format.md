@@ -5,7 +5,7 @@ Status: format version **9** (openLab v0.0.1). Requirements: NFR-40, NFR-32, DOC
 An openLab workspace is one UTF-8 JSON text file with the extension **`.openlab`**. It is meant to be
 readable, diffable and safe to keep under version control. The source of truth for the format is the
 Rust model in `engine/crates/core` (`model.rs`, `cue.rs`, `show_file.rs`); this document describes
-it, and `engine/fixtures/show/` holds a sample file for every format version.
+it, and `engine/fixtures/show/` holds a sample file for each format version so far.
 
 ## 1. Conventions
 
@@ -49,16 +49,18 @@ The top level of every file is:
 }
 ```
 
-- `format_version` is an integer, 0 or greater. It changes whenever the meaning or shape of the file
-  changes in a way an older reader would get wrong. Every change bumps it by exactly one.
+- `format_version` is an integer, 0 or greater. It stays at its current value until v1.0.0 (see the
+  policy below).
 - **Newer than supported:** openLab refuses the file with a message naming both the file's version
   and the newest version it supports. It never guesses at a newer format.
 - **Older than current:** openLab upgrades the document in memory one version at a time
   (`v0 → v1 → … → current`). Each step is a pure function from one JSON document to the next, with a
   fixture of the old version in `engine/fixtures/show/` and a test that it upgrades correctly. The
   file on disk is only rewritten (in the current version) when the user saves.
-- **Policy for contributors:** a change to the model that affects the file bumps `FORMAT_VERSION`,
-  adds a migration step and an old-version fixture, and updates this document, all in one commit.
+- **Policy for contributors:** until v1.0.0 a change to the model that affects the file keeps
+  `FORMAT_VERSION`, edits the current-version fixture in place and updates this document, all in one
+  commit. It adds no migration step or old-version fixture: openLab runs no production shows before
+  then, so no old files need upgrading. The existing steps stay, so older test shows still load.
 
 | Version | openLab | Notes |
 |---|---|---|
