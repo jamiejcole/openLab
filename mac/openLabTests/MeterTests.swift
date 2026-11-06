@@ -165,6 +165,25 @@ final class MeterTests: XCTestCase {
         XCTAssertEqual(ticker.started, ticker.stopped)
     }
 
+    /// #452: a meter added to a window that is already covered does not run the tick.
+    func testAMeterAddedToACoveredWindowDoesNotRun() {
+        let covered = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 100), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        covered.isReleasedWhenClosed = false
+        covered.orderFront(nil)
+        defer { covered.orderOut(nil) }
+        view.removeFromSuperview()  // the fixture's own meter is not the one under test
+        XCTAssertFalse(ticker.running)
+        let late = MeterView(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
+        late.source = .cue(Self.intro)
+        late.bank = bank
+        late.windowIsCovered = { _ in true }  // a headless host cannot cover a window
+        covered.contentView?.addSubview(late)
+        XCTAssertEqual(bank.visibleCount, 0, "covered: not registered, no 60 Hz tick")
+        XCTAssertFalse(ticker.running)
+    }
+
     func testOneTimerServesAllViews() {
         let second = MeterView(frame: .zero)
         second.bank = bank
