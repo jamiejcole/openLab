@@ -80,7 +80,8 @@ enum NetworkMessage {
     /// `address` and `args` as the line the user would type, so parsing it gives them back.
     static func format(address: String, args: [JSONValue]) -> String {
         // An empty address is quoted when arguments follow, or the line would read back shifted.
-        let quoteAddress = address.isEmpty ? !args.isEmpty : address.contains(where: \.isWhitespace) || address.contains("\"")
+        let odd = address.contains(where: \.isWhitespace) || address.contains("\"")
+        let quoteAddress = address.isEmpty ? !args.isEmpty : odd
         var parts = [quoteAddress ? quoted(address) : address]
         for a in args {
             switch (a["type"]?.stringValue, a["value"]) {
