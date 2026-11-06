@@ -20,11 +20,12 @@ final class WindowLayoutUITests: XCTestCase {
 
     /// What the drag saw, for the failure message: every splitter's frame, the window's frame and
     /// what the press point hit. A drag that does not take is otherwise a bare "the drag took".
-    private func scene(_ app: XCUIApplication, _ divider: XCUIElement) -> String {
+    private func scene(_ app: XCUIApplication, _ horizontal: Bool) -> String {
+        let bar = divider(app, horizontal: horizontal)
         let window = app.windows["main-window"]
         let splitters = window.splitters.allElementsBoundByIndex.map { "\($0.frame)" }
-        let hit = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).screenPoint
-        return "window \(window.frame), splitters \(splitters), divider \(divider.frame), press at \(hit)"
+        let hit = bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).screenPoint
+        return "window \(window.frame), splitters \(splitters), divider \(bar.frame), press at \(hit)"
     }
 
     /// True once `condition` holds, false after ten seconds.
