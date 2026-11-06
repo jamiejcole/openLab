@@ -83,7 +83,7 @@ Each run segment gets its own mixer `VoiceId`, allocated by the loop from one en
 | `StopVoice { at, fade }` | mixer `StopVoice` (fade with the curve); the record goes with the `VoiceFinished` |
 | `PauseVoice { at }` | mixer `PauseVoice` (native pause, M3.18: position and ring kept) |
 | `ResumeVoice { run, paused, at }` | mixer `ResumeVoice { voice: old, new_id }` re-keys the voice to a fresh id for the fresh run |
-| `Ramp` | mixer `Ramp` (`Master` / `CueOutput` / `Crosspoint`), no gangs (a Fade's values, and a level edit's, are already per output). Ramps come from Fade cues and from level edits on a playing cue (docs/cue-engine.md, "Level edits on a playing cue"): the loop carries them out alike, one fixed-size mixer command each, through the queue every command takes |
+| `Ramp` | mixer `Ramp`, or `RampSet` with the ramps next to it (`Master` / `CueOutput` / `Crosspoint`), no gangs (a Fade's values, and a level edit's, are already per output). Ramps come from Fade cues and from level edits on a playing cue (docs/cue-engine.md, "Level edits on a playing cue"): the loop carries them out alike, through the queue every command takes; each run of ramps of one voice with one date and fade goes as one `RampSet` (docs/audio.md, Scheduling horizon) |
 | `DevampVoice { stop }` | mixer `Devamp` |
 | `PreviewStart` / `PreviewStop` | as `StartVoice` (offset 0, never a primed stream) / `StopVoice`, on the cue's own patch until PB-09's audition output (M2.21) |
 | `SetArmed` | applied to the model through its write guard (the engine is told of that cue) before the engine's next call, then a `model_changed` broadcast with an upsert of each cue whose flag changed |
