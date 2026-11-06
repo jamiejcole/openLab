@@ -1194,7 +1194,8 @@ final class EngineCrashFlowTests: XCTestCase {
     /// The list to reopen is [A, B]: A saved in Show Mode (or Edit Mode), B with an autosave newer
     /// than its file. The engine that held them has crashed; the app is up, the launch choice not
     /// yet carried out and the alarm's offer made.
-    private func launchWithAnAutosaveAfterAWorkspace(showMode: Bool) async throws {
+    @discardableResult
+    private func launchWithAnAutosaveAfterAWorkspace(showMode: Bool) async throws -> (a: String, b: String) {
         makePrefs(.restore)
         try await runs.start()
         let b = try runs.show("Demo", named: "B")
@@ -1212,6 +1213,7 @@ final class EngineCrashFlowTests: XCTestCase {
         try await launch(launchDefaults: prefs)
         let offered = await pump { self.presenter.restore != nil }
         XCTAssertTrue(offered)
+        return (a, b)
     }
 
     /// Carries out the launch choice with B's answer held until A's window knows its mode, however
@@ -1263,7 +1265,7 @@ final class EngineCrashFlowTests: XCTestCase {
     /// A's snapshot is later than any wait (a big show, a loaded machine), so its mode is unknown
     /// when B's autosave is found: no modal may come up under which A could enter Show Mode.
     func testASlowSnapshotRaisesNoRestorePromptAndLosesNothing() async throws {
-        try await launchWithAnAutosaveAfterAWorkspace(showMode: true)
+        let paths = try await launchWithAnAutosaveAfterAWorkspace(showMode: true)
         tap.holdSnapshots = true
         await app.applyLaunchBehavior()
 
@@ -1283,14 +1285,16 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(restorePrompts, [], "the snapshot's arrival raises nothing either")
         assertToldToRecover(window)
 
-        alerts.restoreAutosaves = true
-        await alarm.recoverAutosaves()
-        XCTAssertEqual(alerts.log, ["autosave:B", "autosave:B"])
+        // The route the notice names: bound to B's file, so its relative media plays and it reopens next launch.
+        alerts.recoveryChoice = .restore
+        await app.openWorkspace(url: URL(fileURLWithPath: paths.b))
+        XCTAssertEqual(restorePrompts, ["recoveryOffer:B"], "the prompt comes when the operator asks")
         await assertEventually { self.openNames() == ["A", "B"] }
         let b = try XCTUnwrap(app.allWindows.first { $0.store.model?.name == "B" })
         await assertEventually("B has the autosave's edit") {
             b.store.model?.cue(self.intro)?.name == "Autosaved"
         }
+        await assertEventually("B is bound to its file") { b.store.document?.path == paths.b }
         XCTAssertTrue(window.isShowMode)
         XCTAssertTrue(alerts.errors.isEmpty, "\(alerts.errors)")
     }
