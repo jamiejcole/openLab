@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # The app test runs that have a hang limit. On a hosted macOS VM the paravirtual GPU driver can stall
 # with WindowServer inside it; every window call on the machine then blocks, so whichever test makes a
-# window next hits the limit, with no fault of its own (a later process on the same runner is fine).
-# When the spindump XCTest took for a timed-out test proves exactly that, and every failure of the run
+# window next hits the limit. What stalls the driver is not known; a later process on the same runner
+# has been fine. When the spindump XCTest took for a timed-out test proves exactly that, and every failure of the run
 # is such a timeout, those tests run once more; they must pass. Any other failure fails the step at once.
 #
 #   scripts/run-mac-tests.sh XCODEBUILD... -- [SELECTION...]    run `XCODEBUILD... SELECTION... test`
@@ -63,15 +63,18 @@ while [ $# -gt 0 ] && [ "$1" != "--" ]; do
 done
 [ $# -gt 0 ] && shift
 
+# The result bundles there now.
+bundles() { find build/Logs/Test -maxdepth 1 -name '*.xcresult' 2>/dev/null | sort; }
+
 # Left in the temporary folder: what it exports after a failure is worth reading.
 work=$(mktemp -d)
-touch "$work/start"
+bundles >"$work/before"
 "${base[@]}" "$@" test
 rc=$?
 [ "$rc" = 0 ] && exit 0
 
 # Only this run's bundle: an older one must not excuse a run that left none.
-bundle=$(find build/Logs/Test -maxdepth 1 -name '*.xcresult' -newer "$work/start" 2>/dev/null | sort | tail -n 1)
+bundle=$(bundles | comm -13 "$work/before" - | tail -n 1)
 [ -n "$bundle" ] || exit "$rc"
 xcrun xcresulttool get test-results summary --path "$bundle" >"$work/summary.json" || exit "$rc"
 xcrun xcresulttool export attachments --only-failures --path "$bundle" --output-path "$work/att" >/dev/null || exit "$rc"
@@ -84,5 +87,20 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "$retry"
   } >>"$GITHUB_STEP_SUMMARY"
 fi
+bundles >"$work/before-retry"
 # shellcheck disable=SC2086 # one argument per line, none with a space (test names)
 "${base[@]}" $retry test
+retry_rc=$?
+[ "$retry_rc" = 0 ] || exit "$retry_rc"
+
+# xcodebuild succeeds on a selection that runs no test: the retried tests must really have passed.
+bundle=$(bundles | comm -13 "$work/before-retry" - | tail -n 1)
+want=$(echo "$retry" | wc -l | tr -d ' ')
+passed=
+if [ -n "$bundle" ]; then
+  passed=$(xcrun xcresulttool get test-results summary --path "$bundle" | jq -r '.passedTests')
+fi
+if ! [ "$passed" -ge "$want" ] 2>/dev/null; then
+  echo "run-mac-tests: the retry passed ${passed:-no} tests of $want"
+  exit "$rc"
+fi
