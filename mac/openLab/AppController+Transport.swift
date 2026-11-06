@@ -127,13 +127,16 @@ extension AppController {
         case .panic: break
         case .loadSelected: if let id = selected.last { await run(.load(cue: id, at: 0), on: store) }
         case .startSelected: await runAll(selected.map { .start(cue: $0) }, on: store)
-        case .stopSelected: await runAll(selected.map { .hardStop(cue: $0) }, on: store)
+        case .stopSelected:
+            await stopPreviews(of: selected, in: wc)
+            await runAll(selected.map { .hardStop(cue: $0) }, on: store)
         case .resetSelected: await runAll(selected.map { .reset(cue: $0) }, on: store)
         // A second press on cues still fading from the first stops them at once: the engine
         // decides that per cue (QLab: S twice is a hard stop of the selection).
         // A group's panic already fades its whole subtree, so a selected descendant of a selected
         // cue is left out: its own panic_cue would read as a second press and hard-cut it.
         case .panicSelected:
+            await stopPreviews(of: selected, in: wc)
             let roots = CueEditor.topLevel(selected.compactMap { wc.cueList.node($0) })
             await runAll(roots.map { .panicCue(cue: $0.id) }, on: store)
         case .previewSelected:
@@ -141,14 +144,15 @@ extension AppController {
             // previewed does nothing (checks V1, V3), so it is left out rather than sent for the engine to
             // refuse. A Network cue's preview sends its message once (the inspector's Send) and holds no
             // state, so it is never in `previewing` and goes out on every press.
-            let previewable = selected.filter { id in
-                switch store.model?.cue(id)?.kindType {
+            let nodes = selected.compactMap { wc.cueList.node($0) }
+            let previewable = nodes.filter { node in
+                switch node.cue.kindType {
                 case "network": return true
-                case "audio", "group": return !store.previewing.contains(id)
+                case "audio", "group": return !store.previewing.contains(node.id) && !coveredByGroupPreview(node, nodes)
                 default: return false
                 }
             }
-            await runAll(previewable.map { .preview(cue: $0) }, on: store)
+            await runAll(previewable.map { .preview(cue: $0.id) }, on: store)
         case .pauseResumeSelected:
             let actions: [TransportAction] = selected.compactMap { id in
                 switch store.cueStates[id]?.state {
@@ -162,6 +166,32 @@ extension AppController {
             }
             await runAll(actions, on: store)
         }
+    }
+
+    /// A selected audio cue or group inside a selected, armed group is already started by that group's
+    /// preview, so a press names only the group (the engine would warn "already being previewed"). A
+    /// child under a disarmed group is not covered: the group's preview leaves it out.
+    private func coveredByGroupPreview(_ node: CueNode, _ selected: [CueNode]) -> Bool {
+        let ids = Set(selected.map(\.id))
+        var disarmedBelow = node.cue.raw["armed"] == .bool(false)
+        var up = node.parent
+        while let ancestor = up {
+            let armed = ancestor.cue.raw["armed"] != .bool(false)
+            if ids.contains(ancestor.id), armed, !disarmedBelow { return true }
+            disarmedBelow = disarmedBelow || !armed
+            up = ancestor.parent
+        }
+        return false
+    }
+
+    /// A preview is a playing cue to the operator, so Stop and Panic on the selection end it too (QLab
+    /// treats a previewed cue as an ordinary playing one). Sent before, and apart from, the cue's own
+    /// stop or panic: one batch cannot name a cue twice. Under a selected previewing group its
+    /// previewing descendants are left out; the group's stop covers them.
+    private func stopPreviews(of selected: [ModelID], in wc: WorkspaceWindowController) async {
+        let store = wc.store
+        let previewing = selected.compactMap { wc.cueList.node($0) }.filter { store.previewing.contains($0.id) }
+        await runAll(CueEditor.topLevel(previewing).map { .stopPreview(cue: $0.id) }, on: store)
     }
 
     /// The selected cues act together: one `batch`, which the engine carries out at one scheduling
