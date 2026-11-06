@@ -12,7 +12,7 @@
 //! between them. Every reply and broadcast must survive the wire format, revisions never go
 //! backwards, and nothing may hang.
 //!
-//! Document requests run too (M4.10a), against a fresh folder per input: the application folder
+//! Document requests run too, against a fresh folder per input: the application folder
 //! (autosaves, recovery) is inside it, and every path `open`, `save_as` and `relink` name is
 //! moved into it (its file name kept, sanitised), so a fuzzer never chooses which file is read
 //! or written. Media probes are a stand-in that finds no file for the same reason (a fuzzed path

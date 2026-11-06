@@ -12,7 +12,7 @@ impl Voices {
                     return;
                 };
                 let Some(r) = self.remove(id) else { return };
-                // A refused start: the voice never played (M4.14). Decided by the id the mixer
+                // A refused start: the voice never played. Decided by the id the mixer
                 // refused, not by whether a resume was sent since (a start refused while a
                 // pause and resume were on their way is still a start that never played).
                 fx.feedback.push(failure(
@@ -135,7 +135,7 @@ impl Voices {
         let failed = faulted || r.stream_failed || seen_now;
         // Ended after a pending pause: the engine ignores the report (a paused voice cannot
         // end), so keep the record for the resume to report the end afresh. An end on the pause
-        // sample left nothing to pause: the engine takes it as the end (M2.34) and resumes
+        // sample left nothing to pause: the engine takes it as the end and resumes
         // nothing, so a record kept for it would stay for the session (and, for a show cue,
         // keep the cue from being primed again).
         if !failed

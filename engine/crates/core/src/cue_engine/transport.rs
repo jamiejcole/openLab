@@ -53,7 +53,7 @@ impl CueEngine {
         // stops: they fade out with the show (QLab checks V4, V6).
         self.panic_previews((!hard).then_some(end), cx);
         // Only cues with a runtime are touched: with none, the walk of every cue is skipped
-        // (closing an idle 2,000-cue doc panics it twice, within one audio block: M4.15i).
+        // (closing an idle 2,000-cue doc panics it twice, within one audio block).
         if self.slots.is_empty() {
             return;
         }
@@ -111,7 +111,7 @@ impl CueEngine {
         }
     }
 
-    /// A lost device (M4.2g): every active run stops at once, children before their groups, so
+    /// A lost device: every active run stops at once, children before their groups, so
     /// nothing scheduled before the loss starts by itself after the device returns. Loaded cues
     /// and settled broken cues stay as they are.
     pub(super) fn device_lost(&mut self, cx: &mut Ctx) {

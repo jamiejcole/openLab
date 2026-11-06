@@ -2,9 +2,9 @@
 
 //! The engine process (ARCHITECTURE §1, §3.1, §8): the mixer on the default output device's
 //! audio thread, the control loop on its own thread, the UI server and OSC on the network
-//! runtime. It starts with no workspace open (M4.15g): a client opens what it wants (`new`,
+//! runtime. It starts with no workspace open: a client opens what it wants (`new`,
 //! `open`, which offers recovery, `open_recovery`); `--open` sends the same `open` for
-//! development and tests. `engine.json` tells clients where to connect (M4.9).
+//! development and tests. `engine.json` tells clients where to connect.
 //!
 //! The run ends on `goodbye { shutdown: true }`, `SIGTERM`, `SIGINT` or `SIGHUP` (macOS), or,
 //! with `--watch-stdin`, when stdin closes: the control loop stops the show and writes a
@@ -76,7 +76,7 @@ pub enum HostError {
     Net(#[from] NetError),
     #[error("could not start a thread: {0}")]
     Thread(std::io::Error),
-    /// One engine per user (M4.9): the app attaches to the one running. Its pid and port when
+    /// One engine per user: the app attaches to the one running. Its pid and port when
     /// known (one still starting has not written `engine.json` yet).
     #[error("another openLab engine is running ({})", other_engine(*.pid, *.port))]
     AlreadyRunning { pid: Option<u32>, port: Option<u16> },
@@ -98,7 +98,7 @@ pub struct Options {
     /// Shut down when stdin closes (a parent that ends takes the engine with it: tests).
     pub watch_stdin: bool,
     /// The app to relaunch (its bundle identifier) when its connection ends without `goodbye`
-    /// (M4.9; the app passes its own). `None`: only log it (dev and tests).
+    /// (the app passes its own). `None`: only log it (dev and tests).
     pub relaunch_app: Option<String>,
     /// Play on the virtual device instead of the host's (`--virtual-device`; test-support
     /// builds only, docs/control.md "Virtual device").
@@ -735,7 +735,7 @@ mod tests {
         assert!(markers(&dirs).is_empty());
     }
 
-    /// M4.9: one engine per user. A start while `engine.json` names a live engine fails (and
+    /// One engine per user. A start while `engine.json` names a live engine fails (and
     /// is a controlled end: its own marker goes) and leaves that engine's file alone.
     #[test]
     fn a_start_while_another_engine_runs_is_refused_and_leaves_its_file() {

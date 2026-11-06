@@ -181,7 +181,7 @@ impl Voices {
                     return;
                 }
                 Err(PrepError::Empty) => {
-                    // Nothing to play (a load or start at or past the cue's end, M4.11b): the
+                    // Nothing to play (a load or start at or past the cue's end): the
                     // action ends on its start sample. Its length is the offset itself, so the
                     // core dates the end, and a chained successor, on that sample instead of
                     // on the late report below (a `late_start` warning).

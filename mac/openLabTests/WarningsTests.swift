@@ -114,7 +114,7 @@ final class WarningsTests: XCTestCase {
         XCTAssertTrue(ProblemText.problem(target, label: { _ in "2.1  Door slam" }).contains("2.1  Door slam"))
     }
 
-    /// An older engine may still send the removed `unsupported` warning (M4.6c): the message
+    /// An older engine may still send the removed `unsupported` warning: the message
     /// decodes and the row reads as an unrecognised warning.
     func testLegacyUnsupportedWarningDecodesAsUnknown() throws {
         let m = try ServerMessage.decode(

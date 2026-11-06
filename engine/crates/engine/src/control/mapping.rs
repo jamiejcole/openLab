@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Default patch mapping (M4.4c, WS-07; docs/control.md "Default patch mapping"): a workspace
+//! Default patch mapping (WS-07; docs/control.md "Default patch mapping"): a workspace
 //! with no mapping at all on this machine (a new one, or a show from another computer) plays
 //! on the device the mixer uses, each patch on the device's first outputs, as QLab does. An
 //! operator's mapping is never touched.
@@ -14,7 +14,7 @@ use super::inbox::reply;
 use super::{Control, DocCx, DocId, Engine, Flow, ReplyTx, failed, ok};
 
 impl Control {
-    /// `set_patch_mapping` (M4.4g, WS-07): sets or clears where doc `doc`'s `patch` plays on
+    /// `set_patch_mapping` (WS-07): sets or clears where doc `doc`'s `patch` plays on
     /// this machine. The machine settings are engine-wide, so the entry is keyed by the doc's
     /// workspace id and the patch id, as the default mapping keys it (a second open doc of the
     /// same workspace id shares it). Validated first, nothing changes on a refusal; then stored

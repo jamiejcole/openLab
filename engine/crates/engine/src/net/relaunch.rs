@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! UI relaunch after a crash (M4.9, NFR-01; ARCHITECTURE §8): when an app connection (one bound
+//! UI relaunch after a crash (NFR-01; ARCHITECTURE §8): when an app connection (one bound
 //! to no workspace) ends without `goodbye`, the engine keeps playing, logs it and, if it was
 //! started with a relaunch action, runs it after [`Relaunch::delay`] (1 s) unless an app
 //! connection is back by then, at most [`MAX_PER_WINDOW`] times per [`WINDOW`]. The action

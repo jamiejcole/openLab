@@ -98,7 +98,7 @@ impl Gate {
     /// the one an operator cannot do without. Only other volumes (removable drives, network
     /// shares, other mounts) can be stalled for probe scheduling.
     ///
-    /// With several docs open the show file's volume is exempt no more (M4.15e review M2): the
+    /// With several docs open the show file's volume is exempt no more: the
     /// workers are shared, and a doc whose show volume hangs would otherwise take every worker,
     /// one 30 s abandonment after another, until no worker is left for the other docs. It is
     /// then held back only once two of its files' probes are stuck past the probe watchdog

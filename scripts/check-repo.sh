@@ -67,6 +67,7 @@ allowlist_entries() {
   while IFS= read -r line; do
     case "$line" in '' | '#'*) continue ;; esac
     path=${line%% | *}
+    path=${path%%@*} # `path@kind` entries (the wall-clock list) name a file and what is excused in it
     reason=${line#* | }
     if [ "$reason" = "$line" ]; then
       fail "$check" "$file: '$line' is not 'path | reason'"
@@ -245,25 +246,106 @@ path_filters() {
 }
 
 # 8. Tests do not depend on the wall clock (CLAUDE.md, "Tests"): Instant::now, .elapsed() and SystemTime
-# are allowed in engine test code only in files listed, with a reason, in scripts/wall-clock-allowlist.txt.
-# Test code is everything under a tests/ directory or in a tests.rs, and a source file's part after its
-# first #[cfg(test)].
+# ("clock") and recv_timeout (a hang guard, still a real-time wait) are allowed in engine test code only where
+# scripts/wall-clock-allowlist.txt lists them with a reason: `path` exempts the clock reads of that file,
+# `path@recv_timeout` only its recv_timeout, so one never excuses the other. Test code is everything under a
+# tests/ directory or in a tests.rs, plus any item under #[cfg(test)], #[cfg(all(test, ..))] or
+# #[cfg(any(test, ..))] (test-support code): the item runs from its first line to the brace (or paren, or
+# `;`/`,`) that closes it, so a multi-line signature, a nested attribute or a trailing // comment do not end
+# or fake a region, and production code after a test helper is not test code.
+wall_clock_scan() { # files: prints "<file> clock" / "<file> recv_timeout" for each kind a file reads in test code
+  awk '
+    function flag(kind) { if (!((FILENAME SUBSEP kind) in seen)) { seen[FILENAME SUBSEP kind] = 1; print FILENAME, kind } }
+    FNR == 1 { t = 0; arm = 0; d = 0; pd = 0; opened = 0; whole = (FILENAME ~ /\/tests\// || FILENAME ~ /\/tests\.rs$/) }
+    {
+      code = $0
+      gsub(/"([^"\\]|\\.)*"/, "\"\"", code)
+      gsub(/'"'"'[{}()]'"'"'/, "'"'"''"'"'", code)
+      sub(/\/\/.*/, "", code)
+      match(code, /^[ \t]*/); body = substr(code, RLENGTH + 1)
+      if (!t && body ~ /^#\[cfg\((all\(|any\()?test[,)]/) { arm = 1; next }
+      if (arm && body != "" && body !~ /^#\[/) { arm = 0; t = 1; d = 0; pd = 0; opened = 0 }
+      if (whole || t) {
+        if (code ~ /Instant::now|\.elapsed\(\)|SystemTime/) flag("clock")
+        if (code ~ /recv_timeout/) flag("recv_timeout")
+      }
+      if (t) {
+        for (i = 1; i <= length(code); i++) {
+          ch = substr(code, i, 1)
+          if (ch == "{") { d++; opened = 1 } else if (ch == "}") d--
+          else if (ch == "(" || ch == "[") pd++
+          else if (ch == ")" || ch == "]") pd--
+        }
+        if (d <= 0 && pd <= 0 && (opened || code ~ /[;,][ \t]*$/)) t = 0
+      }
+    }
+  ' "$@"
+}
+# wall_clock_excused <allowlist> <file> <kind>: a `path` entry excuses the clock reads of a file, a
+# `path@recv_timeout` entry only its recv_timeout; neither excuses the other kind.
+wall_clock_excused() {
+  if [ "$3" = clock ]; then allowlisted "$1" "$2"; else allowlisted "$1" "$2@$3"; fi
+}
 wall_clock() {
-  local hits f
-  hits=$(git ls-files -co --exclude-standard 'engine/*.rs' | sort -u | xargs awk '
-    FNR == 1 { t = (FILENAME ~ /\/tests\// || FILENAME ~ /\/tests\.rs$/) }
-    /^#\[cfg\(test\)\]/ { t = 1 }
-    t && $0 !~ /^[[:space:]]*\/\// && /Instant::now|\.elapsed\(\)|SystemTime/ { print FILENAME; nextfile }
-  ')
+  local hits f kind
+  hits=$(wall_clock_scan $(git ls-files -co --exclude-standard 'engine/*.rs' | sort -u))
   allowlist_entries wall-clock "$CLOCK_ALLOW"
-  while IFS= read -r f; do
+  while read -r f kind; do
     [ -n "$f" ] || continue
-    allowlisted "$CLOCK_ALLOW" "$f" && continue
-    fail wall-clock "$f reads the wall clock (Instant::now, .elapsed(), SystemTime) in test code; drive time from the virtual clock, or list the file in $CLOCK_ALLOW with an open issue"
+    wall_clock_excused "$CLOCK_ALLOW" "$f" "$kind" && continue
+    fail wall-clock "$f reads the wall clock in test code ($kind; clock = Instant::now, .elapsed(), SystemTime); drive time from the virtual clock, or list the file in $CLOCK_ALLOW (a clock entry is 'path', a hang guard 'path@recv_timeout') with an open issue"
   done <<<"$hits"
   for f in $(allowlist_paths "$CLOCK_ALLOW"); do
-    printf '%s\n' "$hits" | grep -qxF "$f" || fail wall-clock "$CLOCK_ALLOW lists $f, which no longer reads the wall clock in test code; delete the entry"
+    case "$f" in
+      *@recv_timeout) printf '%s\n' "$hits" | grep -qxF "${f%@recv_timeout} recv_timeout" || fail wall-clock "$CLOCK_ALLOW lists $f, which no longer calls recv_timeout in test code; delete the entry" ;;
+      *) printf '%s\n' "$hits" | grep -qxF "$f clock" || fail wall-clock "$CLOCK_ALLOW lists $f, which no longer reads the wall clock in test code; delete the entry" ;;
+    esac
   done
+}
+
+
+wall_clock_cases() { # the scan must see every test region, stop at its end, and tell the kinds apart
+  local d
+  d=$(mktemp -d)
+  mkdir "$d/tests"
+  printf 'struct S;\nimpl S {\n    #[cfg(test)]\n    mod t {\n        fn f() { let _ = std::time::Instant::now(); }\n    }\n}\n' >"$d/indented.rs"
+  printf '#[cfg(test)]\nfn helper() {\n    let _ = 1;\n}\n\nfn prod() { let _ = Instant::now(); }\n' >"$d/after_helper.rs"
+  printf 'struct S {\n    #[cfg(test)]\n    flag: bool,\n}\nfn prod() { let _ = Instant::now(); }\n' >"$d/field.rs"
+  printf '#[cfg(test)]\nmod tests {\n    fn f() { rx.recv_timeout(D); }\n}\n' >"$d/guard.rs"
+  printf 'fn prod() { let _ = SystemTime::now(); }\n#[cfg(test)]\nmod tests {\n    fn f() {}\n}\n' >"$d/clean.rs"
+  printf 'fn f() { rx.recv_timeout(D); }\n' >"$d/tests/dir.rs"
+  printf '#[cfg(test)]\nfn helper(\n    a: u32,\n) -> u32 {\n    let _ = Instant::now();\n    a\n}\n' >"$d/signature.rs"
+  printf 'mod m {\n    #[cfg(test)]\n    mod t {\n        #[cfg(test)]\n        fn a() {}\n        fn b() { let _ = Instant::now(); }\n    }\n}\n' >"$d/nested.rs"
+  printf '#[cfg(all(test, unix))]\nmod t {\n    fn f() { let _ = Instant::now(); }\n}\n' >"$d/all.rs"
+  printf '#[cfg(any(test, feature = "test-support"))]\nfn f() { let _ = Instant::now(); }\n' >"$d/any.rs"
+  printf '#[cfg(test)]\nfn f() { // note\n    g();\n}\nfn prod() { let _ = Instant::now(); }\n' >"$d/comment_brace.rs"
+  printf '#[cfg(test)]\nuse std::time::Instant; // for the tests\nfn prod() { let _ = Instant::now(); }\n' >"$d/comment_use.rs"
+  printf '#[cfg(test)]\nfn f() {\n    g(); // Instant::now() would be wrong here\n    let _ = "}";\n}\nfn prod() { let _ = Instant::now(); }\n' >"$d/comment_token.rs"
+  printf '#[cfg(test)]\nmod t {\n    fn f() { let _ = Instant::now(); rx.recv_timeout(D); }\n}\n' >"$d/both.rs"
+  printf "#[cfg(test)]\\nfn f() {\\n    let _ = '{';\\n}\\nfn prod() { let _ = Instant::now(); }\\n" >"$d/char_brace.rs"
+  printf '#[cfg(test)]\nfn f() {\n    let _ = "}";\n    let _ = Instant::now();\n}\n' >"$d/string_brace.rs"
+  [ "$(wall_clock_scan "$d/indented.rs")" = "$d/indented.rs clock" ] || fail wall-clock-cases "an indented #[cfg(test)] block must count as test code"
+  [ -z "$(wall_clock_scan "$d/after_helper.rs")" ] || fail wall-clock-cases "production code after a test helper must not count as test code"
+  [ -z "$(wall_clock_scan "$d/field.rs")" ] || fail wall-clock-cases "a cfg(test) field must not make the rest of the file test code"
+  [ "$(wall_clock_scan "$d/guard.rs")" = "$d/guard.rs recv_timeout" ] || fail wall-clock-cases "recv_timeout in test code must be flagged, as its own kind"
+  [ -z "$(wall_clock_scan "$d/clean.rs")" ] || fail wall-clock-cases "a clock read before the test module is production code"
+  [ "$(wall_clock_scan "$d/tests/dir.rs")" = "$d/tests/dir.rs recv_timeout" ] || fail wall-clock-cases "recv_timeout under a tests/ directory must be flagged"
+  [ "$(wall_clock_scan "$d/signature.rs")" = "$d/signature.rs clock" ] || fail wall-clock-cases "a multi-line signature must not close the test region before its body"
+  [ "$(wall_clock_scan "$d/nested.rs")" = "$d/nested.rs clock" ] || fail wall-clock-cases "a nested #[cfg(test)] must not end the enclosing test region"
+  [ "$(wall_clock_scan "$d/all.rs")" = "$d/all.rs clock" ] || fail wall-clock-cases "cfg(all(test, ..)) must count as test code"
+  [ "$(wall_clock_scan "$d/any.rs")" = "$d/any.rs clock" ] || fail wall-clock-cases "cfg(any(test, ..)) must count as test code"
+  [ -z "$(wall_clock_scan "$d/comment_brace.rs")" ] || fail wall-clock-cases "a trailing // comment must not hide the opening brace of a test item"
+  [ -z "$(wall_clock_scan "$d/comment_use.rs")" ] || fail wall-clock-cases "a trailing // comment must not hide the end of a one-line test item"
+  [ -z "$(wall_clock_scan "$d/comment_token.rs")" ] || fail wall-clock-cases "a token in a trailing comment, and a brace in a string, must not count"
+  [ "$(wall_clock_scan "$d/string_brace.rs")" = "$d/string_brace.rs clock" ] || fail wall-clock-cases "a brace inside a string must not end the test region"
+  [ -z "$(wall_clock_scan "$d/char_brace.rs")" ] || fail wall-clock-cases "an open brace in a char literal must not stretch the test region over the production clock read after it"
+  [ "$(wall_clock_scan "$d/both.rs" | wc -l | tr -d ' ')" = 2 ] || fail wall-clock-cases "clock reads and recv_timeout in one file must be reported as two kinds"
+  printf 'a.rs | permanent: `x`\nb.rs@recv_timeout | permanent: `y`\n' >"$d/allow"
+  wall_clock_excused "$d/allow" a.rs clock || fail wall-clock-cases "a path entry must excuse that file's clock reads"
+  wall_clock_excused "$d/allow" b.rs recv_timeout || fail wall-clock-cases "a path@recv_timeout entry must excuse that file's recv_timeout"
+  wall_clock_excused "$d/allow" b.rs clock && fail wall-clock-cases "a recv_timeout entry must not excuse a clock read in the same file"
+  wall_clock_excused "$d/allow" a.rs recv_timeout && fail wall-clock-cases "a clock entry must not excuse recv_timeout"
+  rm -rf "$d"
 }
 
 # 9. The Rust fmt/clippy/test command lines live only in scripts/rust-checks.sh, which CI, `make` and
@@ -456,6 +538,20 @@ FAKE
 
 # 12. Every identifier in scripts/ui-smoke.txt and scripts/core-flows.txt names an existing test, so a
 # rename cannot silently drop it from the per-PR set or the core-flows set.
+# test_in_class <class> <test> <files...>: true when the test function is declared inside that class.
+test_in_class() {
+  local cls=$1 name=$2
+  shift 2
+  # A class line may carry attributes (@MainActor final class B); a func line is anchored so a commented-out
+  # `// func testGone()` does not count.
+  awk -v cls="$cls" -v fn="^[ \t]*(@[A-Za-z0-9_]+[ \t]+)*((override|public|private|fileprivate|internal)[ \t]+)*func[ \t]+$name[ \t]*\\\\(" '
+    FNR == 1 { cur = "" }
+    /^(@[A-Za-z0-9_]+[ \t]+)*((public|internal|open)[ \t]+)?(final[ \t]+)?class[ \t]+[A-Za-z0-9_]+/ {
+      c = $0; sub(/^(@[A-Za-z0-9_]+[ \t]+)*((public|internal|open)[ \t]+)?(final[ \t]+)?class[ \t]+/, "", c); sub(/[^A-Za-z0-9_].*/, "", c); cur = c
+    }
+    $0 ~ fn && cur == cls { found = 1 }
+    END { exit !found }' "$@"
+}
 test_list() {
   # Sets LIST_N (not echoed: fail must run in this shell to keep its flag).
   local list=$1 check=$2 prefix=$3 line target cls name n=0
@@ -470,20 +566,61 @@ test_list() {
     target=$(printf '%s' "$line" | cut -d/ -f1); cls=$(printf '%s' "$line" | cut -d/ -f2); name=$(printf '%s' "$line" | cut -d/ -f3)
     # The test must be declared in the class named, not merely in the same file: xcodebuild runs
     # nothing, silently, for an identifier whose class does not hold the test.
-    if ! awk -v cls="$cls" -v fn="func $name()" '
-        /^(final )?class [A-Za-z0-9_]+/ { c = $0; sub(/^(final )?class /, "", c); sub(/[^A-Za-z0-9_].*/, "", c); cur = c }
-        index($0, fn) && cur == cls { found = 1 }
-        END { exit !found }' mac/"$target"/*.swift; then
+    if ! test_in_class "$cls" "$name" mac/"$target"/*.swift; then
       fail "$check" "'$line' names no test in mac/$target"
     fi
   done <"$list"
   LIST_N=$n
+}
+test_list_cases() { # a class and a test of another class in the same file must not pair
+  local d
+  d=$(mktemp -d)
+  printf 'final class A: XCTestCase {\n    func testOne() {}\n}\nfinal class B: XCTestCase {\n    func testTwo() {}\n}\n' >"$d/two.swift"
+  printf 'func testOrphan() {}\n' >"$d/orphan.swift"
+  printf '@MainActor\nfinal class C: XCTestCase {\n    // func testGone() {}\n    @MainActor func testKept() {}\n}\n@MainActor final class D: XCTestCase {\n    func testDee() {}\n}\n' >"$d/attr.swift"
+  test_in_class A testOne "$d/two.swift" || fail ui-smoke-cases "a test must pair with its own class"
+  test_in_class B testTwo "$d/two.swift" || fail ui-smoke-cases "the second class's test must pair with the second class"
+  test_in_class A testTwo "$d/two.swift" && fail ui-smoke-cases "A/testTwo must not pass: testTwo is in class B"
+  test_in_class B testOne "$d/two.swift" && fail ui-smoke-cases "B/testOne must not pass: testOne is in class A"
+  test_in_class B testOrphan "$d/two.swift" "$d/orphan.swift" && fail ui-smoke-cases "a function before any class in the next file must not pair with the last class of the previous file"
+  test_in_class C testGone "$d/attr.swift" && fail ui-smoke-cases "a commented-out func must not count as a test"
+  test_in_class C testKept "$d/attr.swift" || fail ui-smoke-cases "an attributed func must pair with its class"
+  test_in_class D testDee "$d/attr.swift" || fail ui-smoke-cases "a class declared with a leading attribute on the same line must be recognised"
+  test_in_class C testDee "$d/attr.swift" && fail ui-smoke-cases "a test of an attributed class must not pair with the class before it"
+  rm -rf "$d"
 }
 ui_smoke() {
   test_list scripts/ui-smoke.txt ui-smoke openLabUITests
   [ "$LIST_N" -ge 3 ] || fail ui-smoke "scripts/ui-smoke.txt lists $LIST_N tests; the smoke set needs launch, GO and panic"
   test_list scripts/core-flows.txt core-flows openLabTests
   [ "$LIST_N" -ge 10 ] || fail core-flows "scripts/core-flows.txt lists $LIST_N tests; the core-flows set is the everyday flows"
+}
+
+# 13. Milestone and task IDs (M5.4, M4.12c; as identifiers m5_6b) stay out of code, comments and test names
+# (CLAUDE.md, "Work and git"); requirement IDs (AUD-07) are fine. They go stale, and the issue or PR holds
+# the history. The scan covers Rust and Swift sources only (engine/*.rs, mac/*.swift); other files are kept
+# clean by hand.
+TASK_ID_RE='(^|[^A-Za-z0-9_.])M[0-9]+\.[0-9]+[a-z]?([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9])[Mm][0-9]+_[0-9]+[a-z]?([^A-Za-z0-9]|$)'
+task_ids_scan() { grep -nE "$TASK_ID_RE" "$@" 2>/dev/null || true; }
+task_ids() {
+  local hits d
+  d=$(mktemp -d)
+  printf '// fine: AUD-07, v1.2, Model3.5, an M4 Mac\nlet x = 1 // M5.4d\n' >"$d/a.swift"
+  printf '/// done in M4.12c\n' >"$d/b.rs"
+  printf '// (QLab check D6, M2.24)\n' >"$d/c.rs"
+  printf '// AUD-07 and v1.2 only, Apple M4\n' >"$d/d.rs"
+  printf 'fn test_m5_6b_duration() {}\n' >"$d/e.rs"
+  printf 'fn rate_m4_of_3() { let om5_6 = 1; }\n' >"$d/f.rs"
+  [ "$(task_ids_scan "$d/a.swift" | wc -l | tr -d ' ')" = 1 ] || fail task-ids-cases "a task ID after code must be found, and requirement IDs, versions and chip names must not"
+  [ -n "$(task_ids_scan "$d/b.rs")" ] || fail task-ids-cases "a task ID with a letter suffix must be found"
+  [ -n "$(task_ids_scan "$d/c.rs")" ] || fail task-ids-cases "a task ID after a comma must be found"
+  [ -z "$(task_ids_scan "$d/d.rs")" ] || fail task-ids-cases "requirement IDs, versions and chip names must not be found"
+  [ -n "$(task_ids_scan "$d/e.rs")" ] || fail task-ids-cases "a task ID in an identifier (m5_6b) must be found"
+  [ -z "$(task_ids_scan "$d/f.rs")" ] || fail task-ids-cases "an identifier that only contains m<digit>_ must not be found"
+  rm -rf "$d"
+  hits=$(git ls-files -co --exclude-standard 'engine/*.rs' 'mac/*.swift' | sort -u | xargs grep -nE "$TASK_ID_RE" 2>/dev/null | head -n 20 || true)
+  [ -z "$hits" ] || fail task-ids "milestone/task IDs in code, comments or test names (describe the behaviour instead):
+$hits"
 }
 
 known_entries
@@ -495,12 +632,15 @@ real_engine_tests
 one_home
 path_filters
 wall_clock
+wall_clock_cases
 one_gate
 prepush_no_stamp
 soak_classifier
 wedged_classifier
 wedged_run
+test_list_cases
 ui_smoke
+task_ids
 
 if [ "$failed" = 0 ]; then
   echo "check-repo: ok"

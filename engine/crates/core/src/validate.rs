@@ -86,7 +86,7 @@ pub const MAX_GROUP_DEPTH: usize = 32;
 pub const MAX_AUTO_NUMBER: f64 = 1_000_000.0;
 /// Shortest slice of an Audio cue, seconds: between its trim points and slice markers, every
 /// slice (and so every loop) is at least this long. QLab 5 refuses a shorter slice or trim in its
-/// editor (nothing under 0.05 s), and plays a loop of exactly this length (M2.24, QLab check D6).
+/// editor (nothing under 0.05 s), and plays a loop of exactly this length (QLab check D6).
 pub const MIN_SLICE_SECONDS: f64 = 0.05;
 
 /// Whether a slice of `seconds` is shorter than [`MIN_SLICE_SECONDS`]. With a margin far below
@@ -643,7 +643,7 @@ impl Checker {
         }
     }
 
-    /// The OSC passcode table (M4.5c): rights need View; rows that are empty, too long, repeated
+    /// The OSC passcode table: rights need View; rows that are empty, too long, repeated
     /// or past the table's size are removed (the first of a repeat stays). A passcode that is
     /// not digits is kept and pointed out: dropping it would silently lock a console out of a
     /// show migrated from a file whose passcode was any text.

@@ -74,7 +74,7 @@ impl OfflineShow {
         Self::build(Some(ws), mixer, config, capacity)
     }
 
-    /// A show with no doc open, as the engine starts (M4.15g; [`Control::empty`]).
+    /// A show with no doc open, as the engine starts ([`Control::empty`]).
     pub fn empty(mixer: MixerConfig, config: ControlConfig) -> Result<Self, OfflineError> {
         Self::build(None, mixer, config, OUTBOUND_CAPACITY)
     }

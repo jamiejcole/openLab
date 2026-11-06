@@ -38,7 +38,7 @@ fn version_into_closed_pipe_does_not_panic() {
 
 #[test]
 fn a_bad_command_line_is_a_usage_error_on_stderr_with_exit_2() {
-    // M4.15g: the engine starts empty; `--open` replaced the positional show file. An app that
+    // The engine starts empty; `--open` replaced the positional show file. An app that
     // spawns the engine with a wrong argument must see a failure, not a clean exit (#162).
     for bad in [
         &["/nonexistent/openlab/show.openlab"][..],
@@ -55,7 +55,7 @@ fn a_bad_command_line_is_a_usage_error_on_stderr_with_exit_2() {
     }
 }
 
-/// M4.9: `engine.json` is written at start (private, this pid) and removed on a graceful
+/// `engine.json` is written at start (private, this pid) and removed on a graceful
 /// shutdown (SIGTERM on macOS; stdin closing with `--watch-stdin` elsewhere), as is the run
 /// marker; `--open` goes through `open` and a file that cannot be opened leaves the engine
 /// running. Needs an audio output device: without one the engine refuses to start, and the
@@ -116,7 +116,7 @@ fn skip_without_audio(engine: &mut Engine) {
     eprintln!("no audio device here, skipped: {seen:?}");
 }
 
-/// #164 (M4.4e): `--open` keeps the recovery offer. A show with an autosave newer than the file
+/// #164: `--open` keeps the recovery offer. A show with an autosave newer than the file
 /// is not opened (the operator decides in the app) and the engine says so and keeps running.
 /// Needs an audio output device, like the test above; without one it says so and stops.
 #[test]

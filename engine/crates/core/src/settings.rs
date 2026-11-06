@@ -32,7 +32,7 @@ pub struct PatchMapping {
 }
 
 impl PatchMapping {
-    /// The explicit "deliberately unmapped" entry (M4.4g): no device, no channels. Stored so
+    /// The explicit "deliberately unmapped" entry: no device, no channels. Stored so
     /// the default mapping does not map the patch again.
     pub fn none() -> Self {
         Self {

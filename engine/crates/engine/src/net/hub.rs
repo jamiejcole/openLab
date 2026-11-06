@@ -7,7 +7,7 @@
 //! for a client, so a stalled client can never hold up the control loop (which only ever does
 //! `try_send` on the outbound channel) or another client. A message about a doc goes to the
 //! connections bound to that doc, the engine's own (`log`, `status`, ...) to every connection,
-//! and the `workspaces` list to the app connections (M4.15f).
+//! and the `workspaces` list to the app connections.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -406,7 +406,7 @@ mod tests {
         );
     }
 
-    /// What the relaunch checks after its delay (M4.9): is an app connection back?
+    /// What the relaunch checks after its delay: is an app connection back?
     #[test]
     fn app_connections_are_counted_apart_from_bound_ones() {
         let hub = Hub::default();
