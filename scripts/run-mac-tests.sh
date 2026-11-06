@@ -13,7 +13,9 @@
 set -uo pipefail
 
 # A report whose every sample has WindowServer's main thread in the paravirtual GPU driver and the
-# tested process waiting on WindowServer. A moment in the driver in passing is not enough.
+# tested process's main thread waiting on WindowServer. A moment in the driver in passing is not
+# enough, and nor is a background thread: those wait on a stalled WindowServer too, so one waiting
+# says nothing about what stopped the main thread (it may be a deadlock of our own).
 wedged() {
   awk '
     /^Command:/ && target == "" { target = $2 }
@@ -25,7 +27,7 @@ wedged() {
       sub(/^\*/, "", count)
       if (count == samples) {
         if (process == "WindowServer" && thread ~ /ws_main_thread/ && /AppleParavirt/) driver = 1
-        if (process == target && /blocked by turnstile waiting for WindowServer/) waiting = 1
+        if (process == target && thread ~ /com\.apple\.main-thread/ && /blocked by turnstile waiting for WindowServer/) waiting = 1
       }
     }
     END { exit !(driver && waiting) }

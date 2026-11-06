@@ -303,8 +303,9 @@ soak_classifier() {
 
 # 11b. The app-test wrapper retries a hang only when the spindump proves the runner's WindowServer is
 # stuck in the GPU driver and every failure is such a hang. Canned reports and summaries.
-wedged_report() { # samples in the driver, samples waiting on WindowServer
-  printf 'Command: openLab\nProcess: openLab [1]\nNum samples: 9 (1-9)\n  Thread 0x1 "main"\n  *%s ??? (kernel) (blocked by turnstile waiting for WindowServer [2] after 2 hops) 1-9\n' "$2"
+wedged_report() { # samples in the driver, samples waiting on WindowServer, waiting thread, waiting process
+  local main='DispatchQueue "com.apple.main-thread"(1)'
+  printf 'Command: openLab\nProcess: %s [1]\nNum samples: 9 (1-9)\n  Thread 0x1 %s\n  *%s ??? (kernel) (blocked by turnstile waiting for WindowServer [2] after 2 hops) 1-9\n' "${4:-openLab}" "${3:-$main}" "$2"
   printf 'Process: WindowServer [2]\nNum samples: 9 (1-9)\n  Thread 0x3 Thread name "ws_main_thread"\n  *%s AppleParavirtDevice::createObjectInternal 1-9\n' "$1"
 }
 wedged_classifier() {
@@ -325,6 +326,10 @@ wedged_classifier() {
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "WindowServer only passing through the driver must not excuse a hang"
   wedged_report 9 3 >"$d/s.txt"
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a process not waiting on WindowServer must not be excused"
+  wedged_report 9 9 'Thread name "com.apple.NSEventThread"' >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "only a background thread waiting must not excuse a hung main thread"
+  wedged_report 9 9 '' other >"$d/s.txt"
+  scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "another process waiting must not excuse the tested one"
   wedged_report 9 9 >"$d/s.txt"
   printf '[]' >"$d/manifest.json"
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a hang with no spindump must not be retried"
