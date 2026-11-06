@@ -292,7 +292,8 @@ final class CueTargetUITests: XCTestCase {
         XCTAssertTrue(waitFor("isHittable == true", field))
         field.doubleClick()
         XCTAssertTrue(app.buttons["Choose"].waitForExistence(timeout: 10), "the file chooser opens")
-        app.buttons["Cancel"].firstMatch.click()  // the panel's own controls hold a second one
+        // A key, not the Cancel button: the first element of that name is the panel's Touch Bar one.
+        app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
         XCTAssertTrue(waitFor("exists == false", app.buttons["Choose"]), "and closes")
     }
 }

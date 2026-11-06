@@ -328,6 +328,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         targetNote.lineBreakMode = .byTruncatingTail
         targetNote.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         targetNote.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Shown by `renderTarget`: until then they must not widen the inspector's least width.
+        jumpTargetButton.isHidden = true
+        targetNote.isHidden = true
         targetField.onDoubleClick = { [weak self] in self?.chooseClicked() }
         let targetRow = NSStackView(views: [targetField, targetNote, clearTargetButton, jumpTargetButton, chooseButton])
         targetRow.spacing = 6
