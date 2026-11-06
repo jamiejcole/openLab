@@ -1022,6 +1022,53 @@ fn a_hung_show_volume_of_one_doc_leaves_workers_for_the_others() {
     }
 }
 
+/// The error log line of a stuck probe names the workspace it belongs to while several are
+/// open, and is logged plain when its doc has closed meanwhile (the watchdog still reports it).
+#[test]
+fn a_stuck_probe_is_logged_with_its_workspace_and_plain_once_its_doc_closed() {
+    let time = ProbeTime::new();
+    let (mut s, _) = docs_show_with(workspace(vec![]), vec![ws_n(1, vec![])], |c| {
+        c.probe = gated_probe;
+        c.probe_clock = time.clock();
+    });
+    let kept_file = wav(&dc(100, 0.5));
+    let closing_file = wav(&dc(100, 0.5));
+    gate(&kept_file);
+    gate(&closing_file);
+    let ws2 = ws_n(2, vec![audio(1, &kept_file, 0)]);
+    let ws3 = ws_n(3, vec![audio(1, &closing_file, 0)]);
+    let _kept = s.open_doc(DocSource::Workspace(Box::new(ws2))).unwrap();
+    let gone = s.open_doc(DocSource::Workspace(Box::new(ws3))).unwrap();
+    wait_probed(&[kept_file.clone(), closing_file.clone()], 2);
+    s.take_outbound();
+    // Both hang; the second's doc closes before the watchdog acts.
+    s.close_doc(gone, false).unwrap();
+    time.advance(Duration::from_secs(31));
+    s.tick();
+    let lines: Vec<String> = s
+        .take_outbound()
+        .into_iter()
+        .filter_map(|m| match m {
+            ServerMessage::Log { message, .. } if message.contains("stuck; worker replaced") => {
+                Some(message)
+            }
+            _ => None,
+        })
+        .collect();
+    let of = |p: &std::path::Path| {
+        let name = p.file_name().unwrap().to_str().unwrap();
+        lines
+            .iter()
+            .find(|l| l.contains(name))
+            .unwrap_or_else(|| panic!("no line for {p:?} in {lines:?}"))
+            .clone()
+    };
+    assert!(of(&kept_file).starts_with("[doc 2] "), "{lines:?}");
+    assert!(!of(&closing_file).starts_with('['), "{lines:?}");
+    release(&kept_file);
+    release(&closing_file);
+}
+
 /// Primes are a head start only: the docs' primes together never take the stream permits a
 /// start needs. With 4 permits, two docs prime one cue each and a start of a cue
 /// nobody primed still plays.
