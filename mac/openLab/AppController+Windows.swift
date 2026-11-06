@@ -39,8 +39,13 @@ extension AppController {
                 case .runtime, .progress, .waits, .notices: break
                 }
             }
-            if let doc = session.doc(of: store), let n = session.workspaces.first(where: { $0.doc == doc }) {
-                wc.workspaceName = n.name
+            let doc = session.doc(of: store)
+            let listed = session.workspaces.first { $0.doc == doc }
+            if let listed { wc.workspaceName = listed.name }
+            // The path of a file just opened is known before the engine's list names it: the layout
+            // is applied now, before the window is shown, so it never jumps under the operator.
+            if let path = doc.flatMap({ session.takeOpenedPath($0) }) ?? listed?.path, let defaults = layoutDefaults {
+                wc.restoreLayout(from: WindowLayoutStore(defaults: defaults), path: path)
             }
             show(wc)
             if !previousRunAnnounced {
@@ -67,6 +72,11 @@ extension AppController {
             guard let wc = windows[info.doc], let window = wc.window else { continue }
             wc.workspaceName = info.name
             window.isDocumentEdited = info.dirty
+            // A file named after the window is up (a new workspace saved, Save As): the layout on
+            // screen moves to it as it is; nothing is applied to a window the operator has.
+            if let path = info.path, let defaults = layoutDefaults {
+                wc.bindLayout(to: WindowLayoutStore(defaults: defaults), path: path)
+            }
         }
     }
 

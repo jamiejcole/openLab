@@ -4,6 +4,15 @@ import Foundation
 
 /// Levels as the inspector shows and types them (AUD-06, AUD-08). The wire holds dB with
 /// -120 meaning silence (docs/file-format.md); the UI shows that as "-inf".
+/// The workspace volume limits (PB-11, `settings.output_max_db` and `output_min_db`): a level above the
+/// maximum is held at it, one at or below the minimum is silent.
+struct VolumeLimits: Equatable {
+    var max = 12.0
+    var min = -60.0
+    static let maxRange = -30.0...12.0
+    static let minRange = -180.0...(-40.0)
+}
+
 enum LevelText {
     static let silence = -120.0
     static let maxDb = 12.0
@@ -20,18 +29,24 @@ enum LevelText {
     /// sign is negative (`6` is -6 dB, `+6` is +6 dB); a value at or below the lower limit, or text
     /// that is not a number, is -inf. Above +12 is held at +12 (QLab limits it to the workspace
     /// maximum). A decimal comma is read as a point.
-    static func parse(_ text: String) -> Double {
+    static func parse(_ text: String, limits: VolumeLimits = VolumeLimits()) -> Double {
         var t = text.trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: ",", with: ".")
         t = t.replacingOccurrences(of: "db", with: "").trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty, let v = Double(t), !v.isNaN else { return silence }
         let signed = t.hasPrefix("+") || t.hasPrefix("-")
-        return clamp(signed || v == 0 ? v : -v)
+        return clamp(signed || v == 0 ? v : -v, limits: limits)
     }
 
-    /// Held to what the engine accepts: at most +12, and at or below the floor means silent.
-    static func clamp(_ db: Double) -> Double {
-        if db.isNaN || db <= floorDb { return silence }
-        return min(db, maxDb)
+    /// Text that is only white space, what a Space pressed in a selected level box leaves.
+    static func isStraySpace(_ text: String) -> Bool {
+        !text.isEmpty && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Held to what the engine accepts: at most the maximum, and at or below the minimum means silent,
+    /// as does anything at or below our silence when the minimum is lower still.
+    static func clamp(_ db: Double, limits: VolumeLimits = VolumeLimits()) -> Double {
+        if db.isNaN || db <= Swift.max(limits.min, silence) { return silence }
+        return min(db, limits.max)
     }
 }
 
@@ -163,15 +178,15 @@ struct LevelSet: Equatable {
 
     /// Sets a level. A cue output in a gang moves its whole gang by the same amount, each member
     /// held to the limits on its own (QLab, manual p. 181).
-    mutating func set(_ slot: Slot, db: Double, drag: Bool = false) {
-        let db = LevelText.clamp(db)
+    mutating func set(_ slot: Slot, db: Double, drag: Bool = false, limits: VolumeLimits = VolumeLimits()) {
+        let db = LevelText.clamp(db, limits: limits)
         switch slot {
         case .master: master = db
         case .output(let o):
             guard o >= 0, o < Self.maxChannels else { return }
-            // Levels move on the fader's travel, where -inf is the bottom (-60 dB): a member at -inf
-            // is at the floor, not 60 dB below it, so the delta is what the control moved.
-            func travel(_ x: Double) -> Double { max(x, LevelText.floorDb) }
+            // Levels move on the fader's travel, where -inf is the bottom (the minimum limit): a member
+            // at -inf is at the floor, not far below it, so the delta is what the control moved.
+            func travel(_ x: Double) -> Double { max(x, limits.min) }
             let old = travel(self.db(slot) ?? db)
             padOutputs(to: o + 1)
             if !isFade, let g = gang(of: o), gangs[g].count > 1 {
@@ -181,7 +196,7 @@ struct LevelSet: Equatable {
                     var moved = travel(was) + delta
                     // A drag never takes a member past 0 dB (a member already above stays where it is).
                     if drag { moved = min(moved, max(0, was)) }
-                    outputs[m].db = LevelText.clamp(moved)
+                    outputs[m].db = LevelText.clamp(moved, limits: limits)
                 }
             }
             outputs[o].db = db

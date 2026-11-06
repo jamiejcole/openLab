@@ -9,7 +9,7 @@
 
 //! Settings, patch, network patch and cue list commands through the control loop
 //! (ED-07): what clients are sent, what the engine and mixer do with them, patch layout edits
-//! under a playing voice (stable mixer slots), the workspace master in the
+//! under a playing voice (stable mixer slots), the patch levels in the
 //! matrices, undo coalescing and edits that change nothing.
 
 use crate::show::*;
@@ -19,8 +19,8 @@ use openlab_core::protocol::{
 };
 use openlab_core::{
     Command, CueKind, CueProperty, NetworkPatch, NetworkPatchProperty, NetworkProtocol,
-    OutputPatch, PatchId, PatchMapping, PatchOutput, PatchProperty, TransportKey, Workspace,
-    WorkspaceSetting,
+    OutputPatch, PatchId, PatchMapping, PatchOutput, PatchProperty, SILENCE_DB, TransportKey,
+    Workspace, WorkspaceSetting,
 };
 use openlab_engine::control::offline::OfflineShow;
 
@@ -124,9 +124,9 @@ fn patch(n: u128) -> OutputPatch {
     }
 }
 
-fn master(db: f64) -> Command {
+fn minimum_limit(db: f64) -> Command {
     Command::SetWorkspaceSetting {
-        setting: WorkspaceSetting::MasterDb { value: db },
+        setting: WorkspaceSetting::OutputMinDb { value: db - 60.0 },
     }
 }
 
@@ -145,7 +145,7 @@ fn settings_patches_and_lists_reach_clients_as_model_changed() {
     let mut mirror = Mirror::new(&s);
     let revision = s.control().revision();
     let steps = [
-        master(-3.0),
+        minimum_limit(-3.0),
         Command::AddOscPasscode {
             index: 0,
             passcode: "4821".into(),
@@ -209,7 +209,7 @@ fn settings_patches_and_lists_reach_clients_as_model_changed() {
     }
     assert_eq!(s.control().workspace().patches.len(), 2);
     assert!(s.control().workspace().network_patches.is_empty());
-    assert_eq!(s.control().workspace().settings.master_db, 0.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -60.0);
     assert_eq!(
         s.control().workspace().settings.osc_access,
         openlab_core::OscAccess::default()
@@ -567,47 +567,510 @@ fn a_paused_voice_keeps_its_slot_and_resumes_as_routed() {
     heard_as_routed_since(&s, resumed);
 }
 
-#[test]
-fn the_workspace_master_scales_each_sample_exactly() {
-    let samples = ramp(RATE as usize);
-    let path = wav(&samples);
-    for db in [0.0, -6.0, -20.0] {
-        let mut ws = workspace(vec![audio(1, &path, 0)]);
-        ws.settings.master_db = db;
-        let mut s = show(ws);
-        // Past the matrices' de-zipper ramp from the mixer's identity start.
-        s.run(BLOCK * 4);
-        start(&mut s, 1);
-        s.run(RATE as u64 / 2);
-        let out = s.channel(0);
-        let first = first_nonzero(&out).unwrap();
-        let g = openlab_core::db_to_gain(db);
-        let n = RATE as usize / 4;
-        for (i, (y, x)) in out[first..first + n].iter().zip(&samples).enumerate() {
-            assert_eq!(y.to_bits(), (g * x).to_bits(), "{db} dB, sample {i}");
-        }
-        if db == 0.0 {
-            // Bit for bit the file: what the mixer's own master at unity gave before.
-            assert_eq!(&out[first..first + n], &samples[..n]);
-        }
+// ---- Patch main and output faders, and the workspace volume limits (PB-11) ----
+
+/// The loudest sample of the last two blocks of output channel `ch`.
+fn peak(s: &OfflineShow, ch: usize) -> f32 {
+    let out = s.channel(ch);
+    out[out.len() - BLOCK as usize * 2..]
+        .iter()
+        .fold(0.0f32, |m, x| m.max(x.abs()))
+}
+
+fn near(a: f32, b: f32) -> bool {
+    (a - b).abs() <= b.abs() * 0.01 + 1e-6
+}
+
+/// A show playing a steady 0.2 on both output channels (file channel 1 to cue outputs 1 and 2).
+fn steady_show(edit: impl FnOnce(&mut Workspace)) -> OfflineShow {
+    let path = wav(&dc(RATE as usize * 20, 0.2));
+    let mut cue = audio(1, &path, 0);
+    if let CueKind::Audio { levels, .. } = &mut cue.kind {
+        levels.crosspoints.push(openlab_core::Crosspoint {
+            input: 0,
+            output: 1,
+            db: 0.0,
+            mute: false,
+        });
+    }
+    let mut ws = workspace(vec![cue]);
+    edit(&mut ws);
+    let mut s = show(ws);
+    start(&mut s, 1);
+    s.run(BLOCK * 8);
+    s
+}
+
+fn master_of_patch(db: f64) -> Command {
+    Command::SetPatchProperty {
+        id: patch_id(),
+        property: PatchProperty::MasterDb { value: db },
+    }
+}
+
+fn output_of_patch(output: usize, db: f64) -> Command {
+    Command::SetPatchProperty {
+        id: patch_id(),
+        property: PatchProperty::OutputLevel { output, value: db },
+    }
+}
+
+fn cue_master(s: &OfflineShow) -> f64 {
+    match &s.control().workspace().find_cue(id(1)).unwrap().kind {
+        CueKind::Audio { levels, .. } => levels.master_db,
+        other => panic!("{other:?}"),
     }
 }
 
 #[test]
-fn the_master_level_setting_changes_what_is_heard() {
-    let path = wav(&dc(RATE as usize * 4, 0.5));
-    let mut s = show(workspace(vec![audio(1, &path, 0)]));
-    start(&mut s, 1);
+fn the_patch_main_level_changes_what_is_heard_and_leaves_the_cue_alone() {
+    let mut s = steady_show(|_| {});
+    assert!(near(peak(&s, 0), 0.2) && near(peak(&s, 1), 0.2));
+    command(&mut s, master_of_patch(-12.0));
     s.run(BLOCK * 8);
-    let loud = s.channel(0).iter().fold(0.0f32, |m, x| m.max(x.abs()));
-    assert!(loud > 0.4, "{loud}");
-    command(&mut s, master(-20.0));
+    let drop = openlab_core::db_to_gain(-12.0);
+    assert!(near(peak(&s, 0), 0.2 * drop), "{}", peak(&s, 0));
+    assert!(near(peak(&s, 1), 0.2 * drop), "{}", peak(&s, 1));
+    assert_eq!(cue_master(&s), 0.0, "the cue's own levels are untouched");
+    // Still playing: the next block has sound in it.
     s.run(BLOCK * 8);
-    let tail: Vec<f32> = s.channel(0);
-    let quiet = tail[tail.len() - BLOCK as usize..]
+    assert!(peak(&s, 0) > 0.0);
+}
+
+#[test]
+fn one_patch_output_fader_silences_that_output_only() {
+    let mut s = steady_show(|_| {});
+    command(&mut s, output_of_patch(1, SILENCE_DB));
+    s.run(BLOCK * 8);
+    assert_eq!(peak(&s, 1), 0.0, "output 2 is silent");
+    assert!(near(peak(&s, 0), 0.2), "output 1 plays at its level");
+}
+
+#[test]
+fn a_patch_level_above_the_maximum_is_put_at_it_and_no_louder_is_heard() {
+    let mut s = steady_show(|_| {});
+    command(
+        &mut s,
+        Command::SetWorkspaceSetting {
+            setting: WorkspaceSetting::OutputMaxDb { value: 0.0 },
+        },
+    );
+    command(&mut s, master_of_patch(6.0));
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().workspace().patches[0].master_db, 0.0);
+    assert!(near(peak(&s, 0), 0.2), "{}", peak(&s, 0));
+    // A peer's level in a file or command can be nothing but within the limits.
+    command(&mut s, output_of_patch(0, 12.0));
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().workspace().patches[0].outputs[0].level_db, 0.0);
+    assert!(near(peak(&s, 0), 0.2), "{}", peak(&s, 0));
+}
+
+#[test]
+fn lowering_the_maximum_pulls_playing_levels_down_and_is_one_undo_step() {
+    let mut s = steady_show(|ws| {
+        ws.patches[0].master_db = 6.0;
+        if let CueKind::Audio { levels, .. } = &mut ws.cue_lists[0].cues[0].kind {
+            levels.master_db = 6.0;
+        }
+    });
+    let loud = 0.2 * openlab_core::db_to_gain(12.0);
+    assert!(near(peak(&s, 0), loud), "{}", peak(&s, 0));
+    let mut mirror = Mirror::new(&s);
+    command(
+        &mut s,
+        Command::SetWorkspaceSetting {
+            setting: WorkspaceSetting::OutputMaxDb { value: 0.0 },
+        },
+    );
+    s.run(BLOCK * 8);
+    assert_eq!(
+        cue_master(&s),
+        0.0,
+        "the cue's level reads the clamped value"
+    );
+    assert_eq!(s.control().workspace().patches[0].master_db, 0.0);
+    assert!(near(peak(&s, 0), 0.2), "{}", peak(&s, 0));
+    // Clients follow every level the change moved, as ordinary edits of them.
+    assert_eq!(mirror.catch_up(&mut s), 1);
+    // One step gives it all back.
+    let undo = s.request_id();
+    let replies = s.send(ClientMessage::Undo { id: undo });
+    assert!(refusal(&replies).is_none(), "{replies:?}");
+    s.run(BLOCK * 8);
+    assert_eq!(cue_master(&s), 6.0);
+    assert_eq!(s.control().workspace().settings.output_max_db, 12.0);
+    assert!(near(peak(&s, 0), loud), "{}", peak(&s, 0));
+    assert_eq!(mirror.catch_up(&mut s), 1);
+}
+
+/// A Fade cue `n` of the steady cue's master to `db` over `seconds`.
+fn fade_of_steady(
+    n: u128,
+    db: f64,
+    seconds: f64,
+    stop_target_when_done: bool,
+) -> openlab_core::Cue {
+    cue(
+        n,
+        CueKind::Fade {
+            target: Some(id(1)),
+            duration: seconds,
+            curve: openlab_core::FadeCurve::Linear,
+            levels: openlab_core::FadeLevels {
+                master_db: Some(db),
+                output_db: vec![],
+                crosspoints: vec![],
+            },
+            stop_target_when_done,
+        },
+    )
+}
+
+fn set_maximum(s: &mut OfflineShow, db: f64) {
+    command(
+        s,
+        Command::SetWorkspaceSetting {
+            setting: WorkspaceSetting::OutputMaxDb { value: db },
+        },
+    );
+}
+
+/// The loudest sample of output channel 1 from sample `from` on.
+fn peak_since(s: &OfflineShow, from: usize) -> f32 {
+    s.channel(0)[from..]
         .iter()
-        .fold(0.0f32, |m, x| m.max(x.abs()));
-    assert!(quiet < 0.1 && quiet > 0.01, "{quiet}");
+        .fold(0.0f32, |m, x| m.max(x.abs()))
+}
+
+#[test]
+fn lowering_the_maximum_pulls_down_a_level_a_fade_has_set() {
+    let mut s = steady_show(|ws| {
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, 6.0, 0.0, false))
+    });
+    start(&mut s, 2);
+    s.run(BLOCK * 8);
+    assert!(near(peak(&s, 0), 0.2 * openlab_core::db_to_gain(6.0)));
+    let before = s.channel(0).len();
+    set_maximum(&mut s, 0.0);
+    s.run(BLOCK * 8);
+    assert!(near(peak(&s, 0), 0.2), "{}", peak(&s, 0));
+    // De-zippered, not a step: no sample jumps by more than a 10 ms ramp's share of the change.
+    let out = s.channel(0);
+    let largest_step = out[before..]
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0, f32::max);
+    let ramp_step = (0.399 - 0.2) / (RATE as f32 * 0.010);
+    assert!(largest_step < ramp_step * 1.5, "{largest_step}");
+}
+
+#[test]
+fn lowering_the_maximum_keeps_a_running_fade_from_passing_it() {
+    let mut s = steady_show(|ws| {
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, 12.0, 1.0, false))
+    });
+    start(&mut s, 2);
+    s.run(u64::from(RATE) / 10);
+    // On its way up, below the new maximum: it carries on rising, and stops there.
+    set_maximum(&mut s, 6.0);
+    s.run(u64::from(RATE) * 2);
+    let top = 0.2 * openlab_core::db_to_gain(6.0);
+    assert!(near(peak(&s, 0), top), "{}", peak(&s, 0));
+    assert!(peak_since(&s, 0) <= top * 1.01, "{}", peak_since(&s, 0));
+}
+
+#[test]
+fn lowering_the_maximum_under_a_running_fade_brings_it_down_at_once() {
+    let mut s = steady_show(|ws| {
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, 12.0, 4.0, false))
+    });
+    start(&mut s, 2);
+    s.run(u64::from(RATE) * 2); // half way up the fade, well above 0 dB
+    assert!(peak(&s, 0) > 0.25, "{}", peak(&s, 0));
+    set_maximum(&mut s, 0.0);
+    let settled = s.channel(0).len() + (RATE as usize / 50) + BLOCK as usize;
+    s.run(u64::from(RATE) * 4);
+    assert!(
+        peak_since(&s, settled) <= 0.2 * 1.01,
+        "{}",
+        peak_since(&s, settled)
+    );
+    assert!(near(peak(&s, 0), 0.2), "{}", peak(&s, 0));
+}
+
+/// A fade-out passing through the region above the new maximum: at once no louder than it, and it
+/// still gets where it was going, on time, with its "stop target when done".
+#[test]
+fn lowering_the_maximum_during_a_fade_out_lets_it_finish_its_way_down() {
+    let mut s = steady_show(|ws| {
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, 6.0, 0.0, false));
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(3, SILENCE_DB, 4.0, true));
+    });
+    start(&mut s, 2);
+    s.run(BLOCK * 8);
+    start(&mut s, 3);
+    s.run(BLOCK * 8);
+    assert!(peak(&s, 0) > 0.3, "{}", peak(&s, 0));
+    set_maximum(&mut s, 0.0);
+    let settled = s.channel(0).len() + (RATE as usize / 50) + BLOCK as usize;
+    s.run(u64::from(RATE));
+    assert!(
+        peak_since(&s, settled) <= 0.2 * 1.01,
+        "{}",
+        peak_since(&s, settled)
+    );
+    assert!(peak(&s, 0) > 0.05, "still fading, not cut: {}", peak(&s, 0));
+    s.run(u64::from(RATE) * 4);
+    assert_eq!(peak(&s, 0), 0.0, "it reached silence");
+    assert_eq!(
+        s.control().engine().state(id(1)),
+        openlab_core::CueState::Idle,
+        "and stopped its target"
+    );
+}
+
+/// The cue's own level is above the new maximum and a Fade is taking it down: the sweep of the
+/// model is the limit's, not the operator taking the level over, so the Fade keeps it and its
+/// stop still applies.
+#[test]
+fn a_maximum_that_moves_the_cues_own_level_does_not_end_a_fade_of_it() {
+    let mut s = steady_show(|ws| {
+        if let CueKind::Audio { levels, .. } = &mut ws.cue_lists[0].cues[0].kind {
+            levels.master_db = 6.0;
+        }
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, SILENCE_DB, 2.0, true));
+    });
+    start(&mut s, 2);
+    s.run(u64::from(RATE));
+    set_maximum(&mut s, -30.0);
+    assert_eq!(cue_master(&s), -30.0);
+    s.run(u64::from(RATE) * 2);
+    assert_eq!(peak(&s, 0), 0.0, "the fade-out went on");
+    assert_eq!(
+        s.control().engine().state(id(1)),
+        openlab_core::CueState::Idle,
+        "and stopped its target"
+    );
+}
+
+/// A level a Fade has taken below the cue's own: a maximum that moves the cue's level must not
+/// bring the sound back up to it.
+#[test]
+fn a_maximum_that_moves_the_cues_own_level_does_not_raise_a_faded_level() {
+    let mut s = steady_show(|ws| {
+        if let CueKind::Audio { levels, .. } = &mut ws.cue_lists[0].cues[0].kind {
+            levels.master_db = 6.0;
+        }
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, -20.0, 0.0, false));
+    });
+    start(&mut s, 2);
+    s.run(BLOCK * 8);
+    let faded = 0.2 * openlab_core::db_to_gain(-20.0);
+    assert!(near(peak(&s, 0), faded), "{}", peak(&s, 0));
+    set_maximum(&mut s, 0.0);
+    s.run(BLOCK * 8);
+    assert!(near(peak(&s, 0), faded), "{}", peak(&s, 0));
+}
+
+/// A paused Fade holds its level; lowered under it, the level comes down now and the resume goes
+/// no higher than the maximum.
+#[test]
+fn a_paused_fade_resumes_within_a_lowered_maximum() {
+    let mut s = steady_show(|ws| {
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, 12.0, 1.0, false))
+    });
+    start(&mut s, 2);
+    s.run(u64::from(RATE) * 3 / 4);
+    s.transport(TransportAction::Pause { cue: id(2) });
+    s.run(BLOCK * 8);
+    assert!(peak(&s, 0) > 0.3, "{}", peak(&s, 0));
+    set_maximum(&mut s, 0.0);
+    s.run(BLOCK * 8);
+    assert!(near(peak(&s, 0), 0.2), "{}", peak(&s, 0));
+    s.transport(TransportAction::Resume { cue: id(2) });
+    s.run(u64::from(RATE));
+    assert!(near(peak(&s, 0), 0.2), "{}", peak(&s, 0));
+}
+
+#[test]
+fn raising_the_minimum_silences_a_level_a_fade_has_set_at_or_below_it() {
+    let mut s = steady_show(|ws| {
+        ws.settings.output_min_db = -80.0;
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, -50.0, 0.0, false));
+    });
+    start(&mut s, 2);
+    s.run(BLOCK * 8);
+    assert!(peak(&s, 0) > 0.0);
+    command(
+        &mut s,
+        Command::SetWorkspaceSetting {
+            setting: WorkspaceSetting::OutputMinDb { value: -40.0 },
+        },
+    );
+    s.run(BLOCK * 8);
+    assert_eq!(peak(&s, 0), 0.0);
+}
+
+/// A paused Fade that was shortened ends where its planned curve is at the new length, which from
+/// a level above a lowered maximum is above it too: the resume is limited as well.
+#[test]
+fn a_shortened_paused_fade_resumes_within_a_lowered_maximum() {
+    let mut s = steady_show(|ws| {
+        if let CueKind::Audio { levels, .. } = &mut ws.cue_lists[0].cues[0].kind {
+            levels.master_db = 6.0;
+        }
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, SILENCE_DB, 4.0, false));
+    });
+    start(&mut s, 2);
+    s.run(u64::from(RATE) / 4);
+    s.transport(TransportAction::Pause { cue: id(2) });
+    s.run(BLOCK * 8);
+    command(
+        &mut s,
+        Command::SetCueProperty {
+            id: id(2),
+            property: CueProperty::Duration { value: 1.0 },
+        },
+    );
+    set_maximum(&mut s, 0.0);
+    s.run(BLOCK * 8);
+    s.transport(TransportAction::Resume { cue: id(2) });
+    let resumed = s.channel(0).len();
+    s.run(u64::from(RATE));
+    assert!(
+        peak_since(&s, resumed) <= 0.2 * 1.01,
+        "{}",
+        peak_since(&s, resumed)
+    );
+}
+
+/// A fade-out above the new maximum goes to it in 10 ms and on down from there; whatever comes in
+/// those 10 ms (from a second client or OSC) comes after both steps and is what stays.
+fn narrowed_during_a_fade_out(blocks_before: u64) -> OfflineShow {
+    let mut s = steady_show(|ws| {
+        ws.cue_lists[0]
+            .cues
+            .push(fade_of_steady(2, 6.0, 0.0, false));
+        let mut out = fade_of_steady(3, SILENCE_DB, 4.0, true);
+        out.continue_mode = openlab_core::ContinueMode::AutoFollow;
+        ws.cue_lists[0].cues.push(out);
+        ws.cue_lists[0]
+            .cues
+            .push(cue(4, CueKind::Wait { duration: 60.0 }));
+    });
+    start(&mut s, 2);
+    s.run(BLOCK * 8);
+    start(&mut s, 3);
+    s.run(BLOCK * 8);
+    set_maximum(&mut s, 0.0);
+    s.run(BLOCK * blocks_before);
+    s
+}
+
+#[test]
+fn an_edit_just_after_a_narrowing_wins_over_the_fade_it_interrupted() {
+    for blocks in [0, 1] {
+        let mut s = narrowed_during_a_fade_out(blocks);
+        let mut kind = s
+            .control()
+            .workspace()
+            .find_cue(id(1))
+            .unwrap()
+            .kind
+            .clone();
+        if let CueKind::Audio { levels, .. } = &mut kind {
+            levels.master_db = -6.0;
+        }
+        command(
+            &mut s,
+            Command::SetCueProperty {
+                id: id(1),
+                property: CueProperty::Kind { value: kind },
+            },
+        );
+        let want = 0.2 * openlab_core::db_to_gain(-6.0);
+        s.run(BLOCK * 8);
+        assert!(near(peak(&s, 0), want), "soon, {blocks}: {}", peak(&s, 0));
+        s.run(u64::from(RATE) * 5);
+        assert!(near(peak(&s, 0), want), "late, {blocks}: {}", peak(&s, 0));
+        assert_eq!(
+            s.control().engine().state(id(1)),
+            openlab_core::CueState::Running,
+            "the edit took the level over: its stop does not apply"
+        );
+        // The Fade completed at once, so its auto-follow fired.
+        assert_eq!(
+            s.control().engine().state(id(4)),
+            openlab_core::CueState::Running
+        );
+    }
+}
+
+#[test]
+fn stopping_a_fade_just_after_a_narrowing_holds_its_level() {
+    for blocks in [0, 1] {
+        let mut s = narrowed_during_a_fade_out(blocks);
+        s.transport(TransportAction::Stop {
+            cue: id(3),
+            fade_out: None,
+        });
+        s.run(BLOCK * 8);
+        assert!(near(peak(&s, 0), 0.2), "soon, {blocks}: {}", peak(&s, 0));
+        s.run(u64::from(RATE) * 5);
+        assert!(near(peak(&s, 0), 0.2), "late, {blocks}: {}", peak(&s, 0));
+        assert_eq!(
+            s.control().engine().state(id(1)),
+            openlab_core::CueState::Running
+        );
+    }
+}
+
+#[test]
+fn a_stop_of_the_cue_just_after_a_narrowing_is_not_overtaken() {
+    let mut s = narrowed_during_a_fade_out(0);
+    s.transport(TransportAction::HardStop { cue: id(1) });
+    s.run(BLOCK * 8);
+    assert_eq!(peak(&s, 0), 0.0);
+}
+
+#[test]
+fn a_limit_out_of_range_is_refused_and_the_old_one_stays() {
+    let mut s = steady_show(|_| {});
+    for bad in [
+        WorkspaceSetting::OutputMaxDb { value: -31.0 },
+        WorkspaceSetting::OutputMaxDb { value: 13.0 },
+        WorkspaceSetting::OutputMinDb { value: -39.0 },
+        WorkspaceSetting::OutputMinDb { value: -181.0 },
+    ] {
+        let replies = send(&mut s, Command::SetWorkspaceSetting { setting: bad }, None);
+        assert!(refusal(&replies).is_some(), "{replies:?}");
+    }
+    let settings = &s.control().workspace().settings;
+    assert_eq!(
+        (settings.output_max_db, settings.output_min_db),
+        (12.0, -60.0)
+    );
 }
 
 #[test]
@@ -617,7 +1080,7 @@ fn edits_that_change_nothing_make_no_revision_and_no_undo_step() {
     let before = s.control().snapshot();
     let passes = s.control().engine().whole_show_passes();
     for same in [
-        master(0.0),
+        minimum_limit(0.0),
         Command::SetWorkspaceSetting {
             setting: WorkspaceSetting::Hotkey {
                 key: TransportKey::Go,
@@ -662,36 +1125,36 @@ fn a_fader_drag_with_one_key_is_one_undo_step_but_every_value_reaches_clients() 
     let mut mirror = Mirror::new(&s);
     let revision = s.control().revision();
     for db in [-1.0, -2.0, -3.0, -4.0] {
-        let replies = send(&mut s, master(db), Some("master:1"));
+        let replies = send(&mut s, minimum_limit(db), Some("limit:1"));
         assert!(refusal(&replies).is_none());
         assert_eq!(mirror.catch_up(&mut s), 1, "each value is shown at once");
     }
     assert_eq!(s.control().revision(), revision + 4);
-    assert_eq!(s.control().workspace().settings.master_db, -4.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -64.0);
     assert!(s.control().snapshot().document.can_undo);
 
     // A second gesture is its own step.
-    send(&mut s, master(-9.0), Some("master:2"));
+    send(&mut s, minimum_limit(-9.0), Some("limit:2"));
     mirror.catch_up(&mut s);
     undo(&mut s);
     mirror.catch_up(&mut s);
-    assert_eq!(s.control().workspace().settings.master_db, -4.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -64.0);
     undo(&mut s);
     mirror.catch_up(&mut s);
-    assert_eq!(s.control().workspace().settings.master_db, 0.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -60.0);
     assert!(!s.control().snapshot().document.can_undo);
 }
 
 #[test]
 fn a_command_without_a_key_never_merges_and_a_long_key_is_refused() {
     let mut s = playing_show();
-    send(&mut s, master(-1.0), None);
-    send(&mut s, master(-2.0), None);
+    send(&mut s, minimum_limit(-1.0), None);
+    send(&mut s, minimum_limit(-2.0), None);
     undo(&mut s);
-    assert_eq!(s.control().workspace().settings.master_db, -1.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -61.0);
 
     let revision = s.control().revision();
-    let replies = send(&mut s, master(-5.0), Some(&"k".repeat(129)));
+    let replies = send(&mut s, minimum_limit(-5.0), Some(&"k".repeat(129)));
     let error = replies
         .iter()
         .find_map(|m| match m {
@@ -704,11 +1167,11 @@ fn a_command_without_a_key_never_merges_and_a_long_key_is_refused() {
         .expect("refused");
     assert_eq!(error.code, ErrorCode::BadRequest);
     assert_eq!(s.control().revision(), revision);
-    assert_eq!(s.control().workspace().settings.master_db, -1.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -61.0);
     // The longest allowed key works.
-    let replies = send(&mut s, master(-5.0), Some(&"k".repeat(128)));
+    let replies = send(&mut s, minimum_limit(-5.0), Some(&"k".repeat(128)));
     assert!(refusal(&replies).is_none());
-    assert_eq!(s.control().workspace().settings.master_db, -5.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -65.0);
 }
 
 #[test]
@@ -764,13 +1227,13 @@ fn undo_and_redo_of_a_merged_multi_slot_gesture_reach_a_mirror() {
     };
     for step in [
         name("a"),
-        master(-2.0),
+        minimum_limit(-2.0),
         Command::SetPatchProperty {
             id: patch_id(),
             property: PatchProperty::MasterDb { value: -1.0 },
         },
         name("b"),
-        master(-4.0),
+        minimum_limit(-4.0),
     ] {
         send(&mut s, step, Some("g"));
         assert_eq!(mirror.catch_up(&mut s), 1);
@@ -778,7 +1241,7 @@ fn undo_and_redo_of_a_merged_multi_slot_gesture_reach_a_mirror() {
     let after = s.control().workspace().clone();
     undo(&mut s);
     assert_eq!(mirror.catch_up(&mut s), 1);
-    assert_eq!(s.control().workspace().settings.master_db, 0.0);
+    assert_eq!(s.control().workspace().settings.output_min_db, -60.0);
     assert!(!s.control().snapshot().document.can_undo);
     let rid = s.request_id();
     s.send(ClientMessage::Redo { id: rid });
@@ -875,4 +1338,82 @@ fn the_cue_slice_marker_limit_fits_the_mixers_slice_table() {
         openlab_core::MAX_SLICE_MARKERS + 2,
         openlab_audio::MAX_SLICES
     );
+}
+
+/// Each narrowing under a fade-out above it can date its steps past the one before, so they can
+/// lie further ahead than any one call commits. Whatever comes after still comes last, at any
+/// block size.
+fn narrowed_twice_during_a_fade_out(rate: u32, block: u64) -> OfflineShow {
+    let path = wav(&dc(RATE as usize * 20, 0.2));
+    let mut steady = audio(1, &path, 0);
+    if let CueKind::Audio { levels, .. } = &mut steady.kind {
+        levels.master_db = 0.0;
+    }
+    let mut ws = workspace(vec![steady]);
+    ws.cue_lists[0]
+        .cues
+        .push(fade_of_steady(2, 6.0, 0.0, false));
+    ws.cue_lists[0]
+        .cues
+        .push(fade_of_steady(3, SILENCE_DB, 4.0, true));
+    let mut s = show_at(ws, rate, block);
+    start(&mut s, 1);
+    s.run(block * 8);
+    start(&mut s, 2);
+    s.run(block * 8);
+    start(&mut s, 3);
+    s.run(block * 8);
+    set_maximum(&mut s, 3.0);
+    set_maximum(&mut s, 0.0);
+    s
+}
+
+const NARROWING_CASES: [(u32, u64); 2] = [(RATE, BLOCK), (48_000, 512)];
+
+#[test]
+fn a_stop_after_two_narrowings_holds_the_fades_level() {
+    for (rate, block) in NARROWING_CASES {
+        let mut s = narrowed_twice_during_a_fade_out(rate, block);
+        s.transport(TransportAction::Stop {
+            cue: id(3),
+            fade_out: None,
+        });
+        s.run(u64::from(rate) / 2);
+        assert!(near(peak(&s, 0), 0.2), "soon, {rate}: {}", peak(&s, 0));
+        s.run(u64::from(rate) * 5);
+        assert!(near(peak(&s, 0), 0.2), "late, {rate}: {}", peak(&s, 0));
+        assert_eq!(
+            s.control().engine().state(id(1)),
+            openlab_core::CueState::Running
+        );
+    }
+}
+
+#[test]
+fn an_edit_after_two_narrowings_wins_over_the_fade() {
+    for (rate, block) in NARROWING_CASES {
+        let mut s = narrowed_twice_during_a_fade_out(rate, block);
+        let mut kind = s
+            .control()
+            .workspace()
+            .find_cue(id(1))
+            .unwrap()
+            .kind
+            .clone();
+        if let CueKind::Audio { levels, .. } = &mut kind {
+            levels.master_db = -6.0;
+        }
+        command(
+            &mut s,
+            Command::SetCueProperty {
+                id: id(1),
+                property: CueProperty::Kind { value: kind },
+            },
+        );
+        let want = 0.2 * openlab_core::db_to_gain(-6.0);
+        s.run(u64::from(rate) / 2);
+        assert!(near(peak(&s, 0), want), "soon, {rate}: {}", peak(&s, 0));
+        s.run(u64::from(rate) * 5);
+        assert!(near(peak(&s, 0), want), "late, {rate}: {}", peak(&s, 0));
+    }
 }

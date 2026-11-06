@@ -115,8 +115,21 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     let footer = FooterBar()
     /// The audio file chosen for an Audio cue (nil: cancelled). A seam for tests.
     var pickAudioFile: @MainActor () -> URL? = WorkspaceWindowController.audioPanel
-    private let verticalSplit = NSSplitView()
-    private let horizontalSplit = NSSplitView()
+    let verticalSplit = NSSplitView()
+    let horizontalSplit = NSSplitView()
+    /// The preferred inspector height and sidebar width (the splits' soft constraints).
+    var inspectorHeightConstraint: NSLayoutConstraint?
+    var sidebarWidthConstraint: NSLayoutConstraint?
+    /// Where this window's layout is remembered, once `restoreLayout` has set it (`+Layout`).
+    var layoutPersistence: (store: WindowLayoutStore, path: String, key: String)?
+    /// Saved split sizes waiting for their area to be shown.
+    var pendingInspectorHeight: CGFloat?
+    var pendingSidebarWidth: CGFloat?
+    var isRestoringLayout = false
+    /// The least the cue list keeps: its height (the baseline of a minimum-size window) and width.
+    static let minCueListHeight: CGFloat = 56
+    static let minCueListWidth: CGFloat = 200
+    var layoutObservers: [NSObjectProtocol] = []
 
     init(store: WorkspaceStore) {
         self.store = store
@@ -195,8 +208,15 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             MainActor.assumeIsolated {
                 switch change {
                 case .reset, .model: self?.syncFooterCount()
-                // Runtime ticks cannot change the shown list: only the standby cue moves.
-                case .runtime, .progress, .waits, .notices: self?.syncMasthead()
+                // Runtime ticks cannot change the shown list: only the standby cue moves. They do
+                // bring broken cues, problems and warnings.
+                case .runtime(let cues, _):
+                    self?.syncMasthead()
+                    self?.syncFooterWarnings(changed: cues)
+                case .notices:
+                    self?.syncMasthead()
+                    self?.syncFooterWarnings()
+                case .progress, .waits: self?.syncMasthead()
                 }
             }
         }
@@ -224,6 +244,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         footer.onModeChange = { [weak self] show in Task { await self?.requestShowMode(show) } }
         footer.onToggle = { [weak self] area, on in self?.setVisible(area, on) }
         footer.onSettings = { [weak self] in self?.showSettings() }
+        footer.onWarnings = { [weak self] in self?.showWarnings() }
         setVisible(.sidebar, false)
         wire(masthead.goButton, #selector(goClicked))
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
@@ -332,7 +353,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// The areas Show Mode takes away.
     static let hiddenInShowMode: [LayoutArea] = [.toolbar, .inspector]
     /// What the footer toggles last asked for. In Show Mode the shown state differs from it.
-    private var wanted: [LayoutArea: Bool] = [:]
+    var wanted: [LayoutArea: Bool] = [:]
 
     private func refreshMasthead() {
         let size = window?.contentView?.bounds.size ?? NSSize(width: 1200, height: 800)
@@ -341,6 +362,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidResize(_ notification: Notification) {
         refreshMasthead()
+        saveLayout()
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        saveLayout()
     }
 
     /// A notice without an interruption: a log record and the footer line.
@@ -511,6 +537,31 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func syncFooterCount() {
         let model = store.model
         footer.showCount(cues: model?.cueCount ?? 0, lists: model?.cueLists.count ?? 0)
+        syncFooterWarnings()
+    }
+
+    /// The footer's warnings button counts the rows the Warnings tab lists.
+    /// With `changed` (a runtime change), only a cue that has a row, problems or a runtime reason can
+    /// change the count, so a busy show does not rescan the cue tree for every tick (as the sidebar).
+    func syncFooterWarnings(changed: Set<ModelID>? = nil) {
+        if let changed,
+            !changed.contains(where: {
+                footerWarned.contains($0) || store.problems[$0] != nil || store.cueStates[$0]?.reason != nil
+            })
+        {
+            return
+        }
+        let rows = WarningRows.make(store: store)
+        footerWarned = Set(rows.compactMap(\.cue))
+        footer.showWarnings(count: rows.count)
+    }
+
+    private var footerWarned: Set<ModelID> = []
+
+    /// The footer's warnings button: the sidebar opens on the Warnings tab (Show Mode keeps the sidebar).
+    func showWarnings() {
+        setVisible(.sidebar, true)
+        sidebar.showTab(2)
     }
 
     private func syncSidebarList() {
@@ -579,6 +630,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         if isShowMode, Self.hiddenInShowMode.contains(area) { return }
         wanted[area] = visible
         show(area, visible)
+        saveLayout()
     }
 
     private func show(_ area: LayoutArea, _ visible: Bool) {
@@ -592,6 +644,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             inspector.view.isHidden = !visible
         case .sidebar: setSidebarInSplit(visible)
         }
+        if visible { applyPendingSplit(area) }
         footer.toggles[area]?.state = visible ? .on : .off
         footer.toggles[area]?.isEnabled = !(isShowMode && Self.hiddenInShowMode.contains(area))
     }
@@ -625,21 +678,26 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     private func buildContent() -> NSView {
         verticalSplit.isVertical = false
+        cueList.view.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.minCueListHeight).isActive = true
         verticalSplit.dividerStyle = .thin
         verticalSplit.addArrangedSubview(cueList.view)
         verticalSplit.addArrangedSubview(inspector.view)
         verticalSplit.setHoldingPriority(NSLayoutConstraint.Priority(250), forSubviewAt: 0)
         verticalSplit.setHoldingPriority(NSLayoutConstraint.Priority(251), forSubviewAt: 1)
         let inspectorHeight = inspector.view.heightAnchor.constraint(equalToConstant: 240)
-        inspectorHeight.priority = NSLayoutConstraint.Priority(750)
+        // Like the sidebar's: below what a divider drag needs, so a dragged height stays.
+        inspectorHeight.priority = NSLayoutConstraint.Priority(300)
         inspectorHeight.isActive = true
+        inspectorHeightConstraint = inspectorHeight
 
         horizontalSplit.isVertical = true
+        verticalSplit.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minCueListWidth).isActive = true
         horizontalSplit.dividerStyle = .thin
         horizontalSplit.addArrangedSubview(verticalSplit)
         let sidebarWidth = sidebar.view.widthAnchor.constraint(equalToConstant: 280)
         sidebarWidth.priority = NSLayoutConstraint.Priority(300)
         sidebarWidth.isActive = true
+        sidebarWidthConstraint = sidebarWidth
 
         findBar.isHidden = true
         let stack = NSStackView(views: [masthead, cueToolbar, findBar, horizontalSplit, footer])

@@ -8,7 +8,8 @@
 //! [`Paste`]: Command::Paste
 
 use crate::command::{Command, CommandError, CueProperty, prepare_paste};
-use crate::cue::{Cue, CueKind, MediaRef};
+use crate::command_model::WorkspaceSetting;
+use crate::cue::{Cue, CueKind, MediaRef, OUTPUT_MAX_DB_RANGE, OUTPUT_MIN_DB_RANGE};
 use crate::media_path::{
     PathStyle, is_absolute, lexical_normalize, normalize_nfc, portable_ref, resolve, to_portable,
 };
@@ -137,17 +138,49 @@ impl Command {
                 paths.store_property(&mut property);
                 Self::BatchSet { ids, property }
             }
-            Self::Transaction { commands } => Self::Transaction {
-                commands: commands
-                    .into_iter()
+            Self::SetWorkspaceSetting { setting } => limit_change(workspace, setting),
+            Self::Transaction { commands } => {
+                let mut prepared = Vec::with_capacity(commands.len());
+                for command in commands {
                     // A transaction inside one is left for `apply` to refuse.
-                    .map(|c| match c {
-                        Self::Transaction { .. } => Ok(c),
-                        other => other.prepare(workspace, paths, new_id),
-                    })
-                    .collect::<Result<_, _>>()?,
-            },
+                    if matches!(command, Self::Transaction { .. }) {
+                        prepared.push(command);
+                        continue;
+                    }
+                    match command.prepare(workspace, paths, new_id)? {
+                        // A limit change that brings levels down: its steps join this one.
+                        Self::Transaction { commands } => prepared.extend(commands),
+                        other => prepared.push(other),
+                    }
+                }
+                Self::Transaction { commands: prepared }
+            }
             other => other,
         })
     }
+}
+
+/// A change of the maximum or minimum volume limit, with the steps that put the levels already
+/// in the workspace within the new limit in front of it, so one undo gives them all back. Any
+/// other setting passes through.
+fn limit_change(workspace: &Workspace, setting: WorkspaceSetting) -> Command {
+    let mut limits = workspace.settings.limits();
+    match setting {
+        WorkspaceSetting::OutputMaxDb { value } => limits.max_db = value,
+        WorkspaceSetting::OutputMinDb { value } => limits.min_db = value,
+        other => return Command::SetWorkspaceSetting { setting: other },
+    }
+    // A value out of range is refused by `apply`; do not work out its clamps.
+    let in_range = |(lo, hi): (f64, f64), v: f64| (lo..=hi).contains(&v);
+    if !in_range(OUTPUT_MAX_DB_RANGE, limits.max_db)
+        || !in_range(OUTPUT_MIN_DB_RANGE, limits.min_db)
+    {
+        return Command::SetWorkspaceSetting { setting };
+    }
+    let mut commands = workspace.limit_clamps(limits);
+    if commands.is_empty() {
+        return Command::SetWorkspaceSetting { setting };
+    }
+    commands.push(Command::SetWorkspaceSetting { setting });
+    Command::Transaction { commands }
 }

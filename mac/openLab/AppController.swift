@@ -119,15 +119,18 @@ final class AppController {
     /// Where the launch choice and the files open at quit are kept; nil: nothing is (tests that
     /// do not look at it).
     let launchDefaults: UserDefaults?
+    /// Where windows remember their layout (UI-02); nil: they do not (tests that do not look at it).
+    let layoutDefaults: UserDefaults?
     /// The app is starting and has not yet done what the launch choice says: no launcher meanwhile.
     var launching = false
     lazy var preferencesWindow = PreferencesWindowController(preferences: launchPreferences)
 
     init(
         session: EngineSession, supervisor: EngineSupervisor? = nil, scheduler: Scheduler = SystemScheduler(),
-        timeout: Double = 5, launchDefaults: UserDefaults? = nil
+        timeout: Double = 5, launchDefaults: UserDefaults? = nil, layoutDefaults: UserDefaults? = nil
     ) {
         self.launchDefaults = launchDefaults
+        self.layoutDefaults = layoutDefaults
         self.session = session
         self.supervisor = supervisor
         self.scheduler = scheduler

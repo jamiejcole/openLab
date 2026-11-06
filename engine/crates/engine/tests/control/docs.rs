@@ -560,7 +560,7 @@ fn workspace_settings_travel_with_the_file_and_machine_settings_do_not() {
     ws.settings.panic_duration = 3.0;
     ws.settings.autosave_interval = 45.0;
     ws.settings.osc_access = openlab_core::OscAccess::new_workspace(77);
-    ws.settings.master_db = -6.0;
+    ws.settings.output_min_db = -90.0;
     let mut r = rig(ws.clone());
     let path = r.env.show_path();
     ok_result(&request(
@@ -2354,7 +2354,7 @@ fn old_and_damaged_files_open_in_edit_mode() {
     fs::write(&old, doc.to_string()).unwrap();
     assert!(!opens_in_show_mode(&mut r, &old));
 
-    doc["format_version"] = 8.into();
+    doc["format_version"] = openlab_core::FORMAT_VERSION.into();
     doc["workspace"]["id"] = "00000000-0000-4000-8000-0000000000aa".into();
     doc["workspace"]["show_mode"] = "yes".into();
     let damaged = dir.join("damaged.openlab");

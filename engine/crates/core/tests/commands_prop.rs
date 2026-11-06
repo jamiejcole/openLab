@@ -486,7 +486,9 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
         2 => WorkspaceSetting::AutosaveInterval {
             value: time(p.c) * 10.0,
         },
-        3 => WorkspaceSetting::MasterDb { value: level(p.c) },
+        3 => WorkspaceSetting::OutputMinDb {
+            value: level(p.c) - 70.0,
+        },
         4 | 5 => WorkspaceSetting::Hotkey {
             key,
             // "escape" is reserved and "l" / "space" are default keys: refusals.
@@ -824,7 +826,9 @@ fn build(ws: &Workspace, g: &mut Gen, op: u8, p: &Pick) -> Option<Command> {
                     } else {
                         Command::SetWorkspaceSetting {
                             setting: if n % 2 == 0 {
-                                WorkspaceSetting::MasterDb { value: level(p.d) }
+                                WorkspaceSetting::OutputMinDb {
+                                    value: level(p.d) - 70.0,
+                                }
                             } else {
                                 WorkspaceSetting::PanicDuration { value: time(p.d) }
                             },
@@ -1208,7 +1212,7 @@ fn hostile_base() -> Workspace {
         key: "Space Bar".into(),
         modifiers: Modifiers::default(),
     });
-    ws.settings.master_db = -0.0;
+    ws.settings.output_min_db = -60.0;
     // Names load keeps with a warning, and an edit away from them is undone back to them.
     ws.name = "w".repeat(300);
     ws.cue_lists[1].name = "two\nlines".into();
