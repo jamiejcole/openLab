@@ -30,7 +30,8 @@ it, and `engine/fixtures/show/` holds a sample file for each format version so f
 ### What the reader accepts
 
 - **Unknown keys are ignored**, so stray keys added by hand do not stop a file opening; they are
-  dropped on the next save. (A file from a newer openLab is still refused by its `format_version`.)
+  dropped on the next save. (A file with a higher `format_version` is still refused. Until v1.0.0 a newer build still writes
+  the same version, so its file is not detected as newer.)
 - **Missing keys are an error**: every field below is required unless it says otherwise.
 - A leading UTF-8 byte-order mark and `\r\n` line endings are accepted (files edited on Windows).
 - Windows absolute media paths are converted to forward slashes (see §4.3).
@@ -52,7 +53,8 @@ The top level of every file is:
 - `format_version` is an integer, 0 or greater. It stays at its current value until v1.0.0 (see the
   policy below).
 - **Newer than supported:** openLab refuses the file with a message naming both the file's version
-  and the newest version it supports. It never guesses at a newer format.
+  and the newest version it supports. It never guesses at a higher version. Until v1.0.0 the version
+  stays fixed, so this catches only a file with a higher number.
 - **Older than current:** openLab upgrades the document in memory one version at a time
   (`v0 → v1 → … → current`). Each step is a pure function from one JSON document to the next, with a
   fixture of the old version in `engine/fixtures/show/` and a test that it upgrades correctly. The
@@ -60,7 +62,9 @@ The top level of every file is:
 - **Policy for contributors:** until v1.0.0 a change to the model that affects the file keeps
   `FORMAT_VERSION`, edits the current-version fixture in place and updates this document, all in one
   commit. It adds no migration step or old-version fixture: openLab runs no production shows before
-  then, so no old files need upgrading. The existing steps stay, so older test shows still load.
+  then, so no old files need upgrading. The existing steps stay: a new required key also goes into the
+  last step (`v8_to_v9`) so older test shows still load, and the notes for versions 8 and 9 below are
+  updated to match.
 
 | Version | openLab | Notes |
 |---|---|---|

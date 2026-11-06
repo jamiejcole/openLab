@@ -40,7 +40,7 @@ This file is the only copy of every rule below; other files link here instead of
 
 ## Contracts (same commit)
 - Protocol change: Rust types in core, fixtures in `engine/fixtures/protocol/`, Swift `Codable` types, `docs/protocol.md`.
-- Show-file change: update `docs/file-format.md` and edit the current-version fixture in place. Until v1.0.0 `format_version` stays where it is, with no new migration steps, old-version fixtures or handling for old files: none exist, and openLab runs no production shows before then (user decision 2026-11-05). The existing chain stays, so older test shows still load. A crash or hang on any file is still High.
+- Show-file change: update `docs/file-format.md` and edit the current-version fixture in place. Until v1.0.0 `format_version` stays where it is, with no new migration steps, old-version fixtures or handling for old files: none exist, and openLab runs no production shows before then (user decision 2026-11-05). The existing chain stays: a new required key also goes into its last step, so older test shows still load. A crash or hang on any file is still High.
 - New dependency: GPLv3-compatible, justified, listed in ARCHITECTURE §12. Prefer stdlib or an existing one.
 - Docs describe what exists; plans are issues. A claim about CI, lints or tests is checked against `ci.yml` / `Cargo.toml` when written.
 - Every source file starts with `SPDX-License-Identifier: GPL-3.0-or-later`.
