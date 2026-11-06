@@ -1082,6 +1082,76 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertNil(untitled.document?.path)
     }
 
+    /// The operator chose the saved file over an autosave and edited it; the engine died before
+    /// those edits had an autosave. The reattach must not bring back the autosave turned down (the
+    /// window would hold, and fire, cues it never showed, and a Save would write them over the file).
+    func testAReattachDoesNotRestoreAnAutosaveTheOperatorTurnedDown() async throws {
+        let path = try runs.show("Demo", named: "B")
+        try await runs.start()
+        let doc = try await runs.open(path)
+        try await runs.rename(intro, in: doc, to: "Turned down")
+        try await runs.advance(31)
+        await runs.autosaved("B")
+        try await runs.crash()
+
+        try await launch()
+        let offered = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(offered)
+        presenter.dismiss()
+        alerts.recoveryChoice = .ignore
+        await app.openWorkspace(url: URL(fileURLWithPath: path))
+        await assertEventually { self.app.allWindows.first?.store.model?.cue(self.intro)?.name == "Intro" }
+        let store = try XCTUnwrap(app.allWindows.first?.store)
+        guard case .success = await store.send(command: .setProperty(intro, .name("Edited"))) else {
+            return XCTFail("edit")
+        }
+        await assertEventually { store.document?.dirty == true }
+
+        try await crash()
+        let back = await pump { self.presenter.detail.contains(loc("engine.alarm.back")) }
+        XCTAssertTrue(back)
+        await assertEventually { store.connectionState == .connected && !self.app.session.isReattaching }
+        XCTAssertEqual(store.model?.cue(intro)?.name, "Intro", "the saved file, not the autosave turned down")
+        XCTAssertEqual(store.document?.dirty, false)
+        XCTAssertTrue(
+            presenter.detail.contains(String(format: loc("engine.alarm.editsLostOne"), "B")), presenter.detail)
+        XCTAssertFalse(
+            presenter.detail.contains(String(format: loc("engine.alarm.restoredOne"), "B")), presenter.detail)
+    }
+
+    /// An untitled window restored from B's autosave and autosaved since comes back from its own
+    /// autosave, even when file times make the one it was restored from look newer.
+    func testAReattachOfAnUntitledWindowPrefersItsOwnAutosave() async throws {
+        makePrefs(.restore)
+        let path = try runs.show("Demo", named: "B")
+        try await recoverFromTheMenu(afterCrashOf: path) {
+            try "{ corrupt".write(toFile: path, atomically: true, encoding: .utf8)
+        }
+        let store = try XCTUnwrap(app.allWindows.first?.store)
+        await assertEventually { store.model?.cue(self.intro)?.name == "Unsaved" }
+        let id = try XCTUnwrap(store.model?.id.raw)
+        guard case .success = await store.send(command: .setProperty(intro, .name("Own edit"))) else {
+            return XCTFail("edit")
+        }
+        try await advance(31)
+        let recovery = runs.support.appendingPathComponent("openLab/Recovery")
+        let own = recovery.appendingPathComponent("\(id).openlab")
+        await assertEventually { FileManager.default.fileExists(atPath: own.path) }
+        // The autosave it was restored from now looks newer.
+        let names = try FileManager.default.contentsOfDirectory(atPath: recovery.path)
+        let hashed = try XCTUnwrap(names.first { $0.hasPrefix("\(id)-") })
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(3600)],
+            ofItemAtPath: recovery.appendingPathComponent(hashed).path)
+
+        try await crash()
+        let back = await pump { self.presenter.detail.contains(loc("engine.alarm.back")) }
+        XCTAssertTrue(back)
+        await assertEventually { store.connectionState == .connected && !self.app.session.isReattaching }
+        XCTAssertEqual(store.model?.cue(intro)?.name, "Own edit")
+        XCTAssertNil(store.document?.path)
+    }
+
     /// B and a Finder copy of it share a workspace id; the copy's autosave (another path, so
     /// another path hash) is offered from File > Recover Autosaves… while B is open, and B's own
     /// autosave, which its window holds, is not.

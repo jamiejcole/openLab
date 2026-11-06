@@ -1593,6 +1593,17 @@ impl DocCx<'_> {
                 }
             }
             Err(e) => {
+                // A write past the timeout may still land: a removal must queue behind it.
+                if matches!(e, PersistError::Stalled { .. }) {
+                    let file = &mut self.doc.file;
+                    match path {
+                        Some(path) if !file.autosaved_at.iter().any(|p| same_path(p, &path)) => {
+                            file.autosaved_at.push(path);
+                        }
+                        Some(_) => {}
+                        None => file.autosaved_untitled = true,
+                    }
+                }
                 // Said once per run of failures: it repeats every interval otherwise.
                 if !self.doc.file.autosave_failed {
                     self.log(LogLevel::Warn, format!("autosave failed: {e}"));

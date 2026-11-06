@@ -2822,6 +2822,65 @@ fn dont_save_on_an_untitled_workspace_removes_the_autosave_it_wrote() {
     crate::show::spin::spin_until("the autosave to be removed", || !autosave.exists());
 }
 
+/// A doc's first autosave stalls and is given up on, and the operator then drops the edits. The
+/// write lands late: the removal queued behind it, so the edits are not offered later.
+#[test]
+fn a_first_autosave_that_stalls_cannot_bring_back_discarded_edits() {
+    let (entered_tx, entered) = mpsc::channel::<()>();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let entered_tx = Mutex::new(entered_tx);
+    let release = Mutex::new(release);
+    let hook = SaveHook(Arc::new(move |kind: JobKind| {
+        if kind == JobKind::Autosave {
+            let _ = entered_tx.lock().unwrap().send(());
+            let _ = release.lock().unwrap().recv();
+        }
+    }));
+    let time = ProbeTime::new();
+    let mut r = rig_tweak(memo_ws("one", &[1]), |c| {
+        c.save_hook = Some(hook);
+        c.doc_timeout = std::time::Duration::from_secs(20);
+        c.stall_clock = time.clock();
+    });
+    let path = r.env.show_path();
+    save_as(&mut r.s, &path);
+    r.s.settle_docs();
+    let wid = r.s.control().workspace().id;
+    rename(&mut r.s, 1, "edits to drop");
+    r.s.tick();
+    r.clock.advance(31_000);
+    r.s.tick();
+    entered.recv().unwrap(); // mid-write
+    r.s.tick();
+    time.advance(std::time::Duration::from_secs(21));
+    for _ in 0..3 {
+        r.s.tick(); // answered Stalled, and the answer collected
+    }
+    let (tx, mut rx) = reply_channel();
+    let id = r.s.request_id();
+    r.s.deliver(Inbox::Client {
+        message: ClientMessage::Close {
+            id,
+            doc: None,
+            discard_changes: true,
+        },
+        reply: tx,
+    });
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        ServerMessage::Result {
+            outcome: Outcome::Ok(_),
+            ..
+        }
+    ));
+    release_tx.send(()).unwrap();
+    let Rig { s, env, .. } = r;
+    drop(s);
+    crate::show::spin::spin_until("the write that landed late to be removed", || {
+        !env.dirs.recovery_path(wid, Some(&path)).exists()
+    });
+}
+
 /// `open` with `restore` only restores an autosave newer than the file. One the file has
 /// overtaken must not bind: a plain Save would roll the newer file back.
 #[test]
