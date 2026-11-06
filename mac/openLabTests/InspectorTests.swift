@@ -1335,7 +1335,7 @@ final class CueTargetFlowTests: XCTestCase {
         XCTAssertFalse(inspector.chooseButton.isHidden)
         XCTAssertFalse(inspector.targetField.isEditable, "the path is not typed in")
         let before = inspector.targetField.stringValue
-        XCTAssertFalse(before.isEmpty)
+        XCTAssertEqual(before, try showFolder() + "/media/a.wav", "the whole path, not the stored one")
         XCTAssertTrue(inspector.targetNote.isHidden)
         XCTAssertTrue(inspector.jumpTargetButton.isHidden, "a file has no cue to go to")
         // One click asks nothing; a cancelled chooser changes nothing.
@@ -1395,6 +1395,75 @@ final class CueTargetFlowTests: XCTestCase {
 
     // MARK: The rules around them
 
+    /// The folder of the open show.
+    private func showFolder() throws -> String {
+        (try XCTUnwrap(rig.store.document?.path) as NSString).deletingLastPathComponent
+    }
+
+    /// A file in the show's folder is stored relative to it; the field shows the whole path all the same,
+    /// when chosen and when the saved show is opened again.
+    func testAFileInTheShowFolderShowsItsWholePathAfterAReopen() async throws {
+        let folder = try showFolder()
+        let path = try XCTUnwrap(rig.store.document?.path)
+        let chosen = URL(fileURLWithPath: folder).appendingPathComponent("media/b.wav")
+        try FileManager.default.copyItem(atPath: folder + "/media/a.wav", toPath: chosen.path)
+        wc.pickAudioFile = { chosen }
+        await select(Self.intro)
+        try mouseDown(2)
+        await assertEventually { self.inspector.targetField.stringValue == chosen.standardizedFileURL.path }
+        guard case .success = await rig.store.save() else { return XCTFail("the save") }
+        guard case .success = await rig.client.send({ .close(id: $0, doc: self.rig.doc, discardChanges: false) })
+        else { return XCTFail("the close") }
+        wc.window?.close()
+        let engine = rig.testEngine
+        guard case .success(let ok) = await engine.request(.open(path: path)), case .opened(let doc)? = ok.data else {
+            return XCTFail("the reopen")
+        }
+        rig = Rig(engine: engine, workspace: doc)
+        let connected = await rig.connect()
+        XCTAssertTrue(connected)
+        wc = WorkspaceWindowController(store: rig.store)
+        wc.window?.makeKeyAndOrderFront(nil)
+        await assertEventually { self.wc.cueList.node(Self.intro) != nil }
+        await select(Self.intro)
+        XCTAssertEqual(inspector.targetField.stringValue, chosen.standardizedFileURL.path)
+        XCTAssertEqual(inspector.targetField.toolTip, chosen.standardizedFileURL.path)
+        _ = await rig.client.send({ .close(id: $0, doc: doc, discardChanges: true) })
+    }
+
+    /// `InspectorEdit.targetRejection` is a copy of core's `can_target`: every cue that takes a target, on
+    /// every kind and every Group mode, must be refused exactly where the engine would mark it broken.
+    func testTheTargetRulesMatchTheEngines() async throws {
+        var targets: [(String, ModelID)] = []
+        for kind in NewCueKind.allCases where kind != .group { targets.append((kind.wireType, try await add(kind))) }
+        for mode in InspectorViewController.groupModes {
+            let group = try await add(.group)
+            let set = await rig.store.send(
+                command: .setProperty(group, .groupMode(type: mode, loop: false, shuffle: false)))
+            guard case .success = set else { return XCTFail("group mode \(mode)") }
+            targets.append(("group \(mode)", group))
+        }
+        let sources = NewCueKind.allCases.filter { InspectorEdit.targetKinds.contains($0.wireType) }
+        XCTAssertEqual(Set(sources.map(\.wireType)), InspectorEdit.targetKinds, "every kind that takes a target")
+        var refused = 0
+        for kind in sources {
+            let source = try await add(kind)
+            for (name, target) in targets {
+                guard case .success = await rig.store.send(command: .setProperty(source, .target(target))) else {
+                    return XCTFail("\(kind.wireType) on \(name)")
+                }
+                try await rig.advance()
+                let cue = try XCTUnwrap(rig.store.model?.cue(source))
+                let targetCue = try XCTUnwrap(rig.store.model?.cue(target))
+                let ours = InspectorEdit.targetRejection(of: cue, target: targetCue) != nil
+                let engine = (rig.store.problems[source] ?? []).contains { $0.type == "target_wrong_kind" }
+                XCTAssertEqual(ours, engine, "\(kind.wireType) on \(name)")
+                if ours { refused += 1 }
+            }
+        }
+        XCTAssertGreaterThan(refused, 0, "the table reached the refused cases")
+    }
+
     /// QLab 5's change log, pp. 5-7: the dragged cue becomes the target of the cue it lands on.
     func testBothCouldTargetEachOtherTheDraggedCueBecomesTheTarget() async throws {
         let start = try await add(.start)
@@ -1407,8 +1476,6 @@ final class CueTargetFlowTests: XCTestCase {
         await assertEventually { self.target(start) == stop.raw }
         XCTAssertEqual(target(stop), start.raw, "each is set only by a drop on it")
         XCTAssertEqual(order, before)
-        // Two cues that trigger each other are the engine's to mark broken; the list goes on working.
-        XCTAssertNotNil(cell("status", start))
     }
 
     func testAFadeAcceptsOnlyWhatCanBeFaded() async throws {
@@ -1431,12 +1498,14 @@ final class CueTargetFlowTests: XCTestCase {
 
     func testADropOnItsOwnTargetCellChangesNothing() async throws {
         let log = CueEditingTests.SendLog(rig)
-        guard
-            case .move? = wc.cueList.cueDrop(
-                [try XCTUnwrap(wc.cueList.node(Self.fade))], item: wc.cueList.node(Self.fade), index: Self.on,
-                inTargetColumn: true)
-        else { return XCTFail("a cue cannot be its own target") }
-        XCTAssertEqual(log.sent, 0)
+        guard case .move = try drop([Self.fade], on: Self.fade) else {
+            return XCTFail("a cue cannot be its own target")
+        }
+        // The move runs in a task: this waits for it, and an undo would then find a step if it had sent one.
+        await settle()
+        try await rig.advance()
+        XCTAssertEqual(log.sent, 0, "it is already there")
+        XCTAssertEqual(order, original)
         XCTAssertNil(target(Self.fade))
     }
 

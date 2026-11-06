@@ -188,7 +188,7 @@ final class PlayheadClickUITests: XCTestCase {
 final class CueTargetUITests: XCTestCase {
     private func launchTargets() -> XCUIApplication {
         let app = launchApp(opening: ["Targets"])
-        XCTAssertTrue(waitFor("isHittable == true", app.staticTexts["intro"]), "the show is ready")
+        XCTAssertTrue(waitFor("isHittable == true", cueRow("intro", in: app)), "the show is ready")
         return app
     }
 
@@ -205,9 +205,9 @@ final class CueTargetUITests: XCTestCase {
         element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
     }
 
-    /// The titles down the list, top to bottom.
+    /// The titles down the list, top to bottom, read from its rows: the inspector can show the same words.
     private func titles(_ app: XCUIApplication) -> [String] {
-        ["intro", "pad", "note"].map { ($0, app.staticTexts[$0].frame.minY) }
+        ["intro", "pad", "note"].map { ($0, cueRow($0, in: app).frame.minY) }
             .sorted { $0.1 < $1.1 }.map(\.0)
     }
 
@@ -234,7 +234,7 @@ final class CueTargetUITests: XCTestCase {
         let app = launchTargets()
         let cell = fadeRow(app).staticTexts["?"]
         XCTAssertTrue(cell.waitForExistence(timeout: 5))
-        drag(app.staticTexts["intro"], to: center(cell))
+        drag(cueRow("intro", in: app).staticTexts["intro"], to: center(cell))
         assertFadeTarget("1")
         XCTAssertEqual(titles(app), ["intro", "pad", "note"])
         XCTAssertLessThan(cueRow("intro", in: app).frame.minY, fadeRow(app).frame.minY)

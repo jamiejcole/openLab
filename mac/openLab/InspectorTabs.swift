@@ -114,7 +114,8 @@ extension InspectorViewController {
         targetField.isEnabled = isFile || isCueTarget
         targetFieldWidth.isActive = !isFile
         if isFile {
-            targetField.stringValue = media
+            // The whole path (manual p. 126); the show file holds one relative to its folder.
+            targetField.stringValue = CueRowMenu.mediaURL(media, showPath: store.document?.path)?.path ?? media
         } else if !isCueTarget {
             targetField.stringValue = ""
         }

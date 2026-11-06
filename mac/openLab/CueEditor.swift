@@ -121,9 +121,12 @@ final class CueEditor {
         var commands: [Command] = []
         for d in dragged {
             let same = d.parent === parent
+            let from = sim.firstIndex(of: d.id)
             if same { sim.removeAll { $0 == d.id } }
             let at = anchor.flatMap { a in sim.firstIndex(of: a) } ?? sim.count
             sim.insert(d.id, at: at)
+            // Already there: a command would only leave an undo step that does nothing.
+            if same && from == at { continue }
             commands.append(
                 same ? .moveCue(d.id, index: at) : .reparentCue(d.id, list: list, parent: parent?.id, index: at))
         }

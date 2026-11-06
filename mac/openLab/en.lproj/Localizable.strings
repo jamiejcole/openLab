@@ -271,7 +271,7 @@
 "inspector.flagged" = "Flagged";
 "inspector.armed" = "Armed";
 "inspector.target.missing" = "(missing cue)";
-"inspector.target.notApplicable" = "(not applicable)";
+"inspector.target.notApplicable" = "(takes no target)";
 "inspector.target.choose" = "Choose…";
 "inspector.target.noFile" = "No file yet: click Choose…";
 "inspector.target.choosePrompt" = "Choose";
