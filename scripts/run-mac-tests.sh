@@ -19,11 +19,15 @@ set -uo pipefail
 # split over sample ranges (353, 1, 142), so the kernel frames (`*`) carrying the wait add up, one thread
 # tree at a time: a report can hold a second tree of the same thread (a Swift task's), which must not
 # count twice. The tested process is the one with the header's PID: another may share its name.
+# The report may not name the wait: a message to WindowServer can show only as `mach_msg2_trap`, so that
+# counts when, for all samples, the caller of `mach_msg` is SkyLight or QuartzCore itself. Our own code
+# or another framework in between could be waiting on anything.
 wedged() {
   awk '
     function end_thread() {
       if (waited > 0 && waited == samples) waiting = 1
       waited = 0
+      caller = 0
     }
     /^PID:/ && pid == "" { pid = $2 }
     /^Process:/ { end_thread(); tested = index($0, "[" pid "]") > 0; process = $2; samples = "" }
@@ -34,6 +38,10 @@ wedged() {
       in_kernel = sub(/^\*/, "", count)
       if (count == samples && process == "WindowServer" && thread ~ /ws_main_thread/ && /AppleParavirt/) driver = 1
       if (in_kernel && tested && thread ~ /com\.apple\.main-thread/ && /blocked by turnstile waiting for WindowServer/) waited += count
+      if (tested && thread ~ /com\.apple\.main-thread/ && count == samples) {
+        if (/mach_msg2_trap/) { if (caller) waiting = 1 }
+        else if (!/\(libsystem_kernel\.dylib \+/) caller = /\((SkyLight|QuartzCore) \+/
+      }
     }
     END { end_thread(); exit !(driver && waiting) }
   ' "$1"
