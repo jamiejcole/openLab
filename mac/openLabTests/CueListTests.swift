@@ -2429,8 +2429,12 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertNil(status(cues[2], 1))
         wc.cueList.rowCommand(try item(.preview, in: menu))
         await assertEventually("Preview") { self.store.previewing == [self.cues[0]] }
+        // A second Preview on a cue being previewed does nothing (QLab check V3).
         wc.cueList.rowCommand(try item(.preview, in: menu))
-        await assertEventually("Preview stops") { self.store.previewing.isEmpty }
+        await sync()
+        XCTAssertEqual(store.previewing, [cues[0]], "the preview plays on")
+        _ = await store.transport(.stopPreview(cue: cues[0]))
+        await assertEventually("Preview stopped") { self.store.previewing.isEmpty }
         wc.cueList.rowCopy(try item(.copy, in: menu))
         await assertEventually("Copy") { pasteboard.string(forType: CueEditor.pasteType) != nil }
         let copied = try XCTUnwrap(JSONValue.parse(try XCTUnwrap(pasteboard.string(forType: CueEditor.pasteType))))

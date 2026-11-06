@@ -686,7 +686,7 @@ final class CueHotkeyFiringTests: XCTestCase {
         XCTAssertTrue(first.previewing.contains(intro), "V again leaves the preview playing")
         _ = await first.transport(.stopPreview(cue: intro))
         try await run()
-        await assertEventually("stopped") { !self.first.previewing.isEmpty == false }
+        await assertEventually("stopped") { self.first.previewing.isEmpty }
         _ = await first.transport(.start(cue: intro))
         try await run()
         await assertEventually { self.playing(self.first, self.intro) }
