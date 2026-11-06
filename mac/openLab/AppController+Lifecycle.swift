@@ -16,11 +16,18 @@ extension AppController {
         await openWorkspace(url: url)
     }
 
-    func openWorkspace(url: URL) async {
-        let result = await opened {
+    /// `onFailure`: told of a failed open instead of the error alert (the launch restore).
+    func openWorkspace(url: URL, onFailure: ((EngineError) -> Void)? = nil) async {
+        let result = await opened(onFailure: onFailure) {
             let first = await self.session.open(path: url.path)
             // An autosave newer than the file (NFR-05): the engine opened nothing; ask, then open.
             guard case .failure(.recoveryOffered(_, let name, let modified)) = first else { return first }
+            // A restore at launch raises no modal over a window in Show Mode (NFR-10): the file stays
+            // closed, with its autosave, and the caller says so.
+            if let onFailure, self.controllers.values.contains(where: \.isShowMode) {
+                onFailure(.recoveryOffered(path: url.path, workspaceName: name, modifiedMs: modified))
+                return first
+            }
             guard let choice = self.alerts.recoveryOffer(workspace: name, modifiedMs: modified) else { return first }
             return await self.session.open(path: url.path, recovery: choice)
         }
@@ -36,12 +43,19 @@ extension AppController {
     /// Runs a new/open call: another workspace opens beside the ones open (protocol 2), so nothing
     /// unsaved is in the way.
     @discardableResult
-    private func opened(_ call: () async -> Result<ModelID, EngineError>) async -> Result<ModelID, EngineError> {
+    private func opened(
+        onFailure: ((EngineError) -> Void)? = nil, _ call: () async -> Result<ModelID, EngineError>
+    ) async -> Result<ModelID, EngineError> {
         let result = await call()
         switch result {
         case .success(let doc): show(doc)
         case .failure(.engine(.alreadyOpen, _)), .failure(.recoveryOffered): break  // shown; or Cancel
-        case .failure(let e): gatedAlerts.showError(String(format: loc("error.openFailed"), describe(e)))
+        case .failure(let e):
+            if let onFailure {
+                onFailure(e)
+            } else {
+                gatedAlerts.showError(String(format: loc("error.openFailed"), describe(e)))
+            }
         }
         return result
     }
@@ -135,6 +149,10 @@ extension AppController {
             guard let discard = await resolveUnsaved(info.doc) else { return false }
             if discard { discarded.append(info.doc) }
         }
+        // The quit is going ahead (no prompt was cancelled): what is open now, saved or not, is what
+        // the next launch reopens. Not while launching, or with an engine not reached: the list
+        // would be an incomplete one.
+        if session.connectionState == .connected, !launching { recordOpenWorkspaces() }
         // Don't Save is answered only now that no later prompt cancelled the quit. The shutdown
         // writes a recovery file for every dirty workspace, so the dropped edits are discarded
         // first (the engine removes their autosave too). A stalled or failed close must not trap

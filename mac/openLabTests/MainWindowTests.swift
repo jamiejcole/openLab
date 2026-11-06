@@ -974,6 +974,8 @@ final class WindowLayoutTests: XCTestCase {
         let doc = try XCTUnwrap(Set(app.windows.keys).subtracting(before).first)
         let wc = try XCTUnwrap(app.windows[doc])
         await assertEventually { wc.store.model != nil && wc.cueList.listID != nil }
+        // The workspace list is its own message and can arrive after the window's snapshot.
+        await assertEventually { app.session.workspaces.first { $0.doc == doc }?.path != nil }
         wc.window?.layoutIfNeeded()
         return (doc, wc)
     }

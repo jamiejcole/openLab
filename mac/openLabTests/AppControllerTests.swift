@@ -3093,7 +3093,8 @@ final class AppControllerTests: XCTestCase {
         try pressEsc(in: window)
         await assertEventually { panics().count == 1 }
         try await real.advance(seconds: 0.1)
-        XCTAssertNotEqual(store.cueStates[intro]?.state, .running, "fading out over the panic time")
+        // The new state reaches the store as its own message, after the advance returns.
+        await assertEventually("fading out over the panic time") { store.cueStates[self.intro]?.state != .running }
         try await real.advance(seconds: 1)  // past the show's 0.5 s panic time
         await assertEventually { store.cueStates[self.intro] == nil || store.cueStates[self.intro]?.state == .idle }
         XCTAssertTrue(try statusIcon(wc, row: 0).isHidden, "the running icon clears")

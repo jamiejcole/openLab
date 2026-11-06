@@ -11,6 +11,8 @@ final class LauncherWindowController: NSWindowController {
     var onOpenRecent: ((URL) -> Void)?
     private let recentStack = NSStackView()
     private var recents: [URL] = []
+    /// Why something did not open at launch (shown above the recents; empty: hidden).
+    let noticeLabel = NSTextField(wrappingLabelWithString: "")
 
     init() {
         let window = NSWindow(
@@ -31,7 +33,10 @@ final class LauncherWindowController: NSWindowController {
         recentStack.alignment = .leading
         recentStack.spacing = 4
 
-        let column = NSStackView(views: [new, open, heading, recentStack])
+        noticeLabel.textColor = .systemRed
+        noticeLabel.isHidden = true
+        noticeLabel.setAX(AX.launcherNotice)
+        let column = NSStackView(views: [noticeLabel, new, open, heading, recentStack])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 12
@@ -43,6 +48,11 @@ final class LauncherWindowController: NSWindowController {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func showNotice(_ text: String?) {
+        noticeLabel.stringValue = text ?? ""
+        noticeLabel.isHidden = text == nil
+    }
 
     func reload(recents urls: [URL]) {
         recents = Array(urls.prefix(10))
