@@ -231,8 +231,7 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(alarms, [])
     }
 
-    /// An engine that crashed and whose replacement is wedged: the replacement gets the plain
-    /// deadline (the connection reset it), and only its pid is signalled.
+    /// An engine that crashed and whose replacement is wedged: only the replacement's pid is signalled.
     func testAWedgedReplacementAfterACrashIsEndedAfterTheDeadline() async throws {
         let wedged: Int32 = 500
         var spawnCount = 0
@@ -253,6 +252,40 @@ final class EngineSupervisorTests: XCTestCase {
         _ = await pump { self.processes.spawns == 2 }
         XCTAssertEqual(processes.signals.map(\.pid), [wedged + 1])
         XCTAssertEqual(alarms, [.engineStopped(crashed: false), .startTimedOut])
+    }
+
+    /// A miss, then a connection: the deadline is the plain one again, not doubled. The engine dies
+    /// and its wedged replacement is ended at exactly `startDeadline` after its start.
+    func testAConnectionResetsTheDoubledStartDeadline() async throws {
+        var spawnCount = 0
+        var bornAt = 0.0
+        processes.onSpawn = { [unowned self] in
+            spawnCount += 1
+            bornAt = clock
+            if spawnCount == 2 {
+                processes.alive.insert(enginePid)
+                processes.info = .success(engineInfo)
+                return enginePid
+            }
+            let wedged = 600 + Int32(spawnCount)
+            processes.alive.insert(wedged)
+            return wedged
+        }
+        supervisor.start()
+        clock += supervisor.startDeadline  // the first engine misses its deadline
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertEqual(processes.signals.map(\.pid), [601])
+        processes.alive = []
+        processes.info = .failure(.missing)
+        engine.dropConnections()
+        _ = await pump { self.processes.spawns == 3 }
+        clock = bornAt + supervisor.startDeadline - 1
+        await spin(3)
+        XCTAssertEqual(processes.signals.map(\.pid), [601], "within the plain deadline")
+        clock += 1
+        _ = await pump { self.processes.signals.count == 2 }
+        XCTAssertEqual(processes.signals.map(\.pid), [601, 603], "ended at the plain deadline, not at twice it")
     }
 
     /// A start that needs longer than the first deadline still runs: each missed deadline doubles
@@ -575,6 +608,12 @@ final class EngineSupervisorTests: XCTestCase {
     }
 }
 
+/// Each wait returns when the first engine (the one `HidesFirstRunFile` spawned) has exited.
+private struct WaitsForFirstEngineExit: openLab.Scheduler {
+    let exited: @MainActor @Sendable () async -> Void
+    func sleep(seconds: Double) async throws { await exited() }
+}
+
 /// The real process table with the first engine's `engine.json` out of the app's sight until the
 /// app has ended that engine: an engine that is alive and never reaches the app, as a wedged
 /// start looks to it.
@@ -636,8 +675,16 @@ final class EngineCrashFlowTests: XCTestCase {
         let supervised: EngineProcesses = hidingFirstRun ? HidesFirstRunFile(processes) : processes
         hiding = supervised as? HidesFirstRunFile
         let session = EngineSession(transport: tap, infoProvider: { supervised.readInfo() }, scheduler: scheduler)
+        // The real engine takes milliseconds to exit on SIGTERM: the supervisor's wait for it follows
+        // the process, not a count of yields.
+        let exitWait = WaitsForFirstEngineExit { [unowned self] in
+            _ = await eventually(timeout: 10) {
+                guard let first = self.hiding?.spawned.first else { return true }
+                return !self.processes.isEngine(first)
+            }
+        }
         supervisor = EngineSupervisor(
-            processes: supervised, session: session, scheduler: ImmediateScheduler(),
+            processes: supervised, session: session, scheduler: hidingFirstRun ? exitWait : ImmediateScheduler(),
             now: { [unowned self] in stepClock })
         app = AppController(session: session, scheduler: ManualScheduler())
         alerts = ScriptedAlerts()
@@ -708,7 +755,11 @@ final class EngineCrashFlowTests: XCTestCase {
     private func pump(_ condition: @MainActor () -> Bool) async -> Bool {
         await eventually {
             if condition() { return true }
-            if let hiding = self.hiding, hiding.signalled.isEmpty { self.stepClock += 5 }
+            // Only once the first engine's own file exists: SIGTERM must reach an engine that holds
+            // the lock and has its signal handling up.
+            if let hiding = self.hiding, hiding.signalled.isEmpty, case .success = hiding.real.readInfo() {
+                self.stepClock += 5
+            }
             await self.scheduler.fire()
             return condition()
         }
