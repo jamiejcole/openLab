@@ -849,7 +849,8 @@ fn long_start_chains_validate_in_linear_time() {
     cues.push(cue(N, start(1))); // close the loop: every cue is in one cycle
     let ws = workspace(cues);
     // No time bound: a wall-clock assert is flaky on a loaded or sanitised runner. The quadratic version
-    // never finished on this input, so a regression hangs the test and the CI job times out.
+    // never finished on this input, so a regression hangs the test and the CI job times out; the
+    // work bound is `strongly_connected_work_is_linear_in_nodes_and_edges` in validate.rs.
     let issues = validate(&ws);
     assert_eq!(issues.len(), N as usize);
     assert!(issues.iter().all(|i| i.kind == IssueKind::TriggerCycle));

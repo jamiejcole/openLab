@@ -1229,7 +1229,7 @@ impl TriggerGraph {
                     .collect()
             })
             .collect();
-        let components = strongly_connected(&successors).unwrap_or_default();
+        let components = strongly_connected(&successors).map_or_else(Vec::new, |(c, _)| c);
         let component = node
             .into_iter()
             .filter_map(|(id, n)| Some((id, *components.get(n)?)))
@@ -1243,9 +1243,10 @@ impl TriggerGraph {
 }
 
 /// Tarjan's algorithm, iterative so a long chain cannot overflow the stack. O(nodes + edges).
-/// Returns each node's component number; `None` only if `successors` names a node that does not
-/// exist, which the graph built above never does.
-fn strongly_connected(successors: &[Vec<usize>]) -> Option<Vec<usize>> {
+/// Returns each node's component number and the steps taken (a test bounds them: a time limit would
+/// be flaky), or `None` only if `successors` names a node that does not exist, which the graph built
+/// above never does.
+fn strongly_connected(successors: &[Vec<usize>]) -> Option<(Vec<usize>, usize)> {
     let n = successors.len();
     let mut index: Vec<Option<usize>> = vec![None; n];
     let mut low = vec![0; n];
@@ -1255,12 +1256,14 @@ fn strongly_connected(successors: &[Vec<usize>]) -> Option<Vec<usize>> {
     // (node, next edge to follow); edge 0 means the node is being entered.
     let mut work: Vec<(usize, usize)> = Vec::new();
     let (mut next_index, mut next_component) = (0, 0);
+    let mut steps = 0;
     for root in 0..n {
         if index.get(root)?.is_some() {
             continue;
         }
         work.push((root, 0));
         while let Some((v, edge)) = work.pop() {
+            steps += 1;
             if edge == 0 {
                 *index.get_mut(v)? = Some(next_index);
                 *low.get_mut(v)? = next_index;
@@ -1298,7 +1301,7 @@ fn strongly_connected(successors: &[Vec<usize>]) -> Option<Vec<usize>> {
             }
         }
     }
-    Some(component)
+    Some((component, steps))
 }
 
 /// Fades act on audio levels (a Group fades its children); Devamp needs slices or a playlist
@@ -1321,4 +1324,23 @@ pub(crate) fn can_target(source: &CueKind, target: &CueKind) -> bool {
 /// Calls `f` on every cue in `cues`, parents first ([`crate::descendants`]).
 pub(crate) fn visit<'a>(cues: &'a [Cue], f: &mut impl FnMut(&'a Cue)) {
     crate::tree::descendants(cues).for_each(f);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strongly_connected;
+
+    /// Regression (review 2, H1): the work is counted, not timed, so a loaded runner cannot flake it
+    /// and a quadratic version fails at once instead of at the CI job's timeout.
+    #[test]
+    fn strongly_connected_work_is_linear_in_nodes_and_edges() {
+        for n in [1_000_usize, 100_000] {
+            // One cycle through every node: n nodes, n edges.
+            let successors: Vec<Vec<usize>> = (0..n).map(|i| vec![(i + 1) % n]).collect();
+            let (components, steps) = strongly_connected(&successors).expect("valid graph");
+            assert!(components.iter().all(|&c| c == components[0]));
+            // Each node is entered once and resumed once per edge, plus once to close.
+            assert!(steps <= 3 * (n + n), "{steps} steps for {n} nodes");
+        }
+    }
 }
