@@ -230,6 +230,13 @@ final class CueEditingTests: XCTestCase {
         let new = try XCTUnwrap(added)
         await assertEventually { h.vc.selectedIDs() == [new] }
         XCTAssertEqual(shape(h.vc.roots, new: new), "0a N[] 0b 20[21 22 23]")
+        // With only a Group selected, the new group goes inside it as its last child (#435).
+        h.vc.select([H.group])
+        let innerAdded = await editor.add(.group)
+        let inner = try XCTUnwrap(innerAdded)
+        await assertEventually { h.vc.selectedIDs() == [inner] }
+        XCTAssertEqual(h.vc.node(H.group)?.children.map(\.id), [H.door, H.rain, H.radio, inner])
+        XCTAssertEqual(h.vc.node(inner)?.cue.kindType, "group")
     }
 
     func testNewGroupRefusedByTheEngineLeavesTheListAndSaysWhy() async throws {
