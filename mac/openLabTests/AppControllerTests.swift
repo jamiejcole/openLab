@@ -927,7 +927,7 @@ final class AppControllerTests: XCTestCase {
     }
 
     /// A group holding one audio cue, as a show file holds cues (every field), added to the Demo workspace.
-    private func addPreviewGroup(armed: Bool = true) async throws -> (group: ModelID, child: ModelID) {
+    private func addPreviewGroup(armed: Bool = true) async throws -> (group: ModelID, child: ModelID, other: ModelID) {
         let wc = try XCTUnwrap(app.windows["1"])
         let store = try XCTUnwrap(app.session.stores["1"])
         let listID = try XCTUnwrap(wc.cueList.listID)
@@ -941,13 +941,21 @@ final class AppControllerTests: XCTestCase {
         let media = try XCTUnwrap(store.model?.cue(intro)?.raw["kind"]?["media"]?.stringValue)
         let g = ModelID("00000000-0000-0000-0000-0000000000f1")
         let child = ModelID("00000000-0000-0000-0000-0000000000f3")
-        var group = cue(g.raw, TestSnapshots.groupKind([cue(child.raw, TestSnapshots.audioKind(media))]))
+        let other = ModelID("00000000-0000-0000-0000-0000000000f4")
+        var group = cue(
+            g.raw,
+            TestSnapshots.groupKind([
+                cue(child.raw, TestSnapshots.audioKind(media)), cue(other.raw, TestSnapshots.audioKind(media)),
+            ]))
         group.set("armed", .bool(armed))
         let added = await store.send(command: .addCue(group, list: listID, parent: nil, index: 0))
-        guard case .success = added else { throw XCTSkip("add_cue failed: \(added)") }
+        guard case .success = added else {
+            XCTFail("add_cue refused: \(added)")
+            throw CancellationError()
+        }
         await assertEventually { wc.cueList.node(child) != nil }
         wc.cueList.reveal(child)
-        return (g, child)
+        return (g, child, other)
     }
 
     /// The label of the preview mark drawn in `id`'s row, nil when it shows none.
@@ -968,7 +976,7 @@ final class AppControllerTests: XCTestCase {
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])
         let store = try XCTUnwrap(app.session.stores["1"])
-        let (g, child) = try await addPreviewGroup()
+        let (g, child, _) = try await addPreviewGroup()
         wc.cueList.select([g])
         XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
         try await advance()
@@ -989,7 +997,7 @@ final class AppControllerTests: XCTestCase {
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])
         let store = try XCTUnwrap(app.session.stores["1"])
-        let (g, child) = try await addPreviewGroup()
+        let (g, child, _) = try await addPreviewGroup()
         wc.cueList.select([g])
         let menu = NSMenu()
         wc.cueList.prepareRowMenu(menu, row: wc.cueList.outlineView.row(forItem: wc.cueList.node(g)))
@@ -1001,13 +1009,48 @@ final class AppControllerTests: XCTestCase {
         await assertEventually("the group previews") { store.previewing.isSuperset(of: [g, child]) }
     }
 
+    /// A group's stop ends only the previews it started. S and Stop Selected on a group plus a child
+    /// previewed on its own stop both; and a child stopped alone is previewed again by V on the pair.
+    func testStopSelectedEndsAChildPreviewedOnItsOwnAndVRestartsAStoppedChild() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let (g, c, d) = try await addPreviewGroup()
+        wc.cueList.select([c])
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        try await advance()
+        await assertEventually("C previews on its own") { store.previewing == [c] }
+        wc.cueList.select([g])
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        try await advance()
+        await assertEventually("the group starts D") { store.previewing.isSuperset(of: [g, c, d]) }
+        wc.cueList.select([g, c])
+        XCTAssertNil(app.handleKeyDown(try keyEvent("s")))
+        await assertEventually("S ends C as well as the group's previews") { store.previewing.isEmpty }
+
+        // V on the group, D stopped alone, then V on group and D: D plays again.
+        wc.cueList.select([g])
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        try await advance()
+        await assertEventually { store.previewing.isSuperset(of: [g, c, d]) }
+        _ = await store.transport(.stopPreview(cue: d))
+        await assertEventually("D stopped alone") { !store.previewing.contains(d) && store.previewing.contains(g) }
+        wc.cueList.select([g, d])
+        XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
+        try await advance()
+        await assertEventually("V restarts D") { store.previewing.contains(d) }
+        wc.cueList.select([g, d])
+        await app.perform(.stopSelected)
+        await assertEventually("Stop Selected ends D too") { !store.previewing.contains(d) }
+    }
+
     /// A Group and its child both selected: V names the group only, so the engine has nothing to refuse.
     /// A child under a disarmed group is named too, as the group's preview leaves it out.
     func testPreviewSelectedWithAGroupAndItsChildWarnsOfNothing() async throws {
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])
         let store = try XCTUnwrap(app.session.stores["1"])
-        let (g, child) = try await addPreviewGroup()
+        let (g, child, _) = try await addPreviewGroup()
         wc.cueList.select([g, child])
         XCTAssertNil(app.handleKeyDown(try keyEvent("v")))
         try await advance()
@@ -1031,7 +1074,7 @@ final class AppControllerTests: XCTestCase {
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])
         let store = try XCTUnwrap(app.session.stores["1"])
-        let (g, child) = try await addPreviewGroup()
+        let (g, child, _) = try await addPreviewGroup()
         wc.cueList.select([g])
         wc.inspector.setSelection([g])
         let button = wc.inspector.previewButton
@@ -1063,7 +1106,7 @@ final class AppControllerTests: XCTestCase {
         keyDoc = "1"
         let wc = try XCTUnwrap(app.windows["1"])
         let store = try XCTUnwrap(app.session.stores["1"])
-        let (g, child) = try await addPreviewGroup()
+        let (g, child, _) = try await addPreviewGroup()
         wc.setShowMode(true)
         await assertEventually { store.showMode }
         func preview(_ id: ModelID) async throws {

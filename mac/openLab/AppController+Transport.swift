@@ -128,17 +128,15 @@ extension AppController {
         case .loadSelected: if let id = selected.last { await run(.load(cue: id, at: 0), on: store) }
         case .startSelected: await runAll(selected.map { .start(cue: $0) }, on: store)
         case .stopSelected:
-            await stopPreviews(of: selected, in: wc)
-            await runAll(selected.map { .hardStop(cue: $0) }, on: store)
+            await runAll(selected.map { .hardStop(cue: $0) }, alongside: previewStops(of: selected, in: wc), on: store)
         case .resetSelected: await runAll(selected.map { .reset(cue: $0) }, on: store)
         // A second press on cues still fading from the first stops them at once: the engine
         // decides that per cue (QLab: S twice is a hard stop of the selection).
         // A group's panic already fades its whole subtree, so a selected descendant of a selected
         // cue is left out: its own panic_cue would read as a second press and hard-cut it.
         case .panicSelected:
-            await stopPreviews(of: selected, in: wc)
             let roots = CueEditor.topLevel(selected.compactMap { wc.cueList.node($0) })
-            await runAll(roots.map { .panicCue(cue: $0.id) }, on: store)
+            await runAll(roots.map { .panicCue(cue: $0.id) }, alongside: previewStops(of: selected, in: wc), on: store)
         case .previewSelected:
             // QLab starts a preview of every selected audio cue and group; a press on one already being
             // previewed does nothing (checks V1, V3), so it is left out rather than sent for the engine to
@@ -148,7 +146,9 @@ extension AppController {
             let previewable = nodes.filter { node in
                 switch node.cue.kindType {
                 case "network": return true
-                case "audio", "group": return !store.previewing.contains(node.id) && !coveredByGroupPreview(node, nodes)
+                case "audio", "group":
+                    return !store.previewing.contains(node.id)
+                        && !coveredByGroupPreview(node, nodes, previewing: store.previewing)
                 default: return false
                 }
             }
@@ -171,13 +171,14 @@ extension AppController {
     /// A selected audio cue or group inside a selected, armed group is already started by that group's
     /// preview, so a press names only the group (the engine would warn "already being previewed"). A
     /// child under a disarmed group is not covered: the group's preview leaves it out.
-    private func coveredByGroupPreview(_ node: CueNode, _ selected: [CueNode]) -> Bool {
+    private func coveredByGroupPreview(_ node: CueNode, _ selected: [CueNode], previewing: Set<ModelID>) -> Bool {
         let ids = Set(selected.map(\.id))
         var disarmedBelow = node.cue.raw["armed"] == .bool(false)
         var up = node.parent
         while let ancestor = up {
             let armed = ancestor.cue.raw["armed"] != .bool(false)
-            if ids.contains(ancestor.id), armed, !disarmedBelow { return true }
+            // An ancestor already previewing is not sent by this press, so it starts nothing.
+            if ids.contains(ancestor.id), armed, !disarmedBelow, !previewing.contains(ancestor.id) { return true }
             disarmedBelow = disarmedBelow || !armed
             up = ancestor.parent
         }
@@ -185,13 +186,12 @@ extension AppController {
     }
 
     /// A preview is a playing cue to the operator, so Stop and Panic on the selection end it too (QLab
-    /// treats a previewed cue as an ordinary playing one). Sent before, and apart from, the cue's own
-    /// stop or panic: one batch cannot name a cue twice. Under a selected previewing group its
-    /// previewing descendants are left out; the group's stop covers them.
-    private func stopPreviews(of selected: [ModelID], in wc: WorkspaceWindowController) async {
-        let store = wc.store
-        let previewing = selected.compactMap { wc.cueList.node($0) }.filter { store.previewing.contains($0.id) }
-        await runAll(CueEditor.topLevel(previewing).map { .stopPreview(cue: $0.id) }, on: store)
+    /// treats a previewed cue as an ordinary playing one). One stop per selected previewing cue: a
+    /// group's stop ends only the previews it started, not a child previewed on its own. They go
+    /// apart from the cue's own stop or panic, which a batch could not hold (it cannot name a cue
+    /// twice), but in the same send, so nothing lands between them.
+    private func previewStops(of selected: [ModelID], in wc: WorkspaceWindowController) -> [TransportAction] {
+        selected.filter { wc.store.previewing.contains($0) }.map { .stopPreview(cue: $0) }
     }
 
     /// The selected cues act together: one `batch`, which the engine carries out at one scheduling
@@ -199,17 +199,24 @@ extension AppController {
     /// engine's batch limit goes as several batches, all out before any result is awaited. A
     /// repeated action is dropped (the engine refuses a batch naming a cue twice). Each failure is
     /// logged; one beep.
-    private func runAll(_ actions: [TransportAction], on store: WorkspaceStore) async {
+    /// `alongside` actions go as messages of their own, ahead of the batches but in the same send.
+    private func runAll(
+        _ actions: [TransportAction], alongside separate: [TransportAction] = [], on store: WorkspaceStore
+    ) async {
         var seen = Set<TransportAction>()
         let actions = actions.filter { seen.insert($0).inserted }
-        guard actions.count > 1 else {
-            if let only = actions.first { await run(only, on: store) }
+        let separate = separate.filter { seen.insert($0).inserted }
+        let batches: [TransportAction] =
+            actions.count > 1
+            ? stride(from: 0, to: actions.count, by: TransportAction.maxBatch).map {
+                .batch(actions: Array(actions[$0..<min($0 + TransportAction.maxBatch, actions.count)]))
+            } : actions
+        let messages = separate + batches
+        guard messages.count > 1 else {
+            if let only = messages.first { await run(only, on: store) }
             return
         }
-        let batches = stride(from: 0, to: actions.count, by: TransportAction.maxBatch).map {
-            TransportAction.batch(actions: Array(actions[$0..<min($0 + TransportAction.maxBatch, actions.count)]))
-        }
-        let failures = await store.transport(batches).compactMap { r -> EngineError? in
+        let failures = await store.transport(messages).compactMap { r -> EngineError? in
             if case .failure(let e) = r { return e } else { return nil }
         }
         guard !failures.isEmpty else { return }
