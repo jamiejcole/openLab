@@ -747,6 +747,62 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(sentPlayheads(h), [], "a followed selection sends no set_playhead")
     }
 
+    /// A group inside a group, both closed: the playhead moving to the cue inside (a GO during a
+    /// show) opens the outer group first, then the inner one, so the cue is selected and in view;
+    /// a reveal of it (a jump to a target) does the same without moving the playhead. Expanding
+    /// the inner group first leaves it closed and the selection empty.
+    func testAPlayheadInsideTwoClosedGroupsOpensBothAndSelectsTheCue() async throws {
+        let h = try await live()
+        func cue(_ id: String, _ kind: JSONValue) -> JSONValue {
+            var c = TestSnapshots.cueJSON(id: id, number: nil, name: id, kind: kind)
+            c.set("triggers", .object(["hotkey": .null, "osc": .null]))
+            c.set("second_trigger", .string("nothing"))
+            c.set("second_trigger_on_release", .bool(false))
+            return c
+        }
+        let (a, b, c): (ModelID, ModelID, ModelID) = (
+            "00000000-0000-0000-0000-0000000000e1", "00000000-0000-0000-0000-0000000000e2",
+            "00000000-0000-0000-0000-0000000000e3"
+        )
+        let inner = cue(b.raw, TestSnapshots.groupKind([cue(c.raw, TestSnapshots.audioKind("media/a.wav"))]))
+        guard
+            case .success = await h.store.send(
+                command: .addCue(
+                    cue(a.raw, TestSnapshots.groupKind([inner])), list: ModelID(H.list), parent: nil, index: 0))
+        else { return XCTFail("add") }
+        await assertEventually { h.vc.node(c) != nil }
+        h.spy.collapseItem(h.vc.node(b))
+        h.spy.collapseItem(h.vc.node(a))
+        var shown: [[ModelID]] = []
+        h.vc.onSelectionChange = { shown.append($0) }
+
+        func assertShown(_ line: UInt = #line) {
+            XCTAssertEqual(h.vc.selectedIDs(), [c], line: line)
+            XCTAssertTrue(h.spy.isItemExpanded(h.vc.node(a)), line: line)
+            XCTAssertTrue(h.spy.isItemExpanded(h.vc.node(b)), line: line)
+            let row = h.spy.row(forItem: h.vc.node(c))
+            XCTAssertTrue(row >= 0 && h.spy.rows(in: h.spy.visibleRect).contains(row), line: line)
+        }
+        try await moveElsewhere(h, to: c)
+        await assertEventually { h.vc.selectedIDs() == [c] }
+        assertShown()
+        XCTAssertEqual(shown.last, [c])
+        await settle()
+        XCTAssertEqual(sentPlayheads(h), [], "a followed selection sends no set_playhead")
+        XCTAssertEqual(playhead(h), c)
+
+        // The reveal path (a jump to a target) with both closed again; the playhead stays.
+        try await moveElsewhere(h, to: H.intro)
+        await assertEventually { h.vc.selectedIDs() == [H.intro] }
+        h.spy.collapseItem(h.vc.node(b))
+        h.spy.collapseItem(h.vc.node(a))
+        h.vc.reveal(c)
+        assertShown()
+        await settle()
+        XCTAssertEqual(playhead(h), H.intro)
+        XCTAssertEqual(sentPlayheads(h), [])
+    }
+
     /// Only this list's own playhead moves the selection, and only when it changes: a group the
     /// operator closed stays closed when another list's playhead moves.
     func testAnotherListsPlayheadLeavesAClosedGroupClosed() async throws {

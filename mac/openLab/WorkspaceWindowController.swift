@@ -566,7 +566,6 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         setVisible(.sidebar, true)
     }
 
-    /// Tools > Jump to Targets of Selected Cues (Show Mode allowed: it only moves the selection).
     /// The selected cues' targets that exist in the workspace.
     private var existingTargets: [ModelID] {
         cueList.selectedTargets.filter { target in
@@ -576,7 +575,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     var canJumpToTargets: Bool { !existingTargets.isEmpty }
 
-    /// The targets become the selection as a click would make it (inspector and playhead follow).
+    /// Tools > Jump to Targets of Selected Cues. The targets become the selection as a click would
+    /// make it, so the inspector and the playhead follow; Show Mode allows it (it fires and edits
+    /// nothing).
     /// Targets spread over several lists: the first one's list is shown, the others there are kept.
     func jumpToTargets() {
         let targets = existingTargets

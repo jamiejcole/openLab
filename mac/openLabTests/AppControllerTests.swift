@@ -2959,7 +2959,7 @@ final class AppControllerTests: XCTestCase {
         let row = outline.row(forItem: list.node(ModelID(gc)))
         XCTAssertTrue(row >= 0 && outline.rows(in: outline.visibleRect).contains(row), "the first target is in view")
         await assertEventually { Set(wc.inspector.selection) == [ModelID(gc), ModelID(far)] }
-        await assertEventually { [ModelID(gc), ModelID(far)].contains(store.playheads[lst] ?? "") }
+        await assertEventually { store.playheads[lst] == ModelID(far) }  // the last selected row
 
         // A cell being edited keeps its focus: the item waits.
         list.selectAsUser([ModelID(s1)])
