@@ -177,7 +177,6 @@
 "cuelist.col.postWait" = "Post-Wait";
 
 "cue.target.missing" = "?";
-"cue.target.file" = "File";
 "cue.playhead" = "Playhead";
 "cue.playhead.inside" = "Playhead is inside this group";
 "cue.flagged" = "Flagged";

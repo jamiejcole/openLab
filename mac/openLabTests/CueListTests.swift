@@ -4046,28 +4046,37 @@ final class CueListDrawingTests: XCTestCase {
     /// The rendered pixels (0...1 RGB) of one cell of a row, as drawn inside the row (selection and
     /// alternating background included).
     private func pixels(_ h: H, _ column: String, _ id: ModelID) throws -> Pixels {
-        let row = h.spy.row(forItem: h.vc.node(id))
-        let col = h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
+        try pixels(h.spy, column, item: h.vc.node(id))
+    }
+
+    private func pixels(_ outline: NSOutlineView, _ column: String, item: Any?) throws -> Pixels {
+        let row = outline.row(forItem: item)
+        let col = outline.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
         XCTAssertGreaterThanOrEqual(row, 0)
-        let rowView = try XCTUnwrap(h.spy.rowView(atRow: row, makeIfNecessary: true))
+        let rowView = try XCTUnwrap(outline.rowView(atRow: row, makeIfNecessary: true))
         rowView.layoutSubtreeIfNeeded()
-        let cell = h.spy.frameOfCell(atColumn: col, row: row)
-        let rowFrame = h.spy.rect(ofRow: row)
+        let cell = outline.frameOfCell(atColumn: col, row: row)
+        let rowFrame = outline.rect(ofRow: row)
         let region = NSRect(x: cell.minX - rowFrame.minX, y: 0, width: cell.width, height: rowFrame.height)
         rowView.layoutSubtreeIfNeeded()
         let scale = max(1, rowView.window?.backingScaleFactor ?? 2)
+        return Pixels(rep: try render(rowView, scale: scale), region: region, scale: scale)
+    }
+
+    /// `view` drawn into a bitmap on the window's light background.
+    private func render(_ view: NSView, scale: CGFloat) throws -> NSBitmapImageRep {
         let rep = try XCTUnwrap(
             NSBitmapImageRep(
-                bitmapDataPlanes: nil, pixelsWide: Int(rowView.bounds.width * scale),
-                pixelsHigh: Int(rowView.bounds.height * scale), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width * scale),
+                pixelsHigh: Int(view.bounds.height * scale), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                 isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
         let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
         context.cgContext.setFillColor(NSColor.white.cgColor)  // the window's light background under a clear row
         context.cgContext.fill(CGRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh))
         context.cgContext.scaleBy(x: scale, y: scale)
         // Draws the view tree straight into the bitmap (cacheDisplay skips layer-backed subviews).
-        rowView.displayIgnoringOpacity(rowView.bounds, in: context)
-        return Pixels(rep: rep, region: region, scale: scale)
+        view.displayIgnoringOpacity(view.bounds, in: context)
+        return rep
     }
 
     struct Pixels {
@@ -4203,13 +4212,15 @@ final class CueListDrawingTests: XCTestCase {
 
     private func drawnMask(_ p: Pixels) -> [Bool] { p.all.map { Self.drawn($0.r, $0.g, $0.b) } }
 
-    /// `wc`'s cue list in a window of its own, so clicks can reach it through the window.
-    private func show(_ wc: WorkspaceWindowController) -> NSWindow {
+    /// `view` of `wc` in a window of its own, so clicks reach it through the window and it draws.
+    @discardableResult
+    private func show(_ view: NSView) -> NSWindow {
         let w = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1000, height: 400), styleMask: [.titled, .resizable],
             backing: .buffered, defer: false)
         w.isReleasedWhenClosed = false
-        w.contentView = wc.cueList.view
+        w.appearance = NSAppearance(named: .aqua)  // the pixel checks assume dark icons on a light row
+        w.contentView = view
         w.makeKeyAndOrderFront(nil)
         w.layoutIfNeeded()
         window = w
@@ -4258,6 +4269,29 @@ final class CueListDrawingTests: XCTestCase {
         return o.view(atColumn: col, row: o.row(forItem: wc.cueList.node(id)), makeIfNecessary: true) as? CueCell
     }
 
+    private func cellPixels(_ wc: WorkspaceWindowController, _ id: ModelID) throws -> Pixels {
+        try pixels(wc.cueList.outlineView, "target", item: wc.cueList.node(id))
+    }
+
+    /// `button` as drawn, and a new button of the same shape beside it (so in the same window state)
+    /// showing `icon`, as drawn.
+    private func drawnGlyphs(_ button: NSButton, _ icon: Icon, label: String) throws -> (shown: Pixels, icon: Pixels) {
+        let reference = NSButton(title: button.title, target: nil, action: nil)
+        reference.frame = button.frame
+        button.superview?.addSubview(reference)
+        defer { reference.removeFromSuperview() }
+        reference.isBordered = button.isBordered
+        reference.bezelStyle = button.bezelStyle
+        reference.imagePosition = button.imagePosition
+        reference.imageScaling = button.imageScaling
+        reference.image = icon.image(label, compact: true)
+        let scale = max(1, button.window?.backingScaleFactor ?? 2)
+        func drawn(_ view: NSButton) throws -> Pixels {
+            Pixels(rep: try render(view, scale: scale), region: view.bounds, scale: scale)
+        }
+        return (try drawn(button), try drawn(reference))
+    }
+
     func testTargetColumnForAFileCue() async throws {
         let (rig, empty) = try await targetRig()
         let network = try await add(.network, rig)
@@ -4268,21 +4302,21 @@ final class CueListDrawingTests: XCTestCase {
         let none = try XCTUnwrap(h.cell("target", empty))
         for cell in [file, none] {
             XCTAssertFalse(cell.chooseButton.isHidden)
+            XCTAssertEqual(cell.chooseButton.accessibilityLabel(), loc("inspector.target.choose"))
             XCTAssertEqual(cell.label.stringValue, "", "no file name")
             XCTAssertTrue(cell.images[0].isHidden)
         }
-        XCTAssertEqual(file.chooseButton.accessibilityLabel(), loc("cue.target.file"))
-        XCTAssertEqual(none.chooseButton.accessibilityLabel(), loc("inspector.target.choose"))
-        // The glyphs are drawn and differ, and nothing is drawn after them.
+        // The same glyph is drawn with and without a file, and nothing else.
         let f = try pixels(h, "target", H.intro)
-        let n = try pixels(h, "target", empty)
-        XCTAssertGreaterThan(middle(f).count(Self.drawn), 8, "the file glyph is drawn")
-        XCTAssertGreaterThan(middle(n).count(Self.drawn), 8, "the folder glyph is drawn")
-        XCTAssertNotEqual(drawnMask(middle(f)), drawnMask(middle(n)), "they differ")
+        XCTAssertGreaterThan(middle(f).count(Self.drawn), 8, "the glyph is drawn")
+        XCTAssertGreaterThan(try pixels(h, "target", empty).count(Self.drawn), 8, "with no file too")
+        // The same row without its file: a row's background shifts the glyph's edge pixels.
+        _ = await rig.store.send(command: .setProperty(H.intro, .media(nil)))
+        await assertEventually { (h.store.model?.cue(H.intro)?.raw["kind"]?["media"]?.stringValue ?? "").isEmpty }
+        XCTAssertEqual(drawnMask(f), drawnMask(try pixels(h, "target", H.intro)), "the same glyph")
         XCTAssertEqual(f.count(Self.drawn), middle(f).count(Self.drawn), "centred, and all the cell holds")
         XCTAssertEqual(f.region.width, 60, accuracy: 1, "the column's default width")
-        XCTAssertTrue(Icon.fieldChoose.symbol.hasPrefix("folder"), Icon.fieldChoose.symbol)
-        XCTAssertNotEqual(Icon.fieldChoose.symbol, Icon.kindGroup.symbol)
+        XCTAssertNotEqual(Icon.targetFile.symbol, Icon.fieldChoose.symbol)
         // Cues that take no target: nothing, a Network cue's address included.
         for id in [H.group, network, memo] {
             let cell = try XCTUnwrap(h.cell("target", id))
@@ -4332,7 +4366,7 @@ final class CueListDrawingTests: XCTestCase {
             asked += 1
             return picked
         }
-        _ = show(wc)
+        show(wc.cueList.view)
         await assertEventually { self.targetCell(wc, empty)?.chooseButton.isHidden == false }
         let fileMedia = rig.store.model?.cue(H.intro)?.raw["kind"]?["media"]?.stringValue
         let doorMedia = rig.store.model?.cue(H.door)?.raw["kind"]?["media"]?.stringValue
@@ -4342,8 +4376,8 @@ final class CueListDrawingTests: XCTestCase {
         // Cancelling changes nothing.
         try click(emptyCell.chooseButton)
         XCTAssertEqual(asked, 1)
-        XCTAssertEqual(targetCell(wc, empty)?.chooseButton.accessibilityLabel(), loc("inspector.target.choose"))
-        // No file yet: the picked file is set and the file glyph shows.
+        XCTAssertEqual(rig.store.model?.cue(empty)?.raw["kind"]?["media"]?.stringValue ?? "", "")
+        // No file yet: the picked file is set, and the cell still draws only its button.
         picked = wav
         try click(emptyCell.chooseButton)
         await assertEventually {
@@ -4351,10 +4385,10 @@ final class CueListDrawingTests: XCTestCase {
         }
         XCTAssertEqual(asked, 2)
         XCTAssertEqual(wc.cueList.selectedIDs(), [H.fade], "the click leaves the selection")
-        await assertEventually {
-            self.targetCell(wc, empty)?.chooseButton.accessibilityLabel() == loc("cue.target.file")
-        }
         XCTAssertEqual(targetCell(wc, empty)?.label.stringValue, "", "no file name")
+        let picks = try cellPixels(wc, empty)
+        XCTAssertGreaterThan(picks.count(Self.drawn), 8, "the button is drawn")
+        XCTAssertEqual(picks.count(Self.drawn), middle(picks).count(Self.drawn), "and nothing else")
         // A cue already holding a file: cancelled, then replaced; only that cue changes.
         let fileCell = try XCTUnwrap(targetCell(wc, H.intro))
         picked = nil
@@ -4375,6 +4409,9 @@ final class CueListDrawingTests: XCTestCase {
             [empty, H.intro, H.door].allSatisfy { self.targetCell(wc, $0)?.chooseButton.isHidden == true }
         }
         XCTAssertEqual(targetCell(wc, H.intro)?.label.stringValue, "")
+        for id in [empty, H.intro, H.door] {
+            XCTAssertEqual(try cellPixels(wc, id).count(Self.drawn), 0, "nothing drawn in Show Mode")
+        }
         onChoose()
         XCTAssertEqual(asked, 4)
     }
@@ -4383,6 +4420,7 @@ final class CueListDrawingTests: XCTestCase {
         let (rig, empty) = try await targetRig()
         let wc = WorkspaceWindowController(store: rig.store)
         wc.cueList.view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
+        show(wc.inspector.view)
         wc.cueList.selectAsUser([empty])
         await assertEventually { wc.inspector.cueForEdit?.id == empty }
         XCTAssertTrue(wc.inspector.clearTargetButton.isHidden, "no target: no clear glyph")
@@ -4392,17 +4430,16 @@ final class CueListDrawingTests: XCTestCase {
         let clear = wc.inspector.clearTargetButton
         XCTAssertFalse(clear.isHidden)
         XCTAssertEqual(clear.image?.accessibilityDescription, loc("inspector.target.clear"))
-        XCTAssertEqual(
-            clear.image?.tiffRepresentation,
-            Icon.fieldClear.image(loc("inspector.target.clear"), compact: true).tiffRepresentation)
-        XCTAssertEqual(
-            wc.inspector.chooseButton.image?.tiffRepresentation,
-            Icon.fieldChoose.image(loc("inspector.target.choose")).tiffRepresentation)
+        let drawnClear = try drawnGlyphs(clear, .fieldClear, label: loc("inspector.target.clear"))
+        XCTAssertGreaterThan(drawnClear.shown.count(Self.drawn), 8, "the clear glyph is drawn")
+        XCTAssertEqual(drawnMask(drawnClear.shown), drawnMask(drawnClear.icon), "from the icon table")
+        let choose = try drawnGlyphs(wc.inspector.chooseButton, .fieldChoose, label: loc("inspector.target.choose"))
+        XCTAssertGreaterThan(choose.shown.count(Self.drawn), 8, "the choose glyph is drawn")
+        XCTAssertEqual(drawnMask(choose.shown), drawnMask(choose.icon), "from the icon table")
         clear.performClick(nil)
         await assertEventually { (rig.store.model?.cue(H.door)?.raw["kind"]?["media"]?.stringValue ?? "").isEmpty }
-        await assertEventually {
-            self.targetCell(wc, H.door)?.chooseButton.accessibilityLabel() == loc("inspector.target.choose")
-        }
+        await assertEventually { wc.inspector.targetField.stringValue == "" }
+        XCTAssertEqual(targetCell(wc, H.door)?.label.stringValue, "", "the list cell holds no file")
         await assertEventually { wc.inspector.clearTargetButton.isHidden }
     }
 

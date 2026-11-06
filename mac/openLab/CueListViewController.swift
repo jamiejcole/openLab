@@ -139,14 +139,15 @@ final class CueCell: NSTableCellView {
 
     @objc private func chooseClicked() { onChoose?() }
 
-    /// Shows the Target cell's button: `label` names it for VoiceOver, the tooltip says what a click does.
-    func showChoose(icon: Icon, label: String, onChoose: @escaping () -> Void) {
-        let image = icon.image(label, compact: true)
+    /// Shows the Target cell's button.
+    func showChoose(onChoose: @escaping () -> Void) {
+        let label = loc("inspector.target.choose")
+        let image = Icon.targetFile.image(label, compact: true)
         // Plain, not a template, for the same reason as `setImage`.
         chooseButton.image = TimeHeaderCell.tinted(
             image, .secondaryLabelColor, size: image.size, description: label)
         chooseButton.setAccessibilityLabel(label)
-        chooseButton.toolTip = loc("inspector.target.choose")
+        chooseButton.toolTip = label
         chooseButton.isHidden = false
         self.onChoose = onChoose
     }
@@ -1329,16 +1330,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     private var cueLookup: (ModelID) -> Cue? { { [weak self] in self?.nodes[$0]?.cue ?? self?.store.model?.cue($0) } }
 
-    /// An Audio cue's Target cell is one button that chooses its file, whether it holds one or not, and
+    /// An Audio cue's Target cell is one button that chooses its file, the same whether it holds one or not, and
     /// is empty in a locked (Show Mode) list, as QLab's Target column is.
     private func fillFileTargetButton(_ cell: CueCell, _ cue: Cue) {
         guard !isEditLocked else { return }
-        let hasFile = !(cue.raw["kind"]?["media"]?.stringValue ?? "").isEmpty
         let id = cue.id
-        cell.showChoose(
-            icon: hasFile ? .targetFile : .fieldChoose,
-            label: loc(hasFile ? "cue.target.file" : "inspector.target.choose")
-        ) { [weak self] in
+        cell.showChoose { [weak self] in
             guard let self, !self.isEditLocked else { return }
             self.onChooseFile?(id)
         }
