@@ -667,8 +667,8 @@
 "alert.recoveryOffer.restore" = "Restore Autosave";
 "alert.recoveryOffer.ignore" = "Open Saved File";
 "alert.autosave.title" = "Restore “%@”?";
-"alert.autosave.message" = "This workspace was autosaved at %@ and not saved since. It opens as unsaved changes to its file if that is still there, otherwise as an untitled workspace.";
-"alert.autosave.setAsideMessage" = "This autosave from %@ was set aside because the saved file looked newer, but file times can be wrong, so it may hold later work than the file. It opens as unsaved changes to that file if the file is still there and has no newer autosave, otherwise as a separate, untitled workspace.";
+"alert.autosave.message" = "This workspace was autosaved at %@ and not saved since. It opens as unsaved changes to its file if the file is still there and older, otherwise as an untitled workspace.";
+"alert.autosave.setAsideMessage" = "This autosave from %@ was set aside because the saved file looked newer, but file times can be wrong, so it may hold later work than the file. It opens as a separate, untitled workspace.";
 "alert.autosave.open" = "Restore";
 "alert.autosave.skip" = "Skip";
 

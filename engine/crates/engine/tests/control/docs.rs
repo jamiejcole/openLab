@@ -1888,6 +1888,14 @@ fn an_autosave_in_flight_cannot_bring_back_edits_the_operator_discarded() {
         matches!(data(&replies), ResultData::Opened { .. }),
         "no offer"
     );
+    // The writer has finished everything once it is gone: nothing came back behind the removal.
+    let Rig { s, env, .. } = r;
+    drop(s);
+    assert!(
+        names(&env.dirs.recovery_dir()).is_empty(),
+        "{:?}",
+        names(&env.dirs.recovery_dir())
+    );
 }
 
 /// Another doc opened beside the first (not closing it, unlike `request`).
@@ -2522,7 +2530,7 @@ fn a_recovered_autosave_binds_to_its_show_file_and_its_relative_media_plays_on_g
 }
 
 /// With no file to bind to, the restored workspace is untitled, and says so before a GO: its
-/// cue is broken in its first snapshot, not silent when it runs.
+/// cue is broken, not silent when it runs.
 #[test]
 fn an_autosave_whose_show_file_is_gone_damaged_or_replaced_stays_untitled_and_its_cue_reports_it() {
     type Spoil = fn(&Path);
@@ -2572,13 +2580,11 @@ fn an_autosave_that_does_not_name_its_file_stays_untitled() {
         .unwrap()
         .workspace;
     let names_nothing = save_show(&edited).unwrap();
-    let names_relative = openlab_core::save_recovery(&edited, Some("My Show.openlab")).unwrap();
     let names_elsewhere = openlab_core::save_recovery(&edited, elsewhere.to_str()).unwrap();
     fs::copy(&path, &elsewhere).unwrap();
     let mut r = restart(env, memo_ws("blank", &[5]));
     for (what, text) in [
         ("no path", names_nothing),
-        ("relative path", names_relative),
         ("another file's path", names_elsewhere),
     ] {
         fs::write(&autosave, text).unwrap();
@@ -2689,53 +2695,213 @@ fn an_autosave_of_a_file_open_in_another_workspace_opens_untitled_beside_it() {
     );
 }
 
-/// An autosave set aside as stale binds like any other, unless the current autosave of that
-/// file is there too: the bound doc's next autosave would replace it. That one's work is kept.
+/// A set-aside autosave is not restored by `open` either: it opens separately, whatever the file
+/// times say, so its edits never replace the current autosave or a newer file.
 #[test]
-fn a_set_aside_autosave_binds_unless_a_current_autosave_of_that_file_would_be_overwritten() {
-    for current_too in [false, true] {
-        let (env, path, wid) = crash_with_relative_media();
-        let autosave = env.dirs.recovery_path(wid, Some(&path));
-        let stem = autosave.file_stem().unwrap().to_str().unwrap().to_owned();
-        let stale = env
-            .dirs
-            .recovery_dir()
-            .join(format!("{stem}.000000000001000.stale.openlab"));
-        let text = fs::read(&autosave).unwrap();
-        fs::rename(&autosave, &stale).unwrap();
-        if current_too {
-            fs::write(&autosave, &text).unwrap();
-        }
-        let mut r = restart(env, memo_ws("blank", &[5]));
-        let replies = request(
-            &mut r.s,
-            Request::OpenRecovery {
-                workspace_id: wid,
-                path_hash: Some(stem.rsplit('-').next().unwrap().to_owned()),
-                modified_ms: Some(1000),
-            },
-        );
-        ok_result(&replies);
-        let snap = snapshot(&replies);
-        if !current_too {
-            assert_eq!(
-                snap.document.path.as_deref(),
-                Some(path.to_string_lossy().as_ref())
-            );
-            continue;
-        }
-        assert_eq!(snap.document.path, None);
-        assert!(has_untitled_notice(snap), "{:?}", snap.warnings);
-        rename(&mut r.s, 1, "edits to the set-aside work");
-        r.s.tick();
-        r.clock.advance(31_000);
-        r.s.settle_docs();
-        assert_eq!(
-            fs::read(&autosave).unwrap(),
-            text,
-            "the current autosave is kept"
-        );
-    }
+fn a_set_aside_autosave_stays_untitled_and_the_current_autosave_is_kept() {
+    let (env, path, wid) = crash_with_relative_media();
+    let autosave = env.dirs.recovery_path(wid, Some(&path));
+    let stem = autosave.file_stem().unwrap().to_str().unwrap().to_owned();
+    // Named newer than the show file: only that it was set aside keeps it from binding.
+    let stale = env
+        .dirs
+        .recovery_dir()
+        .join(format!("{stem}.000000099999999.stale.openlab"));
+    let text = fs::read(&autosave).unwrap();
+    fs::copy(&autosave, &stale).unwrap();
+    let mut r = restart(env, memo_ws("blank", &[5]));
+    let replies = request(
+        &mut r.s,
+        Request::OpenRecovery {
+            workspace_id: wid,
+            path_hash: Some(stem.rsplit('-').next().unwrap().to_owned()),
+            modified_ms: Some(99_999_999),
+        },
+    );
+    ok_result(&replies);
+    let snap = snapshot(&replies);
+    assert_eq!(snap.document.path, None);
+    assert!(has_untitled_notice(snap), "{:?}", snap.warnings);
+    rename(&mut r.s, 1, "edits to the set-aside work");
+    r.s.tick();
+    r.clock.advance(31_000);
+    r.s.settle_docs();
+    assert_eq!(
+        fs::read(&autosave).unwrap(),
+        text,
+        "the current autosave is kept"
+    );
+}
+
+/// Don't Save on a restored doc drops that doc's edits. The autosave it came from, and any other
+/// set aside from that file, may be the only copy of newer work: they stay.
+#[test]
+fn dont_save_on_a_recovered_workspace_keeps_the_autosaves_it_did_not_write() {
+    let (env, path, wid) = crash_with_relative_media();
+    let autosave = env.dirs.recovery_path(wid, Some(&path));
+    let stem = autosave.file_stem().unwrap().to_str().unwrap().to_owned();
+    let dir = env.dirs.recovery_dir();
+    let chosen = dir.join(format!("{stem}.000000000001000.stale.openlab"));
+    let sibling = dir.join(format!("{stem}.000000000002000.stale.openlab"));
+    fs::copy(&autosave, &chosen).unwrap();
+    fs::copy(&autosave, &sibling).unwrap();
+    let mut r = restart(env, memo_ws("blank", &[5]));
+
+    // Bound to the file, restored from the current autosave.
+    let doc = r.s.open_doc(recovery_source(wid)).unwrap();
+    r.s.settle_docs();
+    let snap = r.s.control().doc(doc).unwrap().snapshot();
+    assert_eq!(
+        snap.document.path.as_deref(),
+        Some(path.to_string_lossy().as_ref())
+    );
+    r.s.close_doc(doc, true).unwrap();
+    r.s.settle_docs();
+    assert!(autosave.exists(), "the autosave it came from");
+    assert!(chosen.exists() && sibling.exists(), "the set-aside ones");
+
+    // Untitled, restored from a set-aside one.
+    let doc =
+        r.s.open_doc(DocSource::Recovery {
+            workspace_id: wid,
+            path_hash: Some(stem.rsplit('-').next().unwrap().to_owned()),
+            modified_ms: Some(1000),
+        })
+        .unwrap();
+    r.s.settle_docs();
+    r.s.close_doc(doc, true).unwrap();
+    r.s.settle_docs();
+    assert!(autosave.exists() && chosen.exists() && sibling.exists());
+
+    // Bound again, this time autosaved by the doc: the file it wrote goes, the set-aside stay.
+    let doc = r.s.open_doc(recovery_source(wid)).unwrap();
+    r.s.settle_docs();
+    let id = r.s.request_id();
+    ok_result(&r.s.send_doc(
+        doc,
+        ClientMessage::Command {
+            id,
+            command: Box::new(Command::SetCueProperty {
+                id: show::id(1),
+                property: CueProperty::Name {
+                    value: "more edits".into(),
+                },
+            }),
+            coalesce: None,
+        },
+    ));
+    r.s.tick();
+    r.clock.advance(31_000);
+    r.s.settle_docs();
+    assert!(
+        fs::read_to_string(&autosave)
+            .unwrap()
+            .contains("more edits")
+    );
+    r.s.close_doc(doc, true).unwrap();
+    r.s.settle_docs();
+    crate::show::spin::spin_until("the doc's own autosave to be removed", || {
+        !autosave.exists()
+    });
+    assert!(chosen.exists() && sibling.exists(), "the set-aside ones");
+}
+
+#[test]
+fn dont_save_on_an_untitled_workspace_removes_the_autosave_it_wrote() {
+    let mut r = rig(memo_ws("one", &[1]));
+    let id = r.s.control().workspace().id;
+    rename(&mut r.s, 1, "edited");
+    r.s.tick();
+    r.clock.advance(31_000);
+    r.s.settle_docs();
+    let autosave = r.env.dirs.recovery_path(id, None);
+    assert!(autosave.exists());
+    let doc = r.s.control().doc_ids()[0];
+    r.s.close_doc(doc, true).unwrap();
+    r.s.settle_docs();
+    crate::show::spin::spin_until("the autosave to be removed", || !autosave.exists());
+}
+
+/// `open` with `restore` only restores an autosave newer than the file. One the file has
+/// overtaken must not bind: a plain Save would roll the newer file back.
+#[test]
+fn an_autosave_older_than_its_show_file_stays_untitled_and_a_save_cannot_roll_the_file_back() {
+    let (env, path, wid) = crash_with_relative_media();
+    let mut newer = relative_show();
+    newer.id = wid;
+    newer.cue_lists[0].cues[0].name = "saved later".into();
+    write_show(&path, &newer);
+    set_mtime(&path, 3_000_000);
+    let before = fs::read(&path).unwrap();
+    let mut r = restart(env, memo_ws("blank", &[5]));
+    let replies = request(&mut r.s, newest_autosave(wid));
+    ok_result(&replies);
+    let snap = snapshot(&replies);
+    assert_eq!(snap.document.path, None);
+    assert!(has_untitled_notice(snap), "{:?}", snap.warnings);
+    assert_eq!(
+        error_code(&request(&mut r.s, Request::Save)),
+        ErrorCode::NoWorkspace
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+/// The notice says the workspace has no file: once it has one, it is healthy.
+#[test]
+fn save_as_clears_the_notice_that_the_recovery_stayed_untitled() {
+    let (env, path, wid) = crash_with_relative_media();
+    fs::remove_file(&path).unwrap();
+    let mut r = restart(env, memo_ws("blank", &[5]));
+    let replies = request(&mut r.s, newest_autosave(wid));
+    ok_result(&replies);
+    assert!(has_untitled_notice(snapshot(&replies)));
+    save_as(&mut r.s, &path);
+    r.s.settle_docs();
+    r.s.tick();
+    let snap = r.s.control().snapshot();
+    assert!(!has_untitled_notice(&snap), "{:?}", snap.warnings);
+}
+
+/// An autosave whose name matches the path it holds, and that path is one no bound doc can have:
+/// relative (it would resolve against the engine's working folder).
+#[test]
+fn an_autosave_naming_a_relative_path_stays_untitled_without_a_notice() {
+    let (env, path, wid) = crash_with_relative_media();
+    let edited = load_show(&fs::read_to_string(env.dirs.recovery_path(wid, Some(&path))).unwrap())
+        .unwrap()
+        .workspace;
+    fs::remove_file(env.dirs.recovery_path(wid, Some(&path))).unwrap();
+    write_recovery(&env.dirs, &edited, Some(Path::new("relative/show.openlab"))).unwrap();
+    let mut r = restart(env, memo_ws("blank", &[5]));
+    let replies = request(&mut r.s, newest_autosave(wid));
+    ok_result(&replies);
+    let snap = snapshot(&replies);
+    assert_eq!(snap.document.path, None);
+    assert!(!has_untitled_notice(snap), "{:?}", snap.warnings);
+}
+
+/// A show path that is not UTF-8 is not written in the autosave (it can be restored, untitled).
+#[cfg(unix)]
+#[test]
+fn the_autosave_of_a_show_whose_path_is_not_utf8_restores_untitled() {
+    use std::os::unix::ffi::OsStrExt;
+    let (env, path, wid) = crash_with_relative_media();
+    let edited = load_show(&fs::read_to_string(env.dirs.recovery_path(wid, Some(&path))).unwrap())
+        .unwrap()
+        .workspace;
+    fs::remove_file(env.dirs.recovery_path(wid, Some(&path))).unwrap();
+    let odd = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/bad\xff.openlab"));
+    let file = write_recovery(&env.dirs, &edited, Some(odd)).unwrap();
+    assert_eq!(
+        openlab_core::recovery_show_path(&fs::read_to_string(file).unwrap()),
+        None
+    );
+    let mut r = restart(env, memo_ws("blank", &[5]));
+    let replies = request(&mut r.s, newest_autosave(wid));
+    ok_result(&replies);
+    let snap = snapshot(&replies);
+    assert_eq!(snap.document.path, None);
+    assert!(!has_untitled_notice(snap), "{:?}", snap.warnings);
 }
 
 /// Save As from a bound recovery moves the show folder as any Save As does: the relative
@@ -2782,7 +2948,7 @@ fn a_relative_reference_with_no_show_folder_is_a_problem_before_go_until_the_fir
             .unwrap();
     assert!(
         has_media_missing(&r.s.control().doc(doc).unwrap().snapshot()),
-        "in a new doc's first snapshot"
+        "a new doc"
     );
 
     let mut r2 = rig(workspace(vec![audio(1, &wav(&dc(2000, 0.5)), 0)]));

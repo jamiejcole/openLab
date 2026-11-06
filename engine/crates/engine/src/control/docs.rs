@@ -38,8 +38,9 @@ use openlab_core::protocol::{
 };
 use openlab_core::{
     Action, CueEngine, CueListId, EngineConfig, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES,
-    MediaRef, PatchId, PathStyle, Relink, Workspace, WorkspaceId, audio_media, autosave_due,
-    is_absolute, load_show, portable_ref, recovery_show_path, relink_command,
+    MediaRef, PatchId, PathStyle, RecoveryDecision, Relink, Workspace, WorkspaceId, audio_media,
+    autosave_due, decide_recovery, is_absolute, load_show, portable_ref, recovery_show_path,
+    relink_command,
 };
 use openlab_core::{Command, CommandError, CueId, MediaPaths, RelinkPlan};
 
@@ -54,7 +55,7 @@ use super::{
 use crate::persist::{
     AppDirs, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck, RecoveryEntry, SaveReport,
     SaveWriter, ScanLimits, check_recovery, file_key, find_in_folder, lexical_key, media_path,
-    path_key, read_text, scan_recovery,
+    modified_ms, path_key, read_text, scan_recovery,
 };
 
 /// Most `load_repair` notices sent for one opened show; the rest are summed in one more.
@@ -483,6 +484,8 @@ pub(super) struct DocFile {
     /// since. Only these are left behind for removal: a recovery file that was there before
     /// (one the operator chose to keep when opening the show) holds edits that are nowhere else.
     autosaved_at: Vec<PathBuf>,
+    /// This doc wrote the recovery file of an untitled workspace in this run.
+    autosaved_untitled: bool,
     /// Of those, the ones whose recovery file may go now ([`Control::clear_left_autosaves`]
     /// removes them unless another workspace claims the path).
     left_ready: Vec<(WorkspaceId, PathBuf)>,
@@ -506,12 +509,26 @@ impl DocFile {
             autosave_failed: false,
             left_paths: Vec::new(),
             autosaved_at: Vec::new(),
+            autosaved_untitled: false,
             left_ready: Vec::new(),
             autosaved_revision: None,
             dirty_since: None,
             last_autosave: None,
             notices: Vec::new(),
             resend_snapshot: false,
+        }
+    }
+
+    /// Whether the current recovery file at `path` is this doc's: it wrote it, or is writing it.
+    /// One that was there before (an autosave restored into this doc) holds work the operator
+    /// has not dropped by dropping this doc's edits.
+    fn wrote_autosave_at(&self, path: Option<&Path>) -> bool {
+        if self.autosave.is_some() && self.autosave_path.as_deref() == path {
+            return true;
+        }
+        match path {
+            Some(path) => self.autosaved_at.iter().any(|p| same_path(p, path)),
+            None => self.autosaved_untitled,
         }
     }
 
@@ -933,8 +950,8 @@ fn open_recovery(
         Err((code, message)) => return failed(ticket, code, message),
     };
     let mut notices = load_notices(&shown);
-    let path = named_show_path(&text, entry).filter(|path| {
-        match why_not_bound(path, entry, others, dirs) {
+    let path =
+        named_show_path(&text, entry).filter(|path| match why_not_bound(path, entry, others) {
             None => true,
             Some(why) => {
                 notices.push(notice(
@@ -944,8 +961,7 @@ fn open_recovery(
                 ));
                 false
             }
-        }
-    });
+        });
     DocAnswer::Loaded {
         ticket,
         loaded: Box::new(Loaded {
@@ -967,22 +983,22 @@ fn named_show_path(text: &str, entry: &RecoveryEntry) -> Option<PathBuf> {
 }
 
 /// Why a restored autosave stays untitled although it knows its show file `path`; `None`: it can
-/// be bound, as `open` with `restore` is. A save of a bound doc writes that file, so it must be
-/// this workspace's and no other doc's.
-fn why_not_bound(
-    path: &Path,
-    entry: &RecoveryEntry,
-    others: &[PathBuf],
-    dirs: &AppDirs,
-) -> Option<String> {
+/// be bound, on what `open` with `restore` asks: the current autosave, newer than the file. A
+/// save of a bound doc writes that file, so it must be this workspace's and no other doc's; and
+/// its autosaves replace the current one, which a set-aside autosave must not cost.
+fn why_not_bound(path: &Path, entry: &RecoveryEntry, others: &[PathBuf]) -> Option<String> {
     let shown = path.display();
     let key = file_key(path);
     if others.iter().any(|o| file_key(o) == key) {
         return Some(format!("{shown} is open in another workspace"));
     }
-    // A bound doc autosaves to the current autosave's name: that autosave's work is kept.
-    if entry.stale && dirs.recovery_path(entry.workspace_id, Some(path)).exists() {
-        return Some(format!("{shown} has a newer autosave"));
+    if entry.stale {
+        return Some("this autosave was set aside from its file".to_owned());
+    }
+    // A time the platform cannot give counts as new, as in `check_recovery`.
+    let autosaved = entry.modified_ms.unwrap_or(i64::MAX);
+    if decide_recovery(modified_ms(path), Some(autosaved)) != RecoveryDecision::Offer {
+        return Some(format!("{shown} is newer than this autosave"));
     }
     match read_show(path) {
         Ok(show) if show.workspace.id == entry.workspace_id => None,
@@ -1288,13 +1304,19 @@ impl DocCx<'_> {
         self.eng.mixer.pump();
     }
 
-    /// Queues the removal of a workspace's recovery file behind the writer's current job.
-    fn clear_autosave_of(&mut self, workspace: WorkspaceId, show_path: Option<PathBuf>) {
+    /// Queues the removal of this doc's own current recovery file behind the writer's current
+    /// job: its edits are being dropped.
+    fn discard_own_autosave(&mut self) {
+        let path = self.doc.show_path.clone();
+        if !self.doc.file.wrote_autosave_at(path.as_deref()) {
+            return;
+        }
+        let workspace = self.doc.model.ws().id;
         if let Some(writer) = &self.eng.docs.writer {
             self.eng
                 .docs
                 .clears
-                .push(writer.clear_recovery(workspace, show_path));
+                .push(writer.discard_recovery(workspace, path));
         }
     }
 
@@ -1449,6 +1471,11 @@ impl DocCx<'_> {
             // Back at a path it left: that recovery file is the current one again.
             file.left_paths.retain(|(_, p)| !same_path(p, &save.path));
             self.doc.show_path = Some(save.path.clone());
+            // It has a file now: the notice that it had none no longer holds.
+            self.doc.file.notices.retain(
+                |n| !matches!(n, WireWarning::Notice { code, .. } if code == "recovery_untitled"),
+            );
+            self.doc.warnings_dirty = true;
             if self.show_dir() != old_dir {
                 self.moved_folder(
                     old_dir.as_deref(),
@@ -1548,6 +1575,9 @@ impl DocCx<'_> {
                 self.doc.file.autosave_failed = false;
                 // Written at the current path, after every path left behind was left: it holds
                 // every edit their recovery files do (#383).
+                if written.is_some() && path.is_none() {
+                    self.doc.file.autosaved_untitled = true;
+                }
                 if let (Some(_), Some(path)) = (written, path) {
                     let file = &mut self.doc.file;
                     if !file.autosaved_at.iter().any(|p| same_path(p, &path)) {
@@ -2275,8 +2305,6 @@ impl Control {
         for input in cx.execute(&actions, now) {
             cx.feed(input, now);
         }
-        // In the doc's first snapshot: a file no folder can place is a problem before any GO.
-        cx.flush_media(now);
         let mut inputs = vec![Input::Tick];
         inputs.extend(cx.sync_workspace(true));
         for input in inputs {
@@ -2335,8 +2363,7 @@ impl Control {
                 ));
             }
             if cx.doc.is_dirty() {
-                let (id, path) = (cx.doc.model.ws().id, cx.doc.show_path.clone());
-                cx.clear_autosave_of(id, path);
+                cx.discard_own_autosave();
             }
             cx.stop_everything();
             cx.log_kind(

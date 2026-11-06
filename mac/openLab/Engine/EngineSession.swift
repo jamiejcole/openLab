@@ -380,6 +380,9 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
 
     /// Reopens one window's show at a time (the engine takes one document request at a time).
     private func reattach() async {
+        // Windows with a file first: an untitled one's autosave can bind to a show file it names,
+        // and that file's own window must have it by then (the engine then keeps the other untitled).
+        detached = detached.filter { $0.info.path != nil } + detached.filter { $0.info.path == nil }
         var recovery: [RecoveryEntryInfo]?
         while let next = detached.first, !Task.isCancelled {
             let outcome = await rebind(next.info, recovery: &recovery)
@@ -471,7 +474,10 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
             }
         }
         let request: Request
-        let entry = recovery?.first { $0.workspaceId == info.workspaceId }
+        // Its own autosave if it has one (#385); else the one it was restored from.
+        let entry =
+            recovery?.first { $0.workspaceId == info.workspaceId && $0.pathHash == nil }
+            ?? recovery?.first { $0.workspaceId == info.workspaceId }
         if let entry {
             request = .openRecovery(
                 workspaceId: entry.workspaceId, pathHash: entry.pathHash, modifiedMs: entry.modifiedMs)

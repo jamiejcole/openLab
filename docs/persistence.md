@@ -94,7 +94,7 @@ The queue is bounded by coalescing, because the disk may be slow or hung while a
   needs a final autosave (M4.15g) must wait on its reply;
 - manual saves run before pending autosaves, and an autosave whose revision is not newer than the last
   durably saved one of its workspace is dropped (`Ok(None)`), so saved state never gets a recovery file;
-- `clear_recovery(workspace, show_path)` runs after any job in flight that writes that recovery file (no two writer
+- `clear_recovery(workspace, show_path)` (and `discard_recovery`, which leaves files moved aside) runs after any job in flight that writes that recovery file (no two writer
   threads ever write the same show file or recovery file at once), removes that target's file, and cancels
   only that target's pending autosave;
 - a job stuck on a hung volume for the document timeout is answered `Stalled` and its thread abandoned; a
@@ -128,7 +128,7 @@ off and leaves existing ones alone.
   (bounded: docs/control.md "Documents"), so a quit or `SIGTERM` loses nothing an autosave interval
   would have; the next launch's `open` offers it, and `scan_recovery` lists it.
 - `write_recovery` writes the bound recovery file atomically and never touches the show file.
-  `clear_recovery` removes it (after a save or clean close).
+  `clear_recovery` removes it and the files moved aside from it (after a save). `discard_recovery` removes only the current file (`close` with `discard_changes`).
 - `check_recovery(dirs, workspace_id, show_path)` compares file modification times with
   `decide_recovery`:
 
@@ -143,7 +143,7 @@ off and leaves existing ones alone.
 path (a duplicated show, or work from before the first save). They are never offered to this file and
 never touched; the engine reports them as a `recovery_other_copies` notice when the show is opened.
 
-The restore prompt is the protocol's (M4.4): `open` answers `recovery_offer` while a newer autosave exists and nothing is opened; the client repeats it with `recovery: restore` or `ignore` ([protocol.md](protocol.md) "Opening and closing workspaces"). Restoring opens the autosave, bound to the show path and dirty; the autosave file stays until a save (or the next autosave) replaces it, so a crash right after restoring loses nothing. `ignore` opens the saved file and leaves the autosave in place (it is offered again next time). `close` with `discard_changes` over unsaved edits removes the autosave of the dropped edits through the writer thread, after any autosave write in flight (M4.15f: there is no `revert`, and `new`/`open` replace nothing). `other_copies` of a recovery check are summed in a `recovery_other_copies` notice in the workspace warnings; an unusable autosave is a `recovery_unusable` notice. Load repairs of the opened show are `load_repair` notices (at most 50, then a summary).
+The restore prompt is the protocol's (M4.4): `open` answers `recovery_offer` while a newer autosave exists and nothing is opened; the client repeats it with `recovery: restore` or `ignore` ([protocol.md](protocol.md) "Opening and closing workspaces"). Restoring opens the autosave, bound to the show path and dirty; the autosave file stays until a save (or the next autosave) replaces it, so a crash right after restoring loses nothing. `ignore` opens the saved file and leaves the autosave in place (it is offered again next time). `close` with `discard_changes` over unsaved edits removes the autosave this doc wrote of the dropped edits through the writer thread, after any autosave write in flight (M4.15f: there is no `revert`, and `new`/`open` replace nothing); one restored into the doc and not written since, and files moved aside, stay and are offered again. `other_copies` of a recovery check are summed in a `recovery_other_copies` notice in the workspace warnings; an unusable autosave is a `recovery_unusable` notice. Load repairs of the opened show are `load_repair` notices (at most 50, then a summary).
 
 ### When the show file cannot be loaded
 
@@ -163,9 +163,9 @@ which of the excess are seen depends on the file system); no recursion (`Recover
 `MAX_NAME_READ_BYTES` (4 MiB) is listed without a name instead of being parsed. Names are read by parsing
 files, so call it off the control thread: the `scan_recovery` request runs it on the document worker and `open_recovery` opens one entry, dirty.
 
-An autosave names the show file it belongs to (`core::save_recovery`: a top-level `show_path` beside `format_version`, UTF-8 paths only; a recovery file's name holds only a hash of the path, and a show file never has the key). `open_recovery` binds to that file, as `open` with `restore` does, so relative media resolves, Save goes to the file and the app reopens it next launch, when all of these hold: the `show_path` is absolute, at most 4096 bytes, and hashes to the hash in the file's name; the file holds the entry's workspace id (it reads and loads); no other doc holds it; and, for an entry set aside as stale, no current autosave of that file exists (the bound doc's next autosave would replace it). Otherwise the workspace is **untitled** (a save has to choose a path; the entry's autosave stays until then, and a save-as clears the never-saved autosave of the workspace id), and when the autosave did name a file that could not be used, a `recovery_untitled` notice says why. A file that does not answer holds up the whole request, as an `open` of it would (`io`, past the read timeout).
+An autosave names the show file it belongs to (`core::save_recovery`: a top-level `show_path` beside `format_version`, UTF-8 paths only; a recovery file's name holds only a hash of the path, and a show file never has the key). `open_recovery` binds to that file, on what `open` with `restore` asks, so relative media resolves, Save goes to the file and the app reopens it next launch, when all of these hold: the entry is the current autosave, not one set aside as stale; `decide_recovery` says it is newer than the file; the `show_path` is absolute, at most 4096 bytes, and hashes to the hash in the file's name; the file holds the entry's workspace id (it reads and loads); and no other doc holds it. Otherwise the workspace is **untitled** (a save has to choose a path; the entry's autosave stays until then, and a save-as clears the never-saved autosave of the workspace id), and when the autosave did name a file that could not be used, a `recovery_untitled` notice says why. A file that does not answer holds up the whole request, as an `open` of it would (`io`, past the read timeout).
 
-A workspace with no show folder cannot place a relative media reference: the catalog reports it `Missing` to the cue engine at once (`MediaCatalog::take_unresolved`), so the cue has a `media_missing` problem before any GO, on every path that makes one (a doc installed with it, in its first snapshot; an edit, within a tick), until a save gives it a folder.
+A workspace with no show folder cannot place a relative media reference: the catalog reports it `Missing` to the cue engine at once (`MediaCatalog::take_unresolved`), so the cue has a `media_missing` problem from the next tick, before any GO, on every path that makes one (a doc installed with it, an edit), until a save gives it a folder.
 
 ## Per-machine settings (WS-06, WS-07)
 

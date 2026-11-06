@@ -1041,8 +1041,45 @@ final class EngineCrashFlowTests: XCTestCase {
         await assertEventually {
             store.problems[self.intro]?.contains { $0.type == "media_missing" } == true
         }
+        await assertEventually {
+            store.warnings.contains { $0.type == "notice" && $0.json["code"]?.stringValue == "recovery_untitled" }
+        }
         app.recordOpenWorkspaces()
         XCTAssertEqual(LaunchPreferences(defaults: prefs).openFiles, [])
+    }
+
+    /// An untitled window restored from B's autosave (B was damaged then), and B's own window open
+    /// beside it under a fresh id. After a crash that autosave could bind to B: B's window gets its
+    /// file, and the untitled window comes back untitled.
+    func testAnUntitledWindowRestoredFromAShowsAutosaveDoesNotTakeThatShowsFileInAReattach() async throws {
+        makePrefs(.restore)
+        let path = try runs.show("Demo", named: "B")
+        let good = try Data(contentsOf: URL(fileURLWithPath: path))
+        try await recoverFromTheMenu(afterCrashOf: path) {
+            try "{ corrupt".write(toFile: path, atomically: true, encoding: .utf8)
+        }
+        let untitled = try XCTUnwrap(app.allWindows.first?.store)
+        await assertEventually { untitled.document != nil }
+        XCTAssertNil(untitled.document?.path)
+        // B is mended, older than its autosave.
+        try good.write(to: URL(fileURLWithPath: path))
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)], ofItemAtPath: path)
+        guard case .success = await app.session.open(path: path, recovery: .ignore) else {
+            return XCTFail("open B")
+        }
+        await assertEventually { self.app.allWindows.count == 2 }
+
+        try await crash()
+        let back = await pump { self.presenter.detail.contains(loc("engine.alarm.back")) }
+        XCTAssertTrue(back)
+        await assertEventually { self.app.session.detached.isEmpty && !self.app.session.isReattaching }
+        XCTAssertEqual(app.allWindows.count, 2, presenter.detail)
+        XCTAssertFalse(
+            presenter.detail.contains(String(format: loc("engine.alarm.failedOne"), "B", "")), presenter.detail)
+        await assertEventually { self.app.allWindows.compactMap(\.store.document?.path) == [path] }
+        await assertEventually { untitled.document != nil }
+        XCTAssertNil(untitled.document?.path)
     }
 
     /// B and a Finder copy of it share a workspace id; the copy's autosave (another path, so
