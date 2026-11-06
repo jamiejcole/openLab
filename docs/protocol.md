@@ -70,7 +70,7 @@ The macOS client (`EngineClient`) gives each live message (`transport`, `command
 | `load` | `cue`, `at` (seconds, >= 0) | `Load { time: at }` |
 | `reset` | `cue` | `Reset` |
 | `trigger_released` | `cue` | `TriggerReleased` (second trigger on release) |
-| `preview` | `cue` | `Preview` (M4.13): an audio cue, or every armed audio cue in a group (M2.28); for a Network cue, send its message once now (the inspector's Send button; no `preview` change follows) |
+| `preview` | `cue` | `Preview` (M4.13): an audio cue, or every armed audio cue in a group (M2.28); for a Network cue, send its message once now (the inspector's Send button and Preview Selected, V; no `preview` change follows) |
 | `stop_preview` | `cue` (optional; absent or null: every preview) | `StopPreview` |
 | `batch` | `actions`: 1 to 4096 (`MAX_BATCH_ACTIONS`) per-cue actions | Each item's input, in order, all at one scheduling time and before anything else is handled, so cues started together start on the same sample and cues stopped together end on the same sample (NFR-21; the app's Start, Stop, Pause/Resume, Reset and Preview Selected, M5.11g). An item is `start`, `stop`, `hard_stop`, `panic_cue`, `pause`, `resume`, `load`, `reset`, `preview` or `stop_preview` with a `cue`; no cue twice. An empty or longer list, another action (a nested `batch` among them) or a repeated cue makes the frame `bad_request`, nothing done. A cue not in the workspace gets `unknown_cue` and the other items still run, as separate actions would; one `result` for the batch. The `panic_cue` items are one press: a cue fading only because an earlier item panicked it (its group, or its children) is not pressed a second time (docs/cue-engine.md, Panic) |
 
@@ -244,6 +244,6 @@ The `model_changed` for revision N is always sent before the `result` that repor
 
 M4.6a additions (`PROTOCOL_VERSION` stayed 1 (it was 1 until M4.15f)): `set_cue_property` (and `batch_set`) accept the cue properties `destination` (a network patch id), `address` (string) and `args` (array of `{type: int|float|string|bool, value}`) for Network cues; fixtures `client/command_set_network_cue_{destination,address,args}.json`. A refused value is a `result` error naming the reason (see [commands.md](commands.md)).
 
-The `set_workspace_setting` `hotkeys` value must list all 9 keys (`null` = no key) and no other field; a partial or misspelt map is `bad_request` (docs/commands.md).
+The `set_workspace_setting` `hotkeys` value must list all 11 keys (`null` = no key) and no other field; a partial or misspelt map is `bad_request` (docs/commands.md).
 
 M5.10f addition (`PROTOCOL_VERSION` stayed 2): `paste_clipboard` takes an optional `source_dir` (absolute folder of the show the cues were copied from; omitted for a show never saved; fixture `client/command_paste_clipboard_from_folder.json`). The engine resolves the clipboard's relative media paths against it before storing them for the destination show.

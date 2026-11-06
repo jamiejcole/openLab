@@ -6,8 +6,8 @@
 //! Every command goes through a control-side hold queue ordered by `(at, send order)`. [`pump`]
 //! releases those due within the lookahead horizon, whole batches at a time, so the mixer only
 //! ever holds near-term commands and a far-future schedule cannot delay a stop. A batch of
-//! stops also overtakes batches of ramps queued ahead of it (a whole-matrix level edit is
-//! thousands of ramps, released one queue's worth per block). The engine's control loop calls
+//! stops also overtakes batches of ramps queued ahead of it (ramps can still fill the queue, one
+//! queue's worth released per block). The engine's control loop calls
 //! [`pump`] on every tick; [`send`] pumps too.
 //!
 //! [`pump`]: MixerController::pump
@@ -22,8 +22,8 @@ use rtrb::{Consumer, Producer};
 use crate::gain::{Fade, MAX_GAIN_DB, SILENCE_DB, db_to_linear};
 use crate::meter::MeterReader;
 use crate::mixer::{
-    COMMAND_CAPACITY, Command, CommandKind, Event, GainTarget, SampleTime, Shared, VoiceId,
-    VoiceStart,
+    COMMAND_CAPACITY, Command, CommandKind, Event, GainTarget, Returned, SampleTime, Shared,
+    VoiceId,
 };
 
 /// A batch larger than the command queue can never be delivered atomically.
@@ -41,7 +41,7 @@ impl std::error::Error for BatchTooLarge {}
 pub struct MixerController {
     commands: Producer<Command>,
     events: Consumer<Event>,
-    returns: Consumer<Box<VoiceStart>>,
+    returns: Consumer<Returned>,
     shared: Arc<Shared>,
     cue_outputs: usize,
     lookahead: u64,
@@ -57,7 +57,7 @@ impl MixerController {
     pub(crate) fn new(
         commands: Producer<Command>,
         events: Consumer<Event>,
-        returns: Consumer<Box<VoiceStart>>,
+        returns: Consumer<Returned>,
         shared: Arc<Shared>,
         cue_outputs: usize,
         lookahead: u64,
@@ -76,7 +76,7 @@ impl MixerController {
         }
     }
 
-    /// Number of cue outputs a [`VoiceStart`] must route (= the mixer's output channels).
+    /// Number of cue outputs a [`crate::VoiceStart`] must route (= the mixer's output channels).
     pub fn cue_outputs(&self) -> usize {
         self.cue_outputs
     }
@@ -188,8 +188,8 @@ impl MixerController {
     /// The due batches of stops that only batches of ramps are queued ahead of, in order. A
     /// ramp never starts, resumes or ends a voice, so a stop overtaking one cannot leave a voice
     /// playing: the ramp just applies later, to a voice fading out or gone (ignored). Without
-    /// this a stop or panic sent just after a whole-matrix edit of a large cue waits behind
-    /// thousands of ramps, a queue's worth per block.
+    /// this a stop or panic sent just after more ramps than the queue holds waits behind them,
+    /// a queue's worth per block.
     fn overtaking_stops(&self, horizon: SampleTime) -> Vec<(SampleTime, u64)> {
         let mut stops = Vec::new();
         for (&key, cmds) in self.held.range(..=(horizon, u64::MAX)) {
@@ -198,10 +198,12 @@ impl MixerController {
                 .all(|c| matches!(c.kind, CommandKind::StopVoice { .. }))
             {
                 stops.push(key);
-            } else if !cmds
-                .iter()
-                .all(|c| matches!(c.kind, CommandKind::Ramp { .. }))
-            {
+            } else if !cmds.iter().all(|c| {
+                matches!(
+                    c.kind,
+                    CommandKind::Ramp { .. } | CommandKind::RampSet { .. }
+                )
+            }) {
                 break;
             }
         }
@@ -227,7 +229,8 @@ impl MixerController {
         self.events.pop().ok()
     }
 
-    /// Frees voice starts (and their sources) the mixer has finished with. Returns how many.
+    /// Frees voice starts (and their sources) and ramp lists the mixer has finished with. Returns
+    /// how many.
     pub fn collect_returns(&mut self) -> usize {
         let mut n = 0;
         while self.returns.pop().is_ok() {
@@ -278,9 +281,9 @@ impl MixerController {
         self.shared.dropped_events.load(Ordering::Relaxed)
     }
 
-    /// Voice starts leaked because the return queue was full (should stay zero).
-    pub fn leaked_starts(&self) -> u64 {
-        self.shared.leaked_starts.load(Ordering::Relaxed)
+    /// Voice starts and ramp lists leaked because the return queue was full (should stay zero).
+    pub fn leaked_returns(&self) -> u64 {
+        self.shared.leaked_returns.load(Ordering::Relaxed)
     }
 
     /// Blocks in which commands had to wait because the mixer's pending set was full.

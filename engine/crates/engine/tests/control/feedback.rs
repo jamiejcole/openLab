@@ -254,7 +254,7 @@ fn a_long_show_leaves_no_voice_or_stream_behind() {
     assert_eq!(s.control().live_voices(), 0);
     s.control_mut().mixer_voice_count();
     assert_eq!(s.control_mut().mixer_voice_count(), 0);
-    assert_eq!(s.control().mixer().leaked_starts(), 0);
+    assert_eq!(s.control().mixer().leaked_returns(), 0);
     // Only the primed streams near the playhead are held.
     assert_eq!(s.control().held_streams(), s.control().primed().len());
     assert_eq!(s.control().mixer().faults(), 0);

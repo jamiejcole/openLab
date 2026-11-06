@@ -110,7 +110,7 @@ impl Mixer {
                             .for_each(|(y, x)| *y += x * g);
                         continue;
                     }
-                    g.fill(tmp);
+                    g.fill(tmp, &mut scratch.shapes);
                     p.dirty |= g.is_ramping();
                     for ((y, x), g) in dv.iter_mut().zip(bo).zip(tmp.iter()) {
                         *y += x * g;
@@ -126,7 +126,7 @@ impl Mixer {
             mb.fill(1.0);
         } else {
             stage.enter(Stage::Master);
-            master.fill(mb);
+            master.fill(mb, &mut scratch.shapes);
         }
         for (o, ((dv, pk), h)) in dev
             .chunks_exact_mut(block)
@@ -239,14 +239,15 @@ fn render_voice(
 
     // Voice gain: master × stop fade × integrated fade envelope. Multiplying by an exact 1.0 is
     // an identity, so skipping it keeps output independent of block segmentation.
-    v.master.fill(vg);
+    let shapes = &mut s.shapes;
+    v.master.fill(vg, shapes);
     if v.stop.is_ramping() || v.stop.current() != 1.0 {
-        v.stop.fill(tmp);
+        v.stop.fill(tmp, shapes);
         vg.iter_mut().zip(tmp.iter()).for_each(|(g, t)| *g *= t);
     }
     // The declick acts on the input, so the tail it crossfades with shares the voice's gains.
     if v.declick.is_ramping() || v.declick.current() != 1.0 {
-        v.declick.fill(tmp);
+        v.declick.fill(tmp, shapes);
         let Voice {
             input,
             xbuf,
@@ -298,7 +299,7 @@ fn render_voice(
         match co.steady() {
             Some(c) => og.iter_mut().zip(vg.iter()).for_each(|(g, v)| *g = c * v),
             None => {
-                co.fill(og);
+                co.fill(og, shapes);
                 og.iter_mut().zip(vg.iter()).for_each(|(g, v)| *g *= v);
             }
         }
@@ -313,7 +314,7 @@ fn render_voice(
             match p.steady() {
                 Some(g) => XGain::Steady(g),
                 None => {
-                    p.fill(tmp);
+                    p.fill(tmp, shapes);
                     XGain::Frames
                 }
             }
@@ -369,6 +370,7 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
     let (Some(vg), Some(acc)) = (s.vgain.get_mut(..n), s.acc.get_mut(..n)) else {
         return;
     };
+    let shapes = &mut s.shapes;
     let g = v.master.current() * v.stop.current() * v.declick.current();
     for (j, x) in vg.iter_mut().enumerate() {
         *x = g * p.gain(p.done + j as u64);
@@ -392,10 +394,15 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
     } = v;
     let (outs, ch) = (cue_out.len(), *channels);
     for (o, co) in cue_out.iter().enumerate() {
-        let co = co.current();
+        let co = co.current_in(shapes);
         // As in `render_voice`: an output nothing reaches costs nothing (Pause All on many
         // voices × outputs renders every tail in one block).
-        if co == 0.0 || (0..ch).all(|i| xp.get(i * outs + o).is_none_or(|x| x.current() == 0.0)) {
+        if co == 0.0
+            || (0..ch).all(|i| {
+                xp.get(i * outs + o)
+                    .is_none_or(|x| x.current_in(shapes) == 0.0)
+            })
+        {
             continue;
         }
         let Some(bo) = bus.get_mut(o * block..o * block + got) else {
@@ -403,7 +410,7 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
         };
         let inputs = input.chunks(block).take(ch);
         mix_output(bo, acc, &mut [], inputs, vg, meter.get_mut(o), |i, _| {
-            let g = xp.get(i * outs + o).map_or(0.0, |x| x.current()) * co;
+            let g = xp.get(i * outs + o).map_or(0.0, |x| x.current_in(shapes)) * co;
             if g == 0.0 {
                 XGain::Skip
             } else {
