@@ -129,8 +129,9 @@ pub fn ramp_value(from: f32, to: f32, pos: u64, len: u64, curve: Curve) -> f32 {
 
 /// The mixer's gain along a ramp or fade from `from` to `to` differs from [`ramp_value`] by at
 /// most this times `max(|from|, |to|)`: −120 dB, the silence floor. One `f32` step of the
-/// result is up to 1.2e-7 of it and the mixer's recurrence adds about 1e-13 (docs/audio.md);
-/// the first frame and the end are exact.
+/// result is up to 1.2e-7 of it and the mixer's recurrence adds about 1e-13; a gain ramp's `f32`
+/// sum and product add up to about 4.2e-7 more in the worst case (docs/audio.md). The first frame
+/// and the end are exact.
 pub const RAMP_TOLERANCE: f64 = 1e-6;
 
 /// Ramp positions that are multiples of this are evaluated exactly; the frames between follow
@@ -144,8 +145,8 @@ const EXP_INV: f64 = 1.0 / 999.0;
 /// How [`CurveRamp`] gets the curve's progress `s` from its state `(x, y)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Kind {
-    /// Delegates to [`ramp_value`].
-    Exact,
+    /// `y` is the position: `s = y · (1 / len)`, no division per frame.
+    Linear,
     /// `(x, y) = (cos φ, sin φ)` with `φ = θ·pos`, advanced by a rotation through `θ`.
     /// Equal-power rising: `s = sin φ`.
     Sin,
@@ -186,9 +187,18 @@ pub(crate) struct CurveRamp {
 
 impl CurveRamp {
     pub(crate) fn new(from: f32, to: f32, len: u64, curve: Curve) -> Self {
-        let rising = to >= from;
+        Self::with_direction(from, to, len, curve, to >= from)
+    }
+
+    /// The curve's progress `s` (0 to 1) along a ramp going the way `rising` says: what a gain
+    /// ramp from `a` to `b` is `a + (b − a) · s` of, whatever `a` and `b` are.
+    pub(crate) fn progress(len: u64, curve: Curve, rising: bool) -> Self {
+        Self::with_direction(0.0, 1.0, len, curve, rising)
+    }
+
+    fn with_direction(from: f32, to: f32, len: u64, curve: Curve, rising: bool) -> Self {
         let kind = match (curve, rising) {
-            (Curve::Linear, _) => Kind::Exact,
+            (Curve::Linear, _) => Kind::Linear,
             (Curve::EqualPower, true) => Kind::Sin,
             (Curve::EqualPower, false) => Kind::OneMinusCos,
             (Curve::SCurve, _) => Kind::HalfOneMinusCos,
@@ -197,7 +207,7 @@ impl CurveRamp {
         };
         let n = len.max(1) as f64;
         let (cr, sr) = match kind {
-            Kind::Exact => (1.0, 0.0),
+            Kind::Linear => (1.0 / n, 0.0),
             Kind::Sin | Kind::OneMinusCos => {
                 let (s, c) = (std::f64::consts::FRAC_PI_2 / n).sin_cos();
                 (c, s)
@@ -245,7 +255,7 @@ impl CurveRamp {
 
     /// Value at `pos`; leaves the state ready for `pos + 1`.
     pub(crate) fn value(&mut self, pos: u64) -> f32 {
-        if pos == 0 || pos >= self.len || self.kind == Kind::Exact {
+        if pos == 0 || pos >= self.len {
             return ramp_value(self.from, self.to, pos, self.len, self.curve);
         }
         if self.at != Some(pos) {
@@ -270,12 +280,6 @@ impl CurveRamp {
     /// Leaves the state ready for the position after the last.
     #[inline]
     pub(crate) fn apply(&mut self, pos: u64, out: &mut [f32], mut f: impl FnMut(&mut f32, f32)) {
-        if self.kind == Kind::Exact {
-            for (o, p) in out.iter_mut().zip(pos..) {
-                f(o, ramp_value(self.from, self.to, p, self.len, self.curve));
-            }
-            return;
-        }
         let mut rest = out;
         let mut p = pos;
         if p == 0
@@ -322,7 +326,15 @@ impl CurveRamp {
         let (a, d) = (self.a, self.d);
         let out = |s: f64| (a + d * s.clamp(0.0, 1.0)) as f32;
         match self.kind {
-            Kind::Exact => {}
+            Kind::Linear => {
+                let inv = self.cr;
+                let mut y = self.y;
+                for o in seg {
+                    f(o, out(y * inv));
+                    y += 1.0;
+                }
+                self.y = y;
+            }
             Kind::Sin => self.rotate(seg, f, |_, y| out(y)),
             Kind::OneMinusCos => self.rotate(seg, f, |x, _| out(1.0 - x)),
             Kind::HalfOneMinusCos => self.rotate(seg, f, |x, _| out((1.0 - x) * 0.5)),
@@ -400,7 +412,7 @@ impl CurveRamp {
     fn anchor(&mut self, pos: u64) {
         let t = pos as f64 / self.len as f64;
         match self.kind {
-            Kind::Exact => {}
+            Kind::Linear => self.y = pos as f64,
             Kind::Sin | Kind::OneMinusCos => {
                 (self.y, self.x) = (t * std::f64::consts::FRAC_PI_2).sin_cos();
             }
@@ -412,7 +424,7 @@ impl CurveRamp {
 
     fn step(&mut self) {
         match self.kind {
-            Kind::Exact => {}
+            Kind::Linear => self.y += 1.0,
             Kind::Sin | Kind::OneMinusCos | Kind::HalfOneMinusCos => {
                 let (x, y) = (self.x, self.y);
                 self.x = x * self.cr - y * self.sr;
@@ -424,7 +436,7 @@ impl CurveRamp {
 
     fn output(&self) -> f32 {
         let s = match self.kind {
-            Kind::Exact => 0.0,
+            Kind::Linear => self.y * self.cr,
             Kind::Sin => self.y,
             Kind::OneMinusCos => 1.0 - self.x,
             Kind::HalfOneMinusCos => (1.0 - self.x) * 0.5,
@@ -435,12 +447,120 @@ impl CurveRamp {
     }
 }
 
+/// Stretches of curve progress a mixer keeps at once, in sets of [`SHAPE_WAYS`], so a gain finds
+/// its stretch whatever order the render walks the gains in. Shapes past these only cost
+/// recomputing (docs/audio.md).
+const SHAPE_SLOTS: usize = 128;
+const SHAPE_WAYS: usize = 8;
+const SHAPE_SETS: usize = SHAPE_SLOTS / SHAPE_WAYS;
+
+/// One stretch of a curve's progress: what a gain ramp needs besides its own ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ShapeKey {
+    len: u64,
+    curve: Curve,
+    rising: bool,
+    pos: u64,
+    frames: usize,
+}
+
+impl ShapeKey {
+    /// The first slot of the set this key belongs in.
+    fn set(&self) -> usize {
+        const MIX: u64 = 0x9E37_79B9_7F4A_7C15;
+        let shape = (self.curve as u64) << 1 | u64::from(self.rising);
+        let bits = (self.len ^ shape.wrapping_mul(MIX))
+            .wrapping_mul(MIX)
+            .rotate_left(23)
+            ^ self.pos;
+        let top = bits.wrapping_mul(MIX) >> (u64::BITS - SHAPE_SETS.trailing_zeros());
+        top as usize * SHAPE_WAYS
+    }
+}
+
+/// The curve progress of the ramps being rendered, each stretch worked out once however many
+/// gains follow it: a whole-matrix edit or Fade is thousands of ramps of one shape, and a gain
+/// is then one multiply and one add per frame ([`Param::fill`]). A stretch is a pure function of
+/// its key, so a hit is right whenever it was computed. Preallocated; never allocates.
+#[derive(Debug)]
+pub(crate) struct Shapes {
+    frames: usize,
+    keys: Vec<Option<ShapeKey>>,
+    /// `SHAPE_SLOTS` stretches of `frames` each.
+    values: Vec<f32>,
+    /// The way of each set to replace next.
+    next: [u8; SHAPE_SETS],
+}
+
+impl Shapes {
+    /// Room for stretches of up to `frames` (the mixer's block).
+    pub(crate) fn new(frames: usize) -> Self {
+        let frames = frames.max(1);
+        Shapes {
+            frames,
+            keys: vec![None; SHAPE_SLOTS],
+            values: vec![0.0; SHAPE_SLOTS * frames],
+            next: [0; SHAPE_SETS],
+        }
+    }
+
+    /// The progress at positions `key.pos..key.pos + key.frames`; `key.frames` is at most
+    /// [`Self::new`]'s. Empty if it were more.
+    fn get(&mut self, key: ShapeKey) -> &[f32] {
+        let set = key.set();
+        let ways = self.keys.get(set..set + SHAPE_WAYS).unwrap_or(&[]);
+        let slot = match ways.iter().position(|k| *k == Some(key)) {
+            Some(way) => set + way,
+            None => self.compute(key, set),
+        };
+        let start = slot * self.frames;
+        self.values.get(start..start + key.frames).unwrap_or(&[])
+    }
+
+    /// Computes `key` into the next way of its set. Returns the slot.
+    fn compute(&mut self, key: ShapeKey, set: usize) -> usize {
+        let Some(next) = self.next.get_mut(set / SHAPE_WAYS) else {
+            return set;
+        };
+        let slot = set + usize::from(*next);
+        *next = (*next + 1) % SHAPE_WAYS as u8;
+        let start = slot * self.frames;
+        if let (Some(k), Some(out)) = (
+            self.keys.get_mut(slot),
+            self.values.get_mut(start..start + key.frames),
+        ) {
+            // Unset while it is written: a fault here must not leave half a stretch to be found.
+            *k = None;
+            CurveRamp::progress(key.len, key.curve, key.rising).apply(key.pos, out, |o, v| *o = v);
+            *k = Some(key);
+        }
+        slot
+    }
+
+    /// As good as new, for a test to compare against nothing shared.
+    #[cfg(test)]
+    fn forget(&mut self) {
+        self.keys.fill(None);
+    }
+}
+
+/// A gain ramp: `from + delta · s` for the curve's progress `s`. The evaluator is shared
+/// ([`Shapes`]), so a ramp is small and thousands of them stay cheap to walk.
 #[derive(Clone, Copy, Debug)]
 struct Ramp {
     pos: u64,
     len: u64,
+    from: f32,
+    delta: f32,
     to: f32,
-    eval: CurveRamp,
+    curve: Curve,
+}
+
+impl Ramp {
+    /// The direction of the curve: a falling ramp is the time-reverse of a rising one.
+    fn rising(&self) -> bool {
+        self.delta >= 0.0
+    }
 }
 
 /// A gain that can ramp, advanced one sample at a time on the audio thread.
@@ -458,7 +578,30 @@ impl Param {
     /// Value at the next sample to be rendered.
     pub(crate) fn current(&self) -> f32 {
         match &self.ramp {
-            Some(r) => r.eval.peek(r.pos),
+            // What `fill` writes for this position, to the bit.
+            Some(r) => {
+                let s = CurveRamp::progress(r.len, r.curve, r.rising()).peek(r.pos);
+                r.from + r.delta * s
+            }
+            None => self.value,
+        }
+    }
+
+    /// [`Self::current`] through `shapes`: the curve is worked out once for all the gains asked
+    /// about a position, so asking thousands of them (a whole-matrix edit during a Fade, a pause
+    /// tail) costs what they multiply, not one evaluator each.
+    pub(crate) fn current_in(&self, shapes: &mut Shapes) -> f32 {
+        match &self.ramp {
+            Some(r) => {
+                let s = shapes.get(ShapeKey {
+                    len: r.len,
+                    curve: r.curve,
+                    rising: r.rising(),
+                    pos: r.pos,
+                    frames: 1,
+                });
+                s.first().map_or(self.value, |s| r.from + r.delta * s)
+            }
             None => self.value,
         }
     }
@@ -494,29 +637,52 @@ impl Param {
 
     /// Ramps from the current value to `to`, starting at the next sample.
     pub(crate) fn ramp_to(&mut self, to: f32, frames: u64, curve: Curve) {
+        self.ramp_from(self.current(), to, frames, curve);
+    }
+
+    /// [`Self::ramp_to`], for one of many gains moving together ([`Self::current_in`]).
+    pub(crate) fn ramp_to_in(&mut self, to: f32, frames: u64, curve: Curve, shapes: &mut Shapes) {
+        self.ramp_from(self.current_in(shapes), to, frames, curve);
+    }
+
+    fn ramp_from(&mut self, from: f32, to: f32, frames: u64, curve: Curve) {
         if frames == 0 {
             self.set(to);
         } else {
-            let from = self.current();
             self.ramp = Some(Ramp {
                 pos: 0,
                 len: frames,
+                from,
+                delta: to - from,
                 to,
-                eval: CurveRamp::new(from, to, frames, curve),
+                curve,
             });
         }
     }
 
-    /// Writes the next `out.len()` values.
-    pub(crate) fn fill(&mut self, out: &mut [f32]) {
+    /// Writes the next `out.len()` values. The first of a ramp is exactly where it started, and
+    /// the ramp ends exactly on its target; between, within [`RAMP_TOLERANCE`] of [`ramp_value`].
+    pub(crate) fn fill(&mut self, out: &mut [f32], shapes: &mut Shapes) {
         let mut rest = out;
         if let Some(r) = &mut self.ramp {
             let n = usize::try_from(r.len - r.pos)
                 .unwrap_or(usize::MAX)
                 .min(rest.len());
             let (head, tail) = rest.split_at_mut(n);
-            r.eval.apply(r.pos, head, |o, v| *o = v);
-            r.pos += n as u64;
+            let rising = r.rising();
+            for stretch in head.chunks_mut(shapes.frames) {
+                let s = shapes.get(ShapeKey {
+                    len: r.len,
+                    curve: r.curve,
+                    rising,
+                    pos: r.pos,
+                    frames: stretch.len(),
+                });
+                for (o, s) in stretch.iter_mut().zip(s) {
+                    *o = r.from + r.delta * s;
+                }
+                r.pos += stretch.len() as u64;
+            }
             if r.pos >= r.len {
                 self.value = r.to;
                 self.ramp = None;
@@ -641,13 +807,15 @@ mod tests {
         let mut p = Param::new(1.0);
         p.ramp_to(0.0, 10, Curve::SCurve);
         let mut buf = [9.0; 16];
-        p.fill(&mut buf[..4]);
+        let mut shapes = Shapes::new(16);
+        p.fill(&mut buf[..4], &mut shapes);
         p.advance(2);
-        p.fill(&mut buf[4..]);
+        p.fill(&mut buf[4..], &mut shapes);
+        assert_eq!(buf[0], 1.0, "a ramp starts exactly where it was");
         for (i, v) in buf[..4].iter().enumerate() {
-            assert_eq!(*v, ramp_value(1.0, 0.0, i as u64, 10, Curve::SCurve));
+            within_bound(1.0, 0.0, 10, Curve::SCurve, i as u64, *v);
         }
-        assert_eq!(buf[4], ramp_value(1.0, 0.0, 6, 10, Curve::SCurve));
+        within_bound(1.0, 0.0, 10, Curve::SCurve, 6, buf[4]);
         assert!(buf[8..].iter().all(|v| *v == 0.0));
         assert!(p.is_silent());
     }
@@ -659,7 +827,7 @@ mod tests {
         p.advance(50);
         p.ramp_to(0.0, 10, Curve::Linear);
         let mut buf = [0.0; 1];
-        p.fill(&mut buf);
+        p.fill(&mut buf, &mut Shapes::new(1));
         assert_eq!(buf[0], 0.5);
     }
 
@@ -778,25 +946,77 @@ mod tests {
             cuts in proptest::collection::vec((0usize..700, proptest::bool::ANY), 1..20),
         ) {
             let curve = ALL[c];
-            let eval = CurveRamp::new(from, to, len, curve);
+            // One whole render is the reference; the stretches are smaller than some spans.
+            let mut whole = Param::new(from);
+            whole.ramp_to(to, len, curve);
+            let mut want = vec![0.0f32; len as usize + 700 * 20];
+            whole.fill(&mut want, &mut Shapes::new(64));
             let mut p = Param::new(from);
             p.ramp_to(to, len, curve);
-            let mut pos = 0u64;
+            let mut shapes = Shapes::new(64);
+            let mut pos = 0usize;
             let mut buf = [0.0f32; 700];
             for (n, skip) in cuts {
                 if skip {
                     p.advance(n);
                 } else {
                     let out = &mut buf[..n];
-                    p.fill(out);
+                    p.fill(out, &mut shapes);
                     for (k, v) in out.iter().enumerate() {
-                        let want = eval.peek(pos + k as u64);
-                        proptest::prop_assert_eq!(v.to_bits(), want.to_bits());
+                        proptest::prop_assert_eq!(v.to_bits(), want[pos + k].to_bits());
                     }
                 }
-                pos += n as u64;
-                proptest::prop_assert_eq!(p.current().to_bits(), eval.peek(pos).to_bits());
+                pos += n;
+                proptest::prop_assert_eq!(p.current().to_bits(), want[pos].to_bits());
             }
+        }
+
+        /// A gain ramp follows `ramp_value` within the bound on every curve and any ends, from its
+        /// exact first value to its exact target.
+        #[test]
+        fn param_ramps_are_within_bound_and_end_exactly(
+            c in 0usize..5,
+            from in gain(),
+            to in gain(),
+            len in proptest::prop_oneof![1u64..=200, 1u64..=20_000],
+        ) {
+            let curve = ALL[c];
+            let mut p = Param::new(from);
+            p.ramp_to(to, len, curve);
+            let mut out = vec![0.0f32; len as usize + 3];
+            p.fill(&mut out, &mut Shapes::new(512));
+            proptest::prop_assert_eq!(out[0].to_bits(), from.to_bits());
+            for (pos, v) in out.iter().enumerate().take(len as usize) {
+                within_bound(from, to, len, curve, pos as u64, *v);
+            }
+            proptest::prop_assert!(out[len as usize..].iter().all(|v| v.to_bits() == to.to_bits()));
+            proptest::prop_assert!(p.steady().is_some());
+        }
+
+        /// Both ways of asking a ramp's value give what the next `fill` writes, to the bit, and a
+        /// new ramp from either starts there.
+        #[test]
+        fn current_in_shapes_is_what_fill_writes_next(
+            c in 0usize..5,
+            from in gain(),
+            to in gain(),
+            len in 1u64..5000,
+            at in 0usize..6000,
+            next in gain(),
+        ) {
+            let mut shapes = Shapes::new(64);
+            let mut p = Param::new(from);
+            p.ramp_to(to, len, ALL[c]);
+            p.advance(at);
+            let mut retargeted = p;
+            let mut out = [0.0f32];
+            let (current, shared) = (p.current(), p.current_in(&mut shapes));
+            p.fill(&mut out, &mut shapes);
+            proptest::prop_assert_eq!(current.to_bits(), out[0].to_bits());
+            proptest::prop_assert_eq!(shared.to_bits(), out[0].to_bits());
+            retargeted.ramp_to_in(next, 10, Curve::Linear, &mut shapes);
+            retargeted.fill(&mut out, &mut shapes);
+            proptest::prop_assert_eq!(current.to_bits(), out[0].to_bits());
         }
     }
 
@@ -851,10 +1071,176 @@ mod tests {
                 .to_bits()
         );
         assert!(r.is(0.5, 0.0, 300, Curve::EqualPower));
-        // Linear is evaluated exactly.
-        let mut l = CurveRamp::new(0.3, 0.9, 777, Curve::Linear);
-        for pos in 0..=777 {
-            assert_eq!(l.value(pos), ramp_value(0.3, 0.9, pos, 777, Curve::Linear));
+    }
+
+    /// The largest error of a whole ramp on every curve, either way, near the worst case for the
+    /// `f32` sum: full scale across the sign, over a long ramp.
+    #[test]
+    fn a_gain_ramp_at_full_scale_stays_within_half_the_bound() {
+        for c in ALL {
+            for (from, to) in [
+                (MAX_GAIN, -MAX_GAIN),
+                (-MAX_GAIN, MAX_GAIN),
+                (MAX_GAIN, 0.001),
+            ] {
+                let len = 1 << 16;
+                let mut p = Param::new(from);
+                p.ramp_to(to, len, c);
+                let mut out = vec![0.0f32; len as usize];
+                p.fill(&mut out, &mut Shapes::new(512));
+                let worst = out
+                    .iter()
+                    .enumerate()
+                    .map(|(pos, v)| within_bound(from, to, len, c, pos as u64, *v))
+                    .fold(0.0, f64::max);
+                assert!(
+                    worst <= RAMP_TOLERANCE / 2.0,
+                    "{c:?} {from}->{to}: {worst:e}"
+                );
+                assert_eq!(p.current(), to);
+            }
         }
+    }
+
+    /// Random fills, skips, reads and new ramps of many gains through one `Shapes` give the bits
+    /// each gets through nothing shared: a stretch of another curve, direction, length or position
+    /// is never taken for its own.
+    #[test]
+    fn shared_shapes_vs_private() {
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, m: u64) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0 % m
+            }
+        }
+        const LENS: [u64; 10] = [1, 2, 63, 64, 65, 100, 1000, 4096, 48000, 1 << 31];
+        const GAINS: [f32; 6] = [0.0, 1.0, 0.25, MAX_GAIN, -1.0, 1e-5];
+        let mut r = Rng(0x9E37_79B9_7F4A_7C15);
+        for frames in [1usize, 7, 64, 512] {
+            let mut shared = Shapes::new(frames);
+            let mut private = Shapes::new(frames);
+            let (mut a, mut b) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+            for round in 0..40 {
+                shared.forget();
+                let lens = if round % 2 == 0 { 4 } else { 10 };
+                let mut ps: Vec<Param> = (0..12)
+                    .map(|_| Param::new(GAINS[r.below(6) as usize]))
+                    .collect();
+                let mut qs = ps.clone();
+                for _ in 0..600 {
+                    let i = r.below(12) as usize;
+                    private.forget();
+                    match r.below(10) {
+                        0 => {
+                            let to = GAINS[r.below(6) as usize];
+                            let len = LENS[r.below(lens) as usize];
+                            let curve = ALL[r.below(5) as usize];
+                            ps[i].ramp_to_in(to, len, curve, &mut shared);
+                            qs[i].ramp_to_in(to, len, curve, &mut private);
+                        }
+                        1 => {
+                            let n = r.below(200) as usize;
+                            ps[i].advance(n);
+                            qs[i].advance(n);
+                        }
+                        2 => {
+                            let got = ps[i].current_in(&mut shared);
+                            assert_eq!(got.to_bits(), qs[i].current_in(&mut private).to_bits());
+                            assert_eq!(got.to_bits(), qs[i].current().to_bits());
+                        }
+                        _ => {
+                            let n = 1 + r.below(frames as u64) as usize;
+                            ps[i].fill(&mut a[..n], &mut shared);
+                            qs[i].fill(&mut b[..n], &mut private);
+                            for k in 0..n {
+                                assert_eq!(a[k].to_bits(), b[k].to_bits(), "{frames} {round} {k}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Hour-long gain ramps at 192 kHz, sampled across their length, on every curve and on the
+    /// hard ends: within the bound throughout and exactly on target at the end.
+    #[test]
+    fn hour_long_gain_ramps_stay_within_the_bound() {
+        const LEN: u64 = 3600 * 192_000;
+        const WINDOW: usize = 1 << 11;
+        let ends = [
+            (MAX_GAIN, 0.0f32),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (MAX_GAIN, -MAX_GAIN),
+            (0.001, 1.0),
+            (MAX_GAIN, 1e-5),
+            (1e-5, 1e-6),
+        ];
+        let starts = [0, LEN / 7, LEN / 2, LEN * 9 / 10, LEN - WINDOW as u64];
+        let mut buf = vec![0.0f32; WINDOW];
+        let mut shapes = Shapes::new(512);
+        for c in ALL {
+            for (from, to) in ends {
+                let mut p = Param::new(from);
+                p.ramp_to(to, LEN, c);
+                for start in starts {
+                    let mut q = p;
+                    q.advance(start as usize);
+                    for stretch in buf.chunks_mut(512) {
+                        q.fill(stretch, &mut shapes);
+                    }
+                    for (k, v) in buf.iter().enumerate() {
+                        within_bound(from, to, LEN, c, start + k as u64, *v);
+                    }
+                    if start == LEN - WINDOW as u64 {
+                        assert_eq!(q.current().to_bits(), to.to_bits(), "{c:?}");
+                        assert!(q.steady().is_some(), "{c:?} finishes");
+                    }
+                }
+            }
+        }
+    }
+
+    /// More shapes in a segment than the slots: each gain still gets its own ramp's values.
+    #[test]
+    fn more_ramp_shapes_than_slots_each_get_their_own_values() {
+        let n = SHAPE_SLOTS as u64 * 2 + 1;
+        let mut shapes = Shapes::new(32);
+        let mut params: Vec<(u64, Param)> = (0..n)
+            .map(|k| {
+                let mut p = Param::new(0.25);
+                p.ramp_to(1.0, 100 + k, ALL[k as usize % 5]);
+                (k, p)
+            })
+            .collect();
+        for block in 0..3u64 {
+            for (k, p) in &mut params {
+                let mut out = [0.0f32; 32];
+                p.fill(&mut out, &mut shapes);
+                for (i, v) in out.iter().enumerate() {
+                    let pos = block * 32 + i as u64;
+                    within_bound(0.25, 1.0, 100 + *k, ALL[*k as usize % 5], pos, *v);
+                }
+            }
+        }
+    }
+
+    /// Filling thousands of ramps touches no allocator: `Shapes` was sized up front.
+    #[test]
+    fn filling_ramps_of_a_curve_allocates_nothing() {
+        let mut shapes = Shapes::new(64);
+        let mut p = Param::new(0.0);
+        p.ramp_to(1.0, 1000, Curve::SCurve);
+        let mut q = Param::new(1.0);
+        q.ramp_to(0.0, 1000, Curve::SCurve);
+        let mut out = [0.0f32; 64];
+        crate::no_alloc_for_tests(|| {
+            p.fill(&mut out, &mut shapes);
+            q.fill(&mut out, &mut shapes);
+        });
     }
 }

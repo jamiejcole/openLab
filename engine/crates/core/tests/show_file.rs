@@ -1220,7 +1220,7 @@ fn any_access() -> impl Strategy<Value = OscAccess> {
 }
 
 fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
-    let hotkeys = vec(option::of(hotkey()), 9).prop_map(|keys| {
+    let hotkeys = vec(option::of(hotkey()), 11).prop_map(|keys| {
         let [
             go,
             stop_all,
@@ -1231,7 +1231,9 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
             start_selected,
             stop_selected,
             reset_selected,
-        ] = <[Option<Hotkey>; 9]>::try_from(keys).unwrap();
+            preview_selected,
+            panic_selected,
+        ] = <[Option<Hotkey>; 11]>::try_from(keys).unwrap();
         TransportHotkeys {
             go,
             stop_all,
@@ -1242,6 +1244,8 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
             start_selected,
             stop_selected,
             reset_selected,
+            preview_selected,
+            panic_selected,
         }
     });
     (
@@ -1441,6 +1445,23 @@ fn migrate_keys_to_v5(ws: &mut Workspace) {
     keys.start_selected = None;
     keys.stop_selected = None;
     keys.reset_selected = None;
+    // The v8 -> v9 step: Preview Selected V and Panic Selected S unless a cue hotkey or another
+    // key of the map is that chord.
+    taken.extend(
+        [
+            &keys.go,
+            &keys.stop_all,
+            &keys.pause_all,
+            &keys.resume_all,
+            &keys.load_selected,
+            &keys.pause_resume_selected,
+        ]
+        .into_iter()
+        .flatten()
+        .cloned(),
+    );
+    keys.preview_selected = Some(plain("v")).filter(|k| !taken.contains(k));
+    keys.panic_selected = Some(plain("s")).filter(|k| !taken.contains(k));
 }
 
 /// What a v3 file's `osc_passcode` becomes: none or empty is No Passcode with all rights
@@ -1635,6 +1656,32 @@ fn v8_fixture_drops_the_global_master_with_one_warning_and_no_level_changes() {
     let text = save_show(&loaded.workspace).unwrap();
     assert_eq!(text, EXAMPLE);
     assert_eq!(load_show(&text).unwrap().warnings, vec![]);
+}
+
+/// Preview Selected and Panic Selected were fixed app keys V and S that yielded to a cue hotkey
+/// or a workspace key on the chord: an older show keeps its cue hotkey (the new key is none) and
+/// gets the key everywhere else.
+#[test]
+fn older_shows_keep_v_and_s_unless_a_cue_or_a_key_already_uses_the_chord() {
+    let mut doc: serde_json::Value = serde_json::from_str(V8_EXAMPLE).unwrap();
+    let keys = &mut doc["workspace"]["settings"]["hotkeys"];
+    keys["resume_all"]["key"] = "s".into();
+    let cue = &mut doc["workspace"]["cue_lists"][0]["cues"][0]["triggers"]["hotkey"];
+    *cue = serde_json::json!({"key": "v", "modifiers": {
+        "shift": false, "control": false, "alt": false, "command": false}});
+    let keys = &load_show(&doc.to_string())
+        .unwrap()
+        .workspace
+        .settings
+        .hotkeys;
+    assert_eq!(
+        (&keys.preview_selected, &keys.panic_selected),
+        (&None, &None)
+    );
+    // The fixture itself, with neither chord used, keeps both.
+    let keys = &load_show(V8_EXAMPLE).unwrap().workspace.settings.hotkeys;
+    assert_eq!(keys.preview_selected.as_ref().unwrap().key, "v");
+    assert_eq!(keys.panic_selected.as_ref().unwrap().key, "s");
 }
 
 /// A v8 master of 0 dB was no master at all: nothing to warn about.
