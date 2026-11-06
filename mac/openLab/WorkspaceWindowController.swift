@@ -562,12 +562,30 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// The footer's warnings button: the sidebar opens on the Warnings tab (Show Mode keeps the sidebar).
     func showWarnings() {
+        sidebar.showTab(2)  // before setVisible, which saves the layout
         setVisible(.sidebar, true)
-        sidebar.showTab(2)
     }
 
     /// Tools > Jump to Targets of Selected Cues (Show Mode allowed: it only moves the selection).
-    func jumpToTargets() { cueList.jumpToTargets() }
+    /// The selected cues' targets that exist in the workspace.
+    private var existingTargets: [ModelID] {
+        cueList.selectedTargets.filter { target in
+            store.model?.cueLists.contains { Self.contains(target, in: $0.cues) } == true
+        }
+    }
+
+    var canJumpToTargets: Bool { !existingTargets.isEmpty }
+
+    /// The targets become the selection as a click would make it (inspector and playhead follow).
+    /// Targets spread over several lists: the first one's list is shown, the others there are kept.
+    func jumpToTargets() {
+        let targets = existingTargets
+        guard let first = targets.first,
+            let list = store.model?.cueLists.first(where: { Self.contains(first, in: $0.cues) })
+        else { return }
+        if cueList.listID != list.id { cueList.showList(list.id) }
+        cueList.selectAsUser(targets.filter { cueList.node($0) != nil })
+    }
 
     private func syncSidebarList() {
         sidebar.syncSelection()

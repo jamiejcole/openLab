@@ -283,7 +283,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return appController.frontController.map { !$0.isShowMode && !$0.cueList.selectedIDs().isEmpty } ?? false
         case #selector(showWarnings(_:))?: return appController.frontController != nil  // views only: Show Mode too
         case #selector(jumpToTargets(_:))?:
-            return appController.frontController?.cueList.canJumpToTargets ?? false
+            // Not while a text field is edited: the jump would take its focus.
+            return (appController.frontController?.canJumpToTargets ?? false) && !appController.isTextEditing()
         case #selector(revealTargetFile(_:))?:
             return appController.frontController?.cueList.canRevealSelectedTarget ?? false
         case #selector(closeAllWorkspaces(_:))?: return !appController.allWindows.isEmpty
