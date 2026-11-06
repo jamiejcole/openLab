@@ -203,7 +203,8 @@ final class EngineSupervisor {
         guard now() - spawnedAt >= startDeadline, !handled.contains(pid) else { return true }
         handled.insert(pid)
         engineLog.error(
-            "engine pid \(pid, privacy: .public) wrote no engine.json within \(self.startDeadline, privacy: .public) s: ending it")
+            "engine pid \(pid, privacy: .public) wrote no engine.json within \(self.startDeadline, privacy: .public) s: ending it"
+        )
         alarms.send(.cannotStart(loc("engine.alarm.startTimeout")))
         Task { await terminateThenSpawn(pid, silent: false) }
         return true
