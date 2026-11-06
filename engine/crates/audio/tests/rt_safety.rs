@@ -110,7 +110,7 @@ fn no_allocation_across_a_busy_voice_lifecycle() {
     }));
     assert_eq!(ctl.collect_returns(), 64);
     assert_eq!(ctl.faults(), 0);
-    assert_eq!(ctl.leaked_starts(), 0);
+    assert_eq!(ctl.leaked_returns(), 0);
     assert_eq!(ctl.dropped_events(), 0);
 }
 
@@ -208,7 +208,7 @@ fn no_allocation_across_pause_and_resume() {
     }));
     assert_eq!(ctl.collect_returns(), 32);
     assert_eq!(ctl.faults(), 0);
-    assert_eq!(ctl.leaked_starts(), 0);
+    assert_eq!(ctl.leaked_returns(), 0);
     assert_eq!(ctl.dropped_events(), 0);
 }
 
@@ -363,7 +363,7 @@ fn full_event_queue_drops_and_counts_without_allocating() {
     // 2000 rejections, 1024 fit in the event queue.
     assert_eq!(ctl.dropped_events(), 2000 - 1024);
     assert_eq!(events(&mut ctl).len(), 1024);
-    assert_eq!(ctl.leaked_starts(), 0);
+    assert_eq!(ctl.leaked_returns(), 0);
 }
 
 #[test]
@@ -396,6 +396,76 @@ fn full_pending_set_is_reported_and_nothing_is_lost() {
         (out[255] - 0.5).abs() < 1e-6,
         "the last command was applied"
     );
+}
+
+/// #377: a ramp set behind a full pending set waits in the queue, whole: it applies late, never
+/// to some gains first.
+#[test]
+fn a_ramp_set_behind_a_full_pending_set_applies_whole() {
+    let cfg = MixerConfig {
+        lookahead_ms: 60_000,
+        ..config(2)
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    let mut v = voice(&ctl, 1, source(&vec![1.0; 40_000]), 1);
+    v.set_crosspoint(0, 1, 1.0);
+    send_start(&mut ctl, 0, v);
+    let n = (PENDING_CAPACITY + 1500) as u64;
+    for i in 0..n {
+        ctl.send(5000 + i, CommandKind::SetMaster { gain: 1.0 });
+    }
+    let crosspoint = |output| GainTarget::Crosspoint { input: 0, output };
+    ctl.send(
+        5000 + n,
+        CommandKind::RampSet {
+            voice: VoiceId(1),
+            gains: vec![(crosspoint(0), 0.5), (crosspoint(1), 0.5)].into(),
+            fade: Fade::NONE,
+        },
+    );
+    let mut out = vec![0.0; 2 * 256];
+    let mut last = 0.0;
+    for _ in 0..80 {
+        ctl.pump();
+        no_alloc(|| r.render_into(&mut out, &[256]));
+        assert!(out.chunks(2).all(|f| f[0] == f[1]), "half an edit: {out:?}");
+        last = out[510];
+    }
+    assert!(ctl.pending_full_blocks() > 0);
+    assert_eq!(ctl.held(), 0);
+    assert!((last - 0.5).abs() < 1e-6, "the edit arrived: {last}");
+}
+
+/// #377: applying a ramp set allocates and frees nothing: its list goes back to the control
+/// thread whether it applied, named gains the voice lacks, or found no voice. Dated on the
+/// voice's start sample, it is in force from the first sample heard.
+#[test]
+fn ramp_sets_allocate_nothing_and_every_list_goes_back() {
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 64, 1, source(&[1.0; 2000]), 1);
+    let set = |voice, gains: Vec<(GainTarget, f32)>| CommandKind::RampSet {
+        voice: VoiceId(voice),
+        gains: gains.into(),
+        fade: Fade::NONE,
+    };
+    let bad = GainTarget::Crosspoint {
+        input: 5,
+        output: 0,
+    };
+    let master = GainTarget::Master;
+    ctl.send(
+        64,
+        set(1, vec![(bad, 1.0), (master, f32::NAN), (master, 0.5)]),
+    );
+    ctl.send(64, set(9, vec![(master, 0.25), (master, 0.25)]));
+    ctl.send(64, set(1, vec![(GainTarget::CueOutput(99), 0.25); 2]));
+    let mut out = vec![0.0; 200];
+    no_alloc(|| r.render_into(&mut out, &[16]));
+    assert!(out[..64].iter().all(|s| *s == 0.0));
+    assert!(out[64..].iter().all(|s| *s == 0.5), "{out:?}");
+    assert_eq!(ctl.collect_returns(), 3);
+    assert_eq!(ctl.leaked_returns(), 0);
+    assert!(events(&mut ctl).is_empty());
 }
 
 /// a full burst of 1024 equal-time commands lands in one block without allocating,
@@ -472,7 +542,7 @@ fn no_allocation_with_meters_active_on_64_voices() {
     assert!(entries >= 64 * 12 - 64);
     assert_eq!(ctl.xruns(), 12);
     assert_eq!(ctl.faults(), 0);
-    assert_eq!(ctl.leaked_starts(), 0);
+    assert_eq!(ctl.leaked_returns(), 0);
 }
 
 #[test]

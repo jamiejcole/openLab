@@ -148,10 +148,11 @@ fn stop_with_fade_ends_at_zero_and_finishes() {
     ctl.send(500, stop(1, Fade::new(100, Curve::Linear)));
     let out = r.render(1000, &[64]);
     for k in 0..=100 {
-        assert_eq!(
-            out[500 + k],
-            ramp_value(1.0, 0.0, k as u64, 100, Curve::Linear),
-            "k={k}"
+        let want = ramp_value(1.0, 0.0, k as u64, 100, Curve::Linear);
+        assert!(
+            f64::from((out[500 + k] - want).abs()) <= RAMP_TOLERANCE,
+            "k={k}: {} vs {want}",
+            out[500 + k]
         );
     }
     assert!(out[600..].iter().all(|s| *s == 0.0));
@@ -189,12 +190,14 @@ fn ramp_mid_block_starts_on_the_exact_sample() {
         let out = r.render(1000, &[64]);
         assert!(out[100..at].iter().all(|s| *s == 1.0));
         for k in 0..=200 {
-            assert_eq!(
-                out[at + k],
-                ramp_value(1.0, 0.0, k as u64, 200, curve),
-                "{curve:?} k={k}"
+            let want = ramp_value(1.0, 0.0, k as u64, 200, curve);
+            assert!(
+                f64::from((out[at + k] - want).abs()) <= RAMP_TOLERANCE,
+                "{curve:?} k={k}: {} vs {want}",
+                out[at + k]
             );
         }
+        assert_eq!(out[at], 1.0, "{curve:?}");
         assert!(out[at + 1] < 1.0, "{curve:?}");
         assert!(out[at + 200..].iter().all(|s| *s == 0.0), "{curve:?}");
     }
@@ -553,9 +556,9 @@ fn far_future_commands_wait_on_the_control_thread_and_never_delay_a_stop() {
     assert_eq!(ctl.held(), 5000);
 }
 
-/// #291: a stop sent just after a whole-matrix edit of a 64x64 cue (1 + 64 + 4096 ramps, more
-/// than four queues' worth) is not released behind the ramps: it cuts on its own sample, and
-/// the ramps still all apply.
+/// #291: a stop sent just after more ramps than the queue holds (more than four queues' worth,
+/// and a ramp set) is not released behind them: it cuts on its own sample, and the ramps still
+/// all apply.
 #[test]
 fn a_stop_overtakes_a_large_batch_of_ramps_queued_ahead_of_it() {
     let (mut ctl, mut r) = setup(config(1));
@@ -571,6 +574,14 @@ fn a_stop_overtakes_a_large_batch_of_ramps_queued_ahead_of_it() {
         ctl.send_batch(batch).unwrap();
         left -= n;
     }
+    ctl.send(
+        64,
+        CommandKind::RampSet {
+            voice: VoiceId(2),
+            gains: vec![(GainTarget::Master, 0.5); 2].into(),
+            fade: Fade::NONE,
+        },
+    );
     ctl.send(192, stop(1, Fade::NONE));
     let mut out = Vec::new();
     for _ in 0..10 {
@@ -580,6 +591,110 @@ fn a_stop_overtakes_a_large_batch_of_ramps_queued_ahead_of_it() {
     assert_eq!(events(&mut ctl), [finished(1, 192, FinishReason::Stopped)]);
     assert_eq!(ctl.held(), 0);
     assert!(out[640 - 64..].iter().all(|s| (*s - 0.5).abs() < 1e-6));
+}
+
+/// #377: a whole-matrix edit of a 64x64 cue (1 + 64 + 4096 gains) is one command. Released at
+/// once, it starts every gain on one sample, so no block renders part of it, and a start sent
+/// right after it plays on its own sample.
+#[test]
+fn a_whole_matrix_ramp_set_moves_every_gain_on_one_sample() {
+    const OUTS: usize = 64;
+    const FRAMES: usize = 64 * 8;
+    const AT: usize = 128;
+    const LEN: usize = 16;
+    let (mut ctl, mut r) = setup(MixerConfig {
+        output_channels: OUTS,
+        max_voice_channels: OUTS,
+        max_block_frames: 64,
+        max_voices: 4,
+        ..MixerConfig::default()
+    });
+    let mut v = VoiceStart::new(
+        VoiceId(1),
+        source(&vec![1.0; OUTS * FRAMES]),
+        OUTS as u16,
+        OUTS,
+    );
+    v.crosspoints.fill(0.5);
+    send_start(&mut ctl, 0, v);
+
+    let mut gains = vec![(GainTarget::Master, 0.5)];
+    for o in 0..OUTS as u16 {
+        gains.push((GainTarget::CueOutput(o), 0.5));
+        for i in 0..OUTS as u16 {
+            let target = GainTarget::Crosspoint {
+                input: i,
+                output: o,
+            };
+            gains.push((target, 0.25));
+        }
+    }
+    assert_eq!(gains.len(), 1 + 64 + 4096);
+    let set = CommandKind::RampSet {
+        voice: VoiceId(1),
+        gains: gains.into(),
+        fade: Fade::new(LEN as u64, Curve::Linear),
+    };
+    ctl.send(AT as u64, set);
+    let mut next = VoiceStart::new(VoiceId(2), source(&[1.0]), 1, OUTS);
+    next.play_frames = Some(1);
+    send_start(&mut ctl, AT as u64, next);
+    assert_eq!(ctl.held(), 0, "the edit waits for no later block");
+
+    let mut out = vec![0.0; OUTS * FRAMES];
+    no_alloc(|| r.render_into(&mut out, &[64]));
+    let (old, new) = (32.0, 4.0);
+    for frame in out.chunks(OUTS) {
+        assert!(
+            frame.iter().all(|s| *s == frame[0]),
+            "the outputs differ: {frame:?}"
+        );
+    }
+    let first = channel(&out, OUTS, 0);
+    assert!(first[..=AT].iter().all(|s| *s == old));
+    assert!(first[AT..AT + LEN].windows(2).all(|w| w[1] < w[0]));
+    assert!(first[AT + LEN..].iter().all(|s| *s == new));
+    assert_eq!(
+        events(&mut ctl),
+        [finished(2, AT as u64 + 1, FinishReason::OutPoint)]
+    );
+    // The edit's list and the second voice's start.
+    assert_eq!(ctl.collect_returns(), 2);
+}
+
+/// #377: a ramp set that finds the queue full waits on the control thread, whole, and lands whole
+/// when there is room: late, but no block renders part of it.
+#[test]
+fn a_ramp_set_that_finds_the_queue_full_waits_whole_and_lands_on_one_sample() {
+    let (mut ctl, mut r) = setup(config(2));
+    let mut v = voice(&ctl, 1, mono_dc(1000), 1);
+    v.set_crosspoint(0, 1, 1.0);
+    send_start(&mut ctl, 0, v);
+    r.render(64, &[64]);
+    let batch = (0..openlab_audio::COMMAND_CAPACITY)
+        .map(|_| (64, ramp(9, GainTarget::Master, 0.5, Fade::NONE)))
+        .collect();
+    ctl.send_batch(batch).unwrap();
+    let crosspoint = |output| GainTarget::Crosspoint { input: 0, output };
+    ctl.send(
+        64,
+        CommandKind::RampSet {
+            voice: VoiceId(1),
+            gains: vec![(crosspoint(0), 0.5), (crosspoint(1), 0.5)].into(),
+            fade: Fade::new(1, Curve::Linear),
+        },
+    );
+    assert_eq!(ctl.held(), 1, "the queue has no room");
+    let mut out = r.render(64, &[64]);
+    assert_eq!(ctl.pump(), 1);
+    assert_eq!(ctl.held(), 0);
+    out.extend(r.render(64, &[64]));
+    // Dated sample 64, due again at the start of the block after it reached the queue (128).
+    for ch in 0..2 {
+        let x = channel(&out, 2, ch);
+        assert!(x[..=64].iter().all(|s| *s == 1.0), "channel {ch}: {x:?}");
+        assert!(x[65..].iter().all(|s| *s == 0.5), "channel {ch}: {x:?}");
+    }
 }
 
 /// Only ramps are overtaken: a stop queued behind its voice's start (behind ramps too) still

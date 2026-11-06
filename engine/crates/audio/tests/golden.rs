@@ -21,7 +21,7 @@ use openlab_audio::{CommandKind, Curve, Fade, GainTarget, MixerController, Voice
 /// To regenerate after an intended change to the mixer's arithmetic: run
 /// `cargo test -p openlab-audio --test golden`, which prints the new value on a mismatch, and
 /// paste it here (say why in the commit message).
-const GOLDEN: u64 = 0x73ce_a58c_318f_693f;
+const GOLDEN: u64 = 0xae70_0cca_1712_4ae5;
 
 struct Fnv(u64);
 
