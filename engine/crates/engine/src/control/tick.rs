@@ -148,23 +148,24 @@ impl Control {
         }
     }
 
-    /// The probe pool's watchdog: stuck workers replaced, their files reported unplayable in
-    /// the doc that asked (from the next tick's `Availability`), volume notes logged once.
+    /// The probe pool's watchdog: stuck workers replaced and logged, each with its file; a file
+    /// with no answer yet is reported unplayable in the doc that asked (from the next tick's
+    /// `Availability`); volume notes logged once. One line per worker replaced, so at most
+    /// [`media::MAX_ABANDONED_WORKERS`] in the engine's life.
     fn probe_watchdog(&mut self) {
         let stuck = self.eng.pool.watchdog();
-        if !stuck.is_empty() {
-            let message = format!(
-                "{} media probe(s) stuck; workers replaced ({} so far)",
-                stuck.len(),
-                self.eng.pool.abandoned_workers()
-            );
-            self.eng.log(LogLevel::Error, message);
-            for s in stuck {
-                if let Some(doc) = self.docs.iter_mut().find(|d| d.id == s.doc) {
+        let abandoned = self.eng.pool.abandoned_workers();
+        for s in stuck {
+            let message = s.log_line(abandoned);
+            match self.cx_of(s.doc) {
+                Some(mut cx) => {
+                    cx.log(LogLevel::Error, message);
                     let mut out = Vec::new();
-                    doc.media.give_up(&s.key, s.ticket, &mut out);
-                    doc.pending_media.extend(out);
+                    cx.doc.media.give_up(&s.key, s.ticket, &mut out);
+                    cx.doc.pending_media.extend(out);
                 }
+                // Its doc has closed.
+                None => self.eng.log(LogLevel::Error, message),
             }
         }
         for (volume, stalled) in self.eng.pool.take_volume_events() {

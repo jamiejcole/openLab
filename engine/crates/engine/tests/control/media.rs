@@ -9,7 +9,7 @@
 
 use crate::show::*;
 use openlab_core::protocol::{
-    ClientMessage, ErrorCode, Outcome, Request, ResultData, WaveformData,
+    ClientMessage, ErrorCode, LogLevel, Outcome, Request, ResultData, WaveformData,
 };
 use openlab_core::protocol::{
     RuntimeChange, ServerMessage, TransportAction, WireBrokenReason, WireCueState, WireProblem,
@@ -769,6 +769,84 @@ fn a_stuck_probe_worker_is_replaced() {
         s.control().engine().state(id(1)) != CueState::Broken
             && s.control().engine().state(id(2)) != CueState::Broken
     });
+}
+
+/// A stream of a ready file fails and its re-probe hangs: the error log names the file, its cues
+/// stay available, another cue plays on, and the next stream failure asks again.
+#[test]
+fn a_stuck_reprobe_of_a_ready_file_is_logged_and_changes_no_cue() {
+    let path = wav(&dc(2000, 0.5));
+    let other = wav(&dc(40_000, 0.5));
+    let ws = workspace(vec![
+        audio(1, &other, 0),
+        audio(2, &path, 1),
+        audio(3, &path, 1),
+    ]);
+    let time = ProbeTime::new();
+    let mut c = config(&ws);
+    c.probe = gated_probe;
+    c.probe_clock = time.clock();
+    // No prime, so the streams are opened at the GOs, after the file changed.
+    c.prime_cues = 0;
+    let timeout = c.probe_timeout;
+    let mut s = OfflineShow::new(ws, mixer_config(), c).unwrap();
+    s.settle_media();
+    let paths = [path.clone()];
+    wait_probed(&paths, 1);
+
+    // The disk worker refuses the changed file, and the read of the re-probe never returns.
+    gate(&path);
+    std::fs::write(&path, std::fs::read(wav(&dc(1500, 0.5))).unwrap()).unwrap();
+    go(&mut s);
+    go(&mut s);
+    // Ticks with nothing rendered: the stream's failure is seen by the tick's poll, which asks
+    // for the re-probe, and not by the voice's end, which does not.
+    spin::spin_until("the stream to fail", || {
+        s.tick();
+        s.control().probes_pending() == 1
+    });
+    assert_eq!(s.control().engine().state(id(2)), CueState::Broken);
+    wait_probed(&paths, 2);
+    s.take_outbound();
+
+    time.advance(timeout + std::time::Duration::from_secs(1));
+    s.tick();
+    assert_eq!(s.control().abandoned_probe_workers(), 1);
+    assert_eq!(s.control().probes_pending(), 0);
+    let msgs = s.take_outbound();
+    let name = path.file_name().unwrap().to_str().unwrap();
+    assert!(
+        msgs.iter().any(|m| matches!(
+            m,
+            ServerMessage::Log { level: LogLevel::Error, message }
+                if message.contains("media probe of") && message.contains(name)
+        )),
+        "{msgs:?}"
+    );
+    // A tick later the give-up would be in `Availability`, if it had made one.
+    s.run(BLOCK * 2);
+    let msgs = [msgs, s.take_outbound()].concat();
+    assert!(
+        !changes(&msgs)
+            .iter()
+            .any(|c| matches!(c, RuntimeChange::Problems { .. })),
+        "{msgs:?}"
+    );
+    assert!(s.control().engine().problems(id(3)).is_empty());
+    assert_eq!(s.control().engine().state(id(3)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+
+    // The next cue on the file fails the same way, as its probe still stands: a new job goes out.
+    go(&mut s);
+    spin::spin_until("the next stream to fail", || {
+        s.tick();
+        s.control().probes_pending() == 1
+    });
+    assert_eq!(s.control().engine().state(id(3)), CueState::Broken);
+    wait_probed(&paths, 3);
+    release(&path);
+    s.settle_media();
+    assert_eq!(s.control().probes_pending(), 0);
 }
 
 /// A volume that never answers (the path's mount prefix is what the catalog goes by) with more
