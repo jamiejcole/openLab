@@ -640,8 +640,8 @@ final class AppControllerTests: XCTestCase {
 
     func testStopAllKeyFromTheShowsHotkeysDispatches() async throws {
         keyDoc = "1"
-        try await setHotkeys("1", #"{"stop_all":\#(Self.hotkey("s"))}"#)
-        XCTAssertNil(app.handleKeyDown(try keyEvent("s")))
+        try await setHotkeys("1", #"{"stop_all":\#(Self.hotkey("j"))}"#)
+        XCTAssertNil(app.handleKeyDown(try keyEvent("j")))
         await assertEventually { !transports(.stopAll).isEmpty }
         XCTAssertEqual(transports(.stopAll), ["1"])
     }
