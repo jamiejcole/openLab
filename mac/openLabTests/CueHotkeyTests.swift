@@ -642,7 +642,9 @@ final class CueHotkeyFiringTests: XCTestCase {
             await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == KeyChord(key) } == true }
             _ = app.frontKeys
             XCTAssertEqual(app.frontKeys.chord(for: key == "v" ? .previewSelected : .panicSelected), KeyChord(key))
-            await assertEventually { self.first.logEntries.filter { $0.message.contains("transport key") }.count == n + 1 }
+            await assertEventually {
+                self.first.logEntries.filter { $0.message.contains("transport key") }.count == n + 1
+            }
             _ = app.frontKeys
             XCTAssertEqual(first.logEntries.filter { $0.message.contains("transport key") }.count, n + 1, "once each")
         }
