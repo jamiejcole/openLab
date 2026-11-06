@@ -247,11 +247,11 @@ final class CueListTests: XCTestCase {
         let h = try await H()
         XCTAssertEqual(h.cell("number", H.intro)?.label.stringValue, "1")
         XCTAssertEqual(h.cell("name", H.intro)?.label.stringValue, "Intro")
-        XCTAssertEqual(h.cell("target", H.intro)?.label.stringValue, "a.wav")
+        XCTAssertEqual(h.cell("target", H.intro)?.label.stringValue, "")
         // The fade cue has no name and no number: its default name follows the cue it fades, and it points at cue 1.
         XCTAssertEqual(h.cell("name", H.fade)?.label.stringValue, "Fade and stop Intro")
         XCTAssertEqual(h.cell("duration", H.fade)?.label.stringValue, "00:05.00")
-        XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "1 Intro")
+        XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "1")
         // Zero waits show as a dimmed 00:00.00, a non-zero one in the normal colour.
         XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:00.00")
         XCTAssertEqual(h.cell("preWait", H.intro)?.label.textColor, .secondaryLabelColor)
@@ -468,16 +468,16 @@ final class CueListTests: XCTestCase {
     func testRenameRefreshesTheTargetCellOfCuesThatPointAtIt() async throws {
         let h = try await H()
         let target = TestSnapshots.cueJSON(
-            id: H.intro.raw, number: "1", name: "Overture", kind: TestSnapshots.audioKind("media/a.wav"))
+            id: H.intro.raw, number: nil, name: "Overture", kind: TestSnapshots.audioKind("media/a.wav"))
         var fade = TestSnapshots.cueJSON(
             id: H.fade.raw, number: nil, name: "",
             kind: .object(["type": .string("fade"), "target": .string(H.intro.raw), "duration": .double(5)]))
         fade.set("armed", .bool(true))
         try h.change(upserts: [try H.upsertJSON(fade, index: 1)])
-        XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "1 Intro")
+        XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "1")
         h.spy.resetCounts()
         try h.change(upserts: [try H.upsertJSON(target, index: 0)])
-        XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "1 Overture")
+        XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "Overture")
         let fadeRow = h.spy.row(forItem: h.vc.node(H.fade))
         XCTAssertTrue(h.spy.rowReloads.contains { $0.rows.contains(fadeRow) })
     }
@@ -1107,7 +1107,7 @@ final class CueListTests: XCTestCase {
             id: H.fade.raw, number: nil, name: "",
             kind: .object(["type": .string("fade"), "target": .string(H.rain.raw), "duration": .double(5)]))
         try h.change(upserts: [try H.upsertJSON(fade, index: 1)])
-        XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "2.2 Rain")
+        XCTAssertEqual(h.cell("target", H.fade)?.label.stringValue, "2.2")
         let kids = ["Door slam", "Storm", "Radio"].enumerated().map { i, n in
             h.cue([H.door, H.rain, H.radio][i].raw, n)
         }
@@ -4046,28 +4046,37 @@ final class CueListDrawingTests: XCTestCase {
     /// The rendered pixels (0...1 RGB) of one cell of a row, as drawn inside the row (selection and
     /// alternating background included).
     private func pixels(_ h: H, _ column: String, _ id: ModelID) throws -> Pixels {
-        let row = h.spy.row(forItem: h.vc.node(id))
-        let col = h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
+        try pixels(h.spy, column, item: h.vc.node(id))
+    }
+
+    private func pixels(_ outline: NSOutlineView, _ column: String, item: Any?) throws -> Pixels {
+        let row = outline.row(forItem: item)
+        let col = outline.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
         XCTAssertGreaterThanOrEqual(row, 0)
-        let rowView = try XCTUnwrap(h.spy.rowView(atRow: row, makeIfNecessary: true))
+        let rowView = try XCTUnwrap(outline.rowView(atRow: row, makeIfNecessary: true))
         rowView.layoutSubtreeIfNeeded()
-        let cell = h.spy.frameOfCell(atColumn: col, row: row)
-        let rowFrame = h.spy.rect(ofRow: row)
+        let cell = outline.frameOfCell(atColumn: col, row: row)
+        let rowFrame = outline.rect(ofRow: row)
         let region = NSRect(x: cell.minX - rowFrame.minX, y: 0, width: cell.width, height: rowFrame.height)
         rowView.layoutSubtreeIfNeeded()
         let scale = max(1, rowView.window?.backingScaleFactor ?? 2)
+        return Pixels(rep: try render(rowView, scale: scale), region: region, scale: scale)
+    }
+
+    /// `view` drawn into a bitmap on the window's light background.
+    private func render(_ view: NSView, scale: CGFloat) throws -> NSBitmapImageRep {
         let rep = try XCTUnwrap(
             NSBitmapImageRep(
-                bitmapDataPlanes: nil, pixelsWide: Int(rowView.bounds.width * scale),
-                pixelsHigh: Int(rowView.bounds.height * scale), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width * scale),
+                pixelsHigh: Int(view.bounds.height * scale), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                 isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
         let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
         context.cgContext.setFillColor(NSColor.white.cgColor)  // the window's light background under a clear row
         context.cgContext.fill(CGRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh))
         context.cgContext.scaleBy(x: scale, y: scale)
         // Draws the view tree straight into the bitmap (cacheDisplay skips layer-backed subviews).
-        rowView.displayIgnoringOpacity(rowView.bounds, in: context)
-        return Pixels(rep: rep, region: region, scale: scale)
+        view.displayIgnoringOpacity(view.bounds, in: context)
+        return rep
     }
 
     struct Pixels {
@@ -4193,6 +4202,239 @@ final class CueListDrawingTests: XCTestCase {
         let col = { h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier($0)) }
         XCTAssertEqual(col("type"), col("status") + 1)
         XCTAssertEqual(col("number"), col("type") + 1)
+    }
+
+    /// The cell's middle 18 points, where its button is.
+    private func middle(_ p: Pixels) -> Pixels {
+        let region = NSRect(x: p.region.midX - 9, y: 0, width: 18, height: p.region.height)
+        return Pixels(rep: p.rep, region: region, scale: p.scale)
+    }
+
+    private func drawnMask(_ p: Pixels) -> [Bool] { p.all.map { Self.drawn($0.r, $0.g, $0.b) } }
+
+    /// `view` of `wc` in a window of its own, so a click can be hit-tested through the window and it draws.
+    @discardableResult
+    private func show(_ view: NSView) -> NSWindow {
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 400), styleMask: [.titled, .resizable],
+            backing: .buffered, defer: false)
+        w.isReleasedWhenClosed = false
+        w.appearance = NSAppearance(named: .aqua)  // the pixel checks assume dark icons on a light row
+        w.contentView = view
+        w.makeKeyAndOrderFront(nil)
+        w.layoutIfNeeded()
+        window = w
+        return w
+    }
+
+    /// A click on `button`: the middle of it must reach it through the window's hit test, then it is
+    /// pressed. A synthetic press through `window.sendEvent` is not used: when the app is not active (CI),
+    /// the press only brings the window forward and the button never fires.
+    private func click(_ button: NSButton) throws {
+        let window = try XCTUnwrap(button.window)
+        let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+        XCTAssertTrue(window.contentView?.hitTest(point) === button, "the click would land elsewhere")
+        XCTAssertTrue(button.isEnabled)
+        button.performClick(nil)
+    }
+
+    private static let drawn: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in r + g + b < 2.2 }
+
+    /// The Demo show plus an Audio cue with no file, added through the store.
+    private func targetRig() async throws -> (Rig, ModelID) {
+        let rig = try await Rig.open()
+        return (rig, try await add(.audio, rig))
+    }
+
+    /// Adds a new cue of `kind`, as the toolbar makes it with nothing selected, through the store.
+    private func add(_ kind: NewCueKind, _ rig: Rig) async throws -> ModelID {
+        let id = ModelID(UUID().uuidString.lowercased())
+        let model = rig.store.model
+        let cue = try XCTUnwrap(
+            kind.cueJSON(id: id, patch: model?.patches.first, networkPatch: model?.networkPatches.first))
+        let added = await rig.store.send(command: .addCue(cue, list: TestSnapshots.mainList, parent: nil, index: 0))
+        guard case .success = added else { throw TestEngineError.notConnected }
+        return id
+    }
+
+    /// The Target cell of `id` in a window controller's cue list.
+    private func targetCell(_ wc: WorkspaceWindowController, _ id: ModelID) -> CueCell? {
+        let o = wc.cueList.outlineView
+        let col = o.column(withIdentifier: NSUserInterfaceItemIdentifier("target"))
+        return o.view(atColumn: col, row: o.row(forItem: wc.cueList.node(id)), makeIfNecessary: true) as? CueCell
+    }
+
+    private func cellPixels(_ wc: WorkspaceWindowController, _ id: ModelID) throws -> Pixels {
+        try pixels(wc.cueList.outlineView, "target", item: wc.cueList.node(id))
+    }
+
+    /// `button` as drawn, and a new button of the same shape beside it (so in the same window state)
+    /// showing `icon`, as drawn.
+    private func drawnGlyphs(_ button: NSButton, _ icon: Icon, label: String) throws -> (shown: Pixels, icon: Pixels) {
+        let reference = NSButton(title: button.title, target: nil, action: nil)
+        reference.frame = button.frame
+        button.superview?.addSubview(reference)
+        defer { reference.removeFromSuperview() }
+        reference.isBordered = button.isBordered
+        reference.bezelStyle = button.bezelStyle
+        reference.imagePosition = button.imagePosition
+        reference.imageScaling = button.imageScaling
+        reference.image = icon.image(label, compact: true)
+        let scale = max(1, button.window?.backingScaleFactor ?? 2)
+        func drawn(_ view: NSButton) throws -> Pixels {
+            Pixels(rep: try render(view, scale: scale), region: view.bounds, scale: scale)
+        }
+        return (try drawn(button), try drawn(reference))
+    }
+
+    func testTargetColumnForAFileCue() async throws {
+        let (rig, empty) = try await targetRig()
+        let memo = try await add(.memo, rig)
+        let h = try await harness(rig)
+        await assertEventually { h.vc.node(empty) != nil && h.vc.node(memo) != nil }
+        let file = try XCTUnwrap(h.cell("target", H.intro))
+        let none = try XCTUnwrap(h.cell("target", empty))
+        for cell in [file, none] {
+            XCTAssertFalse(cell.chooseButton.isHidden)
+            XCTAssertEqual(cell.chooseButton.accessibilityLabel(), loc("inspector.target.choose"))
+            XCTAssertEqual(cell.label.stringValue, "", "no file name")
+            XCTAssertTrue(cell.images[0].isHidden)
+        }
+        // The same glyph is drawn with and without a file, and nothing else.
+        let f = try pixels(h, "target", H.intro)
+        XCTAssertGreaterThan(middle(f).count(Self.drawn), 8, "the glyph is drawn")
+        XCTAssertGreaterThan(try pixels(h, "target", empty).count(Self.drawn), 8, "with no file too")
+        // The same row without its file: a row's background shifts the glyph's edge pixels.
+        _ = await rig.store.send(command: .setProperty(H.intro, .media(nil)))
+        await assertEventually { (h.store.model?.cue(H.intro)?.raw["kind"]?["media"]?.stringValue ?? "").isEmpty }
+        XCTAssertEqual(drawnMask(f), drawnMask(try pixels(h, "target", H.intro)), "the same glyph")
+        XCTAssertEqual(f.count(Self.drawn), middle(f).count(Self.drawn), "centred, and all the cell holds")
+        XCTAssertEqual(f.region.width, 60, accuracy: 1, "the column's default width")
+        XCTAssertNotEqual(Icon.targetFile.symbol, Icon.fieldChoose.symbol)
+        // Cues that take no target: nothing.
+        for id in [H.group, memo] {
+            let cell = try XCTUnwrap(h.cell("target", id))
+            XCTAssertTrue(cell.chooseButton.isHidden)
+            XCTAssertTrue(cell.images[0].isHidden)
+            XCTAssertEqual(cell.label.stringValue, "")
+            XCTAssertEqual(try pixels(h, "target", id).count(Self.drawn), 0)
+        }
+    }
+
+    func testTargetColumnForACueTargetingCue() async throws {
+        let rig = try await Rig.open()
+        let stop = try await add(.stop, rig)
+        let h = try await harness(rig)
+        await assertEventually { h.vc.node(stop) != nil }
+        func assertShows(_ id: ModelID, _ text: String, line: UInt = #line) throws {
+            let cell = try XCTUnwrap(h.cell("target", id), line: line)
+            XCTAssertEqual(cell.label.stringValue, text, line: line)
+            XCTAssertFalse(cell.label.isHidden, line: line)
+            XCTAssertTrue(cell.images[0].isHidden, "no marker", line: line)
+            XCTAssertTrue(cell.chooseButton.isHidden, "no button", line: line)
+            XCTAssertGreaterThan(try pixels(h, "target", id).count(Self.drawn), 8, "drawn", line: line)
+        }
+        try assertShows(H.fade, "1")
+        XCTAssertEqual(h.cell("target", H.fade)?.label.alignment, .center)
+        XCTAssertEqual(h.cell("target", H.fade)?.label.textColor, .labelColor)
+        // No target: a question mark, in the colour QLab draws it.
+        try assertShows(stop, "?")
+        XCTAssertEqual(h.cell("target", stop)?.label.textColor, .systemYellow)
+        // A target with no number: its name.
+        _ = await rig.store.send(command: .setProperty(stop, .target(H.fade)))
+        await assertEventually { h.cell("target", stop)?.label.stringValue == "Fade and stop Intro" }
+        try assertShows(stop, "Fade and stop Intro")
+        XCTAssertEqual(h.cell("target", stop)?.label.textColor, .labelColor)
+        // Show Mode changes nothing here.
+        h.vc.isEditLocked = true
+        try assertShows(H.fade, "1")
+    }
+
+    func testTargetCellButtonChoosesAFile() async throws {
+        let (rig, empty) = try await targetRig()
+        let wc = WorkspaceWindowController(store: rig.store)
+        let wav = try tempFiles(["chosen.wav"])[0]
+        var picked: URL?
+        var asked = 0
+        wc.pickAudioFile = {
+            asked += 1
+            return picked
+        }
+        show(wc.cueList.view)
+        await assertEventually { self.targetCell(wc, empty)?.chooseButton.isHidden == false }
+        let fileMedia = rig.store.model?.cue(H.intro)?.raw["kind"]?["media"]?.stringValue
+        let doorMedia = rig.store.model?.cue(H.door)?.raw["kind"]?["media"]?.stringValue
+        let emptyCell = try XCTUnwrap(targetCell(wc, empty))
+        XCTAssertEqual(emptyCell.chooseButton.toolTip, loc("inspector.target.choose"))
+        wc.cueList.selectAsUser([H.fade])
+        // Cancelling changes nothing.
+        try click(emptyCell.chooseButton)
+        XCTAssertEqual(asked, 1)
+        XCTAssertEqual(rig.store.model?.cue(empty)?.raw["kind"]?["media"]?.stringValue ?? "", "")
+        // No file yet: the picked file is set, and the cell still draws only its button.
+        picked = wav
+        try click(emptyCell.chooseButton)
+        await assertEventually {
+            rig.store.model?.cue(empty)?.raw["kind"]?["media"]?.stringValue == wav.standardizedFileURL.path
+        }
+        XCTAssertEqual(asked, 2)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [H.fade], "the click leaves the selection")
+        XCTAssertEqual(targetCell(wc, empty)?.label.stringValue, "", "no file name")
+        let picks = try cellPixels(wc, empty)
+        XCTAssertGreaterThan(picks.count(Self.drawn), 8, "the button is drawn")
+        XCTAssertEqual(picks.count(Self.drawn), middle(picks).count(Self.drawn), "and nothing else")
+        // A cue already holding a file: cancelled, then replaced; only that cue changes.
+        let fileCell = try XCTUnwrap(targetCell(wc, H.intro))
+        picked = nil
+        try click(fileCell.chooseButton)
+        XCTAssertEqual(asked, 3)
+        XCTAssertEqual(rig.store.model?.cue(H.intro)?.raw["kind"]?["media"]?.stringValue, fileMedia)
+        picked = wav
+        try click(fileCell.chooseButton)
+        await assertEventually {
+            rig.store.model?.cue(H.intro)?.raw["kind"]?["media"]?.stringValue == wav.standardizedFileURL.path
+        }
+        XCTAssertEqual(asked, 4)
+        XCTAssertEqual(rig.store.model?.cue(H.door)?.raw["kind"]?["media"]?.stringValue, doorMedia)
+        // Show Mode: the button is gone, the cell is empty, and a click already on its way asks nothing.
+        let onChoose = try XCTUnwrap(targetCell(wc, H.door)?.onChoose)
+        wc.setShowMode(true)
+        await assertEventually {
+            [empty, H.intro, H.door].allSatisfy { self.targetCell(wc, $0)?.chooseButton.isHidden == true }
+        }
+        XCTAssertEqual(targetCell(wc, H.intro)?.label.stringValue, "")
+        for id in [empty, H.intro, H.door] {
+            XCTAssertEqual(try cellPixels(wc, id).count(Self.drawn), 0, "nothing drawn in Show Mode")
+        }
+        onChoose()
+        XCTAssertEqual(asked, 4)
+    }
+
+    func testInspectorTargetFieldGlyphs() async throws {
+        let (rig, empty) = try await targetRig()
+        let wc = WorkspaceWindowController(store: rig.store)
+        wc.cueList.view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
+        show(wc.inspector.view)
+        wc.cueList.selectAsUser([empty])
+        await assertEventually { wc.inspector.cueForEdit?.id == empty }
+        XCTAssertTrue(wc.inspector.clearTargetButton.isHidden, "no target: no clear glyph")
+        XCTAssertNotNil(wc.inspector.chooseButton.image)
+        wc.cueList.selectAsUser([H.door])
+        await assertEventually { wc.inspector.cueForEdit?.id == H.door }
+        let clear = wc.inspector.clearTargetButton
+        XCTAssertFalse(clear.isHidden)
+        XCTAssertEqual(clear.image?.accessibilityDescription, loc("inspector.target.clear"))
+        let drawnClear = try drawnGlyphs(clear, .fieldClear, label: loc("inspector.target.clear"))
+        XCTAssertGreaterThan(drawnClear.shown.count(Self.drawn), 8, "the clear glyph is drawn")
+        XCTAssertEqual(drawnMask(drawnClear.shown), drawnMask(drawnClear.icon), "from the icon table")
+        let choose = try drawnGlyphs(wc.inspector.chooseButton, .fieldChoose, label: loc("inspector.target.choose"))
+        XCTAssertGreaterThan(choose.shown.count(Self.drawn), 8, "the choose glyph is drawn")
+        XCTAssertEqual(drawnMask(choose.shown), drawnMask(choose.icon), "from the icon table")
+        clear.performClick(nil)
+        await assertEventually { (rig.store.model?.cue(H.door)?.raw["kind"]?["media"]?.stringValue ?? "").isEmpty }
+        await assertEventually { wc.inspector.targetField.stringValue == "" }
+        XCTAssertEqual(targetCell(wc, H.door)?.label.stringValue, "", "the list cell holds no file")
+        await assertEventually { wc.inspector.clearTargetButton.isHidden }
     }
 
     func testGroupModeChangesTheTypeIcon() async throws {
