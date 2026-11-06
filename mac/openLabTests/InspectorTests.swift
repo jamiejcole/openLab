@@ -707,73 +707,6 @@ final class NetworkMessageTests: XCTestCase {
     }
 }
 
-/// A UDP socket the test owns on the loopback interface: a Network patch's destination, so what the
-/// engine really sends is what the test reads.
-private final class UDPListener {
-    let fd: Int32
-    let port: UInt16
-
-    init() throws {
-        let fd = socket(AF_INET, SOCK_DGRAM, 0)
-        guard fd >= 0 else { throw TestEngineError.refused("socket") }
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-        addr.sin_port = 0
-        let bound = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let named = withUnsafeMutablePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) }
-        }
-        guard bound == 0, named == 0, fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else {
-            close(fd)
-            throw TestEngineError.refused("bind")
-        }
-        self.fd = fd
-        port = UInt16(bigEndian: addr.sin_port)
-    }
-
-    deinit { close(fd) }
-
-    /// The next OSC message that has arrived, as "address arg arg" with typed arguments (`i:5`,
-    /// `f:10.5`, `s:text`, `T`, `F`); nil when none has.
-    func receive() -> String? {
-        var buffer = [UInt8](repeating: 0, count: 65536)
-        let n = recv(fd, &buffer, buffer.count, 0)
-        guard n > 0 else { return nil }
-        let bytes = Array(buffer.prefix(n))
-        var at = 0
-        func string() -> String {
-            let start = at
-            while at < bytes.count, bytes[at] != 0 { at += 1 }
-            let text = String(decoding: bytes[start..<min(at, bytes.count)], as: UTF8.self)
-            at = (at / 4 + 1) * 4
-            return text
-        }
-        func word() -> UInt32 {
-            defer { at += 4 }
-            guard at + 4 <= bytes.count else { return 0 }
-            return bytes[at..<at + 4].reduce(0) { $0 << 8 | UInt32($1) }
-        }
-        var parts = [string()]
-        for tag in string().dropFirst() {
-            switch tag {
-            case "i": parts.append("i:\(Int32(bitPattern: word()))")
-            case "f": parts.append("f:\(Float(bitPattern: word()))")
-            case "s": parts.append("s:\(string())")
-            case "T": parts.append("T")
-            case "F": parts.append("F")
-            default: parts.append("?\(tag)")
-            }
-        }
-        return parts.joined(separator: " ")
-    }
-}
-
 /// The Network cue's Settings tab (CT-30; QLab 5, manual pp. 366-367, 371-372) on the real engine: the
 /// operator picks a patch, types the message with real key events, clicks Send, and a socket the test
 /// owns reads what really goes out. Each test is one flow of the issue's checklist.
@@ -897,7 +830,7 @@ final class NetworkInspectorTests: XCTestCase {
         var got: String?
         _ = await eventually {
             try? await self.engine.advance(seconds: 0.1)
-            got = got ?? listener.receive()
+            got = got ?? listener.receiveMessage()
             return got != nil
         }
         return got
@@ -907,7 +840,7 @@ final class NetworkInspectorTests: XCTestCase {
     private func quiet() async throws -> Bool {
         for _ in 0..<5 { try await engine.advance(seconds: 0.1) }
         await settle()
-        return one.receive() == nil && two.receive() == nil
+        return one.receiveMessage() == nil && two.receiveMessage() == nil
     }
 
     // MARK: What the window shows
@@ -982,7 +915,7 @@ final class NetworkInspectorTests: XCTestCase {
         try go()
         let got = await received(two)
         XCTAssertEqual(got, "/lights/go i:5")
-        XCTAssertNil(one.receive(), "nothing went to Network 1")
+        XCTAssertNil(one.receiveMessage(), "nothing went to Network 1")
         // Undo puts Network 1 back.
         await wc.editor.undo()
         await assertEventually { self.kind?["destination"]?.stringValue == self.patch1.raw }

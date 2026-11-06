@@ -665,7 +665,7 @@ fn refuse(issues: Vec<ValidationIssue>) -> Result<(), CommandError> {
 ///   exists in `workspace` and cleared if not.
 /// - Numbers already used in `workspace` (or earlier in the copy) are cleared.
 /// - An Audio cue's patch or a Network cue's destination missing from `workspace` becomes the
-///   workspace's first one, if it has any.
+///   workspace's first one, if it has any. A Network cue with no patch (the nil id) keeps none.
 ///
 /// Fails only if the clipboard is nested deeper than [`MAX_GROUP_DEPTH`].
 pub fn prepare_paste(
@@ -719,7 +719,11 @@ pub fn prepare_paste(
                     *patch = first;
                 }
             }
-            CueKind::Network { destination, .. } if !network_patches.contains(destination) => {
+            // The nil id is the inspector's deliberate "no patch": it stays, so the copy is as
+            // broken (and as visibly so) as the original, not silently aimed at another device.
+            CueKind::Network { destination, .. }
+                if !destination.0.is_nil() && !network_patches.contains(destination) =>
+            {
                 if let Some(first) = first_network {
                     *destination = first;
                 }
