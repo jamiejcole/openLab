@@ -211,4 +211,31 @@ extension CueListViewController: NSMenuDelegate {
     var canRevealSelectedTarget: Bool {
         selectedIDs().last.flatMap { node($0) }.flatMap { revealURL($0) } != nil
     }
+
+    /// The selected cues' cue targets, in row order, that are in this list.
+    var selectedTargets: [ModelID] {
+        selectedIDs().compactMap { node($0)?.targetID }.filter { node($0) != nil }
+    }
+
+    /// Whether Jump to Targets has a cue target to go to (an Audio cue's file is not one).
+    var canJumpToTargets: Bool { !selectedTargets.isEmpty }
+
+    /// Tools > Jump to Targets of Selected Cues: the targets become the selection, opening any
+    /// collapsed group above them and scrolling the first into view. The playhead stays.
+    func jumpToTargets() {
+        let targets = selectedTargets
+        guard let first = targets.first else { return }
+        for id in targets {
+            var parent = node(id)?.parent
+            while let group = parent {
+                outlineView.expandItem(group)
+                parent = group.parent
+            }
+        }
+        select(targets)
+        if let n = node(first) {
+            let row = outlineView.row(forItem: n)
+            if row >= 0 { outlineView.scrollRowToVisible(row) }
+        }
+    }
 }

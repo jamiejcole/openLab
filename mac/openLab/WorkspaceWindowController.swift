@@ -564,6 +564,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         sidebar.showTab(2)
     }
 
+    /// Tools > Jump to Targets of Selected Cues (Show Mode allowed: it only moves the selection).
+    func jumpToTargets() { cueList.jumpToTargets() }
+
     private func syncSidebarList() {
         sidebar.syncSelection()
     }

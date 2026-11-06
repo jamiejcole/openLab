@@ -2851,6 +2851,72 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(wc.isVisible(.inspector))
     }
 
+    // MARK: View > Warnings and Tools > Jump to Targets
+
+    private func menuItem(_ action: Selector) throws -> NSMenuItem {
+        try XCTUnwrap(
+            MainMenu.make().bar.items.compactMap(\.submenu).flatMap(\.items).first { $0.action == action },
+            NSStringFromSelector(action))
+    }
+
+    /// The sidebar is hidden on Cue Lists: Cmd-B shows it on the Warnings tab with the broken cue
+    /// listed, and it works in Show Mode too.
+    func testWarningsFromTheViewMenu() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        let item = try menuItem(#selector(AppDelegate.showWarnings(_:)))
+        XCTAssertEqual(item.keyEquivalent, "b")
+        XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
+        for showMode in [false, true] {
+            wc.setShowMode(showMode)
+            wc.setVisible(.sidebar, false)
+            wc.sidebar.showTab(0)
+            XCTAssertTrue(delegate.validateMenuItem(item))
+            delegate.showWarnings(item)
+            XCTAssertTrue(wc.isVisible(.sidebar))
+            XCTAssertEqual(wc.sidebar.tabs.selectedSegment, 2)
+            XCTAssertFalse(wc.sidebar.warningsTable.isHiddenOrHasHiddenAncestor)
+            await assertEventually { !wc.sidebar.warningRows.isEmpty }
+        }
+        keyDoc = nil
+        XCTAssertFalse(delegate.validateMenuItem(item), "no workspace in front")
+    }
+
+    /// A Fade cue targets the Intro cue: with the Fade selected, the item moves the selection to
+    /// Intro and shows it. An Audio cue has no cue target (its file is not one): the item is off.
+    /// Show Mode allows it.
+    func testJumpToTargets() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let wc = try XCTUnwrap(app.windows["1"])
+        wc.window?.setContentSize(NSSize(width: 800, height: 600))
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        let item = try menuItem(#selector(AppDelegate.jumpToTargets(_:)))
+        XCTAssertEqual(item.keyEquivalent, "j")
+        XCTAssertEqual(item.keyEquivalentModifierMask, [.command, .option])
+        let list = wc.cueList
+        list.selectAsUser([TestSnapshots.door])
+        XCTAssertFalse(delegate.validateMenuItem(item), "an audio cue's file is not a cue target")
+        list.selectAsUser([fade])
+        XCTAssertTrue(delegate.validateMenuItem(item))
+        for showMode in [false, true] {
+            wc.setShowMode(showMode)
+            list.selectAsUser([fade])
+            delegate.jumpToTargets(item)
+            XCTAssertEqual(list.selectedIDs(), [intro])
+            let row = list.outlineView.row(forItem: list.node(intro))
+            XCTAssertTrue(list.outlineView.rows(in: list.outlineView.visibleRect).contains(row))
+        }
+        // Several selected: every target is selected, cues without one add nothing.
+        list.selectAsUser([fade, TestSnapshots.door])
+        XCTAssertTrue(delegate.validateMenuItem(item))
+        delegate.jumpToTargets(item)
+        XCTAssertEqual(list.selectedIDs(), [intro])
+    }
+
     func testMastheadIsLargerAndHighContrastInShowModeAndFollowsTheWindowSize() async throws {
         let wc = try XCTUnwrap(app.windows["1"])
         let edit = wc.masthead.metrics
