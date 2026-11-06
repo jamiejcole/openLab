@@ -14,6 +14,10 @@ struct ModelID: Hashable, Sendable, Codable, ExpressibleByStringLiteral, CustomS
         try c.encode(raw)
     }
     var description: String { raw }
+
+    /// The id a Network cue's destination holds when the inspector's "no patch" is chosen. No patch
+    /// has it, so the engine shows the cue broken (`network_patch_missing`) and it never sends.
+    static let unpatched = ModelID("00000000-0000-0000-0000-000000000000")
 }
 
 /// A model object the UI only needs the id of for now (patches, network patches).
