@@ -75,7 +75,7 @@ fn a_reprobe_keeps_the_last_answer_until_the_new_one() {
 // ----- following edits from their footprints (M4.12a) and preload changes (M4.12b) -----
 
 use openlab_core::{Command, CueProperty, GroupMode, History, Position, load_show};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A mono 32-bit float WAV of 100 frames (400 bytes preloaded).
 fn write_wav(dir: &Path, name: &str) -> String {
@@ -120,22 +120,42 @@ fn catalog(budget: u64) -> (MediaCatalog, Receiver<Inbox>) {
     (cat, rx)
 }
 
-/// Hands the catalog the answers of every job it has sent, in a fixed order (the two
-/// workers answer in any order, and the budget goes to whoever is answered first), until
-/// nothing is in flight: answers can start preloads.
+/// The tickets of the answers the catalog still owes itself: each running probe's and each
+/// preload job's not answered yet (what `pending` and `preloads_pending` count). A job a
+/// worker dropped for its newer copy is not among them: only the newest ticket of a key is.
+fn owed_tickets(cat: &MediaCatalog) -> BTreeSet<u64> {
+    let mut owed = BTreeSet::new();
+    for e in cat.entries.values() {
+        if e.asking && !e.timed_out {
+            owed.insert(e.ticket);
+        }
+        if e.preload_ticket != 0 && e.preloaded.is_none() && !e.preload_failed {
+            owed.insert(e.preload_ticket);
+        }
+    }
+    owed
+}
+
+/// Hands the catalog the answers it is owed, in a fixed order (the two workers answer in any
+/// order, and the budget goes to whoever is answered first), until nothing is in flight:
+/// answers can start preloads. A round is gathered until every owed ticket is in hand, so the
+/// order does not depend on which answers came early; a stale answer met on the way joins the
+/// round and is ignored.
 fn settle(cat: &mut MediaCatalog, rx: &Receiver<Inbox>) {
-    // Wait for what the catalog still owes itself, not for a count of jobs sent: a worker
-    // drops a job whose newer copy it took first (the gate's claim), so the older one never
-    // answers and the newer one's answer is the one that counts.
-    while cat.pending() > 0 || cat.preloads_pending() > 0 {
-        let what = format!(
-            "{} probes and {} preloads",
-            cat.pending(),
-            cat.preloads_pending()
-        );
-        let mut round = vec![wait_for(rx, &what)];
-        // Whatever else has come meanwhile joins the round (stale answers are ignored).
-        while let Ok(Inbox::Probe(_, a)) = rx.try_recv() {
+    loop {
+        let mut owed = owed_tickets(cat);
+        if owed.is_empty() {
+            return;
+        }
+        let what = format!("tickets {owed:?}");
+        let mut round = Vec::new();
+        while !owed.is_empty() {
+            let a = wait_for(rx, &what);
+            owed.remove(match &a {
+                ProbeAnswer::Probed { ticket, .. } | ProbeAnswer::Preloaded { ticket, .. } => {
+                    ticket
+                }
+            });
             round.push(a);
         }
         round.sort_by_key(|a| match a {
@@ -889,7 +909,10 @@ fn a_preload_answer_that_arrives_after_its_release_is_ignored() {
     ws.apply(command).unwrap();
     cat.sync_cues(&ws, &footprint);
     assert_eq!(cat.preload_reserved(), 0);
-    settle(&mut cat, &rx);
+    assert_eq!(cat.preloads_pending(), 0);
+    let late = answer(&rx);
+    assert!(matches!(late, ProbeAnswer::Preloaded { .. }));
+    assert_eq!(cat.answer(late), None);
     assert!(
         matches!(cat.media(&file), Some((_, Media::Path(_)))),
         "the late answer did not bring the samples back"
