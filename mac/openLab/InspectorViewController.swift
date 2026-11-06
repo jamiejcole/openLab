@@ -658,7 +658,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     func updatePreviewButton(connected: Bool? = nil) {
         let active = cue.map { store.previewing.contains($0.id) } ?? false
         previewButton.title = loc(active ? "inspector.stopPreview" : "inspector.preview")
-        previewButton.isEnabled = ["audio", "group"].contains(cue?.kindType) && (connected ?? (store.connectionState == .connected))
+        let previewable = ["audio", "group"].contains(cue?.kindType)
+        previewButton.isEnabled = previewable && (connected ?? (store.connectionState == .connected))
     }
 
     @objc private func chooseClicked() {

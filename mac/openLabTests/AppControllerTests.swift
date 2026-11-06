@@ -941,7 +941,8 @@ final class AppControllerTests: XCTestCase {
             return c
         }
         let media = try XCTUnwrap(store.model?.cue(intro)?.raw["kind"]?["media"]?.stringValue)
-        let (g, child) = (ModelID("00000000-0000-0000-0000-0000000000f1"), ModelID("00000000-0000-0000-0000-0000000000f3"))
+        let g = ModelID("00000000-0000-0000-0000-0000000000f1")
+        let child = ModelID("00000000-0000-0000-0000-0000000000f3")
         let group = cue(g.raw, TestSnapshots.groupKind([cue(child.raw, TestSnapshots.audioKind(media))]))
         guard case .success = await store.send(command: .addCue(group, list: listID, parent: nil, index: 0)) else {
             return XCTFail("add_cue")
