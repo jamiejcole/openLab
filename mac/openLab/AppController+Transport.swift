@@ -140,10 +140,13 @@ extension AppController {
             let roots = CueEditor.topLevel(selected.compactMap { wc.cueList.node($0) })
             await runAll(roots.map { .panicCue(cue: $0.id) }, on: store)
         case .previewSelected:
-            // Audio cues only (the engine ignores other kinds); each toggles on its own preview state.
-            let audio = selected.filter { store.model?.cue($0)?.kindType == "audio" }
+            // Audio cues toggle on their own preview state; a Network cue's preview sends its message once
+            // (the inspector's Send) and holds no state, so it is never in `previewing`. Only these kinds are
+            // sent: groups and the rest are left out for now (#556).
+            let previewable = selected.filter { ["audio", "network"].contains(store.model?.cue($0)?.kindType) }
             await runAll(
-                audio.map { store.previewing.contains($0) ? .stopPreview(cue: $0) : .preview(cue: $0) }, on: store)
+                previewable.map { store.previewing.contains($0) ? .stopPreview(cue: $0) : .preview(cue: $0) },
+                on: store)
         case .pauseResumeSelected:
             let actions: [TransportAction] = selected.compactMap { id in
                 switch store.cueStates[id]?.state {

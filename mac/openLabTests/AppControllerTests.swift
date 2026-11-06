@@ -849,6 +849,56 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(transports(.resume(cue: cue)), ["1"])
     }
 
+    /// Audio and Network cues selected, V twice: each press sends the message once, and the audio cue's
+    /// preview starts, then stops.
+    func testPreviewSelectedWithAudioAndNetworkCuesSelectedSendsOncePerPress() async throws {
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let store = try XCTUnwrap(app.session.stores["1"])
+        let udp = try UDPListener()
+        let patch: ModelID = "00000000-0000-0000-0000-0000000000b1"
+        var setup = (store.model?.networkPatches ?? []).map {
+            Command(.object(["type": .string("remove_network_patch"), "id": .string($0.id.raw)]))
+        }
+        setup.append(
+            .addNetworkPatch(
+                .object([
+                    "id": .string(patch.raw), "name": .string("Desk"), "host": .string("127.0.0.1"),
+                    "port": .int(Int64(udp.port)), "protocol": .string("udp"),
+                ]), index: 0))
+        guard let all = Command.transaction(setup), case .success = await store.send(command: all) else {
+            return XCTFail("patch")
+        }
+        let added = await wc.editor.add(.network)
+        let net = try XCTUnwrap(added)
+        await assertEventually { store.model?.cue(net) != nil }
+        let cue = try XCTUnwrap(store.model?.cue(net))
+        guard case .success(let message) = InspectorEdit.messageCommand(text: "/lights/go 5", cue: cue),
+            let command = message, case .success = await store.send(command: command)
+        else { return XCTFail("message") }
+        await assertEventually { store.model?.cue(net)?.raw["kind"]?["address"]?.stringValue == "/lights/go" }
+        wc.cueList.select([intro, net])
+        func received() async -> String? {
+            var got: String?
+            _ = await eventually {
+                try? await self.advance(0.1)
+                got = got ?? udp.receiveMessage()
+                return got != nil
+            }
+            return got
+        }
+        await app.perform(.previewSelected)
+        let first = await received()
+        XCTAssertEqual(first, "/lights/go i:5")
+        await assertEventually("the audio cue previews") { store.previewing == [self.intro] }
+        await app.perform(.previewSelected)
+        let second = await received()
+        XCTAssertEqual(second, "/lights/go i:5", "the second press sends again")
+        await assertEventually("the audio preview stops") { store.previewing.isEmpty }
+        for _ in 0..<3 { try await advance(0.1) }
+        XCTAssertNil(udp.receiveMessage(), "one message per press")
+    }
+
     func testPreviewSelectedTogglesAudioCuesOfTheKeyWindowOnly() async throws {
         let audio = intro
         let wc = try XCTUnwrap(app.windows["1"])
@@ -869,7 +919,7 @@ final class AppControllerTests: XCTestCase {
         await assertEventually("and stops") { !store.previewing.contains(audio) }
         wc.cueList.select([fade])
         await app.perform(.previewSelected)
-        XCTAssertTrue(transports(.preview(cue: fade)).isEmpty, "only audio cues")
+        XCTAssertTrue(transports(.preview(cue: fade)).isEmpty, "only audio and Network cues")
     }
 
     func testDisconnectClearsPreviewMarksAndInspectorButton() async throws {
