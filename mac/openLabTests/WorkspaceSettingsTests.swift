@@ -176,6 +176,40 @@ final class WorkspaceSettingsTests: XCTestCase {
         await assertEventually { sc.renderCount > drawn }
     }
 
+    /// #449: a menu that began tracking while the window was closed (its end never heard) does not
+    /// freeze the controls once the window is shown again.
+    func testAMenuOpenedWhileTheWindowWasClosedDoesNotFreezeItWhenReopened() async throws {
+        let (rig, sc) = try await open()
+        try await status(rig)
+        await assertEventually { sc.model.playing?.name == self.device }
+        await settle()
+        sc.close()
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: NSMenu())
+        sc.showWindow(nil)
+        await settle()
+        let drawn = sc.renderCount
+        try await loseDevice(rig)
+        await assertEventually("the reopened window rebuilds") { sc.renderCount > drawn }
+        sc.close()
+    }
+
+    /// A popup's menu open on the shown window holds the rebuild until it closes.
+    func testAMenuOpenOnTheShownWindowHoldsTheRebuildUntilItCloses() async throws {
+        let (rig, sc) = try await open()
+        try await status(rig)
+        await assertEventually { sc.model.playing?.name == self.device }
+        await settle()
+        let drawn = sc.renderCount
+        let menu = NSMenu()
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
+        try await loseDevice(rig)
+        await settle()
+        XCTAssertEqual(sc.renderCount, drawn, "no rebuild under an open menu")
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu)
+        await assertEventually("it rebuilds once the menu closes") { sc.renderCount > drawn }
+        sc.close()
+    }
+
     // MARK: Patch editor
 
     /// The engine put the patch on the device's first outputs when the show opened; cleared, the

@@ -8,7 +8,7 @@ import Combine
 /// between GOs) and an Audio tab (the output device, and the patch editor that puts each output
 /// patch on device channels). It reads and writes through its `WorkspaceSettingsModel`.
 @MainActor
-final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDelegate {
+final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDelegate, NSWindowDelegate {
     let model: WorkspaceSettingsModel
     /// Sized before its tabs are added: a zero-sized tab view lays its tab strip out at a negative width.
     let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
@@ -40,7 +40,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let doneButton = NSButton(title: loc("settings.done"), target: nil, action: nil)
 
     private var subs: [AnyCancellable] = []
-    // Weak-self observers: they outlive the controller harmlessly and do nothing.
+    // Menu-tracking observers: held only while the window is open, removed when it closes.
     private var observers: [NSObjectProtocol] = []
     /// How many times the controls were rebuilt (tests: an unchanged status rebuilds nothing).
     private(set) var renderCount = 0
@@ -63,6 +63,17 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // Published before they change: the sinks use the delivered value and render after it.
         subs.append(store.$status.sink { [weak self] _ in self?.renderSoon() })
         subs.append(store.$model.sink { [weak self] _ in self?.renderSoon() })
+        window.delegate = self
+        render()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    // MARK: Menu tracking
+
+    private func trackMenus() {
+        guard observers.isEmpty else { return }
         let center = NotificationCenter.default
         observers.append(
             center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) {
@@ -76,11 +87,19 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
                     self?.renderSoon()
                 }
             })
-        render()
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+    /// The observers live from showing to closing.
+    override func showWindow(_ sender: Any?) {
+        trackMenus()
+        super.showWindow(sender)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        menuOpen = false
+    }
 
     // MARK: Showing
 

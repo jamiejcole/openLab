@@ -70,6 +70,9 @@ final class CueCell: NSTableCellView {
     let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView()]
     let label = NSTextField(labelWithString: "")
     let progress = ProgressFillView()
+    /// An Audio cue's button in the Target cell, with or without a file; clicking it calls `onChoose`.
+    let chooseButton = NSButton(title: "", target: nil, action: nil)
+    var onChoose: (() -> Void)?
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -99,6 +102,20 @@ final class CueCell: NSTableCellView {
             image.setContentHuggingPriority(.required, for: .horizontal)
             image.widthAnchor.constraint(equalToConstant: 16).isActive = true
         }
+        chooseButton.isBordered = false
+        chooseButton.imagePosition = .imageOnly
+        chooseButton.imageScaling = .scaleProportionallyDown
+        chooseButton.isHidden = true
+        chooseButton.target = self
+        chooseButton.action = #selector(chooseClicked)
+        chooseButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(chooseButton)
+        NSLayoutConstraint.activate([
+            chooseButton.widthAnchor.constraint(equalToConstant: 16),
+            chooseButton.centerXAnchor.constraint(equalTo: centerXAnchor),
+            chooseButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        chooseButton.setAccessibilityIdentifier("cue-target-choose")
         textField = label
         // Cell state is set on every reuse, so no stale identifier survives.
         switch identifier.rawValue {
@@ -111,12 +128,29 @@ final class CueCell: NSTableCellView {
             images[0].setAccessibilityIdentifier("cue-type")
         case "continue":
             images[0].setAccessibilityIdentifier("cue-continue")
+        case "target":
+            label.alignment = .center
         default: break
         }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    @objc private func chooseClicked() { onChoose?() }
+
+    /// Shows the Target cell's button.
+    func showChoose(onChoose: @escaping () -> Void) {
+        let label = loc("inspector.target.choose")
+        let image = Icon.targetFile.image(label, compact: true)
+        // Plain, not a template, for the same reason as `setImage`.
+        chooseButton.image = TimeHeaderCell.tinted(
+            image, .secondaryLabelColor, size: image.size, description: label)
+        chooseButton.setAccessibilityLabel(label)
+        chooseButton.toolTip = label
+        chooseButton.isHidden = false
+        self.onChoose = onChoose
+    }
 
     /// Shows `symbol` in image `i` (hidden when nil) with an accessibility label and tooltip.
     func setImage(_ i: Int, icon: Icon?, label: String?, tint: NSColor? = nil, tooltip: String? = nil) {
@@ -151,7 +185,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// QLab order. The first and last columns carry no title.
     static let columns: [(id: String, titleKey: String?, width: CGFloat)] = [
         ("status", nil, 80), ("type", nil, 32), ("number", "cuelist.col.number", 60), ("name", "cuelist.col.name", 280),
-        ("target", "cuelist.col.target", 160), ("preWait", "cuelist.col.preWait", 80),
+        ("target", "cuelist.col.target", 60), ("preWait", "cuelist.col.preWait", 80),
         ("duration", "cuelist.col.duration", 120), ("postWait", "cuelist.col.postWait", 80),
         ("continue", nil, 36),
     ]
@@ -334,7 +368,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// Show Mode: rows cannot be dragged, nothing can be dropped and no cell can be edited; a
     /// cell being typed in is dropped (callers commit it first, as the inspector's fields).
     var isEditLocked = false {
-        didSet { if isEditLocked { cancelCellEdit() } }
+        didSet {
+            if isEditLocked { cancelCellEdit() }
+            guard isEditLocked != oldValue else { return }
+            refresh(Set(nodes.keys), columns: ["target"])
+        }
     }
     /// A validated drop: the cues go before child `index` of the parent (nil: top level).
     var onMove: (([ModelID], ModelID?, Int) -> Void)?
@@ -913,6 +951,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// The plan, and how many of the dragged files it leaves out (not audio).
     var onFileDrop: ((FileDrop, Int) -> Void)?
+    /// The Target cell's button of an Audio cue was clicked.
+    var onChooseFile: ((ModelID) -> Void)?
 
     /// The file URLs of a drag from Finder (empty for a drag of our own rows).
     private func fileURLs(_ info: NSDraggingInfo) -> [URL] {
@@ -1203,6 +1243,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         cell.label.textColor = .labelColor
         cell.label.isHidden = true
         for i in cell.images.indices { cell.setImage(i, icon: nil, label: nil) }
+        cell.chooseButton.isHidden = true
+        cell.onChoose = nil
         cell.progress.progress = nil
         func text(_ s: String) {
             cell.label.isHidden = false
@@ -1252,7 +1294,16 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             } else {
                 text(shown)
             }
-        case "target": text(targetText(cue))
+        case "target":
+            if cue.kindType == "audio" {
+                fillFileTargetButton(cell, cue)
+            } else if InspectorEdit.targetKinds.contains(cue.kindType) {
+                let shown = targetText(cue)
+                text(shown ?? loc("cue.target.missing"))
+                if shown == nil { cell.label.textColor = .systemYellow }
+            } else if cue.kindType == "network" {
+                text(InspectorViewController.networkTargetText(cue, model: store.model))
+            }
         case "preWait", "postWait":
             // A wait in progress counts down what is left, as QLab's columns do.
             if let wait = store.waits[cue.id]?[column == "preWait" ? .preWait : .postWait] {
@@ -1281,16 +1332,24 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     private var cueLookup: (ModelID) -> Cue? { { [weak self] in self?.nodes[$0]?.cue ?? self?.store.model?.cue($0) } }
 
-    private func targetText(_ cue: Cue) -> String {
-        if cue.kindType == "audio" {
-            let media = cue.raw["kind"]?["media"]?.stringValue ?? ""
-            return (media as NSString).lastPathComponent
+    /// An Audio cue's Target cell is one button that chooses its file, the same whether it holds one or not, and
+    /// is empty in a locked (Show Mode) list, as QLab's Target column is.
+    private func fillFileTargetButton(_ cell: CueCell, _ cue: Cue) {
+        guard !isEditLocked else { return }
+        let id = cue.id
+        cell.showChoose { [weak self] in
+            guard let self, !self.isEditLocked else { return }
+            self.onChooseFile?(id)
         }
-        if cue.kindType == "network" { return InspectorViewController.networkTargetText(cue, model: store.model) }
-        guard let target = cue.raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }) else { return "" }
-        guard let t = nodes[target]?.cue ?? store.model?.cue(target) else { return loc("cue.target.missing") }
-        let label = [t.number, t.listName(lookup: cueLookup)]
-        return label.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// The target's number, or its name if it has none; nil with no target or one that is gone.
+    private func targetText(_ cue: Cue) -> String? {
+        guard let id = cue.raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }),
+            let target = cueLookup(id)
+        else { return nil }
+        if let number = target.number, !number.isEmpty { return number }
+        return target.listName(lookup: cueLookup)
     }
 
     /// The Duration column's text: the cue's duration, or while it runs and the column shows the time

@@ -1672,6 +1672,45 @@ final class SystemEngineProcessesTests: XCTestCase {
         XCTAssertEqual(p.stderrTail.read(), [], "each line once")
     }
 
+    /// #376: an app relaunched after a crash attaches to the engine still running; what that engine
+    /// prints on stderr afterwards (not what it printed before) reaches the app's log.
+    @MainActor
+    func testTheStderrOfAnEngineAlreadyRunningIsReadBack() async throws {
+        final class Lines: @unchecked Sendable {
+            private let lock = NSLock()
+            private var all: [String] = []
+            func add(_ line: String) {
+                lock.lock()
+                all.append(line)
+                lock.unlock()
+            }
+            var value: [String] {
+                lock.lock()
+                defer { lock.unlock() }
+                return all
+            }
+        }
+        let engine = try await TestEngine.start()
+        defer { engine.stop() }
+        let log = engine.support.appendingPathComponent("engine-stderr.log")
+        let handle = try FileHandle(forWritingTo: log)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("said before the app came\n".utf8))
+        // Over the size the app empties between runs: a running engine's file is not replaced.
+        try handle.write(contentsOf: Data(count: Int(EngineStderrTail.fileLimit) + 1))
+        try handle.write(contentsOf: Data("\n".utf8))
+        let inode = try FileManager.default.attributesOfItem(atPath: log.path)[.systemFileNumber] as? Int
+        let lines = Lines()
+        let p = SystemEngineProcesses(infoURL: engine.infoURL, stderrURL: log, stderrSink: { lines.add($0) })
+        try handle.write(contentsOf: Data("thread panicked at engine\n".utf8))
+        try handle.close()
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: log.path)[.systemFileNumber] as? Int, inode)
+        await assertEventually("the attached engine's later output is logged") {
+            lines.value == ["thread panicked at engine"]
+        }
+        withExtendedLifetime(p) {}
+    }
+
     /// A stderr log the app cannot open (read-only, a directory) costs the engine its log, never
     /// its start: the engine is spawned with /dev/null instead. The program is `true` (a system
     /// program, which Gatekeeper never holds: see `keptProgram`), so it runs and exits 0.
