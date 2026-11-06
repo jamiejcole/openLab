@@ -129,6 +129,7 @@ impl Stage {
             CommandKind::StartVoice(s) => on(s.voice, s.voice, true),
             CommandKind::StopVoice { voice, .. }
             | CommandKind::Ramp { voice, .. }
+            | CommandKind::RampSet { voice, .. }
             | CommandKind::Devamp { voice, .. }
             | CommandKind::MoveVoice { voice, .. }
             | CommandKind::PauseVoice { voice } => on(*voice, *voice, false),
@@ -609,6 +610,22 @@ mod tests {
         assert_eq!(play(&mut r, 4), [0.0, 0.5]);
         assert_eq!(ctl.faulted_voices(), 2);
         assert_eq!(ctl.faulted_stages(), 0);
+    }
+
+    #[test]
+    fn a_ramp_set_that_panics_on_a_voice_drops_that_voice_only() {
+        let (mut ctl, mut r) = two_voices();
+        r.mixer_mut().panic_apply = Some(|k| matches!(k, CommandKind::RampSet { .. }));
+        let set = CommandKind::RampSet {
+            voice: VoiceId(1),
+            gains: vec![(GainTarget::Master, 0.25), (GainTarget::CueOutput(0), 0.25)].into(),
+            fade: Fade::NONE,
+        };
+        ctl.send(ctl.samples_rendered(), set);
+        fault(&mut r);
+        assert_eq!(faulted_events(&mut ctl), [VoiceId(1)]);
+        assert_eq!(play(&mut r, 4), [0.0, 0.5]);
+        assert_eq!(ctl.faulted_voices(), 1);
     }
 
     /// Regression (#319): a panic inside `finish`, after the voice left the pool and before it

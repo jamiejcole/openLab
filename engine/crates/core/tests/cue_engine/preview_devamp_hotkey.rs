@@ -847,6 +847,34 @@ fn a_cue_hotkey_used_by_the_workspace_warns_and_never_starts_the_cue() {
     );
 }
 
+/// Preview Selected and Panic Selected are keys of the map (V and S by default): a cue on one
+/// warns and never starts; once the workspace remaps them, the chord is the cue's.
+#[test]
+fn a_cue_hotkey_on_a_remapped_preview_or_panic_key_starts_the_cue() {
+    let mut rig = Rig::panicking(vec![keyed(sound(1), "v"), keyed(sound(2), "s")]);
+    assert_eq!(
+        validate(&rig.ws)
+            .iter()
+            .map(|i| i.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            IssueKind::HotkeyUsedByWorkspace {
+                action: "preview_selected"
+            },
+            IssueKind::HotkeyUsedByWorkspace {
+                action: "panic_selected"
+            },
+        ]
+    );
+    assert!(rig.ws.cues_with_hotkey(&hotkey("v")).is_empty());
+    rig.ws.settings.hotkeys.preview_selected = Some(hotkey("f6"));
+    rig.ws.settings.hotkeys.panic_selected = None;
+    assert!(validate(&rig.ws).is_empty());
+    assert_eq!(rig.ws.cues_with_hotkey(&hotkey("v")), vec![id(1)]);
+    assert_eq!(rig.ws.cues_with_hotkey(&hotkey("s")), vec![id(2)]);
+    assert!(rig.ws.cues_with_hotkey(&hotkey("f6")).is_empty());
+}
+
 /// Editing a cue's hotkey to a workspace key is allowed (QLab keeps it, with the warning).
 #[test]
 fn setting_a_workspace_key_as_a_cue_hotkey_is_not_refused() {

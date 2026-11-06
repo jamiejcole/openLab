@@ -88,7 +88,7 @@ final class AppController {
     var keySubs: [ObjectIdentifier: AnyCancellable] = [:]
     var keyCache:
         [ObjectIdentifier: (
-            hotkeys: JSONValue?, cueChords: Set<KeyChord>, shadowed: Set<KeyChord>,
+            hotkeys: JSONValue?, shadowed: Set<KeyChord>,
             lost: [TransportCommand: KeyChord], keys: TransportKeys
         )] =
             [:]

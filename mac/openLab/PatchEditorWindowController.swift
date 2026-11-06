@@ -13,7 +13,8 @@ import Combine
 final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate {
     let store: WorkspaceStore
     let patchID: ModelID
-    let tabs = NSTabView()
+    /// Sized before its tabs are added: a zero-sized tab view lays its tab strip out at a negative width.
+    let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
     let titleLabel = NSTextField(labelWithString: "")
     let mainFader = LevelFader(value: 0, minValue: LevelText.floorDb, maxValue: 0, target: nil, action: nil)
     let mainField = NSTextField()
