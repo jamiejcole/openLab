@@ -1,0 +1,27 @@
+# Files, names, Show Mode, restore, media
+
+Q10 | Opening a workspace whose id duplicates an open one: engine gives it a fresh id, marks it dirty, saves with the new id (QLab: two open copies get different uniqueIDs; whether it saves the new id untested) | assumed (partly user 2026-10-29)
+Q13 | Names (workspace, cue list, patch, network patch, cue): at most 1024 Unicode scalars (cue names also 1024 bytes, `MAX_CUE_NAME_BYTES`, m: Q41). Newlines allowed; other control chars refused; empty allowed (empty cue name falls back to the file name, empty patch name shows a grey placeholder). Network host at most 253 bytes, no control char. | user 2026-10-29
+Q13b | Name details (same row): loaded odd values are kept with a warning. Bidi marks, U+2028/2029, zero-width spaces, BOM allowed | user 2026-10-29 (QLab 300 chars fine; user: raise to 1024)
+Q14 | Show Mode is saved with the workspace: a workspace saved in Show Mode reopens in Show Mode (file `show_mode`, written only when true; absent = Edit Mode). Detail in `docs/file-format.md` | user 2026-10-29
+Q76 | Entering/leaving Show Mode does not mark the workspace unsaved (not an edit, not undoable). Every Save, Save As and autosave writes it (plain Save of an unchanged workspace too); quitting after only switching mode keeps the last saved mode | assumed 2026-11-04
+Q77 | A crash-recovered workspace opens in the mode written in its autosave (autosave is written for edits, not mode changes, so it may hold an older mode) | assumed 2026-11-04
+Q25 | File > Recover Autosaves lists every autosave no open window holds, one prompt each, whenever the engine is connected; the alarm's post-crash offer stays. QLab offers no autosave for a never-saved workspace; user chose to keep openLab's list | user 2026-10-29
+Q29 | Pasting cues into a workspace in another folder, or first-saving an untitled one: file references keep pointing at the same file (relative paths resolved against the source folder first); first save stores paths inside the folder relative, others absolute | assumed 2026-10-29 (user unsure)
+Q44 | Audio cue whose file volume hangs after the file was found: after 5 s of sample time (`STREAM_START_LIMIT`) the voice stops with a `stream_timeout` notice and the cue breaks (`stream_failed`, skipped as a failed start so its auto-follow fires); never plays late | assumed
+Q105 | Cue whose file was found but cannot be re-read now (disk stops answering, read neither fails nor returns): stays ready, error log says a probe got stuck, playing audio plays on; a GO tries the file and fails by the 5 s limit (Q44). Goes broken before GO only when a read says the file is gone or bad | assumed
+Q48 | Recent workspaces whose file moved or was deleted are hidden from Open Recent and the home screen | assumed 2026-10-31
+Q105b | Launch with "reopen last workspaces" and a file missing now: skipped, reported in the log and the first window's footer; no dialog (a launch in front of a show must never raise one); other files open | assumed 2026-11-05
+Q106 | Reopen-last with nothing to reopen (none open at quit or all missing): launcher shows | assumed 2026-11-05
+Q107 | Reopen-last restores saved files open at quit, in open order; untitled ones and ones closed before quit are not; the list is written only when quit goes ahead (cancelled quit keeps the old list) | assumed 2026-11-05
+Q108 | Reopen-last meets a file whose autosave is newer: same restore-or-open prompt a manual Open gives (modal; later files wait). Not while a restored window is in Show Mode or its mode is not yet known: file stays closed, footer and log say to use File > Open (keeps media relative to the show folder working). Recover Autosaves still lists it but opens untitled | assumed 2026-11-05
+
+## Media check pages, 2026-10-27
+C-R1 | Renaming or moving a cue's file does not break the cue; an unrenamed cue's name follows the file (also in an unsaved workspace). A file moved to the Trash breaks the cue at once | user
+C-R2 | Renamed file and a cue with the user's own name: cue keeps the user's name | user
+C-R3 | A missing file that comes back relinks automatically | user
+C-R4 | Missing file noticed within a couple of seconds, not only when played: cue goes broken (Target shows Trash, duration 0); putting the file back un-breaks it by itself | user
+C-R5 | Dropping media already in the project folder copies it again with "2" appended, then "3"... (openLab has no copy-on-import) | user
+C-X1 | Audio interface unplugged mid-show: playing cue stops and shows the yellow pause icon, other cues routed to it go broken until replug. After replug (3 s or 20 s) nothing resumes by itself (Resume All only clears the icon), GO restarts from 0. Decision: follow QLab, no automatic resume | user 2026-10-27, decision
+C-Q13 | Unplug while cues wait: the active cue pauses, others go broken; on replug nothing plays; pre-waits and post-waits do not start by themselves and countdowns stop | user
+C-Q9 | New/Open/Revert while cues play: no Revert item; reopening the current workspace does nothing; File > New or Open opens another window and the playing workspace keeps playing (running cues are NOT stopped) | user

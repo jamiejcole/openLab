@@ -1,0 +1,13 @@
+# Levels, limits, patches, audio cue routing
+
+Q7 | Loops, slices and trims shorter than 50 ms are refused: `MIN_LOOP_MS` (audio `plan.rs`) and the trim floor are both 50 ms. QLab places or trims nothing under 0.05 s (0.051 s works; check D6) | user 2026-10-27, confirmed 2026-10-29
+Q26 | Changing an Audio cue's output patch while it plays is heard at once: the voice moves to the new patch's outputs with a 5 ms crossfade, no restart; previews keep their patch. Resizing the patch itself under a playing cue keeps the old rule (heard from next start) | user 2026-10-29
+Q27 | Clearing a patch's device pauses the running or fading cues playing through it (pre-waiting cues and previews untouched, m: Q37); remapping the device does NOT resume them; patch shows unmapped in the pre-show check | user 2026-10-29
+Q50 | Switching an Audio cue's built-in fade on: 1 s each way, at most a quarter of the trimmed cue; waveform handles then set each length; off sets both 0; fades follow the trims | assumed 2026-10-31
+Q75 | Routing matrix input rows = file's probed channel count; unknown count (missing, damaged, unprobed) shows two rows or more if saved routing names a higher input; follows the file when the engine reports a count; saved crosspoints beyond the file's channels stay in the cue without a row | assumed 2026-11-04
+Q100 | Maximum volume limit range is -30 to +12 dB (`OUTPUT_MAX_DB_RANGE`, since levels stop at +12); a value above is refused | assumed (QLab allows more)
+Q101 | Lowering a limit (or raising the minimum): every Audio cue level, patch level and Fade-cue level not aimed at a Group above the new maximum moves to it (at or below the minimum: silent); one undo restores all. A loaded file's levels are put within limits: above max, one warning each; at/below min silent, one warning per file. A playing Fade's level comes within a narrowed limit over 10 ms and the Fade keeps it | assumed
+Q102 | A show file's global master (QLab has none) is dropped, not folded into patch levels; a master other than 0 dB gives one load warning (`GlobalMasterRemoved`) | assumed
+Q103 | Emptied level box = -inf (as QLab p.204); other non-number text -inf (p.200). Only WHITE SPACE is no change (patch editor and inspector): our own safety rule, because Space pressed in a selected box (the GO key) must not silence a playing level | manual p.199-204 + assumed (white space)
+Q104 | Transport keys act only when a workspace window is key (not while the patch editor or Workspace Settings is key); Esc panics from anywhere. Patch editor opens with no field focused so Space edits no level; the system beep says GO was not taken | assumed
+Q221 | Output patch levels: a main fader per patch, no workspace master | manual p.189-190
