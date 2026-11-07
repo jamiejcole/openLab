@@ -37,7 +37,7 @@ This file is the only copy of every rule below; other files link here instead of
 - Extend the existing test file and `tests/common`; no new harness types. `tests/common/mod.rs` starts with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`.
 - A test that cannot run here fails or reports a skip; it never passes by returning early.
 - Test-only code (fakes, fault switches, fixtures) never compiles into a Release product.
-- Before reporting done: `make prepush`. Windows paths: expect `\` or use `to_portable`; APFS refuses non-UTF-8 names.
+- Before reporting done: `make prepush`. It and `make ui-shots` take the machine-wide mac-test lock (`/tmp/openlab-xcuitest.lock`) themselves; never wrap them in `lockf`, since a nested lock on the same file waits forever. Windows paths: expect `\` or use `to_portable`; APFS refuses non-UTF-8 names.
 
 ## Contracts (same commit)
 - Protocol change: Rust types in core, fixtures in `engine/fixtures/protocol/`, Swift `Codable` types, `docs/protocol.md`.
