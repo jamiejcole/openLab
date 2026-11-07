@@ -29,7 +29,8 @@ pub use backup::backup_existing;
 pub use files::{modified_ms, read_text, unique_sibling};
 pub(crate) use files::{path_key, remove_if_present};
 pub use recovery::{
-    RecoveryCheck, RecoveryOffer, RecoveryReport, check_recovery, clear_recovery, write_recovery,
+    RecoveryCheck, RecoveryOffer, RecoveryReport, check_recovery, clear_recovery, discard_recovery,
+    write_recovery,
 };
 pub use recovery_scan::{
     MAX_NAME_READ_BYTES, MAX_RECOVERY_ENTRIES, RecoveryEntry, RecoveryScan, scan_recovery,

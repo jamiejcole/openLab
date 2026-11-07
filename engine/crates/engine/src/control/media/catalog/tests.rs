@@ -279,6 +279,13 @@ fn the_watch_follows_the_files_the_catalog_knows() {
     cat.sync(&ws);
     assert!(cat.take_key_changes().is_empty());
     assert!(matches!(cat.get("sounds/rel.wav"), Some(Probe::Failed)));
+    // No probe will answer for it: the cue engine is told it is missing, once.
+    assert_eq!(
+        cat.take_unresolved(),
+        [(MediaRef::new("sounds/rel.wav"), MediaStatus::Missing)]
+    );
+    cat.sync(&ws);
+    assert!(cat.take_unresolved().is_empty());
 }
 
 /// A doc's files are resolved off the control thread, against its show folder;
