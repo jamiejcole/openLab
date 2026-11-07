@@ -15,7 +15,7 @@ FUZZ_TOOLCHAIN ?= nightly
 SAN_TOOLCHAIN ?= nightly-2026-10-15
 SAN_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 
-.PHONY: lint test test-rust test-mac test-mac-unit test-mac-core-flows test-mac-ui-full mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
+.PHONY: ui-shots lint test test-rust test-mac test-mac-unit test-mac-core-flows test-mac-ui-full mac verify-bundle test-bundle-rebuild dmg project fuzz sanitize sanitize-address sanitize-thread miri prepush hooks
 
 lint:
 	scripts/check-repo.sh
@@ -103,6 +103,13 @@ test-mac-core-flows: project
 # Every unit test and the whole UI suite: what the nightly run does.
 test-mac-ui-full: project
 	$(MAC_TESTS_WITH_LIMIT) --
+
+# Pictures of the real workspace window driven through a scenario on the real engine, drawn offscreen
+# (no focus taken): `make ui-shots SCENARIO=mac/scenarios/<name>.json [OUT=<dir>]`. It waits for any other
+# mac test run on this machine (the lock `make prepush` takes for UI tests).
+ui-shots:
+	@test -n "$(SCENARIO)" || { echo "usage: make ui-shots SCENARIO=mac/scenarios/<name>.json [OUT=<dir>]"; exit 2; }
+	lockf -k /tmp/openlab-xcuitest.lock mac/scenarios/ui-shots.sh "$(SCENARIO)" "$(or $(OUT),build/ui-shots/$(basename $(notdir $(SCENARIO))))"
 
 mac: project
 	$(XCODEBUILD) -configuration Release build

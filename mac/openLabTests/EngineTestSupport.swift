@@ -175,6 +175,8 @@ final class TestEngine {
     private(set) var info: EngineConnectionInfo
     private let process: Process
     private let stdin: Pipe
+    /// The engine's process id (a test checks that it ended).
+    var pid: Int32 { process.processIdentifier }
     /// An app connection for the app-scope requests the tests make (`open`, `advance`, `close`).
     let app: EngineClient
     private var openedThisTest: [ModelID] = []
@@ -257,15 +259,22 @@ final class TestEngine {
     /// its media probes; its doc. Closed again when the test ends.
     func open(_ name: String, edit: ((URL) throws -> Void)? = nil) async throws -> ModelID {
         let copies = folder.appendingPathComponent("shows-\(UUID().uuidString)", isDirectory: true)
-        let source = try XCTUnwrap(
-            Bundle(for: TestEngine.self).url(forResource: "TestShows", withExtension: nil), "the test shows are bundled"
-        )
+        let source = try XCTUnwrap(Self.testShows, "the test shows are bundled")
         try FileManager.default.copyItem(at: source.appendingPathComponent(name), to: copies)
         try edit?(copies)
-        let path = copies.appendingPathComponent("\(name).openlab").path
-        guard case .success(let ok) = await app.send({ .request(id: $0, .open(path: path)) }),
-            case .opened(let doc)? = ok.data
-        else { throw TestEngineError.refused("open \(name)") }
+        return try await open(path: copies.appendingPathComponent("\(name).openlab").path)
+    }
+
+    /// The bundled test shows' folder (`mac/TestShows`).
+    static var testShows: URL? { Bundle(for: TestEngine.self).url(forResource: "TestShows", withExtension: nil) }
+
+    /// Opens the show file at `path` where it is, and lets the engine take in its media probes; its
+    /// doc. Closed (unsaved changes discarded) when the test ends.
+    func open(path: String) async throws -> ModelID {
+        let result = await app.send({ .request(id: $0, .open(path: path)) })
+        guard case .success(let ok) = result, case .opened(let doc)? = ok.data else {
+            throw TestEngineError.refused("open \(path): \(result)")
+        }
         openedThisTest.append(doc)
         try await advance(frames: 0)
         return doc
@@ -452,9 +461,7 @@ final class EngineRuns {
     /// A copy of the test show `template` as `<name>/<name>.openlab` (its media beside it), the
     /// workspace named `name` with an id of its own; its path.
     func show(_ template: String, named name: String) throws -> String {
-        let source = try XCTUnwrap(
-            Bundle(for: TestEngine.self).url(forResource: "TestShows", withExtension: nil)?.appendingPathComponent(
-                template))
+        let source = try XCTUnwrap(TestEngine.testShows?.appendingPathComponent(template))
         let dir = folder.appendingPathComponent("shows/\(name)", isDirectory: true)
         try FileManager.default.createDirectory(
             at: dir.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -853,6 +860,76 @@ extension WorkspaceStore {
         guard case .success = result else { return XCTFail("set_key_map: \(result)") }
         await assertEventually { self.model?.settings["hotkeys"] == map }
     }
+}
+
+/// `view` and everything in it drawn into a bitmap of `scale` pixels per point, over `background`
+/// when given. The view tree is drawn straight into the bitmap: `cacheDisplay` skips layer-backed
+/// subviews, and a window never ordered on screen has nothing to read back. Each view's `draw`
+/// runs with the clip AppKit gives it on screen, so a view that does not clip to its bounds paints
+/// over its neighbours here as it does there. Rendering the window's frame view gives the window.
+@MainActor
+func renderView(_ view: NSView, scale: CGFloat = 2, background: NSColor? = nil) throws -> NSBitmapImageRep {
+    let rep = try XCTUnwrap(
+        NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int((view.bounds.width * scale).rounded()),
+            pixelsHigh: Int((view.bounds.height * scale).rounded()), bitsPerSample: 8, samplesPerPixel: 4,
+            hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+        "a bitmap for \(view.bounds.size)")
+    let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
+    if let background {
+        context.cgContext.setFillColor(background.cgColor)
+        context.cgContext.fill(CGRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh))
+    }
+    context.cgContext.scaleBy(x: scale, y: scale)
+    view.displayIgnoringOpacity(view.bounds, in: context)
+    redrawTabStrips(in: view, rep: rep, context: context, scale: scale)
+    return rep
+}
+
+/// On screen a tab view shows its tabs through its layer; forced to draw (above) it paints a blank
+/// white bar where they go, over the tab buttons' own drawing. Each bar is filled with the colour
+/// beside it and the tab buttons are drawn again on top.
+@MainActor
+private func redrawTabStrips(in root: NSView, rep: NSBitmapImageRep, context: NSGraphicsContext, scale: CGFloat) {
+    var strips: [NSView] = []
+    func find(_ v: NSView) {
+        guard !v.isHidden else { return }
+        if v is NSTabView {
+            strips += v.subviews.filter { $0 is NSSegmentedControl && !$0.isHidden }
+        }
+        v.subviews.forEach(find)
+    }
+    find(root)
+    for control in strips {
+        let r = control.convert(control.bounds, to: root)
+        // The colour just left of the bar, in bitmap pixels (rows run top-down).
+        let x = Int((r.minX - 4) * scale)
+        let y = root.isFlipped ? Int(r.midY * scale) : rep.pixelsHigh - Int(r.midY * scale)
+        guard x >= 0, y >= 0, y < rep.pixelsHigh, let beside = rep.colorAt(x: x, y: y) else { continue }
+        let cg = context.cgContext
+        cg.saveGState()
+        cg.setFillColor(beside.cgColor)
+        cg.fill(r)
+        cg.translateBy(x: r.minX, y: r.minY)
+        control.displayIgnoringOpacity(control.bounds, in: context)
+        cg.restoreGState()
+    }
+}
+
+/// A real event's worth of fields at a point, as AppKit delivers a scroll or pinch to a view
+/// (NSEvent has no public initializer for those).
+final class GestureEvent: NSEvent {
+    var point = NSPoint.zero
+    var mag: CGFloat = 0
+    var delta = (x: CGFloat(0), y: CGFloat(0))
+    var precise = true
+    var flags: NSEvent.ModifierFlags = []
+    override var locationInWindow: NSPoint { point }
+    override var magnification: CGFloat { mag }
+    override var scrollingDeltaX: CGFloat { delta.x }
+    override var scrollingDeltaY: CGFloat { delta.y }
+    override var hasPreciseScrollingDeltas: Bool { precise }
+    override var modifierFlags: NSEvent.ModifierFlags { flags }
 }
 
 /// The texts shown in a sheet (an alert's message).
