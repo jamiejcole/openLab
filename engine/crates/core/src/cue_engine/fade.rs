@@ -2,7 +2,7 @@
 
 //! Fade cues (CT-10, audio levels): a fade of the target's levels over the cue's duration, as
 //! `Ramp` actions the mixer carries out: absolute for an audio cue, relative for the audio cues
-//! in a group (QLab check F2). Rules: `docs/cue-engine.md`, "Fade cues".
+//! in a group (QLab check F2).
 
 use std::collections::BTreeSet;
 

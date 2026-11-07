@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Default patch mapping (WS-07; docs/control.md "Default patch mapping"): a workspace
+//! Default patch mapping (WS-07): a workspace
 //! with no mapping at all on this machine (a new one, or a show from another computer) plays
 //! on the device the mixer uses, each patch on the device's first outputs, as QLab does. An
 //! operator's mapping is never touched.
@@ -115,7 +115,7 @@ fn mapping_refusal(
 impl DocCx<'_> {
     /// The operator cleared `patch`'s device: every Audio cue playing through it (running or
     /// fading) pauses, as QLab 5.5.3 does; mapping a device again does not resume them. A device
-    /// that disappears by itself is device loss, not this (docs/control.md, Devices).
+    /// that disappears by itself is device loss, not this.
     fn pause_cues_on(&mut self, patch: PatchId, now: SampleTime) {
         let engine = self.doc.model.engine();
         let playing: Vec<CueId> = self

@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Group cues (CT-22) and the playhead inside groups, per docs/cue-engine.md "Groups".
+//! Group cues (CT-22) and the playhead inside groups.
 //! Virtual sample clock at 1 kHz: one second is 1000 samples.
 
 use crate::common::*;
@@ -391,7 +391,7 @@ fn next_and_previous_enter_only_start_first_and_enter_groups() {
 #[test]
 fn stepping_from_a_child_of_a_group_not_entered_goes_on_among_its_siblings() {
     // Put on a child explicitly, the playhead steps among the siblings and then leaves the
-    // group, as GO from that child does (docs/cue-engine.md, Playhead).
+    // group, as GO from that child does.
     let mut rig = nav_rig();
     let next = Input::PlayheadNext { list: list() };
     let previous = Input::PlayheadPrevious { list: list() };

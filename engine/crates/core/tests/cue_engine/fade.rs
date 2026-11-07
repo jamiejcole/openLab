@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Fade cues (CT-10 audio levels), per docs/cue-engine.md "Fade cues". Virtual sample
+//! Fade cues (CT-10 audio levels). Virtual sample
 //! clock at 1 kHz: one second is 1000 samples.
 
 use crate::common::*;

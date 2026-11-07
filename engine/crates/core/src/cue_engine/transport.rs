@@ -2,8 +2,7 @@
 
 //! Workspace-wide transport: Panic (PB-03), Stop All, Reset All, Pause All and Resume All
 //! (PB-04). They reach every cue of every list at every depth through the per-cue operations,
-//! so every rule of those holds. Rules: `docs/cue-engine.md`, "Panic", "Reset All" and "Pause
-//! All and Resume All".
+//! so every rule of those holds.
 
 use std::collections::HashSet;
 

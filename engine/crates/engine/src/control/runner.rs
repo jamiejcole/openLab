@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The control thread's loop against a running device (ARCHITECTURE §3.2): wake on an inbox
+//! The control thread's loop against a running device: wake on an inbox
 //! message, when the next deadline enters the lookahead window, or after [`MAX_WAIT`]
 //! (5 ms), whichever comes first. Wake jitter never shifts audio: every transition is computed
 //! from sample time, and the lookahead commits each start on its exact sample. Each wake ticks

@@ -27,7 +27,7 @@ for marker in "-OpenLabEngine" "-OpenLabVirtualDevice" "--virtual-device" "lose_
     fi
 done
 # The engine's virtual audio device and its test-only requests are built only with the test-support
-# feature (docs/control.md "Virtual device"): the bundled engine must not contain it and must refuse
+# feature: the bundled engine must not contain it and must refuse
 # `--virtual-device` as a usage error (exit 2) without starting. `--watch-stdin` with no stdin ends an
 # engine that wrongly started at once.
 engine="$app/Contents/MacOS/openlab-engine"

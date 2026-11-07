@@ -306,7 +306,7 @@ final class EngineAlarmController {
         return AutosaveOffer.offerable(entries, held: held, windows: windows)
     }
 
-    /// One prompt per autosave, newest first, while there is room (at most 8 workspaces, §21).
+    /// One prompt per autosave, newest first, while there is room (at most 8 workspaces).
     func restore(_ entries: [RecoveryEntryInfo]) async {
         for entry in entries {
             guard session.stores.count < 8 else { break }

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The control thread (ARCHITECTURE §3.1, §3.2; docs/control.md): owns the workspace, its undo
+//! The control thread: owns the workspace, its undo
 //! history, the cue engine and the mixer controller, and wires them to the disk streams.
 //!
-//! The state is split as ARCHITECTURE §3.1 assigns it: an `Engine` every workspace shares (mixer,
+//! The state is split: an `Engine` every workspace shares (mixer,
 //! device, disk streamer, voice-id and patch-slot allocators, machine settings, document worker,
 //! outbound channel, show log, probe pool, media watch) and a `Doc` per open workspace (model,
 //! history, cue engine, voices, media catalog, file state), at most [`MAX_DOCS`]. Per-doc work
@@ -107,7 +107,7 @@ use voices::Voices;
 use watch::{MediaWatch, WatchBatch};
 use watch_share::WatchShare;
 
-/// The longest the loop sleeps without a reason to wake (ARCHITECTURE §3.2).
+/// The longest the loop sleeps without a reason to wake.
 pub const MAX_WAIT: Duration = Duration::from_millis(5);
 /// The longest floor on the wait after a tick that saw sample time standing still (see
 /// [`stall_floor`]): the mixer renders whole blocks, so waiting less for a deadline to enter
@@ -116,16 +116,16 @@ pub const MAX_WAIT: Duration = Duration::from_millis(5);
 pub const MIN_STALL_WAIT: Duration = Duration::from_millis(1);
 /// Progress and meters go out at most this often (docs/protocol.md §4).
 pub const REPORT_HZ: u64 = 30;
-/// Cues primed from each playhead (ARCHITECTURE §3.5).
+/// Cues primed from each playhead.
 pub const PRIME_CUES: usize = 16;
 /// Most streams kept primed at once.
 pub const MAX_PRIMES: usize = 64;
 /// A start held up by its file's probe fails after this long (sample time), so the cue goes
-/// broken instead of showing as running with no sound (docs/control.md).
+/// broken instead of showing as running with no sound.
 pub const PROBE_HOLD_LIMIT: Duration = Duration::from_secs(5);
 /// A started voice whose stream has not delivered its first chunk after this long (sample
 /// time; an open that hangs on a dead volume) is stopped and its cue breaks, instead of
-/// running silent and playing late if the volume ever answers (docs/control.md).
+/// running silent and playing late if the volume ever answers.
 pub const STREAM_START_LIMIT: Duration = Duration::from_secs(5);
 /// A document read stuck this long fails with `io` and its worker is replaced.
 pub const DOC_TIMEOUT: Duration = Duration::from_secs(20);
@@ -240,8 +240,7 @@ pub struct ControlConfig {
     /// Which volume a media path is on, for probe scheduling (tests inject one; the media
     /// watch's `bucket_of` by default).
     pub probe_volume: Option<fn(&std::path::Path) -> String>,
-    /// The show log: its ring always, and the disk writer's sink when the host started one
-    /// (docs/logging.md).
+    /// The show log: its ring always, and the disk writer's sink when the host started one.
     pub show_log: crate::diag::ShowLog,
     /// Send `status` messages (DX-03). `None`: never (offline tests; the host turns it on).
     pub status: Option<crate::diag::StatusConfig>,
@@ -335,7 +334,7 @@ pub enum Flow {
 }
 
 /// The control loop's state: the [`Engine`] every workspace shares and the open [`Doc`]s, in
-/// open order (ARCHITECTURE §1, §3.1). See the module docs and docs/control.md.
+/// open order.
 pub struct Control {
     eng: Engine,
     docs: Vec<Doc>,
@@ -373,7 +372,7 @@ struct MeterRound {
     listed: usize,
 }
 
-/// What every open workspace shares (ARCHITECTURE §3.1, §3.5): the mixer and its clock, the
+/// What every open workspace shares: the mixer and its clock, the
 /// device, the disk streamer, the voice-id and patch-slot allocators, the machine settings,
 /// the document worker and the save writer, the outbound channel, the show log and status.
 struct Engine {
@@ -426,7 +425,7 @@ struct Engine {
     meter_peaks: Vec<f32>,
     /// Show-log and status bookkeeping (`observe.rs`).
     observe: Observe,
-    /// The probe workers every doc's catalog uses (one pool, ARCHITECTURE §3.1).
+    /// The probe workers every doc's catalog uses (one pool).
     pool: ProbePool,
     /// The one thread reading waveforms (AUD-14), apart from the probe workers.
     waveform_reader: waveform_reader::WaveformReader,
@@ -491,7 +490,7 @@ impl Listed {
     }
 }
 
-/// One open workspace (ARCHITECTURE §3.1): its model, undo history, cue engine, voices, media
+/// One open workspace: its model, undo history, cue engine, voices, media
 /// catalog, plan checks, network output, file state (path, saves, autosave) and what its
 /// clients have been told (revision, runtime sequence, warnings).
 struct Doc {
@@ -601,7 +600,7 @@ impl Control {
             };
             let now = cx.now();
             // A newly opened workspace (the engine was told by `DocModel::new`): report the
-            // playheads (docs/cue-engine.md).
+            // playheads.
             cx.doc.media.sync(cx.doc.model.ws());
             let mut inputs = vec![Input::Tick];
             inputs.extend(cx.sync_workspace(true));
@@ -613,7 +612,7 @@ impl Control {
         Ok(control)
     }
 
-    /// The control state with no doc open, as the engine starts (ARCHITECTURE §8): the
+    /// The control state with no doc open, as the engine starts: the
     /// client opens what it wants (`new`, `open`, which offers recovery, `open_recovery`).
     /// Starts the disk workers, the probe workers and the document worker (which answer on
     /// `inbox`).
@@ -628,7 +627,7 @@ impl Control {
         let engine_config = EngineConfig::new(config.sample_rate, block, config.seed)?;
         let rate = engine_config.sample_rate();
         // Stream opens are told apart by the probe gate's volumes, so opens hung on one volume
-        // never take every opener (docs/audio.md, Disk streaming).
+        // never take every opener.
         let mut streamer_config = config.streamer;
         streamer_config.volume_of = streamer_config
             .volume_of
@@ -844,7 +843,7 @@ impl Engine {
             .then(|| self.mixer.samples_rendered())
     }
 
-    /// Sends commands as batches the mixer applies whole (docs/audio.md, Scheduling horizon).
+    /// Sends commands as batches the mixer applies whole.
     fn send_commands(&mut self, commands: Vec<(SampleTime, CommandKind)>) {
         for commands in stops_apart(commands) {
             let mut commands = ramps_together(commands);
@@ -1113,12 +1112,12 @@ impl DocCx<'_> {
 impl Control {
     /// Stops the show for shutdown: a hard stop of everything in every doc, carried out by the
     /// mixer; then a final recovery write of every doc with unsaved changes, waited for at most
-    /// [`ControlConfig::shutdown_wait`] (ARCHITECTURE §8). With no doc open, only the
+    /// [`ControlConfig::shutdown_wait`]. With no doc open, only the
     /// mixer's queue is pumped.
     pub fn shutdown(&mut self) -> FinalWrites {
         self.each_doc(|cx| {
             let now = cx.now();
-            // A second panic within the fade is a hard stop (docs/cue-engine.md, Panic).
+            // A second panic within the fade is a hard stop.
             cx.feed(Input::Panic, now);
             cx.feed(Input::Panic, now);
             cx.doc.voices.clear_primes();

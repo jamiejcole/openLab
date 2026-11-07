@@ -2,7 +2,7 @@
 
 //! Output device configuration, pure (AUD-03, AUD-21): picks a stream configuration from what a
 //! device supports, and the reopen backoff schedule (NFR-08). No cpal types here, so it builds
-//! and is tested without the `device` feature. See `docs/audio.md`, Device layer.
+//! and is tested without the `device` feature.
 
 use crate::mixer::MAX_OUTPUT_CHANNELS;
 

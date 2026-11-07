@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! GO and the playheads: GO, double-GO protection, moving a list's playhead, and which groups a
-//! playhead is visiting (docs/cue-engine.md, "GO and double-GO", "Playhead").
+//! playhead is visiting.
 
 use crate::cue::Cue;
 use crate::model::{CueId, CueListId, Workspace};

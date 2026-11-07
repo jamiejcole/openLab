@@ -3,7 +3,7 @@
 //! Unclean exits (DX-04): a "running" marker file per engine process, removed on a
 //! graceful shutdown. The next start turns a leftover marker into a show-log record, so a
 //! crash the panic hook could not see (an abort, SIGSEGV, SIGKILL, an out-of-memory kill, a
-//! power cut) still leaves a trace. Decision record: docs/handoff/decisions/m4-7b.md.
+//! power cut) still leaves a trace.
 //!
 //! Each running engine holds an exclusive lock on its own marker (`File::try_lock`); the OS
 //! drops the lock when the process ends, however it ends. A marker that can be locked

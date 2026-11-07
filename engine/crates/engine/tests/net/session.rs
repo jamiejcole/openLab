@@ -1236,7 +1236,7 @@ async fn ok_call(ws: &mut Ws, make: impl FnOnce(RequestId) -> ClientMessage) {
 }
 
 /// What a session told its two connections: results, and every other message, apart (the two
-/// kinds may pass each other on a connection, docs/network.md "Ordering and gaps").
+/// kinds may pass each other on a connection).
 #[derive(Debug, PartialEq)]
 struct Told {
     app_results: Vec<ServerMessage>,

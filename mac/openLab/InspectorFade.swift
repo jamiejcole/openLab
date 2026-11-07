@@ -4,7 +4,7 @@ import AppKit
 
 /// The Fade cue's settings beside its levels (CT-10, AUD-09): how long, which curve, and whether
 /// the target stops when the fade is done. Only the standard curves; custom curves are not in
-/// v0.0.1 (REQUIREMENTS §21).
+/// v0.0.1.
 @MainActor
 final class FadeSettingsPanel: NSObject, NSTextFieldDelegate {
     enum Change: Equatable {

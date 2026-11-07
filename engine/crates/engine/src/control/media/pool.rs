@@ -37,7 +37,7 @@ pub(super) struct WorkerState {
 }
 
 /// The probe workers every doc shares, their watchdog and what they know about the volumes
-/// (ARCHITECTURE §3.1: one pool of [`PROBE_WORKERS`]).
+/// (one pool of [`PROBE_WORKERS`]).
 pub struct ProbePool {
     high: Sender<Job>,
     low: Sender<Job>,

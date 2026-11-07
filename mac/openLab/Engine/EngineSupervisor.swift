@@ -3,8 +3,7 @@
 import Combine
 import Foundation
 
-/// Finds or starts the engine and notices when it is gone (docs/control.md "Process
-/// lifecycle"). No UI: it says what happened on `alarms` and `ready`.
+/// Finds or starts the engine and notices when it is gone. No UI: it says what happened on `alarms` and `ready`.
 ///
 /// Show safety: an engine this app run has talked to is never signalled. Ending an engine that
 /// is alive but does not answer (SIGTERM, then SIGKILL) happens only at launch, before any

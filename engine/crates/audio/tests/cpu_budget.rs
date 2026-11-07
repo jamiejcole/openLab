@@ -562,7 +562,7 @@ fn sixty_four_stereo_voices_with_fades_render_at_least_ten_times_real_time() {
         }
     }
     println!("gate: best {best:.1}x, budget {MIN_REALTIME_RATIO}x");
-    // A whole-matrix edit (its 10 ms ramp, docs/cue-engine.md) and a half-second Fade of every
+    // A whole-matrix edit (its 10 ms ramp) and a half-second Fade of every
     // gain on dense matrices: gated on the worst block, since one overrun is a dropout.
     let edit = Fade::new(RATE as u64 / 100, Curve::Linear);
     let fade = Fade::new(RATE as u64 / 2, Curve::SCurve);

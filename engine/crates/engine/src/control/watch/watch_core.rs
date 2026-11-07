@@ -37,7 +37,7 @@ pub struct Target {
     pub(super) bucket: String,
 }
 
-/// The watch state and the pass rules (docs/persistence.md "Media watch and follow").
+/// The watch state and the pass rules.
 #[derive(Debug, Default)]
 pub struct WatchCore {
     generation: u64,

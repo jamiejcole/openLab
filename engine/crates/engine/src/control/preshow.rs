@@ -3,7 +3,7 @@
 //! The pre-show check (SM-06, NFR-07): one report of what would keep the show from running,
 //! built from state the control thread already holds (the cue engine's problems, the patch
 //! resolutions, the workspace warnings). It does no I/O: media status is the latest probe plus
-//! the media watch (docs/control.md, Pre-show check).
+//! the media watch.
 
 use std::collections::{BTreeMap, BTreeSet};
 

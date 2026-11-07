@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The real-time mixer (ARCHITECTURE §3.4, §3.5). Everything reachable from [`Mixer::process`]
+//! The real-time mixer. Everything reachable from [`Mixer::process`]
 //! runs on the audio thread: no allocation, locks, syscalls or logging. All buffers are sized in
 //! [`Mixer::new`]; voice starts that must be freed go back to the controller on the return queue.
 
@@ -26,7 +26,7 @@ use faults::{DisabledFlags, FaultLog, FaultWindow, Health, Stage, StageTracker};
 pub use faults::{DisabledUnits, FAULT_LIMIT, FAULT_WINDOW, FaultStage};
 use voice::Voice;
 
-/// Absolute time in frames at the device rate since the mixer started (ARCHITECTURE §3.2).
+/// Absolute time in frames at the device rate since the mixer started.
 pub type SampleTime = u64;
 
 /// Caller-chosen voice identifier; must be unique among active voices.

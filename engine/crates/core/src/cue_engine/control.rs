@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Control cues (CT-11..CT-17, CT-19): Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm and
-//! Disarm act on their target as the operator would, at their action start. Rules:
-//! `docs/cue-engine.md`, "Control cues".
+//! Disarm act on their target as the operator would, at their action start.
 
 use crate::cue::{Cue, CueKind, DevampMode, GroupMode};
 use crate::model::{CueId, CueListId};

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Offline render driver (ARCHITECTURE §3.6): runs the same mixer callback in a loop into memory,
+//! Offline render driver: runs the same mixer callback in a loop into memory,
 //! as fast as the CPU allows.
 
 use crate::mixer::Mixer;

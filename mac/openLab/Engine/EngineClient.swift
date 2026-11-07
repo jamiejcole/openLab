@@ -10,7 +10,7 @@ enum EngineError: Error, Equatable, Sendable {
     case disconnected
     case engine(code: ErrorCode, message: String)
     case encoding(String)
-    /// A `snapshot` is already out; never pipelined (docs/network.md).
+    /// A `snapshot` is already out; never pipelined.
     case snapshotAlreadyPending
     /// No `result` within `ReconnectPolicy.requestTimeout` (the engine may still carry it out).
     case timeout
@@ -404,7 +404,7 @@ final class EngineClient: ObservableObject {
             switch outcome {
             case .ok(let body):
                 // The model_changed for N always precedes a result with revision N; behind it means
-                // the change was dropped (docs/network.md), so resync.
+                // the change was dropped, so resync.
                 if let r = body.revision, let delegate, r > delegate.revision { requestSnapshot() }
                 completion(.success(body))
             case .error(let e):

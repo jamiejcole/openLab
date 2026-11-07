@@ -7,7 +7,7 @@
 //!
 //! A peer only gets a session by succeeding at `/connect` or by subscribing, so stray traffic
 //! from spoofed UDP sources costs a table slot only if it subscribes (possible only without a
-//! passcode, which `docs/osc.md` says is for trusted networks).
+//! passcode, which is for trusted networks).
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -482,7 +482,7 @@ impl Sessions {
     }
 }
 
-/// The reply byte budget of each UDP source address (docs/osc.md, "Limits"). Per IP, whatever
+/// The reply byte budget of each UDP source address. Per IP, whatever
 /// workspace the replies are about: several open docs must not multiply what a forged source
 /// can be sent.
 #[derive(Debug, Default)]

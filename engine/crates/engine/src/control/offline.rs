@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The control loop on the offline render driver (ARCHITECTURE §3.6): the same [`Control`] as
+//! The control loop on the offline render driver: the same [`Control`] as
 //! on a device, stepped one block at a time into memory, faster than real time. Used by the
 //! engine's tests (sample-exact starts, fades, feedback) and for offline renders.
 //!

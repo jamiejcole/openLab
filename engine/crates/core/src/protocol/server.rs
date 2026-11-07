@@ -259,7 +259,7 @@ pub const WAVEFORM_PEAK_SCALE: i16 = 32767;
 
 /// The pre-show check (SM-06, NFR-07): everything that would keep the show from running,
 /// computed from the engine's state when the request is handled (no disk or network I/O: media
-/// status is the latest probe, `docs/control.md`). Every list is sorted for display.
+/// status is the latest probe). Every list is sorted for display.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PreshowReport {
     /// True when nothing is a problem: no broken cue, no `system` problem, and none of the

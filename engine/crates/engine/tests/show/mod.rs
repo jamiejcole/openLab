@@ -240,7 +240,7 @@ pub fn show_at(ws: Workspace, rate: u32, block: u64) -> OfflineShow {
 /// followed the change as a signalled one, in every build: its whole-model passes ran again
 /// (`model_syncs` counts only follow-ups of a signal) and no change went unsignalled. Nothing in
 /// the control loop signals an edit by hand any more: the signal is the workspace's write
-/// guard's (docs/control.md, Model changes).
+/// guard's.
 pub fn assert_engine_follows<R>(
     s: &mut OfflineShow,
     edit: impl FnOnce(&mut OfflineShow) -> R,

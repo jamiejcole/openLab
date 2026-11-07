@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Device-rate view of a [`FrameSource`] (ARCHITECTURE §3.5): rubato's synchronous FFT resampler
+//! Device-rate view of a [`FrameSource`]: rubato's synchronous FFT resampler
 //! when the rates differ, a pass-through otherwise. Runs on disk threads.
 //!
 //! Positions are device frames on one fixed grid: frame `p` is the signal at time `p / device

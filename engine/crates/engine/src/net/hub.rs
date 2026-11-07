@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Fan-out of the control thread's broadcasts to the connected clients (docs/network.md).
+//! Fan-out of the control thread's broadcasts to the connected clients.
 //!
 //! One task on the network runtime reads the outbound channel, encodes each message once and
 //! offers it to the bounded queue of every client it is for with `try_send`: nothing here waits
@@ -178,7 +178,7 @@ fn encode(message: &ServerMessage) -> Option<Arc<str>> {
 }
 
 /// A second consumer of the control thread's broadcasts: the OSC side, which keeps a copy of
-/// every open doc's workspace from them (ARCHITECTURE section 7, "the OSC task sees all"). Only
+/// every open doc's workspace from them. Only
 /// the messages that change a copy are forwarded, with their doc: each doc's `model_changed`,
 /// `runtime`, `document`, `snapshot` and `closed`, and the `workspaces` list (which docs are
 /// open, in open order).

@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Per-cue second-trigger options (QLab 5), per docs/cue-engine.md "Second trigger":
+//! Per-cue second-trigger options (QLab 5):
 //! every option on a running, paused, pre-waiting and stopping cue; playlist next/previous;
 //! the trigger sources (Start, GO, Start cue, GoTo-and-GO, continue, Devamp "start next cue");
 //! the release input; cycles staying within the chain budget; editing with undo and validation.

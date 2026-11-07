@@ -6,9 +6,9 @@
 //! outputs. The mixer's own master stays at unity (the mixer is shared by every open doc; a
 //! workspace has no global master).
 //!
-//! The mixer is shared by every open doc (ARCHITECTURE §3.5): slots are keyed by `(DocId,
+//! The mixer is shared by every open doc: slots are keyed by `(DocId,
 //! PatchId)`, not by a patch's place in a list, so adding, removing or moving a patch never
-//! re-routes or silences a voice already playing (docs/control.md "Patch slots"). A slot belongs
+//! re-routes or silences a voice already playing. A slot belongs
 //! to one doc's patch at a time, so only that doc's voices can play through it. A voice keeps
 //! the slot it started on; a slot whose patch is gone, or whose patch changed its output count
 //! while a voice plays through it, is *retired*: it keeps the routing it had until no voice
@@ -16,7 +16,7 @@
 //! ([`Patches::release_doc`]): its voices were stopped first.
 //!
 //! Patches resolve against the device the mixer plays on (the control loop's `playable` list:
-//! empty during a device outage; docs/control.md "Devices"). Output level, mute and polarity
+//! empty during a device outage). Output level, mute and polarity
 //! are in the matrix: the mixer has no other per-output setting.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -463,7 +463,7 @@ impl Patches {
     }
 
     /// The mixer reset slot `slot` to silence after a fault: what brings it back to the gains
-    /// last sent (`docs/control.md` "Mixer faults").
+    /// last sent.
     pub fn resend(&self, slot: u16) -> Vec<CommandKind> {
         let mut commands = Vec::new();
         self.resend_into(slot, &mut commands);

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Panic (PB-03), Reset All, Pause All and Resume All (PB-04), per docs/cue-engine.md "Panic",
-//! "Reset All" and "Pause All and Resume All". Virtual sample clock at 1 kHz: one second is
+//! Panic (PB-03), Reset All, Pause All and Resume All (PB-04). Virtual sample clock at 1 kHz: one second is
 //! 1000 samples.
 
 use crate::common::*;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Peak meters and the xrun counter (AUD-19, NFR-27, ARCHITECTURE §3.1, §3.5).
+//! Peak meters and the xrun counter (AUD-19, NFR-27).
 //!
 //! The audio thread keeps each block's peaks in plain `f32`s and publishes them once per
 //! `process` call with one `fetch_max` per meter; the control thread takes them with `swap(0)`,
@@ -14,8 +14,6 @@
 //! unread peaks to a second word (`retired`), so a voice that ends or is re-keyed still has its
 //! last peaks read once under its own id even if its slot is reused before the read. The slot's
 //! `(id, epoch, active)` is published with a sequence lock that only the reader ever retries.
-//!
-//! See `docs/audio.md` (Meters and xruns).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};

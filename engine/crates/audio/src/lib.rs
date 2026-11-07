@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! openLab audio: device layer, decoding, disk streaming, real-time mixer and offline render driver.
-//! See `docs/audio.md`.
 
 mod controller;
 mod decode;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The engine <-> UI protocol (ARCHITECTURE section 6): message types, the codec and the version.
+//! The engine <-> UI protocol: message types, the codec and the version.
 //! These types are the single source of truth; `docs/protocol.md` is the spec and
 //! `engine/fixtures/protocol/` holds one golden JSON file per message, which the Swift app
 //! decodes too. No sockets or threads here: the server is the binary's.

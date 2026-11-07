@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The cue engine's voice actions carried out on the mixer and the disk streamer, and the
-//! mixer's events turned back into feedback (docs/control.md "Voices" and "Feedback").
+//! mixer's events turned back into feedback.
 //!
 //! Every run segment (`RunId`) gets its own mixer `VoiceId`, from the engine's [`VoiceIds`] (never
 //! reused), so
@@ -38,7 +38,7 @@ pub struct Effects {
     pub commands: Vec<(SampleTime, CommandKind)>,
     /// Feedback to hand to the engine at once (no sample of its own: failures).
     pub feedback: Vec<Input>,
-    /// Feedback dated `at`, handed to the engine only once `now > at` (docs/control.md).
+    /// Feedback dated `at`, handed to the engine only once `now > at`.
     pub deferred: Vec<(SampleTime, Input)>,
     /// Notices for the operator (`code`, message, cue).
     pub notices: Vec<(&'static str, String, Option<CueId>)>,
@@ -179,7 +179,7 @@ impl VoiceRec {
     }
 }
 
-/// A prepared stream kept ready for a cue near the playhead (ARCHITECTURE §3.5).
+/// A prepared stream kept ready for a cue near the playhead.
 struct Prime {
     prepared: PreparedStream,
     total: Option<u64>,
@@ -210,7 +210,7 @@ pub struct Voices {
     /// Starts that used a primed stream (a cold start prepares one on the spot).
     prime_hits: u64,
     /// Ids that left since the last voice-meter read, and their cue: the read reports them once
-    /// more (docs/audio.md, Meters).
+    /// more.
     gone: Vec<(VoiceId, CueId)>,
     /// A show cue's record left since the last [`Voices::take_freed`]: a priming pass skips a
     /// cue that still has one, so the one after it is gone may prime the cue again.

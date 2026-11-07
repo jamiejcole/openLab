@@ -21,7 +21,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(not(feature = "test-support"))]
 const USAGE: &str = "usage: openlab-engine [--version] [--open SHOW_FILE]... \
 [--app-support DIR] [--watch-stdin] [--relaunch-app BUNDLE_ID]";
-/// A test-support build also takes `--virtual-device` (docs/control.md "Virtual device").
+/// A test-support build also takes `--virtual-device`.
 #[cfg(feature = "test-support")]
 const USAGE: &str = "usage: openlab-engine [--version] [--open SHOW_FILE]... \
 [--app-support DIR] [--watch-stdin] [--relaunch-app BUNDLE_ID] \

@@ -61,7 +61,7 @@ impl Control {
 }
 
 impl Engine {
-    /// Primed streams the whole engine may hold (ARCHITECTURE §3.5): `max_primes`, and never
+    /// Primed streams the whole engine may hold: `max_primes`, and never
     /// more than half the disk streamer's open-stream limit, which is the engine's. A start
     /// that finds no permit fails (`stream_failed`), and primes are only a head start, so the
     /// other half is always left for starts. 64 with the defaults.
@@ -93,7 +93,7 @@ impl Engine {
 }
 
 impl DocCx<'_> {
-    /// Keeps the cues near each playhead primed (ARCHITECTURE §3.5).
+    /// Keeps the cues near each playhead primed.
     pub(super) fn prime(&mut self, now: SampleTime) {
         let wanted = prime_set(
             self.doc.model.ws(),
@@ -154,8 +154,7 @@ impl DocCx<'_> {
 }
 
 /// The cues to keep primed: from each list's playhead the next `per_list` cues (any kind; the
-/// audio ones count), the targets of those cues, then every cue with a hotkey or OSC trigger
-/// (ARCHITECTURE §3.5). Disarmed and running cues are left out (a start of a running cue makes
+/// audio ones count), the targets of those cues, then every cue with a hotkey or OSC trigger. Disarmed and running cues are left out (a start of a running cue makes
 /// a new voice anyway).
 ///
 /// Reads the playhead window and the targets through the cue index, so they cost the cues

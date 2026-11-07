@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Several workspaces (docs) in one engine (WS-02, REQUIREMENTS §21: at most 8;
-//! ARCHITECTURE §1, §3.1, §3.5): the docs share the mixer, the device, the probe pool and the
+//! Several workspaces (docs) in one engine (WS-02, REQUIREMENTS §21: at most 8):
+//! the docs share the mixer, the device, the probe pool and the
 //! media watch, and nothing one doc does reaches another. Driven through the engine's test API
 //! (`OfflineShow::open_doc`, `close_doc`, `transport_doc`, `panic_all`, `hotkey`); the
 //! protocol's bound connections are in net_docs.rs.
@@ -482,7 +482,7 @@ fn at_most_eight_docs_are_open_and_ids_are_never_reused() {
     );
 }
 
-/// Eight docs share one probe pool of two workers (ARCHITECTURE §3.1).
+/// Eight docs share one probe pool of two workers.
 #[test]
 fn eight_docs_share_one_pool_of_two_probe_workers() {
     let files: Vec<_> = (0..MAX_DOCS).map(|_| wav(&dc(100, 0.5))).collect();
@@ -1219,7 +1219,7 @@ fn an_idle_second_doc_takes_no_primes_from_a_busy_show() {
         modifiers: Modifiers::default(),
     };
     let f = wav(&dc(400, 0.25));
-    // 60 hotkey cues: all primed (ARCHITECTURE §3.5), within the 64 of the pool.
+    // 60 hotkey cues: all primed, within the 64 of the pool.
     let cues = (1..=60)
         .map(|n| {
             let mut c = audio(n, &f, 0);

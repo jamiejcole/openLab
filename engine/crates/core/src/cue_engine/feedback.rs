@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Feedback from the audio side: an action ended, its real length became known, or it failed
-//! (docs/cue-engine.md, "Feedback", "Broken cues").
+//! Feedback from the audio side: an action ended, its real length became known, or it failed.
 
 use crate::cue::{CueKind, GroupMode};
 use crate::model::{CueId, Workspace};

@@ -10,7 +10,7 @@
 //! Level, mute and routing edits on a playing audio cue (AUD-06, AUD-08, NFR-01),
 //! through the control loop and rendered offline: the edit is heard within the 10 ms edit ramp
 //! (80 frames at 8 kHz), with no step in the samples, no voice restart, and fades start from
-//! what is heard. Rules: docs/cue-engine.md, "Level edits on a playing cue".
+//! what is heard.
 
 use crate::show::*;
 use openlab_core::protocol::{ClientMessage, Outcome, ServerMessage, TransportAction};

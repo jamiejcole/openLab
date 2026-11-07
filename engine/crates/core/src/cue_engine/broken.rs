@@ -2,8 +2,7 @@
 
 //! Static broken-cue detection (CUE-06, NFR-07): problems that keep a cue from running, found
 //! before it is triggered. Core does no I/O, so media and device availability come from the
-//! binary as inputs; target and reference problems come from the model. Rules:
-//! `docs/cue-engine.md`, "Broken cues".
+//! binary as inputs; target and reference problems come from the model.
 //!
 //! Incremental, so a show of thousands of cues costs nothing per tick and an edit costs what the
 //! edit touched: the model's part (targets, patches, media references) is brought up to date
@@ -13,7 +12,7 @@
 //! opened workspace, a change with no footprint) and is the reference the incremental path must
 //! equal. A status input recomputes only the cues on that media file or patch (indexes below).
 //!
-//! Dependencies between cues (docs/cue-engine.md, "Broken cues"): a cue's problems come from its
+//! Dependencies between cues: a cue's problems come from its
 //! own content, from the existence and kind of its target (a fade, stop, devamp, ... names
 //! another cue; `can_target` reads the target's kind and a group's mode), and from the patch
 //! and the network patches (id, host and port: cue facts depend on them). So an edit refreshes, besides the cues it touched and the cues it
@@ -309,7 +308,7 @@ impl CueEngine {
     }
 
     /// Whether the patch of an audio cue exists and was last reported `Mapped`: a `device_lost`
-    /// break clears then (docs/cue-engine.md, Broken cues). An unreported patch does not count,
+    /// break clears then. An unreported patch does not count,
     /// so a break the binary reports without any patch status stays until a reset.
     pub(super) fn device_back(&self, cue: CueId) -> bool {
         let p = &self.problems;

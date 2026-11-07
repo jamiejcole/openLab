@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The countdowns a client shows for cues without a voice: pre-waits, silent actions (Wait,
-//! Fade, Group, ...) and post-waits (docs/cue-engine.md, "Timer progress").
+//! Fade, Group, ...) and post-waits.
 
 use crate::model::CueId;
 

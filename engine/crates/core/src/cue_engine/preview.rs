@@ -5,7 +5,6 @@
 //! playhead, on double-GO protection or on the groups around the cue; its start and stop carry
 //! their own variants so the binary can route them to the audition output, and Pause All /
 //! Resume All pause and resume it with the show's `PauseVoice` / `ResumeVoice` for its run.
-//! Rules: `docs/cue-engine.md`, "Preview".
 
 use std::collections::BTreeSet;
 
@@ -80,7 +79,7 @@ impl CueEngine {
         let ignored = |reason| EngineWarning::PreviewIgnored { cue, reason };
         let group = match &model.kind {
             // The inspector's Send button: the message goes out once, now, as the cue's action
-            // would (docs/cue-engine.md "Network cues"). No preview state: nothing to stop.
+            // would. No preview state: nothing to stop.
             CueKind::Network {
                 destination,
                 address,

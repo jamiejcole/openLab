@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A doc's workspace and the cue engine that plays it, kept together so the engine can never
-//! miss an edit (docs/control.md, "Model changes"). The workspace is reachable for writing only
+//! miss an edit. The workspace is reachable for writing only
 //! through [`DocModel::edit`], whose guard tells the engine when it goes: every edit is
 //! signalled by construction, and the engine's next `handle` follows it at the cost of a flag
 //! check when nothing changed.
@@ -72,7 +72,7 @@ impl WorkspaceEdit<'_> {
     /// undo or redo: `Command::footprint`), so its static problems are brought up to date for
     /// those cues alone (NFR-24). A model-wide footprint (lists, patches, settings) tells it the
     /// whole workspace changed. A footprint that misses a change is counted by the edit
-    /// cross-check (docs/cue-engine.md), as for a missed signal.
+    /// cross-check, as for a missed signal.
     pub(super) fn touched(mut self, footprint: &Footprint) {
         if !footprint.is_model_wide() {
             self.engine.model_changed_cues(footprint);

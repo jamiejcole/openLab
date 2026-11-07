@@ -4,7 +4,7 @@
 
 //! `model_changed` as the control loop sends it: a client mirror that starts from the snapshot
 //! and applies every message holds the engine's workspace after each edit, undo, redo and
-//! runtime change, and revisions rise by one (NFR-01, ED-07; docs/protocol.md, docs/control.md).
+//! runtime change, and revisions rise by one (NFR-01, ED-07; docs/protocol.md).
 
 use crate::show::*;
 use openlab_core::protocol::{ClientMessage, ServerMessage};
@@ -186,7 +186,7 @@ fn a_runtime_arm_change_is_sent_as_an_upsert_of_that_cue() {
 // ---- Every path that changes the workspace reaches the cue engine ----
 //
 // The control loop signals no edit by hand: a doc's workspace is written only through a guard
-// that tells its cue engine (docs/control.md, Model changes). Each path is checked with
+// that tells its cue engine. Each path is checked with
 // `assert_engine_follows` and, where the edit changes what the engine reports, by that report:
 // a Start cue losing its target is broken at once. Without the signal the problem cache would
 // stay as it was (the outline check sees no change inside a cue).

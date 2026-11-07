@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The socket-free OSC layer over several open docs (ARCHITECTURE section 7): an
+//! The socket-free OSC layer over several open docs: an
 //! un-prefixed message goes to every doc and each answers for itself, `/workspace/{id|name}`
 //! picks one, `/connect` and its sessions and lockouts are per peer and doc, the reply budgets
 //! per IP, and the per-call caps bound the fan-out.

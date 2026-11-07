@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The cue engine: cue lifecycle, timing, continue modes, groups, GO and playheads
-//! (ARCHITECTURE §3.3).
+//! The cue engine: cue lifecycle, timing, continue modes, groups, GO and playheads.
 //!
 //! Pure and deterministic: [`CueEngine::handle`] takes the current workspace, one [`Input`] and
-//! the sample time, and returns the [`Action`]s to carry out. Semantics are specified in
-//! `docs/cue-engine.md`.
+//! the sample time, and returns the [`Action`]s to carry out.
 
 mod advance;
 mod broken;

@@ -342,7 +342,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             let text = levelField.stringValue
             // Emptied is -inf (QLab 5 manual p. 204), except on a level a Fade is not moving, which
             // it leaves alone. Only white space is no change: a stray Space, the GO key, leaves that
-            // (ours; docs/todo/open-qlab-questions.md row 103).
+            // (ours).
             if LevelText.isStraySpace(text) || (text.isEmpty && levels?.isActive(slot) == false) { return }
             let limits = limits
             let db = LevelText.parse(text, limits: limits)

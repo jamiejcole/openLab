@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Client messages through the control loop's inbox: transport, commands, undo/redo, requests,
-//! and what goes out (docs/protocol.md, docs/control.md).
+//! and what goes out (docs/protocol.md).
 
 use crate::show::*;
 use openlab_core::protocol::{
