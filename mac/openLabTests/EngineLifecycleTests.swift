@@ -1491,7 +1491,16 @@ final class EngineCrashFlowTests: XCTestCase {
         try await recoverFromTheMenu(afterCrashOf: path)
         let wc = try XCTUnwrap(app.allWindows.first)
         let store = wc.store
-        await assertEventually { store.document?.path == path }
+        let bound = await eventually { store.document?.path == path }
+        if !bound {
+            // What the app and the engine said, so a failure in CI says which side lost the path.
+            let listed = app.session.workspaces.map { "\($0.doc) path=\($0.path ?? "nil")" }
+            let waiting = await scheduler.waitingCount
+            XCTFail(
+                "the recovered workspace never got its show file: document=\(String(describing: store.document)) "
+                    + "client=\(store.client.state) model=\(store.model?.name ?? "nil") listed=\(listed) "
+                    + "scheduler waiting=\(waiting)")
+        }
         await assertEventually { wc.window?.isDocumentEdited == true }
         XCTAssertEqual(store.model?.cue(intro)?.name, "Unsaved", "the autosave's edits")
         try await advance(0.1)
