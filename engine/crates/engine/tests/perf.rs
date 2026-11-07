@@ -11,7 +11,7 @@
 
 //! Performance budgets (NFR-24, NFR-25). Hardware testing is out of scope, so the
 //! budgets are CI stand-ins for the 2014 Mac mini (NFR-24's minimum spec): the requirement is
-//! divided by [`HEADROOM`], the same 2x as cpu_budget (ARCHITECTURE 3.6), and CI must stay
+//! divided by [`HEADROOM`], the same 2x as cpu_budget, and CI must stay
 //! under the divided figure.
 //!
 //! Everything that can be proven without a wall clock is: the idle loop's wake rate is counted
@@ -38,7 +38,7 @@ use openlab_engine::persist::read_text;
 use show::*;
 
 /// Headroom for the minimum-spec 2014 Mac mini: CI budgets are the requirement divided by
-/// this, the same 2x cpu_budget keeps (ARCHITECTURE 3.6) for hardware slower than the runner.
+/// this, the same 2x cpu_budget keeps for hardware slower than the runner.
 const HEADROOM: u32 = 2;
 /// Independent timed runs; a gate passes as soon as one is under budget.
 const RUNS: usize = 5;
@@ -606,7 +606,7 @@ fn rename(id: openlab_core::CueId) -> Command {
     }
 }
 
-// Two docs (ARCHITECTURE 3.1, docs/control.md "Several docs"). Every doc ticks on the
+// Two docs. Every doc ticks on the
 // one control thread and renders through the one mixer, so a second 2,000-cue doc must not
 // change what the first costs: the idle wake rate stays one per `MAX_WAIT` (virtual time), an
 // idle tick and an edit cost what one doc's do plus that doc's own share, installing and
@@ -620,7 +620,7 @@ const MAX_IDLE_DOC_SCALING: f64 = 3.0;
 /// plus [`EDIT_SLACK`] (the edit touches one doc; the tick after it ticks both).
 const MAX_EDIT_DOC_SCALING: f64 = 1.5;
 const EDIT_SLACK: Duration = Duration::from_micros(500);
-/// ARCHITECTURE 3.1: installing a doc on the control thread is "within one audio block
+/// Installing a doc on the control thread is "within one audio block
 /// (~5 ms)": 256 frames at 48 kHz. The gate takes this or the perf show's own block, whichever
 /// is shorter, divided by [`HEADROOM`].
 const ARCH_BLOCK: Duration = Duration::from_nanos(256 * 1_000_000_000 / 48_000);

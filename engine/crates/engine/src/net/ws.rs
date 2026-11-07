@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The WebSocket server: accept, authenticate, then relay between one client and the control
-//! thread (docs/network.md, docs/protocol.md section 2).
+//! thread (docs/protocol.md section 2).
 
 use crate::lock;
 use std::collections::VecDeque;
@@ -74,7 +74,7 @@ pub struct ServerConfig {
     /// Refused connections are logged at most this often (with a count), so a process that
     /// keeps knocking cannot flood the log.
     pub refusal_log_interval: Duration,
-    /// The OSC listeners (docs/osc.md), on this server's runtime. `None`: no OSC.
+    /// The OSC listeners, on this server's runtime. `None`: no OSC.
     pub osc: Option<OscConfig>,
     /// What to do when an app connection ends without `goodbye` (the UI crashed).
     /// `None`: only log it.
@@ -970,7 +970,7 @@ impl Conn {
                 if shutdown {
                     // First, so the app connections that end from here on are no crash.
                     self.shared.config.stopping.begin();
-                    // The control loop stops the show and ends (docs/network.md); the process
+                    // The control loop stops the show and ends; the process
                     // exit is the host's.
                     let _ = self.to_control(ClientMessage::Goodbye { shutdown: true });
                 }

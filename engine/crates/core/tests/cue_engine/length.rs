@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! `Input::ActionLength`: an audio action whose length the binary knows ends on a deadline, so
-//! continues and playlist moves come on the end sample itself (docs/cue-engine.md, Feedback).
+//! continues and playlist moves come on the end sample itself.
 //! 1 kHz, so one second is 1000 samples.
 
 use crate::common::*;

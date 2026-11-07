@@ -156,7 +156,7 @@ pub enum ContinueMode {
 /// Which loop of an Audio target a Devamp cue leaves: QLab 5's "Devamp currently looping slice"
 /// and "Devamp looping cue" (check D7). openLab has no play count for the whole cue: a
 /// cue without slice markers loops as a whole through `last_slice_play_count`, which is the
-/// cue's loop; with markers, every loop is a slice's. Rules: `docs/cue-engine.md`, "Devamp".
+/// cue's loop; with markers, every loop is a slice's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DevampMode {
@@ -170,8 +170,7 @@ pub enum DevampMode {
 }
 
 /// What a trigger (GO, a Start cue, a continue, a hotkey, OSC, …) does to a cue that is already
-/// active: pre-waiting, running, post-waiting, paused, fading or stopping. Rules:
-/// `docs/cue-engine.md`, "Second trigger".
+/// active: pre-waiting, running, post-waiting, paused, fading or stopping.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecondTrigger {

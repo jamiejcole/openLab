@@ -260,7 +260,7 @@ impl DocCx<'_> {
 
     /// A started voice the mixer has not listed in two meter reads in a row, while mixer
     /// events have been lost, has ended without its report reaching us: report it ended so its
-    /// cue does not run forever (docs/control.md, Reconciliation).
+    /// cue does not run forever.
     fn reconcile(&mut self, listed: &[VoiceId], rendered: SampleTime, prev: Option<SampleTime>) {
         let Some(prev) = prev else {
             return;
@@ -355,8 +355,7 @@ impl DocCx<'_> {
         }
         // The plans just checked give the cues whose slices cannot be played, which the cue
         // engine shows broken before a GO (`Input::SliceProblems`); the cues' nominal lengths,
-        // which a playlist halted by a broken child times its auto-follow by
-        // (docs/cue-engine.md, "Playlist"); and the media lengths clients show: only
+        // which a playlist halted by a broken child times its auto-follow by; and the media lengths clients show: only
         // the cues whose plan changed.
         let changes = self.doc.checks.take_changes();
         if !changes.slices.is_empty() {

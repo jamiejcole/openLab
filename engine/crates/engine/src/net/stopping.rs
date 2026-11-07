@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The engine's shutdown has begun (docs/control.md "Process lifecycle"). Set once, by whoever
+//! The engine's shutdown has begun. Set once, by whoever
 //! sees it first: a `goodbye { shutdown: true }` on any connection (the server), a signal or
 //! stdin closing (the host), or the end of the control loop (the host, as a backstop). From
 //! then on an app connection that ends is no crash, so the app is not relaunched into an engine

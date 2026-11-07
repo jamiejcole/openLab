@@ -2,7 +2,7 @@
 
 //! Mixer feedback through the control loop: pause/resume re-keying, a resume of a voice that had
 //! already ended, devamp, Pause All / Resume All, lost events, and a long show that must leave no
-//! voice or stream behind (docs/control.md).
+//! voice or stream behind.
 
 use crate::show::*;
 use openlab_core::protocol::{TransportAction, WireCueState, WireProblem, WireWarning};

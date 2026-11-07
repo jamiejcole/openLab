@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Audio levels as the mixer applies them: linear gains, fade curves and ramps. The formulas are
-//! the mixer's (`openlab-audio::gain`, docs/audio.md "Fades and curves"), duplicated here because
+//! the mixer's (`openlab-audio::gain`), duplicated here because
 //! core does not depend on the audio crate; a test compares the two sample by sample.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,7 +26,7 @@ pub enum LevelParam {
 
 /// How long the mixer takes over a gain change that has no fade of its own (5 ms, at least one
 /// frame): `Ramp` with 0 frames moves linearly over this many samples, except on the voice's own
-/// start sample, where nothing has been heard yet (docs/audio.md, De-zipper).
+/// start sample, where nothing has been heard yet.
 pub(super) fn dezip_frames(sample_rate: u32) -> SampleTime {
     let frames = (f64::from(sample_rate) * 0.005).round();
     if frames.is_nan() || frames < 1.0 {
@@ -56,8 +56,7 @@ pub(super) fn heard(
 /// How long an edit of a playing cue's levels (the operator riding a fader, a mute) takes to
 /// be heard: a linear ramp of 10 ms, at least one frame. Twice the mixer's 5 ms de-zipper,
 /// because an edit can be a full-scale step (a mute, a typed level) that a 5 ms ramp still
-/// makes tick; still short enough to feel immediate (docs/cue-engine.md, "Level edits on a
-/// playing cue").
+/// makes tick; still short enough to feel immediate.
 pub(super) fn edit_frames(sample_rate: u32) -> SampleTime {
     let frames = (f64::from(sample_rate) * EDIT_RAMP_SECONDS).round();
     if frames.is_nan() || frames < 1.0 {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Sample time: the only clock the cue engine knows (ARCHITECTURE §3.2).
+//! Sample time: the only clock the cue engine knows.
 
 use std::num::NonZeroU32;
 

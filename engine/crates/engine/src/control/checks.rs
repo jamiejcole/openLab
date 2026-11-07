@@ -3,7 +3,7 @@
 //! Which audio cues' slices cannot be played with their file (the cue engine's
 //! `slices_unplayable` problem, `Input::SliceProblems`, #410), kept per
 //! cue and recomputed only when the cue's trims and markers or its file's probe change: an edit
-//! of one cue in a show of thousands builds one plan, not thousands (docs/control.md).
+//! of one cue in a show of thousands builds one plan, not thousands.
 //!
 //! Only those cues are looked at, too: the media catalog notes the cues each edit
 //! touched and the files whose probe changed ([`PlanChanges`]), and the checks keep the files'

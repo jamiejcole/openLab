@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Mixer faults outside any voice (NFR-01; docs/control.md "Mixer faults"). The mixer blames a
+//! Mixer faults outside any voice (NFR-01). The mixer blames a
 //! panic on the patch slot, device output, master or meters it hit in, resets that unit to
 //! silence and reports it (`Event::StageFaulted`); after repeated faults it disables the unit.
 //! Here the unit gets its settings again from the control thread's copy and the operator is

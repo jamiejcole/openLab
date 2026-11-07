@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Cue engine behaviour (docs/cue-engine.md), driven by a virtual sample clock. The rate is
+//! Cue engine behaviour, driven by a virtual sample clock. The rate is
 //! 1 kHz, so one second is 1000 samples.
 
 use crate::common::*;
@@ -570,8 +570,7 @@ fn next_and_previous_move_without_firing() {
 
     assert_eq!(moved(&next(&mut rig)), Some(Some(id(2))));
     assert_eq!(moved(&next(&mut rig)), Some(Some(id(3))));
-    // Over the timeline group as a unit (QLab 5 enters only "start first and enter" groups;
-    // docs/cue-engine.md, Playhead).
+    // Over the timeline group as a unit (QLab 5 enters only "start first and enter" groups).
     assert_eq!(moved(&next(&mut rig)), Some(None));
     assert!(next(&mut rig).is_empty());
     assert_eq!(moved(&previous(&mut rig)), Some(Some(id(3))));
@@ -1423,7 +1422,7 @@ fn continue_goes_to_the_cue_that_is_next_when_it_fires() {
     assert_eq!(rig.state(2), CueState::Idle);
 }
 
-// ----- transition table (docs/cue-engine.md) -----
+// ----- transition table -----
 
 #[derive(Clone, Copy, Debug)]
 enum Setup {

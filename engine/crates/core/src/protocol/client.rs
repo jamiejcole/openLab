@@ -55,7 +55,7 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace: Option<DocId>,
         /// The client's process id. On an app connection that ends without `goodbye`, the
-        /// engine relaunches the app only once this process is gone (ARCHITECTURE §8): an app
+        /// engine relaunches the app only once this process is gone: an app
         /// that is alive but reconnecting slowly is not launched again. Absent: relaunch after
         /// the delay as before.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -121,7 +121,7 @@ pub enum ClientMessage {
 }
 
 /// What the operator does at the transport. Each maps to one cue-engine `Input`
-/// (`docs/protocol.md` has the table).
+/// (the mapping is in `control/transport.rs`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TransportAction {

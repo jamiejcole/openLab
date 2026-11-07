@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Gain helpers: dB conversion, fade curves and per-sample gain ramps. Formulas are documented in
-//! `docs/audio.md`; keep the two in sync.
+//! Gain helpers: dB conversion, fade curves and per-sample gain ramps.
 
-/// Levels at or below this are silence (ARCHITECTURE §4).
+/// Levels at or below this are silence.
 pub const SILENCE_DB: f64 = -120.0;
 
 /// Safety ceiling for every gain the mixer applies (the show model itself stops at +12 dB).
@@ -130,7 +129,7 @@ pub fn ramp_value(from: f32, to: f32, pos: u64, len: u64, curve: Curve) -> f32 {
 /// The mixer's gain along a ramp or fade from `from` to `to` differs from [`ramp_value`] by at
 /// most this times `max(|from|, |to|)`: −120 dB, the silence floor. One `f32` step of the
 /// result is up to 1.2e-7 of it and the mixer's recurrence adds about 1e-13; a gain ramp's `f32`
-/// sum and product add up to about 4.2e-7 more in the worst case (docs/audio.md). The first frame
+/// sum and product add up to about 4.2e-7 more in the worst case. The first frame
 /// and the end are exact.
 pub const RAMP_TOLERANCE: f64 = 1e-6;
 
@@ -166,7 +165,7 @@ enum Kind {
 /// position instead of a `sin`/`cos`/`exp` per frame. A value is a pure function of the ramp
 /// and the position, whatever order positions are asked in; consecutive positions cost a few
 /// multiplications each. Position 0 is exactly `from` and `len` (and beyond) exactly `to`; every
-/// other value is within [`RAMP_TOLERANCE`] of [`ramp_value`] (docs/audio.md).
+/// other value is within [`RAMP_TOLERANCE`] of [`ramp_value`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CurveRamp {
     from: f32,
@@ -449,7 +448,7 @@ impl CurveRamp {
 
 /// Stretches of curve progress a mixer keeps at once, in sets of [`SHAPE_WAYS`], so a gain finds
 /// its stretch whatever order the render walks the gains in. Shapes past these only cost
-/// recomputing (docs/audio.md).
+/// recomputing.
 const SHAPE_SLOTS: usize = 128;
 const SHAPE_WAYS: usize = 8;
 const SHAPE_SETS: usize = SHAPE_SLOTS / SHAPE_WAYS;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The socket-free OSC layer (ARCHITECTURE section 7, `docs/osc.md`): decoding, address
+//! The socket-free OSC layer: decoding, address
 //! dispatch onto the inputs the UI sends, per-peer passcode and updates state, and QLab-style
 //! replies. The UDP and TCP listeners call [`Osc`] with what they read and send what
 //! comes back; nothing in here opens a socket, reads a clock or spawns a thread.
@@ -160,7 +160,7 @@ pub const SINGLE_DOC: DocId = DocId(0);
 /// The OSC endpoint's state: per-(peer, doc) sessions, per-IP reply budgets and counters.
 #[derive(Debug)]
 pub struct Osc {
-    /// One table per open doc (ARCHITECTURE section 7: `/connect`, its passcode, sessions and
+    /// One table per open doc (`/connect`, its passcode, sessions and
     /// lockouts are per peer and doc). Doc ids rise in open order, so this is open order too.
     docs: BTreeMap<DocId, Sessions>,
     /// Wrong-passcode failures per IP and in all, for every doc together: a guesser gets no

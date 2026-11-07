@@ -53,7 +53,7 @@ impl Voices {
                 }
             }
             Event::Underrun { voice, .. } => {
-                // A starved voice does not skip what it missed (docs/audio.md, Voices): it ends
+                // A starved voice does not skip what it missed: it ends
                 // later than planned by the underrun, while the cue engine keeps the planned end.
                 if let Some(cue) = self.cue_of(voice) {
                     fx.notices.push((

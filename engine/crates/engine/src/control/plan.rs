@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! An Audio cue's playback plan: its trims, slice markers and play counts as the slice table the
-//! disk stream and the mixer voice share (docs/audio.md "Slices, loops and devamp"), started
+//! disk stream and the mixer voice share, started
 //! `offset` device frames into the cue's action. Pure: the probe's `MediaInfo` comes in.
 
 use std::num::NonZeroU32;

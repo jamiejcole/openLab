@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Following a model edit: cues gone from the workspace are stopped and forgotten, their groups
-//! react, and each list's playhead keeps its place (docs/cue-engine.md, "Model edits").
+//! react, and each list's playhead keeps its place.
 
 use std::collections::{BTreeSet, HashSet};
 

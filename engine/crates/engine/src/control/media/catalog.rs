@@ -81,7 +81,7 @@ pub(super) struct Entry {
 }
 
 /// What [`index_workspace`] reads from a workspace for a catalog: built off the control thread
-/// for a doc being opened (ARCHITECTURE §3.1, `DocParts`), so installing it there costs only
+/// for a doc being opened (`DocParts`), so installing it there costs only
 /// the probe jobs.
 pub struct Indexed {
     index: CueIndex,
@@ -198,7 +198,7 @@ impl PlanChanges {
     }
 }
 
-/// A file the media watch is to start or stop watching (docs/control.md "Media watch").
+/// A file the media watch is to start or stop watching.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeyChange {
     /// Everything was forgotten (the catalog was reset).
@@ -1004,7 +1004,7 @@ pub(super) fn preload_bytes(p: &Probed) -> u64 {
         .saturating_mul(4)
 }
 
-/// How the cue engine sees a failed probe (docs/cue-engine.md, Broken cues).
+/// How the cue engine sees a failed probe.
 pub fn status_of(e: &MediaError) -> MediaStatus {
     match e {
         MediaError::NotFound(_) => MediaStatus::Missing,

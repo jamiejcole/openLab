@@ -15,7 +15,7 @@ private func encodeTagged(_ tag: String, _ fields: Fields, to encoder: Encoder) 
     for (k, v) in fields { try c.encode(v, forKey: Key(k)) }
 }
 
-/// A model edit: core's `Command` (docs/commands.md). Opaque until the editing tasks give it
+/// A model edit: core's `Command`. Opaque until the editing tasks give it
 /// types; it round-trips exactly.
 struct Command: Hashable, Sendable, Codable {
     var json: JSONValue
@@ -171,7 +171,7 @@ enum Request: Hashable, Sendable, Codable {
     #endif
 
     /// Replies with a `snapshot` (the `workspaces` list on the app connection), so the engine
-    /// holds this connection's broadcasts until the `result` (docs/network.md "Ordering and gaps").
+    /// holds this connection's broadcasts until the `result`.
     var answersWithSnapshot: Bool {
         switch self {
         case .snapshot: return true
@@ -345,7 +345,7 @@ struct HotkeyModifiers: Hashable, Sendable, Codable {
 
 enum ClientMessage: Hashable, Sendable, Codable {
     case hello(Hello)
-    /// `coalesce`: edits sent with the same key join one undo step (docs/commands.md "Coalescing");
+    /// `coalesce`: edits sent with the same key join one undo step;
     /// absent on the wire when nil.
     case command(id: UInt64, Command, coalesce: String? = nil)
     case transport(id: UInt64, TransportAction)

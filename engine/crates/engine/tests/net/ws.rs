@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! The WebSocket server over real sockets on 127.0.0.1, against a stand-in control thread
-//! (docs/network.md, docs/protocol.md section 2). Timeouts here are hang guards only; the
+//! (docs/protocol.md section 2). Timeouts here are hang guards only; the
 //! server's own timers are shortened through `ServerConfig`.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -1404,7 +1404,7 @@ impl Fix {
     }
 }
 
-/// (NFR-01, ARCHITECTURE §8): an app connection that ends without `goodbye` is logged and
+/// (NFR-01): an app connection that ends without `goodbye` is logged and
 /// the app is relaunched, unless an app connection is back by then; one that says goodbye is not
 /// a crash. Bound connections (windows) never relaunch anything.
 #[tokio::test]

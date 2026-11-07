@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The engine <-> UI protocol (ARCHITECTURE section 6): message types, the codec and the version.
+//! The engine <-> UI protocol: message types, the codec and the version.
 //! These types are the single source of truth; `docs/protocol.md` is the spec and
 //! `engine/fixtures/protocol/` holds one golden JSON file per message, which the Swift app
 //! decodes too. No sockets or threads here: the server is the binary's.
 //!
-//! Compatibility rules (see the spec): unknown **fields** are ignored, so a newer peer may add
+//! Compatibility rules (`docs/protocol.md`): unknown **fields** are ignored, so a newer peer may add
 //! optional fields without a version bump; unknown message **types** are an error
 //! ([`ProtocolError::UnknownType`]); removing or re-typing a field, or changing what one means,
 //! bumps [`PROTOCOL_VERSION`]. Times are seconds (f64), never samples.

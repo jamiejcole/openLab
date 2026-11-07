@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! OSC address -> the inputs the UI sends and the replies QLab 5 gives (`docs/osc.md` lists them).
+//! OSC address -> the inputs the UI sends and the replies QLab 5 gives.
 //! Two steps so that nothing about the show is revealed before the peer's passcode is checked:
 //! [`parse_address`] looks at the address text only; [`resolve`] looks cues up and builds the
 //! inputs and replies.
@@ -77,7 +77,7 @@ pub trait OscShow {
 }
 
 /// One open workspace as the dispatcher sees it: the engine's doc and its show. A call gets every
-/// open doc, in open order (ARCHITECTURE section 7: an un-prefixed message goes to each).
+/// open doc, in open order (an un-prefixed message goes to each).
 #[derive(Clone, Copy)]
 pub struct DocShow<'a> {
     pub doc: DocId,
@@ -421,7 +421,7 @@ fn verb_of(part: &str) -> Option<Verb> {
 }
 
 /// The right a message needs, judged on its address and argument count alone so that nothing
-/// about the show is looked up before the peer is known to be allowed (docs/osc.md, "Rights").
+/// about the show is looked up before the peer is known to be allowed.
 /// `None` for `/connect`, `/version`, `/workspaces` and `/updates`, which every peer may send.
 ///
 /// - View: every read, `/udpReplyPort`, and writing a cue's `notes`.

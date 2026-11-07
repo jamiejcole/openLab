@@ -2,8 +2,7 @@
 
 //! Level edits on a playing audio cue (AUD-06, AUD-08): an edit of the levels, mutes or
 //! crosspoints of an audio cue whose voice has started reaches the voice as short `Ramp`s, one
-//! per changed gain, the way Fade cues reach it. Rules: `docs/cue-engine.md`, "Level edits on a
-//! playing cue".
+//! per changed gain, the way Fade cues reach it.
 //!
 //! The diff is made here, from the levels the voice was last given (kept on its run) and the
 //! model's, so the binary carries out `Ramp` actions without knowing why they came; which
@@ -106,7 +105,7 @@ impl CueEngine {
     }
 
     /// A narrowing of the volume limits reaches the levels Fade cues hold or are moving on playing
-    /// voices, which no model edit touches ("Level edits on a playing cue", docs/cue-engine.md):
+    /// voices, which no model edit touches:
     /// nothing plays above the maximum 10 ms after it is lowered, and a Fade no longer ends beyond
     /// the limits. A fade on its way down that is above the new maximum is at it within the 10 ms
     /// and goes on down from there, so it still ends where and when it was going to. Returns the

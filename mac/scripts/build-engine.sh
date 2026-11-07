@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Xcode build phase: build openlab-engine with cargo and copy it to Contents/MacOS.
 # Release builds a universal (arm64 + x86_64) binary without test support; Debug builds the host arch
-# only, with the `test-support` feature: the app's tests start this engine on its virtual audio device
-# (docs/control.md "Virtual device"). verify-bundle.sh checks a Release engine refuses it.
+# only, with the `test-support` feature: the app's tests start this engine on its virtual audio device.
+# verify-bundle.sh checks a Release engine refuses it.
 set -euo pipefail
 
 # Xcode's PATH does not include rustup's proxies.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The show log's disk side (ARCHITECTURE §3.1 "Writer"): a bounded channel from the control
+//! The show log's disk side (a bounded channel from the control
 //! thread to a writer thread that appends JSON lines to a size-rotated file.
 //!
 //! The control thread only ever `try_send`s. When the writer is behind (a slow or stuck disk)

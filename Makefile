@@ -58,7 +58,7 @@ fuzz:
 	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run protocol fuzz/corpus/protocol fixtures/protocol/client \
 		fixtures/protocol/server fuzz/protocol-seeds -- -max_total_time=$(FUZZ_TIME) -max_len=65536 -timeout=10
 
-# Nightly CI and local: engine tests under ASan and TSan, then Miri on openlab-core (QA-09, docs/ARCHITECTURE.md §11).
+# Nightly CI and local: engine tests under ASan and TSan, then Miri on openlab-core (QA-09).
 # Needs: rustup toolchain install $(SAN_TOOLCHAIN) --profile minimal -c rust-src -c miri
 # Rust has no -Zsanitizer=undefined; Miri is the undefined-behaviour check, and runs on core only (no I/O, no FFI).
 # --lib --tests skips doctests (rustdoc does not support -Zsanitizer reliably). Ignored tests (real-time, perf,

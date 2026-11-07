@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The engine process (ARCHITECTURE §1, §3.1, §8): the mixer on the default output device's
+//! The engine process: the mixer on the default output device's
 //! audio thread, the control loop on its own thread, the UI server and OSC on the network
 //! runtime. It starts with no workspace open: a client opens what it wants (`new`,
 //! `open`, which offers recovery, `open_recovery`); `--open` sends the same `open` for
@@ -18,7 +18,7 @@
 //!
 //! The stream is opened, closed and reopened on the device thread (`control::devices`), which
 //! keeps it (a cpal stream is not `Send` on every platform); the control thread gets the mixer
-//! controller and decides when (docs/control.md "Devices").
+//! controller and decides when.
 
 pub mod engine_file;
 mod instance_lock;
@@ -101,7 +101,7 @@ pub struct Options {
     /// (the app passes its own). `None`: only log it (dev and tests).
     pub relaunch_app: Option<String>,
     /// Play on the virtual device instead of the host's (`--virtual-device`; test-support
-    /// builds only, docs/control.md "Virtual device").
+    /// builds only).
     #[cfg(feature = "test-support")]
     pub virtual_device: Option<VirtualMode>,
 }
@@ -176,7 +176,7 @@ fn supervise(
     run: impl FnOnce(ShowLog) -> Result<(), HostError>,
 ) -> Result<(), HostError> {
     // First, so a crash while starting is captured too. Without an app-support folder the log
-    // keeps its in-memory ring only and there are no crash files (docs/logging.md).
+    // keeps its in-memory ring only and there are no crash files.
     let mut show_log = ShowLog::default();
     let mut log_writer = None;
     let mut run_marker = None;
@@ -230,7 +230,7 @@ fn supervise(
     // A controlled end, with or without an error, is not an unclean exit. A marker that cannot
     // be removed is reported (wrongly) at the next start; nothing better to do with it here.
     // After a control-thread panic the marker is dropped instead: closed and unlocked, but
-    // left in place, so the next start reports the crash (docs/handoff/decisions/m4-7b.md).
+    // left in place, so the next start reports the crash.
     if let Some(marker) = run_marker
         && !matches!(result, Err(HostError::ControlPanicked))
     {

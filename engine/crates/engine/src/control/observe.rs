@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The control thread's side of the show log and the status message (DX-02, DX-03;
-//! docs/logging.md): turns what the loop does into log records, and gathers the counters for
+//! The control thread's side of the show log and the status message (DX-02, DX-03): turns what the loop does into log records, and gathers the counters for
 //! `status`. The decisions about files, rotation, cadence and crash reports are in `diag`.
 
 use std::collections::HashMap;

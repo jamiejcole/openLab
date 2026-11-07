@@ -10,7 +10,7 @@
 //!   beyond [`MAX_GROUP_DEPTH`], non-finite or out-of-range times and levels. So `save_show`
 //!   accepts the result.
 //! - References are not checked: a target, patch or destination that does not exist, a wrong
-//!   kind of target and trigger cycles are the broken-cue state of ARCHITECTURE §10, which
+//!   kind of target and trigger cycles are the broken-cue state, which
 //!   [`validate`](crate::validate) reports as warnings. Removing a cue leaves such references
 //!   behind, and undo has to be able to put back states that contain them. UI code picks targets
 //!   from existing cues; [`prepare_paste`] drops references a pasted cue cannot keep.
@@ -137,8 +137,7 @@ pub enum CueProperty {
         value: Vec<OscArg>,
     },
     /// Only for Wait and Fade cues: how long the action lasts, in seconds (CUE-02, CT-20, CT-10).
-    /// Finite, from 0 to `MAX_TIME`. A running cue keeps the end it had when its action started
-    /// (docs/cue-engine.md, Model edits).
+    /// Finite, from 0 to `MAX_TIME`. A running cue keeps the end it had when its action started.
     Duration {
         value: f64,
     },

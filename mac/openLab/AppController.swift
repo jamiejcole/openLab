@@ -4,7 +4,7 @@ import AppKit
 import Combine
 import UniformTypeIdentifiers
 
-/// The app-level owner of the windows (ARCHITECTURE section 9): one `WorkspaceWindowController`
+/// The app-level owner of the windows: one `WorkspaceWindowController`
 /// per workspace the session holds, each given only its own store, plus the launcher shown when
 /// none is open. It also runs File New/Open, the close and quit flows and the front-window
 /// routing. No NSDocument.
@@ -201,7 +201,7 @@ final class AppController {
         return list.beginEditFromKey(column)
     }
 
-    /// A cue hotkey fires in every open workspace, key window or not (ARCHITECTURE section 6): one
+    /// A cue hotkey fires in every open workspace, key window or not: one
     /// app-scope `hotkey` goes to the engine, which does the matching and applies each cue's
     /// second-trigger rule. The app only decides whether the key is a cue hotkey of an open
     /// workspace (to take the event); typing keys stay with a text field being edited, a held key

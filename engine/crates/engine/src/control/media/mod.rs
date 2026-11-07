@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What the control thread knows about each media file the workspace uses, and the probe workers
-//! that find it out. Probing decodes a whole compressed file (1–2 s for 30 minutes, docs/audio.md),
+//! that find it out. Probing decodes a whole compressed file (1–2 s for 30 minutes),
 //! and preloading decodes it into memory, so both run on these workers and never on the control
-//! thread (ARCHITECTURE §3.1): the control thread sends a job and gets the answer back through
+//! thread: the control thread sends a job and gets the answer back through
 //! its inbox.
 //!
 //! Probes of files cues near a playhead need come first (a high-priority queue the workers
@@ -22,10 +22,10 @@
 //! probes are stuck on it (preloads never count). A stalled volume gets one trial job at a time
 //! (the rest wait, still pending, no worker taken; files keep any last answer) and the next
 //! trial waits out a backoff after one gets stuck or fails. Any answer from the volume ends the
-//! probe-side stall. Jobs on other volumes always run. See docs/control.md.
+//! probe-side stall. Jobs on other volumes always run.
 //!
 //! The workers, their watchdog and the volume state are the engine's ([`ProbePool`]: one pool of
-//! [`PROBE_WORKERS`] for every open doc, ARCHITECTURE §3.1). Each doc's [`MediaCatalog`] sends
+//! [`PROBE_WORKERS`] for every open doc). Each doc's [`MediaCatalog`] sends
 //! its jobs through a [`PoolHandle`] that tags them with the doc, and the answers come back
 //! tagged the same way, so the control loop hands each to its doc (an answer for a closed doc
 //! is dropped).

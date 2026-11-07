@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The output device behind the control loop (NFR-08; docs/control.md "Devices"): the
+//! The output device behind the control loop (NFR-08): the
 //! device list, loss detection, and close/reopen with backoff.
 //!
 //! Opening, closing and listing a device can block in the host's audio system (CoreAudio holds

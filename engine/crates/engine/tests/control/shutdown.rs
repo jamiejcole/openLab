@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! The engine starts with no doc and ends with a final recovery write of every doc with unsaved
-//! changes (ARCHITECTURE §8, NFR-05), on the offline driver with a
+//! changes (NFR-05), on the offline driver with a
 //! virtual wall clock and the persistence layer on a temp folder.
 
 use std::fs;

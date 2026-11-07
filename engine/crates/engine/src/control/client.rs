@@ -144,7 +144,7 @@ impl Control {
         }
     }
 
-    /// Carries out an app-scope message (ARCHITECTURE §6: on any connection, whether or not a
+    /// Carries out an app-scope message (on any connection, whether or not a
     /// doc is open): opening a workspace, the recovery scan, closing one by id, the Esc panic
     /// and hotkeys of every doc, the PB-10 override, the device list and the show log. Any
     /// other message is handed back.

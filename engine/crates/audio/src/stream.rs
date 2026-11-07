@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Disk streaming (AUD-05, ARCHITECTURE §3.1, §3.5): a small pool of worker threads decodes and
+//! Disk streaming (AUD-05): a small pool of worker threads decodes and
 //! resamples each stream into its voice's ring, about 2 s ahead of the mixer. Loops are unrolled
 //! into the ring following the slice table ahead of time, so the ring never starves at a loop:
 //! a loop's later plays come from its loop cache (its first play, as written), or for loops
@@ -33,8 +33,7 @@ use crate::resample::Pipeline;
 
 pub const DEFAULT_WORKERS: usize = 2;
 /// Opener threads. Opens on a hung volume each hold one until the volume answers, but one
-/// volume holds at most all but one of them, so opens on other volumes always have one (see
-/// docs/audio.md, Disk streaming).
+/// volume holds at most all but one of them, so opens on other volumes always have one.
 pub const DEFAULT_OPENERS: usize = 4;
 /// Extra openers started while every opener is held and an open on a volume with nothing in
 /// flight waits (opens hung on several dead volumes). Each takes only opens on volumes with
@@ -49,7 +48,7 @@ pub const DEFAULT_BUFFER_MS: u32 = 2000;
 pub const DEFAULT_MAX_STREAMS: usize = 256;
 /// Loop exit buffer length. After a devamp leaves a loop the worker must, within this time:
 /// notice the freed ring (its poll, 5 ms), seek (a fresh demuxer plus pre-roll: up to about
-/// 10 ms on long compressed files, see docs/audio.md) and decode its first chunk (4096 frames),
+/// 10 ms on long compressed files) and decode its first chunk (4096 frames),
 /// while the device still has to be fed a block ahead (up to 8192 frames = 170 ms at 48 kHz).
 /// 250 ms covers that with margin.
 pub const DEFAULT_EXIT_MS: u32 = 250;
@@ -98,8 +97,7 @@ pub struct StreamerConfig {
     /// long seek (a damaged file decoding from its start) never holds up the worker's other
     /// streams.
     pub step_frames: u64,
-    /// Most bytes of loop exit buffers per stream; exits beyond it are not built (see
-    /// docs/audio.md, Loop exits).
+    /// Most bytes of loop exit buffers per stream; exits beyond it are not built.
     pub exit_bytes: usize,
     /// Longest loop (in bytes of device-rate frames) a stream plays from its loop cache instead
     /// of seeking back for every play; 0 turns the cache off.
@@ -269,7 +267,7 @@ impl StreamHandle {
     }
 
     // The `wait_*` helpers block (with a timeout): for I/O helper threads and tests, never the
-    // control thread (ARCHITECTURE §3.1).
+    // control thread.
 
     /// Blocks until the worker has looked at the latest devamp cut the voice published (made, or
     /// waiting for the write cursor to reach its boundary); at once if there is none. The
@@ -954,7 +952,7 @@ enum ExitState {
     Unknown,
     Ready,
     /// Not built: over the per-stream cap, or the memory was not available. A devamp into it
-    /// waits for the disk (see docs/audio.md, Loop exits).
+    /// waits for the disk.
     Refused,
     /// Not built yet: the global exit budget was full. Retried while the stream is idle.
     Starved,

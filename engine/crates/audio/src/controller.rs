@@ -239,7 +239,7 @@ impl MixerController {
         n
     }
 
-    /// The master clock (ARCHITECTURE §3.2): frames rendered so far.
+    /// The master clock: frames rendered so far.
     pub fn samples_rendered(&self) -> SampleTime {
         self.shared.samples_rendered.load(Ordering::Acquire)
     }

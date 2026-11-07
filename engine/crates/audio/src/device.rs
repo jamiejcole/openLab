@@ -4,7 +4,7 @@
 //! mixer, and get the mixer back when the stream is closed or lost. The `device` feature gates
 //! this module; the callback adapter ([`crate::OutputHost`]) and configuration choice
 //! ([`crate::negotiate`]) are pure and built without it. Reopen policy (when, how often, what
-//! the operator sees) is the engine's. See `docs/audio.md`, Device layer.
+//! the operator sees) is the engine's.
 
 use std::fmt;
 use std::str::FromStr;

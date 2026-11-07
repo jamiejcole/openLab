@@ -1010,7 +1010,7 @@ fn a_cue_broken_before_the_loss_does_not_auto_continue_after_the_return() {
 
 // ---- stall watchdog: a stream that stops calling back with no error, device listed ----
 //
-// Two stages (docs/control.md "Devices"): a `device_stalled` warning after 500 ms of silence
+// Two stages: a `device_stalled` warning after 500 ms of silence
 // (nothing stops), a loss after 3 s. The supervisor samples every tick; these tests tick every
 // 25 ms of the injected clock, as the real loop's 5 ms is finer still.
 

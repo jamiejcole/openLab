@@ -11,8 +11,7 @@ struct EngineConnectionInfo: Equatable, Sendable, Decodable {
     var port: UInt16
     var token: String
     var pid: Int32
-    /// The engine's shutdown has begun: do not attach, wait for `pid` to exit (docs/control.md,
-    /// Process lifecycle). Absent (an older engine): false.
+    /// The engine's shutdown has begun: do not attach, wait for `pid` to exit. Absent (an older engine): false.
     var stopping = false
 
     enum LoadError: Error, Equatable, Sendable {

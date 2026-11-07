@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The network layer (ARCHITECTURE §3.1, §6): a tokio runtime with two threads that serves the
-//! UI protocol over WebSocket on `127.0.0.1` (docs/network.md). It talks to the control thread
+//! The network layer: a tokio runtime with two threads that serves the
+//! UI protocol over WebSocket on `127.0.0.1`. It talks to the control thread
 //! only through the control inbox (`Inbox::Client`, one reply channel per connection; `Inbox::Log`)
 //! and the outbound broadcast channel; it never touches the workspace.
 

@@ -950,7 +950,7 @@ fn the_follow_counts_the_remaining_childrens_pre_waits_and_any_kind_of_child() {
 #[test]
 fn a_remaining_child_with_no_known_end_cancels_the_follow() {
     // The third child's length is unknown (not probed): the group could never say when it
-    // would have ended, so it does not follow (open question in docs/cue-engine.md).
+    // would have ended, so it does not follow.
     let (mut rig, broke) = halted_rig(sound(12), None, false);
     assert!(starts(&broke).is_empty());
     let end = rig.tick(20_000);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Documents (docs/control.md "Documents"): new, open, open-recovery, close, save,
+//! Documents: new, open, open-recovery, close, save,
 //! save-as and autosave.
 //!
 //! Nothing here touches the disk on the control thread. Saves and autosaves go to the
@@ -8,7 +8,7 @@
 //! tick); reading a show, the recovery check and the recovery scan run on one document worker
 //! thread, whose answer comes back through the inbox ([`DocAnswer`]) and is applied here.
 //!
-//! Several docs (ARCHITECTURE §3.1, §6): `new`, `open` and `open_recovery` add a
+//! Several docs: `new`, `open` and `open_recovery` add a
 //! doc ([`Control::open_doc`]) beside the ones open, which keep playing. The document
 //! worker reads the file (or takes the workspace given) and builds everything the doc needs off
 //! the control thread ([`DocParts`]: the workspace, its cue engine with its static problems
@@ -155,7 +155,7 @@ pub struct Loaded {
     notices: Vec<WireWarning>,
 }
 
-/// Everything a doc being opened needs, built on the document worker (ARCHITECTURE §3.1).
+/// Everything a doc being opened needs, built on the document worker.
 pub struct DocParts {
     /// The workspace and a cue engine that has followed it once (its static problems and
     /// playheads worked out) ...
@@ -1274,7 +1274,7 @@ impl DocCx<'_> {
     /// voice, prime and queued feedback: the doc is closing.
     pub(super) fn stop_everything(&mut self) {
         let now = self.now();
-        // A second Panic within the first's fade is a hard stop (docs/cue-engine.md, Panic).
+        // A second Panic within the first's fade is a hard stop.
         self.feed(Input::Panic, now);
         self.feed(Input::Panic, now);
         self.silence_orphans(Scope::All, now);
@@ -2211,7 +2211,7 @@ impl Control {
     }
 
     /// Installs a doc built off the control thread: an insert, its probe jobs, its slot
-    /// commands and its first reports, so it costs no audio block (ARCHITECTURE §3.1). The
+    /// commands and its first reports, so it costs no audio block. The
     /// requester gets `opened { doc }`; a connection bound to the doc gets its snapshot.
     fn install_new(&mut self, parts: DocParts, id: RequestId, to: &ReplyTx) {
         if self.docs.len() >= MAX_DOCS {

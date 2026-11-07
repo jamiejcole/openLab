@@ -32,7 +32,7 @@ enum StoreChange: Sendable {
 
 /// The UI's mirror of one open workspace: the model plus the engine's runtime state, applied from
 /// the protocol and published with Combine. View controllers read this and call its intent
-/// methods; they never see the socket (ARCHITECTURE section 9).
+/// methods; they never see the socket.
 @MainActor
 final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var model: WorkspaceModel?
@@ -169,7 +169,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             min: settings?["output_min_db"]?.doubleValue ?? VolumeLimits().min)
     }
 
-    /// `coalesce`: edits sent with the same key join one undo step (a fader drag; docs/commands.md).
+    /// `coalesce`: edits sent with the same key join one undo step (a fader drag).
     func send(command: Command, coalesce: String? = nil) async -> Result<OkBody, EngineError> {
         await client.send { .command(id: $0, command, coalesce: coalesce) }
     }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `engine.json` (ARCHITECTURE §6, §8): how a client finds the running engine.
+//! `engine.json`: how a client finds the running engine.
 //!
 //! `<app-support>/openLab/engine.json` holds
 //! `{"pid", "port", "token", "version", "protocol_version", "started_ms", "stopping"}`, readable

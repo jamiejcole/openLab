@@ -247,7 +247,7 @@ fn integrated_fade_in_starts_at_exact_zero() {
     }
 }
 
-/// The mixer evaluates curves by recurrence between exact knots (docs/audio.md): long ramps,
+/// The mixer evaluates curves by recurrence between exact knots: long ramps,
 /// fade-ins and fade-outs stay within `RAMP_TOLERANCE` of `ramp_value`, land exactly, and do
 /// not depend on the block size.
 #[test]
