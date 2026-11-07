@@ -105,7 +105,10 @@ Rules (each one fixes a false stop):
 - **Sleep detection:** on macOS the monotonic `Instant` stops during sleep, so it shows no gap. A second injected clock that counts sleep (`SleepClock`, `SystemTime::now`) moving on more than `SLEEP_SLACK` further than the monotonic one between two samples is a wake. An NTP step forward does the same, harmlessly.
 - **Flapping:** a device calling back every 0.5-3 s is never silent for 3 s but plays almost nothing. (a) The warning clears only after callbacks ran one warning limit with no silence of that length; an `info` log says so. 
   (b) The warn log is written at most once per `STALL_LOG_EVERY` with the stalls since, and the clearing is logged only if the raise was. 
-  (c) Over a sliding `STALL_WINDOW` of watched time (once `STALL_WINDOW_MIN` was watched, grace excluded), silence for half of it or more is a loss, reason `stalled (intermittent)`. One 600 ms stall is 6% of the window and recovers.
+  (c) Over a sliding `STALL_WINDOW` of watched time (once `STALL_WINDOW_MIN` was watched, grace excluded), a stream that delivered half its audio or less is lost, reason `stalled (intermittent)`. Delivered audio is `DeviceMonitor::frames_delivered` at the stream's rate; silence is watched time minus that.
+  So callback size, spacing and the reported buffer don't matter: a bursty stream delivering everything stays up, and one 600 ms stall is 6% of the window and recovers. **Never judge by ticks without a new callback:** the supervisor samples every 5 ms at most, so a healthy stream with a longer period looks still on most ticks, and doing so lost healthy large-buffer streams.
+  An empty callback delivers nothing but holds off the two stages. With no known rate only the two stages apply. Time and frames from a gap that is no evidence (a freeze, a sleep) count for nothing.
+  In tests, a watched clock move must be paid for with frames: `DeviceShow::advance` does this up to `STALL_MAX_GAP`; `advance_between_callbacks` moves the clock with no callback.
 - **Only `Stream::Up` is watched** (not closing, down or opening). openLab never pauses a stream and a silent mixer still calls back, so "paused by us" reduces to "not up".
 - **List vs watchdog:** a device that left the list is found by the list check first ("no longer listed"); the watchdog never words a loss that way.
 

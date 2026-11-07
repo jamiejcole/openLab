@@ -16,7 +16,7 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 - A level edit or a nudged fader never cuts sound (takeover completes a Fade but does not stop its target).
 - Panic ends every voice on one sample `E`; nothing scheduled fires after it.
 - Core stays pure: no threads, clocks, files, sockets. Time and randomness (seeded SplitMix64) come in.
-- A missed model-change signal costs a late edit, never a lost start, a lost GO.
+- A missed model-change signal costs a late edit, never a lost start or a lost GO.
 
 ## Shape
 - `EngineConfig::new(sample_rate, lookahead, seed)`: checked, rate 1..=384000 Hz, lookahead at most one second of samples.
@@ -42,7 +42,7 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 
 ## Paused show starts nothing (single home)
 - Failure while paused (`ActionFailed`/`StartFailed`, not `device_lost`): the voice is lost at once; a skipped cue's auto-follow and a playlist's next child are held to the resume. A Devamp's next cue is cancelled, not held.
-- Clean end dated at or before the pause: a skipped cue's auto-follow, a Devamp's next cue and a runless playlist's next child are held; the cue shows `paused`, never broken.
+- Clean end dated at or before the pause: a cue's auto-follow (when it would start a sibling), a Devamp's next cue and a runless playlist's next child are held; the cue shows `paused`, never broken.
 - A held end is carried out on the resume sample (Resume, Resume All, or a trigger that resumes it) against the workspace as it is then.
 - Stop, Reset, Panic and Stop All cancel the hold. Other feedback while paused only sets lengths or is stale.
 - A group whose last child leaves while paused ends on the resume; a running playlist moves on at the resume.
