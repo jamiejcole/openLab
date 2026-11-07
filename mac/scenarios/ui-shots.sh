@@ -25,6 +25,8 @@ if [ -z "$run" ] || [ -n "$(find mac/openLab mac/openLabTests mac/TestShows mac/
   (cd mac && xcodegen --quiet) || exit 1
   "${xcodebuild[@]}" -destination "$destination" -quiet build-for-testing || exit 1
   run="$(testrun)"
+  # A build with nothing to do leaves the file's time as it was: mark the sources as built.
+  touch "$run"
 fi
 
 TEST_RUNNER_OPENLAB_SCENARIO="$scenario" TEST_RUNNER_OPENLAB_SHOTS_OUT="$out" \
