@@ -51,12 +51,8 @@ pub const STALL_MIN_SAMPLES: u32 = 10;
 /// one warning limit (a device that stutters keeps it up).
 /// At most one stall warn log per this long, with the number of stalls since.
 pub const STALL_LOG_EVERY: Duration = Duration::from_secs(10);
-/// Callback periods a gap between two callbacks may last before the rest of it counts as
-/// silence in the [`STALL_WINDOW`]. The loop samples at its own pace, so a healthy stream with
-/// a period above a tick is not seen to move on most ticks. Two periods hold a period seen one
-/// tick late; a stream delivering a quarter of its audio or less is still lost.
-pub const STALL_GAP_PERIODS: u32 = 2;
-/// Sliding window of watched time over which a mostly silent stream is a loss.
+/// Sliding window of watched time over which a stream that delivered half its audio or less is
+/// a loss.
 pub const STALL_WINDOW: Duration = Duration::from_secs(10);
 /// The window needs this much watched time before it can declare a loss.
 pub const STALL_WINDOW_MIN: Duration = Duration::from_secs(8);
@@ -476,13 +472,6 @@ enum Stream {
     Gone,
 }
 
-/// How long a gap between callbacks is explained by a stream of `block_frames` frames per
-/// callback at `rate`: [`STALL_GAP_PERIODS`] periods, or [`STALL_MAX_GAP`] with no known period.
-pub fn stall_allowed_gap(block_frames: Option<u32>, rate: u32) -> Duration {
-    let gap = periods(block_frames, rate, STALL_GAP_PERIODS);
-    if gap.is_zero() { STALL_MAX_GAP } else { gap }
-}
-
 /// The silence of a stream of `block_frames` frames per callback at `rate` that raises the
 /// warning: [`STALL_WARN_MIN`], or [`STALL_WARN_PERIODS`] buffer periods if that is longer.
 pub fn stall_limit(block_frames: Option<u32>, rate: u32) -> Duration {
@@ -504,6 +493,14 @@ fn periods(block_frames: Option<u32>, rate: u32, n: u32) -> Duration {
     }
 }
 
+/// How long `frames` play at `rate`; `None` when the rate is not known.
+fn frames_time(frames: u64, rate: u32) -> Option<Duration> {
+    (rate > 0).then(|| {
+        let micros = u128::from(frames) * 1_000_000 / u128::from(rate);
+        Duration::from_micros(u64::try_from(micros).unwrap_or(u64::MAX))
+    })
+}
+
 /// The stall watchdog's state for the running stream.
 struct Stall {
     warn_limit: Duration,
@@ -513,6 +510,8 @@ struct Stall {
     since: Instant,
     /// Samples inside the window.
     samples: u32,
+    /// Frames the stream had delivered at the previous sample.
+    frames: u64,
     /// The previous supervisor sample, on both clocks.
     sampled: Instant,
     sampled_sys: SystemTime,
@@ -532,12 +531,13 @@ struct Stall {
     window: Window,
 }
 
-/// Watched time and watched silence over the last [`STALL_WINDOW`], in one-second buckets.
+/// Watched time and the audio delivered in it over the last [`STALL_WINDOW`], in one-second
+/// buckets.
 struct Window {
     start: Instant,
     idx: usize,
     watched: [u64; 10],
-    silent: [u64; 10],
+    delivered: [u64; 10],
 }
 
 impl Window {
@@ -546,23 +546,23 @@ impl Window {
             start: now,
             idx: 0,
             watched: [0; 10],
-            silent: [0; 10],
+            delivered: [0; 10],
         }
     }
 
-    fn add(&mut self, now: Instant, gap: Duration, silent: Duration) {
+    fn add(&mut self, now: Instant, gap: Duration, delivered: Duration) {
         let bucket = Duration::from_secs(1);
         if now.saturating_duration_since(self.start) >= STALL_WINDOW {
             *self = Window::new(now);
         }
         while now.saturating_duration_since(self.start) >= bucket {
             self.idx = (self.idx + 1) % self.watched.len();
-            if let (Some(w), Some(sl)) = (
+            if let (Some(w), Some(d)) = (
                 self.watched.get_mut(self.idx),
-                self.silent.get_mut(self.idx),
+                self.delivered.get_mut(self.idx),
             ) {
                 *w = 0;
-                *sl = 0;
+                *d = 0;
             }
             self.start += bucket;
         }
@@ -570,17 +570,17 @@ impl Window {
         if let Some(w) = self.watched.get_mut(self.idx) {
             *w = w.saturating_add(micros);
         }
-        if let Some(sl) = self.silent.get_mut(self.idx) {
-            let micros = u64::try_from(silent.as_micros()).unwrap_or(u64::MAX);
-            *sl = sl.saturating_add(micros);
+        if let Some(d) = self.delivered.get_mut(self.idx) {
+            let micros = u64::try_from(delivered.as_micros()).unwrap_or(u64::MAX);
+            *d = d.saturating_add(micros);
         }
     }
 
-    /// (watched, silent) over the window.
+    /// (watched, delivered) over the window.
     fn totals(&self) -> (Duration, Duration) {
         let sum =
             |a: &[u64; 10]| Duration::from_micros(a.iter().fold(0u64, |t, v| t.saturating_add(*v)));
-        (sum(&self.watched), sum(&self.silent))
+        (sum(&self.watched), sum(&self.delivered))
     }
 }
 
@@ -593,6 +593,7 @@ impl Stall {
             callbacks: info.monitor.callbacks(),
             since: now,
             samples: 0,
+            frames: info.monitor.frames_delivered(),
             sampled: now,
             sampled_sys: sys,
             quiet_until: Some(now + loss_limit),
@@ -869,24 +870,26 @@ impl Device {
     /// samples above `max(STALL_MAX_GAP, warn_limit / 8)` (the process was frozen, a thread
     /// starved) is no evidence and starts the window over, a stage needs `STALL_MIN_SAMPLES`
     /// samples in the window, and a sleep of the Mac (the system clock moved on further than
-    /// the monotonic one) gives a post-wake grace of one loss limit. The window behind the
-    /// intermittent loss counts only the part of a gap beyond what the stream's period explains
-    /// ([`stall_allowed_gap`]), at the larger of the period reported at open and the size of the
-    /// last callback: a report can be missing or wrong, and the last callback paid for this gap.
+    /// the monotonic one) gives a post-wake grace of one loss limit. The intermittent loss
+    /// compares watched time with the audio delivered in it (`DeviceMonitor::frames_delivered`
+    /// at the stream's rate), so the size and spacing of callbacks do not matter: a stream that
+    /// delivered half its audio or less over the window is lost. An empty callback delivers
+    /// nothing, though it does hold off the two stages. With no known rate the delivered audio
+    /// cannot be judged, so only the two stages apply.
     fn check_stall(&mut self, now: Instant, events: &mut Vec<DeviceEvent>) {
         let sys = (self.sleep_clock)();
         let callbacks = self.info.monitor.callbacks();
-        let period_frames = self
-            .info
-            .block_frames
-            .max(self.info.monitor.last_callback_frames());
-        let allowed_gap = stall_allowed_gap(period_frames, self.info.sample_rate);
+        let frames = self.info.monitor.frames_delivered();
+        let rate = self.info.sample_rate;
         let st = &mut self.stall;
         let gap = now.saturating_duration_since(st.sampled);
         let sys_gap = sys.duration_since(st.sampled_sys).unwrap_or(Duration::ZERO);
         st.sampled = now;
         st.sampled_sys = sys;
         let moved = callbacks != st.callbacks;
+        // Taken on every sample: audio delivered in a gap that is no evidence counts for nothing.
+        let new_frames = frames.saturating_sub(st.frames);
+        st.frames = frames;
         // The warning of a stream that has run steadily for one warning limit goes: a device
         // that stutters (a callback every 0.5 s) keeps it up instead of flickering.
         if st.warned
@@ -921,20 +924,14 @@ impl Device {
             return;
         }
         let quiet = st.quiet_until.is_some_and(|q| now < q);
-        if !quiet {
-            let unexplained = if moved {
-                Duration::ZERO
-            } else {
-                now.saturating_duration_since(st.since)
-                    .saturating_sub(allowed_gap)
-                    .min(gap)
-            };
-            st.window.add(now, gap, unexplained);
-            let (watched, silent) = st.window.totals();
+        if !quiet && let Some(delivered) = frames_time(new_frames, rate) {
+            st.window.add(now, gap, delivered);
+            let (watched, delivered) = st.window.totals();
+            let silent = watched.saturating_sub(delivered);
             if watched >= STALL_WINDOW_MIN && silent * 2 >= watched {
                 let why = format!(
-                    "stalled (intermittent): no callback for {:.1} s of the last {:.1} s watched",
-                    silent.as_secs_f64(),
+                    "stalled (intermittent): {:.1} s of audio delivered in the last {:.1} s watched",
+                    delivered.as_secs_f64(),
                     watched.as_secs_f64()
                 );
                 self.lose(now, why, events);

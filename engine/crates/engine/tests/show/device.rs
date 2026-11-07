@@ -67,6 +67,7 @@ struct State {
     block: u32,
     /// What those streams report instead of `block` (a host that cannot say, or says wrong).
     reported_block: Option<Option<u32>>,
+    reported_rate: Option<u32>,
     /// The next open panics inside the layer.
     panic_on_open: bool,
     /// The next list read leaves this device out (a host busy reconfiguring it).
@@ -132,10 +133,8 @@ impl Fake {
         s.rendering = s.host.is_some();
     }
 
-    /// A callback with no frames, as a live device keeps making between the blocks the test
-    /// renders (the stall watchdog counts callbacks, and a wall clock that moves without
-    /// them would look like a hung stream).
-    fn heartbeat(&self) {
+    /// A callback with no frames, for a clock move the stall watchdog takes as no evidence.
+    fn empty_callback(&self) {
         let mut s = self.state.lock().unwrap();
         if !s.rendering {
             return;
@@ -173,6 +172,11 @@ impl Fake {
     /// Streams opened from now on report `frames` per callback, whatever they really make.
     pub fn report_block(&self, frames: Option<u32>) {
         self.state.lock().unwrap().reported_block = Some(frames);
+    }
+
+    /// Streams opened from now on report this sample rate.
+    pub fn report_rate(&self, rate: u32) {
+        self.state.lock().unwrap().reported_rate = Some(rate);
     }
 
     /// Frames per callback of the open stream.
@@ -274,7 +278,7 @@ impl DeviceLayer for FakeLayer {
             channels: outputs.min(channels),
             outputs_dropped: channels < outputs,
             block_frames: s.reported_block.unwrap_or(Some(s.block)),
-            sample_rate: RATE,
+            sample_rate: s.reported_rate.unwrap_or(RATE),
             monitor: link.monitor(),
         };
         Ok(Box::new(FakeStream {
@@ -413,11 +417,18 @@ impl DeviceShow {
     }
 
     /// Moves the wall clock on (the device policy's clock). A live device keeps calling back
-    /// while time passes, so a callback is made first (`Fake::heartbeat`): the tests written
-    /// before the stall watchdog move the clock by seconds without rendering a block, which
-    /// the watchdog would otherwise take for a hung stream. A stalled fake makes none.
+    /// while time passes: a move the watchdog watches is paid for with that much audio, as its
+    /// silence is measured against the frames delivered. A longer move is no evidence to the
+    /// watchdog and takes an empty callback, so sample time stays where it is: the tests written
+    /// before the stall watchdog move the clock by seconds without rendering. A stalled fake
+    /// makes neither.
     pub fn advance(&mut self, d: Duration) {
-        self.fake.heartbeat();
+        if d <= devices::STALL_MAX_GAP {
+            let frames = (d.as_secs_f64() * f64::from(RATE)) as usize;
+            self.callback(frames);
+        } else {
+            self.fake.empty_callback();
+        }
         *self.wall.lock().unwrap() += d;
     }
 
@@ -504,10 +515,16 @@ impl DeviceShow {
     /// then a control tick.
     pub fn step(&mut self) {
         self.pump_inbox();
+        self.callback(self.fake.block() as usize);
+        self.control.tick();
+    }
+
+    /// One device callback of `frames` frames, if the device is up, with its streams settled.
+    fn callback(&mut self, frames: usize) {
         if self.fake.is_rendering() {
-            self.settle_streams();
+            self.settle_streams(frames as u64);
         }
-        if let Some((ch, buf)) = self.fake.render(self.fake.block() as usize) {
+        if let Some((ch, buf)) = self.fake.render(frames) {
             if self.capture.len() < ch {
                 self.capture.resize(ch, Vec::new());
             }
@@ -515,7 +532,6 @@ impl DeviceShow {
                 c.extend(buf.iter().skip(k).step_by(ch));
             }
         }
-        self.control.tick();
     }
 
     /// Steps until `frames` more have been rendered (the device must be up).
@@ -527,8 +543,8 @@ impl DeviceShow {
         }
     }
 
-    fn settle_streams(&mut self) {
-        let end = self.rendered() + u64::from(self.fake.block());
+    fn settle_streams(&mut self, frames: u64) {
+        let end = self.rendered() + frames;
         for (handle, needed) in self.control.stream_needs(end) {
             assert!(
                 matches!(handle.wait_written(needed, WAIT), Ok(true) | Err(_)),

@@ -124,6 +124,7 @@ fn callbacks_larger_than_the_scratch_render_in_pieces_without_allocating() {
     assert_eq!(out, expected::<i32>(&want, 2, 3));
     assert_eq!(link.monitor().last_callback_frames(), Some(frames as u32));
     assert_eq!(link.monitor().callbacks(), 1);
+    assert_eq!(link.monitor().frames_delivered(), frames as u64);
 }
 
 #[test]

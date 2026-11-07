@@ -21,7 +21,7 @@ use openlab_core::protocol::{
 use openlab_core::{
     ContinueMode, CueKind, CueState, GroupMode, MachineSettings, PatchMapping, Workspace,
 };
-use openlab_engine::control::ControlConfig;
+use openlab_engine::control::{ControlConfig, MAX_WAIT};
 use std::sync::Arc;
 
 use crate::show::device::{DeviceShow, Fake, FakeLayer, listed};
@@ -1380,9 +1380,6 @@ fn stutter_until_lost(settle: bool) {
     );
 }
 
-/// The real loop's longest wait (`MAX_WAIT`): a tick at least this often.
-const LOOP_TICK: Duration = Duration::from_millis(5);
-
 /// The frames per callback at the test's [`RATE`] with the period of `frames` at 48 kHz.
 fn frames_like_48k(frames: u32) -> u32 {
     frames * RATE / 48_000
@@ -1406,26 +1403,42 @@ fn playing_on_block(frames: u32) -> DeviceShow {
     playing_on_block_with(frames, |_| {})
 }
 
-/// `span` of a stream calling back every `period`, the loop ticking every [`LOOP_TICK`] in
-/// between, as a real device does and `DeviceShow::advance` does not.
-fn callbacks_every(s: &mut DeviceShow, period: Duration, span: Duration) -> Vec<ServerMessage> {
+/// `span` of a stream making the callbacks `next` asks for (frames, then the gap to the next
+/// one), the loop ticking every [`MAX_WAIT`] in between, as a real device does and
+/// `DeviceShow::advance` does not. Stops at a loss.
+fn callbacks_by(
+    s: &mut DeviceShow,
+    span: Duration,
+    mut next: impl FnMut() -> (u32, Duration),
+) -> Vec<ServerMessage> {
     let mut msgs = Vec::new();
-    let mut since_callback = Duration::ZERO;
     let mut elapsed = Duration::ZERO;
+    let (mut frames, mut gap) = next();
+    let mut due = gap;
     while elapsed < span && !s.control().device_down() {
-        s.advance_between_callbacks(LOOP_TICK);
-        elapsed += LOOP_TICK;
-        since_callback += LOOP_TICK;
-        if since_callback >= period {
-            since_callback -= period;
+        s.advance_between_callbacks(MAX_WAIT);
+        elapsed += MAX_WAIT;
+        let mut called = false;
+        while due <= elapsed && !s.control().device_down() {
+            s.fake.set_block(frames);
             s.step();
-        } else {
+            called = true;
+            (frames, gap) = next();
+            due += gap;
+        }
+        if !called {
             s.tick();
         }
         s.wait_list();
         msgs.extend(s.take_outbound());
     }
     msgs
+}
+
+/// `span` of callbacks of the stream's own size every `period`.
+fn callbacks_every(s: &mut DeviceShow, period: Duration, span: Duration) -> Vec<ServerMessage> {
+    let frames = s.fake.block();
+    callbacks_by(s, span, || (frames, period))
 }
 
 fn frames_period(frames: u32) -> Duration {
@@ -1462,17 +1475,27 @@ fn a_healthy_stream_at_256_1024_and_4096_frames_is_never_lost_or_warned() {
 }
 
 #[test]
-fn a_healthy_stream_whose_period_is_not_reported_is_not_lost() {
+fn a_steady_stream_with_jitter_stays_up() {
+    // The same audio, callbacks arriving at half and one and a half periods in turn.
     let frames = frames_like_48k(1024);
-    let mut s = playing_on_block_with(frames, |fake| fake.report_block(None));
-    assert_healthy(&mut s, frames, Duration::from_secs(25));
-}
-
-#[test]
-fn a_healthy_stream_with_longer_callbacks_than_it_reports_is_not_lost() {
-    let frames = frames_like_48k(4096);
-    let mut s = playing_on_block_with(frames, |fake| fake.report_block(Some(BLOCK as u32)));
-    assert_healthy(&mut s, frames, Duration::from_secs(25));
+    let period = frames_period(frames);
+    let mut s = playing_on_block(frames);
+    let mut made = 0;
+    let msgs = callbacks_by(&mut s, Duration::from_secs(25), || {
+        made += 1;
+        let gap = if made % 2 == 0 {
+            period / 2
+        } else {
+            period * 3 / 2
+        };
+        (frames, gap)
+    });
+    assert!(
+        !s.control().device_down(),
+        "{:?}",
+        logs(&msgs, LogLevel::Error)
+    );
+    assert_ne!(stalled_warning(&msgs), Some(true));
 }
 
 #[test]
@@ -1489,48 +1512,34 @@ fn a_stuttering_device_with_a_large_buffer_is_lost_as_intermittent() {
 }
 
 #[test]
-fn the_intermittent_rule_counts_only_time_beyond_two_callback_periods() {
-    let frames = frames_like_48k(4096);
-    let period = frames_period(frames);
-    // Every third period: a gap with one period over the two allowed, a third of it silence.
-    let mut s = playing_on_block(frames);
-    let msgs = callbacks_every(&mut s, period * 3, Duration::from_secs(25));
-    assert!(!s.control().device_down(), "{msgs:?}");
-    // Every fifth period: three of five over, past the half that is a loss.
-    let mut s = playing_on_block(frames);
-    let msgs = callbacks_every(&mut s, period * 5, Duration::from_secs(25));
-    assert!(s.control().device_down());
+fn a_stream_of_empty_callbacks_is_lost_as_intermittent() {
+    // Calling back is not enough: no frames, no audio. Each callback holds off the two stages.
+    let mut s = playing_on_block(frames_like_48k(1024));
+    let msgs = callbacks_by(&mut s, Duration::from_secs(11), || {
+        (0, Duration::from_millis(25))
+    });
+    assert!(s.control().device_down(), "empty callbacks stayed up");
     assert!(lost_as_intermittent(&msgs), "{msgs:?}");
 }
 
 #[test]
-fn callbacks_of_no_known_size_get_the_fallback_allowance() {
-    // No period reported and callbacks with no frames: gaps up to `STALL_MAX_GAP` are explained.
-    let empty_callbacks_every = |s: &mut DeviceShow, gap: Duration| {
-        let mut msgs = Vec::new();
-        let mut elapsed = Duration::ZERO;
-        while elapsed < Duration::from_secs(11) && !s.control().device_down() {
-            s.advance(LOOP_TICK);
-            s.tick();
-            let mut left = gap - LOOP_TICK;
-            while !left.is_zero() && !s.control().device_down() {
-                s.advance_between_callbacks(LOOP_TICK);
-                s.tick();
-                left -= LOOP_TICK;
-            }
-            elapsed += gap;
-            s.wait_list();
-            msgs.extend(s.take_outbound());
-        }
-        msgs
-    };
-    let mut s = playing_on_block_with(BLOCK as u32, |fake| fake.report_block(None));
-    s.run(BLOCK);
-    empty_callbacks_every(&mut s, Duration::from_millis(100));
+fn a_stream_of_no_known_rate_is_judged_by_the_two_stages_only() {
+    let frames = frames_like_48k(1024);
+    let mut s = playing_on_block_with(frames, |fake| fake.report_rate(0));
+    // Its delivered audio cannot be judged: a stutter stays up, with its warning limit of 500 ms.
+    let msgs = callbacks_every(&mut s, Duration::from_millis(400), Duration::from_secs(25));
+    assert!(
+        !s.control().device_down(),
+        "{:?}",
+        logs(&msgs, LogLevel::Error)
+    );
+    // A hang is still found at the 3 s floor.
+    s.step();
+    s.fake.stall();
+    idle_ms(&mut s, 2900);
     assert!(!s.control().device_down());
-    let msgs = empty_callbacks_every(&mut s, Duration::from_millis(525));
-    assert!(s.control().device_down());
-    assert!(lost_as_intermittent(&msgs), "{msgs:?}");
+    idle_ms(&mut s, 200);
+    assert!(s.control().device_down(), "a hung stream was not lost");
 }
 
 #[test]
@@ -1575,6 +1584,91 @@ fn a_sleep_in_a_large_buffer_stream_starts_its_silence_over() {
     );
     s.fake.unstall();
     assert_healthy(&mut s, frames, Duration::from_secs(10));
+}
+
+#[test]
+fn a_stream_delivering_all_its_audio_in_bursts_stays_up() {
+    // Eight 256-frame callbacks at once, then the eight periods they cover.
+    let frames = frames_like_48k(256);
+    let period = frames_period(frames);
+    let mut s = playing_on_block(frames);
+    let mut made = 0;
+    let msgs = callbacks_by(&mut s, Duration::from_secs(25), || {
+        made += 1;
+        let gap = if made % 8 == 0 {
+            period * 8
+        } else {
+            Duration::ZERO
+        };
+        (frames, gap)
+    });
+    assert!(
+        !s.control().device_down(),
+        "{:?}",
+        logs(&msgs, LogLevel::Error)
+    );
+}
+
+#[test]
+fn a_stream_delivering_all_its_audio_in_alternating_sizes_stays_up() {
+    let small = frames_like_48k(256);
+    let big = frames_like_48k(2048);
+    for reported in [None, Some(small)] {
+        let mut s = playing_on_block_with(small, |fake| fake.report_block(reported));
+        let mut made = 0;
+        let msgs = callbacks_by(&mut s, Duration::from_secs(25), || {
+            made += 1;
+            let frames = if made % 2 == 0 { big } else { small };
+            (frames, frames_period(frames))
+        });
+        assert!(
+            !s.control().device_down(),
+            "reported {reported:?}: {:?}",
+            logs(&msgs, LogLevel::Error)
+        );
+    }
+}
+
+#[test]
+fn a_stream_delivering_half_its_audio_or_less_is_lost() {
+    for frames in [256, 1024].map(frames_like_48k) {
+        // A callback every 2.2 periods: 45% of the audio.
+        let gap = frames_period(frames) * 22 / 10;
+        let mut s = playing_on_block(frames);
+        let msgs = callbacks_every(&mut s, gap, Duration::from_secs(11));
+        assert!(
+            s.control().device_down(),
+            "{frames} frames at 45% stayed up"
+        );
+        assert!(lost_as_intermittent(&msgs), "{msgs:?}");
+    }
+}
+
+#[test]
+fn a_stream_delivering_more_than_half_its_audio_stays_up() {
+    for frames in [256, 1024].map(frames_like_48k) {
+        // A callback every 1.6 periods: 62% of the audio.
+        let gap = frames_period(frames) * 16 / 10;
+        let mut s = playing_on_block(frames);
+        let msgs = callbacks_every(&mut s, gap, Duration::from_secs(25));
+        assert!(
+            !s.control().device_down(),
+            "{frames} frames at 62%: {:?}",
+            logs(&msgs, LogLevel::Error)
+        );
+    }
+}
+
+#[test]
+fn a_stream_delivering_little_with_an_oversized_report_is_lost() {
+    // Reports 4096-frame buffers, makes 256 frames every 150 ms: 3.5% of the audio.
+    let frames = frames_like_48k(256);
+    let mut s = playing_on_block_with(frames, |fake| {
+        fake.report_block(Some(frames_like_48k(4096)));
+    });
+    let msgs = callbacks_every(&mut s, Duration::from_millis(150), Duration::from_secs(11));
+    assert!(s.control().device_down(), "stayed up at 3.5%");
+    assert!(lost_as_intermittent(&msgs), "{msgs:?}");
 }
 
 #[test]
