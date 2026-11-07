@@ -428,7 +428,8 @@ wedged_classifier() {
   scripts/run-mac-tests.sh --classify "$d/mixed.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a hang beside another failure must not be retried"
   scripts/run-mac-tests.sh --classify "$d/none.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a run with no test failure (a build error) must not be retried"
   # The app started again after a hang into the same stalled WindowServer never connects: a failure of
-  # the run, not of a test, with a spindump of its own. The tests after the hang never ran, so all run again.
+  # the run, not of a test, with a spindump of its own. The tests after the hang never ran, so the run fails
+  # with a notice that the job needs a re-run.
   local started hung_entry restart_entry
   started='{"failureText":"The test runner hung before establishing connection.","targetName":"openLabTests","testIdentifierString":"openLab (5) encountered an error"}'
   hung_entry='{"testIdentifier":"Flow/testHung()","attachments":[{"exportedFileName":"s.txt","isAssociatedWithFailure":true,"suggestedHumanReadableName":"x-Spindump_0.txt"}]}'
