@@ -33,13 +33,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossbeam_channel::Sender;
 use openlab_audio::{CommandKind, Fade};
 use openlab_core::protocol::{
-    ErrorBody, ErrorCode, LogKind, LogLevel, OkBody, Outcome, RecoveryChoice, RecoveryEntryInfo,
-    Request, RequestId, ResultData, ServerMessage, WireWarning,
+    ErrorBody, ErrorCode, LogKind, LogLevel, MAX_FOLDER_BYTES, OkBody, Outcome, RecoveryChoice,
+    RecoveryEntryInfo, Request, RequestId, ResultData, ServerMessage, WireWarning,
 };
 use openlab_core::{
     Action, CueEngine, CueListId, EngineConfig, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES,
-    MediaRef, PatchId, PathStyle, Relink, Workspace, WorkspaceId, audio_media, autosave_due,
-    is_absolute, load_show, portable_ref, relink_command,
+    MediaRef, PatchId, PathStyle, RecoveryDecision, Relink, Workspace, WorkspaceId, audio_media,
+    autosave_due, decide_recovery, is_absolute, load_show, portable_ref, recovery_show_path,
+    relink_command,
 };
 use openlab_core::{Command, CommandError, CueId, MediaPaths, RelinkPlan};
 
@@ -52,9 +53,9 @@ use super::{
     Scope, fail, notice, ok,
 };
 use crate::persist::{
-    AppDirs, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck, SaveReport, SaveWriter,
-    ScanLimits, check_recovery, file_key, find_in_folder, lexical_key, media_path, read_text,
-    scan_recovery,
+    AppDirs, JobKind, MAX_RECOVERY_ENTRIES, PersistError, RecoveryCheck, RecoveryEntry, SaveReport,
+    SaveWriter, ScanLimits, check_recovery, file_key, find_in_folder, lexical_key, media_path,
+    modified_ms, path_key, read_text, scan_recovery,
 };
 
 /// Most `load_repair` notices sent for one opened show; the rest are summed in one more.
@@ -147,7 +148,7 @@ impl fmt::Debug for DocHook {
 #[derive(Debug)]
 pub struct Loaded {
     workspace: Workspace,
-    /// The show file it came from; `None` for an autosave opened as untitled.
+    /// The show file it came from or is bound to; `None` for an autosave restored as untitled.
     path: Option<PathBuf>,
     /// Has changes the show file lacks (restored from an autosave).
     dirty: bool,
@@ -159,7 +160,7 @@ pub struct DocParts {
     /// The workspace and a cue engine that has followed it once (its static problems and
     /// playheads worked out) ...
     model: DocModel,
-    /// The show file it came from; `None` for an autosave opened as untitled.
+    /// The show file it came from or is bound to; `None` for an autosave restored as untitled.
     path: Option<PathBuf>,
     /// Has changes the show file lacks (restored from an autosave).
     dirty: bool,
@@ -223,7 +224,8 @@ pub enum DocSource {
         path: PathBuf,
         recovery: Option<RecoveryChoice>,
     },
-    /// An autosave listed by `scan_recovery`, opened untitled and dirty (as `open_recovery`).
+    /// An autosave listed by `scan_recovery`, opened dirty (as `open_recovery`): bound to its show
+    /// file when that is still there, else untitled.
     Recovery {
         workspace_id: WorkspaceId,
         path_hash: Option<String>,
@@ -317,6 +319,8 @@ enum DocJob {
         path_hash: Option<String>,
         modified_ms: Option<i64>,
         config: EngineConfig,
+        /// The show files open (or being saved) in other docs: never bound to one of them.
+        others: Vec<PathBuf>,
     },
     Scan {
         ticket: u64,
@@ -480,6 +484,8 @@ pub(super) struct DocFile {
     /// since. Only these are left behind for removal: a recovery file that was there before
     /// (one the operator chose to keep when opening the show) holds edits that are nowhere else.
     autosaved_at: Vec<PathBuf>,
+    /// This doc wrote the recovery file of an untitled workspace in this run.
+    autosaved_untitled: bool,
     /// Of those, the ones whose recovery file may go now ([`Control::clear_left_autosaves`]
     /// removes them unless another workspace claims the path).
     left_ready: Vec<(WorkspaceId, PathBuf)>,
@@ -503,12 +509,26 @@ impl DocFile {
             autosave_failed: false,
             left_paths: Vec::new(),
             autosaved_at: Vec::new(),
+            autosaved_untitled: false,
             left_ready: Vec::new(),
             autosaved_revision: None,
             dirty_since: None,
             last_autosave: None,
             notices: Vec::new(),
             resend_snapshot: false,
+        }
+    }
+
+    /// Whether the current recovery file at `path` is this doc's: it wrote it, or is writing it.
+    /// One that was there before (an autosave restored into this doc) holds work the operator
+    /// has not dropped by dropping this doc's edits.
+    fn wrote_autosave_at(&self, path: Option<&Path>) -> bool {
+        if self.autosave.is_some() && self.autosave_path.as_deref() == path {
+            return true;
+        }
+        match path {
+            Some(path) => self.autosaved_at.iter().any(|p| same_path(p, path)),
+            None => self.autosaved_untitled,
         }
     }
 
@@ -723,8 +743,16 @@ fn work(
                 path_hash,
                 modified_ms,
                 config,
+                others,
             } => built(
-                open_recovery(ticket, workspace, path_hash.as_deref(), modified_ms, dirs),
+                open_recovery(
+                    ticket,
+                    workspace,
+                    path_hash.as_deref(),
+                    modified_ms,
+                    &others,
+                    dirs,
+                ),
                 config,
             ),
             DocJob::Scan { ticket } => scan(ticket, dirs),
@@ -778,9 +806,9 @@ fn failed(ticket: u64, code: ErrorCode, message: String) -> DocAnswer {
     }
 }
 
-/// Reads and loads a show file; the error carries the protocol code.
-fn read_show(path: &Path) -> Result<LoadedShow, (ErrorCode, String)> {
-    let text = read_text(path, MAX_SHOW_FILE_BYTES).map_err(|e| {
+/// Reads a show file; the error carries the protocol code.
+fn read_show_text(path: &Path) -> Result<String, (ErrorCode, String)> {
+    read_text(path, MAX_SHOW_FILE_BYTES).map_err(|e| {
         let code = match &e {
             PersistError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => {
                 ErrorCode::NotFound
@@ -789,8 +817,16 @@ fn read_show(path: &Path) -> Result<LoadedShow, (ErrorCode, String)> {
             _ => ErrorCode::BadShowFile,
         };
         (code, e.to_string())
-    })?;
-    load_show(&text).map_err(|e| (ErrorCode::BadShowFile, format!("{}: {e}", path.display())))
+    })
+}
+
+fn load_show_text(path: &Path, text: &str) -> Result<LoadedShow, (ErrorCode, String)> {
+    load_show(text).map_err(|e| (ErrorCode::BadShowFile, format!("{}: {e}", path.display())))
+}
+
+/// Reads and loads a show file; the error carries the protocol code.
+fn read_show(path: &Path) -> Result<LoadedShow, (ErrorCode, String)> {
+    load_show_text(path, &read_show_text(path)?)
 }
 
 fn load_notices(shown: &LoadedShow) -> Vec<WireWarning> {
@@ -875,6 +911,7 @@ fn open_recovery(
     workspace: WorkspaceId,
     path_hash: Option<&str>,
     modified_ms: Option<i64>,
+    others: &[PathBuf],
     dirs: Option<&AppDirs>,
 ) -> DocAnswer {
     let Some(dirs) = dirs else {
@@ -897,7 +934,11 @@ fn open_recovery(
             format!("no autosave of workspace {workspace}"),
         );
     };
-    let shown = match read_show(&entry.path) {
+    let text = match read_show_text(&entry.path) {
+        Ok(text) => text,
+        Err((code, message)) => return failed(ticket, code, message),
+    };
+    let shown = match load_show_text(&entry.path, &text) {
         Ok(shown) if shown.workspace.id == workspace => shown,
         Ok(_) => {
             return failed(
@@ -908,14 +949,61 @@ fn open_recovery(
         }
         Err((code, message)) => return failed(ticket, code, message),
     };
+    let mut notices = load_notices(&shown);
+    let path =
+        named_show_path(&text, entry).filter(|path| match why_not_bound(path, entry, others) {
+            None => true,
+            Some(why) => {
+                notices.push(notice(
+                    "recovery_untitled",
+                    format!("restored as an untitled workspace: {why}"),
+                    None,
+                ));
+                false
+            }
+        });
     DocAnswer::Loaded {
         ticket,
         loaded: Box::new(Loaded {
-            notices: load_notices(&shown),
+            notices,
             workspace: shown.workspace,
-            path: None,
+            path,
             dirty: true,
         }),
+    }
+}
+
+/// The show file an autosave says it belongs to, if the file's name agrees: the name is what
+/// ties an autosave to a path, so a file renamed or edited by hand binds to nothing.
+fn named_show_path(text: &str, entry: &RecoveryEntry) -> Option<PathBuf> {
+    let path = recovery_show_path(text).filter(|p| p.len() <= MAX_FOLDER_BYTES)?;
+    let path = PathBuf::from(path);
+    (path.is_absolute() && entry.path_hash.as_deref() == Some(path_key(&path).as_str()))
+        .then_some(path)
+}
+
+/// Why a restored autosave stays untitled although it knows its show file `path`; `None`: it can
+/// be bound, on what `open` with `restore` asks: the current autosave, newer than the file. A
+/// save of a bound doc writes that file, so it must be this workspace's and no other doc's; and
+/// its autosaves replace the current one, which a set-aside autosave must not cost.
+fn why_not_bound(path: &Path, entry: &RecoveryEntry, others: &[PathBuf]) -> Option<String> {
+    let shown = path.display();
+    let key = file_key(path);
+    if others.iter().any(|o| file_key(o) == key) {
+        return Some(format!("{shown} is open in another workspace"));
+    }
+    if entry.stale {
+        return Some("this autosave was set aside from its file".to_owned());
+    }
+    // A time the platform cannot give counts as new, as in `check_recovery`.
+    let autosaved = entry.modified_ms.unwrap_or(i64::MAX);
+    if decide_recovery(modified_ms(path), Some(autosaved)) != RecoveryDecision::Offer {
+        return Some(format!("{shown} is newer than this autosave"));
+    }
+    match read_show(path) {
+        Ok(show) if show.workspace.id == entry.workspace_id => None,
+        Ok(_) => Some(format!("{shown} now holds another workspace")),
+        Err((_, message)) => Some(format!("its show file cannot be opened: {message}")),
     }
 }
 
@@ -1216,13 +1304,19 @@ impl DocCx<'_> {
         self.eng.mixer.pump();
     }
 
-    /// Queues the removal of a workspace's recovery file behind the writer's current job.
-    fn clear_autosave_of(&mut self, workspace: WorkspaceId, show_path: Option<PathBuf>) {
+    /// Queues the removal of this doc's own current recovery file behind the writer's current
+    /// job: its edits are being dropped.
+    fn discard_own_autosave(&mut self) {
+        let path = self.doc.show_path.clone();
+        if !self.doc.file.wrote_autosave_at(path.as_deref()) {
+            return;
+        }
+        let workspace = self.doc.model.ws().id;
         if let Some(writer) = &self.eng.docs.writer {
             self.eng
                 .docs
                 .clears
-                .push(writer.clear_recovery(workspace, show_path));
+                .push(writer.discard_recovery(workspace, path));
         }
     }
 
@@ -1377,6 +1471,11 @@ impl DocCx<'_> {
             // Back at a path it left: that recovery file is the current one again.
             file.left_paths.retain(|(_, p)| !same_path(p, &save.path));
             self.doc.show_path = Some(save.path.clone());
+            // It has a file now: the notice that it had none no longer holds.
+            self.doc.file.notices.retain(
+                |n| !matches!(n, WireWarning::Notice { code, .. } if code == "recovery_untitled"),
+            );
+            self.doc.warnings_dirty = true;
             if self.show_dir() != old_dir {
                 self.moved_folder(
                     old_dir.as_deref(),
@@ -1476,6 +1575,9 @@ impl DocCx<'_> {
                 self.doc.file.autosave_failed = false;
                 // Written at the current path, after every path left behind was left: it holds
                 // every edit their recovery files do (#383).
+                if written.is_some() && path.is_none() {
+                    self.doc.file.autosaved_untitled = true;
+                }
                 if let (Some(_), Some(path)) = (written, path) {
                     let file = &mut self.doc.file;
                     if !file.autosaved_at.iter().any(|p| same_path(p, &path)) {
@@ -1491,6 +1593,17 @@ impl DocCx<'_> {
                 }
             }
             Err(e) => {
+                // A write past the timeout may still land: a removal must queue behind it.
+                if matches!(e, PersistError::Stalled { .. }) {
+                    let file = &mut self.doc.file;
+                    match path {
+                        Some(path) if !file.autosaved_at.iter().any(|p| same_path(p, &path)) => {
+                            file.autosaved_at.push(path);
+                        }
+                        Some(_) => {}
+                        None => file.autosaved_untitled = true,
+                    }
+                }
                 // Said once per run of failures: it repeats every interval otherwise.
                 if !self.doc.file.autosave_failed {
                     self.log(LogLevel::Warn, format!("autosave failed: {e}"));
@@ -1865,6 +1978,7 @@ impl Control {
                     path_hash,
                     modified_ms,
                     config,
+                    others,
                 }
             }
             DocSource::New | DocSource::Workspace(_) => {
@@ -2260,8 +2374,7 @@ impl Control {
                 ));
             }
             if cx.doc.is_dirty() {
-                let (id, path) = (cx.doc.model.ws().id, cx.doc.show_path.clone());
-                cx.clear_autosave_of(id, path);
+                cx.discard_own_autosave();
             }
             cx.stop_everything();
             cx.log_kind(

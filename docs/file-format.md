@@ -51,6 +51,9 @@ The top level of every file is:
 }
 ```
 
+  An autosave (a file in the engine's recovery folder, never a show file) also has a top-level
+  `"show_path"`, the absolute path of the show file it belongs to, after `format_version`; a
+  reader of the workspace ignores it like any unknown key, so it needs no version of its own.
 - `format_version` is an integer, 0 or greater. It stays at its current value until v1.0.0 (see the
   policy below).
 - **Newer than supported:** openLab refuses the file with a message naming both the file's version
