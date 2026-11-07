@@ -2,11 +2,11 @@
 
 openLab is an open-source (GPLv3-or-later) show-playback system for theatre, a QLab 5 alternative. It runs live shows: **a crash or wrong behaviour can stop a performance.** Correctness beats speed. No human reads the code or reviews PRs: CI checks and an independent review agent are the only gates, so a rule that matters is a check, not a sentence here.
 
-This file is the only copy of every rule below; other files link here instead of restating it. Read the sections of [`REQUIREMENTS.md`](REQUIREMENTS.md) (IDs like `AUD-07`, scope in §21) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) that your task names (grep; don't read them whole). Open work is GitHub issues and milestones; there is no other tracker.
+This file is the only copy of every rule below; other files link here instead of restating it. Read the sections of [`REQUIREMENTS.md`](REQUIREMENTS.md) (IDs like `AUD-07`, scope in §21) that your task names (grep; don't read it whole). Load the skills (`.claude/skills/`) for the area you touch, found by their descriptions or named in your brief; they hold the architecture, behaviour and invariants for that area. Open work is GitHub issues and milestones; there is no other tracker.
 
 ## When rules or facts conflict
-1. **Show safety at risk, or your brief asks for something ARCHITECTURE.md rules out:** stop that task and report to the orchestrator. It decides, fixes ARCHITECTURE.md in the same PR, or escalates scope, dependency and security questions to the user.
-2. **A doc is stale** (ARCHITECTURE.md, REQUIREMENTS.md or a decision note disagrees with the code or with known QLab 5 behaviour): follow the code or QLab, carry on, and report the stale line.
+1. **Show safety at risk, or your brief asks for something a skill rules out:** stop that task and report to the orchestrator. It decides, fixes the skill in the same PR, or escalates scope, dependency and security questions to the user.
+2. **A doc or skill is stale** (a skill, REQUIREMENTS.md or a contract doc disagrees with the code or with known QLab 5 behaviour): follow the code or QLab, carry on, and report the stale line.
 3. **Unknown QLab behaviour:** never block; see "Behaviour". On a show-safety path, rule 1 applies instead.
 4. **Style and everything else:** proceed and say what you chose in your report.
 
@@ -41,7 +41,8 @@ This file is the only copy of every rule below; other files link here instead of
 ## Contracts (same commit)
 - Protocol change: Rust types in core, fixtures in `engine/fixtures/protocol/`, Swift `Codable` types, `docs/protocol.md`.
 - Show-file change: update `docs/file-format.md` and edit the current-version fixture in place. Until v1.0.0 `format_version` stays where it is, with no new migration steps, old-version fixtures or handling for old files: none exist, and openLab runs no production shows before then (user decision 2026-11-05). The existing chain stays: a new required key also goes into its last step, so older test shows still load. A crash or hang on any file is still High.
-- New dependency: GPLv3-compatible, justified, listed in ARCHITECTURE §12. Prefer stdlib or an existing one.
+- New dependency: GPLv3-compatible, justified, listed in `.claude/skills/architecture/references/dependencies.md`. Prefer stdlib or an existing one.
+- A behaviour change updates its skill in the same commit. Code comments never cite skills or doc paths other than `docs/protocol.md` and `docs/file-format.md`, so a skill's description must say when it applies. Skills hold no milestone or task IDs.
 - Docs describe what exists; plans are issues. A claim about CI, lints or tests is checked against `ci.yml` / `Cargo.toml` when written.
 - Every source file starts with `SPDX-License-Identifier: GPL-3.0-or-later`.
 
@@ -52,12 +53,12 @@ This file is the only copy of every rule below; other files link here instead of
 ## Behaviour: match QLab 5
 - openLab builds what QLab 5 has and drops what it doesn't, including openLab extras already built (user decision 2026-10-29/30).
 - Where QLab's behaviour is known, copy it and say so in your report. Look it up: `~/qlab-ref/qlab-ref search "<words>"` then `show <page>` if it exists, then https://qlab.app/docs/v5/. Paraphrase and cite pages. UI layout: `~/qlab-ref/ui` (`README.md`, `surfaces.json`, `menus.json`, `cue-types.json`, `shots/`); cite its surface ids.
-- Where it is unknown: search [`docs/todo/open-qlab-questions.md`](docs/todo/open-qlab-questions.md) (every user answer is there; never ask twice), then implement the likeliest behaviour and add an `assumed` row (assumption, what you searched).
+- Where it is unknown: search skill `qlab-behaviour` (every user answer is there; never ask twice), then implement the likeliest behaviour and add an `assumed` row to its references (assumption, what you searched).
 - Public repo: never copy QLab text, labels, tooltips, icons, artwork or screenshots into the repo, issues or PRs. Describe in our own words; give our controls our own similar names. Never put personal account or machine details in the repo, issues or PRs.
 
 ## Findings policy
 - **High:** a show can stop, sound wrong, fire or stop the wrong cue, lose data, or the process can crash, panic or hang, on any input (fuzzers and property tests included; any input from outside the process is reachable).
-- **Medium:** wrong behaviour; a false or stale claim in a contract doc, ARCHITECTURE.md or this file; a missing test on a changed path; debug/release difference; duplication, dead code or a parallel harness the change adds.
+- **Medium:** wrong behaviour; a false or stale claim in a contract doc, a skill or this file; a behaviour change that did not update its skill; a missing test on a changed path; debug/release difference; duplication, dead code or a parallel harness the change adds.
 - **Low:** everything else.
 - High and Medium block merge, within the review limit in "Review"; otherwise only the user downgrades a Medium (quote it in the PR). Lows are fixed in the same PR or dropped with one line in the PR; they are never filed as issues.
 - Review covers the diff. A pre-existing problem in a touched file is reported only if High (fixed in this PR, or the PR waits for its fix) or Medium (a `severity:medium` issue in the current milestone; blocks the milestone, not the PR, unless the PR makes it worse). Milestone audits file only Highs and Mediums.
@@ -74,7 +75,7 @@ This file is the only copy of every rule below; other files link here instead of
 ## Work and git
 - Work only on assigned issues. Tick an issue's Checklist box when that part is implemented **and tested**; say what is missing for any left open. Report extra work found; don't expand scope. Niche QLab parity not needed for v0.0.1 → `v0.0.2` milestone; what QLab users do every rehearsal (GO, panic, playhead, editing in the list, targeting) is never niche.
 - Fewer, flow-complete batches: an issue closes only when every flow on it passes.
-- Milestone and task IDs (`M5.4`) may appear in issues, PR titles and docs, never in code, comments or test names (requirement IDs are fine there).
+- Milestone and task IDs (`M5.4`) may appear in issues, PR titles and orchestrator state, never in code, comments, skills or test names (requirement IDs are fine there).
 - Only the orchestrator ticks `REQUIREMENTS.md`, after merge. Notes and decisions go in the issue, the PR or the docs.
 - Commit with plain `git add` / `git commit`; author is the repo-local identity (`docs/dev-setup.md`); no `Co-authored-by` or AI trailer. Subject: area prefix + imperative, e.g. `core: add continue-mode state transitions`.
 - Never push to `main`, force-push or rebase shared history. Changes reach `main` only through a PR the orchestrator merges after green CI. Implementers and reviewers never push or merge.

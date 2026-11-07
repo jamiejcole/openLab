@@ -598,8 +598,8 @@ ui_smoke() {
 
 # 13. Milestone and task IDs (M5.4, M4.12c; as identifiers m5_6b) stay out of code, comments and test names
 # (CLAUDE.md, "Work and git"); requirement IDs (AUD-07) are fine. They go stale, and the issue or PR holds
-# the history. The scan covers Rust and Swift sources only (engine/*.rs, mac/*.swift); other files are kept
-# clean by hand.
+# the history. The scan covers Rust and Swift sources and the skills except orchestrate (which
+# briefs on milestones); other files are kept clean by hand.
 TASK_ID_RE='(^|[^A-Za-z0-9_.])M[0-9]+\.[0-9]+[a-z]?([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9])[Mm][0-9]+_[0-9]+[a-z]?([^A-Za-z0-9]|$)'
 task_ids_scan() { grep -nE "$TASK_ID_RE" "$@" 2>/dev/null || true; }
 task_ids() {
@@ -618,8 +618,51 @@ task_ids() {
   [ -n "$(task_ids_scan "$d/e.rs")" ] || fail task-ids-cases "a task ID in an identifier (m5_6b) must be found"
   [ -z "$(task_ids_scan "$d/f.rs")" ] || fail task-ids-cases "an identifier that only contains m<digit>_ must not be found"
   rm -rf "$d"
-  hits=$(git ls-files -co --exclude-standard 'engine/*.rs' 'mac/*.swift' | sort -u | xargs grep -nE "$TASK_ID_RE" 2>/dev/null | head -n 20 || true)
+  hits=$(git ls-files -co --exclude-standard 'engine/*.rs' 'mac/*.swift' '.claude/skills/*' | grep -v '^\.claude/skills/orchestrate/' | sort -u | xargs grep -nE "$TASK_ID_RE" 2>/dev/null | head -n 20 || true)
   [ -z "$hits" ] || fail task-ids "milestone/task IDs in code, comments or test names (describe the behaviour instead):
+$hits"
+}
+
+# 14. Skills (.claude/skills/*) are found by their description and loaded whole, so their shape is checked:
+# the frontmatter name is the folder, the description is short enough to sit in every agent's list, the
+# body is small, every reference is named in SKILL.md (so it is read on purpose), and no line is long
+# enough to flood a grep. Code comments never cite skills, so a description is the only way in.
+skills() {
+  local dir name want desc ref n f
+  for dir in .claude/skills/*/; do
+    dir=${dir%/}
+    want=$(basename "$dir")
+    f=$dir/SKILL.md
+    [ -f "$f" ] || { fail skills "$dir has no SKILL.md"; continue; }
+    name=$(sed -n '2,/^---$/s/^name: *//p' "$f" | head -n 1)
+    [ "$name" = "$want" ] || fail skills "$f: frontmatter name '$name' must equal the folder '$want'"
+    desc=$(sed -n '2,/^---$/s/^description: *//p' "$f" | head -n 1)
+    if [ "$(printf '%s' "$desc" | wc -m | tr -d ' ')" -gt 300 ]; then
+      known skills "$f" || fail skills "$f: description is $(printf '%s' "$desc" | wc -m | tr -d ' ') characters (max 300)"
+    fi
+    [ "$(wc -l <"$f" | tr -d ' ')" -le 500 ] || fail skills "$f has more than 500 lines"
+    for ref in $(grep -oE 'references/[A-Za-z0-9_.-]+\.md' "$f" | sort -u); do
+      [ -f "$dir/$ref" ] || fail skills "$f names $ref, which does not exist"
+    done
+    for n in "$dir"/references/*.md; do
+      [ -f "$n" ] || continue
+      grep -q "references/$(basename "$n")" "$f" || fail skills "$n is not named in $f (an unlisted reference is never read)"
+    done
+    for n in $(find "$dir" -name '*.md' | sort); do
+      if [ -n "$(awk 'length > 500 { print FNR; exit }' "$n")" ]; then
+        known skills "$n" || fail skills "$n has a line over 500 characters (line $(awk 'length > 500 { print FNR; exit }' "$n")); split it"
+      fi
+    done
+  done
+}
+
+# 15. The one-doc-per-subsystem files are gone; skills replaced them. A path to one in any tracked file
+# (skills included) is a dead link. Only docs/protocol.md and docs/file-format.md remain as contract docs.
+dead_docs() {
+  local hits
+  hits=$(git ls-files -co --exclude-standard | sort -u | grep -v -e '^scripts/check-repo\.sh$' |
+    xargs grep -nE 'docs/(ARCHITECTURE|control|cue-engine|audio|osc|network|commands|persistence|logging)\.md|docs/handoff/|docs/todo/|ARCHITECTURE §' 2>/dev/null | head -n 20 || true)
+  [ -z "$hits" ] || fail dead-docs "reference to a deleted doc (name the skill, or drop the citation; code comments cite only docs/protocol.md and docs/file-format.md):
 $hits"
 }
 
@@ -641,6 +684,8 @@ wedged_run
 test_list_cases
 ui_smoke
 task_ids
+skills
+dead_docs
 
 if [ "$failed" = 0 ]; then
   echo "check-repo: ok"
