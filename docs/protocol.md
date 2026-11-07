@@ -13,7 +13,7 @@ Types: `openlab-core::protocol` (`engine/crates/core/src/protocol/`) are the sou
   - Numeric payloads inside a `command` are not checked by the codec: `Workspace::apply` validates every time and level and refuses with `command_refused`.
   - Engine output: the encoder sanitises `progress` and `meters`: a negative, NaN or infinite time or peak is sent as 0 (a loop-end overrun must not cost the UI a tick). Other non-finite numbers in `status` are also sent as 0.
 - **Frame limits** are checked on byte length before parsing (`MAX_HELLO_FRAME_BYTES`, decoded before the token is checked; `MAX_CLIENT_FRAME_BYTES`; `MAX_SERVER_FRAME_BYTES`; all in `protocol/mod.rs`). Over: `ProtocolError::TooLarge`.
-- **Errors**: a missing `type` is `MissingType`; a `type` that is not a message of the direction is `UnknownType`; everything else wrong (bad JSON, wrong field types, an unknown variant inside a known message) is `Malformed`. All are rejections: the engine answers `error` with `bad_request` or `unknown_message` and the connection stays open.
+- **Errors**: a missing `type` is `MissingType`; a `type` that is not a message of the direction is `UnknownType`; everything else wrong (bad JSON, wrong field types, an unknown variant inside a known message) is `Malformed`. All are rejections: the engine answers `error` with `bad_request` or `unknown_message`. After `welcome` the connection stays open, except for a frame over the size limit, which ends it. A bad `hello` (malformed, or over `MAX_HELLO_FRAME_BYTES`) answers `bad_request` and ends the connection.
 - **Compatibility**: unknown **fields** are ignored, so a newer peer may add optional fields without a version bump; receivers treat absent optional fields as documented. Unknown message **types** and unknown nested variants are errors. Removing, renaming or re-typing a field, or changing its meaning, bumps `PROTOCOL_VERSION` (now **4**: section 2). A client ignores a runtime change `type` it does not know. Any change updates the fixtures, the Swift `Codable` types and this page in the same commit.
 - **Fixtures**: see skill `wire-protocol`. The test compares byte for byte and fails if a variant has no sample.
 
@@ -209,7 +209,7 @@ Fields: `Snapshot` in `server.rs`. `workspace` never carries `show_mode`. `cue_s
 
 `ErrorCode` in `server.rs`; the client acts on the code, never the message:
 - `protocol_version_mismatch`, `bad_token`: connection ends at `hello`; do not retry blindly.
-- `bad_request`, `unknown_message`: the frame was rejected; connection stays open.
+- `bad_request`, `unknown_message`: the frame was rejected; after `welcome` the connection stays open unless the frame was over the limit. A bad `hello` or an over-limit frame ends it.
 - `command_refused`: the engine refused a valid message (validation, limit, busy). Nothing changed.
 - `not_found`, `already_open`, `unsaved_changes`, `io`, `bad_show_file`, `unsupported`, `internal`.
 - `no_workspace`: no doc to act on (none open, a closed doc, an app connection, or a save with no path yet).

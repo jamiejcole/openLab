@@ -76,7 +76,7 @@ This file is the only copy of every rule below; other files link here instead of
 - Work only on assigned issues. Tick an issue's Checklist box when that part is implemented **and tested**; say what is missing for any left open. Report extra work found; don't expand scope. Niche QLab parity not needed for v0.0.1 → `v0.0.2` milestone; what QLab users do every rehearsal (GO, panic, playhead, editing in the list, targeting) is never niche.
 - Fewer, flow-complete batches: an issue closes only when every flow on it passes.
 - Milestone and task IDs (`M5.4`) may appear in issues, PR titles and orchestrator state, never in code, comments, skills or test names (requirement IDs are fine there).
-- Only the orchestrator ticks `REQUIREMENTS.md`, after merge. Notes and decisions go in the issue, the PR or the docs.
+- Only the orchestrator ticks `REQUIREMENTS.md`, after merge. Notes and decisions go in the issue, the PR or the skill.
 - Commit with plain `git add` / `git commit`; author is the repo-local identity (`docs/dev-setup.md`); no `Co-authored-by` or AI trailer. Subject: area prefix + imperative, e.g. `core: add continue-mode state transitions`.
 - Never push to `main`, force-push or rebase shared history. Changes reach `main` only through a PR the orchestrator merges after green CI. Implementers and reviewers never push or merge.
 - Comments explain why. Boring over clever; small modules; no speculative abstractions or scaffolding for future features. Match surrounding code.

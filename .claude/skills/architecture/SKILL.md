@@ -1,6 +1,6 @@
 ---
 name: architecture
-description: Load when a change crosses threads, processes or crates, or touches the engine/UI split, doc multiplexing, sample-clock scheduling, process lifecycle, Show Mode error policy or Windows portability (engine/crates/*, mac/openLab/Engine). Also for adding a dependency.
+description: "Load when a change crosses threads, processes or crates, or touches the engine/UI split, doc multiplexing, sample-clock scheduling, Show Mode errors or Windows portability (engine/crates/*). Also for adding a dependency. Start/stop is skill engine-lifecycle; the mac app is skill mac-app."
 ---
 
 # openLab architecture
@@ -117,5 +117,5 @@ audio thread: voice reads ring -> trims/loops/slices -> cue fades -> channel lev
 - Xcode is pinned in CI. The pinned Xcode's minimum deployment target is exactly 12.0. A future Xcode that drops 12.0 must not be adopted without a Monterey plan.
 
 ## Reference files
-- `references/mac-app.md`: read when changing `mac/openLab` structure, windows, `EngineClient`, `WorkspaceStore` or meters.
+- Skill `mac-app` holds the macOS app structure (windows, `EngineClient`, `WorkspaceStore`, meters, Show Mode alerts).
 - `references/dependencies.md`: read when adding, removing or changing a Cargo dependency; every dependency needs a row there.

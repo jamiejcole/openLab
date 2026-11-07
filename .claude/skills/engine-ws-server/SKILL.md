@@ -1,6 +1,6 @@
 ---
 name: engine-ws-server
-description: Load when changing or reviewing the engine's WebSocket server: engine/crates/engine/src/net/ (ws.rs, hub.rs, token.rs, refusals.rs), handshake, hub fan-out, slow clients, snapshot and ordering rules. OSC is skill osc; app relaunch is skill engine-lifecycle; schemas are docs/protocol.md.
+description: "Load when changing or reviewing the engine's WebSocket server: engine/crates/engine/src/net/ (ws.rs, hub.rs, token.rs, refusals.rs), handshake, hub fan-out, slow clients, snapshot and ordering rules. OSC is skill osc; app relaunch is skill engine-lifecycle; schemas: docs/protocol.md."
 ---
 
 # Engine WebSocket server (`net/`)

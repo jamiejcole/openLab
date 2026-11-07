@@ -114,8 +114,7 @@ pub struct CueEngine {
     /// The `now` of the last call and the cue starts made by the calls at that `now` so far.
     /// The chain budget is per sample, not per call: mixer feedback dated on the sample it is
     /// handled at (a zero-length voice ends on its start sample) could otherwise carry a cycle
-    /// into call after call at one `now`, each with a fresh budget (see "Chains and the chain
-    /// bound").
+    /// into call after call at one `now`, each with a fresh budget.
     spent: (SampleTime, usize),
     /// The outline every call checks for a missed `model_changed` (see `shape.rs`).
     shape: shape::Shape,

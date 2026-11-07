@@ -1,6 +1,6 @@
 ---
 name: media-files
-description: Load when changing or reviewing media probes, preload scheduling, the stalled-volume gate, the media watch thread and its watchdog, missing/back/changed-file detection, or relink (engine/crates/engine/src/control/media/, control/watch/, persist/relink.rs; core relink.rs).
+description: "Load when changing or reviewing when media probes run, the probe pool and preload scheduling, the stalled-volume gate, the media watch thread and its watchdog, missing/back/changed-file detection, or relink (engine/crates/engine/src/control/media/, control/watch/, persist/relink.rs; core relink.rs)."
 ---
 
 # Media probes, volume gate, media watch, relink
@@ -11,7 +11,7 @@ Hold limits for a GO on an unanswered probe (`PROBE_HOLD_LIMIT`) and on a stream
 ## Must not break
 - **The control thread never stats, reads or walks a file or folder.** Probes, preloads, watch stats and relink walks run on their own threads.
 - **A healthy disk never makes a cue broken.** A probe that is merely slow is never failed early. Nothing playing is touched by a re-probe.
-- **The system volume and the show file's volume are never gated** for probe scheduling.
+- **The system volume is never gated; the show file's volume is exempt only while one doc is open** (with several, see "Never gated").
 - **A volume counts as stalled only on corroboration** (the watch says so, or two different files' probes are stuck on it). One slow file is not a dead mount.
 - **A half-copied file is never probed**: Back and Changed need two identical watch passes.
 - **Relink never guesses.** Ambiguous matches are left to the operator; a match whose cue changed meanwhile is dropped (the edit wins); one relink is one undo step.
@@ -34,7 +34,7 @@ A volume is the mount a path is on (`bucket_of`, same names as the watch: `/Volu
 **Never gated** (probes there run as if no gate existed: a stuck worker is replaced, a GO waits the usual hold):
 - `/` (it mixes the local disk with automounts and cloud folders, so a verdict there is meaningless, and most media live there);
 - on Windows the system drive (`%SystemDrive%`, `C:` if unset, compared without regard to case);
-- the volume holding any open doc's show file (found from the show file's own path, so a show at a volume's root counts; updated when another show opens).
+- the volume holding the open doc's show file (found from the show file's own path, so a show at a volume's root counts), only while ONE doc is open. With several the workers are shared, so that volume is held back once two of its probes are stuck past the watchdog, never on the media watch's word alone. Held-back jobs release urgent first.
 
 **When a volume is stalled** (only other volumes can be):
 - Stalled only when corroborated: the media watch reports it (`MediaWatch::stalled_volumes`, fed to the catalog every tick; its `media_volume_not_responding` is the only notice), or two different files' probes are stuck on it. Preloads never count. A probe-side verdict is an `info` log only, in different words from the watch's notice.

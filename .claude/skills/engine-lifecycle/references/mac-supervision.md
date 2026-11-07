@@ -1,6 +1,6 @@
 # macOS app: engine supervision
 
-Files: `mac/openLab/Engine/EngineSupervisor.swift`, `EngineProcesses.swift`, `EngineSession.swift`, `EngineAlarm.swift` (alarm window), `EngineLaunch.swift`, `AutosaveCover.swift`, `mac/openLab/AppLaunch.swift`. The engine side (`engine.json`, `stopping`, relaunch, deadlines) is in SKILL.md.
+Files: `mac/openLab/Engine/EngineSupervisor.swift`, `EngineProcesses.swift`, `EngineSession.swift`, `mac/openLab/EngineAlarm.swift` (alarm window; outside `Engine/`), `EngineLaunch.swift`, `AutosaveCover.swift`, `mac/openLab/AppLaunch.swift`. The engine side (`engine.json`, `stopping`, relaunch, deadlines) is in SKILL.md.
 
 ## Must not break
 

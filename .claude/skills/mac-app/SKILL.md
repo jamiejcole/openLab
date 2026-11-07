@@ -1,4 +1,10 @@
+---
+name: mac-app
+description: "Load when changing or reviewing the macOS app structure in mac/openLab: windows, EngineClient, WorkspaceStore, cue list, inspector, meters, Show Mode notices and alerts, or the app build and signing setup. Stack rules are in CLAUDE.md."
+---
 # macOS app structure
+
+Must not break: view controllers never touch the socket; Show Mode never opens an alert or sheet except the modal cases listed below; meters publish nothing while no `MeterView` is on screen.
 
 Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party packages, SF Symbols, `Localizable.strings`) are in CLAUDE.md.
 

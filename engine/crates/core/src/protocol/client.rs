@@ -121,7 +121,7 @@ pub enum ClientMessage {
 }
 
 /// What the operator does at the transport. Each maps to one cue-engine `Input`
-/// (`docs/protocol.md` has the table).
+/// (the mapping is in `control/transport.rs`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TransportAction {

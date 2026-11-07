@@ -1,6 +1,6 @@
 ---
 name: edit-commands
-description: Load when adding, changing or reviewing an editing Command in openlab-core (command.rs, command_model.rs, command/, History, undo/redo, Transaction, Paste, settings, patches, cue lists, OSC passcodes), a size or name limit, or Command::prepare.
+description: "Load when adding, changing or reviewing an editing Command in openlab-core (command.rs, command_model.rs, command/, History, undo/redo, Transaction, Paste, settings, patches, cue lists, OSC passcodes), a size or name limit, or Command::prepare."
 ---
 
 # Editing commands

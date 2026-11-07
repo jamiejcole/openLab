@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: The openLab orchestrator loop: pick task issues, brief implementers, run adversarial review, land each batch via a PR into main, track CI, report to the user. Use when continuing openLab development, after a context reset, or on "continue", "next task", "status", "orchestrate".
+description: "The openLab orchestrator loop: pick task issues, brief implementers, run adversarial review, land each batch via a PR into main, track CI, report to the user. Use when continuing openLab development, after a context reset, or on 'continue', 'next task', 'status', 'orchestrate'."
 ---
 
 # openLab orchestrator

@@ -25,6 +25,7 @@ Mixer events, stream state and probe answers become cue-engine inputs. `StartFai
 ## Reconciliation of lost events
 The mixer drops events when its queue is full and counts `dropped_events`. A lost `VoiceFinished` would leave a cue running for ever. The voice-meter read (about 30 Hz, once per wake across docs) lists every voice the mixer holds, paused included; each doc checks its own started voices against it (ids are unique engine-wide).
 - A started voice whose start sample was rendered before the previous read and that is **missing from two reads in a row while `dropped_events > 0`** is taken as ended: `ActionEnded` on the read's sample (`ActionFailed { stream_failed }` if its stream failed).
+- A rejected voice of known length whose rejection is lost completes on its planned end if that comes before the two reads.
 - A voice no meter read ever listed was never taken by the mixer; its lost report was a rejection: `StartFailed { voice_rejected }`.
 - The first loss is logged at `warn`.
 

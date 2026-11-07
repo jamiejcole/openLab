@@ -1,6 +1,6 @@
 ---
 name: cue-engine
-description: Load when changing or reviewing the cue state machine in engine/crates/core/src/cue_engine/: timing, states, continue modes, chains, groups, GO, playhead, control/Fade cues, panic, pause, preview, broken cues, model-edit following.
+description: "Load when changing or reviewing the cue state machine in engine/crates/core/src/cue_engine/: timing, states, chains, groups, GO, playhead, second trigger, level edits and takeover, fades, panic, Stop All/Reset All, preview, broken cues, display_name (cue.rs), cues_with_hotkey (model.rs)."
 ---
 
 # Cue engine (`openlab-core::cue_engine`)
@@ -16,7 +16,7 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 - A level edit or a nudged fader never cuts sound (takeover completes a Fade but does not stop its target).
 - Panic ends every voice on one sample `E`; nothing scheduled fires after it.
 - Core stays pure: no threads, clocks, files, sockets. Time and randomness (seeded SplitMix64) come in.
-- A missed model-change signal costs a late edit, never a lost start, a lost GO or a panic.
+- A missed model-change signal costs a late edit, never a lost start, a lost GO.
 
 ## Shape
 - `EngineConfig::new(sample_rate, lookahead, seed)`: checked, rate 1..=384000 Hz, lookahead at most one second of samples.
@@ -28,7 +28,7 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 - `Action::Warning(EngineWarning)` never stops anything; variants are structured for UI localisation.
 
 ## Rule 1: second trigger
-- Start, GO or a continue on an active cue (pre-waiting, running, post-waiting, paused, fading, stopping) does nothing by default: no restart, no voice action, timers untouched, `TriggerIgnored { cue, state }`. GO still counts and moves the playhead.
+- Start, GO or a continue on an active cue (pre-waiting, running, post-waiting, fading, stopping) does nothing by default: no restart, no voice action, timers untouched, `TriggerIgnored { cue, state }`. GO still counts and moves the playhead.
 - A trigger on a paused cue resumes it, whatever its `second_trigger` option. Options and release: `references/timing.md` "Second trigger".
 
 ## Rule 2: break vs auto-continue vs auto-follow (single home)
@@ -41,10 +41,12 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 - `device_lost` ends the run as a stop, with no continues at all (`references/panic-transport.md`).
 
 ## Paused show starts nothing (single home)
-- A paused cue that fails (`ActionFailed`/`StartFailed`, not `device_lost`) loses its voice at once but stays paused when its end would start something: a skipped cue's auto-follow, a playlist's next child, a Devamp's next cue. The end is carried out on the resume sample (Resume, Resume All, or a trigger that resumes it) against the workspace as it is then.
+- Failure while paused (`ActionFailed`/`StartFailed`, not `device_lost`): the voice is lost at once; a skipped cue's auto-follow and a playlist's next child are held to the resume. A Devamp's next cue is cancelled, not held.
+- Clean end dated at or before the pause: a skipped cue's auto-follow, a Devamp's next cue and a runless playlist's next child are held; the cue shows `paused`, never broken.
+- A held end is carried out on the resume sample (Resume, Resume All, or a trigger that resumes it) against the workspace as it is then.
 - Stop, Reset, Panic and Stop All cancel the hold. Other feedback while paused only sets lengths or is stale.
 - A group whose last child leaves while paused ends on the resume; a running playlist moves on at the resume.
-- A playlist child shows `paused` until that resume, then `broken`; any other held cue shows `broken` at once.
+- A failed playlist child shows `paused` until that resume, then `broken`; any other cue that failed while paused shows `broken` at once, a stopped one too.
 - Matching rules and the end-vs-pause tie: `references/timing.md` "Feedback".
 
 ## Chain bound (single home)

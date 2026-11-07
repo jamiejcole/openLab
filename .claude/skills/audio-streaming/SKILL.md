@@ -1,6 +1,6 @@
 ---
 name: audio-streaming
-description: Load when changing or reviewing media decoding, probing, preload, disk streaming, resampling, loop cache, slices, loops, devamp or the waveform overview in engine/crates/audio (decode.rs, pcm.rs, stream.rs, plan.rs, resample.rs, waveform.rs) or damaged-file handling.
+description: "Load when changing or reviewing media decoding, the probe function, preload, disk streaming, resampling, loop cache, slices, loops, devamp or the waveform overview in engine/crates/audio (decode.rs, pcm.rs, stream.rs, plan.rs, resample.rs, waveform.rs) or damaged-file handling."
 ---
 
 # Decoding, disk streaming, slices, loops and waveform (`openlab-audio`)

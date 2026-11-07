@@ -9,7 +9,7 @@ Q43 | Network patch is incomplete (cues broken `network_host_invalid`) when host
 Q54 | New workspace starts with one network patch "Network 1" to this Mac (127.0.0.1, UDP 53000). A workspace with none gets that patch added in the same undo step when a Network cue is created. New cue starts with an empty address, so it shows broken and sends nothing | manual p.111 for new workspaces; fallback assumed
 Q90 | Output override is engine-memory only: a relaunch or engine restart starts with network output on | assumed
 Q91 | Network cue under override shows a red circle in the status column | manual p.162
-Q92 | Override Controls panel needs only the network output switch (engine gates no inputs) | assumed
+Q92 | Our "Output Overrides" control needs only the network output switch, since the engine gates no inputs (QLab's counterpart: surfaces.json `window.override-controls`) | assumed
 Q109 | App starts while the engine already runs workspaces (app crash): the launch choice is not applied, the engine's workspaces are the show; an engine with none gets the choice | assumed 2026-11-05
 Q115 | Network message over the size bounds typed in the inspector: edit refused, field shows the cue's text again, a line says why | assumed
 Q116 | Network inspector Send on a disarmed or broken cue sends nothing. `\I` and `\N` (impulse, nil) arguments are refused with a message (not supported yet). Target column shows the patch name | assumed
@@ -22,7 +22,7 @@ C-QD | Un-prefixed `/updates 1` subscribes in every workspace, but a workspace s
 C-QE | Esc (Panic) stops both workspaces whichever is in front; Pause All pauses only the front one; no all-workspaces command | user
 C-QF | A hotkey of a workspace not in front still starts its cue | user
 C-QG | Closing a workspace while cues play asks for confirmation | user
-C-QH | After the last workspace closes a home screen shows: links, Open/New/Connect/License buttons, Recent Workspaces/Templates tabs | user
+C-QH | After the last workspace closes a start screen appears with ways to open, create or connect to a workspace and lists of recent workspaces and templates (surfaces.json `launcher`) | user
 C-QI | Two copies of one file open report different uniqueIDs with the same display name (open of an already-open file not tested) | user
 C-QJ | No per-workspace device output delay found; levels are per workspace | user
 C-QK | Quit with an unsaved workspace prompts to save, naming it, one prompt per unsaved workspace | user
@@ -31,5 +31,5 @@ C-Q11 | `/udpReplyPort {port}`: replies and updates move to the new port; after 
 C-Q12 | OSC bundles: every message in the bundle runs | user
 Q220 | OSC over TCP uses double-ended SLIP framing (RFC 1055, OSC 1.1), no length prefix | manual: osc-dictionary
 Q222 | `/playhead` naming a cue that does not exist (or no argument that resolves): `error` reply, playhead unchanged, no state change | assumed (searched: osc-dictionary, open-qlab-questions: manual silent)
-Q223 | `/go` with an empty-string argument is looked up as a cue number like any other string: it goes to a cue whose number is exactly empty, else `error` and nothing starts (never a plain GO) | assumed (searched: osc-dictionary: manual silent)
+Q223 | `/go` with an empty-string argument answers `error`, nothing starts, never a plain GO: no cue can have an empty number (validate.rs, command.rs, command/structure.rs refuse it) | assumed (searched: osc-dictionary: manual silent)
 Q224 | Cue `type` names in OSC replies for kinds QLab's docs do not list a name for (everything except Audio, Group, Cue List): our own display-style names (`Fade`, `Start`, `Stop`, `Network`, ...); clients should not depend on them | assumed (searched: osc-dictionary: no names for these kinds)

@@ -1,6 +1,6 @@
 ---
 name: audio-mixer
-description: Load when changing or reviewing the real-time mixer in engine/crates/audio (mixer/, controller.rs, gain.rs, meter.rs, offline.rs): commands, scheduling horizon, voices, pause/resume, fault stages, queues, meters, or anything that sends commands to the mixer.
+description: "Load when changing or reviewing the real-time mixer in engine/crates/audio (mixer/, controller.rs, gain.rs, meter.rs, offline.rs): commands, horizon, voices, pause/resume, fault stages, fade curves, routing, ganging, queues, meters, the offline driver, or anything that sends commands to the mixer."
 ---
 
 # Real-time mixer (`openlab-audio`)

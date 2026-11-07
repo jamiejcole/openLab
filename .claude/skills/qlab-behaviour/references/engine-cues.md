@@ -8,7 +8,7 @@ Q2 | Pause All holds a paused playlist's next child until Resume; group and fail
 Q3 | Cue paused on its own: its auto-follow/playlist step waits for its resume. A QLab oddity (pause at 4.98 s never followed) is not copied | user 2026-10-29
 Q4 | Follow held over a pause: after Resume the rest of the cue plays out, then the next follows (fresh start at the resume sample, no late-start warning) | user 2026-10-29
 Q5 | Halted playlist (child broke) with unknown/endless lengths or loop: its auto-follow never fires; the group keeps counting | user 2026-10-29
-Q6 | Shuffle switched on during a looping pass: current pass keeps order, reshuffles next pass | user 2026-10-29
+Q6 | Shuffle switched on during a looping pass: the group name goes italic with a shuffle marker appended at once, but the current pass keeps its order and reshuffles next pass | user 2026-10-29
 Q9 | Child GOed on its own while its playlist post-waits: it carries the playlist on if it ends after the post-wait, not if during. C-Q5's 2026-10-27 "nothing happens" run reverted its own edit; this later test stands | user 2026-10-29
 Q19 | Undo/redo that removes a playing, paused or waiting cue (or a group holding one) is performed; the cue stops as for Delete | user 2026-10-29
 Q23 | Level edit on a playing Audio cue while a Fade moves that level: the Fade completes at once for that cue, the edit wins; auto-follow fires. A Fade set to stop its target does NOT stop it then (safety). Editing one child while a Fade targets the group completes the group Fade and holds the other children (m: Q33, Q34). QLab: the fade does not move the cue's master level display | user 2026-10-29; edge parts assumed

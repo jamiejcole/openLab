@@ -627,6 +627,25 @@ $hits"
 # the frontmatter name is the folder, the description is short enough to sit in every agent's list, the
 # body is small, every reference is named in SKILL.md (so it is read on purpose), and no line is long
 # enough to flood a grep. Code comments never cite skills, so a description is the only way in.
+# skill_description_shape <file> <raw value>: the frontmatter must be strict YAML on one line. A block scalar
+# (> or |) or an empty value hides the text from the one-line list agents search; an unquoted ": " is a YAML
+# error; a quoted value must not hold a bare double quote.
+skill_description_shape() {
+  local f=$1 raw=$2 inner
+  case "$raw" in
+    '') fail skills "$f: description is missing or empty" ;;
+    '>'* | '|'*) fail skills "$f: description is a block scalar (starts with ${raw%"${raw#?}"}); write it on one line, in quotes" ;;
+    \"*\") inner=${raw#\"}; inner=${inner%\"}
+      case "$inner" in *\"*) fail skills "$f: description holds a double quote inside its quotes; rephrase" ;; esac ;;
+    *": "*) fail skills "$f: description has an unquoted ': ' (invalid YAML); put the whole value in double quotes" ;;
+  esac
+}
+skill_shape_cases() {
+  local out
+  out=$(skill_description_shape f '' ; skill_description_shape f '> folded'; skill_description_shape f '| lit'; skill_description_shape f 'a: b'; skill_description_shape f '"a "b" c"')
+  [ "$(printf '%s\n' "$out" | grep -c '^FAIL')" = 5 ] || fail skills-cases "skill_description_shape must reject empty, > and |, an unquoted ': ' and an inner quote (got: $out)"
+  [ -z "$(skill_description_shape f '"fine: quoted"'; skill_description_shape f 'plain words')" ] || fail skills-cases "a quoted value with ': ' and a plain value must pass"
+}
 skills() {
   local dir name want desc ref n f
   for dir in .claude/skills/*/; do
@@ -637,6 +656,8 @@ skills() {
     name=$(sed -n '2,/^---$/s/^name: *//p' "$f" | head -n 1)
     [ "$name" = "$want" ] || fail skills "$f: frontmatter name '$name' must equal the folder '$want'"
     desc=$(sed -n '2,/^---$/s/^description: *//p' "$f" | head -n 1)
+    skill_description_shape "$f" "$desc"
+    case "$desc" in \"*\") desc=${desc#\"}; desc=${desc%\"} ;; esac
     if [ "$(printf '%s' "$desc" | wc -m | tr -d ' ')" -gt 300 ]; then
       known skills "$f" || fail skills "$f: description is $(printf '%s' "$desc" | wc -m | tr -d ' ') characters (max 300)"
     fi
@@ -656,13 +677,33 @@ skills() {
   done
 }
 
-# 15. The one-doc-per-subsystem files are gone; skills replaced them. A path to one in any tracked file
-# (skills included) is a dead link. Only docs/protocol.md and docs/file-format.md remain as contract docs.
+# 15. The one-doc-per-subsystem files are gone; skills replaced them. A path to one in any file on disk
+# (tracked or not yet added; skills included) is a dead link. Only docs/protocol.md and docs/file-format.md
+# remain as contract docs. Code comments (engine/ and mac/ lines holding `//`) may cite no skill and
+# no doc except docs/protocol.md, docs/file-format.md, REQUIREMENTS.md and CLAUDE.md: that also catches a
+# bare control.md or a `see "Section"` pointer into a removed doc.
+comment_citations_scan() { grep -nE '//.*(ARCHITECTURE|\.claude/skills|[Ss]kills? `[a-z]|[Ss]kill [a-z]+-[a-z]+|\(see "[A-Z]|[A-Za-z0-9_./-]+\.md)' "$@" 2>/dev/null |
+  grep -vE '//.*(docs/protocol\.md|docs/file-format\.md|REQUIREMENTS\.md|CLAUDE\.md)' || true; }
 dead_docs() {
-  local hits
+  local hits d
+  d=$(mktemp -d)
+  printf '// see control.md\n' >"$d/a.rs"
+  printf '// load skill `audio-mixer`\n' >"$d/b.rs"
+  printf '/// (see "Chains and the chain bound")\n' >"$d/c.rs"
+  printf '// ARCHITECTURE says\n' >"$d/d.rs"
+  printf '// docs/protocol.md and REQUIREMENTS.md, CLAUDE.md; a skill is a file\n' >"$d/e.rs"
+  printf '// (`protocol.md`)\n' >"$d/f.rs"
+  for n in a b c d f; do
+    [ -n "$(comment_citations_scan "$d/$n.rs")" ] || fail dead-docs-cases "a comment citation in $n.rs must be found"
+  done
+  [ -z "$(comment_citations_scan "$d/e.rs")" ] || fail dead-docs-cases "allowed citations and the word skill must not be found"
+  rm -rf "$d"
   hits=$(git ls-files -co --exclude-standard | sort -u | grep -v -e '^scripts/check-repo\.sh$' |
     xargs grep -nE 'docs/(ARCHITECTURE|control|cue-engine|audio|osc|network|commands|persistence|logging)\.md|docs/handoff/|docs/todo/|ARCHITECTURE §' 2>/dev/null | head -n 20 || true)
   [ -z "$hits" ] || fail dead-docs "reference to a deleted doc (name the skill, or drop the citation; code comments cite only docs/protocol.md and docs/file-format.md):
+$hits"
+  hits=$(comment_citations_scan $(git ls-files -co --exclude-standard 'engine/*.rs' 'mac/*.swift' | sort -u) | head -n 20)
+  [ -z "$hits" ] || fail dead-docs "comment cites a skill or a doc that is not docs/protocol.md, docs/file-format.md, REQUIREMENTS.md or CLAUDE.md (comments never cite skills; say the rule in the comment):
 $hits"
 }
 
@@ -684,6 +725,7 @@ wedged_run
 test_list_cases
 ui_smoke
 task_ids
+skill_shape_cases
 skills
 dead_docs
 

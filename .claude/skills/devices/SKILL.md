@@ -1,6 +1,6 @@
 ---
 name: devices
-description: Load when changing or reviewing audio devices: listing, negotiation, callback, loss and reopen, stall watchdog, xruns, engine load, default patch mapping (audio/src/device.rs, output.rs, negotiate.rs; engine/src/control/devices.rs, virtual_device.rs).
+description: "Load when changing or reviewing audio devices: listing, negotiation, callback, loss and reopen, stall watchdog, xruns, engine load, default patch mapping (audio/src/device.rs, output.rs, negotiate.rs; engine control/devices.rs, virtual_device.rs)."
 ---
 
 # Audio devices
@@ -14,7 +14,7 @@ Two layers. **Mechanism** is in `openlab-audio`: `negotiate.rs` (pure), `output.
 
 - **A lost device stops every cue on it at once and nothing resumes by itself.** A 3 s and a 20 s outage behave the same. Only the operator's GO restarts the show.
 - **Nothing scheduled before a loss may fire after it**: pre-wait, post-wait, auto-continue and auto-follow of every active run are cancelled, not only those of audio cues.
-- **A stall is a loss only in the second stage.** A one-stage 500 ms loss turns a recoverable dropout into a stopped show with every cue broken. A false positive costs the whole show; a late true positive costs seconds of an already silent show.
+- **A stall is a loss only in the second stage** (or through the intermittent window rule). A one-stage 500 ms loss turns a recoverable dropout into a stopped show with every cue broken. A false positive costs the whole show; a late true positive costs seconds of an already silent show.
 - **Only silence the supervisor actually watched counts.** A frozen process, a starved control thread or a sleeping Mac is never a stall.
 - **The control thread never calls the device layer** and a GO never waits for a device (list, open, close run on device threads).
 - **The stream never follows the system default**, and the engine never switches device while running.
@@ -23,7 +23,7 @@ Two layers. **Mechanism** is in `openlab-audio`: `negotiate.rs` (pure), `output.
 
 ## Listing and negotiation (`negotiate.rs`, pure)
 
-- Zero devices is a valid answer. A `DeviceInfo` has a stable `id` (cpal `DeviceId`, `"host:id"`, stored in settings), `name`, `is_default`, `configs`.
+- Zero devices is a valid answer. A `DeviceInfo` has a stable `id` (cpal `DeviceId`, `"host:id"`, used to open and reopen), `name` (what settings store and `set_output_device` takes), `is_default`, `configs`.
 - **Rate** must be supported exactly (the mixer's rate is fixed when built); otherwise `NegotiateError::SampleRate` and the engine decides whether to rebuild the mixer.
 - **Channels:** the exact count if offered; else the smallest larger count (extra device channels silent); else the largest smaller count. With fewer channels, mixer outputs `0..mapped` reach the device and the rest are not heard: `outputs_dropped` is reported so the engine warns.
 - At most 64 mixer outputs are used; a device with more channels opens at its own count and channels above 64 stay silent.

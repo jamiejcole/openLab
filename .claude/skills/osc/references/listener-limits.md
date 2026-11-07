@@ -41,6 +41,8 @@ Matching work is bounded so a hostile bundle of patterns cannot hold the OSC tas
   - A UDP peer connected with a real passcode, and any TCP peer, has no budget. Accepted cost: forged traffic from a console's own address can make us send it replies up to the per-read caps.
 - The kind of budget for a doc's reply follows that doc's table. An application reply (`/version`, `/workspaces`, unknown-workspace error, `/updates` and `/udpReplyPort` errors) is unbudgeted only for a peer connected with a passcode to some doc; otherwise it is held to the open budget if some open doc has no passcode, else the strict one.
 - At most 1024 source IPs have a budget. A bucket is dropped only once refilled; a **depleted bucket is never evicted** (that would give a cycling forged address a fresh burst). When the table is full of depleted buckets a source with no bucket is sent nothing until one refills (2 s strict, 4 s open). A tracked console keeps its bucket.
+- A list of open docs read from the tap never drops a doc: the answer to the task's own request can overtake a list made before it. Only the list the task asked for itself (at start, after a lag) and a doc's `closed` drop one.
+- A wrong `/connect` from a peer that is already connected counts toward the lockouts, and while its IP is locked out even the right passcode is `denied`: the known-address exemption is only for peers that are not connected. Otherwise a view-only peer could guess passcodes without limit.
 - Rotating 1024 forged addresses can evict the oldest budget (bounded: at most 16 KiB per forged address). Without a passcode a forged `/connect` takes a session slot like `/updates 1`; slots free as UDP peers idle (60 s).
 
 ## TCP connections

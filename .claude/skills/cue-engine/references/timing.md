@@ -24,7 +24,7 @@ Reported state derives in order: broken > paused > stopping > fading > pre-waiti
 - A started cue is a run: `{pre-wait deadline, action progress, post-wait deadline, paused-at, fade-out end}`. Each voice segment has a `RunId`, unique for the engine's lifetime (the binary uses it as the mixer `VoiceId`). Loading or starting creates it; starting a loaded cue keeps it. Every resume gives a fresh id (`ResumeVoice { run: fresh, paused: previous }`), so feedback still on its way for the paused segment is stale. `run_of(cue)` is `None` for a cue owning no voice.
 
 ### Broken state
-- Run-time break (feedback; `voice_rejected`, `stream_failed`, `device_lost`): owns no voice, cannot start until reset; its pending auto-continue still fires on schedule.
+- Run-time break (feedback; `voice_rejected`, `stream_failed`, `device_lost`): owns no voice, cannot start until reset; its pending auto-continue still fires on schedule, except after `device_lost`, which cancels it.
 - `device_lost` ends the run for good (pre-wait, auto-continue, auto-follow cancelled) and clears once the cue's patch is reported `mapped` again (`PatchStatus`, or when the run settles with the patch mapped; a patch never reported does not count).
 - A run that broke with a pending continue keeps showing `broken` until it fires, even if the device is back: clearing early would show a voiceless run as running.
 - `Input::DeviceLost` (sent after the binary failed the audio runs) hard-stops every other active run, so nothing scheduled before the loss fires after it.

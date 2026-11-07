@@ -1,6 +1,6 @@
 ---
 name: osc
-description: Load when changing or reviewing OSC input or output: engine/crates/engine/src/osc/, net/osc.rs, net/osc_mirror.rs, addresses, patterns, replies, /connect passcodes and rights, updates, listener limits, Network cue sending (control/netout.rs, OSC override).
+description: "Load when changing or reviewing OSC input or output: engine/crates/engine/src/osc/, net/osc.rs, net/osc_mirror.rs, addresses, patterns, replies, /connect passcodes and rights, updates, listener limits, Network cue sending (control/netout/, OSC override)."
 ---
 
 # OSC (NET-01, NET-02, NET-05, TRG-03, DOC-02, CT-30, PB-10)
@@ -148,5 +148,5 @@ A message with the same address and arguments as the peer's previous one, arrivi
 ## References
 - `references/updates-and-queries.md`: read when touching `/updates`, `/udpReplyPort`, update messages, reply JSON, queries or cue objects.
 - `references/listener-limits.md`: read when touching sockets, the task, TCP/UDP caps, byte budgets, held input, counters, or reviewing OSC for flood, reflection or hang risk.
-- `references/network-cue.md`: read when touching Network cue sending, `control/netout.rs`, network patches, look-ups or the output override.
+- `references/network-cue.md`: read when touching Network cue sending, `control/netout/`, network patches, look-ups or the output override.
 - Skill `engine-ws-server` for the hub tap the OSC copy is fed from; `docs/protocol.md` for the WebSocket messages OSC reuses.

@@ -1,6 +1,6 @@
 ---
 name: qlab-behaviour
-description: Load before deciding, building or reviewing any behaviour CLAUDE.md says to match from QLab 5, and before asking the user a QLab question. Holds every user answer and every assumed decision (cues, panic, fades, OSC, levels, files, Show Mode, cue-list UI). Search with grep first.
+description: "Load before deciding, building or reviewing any behaviour CLAUDE.md says to match from QLab 5, and before asking the user a QLab question. Holds every user answer and every assumed decision (cues, panic, fades, OSC, levels, files, Show Mode, cue-list UI). Search with grep first."
 ---
 
 # QLab 5 behaviour decisions

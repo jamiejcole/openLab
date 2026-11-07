@@ -52,7 +52,9 @@ Sent when `ControlConfig::status` is set (the host does; offline tests do not).
 
 ## Crash reports
 
-`diag::crash::install` (first thing in `host::run`, when an app-support folder exists) sets a panic hook that writes `crash-<UTC>-<pid>.txt` into `AppDirs::crash_dir()` (`~/Library/Logs/openLab/Crashes` on macOS, beside the logs a user is asked to attach; `<app-support>/openLab/Crashes` elsewhere): version, time, OS and architecture, open workspace path(s), thread, panic message and location, backtrace, and the last 200 show-log lines from the ring.
+`diag::crash::install` (in `host::run` after the instance lock and the log writer, before the run marker; only when an app-support folder exists) sets a panic hook that writes `crash-<UTC>-<pid>.txt` into `AppDirs::crash_dir()` (`~/Library/Logs/openLab/Crashes` on macOS, beside the logs a user is asked to attach; `<app-support>/openLab/Crashes` elsewhere).
+
+It holds: version, time, OS and architecture, open workspace path(s), thread, panic message and location, backtrace, and the last 200 show-log lines from the ring.
 
 Then the previous hook runs (the message still reaches stderr).
 

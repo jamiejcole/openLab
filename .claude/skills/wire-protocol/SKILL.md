@@ -1,6 +1,6 @@
 ---
 name: wire-protocol
-description: Load when adding, removing or changing an engine-UI WebSocket message, request, runtime change, error code or limit (engine/crates/core/src/protocol, engine/fixtures/protocol, mac/openLab/Engine/ClientProtocol.swift and ServerProtocol.swift) or reviewing such a change.
+description: "Load when adding, removing or changing an engine-UI WebSocket message, request, runtime change, error code or limit (engine/crates/core/src/protocol, engine/fixtures/protocol, mac/openLab/Engine/ClientProtocol.swift and ServerProtocol.swift) or reviewing such a change."
 ---
 
 # Changing the wire protocol
@@ -25,7 +25,7 @@ Behaviour, ordering and limits are in `docs/protocol.md` (read the sections for 
 - `model_changed` for revision N precedes the `result` reporting N; deletes apply before upserts; revisions step by 1.
 - A numeric field that can be NaN or infinite on output is sanitised to 0 by the encoder.
 - Test-only requests (`advance`, `lose_device`, `restore_device`) never exist in a release build; `mac/scripts/verify-bundle.sh` checks.
-- Touching `docs/protocol.md` or `engine/fixtures/protocol/` triggers the mac PR checks and the real-engine app tests (`scripts/paths.sh`).
+- Touching `engine/fixtures/protocol/` or `engine/crates/core/src/protocol` triggers the mac PR checks and the real-engine app tests (`scripts/paths.sh`).
 
 ## Related
 Skill `engine-ws-server` for server mechanics; `edit-commands` when the change is a model `Command` (commands ride inside the `command` message).

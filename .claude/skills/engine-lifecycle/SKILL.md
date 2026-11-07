@@ -1,6 +1,6 @@
 ---
 name: engine-lifecycle
-description: Load when changing or reviewing engine start/shutdown, engine.json, instance lock, signals, run marker and crash capture, show log and status, sleep prevention, app relaunch, or the mac engine supervisor (engine/src/host/, diag/, platform/, net/relaunch.rs; mac/openLab/Engine/).
+description: "Load when changing or reviewing engine start/shutdown, engine.json, instance lock, signals, run marker, crash capture, show log and status, sleep prevention, app relaunch, Pre-Show Check window (Preshow*.swift), EngineAlarm.swift, mac supervisor (engine/crates/engine/src/host/, diag/, platform/)."
 ---
 
 # Engine process lifecycle
@@ -17,7 +17,7 @@ description: Load when changing or reviewing engine start/shutdown, engine.json,
 - **A panic on the control thread is a crash**: non-zero exit, run marker and `engine.json` left behind.
 - **No signal handler for crashes**, ever (below).
 - **Nothing is sent off the machine** by crash or log code; there is no network code for it.
-- Nothing in diagnostics runs on the audio thread or waits for a disk.
+- Nothing in diagnostics runs on the audio thread or waits for a disk, except the panic hook (writes a file after a caught audio-thread panic) and `LogWriter::finish`'s bounded flush.
 
 ## Start order
 
@@ -55,6 +55,7 @@ Triggers: `goodbye { shutdown: true }` from any client, `SIGTERM`, `SIGINT`, `SI
 ## Run marker and crash capture
 
 - At start the engine writes `<app-support>/openLab/Running/running-<pid>.json` (`pid`, `started_ms`, `version`) and holds an exclusive file lock on it for its whole life (`diag/run_marker.rs`). It is written, locked and synced under a temporary name, then renamed (the lock belongs to the open file and survives), so a concurrent start never finds it empty or unlocked. Dead temps are removed by a later start once unlocked and a minute old.
+- With no app-support folder, or an unwritable `Running` folder, the engine runs without a marker and the start goes on; that run leaves no crash notice.
 - A graceful end of `host::run` (including a start that fails with an error) removes it. A control-thread panic returns `HostError::ControlPanicked` (non-zero exit) and leaves it.
 - **The next start locks each leftover marker it finds.** One it can lock belongs to a dead run (the OS drops a lock when the process ends however it ends): it records one `warn` show-log record (kind `engine`) "previous run ended without a clean shutdown (crash, kill or power loss): ...", naming that run's crash reports (at most 3), prints the same line to stderr, and removes the marker, so each unclean exit is reported once. A marker a live engine holds cannot be locked and is left alone.
 - The record is the engine's, not a workspace's: it is in `log_tail` whichever workspace is open. No client is connected at start, so there is no live push for it.

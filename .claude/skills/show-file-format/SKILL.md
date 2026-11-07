@@ -1,6 +1,6 @@
 ---
 name: show-file-format
-description: Load when changing or reviewing what is written to or read from a .openlab show file: model fields (engine/crates/core model.rs, cue.rs, show_file.rs, validate.rs), load-time validation and warnings, format_version, the migration chain, media path storage, or fixtures in engine/fixtures/show.
+description: "Load when changing or reviewing what is stored in a .openlab show file: model fields (engine/crates/core model.rs, cue.rs, show_file.rs, validate.rs), load-time validation and warnings, format_version, migration chain, stored media path form (media_path.rs), fixtures in engine/fixtures/show."
 ---
 
 # Changing the show-file format
@@ -16,11 +16,11 @@ The contract is `docs/file-format.md` (conventions, ยง3 load/validation table, ย
 
 ## What check-repo parses
 - `scripts/check-repo.sh` (check `versions`) reads the line `Status: format version **N**` in `docs/file-format.md` and requires N equal to `FORMAT_VERSION`. Keep that exact form.
-- Touching `docs/file-format.md` or `engine/crates/core/src/show_file*` triggers the mac PR checks (`scripts/paths.sh`).
+- Touching `engine/crates/core/src/show_file*` triggers the mac PR checks (`scripts/paths.sh`).
 
 ## Must not break
 - Any input file, however hostile, loads, warns or is refused cleanly: never a panic, hang or unbounded allocation. Size and depth limits (`MAX_SHOW_FILE_BYTES`, parser depth) apply on every open path including recovery files.
-- Refuse only what makes the show ambiguous (bad JSON, duplicate ids, nesting too deep, newer version). Everything else loads with a warning naming the cue, and the cue shows broken where it cannot run. Oversize names and text are kept so the show opens; commands refuse new oversize values.
+- Refuse only what makes the show ambiguous; the refuse/warn/repair table is `docs/file-format.md` section 3. Everything else loads with a warning naming the cue, and the cue shows broken where it cannot run. Oversize names and text are kept so the show opens; commands refuse new oversize values.
 - A limit or validation applies on every path that creates the data (load, command, paste, import) and is tested on each.
 - Unknown keys are ignored; missing required keys are an error (except `settings.hotkeys` keys).
 - Media paths are stored with forward slashes, relative only when literally inside the show folder (byte for byte after NFC). Matching rules and relink are in skills `media-files` and `persistence`.

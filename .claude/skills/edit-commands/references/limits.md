@@ -11,9 +11,9 @@ Rule for all limits: they apply to the **value being set only**. Load keeps an o
 | Cue notes | 64 KiB (`MAX_CUE_NOTES_BYTES`, the bound on a Network string argument); free text, newlines allowed | `InvalidCue`, `TooLarge { field: "notes" }` | `TooLarge` warning |
 | Network cue address | 64 KiB | `InvalidMessage(reason)`; on add/paste/kind change `InvalidCue` (`TooLarge`) | `TooLarge` warning; cue shows broken (`network_message_invalid`) |
 | Network cue arguments | 1024 arguments; each string argument 64 KiB; no non-finite float (JSON cannot hold one) | as above | as above |
-| OSC passcode (via command) | 1 to 32 ASCII digits; at most 16 rows | refused by the command (the table is not changed) | a show file may hold other text; kept with a warning |
-| Network patch port (new or changed value) | 1 to 65535 | refused | port 0 accepted at load |
-| Patch outputs / `channel_count` | 1 to 64 | refused | per `docs/file-format.md` |
+| OSC passcode (via command) | 1 to 32 ASCII digits; at most 16 rows | `InvalidValue(&'static str)` (the table is not changed); a bad index is `IndexOutOfRange` | a show file may hold other text; kept with a warning |
+| Network patch port (new or changed value) | 1 to 65535 | `InvalidValue` | port 0 accepted at load |
+| Patch outputs / `channel_count` | 1 to 64 | `channel_count` edit: `InvalidValue`; `AddPatch` or outputs edit with 0 or over 64: `InvalidModel` carrying `PatchChannelCount`; a bad output index: `PatchOutputOutOfRange` | per `docs/file-format.md` |
 
 Why:
 - Newlines in names are allowed as in QLab 5. The 1024 scalar limit for names is our choice (QLab sets none we know of).
