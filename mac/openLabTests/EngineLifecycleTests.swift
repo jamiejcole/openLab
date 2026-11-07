@@ -1465,6 +1465,173 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(alerts.log.filter { $0.hasPrefix("setAside") }, ["setAsideAutosave:Hamlet"])
     }
 
+    /// Crashed with B's edits autosaved; the alarm dismissed, then File > Recover Autosaves…
+    private func recoverFromTheMenu(afterCrashOf path: String, spoil: () throws -> Void = {}) async throws {
+        try await runs.start()
+        let doc = try await runs.open(path)
+        try await runs.rename(intro, in: doc, to: "Unsaved")
+        try await runs.advance(31)
+        await runs.autosaved("B")
+        try await runs.crash()
+        try spoil()
+        try await launch(launchDefaults: prefs)
+        let offered = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(offered)
+        presenter.dismiss()
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log, ["autosave:B"])
+        await assertEventually { self.app.allWindows.count == 1 }
+    }
+
+    /// The recovered workspace is B again, with unsaved changes: its media (relative to its folder)
+    /// plays on GO, and it is among the files to reopen next launch.
+    func testRecoverAutosavesBindsTheWorkspaceToItsShowFile() async throws {
+        makePrefs(.restore)
+        let path = try runs.show("Demo", named: "B")
+        try await recoverFromTheMenu(afterCrashOf: path)
+        let wc = try XCTUnwrap(app.allWindows.first)
+        let store = wc.store
+        await assertEventually { store.document?.path == path }
+        await assertEventually { wc.window?.isDocumentEdited == true }
+        XCTAssertEqual(store.model?.cue(intro)?.name, "Unsaved", "the autosave's edits")
+        try await advance(0.1)
+        XCTAssertNil(store.problems[intro], "\(store.problems)")
+        guard case .success = await store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
+        try await advance(0.1)
+        await assertEventually { store.cueStates[self.intro]?.state == .running }
+        app.recordOpenWorkspaces()
+        XCTAssertEqual(LaunchPreferences(defaults: prefs).openFiles, [path])
+        // Its window holds that autosave now: nothing more to recover.
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log.last, "info:" + loc("recover.none"))
+    }
+
+    /// A damaged file is not written over by a plain Save: the recovered workspace is untitled, and
+    /// its cue shows the media problem before any GO.
+    func testRecoverAutosavesOfADamagedShowIsUntitledAndItsCueReportsItsMedia() async throws {
+        makePrefs(.restore)
+        let path = try runs.show("Demo", named: "B")
+        try await recoverFromTheMenu(afterCrashOf: path) {
+            try "{ corrupt".write(toFile: path, atomically: true, encoding: .utf8)
+        }
+        let store = try XCTUnwrap(app.allWindows.first?.store)
+        await assertEventually { store.document != nil }
+        XCTAssertNil(store.document?.path)
+        XCTAssertEqual(store.model?.cue(intro)?.name, "Unsaved")
+        await assertEventually {
+            store.problems[self.intro]?.contains { $0.type == "media_missing" } == true
+        }
+        await assertEventually {
+            store.warnings.contains { $0.type == "notice" && $0.json["code"]?.stringValue == "recovery_untitled" }
+        }
+        app.recordOpenWorkspaces()
+        XCTAssertEqual(LaunchPreferences(defaults: prefs).openFiles, [])
+    }
+
+    /// An untitled window restored from B's autosave (B was damaged then), and B's own window open
+    /// beside it under a fresh id. After a crash that autosave could bind to B: B's window gets its
+    /// file, and the untitled window comes back untitled.
+    func testAnUntitledWindowRestoredFromAShowsAutosaveDoesNotTakeThatShowsFileInAReattach() async throws {
+        makePrefs(.restore)
+        let path = try runs.show("Demo", named: "B")
+        let good = try Data(contentsOf: URL(fileURLWithPath: path))
+        try await recoverFromTheMenu(afterCrashOf: path) {
+            try "{ corrupt".write(toFile: path, atomically: true, encoding: .utf8)
+        }
+        let untitled = try XCTUnwrap(app.allWindows.first?.store)
+        await assertEventually { untitled.document != nil }
+        XCTAssertNil(untitled.document?.path)
+        // B is mended, older than its autosave.
+        try good.write(to: URL(fileURLWithPath: path))
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)], ofItemAtPath: path)
+        guard case .success = await app.session.open(path: path, recovery: .ignore) else {
+            return XCTFail("open B")
+        }
+        await assertEventually { self.app.allWindows.count == 2 }
+
+        try await crash()
+        let back = await pump { self.presenter.detail.contains(loc("engine.alarm.back")) }
+        XCTAssertTrue(back)
+        await assertEventually { self.app.session.detached.isEmpty && !self.app.session.isReattaching }
+        XCTAssertEqual(app.allWindows.count, 2, presenter.detail)
+        XCTAssertFalse(
+            presenter.detail.contains(String(format: loc("engine.alarm.failedOne"), "B", "")), presenter.detail)
+        await assertEventually { self.app.allWindows.compactMap(\.store.document?.path) == [path] }
+        await assertEventually { untitled.document != nil }
+        XCTAssertNil(untitled.document?.path)
+    }
+
+    /// The operator chose the saved file over an autosave and edited it; the engine died before
+    /// those edits had an autosave. The reattach must not bring back the autosave turned down (the
+    /// window would hold, and fire, cues it never showed, and a Save would write them over the file).
+    func testAReattachDoesNotRestoreAnAutosaveTheOperatorTurnedDown() async throws {
+        let path = try runs.show("Demo", named: "B")
+        try await runs.start()
+        let doc = try await runs.open(path)
+        try await runs.rename(intro, in: doc, to: "Turned down")
+        try await runs.advance(31)
+        await runs.autosaved("B")
+        try await runs.crash()
+
+        try await launch()
+        let offered = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(offered)
+        presenter.dismiss()
+        alerts.recoveryChoice = .ignore
+        await app.openWorkspace(url: URL(fileURLWithPath: path))
+        await assertEventually { self.app.allWindows.first?.store.model?.cue(self.intro)?.name == "Intro" }
+        let store = try XCTUnwrap(app.allWindows.first?.store)
+        guard case .success = await store.send(command: .setProperty(intro, .name("Edited"))) else {
+            return XCTFail("edit")
+        }
+        await assertEventually { store.document?.dirty == true }
+
+        try await crash()
+        let back = await pump { self.presenter.detail.contains(loc("engine.alarm.back")) }
+        XCTAssertTrue(back)
+        await assertEventually { store.connectionState == .connected && !self.app.session.isReattaching }
+        XCTAssertEqual(store.model?.cue(intro)?.name, "Intro", "the saved file, not the autosave turned down")
+        XCTAssertEqual(store.document?.dirty, false)
+        XCTAssertTrue(
+            presenter.detail.contains(String(format: loc("engine.alarm.editsLostOne"), "B")), presenter.detail)
+        XCTAssertFalse(
+            presenter.detail.contains(String(format: loc("engine.alarm.restoredOne"), "B")), presenter.detail)
+    }
+
+    /// An untitled window restored from B's autosave and autosaved since comes back from its own
+    /// autosave, even when file times make the one it was restored from look newer.
+    func testAReattachOfAnUntitledWindowPrefersItsOwnAutosave() async throws {
+        makePrefs(.restore)
+        let path = try runs.show("Demo", named: "B")
+        try await recoverFromTheMenu(afterCrashOf: path) {
+            try "{ corrupt".write(toFile: path, atomically: true, encoding: .utf8)
+        }
+        let store = try XCTUnwrap(app.allWindows.first?.store)
+        await assertEventually { store.model?.cue(self.intro)?.name == "Unsaved" }
+        let id = try XCTUnwrap(store.model?.id.raw)
+        guard case .success = await store.send(command: .setProperty(intro, .name("Own edit"))) else {
+            return XCTFail("edit")
+        }
+        try await advance(31)
+        let recovery = runs.support.appendingPathComponent("openLab/Recovery")
+        let own = recovery.appendingPathComponent("\(id).openlab")
+        await assertEventually { FileManager.default.fileExists(atPath: own.path) }
+        // The autosave it was restored from now looks newer.
+        let names = try FileManager.default.contentsOfDirectory(atPath: recovery.path)
+        let hashed = try XCTUnwrap(names.first { $0.hasPrefix("\(id)-") })
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(3600)],
+            ofItemAtPath: recovery.appendingPathComponent(hashed).path)
+
+        try await crash()
+        let back = await pump { self.presenter.detail.contains(loc("engine.alarm.back")) }
+        XCTAssertTrue(back)
+        await assertEventually { store.connectionState == .connected && !self.app.session.isReattaching }
+        XCTAssertEqual(store.model?.cue(intro)?.name, "Own edit")
+        XCTAssertNil(store.document?.path)
+    }
+
     /// B and a Finder copy of it share a workspace id; the copy's autosave (another path, so
     /// another path hash) is offered from File > Recover Autosaves… while B is open, and B's own
     /// autosave, which its window holds, is not.

@@ -34,8 +34,8 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
     private(set) var stores: [ModelID: WorkspaceStore] = [:]
     /// The docs of `stores` in open order (the `workspaces` list order; a doc not listed yet last).
     private(set) var order: [ModelID] = []
-    /// Stores waiting to be rebound in a new engine run, in window order, with what their window
-    /// showed when the old run ended.
+    /// Stores waiting to be rebound in a new engine run, with what their window showed when the
+    /// old run ended: in window order, then those with a file first once a reattach starts.
     private(set) var detached: [(info: WorkspaceInfo, store: WorkspaceStore)] = []
     /// Sent after `stores`, `order` or `detached` changed.
     let storesChanged = PassthroughSubject<Void, Never>()
@@ -104,8 +104,9 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
     func open(path: String, recovery: RecoveryChoice? = nil) async -> Result<ModelID, EngineError> {
         let result = await opened(
             docRequest(.open(path: path, recovery: recovery)), path: path)
-        if recovery == .restore, case .success(let doc) = result, let ms = offeredAutosaves[path] {
-            cover(doc) { $0.loadOwn(modifiedMs: ms) }
+        if case .success(let doc) = result, let ms = offeredAutosaves[path] {
+            if recovery == .restore { cover(doc) { $0.loadOwn(modifiedMs: ms) } }
+            if recovery == .ignore { cover(doc) { $0.turnDown(modifiedMs: ms) } }
         }
         // Keyed by the path asked for: the caller repeats it with `restore`.
         if case .failure(.recoveryOffered(_, _, let ms)) = result { offeredAutosaves[path] = ms }
@@ -380,9 +381,12 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
 
     /// Reopens one window's show at a time (the engine takes one document request at a time).
     private func reattach() async {
+        // Windows with a file first: an untitled one's autosave can bind to a show file it names,
+        // and that file's own window must have it by then (the engine then keeps the other untitled).
+        detached = detached.filter { $0.info.path != nil } + detached.filter { $0.info.path == nil }
         var recovery: [RecoveryEntryInfo]?
         while let next = detached.first, !Task.isCancelled {
-            let outcome = await rebind(next.info, recovery: &recovery)
+            let outcome = await rebind(next.info, turnedDown: next.store.autosaveCover.turnedDown, recovery: &recovery)
             guard !Task.isCancelled, detached.first?.store === next.store else { return }
             switch outcome {
             case .interrupted:
@@ -430,7 +434,9 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
                 failures: failures, restored: restored, editsLost: editsLost, editsLostWorkspaces: editsLostIDs))
     }
 
-    private func rebind(_ info: WorkspaceInfo, recovery: inout [RecoveryEntryInfo]?) async -> Rebind {
+    private func rebind(
+        _ info: WorkspaceInfo, turnedDown: Set<Int64>, recovery: inout [RecoveryEntryInfo]?
+    ) async -> Rebind {
         if let path = info.path {
             // With no autosave newer than the file, a window with unsaved changes loses them.
             var source: Source = info.dirty ? .fileEditsLost : .file
@@ -438,10 +444,17 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
             var result = await docRequest(.open(path: path, recovery: nil))
             if case .success(let ok) = result, case .recoveryOffer(_, _, let modified)? = ok.data {
                 // An autosave newer than the file: the window showed it if it had unsaved changes
-                // (the engine stopped before they were saved); otherwise it showed the saved file.
-                source = info.dirty ? .autosave : .file
-                if info.dirty { cover.loadOwn(modifiedMs: modified) }
-                result = await docRequest(.open(path: path, recovery: info.dirty ? .restore : .ignore))
+                // (the engine stopped before they were saved), unless the operator turned that very
+                // autosave down: those are edits to the saved file, made since and with no autosave
+                // yet. Otherwise it showed the saved file.
+                let restore = info.dirty && !turnedDown.contains(modified)
+                if restore {
+                    source = .autosave
+                    cover.loadOwn(modifiedMs: modified)
+                } else {
+                    cover.turnDown(modifiedMs: modified)
+                }
+                result = await docRequest(.open(path: path, recovery: restore ? .restore : .ignore))
             }
             switch result {
             case .success(let ok):
@@ -471,7 +484,10 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
             }
         }
         let request: Request
-        let entry = recovery?.first { $0.workspaceId == info.workspaceId }
+        // Its own autosave if it has one (#385); else the one it was restored from.
+        let entry =
+            recovery?.first { $0.workspaceId == info.workspaceId && $0.pathHash == nil }
+            ?? recovery?.first { $0.workspaceId == info.workspaceId }
         if let entry {
             request = .openRecovery(
                 workspaceId: entry.workspaceId, pathHash: entry.pathHash, modifiedMs: entry.modifiedMs)
