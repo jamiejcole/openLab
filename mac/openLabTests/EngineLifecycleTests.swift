@@ -364,6 +364,206 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(processes.signals.count, supervisor.maxSpawns, "each wedged engine is ended once")
     }
 
+    /// Spawned here, its file naming a port nobody answers on: alive, no connection can reach it.
+    private func spawnsSilentEngines(silent: Int = 1) {
+        var count = 0
+        processes.onSpawn = { [unowned self] in
+            count += 1
+            if count > silent {
+                processes.alive.insert(enginePid)
+                processes.info = .success(engineInfo)
+                return enginePid
+            }
+            let pid = 900 + Int32(count)
+            processes.alive.insert(pid)
+            processes.info = .success(EngineConnectionInfo(port: deadPort, token: engine.token, pid: pid))
+            return pid
+        }
+    }
+
+    private func alarmPanel() -> (RecordingPresenter, EngineAlarmController) {
+        let presenter = RecordingPresenter()
+        let controller = EngineAlarmController(
+            session: session, supervisor: supervisor, presenter: presenter, alerts: { ScriptedAlerts() })
+        return (presenter, controller)
+    }
+
+    /// The flow of #562: the alarm goes up after `probeAttempts`, nothing is signalled while the
+    /// deadline runs, and the alarm comes down when the engine answers.
+    func testASpawnedEngineWithItsFileThatNeverAnswersRaisesTheAlarmAndItComesDownWhenItAnswers() async throws {
+        spawnsSilentEngines()
+        let (presenter, controller) = alarmPanel()
+        supervisor.start()
+        let alarmed = await pump { !self.alarms.isEmpty }
+        XCTAssertTrue(alarmed)
+        XCTAssertEqual(alarms, [.newEngineNotAnswering])
+        XCTAssertTrue(presenter.isVisible)
+        XCTAssertEqual(presenter.shown.last?.title, loc("engine.alarm.notResponding"))
+        XCTAssertEqual(presenter.shown.last?.message, loc("engine.alarm.newEngineNotAnswering"))
+        clock += supervisor.startDeadline - 1
+        await spin(5)
+        XCTAssertEqual(alarms, [.newEngineNotAnswering], "raised once")
+        XCTAssertTrue(processes.signals.isEmpty, "within the deadline")
+        XCTAssertEqual(processes.spawns, 1)
+        processes.info = .success(EngineConnectionInfo(port: engine.port, token: engine.token, pid: 901))
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        await assertEventually { !presenter.isVisible }
+        XCTAssertEqual(alarms, [.newEngineNotAnswering])
+        XCTAssertTrue(processes.signals.isEmpty)
+        withExtendedLifetime(controller) {}
+    }
+
+    /// Past the deadline it is ended (nothing plays on an engine nothing reached) and replaced; the
+    /// next silent one has its own attempts and a doubled deadline; the alarm comes down when one
+    /// answers.
+    func testASpawnedEngineThatNeverAnswersIsEndedAndReplacedAfterTheDeadline() async throws {
+        spawnsSilentEngines(silent: 2)
+        let (presenter, controller) = alarmPanel()
+        supervisor.start()
+        _ = await pump { self.alarms.count == 1 }
+        clock += supervisor.startDeadline
+        _ = await pump { self.processes.spawns == 2 }
+        XCTAssertEqual(processes.signals.map(\.pid), [901])
+        XCTAssertEqual(processes.signals.map(\.signal), [.terminate])
+        XCTAssertEqual(alarms, [.newEngineNotAnswering, .startTimedOut])
+        XCTAssertEqual(presenter.shown.last?.message, loc("engine.alarm.startTimeout"))
+        _ = await pump { self.alarms.count == 3 }
+        XCTAssertEqual(alarms.last, .newEngineNotAnswering, "the new engine's own attempts")
+        clock += supervisor.startDeadline
+        await spin(5)
+        XCTAssertEqual(processes.signals.map(\.pid), [901], "its deadline is twice the first")
+        clock += supervisor.startDeadline
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertEqual(processes.signals.map(\.pid), [901, 902])
+        XCTAssertEqual(processes.spawns, 3)
+        XCTAssertEqual(alarms, [.newEngineNotAnswering, .startTimedOut, .newEngineNotAnswering, .startTimedOut])
+        await assertEventually { !presenter.isVisible }
+        withExtendedLifetime(controller) {}
+    }
+
+    /// The app stalled past the deadline with attempts still to fail: the end is announced all the
+    /// same, by the alarm that says what is happening, and the other is not raised after it.
+    func testASpawnedEngineEndedBeforeItsAttemptsHaveFailedIsStillAnnounced() async throws {
+        spawnsSilentEngines()
+        supervisor.start()
+        let firstFailed = await eventually { await self.scheduler.waitingCount > 0 }
+        XCTAssertTrue(firstFailed)
+        clock += supervisor.startDeadline
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertEqual(processes.signals.map(\.pid), [901])
+        XCTAssertEqual(alarms, [.startTimedOut])
+    }
+
+    /// A slow valid start: the control loop has not sent its first welcome. Nothing is said before
+    /// the third handshake timeout (about 30 s after the file), and it answers with no signal.
+    func testASpawnedEngineSlowToItsFirstWelcomeIsNotAlarmedBeforeItsAttemptsAndNeverSignalled() async throws {
+        spawnsTheFake()
+        engine.welcomeFault = .silent
+        supervisor.start()
+        for attempt in 1...supervisor.probeAttempts {
+            XCTAssertEqual(alarms, [], "before attempt \(attempt) has failed")
+            let waiting = await eventually {
+                await self.scheduler.fire()
+                return await self.handshakeScheduler.waitingCount > 0
+            }
+            XCTAssertTrue(waiting)
+            await handshakeScheduler.fire()
+            if attempt < supervisor.probeAttempts {
+                let next = await eventually { await self.scheduler.waitingCount > 0 }
+                XCTAssertTrue(next)
+            }
+        }
+        await assertEventually { self.alarms == [.newEngineNotAnswering] }
+        engine.welcomeFault = .none
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertTrue(processes.signals.isEmpty)
+        XCTAssertEqual(processes.spawns, 1)
+    }
+
+    /// The engine's own snapshot wait can end first: an `internal` error before the welcome is no
+    /// answer either.
+    func testASpawnedEngineThatOnlyAnswersWithAnErrorRaisesTheAlarm() async throws {
+        spawnsTheFake()
+        engine.refuseAuth = .internal
+        supervisor.start()
+        let alarmed = await pump { !self.alarms.isEmpty }
+        XCTAssertTrue(alarmed)
+        XCTAssertEqual(alarms, [.newEngineNotAnswering])
+        XCTAssertTrue(processes.signals.isEmpty)
+    }
+
+    func testASpawnedEngineThatAnswersOnTheFirstProbeGetsNoAlarm() async throws {
+        spawnsTheFake()
+        let (presenter, controller) = alarmPanel()
+        supervisor.start()
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertEqual(engine.connectCount, 1)
+        XCTAssertEqual(alarms, [])
+        XCTAssertTrue(presenter.shown.isEmpty)
+        XCTAssertTrue(processes.signals.isEmpty)
+        withExtendedLifetime(controller) {}
+    }
+
+    /// Once reached, a spawned engine is an engine like any other: however long it stays silent, a
+    /// running show is never ended for it.
+    func testASpawnedEngineReachedOnceAndThenSilentIsNeverEndedOrAlarmed() async throws {
+        spawnsTheFake()
+        supervisor.start()
+        _ = await pump { self.session.connectionState == .connected }
+        processes.info = .success(EngineConnectionInfo(port: deadPort, token: engine.token, pid: enginePid))
+        engine.dropConnections()
+        await spin(5)
+        clock += 10 * supervisor.startDeadline
+        await spin(10)
+        XCTAssertNotEqual(session.connectionState, .connected)
+        XCTAssertTrue(processes.signals.isEmpty)
+        XCTAssertEqual(processes.spawns, 1)
+        XCTAssertEqual(alarms, [])
+        XCTAssertNil(supervisor.engineNotReached)
+    }
+
+    /// The same one step later: the replacement after a crash writes its file and never answers.
+    func testASilentReplacementAfterACrashIsAlarmedThenEnded() async throws {
+        processes.info = .success(engineInfo)
+        processes.alive = [enginePid]
+        spawnsSilentEngines()
+        supervisor.start()
+        _ = await pump { self.session.connectionState == .connected }
+        processes.alive = []
+        processes.info = .failure(.missing)
+        engine.dropConnections()
+        let alarmed = await pump { self.alarms.count == 2 }
+        XCTAssertTrue(alarmed)
+        XCTAssertEqual(alarms, [.engineStopped(crashed: false), .newEngineNotAnswering])
+        XCTAssertTrue(processes.signals.isEmpty)
+        clock += supervisor.startDeadline
+        let ok = await pump { self.session.connectionState == .connected }
+        XCTAssertTrue(ok)
+        XCTAssertEqual(processes.signals.map(\.pid), [901])
+        XCTAssertEqual(alarms, [.engineStopped(crashed: false), .newEngineNotAnswering, .startTimedOut])
+    }
+
+    /// The attempts that ended an engine not spawned here say nothing about the one that replaces it.
+    func testASilentEngineFromBeforeLeavesItsReplacementItsOwnAttempts() async throws {
+        let old: Int32 = 777
+        processes.info = .success(EngineConnectionInfo(port: deadPort, token: engine.token, pid: old))
+        processes.alive = [old]
+        spawnsSilentEngines()
+        supervisor.start()
+        let replaced = await pump { self.processes.spawns == 1 }
+        XCTAssertTrue(replaced)
+        XCTAssertEqual(alarms, [], "the replacement has failed no attempt yet")
+        let alarmed = await pump { !self.alarms.isEmpty }
+        XCTAssertTrue(alarmed)
+        XCTAssertEqual(alarms, [.newEngineNotAnswering])
+        XCTAssertEqual(processes.signals.map(\.pid), [old], "the replacement is left alone within its deadline")
+    }
+
     /// An engine that accepts the connection but is slow to send its welcome (its control loop
     /// is busy while the audio thread plays) is never ended for it (#268).
     func testALaunchHandshakeTimeoutIsBusyNotSilence() async throws {
@@ -391,6 +591,7 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(alarms, [.notResponding], "the operator is told once, the engine is left alone")
         XCTAssertTrue(presenter.isVisible, "the alarm is up")
         XCTAssertEqual(presenter.shown.last?.title, loc("engine.alarm.notResponding"))
+        XCTAssertEqual(presenter.shown.last?.message, loc("engine.alarm.notRespondingMessage"))
         // It answers in the end: attached, nothing was lost, and the alarm (which says to quit the
         // engine) goes away.
         engine.welcomeFault = .none
@@ -620,12 +821,23 @@ private struct WaitsForFirstEngineExit: openLab.Scheduler {
 @MainActor
 private final class HidesFirstRunFile: EngineProcesses {
     let real: SystemEngineProcesses
+    /// When set, the first run's file is seen, naming this port nobody answers on.
+    let closedPort: UInt16?
     private(set) var spawned: [Int32] = []
     private(set) var signalled: [Int32] = []
-    init(_ real: SystemEngineProcesses) { self.real = real }
+    init(_ real: SystemEngineProcesses, closedPort: UInt16? = nil) {
+        self.real = real
+        self.closedPort = closedPort
+    }
 
     func readInfo() -> Result<EngineConnectionInfo, EngineConnectionInfo.LoadError> {
-        signalled.isEmpty ? .failure(.missing) : real.readInfo()
+        guard signalled.isEmpty else { return real.readInfo() }
+        guard let closedPort else { return .failure(.missing) }
+        return real.readInfo().map {
+            var info = $0
+            info.port = closedPort
+            return info
+        }
     }
     func isEngine(_ pid: Int32) -> Bool { real.isEngine(pid) }
     func signal(_ pid: Int32, _ signal: EngineSignal) {
@@ -667,12 +879,15 @@ final class EngineCrashFlowTests: XCTestCase {
 
     /// The app with Hamlet (the demo show, a cue playing and an unsaved edit) and A (an empty show)
     /// open. `before`: what happens in the folder before the app starts its engine.
-    private func launch(hidingFirstRun: Bool = false, launchDefaults: UserDefaults? = nil) async throws {
+    private func launch(
+        hidingFirstRun: Bool = false, firstRunPort: UInt16? = nil, launchDefaults: UserDefaults? = nil
+    ) async throws {
         let support = runs.support
         processes = SystemEngineProcesses(
             infoURL: runs.infoURL, watchStderr: false,
             arguments: TestEngineOptions(clock: .stepped, appSupport: support).engineArguments, watchStdin: true)
-        let supervised: EngineProcesses = hidingFirstRun ? HidesFirstRunFile(processes) : processes
+        let supervised: EngineProcesses =
+            hidingFirstRun ? HidesFirstRunFile(processes, closedPort: firstRunPort) : processes
         hiding = supervised as? HidesFirstRunFile
         let session = EngineSession(transport: tap, infoProvider: { supervised.readInfo() }, scheduler: scheduler)
         // The real engine takes milliseconds to exit on SIGTERM: the supervisor's wait for it follows
@@ -758,7 +973,12 @@ final class EngineCrashFlowTests: XCTestCase {
             if condition() { return true }
             // Only once the first engine's own file exists: SIGTERM must reach an engine that holds
             // the lock and has its signal handling up.
-            if let hiding = self.hiding, hiding.signalled.isEmpty, case .success = hiding.real.readInfo() {
+            // An engine whose file the app can see is first reported: how many attempts fail per
+            // poll depends on the machine, so the clock waits for what the panel shows.
+            if let hiding = self.hiding, hiding.signalled.isEmpty, case .success = hiding.real.readInfo(),
+                hiding.closedPort == nil
+                    || self.presenter.shown.last?.message == loc("engine.alarm.newEngineNotAnswering")
+            {
                 self.stepClock += 5
             }
             await self.scheduler.fire()
@@ -778,6 +998,23 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertFalse(processes.isEngine(first), "the first engine exited on SIGTERM")
         guard case .success(let info) = processes.readInfo() else { return XCTFail("no engine.json") }
         XCTAssertEqual(info.pid, hiding.spawned.last)
+    }
+
+    /// An engine whose `engine.json` is there but which the app cannot reach (#562): the alarm goes
+    /// up, the real engine is ended (SIGTERM), the replacement connects and the alarm comes down.
+    func testAnEngineThatWroteItsFileButIsNeverReachedIsAlarmedEndedAndReplaced() async throws {
+        try await launch(hidingFirstRun: true, firstRunPort: try StubEngine.closedPort())
+        let hiding = try XCTUnwrap(hiding)
+        let first = try XCTUnwrap(hiding.spawned.first)
+        XCTAssertEqual(hiding.signalled, [first], "only the engine nothing reached was signalled")
+        XCTAssertEqual(hiding.spawned.count, 2)
+        XCTAssertFalse(processes.isEngine(first), "the first engine exited on SIGTERM")
+        XCTAssertEqual(
+            presenter.shown.map(\.title), [loc("engine.alarm.notResponding"), loc("engine.alarm.cannotStart")])
+        XCTAssertEqual(
+            presenter.shown.map(\.message),
+            [loc("engine.alarm.newEngineNotAnswering"), loc("engine.alarm.startTimeout")])
+        await assertEventually { !self.presenter.isVisible }
     }
 
     func testEngineCrashAlarmsStartsANewEngineReattachesAndOffersRecovery() async throws {

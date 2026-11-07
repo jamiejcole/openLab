@@ -165,6 +165,9 @@ final class EngineAlarmController {
         case .notResponding:
             notRespondingShown = true
             presenter.show(title: loc("engine.alarm.notResponding"), message: loc("engine.alarm.notRespondingMessage"))
+        case .newEngineNotAnswering:
+            notRespondingShown = true
+            presenter.show(title: loc("engine.alarm.notResponding"), message: loc("engine.alarm.newEngineNotAnswering"))
         case .startTimedOut:
             notRespondingShown = true
             presenter.show(title: loc("engine.alarm.cannotStart"), message: loc("engine.alarm.startTimeout"))
