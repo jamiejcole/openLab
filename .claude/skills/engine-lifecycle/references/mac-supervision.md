@@ -20,16 +20,19 @@ Files: `mac/openLab/Engine/EngineSupervisor.swift`, `EngineProcesses.swift`, `En
 
 ## Start deadline
 
-An engine this app spawned that stays alive but writes no `engine.json` within 90 s (a cold start on a slow machine takes tens of seconds; applies only until the file exists, never to an engine this run reached):
+An engine this app spawned that stays alive but writes no `engine.json` within 90 s (a cold start on a slow machine takes tens of seconds; never to an engine this run reached):
 - Raises the alarm "did not start in time" (taken down when an engine answers), gets SIGTERM (SIGKILL after 25 s) on that pid only, and is replaced within the 3-starts-a-minute limit (past it the crash-loop alarm stays).
 - Each consecutive engine that misses the deadline doubles the next one's (90, 180, 360 s, capped at 1024 times the first); a connection resets it, so a start of any finite length eventually runs.
+
+A spawned engine that writes the file but fails 3 connection attempts in a row (refused, reset, no `welcome`, or an error before it) raises the "not responding" alarm, with its own message saying a new engine has not answered and will be ended and replaced; taken down when an engine answers. A valid start listens before writing the file, so this means a dead listener or about 30 s of no `welcome`.
+This holds at launch and for a replacement after a crash. Nothing plays on it, so if it has not answered one start deadline after its file was first seen, it is ended and replaced as above. Each consecutive engine missing the deadline doubles the next one's (90, 180, 360 s, capped at 1024 times the first); a connection resets it, so a start of any finite length eventually runs.
 
 ## Stopping and unresponsive engines
 
 - `stopping: true`: no connection opened, no signal. The app polls for the pid to exit (up to 25 s, just past the engine's 24 s `EXIT_DEADLINE`), then starts a new engine with no alarm. Still alive after that: reported once ("still shutting down", taken down when an engine answers) and waited for.
 - After such a wait the new engine's autosaves are always offered (none: nothing shown): the stopped engine may have been forced out before its final recovery writes finished, and a forced exit removes `engine.json` like a clean one.
 - An engine this app was connected to that leaves a `stopping: true` file behind (killed, or removal blocked on a hung disk) is alarmed as a stop, not a crash.
-- Connections refused or reset 3 times while no connection has been made in this app run: SIGTERM, 25 s, SIGKILL, then a new engine (all logged). After 3 attempts that open a socket but get no `welcome`, the alarm says the engine is not responding and the app keeps retrying without ending it.
+- An engine this app did not spawn: connections refused or reset 3 times while no connection has been made in this app run: SIGTERM, 25 s, SIGKILL, then a new engine (all logged). After 3 attempts that open a socket but get no `welcome`, the alarm says the engine is not responding and the app keeps retrying without ending it.
 
 ## Running, crash and reattach
 

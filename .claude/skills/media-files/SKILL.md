@@ -106,3 +106,7 @@ Control side: `relink { folder }` (bound connection, its doc; WS-03, NFR-04).
 - The stall check allows the walk's own time budget on top of `doc_timeout`. A walk stuck on a hung volume fails with `io`; its thread is abandoned and counted with the stuck document workers (`MAX_STUCK_WORKERS`: past it, requests that read are refused with `io`).
 - If the thread cannot start the request answers `internal`, changes nothing and leaves no walk counted, so the next `relink` is not refused (`ControlConfig::fail_relink_spawn`, feature `test-support` only).
 - If the doc closes during the walk the answer is `no_workspace`.
+
+## No show folder
+
+A workspace with no show folder cannot place a relative media reference: the catalog reports it `Missing` to the cue engine at once (`MediaCatalog::take_unresolved`), so the cue has a `media_missing` problem from the next tick, before any GO, on every path that makes one (a doc installed with it, an edit), until a save gives it a folder.

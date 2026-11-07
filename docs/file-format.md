@@ -44,6 +44,7 @@ The top level of every file is:
 ```
 
 - `format_version` is an integer, 0 or greater, and stays at its current value until v1.0.0 (CLAUDE.md "Contracts").
+- An autosave (a file in the engine's recovery folder, never a show file) also has a top-level `show_path`, the absolute path of the show file it belongs to, after `format_version`. A reader of the workspace ignores it like any unknown key, so it needs no version of its own.
 - **Newer than supported:** refused with a message naming both the file's version and the newest supported. openLab never guesses at a higher version.
 - **Older than current:** upgraded in memory one version at a time through the existing chain (`vN_to_vN+1` in `show_file.rs`, each a pure function over the JSON document with a fixture of the old version in `engine/fixtures/show/`). The file on disk is rewritten, in the current version, only when the user saves. A new required key also goes into the last step so older test shows still load.
 - Migration notices: some steps warn once instead of guessing (see §3, "Migration notices"). Two non-obvious rules: the removed global master is dropped, never folded into patch levels (QLab 5 has no global master), and a Fade aimed at a Group changed meaning (absolute to relative, v3) in a way no upgrade can preserve, so such files warn.

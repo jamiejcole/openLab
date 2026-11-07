@@ -58,7 +58,7 @@ Details of the replace:
 - `keep` is `MachineSettings::backup_keep` (default 20, at most 1000). 0 turns backups off and leaves existing ones alone.
 
 ## Autosave and recovery (NFR-05)
-- `write_recovery` writes the bound recovery file atomically and never touches the show file. `clear_recovery` removes it after a save or clean close.
+- `write_recovery` writes the bound recovery file atomically and never touches the show file. `clear_recovery` removes it and the files moved aside from it after a save. `discard_recovery` removes only the current file (`close` with `discard_changes`).
 - `check_recovery(dirs, workspace_id, show_path)` compares file modification times with `decide_recovery`:
 
 | Situation | Result |
@@ -72,7 +72,7 @@ Details of the replace:
 - The restore flow is the protocol's: `open` answers `recovery_offer` while a newer autosave exists and nothing is opened; the client repeats it with `recovery: restore` or `ignore`.
 - `restore` opens the autosave bound to the show path and dirty; the autosave file stays until a save (or the next autosave) replaces it, so a crash right after restoring loses nothing.
 - `ignore` opens the saved file and leaves the autosave in place (offered again next time).
-- `close` with `discard_changes` over unsaved edits removes the autosave of the dropped edits through the writer, after any autosave write in flight. There is no `revert`, and `new`/`open` replace nothing.
+- `close` with `discard_changes` over unsaved edits removes the autosave this doc wrote of the dropped edits through the writer, after any autosave write in flight. One restored into the doc and not written since, and files moved aside, stay and are offered again. There is no `revert`, and `new`/`open` replace nothing.
 - Notices: `recovery_other_copies`, `recovery_unusable`, and `load_repair` for load repairs (at most 50, then a summary).
 
 ### When the show file cannot be loaded
@@ -81,7 +81,10 @@ Details of the replace:
 - Files moved aside as stale are listed `stale: true` with the time from their name. Why: a stale file may be the only copy of newer work. `.corrupt` / `.corrupt.N` files are hidden.
 - Names are parsed strictly (lower-case hyphenated UUID, optional `-` and 16 lower-case hex digits; `parse_recovery_file_name` / `parse_store_name`). Anything else is skipped with a warning.
 - Bounds: at most `max_entries` returned (`MAX_RECOVERY_ENTRIES` default); newest by mtime among the first 5000 directory entries (more is `truncated`); no recursion; a file over `MAX_NAME_READ_BYTES` (4 MiB) is listed without a name instead of being parsed.
-- It parses files, so it runs on the document worker, never the control thread. `open_recovery` opens one entry as an untitled, dirty workspace; its autosave stays until a save, and a Save As clears the never-saved autosave of the workspace id.
+- It parses files, so it runs on the document worker, never the control thread. `open_recovery` opens one entry, dirty.
+- An autosave names its show file: `core::save_recovery` writes a top-level `show_path` (UTF-8 paths only; a recovery file's name holds only a hash of the path, and a show file never has the key).
+- `open_recovery` binds to that file, as `open` with `restore`, so relative media resolves, Save goes to the file and the app reopens it next launch, only when all hold: it is the current autosave, not one set aside; `decide_recovery` says it is newer than the file; `show_path` is absolute, at most 4096 bytes, and hashes to the hash in the file's name; the file reads, loads and holds the entry's workspace id; no other doc holds it.
+- Otherwise it is **untitled**: a save chooses a path, the autosave stays until then, and a Save As clears the never-saved autosave of the workspace id. When it named a file that could not be used, a `recovery_untitled` notice says why. A file that does not answer holds up the whole request, as an `open` would (`io`, past the read timeout).
 
 ## Documents in the control loop (`control/docs.rs`)
 Request shapes: `docs/protocol.md`. `new`, `open` and `open_recovery` open another doc beside the others; nothing is replaced.
