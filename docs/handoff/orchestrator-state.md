@@ -7,7 +7,7 @@ requirement IDs, ticked by the implementer as parts land.
 
 ## 2026-10-30 session
 - Two external reviews (code, process) found Highs the loop missed. Response: rules become CI checks (#400), the
-  instruction files were made consistent and CLAUDE.md shortened (#399), PROGRESS.md deleted (the archive stays: issues link it), reviewers run on Opus
+  instruction files were made consistent and CLAUDE.md shortened (#399), PROGRESS.md deleted, reviewers run on Opus
   and re-run what they cite, `main` requires up-to-date branches. Code Highs: #401, #402, #403.
 - User decisions: no human reads code or PRs; everything matches QLab 5, extras included (output delay goes, #404).
 
