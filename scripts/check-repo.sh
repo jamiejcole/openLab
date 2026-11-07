@@ -633,6 +633,17 @@ ui_smoke() {
   [ "$LIST_N" -ge 10 ] || fail core-flows "scripts/core-flows.txt lists $LIST_N tests; the core-flows set is the everyday flows"
 }
 
+# `make test-mac` splits the unit tests over two processes: what the first skips, the second must run.
+test_mac_split() {
+  local plan skipped only
+  plan=$(make -n test-mac | tr ' ' '\n')
+  skipped=$(printf '%s\n' "$plan" | sed -n 's/^-skip-testing:openLabTests\///p' | sort)
+  only=$(printf '%s\n' "$plan" | sed -n 's/^-only-testing:openLabTests\/\([^/]*\)$/\1/p' | sort)
+  [ -n "$skipped" ] || fail test-mac-split "make test-mac skips no classes in its first process"
+  [ "$skipped" = "$only" ] || fail test-mac-split "make test-mac's second process must run exactly what its first skips"
+  printf '%s\n' "$plan" | grep -qx -- '-only-testing:openLabTests' || fail test-mac-split "make test-mac's first process must select the whole unit target"
+}
+
 # 13. Milestone and task IDs (M5.4, M4.12c; as identifiers m5_6b) stay out of code, comments and test names
 # (CLAUDE.md, "Work and git"); requirement IDs (AUD-07) are fine. They go stale, and the issue or PR holds
 # the history. The scan covers Rust and Swift sources and the skills except orchestrate (which
@@ -761,6 +772,7 @@ wedged_classifier
 wedged_run
 test_list_cases
 ui_smoke
+test_mac_split
 task_ids
 skill_shape_cases
 skills
