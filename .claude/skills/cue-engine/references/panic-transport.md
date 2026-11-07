@@ -1,0 +1,53 @@
+# Panic, Stop All, Reset All, Pause All, preview
+
+## Panic (PB-03)
+`Input::Panic` stops everything: every cue of every list at every depth.
+- Fade: every playing voice (audio cue in its action, not paused) gets `StopVoice { at, fade: { frames: E - at, curve: PANIC_CURVE } }`, `E = now + panic_duration`, `at` as for any stop (no earlier than `now`, voice start or a committed command). Every voice reaches silence and stops on the same sample `E`; the cue is `stopping` and goes `idle` on `E` without waiting for feedback.
+- `PANIC_CURVE` is linear in gain (`transport.rs`; the setting has only a duration, and a gain-linear fade matches QLab's measured sound). The stop gain multiplies the voice's other gains, so the fade starts from wherever the voice is.
+- Takeover: a Fade cue moving levels is stopped (holds its ramps), then the panic fades the voice from there. A cue already fading out with a stop ending after `E` gets the panic's `StopVoice` (the mixer restarts the stop gain from its current value, ending on `E`); one ending on or before `E` keeps its stop.
+- Everything else stops at once: pre-waiting, post-waiting, paused (silent: hard stop), loaded (`UnloadVoice`), silent cues (Wait, Memo, control, Fade). So nothing pending fires: pre-waits, auto-continues, auto-follows, a Devamp's start-next-cue (also if the voice would leave its loop during the fade), playlist steps, stop-target-when-done.
+- A group in its action with a child still fading is `stopping` and idle on `E`. A cue broken at run time with a pending auto-continue stays broken; the continue is cancelled.
+- Feedback during the fade starts nothing: a voice that ends early is stopped (`idle`). One that fails while fading out (`ActionFailed`/`StartFailed`, any reason) shows `broken` (a `device_lost` one is `idle` at once if its patch is `mapped`) but ends as a stopped cue: its group hears a stop (a group with no other busy child stops, not completes); no continue, playlist step (follow-through included) or halt follows.
+- The same holds for a cue's own panic and for a stop-with-fade without panic: the failure only ends a stop under way.
+- Lost device (`ActionFailed`/`StartFailed` with `device_lost`, panic or not) ends the run as a stop: no auto-follow, no auto-continue (pre-wait and post-wait cancelled), no playlist step or halt; its group hears a stop. The binary sends these failures one input before `Input::DeviceLost`; in between, a playlist moving on could run a control cue (a Disarm is saved with the show) although its audio children are refused.
+- Second press: a Panic before `E` (`panic_end()` is `Some(E)`, `now < E`) hard-stops everything at once, cues started since included. `panic_duration` 0 is always that. A Panic on or after `E` is new, as is one after the clock went back before the panic.
+- After it: nothing active, loaded or pending (`next_deadline()` `None`, `cue_states()` only broken cues, `panic_end()` `None` from the first call on or after `E`). Fade levels go with their runs. Playheads do not move.
+- GO during the fade is accepted and starts cues normally (the workspace is not locked); the panic end does not touch them, a second Panic does. Double-GO protection is untouched by Panic.
+- A cue fading out in the panic is not active for the second-trigger rule (recovering from a panic): Start, GO or a continue on it hard-stops its fading voice and starts it afresh (new run and `RunId`; a hard stop cuts on its sample without de-click, so a partly faded voice can click). On a group it hard-stops everything in it and starts the group again.
+- Counted as fading out in the panic: a cue whose own stop fade the panic kept (it ends sooner) and a cue in its own `Panic` second-trigger fade. A cue fading from an ordinary stop-with-fade keeps the second-trigger rule.
+- A child started on its own while its group (and every group around it) fades out in the panic ends that group's run at once (`idle` or `broken`) instead of leaving it `stopping`; the group's other children finish their fades on their own.
+
+## Stop All and a cue's own panic
+- `Input::StopAll` (OSC `/stop`, `/hardStop`): every cue of every list at every depth and every preview stops at once, children before groups, as `Stop` without fade (pending pre-waits, continues and devamp next cues fire nothing). It ends any panic window (`panic_end()` `None`), so a Panic right after is a new panic with its fade.
+- `Input::PanicCue { cue }` is the cue's own panic (the `Panic` second trigger, `panic_tree`): the cue and its contents fade over `panic_duration` (0: at once); other cues and the workspace panic untouched. Unknown cue: `UnknownCue`; nothing running: nothing.
+- Second press: `PanicCue` on a cue fading out in a panic (own or workspace), or whose active descendants all fade in one, stops it and its contents at once (no fade); others keep playing.
+- Within one batch (the binary feeds a batch's `panic_cue` items after the first as `Input::PanicCueInBatch`), a cue fading only because an earlier item of the same batch panicked it (its group or children) does not count as fading: a group and its child in one batch is one press of each, so the child fades with the group. A cue fading from an earlier command still counts, so the next batch's press is a second one.
+- The `Panic` second-trigger option does not do this: a trigger on a cue fading in a panic restarts it.
+
+## Reset All
+`Input::ResetAll`, one input, in order:
+- Stop All (a panic fade under way included; no panic window is left).
+- Reset every cue that still has a runtime, children before groups: broken-at-run-time cleared (pending continue cancelled), loaded cues unload (`UnloadVoice`). Static problems stay.
+- Random groups forget their cycle. Every list's playhead moves to its first cue (none if empty); the binary primes from there (`engine-control`).
+- Kept: Arm/Disarm changes and level edits (model edits, saved with the show), double-GO's timer.
+
+## Pause All and Resume All (PB-04)
+- `PauseAll` pauses every active cue of every list at every depth, groups before children, with the Pause operation (timers, `PauseVoice`, Fade cues holding ramps, devamps kept). Stopping, loaded, idle and broken cues are left as Pause leaves them. Then every playing preview pauses.
+- `ResumeAll` resumes every paused cue however paused (Pause All, a Pause cue, the operator); groups first, so a group resumes with its paused children (a playlist moving on included). Every resume gives a fresh `RunId` and re-sends a pending devamp. Then every paused preview resumes. Nothing paused: nothing.
+- Failures and ends while paused: SKILL.md "Paused show starts nothing".
+
+## Preview (CUE-05, PB-09)
+`Input::Preview { cue }` plays an audio cue, or the audio cues of a group, to listen to outside the show; `Input::StopPreview { cue }` ends it (`None`: every preview). The audition output does not exist yet: the binary plays previews on the cue's own patch.
+- What plays: the cue's audio from the start of its action, now (`PreviewStart { cue, run, at: now }`): no pre-wait, post-wait, continue or load-to-time; own loops, slices, levels and fade-in. An infinite loop plays until stopped. Unknown cue: `UnknownCue`; static problems: `CueBroken`, nothing plays.
+- Groups: a preview starts at once a preview of every armed audio cue inside (any depth, any mode; children of a disarmed group inside it left out), each with its own `PreviewStart`/`PreviewChanged`, then `PreviewChanged { cue: group, active: true }`. A broken audio cue inside is skipped (`CueBroken`); one already previewed on its own stays its own. All play together whatever the mode (QLab unmeasured, assumed).
+- A preview is named by its cue id, so with duplicate ids (invalid workspace, loading refuses it) an audio cue whose id names another cue first is skipped. None to play: `PreviewIgnored { reason: nothing_to_preview }`.
+- The group is previewing while any of its audio previews is; when the last ends (by itself, stopped, failed, deleted) it reports inactive. `StopPreview { cue: group }` stops the audio cues its preview plays; stopping one stops only that one. A deleted group (or no longer a group) stops its preview.
+- Refusals: disarmed cue or group `PreviewIgnored { reason: disarmed }`; Network cue is the Send case (`kinds.md`); other kinds `not_audio`; second preview of one being previewed `already_previewing` (a toggling UI sends `StopPreview` while `is_previewing`).
+- Invisible to the show: no `CueState`, no playhead move, no double-GO effect, never triggers a continue, auto-follow or start-next-cue, does not make a group run, uses no chain budget, and uses none of the show's `RunId`s: previews are numbered from `PREVIEW_RUN_BASE` (2^63, `preview.rs`), so show ids are the same whether or not anything was previewed, yet a preview id can still be a mixer voice id.
+- The same cue can play in the show and as a preview at once; each ignores the other's stop, reset and end reports (feedback matches cue and run).
+- Reported: `PreviewChanged { cue, active, at }` on start and every end; `is_previewing`, `previewing()` (groups included), `preview_run(cue)` (audio cues only).
+- End: the voice ends (`ActionEnded` with the preview's `run`); `StopPreview` sends `PreviewStop { cue, run, at: max(now, start), fade }` with a linear `PREVIEW_STOP_FADE_SECONDS` (50 ms) fade so a stop does not click in headphones (a paused preview stops with no fade; the engine does not wait for the fade, a late end report is stale).
+- A preview failure (`ActionFailed` with its `run`: hard `PreviewStop`, `PreviewFailed` warning; the cue is not broken in the show); the cue deleted or no longer audio (hard stop at the next signalled call).
+- Pause All / Resume All pause and resume previews after the show's cues (`PauseVoice` with `offset`; `ResumeVoice` with a fresh preview id). While paused it is still a preview. An end report dated after the pause is ignored; one on the pause sample ends the preview (same tie as `timing.md` Feedback). Pause, Resume, Stop, Reset, Load and Start on the cue itself concern the show only.
+- Panic: a playing preview fades out with the show, ending on `E` (`PreviewStop { fade: { frames: E - at, curve: PANIC_CURVE } }`), and is over as of the Panic (`PreviewChanged` inactive, so it can be previewed again during the fade); a paused one stops at once.
+- A second Panic before `E`, `panic_duration` 0, or Stop All stops every preview at once and cuts voices still fading from the first Panic (hard `PreviewStop` each, no further `PreviewChanged`). Those voices are forgotten when their end report comes or the panic window ends.

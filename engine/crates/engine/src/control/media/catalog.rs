@@ -81,7 +81,7 @@ pub(super) struct Entry {
 }
 
 /// What [`index_workspace`] reads from a workspace for a catalog: built off the control thread
-/// for a doc being opened (ARCHITECTURE §3.1, `DocParts`), so installing it there costs only
+/// for a doc being opened (`DocParts`), so installing it there costs only
 /// the probe jobs.
 pub struct Indexed {
     index: CueIndex,
@@ -172,6 +172,9 @@ pub struct MediaCatalog {
     plan_changes: PlanChanges,
     /// Files to start or stop watching (drained by the control loop into watch jobs).
     key_changes: Vec<KeyChange>,
+    /// References with no place on disk (relative, and no show folder), still to be told to the
+    /// cue engine: no probe will ever answer for them.
+    unresolved: Vec<(MediaRef, MediaStatus)>,
 }
 
 /// What may have changed a cue's slice-plan check (`checks.rs`) since the checks last looked:
@@ -195,7 +198,7 @@ impl PlanChanges {
     }
 }
 
-/// A file the media watch is to start or stop watching (docs/control.md "Media watch").
+/// A file the media watch is to start or stop watching.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeyChange {
     /// Everything was forgotten (the catalog was reset).
@@ -248,6 +251,7 @@ impl MediaCatalog {
             cues_read: 0,
             plan_changes: PlanChanges::default(),
             key_changes: Vec::new(),
+            unresolved: Vec::new(),
         }
     }
 
@@ -305,6 +309,7 @@ impl MediaCatalog {
     /// find no entry (or a newer ticket) and are ignored.
     pub fn reset(&mut self, show_dir: Option<PathBuf>, ws: &Workspace) {
         self.entries.clear();
+        self.unresolved.clear();
         lock(&self.pool.gate).reset_doc(self.pool.doc, show_dir.clone());
         self.key_changes = vec![KeyChange::Reset];
         self.uses.clear();
@@ -657,8 +662,13 @@ impl MediaCatalog {
                     path: path.clone(),
                 })
                 .is_ok(),
-            // A relative reference in a show that was never saved has no folder to be in.
-            None => false,
+            // A relative reference in a workspace with no show folder has no file to be: its
+            // cue is broken now, not when a GO finds the stream cannot start.
+            None => {
+                self.unresolved
+                    .push((MediaRef::new(key.clone()), MediaStatus::Missing));
+                false
+            }
         };
         // A new entry, or one that fails at once: what `media` gives may change (when every
         // cue is to be checked again anyway, the checks do not read the keys).
@@ -840,6 +850,11 @@ impl MediaCatalog {
         true
     }
 
+    /// The references found to have no place on disk since this was last called.
+    pub fn take_unresolved(&mut self) -> Vec<(MediaRef, MediaStatus)> {
+        std::mem::take(&mut self.unresolved)
+    }
+
     /// Files to start or stop watching since this was last called, in order.
     pub fn take_key_changes(&mut self) -> Vec<KeyChange> {
         std::mem::take(&mut self.key_changes)
@@ -989,7 +1004,7 @@ pub(super) fn preload_bytes(p: &Probed) -> u64 {
         .saturating_mul(4)
 }
 
-/// How the cue engine sees a failed probe (docs/cue-engine.md, Broken cues).
+/// How the cue engine sees a failed probe.
 pub fn status_of(e: &MediaError) -> MediaStatus {
     match e {
         MediaError::NotFound(_) => MediaStatus::Missing,

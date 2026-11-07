@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Persistence I/O (ARCHITECTURE §5): atomic saves, rolling backups, autosave recovery files,
+//! Persistence I/O: atomic saves, rolling backups, autosave recovery files,
 //! per-machine settings and media relinking. The decisions (names, rotation, which file is
 //! newer, path conversion) are pure and live in `openlab-core`; this module does the file work.
 //!
@@ -29,7 +29,8 @@ pub use backup::backup_existing;
 pub use files::{modified_ms, read_text, unique_sibling};
 pub(crate) use files::{path_key, remove_if_present};
 pub use recovery::{
-    RecoveryCheck, RecoveryOffer, RecoveryReport, check_recovery, clear_recovery, write_recovery,
+    RecoveryCheck, RecoveryOffer, RecoveryReport, check_recovery, clear_recovery, discard_recovery,
+    write_recovery,
 };
 pub use recovery_scan::{
     MAX_NAME_READ_BYTES, MAX_RECOVERY_ENTRIES, RecoveryEntry, RecoveryScan, scan_recovery,
@@ -86,7 +87,7 @@ impl AppDirs {
         dirs
     }
 
-    /// `engine.json`: how a client finds the running engine (ARCHITECTURE §6, §8).
+    /// `engine.json`: how a client finds the running engine.
     pub fn engine_file_path(&self) -> PathBuf {
         self.root.join("engine.json")
     }

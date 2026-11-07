@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Second triggers (QLab 5): what a trigger does to a cue that is already active, by the
-//! cue's `second_trigger` option, and the "second trigger on release" input. Rules:
-//! `docs/cue-engine.md`, "Second trigger".
+//! cue's `second_trigger` option, and the "second trigger on release" input.
 
 use crate::cue::{DevampMode, SecondTrigger};
 use crate::model::CueId;

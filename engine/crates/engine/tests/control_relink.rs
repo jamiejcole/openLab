@@ -177,7 +177,7 @@ fn relink_finds_moved_files_in_one_undo_step_and_undo_restores() {
 }
 
 /// The relink's edit reaches the cue engine with no signal by hand: the workspace's write guard
-/// tells it (docs/control.md, Model changes).
+/// tells it.
 #[test]
 fn a_relink_reaches_the_cue_engine_without_a_signal() {
     let mut r = rig(&["a.wav"]);

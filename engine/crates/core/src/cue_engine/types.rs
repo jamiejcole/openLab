@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What goes into and comes out of the cue engine. See `docs/cue-engine.md`.
+//! What goes into and comes out of the cue engine.
 
 use std::num::NonZeroU32;
 
@@ -109,7 +109,7 @@ pub enum Input {
     },
     /// The hotkey or MIDI key that triggers `cue` was released (the binary sends it on key-up).
     /// Acts as a second trigger if the cue has `second_trigger_on_release` set and is active;
-    /// otherwise it is ignored without a warning. See `docs/cue-engine.md`, "Second trigger".
+    /// otherwise it is ignored without a warning.
     TriggerReleased {
         cue: CueId,
     },
@@ -179,7 +179,7 @@ pub enum Input {
     /// a stop or a failure), so a continue or playlist move comes on the end sample itself, not
     /// when the mixer's report arrives. The voice's `ActionEnded` still counts if it comes
     /// first (an earlier end); after the deadline it is stale. A later `ActionLength` (after a
-    /// devamp) replaces the earlier one. See `docs/cue-engine.md`, "Feedback".
+    /// devamp) replaces the earlier one.
     ActionLength {
         cue: CueId,
         run: RunId,
@@ -190,7 +190,7 @@ pub enum Input {
     /// known (not probed, no playable plan) or the cue loops forever. Sent for every Audio cue
     /// whose length changed (edit, probe answer, a newly opened workspace), and `None` for a cue
     /// that went away. Only a playlist that halts on a broken child uses it, to time its
-    /// auto-follow (QLab check Q2, `docs/cue-engine.md` "Playlist"); the core cannot plan audio.
+    /// auto-follow (QLab check Q2); the core cannot plan audio.
     CueLengths {
         lengths: Vec<(CueId, Option<SampleTime>)>,
     },
@@ -216,7 +216,7 @@ pub enum Input {
         run: RunId,
     },
     /// Preview (audition) an audio cue from its start, outside the show (CUE-05): no pre-wait,
-    /// continue, playhead or show state is involved. See `docs/cue-engine.md`, "Preview".
+    /// continue, playhead or show state is involved.
     Preview {
         cue: CueId,
     },

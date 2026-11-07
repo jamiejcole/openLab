@@ -151,7 +151,7 @@ extension AppController {
     }
 
     /// The engine logs "previous run ended without a clean shutdown" at its start (kind `engine`,
-    /// `warn`; docs/logging.md). Said in the footer of the first window, not in an alert: a show may
+    /// `warn`). Said in the footer of the first window, not in an alert: a show may
     /// be about to run. The record itself stays in the log window.
     func announcePreviousRun(on store: WorkspaceStore) async {
         guard case .success(let tail) = await store.logTail(),

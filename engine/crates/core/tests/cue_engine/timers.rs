@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! `CueEngine::timers`: the pre-wait, silent-action and post-wait countdowns a client
-//! shows for cues without a voice (docs/cue-engine.md, "Timer progress"). Virtual sample clock
+//! shows for cues without a voice. Virtual sample clock
 //! at 1 kHz: one second is 1000 samples.
 
 use crate::common::*;

@@ -2,7 +2,7 @@
 
 import Foundation
 
-/// One editable cue property: core's `CueProperty` (docs/commands.md), the subset the UI sends.
+/// One editable cue property: core's `CueProperty`, the subset the UI sends.
 /// Enum-like values (colour, continue mode) stay the engine's snake_case strings.
 enum CueProperty: Hashable, Sendable {
     case name(String)
@@ -76,7 +76,7 @@ enum CueProperty: Hashable, Sendable {
     }
 }
 
-/// A key of the workspace key map (`settings.hotkeys`): core's `TransportKey` (docs/commands.md).
+/// A key of the workspace key map (`settings.hotkeys`): core's `TransportKey`.
 enum WorkspaceKey: String, CaseIterable, Hashable, Sendable {
     case go
     case stopAll = "stop_all"
@@ -133,7 +133,7 @@ extension Command {
     }
 
     /// `RenameWorkspace { name }`: the show title, undoable. At most 1024 Unicode scalars; a newline
-    /// is allowed, other control characters are not (docs/commands.md); the engine refuses anything
+    /// is allowed, other control characters are not; the engine refuses anything
     /// else.
     static func renameWorkspace(_ name: String) -> Command {
         Command(.object(["type": .string("rename_workspace"), "name": .string(name)]))

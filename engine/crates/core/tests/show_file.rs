@@ -76,6 +76,33 @@ fn golden_fixture_loads_cleanly_and_covers_every_cue_kind_and_group_mode() {
     assert_eq!(modes.len(), 5);
 }
 
+/// An autosave names its show file (its file name only holds a hash); a show file never does,
+/// and the reader takes the autosave as the same workspace.
+#[test]
+fn an_autosave_names_its_show_file_and_loads_as_the_same_workspace() {
+    let ws = load_show(EXAMPLE).unwrap().workspace;
+    let plain = save_show(&ws).unwrap();
+    assert_eq!(recovery_show_path(&plain), None);
+    assert_eq!(save_recovery(&ws, None).unwrap(), plain);
+
+    let autosave = save_recovery(&ws, Some("/Shows/Caf\u{e9} \"x\".openlab")).unwrap();
+    assert_eq!(
+        recovery_show_path(&autosave).as_deref(),
+        Some("/Shows/Caf\u{e9} \"x\".openlab")
+    );
+    assert_eq!(
+        recovery_show_path(&format!("\u{feff}{autosave}")).as_deref(),
+        Some("/Shows/Caf\u{e9} \"x\".openlab")
+    );
+    let loaded = load_show(&autosave).unwrap();
+    assert!(loaded.warnings.is_empty());
+    assert_eq!(save_show(&loaded.workspace).unwrap(), plain);
+
+    for bad in ["", "{ corrupt", "[]", r#"{"show_path":7}"#] {
+        assert_eq!(recovery_show_path(bad), None, "{bad}");
+    }
+}
+
 #[test]
 fn golden_fixture_is_in_canonical_form() {
     let loaded = load_show(EXAMPLE).unwrap();

@@ -27,7 +27,7 @@ impl Control {
         self.device_events(events);
     }
 
-    /// The device policy (docs/control.md "Devices"): one device for every
+    /// The device policy: one device for every
     /// doc, so a loss stops every doc and a return makes every doc playable again.
     fn device_events(&mut self, events: Vec<DeviceEvent>) {
         let name = self

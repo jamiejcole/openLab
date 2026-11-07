@@ -157,7 +157,7 @@ final class Rig {
 }
 
 /// The real engine for the unit tests: the app's bundled `openlab-engine` on its stepped virtual
-/// audio device (docs/control.md "Virtual device"), in a temporary Application Support folder,
+/// audio device, in a temporary Application Support folder,
 /// ending with the test process (`--watch-stdin`). Device time moves only on `advance`, so what a
 /// test sees is the same every run.
 ///

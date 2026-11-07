@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use openlab_core::{
     LoadedShow, MAX_SHOW_FILE_BYTES, RecoveryDecision, Workspace, WorkspaceId, decide_recovery,
-    load_show, save_show,
+    load_show, save_recovery,
 };
 
 use super::atomic::rename_no_replace;
@@ -33,7 +33,8 @@ pub fn write_recovery(
     workspace: &Workspace,
     show_path: Option<&Path>,
 ) -> Result<PathBuf, PersistError> {
-    let text = save_show(workspace)?;
+    // A path that is not UTF-8 is not written: the autosave then restores untitled.
+    let text = save_recovery(workspace, show_path.and_then(Path::to_str))?;
     let path = dirs.recovery_path(workspace.id, show_path);
     let dir = dirs.recovery_dir();
     fs::create_dir_all(&dir).map_err(PersistError::io("create", &dir))?;
@@ -42,7 +43,7 @@ pub fn write_recovery(
 }
 
 /// Removes the recovery file for this workspace and show path, and the stale files moved aside
-/// from it. Call after a successful save or a clean close. Missing is fine.
+/// from it. Call after a successful save. Missing is fine.
 pub fn clear_recovery(
     dirs: &AppDirs,
     workspace: WorkspaceId,
@@ -57,6 +58,17 @@ pub fn clear_recovery(
         }
     }
     result
+}
+
+/// Removes only the current recovery file for this workspace and show path: the operator dropped
+/// the edits it holds. Files moved aside stay: nobody has looked at them, and they may hold the
+/// newest work. Missing is fine.
+pub fn discard_recovery(
+    dirs: &AppDirs,
+    workspace: WorkspaceId,
+    show_path: Option<&Path>,
+) -> Result<(), PersistError> {
+    remove_if_present(&dirs.recovery_path(workspace, show_path))
 }
 
 fn remove_if_present(path: &Path) -> Result<(), PersistError> {

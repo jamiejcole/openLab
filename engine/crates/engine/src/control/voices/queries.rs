@@ -32,7 +32,7 @@ impl Voices {
     }
 
     /// Moves every show voice whose cue now names another patch onto that patch's mixer slot,
-    /// crossfading (`MoveVoice`; #293, docs/control.md "Patch slots"). Outputs the voice was
+    /// crossfading (`MoveVoice`; #293). Outputs the voice was
     /// started without (beyond the outputs of the patch it started on) that the new patch has
     /// get their levels first, with their crosspoints: the model's, except a level a Fade cue
     /// has set, which the voice already has (the fade's ramps reached it). A voice whose new

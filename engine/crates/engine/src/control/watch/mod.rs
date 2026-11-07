@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The media watch (ARCHITECTURE §3.1; docs/control.md "Media watch", docs/persistence.md
-//! "Media watch and follow"): the `openlab-watch` thread stats every media file the catalog
+//! The media watch: the `openlab-watch` thread stats every media file the catalog
 //! knows, metadata only, and tells the control thread which went missing, came back, changed or
 //! became unreadable. No file watcher: a stat per file per pass works the same on every OS and
 //! file system, network volumes included.
@@ -38,7 +37,7 @@ use super::inbox::Inbox;
 use super::media::KeyChange;
 use super::notice;
 
-/// The shortest time a pass over every file takes (docs/persistence.md: a file sent to the
+/// The shortest time a pass over every file takes (a file sent to the
 /// Trash shows broken within a few seconds).
 pub const MIN_PERIOD: Duration = Duration::from_secs(3);
 /// Files statted between two pauses of a pass.

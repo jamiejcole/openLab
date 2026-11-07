@@ -4,7 +4,7 @@ import AppKit
 
 /// The Levels tab of an Audio cue (AUD-06, AUD-08) and the Fade tab of a Fade cue (CT-10, AUD-09).
 /// Levels, routing, curve and stop flag are edited by sending only the kind fields the edit changed
-/// (core's `CueProperty::KindFields`, docs/commands.md); the engine merges them into the kind it has; the Fade's duration has its own `duration` property. Dragging a
+/// (core's `CueProperty::KindFields`); the engine merges them into the kind it has; the Fade's duration has its own `duration` property. Dragging a
 /// fader or a matrix cell sends every move with one `coalesce` key, so the whole drag is one undo step.
 extension InspectorViewController {
     /// How many file channels the matrix shows for a cue whose file's channel count is not known (no

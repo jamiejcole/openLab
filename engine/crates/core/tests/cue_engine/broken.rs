@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Static broken-cue detection (CUE-06, NFR-07), per docs/cue-engine.md "Broken cues".
+//! Static broken-cue detection (CUE-06, NFR-07).
 //! Virtual sample clock at 1 kHz: one second is 1000 samples.
 
 use crate::common::*;

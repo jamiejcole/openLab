@@ -211,7 +211,7 @@ const USES_EXIT: u64 = 1 << 63;
 ///
 /// The voice publishes the boundary where it will leave the loop (`request_cut`), and whether
 /// it will play that loop exit's buffer (`exit`) there. The disk stream decodes each exit buffer
-/// before it writes any of that loop to the ring (see docs/audio.md, Loop exits), so normally
+/// before it writes any of that loop to the ring, so normally
 /// nothing has to arrive in time. Meanwhile the disk stream stops unrolling the loop, writes the
 /// continuation from where the exit buffer ends, and publishes where in the ring that starts
 /// (`resume`); the voice skips the stale loop frames in between, which frees the ring for it.

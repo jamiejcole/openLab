@@ -56,7 +56,7 @@ impl DocCx<'_> {
 
     /// Stops voices still sounding for cues that no longer own them: a tail an underrun made
     /// longer than the action's known length, after the engine completed the action on its
-    /// planned end (docs/control.md, Underrun). The engine has nothing left to stop there, so a
+    /// planned end. The engine has nothing left to stop there, so a
     /// Panic, a hard stop or a reset would leave it sounding.
     pub(super) fn silence_orphans(&mut self, scope: Scope, now: SampleTime) {
         let engine = self.doc.model.engine();
@@ -107,7 +107,7 @@ impl DocCx<'_> {
 }
 
 impl Control {
-    /// App-scope Panic (Esc; ARCHITECTURE §6): every open doc panics, as a `panic` transport in
+    /// App-scope Panic (Esc): every open doc panics, as a `panic` transport in
     /// each would (twice within the fade is a hard stop in each).
     pub fn panic_all(&mut self) {
         self.each_doc(|cx| {
@@ -117,7 +117,7 @@ impl Control {
         self.eng.mixer.pump();
     }
 
-    /// App-scope hotkey (ARCHITECTURE §6; QLab 5 fires a hotkey in every open workspace, in
+    /// App-scope hotkey (QLab 5 fires a hotkey in every open workspace, in
     /// front or not): every cue of every doc with this hotkey starts, as the app's `start`
     /// for each would. A doc whose transport keys use it starts nothing (the workspace action
     /// wins); that action is the front window's, not the engine's.

@@ -19,6 +19,9 @@ struct AutosaveCover: Equatable, Sendable {
     /// Restored with `open` + `restore`, by the offer's time: the window's own workspace and show
     /// path (the offer does not carry that path's hash).
     private(set) var ownLoaded: Set<Int64> = []
+    /// Autosaves of the window's show it opened the saved file over, by the offer's time: a
+    /// reattach must not bring one back as if the window had shown it.
+    private(set) var turnedDown: Set<Int64> = []
 
     mutating func load(_ entry: RecoveryEntryInfo) {
         guard let ms = entry.modifiedMs else { return }
@@ -27,9 +30,12 @@ struct AutosaveCover: Equatable, Sendable {
 
     mutating func loadOwn(modifiedMs ms: Int64) { ownLoaded.insert(ms) }
 
+    mutating func turnDown(modifiedMs ms: Int64) { turnedDown.insert(ms) }
+
     mutating func merge(_ other: AutosaveCover) {
         loaded.formUnion(other.loaded)
         ownLoaded.formUnion(other.ownLoaded)
+        turnedDown.formUnion(other.turnedDown)
     }
 
     /// `entry` is an autosave this window (whose workspace id is `workspace`) loaded. An entry

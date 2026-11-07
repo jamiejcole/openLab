@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The per-cue operations: start, stop, pause, resume, load and reset, and the chain budget a
-//! start spends (docs/cue-engine.md, "Operations", "Chains and the chain bound").
+//! start spends.
 
 use crate::cue::{CueKind, FadeSpec};
 use crate::model::CueId;
@@ -38,8 +38,7 @@ impl CueEngine {
     }
 
     /// Starts `cue` at sample `at`. On a cue that is already active its second-trigger option
-    /// applies (`second.rs`); with `nothing` the trigger is ignored, or a paused cue resumes
-    /// (docs/cue-engine.md, "Second trigger").
+    /// applies (`second.rs`); with `nothing` the trigger is ignored, or a paused cue resumes.
     pub(super) fn start(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         let Some(model) = cx.ws.find_cue(cue) else {
             return cx.warn(EngineWarning::UnknownCue { cue });

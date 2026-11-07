@@ -515,7 +515,7 @@ fn a_level_edit_on_a_playing_cue_is_heard_at_once() {
     close(after - before, -6.0, 0.01, "edited master");
 }
 
-/// The documented curve `f(t)` (docs/audio.md, Curves), written out here independently.
+/// The documented curve `f(t)`, written out here independently.
 fn shape(curve: FadeCurve, t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     let k = 1000f64.ln();
@@ -667,7 +667,7 @@ fn a_fade_with_a_pre_wait_starts_its_ramp_when_the_wait_ends() {
 
 #[test]
 fn a_fade_fired_while_its_target_is_in_pre_wait_leaves_it_alone() {
-    // Only playing cues are faded (docs/cue-engine.md, Fade): a target still in its pre-wait
+    // Only playing cues are faded: a target still in its pre-wait
     // starts at its own level.
     let path = dc_wav(2 * R48 as usize);
     let mut c = audio(1, &path, 0);

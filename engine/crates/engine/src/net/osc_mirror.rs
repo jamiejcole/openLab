@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The OSC side's copy of the workspace (docs/osc.md, "Updates"). It is built from a `snapshot`
+//! The OSC side's copy of the workspace. It is built from a `snapshot`
 //! and kept current from the `model_changed`, `runtime` and `document` broadcasts with the
 //! reference client logic (`Workspace::apply_changes`), so answering an OSC message never asks
 //! the control thread anything. A gap in the numbering, or an edit that does not apply, means

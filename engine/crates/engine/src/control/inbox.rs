@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The control thread's inbox and its outbound channel (ARCHITECTURE §3.1: a crossbeam-channel
+//! The control thread's inbox and its outbound channel (a crossbeam-channel
 //! inbox in, a broadcast to the network out).
 //!
 //! Replies and broadcasts travel on tokio channels: the network layer's tasks wait on them
@@ -39,10 +39,10 @@ pub enum Inbox {
     /// A probe worker's answer (internal feedback), for the doc whose catalog asked: the loop
     /// drops it if that doc has closed since.
     Probe(super::DocId, ProbeAnswer),
-    /// The device thread's answer (internal feedback, docs/control.md "Devices").
+    /// The device thread's answer (internal feedback).
     Device(super::devices::DeviceAnswer),
     /// A network worker's answer: a message that could not be sent, a host look-up done
-    /// (internal feedback, docs/control.md "Network output"), for the doc that sent it (dropped
+    /// (internal feedback), for the doc that sent it (dropped
     /// if it has closed since).
     Net(super::DocId, super::netout::NetAnswer),
     /// The waveform reader's answer for doc `doc`'s read `ticket` (AUD-14): the loop starts the
@@ -52,11 +52,11 @@ pub enum Inbox {
         ticket: u64,
         result: Result<Arc<Waveform>, WaveformError>,
     },
-    /// The document worker's answer to an open or a recovery scan (internal feedback,
-    /// docs/control.md "Documents"). One read runs at a time engine-wide, so its ticket names
+    /// The document worker's answer to an open or a recovery scan (internal feedback).
+    /// One read runs at a time engine-wide, so its ticket names
     /// the request, and the request the doc.
     Doc(super::docs::DocAnswer),
-    /// The media watch's findings (internal feedback, docs/control.md "Media watch"). One
+    /// The media watch's findings (internal feedback). One
     /// watch serves every doc: its events name files, and the loop hands each to the docs that
     /// watch it.
     Watch(super::watch::WatchAnswer),
@@ -112,7 +112,7 @@ impl Outgoing {
 /// memory. Meters and progress are dropped first (once the channel is half full: the next ones
 /// replace them anyway). Sequenced messages (`runtime`, `model_changed`) that do not fit are
 /// dropped and counted; the client sees the gap in `seq`/`revision` and asks for a snapshot
-/// (docs/protocol.md §2). State messages without a sequence (`document`, `warnings`) are never
+/// (docs/protocol.md, "Ordering and gaps"). State messages without a sequence (`document`, `warnings`) are never
 /// lost silently: the caller resends the latest once there is room ([`Outbound::send_state`]).
 pub struct Outbound {
     tx: OutboundTx,

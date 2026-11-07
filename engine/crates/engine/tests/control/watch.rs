@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! The media watch through the control loop (QLab checks R3/R4; docs/control.md "Media
-//! watch"): a file sent to the Trash breaks its cues within the tick that hears of it, a file
+//! The media watch through the control loop (QLab checks R3/R4): a file sent to the Trash breaks its cues within the tick that hears of it, a file
 //! put back un-breaks them after two passes and a probe, a replaced file is probed again, an
 //! unreadable one is unsupported, a playing cue keeps playing, a volume that stops answering is
 //! skipped (with a notice) while the others are still watched, and an idle show costs the

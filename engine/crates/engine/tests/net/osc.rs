@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! The OSC listeners over real UDP and TCP sockets on 127.0.0.1 (docs/osc.md, docs/network.md),
+//! The OSC listeners over real UDP and TCP sockets on 127.0.0.1,
 //! against a stand-in control thread, plus one run in front of the real control loop. Waits are
 //! on the sockets or on a notification; the timeouts are hang guards only.
 

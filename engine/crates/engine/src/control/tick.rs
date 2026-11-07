@@ -12,7 +12,7 @@ use super::watch::WatchEvent;
 use super::{Control, DocCx, DocId, PROBE_HOLD_LIMIT, STREAM_START_LIMIT, media};
 
 impl Control {
-    /// One wake of the loop (ARCHITECTURE §3.1, §3.2; docs/audio.md: every tick): the device,
+    /// One wake of the loop (every tick): the device,
     /// the mixer's events (each to the doc owning the voice), the media watch and this wake's
     /// meter read, once; then each doc ([`DocCx::tick`]: its feedback, deadlines, priming,
     /// reports, saves); then the engine's probe watchdog, slot hand-outs, document worker,
@@ -345,7 +345,7 @@ impl DocCx<'_> {
     }
 
     /// A retired patch slot whose last voice has left is freed (zeroed), and a patch waiting
-    /// for a slot gets it (docs/control.md "Patch slots").
+    /// for a slot gets it.
     fn reclaim_slots(&mut self, now: SampleTime) {
         let doc = self.doc.id;
         if !self.eng.patches.has_retired(doc)

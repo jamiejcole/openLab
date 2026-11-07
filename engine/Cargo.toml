@@ -9,7 +9,7 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
 
-# ARCHITECTURE §10. clippy.toml relaxes unwrap/expect/panic/print in tests.
+# clippy.toml relaxes unwrap/expect/panic/print in tests.
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
@@ -24,5 +24,5 @@ indexing_slicing = "deny"
 
 [profile.release]
 # Symbolicated backtraces in crash reports without full debug info. Keep panic = "unwind" (the default):
-# the audio callback relies on catch_unwind (ARCHITECTURE §3.4).
+# the audio callback relies on catch_unwind.
 debug = "line-tables-only"

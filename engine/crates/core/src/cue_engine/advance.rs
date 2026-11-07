@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Deadlines: each due cue steps through pre-wait, action and post-wait, its action begins, and
-//! its continue fires (docs/cue-engine.md, "Timing and continue modes", "Deadlines, lookahead
-//! and late ticks").
+//! its continue fires.
 
 use crate::cue::{ContinueMode, CueKind};
 use crate::model::{CueId, Workspace};

@@ -905,7 +905,7 @@ fn repeated_devamp_is_idempotent() {
     }
 }
 
-/// The cue engine's sequence (docs/cue-engine.md): a devamp pending across a
+/// The cue engine's sequence: a devamp pending across a
 /// pause is re-sent for the fresh id after the resume. Exactly one `DevampScheduled` answers
 /// each devamp sent, the re-sent one with the corrected sample, and the loop is left there.
 #[test]

@@ -6,7 +6,7 @@ import AppKit
 /// Show Mode, commit the inspector first, one transaction per gesture.
 extension CueEditor {
     static let pasteType = NSPasteboard.PasteboardType("dev.openlab.cue-data")
-    /// What the engine's decoder reads (docs/ARCHITECTURE.md §12: WAV, AIFF, FLAC, MP3, AAC, OGG).
+    /// What the engine's decoder reads (WAV, AIFF, FLAC, MP3, AAC, OGG).
     static let audioExtensions: Set<String> = ["wav", "aif", "aiff", "flac", "mp3", "aac", "m4a", "ogg"]
 
     // MARK: Pure rules

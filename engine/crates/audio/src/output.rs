@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The device callback adapter (ARCHITECTURE §3.1, §3.4, §3.5; NFR-02, NFR-08, NFR-27): runs the
+//! The device callback adapter (NFR-02, NFR-08, NFR-27): runs the
 //! mixer for one host buffer in any supported sample format and channel count, watches callback
 //! timestamps for gaps, and hands the mixer back to the control thread when the stream goes away.
 //! No cpal here: the cpal closure calls [`OutputHost::render`], and tests drive it the same way
-//! with fake buffers and timestamps. See `docs/audio.md`, Device layer.
+//! with fake buffers and timestamps.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -139,6 +139,7 @@ struct DeviceShared {
     host_xruns: AtomicU64,
     gap_xruns: AtomicU64,
     callbacks: AtomicU64,
+    frames_delivered: AtomicU64,
     last_frames: AtomicU32,
     device_latency_ns: AtomicU64,
     callback_faults: AtomicU64,
@@ -194,6 +195,7 @@ impl DeviceShared {
             host_xruns: AtomicU64::new(0),
             gap_xruns: AtomicU64::new(0),
             callbacks: AtomicU64::new(0),
+            frames_delivered: AtomicU64::new(0),
             last_frames: AtomicU32::new(0),
             device_latency_ns: AtomicU64::new(UNKNOWN),
             callback_faults: AtomicU64::new(0),
@@ -275,6 +277,12 @@ impl DeviceMonitor {
     /// on unplug) shows as this, and `samples_rendered`, standing still.
     pub fn callbacks(&self) -> u64 {
         self.shared.callbacks.load(Ordering::Relaxed)
+    }
+
+    /// Frames the host has asked for so far: the audio the stream has really taken, whatever
+    /// the size and spacing of its callbacks.
+    pub fn frames_delivered(&self) -> u64 {
+        self.shared.frames_delivered.load(Ordering::Relaxed)
     }
 
     /// Frames in the most recent callback.
@@ -464,7 +472,7 @@ impl OutputHost {
         let result = no_alloc_in_debug(|| {
             catch_unwind(AssertUnwindSafe(|| {
                 // RT: reading the monotonic clock is the one exception to "no syscalls" in the
-                // callback (ARCHITECTURE §3.4). `Instant::now` neither allocates nor locks, and
+                // callback. `Instant::now` neither allocates nor locks, and
                 // normally does not enter the kernel: `clock_gettime(CLOCK_UPTIME_RAW)` on macOS
                 // reads the commpage (`mach_absolute_time`), `QueryPerformanceCounter` on
                 // Windows normally reads the TSC (a kernel-mediated timer on hardware without an
@@ -524,6 +532,9 @@ impl OutputHost {
             tail.fill(S::SILENCE);
             self.reject_buffer();
         }
+        self.shared
+            .frames_delivered
+            .fetch_add(frames as u64, Ordering::Relaxed);
         self.shared
             .last_frames
             .store(u32::try_from(frames).unwrap_or(u32::MAX), Ordering::Relaxed);

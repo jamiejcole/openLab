@@ -75,7 +75,7 @@ pub(super) enum Voice {
         from: SampleTime,
         /// The sample the mixer voice first started on. A resume re-keys the same voice, so
         /// this stays put while `at` becomes the resume sample: only a ramp on this sample is
-        /// immediate, any later 0-frame ramp is de-zippered (docs/audio.md, De-zipper).
+        /// immediate, any later 0-frame ramp is de-zippered.
         first: SampleTime,
     },
 }

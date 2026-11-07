@@ -7,7 +7,7 @@
     clippy::indexing_slicing
 )]
 
-//! The UI protocol (ARCHITECTURE section 6, docs/protocol.md): golden fixtures, codec and
+//! The UI protocol (docs/protocol.md): golden fixtures, codec and
 //! hostile input. Regenerate the fixtures after an intended change with
 //! `UPDATE_PROTOCOL_FIXTURES=1 cargo test -p openlab-core --test protocol`.
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Control loop on the offline render driver: sample-exact starts, continues, fades, stops
-//! (NFR-20, NFR-21, NFR-22; ARCHITECTURE §3.2).
+//! (NFR-20, NFR-21, NFR-22).
 
 use crate::show::*;
 use openlab_audio::RAMP_TOLERANCE;
@@ -15,7 +15,7 @@ use openlab_engine::control::MIN_STALL_WAIT;
 fn go_starts_audio_exactly_one_block_after_now() {
     let path = wav(&dc(800, 0.5));
     let mut s = show(workspace(vec![audio(1, &path, 0)]));
-    // Primed while standing by (ARCHITECTURE §3.5).
+    // Primed while standing by.
     assert_eq!(s.control().primed(), vec![id(1)]);
     s.run(BLOCK * 3);
     let at = go(&mut s);

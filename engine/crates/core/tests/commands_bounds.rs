@@ -8,7 +8,7 @@
 
 //! Memory bounds on what one command can put in a cue: a Network cue's message on every path
 //! that creates or replaces one (add, paste, clipboard paste, kind change), and the cue's name
-//! and notes (docs/commands.md, "Size limits"). A refused edit changes nothing; a show file
+//! and notes. A refused edit changes nothing; a show file
 //! that already holds an over-limit value still opens, with a warning.
 
 mod common;

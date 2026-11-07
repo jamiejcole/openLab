@@ -493,7 +493,7 @@ fn slow_disk_underrun_recovers_where_it_left_off() {
 /// A stream whose open never answers (a dead network share, a stalled USB disk) must not hold
 /// up the worker it is given: a stream already playing on that worker keeps refilling and
 /// plays on without a gap, far past its 2 s ring. The hung stream is not primed and has no
-/// error while its open waits (the engine reports it, see docs/control.md); once the volume
+/// error while its open waits (the engine reports it); once the volume
 /// answers, it streams.
 #[test]
 fn a_hung_open_never_starves_another_stream_on_its_worker() {

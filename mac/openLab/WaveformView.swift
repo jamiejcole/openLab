@@ -556,7 +556,7 @@ class WaveformView: NSView {
         }
     }
 
-    /// A rising fade's gain at fraction `t` on core's curve `curve` (docs/audio.md, Curves); a
+    /// A rising fade's gain at fraction `t` on core's curve `curve`; a
     /// falling one at fraction `t` is `shape(1 - t)`. For drawing only: the engine computes what is
     /// heard.
     static func shape(_ curve: String, _ t: Double) -> Double {

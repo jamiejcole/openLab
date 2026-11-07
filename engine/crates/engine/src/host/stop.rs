@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! How a shutdown signal ends the engine, whatever it is doing (docs/control.md "Process
-//! lifecycle"). The signal thread starts right after the instance lock, so a start stuck in the
+//! How a shutdown signal ends the engine, whatever it is doing. The signal thread starts right after the instance lock, so a start stuck in the
 //! audio system (a device open that never returns) still answers SIGTERM and Ctrl-C:
 //!
 //! - while starting (no control loop yet, so no workspace and nothing to save): exit at once;

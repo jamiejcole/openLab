@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! How long the control loop may wait before it must tick again (ARCHITECTURE §3.2).
+//! How long the control loop may wait before it must tick again.
 
 use std::time::Duration;
 

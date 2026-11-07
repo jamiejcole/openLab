@@ -173,7 +173,7 @@ impl Command {
 /// The `model_changed` payload `(upserts, deletes)` for an edit with `footprint`, read from the
 /// workspace after it.
 ///
-/// Clients apply `deletes` first, then `upserts` in order (`protocol.md`). Every removed or
+/// Clients apply `deletes` first, then `upserts` in order (`docs/protocol.md`). Every removed or
 /// moved cue is deleted first, so a client never has to reason about where a mover used to be;
 /// the upserts then put each cue that exists at its final index, parents before children and
 /// ascending within one container, so each lands where the workspace has it. A touched cue

@@ -6,8 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Level edits on a playing audio cue (AUD-06, AUD-08), per docs/cue-engine.md "Level
-//! edits on a playing cue". Virtual sample clock at 1 kHz: the edit ramp is 10 samples.
+//! Level edits on a playing audio cue (AUD-06, AUD-08). Virtual sample clock at 1 kHz: the edit ramp is 10 samples.
 
 use crate::common::*;
 use openlab_core::*;

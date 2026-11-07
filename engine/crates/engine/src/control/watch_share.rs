@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! One media watch for every open doc (ARCHITECTURE §3.1; docs/control.md "Media watch"). Each
+//! One media watch for every open doc. Each
 //! doc's catalog names its files by its own keys (media references, relative to that doc's show
 //! folder) and its own watch ids; the watch thread is told each file once, by its path, under an
 //! id of the engine's. A file two docs use is watched once, counted for both: one doc letting go

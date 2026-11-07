@@ -8,7 +8,7 @@
 )]
 
 //! Property tests for the cue engine (QA-01, QA-02): random workspaces and random input
-//! sequences against a simulated mixer, checked against the rules of `docs/cue-engine.md`.
+//! sequences against a simulated mixer, checked against the cue engine's rules.
 //!
 //! **Generator.** Lists with nested groups of every mode, control and Fade cues with random
 //! targets (so Start/GoTo cycles, self-targets and missing targets), duplicate ids (more
@@ -26,7 +26,7 @@
 //! also checks the actions against what a mixer needs: commands name voices it knows, pause and
 //! resume carry the position the voice has really reached, a voice is started once.
 //!
-//! **Invariants** (each cites its rule in `docs/cue-engine.md`):
+//! **Invariants**:
 //! - Exactly one state per cue, the one last reported; every runtime is reachable from the
 //!   reported state and the other way round (States; `cue_states`), but for a playlist child
 //!   that failed while paused, which shows `paused` with no voice until the resume (A failure

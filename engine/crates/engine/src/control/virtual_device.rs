@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The virtual output device (`--virtual-device`, built only with the `test-support` feature;
-//! docs/control.md "Virtual device"): the real engine with no audio hardware, for the app's
+//! The virtual output device (`--virtual-device`, built only with the `test-support` feature):
+//! the real engine with no audio hardware, for the app's
 //! tests. It is a [`DeviceLayer`] like cpal's, so the stream is opened, closed, lost and reopened
 //! through the same device policy (`devices.rs`) a real interface goes through.
 //!

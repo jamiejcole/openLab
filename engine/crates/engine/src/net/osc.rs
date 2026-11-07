@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The OSC listeners (docs/osc.md, ARCHITECTURE section 7): UDP and TCP sockets on the network
+//! The OSC listeners: UDP and TCP sockets on the network
 //! runtime, feeding the socket-free [`crate::osc::Osc`] layer.
 //!
 //! One **actor task** owns everything stateful: the `Osc` sessions, the copy of the workspace
@@ -1201,7 +1201,7 @@ impl Actor {
         );
     }
 
-    /// `doc` closed: its copy goes and its sessions end (ARCHITECTURE section 7).
+    /// `doc` closed: its copy goes and its sessions end.
     fn drop_doc(&mut self, doc: DocId) {
         self.docs.retain(|d| d.doc != doc);
         self.osc.close_doc(doc);
@@ -1842,7 +1842,7 @@ impl Actor {
         }
     }
 
-    /// Tells every peer subscribed to `doc` what changed in it (NET-05, docs/osc.md "Updates").
+    /// Tells every peer subscribed to `doc` what changed in it (NET-05).
     fn fan_out(&mut self, doc: DocId, updates: &[Update]) {
         if updates.is_empty() {
             return;
@@ -1907,7 +1907,7 @@ fn doc_shows<'a>(shows: &'a [(DocId, MirrorShow<'a>)]) -> Vec<DocShow<'a>> {
         .collect()
 }
 
-/// The OSC message for an update, as QLab 5 sends them (docs/osc.md, "Updates"): ids in upper
+/// The OSC message for an update, as QLab 5 sends them: ids in upper
 /// case, `__root__` in lower case, no arguments but the playhead's cue.
 fn update_message(workspace: &str, update: &Update) -> OscMessage {
     let base = format!("/update/workspace/{workspace}");

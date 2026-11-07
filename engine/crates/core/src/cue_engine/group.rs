@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Group cues (CT-22): how a group's action runs its children, when it completes, and how
-//! operations on a group reach its descendants. Rules: `docs/cue-engine.md`, "Groups".
+//! operations on a group reach its descendants.
 
 use std::collections::{BTreeSet, HashSet};
 

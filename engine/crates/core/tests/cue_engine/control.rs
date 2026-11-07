@@ -6,8 +6,7 @@
     clippy::indexing_slicing
 )]
 
-//! Control cues (CT-11..CT-17, CT-19..CT-21), per docs/cue-engine.md "Control
-//! cues". Virtual sample clock at 1 kHz: one second is 1000 samples.
+//! Control cues (CT-11..CT-17, CT-19..CT-21). Virtual sample clock at 1 kHz: one second is 1000 samples.
 
 use crate::common::*;
 use openlab_core::*;
