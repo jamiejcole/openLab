@@ -6,6 +6,8 @@ MAC_TESTS_WITH_LIMIT := scripts/run-mac-tests.sh $(XCODEBUILD) -destination "pla
 	-test-timeouts-enabled YES -default-test-execution-time-allowance 180
 # The per-PR UI tests (scripts/ui-smoke.txt) as -only-testing arguments.
 UI_SMOKE := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/ui-smoke.txt),-only-testing:$(t))
+# The unit test classes `make test-mac` runs in its second test process.
+LATE_TEST_CLASSES := $(shell grep -hoE 'class [M-Z][A-Za-z0-9_]*: XCTestCase' mac/openLabTests/*.swift | sed 's/class //; s/:.*//' | sort -u)
 # The everyday-flow tests (scripts/core-flows.txt), unit and UI, as -only-testing arguments.
 CORE_FLOWS := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/core-flows.txt),-only-testing:$(t))
 
@@ -90,9 +92,16 @@ test-mac-unit: project
 
 # Every unit test, real-engine ones included, plus the UI smoke set (scripts/ui-smoke.txt): what a PR
 # that changes the engine, the protocol, the app's engine client, its tests or project runs (scripts/paths.sh).
+# Two test processes: later classes ran about twice as fast in a fresh one when a hang forced a restart
+# (one process gathers windows and connections over 1,100 tests). Both always run, so a failure in the
+# first still reports the second's. A class the name match misses stays in the first run, so it still runs.
 test-mac: project
 	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
-	$(MAC_TESTS_WITH_LIMIT) -- -only-testing:openLabTests $(UI_SMOKE)
+	@test -n "$(LATE_TEST_CLASSES)" || { echo "no test classes for the second test process"; exit 1; }
+	rc=0; \
+	$(MAC_TESTS_WITH_LIMIT) -- -only-testing:openLabTests $(foreach c,$(LATE_TEST_CLASSES),-skip-testing:openLabTests/$(c)) || rc=$$?; \
+	$(MAC_TESTS_WITH_LIMIT) -- $(foreach c,$(LATE_TEST_CLASSES),-only-testing:openLabTests/$(c)) $(UI_SMOKE) || rc=$$?; \
+	exit $$rc
 
 # The everyday QLab-user flows on the real engine (scripts/core-flows.txt): nightly before the full suite,
 # and on demand after a big feature change.
