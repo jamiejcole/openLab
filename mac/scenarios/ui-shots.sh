@@ -12,7 +12,8 @@ set -uo pipefail
 scenario="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 mkdir -p "$2" || exit 2
 out="$(cd "$2" && pwd)"
-rm -f "$out"/*.png "$out/steps.log"
+# Only what an earlier run wrote: OUT may be a folder of the caller's own pictures.
+rm -f "$out"/[0-9][0-9]-*.png "$out/steps.log"
 
 xcodebuild=(xcodebuild -project mac/openLab.xcodeproj -scheme openLab -derivedDataPath build)
 destination="platform=macOS,arch=$(uname -m)"

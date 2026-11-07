@@ -311,6 +311,14 @@ final class ScenarioRunner {
         // The window is never ordered on screen: the run takes no focus.
         window.makeFirstResponder(wc.cueList.outlineView)
         guard await eventually({ self.wc.cueList.listID != nil }) else { throw Failure("the cue list never showed") }
+        // The footer's engine status comes with the engine's status report (one a second of device
+        // time), not with the snapshot: device time moves on, with nothing playing, until one comes.
+        var waited = 0.0
+        while rig.store.status == nil {
+            guard waited < 3 else { throw Failure("the engine sent no status in 3 s of device time") }
+            try await rig.advance(0.1)
+            waited += 0.1
+        }
         await settle()
         note("opened \(scenario.show) in a \(Int(scenario.size.width))x\(Int(scenario.size.height)) window")
     }
@@ -457,7 +465,7 @@ final class ScenarioRunner {
             let url = out.appendingPathComponent(String(format: "%02d-%@.png", shots, name))
             try shot(to: url)
             written.append(url)
-            note("shot \(url.lastPathComponent)")
+            note("shot \(url.lastPathComponent) (footer: \(wc.footer.statusButton.title))")
         }
         await catchUp()
     }
@@ -761,6 +769,10 @@ final class ScenarioShotTests: XCTestCase {
         }
         let log = try String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)
         XCTAssertTrue(log.contains("key space"), log)
+        // The first shot already shows the engine's status in the footer, not the wait for it.
+        let first = try XCTUnwrap(log.split(separator: "\n").first { $0.hasPrefix("shot 01-start.png") }, log)
+        XCTAssertFalse(first.contains(loc("status.waiting")), String(first))
+        XCTAssertTrue(first.contains("(footer: ") && !first.hasSuffix("(footer: )"), String(first))
         XCTAssertTrue(log.hasSuffix("done: 2 shot(s) in \(out.path)\n"), log)
         if let pid = runner.enginePid { XCTAssertEqual(kill(pid, 0), -1, "the engine ended") }
     }
