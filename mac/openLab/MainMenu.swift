@@ -200,6 +200,7 @@ enum MainMenu {
                 item("menu.cues.deleteNumbers", #selector(AppDelegate.deleteNumbers(_:)), "d"),
                 .separator(),
                 item("menu.tools.revealTarget", #selector(AppDelegate.revealTargetFile(_:))),
+                jumpToTargetsItem(),
             ])
     }
 
@@ -232,6 +233,7 @@ enum MainMenu {
                 area("menu.view.toolbar", .toolbar),
                 area("menu.view.masthead", .masthead),
                 area("menu.view.sidebar", .sidebar, "l"),
+                item("menu.view.warnings", #selector(AppDelegate.showWarnings(_:)), "b"),
                 .separator(),
                 chord(item("menu.view.selectCue", #selector(AppDelegate.selectCue(_:)), "j"), cmd),
                 chord(item("menu.view.selectNext", #selector(AppDelegate.selectNextCue(_:)), down), cmd),
@@ -313,6 +315,12 @@ enum MainMenu {
             entry.keyEquivalent = chord?.key ?? ""
             entry.keyEquivalentModifierMask = chord?.modifiers ?? []
         }
+    }
+
+    private static func jumpToTargetsItem() -> NSMenuItem {
+        let jump = item("menu.tools.jumpToTargets", #selector(AppDelegate.jumpToTargets(_:)), "j")
+        jump.keyEquivalentModifierMask = [.command, .option]
+        return jump
     }
 
     private static func closeAllItem() -> NSMenuItem {

@@ -335,14 +335,22 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.selectRowIndexes(rows, byExtendingSelection: false)
     }
 
+    /// Opens the groups above `node`, outermost first: a group inside a collapsed group cannot be
+    /// expanded until the one around it is.
+    func openGroups(above node: CueNode) {
+        var chain: [CueNode] = []
+        var p = node.parent
+        while let a = p {
+            chain.append(a)
+            p = a.parent
+        }
+        for group in chain.reversed() { outlineView.expandItem(group) }
+    }
+
     /// Selects `id` and scrolls to it, opening any collapsed groups above it. Like `select`, it
     /// does not move the playhead.
     func reveal(_ id: ModelID) {
-        var parent = nodes[id]?.parent
-        while let node = parent {
-            outlineView.expandItem(node)
-            parent = node.parent
-        }
+        if let node = nodes[id] { openGroups(above: node) }
         select([id])
         if let node = nodes[id] {
             let row = outlineView.row(forItem: node)
@@ -393,13 +401,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// Selects and shows `ids` as a click would: the inspector follows and the playhead moves.
     func selectAsUser(_ ids: [ModelID]) {
-        for id in ids {
-            var p = nodes[id]?.parent
-            while let a = p {
-                outlineView.expandItem(a)
-                p = a.parent
-            }
-        }
+        for id in ids { if let node = nodes[id] { openGroups(above: node) } }
         let rows = IndexSet(ids.compactMap { nodes[$0] }.map { outlineView.row(forItem: $0) }.filter { $0 >= 0 })
         outlineView.selectRowIndexes(rows, byExtendingSelection: false)
         if let row = rows.first { outlineView.scrollRowToVisible(row) }
@@ -595,11 +597,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             guard !selected.contains(head), let node = nodes[head] else { return }
             followingPlayhead = true
             defer { followingPlayhead = false }
-            var p = node.parent
-            while let a = p {
-                outlineView.expandItem(a)
-                p = a.parent
-            }
+            openGroups(above: node)
             let row = outlineView.row(forItem: node)
             guard row >= 0 else { return }
             outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
@@ -1270,7 +1268,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             if store.previewing.contains(node.id) {
                 cell.setImage(2, icon: .preview, label: loc("cue.previewing"), tint: .systemTeal)
             } else if cue.kindType == "network" && networkOutputDisabled {
-                // Only an Audio cue previews, so a Network cue never needs that slot for both.
+                // A Network cue's preview holds no state, so it never takes that slot for a preview mark.
                 cell.images[2].setAccessibilityIdentifier("cue-override")
                 cell.setImage(2, icon: .outputOverridden, label: loc("cue.outputOverridden"), tint: .systemRed)
             }

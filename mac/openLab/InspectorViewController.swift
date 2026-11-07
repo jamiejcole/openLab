@@ -81,7 +81,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let flaggedCheck = NSButton(checkboxWithTitle: loc("inspector.flagged"), target: nil, action: nil)
     let armedCheck = NSButton(checkboxWithTitle: loc("inspector.armed"), target: nil, action: nil)
     let messageLabel = NSTextField(labelWithString: "")
-    /// Preview / Stop Preview of the selected audio cue. The Time & Loops tab should host it.
+    /// Preview / Stop Preview of the selected audio cue or group. The Time & Loops tab should host it.
     let previewButton = NSButton(title: loc("inspector.preview"), target: nil, action: nil)
     /// Choose... next to an Audio cue's file: opens the file chooser (set by the window controller).
     let chooseButton = NSButton(title: loc("inspector.target.choose"), target: nil, action: nil)
@@ -664,7 +664,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     func updatePreviewButton(connected: Bool? = nil) {
         let active = cue.map { store.previewing.contains($0.id) } ?? false
         previewButton.title = loc(active ? "inspector.stopPreview" : "inspector.preview")
-        previewButton.isEnabled = cue?.kindType == "audio" && (connected ?? (store.connectionState == .connected))
+        let previewable = ["audio", "group"].contains(cue?.kindType)
+        previewButton.isEnabled = previewable && (connected ?? (store.connectionState == .connected))
     }
 
     @objc private func chooseClicked() {

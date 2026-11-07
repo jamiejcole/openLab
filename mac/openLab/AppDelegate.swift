@@ -207,6 +207,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor @objc func revealTargetFile(_ sender: Any?) {
         appController.frontController?.cueList.revealSelectedTarget()
     }
+    @MainActor @objc func showWarnings(_ sender: Any?) { appController.frontController?.showWarnings() }
+    @MainActor @objc func jumpToTargets(_ sender: Any?) { appController.frontController?.jumpToTargets() }
     @MainActor @objc func showPreferences(_ sender: Any?) {
         appController.preferencesWindow.reload()
         appController.preferencesWindow.showWindow(nil)
@@ -279,6 +281,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(loadToTime(_:))?:
             // An edit-time tool: off in Show Mode, as in QLab.
             return appController.frontController.map { !$0.isShowMode && !$0.cueList.selectedIDs().isEmpty } ?? false
+        case #selector(showWarnings(_:))?: return appController.frontController != nil  // views only: Show Mode too
+        case #selector(jumpToTargets(_:))?:
+            // Not while a text field is edited: the jump would take its focus.
+            return (appController.frontController?.canJumpToTargets ?? false) && !appController.isTextEditing()
         case #selector(revealTargetFile(_:))?:
             return appController.frontController?.cueList.canRevealSelectedTarget ?? false
         case #selector(closeAllWorkspaces(_:))?: return !appController.allWindows.isEmpty
