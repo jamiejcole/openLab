@@ -427,6 +427,23 @@ wedged_classifier() {
   [ "$out" = "-only-testing:openLabTests/Flow/testHung" ] || fail wedged-classifier "wrong retry arguments: '$out'"
   scripts/run-mac-tests.sh --classify "$d/mixed.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a hang beside another failure must not be retried"
   scripts/run-mac-tests.sh --classify "$d/none.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a run with no test failure (a build error) must not be retried"
+  # The app started again after a hang into the same stalled WindowServer never connects: a failure of
+  # the run, not of a test, with a spindump of its own. The tests after the hang never ran, so all run again.
+  local started hung_entry restart_entry
+  started='{"failureText":"The test runner hung before establishing connection.","targetName":"openLabTests","testIdentifierString":"openLab (5) encountered an error"}'
+  hung_entry='{"testIdentifier":"Flow/testHung()","attachments":[{"exportedFileName":"s.txt","isAssociatedWithFailure":true,"suggestedHumanReadableName":"x-Spindump_0.txt"}]}'
+  restart_entry='{"testIdentifier":"openLab (5) encountered an error","attachments":[{"exportedFileName":"r.txt","isAssociatedWithFailure":true,"suggestedHumanReadableName":"Hang (Spindump)_1.txt"}]}'
+  printf '{"testFailures":[%s,%s]}' "$started" "$timeout" >"$d/cut-short.json"
+  printf '{"testFailures":[%s,%s,%s]}' "$started" "$timeout" "$other" >"$d/cut-short-mixed.json"
+  printf '[%s,%s]' "$hung_entry" "$restart_entry" >"$d/manifest.json"
+  wedged_report 9 9 >"$d/r.txt"
+  out=$(scripts/run-mac-tests.sh --classify "$d/cut-short.json" "$d") || fail wedged-classifier "a proven hang and a proven failed restart must be retried"
+  [ "$out" = "--all" ] || fail wedged-classifier "a run cut short must run everything again, not '$out'"
+  scripts/run-mac-tests.sh --classify "$d/cut-short-mixed.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a failed restart beside another failure must not be retried"
+  wedged_report 3 9 >"$d/r.txt"
+  scripts/run-mac-tests.sh --classify "$d/cut-short.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a failed restart whose spindump proves no wedge must not be retried"
+  printf '[%s]' "$hung_entry" >"$d/manifest.json"
+  scripts/run-mac-tests.sh --classify "$d/cut-short.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a failed restart with no spindump must not be retried"
   wedged_report 3 9 >"$d/s.txt"
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "WindowServer only passing through the driver must not excuse a hang"
   wedged_report 9 3 >"$d/s.txt"
