@@ -13,22 +13,47 @@ final class WindowLayoutUITests: XCTestCase {
             ?? app.splitters.firstMatch
     }
 
-    /// Presses on the divider's first point across it and drags. A divider is one point thick and
-    /// its centre is half a point in, which a 1x display (the hosted runner's) rounds to the point
-    /// beside the divider: the press then misses it and nothing moves.
-    private func drag(_ divider: XCUIElement, horizontal: Bool, by delta: CGFloat) {
-        let frame = divider.frame
-        let along = horizontal ? (frame.width / 2).rounded() : (frame.height / 2).rounded()
-        let origin = divider.coordinate(withNormalizedOffset: .zero)
-        let start = origin.withOffset(CGVector(dx: horizontal ? along : 0, dy: horizontal ? 0 : along))
-        start.press(
-            forDuration: 0.2,
-            thenDragTo: start.withOffset(CGVector(dx: horizontal ? 0 : delta, dy: horizontal ? delta : 0)))
+    /// The inspector's height or the sidebar's width: the distance from its divider to the window's
+    /// edge. Unlike the divider's position on the screen, it does not move with the window.
+    private func size(_ app: XCUIApplication, horizontal: Bool) -> CGFloat {
+        let window = app.windows["main-window"].frame
+        let frame = divider(app, horizontal: horizontal).frame
+        return horizontal ? window.maxY - frame.minY : window.maxX - frame.minX
     }
 
-    /// True once `condition` holds, false after ten seconds.
-    private func poll(_ condition: () -> Bool) -> Bool {
-        for _ in 0..<20 {
+    /// Drags a divider with the mouse by `delta` points across it (negative: up or left), pressing
+    /// on its middle. On the hosted runner the default press-and-drag is not delivered (the pointer
+    /// never moves and the call waits about five seconds), so a drag that did not move the divider
+    /// within a few seconds is tried again the other ways XCUITest offers. Returns what was tried,
+    /// for the failure message.
+    private func drag(_ app: XCUIApplication, horizontal: Bool, by delta: CGFloat) -> String {
+        let before = size(app, horizontal: horizontal)
+        let start = divider(app, horizontal: horizontal).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let end = start.withOffset(CGVector(dx: horizontal ? 0 : delta, dy: horizontal ? delta : 0))
+        let routes: [(String, () -> Void)] = [
+            ("press and drag", { start.press(forDuration: 0.2, thenDragTo: end) }),
+            (
+                "press and drag, fast, held",
+                { start.press(forDuration: 0.5, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0.5) }
+            ),
+            (
+                "press and drag, slow, held",
+                { start.press(forDuration: 0.5, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.5) }
+            ),
+        ]
+        var tried = ""
+        for (name, route) in routes {
+            route()
+            let moved = poll(seconds: 3) { abs(size(app, horizontal: horizontal) - before) > 30 }
+            tried += "\(name): \(moved ? "moved" : "no move"); pointer \(NSEvent.mouseLocation). "
+            if moved { break }
+        }
+        return tried
+    }
+
+    /// True once `condition` holds, false after `seconds`.
+    private func poll(seconds: Double = 10, _ condition: () -> Bool) -> Bool {
+        for _ in 0..<Int(seconds * 2) {
             if condition() { return true }
             _ = XCTWaiter().wait(for: [], timeout: 0.5)
         }
@@ -46,23 +71,23 @@ final class WindowLayoutUITests: XCTestCase {
 
     func testADraggedInspectorDividerStaysWhereItWasLeft() {
         let app = launchDemo()
-        let before = divider(app, horizontal: true).frame.minY
-        drag(divider(app, horizontal: true), horizontal: true, by: -60)
-        XCTAssertTrue(poll { divider(app, horizontal: true).frame.minY < before - 30 }, "the drag took")
-        let dragged = divider(app, horizontal: true).frame.minY
+        let before = size(app, horizontal: true)
+        let tried = drag(app, horizontal: true, by: -60)
+        XCTAssertTrue(poll { size(app, horizontal: true) > before + 30 }, "the drag took. \(tried)")
+        let dragged = size(app, horizontal: true)
         relaunch(app)
-        XCTAssertEqual(divider(app, horizontal: true).frame.minY, dragged, accuracy: 2)
+        XCTAssertEqual(size(app, horizontal: true), dragged, accuracy: 2)
     }
 
     func testADraggedSidebarDividerStaysWhereItWasLeft() {
         let app = launchDemo()
         app.checkBoxes["toggle-sidebar"].click()
         XCTAssertTrue(divider(app, horizontal: false).waitForExistence(timeout: 10))
-        let before = divider(app, horizontal: false).frame.minX
-        drag(divider(app, horizontal: false), horizontal: false, by: -60)
-        XCTAssertTrue(poll { divider(app, horizontal: false).frame.minX < before - 30 }, "the drag took")
-        let dragged = divider(app, horizontal: false).frame.minX
+        let before = size(app, horizontal: false)
+        let tried = drag(app, horizontal: false, by: -60)
+        XCTAssertTrue(poll { size(app, horizontal: false) > before + 30 }, "the drag took. \(tried)")
+        let dragged = size(app, horizontal: false)
         relaunch(app)
-        XCTAssertEqual(divider(app, horizontal: false).frame.minX, dragged, accuracy: 2)
+        XCTAssertEqual(size(app, horizontal: false), dragged, accuracy: 2)
     }
 }
