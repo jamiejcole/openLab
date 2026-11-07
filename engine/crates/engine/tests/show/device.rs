@@ -65,6 +65,8 @@ struct State {
     open_id: Option<String>,
     /// Frames per callback of the streams opened from now on.
     block: u32,
+    /// What those streams report instead of `block` (a host that cannot say, or says wrong).
+    reported_block: Option<Option<u32>>,
     /// The next open panics inside the layer.
     panic_on_open: bool,
     /// The next list read leaves this device out (a host busy reconfiguring it).
@@ -168,6 +170,11 @@ impl Fake {
         self.state.lock().unwrap().block = frames;
     }
 
+    /// Streams opened from now on report `frames` per callback, whatever they really make.
+    pub fn report_block(&self, frames: Option<u32>) {
+        self.state.lock().unwrap().reported_block = Some(frames);
+    }
+
     /// Frames per callback of the open stream.
     pub fn block(&self) -> u32 {
         self.state.lock().unwrap().block
@@ -266,7 +273,7 @@ impl DeviceLayer for FakeLayer {
             name: device.name.clone(),
             channels: outputs.min(channels),
             outputs_dropped: channels < outputs,
-            block_frames: Some(s.block),
+            block_frames: s.reported_block.unwrap_or(Some(s.block)),
             sample_rate: RATE,
             monitor: link.monitor(),
         };
@@ -411,6 +418,12 @@ impl DeviceShow {
     /// the watchdog would otherwise take for a hung stream. A stalled fake makes none.
     pub fn advance(&mut self, d: Duration) {
         self.fake.heartbeat();
+        *self.wall.lock().unwrap() += d;
+    }
+
+    /// Moves the wall clock on with no callback in between: the time between two callbacks of
+    /// a stream paced by the test.
+    pub fn advance_between_callbacks(&mut self, d: Duration) {
         *self.wall.lock().unwrap() += d;
     }
 

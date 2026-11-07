@@ -1380,6 +1380,203 @@ fn stutter_until_lost(settle: bool) {
     );
 }
 
+/// The real loop's longest wait (`MAX_WAIT`): a tick at least this often.
+const LOOP_TICK: Duration = Duration::from_millis(5);
+
+/// The frames per callback at the test's [`RATE`] with the period of `frames` at 48 kHz.
+fn frames_like_48k(frames: u32) -> u32 {
+    frames * RATE / 48_000
+}
+
+/// A show playing a cue on a stream reopened with `frames` per callback, after `setup`.
+fn playing_on_block_with(frames: u32, setup: impl FnOnce(&Fake)) -> DeviceShow {
+    let long = wav(&dc(400_000, 0.25));
+    let mut s = device_show(workspace(vec![audio(1, &long, 0)]));
+    s.fake.set_block(frames);
+    setup(&s.fake);
+    lose(&mut s);
+    s.wait_wall(Duration::from_secs(2), 4);
+    replug(&mut s);
+    start(&mut s, 1);
+    s.take_outbound();
+    s
+}
+
+fn playing_on_block(frames: u32) -> DeviceShow {
+    playing_on_block_with(frames, |_| {})
+}
+
+/// `span` of a stream calling back every `period`, the loop ticking every [`LOOP_TICK`] in
+/// between, as a real device does and `DeviceShow::advance` does not.
+fn callbacks_every(s: &mut DeviceShow, period: Duration, span: Duration) -> Vec<ServerMessage> {
+    let mut msgs = Vec::new();
+    let mut since_callback = Duration::ZERO;
+    let mut elapsed = Duration::ZERO;
+    while elapsed < span && !s.control().device_down() {
+        s.advance_between_callbacks(LOOP_TICK);
+        elapsed += LOOP_TICK;
+        since_callback += LOOP_TICK;
+        if since_callback >= period {
+            since_callback -= period;
+            s.step();
+        } else {
+            s.tick();
+        }
+        s.wait_list();
+        msgs.extend(s.take_outbound());
+    }
+    msgs
+}
+
+fn frames_period(frames: u32) -> Duration {
+    Duration::from_secs_f64(f64::from(frames) / f64::from(RATE))
+}
+
+/// No loss, no warning and the cue not broken after `span` of steady callbacks.
+fn assert_healthy(s: &mut DeviceShow, frames: u32, span: Duration) {
+    let msgs = callbacks_every(s, frames_period(frames), span);
+    assert!(
+        !s.control().device_down(),
+        "{frames} frames: {:?}",
+        logs(&msgs, LogLevel::Error)
+    );
+    assert_ne!(stalled_warning(&msgs), Some(true), "{frames} frames warned");
+    assert!(
+        !broken_device_lost(&msgs, 1),
+        "{frames} frames: the cue broke"
+    );
+}
+
+fn lost_as_intermittent(msgs: &[ServerMessage]) -> bool {
+    logs(msgs, LogLevel::Error)
+        .iter()
+        .any(|m| m.contains("intermittent"))
+}
+
+#[test]
+fn a_healthy_stream_at_256_1024_and_4096_frames_is_never_lost_or_warned() {
+    for frames in [256, 1024, 4096].map(frames_like_48k) {
+        let mut s = playing_on_block(frames);
+        assert_healthy(&mut s, frames, Duration::from_secs(25));
+    }
+}
+
+#[test]
+fn a_healthy_stream_whose_period_is_not_reported_is_not_lost() {
+    let frames = frames_like_48k(1024);
+    let mut s = playing_on_block_with(frames, |fake| fake.report_block(None));
+    assert_healthy(&mut s, frames, Duration::from_secs(25));
+}
+
+#[test]
+fn a_healthy_stream_with_longer_callbacks_than_it_reports_is_not_lost() {
+    let frames = frames_like_48k(4096);
+    let mut s = playing_on_block_with(frames, |fake| fake.report_block(Some(BLOCK as u32)));
+    assert_healthy(&mut s, frames, Duration::from_secs(25));
+}
+
+#[test]
+fn a_stuttering_device_with_a_large_buffer_is_lost_as_intermittent() {
+    // 85 ms buffers (4096 at 48 kHz), a callback every 525 ms: never a silence near the warning
+    // limit of 1.7 s, but a sixth of the audio.
+    let mut s = playing_on_block(frames_like_48k(4096));
+    let msgs = callbacks_every(&mut s, Duration::from_millis(525), Duration::from_secs(11));
+    assert!(
+        s.control().device_down(),
+        "a stuttering device was not lost"
+    );
+    assert!(lost_as_intermittent(&msgs), "{msgs:?}");
+}
+
+#[test]
+fn the_intermittent_rule_counts_only_time_beyond_two_callback_periods() {
+    let frames = frames_like_48k(4096);
+    let period = frames_period(frames);
+    // Every third period: a gap with one period over the two allowed, a third of it silence.
+    let mut s = playing_on_block(frames);
+    let msgs = callbacks_every(&mut s, period * 3, Duration::from_secs(25));
+    assert!(!s.control().device_down(), "{msgs:?}");
+    // Every fifth period: three of five over, past the half that is a loss.
+    let mut s = playing_on_block(frames);
+    let msgs = callbacks_every(&mut s, period * 5, Duration::from_secs(25));
+    assert!(s.control().device_down());
+    assert!(lost_as_intermittent(&msgs), "{msgs:?}");
+}
+
+#[test]
+fn callbacks_of_no_known_size_get_the_fallback_allowance() {
+    // No period reported and callbacks with no frames: gaps up to `STALL_MAX_GAP` are explained.
+    let empty_callbacks_every = |s: &mut DeviceShow, gap: Duration| {
+        let mut msgs = Vec::new();
+        let mut elapsed = Duration::ZERO;
+        while elapsed < Duration::from_secs(11) && !s.control().device_down() {
+            s.advance(LOOP_TICK);
+            s.tick();
+            let mut left = gap - LOOP_TICK;
+            while !left.is_zero() && !s.control().device_down() {
+                s.advance_between_callbacks(LOOP_TICK);
+                s.tick();
+                left -= LOOP_TICK;
+            }
+            elapsed += gap;
+            s.wait_list();
+            msgs.extend(s.take_outbound());
+        }
+        msgs
+    };
+    let mut s = playing_on_block_with(BLOCK as u32, |fake| fake.report_block(None));
+    s.run(BLOCK);
+    empty_callbacks_every(&mut s, Duration::from_millis(100));
+    assert!(!s.control().device_down());
+    let msgs = empty_callbacks_every(&mut s, Duration::from_millis(525));
+    assert!(s.control().device_down());
+    assert!(lost_as_intermittent(&msgs), "{msgs:?}");
+}
+
+#[test]
+fn a_true_stall_of_a_large_buffer_stream_takes_the_two_stages() {
+    let frames = frames_like_48k(4096);
+    let mut s = playing_on_block(frames);
+    assert_healthy(&mut s, frames, Duration::from_secs(10));
+    s.fake.stall();
+    // Warned at 20 periods (1.7 s), lost at 50 (4.26 s).
+    idle_ms(&mut s, 1600);
+    assert_eq!(stalled_warning(&s.take_outbound()), None);
+    idle_ms(&mut s, 200);
+    assert_eq!(stalled_warning(&s.take_outbound()), Some(true));
+    idle_ms(&mut s, 2300);
+    assert!(!s.control().device_down(), "lost before the loss limit");
+    idle_ms(&mut s, 300);
+    assert!(s.control().device_down(), "a stalled stream was not lost");
+    s.settle_devices();
+    let msgs = s.take_outbound();
+    assert!(!lost_as_intermittent(&msgs), "{msgs:?}");
+    assert!(
+        logs(&msgs, LogLevel::Error)
+            .iter()
+            .any(|m| m.contains("stalled: ")),
+        "{msgs:?}"
+    );
+}
+
+#[test]
+fn a_sleep_in_a_large_buffer_stream_starts_its_silence_over() {
+    let frames = frames_like_48k(4096);
+    let mut s = playing_on_block(frames);
+    assert_healthy(&mut s, frames, Duration::from_secs(5));
+    s.fake.stall();
+    idle_ms(&mut s, 3000);
+    s.sleep(Duration::from_secs(60));
+    // Silent for 7.2 s in all, past the 4.26 s loss limit, but only 4.2 s of it after the wake.
+    idle_ms(&mut s, 4200);
+    assert!(
+        !s.control().device_down(),
+        "lost inside the post-wake grace"
+    );
+    s.fake.unstall();
+    assert_healthy(&mut s, frames, Duration::from_secs(10));
+}
+
 #[test]
 fn repeated_short_stalls_are_logged_at_most_every_10_s_with_a_count() {
     // 600 ms stalls every 2.1 s: warned each time, never lost (29% silent).

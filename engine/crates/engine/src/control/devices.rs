@@ -51,6 +51,11 @@ pub const STALL_MIN_SAMPLES: u32 = 10;
 /// one warning limit (a device that stutters keeps it up).
 /// At most one stall warn log per this long, with the number of stalls since.
 pub const STALL_LOG_EVERY: Duration = Duration::from_secs(10);
+/// Callback periods a gap between two callbacks may last before the rest of it counts as
+/// silence in the [`STALL_WINDOW`]. The loop samples at its own pace, so a healthy stream with
+/// a period above a tick is not seen to move on most ticks. Two periods hold a period seen one
+/// tick late; a stream delivering a quarter of its audio or less is still lost.
+pub const STALL_GAP_PERIODS: u32 = 2;
 /// Sliding window of watched time over which a mostly silent stream is a loss.
 pub const STALL_WINDOW: Duration = Duration::from_secs(10);
 /// The window needs this much watched time before it can declare a loss.
@@ -471,6 +476,13 @@ enum Stream {
     Gone,
 }
 
+/// How long a gap between callbacks is explained by a stream of `block_frames` frames per
+/// callback at `rate`: [`STALL_GAP_PERIODS`] periods, or [`STALL_MAX_GAP`] with no known period.
+pub fn stall_allowed_gap(block_frames: Option<u32>, rate: u32) -> Duration {
+    let gap = periods(block_frames, rate, STALL_GAP_PERIODS);
+    if gap.is_zero() { STALL_MAX_GAP } else { gap }
+}
+
 /// The silence of a stream of `block_frames` frames per callback at `rate` that raises the
 /// warning: [`STALL_WARN_MIN`], or [`STALL_WARN_PERIODS`] buffer periods if that is longer.
 pub fn stall_limit(block_frames: Option<u32>, rate: u32) -> Duration {
@@ -538,7 +550,7 @@ impl Window {
         }
     }
 
-    fn add(&mut self, now: Instant, gap: Duration, silent: bool) {
+    fn add(&mut self, now: Instant, gap: Duration, silent: Duration) {
         let bucket = Duration::from_secs(1);
         if now.saturating_duration_since(self.start) >= STALL_WINDOW {
             *self = Window::new(now);
@@ -558,7 +570,8 @@ impl Window {
         if let Some(w) = self.watched.get_mut(self.idx) {
             *w = w.saturating_add(micros);
         }
-        if silent && let Some(sl) = self.silent.get_mut(self.idx) {
+        if let Some(sl) = self.silent.get_mut(self.idx) {
+            let micros = u64::try_from(silent.as_micros()).unwrap_or(u64::MAX);
             *sl = sl.saturating_add(micros);
         }
     }
@@ -856,10 +869,18 @@ impl Device {
     /// samples above `max(STALL_MAX_GAP, warn_limit / 8)` (the process was frozen, a thread
     /// starved) is no evidence and starts the window over, a stage needs `STALL_MIN_SAMPLES`
     /// samples in the window, and a sleep of the Mac (the system clock moved on further than
-    /// the monotonic one) gives a post-wake grace of one loss limit.
+    /// the monotonic one) gives a post-wake grace of one loss limit. The window behind the
+    /// intermittent loss counts only the part of a gap beyond what the stream's period explains
+    /// ([`stall_allowed_gap`]), at the larger of the period reported at open and the size of the
+    /// last callback: a report can be missing or wrong, and the last callback paid for this gap.
     fn check_stall(&mut self, now: Instant, events: &mut Vec<DeviceEvent>) {
         let sys = (self.sleep_clock)();
         let callbacks = self.info.monitor.callbacks();
+        let period_frames = self
+            .info
+            .block_frames
+            .max(self.info.monitor.last_callback_frames());
+        let allowed_gap = stall_allowed_gap(period_frames, self.info.sample_rate);
         let st = &mut self.stall;
         let gap = now.saturating_duration_since(st.sampled);
         let sys_gap = sys.duration_since(st.sampled_sys).unwrap_or(Duration::ZERO);
@@ -901,7 +922,14 @@ impl Device {
         }
         let quiet = st.quiet_until.is_some_and(|q| now < q);
         if !quiet {
-            st.window.add(now, gap, !moved);
+            let unexplained = if moved {
+                Duration::ZERO
+            } else {
+                now.saturating_duration_since(st.since)
+                    .saturating_sub(allowed_gap)
+                    .min(gap)
+            };
+            st.window.add(now, gap, unexplained);
             let (watched, silent) = st.window.totals();
             if watched >= STALL_WINDOW_MIN && silent * 2 >= watched {
                 let why = format!(
