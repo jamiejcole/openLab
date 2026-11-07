@@ -60,7 +60,7 @@ Never paste large file contents into briefs — point at paths. Agent hand-back 
 - Verify per CLAUDE.md "Review": open the cited tests and run them. Ticked checklist boxes must match what was built.
 
 ## 4. Adversarial review
-- Spawn a fresh `subagent_type: "pr-reviewer"` with: issue numbers, base and branch/commit range, and any area you're suspicious of. Every PR gets one (CLAUDE.md "Review").
+- Spawn a fresh `subagent_type: "pr-reviewer"` with: issue numbers, base and branch/commit range, the shot paths from the implementer's report (for a mac drawing change), and any area you're suspicious of. Every PR gets one (CLAUDE.md "Review").
 - For a change to what the mac app draws, spawn a `subagent_type: "ui-qa"` at the same time with: issue numbers and the worktree path. Never pass it the diff or the implementer's report beyond its scenario paths. Its defects go to the implementer with the reviewer's findings; check a defect by Reading its shot. On a round-2 re-review it re-runs only its failing scenarios.
 - Re-run each High and Medium's command or test before sending it on; a finding that doesn't reproduce goes back to the reviewer or to a second reviewer, not to the implementer.
 - Triage per CLAUDE.md "Findings policy". Niche QLab parity → the `v0.0.2` milestone.
@@ -82,7 +82,7 @@ Review traffic stays local (implementer report files, reviewer replies, `SendMes
 - Decisions that change architecture or behaviour go into the matching skill (skill `architecture` for the engine/UI split, threads and errors) in the same commit. A lesson every agent needs becomes a CI or repo check where possible, else one line in `CLAUDE.md`. A user policy decision goes into `CLAUDE.md` in the same session (through a reviewed PR); memory records only that the user decided it and when. Keep `.claude/skills/orchestrate/state.md` current at the end of a session.
 
 ## 7. Talk to the user
-- After each landed batch that changes what the app draws, send the user the final ui-qa shots of each flow (`SendUserFile`, a few at most, one caption line each) so they can glance at it. Then a short status update:
+- After each landed batch that changes what the app draws, send the user the final shots from ui-qa's `Shots:` list (`SendUserFile`, a few at most, one caption line each) so they can glance at it. Then a short status update:
   ```
   Landed: <task IDs> — <one line each>
   Shots: <sent, or "none": no drawing change>
