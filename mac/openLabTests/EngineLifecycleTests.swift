@@ -1491,13 +1491,30 @@ final class EngineCrashFlowTests: XCTestCase {
         try await recoverFromTheMenu(afterCrashOf: path)
         let wc = try XCTUnwrap(app.allWindows.first)
         let store = wc.store
-        let bound = await eventually { store.document?.path == path }
+        // Late or lost: the largest gap between two checks (a stalled main actor shows as one long
+        // gap) and when the model arrived, measured on the checks themselves.
+        let uptime = { ProcessInfo.processInfo.systemUptime }
+        let started = uptime()
+        var lastCheck = started
+        var largestGap = 0.0
+        var modelAt: Double?
+        let bound = await eventually {
+            let now = uptime()
+            largestGap = max(largestGap, now - lastCheck)
+            lastCheck = now
+            if modelAt == nil, store.model != nil { modelAt = now - started }
+            return store.document?.path == path
+        }
         if !bound {
-            // What the app and the engine said, so a failure in CI says which side lost the path.
+            await settle()
+            let holdsNow = store.document?.path == path
             let listed = app.session.workspaces.map { "\($0.doc) path=\($0.path ?? "nil")" }
             let waiting = await scheduler.waitingCount
             XCTFail(
-                "the recovered workspace never got its show file: document=\(String(describing: store.document)) "
+                "the recovered workspace never got its show file within \(uptime() - started) s: "
+                    + "holds after settle=\(holdsNow) largest gap between checks=\(largestGap) s "
+                    + "model first seen after=\(modelAt.map { "\($0) s" } ?? "never") "
+                    + "expected=\(path) document=\(String(describing: store.document)) "
                     + "client=\(store.client.state) model=\(store.model?.name ?? "nil") listed=\(listed) "
                     + "scheduler waiting=\(waiting)")
         }
