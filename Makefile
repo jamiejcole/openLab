@@ -94,12 +94,14 @@ test-mac-unit: project
 # that changes the engine, the protocol, the app's engine client, its tests or project runs (scripts/paths.sh).
 # Two test processes: later classes ran about twice as fast in a fresh one when a hang forced a restart
 # (one process gathers windows and connections over 1,100 tests). Both always run, so a failure in the
-# first still reports the second's. A class the name match misses stays in the first run, so it still runs.
+# first still reports the second's, except after a run cut short by a proven stall (exit 75 of
+# scripts/run-mac-tests.sh): the runner is wedged, so the second would most likely hang to the step's limit. A class the name match misses stays in the first run, so it still runs.
 test-mac: project
 	@test -n "$(UI_SMOKE)" || { echo "scripts/ui-smoke.txt lists no tests"; exit 1; }
 	@test -n "$(LATE_TEST_CLASSES)" || { echo "no test classes for the second test process"; exit 1; }
 	rc=0; \
 	$(MAC_TESTS_WITH_LIMIT) -- -only-testing:openLabTests $(foreach c,$(LATE_TEST_CLASSES),-skip-testing:openLabTests/$(c)) || rc=$$?; \
+	if [ "$$rc" = 75 ]; then echo "test-mac: the first test process was cut short by a WindowServer stall on the runner; not starting the second. Re-run the job."; exit $$rc; fi; \
 	$(MAC_TESTS_WITH_LIMIT) -- $(foreach c,$(LATE_TEST_CLASSES),-only-testing:openLabTests/$(c)) $(UI_SMOKE) || rc=$$?; \
 	exit $$rc
 
