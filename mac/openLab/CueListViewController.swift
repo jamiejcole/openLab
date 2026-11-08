@@ -49,6 +49,7 @@ final class ProgressFillView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        NSBezierPath.clip(bounds)
         guard let progress, progress.fraction > 0 else { return }
         let box = bounds.insetBy(dx: 1, dy: 2)
         let rect = NSRect(

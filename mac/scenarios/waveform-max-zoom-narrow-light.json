@@ -1,0 +1,17 @@
+{
+  "about": "Zoomed in as far as the view goes, in a narrow window and the light appearance, while playing: no line outside the waveform.",
+  "show": "Demo",
+  "media": {"media/a.wav": 60},
+  "window": {"width": 700, "height": 800},
+  "appearance": "light",
+  "steps": [
+    {"select": "1"},
+    {"key": "space"},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"magnify": "time-loops-waveform", "by": 40, "at": [0, 0.5]},
+    {"scroll": "time-loops-waveform", "dx": -300, "dy": 0, "precise": true},
+    {"advance": 4},
+    {"shot": "max-zoom-narrow-light"}
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "about": "Zoomed and scrolled mid-file while playing, then the window made short and then large: the Time & Loops left column (Start, End, play count, Loop) stays fully visible in the inspector.",
+  "show": "Demo",
+  "media": {"media/a.wav": 60},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"key": "space"},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"magnify": "time-loops-waveform", "by": 3, "at": [0, 0.5]},
+    {"scroll": "time-loops-waveform", "dx": -200, "dy": 0},
+    {"advance": 4},
+    {"resize": [800, 520]},
+    {"advance": 1},
+    {"shot": "short"},
+    {"resize": [1900, 1150]},
+    {"advance": 1},
+    {"shot": "large"}
+  ]
+}

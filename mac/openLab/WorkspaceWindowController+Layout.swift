@@ -25,7 +25,7 @@ extension WorkspaceWindowController {
         pendingInspectorHeight = layout.inspectorHeight
         pendingSidebarWidth = layout.sidebarWidth
         // The preferred sizes are part of the layout whether or not their area is shown now.
-        if let h = layout.inspectorHeight { inspectorHeightConstraint?.constant = max(h, 120) }
+        if let h = layout.inspectorHeight { inspectorHeightConstraint?.constant = max(h, Self.minInspectorHeight) }
         if let w = layout.sidebarWidth { sidebarWidthConstraint?.constant = max(w, 200) }
         for area in LayoutArea.allCases {
             if let on = layout.shown[area] { setVisible(area, on) }
@@ -117,10 +117,10 @@ extension WorkspaceWindowController {
             window?.contentView?.layoutSubtreeIfNeeded()
             let room = verticalSplit.bounds.height - verticalSplit.dividerThickness
             let most = room - Self.minCueListHeight
-            guard most >= 120 else { return }  // no room for a usable inspector
+            guard most >= Self.minInspectorHeight else { return }  // no room for a usable inspector
             // The preferred size stays what was saved even where this window cannot show it yet.
-            inspectorHeightConstraint?.constant = max(target, 120)
-            placeDivider(verticalSplit, at: room - min(max(target, 120), most))
+            inspectorHeightConstraint?.constant = max(target, Self.minInspectorHeight)
+            placeDivider(verticalSplit, at: room - min(max(target, Self.minInspectorHeight), most))
         case .sidebar:
             guard let target = pendingSidebarWidth else { return }
             pendingSidebarWidth = nil

@@ -129,6 +129,30 @@ final class MeterTests: XCTestCase {
         XCTAssertEqual(MeterView.fill(1e-6), 0)
     }
 
+    /// With many channels the last channel's bar is still drawn inside the 22 pt meter: loud on its
+    /// own (the first push, so no earlier channel's level is held), it shows a coloured bar.
+    func testTheLastChannelOfACrowdedMeterIsDrawn() throws {
+        let channels = 16
+        var peaks = [Float](repeating: 0, count: channels)
+        peaks[channels - 1] = 0.5
+        push(peaks)
+        ticker.fire(0)
+        XCTAssertEqual(bank.channelCount(.cue(Self.intro)), channels)
+        let rep = try renderView(view, background: .black)
+        var coloured = 0
+        for py in 0..<rep.pixelsHigh {
+            for px in 0..<rep.pixelsWide {
+                guard let c = rep.colorAt(x: px, y: py)?.usingColorSpace(.sRGB) else { continue }
+                if max(c.redComponent, c.greenComponent, c.blueComponent)
+                    - min(c.redComponent, c.greenComponent, c.blueComponent) > 0.4
+                {
+                    coloured += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(coloured, 0, "the last channel is not drawn")
+    }
+
     // MARK: Hostile input
 
     func testBadPeaksAndHugeCountsAreBounded() {

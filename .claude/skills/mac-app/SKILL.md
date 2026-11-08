@@ -23,6 +23,11 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
 - A `MeterView` registers only while on screen (in a window, not hidden or occluded). The bank's 60 Hz timer runs only while a view is registered. A push with no view registered is dropped.
 - The bank holds views weakly; a view leaves it when its window closes or hides. Levels fall at a fixed dB/s and only changed views redraw.
 
+## Custom views and buttons
+- A custom `NSView` whose `draw(_:)` can paint outside its bounds (a line at an x off the visible span) clips first with `NSBezierPath.clip(bounds)`: `clipsToBounds` (available since macOS 10.9) defaults to false on the macOS 14 SDK, and clipping in `draw(_:)` gives the same result on every system whatever the SDK default. `WaveformView`, `MeterBank`'s meter, `LevelMatrixView` and the cue list's progress fill do.
+- A `.texturedRounded` button's shape stays about 24 pt tall whatever its height; a button meant to be big uses `.regularSquare`, which fills it. The sidebar transport buttons are 44 pt with 18 pt symbols, and a test checks each symbol fits the cell's content rect at default and minimum sidebar width.
+- A handle or line drawn at an edge of a clipped view is moved inside it so it is whole, not half cut.
+
 ## Seeing the app
 - `make ui-shots SCENARIO=mac/scenarios/<name>.json [OUT=<dir>]` drives the real workspace window on the real engine (stepped virtual clock) and writes `<OUT>/<nn>-<name>.png` per shot plus `steps.log` (each step and what it hit). OUT defaults to `build/ui-shots/<name>`. It builds for testing only when `mac/` app, test, test-show or project files or the engine changed since the last build; editing a scenario needs no build.
 - The runner is `ScenarioRunner` in `mac/openLabTests` (test-only, never in a Release product). The window is never ordered on screen or made key: it takes no focus and never moves the pointer, so it runs while the user works. It takes the same machine-wide lock as `make prepush`'s UI tests (`lockf /tmp/openlab-xcuitest.lock`), so it waits for another mac test run. Never run it under another `lockf` on that file: the nested lock waits forever.
