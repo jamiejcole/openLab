@@ -174,29 +174,28 @@ extension WorkspaceSettingsWindowController {
     }
 
     @objc private func oscNoneToggled(_ sender: NSButton) {
-        let on = sender.state == .on
-        let right: WorkspaceSettingsModel.OscRight = [.view, .edit, .control][sender.tag]
+        let rights = Self.rights(of: oscNoneRights)
         Task {
-            await model.setOscRight(right, on, of: nil)
+            await model.setOscRights(rights, of: nil)
             redrawOsc()
         }
     }
 
+    /// Sends what the row's boxes show: boxes clicked in quick succession each carry the others'
+    /// new state, not the table's as of the first click.
     @objc private func oscRightToggled(_ sender: NSButton) {
-        guard let code = shownOsc?.rows[safe: sender.tag]?.passcode else { return }
-        let right: WorkspaceSettingsModel.OscRight
-        if oscViewBoxes.contains(sender) {
-            right = .view
-        } else if oscEditBoxes.contains(sender) {
-            right = .edit
-        } else {
-            right = .control
+        guard let code = shownOsc?.rows[safe: sender.tag]?.passcode, oscViewBoxes.indices.contains(sender.tag) else {
+            return
         }
-        let on = sender.state == .on
+        let rights = Self.rights(of: [oscViewBoxes[sender.tag], oscEditBoxes[sender.tag], oscControlBoxes[sender.tag]])
         Task {
-            await model.setOscRight(right, on, of: code)
+            await model.setOscRights(rights, of: code)
             redrawOsc()
         }
+    }
+
+    private static func rights(of boxes: [NSButton]) -> OscRights {
+        OscRights(view: boxes[0].state == .on, edit: boxes[1].state == .on, control: boxes[2].state == .on)
     }
 
     /// A code field was committed (Return or leaving it): the engine takes the new code or the old

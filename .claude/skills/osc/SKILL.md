@@ -130,8 +130,8 @@ Every message except `/connect`, `/version`, `/workspaces` and `/updates` needs 
 - A wrong `/connect` from a connected peer answers `badpass`, changes nothing, but **counts**; while its IP is locked out its `/connect` is `denied`, even with the right passcode. Without this a View peer could search the table for a Control row without limit.
 - **Known addresses**: each doc remembers up to 64 IPs that completed `/connect`. A correct passcode from a known address passes the global budget (so forged wrong guesses cannot stop the operator's console reconnecting) but never that IP's own lockout; wrong guesses during a lockout still count and extend it. A wrong passcode from a known address is refused.
 - Trade-off: a device that never connected can be blocked during an attack.
-- A multi-address attacker (an IPv6 /64) is bounded only by the global budget, so the default 4-digit passcode falls in about 3 hours at most; use a longer passcode on an open network.
-- Passcodes added by command are 1 to 32 ASCII digits, at most 16 rows. If the OS random source fails, the default passcode comes from the clock and a warning is logged.
+- A multi-address attacker (an IPv6 /64) is bounded only by the global budget, so a 4-digit passcode falls in about 3 hours at most. The settings window only makes four-digit codes (QLab's rule), so on a network you do not control keep No Passcode off and the table's rights narrow.
+- Passcodes added by command are 1 to 32 ASCII digits, at most 16 rows; the Mac app's table (Workspace Settings > OSC) takes exactly four digits, edits a code as a remove and an add in one transaction, and sends `SetOscRights` with all three rights at once. If the OS random source fails, the default passcode comes from the clock and a warning is logged.
 - Recovery: wait 30 s without a wrong guess, use another IP, or stay connected (a connected peer keeps its rights through lockouts).
 
 ## Identical messages

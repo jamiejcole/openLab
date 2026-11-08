@@ -57,30 +57,13 @@ extension WorkspaceSettingsModel {
         await sendOsc(.removeOscPasscode(passcode))
     }
 
-    enum OscRight { case view, edit, control }
-
-    /// Turns one right of a row (`passcode`; nil: the No Passcode row) on or off. Edit and Control
-    /// are not available without View, and turning View off clears all three in one command.
+    /// Sets the rights of the row now showing `passcode` (nil: the No Passcode row) to what its
+    /// boxes show. Edit and Control need View: without it all three go, in one command. False
+    /// when no such row is in the table; nothing is sent.
     @discardableResult
-    func setOscRight(_ right: OscRight, _ on: Bool, of passcode: String?) async -> Bool {
-        let table = osc
-        var rights: OscRights
-        if let passcode {
-            guard let row = table.rows.first(where: { $0.passcode == passcode }) else { return false }
-            rights = row.rights
-        } else {
-            rights = table.noPasscode
-        }
-        switch right {
-        case .view: rights = on ? OscRights(view: true, edit: rights.edit, control: rights.control) : .none
-        case .edit:
-            guard rights.view else { return false }
-            rights.edit = on
-        case .control:
-            guard rights.view else { return false }
-            rights.control = on
-        }
-        return await sendOsc(.setOscRights(passcode, rights))
+    func setOscRights(_ wanted: OscRights, of passcode: String?) async -> Bool {
+        if let passcode, !osc.rows.contains(where: { $0.passcode == passcode }) { return false }
+        return await sendOsc(.setOscRights(passcode, wanted.view ? wanted : .none))
     }
 
     private func sendOsc(_ command: Command) async -> Bool {
