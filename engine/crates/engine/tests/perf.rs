@@ -559,6 +559,10 @@ fn performance_budgets() {
     two_doc_budgets(&path);
 }
 
+/// Runs of ten passes, the best taken: the shared Intel runner measured 78 ms, 179 ms and
+/// 207 ms on the same code, so a few runs can all land in a slow spell.
+const WATCH_RUNS: usize = 12;
+
 /// The media watch thread may take at most 1% of a core with 2,000 files (half the
 /// 2% idle CPU of NFR-25), divided by [`HEADROOM`] like every gate. Ten whole
 /// passes over 2,000 real files are timed on this thread, each made the way the watch thread
@@ -583,7 +587,7 @@ fn watch_budget() {
     }
     assert!(core.pass(&RealFs).is_empty());
     let core = std::sync::Mutex::new(core);
-    let took = best(3, || {
+    let took = best(WATCH_RUNS, || {
         let t = Instant::now();
         for _ in 0..10 {
             timed_pass(&core, &RealFs);
