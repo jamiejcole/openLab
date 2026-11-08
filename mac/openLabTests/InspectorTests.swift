@@ -1429,6 +1429,37 @@ final class CueTargetFlowTests: XCTestCase {
         _ = await rig.client.send({ .close(id: $0, doc: doc, discardChanges: true) })
     }
 
+    /// The Target cell's file glyph follows the file on disk with no edit of the model: the engine's media
+    /// watch reports the file gone, then back, and only a `problems` change reaches the list.
+    func testAFileMovedAwayShowsATrashCanAndPutBackShowsTheFileGlyph() async throws {
+        let folder = URL(fileURLWithPath: try showFolder())
+        let file = folder.appendingPathComponent("media/a.wav")
+        let away = folder.appendingPathComponent("media/a.wav.away")
+        func missing() -> Bool { (rig.store.problems[Self.intro] ?? []).contains { $0.type == "media_missing" } }
+        func glyph() -> (label: String?, image: Data?)? {
+            guard let button = cell("target", Self.intro)?.chooseButton, !button.isHidden else { return nil }
+            return (button.accessibilityLabel(), button.image?.tiffRepresentation)
+        }
+        await assertEventually { glyph()?.label == loc("inspector.target.choose") && !missing() }
+        let present = try XCTUnwrap(glyph())
+        let revision = rig.store.revision
+        try FileManager.default.moveItem(at: file, to: away)
+        await assertEventually("the watch reports the file gone") {
+            try? await self.rig.advance(1)
+            return missing()
+        }
+        await assertEventually { glyph()?.label == loc("cuelist.target.fileMissing") }
+        XCTAssertNotEqual(glyph()?.image, present.image, "a different glyph is drawn")
+        try FileManager.default.moveItem(at: away, to: file)
+        await assertEventually("the watch reports the file back") {
+            try? await self.rig.advance(1)
+            return !missing()
+        }
+        await assertEventually { glyph()?.label == loc("inspector.target.choose") }
+        XCTAssertEqual(glyph()?.image, present.image, "the file glyph is back")
+        XCTAssertEqual(rig.store.revision, revision, "no edit of the show was made")
+    }
+
     /// QLab 5 lists a Network cue as taking no target: its Target cell is empty (no patch name, no `?`).
     func testANetworkCuesTargetCellIsEmpty() async throws {
         let net = try await add(.network)
