@@ -351,6 +351,19 @@ extension WorkspaceSettingsTests {
         )
     }
 
+    /// A line about a refused number goes once the field holds the engine's value again.
+    func testARefusedNumbersLineGoesWhenTheShownValueIsTypedAgain() async throws {
+        let (_, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        sc.tabs.selectTabViewItem(withIdentifier: "general")
+        let shownValue = sc.panicField.stringValue
+        try type("abc", into: sc.panicField)
+        await assertEventually("the line") { !sc.messageLabel.stringValue.isEmpty }
+        try type(shownValue, into: sc.panicField)
+        await assertEventually("the line is gone") { sc.messageLabel.stringValue.isEmpty }
+        XCTAssertEqual(sc.panicField.stringValue, shownValue)
+    }
+
     func testEditAndControlNeedView() async throws {
         let (rig, wc) = try await newWorkspace()
         let sc = wc.settingsWindow

@@ -239,8 +239,12 @@ final class WorkspaceSettingsModel: ObservableObject {
             message = String(format: loc("settings.general.outOfRange"), range.lowerBound, range.upperBound)
             return false
         }
-        // The field was only left, not changed: nothing to send, and no earlier line to clear.
-        if store.model?.settings[type]?.doubleValue == value { return true }
+        // The value is the one the engine has (the field was only left, or the old value typed
+        // again): nothing to send, and an earlier refusal line no longer applies.
+        if store.model?.settings[type]?.doubleValue == value {
+            message = nil
+            return true
+        }
         switch await store.send(command: .setWorkspaceNumber(type, value)) {
         case .success:
             message = nil
