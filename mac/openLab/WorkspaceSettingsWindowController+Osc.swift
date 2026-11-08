@@ -62,7 +62,7 @@ extension WorkspaceSettingsWindowController {
             oscGrid.topAnchor.constraint(equalTo: holder.topAnchor, constant: 8),
             oscGrid.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 8),
             oscGrid.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -8),
-            oscGrid.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -8),
+            oscGrid.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -8),
             holder.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             holder.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             holder.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor),
