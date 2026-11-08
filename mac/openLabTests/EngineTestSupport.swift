@@ -60,7 +60,14 @@ func eventually(timeout: Double = 15, _ condition: @MainActor () async -> Bool) 
         if checks < 300 {
             await Task.yield()
         } else {
-            if ProcessInfo.processInfo.systemUptime > deadline { return false }
+            if ProcessInfo.processInfo.systemUptime > deadline {
+                // A main-thread stall can carry the clock past the deadline before queued
+                // main-actor work (an engine message) has run; give it a turn, then look once more.
+                for _ in 0..<50 { await Task.yield() }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                for _ in 0..<50 { await Task.yield() }
+                return await condition()
+            }
             try? await Task.sleep(nanoseconds: 1_000_000)
         }
     }

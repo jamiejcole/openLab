@@ -12,6 +12,27 @@ final class WorkspaceStoreTests: XCTestCase {
     /// No engine: the store as the golden welcome left it (for what it does with what it receives).
     private func connectedRig() async throws -> Rig { try Rig.offline() }
 
+    /// Queued main-actor work that a stall delays past the deadline still counts: the deadline is not
+    /// the last look.
+    func testEventuallyChecksOnceMoreAfterAStallPastTheDeadline() async {
+        var calls = 0
+        var done = false
+        let ok = await eventually(timeout: 0.05) {
+            calls += 1
+            if calls == 301 {  // first look after the yield phase: stall past the deadline, queue the work
+                usleep(100_000)
+                Task { @MainActor in done = true }
+            }
+            return done
+        }
+        XCTAssertTrue(ok)
+    }
+
+    func testEventuallyStillFailsAtTheDeadlineWhenTheConditionNeverHolds() async {
+        let ok = await eventually(timeout: 0.05) { false }
+        XCTAssertFalse(ok)
+    }
+
     private func msg(_ json: String) throws -> ServerMessage { try ServerMessage.decode(json) }
 
     private func cueUpsert(
