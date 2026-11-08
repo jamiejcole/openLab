@@ -4635,7 +4635,9 @@ final class CueListDrawingTests: XCTestCase {
         // Show Mode: the column is drawn as in Edit Mode (the trash glyph included), and the click does nothing.
         _ = await rig.store.send(command: .setProperty(radio, .media("media/o.wav")))
         await assertEventually { rig.store.problems[radio]?.contains { $0.type == "media_missing" } == true }
-        await assertEventually { self.targetCell(wc, radio)?.chooseButton.accessibilityLabel() == loc("cuelist.target.fileMissing") }
+        await assertEventually {
+            self.targetCell(wc, radio)?.chooseButton.accessibilityLabel() == loc("cuelist.target.fileMissing")
+        }
         let editModePixels = try cellPixels(wc, radio)
         var asked = 0
         wc.pickAudioFile = {
