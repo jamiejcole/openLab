@@ -8,7 +8,7 @@ use std::fs;
 use crate::common::*;
 use openlab_core::{DeviceInfo, MachineSettings, PatchMapping, PatchResolution, resolve_patch};
 use openlab_engine::persist::{
-    AppDirs, RecoveryCheck, check_recovery, clear_recovery, load_machine_settings,
+    AppDirs, RecoveryCheck, check_recovery, discard_recovery, load_machine_settings,
     save_machine_settings, save_workspace, write_recovery,
 };
 
@@ -291,8 +291,8 @@ fn autosave_does_not_touch_the_show_file_and_clear_is_idempotent() {
     let path = write_recovery(&env.dirs, &ws, Some(&env.show_path())).unwrap();
     assert_eq!(fs::read(env.show_path()).unwrap(), before);
     assert!(path.exists());
-    clear_recovery(&env.dirs, ws.id, Some(&env.show_path())).unwrap();
-    clear_recovery(&env.dirs, ws.id, Some(&env.show_path())).unwrap();
+    discard_recovery(&env.dirs, ws.id, Some(&env.show_path())).unwrap();
+    discard_recovery(&env.dirs, ws.id, Some(&env.show_path())).unwrap();
     assert!(!path.exists());
 }
 

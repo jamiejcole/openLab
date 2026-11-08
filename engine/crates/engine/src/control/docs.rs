@@ -2029,9 +2029,10 @@ impl Control {
             .any(|p| same_path(p, path))
     }
 
-    /// Removes the recovery files of the show paths docs were saved away from, once their edits
+    /// Removes the current autosave of the show paths docs were saved away from, once their edits
     /// are on disk at the doc's new path (#383): Save As left the old path's autosave, which is
-    /// offered again (same workspace id, another path) though it holds nothing new. A path a doc
+    /// offered again (same workspace id, another path) though it holds nothing new. Autosaves set
+    /// aside from that path stay: an earlier run wrote them and they may hold the newest work. A path a doc
     /// holds, is saving to, or an open is reading is kept for now: its recovery file may be that
     /// doc's. It is looked at again after the next save or autosave.
     pub(super) fn clear_left_autosaves(&mut self) {
@@ -2050,7 +2051,7 @@ impl Control {
                         .eng
                         .docs
                         .clears
-                        .push(writer.clear_recovery(workspace, Some(path))),
+                        .push(writer.discard_recovery(workspace, Some(path))),
                     // Tried again after the next save or autosave.
                     Some(_) => kept.push((workspace, path)),
                     None => {}

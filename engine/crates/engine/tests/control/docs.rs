@@ -692,6 +692,71 @@ fn save_as_removes_the_autosave_left_at_the_old_path() {
     ));
 }
 
+/// Autosaves set aside from P1 were written by an earlier run and may hold the newest work: a
+/// Save As to P2 removes only this doc's own autosave at P1, and the recovery scan still offers
+/// the set-aside file.
+#[test]
+fn save_as_keeps_the_autosaves_set_aside_from_the_old_path() {
+    let mut ws = memo_ws("one", &[1]);
+    ws.settings.autosave_interval = 30.0;
+    let mut r = saved_rig(ws);
+    let workspace = r.s.control().workspace().id;
+    let old = r.env.show_path();
+    rename(&mut r.s, 1, "edited");
+    r.s.tick();
+    r.clock.advance(30_000);
+    r.s.settle_docs();
+    let own = r.env.dirs.recovery_path(workspace, Some(&old));
+    let stem = own.file_stem().unwrap().to_str().unwrap().to_owned();
+    let aside = r
+        .env
+        .dirs
+        .recovery_dir()
+        .join(format!("{stem}.000000000001000.stale.openlab"));
+    fs::copy(&own, &aside).unwrap();
+    let new = r.env.show_dir().join("moved.openlab");
+    ok_result(&request(
+        &mut r.s,
+        Request::SaveAs {
+            path: new.to_string_lossy().into_owned(),
+        },
+    ));
+    r.s.settle_docs();
+    assert!(!own.exists(), "the doc's own autosave is removed");
+    assert!(aside.exists(), "the set-aside autosave stays");
+    assert!(matches!(
+        data(&request(&mut r.s, Request::ScanRecovery)),
+        ResultData::RecoveryEntries { entries }
+            if entries.len() == 1 && entries[0].stale
+    ));
+}
+
+/// A plain Save removes this doc's own autosave and keeps the files set aside from the path.
+#[test]
+fn save_keeps_the_autosaves_set_aside_from_the_path() {
+    let mut ws = memo_ws("one", &[1]);
+    ws.settings.autosave_interval = 30.0;
+    let mut r = saved_rig(ws);
+    let workspace = r.s.control().workspace().id;
+    let old = r.env.show_path();
+    rename(&mut r.s, 1, "edited");
+    r.s.tick();
+    r.clock.advance(30_000);
+    r.s.settle_docs();
+    let own = r.env.dirs.recovery_path(workspace, Some(&old));
+    let stem = own.file_stem().unwrap().to_str().unwrap().to_owned();
+    let aside = r
+        .env
+        .dirs
+        .recovery_dir()
+        .join(format!("{stem}.000000000001000.stale.openlab"));
+    fs::copy(&own, &aside).unwrap();
+    ok_result(&request(&mut r.s, Request::Save));
+    r.s.settle_docs();
+    assert!(!own.exists(), "the doc's own autosave is removed");
+    assert!(aside.exists(), "the set-aside autosave stays");
+}
+
 /// An edit made while the Save As to P2 is written is in P1's autosave and not in P2: that
 /// autosave stays until an autosave at P2 holds the edit, and while another workspace has P1
 /// open it stays, since it may be that one's (#383).

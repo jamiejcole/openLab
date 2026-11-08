@@ -37,7 +37,7 @@ The show-file JSON schema and the stored media-path spelling are in `docs/file-f
 1. `save_show` serialises and checks the text loads back; failure is `PersistError::Serialize` and nothing is written.
 2. If the file exists and `keep > 0`, its current bytes go to the backup folder. A failed backup is a warning in `SaveReport`, not a failed save.
 3. New text goes to `<name>.<pid>-<n>.tmp` beside the show file: unique per write, opened with `create_new` (never follows a symlink or overwrites another file), fsynced, renamed over the original, then the folder is fsynced (Unix, best effort). Any error before the rename removes the temp file, leaves the original and removes the step-2 backup again.
-4. Backups beyond `keep` are deleted; recovery files for this workspace and show path (and the pre-first-save one) and their moved-aside stale files are removed, only now.
+4. Backups beyond `keep` are deleted; the current recovery files this run wrote for this workspace and show path (and the pre-first-save one) are removed, only now. Files moved aside as stale stay: an earlier run wrote them and they may hold later work than the saved file.
 5. Save As: the recovery file at the path the workspace was saved away from is removed too, only if this engine run wrote it. One already there at open and kept with `ignore` holds edits that are nowhere else and is never touched. A path another open workspace holds, saves to, or has an `open` reading is skipped and looked at again after the next save or autosave.
 Removal waits until the new path holds every edit: at once if no edit was made while the save was written, else after the next successful save or autosave there (`Control::clear_left_autosaves`).
 
@@ -58,14 +58,14 @@ Details of the replace:
 - `keep` is `MachineSettings::backup_keep` (default 20, at most 1000). 0 turns backups off and leaves existing ones alone.
 
 ## Autosave and recovery (NFR-05)
-- `write_recovery` writes the bound recovery file atomically and never touches the show file. `clear_recovery` removes it and the files moved aside from it after a save. `discard_recovery` removes only the current file (`close` with `discard_changes`).
+- `write_recovery` writes the bound recovery file atomically and never touches the show file. `discard_recovery` removes only the current file, never the files moved aside: after a save, after a Save As (at the path left) and on `close` with `discard_changes`.
 - `check_recovery(dirs, workspace_id, show_path)` compares file modification times with `decide_recovery`:
 
 | Situation | Result |
 |---|---|
 | No recovery file for this show path | `None` |
 | Recovery newer than the show file, or the show file missing | `Offer`, carrying the parsed workspace |
-| Recovery not newer (equal counts as not newer) | `Stale`: moved aside to `<stem>.<modified-ms>.stale.openlab`, newest 5 kept, never deleted. A successful save of the workspace deletes them |
+| Recovery not newer (equal counts as not newer) | `Stale`: moved aside to `<stem>.<modified-ms>.stale.openlab`, newest 5 kept, never deleted; a save does not remove them (only the newest 5 are kept) |
 | Unreadable, invalid, or for another workspace | `Unusable { warning }`; renamed `.corrupt` (`.corrupt.1`, ... if one exists) so the warning is not repeated and earlier evidence is kept |
 
 - `other_copies`: recovery files with the same workspace id but another show path (a duplicated show, or work from before the first save). Never offered to this file, never touched; reported as a `recovery_other_copies` notice at open.

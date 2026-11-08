@@ -55,7 +55,7 @@ use openlab_core::{Workspace, WorkspaceId};
 use super::save::save_workspace_inner;
 use super::threads::BoundedThreads;
 use super::{
-    AppDirs, PersistError, SaveReport, clear_recovery, discard_recovery, recovery_stem,
+    AppDirs, PersistError, SaveReport, discard_recovery, recovery_stem,
     write_recovery,
 };
 
@@ -186,8 +186,6 @@ struct AutosaveJob {
 struct ClearJob {
     workspace: WorkspaceId,
     show_path: Option<PathBuf>,
-    /// The files moved aside go too (else only the current one).
-    moved_aside: bool,
     reply: ClearReply,
 }
 
@@ -582,34 +580,23 @@ impl SaveWriter {
         answer
     }
 
-    /// Queues the removal of the recovery file (and its moved-aside copies) of `workspace` at
-    /// `show_path`: what they hold is on disk elsewhere. It runs on the writer thread after any
-    /// job already running, and a pending autosave of that workspace and path is cancelled.
-    pub fn clear_recovery(
-        &self,
-        workspace: WorkspaceId,
-        show_path: Option<PathBuf>,
-    ) -> Receiver<Result<(), PersistError>> {
-        self.queue_clear(workspace, show_path, true)
-    }
-
-    /// Queues the removal of the current recovery file alone: the operator dropped the edits it
-    /// holds. As [`Self::clear_recovery`] it runs after an autosave of those edits that is
-    /// mid-write and cancels a pending one, so they cannot reappear as a recovery offer. Files
-    /// moved aside stay.
+    /// Queues the removal of the current recovery file of `workspace` at `show_path`: what it
+    /// holds is on disk elsewhere (a save) or was dropped by the operator. It runs on the writer
+    /// thread after any autosave of those edits that is mid-write, and a pending autosave of that
+    /// workspace and path is cancelled, so they cannot reappear as a recovery offer. Files moved
+    /// aside stay.
     pub fn discard_recovery(
         &self,
         workspace: WorkspaceId,
         show_path: Option<PathBuf>,
     ) -> Receiver<Result<(), PersistError>> {
-        self.queue_clear(workspace, show_path, false)
+        self.queue_clear(workspace, show_path)
     }
 
     fn queue_clear(
         &self,
         workspace: WorkspaceId,
         show_path: Option<PathBuf>,
-        moved_aside: bool,
     ) -> Receiver<Result<(), PersistError>> {
         let (reply, answer) = mpsc::channel();
         let mut state = self.shared.lock();
@@ -631,7 +618,6 @@ impl SaveWriter {
         state.clears.push_back(ClearJob {
             workspace,
             show_path,
-            moved_aside,
             reply,
         });
         drop(state);
@@ -779,12 +765,7 @@ fn run(shared: &Shared, dirs: &AppDirs, hook: Option<&(dyn Fn(JobKind) + Send + 
                 let _ = job.reply.send(result);
             }
             Next::Clear(job) => {
-                let clear = if job.moved_aside {
-                    clear_recovery
-                } else {
-                    discard_recovery
-                };
-                let result = clear(dirs, job.workspace, job.show_path.as_deref());
+                let result = discard_recovery(dirs, job.workspace, job.show_path.as_deref());
                 let _ = job.reply.send(result);
             }
             Next::Autosave(job) => {
