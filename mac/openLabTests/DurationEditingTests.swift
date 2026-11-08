@@ -220,6 +220,22 @@ final class InspectorDurationTests: XCTestCase {
         XCTAssertEqual(vc.durationField.stringValue, CueTime.format(media.trimmed ?? -1), "while running")
     }
 
+    /// The length changes while the cue stays selected: the field follows the engine's new probe answer.
+    func testTheInspectorDurationFollowsALoopingCuesNewLengthWhileSelected() async throws {
+        let intro = CueListHarness.intro
+        await assertEventually("the probe") { self.rig.store.mediaDurations[intro]?.trimmed != nil }
+        vc.setSelection([intro])
+        let before = try XCTUnwrap(rig.store.mediaDurations[intro]?.trimmed)
+        await assertEventually("the field") { self.vc.durationField.stringValue == CueTime.format(before) }
+        let end = before / 2
+        guard case .success = await rig.store.send(command: .setProperty(intro, .kindFields(["end_time": .double(end)])))
+        else { return XCTFail("trim") }
+        await assertEventually("the new length") {
+            self.rig.store.mediaDurations[intro]?.trimmed == end
+                && self.vc.durationField.stringValue == CueTime.format(end)
+        }
+    }
+
     func testOtherCuesHaveNoDurationToType() async {
         for id in [DurationEditingTests.load, CueListHarness.group] {
             vc.setSelection([id])
