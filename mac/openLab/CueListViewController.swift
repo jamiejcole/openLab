@@ -1364,7 +1364,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private func restingDuration(_ node: CueNode) -> Double? {
         switch node.cue.kindType {
         case "fade", "wait": return node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0
-        case "audio": return store.mediaDurations[node.id]?.duration
+        case "audio": return store.mediaDurations[node.id]?.shownDuration
         default: return nil
         }
     }

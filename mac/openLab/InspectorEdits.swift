@@ -59,7 +59,9 @@ enum InspectorEdit {
     ]
 
     /// What the field shows for `cue`.
-    static func display(_ field: InspectorField, cue: Cue, model: WorkspaceModel) -> String {
+    static func display(
+        _ field: InspectorField, cue: Cue, model: WorkspaceModel, media: CueMediaDuration? = nil
+    ) -> String {
         switch field {
         case .number: return cue.number ?? ""
         // Real text, as in QLab: an unnamed cue shows the name it follows. Committing the text
@@ -70,6 +72,8 @@ enum InspectorEdit {
         case .postWait: return CueTime.format(cue.raw["post_wait"]?.doubleValue ?? 0)
         case .osc: return cue.raw["triggers"]?["osc"]?.stringValue ?? ""
         case .duration:
+            // An Audio cue's length is read-only: what its file gives, as the cue list shows it.
+            if cue.kindType == "audio" { return media?.shownDuration.map(CueTime.format) ?? "" }
             guard durationKinds.contains(cue.kindType) else { return "" }
             return CueTime.format(cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
         case .loadTime:
