@@ -8,7 +8,9 @@ import Combine
 /// between GOs) and an Audio tab (the output device, and the patch editor that puts each output
 /// patch on device channels). It reads and writes through its `WorkspaceSettingsModel`.
 @MainActor
-final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDelegate, NSWindowDelegate {
+final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDelegate, NSWindowDelegate,
+    NSTabViewDelegate
+{
     let model: WorkspaceSettingsModel
     /// Sized before its tabs are added: a zero-sized tab view lays its tab strip out at a negative width.
     let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
@@ -50,8 +52,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var oscDeleteButtons: [NSButton] = []
     /// The table as last drawn: the rows' controls find their passcode here by position.
     var shownOsc: OscAccessTable?
-    /// A passcode edit is on its way to the engine: a second end-of-editing for it is ignored.
-    var oscCommitting = false
+    /// The last passcode edit on its way to the engine; the next waits for it.
+    var oscCommits: Task<Void, Never>?
 
     let messageLabel = NSTextField(wrappingLabelWithString: "")
     let doneButton = DoneButton(title: loc("settings.done"), target: nil, action: nil)
@@ -70,7 +72,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         model = WorkspaceSettingsModel(store: store)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 540),
-            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = loc("settings.title")
         window.identifier = NSUserInterfaceItemIdentifier(AX.settingsWindow)
         window.isReleasedWhenClosed = false
@@ -80,7 +82,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // Published before they change: the sinks use the delivered value and render after it.
         subs.append(store.$status.sink { [weak self] _ in self?.renderSoon() })
         subs.append(store.$model.sink { [weak self] _ in self?.renderSoon() })
+        window.contentMinSize = NSSize(width: 520, height: 540)
         window.delegate = self
+        tabs.delegate = self
         render()
     }
 
@@ -112,7 +116,15 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         super.showWindow(sender)
     }
 
+    /// A refusal line is about the tab it came from.
+    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        model.message = nil
+        render()
+    }
+
     func windowWillClose(_ notification: Notification) {
+        model.message = nil
+        messageLabel.stringValue = ""
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
         menuOpen = false
@@ -208,6 +220,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             let holder = NSView()
             view.translatesAutoresizingMaskIntoConstraints = false
             holder.addSubview(view)
+            // The OSC table takes the pane's height.
+            if id == "osc" { view.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -16).isActive = true }
             NSLayoutConstraint.activate([
                 view.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 16),
                 view.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -16),
@@ -227,11 +241,20 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
 
         let bottom = NSStackView(views: [messageLabel, doneButton])
         bottom.orientation = .horizontal
+        // The line takes the free width, so Done stays at the right edge with or without a message.
+        bottom.distribution = .fill
+        bottom.alignment = .centerY
+        messageLabel.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        doneButton.setContentHuggingPriority(.required, for: .horizontal)
         messageLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         let root = NSStackView(views: [tabs, bottom])
         root.orientation = .vertical
         root.alignment = .width
         root.spacing = 10
+        // The tabs take any height the window is given; the Done row keeps its own.
+        root.distribution = .fill
+        tabs.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        bottom.setContentHuggingPriority(.required, for: .vertical)
         root.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
         return root
     }

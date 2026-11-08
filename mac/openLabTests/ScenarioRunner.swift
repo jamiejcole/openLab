@@ -443,6 +443,21 @@ final class ScenarioRunner {
             e.delta = (dx, dy)
             e.precise = precise
             e.flags = mods
+            // A scroll view's own `scrollWheel` runs an event-tracking loop that lets queued main-actor
+            // work run inside this async step, which aborts the process (out-of-order task
+            // deallocation). Its clip view is moved instead, by the wheel's distance as it would be.
+            if let scroll = view as? NSScrollView {
+                let clip = scroll.contentView
+                let factor: CGFloat = precise ? 1 : 10
+                var origin = clip.bounds.origin
+                origin.y -= dy * factor * (clip.isFlipped ? 1 : -1)
+                origin.x -= dx * factor
+                origin = clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin
+                clip.scroll(to: origin)
+                scroll.reflectScrolledClipView(clip)
+                note("scrolled \(id) to y \(Int(origin.y.rounded()))")
+                break
+            }
             let target = try hitView(at: e.point, inside: view)
             target.scrollWheel(with: e)
             note(

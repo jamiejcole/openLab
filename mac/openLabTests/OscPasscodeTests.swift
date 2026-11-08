@@ -102,7 +102,7 @@ extension WorkspaceSettingsTests {
         XCTAssertEqual(now[0], OscShown(code: "none", on: [false, false, false], enabled: [true, false, false]))
         XCTAssertEqual(sc.oscNoneLabel.stringValue, loc("settings.osc.noPasscode"))
         XCTAssertFalse(sc.oscNoneLabel.isEditable)
-        XCTAssertFalse(sc.oscGrid.cell(atColumnIndex: 4, rowIndex: 1).contentView is NSButton, "no delete")
+        XCTAssertFalse(sc.oscGrid.cell(atColumnIndex: 4, rowIndex: 0).contentView is NSButton, "no delete")
         XCTAssertEqual(now[1].on, [true, true, true])
         XCTAssertEqual(now[1].enabled, [true, true, true])
         let code = try XCTUnwrap(Int(now[1].code))
@@ -253,6 +253,104 @@ extension WorkspaceSettingsTests {
         await assertEventually("scrolled to it") { last.visibleRect.height >= last.bounds.height - 1 }
     }
 
+    /// A scenario's scroll step on the full table scrolls it to the lower rows. (The step used to call
+    /// the scroll view's own `scrollWheel`, whose tracking loop ran queued main-actor work inside the
+    /// async step and aborted the test host.)
+    func testAScenarioScrollOfAFullOscTableShowsTheLowerRows() async throws {
+        let adds = Array(repeating: #"{"click": "settings-osc-add"}"#, count: 15).joined(separator: ",")
+        let json = """
+            {"show": "new", "steps": [{"focus": "settings"}, {"tab": "osc"}, \(adds),
+            {"scroll": "settings-osc-table", "dy": -400, "at": [0.5, 0.7]}, {"shot": "scrolled"}]}
+            """
+        let out = engine.folder.appendingPathComponent("scroll-shots", isDirectory: true)
+        let runner = ScenarioRunner(scenario: try ScenarioRunner.parse(Data(json.utf8), base: engine.folder), out: out)
+        try await runner.run()
+        XCTAssertEqual(runner.written.count, 1)
+        let log = try String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)
+        XCTAssertTrue(log.contains("scrolled settings-osc-table to y "), log)
+        XCTAssertFalse(log.contains("to y 0\n"), "the table moved: \(log)")
+    }
+
+    /// The view with accessibility identifier `id` in the settings window.
+    private func view(_ id: String, in sc: WorkspaceSettingsWindowController) -> NSView? {
+        func find(_ v: NSView) -> NSView? {
+            if v.accessibilityIdentifier() == id { return v }
+            for sub in v.subviews { if let hit = find(sub) { return hit } }
+            return nil
+        }
+        return sc.window?.contentView.flatMap(find)
+    }
+
+    func testTheColumnTitlesStayAboveTheScrollingRows() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await addRows(rig, (1...15).map { (String(3000 + $0), .all) })
+        await assertEventually { self.shown(sc).count == 17 }
+        sc.window?.contentView?.layoutSubtreeIfNeeded()
+        let scroll = try XCTUnwrap(view("settings-osc-table", in: sc) as? NSScrollView)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 10_000))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        func titles(_ root: NSView) -> [NSTextField] {
+            ((root as? NSTextField).map { [$0] } ?? []) + root.subviews.flatMap(titles)
+        }
+        let view = try XCTUnwrap(titles(try XCTUnwrap(sc.window?.contentView)).first { $0.stringValue == "Edit" })
+        XCTAssertFalse(view.isDescendant(of: scroll), "the titles are not in the scrolling area")
+        XCTAssertFalse(view.isHiddenOrHasHiddenAncestor)
+        XCTAssertFalse(view.visibleRect.isEmpty, "still showing with the table scrolled to its last row")
+    }
+
+    func testARefusalLineGoesWithItsTabAndTheWindow() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all), ("2222", .all)])
+        await assertEventually { self.shown(sc).count == 3 }
+        try type("2222", into: sc.oscCodeFields[0])
+        await assertEventually("the line") { sc.messageLabel.stringValue == loc("settings.osc.duplicate") }
+        sc.tabs.selectTabViewItem(withIdentifier: "general")
+        XCTAssertEqual(sc.messageLabel.stringValue, "", "gone on the General tab")
+        sc.tabs.selectTabViewItem(withIdentifier: "osc")
+        try type("2222", into: sc.oscCodeFields[0])
+        let came = await eventually(timeout: 3) { sc.messageLabel.stringValue == loc("settings.osc.duplicate") }
+        let dbg = "\(sc.oscCodeFields.map(\.stringValue)) \(sc.model.message ?? "nil")"
+        XCTAssertTrue(came, "the line again: \(dbg) label \(sc.messageLabel.stringValue)")
+        sc.window?.close()
+        await wc.showSettings().value
+        XCTAssertEqual(sc.messageLabel.stringValue, "", "gone after Done and reopening")
+    }
+
+    func testDoneStaysAtTheBottomRightAndTheTableGrowsWithThePane() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all), ("2222", .all)])
+        await assertEventually { self.shown(sc).count == 3 }
+        let window = try XCTUnwrap(sc.window)
+        func done() -> NSRect {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return sc.doneButton.convert(sc.doneButton.bounds, to: nil)
+        }
+        let quiet = done()
+        try type("2222", into: sc.oscCodeFields[0])
+        await assertEventually("the line") { sc.messageLabel.stringValue == loc("settings.osc.duplicate") }
+        XCTAssertEqual(done(), quiet, "Done does not move when a line shows")
+        sc.tabs.selectTabViewItem(withIdentifier: "general")
+        XCTAssertEqual(done(), quiet)
+        sc.tabs.selectTabViewItem(withIdentifier: "osc")
+        XCTAssertEqual(done().maxX, (window.contentView?.bounds.maxX ?? 0) - 12, accuracy: 1, "at the right edge")
+        let scroll = try XCTUnwrap(view("settings-osc-table", in: sc))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let before = scroll.frame.height
+        var size = try XCTUnwrap(window.contentView?.frame.size)
+        size.height += 300
+        window.setContentSize(size)
+        for _ in 0..<3 { window.contentView?.layoutSubtreeIfNeeded() }
+        XCTAssertGreaterThan(
+            scroll.frame.height, before + 250,
+            "the table takes the height the pane gives it"
+        )
+    }
+
     func testEditAndControlNeedView() async throws {
         let (rig, wc) = try await newWorkspace()
         let sc = wc.settingsWindow
@@ -305,7 +403,7 @@ extension WorkspaceSettingsTests {
         XCTAssertEqual(shown(sc)[0].on, [true, false, true])
         XCTAssertEqual(table(rig).noPasscode, OscRights(view: true, edit: false, control: true))
         XCTAssertFalse(sc.oscNoneLabel.isEditable, "the label cannot be edited")
-        XCTAssertFalse(sc.oscGrid.cell(atColumnIndex: 4, rowIndex: 1).contentView is NSButton, "no delete")
+        XCTAssertFalse(sc.oscGrid.cell(atColumnIndex: 4, rowIndex: 0).contentView is NSButton, "no delete")
     }
 
     func testDeleteARow() async throws {

@@ -22,12 +22,23 @@ extension WorkspaceSettingsWindowController {
         top.orientation = .horizontal
         top.spacing = 12
 
+        // The column titles stay above the scrolling rows, with the same column widths.
         let headers = ["passcode", "view", "edit", "control", "delete"].map { key -> NSView in
             let label = NSTextField(labelWithString: loc("settings.osc.col.\(key)"))
             label.font = .systemFont(ofSize: 12, weight: .semibold)
             return label
         }
-        oscGrid.addRow(with: headers)
+        let header = NSGridView(views: [headers])
+        header.columnSpacing = 8
+        header.translatesAutoresizingMaskIntoConstraints = false
+        let headerHolder = NSView()
+        headerHolder.addSubview(header)
+        NSLayoutConstraint.activate([
+            header.leadingAnchor.constraint(equalTo: headerHolder.leadingAnchor, constant: 9),
+            header.topAnchor.constraint(equalTo: headerHolder.topAnchor),
+            header.bottomAnchor.constraint(equalTo: headerHolder.bottomAnchor),
+            header.trailingAnchor.constraint(lessThanOrEqualTo: headerHolder.trailingAnchor),
+        ])
 
         oscNoneLabel.setAX(AX.settingsOsc + "-none-label")
         oscNoneRights = ["view", "edit", "control"].enumerated().map { index, key in
@@ -42,10 +53,12 @@ extension WorkspaceSettingsWindowController {
 
         oscGrid.rowSpacing = 8
         oscGrid.columnSpacing = 8
-        oscGrid.column(at: 0).width = 130
-        for c in 1...4 {
-            oscGrid.column(at: c).width = Self.rightColumns
-            oscGrid.column(at: c).xPlacement = .center
+        for grid in [oscGrid, header] {
+            grid.column(at: 0).width = 130
+            for c in 1...4 {
+                grid.column(at: c).width = Self.rightColumns
+                grid.column(at: c).xPlacement = .center
+            }
         }
 
         let scroll = NSScrollView()
@@ -67,14 +80,20 @@ extension WorkspaceSettingsWindowController {
             holder.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             holder.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor),
             scroll.widthAnchor.constraint(equalToConstant: 460),
-            scroll.heightAnchor.constraint(equalToConstant: 330),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
         ])
+        // It takes the height the pane gives it.
         scroll.setAX(AX.settingsOsc + "-table", label: loc("settings.tab.osc"))
 
-        let stack = NSStackView(views: [top, scroll])
+        let stack = NSStackView(views: [top, headerHolder, scroll])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 12
+        stack.distribution = .fill
+        scroll.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        top.setContentHuggingPriority(.required, for: .vertical)
+        headerHolder.setContentHuggingPriority(.required, for: .vertical)
+        stack.spacing = 6
+        stack.setCustomSpacing(12, after: top)
         return stack
     }
 
@@ -93,8 +112,8 @@ extension WorkspaceSettingsWindowController {
         shownOsc = table
         drawRights(table.noPasscode, in: oscNoneRights, enabled: enabled)
 
-        // Row 0 is the header and row 1 the fixed No Passcode row.
-        while oscGrid.numberOfRows > 2 {
+        // Row 0 is the fixed No Passcode row.
+        while oscGrid.numberOfRows > 1 {
             // The grid keeps the views of a removed row in the window: take them out.
             let last = oscGrid.row(at: oscGrid.numberOfRows - 1)
             for c in 0..<last.numberOfCells { last.cell(at: c).contentView?.removeFromSuperview() }
@@ -201,14 +220,16 @@ extension WorkspaceSettingsWindowController {
     }
 
     /// A code field was committed (Return or leaving it): the engine takes the new code or the old
-    /// one comes back with a line saying why not.
+    /// one comes back with a line saying why not. Commits run one after another, each on the row
+    /// its field stands for, so leaving one field for the next never drops either.
     func oscCodeCommitted(_ field: NSTextField) {
-        guard !oscCommitting, let old = shownOsc?.rows[safe: field.tag]?.passcode else { return }
         let text = field.stringValue
-        oscCommitting = true
-        Task {
+        let tag = field.tag
+        let previous = oscCommits
+        oscCommits = Task {
+            await previous?.value
+            guard let old = shownOsc?.rows[safe: tag]?.passcode else { return }
             let taken = await model.changeOscPasscode(old, to: text)
-            oscCommitting = false
             // The redraw waits while another code field is being typed in: this one shows the old code now.
             if !taken { field.stringValue = old }
             redrawOsc()
