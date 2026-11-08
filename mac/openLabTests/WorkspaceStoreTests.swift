@@ -15,16 +15,17 @@ final class WorkspaceStoreTests: XCTestCase {
     /// Queued main-actor work that a stall delays past the deadline still counts: the deadline is not
     /// the last look.
     func testEventuallyChecksOnceMoreAfterAStallPastTheDeadline() async {
-        var calls = 0
         var done = false
-        let ok = await eventually(timeout: 0.05) {
-            calls += 1
-            if calls == 301 {  // first look after the yield phase: stall past the deadline, queue the work
-                usleep(100_000)
-                Task { @MainActor in done = true }
-            }
-            return done
+        var reads = 0
+        // The clock's first read sets the deadline; the next read is the stall: time jumps past the
+        // deadline and the main-actor work that the stall delayed is only now queued.
+        let clock: @MainActor () -> Double = {
+            reads += 1
+            if reads == 1 { return 0 }
+            if reads == 2 { Task { @MainActor in done = true } }
+            return 100
         }
+        let ok = await eventually(timeout: 1, now: clock) { done }
         XCTAssertTrue(ok)
     }
 
