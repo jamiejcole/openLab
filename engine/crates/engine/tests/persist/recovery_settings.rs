@@ -134,7 +134,7 @@ fn a_stale_recovery_file_never_replaces_another() {
 }
 
 #[test]
-fn stale_files_are_bounded_and_removed_by_a_save() {
+fn stale_files_are_bounded_and_kept_by_a_save() {
     let env = env();
     show_with_mtime(&env, SHOW_T);
     for i in 0..8_u64 {
@@ -155,7 +155,7 @@ fn stale_files_are_bounded_and_removed_by_a_save() {
     // The oldest were the ones removed.
     assert!(names(&dir).iter().all(|n| !n.contains("000000000001000.")));
     save_workspace(&env.dirs, &env.show_path(), &example(), 5, 20).unwrap();
-    assert_eq!(stale(&dir), 0, "a successful save is what deletes them");
+    assert_eq!(stale(&dir), 5, "a save leaves files set aside by an earlier run");
 }
 
 #[test]
