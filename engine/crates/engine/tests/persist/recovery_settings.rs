@@ -155,7 +155,11 @@ fn stale_files_are_bounded_and_kept_by_a_save() {
     // The oldest were the ones removed.
     assert!(names(&dir).iter().all(|n| !n.contains("000000000001000.")));
     save_workspace(&env.dirs, &env.show_path(), &example(), 5, 20).unwrap();
-    assert_eq!(stale(&dir), 5, "a save leaves files set aside by an earlier run");
+    assert_eq!(
+        stale(&dir),
+        5,
+        "a save leaves files set aside by an earlier run"
+    );
 }
 
 #[test]
