@@ -292,6 +292,7 @@ final class MeterView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        NSBezierPath.clip(bounds)
         let count = source.flatMap { bank?.channelCount($0) } ?? 0
         let rows = max(count, 1)
         let gap: CGFloat = 1

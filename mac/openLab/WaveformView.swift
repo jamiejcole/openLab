@@ -446,6 +446,9 @@ class WaveformView: NSView {
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+        // `clipsToBounds` is off by default on newer SDKs: lines at an x outside the visible span
+        // would land on the neighbouring views.
+        NSBezierPath.clip(bounds)
         NSColor(calibratedRed: 0.02, green: 0.02, blue: 0.1, alpha: 1).setFill()
         waveRect.fill()
         NSColor.controlBackgroundColor.setFill()

@@ -127,6 +127,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         (AX.transportPanic, .transportPanic, "transport.panic"),
     ]
 
+    /// The symbol's point size: the textured-rounded cell draws its shape about 24 pt tall whatever
+    /// the button's height, so the glyph must stay well inside that.
+    static let transportSymbolSize: CGFloat = 13
+
     static var icons: [Icon] { transport.map(\.icon) + [.activeCuePause, .activeCueResume, .activeCuePanic] }
 
     let store: WorkspaceStore
@@ -219,7 +223,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             button.toolTip = name
             button.bezelStyle = .texturedRounded
             button.imageScaling = .scaleProportionallyDown
-            button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 22, weight: .regular)
+            button.symbolConfiguration = NSImage.SymbolConfiguration(
+                pointSize: Self.transportSymbolSize, weight: .regular)
             button.heightAnchor.constraint(equalToConstant: 44).isActive = true
             transportButtons[entry.id] = button
             strip.addArrangedSubview(button)

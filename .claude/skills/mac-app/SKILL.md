@@ -23,6 +23,10 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
 - A `MeterView` registers only while on screen (in a window, not hidden or occluded). The bank's 60 Hz timer runs only while a view is registered. A push with no view registered is dropped.
 - The bank holds views weakly; a view leaves it when its window closes or hides. Levels fall at a fixed dB/s and only changed views redraw.
 
+## Custom views and buttons
+- A custom `NSView` whose `draw(_:)` can paint outside its bounds (a line at an x off the visible span) clips first with `NSBezierPath.clip(bounds)`: `clipsToBounds` defaults to false on the macOS 14 SDK and is not available on 12. `WaveformView`, `MeterBank`'s meter, `LevelMatrixView` and the cue list's progress fill do.
+- A symbol on a `.texturedRounded` button is sized to the shape the cell draws (about 24 pt tall whatever the button's height), not to the button: the sidebar transport symbols are 13 pt.
+
 ## Seeing the app
 - `make ui-shots SCENARIO=mac/scenarios/<name>.json [OUT=<dir>]` drives the real workspace window on the real engine (stepped virtual clock) and writes `<OUT>/<nn>-<name>.png` per shot plus `steps.log` (each step and what it hit). OUT defaults to `build/ui-shots/<name>`. It builds for testing only when `mac/` app, test, test-show or project files or the engine changed since the last build; editing a scenario needs no build.
 - The runner is `ScenarioRunner` in `mac/openLabTests` (test-only, never in a Release product). The window is never ordered on screen or made key: it takes no focus and never moves the pointer, so it runs while the user works. It takes the same machine-wide lock as `make prepush`'s UI tests (`lockf /tmp/openlab-xcuitest.lock`), so it waits for another mac test run. Never run it under another `lockf` on that file: the nested lock waits forever.

@@ -718,6 +718,50 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertTrue(kinds.isEmpty)
     }
 
+    /// Zoomed in and scrolled to either end of the file while playing, the trim, slice and playhead
+    /// lines that are out of view are not drawn over the neighbouring views: everything outside the
+    /// waveform renders the same with the waveform hidden.
+    func testNoLineIsDrawnOutsideTheWaveformWhenZoomedScrolledAndPlaying() async throws {
+        await showIntro()
+        type(panel.startField, "20")
+        await assertEventually { self.panel.startTime == 20 }
+        type(panel.endField, "50")
+        await assertEventually { self.panel.endTime == 50 }
+        await answered()
+        panel.showProgress(elapsed: 3)  // the playhead at 23 s
+        let width = wave.bounds.width
+        for _ in 0..<5 { pinch(0.5, at: windowPoint(atSeconds: 22)) }
+        await peaksSettled()
+        let host: NSView = vc.view
+        for direction: CGFloat in [-1, 1] {
+            scroll(dx: direction * 100 * width, precise: true, at: windowPoint(atSeconds: panel.visible.start + 1))
+            await peaksSettled()
+            wave.sliceMarks = [25, 30]
+            for t in [20.0, 50, 25, 30, 23] {
+                XCTAssertFalse(t >= panel.visible.start && t <= panel.visible.end, "\(t) s is out of view")
+            }
+            let frame = host.convert(wave.bounds, from: wave)
+            let shown = try renderView(host)
+            // The same window with every line removed: only the waveform itself may differ.
+            let (start, end, marks, head) = (wave.trimStart, wave.trimEnd, wave.sliceMarks, wave.playhead)
+            (wave.trimStart, wave.trimEnd, wave.sliceMarks, wave.playhead) = (0, wave.duration, [], nil)
+            let hidden = try renderView(host)
+            (wave.trimStart, wave.trimEnd, wave.sliceMarks, wave.playhead) = (start, end, marks, head)
+            let scale = CGFloat(shown.pixelsWide) / host.bounds.width
+            var stray = 0
+            for py in 0..<shown.pixelsHigh {
+                for px in 0..<shown.pixelsWide {
+                    let down = (CGFloat(py) + 0.5) / scale
+                    let at = NSPoint(
+                        x: (CGFloat(px) + 0.5) / scale, y: host.isFlipped ? down : host.bounds.height - down)
+                    if frame.contains(at) { continue }
+                    if shown.colorAt(x: px, y: py) != hidden.colorAt(x: px, y: py) { stray += 1 }
+                }
+            }
+            XCTAssertEqual(stray, 0, "pixels outside the waveform changed by its drawing (scroll \(direction))")
+        }
+    }
+
     /// While it plays, the playhead line is where the cue is in the file; looping, it wraps.
     func testThePlayheadFollowsProgress() async {
         await showIntro()
