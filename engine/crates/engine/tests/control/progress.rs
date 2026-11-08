@@ -314,5 +314,6 @@ fn a_devamp_stop_keeps_the_position_inside_the_loop() {
     s.take_outbound();
     s.run(2400);
     let pos = item_positions(&s.take_outbound(), 1);
+    assert!(!pos.is_empty());
     assert!(pos.iter().all(|(_, p)| frames_of(*p) < 800.0), "{pos:?}");
 }

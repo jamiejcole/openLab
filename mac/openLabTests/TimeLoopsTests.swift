@@ -720,12 +720,12 @@ final class TimeLoopsTests: XCTestCase {
 
     /// Slice 1 (0 to 10 s) of the 62.5 s file plays three times, then the rest once; the cue is
     /// started on the real engine.
-    private func startLoopingSlice() async {
+    private func startLoopingSlice(count: Int = 3) async {
         await showIntro()
         await addSlice(at: 10, expect: 1)
         panel.editSliceCount(0)
-        type(panel.sliceCountField, "3")
-        await assertEventually { self.panel.sliceMarks.first?.playCount == 3 }
+        type(panel.sliceCountField, count == 0 ? "\u{221E}" : String(count))
+        await assertEventually { self.panel.sliceMarks.first?.playCount == count }
         await answered()
         _ = await rig.store.transport(.start(cue: Self.intro))
     }
@@ -762,6 +762,47 @@ final class TimeLoopsTests: XCTestCase {
         try await rig.advance(1)
         await assertEventually("progress ended") { self.rig.store.progress[Self.intro] == nil }
         XCTAssertNil(wave.playhead, "the line is gone once the cue stopped")
+    }
+
+    /// Esc (the engine's panic) while a slice loops: the cue fades out, and once the fade has
+    /// ended the Time & Loops waveform draws no playhead line.
+    func testAfterEscTheWaveformDrawsNoPlayhead() async throws {
+        await startLoopingSlice()
+        let playing = try await playhead(after: 4)
+        XCTAssertNotNil(playing)
+        _ = await rig.store.transport(.panic)
+        try await rig.advance(0.1)
+        try await rig.advance(10)
+        await assertEventually("progress ended") { self.rig.store.progress[Self.intro] == nil }
+        XCTAssertNil(wave.playhead, "no line once the panic fade is over")
+    }
+
+    /// Devamped while looping slice 1: the playhead has stayed within that slice, then moves on past
+    /// its end into the next slice and keeps rising.
+    func testDevampingMovesThePlayheadToTheNextSlice() async throws {
+        await startLoopingSlice(count: 0)
+        let devampID: ModelID = "00000000-0000-0000-0000-0000000000d1"
+        var devamp = try XCTUnwrap(NewCueKind.devamp.cueJSON(id: devampID, patch: nil))
+        var kind = try XCTUnwrap(devamp["kind"])
+        kind.set("target", .string(Self.intro.raw))
+        kind.set("devamp_mode", .string("current_slice"))
+        devamp.set("kind", kind)
+        let added = await rig.store.send(
+            command: .addCue(devamp, list: TestSnapshots.mainList, parent: nil, index: 1))
+        guard case .success = added else { return XCTFail("\(added)") }
+        for _ in 0..<12 {
+            let p = try await playhead(after: 1)
+            XCTAssertLessThanOrEqual(p ?? 99, 10.2, "looping inside slice 1 before the devamp")
+        }
+        _ = await rig.store.transport(.start(cue: devampID))
+        var seen: [Double] = []
+        for _ in 0..<12 {
+            if let p = try await playhead(after: 1) { seen.append(p) }
+        }
+        XCTAssertGreaterThan(seen.last ?? 0, 10.5, "moved on past slice 1: \(seen)")
+        let moved = try XCTUnwrap(seen.firstIndex { $0 > 10.2 })
+        let rest = Array(seen[moved...])
+        XCTAssertEqual(rest, rest.sorted(), "rises once it has moved on: \(seen)")
     }
 
     /// The line is drawn where the engine says it is.
