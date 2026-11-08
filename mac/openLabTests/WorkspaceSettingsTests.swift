@@ -68,6 +68,11 @@ final class WorkspaceSettingsTests: XCTestCase {
     // MARK: Meters
 
     func testTheAudioTabShowsTheShownPatchsPeaksAndOtherTabsIdle() async throws {
+        // Whether a window counts as covered is the host's occlusion state, which a headless
+        // runner reports late and differently each run; this test is about which tab meters.
+        let shipped = MeterView.defaultWindowIsCovered
+        MeterView.defaultWindowIsCovered = { _, _ in false }
+        addTeardownBlock { @MainActor in MeterView.defaultWindowIsCovered = shipped }
         let (rig, sc) = try await open()
         sc.tabs.selectTabViewItem(withIdentifier: "audio")
         sc.patchMeter.updateLive()
