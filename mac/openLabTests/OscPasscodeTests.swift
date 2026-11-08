@@ -136,7 +136,7 @@ extension WorkspaceSettingsTests {
         XCTAssertTrue((1000...9999).contains(code))
         XCTAssertFalse(first.contains(rows[2].code), "a code not in the table")
         XCTAssertEqual(rows[1].code, first[0], "at the end")
-        XCTAssertEqual(rig.store.document?.dirty, true, "unsaved")
+        await assertEventually("unsaved") { rig.store.document?.dirty == true }
     }
 
     func testTableFull() async throws {
