@@ -295,8 +295,11 @@ final class MeterView: NSView {
         NSBezierPath.clip(bounds)
         let count = source.flatMap { bank?.channelCount($0) } ?? 0
         let rows = max(count, 1)
-        let gap: CGFloat = 1
-        let h = max((bounds.height - gap * CGFloat(rows - 1)) / CGFloat(rows), 1)
+        // Every row stays inside the view: with many channels the gaps go first, then the rows
+        // get thinner than a point.
+        var gap: CGFloat = 1
+        if (bounds.height - gap * CGFloat(rows - 1)) / CGFloat(rows) < 1 { gap = 0 }
+        let h = (bounds.height - gap * CGFloat(rows - 1)) / CGFloat(rows)
         for row in 0..<rows {
             let y = CGFloat(row) * (h + gap)
             NSColor.quaternaryLabelColor.setFill()

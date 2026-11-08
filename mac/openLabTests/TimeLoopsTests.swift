@@ -718,9 +718,10 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertTrue(kinds.isEmpty)
     }
 
-    /// Zoomed in and scrolled to either end of the file while playing, the trim, slice and playhead
-    /// lines that are out of view are not drawn over the neighbouring views: everything outside the
-    /// waveform renders the same with the waveform hidden.
+    /// Zoomed in and scrolled to either end of the file while playing, each line just past a visible
+    /// edge (a playhead, a slice marker, a trim: 0.15 s outside, so its x falls on the Start/End
+    /// fields or the controls beside the waveform) is not drawn outside the waveform: with the one
+    /// line set, every pixel outside the waveform renders as it does with no line.
     func testNoLineIsDrawnOutsideTheWaveformWhenZoomedScrolledAndPlaying() async throws {
         await showIntro()
         type(panel.startField, "20")
@@ -728,37 +729,98 @@ final class TimeLoopsTests: XCTestCase {
         type(panel.endField, "50")
         await assertEventually { self.panel.endTime == 50 }
         await answered()
-        panel.showProgress(elapsed: 3)  // the playhead at 23 s
+        panel.showProgress(elapsed: 3)  // playing
         let width = wave.bounds.width
         for _ in 0..<5 { pinch(0.5, at: windowPoint(atSeconds: 22)) }
         await peaksSettled()
         let host: NSView = vc.view
-        for direction: CGFloat in [-1, 1] {
-            scroll(dx: direction * 100 * width, precise: true, at: windowPoint(atSeconds: panel.visible.start + 1))
-            await peaksSettled()
-            wave.sliceMarks = [25, 30]
-            for t in [20.0, 50, 25, 30, 23] {
-                XCTAssertFalse(t >= panel.visible.start && t <= panel.visible.end, "\(t) s is out of view")
-            }
-            let frame = host.convert(wave.bounds, from: wave)
-            let shown = try renderView(host)
-            // The same window with every line removed: only the waveform itself may differ.
-            let (start, end, marks, head) = (wave.trimStart, wave.trimEnd, wave.sliceMarks, wave.playhead)
-            (wave.trimStart, wave.trimEnd, wave.sliceMarks, wave.playhead) = (0, wave.duration, [], nil)
-            let hidden = try renderView(host)
-            (wave.trimStart, wave.trimEnd, wave.sliceMarks, wave.playhead) = (start, end, marks, head)
-            let scale = CGFloat(shown.pixelsWide) / host.bounds.width
-            var stray = 0
-            for py in 0..<shown.pixelsHigh {
-                for px in 0..<shown.pixelsWide {
+        let waveFrame = { host.convert(self.wave.bounds, from: self.wave) }
+        let duration = try XCTUnwrap(wave.duration)
+        // The lines as the panel set them, put back after each case.
+        let (start, end, marks, head) = (wave.trimStart, wave.trimEnd, wave.sliceMarks, wave.playhead)
+        func baseline() { (wave.trimStart, wave.trimEnd, wave.sliceMarks, wave.playhead) = (0, duration, [], nil) }
+        defer { (wave.trimStart, wave.trimEnd, wave.sliceMarks, wave.playhead) = (start, end, marks, head) }
+
+        /// Pixels outside the waveform that differ between two renders of the whole inspector.
+        func stray(_ a: NSBitmapImageRep, _ b: NSBitmapImageRep) -> Int {
+            let frame = waveFrame()
+            let scale = CGFloat(a.pixelsWide) / host.bounds.width
+            var count = 0
+            for py in 0..<a.pixelsHigh {
+                for px in 0..<a.pixelsWide {
                     let down = (CGFloat(py) + 0.5) / scale
                     let at = NSPoint(
                         x: (CGFloat(px) + 0.5) / scale, y: host.isFlipped ? down : host.bounds.height - down)
                     if frame.contains(at) { continue }
-                    if shown.colorAt(x: px, y: py) != hidden.colorAt(x: px, y: py) { stray += 1 }
+                    if a.colorAt(x: px, y: py) != b.colorAt(x: px, y: py) { count += 1 }
                 }
             }
-            XCTAssertEqual(stray, 0, "pixels outside the waveform changed by its drawing (scroll \(direction))")
+            return count
+        }
+
+        for direction: CGFloat in [-1, 1] {
+            scroll(dx: direction * 100 * width, precise: true, at: windowPoint(atSeconds: panel.visible.start + 1))
+            await peaksSettled()
+            let (lo, hi) = panel.visible
+            let sides: [(String, Double)] = [("left", lo - 0.15), ("right", hi + 0.15)]
+            baseline()
+            let empty = try renderView(host)
+            for (side, t) in sides where t >= 0 && t <= duration {
+                let cases: [(String, () -> Void)] = [
+                    ("playhead", { self.wave.playhead = t }),
+                    ("slice marker", { self.wave.sliceMarks = [t] }),
+                    ("start trim", { self.wave.trimStart = t }),
+                    ("end trim", { self.wave.trimEnd = t }),
+                ]
+                for (name, apply) in cases {
+                    baseline()
+                    apply()
+                    // The line's x falls between the waveform and the edge of what is rendered.
+                    let x = host.convert(NSPoint(x: wave.scale.x(t), y: 0), from: wave).x
+                    XCTAssertTrue(
+                        x >= 0 && x <= host.bounds.width
+                            && !waveFrame().insetBy(dx: -0.5, dy: 0).contains(NSPoint(x: x, y: waveFrame().midY)),
+                        "the \(name) \(side) of the view is drawn off the rendered area at x \(x)")
+                    XCTAssertEqual(
+                        stray(try renderView(host), empty), 0,
+                        "the \(name) \(side) of the visible span, scrolled \(direction), is drawn outside the waveform")
+                }
+            }
+        }
+    }
+
+    /// With slices (the left column then also carries a note), its Start, End, play count and Loop
+    /// all sit inside the inspector, under the tab strip, level with the waveform.
+    func testTheLeftColumnSitsInsideTheInspector() async throws {
+        await showIntro()
+        await addSlice(at: 30, expect: 1)
+        XCTAssertFalse(panel.slicesNote.isHidden)
+        window.setContentSize(NSSize(width: 900, height: 190))  // a short inspector
+        vc.view.layoutSubtreeIfNeeded()
+        let controls: [(String, NSView)] = [
+            ("Start", panel.startField), ("End", panel.endField), ("Play count", panel.countField),
+            ("Loop", panel.loopRadio),
+        ]
+        for (name, control) in controls {
+            let frame = control.convert(control.bounds, to: vc.view)
+            XCTAssertTrue(vc.view.bounds.contains(frame), "\(name) at \(frame) is outside \(vc.view.bounds)")
+        }
+        let top = panel.startField.convert(panel.startField.bounds, to: vc.view).maxY
+        let waveTop = wave.convert(wave.bounds, to: vc.view).maxY
+        XCTAssertEqual(top, waveTop, accuracy: 12, "Start is level with the top of the waveform")
+    }
+
+    /// With the view at the file's start and end the two trim handles sit on the waveform's edges
+    /// and are drawn whole there: the outermost pixel columns hold the orange line, not half of it.
+    func testTrimHandlesAtTheEdgesAreDrawnWhole() async throws {
+        await showIntro()
+        XCTAssertEqual(panel.startTime, 0)
+        XCTAssertEqual(wave.scale.x(wave.endTime), wave.bounds.width, accuracy: 0.5)
+        let rep = try renderView(wave)
+        let y = Int((WaveformView.rulerHeight + 60) * CGFloat(rep.pixelsHigh) / wave.bounds.height)
+        for px in [0, 1, rep.pixelsWide - 2, rep.pixelsWide - 1] {
+            let c = try XCTUnwrap(rep.colorAt(x: px, y: y)?.usingColorSpace(.sRGB))
+            XCTAssertGreaterThan(c.redComponent - c.blueComponent, 0.5, "pixel column \(px) of the edge handle")
         }
     }
 
