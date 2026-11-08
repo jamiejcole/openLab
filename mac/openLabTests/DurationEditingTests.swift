@@ -206,8 +206,38 @@ final class InspectorDurationTests: XCTestCase {
         await assertEventually("the Fade tab follows") { self.vc.fadeSettings.durationField.stringValue == "00:03.00" }
     }
 
+    func testALoopingAudioCueShowsItsOnePassLengthInTheInspector() async throws {
+        let intro = CueListHarness.intro
+        await assertEventually("the probe") { self.rig.store.mediaDurations[intro]?.trimmed != nil }
+        let media = try XCTUnwrap(rig.store.mediaDurations[intro])
+        XCTAssertNil(media.duration, "the Demo's Intro loops until devamped")
+        vc.setSelection([intro])
+        await assertEventually("the field") { self.vc.durationField.stringValue == CueTime.format(media.trimmed ?? -1) }
+        XCTAssertFalse(vc.durationField.isEnabled, "read-only: it comes from the file")
+        XCTAssertNotEqual(vc.durationField.stringValue, "")
+        guard case .success = await rig.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
+        await assertEventually("running") { self.rig.store.cueStates[intro]?.state == .running }
+        XCTAssertEqual(vc.durationField.stringValue, CueTime.format(media.trimmed ?? -1), "while running")
+    }
+
+    /// The length changes while the cue stays selected: the field follows the engine's new probe answer.
+    func testTheInspectorDurationFollowsALoopingCuesNewLengthWhileSelected() async throws {
+        let intro = CueListHarness.intro
+        await assertEventually("the probe") { self.rig.store.mediaDurations[intro]?.trimmed != nil }
+        vc.setSelection([intro])
+        let before = try XCTUnwrap(rig.store.mediaDurations[intro]?.trimmed)
+        await assertEventually("the field") { self.vc.durationField.stringValue == CueTime.format(before) }
+        let end = before / 2
+        let trim = Command.setProperty(intro, .kindFields(["end_time": .double(end)]))
+        guard case .success = await rig.store.send(command: trim) else { return XCTFail("trim") }
+        await assertEventually("the new length") {
+            self.rig.store.mediaDurations[intro]?.trimmed == end
+                && self.vc.durationField.stringValue == CueTime.format(end)
+        }
+    }
+
     func testOtherCuesHaveNoDurationToType() async {
-        for id in [CueListHarness.intro, DurationEditingTests.load, CueListHarness.group] {
+        for id in [DurationEditingTests.load, CueListHarness.group] {
             vc.setSelection([id])
             XCTAssertFalse(vc.durationField.isEnabled, "\(id)")
             XCTAssertEqual(vc.durationField.stringValue, "", "\(id)")

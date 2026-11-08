@@ -1,0 +1,11 @@
+{
+  "about": "The sidebar transport buttons in the light appearance: icons inside their buttons.",
+  "show": "Demo",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 1200, "height": 800},
+  "appearance": "light",
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"shot": "sidebar-light"}
+  ]
+}

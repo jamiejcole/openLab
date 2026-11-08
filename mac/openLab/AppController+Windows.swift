@@ -29,6 +29,12 @@ extension AppController {
             wc.onCueAction = { [weak self] action in Task { await self?.run(action, on: store) } }
             wc.onRelink = { [weak self] in Task { await self?.relinkMedia(on: store) } }
             controllers[ObjectIdentifier(store)] = wc
+            // The edited dot follows the store's own document state: the engine's workspace list can
+            // publish before this window exists (a recovered autosave arrives dirty), and the list
+            // alone then never sets it.
+            editedSubs[ObjectIdentifier(store)] = store.$document.sink { [weak wc] document in
+                if let document { MainActor.assumeIsolated { wc?.window?.isDocumentEdited = document.dirty } }
+            }
             watchOverride(of: store)
             // Hotkey warnings are logged when the settings arrive, not at the first key press.
             _ = keys(for: store)
@@ -62,6 +68,7 @@ extension AppController {
         guard let wc = controllers.removeValue(forKey: id) else { return }
         keyCache[id] = nil
         keySubs[id] = nil
+        editedSubs[id] = nil
         statusSubs[id] = nil
         wc.window?.close()
         syncOverridePanel()

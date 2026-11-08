@@ -130,6 +130,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var isRestoringLayout = false
     /// The least the cue list keeps: its height (the baseline of a minimum-size window) and width.
     static let minCueListHeight: CGFloat = 56
+    /// The least the inspector may be: enough for the Time & Loops tab's left column (Start, End,
+    /// play count, Loop) below the tab strip. The smallest window leaves this much.
+    static let minInspectorHeight: CGFloat = 180
     static let minCueListWidth: CGFloat = 200
     var layoutObservers: [NSObjectProtocol] = []
 
@@ -710,6 +713,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         verticalSplit.addArrangedSubview(inspector.view)
         verticalSplit.setHoldingPriority(NSLayoutConstraint.Priority(250), forSubviewAt: 0)
         verticalSplit.setHoldingPriority(NSLayoutConstraint.Priority(251), forSubviewAt: 1)
+        inspector.view.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.minInspectorHeight).isActive = true
         let inspectorHeight = inspector.view.heightAnchor.constraint(equalToConstant: 240)
         // Like the sidebar's: below what a divider drag needs, so a dragged height stays.
         inspectorHeight.priority = NSLayoutConstraint.Priority(300)
