@@ -105,7 +105,8 @@ if [ "$want_ui" != 0 ]; then
   if [ "$want_ui" = 2 ]; then ui_target=test-mac-ui-full; else ui_target=test-mac; fi
   step "test-mac-ui" lockf -k /tmp/openlab-xcuitest.lock make "$ui_target"
 elif [ "$want_mac_unit" = 1 ]; then
-  step "test-mac-unit" make test-mac-unit
+  # The unit tests launch the app as their host too: one mac test run at a time on this machine.
+  step "test-mac-unit" lockf -k /tmp/openlab-xcuitest.lock make test-mac-unit
 fi
 
 trap - EXIT
