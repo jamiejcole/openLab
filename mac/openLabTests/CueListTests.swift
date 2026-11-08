@@ -4586,16 +4586,13 @@ final class CueListDrawingTests: XCTestCase {
         }
         XCTAssertEqual(asked, 4)
         XCTAssertEqual(rig.store.model?.cue(H.door)?.raw["kind"]?["media"]?.stringValue, doorMedia)
-        // Show Mode: the button is gone, the cell is empty, and a click already on its way asks nothing.
+        // Show Mode: the column is drawn as in Edit Mode, and a click already on its way asks nothing.
         let onChoose = try XCTUnwrap(targetCell(wc, H.door)?.onChoose)
+        let editPixels = try cellPixels(wc, H.door)
         wc.setShowMode(true)
-        await assertEventually {
-            [empty, H.intro, H.door].allSatisfy { self.targetCell(wc, $0)?.chooseButton.isHidden == true }
-        }
-        XCTAssertEqual(targetCell(wc, H.intro)?.label.stringValue, "")
-        for id in [empty, H.intro, H.door] {
-            XCTAssertEqual(try cellPixels(wc, id).count(Self.drawn), 0, "nothing drawn in Show Mode")
-        }
+        await settle()
+        XCTAssertTrue([empty, H.intro, H.door].allSatisfy { self.targetCell(wc, $0)?.chooseButton.isHidden == false })
+        XCTAssertEqual(drawnMask(try cellPixels(wc, H.door)), drawnMask(editPixels), "the same glyph in Show Mode")
         onChoose()
         XCTAssertEqual(asked, 4)
     }
