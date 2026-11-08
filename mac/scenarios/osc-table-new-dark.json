@@ -1,0 +1,10 @@
+{
+  "about": "The OSC tab of the workspace settings in a new workspace, dark: the fixed no-passcode row (nothing on, Edit and Control greyed) and the one generated passcode with every right.",
+  "show": "new",
+  "appearance": "dark",
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "osc"},
+    {"shot": "new-workspace-dark"}
+  ]
+}

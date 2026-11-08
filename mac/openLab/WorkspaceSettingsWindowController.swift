@@ -36,6 +36,23 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// One popup per output of the shown patch: the device channel it plays on.
     private(set) var channelPopups: [NSPopUpButton] = []
 
+    // OSC passcode table (NET-02); built and drawn in `+Osc`.
+    let oscAddButton = NSButton(title: loc("settings.osc.add"), target: nil, action: nil)
+    let oscGrid = NSGridView()
+    let oscNoneLabel = NSTextField(labelWithString: loc("settings.osc.noPasscode"))
+    /// The No Passcode row's View, Edit and Control boxes.
+    var oscNoneRights: [NSButton] = []
+    /// One per passcode row, in table order; rebuilt whenever the table is drawn.
+    var oscCodeFields: [NSTextField] = []
+    var oscViewBoxes: [NSButton] = []
+    var oscEditBoxes: [NSButton] = []
+    var oscControlBoxes: [NSButton] = []
+    var oscDeleteButtons: [NSButton] = []
+    /// The table as last drawn: the rows' controls find their passcode here by position.
+    var shownOsc: OscAccessTable?
+    /// A passcode edit is on its way to the engine: a second end-of-editing for it is ignored.
+    var oscCommitting = false
+
     let messageLabel = NSTextField(wrappingLabelWithString: "")
     let doneButton = NSButton(title: loc("settings.done"), target: nil, action: nil)
 
@@ -44,7 +61,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     private var observers: [NSObjectProtocol] = []
     /// How many times the controls were rebuilt (tests: an unchanged status rebuilds nothing).
     private(set) var renderCount = 0
-    private var lastDrawn: WorkspaceSettingsModel.DisplayState?
+    var lastDrawn: WorkspaceSettingsModel.DisplayState?
     /// A popup's menu is open: rebuilding its items would close it under the operator's hand.
     private var menuOpen = false
     private var shownPatch: ModelID?
@@ -184,6 +201,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
 
         for (label, view, id) in [
             (loc("settings.tab.general"), general, "general"), (loc("settings.tab.audio"), audio, "audio"),
+            (loc("settings.tab.osc"), buildOscTab(), "osc"),
         ] {
             let item = NSTabViewItem(identifier: id)
             item.label = label
@@ -243,8 +261,11 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     func render() {
         let state = model.displayState
         guard state != lastDrawn, !menuOpen else { return }
+        // A cleared `lastDrawn` asks for a full redraw (a refused edit puts the engine's text back).
+        let forced = lastDrawn == nil
         lastDrawn = state
         renderCount += 1
+        renderOsc(state.osc, forced: forced)
         renderGeneral()
         renderDevice()
         renderPatch()
@@ -436,6 +457,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// engine's value comes back.
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let field = notification.object as? NSTextField else { return }
+        if oscCodeFields.contains(field) {
+            oscCodeCommitted(field, notification)
+            return
+        }
         let text = field.stringValue
         Task {
             if field === panicField {

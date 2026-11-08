@@ -105,6 +105,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         return pc
     }
     private var settingsController: WorkspaceSettingsWindowController?
+    /// The settings window if it was ever made.
+    var existingSettingsWindow: WorkspaceSettingsWindowController? { settingsController }
     /// The workspace settings window, made on first use. It closes with this window.
     var settingsWindow: WorkspaceSettingsWindowController {
         if let sc = settingsController { return sc }
