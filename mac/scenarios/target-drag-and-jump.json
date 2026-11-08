@@ -1,0 +1,13 @@
+{
+  "about": "Drag the Fade onto cue 1's Target cell, then jump to the target from the inspector.",
+  "show": "Targets",
+  "media": {"media/a.wav": 5},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "3"},
+    {"drag": "cue-list", "from": [0.2, 0.7], "to": [0.55, 0.2]},
+    {"shot": "after-drag"},
+    {"click": "inspector-target-jump"},
+    {"shot": "after-jump"}
+  ]
+}

@@ -1429,6 +1429,14 @@ final class CueTargetFlowTests: XCTestCase {
         _ = await rig.client.send({ .close(id: $0, doc: doc, discardChanges: true) })
     }
 
+    /// A Devamp cue made from the toolbar carries every field core requires; one without `devamp_mode`
+    /// is a frame the engine cannot read, and the add never got an answer.
+    func testANewDevampCueIsAcceptedByTheEngine() async throws {
+        let id = try await add(.devamp)
+        let mode = wc.cueList.node(id)?.cue.raw["kind"]?["devamp_mode"]?.stringValue
+        XCTAssertEqual(mode, "current_slice")
+    }
+
     /// `InspectorEdit.targetRejection` is a copy of core's `can_target`: every cue that takes a target, on
     /// every kind and every Group mode, must be refused exactly where the engine would mark it broken.
     func testTheTargetRulesMatchTheEngines() async throws {
@@ -1502,7 +1510,8 @@ final class CueTargetFlowTests: XCTestCase {
         // The move runs in a task: this waits for it, and an undo would then find a step if it had sent one.
         await settle()
         try await rig.advance()
-        XCTAssertEqual(log.sent, 0, "it is already there")
+        // The clock step above is itself one request; a move would be a second.
+        XCTAssertEqual(log.sent, 1, "it is already there: nothing but the clock step went to the engine")
         XCTAssertEqual(order, original)
         XCTAssertNil(target(Self.fade))
     }

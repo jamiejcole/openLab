@@ -1,0 +1,12 @@
+{
+  "about": "Target column with the show's audio file absent (trash glyph), then the edit-target key on the Fade opens a number field in its Target cell.",
+  "show": "Targets",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"advance": 3},
+    {"shot": "missing-file"},
+    {"select": "3"},
+    {"key": "t"},
+    {"shot": "edit-target-key"}
+  ]
+}
