@@ -53,10 +53,10 @@ pub fn discard_recovery(
     workspace: WorkspaceId,
     show_path: Option<&Path>,
 ) -> Result<(), PersistError> {
-    remove_if_present(&dirs.recovery_path(workspace, show_path))
+    remove_exact(&dirs.recovery_path(workspace, show_path))
 }
 
-fn remove_if_present(path: &Path) -> Result<(), PersistError> {
+pub(super) fn remove_exact(path: &Path) -> Result<(), PersistError> {
     crate::persist::remove_if_present(path).map_err(PersistError::io("remove", path))
 }
 

@@ -2873,6 +2873,115 @@ fn dont_save_on_a_recovered_workspace_keeps_the_autosaves_it_did_not_write() {
     assert!(chosen.exists() && sibling.exists(), "the set-aside ones");
 }
 
+fn discard_request(
+    workspace_id: openlab_core::WorkspaceId,
+    path_hash: &str,
+    modified_ms: Option<i64>,
+) -> Request {
+    Request::DiscardRecovery {
+        workspace_id,
+        path_hash: Some(path_hash.to_owned()),
+        modified_ms,
+    }
+}
+
+/// `discard_recovery` deletes exactly the file it names: a sibling set aside stays, the scan no
+/// longer lists it, an unknown selector is `not_found`, and the current autosave of an open
+/// workspace is refused.
+#[test]
+fn discard_recovery_removes_only_the_file_it_names() {
+    let (env, path, wid) = crash_with_relative_media();
+    let autosave = env.dirs.recovery_path(wid, Some(&path));
+    let stem = autosave.file_stem().unwrap().to_str().unwrap().to_owned();
+    let hash = stem.rsplit('-').next().unwrap().to_owned();
+    let dir = env.dirs.recovery_dir();
+    let chosen = dir.join(format!("{stem}.000000000001000.stale.openlab"));
+    let sibling = dir.join(format!("{stem}.000000000002000.stale.openlab"));
+    fs::copy(&autosave, &chosen).unwrap();
+    fs::copy(&autosave, &sibling).unwrap();
+    let mut r = restart(env, memo_ws("blank", &[5]));
+
+    ok_result(&request(&mut r.s, discard_request(wid, &hash, Some(1000))));
+    assert!(!chosen.exists());
+    assert!(sibling.exists() && autosave.exists());
+    assert!(matches!(
+        data(&request(&mut r.s, Request::ScanRecovery)),
+        ResultData::RecoveryEntries { entries }
+            if entries.len() == 2 && entries.iter().all(|e| e.modified_ms != Some(1000))
+    ));
+    // Gone already, and a hash nothing has: not found, nothing else touched.
+    for (hash, ms) in [(hash.as_str(), Some(1000)), ("0000000000000000", None)] {
+        assert_eq!(
+            error_code(&request(&mut r.s, discard_request(wid, hash, ms))),
+            ErrorCode::NotFound
+        );
+    }
+    assert!(sibling.exists() && autosave.exists());
+
+    // The current autosave of a workspace that is open is that workspace's own.
+    ok_result(&request(
+        &mut r.s,
+        Request::Open {
+            path: path.to_string_lossy().into_owned(),
+            recovery: Some(RecoveryChoice::Ignore),
+        },
+    ));
+    r.s.settle_docs();
+    assert_eq!(
+        error_code(&request(&mut r.s, discard_request(wid, &hash, None))),
+        ErrorCode::CommandRefused
+    );
+    assert!(autosave.exists());
+}
+
+/// A doc restored from a file set aside takes its contents: its first save removes that file and
+/// no other; a restore that is not saved leaves it.
+#[test]
+fn saving_a_workspace_restored_from_a_set_aside_autosave_removes_that_file() {
+    let (env, path, wid) = crash_with_relative_media();
+    let autosave = env.dirs.recovery_path(wid, Some(&path));
+    let stem = autosave.file_stem().unwrap().to_str().unwrap().to_owned();
+    let hash = stem.rsplit('-').next().unwrap().to_owned();
+    let dir = env.dirs.recovery_dir();
+    let chosen = dir.join(format!("{stem}.000000000001000.stale.openlab"));
+    let sibling = dir.join(format!("{stem}.000000000002000.stale.openlab"));
+    fs::copy(&autosave, &chosen).unwrap();
+    fs::copy(&autosave, &sibling).unwrap();
+    let mut r = restart(env, memo_ws("blank", &[5]));
+    let restore = |hash: &str| DocSource::Recovery {
+        workspace_id: wid,
+        path_hash: Some(hash.to_owned()),
+        modified_ms: Some(1000),
+    };
+
+    // Closed without saving: it stays.
+    let doc = r.s.open_doc(restore(&hash)).unwrap();
+    r.s.settle_docs();
+    r.s.close_doc(doc, true).unwrap();
+    r.s.settle_docs();
+    assert!(chosen.exists());
+
+    // Restored again and saved as a new file: the one restored from goes.
+    let doc = r.s.open_doc(restore(&hash)).unwrap();
+    r.s.settle_docs();
+    let new = r.env.show_dir().join("taken.openlab");
+    let id = r.s.request_id();
+    ok_result(&r.s.send_doc(
+        doc,
+        ClientMessage::Request {
+            id,
+            request: Request::SaveAs {
+                path: new.to_string_lossy().into_owned(),
+            },
+        },
+    ));
+    r.s.settle_docs();
+    crate::show::spin::spin_until("the restored set-aside file to be removed", || {
+        !chosen.exists()
+    });
+    assert!(sibling.exists() && autosave.exists(), "no other file goes");
+}
+
 #[test]
 fn dont_save_on_an_untitled_workspace_removes_the_autosave_it_wrote() {
     let mut r = rig(memo_ws("one", &[1]));

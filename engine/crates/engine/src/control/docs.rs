@@ -153,6 +153,9 @@ pub struct Loaded {
     /// Has changes the show file lacks (restored from an autosave).
     dirty: bool,
     notices: Vec<WireWarning>,
+    /// The autosave set aside from its file that this was restored from: the operator has taken
+    /// its contents, so the first save of the doc removes it.
+    restored_from: Option<PathBuf>,
 }
 
 /// Everything a doc being opened needs, built on the document worker.
@@ -173,6 +176,7 @@ pub struct DocParts {
     checks: PlanChecks,
     /// The file was saved in Show Mode (SM-01).
     show_mode: bool,
+    restored_from: Option<PathBuf>,
 }
 
 impl fmt::Debug for DocParts {
@@ -191,6 +195,7 @@ fn build_parts(loaded: Loaded, config: EngineConfig) -> DocParts {
         path,
         dirty,
         notices,
+        restored_from,
     } = loaded;
     // The live mode is the doc's; the model's workspace never carries it (`Workspace::show_mode`).
     let show_mode = std::mem::take(&mut workspace.show_mode);
@@ -211,6 +216,7 @@ fn build_parts(loaded: Loaded, config: EngineConfig) -> DocParts {
         indexed,
         checks,
         show_mode,
+        restored_from,
     }
 }
 
@@ -257,6 +263,10 @@ pub enum DocAnswer {
         ticket: u64,
         entries: Vec<RecoveryEntryInfo>,
     },
+    /// An autosave file was deleted.
+    Discarded {
+        ticket: u64,
+    },
     /// The folder walk of a `relink`: proposals only, applied on the control thread.
     Relinked {
         ticket: u64,
@@ -288,6 +298,7 @@ impl DocAnswer {
             | Self::Built { ticket, .. }
             | Self::Offer { ticket, .. }
             | Self::Entries { ticket, .. }
+            | Self::Discarded { ticket }
             | Self::Relinked { ticket, .. }
             | Self::Failed { ticket, .. } => *ticket,
         }
@@ -324,6 +335,15 @@ enum DocJob {
     },
     Scan {
         ticket: u64,
+    },
+    /// Delete one autosave file (`discard_recovery`), unless it is the current autosave of one
+    /// of the `open` (workspace, show path) docs.
+    DiscardRecovery {
+        ticket: u64,
+        workspace: WorkspaceId,
+        path_hash: Option<String>,
+        modified_ms: Option<i64>,
+        open: Vec<(WorkspaceId, Option<PathBuf>)>,
     },
 }
 
@@ -489,6 +509,10 @@ pub(super) struct DocFile {
     /// Of those, the ones whose recovery file may go now ([`Control::clear_left_autosaves`]
     /// removes them unless another workspace claims the path).
     left_ready: Vec<(WorkspaceId, PathBuf)>,
+    /// The autosave set aside from its file that this doc was restored from, until a save.
+    restored_from: Option<PathBuf>,
+    /// A save has put its contents in the show file: [`Control::clear_left_autosaves`] removes it.
+    restored_done: Option<PathBuf>,
     /// The revision last handed to the autosave.
     autosaved_revision: Option<u64>,
     dirty_since: Option<i64>,
@@ -511,6 +535,8 @@ impl DocFile {
             autosaved_at: Vec::new(),
             autosaved_untitled: false,
             left_ready: Vec::new(),
+            restored_from: None,
+            restored_done: None,
             autosaved_revision: None,
             dirty_since: None,
             last_autosave: None,
@@ -756,6 +782,20 @@ fn work(
                 config,
             ),
             DocJob::Scan { ticket } => scan(ticket, dirs),
+            DocJob::DiscardRecovery {
+                ticket,
+                workspace,
+                path_hash,
+                modified_ms,
+                open,
+            } => discard(
+                ticket,
+                workspace,
+                path_hash.as_deref(),
+                modified_ms,
+                &open,
+                dirs,
+            ),
         };
         if !post(answer, inbox, flags, stuck, answered) {
             break;
@@ -902,6 +942,7 @@ fn open(
             path: Some(path.to_path_buf()),
             dirty,
             notices,
+            restored_from: None,
         }),
     }
 }
@@ -969,6 +1010,7 @@ fn open_recovery(
             workspace: shown.workspace,
             path,
             dirty: true,
+            restored_from: entry.stale.then(|| entry.path.clone()),
         }),
     }
 }
@@ -1061,6 +1103,55 @@ fn scan(ticket: u64, dirs: Option<&AppDirs>) -> DocAnswer {
         })
         .collect();
     DocAnswer::Entries { ticket, entries }
+}
+
+fn discard(
+    ticket: u64,
+    workspace: WorkspaceId,
+    path_hash: Option<&str>,
+    modified_ms: Option<i64>,
+    open: &[(WorkspaceId, Option<PathBuf>)],
+    dirs: Option<&AppDirs>,
+) -> DocAnswer {
+    let Some(dirs) = dirs else {
+        return failed(
+            ticket,
+            ErrorCode::NotFound,
+            "there is no application folder to recover from".into(),
+        );
+    };
+    let scan = scan_recovery(dirs, MAX_RECOVERY_ENTRIES);
+    let entry = scan.entries.iter().find(|e| {
+        e.workspace_id == workspace
+            && path_hash.is_none_or(|h| e.path_hash.as_deref() == Some(h))
+            && modified_ms.is_none_or(|m| e.modified_ms == Some(m))
+    });
+    let Some(entry) = entry else {
+        return failed(
+            ticket,
+            ErrorCode::NotFound,
+            format!("no autosave of workspace {workspace}"),
+        );
+    };
+    // An open doc writes its current autosave and removes it itself.
+    if open
+        .iter()
+        .any(|(ws, path)| dirs.recovery_path(*ws, path.as_deref()) == entry.path)
+    {
+        return failed(
+            ticket,
+            ErrorCode::CommandRefused,
+            "that autosave belongs to an open workspace".into(),
+        );
+    }
+    match crate::persist::remove_if_present(&entry.path) {
+        Ok(()) => DocAnswer::Discarded { ticket },
+        Err(e) => failed(
+            ticket,
+            ErrorCode::Io,
+            format!("could not delete {}: {e}", entry.path.display()),
+        ),
+    }
 }
 
 // ---- The control loop's side ----------------------------------------------------------------
@@ -1461,6 +1552,10 @@ impl DocCx<'_> {
             None,
             None,
         );
+        // The operator took the restored autosave's contents; its set-aside file is done with.
+        if let Some(file) = self.doc.file.restored_from.take() {
+            self.doc.file.restored_done = Some(file);
+        }
         if self.doc.show_path.as_deref() != Some(save.path.as_path()) {
             let old_dir = self.show_dir();
             let ws = self.doc.model.ws().id;
@@ -1994,6 +2089,7 @@ impl Control {
                         path: None,
                         dirty: false,
                         notices: Vec::new(),
+                        restored_from: None,
                     }),
                     config,
                 }
@@ -2037,6 +2133,16 @@ impl Control {
     /// doc's. It is looked at again after the next save or autosave.
     pub(super) fn clear_left_autosaves(&mut self) {
         for i in 0..self.docs.len() {
+            if let Some(doc) = self.docs.get_mut(i)
+                && let Some(file) = doc.file.restored_done.take()
+                && let Some(writer) = &self.eng.docs.writer
+            {
+                let workspace = doc.model.ws().id;
+                self.eng
+                    .docs
+                    .clears
+                    .push(writer.remove_set_aside(workspace, file));
+            }
             let Some(doc) = self.docs.get_mut(i) else {
                 continue;
             };
@@ -2152,6 +2258,40 @@ impl Control {
         self.eng.send_job(DocJob::Scan { ticket }, id, to);
     }
 
+    /// `discard_recovery` (app-scope): deletes one autosave file, on the document worker.
+    pub(super) fn discard_recovery(
+        &mut self,
+        workspace: WorkspaceId,
+        path_hash: Option<String>,
+        modified_ms: Option<i64>,
+        id: RequestId,
+        to: &ReplyTx,
+    ) {
+        if !self.eng.read_gate(id, to, true) {
+            return;
+        }
+        let open = self
+            .docs
+            .iter()
+            .flat_map(|d| {
+                let ws = d.model.ws().id;
+                [(ws, d.show_path.clone()), (ws, None)]
+            })
+            .collect();
+        let ticket = self.eng.next_ticket(Target::Engine, id, to);
+        self.eng.send_job(
+            DocJob::DiscardRecovery {
+                ticket,
+                workspace,
+                path_hash,
+                modified_ms,
+                open,
+            },
+            id,
+            to,
+        );
+    }
+
     /// The document worker's (or the relink walk's) answer, for the request it is for (a doc
     /// being added, a scan, a relink).
     pub(super) fn doc_answer(&mut self, answer: DocAnswer) {
@@ -2175,6 +2315,7 @@ impl Control {
             (Target::Engine, DocAnswer::Entries { entries, .. }) => {
                 reply_data(to, id, ResultData::RecoveryEntries { entries });
             }
+            (Target::Engine, DocAnswer::Discarded { .. }) => reply(to, ok(id, None)),
             (Target::New, DocAnswer::Built { parts, .. }) => self.install_new(*parts, id, to),
             (Target::Relink(doc), DocAnswer::Relinked { found, .. }) => {
                 self.relinked(doc, *found, id, to);
@@ -2257,6 +2398,7 @@ impl Control {
             indexed,
             checks,
             show_mode,
+            restored_from,
         } = parts;
         // A copy of an open show (a Finder duplicate) has its workspace id: QLab 5 gives the
         // copy a fresh one and marks it unsaved. Ids must be unique: autosaves, OSC
@@ -2290,6 +2432,7 @@ impl Control {
         doc.checks = checks;
         doc.show_mode = show_mode;
         doc.file.notices = notices;
+        doc.file.restored_from = restored_from;
         doc.revision = 1;
         doc.saved_revision = if dirty { 0 } else { 1 };
         self.docs.push(doc);

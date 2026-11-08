@@ -321,6 +321,16 @@ pub enum Request {
     },
     /// List the autosave files, for a show that cannot be opened.
     ScanRecovery,
+    /// Delete one autosave file listed by `scan_recovery` (same selector as `open_recovery`):
+    /// the operator will not restore it. Nothing else is touched. Refused for the current
+    /// autosave of an open workspace.
+    DiscardRecovery {
+        workspace_id: WorkspaceId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modified_ms: Option<i64>,
+    },
     Save,
     SaveAs {
         path: String,

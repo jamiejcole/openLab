@@ -54,6 +54,7 @@ use openlab_core::{Workspace, WorkspaceId};
 
 use super::save::save_workspace_inner;
 use super::threads::BoundedThreads;
+use super::recovery::remove_exact;
 use super::{AppDirs, PersistError, SaveReport, discard_recovery, recovery_stem, write_recovery};
 
 /// What a writer job does; passed to the test hook.
@@ -183,6 +184,8 @@ struct AutosaveJob {
 struct ClearJob {
     workspace: WorkspaceId,
     show_path: Option<PathBuf>,
+    /// Remove exactly this file (a recovery file set aside), whatever `show_path` says.
+    exact: Option<PathBuf>,
     reply: ClearReply,
 }
 
@@ -216,10 +219,20 @@ impl SaveJob {
 
 impl ClearJob {
     fn target(&self) -> Target {
+        let stem = match &self.exact {
+            // `<stem>.<modified-ms>.stale.openlab`
+            Some(file) => file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.split('.').next())
+                .unwrap_or_default()
+                .to_owned(),
+            None => recovery_stem(self.workspace, self.show_path.as_deref()),
+        };
         Target {
             workspace: self.workspace,
             show: None,
-            recovery: vec![recovery_stem(self.workspace, self.show_path.as_deref())],
+            recovery: vec![stem],
         }
     }
 }
@@ -590,6 +603,30 @@ impl SaveWriter {
         self.queue_clear(workspace, show_path)
     }
 
+    /// Queues the removal of one recovery file moved aside, whose contents a save has put in the
+    /// show file. It waits behind any job writing the same recovery files.
+    pub fn remove_set_aside(
+        &self,
+        workspace: WorkspaceId,
+        file: PathBuf,
+    ) -> Receiver<Result<(), PersistError>> {
+        let (reply, answer) = mpsc::channel();
+        let mut state = self.shared.lock();
+        if state.closing {
+            let _ = reply.send(Err(PersistError::WriterGone));
+            return answer;
+        }
+        state.clears.push_back(ClearJob {
+            workspace,
+            show_path: None,
+            exact: Some(file),
+            reply,
+        });
+        drop(state);
+        self.shared.wake.notify_all();
+        answer
+    }
+
     fn queue_clear(
         &self,
         workspace: WorkspaceId,
@@ -615,6 +652,7 @@ impl SaveWriter {
         state.clears.push_back(ClearJob {
             workspace,
             show_path,
+            exact: None,
             reply,
         });
         drop(state);
@@ -762,7 +800,10 @@ fn run(shared: &Shared, dirs: &AppDirs, hook: Option<&(dyn Fn(JobKind) + Send + 
                 let _ = job.reply.send(result);
             }
             Next::Clear(job) => {
-                let result = discard_recovery(dirs, job.workspace, job.show_path.as_deref());
+                let result = match &job.exact {
+                    Some(file) => remove_exact(file),
+                    None => discard_recovery(dirs, job.workspace, job.show_path.as_deref()),
+                };
                 let _ = job.reply.send(result);
             }
             Next::Autosave(job) => {

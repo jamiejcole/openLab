@@ -26,7 +26,7 @@ The engine holds several open workspaces ("docs"; limit in REQUIREMENTS §21). A
    - Bound: `welcome { protocol_version, doc, snapshot }`. Everything the connection sends acts on that doc, and it receives only that doc's broadcasts plus the engine's own `log`, `log_entry`, `status`. `revision` and `runtime_seq` count per doc (a new doc's snapshot is revision 1).
    - App connection: `welcome { protocol_version, workspaces }`. A `workspaces` message follows every change to the list (a doc opened or closed, a name, path or unsaved state changed). It receives no doc's broadcasts. Doc-scoped messages on it (`command`, `undo`, `redo`, `transport` other than `panic`, `save`, `save_as`, `relink`, `preshow_check`, `close` without `doc`) answer `no_workspace`. Its `request: snapshot` answers a `workspaces` message, then `result`.
 3. After `welcome` the client may send anything below. Every `command`, `transport`, `undo`, `redo`, `request`, `close`, `panic` and `hotkey` gets exactly one `result` with its `id`. A frame the engine cannot read gets `error` (`bad_request` or `unknown_message`).
-4. **App-scope messages** work on any connection and act on the engine or every doc: `new`, `open`, `open_recovery`, `scan_recovery`, `list_devices`, `set_output_device`, `log_tail`, `set_output_overrides`, `close { doc }`, `panic`, `hotkey`.
+4. **App-scope messages** work on any connection and act on the engine or every doc: `new`, `open`, `open_recovery`, `scan_recovery`, `discard_recovery`, `list_devices`, `set_output_device`, `log_tail`, `set_output_overrides`, `close { doc }`, `panic`, `hotkey`.
    - `panic` (Esc) panics every doc; twice within the fade is a hard stop. On the app connection `transport { action: panic }` is this app-scope panic.
    - `hotkey`: see section 3.
    - Pause All, GO and other transport actions act on the bound doc only (the front window's: the UI's notion; the engine has no front doc).
@@ -70,7 +70,7 @@ The `result` of a transport action means accepted and handed to the cue engine. 
 
 Fields and reply shapes: `Request` and `ResultData` (`client.rs`, `server.rs`). Behaviour:
 
-- **`new`, `open`, `open_recovery`, `scan_recovery`**: "Opening and closing workspaces".
+- **`new`, `open`, `open_recovery`, `scan_recovery`, `discard_recovery`**: "Opening and closing workspaces".
 - **`save`**: `document` update, then `result`. `no_workspace` if never saved (use `save_as`); `io` if the write failed.
 - **`save_as { path }`** (absolute): saves and makes `path` the doc's path. `io` on write failure. `already_open` (nothing written) if `path` is another open doc's show file or one another save or `open` is touching, including under another spelling (symlink, `/var` for `/private/var`; the writer compares by file).
 - **`relink { folder }`** (absolute, at most `MAX_FOLDER_BYTES`): relinks the bound doc's missing media (WS-03, NFR-04).
@@ -112,7 +112,8 @@ An engine built with `test-support` and started with `--virtual-device stepped|r
 - **`open_recovery { workspace_id, path_hash?, modified_ms? }`** opens an autosave from `scan_recovery` as an **untitled, unsaved** doc. The optional fields pick one of several autosaves of one workspace id; absent: the newest.
 - **`scan_recovery`** lists every recovery file, including a never-saved doc's autosave and files moved aside as stale (`stale: true`; they may hold the newest work), newest first. It serves the launch offer after an unclean exit (NFR-05) and what to show when a show cannot be opened (`bad_show_file`, or `io`).
 - **One show file, one doc.** `open` of an open show, or of a file another doc's `save_as` is writing, answers `already_open`. Paths compare as media paths do (case, Unicode form, `.`/`..`) and, on the document worker before the read, by the file itself. So neither doc's save can overwrite the other's. A copy of an open show (another file, same workspace id) opens with a fresh workspace id and dirty.
-- **One document read at a time** engine-wide (`open`, `open_recovery`, `scan_recovery`, `new`); another arriving meanwhile is `command_refused`. A read unfinished after the engine's timeout (a stalled network volume) answers `io`, and later requests are served normally.
+- **`discard_recovery { workspace_id, path_hash?, modified_ms? }`** deletes the one autosave file `open_recovery` would open for that selector (it cannot be undone), and nothing else; the `result` is plain `ok`. `not_found` when no listed autosave matches; `command_refused` for the current autosave of an open workspace; `io` when the file cannot be removed. A save of a doc restored from a set-aside autosave (`open_recovery`) removes that file once the save is done: the operator has taken its contents. Any other save leaves set-aside files.
+- **One document read at a time** engine-wide (`open`, `open_recovery`, `scan_recovery`, `discard_recovery`, `new`); another arriving meanwhile is `command_refused`. A read unfinished after the engine's timeout (a stalled network volume) answers `io`, and later requests are served normally.
 - **Saving**: `save` and `save_as` write on a separate thread. `result` comes once the file is durably written; the new `document` (path, `dirty` false when no edit happened meanwhile) is broadcast before it. A failed write is `io`; the doc stays dirty and autosave keeps running. Autosave is not visible on the protocol (skill `persistence`).
 
 ## 4. Engine -> client

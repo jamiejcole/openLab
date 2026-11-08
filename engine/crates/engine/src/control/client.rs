@@ -183,6 +183,11 @@ impl Control {
                     to,
                 ),
                 Request::ScanRecovery => self.scan_recovery(id, to),
+                Request::DiscardRecovery {
+                    workspace_id,
+                    path_hash,
+                    modified_ms,
+                } => self.discard_recovery(workspace_id, path_hash, modified_ms, id, to),
                 Request::ListDevices => reply(
                     to,
                     ServerMessage::Result {

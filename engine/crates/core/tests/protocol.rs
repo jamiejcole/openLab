@@ -272,6 +272,14 @@ fn all_requests() -> Vec<(&'static str, Request)> {
         ("advance", Request::Advance { frames: 4800 }),
         ("lose_device", Request::LoseDevice),
         ("restore_device", Request::RestoreDevice),
+        (
+            "discard_recovery",
+            Request::DiscardRecovery {
+                workspace_id: workspace_id(7),
+                path_hash: Some("0123456789abcdef".into()),
+                modified_ms: Some(1_700_000_000_000),
+            },
+        ),
     ]
 }
 
@@ -1605,7 +1613,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 24);
-    assert_eq!(all_requests().len(), 20);
+    assert_eq!(all_requests().len(), 21);
 }
 
 #[test]
@@ -3780,6 +3788,18 @@ fn arb_request() -> impl Strategy<Value = Request> {
                 }
             }),
         Just(Request::ScanRecovery),
+        (
+            any::<u128>(),
+            proptest::option::of("[0-9a-f]{16}"),
+            proptest::option::of(any::<i64>()),
+        )
+            .prop_map(|(id, path_hash, modified_ms)| {
+                Request::DiscardRecovery {
+                    workspace_id: workspace_id(id),
+                    path_hash,
+                    modified_ms,
+                }
+            }),
         Just(Request::Save),
         arb_abs_path().prop_map(|path| Request::SaveAs { path }),
         arb_abs_path().prop_map(|folder| Request::Relink { folder }),
