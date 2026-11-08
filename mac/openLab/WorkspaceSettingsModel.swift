@@ -34,7 +34,7 @@ final class WorkspaceSettingsModel: ObservableObject {
     @Published private(set) var chosenDevice: String?
     @Published private(set) var patches: [PatchRow] = []
     /// The last refusal or failure, in words; cleared by the next success.
-    @Published private(set) var message: String?
+    @Published var message: String?
     /// The device list could not be read (engine gone): nothing here can be changed.
     @Published private(set) var loaded = false
 
@@ -96,13 +96,14 @@ final class WorkspaceSettingsModel: ObservableObject {
         var panic: Double?
         var goInterval: Double?
         var limits: VolumeLimits
+        var osc: OscAccessTable
     }
 
     var displayState: DisplayState {
         DisplayState(
             devices: devices, chosen: chosenDevice, patches: patches, playingName: playing?.name,
             playingState: playing?.state.raw, loaded: loaded, message: message, panic: panicDuration,
-            goInterval: minGoInterval, limits: limits)
+            goInterval: minGoInterval, limits: limits, osc: osc)
     }
 
     /// The playing device is lost, failed or absent: patches on it are silent until it is back.
@@ -237,6 +238,12 @@ final class WorkspaceSettingsModel: ObservableObject {
         guard let value = Double(trimmed), value.isFinite, range.contains(value) else {
             message = String(format: loc("settings.general.outOfRange"), range.lowerBound, range.upperBound)
             return false
+        }
+        // The value is the one the engine has (the field was only left, or the old value typed
+        // again): nothing to send, and an earlier refusal line no longer applies.
+        if store.model?.settings[type]?.doubleValue == value {
+            message = nil
+            return true
         }
         switch await store.send(command: .setWorkspaceNumber(type, value)) {
         case .success:

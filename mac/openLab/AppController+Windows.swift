@@ -134,6 +134,13 @@ extension AppController {
         guard let key = keyWindow() else { return nil }
         return controllers.values.first { $0.window === key }
     }
+
+    /// The workspace whose window or settings window is key: Edit > Undo and Redo act on its edits,
+    /// so a change made in the settings window is undone from there.
+    var undoController: WorkspaceWindowController? {
+        guard let key = keyWindow() else { return nil }
+        return controllers.values.first { $0.window === key || $0.existingSettingsWindow?.window === key }
+    }
 }
 
 /// DX-04: crash reports and the engine's note that the last run did not end cleanly.
