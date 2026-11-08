@@ -923,12 +923,11 @@ final class NetworkInspectorTests: XCTestCase {
         XCTAssertEqual(
             popup.itemArray.filter { !$0.isSeparatorItem }.map(\.title),
             ["Network 1", "Network 2", loc("inspector.network.unpatched")])
-        XCTAssertEqual(targetCell(net), "Network 1")
+        XCTAssertEqual(targetCell(net), "", "a Network cue takes no target: its cell is empty")
         try await setMessageAndWait("/lights/go 5")
         choosePatch(at: 1)
         await assertEventually { self.kind?["destination"]?.stringValue == self.patch2.raw }
         XCTAssertEqual(popup.titleOfSelectedItem, "Network 2")
-        await assertEventually { self.targetCell(self.net) == "Network 2" }
         // GO sends to Network 2's host and port.
         try go()
         let got = await received(two)
@@ -941,7 +940,6 @@ final class NetworkInspectorTests: XCTestCase {
         click(net)
         await assertEventually { self.inspector.cue?.id == self.net }
         await assertEventually { popup.titleOfSelectedItem == "Network 1" }
-        await assertEventually { self.targetCell(self.net) == "Network 1" }
     }
 
     func testUnpatchedCueIsBroken() async throws {
@@ -951,7 +949,7 @@ final class NetworkInspectorTests: XCTestCase {
         choosePatch(at: popup.numberOfItems - 1)
         await assertEventually { self.isBroken(self.net) }
         XCTAssertEqual(popup.titleOfSelectedItem, loc("inspector.network.unpatched"))
-        XCTAssertEqual(targetCell(net), loc("cue.target.unpatched"))
+        XCTAssertEqual(targetCell(net), "")
         let tip = try XCTUnwrap(status(net, 1)?.toolTip)
         XCTAssertTrue(tip.contains(loc("problem.network_patch_missing.none")), tip)
         // GO sends nothing and the playhead moves on.

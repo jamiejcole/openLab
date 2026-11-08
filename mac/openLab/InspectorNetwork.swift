@@ -60,13 +60,6 @@ extension InspectorViewController {
         if networkPatchPopup.indexOfSelectedItem != chosen { networkPatchPopup.selectItem(at: chosen) }
     }
 
-    /// The name the Target column shows for a Network cue: its patch, or that it has none.
-    static func networkTargetText(_ cue: Cue, model: WorkspaceModel?) -> String {
-        let id = cue.raw["kind"]?["destination"]?.stringValue ?? ""
-        guard id != ModelID.unpatched.raw, !id.isEmpty else { return loc("cue.target.unpatched") }
-        return model?.networkPatches.first { $0.id.raw == id }?.raw["name"]?.stringValue ?? loc("cue.target.missing")
-    }
-
     @objc func networkPatchChosen() {
         guard !isLocked, let cue = cueForEdit, cue.kindType == "network" else { return }
         let i = networkPatchPopup.indexOfSelectedItem

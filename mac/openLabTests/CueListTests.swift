@@ -1956,6 +1956,104 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertNil(wc.cueList.editingCell, "the focus is in the inspector")
     }
 
+    /// T (edit target): a cue target is typed as a cue number in the Target cell, checked as the inspector's
+    /// field does (manual p. 120).
+    func testTKeyEditsACueTargetAsACueNumber() async throws {
+        try await editWorkspace()
+        try await focusList(on: fade)
+        try press("t", code: 17)
+        try assertEditing(fade, "target", text: "1")
+        XCTAssertEqual(wc.cueList.cellEditor.accessibilityLabel(), loc("cuelist.targetEditor.label"))
+        XCTAssertEqual(wc.cueList.cellEditor.accessibilityIdentifier(), AX.cueTargetEditor)
+        XCTAssertEqual(goes(), 0)
+        // T typed in the open cell is text, and the cell is not reopened.
+        try press("t", code: 17)
+        XCTAssertEqual(wc.cueList.cellEditor.stringValue, "t")
+        try press("\u{7F}", code: 51)
+        try type("2")
+        try pressReturn()
+        assertNotEditing()
+        await assertEventually("the Fade targets cue 2, in the cell and the inspector") {
+            self.store.model?.cue(self.fade)?.raw["kind"]?["target"]?.stringValue == self.cues[1].raw
+                && self.cell(self.fade, "target") == "2" && self.wc.inspector.targetField.stringValue == "2"
+        }
+        XCTAssertEqual(goes(), 0)
+        // A number no cue has is refused as the inspector refuses it, and the target is kept.
+        let window = try XCTUnwrap(wc.window)
+        try press("t", code: 17)
+        try type("99")
+        try pressReturn()
+        await assertEventually("the refusal is up") { window.attachedSheet != nil }
+        XCTAssertTrue(sheetTexts(window).contains(loc(InspectorEdit.Rejection.unknownTarget.messageKey)))
+        window.endSheet(try XCTUnwrap(window.attachedSheet))
+        XCTAssertEqual(cell(fade, "target"), "2")
+        // Esc leaves it alone.
+        try press("t", code: 17)
+        try press("\u{1B}", code: 53)
+        assertNotEditing()
+    }
+
+    /// T on a file cue opens the file chooser; the chosen file replaces the cue's, and a cancelled
+    /// chooser changes nothing.
+    func testTKeyOnAFileCueChoosesAFile() async throws {
+        try await editWorkspace()
+        let wav = try tempFiles(["chosen.wav"])[0]
+        var picked: URL?
+        var asked = 0
+        wc.pickAudioFile = {
+            asked += 1
+            return picked
+        }
+        let before = store.model?.cue(cues[1])?.raw["kind"]?["media"]?.stringValue
+        try press("t", code: 17)
+        XCTAssertEqual(asked, 0, "the chooser opens after the key is consumed, not inside it")
+        await assertEventually { asked == 1 }
+        XCTAssertNil(wc.cueList.editingCell, "a file target has no number to type")
+        XCTAssertEqual(store.model?.cue(cues[1])?.raw["kind"]?["media"]?.stringValue, before, "cancelled")
+        picked = wav
+        try press("t", code: 17)
+        await assertEventually { asked == 2 }
+        await assertEventually {
+            self.store.model?.cue(self.cues[1])?.raw["kind"]?["media"]?.stringValue == wav.standardizedFileURL.path
+        }
+        XCTAssertEqual(goes(), 0)
+    }
+
+    func testTKeyDoesNothingInShowModeOrOffTheListOrWithTwoCues() async throws {
+        try await editWorkspace()
+        let window = try XCTUnwrap(wc.window)
+        var asked = 0
+        wc.pickAudioFile = {
+            asked += 1
+            return nil
+        }
+        wc.setShowMode(true)
+        try press("t", code: 17)
+        XCTAssertEqual(asked, 0, "Show Mode locks the target")
+        XCTAssertNil(wc.cueList.editingCell)
+        XCTAssertFalse(wc.cueList.beginCellEdit(fade, column: "target"))
+        wc.setShowMode(false)
+        wc.cueList.selectAsUser([cues[0], cues[1]])
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
+        try press("t", code: 17)
+        XCTAssertEqual(asked, 0, "two cues are highlighted")
+        wc.cueList.selectAsUser([cues[1]])
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.nameField))
+        try press("t", code: 17)
+        XCTAssertEqual(asked, 0, "the focus is in the inspector")
+        XCTAssertNil(wc.cueList.editingCell)
+    }
+
+    /// A cue that takes no target (a Memo) opens no editor.
+    func testTKeyOnACueWithNoTargetOpensNothing() async throws {
+        try await editWorkspace()
+        let added = await wc.editor.add(.memo, after: [cues[1]])
+        let memo = try XCTUnwrap(added)
+        try await focusList(on: memo)
+        try press("t", code: 17)
+        XCTAssertNil(wc.cueList.editingCell)
+    }
+
     /// A cue whose hotkey is N is started by it, and the key opens no editor.
     func testACueHotkeyOnNStartsTheCueAndOpensNoEditor() async throws {
         try await editWorkspace()
@@ -4459,6 +4557,46 @@ final class CueListDrawingTests: XCTestCase {
         }
         onChoose()
         XCTAssertEqual(asked, 4)
+    }
+
+    /// A file that is gone shows the trash glyph in its Target cell, from the `media_missing` problem (the
+    /// Demo show's Radio has none on disk); a file chosen for it brings the file glyph back. Show Mode leaves
+    /// the cell empty, as for any file cue.
+    func testTargetCellShowsATrashCanForAMissingFile() async throws {
+        let rig = try await Rig.open()
+        let wc = WorkspaceWindowController(store: rig.store)
+        show(wc.cueList.view)
+        let radio = H.radio
+        await assertEventually { rig.store.problems[radio]?.contains { $0.type == "media_missing" } == true }
+        wc.cueList.outlineView.expandItem(wc.cueList.node(H.group))
+        await assertEventually { self.targetCell(wc, radio)?.chooseButton.isHidden == false }
+        let button = try XCTUnwrap(targetCell(wc, radio)?.chooseButton)
+        XCTAssertEqual(button.accessibilityLabel(), loc("cuelist.target.fileMissing"))
+        XCTAssertEqual(targetCell(wc, radio)?.label.stringValue, "")
+        let trash = try cellPixels(wc, radio)
+        XCTAssertGreaterThan(trash.count(Self.drawn), 8, "the trash glyph is drawn")
+        let fileCell = try XCTUnwrap(targetCell(wc, H.door))
+        XCTAssertEqual(fileCell.chooseButton.accessibilityLabel(), loc("inspector.target.choose"))
+        XCTAssertNotEqual(drawnMask(trash), drawnMask(try cellPixels(wc, H.door)), "not the file glyph")
+        let glyphs = try drawnGlyphs(button, .targetFileMissing, label: loc("cuelist.target.fileMissing"))
+        XCTAssertEqual(drawnMask(glyphs.shown), drawnMask(glyphs.icon), "from the icon table")
+        XCTAssertNotEqual(Icon.targetFileMissing.symbol, Icon.targetFile.symbol)
+        // The button still chooses a file; once the cue has one that exists, the file glyph is back.
+        let wav = try tempFiles(["back.wav"])[0]
+        wc.pickAudioFile = { wav }
+        try click(button)
+        await assertEventually {
+            rig.store.problems[radio]?.contains { $0.type == "media_missing" } != true
+                && self.targetCell(wc, radio)?.chooseButton.accessibilityLabel() == loc("inspector.target.choose")
+        }
+        XCTAssertEqual(
+            drawnMask(try cellPixels(wc, radio)), drawnMask(try cellPixels(wc, H.door)), "the file glyph again")
+        // Show Mode: nothing, even for a missing file.
+        _ = await rig.store.send(command: .setProperty(radio, .media("media/o.wav")))
+        await assertEventually { rig.store.problems[radio]?.contains { $0.type == "media_missing" } == true }
+        wc.setShowMode(true)
+        await assertEventually { self.targetCell(wc, radio)?.chooseButton.isHidden == true }
+        XCTAssertEqual(try cellPixels(wc, radio).count(Self.drawn), 0)
     }
 
     func testInspectorTargetFieldGlyphs() async throws {
