@@ -228,8 +228,8 @@ final class InspectorDurationTests: XCTestCase {
         let before = try XCTUnwrap(rig.store.mediaDurations[intro]?.trimmed)
         await assertEventually("the field") { self.vc.durationField.stringValue == CueTime.format(before) }
         let end = before / 2
-        guard case .success = await rig.store.send(command: .setProperty(intro, .kindFields(["end_time": .double(end)])))
-        else { return XCTFail("trim") }
+        let trim = Command.setProperty(intro, .kindFields(["end_time": .double(end)]))
+        guard case .success = await rig.store.send(command: trim) else { return XCTFail("trim") }
         await assertEventually("the new length") {
             self.rig.store.mediaDurations[intro]?.trimmed == end
                 && self.vc.durationField.stringValue == CueTime.format(end)
