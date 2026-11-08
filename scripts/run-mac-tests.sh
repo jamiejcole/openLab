@@ -3,14 +3,25 @@
 # The app test runs that have a hang limit. On a hosted macOS VM the paravirtual GPU driver can stall
 # with WindowServer inside it; every window call on the machine then blocks, so whichever test makes a
 # window next hits the limit. What stalls the driver is not known; a later process on the same runner
-# has been fine. When the spindump XCTest took for a timed-out test proves exactly that, and every failure of the run
+# has been fine, but the stall can outlast a restart. When the spindump XCTest took for a timed-out test proves exactly that, and every failure of the run
 # is such a timeout, those tests run once more; they must pass. Any other failure fails the step at once.
+# One more failure is part of a wedge: after a timeout xcodebuild starts the app again, and an app started
+# into the same stalled WindowServer never connects ("The test runner hung before establishing
+# connection"), which ends the run with the tests after the timeout unrun. With a spindump of its own that
+# proves it the same way, the run is not retried (the stall has outlasted the restart, so another start
+# would most likely hang to the step's limit): it fails, saying the runner stalled and the job needs a re-run.
 #
 #   scripts/run-mac-tests.sh XCODEBUILD... -- [SELECTION...]    run `XCODEBUILD... SELECTION... test`
 #   scripts/run-mac-tests.sh --classify SUMMARY ATTACHMENTS     print -only-testing arguments and exit 0
 #                                                               if the run was only wedged, else exit 1
+#                                                               (`--cut-short` when the wedge also ended the run: no retry)
 # SUMMARY: `xcresulttool get test-results summary`; ATTACHMENTS: `xcresulttool export attachments`.
+#
+# Exit codes: xcodebuild's own, except 75 (CUT_SHORT_RC): the run was cut short by a proven stall and the
+# job needs a re-run. `make test-mac` starts no second process on seeing it (the runner is wedged).
 set -uo pipefail
+
+CUT_SHORT_RC=75
 
 # A report whose every sample has WindowServer's main thread in the paravirtual GPU driver and the
 # tested process's main thread waiting on WindowServer. A moment in the driver in passing is not
@@ -53,10 +64,14 @@ wedged() {
 }
 
 classify() {
-  local summary=$1 dir=$2 failure target test report proved args=()
+  local summary=$1 dir=$2 failure target test report proved args=() cut_short=
   [ "$(jq -r '.testFailures | length' "$summary")" -gt 0 ] || return 1
   while IFS=$'\t' read -r failure target test; do
-    case "$failure" in *"exceeded execution time allowance"*) ;; *) return 1 ;; esac
+    case "$failure" in
+      *"exceeded execution time allowance"*) ;;
+      *"test runner hung before establishing connection"*) cut_short=1 ;;
+      *) return 1 ;;
+    esac
     proved=
     while IFS= read -r report; do
       if [ -n "$report" ] && wedged "$dir/$report"; then proved=1; fi
@@ -66,6 +81,10 @@ classify() {
     [ -n "$proved" ] || return 1
     args+=("-only-testing:$target/${test%()}")
   done < <(jq -r '.testFailures[] | [.failureText, .targetName, .testIdentifierString] | @tsv' "$summary")
+  if [ -n "$cut_short" ]; then
+    echo "--cut-short"
+    return 0
+  fi
   printf '%s\n' "${args[@]}" | sort -u
 }
 
@@ -98,6 +117,16 @@ xcrun xcresulttool get test-results summary --path "$bundle" >"$work/summary.jso
 xcrun xcresulttool export attachments --only-failures --path "$bundle" --output-path "$work/att" >/dev/null || exit "$rc"
 retry=$(classify "$work/summary.json" "$work/att") || exit "$rc"
 
+if [ "$retry" = "--cut-short" ]; then
+  echo "::warning title=WindowServer wedged on the runner::the GPU driver stalled and the app could not start again, so the tests after the hang never ran; re-run the job"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    {
+      echo "### App tests: WindowServer wedged on the runner, run cut short"
+      echo "The app could not start again after a test hung, so the tests after it never ran. Re-run the job."
+    } >>"$GITHUB_STEP_SUMMARY"
+  fi
+  exit "$CUT_SHORT_RC"
+fi
 echo "::warning title=WindowServer wedged on the runner::the GPU driver stalled, so these tests hit their hang limit and run again: $(echo "$retry" | tr '\n' ' ')"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {

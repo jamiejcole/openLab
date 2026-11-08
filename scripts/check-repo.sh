@@ -427,6 +427,24 @@ wedged_classifier() {
   [ "$out" = "-only-testing:openLabTests/Flow/testHung" ] || fail wedged-classifier "wrong retry arguments: '$out'"
   scripts/run-mac-tests.sh --classify "$d/mixed.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a hang beside another failure must not be retried"
   scripts/run-mac-tests.sh --classify "$d/none.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a run with no test failure (a build error) must not be retried"
+  # The app started again after a hang into the same stalled WindowServer never connects: a failure of
+  # the run, not of a test, with a spindump of its own. The tests after the hang never ran, so the run fails
+  # with a notice that the job needs a re-run.
+  local started hung_entry restart_entry
+  started='{"failureText":"The test runner hung before establishing connection.","targetName":"openLabTests","testIdentifierString":"openLab (5) encountered an error"}'
+  hung_entry='{"testIdentifier":"Flow/testHung()","attachments":[{"exportedFileName":"s.txt","isAssociatedWithFailure":true,"suggestedHumanReadableName":"x-Spindump_0.txt"}]}'
+  restart_entry='{"testIdentifier":"openLab (5) encountered an error","attachments":[{"exportedFileName":"r.txt","isAssociatedWithFailure":true,"suggestedHumanReadableName":"Hang (Spindump)_1.txt"}]}'
+  printf '{"testFailures":[%s,%s]}' "$started" "$timeout" >"$d/cut-short.json"
+  printf '{"testFailures":[%s,%s,%s]}' "$started" "$timeout" "$other" >"$d/cut-short-mixed.json"
+  printf '[%s,%s]' "$hung_entry" "$restart_entry" >"$d/manifest.json"
+  wedged_report 9 9 >"$d/r.txt"
+  out=$(scripts/run-mac-tests.sh --classify "$d/cut-short.json" "$d") || fail wedged-classifier "a proven hang and a proven failed restart must be recognised"
+  [ "$out" = "--cut-short" ] || fail wedged-classifier "a run cut short must be said so, not '$out'"
+  scripts/run-mac-tests.sh --classify "$d/cut-short-mixed.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a failed restart beside another failure must not be retried"
+  wedged_report 3 9 >"$d/r.txt"
+  scripts/run-mac-tests.sh --classify "$d/cut-short.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a failed restart whose spindump proves no wedge must not be retried"
+  printf '[%s]' "$hung_entry" >"$d/manifest.json"
+  scripts/run-mac-tests.sh --classify "$d/cut-short.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a failed restart with no spindump must not be retried"
   wedged_report 3 9 >"$d/s.txt"
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "WindowServer only passing through the driver must not excuse a hang"
   wedged_report 9 3 >"$d/s.txt"
@@ -473,7 +491,7 @@ wedged_classifier() {
   wedged_report 9 9 >"$d/s.txt"
   printf '[]' >"$d/manifest.json"
   scripts/run-mac-tests.sh --classify "$d/hung.json" "$d" >/dev/null 2>&1 && fail wedged-classifier "a hang with no spindump must not be retried"
-  (cd "$d" && rm -f hung.json mixed.json none.json manifest.json s.txt) && rmdir "$d"
+  (cd "$d" && rm -f hung.json mixed.json none.json cut-short.json cut-short-mixed.json manifest.json s.txt r.txt) && rmdir "$d"
 }
 
 # 11c. The wrapper's run path, with a fake xcodebuild and xcrun on PATH. Each case: exit code, number of
@@ -518,6 +536,26 @@ FAKE
   wedged_report 9 9 >"$d/att/s.txt"
   export WEDGED_ATT="$d/att" FIRST_SUMMARY="$d/hung.json"
 
+  # The app that could not start again after the hang: no second start (the stall has outlasted the
+  # restart, so it would hang to the step's limit), the failure kept, and the job told to be re-run.
+  local att_cut="$d/att-cut" att_bad="$d/att-bad" started
+  started='{"failureText":"The test runner hung before establishing connection.","targetName":"openLabTests","testIdentifierString":"openLab (5) encountered an error"}'
+  mkdir "$att_cut" "$att_bad"
+  printf '[%s,%s]' \
+    '{"testIdentifier":"Flow/testHung()","attachments":[{"exportedFileName":"s.txt","isAssociatedWithFailure":true,"suggestedHumanReadableName":"x-Spindump_0.txt"}]}' \
+    '{"testIdentifier":"openLab (5) encountered an error","attachments":[{"exportedFileName":"r.txt","isAssociatedWithFailure":true,"suggestedHumanReadableName":"Hang (Spindump)_1.txt"}]}' \
+    >"$att_cut/manifest.json"
+  cp "$att_cut/manifest.json" "$att_bad/manifest.json"
+  wedged_report 9 9 >"$att_cut/s.txt"
+  cp "$att_cut/s.txt" "$att_bad/s.txt"
+  wedged_report 9 9 >"$att_cut/r.txt"
+  wedged_report 3 9 >"$att_bad/r.txt"
+  printf '{"testFailures":[%s,{"failureText":"Test exceeded execution time allowance of 3 minutes","targetName":"openLabTests","testIdentifierString":"Flow/testHung()"}]}' "$started" >"$d/cut-short.json"
+  WEDGED_ATT="$att_cut" FIRST_SUMMARY="$d/cut-short.json" wedged_case cut-short 75 1 "65" -only-testing:everything
+  grep -q '::warning.*re-run the job' "$d/cut-short/out" || fail wedged-run "a run cut short must say the job needs a re-run: $(cat "$d/cut-short/out")"
+  WEDGED_ATT="$att_bad" FIRST_SUMMARY="$d/cut-short.json" wedged_case cut-short-unproven 65 1 "65"
+  ! grep -q 're-run the job' "$d/cut-short-unproven/out" || fail wedged-run "a restart not proven wedged must not be called a wedge"
+
   wedged_case proven 0 2 "65 0" -only-testing:everything
   grep -q '::warning' "$d/proven/out" || fail wedged-run "a retry must warn"
   [ "$(sed -n 2p "$d/proven/calls")" = "base -only-testing:openLabTests/Flow/testHung test" ] \
@@ -534,6 +572,37 @@ FAKE
   PASSED=0 wedged_case retry-ran-nothing 65 2 "65 0"
   NO_RETRY_BUNDLE=1 wedged_case retry-left-no-bundle 65 2 "65 0"
   unset WEDGED_ATT FIRST_SUMMARY
+  make_test_mac_cases "$d"
+}
+# `make test-mac` with a stub in place of the test wrapper: the stub exits with the given codes, one per
+# call; wanted is make's exit code and the number of processes it started.
+make_test_mac_case() { # dir, name, wanted exit code, wanted calls, stub exit codes
+  local c="$1/make-$2" rc n want
+  mkdir -p "$c"
+  printf '%s\n' $5 >"$c/rcs"
+  : >"$c/calls"
+  cat >"$c/stub" <<'STUB'
+#!/bin/sh
+d=$(dirname "$0")
+echo "$*" >>"$d/calls"
+exit "$(sed -n "$(wc -l <"$d/calls" | tr -d ' ')p" "$d/rcs")"
+STUB
+  chmod +x "$c/stub"
+  make -s -o project test-mac MAC_TESTS_WITH_LIMIT="$c/stub" >"$c/out" 2>&1
+  rc=$?
+  n=$(wc -l <"$c/calls" | tr -d ' ')
+  # make reports a failed recipe as exit 2 and "Error <recipe's code>".
+  if [ "$3" = 0 ]; then want=0; else want=2; fi
+  { [ "$rc" = "$want" ] && [ "$n" = "$4" ] && { [ "$3" = 0 ] || grep -q "Error $3\$" "$c/out"; }; } \
+    || fail make-test-mac "$2: want exit $3 and $4 process(es), got make exit $rc and $n: $(cat "$c/out")"
+}
+make_test_mac_cases() {
+  make_test_mac_case "$1" cut-short 75 1 "75 0"
+  grep -q 'not starting the second' "$1/make-cut-short/out" || fail make-test-mac "a skipped second process must say why"
+  make_test_mac_case "$1" pass 0 2 "0 0"
+  make_test_mac_case "$1" first-fails 65 2 "65 0"
+  make_test_mac_case "$1" second-fails 70 2 "0 70"
+  make_test_mac_case "$1" both-fail 70 2 "65 70"
 }
 
 # 12. Every identifier in scripts/ui-smoke.txt and scripts/core-flows.txt names an existing test, so a
