@@ -131,6 +131,36 @@ final class EngineClientTests: XCTestCase {
         XCTAssertEqual(stub.requestCount { $0 == .snapshot }, 2)
     }
 
+    /// A request the engine could not decode is answered `bad_request` under its id: the call
+    /// fails with that error, also for a kind with no client-side deadline (a save waits only for
+    /// its result), and the next request still works.
+    func testBadRequestAnswerUnderTheRequestIDFailsTheCallInsteadOfHanging() async throws {
+        let (stub, rig) = try await stubRig()
+        _ = await rig.connect()
+        stub.refuseRequests = .badRequest
+        let saved = await rig.client.send { .request(id: $0, .save) }
+        guard case .failure(.engine(let code, _)) = saved else { return XCTFail("\(saved)") }
+        XCTAssertEqual(code, .badRequest)
+        let stopped = await rig.store.stopAll()
+        guard case .failure(.engine(.badRequest, _)) = stopped else { return XCTFail("\(stopped)") }
+        XCTAssertEqual(rig.client.state, .connected)
+    }
+
+    /// An `error` with no id cannot be tied to a request, so it fails none (a wrong guess would
+    /// fail another caller's request): it is published, and a live request still ends by timeout.
+    func testIdLessBadRequestIsPublishedAndLeavesRequestsToTheirDeadline() async throws {
+        let (stub, rig) = try await stubRig()
+        _ = await rig.connect()
+        stub.holdResults = true
+        let go = Task { await rig.store.go(list: "00000000-0000-0000-0000-000000000001") }
+        await assertEventually { await rig.requestScheduler.waitingCount == 1 }
+        stub.push(#"{"type":"error","code":"bad_request","message":"x","protocol_version":1}"#)
+        await rig.requestScheduler.fire()
+        let r = await go.value
+        XCTAssertEqual(r, .failure(.timeout))
+        XCTAssertEqual(rig.client.state, .connected)
+    }
+
     func testBoundClientOfAClosedWorkspaceStopsReconnecting() async throws {
         let engine = try await TestEngine.shared()
         let rig = Rig(engine: engine, workspace: "99")
@@ -601,6 +631,9 @@ final class StubEngine {
     private(set) var port: UInt16 = 0
     var holdResults = false
     var garbleResults = false
+    /// When set, every request is answered with an error `result` under its id (what the engine
+    /// sends for a frame it could not decode but whose id it could read).
+    var refuseRequests: ErrorCode?
     /// When set, `hello` is answered with this `error` and the connection closes.
     var refuseAuth: ErrorCode?
     var welcomeFault = WelcomeFault.none
@@ -756,6 +789,14 @@ final class StubEngine {
     }
 
     private func result(_ c: StubConnection, _ id: UInt64, data: JSONValue? = nil) {
+        if let refuseRequests {
+            return c.send(
+                Self.text(
+                    .object([
+                        "type": .string("result"), "id": .uint(id),
+                        "error": .object(["code": .string(refuseRequests.raw), "message": .string("unreadable")]),
+                    ])))
+        }
         var ok: JSONValue = .object([:])
         if let data { ok.set("data", data) }
         if garbleResults { ok = .string("garbled") }

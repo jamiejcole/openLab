@@ -16,8 +16,9 @@ use std::time::Duration;
 use crossbeam_channel::Sender;
 use futures_util::{SinkExt, StreamExt};
 use openlab_core::protocol::{
-    ClientMessage, DocId, ErrorCode, LogLevel, MAX_CLIENT_FRAME_BYTES, Outcome, PROTOCOL_VERSION,
-    ProtocolError, Request, RequestId, ServerMessage, decode_client, decode_hello, encode_server,
+    ClientMessage, DocId, ErrorBody, ErrorCode, LogLevel, MAX_CLIENT_FRAME_BYTES, Outcome,
+    PROTOCOL_VERSION, ProtocolError, Request, RequestId, ServerMessage, decode_client,
+    decode_hello, encode_server,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
@@ -335,6 +336,19 @@ fn ws_config() -> WebSocketConfig {
     WebSocketConfig::default()
         .max_message_size(Some(MAX_CLIENT_FRAME_BYTES))
         .max_frame_size(Some(MAX_CLIENT_FRAME_BYTES))
+}
+
+/// The `id` of a frame that failed to decode, if it still looks like a request: a JSON object
+/// with a string `type` and a `u64` `id` that is not the server's reserved one. Frames over the
+/// size limit are not parsed (the connection ends for them anyway).
+fn lenient_request_id(text: &str) -> Option<RequestId> {
+    if text.len() > MAX_CLIENT_FRAME_BYTES {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    value.get("type")?.as_str()?;
+    let id = RequestId(value.get("id")?.as_u64()?);
+    (id != INTERNAL_ID).then_some(id)
 }
 
 fn error_message(code: ErrorCode, message: &str) -> ServerMessage {
@@ -726,7 +740,7 @@ impl Conn {
                         }
                         Some(Ok(Message::Text(text))) => self.text(text.as_str()).await?,
                         Some(Ok(Message::Binary(_))) => {
-                            self.bad_frame(ErrorCode::BadRequest, "binary frames are not part of the protocol")
+                            self.bad_frame(None, ErrorCode::BadRequest, "binary frames are not part of the protocol")
                                 .await?;
                         }
                         // Ping is answered by the library; pong only counts as sign of life.
@@ -933,9 +947,23 @@ impl Conn {
         self.send(&message).await
     }
 
-    async fn bad_frame(&mut self, code: ErrorCode, text: &str) -> Result<(), Closed> {
+    /// `id`: the request id read leniently from the frame, so the refusal is the one `result`
+    /// the client's request is waiting for; `None` is the id-less `error`.
+    async fn bad_frame(
+        &mut self,
+        id: Option<RequestId>,
+        code: ErrorCode,
+        text: &str,
+    ) -> Result<(), Closed> {
         self.bad_frames += 1;
-        self.send(&error_message(code, text)).await?;
+        let reply = match id {
+            Some(id) => ServerMessage::Result {
+                id,
+                outcome: Outcome::Error(ErrorBody::new(code, text)),
+            },
+            None => error_message(code, text),
+        };
+        self.send(&reply).await?;
         if self.bad_frames >= MAX_BAD_FRAMES {
             let _ = self
                 .send(&error_message(
@@ -956,7 +984,9 @@ impl Conn {
                     ProtocolError::UnknownType(_) => ErrorCode::UnknownMessage,
                     _ => ErrorCode::BadRequest,
                 };
-                return self.bad_frame(code, &e.to_string()).await;
+                return self
+                    .bad_frame(lenient_request_id(text), code, &e.to_string())
+                    .await;
             }
         };
         self.bad_frames = 0;
