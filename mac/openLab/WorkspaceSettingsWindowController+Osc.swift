@@ -160,8 +160,10 @@ extension WorkspaceSettingsWindowController {
 
     @objc private func oscAddClicked() {
         Task {
-            await model.addOscPasscode()
+            let added = await model.addOscPasscode()
             redrawOsc()
+            // From about ten rows on the new one is below the visible part of the table.
+            if added, let last = oscCodeFields.last { last.scrollToVisible(last.bounds) }
         }
     }
 
@@ -200,18 +202,15 @@ extension WorkspaceSettingsWindowController {
 
     /// A code field was committed (Return or leaving it): the engine takes the new code or the old
     /// one comes back with a line saying why not.
-    func oscCodeCommitted(_ field: NSTextField, _ notification: Notification) {
+    func oscCodeCommitted(_ field: NSTextField) {
         guard !oscCommitting, let old = shownOsc?.rows[safe: field.tag]?.passcode else { return }
         let text = field.stringValue
         oscCommitting = true
-        let returned = (notification.userInfo?["NSTextMovement"] as? Int) == NSReturnTextMovement
         Task {
-            await model.changeOscPasscode(old, to: text)
+            let taken = await model.changeOscPasscode(old, to: text)
             oscCommitting = false
-            // Return leaves the field selected and focused, which would hold the redraw back and
-            // give Edit > Undo its text. Done here: the field editor is not free inside its own
-            // end-of-editing. A field the operator has already left is not touched.
-            if returned, field.currentEditor() != nil { window?.makeFirstResponder(nil) }
+            // The redraw waits while another code field is being typed in: this one shows the old code now.
+            if !taken { field.stringValue = old }
             redrawOsc()
         }
     }

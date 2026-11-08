@@ -204,6 +204,55 @@ extension WorkspaceSettingsTests {
         }
     }
 
+    /// Return through the window's key-equivalent path (where the Done button's Return lives)
+    /// commits the code and leaves the window open.
+    func testReturnInACodeFieldCommitsAndKeepsTheWindowOpen() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        let window = try XCTUnwrap(sc.window)
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all)])
+        await assertEventually { self.shown(sc).count == 2 }
+        window.makeFirstResponder(sc.oscCodeFields[0])
+        let editor = try XCTUnwrap(sc.oscCodeFields[0].currentEditor(), "being edited")
+        editor.string = "4821"
+        let event = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        if !window.performKeyEquivalent(with: event) { window.sendEvent(event) }
+        await assertEventually("the new code") { self.codes(rig) == ["4821"] }
+        XCTAssertTrue(window.isVisible, "Return did not press Done")
+        await assertEventually("redrawn with focus released") { sc.oscCodeFields.first?.currentEditor() == nil }
+    }
+
+    func testARefusedCodeIsRestoredWhenAnotherCodeFieldTakesTheFocus() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await clearRows(rig)
+        await addRows(rig, [("1111", .all), ("2222", .all)])
+        await assertEventually { self.shown(sc).count == 3 }
+        let window = try XCTUnwrap(sc.window)
+        window.makeFirstResponder(sc.oscCodeFields[0])
+        sc.oscCodeFields[0].currentEditor()?.string = "2222"
+        window.makeFirstResponder(sc.oscCodeFields[1])  // clicking into the next code
+        await assertEventually("the line") { sc.messageLabel.stringValue == loc("settings.osc.duplicate") }
+        await assertEventually("old code shown") { sc.oscCodeFields.first?.stringValue == "1111" }
+        XCTAssertEqual(codes(rig), ["1111", "2222"])
+    }
+
+    func testANewRowIsScrolledIntoView() async throws {
+        let (rig, wc) = try await newWorkspace()
+        let sc = wc.settingsWindow
+        await addRows(rig, (1...11).map { (String(3000 + $0), .all) })
+        await assertEventually { self.shown(sc).count == 13 }
+        sc.window?.contentView?.layoutSubtreeIfNeeded()
+        sc.oscAddButton.performClick(nil)
+        await assertEventually("the 13th passcode") { self.shown(sc).count == 14 }
+        let last = try XCTUnwrap(sc.oscCodeFields.last)
+        await assertEventually("scrolled to it") { last.visibleRect.height >= last.bounds.height - 1 }
+    }
+
     func testEditAndControlNeedView() async throws {
         let (rig, wc) = try await newWorkspace()
         let sc = wc.settingsWindow

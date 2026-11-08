@@ -54,7 +54,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var oscCommitting = false
 
     let messageLabel = NSTextField(wrappingLabelWithString: "")
-    let doneButton = NSButton(title: loc("settings.done"), target: nil, action: nil)
+    let doneButton = DoneButton(title: loc("settings.done"), target: nil, action: nil)
 
     private var subs: [AnyCancellable] = []
     // Menu-tracking observers: held only while the window is open, removed when it closes.
@@ -453,12 +453,20 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         super.close()
     }
 
+    /// Return in a field commits it and leaves the window open (the Done button's Return key
+    /// would otherwise close the window with the typed text never sent).
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        window?.makeFirstResponder(nil)
+        return true
+    }
+
     /// A number field was committed (Return or leaving the field): sent when valid, else the
     /// engine's value comes back.
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let field = notification.object as? NSTextField else { return }
         if oscCodeFields.contains(field) {
-            oscCodeCommitted(field, notification)
+            oscCodeCommitted(field)
             return
         }
         let text = field.stringValue
@@ -476,5 +484,14 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             lastDrawn = nil
             render()
         }
+    }
+}
+
+/// The window's default button. While a field is being typed in, Return belongs to the field
+/// (it commits the text); only with no text being edited does Return press Done.
+final class DoneButton: NSButton {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if window?.firstResponder is NSText { return false }
+        return super.performKeyEquivalent(with: event)
     }
 }
