@@ -54,10 +54,7 @@ use openlab_core::{Workspace, WorkspaceId};
 
 use super::save::save_workspace_inner;
 use super::threads::BoundedThreads;
-use super::{
-    AppDirs, PersistError, SaveReport, discard_recovery, recovery_stem,
-    write_recovery,
-};
+use super::{AppDirs, PersistError, SaveReport, discard_recovery, recovery_stem, write_recovery};
 
 /// What a writer job does; passed to the test hook.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
