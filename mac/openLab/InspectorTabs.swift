@@ -95,6 +95,48 @@ extension InspectorViewController {
         render()
     }
 
+    /// The Target row (QLab 5, manual pp. 126-127). A file cue: the file's path, chosen with a double-click
+    /// or Choose, and cleared. A cue that acts on a cue: a number to type, the target's name beside it, a
+    /// button to clear it and one to go to it. Any other cue: a disabled field and a not-applicable note.
+    func renderTarget(_ cue: Cue, model: WorkspaceModel) {
+        let kind = cue.kindType
+        let isFile = kind == "audio"
+        let isCueTarget = InspectorEdit.targetKinds.contains(kind)
+        let media = cue.raw["kind"]?["media"]?.stringValue ?? ""
+        let targetID = isCueTarget ? cue.raw["kind"]?["target"]?.stringValue.map { ModelID($0) } : nil
+        let target = targetID.flatMap { model.cue($0) }
+        targetField.placeholderString = isFile && media.isEmpty ? loc("inspector.target.noFile") : nil
+        // A file cue's field is not typed in, and a field that can be selected would swallow the double-click.
+        if targetField.isEditable != isCueTarget {
+            targetField.isEditable = isCueTarget
+            targetField.isSelectable = isCueTarget
+        }
+        targetField.isEnabled = isFile || isCueTarget
+        targetFieldWidth.isActive = !isFile
+        if isFile {
+            // The whole path (manual p. 126); the show file holds one relative to its folder.
+            targetField.stringValue = CueRowMenu.mediaURL(media, showPath: store.document?.path)?.path ?? media
+        } else if !isCueTarget {
+            targetField.stringValue = ""
+        }
+        targetField.toolTip = targetField.stringValue.isEmpty ? nil : targetField.stringValue
+        chooseButton.isHidden = !isFile
+        chooseButton.isEnabled = isFile && !isLocked
+        clearTargetButton.isHidden = !isFile && !isCueTarget
+        clearTargetButton.isEnabled = (isFile ? !media.isEmpty : targetID != nil) && !isLocked
+        jumpTargetButton.isHidden = !isCueTarget
+        jumpTargetButton.isEnabled = target != nil
+        targetNote.isHidden = isFile
+        if isCueTarget {
+            let lookup: (ModelID) -> Cue? = { model.cue($0) }
+            // A target that is gone: the field already says so.
+            targetNote.stringValue =
+                target?.listName(lookup: lookup) ?? (targetID == nil ? loc("inspector.target.none") : "")
+        } else {
+            targetNote.stringValue = loc("inspector.target.notApplicable")
+        }
+    }
+
     /// Clears the Target: an Audio cue loses its file, a control cue its target cue.
     @objc func clearTargetClicked() {
         guard !isLocked, let cue = cueForEdit else { return }
@@ -104,8 +146,31 @@ extension InspectorViewController {
             send(.setProperty(cue.id, .media(nil)), cue: cue.id, key: "media", revert: [])
             render()
         } else if InspectorEdit.targetKinds.contains(cue.kindType) {
+            // A number typed and not committed goes too, or ending the typing would set it again.
+            cancel(.target)
+            if targetField.currentEditor() != nil { view.window?.makeFirstResponder(nil) }
             messageLabel.stringValue = ""
             send(.setProperty(cue.id, .target(nil)), cue: cue.id, key: "target", revert: [.target])
+        }
+    }
+
+    /// Selects the target cue as a click on its row would.
+    @objc func jumpToTargetClicked() {
+        guard let id = cue?.raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }), store.model?.cue(id) != nil
+        else { return }
+        onJumpToTarget?(id)
+    }
+}
+
+/// The Target field. A file cue's is not typed in: a double-click on it chooses the file.
+final class TargetField: NSTextField {
+    var onDoubleClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        if !isEditable, isEnabled, event.clickCount == 2 {
+            onDoubleClick?()
+        } else {
+            super.mouseDown(with: event)
         }
     }
 }

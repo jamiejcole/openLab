@@ -21,7 +21,7 @@ Q108 | Reopen-last meets a file whose autosave is newer: same restore-or-open pr
 C-R1 | Renaming or moving a cue's file does not break the cue; an unrenamed cue's name follows the file (also in an unsaved workspace). A file moved to the Trash breaks the cue at once | user
 C-R2 | Renamed file and a cue with the user's own name: cue keeps the user's name | user
 C-R3 | A missing file that comes back relinks automatically | user
-C-R4 | Missing file noticed within a couple of seconds, not only when played: cue goes broken (Target shows Trash, duration 0); putting the file back un-breaks it by itself | user
+C-R4 | Missing file noticed within a couple of seconds, not only when played: cue goes broken (its Target cell shows a trash can, duration 0); putting the file back un-breaks it by itself | user
 C-R5 | Dropping media already in the project folder copies it again with "2" appended, then "3"... (openLab has no copy-on-import) | user
 C-X1 | Audio interface unplugged mid-show: playing cue stops and shows the yellow pause icon, other cues routed to it go broken until replug. After replug (3 s or 20 s) nothing resumes by itself (Resume All only clears the icon), GO restarts from 0. Decision: follow QLab, no automatic resume | user 2026-10-27, decision
 C-Q13 | Unplug while cues wait: the active cue pauses, others go broken; on replug nothing plays; pre-waits and post-waits do not start by themselves and countdowns stop | user

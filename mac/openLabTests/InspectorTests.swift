@@ -222,7 +222,7 @@ final class InspectorTests: XCTestCase {
         XCTAssertEqual(vc.continuePopup.indexOfSelectedItem, 0)
         XCTAssertEqual(vc.colourPopup.indexOfSelectedItem, 0)
         XCTAssertEqual(vc.armedCheck.state, .on)
-        XCTAssertFalse(vc.targetField.isEnabled, "an audio cue has no cue target")
+        XCTAssertFalse(vc.targetField.isEditable, "an audio cue's file is chosen, not typed")
         vc.setSelection([Self.fade])
         XCTAssertTrue(vc.targetField.isEnabled)
         XCTAssertEqual(vc.targetField.stringValue, "1", "the target is shown by its number")
@@ -1140,5 +1140,542 @@ final class NetworkInspectorTests: XCTestCase {
         }
         let silent = try await quiet()
         XCTAssertTrue(silent, "no GO was fired by the typed Space")
+    }
+}
+
+/// The Target row and drag-to-target (#494, QLab 5 manual pp. 94, 120, 126-127) on the real engine: the
+/// "Targets" test show is 1 intro, pad (no number), 3 an unnamed Fade with no target and 4 note (a Memo).
+/// A real drag is in `CueTargetUITests`; here a drop is what the table hands over, so every branch runs.
+@MainActor
+final class CueTargetFlowTests: XCTestCase {
+    private static let intro: ModelID = "00000000-0000-0000-0000-000000000101"
+    private static let pad: ModelID = "00000000-0000-0000-0000-000000000102"
+    private static let fade: ModelID = "00000000-0000-0000-0000-000000000103"
+    private static let memo: ModelID = "00000000-0000-0000-0000-000000000104"
+    private static let on = NSOutlineViewDropOnItemIndex
+
+    private var rig: Rig!
+    private var wc: WorkspaceWindowController!
+    private var inspector: InspectorViewController { wc.inspector }
+    private var list: ModelID { wc.cueList.listID ?? "" }
+
+    override func setUp() async throws {
+        try await open("Targets")
+    }
+
+    override func tearDown() async throws {
+        wc?.window?.close()
+        wc = nil
+        rig = nil
+    }
+
+    private func open(_ show: String) async throws {
+        wc?.window?.close()
+        rig = try await Rig.open(show)
+        wc = WorkspaceWindowController(store: rig.store)
+        wc.window?.makeKeyAndOrderFront(nil)
+        await assertEventually { self.wc.cueList.roots.isEmpty == false }
+    }
+
+    // MARK: Doing what the operator does
+
+    private func select(_ id: ModelID) async {
+        wc.cueList.selectAsUser([id])
+        await assertEventually { self.inspector.cue?.id == id }
+        inspector.tabView.selectTabViewItem(at: 0)
+    }
+
+    /// Clicks in the Target field, replaces what is there with `text`, and presses Return.
+    private func typeTarget(_ text: String) throws {
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(inspector.targetField.isEnabled)
+        XCTAssertTrue(window.makeFirstResponder(inspector.targetField))
+        let editor = try XCTUnwrap(inspector.targetField.currentEditor() as? NSTextView)
+        editor.selectAll(nil)
+        editor.insertText(text, replacementRange: editor.selectedRange())
+        editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+    }
+
+    /// The button is drawn, enabled, and pressed.
+    private func click(_ button: NSButton) throws {
+        XCTAssertFalse(button.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(button.isEnabled)
+        button.performClick(nil)
+    }
+
+    private func mouseDown(_ clicks: Int) throws {
+        let field = inspector.targetField
+        let event = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown, location: field.convert(NSPoint(x: 4, y: 4), to: nil), modifierFlags: [],
+                timestamp: 0, windowNumber: wc.window?.windowNumber ?? 0, context: nil, eventNumber: 0,
+                clickCount: clicks, pressure: 1))
+        // Direct: a press through the window only brings it forward when the app is not active (CI).
+        field.mouseDown(with: event)
+    }
+
+    /// What dropping `dragged` on (or between) rows does, done.
+    @discardableResult
+    private func drop(
+        _ dragged: [ModelID], on item: ModelID?, index: Int = on, targetColumn: Bool = true,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> CueListViewController.CueDrop {
+        let nodes = dragged.compactMap { wc.cueList.node($0) }
+        let planned = wc.cueList.cueDrop(
+            nodes, item: item.flatMap { wc.cueList.node($0) }, index: index, inTargetColumn: targetColumn)
+        let plan = try XCTUnwrap(planned, "the drop is refused", file: file, line: line)
+        wc.cueList.perform(plan)
+        return plan
+    }
+
+    private func add(_ kind: NewCueKind) async throws -> ModelID {
+        let added = await wc.editor.add(kind)
+        let id = try XCTUnwrap(added)
+        await assertEventually { self.wc.cueList.node(id) != nil }
+        return id
+    }
+
+    // MARK: What the window shows
+
+    private func cell(_ column: String, _ id: ModelID) -> CueCell? {
+        let o = wc.cueList.outlineView
+        guard let node = wc.cueList.node(id) else { return nil }
+        let col = o.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
+        return o.view(atColumn: col, row: o.row(forItem: node), makeIfNecessary: true) as? CueCell
+    }
+
+    private func targetCell(_ id: ModelID) -> String { cell("target", id)?.label.stringValue ?? "no cell" }
+    private func nameCell(_ id: ModelID) -> String { cell("name", id)?.label.stringValue ?? "no cell" }
+    private var order: [ModelID] { wc.cueList.roots.map(\.id) }
+    private var original: [ModelID] { [Self.intro, Self.pad, Self.fade, Self.memo] }
+    private func target(_ id: ModelID) -> String? { rig.store.model?.cue(id)?.raw["kind"]?["target"]?.stringValue }
+
+    private func assertNoTargetShown(line: UInt = #line) {
+        XCTAssertEqual(inspector.targetField.stringValue, "", line: line)
+        XCTAssertTrue(inspector.targetField.isEnabled, line: line)
+        XCTAssertEqual(inspector.targetNote.stringValue, loc("inspector.target.none"), line: line)
+        XCTAssertFalse(inspector.targetNote.isHidden, line: line)
+        XCTAssertFalse(inspector.clearTargetButton.isHidden, line: line)
+        XCTAssertFalse(inspector.clearTargetButton.isEnabled, line: line)
+        XCTAssertFalse(inspector.jumpTargetButton.isHidden, line: line)
+        XCTAssertFalse(inspector.jumpTargetButton.isEnabled, line: line)
+        XCTAssertEqual(targetCell(Self.fade), loc("cue.target.missing"), line: line)
+    }
+
+    // MARK: The issue's flows
+
+    func testNoTargetShown() async throws {
+        await select(Self.fade)
+        assertNoTargetShown()
+        XCTAssertEqual(targetCell(Self.fade), "?")
+        XCTAssertTrue(inspector.chooseButton.isHidden, "a control cue is offered no file chooser")
+    }
+
+    func testTypeATargetNumber() async throws {
+        await select(Self.fade)
+        try typeTarget("1")
+        await assertEventually { self.targetCell(Self.fade) == "1" }
+        XCTAssertEqual(inspector.targetField.stringValue, "1")
+        XCTAssertEqual(inspector.targetNote.stringValue, "intro")
+        XCTAssertTrue(inspector.clearTargetButton.isEnabled)
+        XCTAssertTrue(inspector.jumpTargetButton.isEnabled)
+        XCTAssertEqual(inspector.messageLabel.stringValue, "")
+    }
+
+    func testTargetWithoutANumber() async throws {
+        await select(Self.fade)
+        await wc.editor.setTarget(of: [Self.fade], to: Self.pad)
+        await assertEventually { self.targetCell(Self.fade) == "pad" }
+        // The field holds a number and the name goes beside it, so there is nothing to type back.
+        XCTAssertEqual(inspector.targetField.stringValue, "")
+        XCTAssertEqual(inspector.targetNote.stringValue, "pad")
+        XCTAssertTrue(inspector.jumpTargetButton.isEnabled)
+    }
+
+    func testClearTarget() async throws {
+        await select(Self.fade)
+        try typeTarget("1")
+        await assertEventually { self.targetCell(Self.fade) == "1" }
+        try click(inspector.clearTargetButton)
+        await assertEventually { self.targetCell(Self.fade) == "?" }
+        assertNoTargetShown()
+        XCTAssertNil(target(Self.fade))
+    }
+
+    func testJumpToTarget() async throws {
+        await select(Self.fade)
+        try typeTarget("1")
+        await assertEventually { self.inspector.jumpTargetButton.isEnabled }
+        try click(inspector.jumpTargetButton)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [Self.intro], "the target's row is highlighted")
+        let row = wc.cueList.outlineView.row(forItem: wc.cueList.node(Self.intro))
+        XCTAssertTrue(wc.cueList.outlineView.rows(in: wc.cueList.outlineView.visibleRect).contains(row))
+        await assertEventually { self.inspector.cue?.id == Self.intro }
+        XCTAssertEqual(inspector.nameField.stringValue, "intro")
+        await assertEventually { self.rig.store.playheads[self.list] == Self.intro }
+        await assertEventually { self.wc.masthead.standbyField.stringValue.contains("intro") }
+        let marker = try XCTUnwrap(cell("status", Self.intro)?.images[0])
+        await assertEventually { !marker.isHidden }
+    }
+
+    func testFileTargetChooser() async throws {
+        let wav = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        XCTAssertTrue(FileManager.default.createFile(atPath: wav.path, contents: Data()))
+        addTeardownBlock { try? FileManager.default.removeItem(at: wav) }
+        var asked = 0
+        var picked: URL?
+        wc.pickAudioFile = {
+            asked += 1
+            return picked
+        }
+        await select(Self.intro)
+        XCTAssertFalse(inspector.chooseButton.isHidden)
+        XCTAssertFalse(inspector.targetField.isEditable, "the path is not typed in")
+        let before = inspector.targetField.stringValue
+        XCTAssertEqual(before, try showFolder() + "/media/a.wav", "the whole path, not the stored one")
+        XCTAssertTrue(inspector.targetNote.isHidden)
+        XCTAssertTrue(inspector.jumpTargetButton.isHidden, "a file has no cue to go to")
+        // One click asks nothing; a cancelled chooser changes nothing.
+        try mouseDown(1)
+        XCTAssertEqual(asked, 0)
+        try mouseDown(2)
+        XCTAssertEqual(asked, 1)
+        XCTAssertEqual(inspector.targetField.stringValue, before)
+        picked = wav
+        try mouseDown(2)
+        XCTAssertEqual(asked, 2)
+        await assertEventually { self.inspector.targetField.stringValue == wav.standardizedFileURL.path }
+        // The list's round button opens the same chooser, for the same cue.
+        let round = try XCTUnwrap(cell("target", Self.intro)?.chooseButton)
+        try click(round)
+        XCTAssertEqual(asked, 3)
+        // Show Mode offers no chooser.
+        wc.setShowMode(true)
+        try mouseDown(2)
+        XCTAssertEqual(asked, 3)
+        XCTAssertFalse(inspector.chooseButton.isEnabled)
+    }
+
+    func testNoTargetCueType() async throws {
+        await select(Self.memo)
+        XCTAssertFalse(inspector.targetField.isEnabled)
+        XCTAssertEqual(inspector.targetField.stringValue, "")
+        XCTAssertEqual(inspector.targetNote.stringValue, loc("inspector.target.notApplicable"))
+        XCTAssertFalse(inspector.targetNote.isHidden)
+        XCTAssertTrue(inspector.chooseButton.isHidden, "no chooser is offered")
+        XCTAssertTrue(inspector.clearTargetButton.isHidden)
+        XCTAssertTrue(inspector.jumpTargetButton.isHidden)
+        XCTAssertEqual(targetCell(Self.memo), "", "the list shows nothing either")
+    }
+
+    func testDragTheActingCueOntoItsTarget() async throws {
+        XCTAssertEqual(try drop([Self.fade], on: Self.intro), .setTarget([Self.fade], Self.intro))
+        await assertEventually { self.targetCell(Self.fade) == "1" }
+        XCTAssertEqual(order, original)
+        XCTAssertEqual(nameCell(Self.fade), "Fade intro", "its default name follows")
+    }
+
+    func testDragTheTargetOntoTheActingCue() async throws {
+        XCTAssertEqual(try drop([Self.intro], on: Self.fade), .setTarget([Self.fade], Self.intro))
+        await assertEventually { self.targetCell(Self.fade) == "1" }
+        XCTAssertEqual(order, original)
+    }
+
+    func testDropBetweenRowsStillReorders() async throws {
+        await wc.editor.setTarget(of: [Self.fade], to: Self.pad)
+        await assertEventually { self.targetCell(Self.fade) == "pad" }
+        try drop([Self.fade], on: nil, index: 1)
+        await assertEventually { self.order == [Self.intro, Self.fade, Self.pad, Self.memo] }
+        XCTAssertEqual(target(Self.fade), Self.pad.raw)
+        XCTAssertEqual(targetCell(Self.fade), "pad")
+    }
+
+    // MARK: The rules around them
+
+    /// The folder of the open show.
+    private func showFolder() throws -> String {
+        (try XCTUnwrap(rig.store.document?.path) as NSString).deletingLastPathComponent
+    }
+
+    /// A file in the show's folder is stored relative to it; the field shows the whole path all the same,
+    /// when chosen and when the saved show is opened again.
+    func testAFileInTheShowFolderShowsItsWholePathAfterAReopen() async throws {
+        let folder = try showFolder()
+        let path = try XCTUnwrap(rig.store.document?.path)
+        let chosen = URL(fileURLWithPath: folder).appendingPathComponent("media/b.wav")
+        try FileManager.default.copyItem(atPath: folder + "/media/a.wav", toPath: chosen.path)
+        wc.pickAudioFile = { chosen }
+        await select(Self.intro)
+        try mouseDown(2)
+        await assertEventually { self.inspector.targetField.stringValue == chosen.standardizedFileURL.path }
+        guard case .success = await rig.store.save() else { return XCTFail("the save") }
+        guard case .success = await rig.client.send({ .close(id: $0, doc: self.rig.doc, discardChanges: false) })
+        else { return XCTFail("the close") }
+        wc.window?.close()
+        let engine = rig.testEngine
+        guard case .success(let ok) = await engine.request(.open(path: path)), case .opened(let doc)? = ok.data else {
+            return XCTFail("the reopen")
+        }
+        rig = Rig(engine: engine, workspace: doc)
+        let connected = await rig.connect()
+        XCTAssertTrue(connected)
+        wc = WorkspaceWindowController(store: rig.store)
+        wc.window?.makeKeyAndOrderFront(nil)
+        await assertEventually { self.wc.cueList.node(Self.intro) != nil }
+        await select(Self.intro)
+        XCTAssertEqual(inspector.targetField.stringValue, chosen.standardizedFileURL.path)
+        XCTAssertEqual(inspector.targetField.toolTip, chosen.standardizedFileURL.path)
+        _ = await rig.client.send({ .close(id: $0, doc: doc, discardChanges: true) })
+    }
+
+    /// `InspectorEdit.targetRejection` is a copy of core's `can_target`: every cue that takes a target, on
+    /// every kind and every Group mode, must be refused exactly where the engine would mark it broken.
+    func testTheTargetRulesMatchTheEngines() async throws {
+        var targets: [(String, ModelID)] = []
+        for kind in NewCueKind.allCases where kind != .group { targets.append((kind.wireType, try await add(kind))) }
+        for mode in InspectorViewController.groupModes {
+            let group = try await add(.group)
+            let set = await rig.store.send(
+                command: .setProperty(group, .groupMode(type: mode, loop: false, shuffle: false)))
+            guard case .success = set else { return XCTFail("group mode \(mode)") }
+            targets.append(("group \(mode)", group))
+        }
+        let sources = NewCueKind.allCases.filter { InspectorEdit.targetKinds.contains($0.wireType) }
+        XCTAssertEqual(Set(sources.map(\.wireType)), InspectorEdit.targetKinds, "every kind that takes a target")
+        var refused = 0
+        for kind in sources {
+            let source = try await add(kind)
+            for (name, target) in targets {
+                guard case .success = await rig.store.send(command: .setProperty(source, .target(target))) else {
+                    return XCTFail("\(kind.wireType) on \(name)")
+                }
+                try await rig.advance()
+                let cue = try XCTUnwrap(rig.store.model?.cue(source))
+                let targetCue = try XCTUnwrap(rig.store.model?.cue(target))
+                let ours = InspectorEdit.targetRejection(of: cue, target: targetCue) != nil
+                let engine = (rig.store.problems[source] ?? []).contains { $0.type == "target_wrong_kind" }
+                XCTAssertEqual(ours, engine, "\(kind.wireType) on \(name)")
+                if ours { refused += 1 }
+            }
+        }
+        XCTAssertGreaterThan(refused, 0, "the table reached the refused cases")
+    }
+
+    /// QLab 5's change log, pp. 5-7: the dragged cue becomes the target of the cue it lands on.
+    func testBothCouldTargetEachOtherTheDraggedCueBecomesTheTarget() async throws {
+        let start = try await add(.start)
+        let stop = try await add(.stop)
+        let before = order
+        XCTAssertEqual(try drop([start], on: stop), .setTarget([stop], start))
+        await assertEventually { self.target(stop) == start.raw }
+        XCTAssertNil(target(start))
+        XCTAssertEqual(try drop([stop], on: start), .setTarget([start], stop))
+        await assertEventually { self.target(start) == stop.raw }
+        XCTAssertEqual(target(stop), start.raw, "each is set only by a drop on it")
+        XCTAssertEqual(order, before)
+    }
+
+    func testAFadeAcceptsOnlyWhatCanBeFaded() async throws {
+        let start = try await add(.start)
+        // Either way round the Start cue is the one that can act on the other.
+        XCTAssertEqual(try drop([Self.fade], on: start), .setTarget([start], Self.fade))
+        XCTAssertEqual(try drop([start], on: Self.fade), .setTarget([start], Self.fade))
+        // A Memo holds no target and cannot be faded: this is a reorder, the target unchanged.
+        XCTAssertEqual(try drop([Self.fade], on: Self.memo), .move([Self.fade], nil, 4))
+        await assertEventually { self.order == [Self.intro, Self.pad, Self.memo, Self.fade, start] }
+        XCTAssertNil(target(Self.fade))
+    }
+
+    /// QLab 5.0's change log: only the Target column sets a target, so a reorder cannot change one by accident.
+    func testADropElsewhereOnARowOnlyReorders() async throws {
+        XCTAssertEqual(try drop([Self.fade], on: Self.intro, targetColumn: false), .move([Self.fade], nil, 1))
+        await assertEventually { self.order == [Self.intro, Self.fade, Self.pad, Self.memo] }
+        XCTAssertNil(target(Self.fade))
+    }
+
+    func testADropOnItsOwnTargetCellChangesNothing() async throws {
+        let log = CueEditingTests.SendLog(rig)
+        guard case .move = try drop([Self.fade], on: Self.fade) else {
+            return XCTFail("a cue cannot be its own target")
+        }
+        // The move runs in a task: this waits for it, and an undo would then find a step if it had sent one.
+        await settle()
+        try await rig.advance()
+        XCTAssertEqual(log.sent, 0, "it is already there")
+        XCTAssertEqual(order, original)
+        XCTAssertNil(target(Self.fade))
+    }
+
+    func testDraggingAgainDoesNotRetargetOrSendAnything() async throws {
+        await wc.editor.setTarget(of: [Self.fade], to: Self.intro)
+        await assertEventually { self.target(Self.fade) == Self.intro.raw }
+        let log = CueEditingTests.SendLog(rig)
+        await wc.editor.setTarget(of: [Self.fade], to: Self.intro)
+        XCTAssertEqual(log.sent, 0, "already its target")
+    }
+
+    func testSeveralDraggedCuesAllTargetTheOneDroppedOnInOneUndoStep() async throws {
+        let start = try await add(.start)
+        let stop = try await add(.stop)
+        XCTAssertEqual(try drop([start, stop], on: Self.intro), .setTarget([start, stop], Self.intro))
+        await assertEventually { self.targetCell(start) == "1" && self.targetCell(stop) == "1" }
+        await wc.editor.undo()
+        await assertEventually { self.target(start) == nil && self.target(stop) == nil }
+    }
+
+    func testADropOnAGroupsTargetCellMakesItTheTargetAndAnywhereElseMovesIn() async throws {
+        try await open("Demo")
+        let group = TestSnapshots.group
+        let stop = try await add(.stop)
+        let before = order
+        XCTAssertEqual(try drop([stop], on: group), .setTarget([stop], group))
+        await assertEventually { self.target(stop) == group.raw }
+        XCTAssertEqual(order, before, "not moved into it")
+        guard
+            case .move(_, group?, _)? = wc.cueList.cueDrop(
+                [try XCTUnwrap(wc.cueList.node(stop))], item: wc.cueList.node(group), index: Self.on,
+                inTargetColumn: false)
+        else { return XCTFail("a drop on the rest of the row goes in") }
+    }
+
+    func testATypedNumberThatMatchesNoCueIsRefusedOnScreen() async throws {
+        await select(Self.fade)
+        let log = CueEditingTests.SendLog(rig)
+        try typeTarget("99")
+        XCTAssertEqual(inspector.messageLabel.stringValue, loc("inspector.invalid.unknownTarget"))
+        assertNoTargetShown()
+        XCTAssertEqual(log.sent, 0)
+    }
+
+    func testACueCannotTargetItself() async throws {
+        await select(Self.fade)
+        let log = CueEditingTests.SendLog(rig)
+        try typeTarget("3")
+        XCTAssertEqual(inspector.messageLabel.stringValue, loc("inspector.invalid.selfTarget"))
+        assertNoTargetShown()
+        XCTAssertEqual(log.sent, 0)
+    }
+
+    func testATypedTargetOfTheWrongKindIsRefusedOnScreen() async throws {
+        await select(Self.fade)
+        let log = CueEditingTests.SendLog(rig)
+        try typeTarget("4")
+        XCTAssertEqual(inspector.messageLabel.stringValue, loc("inspector.invalid.wrongTargetKind"))
+        assertNoTargetShown()
+        XCTAssertEqual(log.sent, 0)
+    }
+
+    func testUndoOfATargetChange() async throws {
+        try drop([Self.fade], on: Self.intro)
+        await assertEventually { self.targetCell(Self.fade) == "1" }
+        await select(Self.fade)
+        await wc.editor.undo()
+        await assertEventually { self.targetCell(Self.fade) == "?" }
+        assertNoTargetShown()
+        XCTAssertEqual(nameCell(Self.fade), CueKindStyle.kindLabel("fade"))
+        await wc.editor.redo()
+        await assertEventually { self.targetCell(Self.fade) == "1" }
+        XCTAssertEqual(inspector.targetNote.stringValue, "intro")
+    }
+
+    func testClearDropsANumberTypedAndNotCommitted() async throws {
+        await select(Self.fade)
+        try typeTarget("1")
+        await assertEventually { self.target(Self.fade) == Self.intro.raw }
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(inspector.targetField))
+        let editor = try XCTUnwrap(inspector.targetField.currentEditor() as? NSTextView)
+        editor.selectAll(nil)
+        editor.insertText("4", replacementRange: editor.selectedRange())
+        try click(inspector.clearTargetButton)
+        await assertEventually { self.targetCell(Self.fade) == "?" }
+        assertNoTargetShown()
+        XCTAssertEqual(inspector.messageLabel.stringValue, "", "the dropped text was not checked")
+        XCTAssertFalse(inspector.isEditing(.target))
+    }
+
+    /// A render from an edit elsewhere must leave a number being typed alone.
+    func testAModelChangeLeavesANumberBeingTyped() async throws {
+        await select(Self.fade)
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(inspector.targetField))
+        let editor = try XCTUnwrap(inspector.targetField.currentEditor() as? NSTextView)
+        editor.insertText("1", replacementRange: editor.selectedRange())
+        guard case .success = await rig.store.send(command: .setProperty(Self.intro, .name("overture"))) else {
+            return XCTFail("the rename")
+        }
+        await assertEventually { self.nameCell(Self.intro) == "overture" }
+        inspector.render()
+        XCTAssertNotNil(inspector.targetField.currentEditor(), "still typing")
+        XCTAssertEqual(inspector.targetField.currentEditor()?.string, "1")
+        editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        await assertEventually { self.targetCell(Self.fade) == "1" }
+        XCTAssertEqual(inspector.targetNote.stringValue, "overture")
+    }
+
+    func testATargetThatWasDeletedCanBeClearedButNotJumpedTo() async throws {
+        await wc.editor.setTarget(of: [Self.fade], to: Self.pad)
+        await assertEventually { self.targetCell(Self.fade) == "pad" }
+        await select(Self.pad)
+        await wc.editor.deleteSelection()
+        await select(Self.fade)
+        await assertEventually { self.inspector.targetField.stringValue == loc("inspector.target.missing") }
+        XCTAssertEqual(targetCell(Self.fade), "?")
+        XCTAssertEqual(inspector.targetNote.stringValue, "")
+        XCTAssertFalse(inspector.jumpTargetButton.isEnabled)
+        try click(inspector.clearTargetButton)
+        await assertEventually { self.inspector.targetField.stringValue == "" }
+        assertNoTargetShown()
+    }
+
+    func testJumpOpensTheCollapsedGroupsAroundTheTarget() async throws {
+        try await open("Demo")
+        let fade = TestSnapshots.fade
+        let rain = TestSnapshots.rain
+        await wc.editor.setTarget(of: [fade], to: rain)
+        await assertEventually { self.target(fade) == rain.raw }
+        wc.cueList.outlineView.collapseItem(wc.cueList.node(TestSnapshots.group))
+        await select(fade)
+        try click(inspector.jumpTargetButton)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [rain])
+        await assertEventually { self.rig.store.playheads[self.list] == rain }
+    }
+
+    func testJumpFollowsATargetIntoAnotherList() async throws {
+        let second: ModelID = "00000000-0000-0000-0000-0000000000a2"
+        let added = await rig.store.send(command: .addCueList(id: second, name: "Second list", index: 1))
+        guard case .success = added else { return XCTFail("no second list") }
+        let other = ModelID(UUID().uuidString.lowercased())
+        let memo = try XCTUnwrap(NewCueKind.memo.cueJSON(id: other, patch: nil, networkPatch: nil))
+        guard case .success = await rig.store.send(command: .addCue(memo, list: second, parent: nil, index: 0)) else {
+            return XCTFail("no cue in the second list")
+        }
+        let stop = try await add(.stop)
+        guard case .success = await rig.store.send(command: .setProperty(stop, .target(other))) else {
+            return XCTFail("no target")
+        }
+        await select(stop)
+        await assertEventually { self.inspector.jumpTargetButton.isEnabled }
+        try click(inspector.jumpTargetButton)
+        XCTAssertEqual(wc.cueList.listID, second)
+        XCTAssertEqual(wc.cueList.selectedIDs(), [other])
+    }
+
+    func testShowModeRefusesTargetEdits() async throws {
+        await wc.editor.setTarget(of: [Self.fade], to: Self.intro)
+        await assertEventually { self.targetCell(Self.fade) == "1" }
+        await select(Self.fade)
+        wc.setShowMode(true)
+        await assertEventually { self.inspector.isLocked }
+        XCTAssertFalse(inspector.targetField.isEnabled)
+        XCTAssertFalse(inspector.clearTargetButton.isEnabled)
+        XCTAssertNil(
+            wc.cueList.cueDrop(
+                [try XCTUnwrap(wc.cueList.node(Self.pad))], item: wc.cueList.node(Self.fade), index: Self.on,
+                inTargetColumn: true))
+        let log = CueEditingTests.SendLog(rig)
+        await wc.editor.setTarget(of: [Self.fade], to: Self.pad)
+        XCTAssertEqual(log.sent, 0, "a drop on its way is refused too")
     }
 }

@@ -4606,12 +4606,12 @@ final class CueListDrawingTests: XCTestCase {
         show(wc.inspector.view)
         wc.cueList.selectAsUser([empty])
         await assertEventually { wc.inspector.cueForEdit?.id == empty }
-        XCTAssertTrue(wc.inspector.clearTargetButton.isHidden, "no target: no clear glyph")
+        XCTAssertFalse(wc.inspector.clearTargetButton.isEnabled, "no target: nothing to clear")
         XCTAssertNotNil(wc.inspector.chooseButton.image)
         wc.cueList.selectAsUser([H.door])
         await assertEventually { wc.inspector.cueForEdit?.id == H.door }
         let clear = wc.inspector.clearTargetButton
-        XCTAssertFalse(clear.isHidden)
+        XCTAssertTrue(clear.isEnabled)
         XCTAssertEqual(clear.image?.accessibilityDescription, loc("inspector.target.clear"))
         let drawnClear = try drawnGlyphs(clear, .fieldClear, label: loc("inspector.target.clear"))
         XCTAssertGreaterThan(drawnClear.shown.count(Self.drawn), 8, "the clear glyph is drawn")
@@ -4623,7 +4623,7 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { (rig.store.model?.cue(H.door)?.raw["kind"]?["media"]?.stringValue ?? "").isEmpty }
         await assertEventually { wc.inspector.targetField.stringValue == "" }
         XCTAssertEqual(targetCell(wc, H.door)?.label.stringValue, "", "the list cell holds no file")
-        await assertEventually { wc.inspector.clearTargetButton.isHidden }
+        await assertEventually { !wc.inspector.clearTargetButton.isEnabled }
     }
 
     func testGroupModeChangesTheTypeIcon() async throws {
