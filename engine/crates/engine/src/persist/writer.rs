@@ -52,9 +52,9 @@ use std::time::{Duration, Instant};
 
 use openlab_core::{Workspace, WorkspaceId};
 
+use super::recovery::remove_exact;
 use super::save::save_workspace_inner;
 use super::threads::BoundedThreads;
-use super::recovery::remove_exact;
 use super::{AppDirs, PersistError, SaveReport, discard_recovery, recovery_stem, write_recovery};
 
 /// What a writer job does; passed to the test hook.

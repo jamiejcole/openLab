@@ -65,7 +65,7 @@ Details of the replace:
 |---|---|
 | No recovery file for this show path | `None` |
 | Recovery newer than the show file, or the show file missing | `Offer`, carrying the parsed workspace |
-| Recovery not newer (equal counts as not newer) | `Stale`: moved aside to `<stem>.<modified-ms>.stale.openlab`, newest 5 kept, never deleted; a save does not remove them (only the newest 5 are kept) |
+| Recovery not newer (equal counts as not newer) | `Stale`: moved aside to `<stem>.<modified-ms>.stale.openlab`, pruned to the newest 5, otherwise kept until the operator deletes one (`discard_recovery`) or restores one and saves (a save leaves them) |
 | Unreadable, invalid, or for another workspace | `Unusable { warning }`; renamed `.corrupt` (`.corrupt.1`, ... if one exists) so the warning is not repeated and earlier evidence is kept |
 
 - `other_copies`: recovery files with the same workspace id but another show path (a duplicated show, or work from before the first save). Never offered to this file, never touched; reported as a `recovery_other_copies` notice at open.
@@ -81,7 +81,7 @@ Details of the replace:
 - Files moved aside as stale are listed `stale: true` with the time from their name. Why: a stale file may be the only copy of newer work. `.corrupt` / `.corrupt.N` files are hidden.
 - Names are parsed strictly (lower-case hyphenated UUID, optional `-` and 16 lower-case hex digits; `parse_recovery_file_name` / `parse_store_name`). Anything else is skipped with a warning.
 - Bounds: at most `max_entries` returned (`MAX_RECOVERY_ENTRIES` default); newest by mtime among the first 5000 directory entries (more is `truncated`); no recursion; a file over `MAX_NAME_READ_BYTES` (4 MiB) is listed without a name instead of being parsed.
-- It parses files, so it runs on the document worker, never the control thread. `open_recovery` opens one entry, dirty.
+- It parses files, so it runs on the document worker, never the control thread. `open_recovery` opens one entry, dirty. `discard_recovery` (same selector, same worker and one-read gate) deletes exactly that file: `not_found` for no match, `command_refused` for the current autosave of an open doc, `io` when the removal fails. A doc restored from a set-aside file (`Loaded.restored_from`) removes that file through the writer after its first successful save or Save As; a restore that is never saved leaves it.
 - An autosave names its show file: `core::save_recovery` writes a top-level `show_path` (UTF-8 paths only; a recovery file's name holds only a hash of the path, and a show file never has the key).
 - `open_recovery` binds to that file, as `open` with `restore`, so relative media resolves, Save goes to the file and the app reopens it next launch, only when all hold: it is the current autosave, not one set aside; `decide_recovery` says it is newer than the file; `show_path` is absolute, at most 4096 bytes, and hashes to the hash in the file's name; the file reads, loads and holds the entry's workspace id; no other doc holds it.
 - Otherwise it is **untitled**: a save chooses a path, the autosave stays until then, and a Save As clears the never-saved autosave of the workspace id. When it named a file that could not be used, a `recovery_untitled` notice says why. A file that does not answer holds up the whole request, as an `open` would (`io`, past the read timeout).

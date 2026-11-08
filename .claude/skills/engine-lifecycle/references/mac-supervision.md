@@ -48,7 +48,7 @@ This holds at launch and for a replacement after a crash. Nothing plays on it, s
 ### Which autosaves are offered (`AutosaveCover.swift`)
 
 - A current autosave of an open workspace belongs to its window and is not offered: matched by workspace id and the `path_hash` of `workspaces` (another copy of the show, same id at another path, is offered). A window known to be untitled holds only its hashless autosave. Where the hash is unknown (an engine without the field, a Save As not yet in the list) the workspace id alone decides.
-- An autosave set aside as stale (`stale: true`) is offered even when its workspace is open, since it may hold the newest work (file times are unreliable), and its prompt says it was set aside. 
+- An autosave set aside as stale (`stale: true`) is offered even when its workspace is open, since it may hold the newest work (file times are unreliable), and its prompt says it was set aside. That prompt has Restore, Skip (offered again next time) and Delete…; Delete asks for confirmation (it cannot be undone), then sends `discard_recovery` and drops the entry from the alarm's offer. 
   Exception: one that was itself loaded into a window in this run (via `open_recovery`, matched by workspace id, path hash and time; or `open` + `restore`, matched by the offer's time and the window's workspace id). A time alone never hides one: a window saved after a set-aside autosave never held its edits.
 - When the alarm offers a set-aside autosave of a workspace the reattach reopened from its file with edits lost, the line says an earlier autosave was set aside and can be restored (matched by workspace id). The window's own log line does not claim the edits are gone for good.
 

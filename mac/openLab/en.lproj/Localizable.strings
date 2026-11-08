@@ -520,6 +520,7 @@
 /* Relink missing media (WS-03) */
 "menu.file.recover" = "Recover Autosaves…";
 "recover.none" = "There are no autosaves to recover.";
+"error.discardAutosaveFailed" = "The autosave could not be deleted: %@";
 "error.recoverFailed" = "The autosaves could not be listed: %@";
 "menu.file.relink" = "Relink Missing Media…";
 "relink.panel.message" = "Choose the folder that holds the missing media. Sub-folders are searched.";
@@ -675,6 +676,10 @@
 "alert.autosave.setAsideMessage" = "This autosave from %@ was set aside because the saved file looked newer, but file times can be wrong, so it may hold later work than the file. It opens as a separate, untitled workspace.";
 "alert.autosave.open" = "Restore";
 "alert.autosave.skip" = "Skip";
+"alert.autosave.delete" = "Delete…";
+"alert.autosaveDelete.title" = "Delete the autosave of “%@”?";
+"alert.autosaveDelete.message" = "The file is removed from this Mac and cannot be recovered. Skip keeps it for later.";
+"alert.autosaveDelete.delete" = "Delete";
 
 "cuelist.time.showRemaining" = "Show the time left";
 "cuelist.time.showFull" = "Show the whole time";

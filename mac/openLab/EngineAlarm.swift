@@ -309,6 +309,18 @@ final class EngineAlarmController {
         return AutosaveOffer.offerable(entries, held: held, windows: windows)
     }
 
+    /// Delete on a set-aside autosave: after a confirmation, the engine removes that one file.
+    private func delete(_ entry: RecoveryEntryInfo, name: String) async {
+        guard alerts().confirmDeleteAutosave(name: name) else { return }
+        switch await session.discardRecovery(entry) {
+        case .success:
+            offered?.removeAll { $0 == entry }
+            refreshOffer()
+        case .failure(let e):
+            alerts().showError(String(format: loc("error.discardAutosaveFailed"), EngineSession.describe(e)))
+        }
+    }
+
     /// One prompt per autosave, newest first, while there is room (at most 8 workspaces).
     func restore(_ entries: [RecoveryEntryInfo]) async {
         for entry in entries {
@@ -316,8 +328,12 @@ final class EngineAlarmController {
             // The prompts are modal one after another: a workspace opened meanwhile is not offered.
             guard !unheld([entry]).isEmpty else { continue }
             let name = entry.showName ?? loc("engine.alarm.untitled")
-            guard alerts().offerAutosave(name: name, modifiedMs: entry.modifiedMs, setAside: entry.stale) else {
+            switch alerts().offerAutosave(name: name, modifiedMs: entry.modifiedMs, setAside: entry.stale) {
+            case .skip: continue
+            case .delete:
+                await delete(entry, name: name)
                 continue
+            case .restore: break
             }
             if case .failure(let e) = await session.openRecovery(entry) {
                 alerts().showError(String(format: loc("error.openFailed"), EngineSession.describe(e)))

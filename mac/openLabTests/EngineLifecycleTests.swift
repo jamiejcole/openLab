@@ -1465,6 +1465,37 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertEqual(alerts.log.filter { $0.hasPrefix("setAside") }, ["setAsideAutosave:Hamlet"])
     }
 
+    /// The operator can delete a set-aside autosave from its prompt: declining the confirmation
+    /// keeps it, confirming removes that file, and File > Recover Autosaves… then has nothing.
+    func testDeletingASetAsideAutosaveFromItsPromptRemovesIt() async throws {
+        try await launch()
+        try await openShows()
+        let path = try XCTUnwrap(app.session.workspaces.first { $0.name == "Hamlet" }?.path)
+        try await advance(31)
+        await autosaved("Hamlet")
+        try await crash()
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(3600)], ofItemAtPath: path)
+        let offered = await pump { self.presenter.restore != nil }
+        XCTAssertTrue(offered)
+        presenter.dismiss()
+        alerts.autosaveChoice = .delete
+
+        alerts.confirmDelete = false
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log.filter { $0.hasPrefix("confirmDelete") }, ["confirmDelete:Hamlet"])
+        guard case .success(let kept) = await app.session.scanRecovery() else { return XCTFail("scan") }
+        XCTAssertEqual(kept.filter(\.stale).count, 1, "declined: the file stays")
+
+        alerts.confirmDelete = true
+        await alarm.recoverAutosaves()
+        guard case .success(let left) = await app.session.scanRecovery() else { return XCTFail("scan") }
+        XCTAssertTrue(left.filter(\.stale).isEmpty, "confirmed: the file is gone")
+        await alarm.recoverAutosaves()
+        XCTAssertEqual(alerts.log.last, "info:" + loc("recover.none"))
+        XCTAssertTrue(alerts.errors.isEmpty, "\(alerts.errors)")
+    }
+
     /// Crashed with B's edits autosaved; the alarm dismissed, then File > Recover Autosaves…
     private func recoverFromTheMenu(afterCrashOf path: String, spoil: () throws -> Void = {}) async throws {
         try await runs.start()
