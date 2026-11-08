@@ -1519,6 +1519,17 @@ final class EngineCrashFlowTests: XCTestCase {
                     + "scheduler waiting=\(waiting)")
         }
         await assertEventually { wc.window?.isDocumentEdited == true }
+        // The dot follows the store's document state, not only the engine's workspace list (which
+        // can publish before the window exists).
+        let clean = try JSONDecoder().decode(
+            DocumentState.self,
+            from: Data(#"{"path":"\#(path)","dirty":false,"can_undo":false,"can_redo":false}"#.utf8))
+        _ = store.receive(.document(clean))
+        XCTAssertFalse(wc.window?.isDocumentEdited ?? true)
+        var dirty = clean
+        dirty.dirty = true
+        _ = store.receive(.document(dirty))
+        XCTAssertTrue(wc.window?.isDocumentEdited ?? false)
         XCTAssertEqual(store.model?.cue(intro)?.name, "Unsaved", "the autosave's edits")
         try await advance(0.1)
         XCTAssertNil(store.problems[intro], "\(store.problems)")
