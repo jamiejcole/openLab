@@ -932,11 +932,13 @@ fn fixtures() -> Vec<(String, Sample)> {
                     cue: cue_id(10),
                     elapsed: 1.5,
                     remaining: Some(58.5),
+                    position: Some(31.5),
                 },
                 ProgressItem {
                     cue: cue_id(11),
                     elapsed: 0.25,
                     remaining: None,
+                    position: None,
                 },
             ],
             waits: vec![],
@@ -950,6 +952,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                 cue: cue_id(12),
                 elapsed: 1.0,
                 remaining: Some(4.0),
+                position: None,
             }],
             waits: vec![
                 WaitProgress {
@@ -2083,6 +2086,7 @@ fn progress_and_meters_are_sanitised_not_refused() {
             cue: cue_id(1),
             elapsed,
             remaining,
+            position: None,
         }],
         waits: vec![WaitProgress {
             cue: cue_id(2),
