@@ -4125,20 +4125,9 @@ final class CueListDrawingTests: XCTestCase {
         return Pixels(rep: try render(rowView, scale: scale), region: region, scale: scale)
     }
 
-    /// `view` drawn into a bitmap on the window's light background.
+    /// `view` drawn into a bitmap on the window's light background (under a clear row).
     private func render(_ view: NSView, scale: CGFloat) throws -> NSBitmapImageRep {
-        let rep = try XCTUnwrap(
-            NSBitmapImageRep(
-                bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width * scale),
-                pixelsHigh: Int(view.bounds.height * scale), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
-                isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-        let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
-        context.cgContext.setFillColor(NSColor.white.cgColor)  // the window's light background under a clear row
-        context.cgContext.fill(CGRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh))
-        context.cgContext.scaleBy(x: scale, y: scale)
-        // Draws the view tree straight into the bitmap (cacheDisplay skips layer-backed subviews).
-        view.displayIgnoringOpacity(view.bounds, in: context)
-        return rep
+        try renderView(view, scale: scale, background: .white)
     }
 
     struct Pixels {
