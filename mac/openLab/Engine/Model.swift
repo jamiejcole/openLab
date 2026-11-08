@@ -144,6 +144,10 @@ struct CueMediaDuration: Hashable, Sendable, Decodable {
     /// How many channels the probed file has, as the engine sent it (nil: not known).
     let channels: Int?
 
+    /// The length the Duration column and field show: the cue's own `duration`, or for a cue that loops
+    /// until devamped (none sent) one pass through its slices, so it never reads as an unprobed file.
+    var shownDuration: Double? { duration ?? trimmed }
+
     /// The matrix rows this file gives: `channels` when it is a count a file can have, else nil. The
     /// engine only sends 1 to 64; anything else from a peer is treated as not known.
     var fileChannels: Int? {
