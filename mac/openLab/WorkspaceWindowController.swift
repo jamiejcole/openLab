@@ -168,6 +168,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         editor.isLocked = { [weak self] in self?.isShowMode ?? true }
         editor.commitPending = { [weak self] in await self?.commitPendingEdits() ?? true }
         editor.notify = { [weak self] message in self?.showNotice(message) }
+        editor.refuseTarget = { [weak self] message in self?.inspector.showRefusal(message) }
         inspector.onNotesNotSaved = { [weak self] id, text, error in
             self?.editor.reportNotesNotSaved(of: id, text: text, error)
         }

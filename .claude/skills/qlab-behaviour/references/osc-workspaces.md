@@ -12,7 +12,7 @@ Q91 | Network cue under override shows a red circle in the status column | manua
 Q92 | Our "Output Overrides" control needs only the network output switch, since the engine gates no inputs (QLab's counterpart: surfaces.json `window.override-controls`) | assumed
 Q109 | App starts while the engine already runs workspaces (app crash): the launch choice is not applied, the engine's workspaces are the show; an engine with none gets the choice | assumed 2026-11-05
 Q115 | Network message over the size bounds typed in the inspector: edit refused, field shows the cue's text again, a line says why | assumed
-Q116 | Network inspector Send on a disarmed or broken cue sends nothing. `\I` and `\N` (impulse, nil) arguments are refused with a message (not supported yet). Target column shows the patch name | assumed
+Q116 | Network inspector Send on a disarmed or broken cue sends nothing. `\I` and `\N` (impulse, nil) arguments are refused with a message (not supported yet). Target column is empty (QLab lists Network as taking no target) | assumed
 
 ## Check pages (multi-workspace and OSC), 2026-10-27
 C-QA | Un-prefixed OSC goes to every open workspace whichever window is in front; queries get one reply per workspace | user

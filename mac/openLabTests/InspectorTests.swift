@@ -1662,19 +1662,31 @@ final class CueTargetFlowTests: XCTestCase {
         XCTAssertEqual(inspector.targetNote.stringValue, "overture")
     }
 
-    func testATargetThatWasDeletedCanBeClearedButNotJumpedTo() async throws {
+    private func deleteFadesTarget() async {
         await wc.editor.setTarget(of: [Self.fade], to: Self.pad)
         await assertEventually { self.targetCell(Self.fade) == "pad" }
         await select(Self.pad)
         await wc.editor.deleteSelection()
         await select(Self.fade)
-        await assertEventually { self.inspector.targetField.stringValue == loc("inspector.target.missing") }
+        await assertEventually { self.inspector.targetNote.stringValue == loc("inspector.target.missing") }
+    }
+
+    func testATargetThatWasDeletedCanBeClearedButNotJumpedTo() async throws {
+        await deleteFadesTarget()
+        XCTAssertEqual(inspector.targetField.stringValue, "", "an empty field, not clipped text")
         XCTAssertEqual(targetCell(Self.fade), "?")
-        XCTAssertEqual(inspector.targetNote.stringValue, "")
         XCTAssertFalse(inspector.jumpTargetButton.isEnabled)
+        XCTAssertTrue(inspector.clearTargetButton.isEnabled)
         try click(inspector.clearTargetButton)
-        await assertEventually { self.inspector.targetField.stringValue == "" }
+        await assertEventually { self.inspector.targetNote.stringValue == loc("inspector.target.none") }
         assertNoTargetShown()
+    }
+
+    func testEmptyingTheFieldOfATargetThatWasDeletedClearsIt() async throws {
+        await deleteFadesTarget()
+        try typeTarget("")
+        await assertEventually { self.inspector.targetNote.stringValue == loc("inspector.target.none") }
+        XCTAssertNil(target(Self.fade))
     }
 
     func testJumpOpensTheCollapsedGroupsAroundTheTarget() async throws {

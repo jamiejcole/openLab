@@ -275,7 +275,7 @@
 "inspector.target.missing" = "(missing cue)";
 "inspector.target.notApplicable" = "(takes no target)";
 "inspector.target.choose" = "Choose…";
-"inspector.target.noFile" = "No file yet: click Choose…";
+"inspector.target.noFile" = "No file yet: double-click here or use the folder button";
 "inspector.target.choosePrompt" = "Choose";
 "inspector.invalid.time" = "Enter a time as mm:ss.sss, from 0 to 24 hours.";
 "inspector.invalid.decimalComma" = "Use a full stop for decimals, as in 1.5.";

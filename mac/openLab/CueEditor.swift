@@ -33,6 +33,9 @@ final class CueEditor {
     var commitPending: () async -> Bool = { true }
     /// Tells the operator why an edit was refused (a sheet in the app; recorded by tests).
     var notify: (String) -> Void = { _ in NSSound.beep() }
+    /// A Target typed in the list that cannot be set: said where the inspector says it for its own field
+    /// (never a sheet), the cell going back to what the cue holds.
+    var refuseTarget: (String) -> Void = { _ in NSSound.beep() }
     /// Typed notes that were not saved: tells the operator and offers the text (Copy Text). Nothing
     /// is held afterwards; the fields show what the cue holds.
     var notesNotSaved: (NotesNotice) -> Void = { _ in NSSound.beep() }
@@ -344,7 +347,7 @@ final class CueEditor {
         }
         switch InspectorEdit.command(field, text: text, cue: cue, model: model) {
         case .failure(let rejection):
-            notify(loc(rejection.messageKey))
+            if field == .target { refuseTarget(loc(rejection.messageKey)) } else { notify(loc(rejection.messageKey)) }
             return false
         case .success(nil): return true
         case .success(let command?): return report(await store.send(command: command))

@@ -1983,9 +1983,11 @@ final class PlayheadFlowTests: XCTestCase {
         try press("t", code: 17)
         try type("99")
         try pressReturn()
-        await assertEventually("the refusal is up") { window.attachedSheet != nil }
-        XCTAssertTrue(sheetTexts(window).contains(loc(InspectorEdit.Rejection.unknownTarget.messageKey)))
-        window.endSheet(try XCTUnwrap(window.attachedSheet))
+        await assertEventually("the refusal is said in the inspector") {
+            self.wc.inspector.messageLabel.stringValue == loc(InspectorEdit.Rejection.unknownTarget.messageKey)
+        }
+        XCTAssertNil(window.attachedSheet, "nothing modal: the window is not dimmed")
+        assertNotEditing()
         XCTAssertEqual(cell(fade, "target"), "2")
         // Esc leaves it alone.
         try press("t", code: 17)
@@ -2052,6 +2054,45 @@ final class PlayheadFlowTests: XCTestCase {
         try await focusList(on: memo)
         try press("t", code: 17)
         XCTAssertNil(wc.cueList.editingCell)
+    }
+
+    /// The list has no type-to-select: a letter moves neither the highlight nor the playhead, the edit-target
+    /// key included when it has nothing to edit (a Memo, a Network cue, anything in Show Mode), or the next GO
+    /// would fire a cue the operator never chose.
+    func testNoLetterKeyMovesTheSelectionOrThePlayhead() async throws {
+        try await editWorkspace()
+        guard case .success = await store.send(command: .setProperty(cues[0], .name("Thunder rumble"))) else {
+            return XCTFail("rename")
+        }
+        let addedMemo = await wc.editor.add(.memo, after: [fade])
+        let xylo = try XCTUnwrap(addedMemo)
+        guard case .success = await store.send(command: .setProperty(xylo, .name("Xylophone"))) else {
+            return XCTFail("rename")
+        }
+        let addedNet = await wc.editor.add(.network, after: [xylo])
+        let net = try XCTUnwrap(addedNet)
+        await sync()
+        for id in [xylo, net] {
+            try await focusList(on: id)
+            try press("t", code: 17)
+            try await assertAllOn(id)
+            XCTAssertNil(wc.cueList.editingCell, "nothing to edit")
+        }
+        try await focusList(on: fade)
+        try press("x", code: 7)
+        try await assertAllOn(fade)
+        try press("t", code: 17)
+        try assertEditing(fade, "target", text: "1")
+        try press("\u{1B}", code: 53)
+        assertNotEditing()
+        try await assertAllOn(fade)
+        wc.setShowMode(true)
+        for letter: (String, UInt16) in [("t", 17), ("x", 7), ("n", 45), ("q", 12)] {
+            try await focusList(on: fade)
+            try press(letter.0, code: letter.1)
+            try await assertAllOn(fade)
+            XCTAssertNil(wc.cueList.editingCell)
+        }
     }
 
     /// A cue whose hotkey is N is started by it, and the key opens no editor.
@@ -4591,12 +4632,22 @@ final class CueListDrawingTests: XCTestCase {
         }
         XCTAssertEqual(
             drawnMask(try cellPixels(wc, radio)), drawnMask(try cellPixels(wc, H.door)), "the file glyph again")
-        // Show Mode: nothing, even for a missing file.
+        // Show Mode: the column is drawn as in Edit Mode (the trash glyph included), and the click does nothing.
         _ = await rig.store.send(command: .setProperty(radio, .media("media/o.wav")))
         await assertEventually { rig.store.problems[radio]?.contains { $0.type == "media_missing" } == true }
+        await assertEventually { self.targetCell(wc, radio)?.chooseButton.accessibilityLabel() == loc("cuelist.target.fileMissing") }
+        let editModePixels = try cellPixels(wc, radio)
+        var asked = 0
+        wc.pickAudioFile = {
+            asked += 1
+            return nil
+        }
         wc.setShowMode(true)
-        await assertEventually { self.targetCell(wc, radio)?.chooseButton.isHidden == true }
-        XCTAssertEqual(try cellPixels(wc, radio).count(Self.drawn), 0)
+        await assertEventually { self.targetCell(wc, radio)?.chooseButton.isHidden == false }
+        XCTAssertEqual(drawnMask(try cellPixels(wc, radio)), drawnMask(editModePixels), "the same glyph in Show Mode")
+        try click(try XCTUnwrap(targetCell(wc, radio)?.chooseButton))
+        await settle()
+        XCTAssertEqual(asked, 0, "the list is locked")
     }
 
     func testInspectorTargetFieldGlyphs() async throws {

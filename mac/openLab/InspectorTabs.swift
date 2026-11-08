@@ -129,9 +129,10 @@ extension InspectorViewController {
         targetNote.isHidden = isFile
         if isCueTarget {
             let lookup: (ModelID) -> Cue? = { model.cue($0) }
-            // A target that is gone: the field already says so.
+            // A target that is gone leaves the field empty and the note says so.
             targetNote.stringValue =
-                target?.listName(lookup: lookup) ?? (targetID == nil ? loc("inspector.target.none") : "")
+                target?.listName(lookup: lookup)
+                ?? loc(targetID == nil ? "inspector.target.none" : "inspector.target.missing")
         } else {
             targetNote.stringValue = loc("inspector.target.notApplicable")
         }

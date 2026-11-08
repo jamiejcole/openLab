@@ -44,8 +44,10 @@ Q121 | A Fade or Devamp cue given a target it cannot act on (a number typed for 
 Q122 | Several selected cues dragged onto a cue's Target cell: each that can act on it targets it, one undo step, if all can; otherwise it is a reorder (a cue holds one target) | assumed 2026-11-07
 Q123 | A cue dropped on a Target cell when neither cue can target the other (a Memo on an Audio cue) reorders, as a drop on the rest of the row | assumed 2026-11-07
 Q124 | Inspector Target field when the target has no number: field empty, name shows beside it; the list's Target column shows the name (p. 94) | assumed 2026-11-07
-Q125 | Inspector Target row when the target cue was deleted: field says the cue is missing, nothing beside it, clear stays on, jump goes off | assumed 2026-11-07
-Q126 | A file cue with a missing file, in Show Mode: its Target cell is empty like every file cue's there (list locked); the status column still shows it broken | assumed 2026-11-07
+Q125 | Inspector Target row when the target cue was deleted: empty field with the note (missing cue) beside it, clear stays on, jump goes off; emptying the field clears it | assumed 2026-11-07
+Q126 | A file cue's Target cell (file glyph, or the trash glyph for a missing file) is drawn in Show Mode as in Edit Mode; the click does nothing there (list locked) | assumed 2026-11-07
+Q128 | A Target typed in a list cell that cannot be set (no such cue, itself, wrong kind) is refused in the inspector's message line, never a sheet; the cell goes back to what the cue holds | assumed 2026-11-08
+Q129 | Letters never move the list's selection or playhead (no type-to-select): N, Q, T are taken by the list even when they do nothing (Show Mode, several cues, a cue with nothing to edit) | assumed 2026-11-08
 Q127 | Edit-target key (T) while cues run works as with nothing running (file chooser is modal to the whole app (`runModal`), Esc still panics (UI test)); on a cue with no target (Memo, Group, Network) it does nothing | assumed 2026-11-07
 Q120 | Jump to Targets with several selected cues in different lists: first selected target's list is shown and its targets become the selection (others left out); a target in another list than the cue's is followed; playhead goes to the last target in row order | assumed 2026-11-07
 Q58 | Waveform: horizontal trackpad scroll and Shift+wheel pan (stop at file ends); pinch, Option+vertical scroll, plain wheel zoom about the pointer; zoom buttons and Cmd-= / Cmd-- zoom about the middle | manual p.180, 73 + assumed 2026-11-01

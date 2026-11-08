@@ -85,7 +85,8 @@ enum InspectorEdit {
                 address: kind?["address"]?.stringValue ?? "", args: kind?["args"]?.arrayValue ?? [])
         case .target:
             guard let id = cue.raw["kind"]?["target"]?.stringValue else { return "" }
-            guard let target = model.cue(ModelID(id)) else { return loc("inspector.target.missing") }
+            // A target that is gone shows an empty field; the note beside it says why.
+            guard let target = model.cue(ModelID(id)) else { return "" }
             // The number only; the name shows beside the field (QLab 5, manual p. 127).
             return target.number ?? ""
         }
@@ -95,7 +96,9 @@ enum InspectorEdit {
     static func command(
         _ field: InspectorField, text: String, cue: Cue, model: WorkspaceModel
     ) -> Result<Command?, Rejection> {
-        if text == display(field, cue: cue, model: model) { return .success(nil) }
+        // An empty field over a target that is gone is still a target to clear.
+        let dangling = field == .target && hasMissingTarget(cue, model: model)
+        if text == display(field, cue: cue, model: model) && !dangling { return .success(nil) }
         switch field {
         case .name:
             // Clearing an unnamed cue's field changes nothing: it goes on following its file.
@@ -148,6 +151,12 @@ enum InspectorEdit {
 }
 
 extension InspectorEdit {
+    /// Whether `cue` names a target that is no longer in the show.
+    static func hasMissingTarget(_ cue: Cue, model: WorkspaceModel) -> Bool {
+        guard let id = cue.raw["kind"]?["target"]?.stringValue else { return false }
+        return model.cue(ModelID(id)) == nil
+    }
+
     /// Why `cue` cannot act on `target`, nil when it can: the one check for every way of setting a
     /// cue target by hand (the inspector's field, the Target column, a drag). The kinds are core's
     /// `can_target`: Fade takes Audio and Group, Devamp takes Audio and a playlist Group.
