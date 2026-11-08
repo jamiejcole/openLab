@@ -1429,6 +1429,14 @@ final class CueTargetFlowTests: XCTestCase {
         _ = await rig.client.send({ .close(id: $0, doc: doc, discardChanges: true) })
     }
 
+    /// QLab 5 lists a Network cue as taking no target: its Target cell is empty (no patch name, no `?`).
+    func testANetworkCuesTargetCellIsEmpty() async throws {
+        let net = try await add(.network)
+        let cell = try XCTUnwrap(cell("target", net))
+        XCTAssertEqual(cell.label.stringValue, "")
+        XCTAssertTrue(cell.chooseButton.isHidden)
+    }
+
     /// A Devamp cue made from the toolbar carries every field core requires; one without `devamp_mode`
     /// is a frame the engine cannot read, and the add never got an answer.
     func testANewDevampCueIsAcceptedByTheEngine() async throws {
