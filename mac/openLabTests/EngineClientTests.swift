@@ -154,7 +154,12 @@ final class EngineClientTests: XCTestCase {
         stub.holdResults = true
         let go = Task { await rig.store.go(list: "00000000-0000-0000-0000-000000000001") }
         await assertEventually { await rig.requestScheduler.waitingCount == 1 }
+        var published: [ErrorBody] = []
+        let sub = rig.client.engineErrors.sink { published.append($0) }
+        defer { sub.cancel() }
         stub.push(#"{"type":"error","code":"bad_request","message":"x","protocol_version":1}"#)
+        await assertEventually { published.count == 1 }
+        XCTAssertEqual(published.first?.code, .badRequest)
         await rig.requestScheduler.fire()
         let r = await go.value
         XCTAssertEqual(r, .failure(.timeout))
@@ -772,12 +777,7 @@ final class StubEngine {
                 result(c, id, data: .object(["type": .string("recovery_entries"), "entries": .array(recoveryEntries)]))
             case .snapshot:
                 if let refuseSnapshot {
-                    return c.send(
-                        Self.text(
-                            .object([
-                                "type": .string("result"), "id": .uint(id),
-                                "error": .object(["code": .string(refuseSnapshot.raw), "message": .string("refused")]),
-                            ])))
+                    return refuse(c, id, refuseSnapshot)
                 }
                 c.send(Self.text(.object(["type": .string("snapshot"), "snapshot": snapshot])))
                 result(c, id)
@@ -788,14 +788,18 @@ final class StubEngine {
         }
     }
 
+    private func refuse(_ c: StubConnection, _ id: UInt64, _ code: ErrorCode) {
+        c.send(
+            Self.text(
+                .object([
+                    "type": .string("result"), "id": .uint(id),
+                    "error": .object(["code": .string(code.raw), "message": .string("refused")]),
+                ])))
+    }
+
     private func result(_ c: StubConnection, _ id: UInt64, data: JSONValue? = nil) {
         if let refuseRequests {
-            return c.send(
-                Self.text(
-                    .object([
-                        "type": .string("result"), "id": .uint(id),
-                        "error": .object(["code": .string(refuseRequests.raw), "message": .string("unreadable")]),
-                    ])))
+            return refuse(c, id, refuseRequests)
         }
         var ok: JSONValue = .object([:])
         if let data { ok.set("data", data) }

@@ -18,7 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use openlab_core::protocol::{
     ClientMessage, DocId, ErrorBody, ErrorCode, LogLevel, MAX_CLIENT_FRAME_BYTES, Outcome,
     PROTOCOL_VERSION, ProtocolError, Request, RequestId, ServerMessage, decode_client,
-    decode_hello, encode_server,
+    decode_hello, encode_server, request_id_of_frame,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
@@ -339,16 +339,9 @@ fn ws_config() -> WebSocketConfig {
 }
 
 /// The `id` of a frame that failed to decode, if it still looks like a request: a JSON object
-/// with a string `type` and a `u64` `id` that is not the server's reserved one. Frames over the
-/// size limit are not parsed (the connection ends for them anyway).
+/// with a string `type` and a `u64` `id` that is not the server's reserved one.
 fn lenient_request_id(text: &str) -> Option<RequestId> {
-    if text.len() > MAX_CLIENT_FRAME_BYTES {
-        return None;
-    }
-    let value: serde_json::Value = serde_json::from_str(text).ok()?;
-    value.get("type")?.as_str()?;
-    let id = RequestId(value.get("id")?.as_u64()?);
-    (id != INTERNAL_ID).then_some(id)
+    request_id_of_frame(text).filter(|id| *id != INTERNAL_ID)
 }
 
 fn error_message(code: ErrorCode, message: &str) -> ServerMessage {
