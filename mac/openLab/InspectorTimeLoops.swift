@@ -57,7 +57,7 @@ extension InspectorViewController {
     /// The playhead line follows the selected cue's progress.
     func updateTimeLoopsProgress() {
         guard let cue, cue.kindType == "audio" else { return }
-        timeLoops.showProgress(elapsed: store.progress[cue.id]?.elapsed)
+        timeLoops.showProgress(position: store.progress[cue.id]?.position)
     }
 
     /// Sends `change` made to the cue as the model has it plus any edit not yet answered

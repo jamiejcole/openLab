@@ -372,17 +372,10 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         waveform.fadeCurve = fadeCurve
     }
 
-    /// Where the cue plays in the file, from its elapsed action time: past the trimmed length it
-    /// wraps while it loops (with slices this is the first pass only: an approximation).
-    func showProgress(elapsed: Double?) {
-        guard let elapsed, let file else {
-            waveform.playhead = nil
-            return
-        }
-        let end = endTime ?? file.duration
-        let length = max(end - startTime, WaveformView.minLength)
-        let t = playCount == 1 || hasSlices ? min(elapsed, length) : elapsed.truncatingRemainder(dividingBy: length)
-        waveform.playhead = startTime + t
+    /// Draws the playhead line at `position`, where the engine says the cue's voice is in the
+    /// file (slices, loop passes and devamps already applied); none draws no line.
+    func showProgress(position: Double?) {
+        waveform.playhead = file == nil ? nil : position
     }
 
     private func applyLock() {

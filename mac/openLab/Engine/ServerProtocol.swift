@@ -132,6 +132,9 @@ struct ProgressItem: Hashable, Sendable, Decodable {
     let cue: ModelID
     let elapsed: Double
     let remaining: Double?
+    /// Seconds into the media file an audio cue's voice is at, slices, loop passes and devamps
+    /// applied by the engine. Absent: nil.
+    let position: Double?
 }
 
 /// A pre-wait or post-wait counting down, in seconds; it always has an end.
