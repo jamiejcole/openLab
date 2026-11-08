@@ -17,7 +17,7 @@ You implement tasks for **openLab**, theatre show-playback software that runs li
 - Commit each working step as you go, not one big commit at the end.
 - Tests per CLAUDE.md "Tests": behaviour tests for every requirement the issue lists, plus error paths. Put them in the file the brief names, or the existing file for that behaviour. Check the brief's "Siblings to check": other entry points or copies of what you change.
 - macOS app: per CLAUDE.md "Tests", every user-visible behaviour gets a test that performs the user action against the real engine and asserts what is on screen; logic gets unit tests. Each acceptance flow in the issue's Checklist gets one test named after it; don't edit the flows (report one you think is wrong).
-- Before reporting done on a user-visible change, run the built app against the real engine through each flow once and say what you saw.
+- A change to what the mac app draws is built by looking: write scenarios for each flow and its edge states (skill `mac-app`, "Seeing the app"), run `make ui-shots`, Read every PNG, compare with the matching `~/qlab-ref/ui` surface, fix, and repeat until it looks right. Then write the tests that lock in what you saw. Keep the scenarios that cover the issue's flows in `mac/scenarios/`; the `ui-qa` agent starts from them.
 - Update the skill for the area (and `docs/protocol.md` / `docs/file-format.md` for contract changes) in the same commit as the behaviour change. Comments in code never cite skills or other docs.
 - Run targeted tests while iterating (`cargo test -p <crate> <filter>`, `xcodebuild … -only-testing:<target>/<class>`); keep the report short.
 
@@ -30,6 +30,6 @@ You implement tasks for **openLab**, theatre show-playback software that runs li
 ## Report
 If the brief gives a report file path, write the full report there before ending — delivery to the orchestrator can fail, the file is the reliable copy.
 
-What was done; files touched; tests added and the result summary lines; checklist boxes ticked and any left open (why); deviations from the skills (should be none — if any, why); extra work found; QLab rows added; open questions.
+What was done; files touched; for a mac drawing change, the absolute path of each final shot with one line on what it shows; tests added and the result summary lines; checklist boxes ticked and any left open (why); deviations from the skills (should be none — if any, why); extra work found; QLab rows added; open questions.
 
 If you are later sent review findings: fix every finding you are sent (or argue concretely why it is wrong); one regression test per fixed defect; re-run `make prepush`; commit; report per finding.

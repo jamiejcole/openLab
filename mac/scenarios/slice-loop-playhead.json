@@ -1,0 +1,20 @@
+{
+  "about": "A cue sliced at 5 s whose first slice plays three times, played 8 s (into that slice's second pass), shown on the Time & Loops tab: where the playhead is drawn.",
+  "show": "Demo",
+  "media": {"media/a.wav": 20},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"click": "time-loops-waveform", "at": [0.25, 0.5]},
+    {"click": "time-loops-add-slice"},
+    {"double_click": "time-loops-waveform", "at": [0.1, 0.97]},
+    {"type": "time-loops-slice-count", "text": "3"},
+    {"shot": "sliced"},
+    {"key": "space"},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 8},
+    {"shot": "second-pass"}
+  ]
+}

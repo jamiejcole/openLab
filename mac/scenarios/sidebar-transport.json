@@ -1,0 +1,14 @@
+{
+  "about": "The workspace window with the sidebar shown: its transport buttons, idle and with a cue running.",
+  "show": "Demo",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"shot": "sidebar"},
+    {"select": "1"},
+    {"key": "space"},
+    {"advance": 1},
+    {"shot": "sidebar-running"}
+  ]
+}

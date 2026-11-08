@@ -972,8 +972,7 @@ final class InspectorLevelsTests: XCTestCase {
         panel.view.layoutSubtreeIfNeeded()
         let m = panel.matrix
         // A whole redraw: the cells are drawn text, not 4,096 views.
-        let whole = try XCTUnwrap(m.bitmapImageRepForCachingDisplay(in: m.bounds))
-        m.cacheDisplay(in: m.bounds, to: whole)
+        _ = try renderView(m)
         _ = set.json(into: kind)
         XCTAssertEqual(m.subviews.count, 0, "no per-cell views")
         XCTAssertEqual(m.outputCount, 64)

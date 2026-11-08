@@ -1,0 +1,16 @@
+{
+  "about": "A cue with a 60 s file playing, shown on the Time & Loops tab with the waveform zoomed in and scrolled: the trim handles and the playhead are outside the visible span.",
+  "show": "Demo",
+  "media": {"media/a.wav": 60},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"key": "space"},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"magnify": "time-loops-waveform", "by": 3, "at": [0, 0.5]},
+    {"scroll": "time-loops-waveform", "dx": -270, "dy": 0, "precise": true},
+    {"advance": 4},
+    {"shot": "zoomed-playing"}
+  ]
+}

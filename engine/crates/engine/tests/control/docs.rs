@@ -2634,6 +2634,8 @@ fn a_copys_autosave_binds_to_the_copy_beside_the_open_original() {
     fs::copy(env.show_dir().join("rel.wav"), copies.join("rel.wav")).unwrap();
     let copy = copies.join("Copy.openlab");
     fs::copy(&original, &copy).unwrap();
+    // File times decide, and `fs::copy` keeps the source's time on macOS but not on Linux.
+    set_mtime(&copy, 1_000_000);
     let edited =
         load_show(&fs::read_to_string(env.dirs.recovery_path(wid, Some(&original))).unwrap())
             .unwrap()

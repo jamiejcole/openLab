@@ -323,27 +323,12 @@ final class TimeLoopsTests: XCTestCase {
 
     private var span: Double { panel.visible.end - panel.visible.start }
 
-    /// A real event's worth of fields at a point of the waveform, as AppKit delivers them to the view.
-    private final class WaveEvent: NSEvent {
-        var point = NSPoint.zero
-        var mag: CGFloat = 0
-        var delta = (x: CGFloat(0), y: CGFloat(0))
-        var precise = true
-        var flags: NSEvent.ModifierFlags = []
-        override var locationInWindow: NSPoint { point }
-        override var magnification: CGFloat { mag }
-        override var scrollingDeltaX: CGFloat { delta.x }
-        override var scrollingDeltaY: CGFloat { delta.y }
-        override var hasPreciseScrollingDeltas: Bool { precise }
-        override var modifierFlags: NSEvent.ModifierFlags { flags }
-    }
-
     private func windowPoint(atSeconds t: Double) -> NSPoint {
         wave.convert(NSPoint(x: wave.scale.x(t), y: WaveformView.rulerHeight + 20), to: nil)
     }
 
     private func pinch(_ m: CGFloat, at p: NSPoint) {
-        let e = WaveEvent()
+        let e = GestureEvent()
         e.point = p
         e.mag = m
         wave.magnify(with: e)
@@ -352,7 +337,7 @@ final class TimeLoopsTests: XCTestCase {
     private func scroll(
         dx: CGFloat = 0, dy: CGFloat = 0, precise: Bool, flags: NSEvent.ModifierFlags = [], at p: NSPoint
     ) {
-        let e = WaveEvent()
+        let e = GestureEvent()
         e.point = p
         e.delta = (dx, dy)
         e.precise = precise
@@ -368,8 +353,7 @@ final class TimeLoopsTests: XCTestCase {
 
     /// The x of the orange trim handle line nearest `x` in the drawn view, or nil: read from the pixels.
     private func drawnHandle(near x: CGFloat) -> CGFloat? {
-        guard let rep = wave.bitmapImageRepForCachingDisplay(in: wave.bounds) else { return nil }
-        wave.cacheDisplay(in: wave.bounds, to: rep)
+        guard let rep = try? renderView(wave) else { return nil }
         let scale = CGFloat(rep.pixelsWide) / wave.bounds.width
         let y = Int((WaveformView.rulerHeight + 60) * scale)
         var best: CGFloat?
