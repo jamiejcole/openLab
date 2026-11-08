@@ -1521,7 +1521,6 @@ final class EngineCrashFlowTests: XCTestCase {
         await assertEventually { wc.window?.isDocumentEdited == true }
         // The dot follows the store's document state, not only the engine's workspace list (which
         // can publish before the window exists).
-        wc.window?.isDocumentEdited = false
         let clean = try JSONDecoder().decode(
             DocumentState.self,
             from: Data(#"{"path":"\#(path)","dirty":false,"can_undo":false,"can_redo":false}"#.utf8))
