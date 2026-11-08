@@ -875,7 +875,7 @@ async fn malformed_frames_are_answered_and_the_connection_stays_up() {
         r#"{"type":"transport","id":1,"action":{"type":"nope"}}"#.into(),
     )
     .await;
-    assert_eq!(error_code(next(&mut c).await), ErrorCode::BadRequest);
+    wait_error(&mut c, 1, ErrorCode::BadRequest).await;
     guard("sending a frame", c.send(Message::binary(vec![1u8, 2, 3])))
         .await
         .unwrap();
@@ -895,6 +895,63 @@ async fn malformed_frames_are_answered_and_the_connection_stays_up() {
         seen.iter()
             .all(|m| !matches!(m, ClientMessage::Hello { .. }))
     );
+}
+
+#[tokio::test]
+async fn an_unreadable_command_with_a_readable_id_is_refused_under_that_id() {
+    let f = fixture();
+    let mut c = f.client().await;
+    // A cue kind missing a required field: the frame cannot decode, but the id can be read.
+    send_text(
+        &mut c,
+        r#"{"type":"command","id":77,"doc":0,"command":{"type":"add_cue","kind":{"type":"audio"}}}"#
+            .into(),
+    )
+    .await;
+    wait_error(&mut c, 77, ErrorCode::BadRequest).await;
+    // An unknown type with an id is answered under it too.
+    send_text(&mut c, r#"{"type":"frobnicate","id":78}"#.into()).await;
+    wait_error(&mut c, 78, ErrorCode::UnknownMessage).await;
+    // The reserved id is never echoed back as a result; no readable id: the id-less error.
+    send_text(
+        &mut c,
+        format!(r#"{{"type":"command","id":{},"x":1}}"#, u64::MAX),
+    )
+    .await;
+    assert_eq!(error_code(next(&mut c).await), ErrorCode::BadRequest);
+    send_text(&mut c, r#"{"type":"command","id":"seven"}"#.into()).await;
+    assert_eq!(error_code(next(&mut c).await), ErrorCode::BadRequest);
+    assert!(
+        f.control
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|m| !matches!(m, ClientMessage::Command { .. }))
+    );
+}
+
+#[tokio::test]
+async fn id_carrying_refusals_count_toward_the_bad_frame_limit() {
+    let f = fixture();
+    let mut c = f.client().await;
+    for _ in 0..40 {
+        send_text(&mut c, r#"{"type":"command","id":5}"#.into()).await;
+    }
+    expect_closed(&mut c).await;
+}
+
+async fn wait_error(c: &mut Client, id: u64, code: ErrorCode) {
+    match next(c).await {
+        Some(ServerMessage::Result {
+            id: got,
+            outcome: Outcome::Error(e),
+        }) => {
+            assert_eq!(got, RequestId(id));
+            assert_eq!(e.code, code);
+        }
+        other => panic!("not a refusal of request {id}: {other:?}"),
+    }
 }
 
 #[tokio::test]
