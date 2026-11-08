@@ -341,12 +341,15 @@ extension WorkspaceSettingsTests {
         let scroll = try XCTUnwrap(view("settings-osc-table", in: sc))
         window.contentView?.layoutSubtreeIfNeeded()
         let before = scroll.frame.height
+        let contentBefore = try XCTUnwrap(window.contentView?.frame.height)
         var size = try XCTUnwrap(window.contentView?.frame.size)
         size.height += 300
-        window.setContentSize(size)
+        window.setContentSize(size)  // the system clamps it to the screen: measure what was applied
         for _ in 0..<3 { window.contentView?.layoutSubtreeIfNeeded() }
+        let applied = try XCTUnwrap(window.contentView?.frame.height) - contentBefore
+        XCTAssertGreaterThan(applied, 50, "the screen has room for a taller window")
         XCTAssertGreaterThan(
-            scroll.frame.height, before + 250,
+            scroll.frame.height, before + applied - 30,
             "the table takes the height the pane gives it"
         )
     }
