@@ -168,7 +168,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         editor.isLocked = { [weak self] in self?.isShowMode ?? true }
         editor.commitPending = { [weak self] in await self?.commitPendingEdits() ?? true }
         editor.notify = { [weak self] message in self?.showNotice(message) }
-        editor.refuseTarget = { [weak self] message in self?.inspector.showRefusal(message) }
+        // Where the operator can see it: the inspector's message line, or a sheet when the inspector is hidden.
+        editor.refuseTarget = { [weak self] message in
+            guard let self else { return }
+            if isVisible(.inspector) { inspector.showRefusal(message) } else { showNotice(message) }
+        }
         inspector.onNotesNotSaved = { [weak self] id, text, error in
             self?.editor.reportNotesNotSaved(of: id, text: text, error)
         }

@@ -1995,6 +1995,21 @@ final class PlayheadFlowTests: XCTestCase {
         assertNotEditing()
     }
 
+    /// With the inspector hidden its message line cannot be seen: the refusal is a sheet then, never silent.
+    func testARefusedTypedTargetIsSeenWithTheInspectorHidden() async throws {
+        try await editWorkspace()
+        wc.setVisible(.inspector, false)
+        try await focusList(on: fade)
+        let window = try XCTUnwrap(wc.window)
+        try press("t", code: 17)
+        try type("99")
+        try pressReturn()
+        await assertEventually("the refusal is a sheet") { window.attachedSheet != nil }
+        XCTAssertTrue(sheetTexts(window).contains(loc(InspectorEdit.Rejection.unknownTarget.messageKey)))
+        window.endSheet(try XCTUnwrap(window.attachedSheet))
+        XCTAssertEqual(cell(fade, "target"), "1", "the cell holds what the cue holds")
+    }
+
     /// T on a file cue opens the file chooser; the chosen file replaces the cue's, and a cancelled
     /// chooser changes nothing.
     func testTKeyOnAFileCueChoosesAFile() async throws {

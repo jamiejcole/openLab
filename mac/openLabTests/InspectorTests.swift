@@ -1682,6 +1682,19 @@ final class CueTargetFlowTests: XCTestCase {
         assertNoTargetShown()
     }
 
+    func testPassingThroughTheFieldOfATargetThatWasDeletedChangesNothing() async throws {
+        await deleteFadesTarget()
+        let before = target(Self.fade)
+        XCTAssertNotNil(before)
+        let revision = rig.store.revision
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(inspector.targetField))
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(nil))
+        await settle()
+        try await rig.advance()
+        XCTAssertEqual(target(Self.fade), before, "focus in and out of the field changed the target")
+        XCTAssertEqual(rig.store.revision, revision, "no edit was made")
+    }
+
     func testEmptyingTheFieldOfATargetThatWasDeletedClearsIt() async throws {
         await deleteFadesTarget()
         try typeTarget("")

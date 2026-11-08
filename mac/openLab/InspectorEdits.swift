@@ -94,10 +94,11 @@ enum InspectorEdit {
 
     /// The command for `text` in `field`; `.success(nil)` when it changes nothing.
     static func command(
-        _ field: InspectorField, text: String, cue: Cue, model: WorkspaceModel
+        _ field: InspectorField, text: String, cue: Cue, model: WorkspaceModel, typed: Bool = false
     ) -> Result<Command?, Rejection> {
-        // An empty field over a target that is gone is still a target to clear.
-        let dangling = field == .target && hasMissingTarget(cue, model: model)
+        // An empty field over a target that is gone is a target to clear only when the operator emptied it:
+        // a field that was only passed through must not change the cue.
+        let dangling = typed && field == .target && hasMissingTarget(cue, model: model)
         if text == display(field, cue: cue, model: model) && !dangling { return .success(nil) }
         switch field {
         case .name:

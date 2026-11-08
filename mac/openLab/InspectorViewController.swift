@@ -737,7 +737,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             return true
         }
         let text = f == .notes ? notesView.string : (field(f)?.stringValue ?? "")
-        switch InspectorEdit.command(f, text: text, cue: cue, model: model) {
+        switch InspectorEdit.command(f, text: text, cue: cue, model: model, typed: wasDirty) {
         case .failure(let r):
             show(rejection: r)
             render(force: [f])
