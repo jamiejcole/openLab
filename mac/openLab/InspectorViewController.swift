@@ -335,6 +335,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let targetRow = NSStackView(views: [targetField, targetNote, clearTargetButton, jumpTargetButton, chooseButton])
         targetRow.spacing = 6
         targetField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        // A long path truncates; it must not hold the inspector, and so the window, wider.
+        targetField.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         targetField.lineBreakMode = .byTruncatingMiddle  // the file name at the end is the part that matters
         targetField.widthAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
         chooseButton.setContentHuggingPriority(.required, for: .horizontal)
