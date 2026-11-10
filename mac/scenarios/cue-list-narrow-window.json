@@ -1,14 +1,14 @@
 {
-  "about": "The cue list in a narrow window (760 pt), then widened to 1200 pt: the Pre-Wait, Duration and Post-Wait headers and cells are drawn whole both times; the Name column is the one that shrinks.",
+  "about": "The cue list in a narrow window (800 pt, the least the window allows), then widened to 1200 pt: the Pre-Wait, Duration and Post-Wait headers and cells are drawn whole both times; the Name column is the one that shrinks.",
   "show": "Demo",
   "media": {"media/a.wav": 30},
-  "window": {"width": 760, "height": 640},
+  "window": {"width": 800, "height": 640},
   "appearance": "light",
   "steps": [
-    {"shot": "narrow-760"},
+    {"shot": "narrow-800"},
     {"resize": [1200, 640]},
     {"shot": "wide-1200"},
-    {"resize": [760, 640]},
+    {"resize": [800, 640]},
     {"shot": "narrow-again"}
   ]
 }
