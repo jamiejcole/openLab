@@ -12,7 +12,7 @@ use openlab_core::{Workspace, save_show};
 use super::atomic::remove_stale_tmp;
 use super::backup::{Rotation, backup_existing, rotate};
 use super::files::regular_file_or_absent;
-use super::recovery::clear_recovery;
+use super::recovery::discard_recovery;
 use super::{AppDirs, PersistError, Stage, write_atomic_with};
 
 #[derive(Debug, Default)]
@@ -105,14 +105,15 @@ pub(crate) fn save_workspace_inner(
             .into_iter()
             .map(|f| format!("could not remove old backup {f}")),
     );
-    // The saved file now holds everything the recovery files did (the one for this show path,
-    // and the one from before the workspace had a path). Only now, after the rename and folder
-    // sync, is it safe to drop them.
+    // The saved file now holds everything the recovery files this run wrote did (the one for
+    // this show path, and the one from before the workspace had a path). Only now, after the
+    // rename and folder sync, is it safe to drop them. Files moved aside stay: an earlier run
+    // wrote them and they may hold later work.
     if !may_clear() {
         return Ok(report);
     }
     for show in [Some(path), None] {
-        if let Err(e) = clear_recovery(dirs, workspace.id, show) {
+        if let Err(e) = discard_recovery(dirs, workspace.id, show) {
             report
                 .warnings
                 .push(format!("could not remove recovery file: {e}"));
