@@ -192,7 +192,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     ]
     static let rowHeight: CGFloat = 24
     /// The least the Name column shrinks to; a narrower list scrolls sideways.
-    static let nameMinWidth: CGFloat = 100
+    static let nameMinWidth: CGFloat = 80
 
     let store: WorkspaceStore
     let outlineView: NSOutlineView
@@ -260,6 +260,17 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    private var fittedWidth: CGFloat = 0
+
+    /// The Name column is fitted to the list's width whenever that width changes, a window that opens
+    /// narrow included (the table fits its columns by itself only on a later resize).
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        guard view.bounds.width != fittedWidth else { return }
+        fittedWidth = view.bounds.width
+        outlineView.sizeToFit()
+    }
 
     override func loadView() {
         for spec in Self.columns {

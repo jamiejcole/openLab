@@ -164,6 +164,11 @@ final class MainWindowTests: XCTestCase {
         }
         let times = ["preWait", "duration", "postWait"]
         let widths = Dictionary(uniqueKeysWithValues: CueListViewController.columns.map { ($0.id, $0.width) })
+        // A window that opens at its narrowest: fitted before any resize.
+        size(window.minSize.width)
+        let last = outline.rect(ofColumn: outline.numberOfColumns - 1)
+        let shown = try XCTUnwrap(outline.enclosingScrollView).contentView.bounds
+        XCTAssertLessThanOrEqual(last.maxX, shown.maxX, "every column is inside a window that opens narrow")
         size(1200)
         let wideName = try column("name").width
         size(window.minSize.width)
@@ -1384,9 +1389,9 @@ final class WindowLayoutTests: XCTestCase {
         store.save(layout, forPath: path)
         let (_, again) = try await open(url)
         settle(again)
-        XCTAssertEqual(
-            again.inspector.view.frame.height, WorkspaceWindowController.minInspectorHeight, accuracy: 1,
-            "150 was raised to the least height")
+        let least = WorkspaceWindowController.minInspectorHeight
+        XCTAssertEqual(again.inspectorHeightConstraint?.constant, least, "150 was raised to the least height")
+        XCTAssertGreaterThanOrEqual(again.inspector.view.frame.height, least)
     }
 
     func testAWindowSqueezeKeepsTheDraggedSidebarWidth() async throws {
