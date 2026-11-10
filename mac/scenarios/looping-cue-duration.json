@@ -1,0 +1,18 @@
+{
+  "about": "An audio cue that loops forever (Demo cue 1): its Duration cell and the inspector's Duration field show the file's one pass before GO, while it runs and after a stop; cue 2.1 plays once for comparison.",
+  "show": "Demo",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"shot": "before-go"},
+    {"key": "space"},
+    {"select": "1"},
+    {"advance": 2},
+    {"shot": "running"},
+    {"key": "escape"},
+    {"advance": 1},
+    {"select": "1"},
+    {"shot": "after-stop"}
+  ]
+}

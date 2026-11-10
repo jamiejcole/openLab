@@ -16,7 +16,12 @@
 #                                                               if the run was only wedged, else exit 1
 #                                                               (`--cut-short` when the wedge also ended the run: no retry)
 # SUMMARY: `xcresulttool get test-results summary`; ATTACHMENTS: `xcresulttool export attachments`.
+#
+# Exit codes: xcodebuild's own, except 75 (CUT_SHORT_RC): the run was cut short by a proven stall and the
+# job needs a re-run. `make test-mac` starts no second process on seeing it (the runner is wedged).
 set -uo pipefail
+
+CUT_SHORT_RC=75
 
 # A report whose every sample has WindowServer's main thread in the paravirtual GPU driver and the
 # tested process's main thread waiting on WindowServer. A moment in the driver in passing is not
@@ -120,7 +125,7 @@ if [ "$retry" = "--cut-short" ]; then
       echo "The app could not start again after a test hung, so the tests after it never ran. Re-run the job."
     } >>"$GITHUB_STEP_SUMMARY"
   fi
-  exit "$rc"
+  exit "$CUT_SHORT_RC"
 fi
 echo "::warning title=WindowServer wedged on the runner::the GPU driver stalled, so these tests hit their hang limit and run again: $(echo "$retry" | tr '\n' ' ')"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then

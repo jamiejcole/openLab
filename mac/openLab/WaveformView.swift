@@ -446,6 +446,10 @@ class WaveformView: NSView {
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+        // `clipsToBounds` defaults to false since the macOS 14 SDK: a line at an x outside the
+        // visible span would land on the neighbouring views. Clipping here does the same on
+        // every system, whatever the SDK default.
+        NSBezierPath.clip(bounds)
         NSColor(calibratedRed: 0.02, green: 0.02, blue: 0.1, alpha: 1).setFill()
         waveRect.fill()
         NSColor.controlBackgroundColor.setFill()
@@ -573,6 +577,9 @@ class WaveformView: NSView {
     }
 
     private func drawHandle(at x: CGFloat, start: Bool) {
+        // A handle at the very edge of the view is drawn whole, not half cut by the clip.
+        guard x >= -1, x <= bounds.width + 1 else { return }
+        let x = min(max(x, 0.5), bounds.width - 0.5)
         NSColor.systemOrange.setFill()
         NSRect(x: x - 0.5, y: Self.rulerHeight, width: 1, height: waveRect.height).fill()
         let tri = NSBezierPath()
