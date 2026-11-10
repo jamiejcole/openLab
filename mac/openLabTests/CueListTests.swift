@@ -4634,7 +4634,12 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(fileCell.chooseButton.accessibilityLabel(), loc("inspector.target.choose"))
         XCTAssertNotEqual(drawnMask(trash), drawnMask(try cellPixels(wc, H.door)), "not the file glyph")
         let glyphs = try drawnGlyphs(button, .targetFileMissing, label: loc("cuelist.target.fileMissing"))
-        XCTAssertEqual(drawnMask(glyphs.shown), drawnMask(glyphs.icon), "from the icon table")
+        // The same glyph, but for an edge pixel or two: the CI Mac antialiases the cell's button and the
+        // one beside it a shade apart, enough to cross the drawn threshold in one sampled pixel.
+        let apart = zip(drawnMask(glyphs.shown), drawnMask(glyphs.icon)).filter { $0 != $1 }.count
+        XCTAssertLessThanOrEqual(apart, 2, "from the icon table")
+        let fromFile = zip(drawnMask(trash), drawnMask(try cellPixels(wc, H.door))).filter { $0 != $1 }.count
+        XCTAssertGreaterThan(fromFile, 8, "far from the file glyph")
         XCTAssertNotEqual(Icon.targetFileMissing.symbol, Icon.targetFile.symbol)
         // The button still chooses a file; once the cue has one that exists, the file glyph is back.
         let wav = try tempFiles(["back.wav"])[0]
