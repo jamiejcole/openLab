@@ -228,6 +228,7 @@ final class SidebarTests: XCTestCase {
         await assertEventually { self.drawnListNames(self.side) == ["Main", "Cue List 2"] }
         let cell = try XCTUnwrap(side.listTable.view(atColumn: 0, row: 1, makeIfNecessary: true) as? NSTableCellView)
         let name = try XCTUnwrap(cell.textField)
+        cell.layoutSubtreeIfNeeded()
         XCTAssertTrue(cell.bounds.contains(name.frame), "the name at \(name.frame) is inside its row")
         XCTAssertGreaterThan(name.frame.width, 40)
     }
