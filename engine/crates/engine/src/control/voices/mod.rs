@@ -14,8 +14,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use openlab_audio::{
-    CommandKind, Curve, DiskStreamer, Event, Fade, FinishReason, GainTarget, Plays, PreparedStream,
-    Slice, StreamHandle, StreamRequest, VoiceId, VoiceStart, total_frames,
+    CommandKind, Curve, DiskStreamer, Event, Fade, FinishReason, GainTarget, MAX_SLICES, Plays,
+    PreparedStream, Slice, StreamHandle, StreamRequest, VoiceId, VoiceStart, total_frames,
 };
 use openlab_core::{
     Action, BrokenReason, Cue, CueEngine, CueId, CueKind, FadeCurve, FadeSpec, Input, LevelParam,
@@ -124,6 +124,9 @@ pub struct VoiceRec {
     table: Vec<Slice>,
     /// The `stop` of the latest devamp sent for it.
     devamp_stop: bool,
+    /// Table frames played when each accepted devamp leaves its loop, in order: where the file
+    /// position jumps on (see [`VoiceRec::file_frame`]).
+    cuts: Vec<u64>,
     /// Its start waited for the file's probe, since this sample (`now`).
     held: Option<SampleTime>,
     /// How much later than the engine dated it the voice started (held by its probe).
@@ -281,6 +284,30 @@ mod priming;
 mod queries;
 
 impl VoiceRec {
+    /// Notes that an accepted devamp leaves its loop on sample `at`. Answered again for the same
+    /// devamp, so a cut is kept once; the table is at most `MAX_SLICES` long, which bounds the
+    /// cuts a voice can have (each needs a loop).
+    fn note_devamp_cut(&mut self, at: SampleTime) {
+        let Some(played) = at.checked_sub(self.start_at) else {
+            return;
+        };
+        let played = played.saturating_sub(self.paused_frames);
+        if self.cuts.last().is_none_or(|&c| played > c) && self.cuts.len() < MAX_SLICES {
+            self.cuts.push(played);
+        }
+    }
+
+    /// The frame of the media file the voice is at when the action is `pos` frames in (the
+    /// table starts at the action offset); `None` without a table or past its end.
+    fn file_frame(&self, pos: u64) -> Option<u64> {
+        let played = pos.saturating_sub(self.offset);
+        // A devamp stop ends the voice on the loop's boundary: nothing is played after it.
+        if self.devamp_stop && self.cuts.last().is_some_and(|&c| c <= played) {
+            return None;
+        }
+        file_frame(&self.table, &self.cuts, played)
+    }
+
     /// The action's length once a devamp leaves the loop it plays on sample `at`: where it is
     /// then, plus the rest of its table after that loop (nothing for a devamp stop). `None`
     /// while that rest loops for ever.
@@ -300,6 +327,47 @@ impl VoiceRec {
                 .saturating_add(self.delay),
         )
     }
+}
+
+/// The entry a voice is in after playing `rem` frames from the start of entry `from` on, and the
+/// frames it is into that entry's plays. `None` past the end of a finite table.
+fn walk(table: &[Slice], from: usize, rem: u64) -> Option<(usize, u64)> {
+    let mut left = rem;
+    for (k, s) in table.iter().enumerate().skip(from) {
+        let len = match s.plays {
+            Plays::Times(n) => s.frames.saturating_mul(u64::from(n)),
+            Plays::Infinite => u64::MAX,
+        };
+        if left < len {
+            return Some((k, left));
+        }
+        left -= len;
+    }
+    None
+}
+
+/// Where in the media file (frames) a voice playing `table` is after `played` frames, given the
+/// frames played when devamps left their loops (`cuts`, increasing). A devamp jumps to the first
+/// entry of the slice after the loop's; the position runs on from that entry's start. `None`
+/// without a table, past a finite table's end, or when a devamp left the table's last slice
+/// (the voice ends there).
+pub fn file_frame(table: &[Slice], cuts: &[u64], played: u64) -> Option<u64> {
+    // The voice has played from entry `entry` since voice frame `from`.
+    let (mut entry, mut from) = (0usize, 0u64);
+    for &cut in cuts.iter().take_while(|&&c| c <= played) {
+        let (k, _) = walk(table, entry, (cut - from).checked_sub(1)?)?;
+        let index = table.get(k)?.index;
+        entry = table
+            .iter()
+            .enumerate()
+            .skip(k + 1)
+            .find(|(_, s)| s.index != index)
+            .map(|(n, _)| n)?;
+        from = cut;
+    }
+    let (k, within) = walk(table, entry, played - from)?;
+    let s = table.get(k)?;
+    Some(s.start.saturating_add(within.checked_rem(s.frames)?))
 }
 
 /// Frames the table plays after the loop entry whose play ends on frame `played` (counted from
@@ -361,6 +429,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         listed: false,
         table: Vec::new(),
         devamp_stop: false,
+        cuts: Vec::new(),
         held: None,
         delay: 0,
         start_id: None,
@@ -530,6 +599,39 @@ fn voice_start(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_frame_follows_loops_and_each_devamp_cut() {
+        let s = |index, start, frames, plays| Slice {
+            index,
+            start,
+            frames,
+            plays,
+        };
+        // Slice 0 (0..100) twice, slice 1 (100..200) for ever, slice 2 (200..300) for ever,
+        // slice 3 (300..350) once.
+        let t = [
+            s(0, 0, 100, Plays::Times(2)),
+            s(1, 100, 100, Plays::Infinite),
+            s(2, 200, 100, Plays::Infinite),
+            s(3, 300, 50, Plays::Times(1)),
+        ];
+        assert_eq!(file_frame(&t, &[], 0), Some(0));
+        assert_eq!(file_frame(&t, &[], 150), Some(50));
+        assert_eq!(file_frame(&t, &[], 450), Some(150));
+        // Devamped out of slice 1 at 450 (a play boundary: 200 + 2 * 100 + 50 is not, so the
+        // cut is at 500).
+        assert_eq!(file_frame(&t, &[500], 499), Some(199));
+        assert_eq!(file_frame(&t, &[500], 530), Some(230));
+        // A second devamp, out of slice 2 at 700.
+        assert_eq!(file_frame(&t, &[500, 700], 699), Some(299));
+        assert_eq!(file_frame(&t, &[500, 700], 720), Some(320));
+        assert_eq!(file_frame(&t, &[500, 700], 749), Some(349));
+        // Past the table's end, and a devamp out of its last slice: the voice has ended.
+        assert_eq!(file_frame(&t, &[500, 700], 750), None);
+        assert_eq!(file_frame(&t[3..], &[10], 20), None);
+        assert_eq!(file_frame(&[], &[], 0), None);
+    }
 
     fn s(index: u32, start: u64, frames: u64, plays: Plays) -> Slice {
         Slice {

@@ -136,10 +136,11 @@ impl DocCx<'_> {
                 .voices
                 .progress(rendered)
                 .into_iter()
-                .map(|(cue, pos, left)| ProgressItem {
+                .map(|(cue, pos, left, at)| ProgressItem {
                     cue,
                     elapsed: self.seconds(pos),
                     remaining: left.map(|l| self.seconds(l)),
+                    position: at.map(|f| self.seconds(f)),
                 })
                 .collect();
             // Cues without a voice: their actions join the voices' (an audio cue's action is
@@ -154,6 +155,7 @@ impl DocCx<'_> {
                             cue: t.cue,
                             elapsed,
                             remaining: t.remaining.map(|l| self.seconds(l)),
+                            position: None,
                         });
                         continue;
                     }

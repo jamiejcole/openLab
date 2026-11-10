@@ -134,7 +134,7 @@ Fields: `ServerMessage` in `protocol/server.rs`. Behaviour:
 
 Sent to connections bound to the doc whose cues it reports, only while something in the doc counts; nothing while every cue is idle or loaded, and no wake is added for it. Full rules: skill `cue-engine` ("Timer progress").
 
-- `items`: an audio cue's from its voice; a cue without a voice (Wait, Fade, Group, ...) from its run, `elapsed` since its action start plus any load-to-time offset. `remaining` is null when there is no end (infinite loop, waiting for feedback, group with a busy child). A broken run has no item.
+- `items`: an audio cue's from its voice (`position`, when present: seconds into the media file the voice is at, with its slices, loop passes and devamps applied, so it stays inside a looping slice and moves on after a devamp; absent for a cue without a voice, past a finite plan's end, and for a voice a devamp stop has ended); a cue without a voice (Wait, Fade, Group, ...) from its run, `elapsed` since its action start plus any load-to-time offset. `remaining` is null when there is no end (infinite loop, waiting for feedback, group with a busy child). A broken run has no item.
 - `waits` (absent when empty): `wait` is `pre_wait` or `post_wait`; `remaining` is never null. A cue can be in both lists. Countdowns keep their schedule for a cue that is broken or skipped.
 - A paused cue's entries keep coming at the values it froze at. Stop, Reset and Panic end them.
 
