@@ -133,8 +133,9 @@ verify-bundle:
 test-bundle-rebuild:
 	mac/scripts/check-incremental-bundle.sh
 
+# The release disk image from the Release app (`make mac` first): build/openLab-<version>.dmg.
 dmg:
-	@echo "dmg: not yet implemented"; exit 1
+	mac/scripts/make-dmg.sh build/Build/Products/Release/openLab.app build
 
 project:
 	cd mac && xcodegen --quiet

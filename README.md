@@ -32,7 +32,8 @@ make test-rust   # Rust tests only (also works on Windows with cargo)
 make test-mac    # generate the Xcode project and run macOS unit tests + the UI smoke set (scripts/ui-smoke.txt)
 make test-mac-ui-full  # the same with every UI test (run nightly in CI)
 make mac         # build the Release app with a universal engine: build/Build/Products/Release/openLab.app
-make verify-bundle  # check that app: universal, macOS 12.0 minimum on every slice, valid signature
+make verify-bundle  # check that app: universal, macOS 12.0 minimum on every slice, one version, icon, valid signature
+make dmg         # the release disk image from that app: build/openLab-<version>.dmg
 make test-bundle-rebuild  # check an engine-only rebuild still gives a validly signed app (slow; run nightly in CI)
 ```
 
