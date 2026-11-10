@@ -1344,6 +1344,51 @@ final class WindowLayoutTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(saved), tall, accuracy: 1, "the shrink did not overwrite it")
     }
 
+    /// The divider dragged down to leave the inspector 120 pt: it stays at its least height or more, and
+    /// the Time & Loops Start and End fields are whole inside it.
+    func testADividerDragNeverLeavesTheInspectorShorterThanItsLeastHeight() async throws {
+        let url = try showFile("ShortInspector")
+        let (_, wc) = try await open(url)
+        wc.window?.setFrame(frame(wc), display: true)
+        let added = await wc.editor.add(.audio)
+        let cue = try XCTUnwrap(added, "a new audio cue")
+        wc.cueList.selectAsUser([cue])
+        await assertEventually { wc.inspector.cueForEdit?.id == cue }
+        wc.inspector.tabView.selectTabViewItem(withIdentifier: "timeLoops")
+        settle(wc)
+        let room = wc.verticalSplit.bounds.height - wc.verticalSplit.dividerThickness
+        wc.verticalSplit.setPosition(room - 120, ofDividerAt: 0)
+        settle(wc)
+        let least = WorkspaceWindowController.minInspectorHeight
+        XCTAssertGreaterThanOrEqual(wc.inspector.view.frame.height, least, "the drag stopped at the least height")
+        let panel = wc.inspector.timeLoops
+        for (name, field) in [("Start", panel.startField), ("End", panel.endField)] {
+            let frame = field.convert(field.bounds, to: wc.inspector.view)
+            XCTAssertTrue(
+                wc.inspector.view.bounds.contains(frame),
+                "\(name) at \(frame) is outside the inspector \(wc.inspector.view.bounds)")
+        }
+    }
+
+    /// A saved inspector height below the least comes back as the least.
+    func testASavedInspectorHeightBelowTheLeastComesBackAsTheLeast() async throws {
+        let url = try showFile("SavedShort")
+        let (doc, wc) = try await open(url)
+        wc.window?.setFrame(frame(wc), display: true)
+        settle(wc)
+        let path = try XCTUnwrap(app.session.workspaces.first { $0.doc == doc }?.path)
+        await close(doc)
+        let store = WindowLayoutStore(defaults: defaults)
+        var layout = store.layout(forPath: path)
+        layout.inspectorHeight = 150
+        store.save(layout, forPath: path)
+        let (_, again) = try await open(url)
+        settle(again)
+        XCTAssertEqual(
+            again.inspector.view.frame.height, WorkspaceWindowController.minInspectorHeight, accuracy: 1,
+            "150 was raised to the least height")
+    }
+
     func testAWindowSqueezeKeepsTheDraggedSidebarWidth() async throws {
         let url = try showFile("SqueezeSide")
         let (doc, wc) = try await open(url)
