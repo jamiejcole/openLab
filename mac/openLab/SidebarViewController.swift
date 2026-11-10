@@ -70,6 +70,28 @@ final class ActiveCueCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 }
 
+/// One Cue Lists row: the list's name, cut short when the sidebar is narrow.
+final class CueListNameCell: NSTableCellView {
+    let name = NSTextField(labelWithString: "")
+
+    init() {
+        super.init(frame: .zero)
+        identifier = NSUserInterfaceItemIdentifier("cue-list-name")
+        name.lineBreakMode = .byTruncatingTail
+        name.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        name.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(name)
+        textField = name
+        NSLayoutConstraint.activate([
+            name.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            name.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            name.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+}
+
 /// One Warnings row: a marker symbol (so a warning is not told by colour alone), the title, the
 /// reasons below it and, for missing media, a Relink button.
 final class WarningCell: NSTableCellView {
@@ -607,10 +629,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         return tableView === warningsTable ? warningRows.count : activeCues.count
     }
 
-    func tableView(_ tableView: NSTableView, objectValueFor tableColumn: NSTableColumn?, row: Int) -> Any? {
-        tableView === listTable && lists.indices.contains(row) ? lists[row].name : nil
-    }
-
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
         if tableView === warningsTable { return warningRows.indices.contains(row) && warningRows[row].cue != nil }
         return tableView === listTable
@@ -639,6 +657,14 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         if tableView === warningsTable { return warningCell(row) }
+        if tableView === listTable {
+            guard lists.indices.contains(row) else { return nil }
+            let cell =
+                (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("cue-list-name"), owner: nil)
+                    as? CueListNameCell) ?? CueListNameCell()
+            cell.name.stringValue = lists[row].name
+            return cell
+        }
         guard tableView === activeTable, activeCues.indices.contains(row) else { return nil }
         let cell =
             (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("active-cue"), owner: nil)

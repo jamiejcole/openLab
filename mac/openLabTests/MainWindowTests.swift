@@ -146,6 +146,42 @@ final class MainWindowTests: XCTestCase {
         XCTAssertTrue(outline.usesAlternatingRowBackgroundColors)
     }
 
+    /// In a narrow window the Name column is the one that gives up width: the Pre-Wait, Duration and
+    /// Post-Wait columns keep their widths and are drawn whole inside the list. Widened again, the time
+    /// columns are unchanged and the Name column takes the room back.
+    func testTheNameColumnGivesUpWidthInANarrowWindowAndTheTimesStayWhole() throws {
+        let wc = try controller()
+        let window = try XCTUnwrap(wc.window)
+        window.orderFront(nil)
+        defer { window.close() }
+        let outline = wc.cueList.outlineView
+        func column(_ id: String) throws -> NSTableColumn {
+            try XCTUnwrap(outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(id)))
+        }
+        func size(_ width: CGFloat) {
+            window.setFrame(NSRect(x: 0, y: 0, width: width, height: 640), display: true)
+            window.contentView?.layoutSubtreeIfNeeded()
+        }
+        let times = ["preWait", "duration", "postWait"]
+        let widths = Dictionary(uniqueKeysWithValues: CueListViewController.columns.map { ($0.id, $0.width) })
+        size(1200)
+        let wideName = try column("name").width
+        size(window.minSize.width)
+        XCTAssertEqual(window.frame.width, window.minSize.width, "the narrowest window")
+        let visible = try XCTUnwrap(outline.enclosingScrollView).contentView.bounds
+        for id in times {
+            XCTAssertEqual(try column(id).width, try XCTUnwrap(widths[id]), "\(id) keeps its width")
+            let header = outline.rect(ofColumn: outline.column(withIdentifier: NSUserInterfaceItemIdentifier(id)))
+            XCTAssertGreaterThanOrEqual(header.minX, visible.minX, "\(id) starts inside the list")
+            XCTAssertLessThanOrEqual(header.maxX, visible.maxX, "\(id) ends inside the list, not cut off")
+        }
+        XCTAssertLessThan(try column("name").width, wideName, "the Name column gave up the width")
+        XCTAssertGreaterThanOrEqual(try column("name").width, CueListViewController.nameMinWidth)
+        size(1200)
+        for id in times { XCTAssertEqual(try column(id).width, try XCTUnwrap(widths[id]), "\(id) after widening") }
+        XCTAssertEqual(try column("name").width, wideName, accuracy: 1, "the Name column took the room back")
+    }
+
     func testSidebarHiddenByDefault() throws {
         let wc = try controller()
         XCTAssertFalse(wc.isVisible(.sidebar))
@@ -768,6 +804,37 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(
             wc.masthead.standbyField.font?.pointSize,
             MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero).standbyFontSize)
+    }
+
+    /// A cue with a 120-character name standing by: the window keeps its width and the name is cut short
+    /// inside the masthead, in Show Mode at 1200 pt and in Edit Mode at the smallest width the window allows.
+    func testALongStandbyNameIsCutShortAndNeverWidensTheWindow() async throws {
+        let (wc, rig) = try await demoController()
+        let window = try XCTUnwrap(wc.window)
+        window.orderFront(nil)
+        defer { window.close() }
+        let long = String(repeating: "Thunder rumble in the distance ", count: 4)
+        XCTAssertGreaterThanOrEqual(long.count, 120)
+        func check(_ what: String, width: CGFloat) {
+            window.setContentSize(NSSize(width: width, height: 700))
+            window.contentView?.layoutSubtreeIfNeeded()
+            let field = wc.masthead.standbyField
+            XCTAssertEqual(window.contentView?.bounds.width ?? 0, width, accuracy: 0.5, "\(what): the window's width")
+            let frame = field.convert(field.bounds, to: wc.masthead)
+            XCTAssertTrue(wc.masthead.bounds.contains(frame), "\(what): the name at \(frame) is inside the masthead")
+            XCTAssertGreaterThan(
+                field.intrinsicContentSize.width, field.bounds.width, "\(what): the name is longer than its field")
+            XCTAssertEqual(field.lineBreakMode, .byTruncatingTail, "\(what): cut short with an ellipsis")
+        }
+        window.setContentSize(NSSize(width: 1200, height: 700))
+        guard case .success = await rig.store.send(command: .setProperty(TestSnapshots.intro, .name(long))) else {
+            return XCTFail("rename")
+        }
+        await assertEventually { wc.masthead.standbyField.stringValue.hasSuffix(long) }
+        wc.setShowMode(true)
+        check("Show Mode at 1200", width: 1200)
+        wc.setShowMode(false)
+        check("Edit Mode at the least width", width: window.minSize.width)
     }
 
     func testShowModePaletteMeetsContrastTargets() {
