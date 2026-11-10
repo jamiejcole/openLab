@@ -313,9 +313,11 @@ final class InspectorLevelsTests: XCTestCase {
         let levels = lastKind?["levels"]
         XCTAssertEqual(levels?["outputs"]?.arrayValue?[1]["db"], .double(-6))
         XCTAssertNotEqual(levels?["master_db"], .double(0), "the commit did not put the master back to 0")
-        await rig.sync()
+        // The commit's change reaches the model in a broadcast, which a reply can overtake: wait for it.
+        await assertEventually("the commit reached the model") {
+            self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?[1]["db"] == .double(-6)
+        }
         XCTAssertEqual(modelKind(Self.intro)?["levels"]?["master_db"], .double(-20), "the peer's level survives")
-        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?[1]["db"], .double(-6))
     }
 
     func testLeavingAFieldWithoutTypingTakesAPeersChangeAndWritesNothing() async throws {
