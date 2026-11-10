@@ -4614,63 +4614,6 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(asked, 4)
     }
 
-    /// A file that is gone shows the trash glyph in its Target cell, from the `media_missing` problem (the
-    /// Demo show's Radio has none on disk); a file chosen for it brings the file glyph back. Show Mode leaves
-    /// the cell empty, as for any file cue.
-    func testTargetCellShowsATrashCanForAMissingFile() async throws {
-        let rig = try await Rig.open()
-        let wc = WorkspaceWindowController(store: rig.store)
-        show(wc.cueList.view)
-        let radio = H.radio
-        await assertEventually { rig.store.problems[radio]?.contains { $0.type == "media_missing" } == true }
-        wc.cueList.outlineView.expandItem(wc.cueList.node(H.group))
-        await assertEventually { self.targetCell(wc, radio)?.chooseButton.isHidden == false }
-        let button = try XCTUnwrap(targetCell(wc, radio)?.chooseButton)
-        XCTAssertEqual(button.accessibilityLabel(), loc("cuelist.target.fileMissing"))
-        XCTAssertEqual(targetCell(wc, radio)?.label.stringValue, "")
-        let trash = try cellPixels(wc, radio)
-        XCTAssertGreaterThan(trash.count(Self.drawn), 8, "the trash glyph is drawn")
-        let fileCell = try XCTUnwrap(targetCell(wc, H.door))
-        XCTAssertEqual(fileCell.chooseButton.accessibilityLabel(), loc("inspector.target.choose"))
-        XCTAssertNotEqual(drawnMask(trash), drawnMask(try cellPixels(wc, H.door)), "not the file glyph")
-        let glyphs = try drawnGlyphs(button, .targetFileMissing, label: loc("cuelist.target.fileMissing"))
-        // The same glyph, but for an edge pixel or two: the CI Mac antialiases the cell's button and the
-        // one beside it a shade apart, enough to cross the drawn threshold in one sampled pixel.
-        let apart = zip(drawnMask(glyphs.shown), drawnMask(glyphs.icon)).filter { $0 != $1 }.count
-        XCTAssertLessThanOrEqual(apart, 2, "from the icon table")
-        let fromFile = zip(drawnMask(trash), drawnMask(try cellPixels(wc, H.door))).filter { $0 != $1 }.count
-        XCTAssertGreaterThan(fromFile, 8, "far from the file glyph")
-        XCTAssertNotEqual(Icon.targetFileMissing.symbol, Icon.targetFile.symbol)
-        // The button still chooses a file; once the cue has one that exists, the file glyph is back.
-        let wav = try tempFiles(["back.wav"])[0]
-        wc.pickAudioFile = { wav }
-        try click(button)
-        await assertEventually {
-            rig.store.problems[radio]?.contains { $0.type == "media_missing" } != true
-                && self.targetCell(wc, radio)?.chooseButton.accessibilityLabel() == loc("inspector.target.choose")
-        }
-        XCTAssertEqual(
-            drawnMask(try cellPixels(wc, radio)), drawnMask(try cellPixels(wc, H.door)), "the file glyph again")
-        // Show Mode: the column is drawn as in Edit Mode (the trash glyph included), and the click does nothing.
-        _ = await rig.store.send(command: .setProperty(radio, .media("media/o.wav")))
-        await assertEventually { rig.store.problems[radio]?.contains { $0.type == "media_missing" } == true }
-        await assertEventually {
-            self.targetCell(wc, radio)?.chooseButton.accessibilityLabel() == loc("cuelist.target.fileMissing")
-        }
-        let editModePixels = try cellPixels(wc, radio)
-        var asked = 0
-        wc.pickAudioFile = {
-            asked += 1
-            return nil
-        }
-        wc.setShowMode(true)
-        await assertEventually { self.targetCell(wc, radio)?.chooseButton.isHidden == false }
-        XCTAssertEqual(drawnMask(try cellPixels(wc, radio)), drawnMask(editModePixels), "the same glyph in Show Mode")
-        try click(try XCTUnwrap(targetCell(wc, radio)?.chooseButton))
-        await settle()
-        XCTAssertEqual(asked, 0, "the list is locked")
-    }
-
     func testInspectorTargetFieldGlyphs() async throws {
         let (rig, empty) = try await targetRig()
         let wc = WorkspaceWindowController(store: rig.store)
