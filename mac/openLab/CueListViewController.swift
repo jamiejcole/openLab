@@ -191,6 +191,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         ("continue", nil, 36),
     ]
     static let rowHeight: CGFloat = 24
+    /// The least the Name column shrinks to; a narrower list scrolls sideways.
+    static let nameMinWidth: CGFloat = 100
 
     let store: WorkspaceStore
     let outlineView: NSOutlineView
@@ -269,9 +271,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 updateTimeHeader(column)
             }
             column.width = spec.width
-            column.minWidth = 24
+            // The Name column takes up and gives up width with the window; the others keep theirs, so the
+            // times stay readable in a narrow window.
+            column.minWidth = spec.id == "name" ? Self.nameMinWidth : 24
+            column.resizingMask = spec.id == "name" ? [.autoresizingMask, .userResizingMask] : [.userResizingMask]
             outlineView.addTableColumn(column)
         }
+        outlineView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         outlineView.outlineTableColumn = outlineView.tableColumns.first { $0.identifier.rawValue == "name" }
         outlineView.usesAlternatingRowBackgroundColors = true
         outlineView.allowsMultipleSelection = true
