@@ -192,7 +192,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     ]
     static let rowHeight: CGFloat = 24
     /// The least the Name column shrinks to; a narrower list scrolls sideways.
-    static let nameMinWidth: CGFloat = 80
+    static let nameMinWidth: CGFloat = 60
 
     let store: WorkspaceStore
     let outlineView: NSOutlineView

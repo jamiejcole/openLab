@@ -164,6 +164,8 @@ final class MainWindowTests: XCTestCase {
         }
         let times = ["preWait", "duration", "postWait"]
         let widths = Dictionary(uniqueKeysWithValues: CueListViewController.columns.map { ($0.id, $0.width) })
+        // Scroll bars always shown (a system setting) take the most room from the list.
+        outline.enclosingScrollView?.scrollerStyle = .legacy
         // A window that opens at its narrowest: fitted before any resize.
         size(window.minSize.width)
         let last = outline.rect(ofColumn: outline.numberOfColumns - 1)
