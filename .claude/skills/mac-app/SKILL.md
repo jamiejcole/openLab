@@ -27,7 +27,7 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
 ## Custom views and buttons
 - A custom `NSView` whose `draw(_:)` can paint outside its bounds (a line at an x off the visible span) clips first with `NSBezierPath.clip(bounds)`: `clipsToBounds` (available since macOS 10.9) defaults to false on the macOS 14 SDK, and clipping in `draw(_:)` gives the same result on every system whatever the SDK default. `WaveformView`, `MeterBank`'s meter, `LevelMatrixView` and the cue list's progress fill do.
 - A `.texturedRounded` button's shape stays about 24 pt tall whatever its height; a button meant to be big uses `.regularSquare`, which fills it. The sidebar transport buttons are 44 pt with 18 pt symbols, and a test checks each symbol fits the cell's content rect at default and minimum sidebar width.
-- A handle or line drawn at an edge of a clipped view is moved inside it so it is whole, not half cut.
+- A trim handle drawn at an edge of the waveform is moved inside it so it is whole (`drawHandle`). The playhead, slice and insertion lines are not: at the very edge the clip cuts half their width.
 
 ## Seeing the app
 - `make ui-shots SCENARIO=mac/scenarios/<name>.json [OUT=<dir>]` drives the real workspace window on the real engine (stepped virtual clock) and writes `<OUT>/<nn>-<name>.png` per shot plus `steps.log` (each step and what it hit). OUT defaults to `build/ui-shots/<name>`. It builds for testing only when `mac/` app, test, test-show or project files or the engine changed since the last build; editing a scenario needs no build.
