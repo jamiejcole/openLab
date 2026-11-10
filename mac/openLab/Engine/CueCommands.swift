@@ -53,6 +53,7 @@ enum NewCueKind: String, CaseIterable, Sendable {
         case .devamp:
             fields.merge([
                 "target": .null, "start_next_cue": .bool(false), "stop_target_when_slice_ends": .bool(false),
+                "devamp_mode": .string("current_slice"),
             ]) { a, _ in a }
         case .goto: fields.merge(["target": .null, "then_go": .bool(false)]) { a, _ in a }
         case .network:

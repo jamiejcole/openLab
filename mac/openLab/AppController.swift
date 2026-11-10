@@ -192,7 +192,7 @@ final class AppController {
         return beginCellEdit(for: chord, event: event) ? nil : event
     }
 
-    /// QLab 5's edit-number (N) and edit-name (Q) keys (`TransportKeys.editKeys`). They come after the
+    /// QLab 5's edit-number (N), edit-name (Q) and edit-target (T) keys (`TransportKeys.editKeys`). They come after the
     /// cue hotkeys: a cue whose hotkey is one of them (a loaded show's) fires, and the key opens no editor.
     /// The key opens the selected cue's cell in the front workspace's list when the list has the
     /// focus: a field being typed in, Show Mode (the list is locked) and a held key take nothing.

@@ -181,12 +181,14 @@
 "cuelist.durationEditor.label" = "Edit duration";
 "cuelist.numberEditor.label" = "Edit number";
 "cuelist.nameEditor.label" = "Edit name";
+"cuelist.targetEditor.label" = "Edit target";
 "cue.name.afterTarget" = "%1$@ %2$@";
 "cue.name.fadeAndStop" = "%1$@ and stop %2$@";
 "cuelist.edit.cueGone" = "The cue you were editing no longer exists.";
 "cuelist.col.postWait" = "Post-Wait";
 
 "cue.target.missing" = "?";
+"cuelist.target.fileMissing" = "File not found. Choose…";
 "cue.playhead" = "Playhead";
 "cue.playhead.inside" = "Playhead is inside this group";
 "cue.flagged" = "Flagged";
@@ -237,7 +239,7 @@
 "inspector.hotkey.transport" = "That key is already a transport key in this workspace.";
 "inspector.hotkey.otherCue" = "Another cue already has that hotkey.";
 "inspector.hotkey.menu" = "That key belongs to a menu command.";
-"inspector.hotkey.editKey" = "That key edits the highlighted cue's number or name (N and Q).";
+"inspector.hotkey.editKey" = "That key edits the highlighted cue's number, name or target (N, Q and T).";
 "inspector.hotkey.unsupported" = "That key cannot be used as a hotkey.";
 "hotkeys.warn.unusable" = "%1$@ key: %2$@, so no key is bound.";
 "hotkeys.warn.menuLost" = "%1$@ key %2$@ is also a menu command's key: the key runs %1$@ here, and that menu command has no key in this workspace.";
@@ -247,7 +249,7 @@
 "hotkeys.reason.duplicate" = "it is the same key as %@";
 "hotkeys.reason.cueHotkey" = "it is the same key as a cue hotkey";
 "hotkeys.reason.menuKey" = "it is the same key as a menu command";
-"hotkeys.reason.editKey" = "the key edits a cue's number or name";
+"hotkeys.reason.editKey" = "the key edits a cue's number, name or target";
 "hotkeys.reason.unsupported" = "the key is not supported";
 "inspector.osc" = "OSC address";
 "inspector.osc.placeholder" = "/my/trigger";
@@ -271,15 +273,16 @@
 "inspector.flagged" = "Flagged";
 "inspector.armed" = "Armed";
 "inspector.target.missing" = "(missing cue)";
-"inspector.target.notApplicable" = "(not applicable)";
+"inspector.target.notApplicable" = "(takes no target)";
 "inspector.target.choose" = "Choose…";
-"inspector.target.noFile" = "No file yet: click Choose…";
+"inspector.target.noFile" = "No file yet: double-click here or use the folder button";
 "inspector.target.choosePrompt" = "Choose";
 "inspector.invalid.time" = "Enter a time as mm:ss.sss, from 0 to 24 hours.";
 "inspector.invalid.decimalComma" = "Use a full stop for decimals, as in 1.5.";
 "inspector.invalid.duplicateNumber" = "Another cue already has that number.";
 "inspector.invalid.unknownTarget" = "No cue has that number.";
 "inspector.invalid.selfTarget" = "A cue cannot target itself.";
+"inspector.invalid.wrongTargetKind" = "This cue cannot act on that kind of cue.";
 "inspector.invalid.notApplicable" = "This cue has no target.";
 "inspector.invalid.noDuration" = "This cue's duration cannot be edited: only Wait and Fade cues have one to set.";
 "inspector.invalid.noLoadTime" = "Only a Load cue has a load time.";
@@ -595,13 +598,14 @@
 "inspector.network.messageHint" = "/address 1 2.5 \"text\" \\T";
 "inspector.network.send" = "Send";
 "inspector.network.unpatched" = "No patch";
-"cue.target.unpatched" = "No patch";
 "inspector.devamp.startNext" = "Start next cue";
 "inspector.devamp.stopTarget" = "Stop target when its slice ends";
 "inspector.devampMode" = "Leaves";
 "inspector.devampMode.current_slice" = "The loop now playing";
 "inspector.devampMode.looping_cue" = "The cue's own loop";
 "inspector.target.clear" = "Clear target";
+"inspector.target.jump" = "Select the target cue";
+"inspector.target.none" = "(no target)";
 "levels.matrix" = "Levels matrix";
 "levels.master" = "Cue master";
 "levels.output" = "Cue output %d";

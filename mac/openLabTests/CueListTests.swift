@@ -1956,6 +1956,160 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertNil(wc.cueList.editingCell, "the focus is in the inspector")
     }
 
+    /// T (edit target): a cue target is typed as a cue number in the Target cell, checked as the inspector's
+    /// field does (manual p. 120).
+    func testTKeyEditsACueTargetAsACueNumber() async throws {
+        try await editWorkspace()
+        try await focusList(on: fade)
+        try press("t", code: 17)
+        try assertEditing(fade, "target", text: "1")
+        XCTAssertEqual(wc.cueList.cellEditor.accessibilityLabel(), loc("cuelist.targetEditor.label"))
+        XCTAssertEqual(wc.cueList.cellEditor.accessibilityIdentifier(), AX.cueTargetEditor)
+        XCTAssertEqual(goes(), 0)
+        // T typed in the open cell is text, and the cell is not reopened.
+        try press("t", code: 17)
+        XCTAssertEqual(wc.cueList.cellEditor.stringValue, "t")
+        try press("\u{7F}", code: 51)
+        try type("2")
+        try pressReturn()
+        assertNotEditing()
+        await assertEventually("the Fade targets cue 2, in the cell and the inspector") {
+            self.store.model?.cue(self.fade)?.raw["kind"]?["target"]?.stringValue == self.cues[1].raw
+                && self.cell(self.fade, "target") == "2" && self.wc.inspector.targetField.stringValue == "2"
+        }
+        XCTAssertEqual(goes(), 0)
+        // A number no cue has is refused as the inspector refuses it, and the target is kept.
+        let window = try XCTUnwrap(wc.window)
+        try press("t", code: 17)
+        try type("99")
+        try pressReturn()
+        await assertEventually("the refusal is said in the inspector") {
+            self.wc.inspector.messageLabel.stringValue == loc(InspectorEdit.Rejection.unknownTarget.messageKey)
+        }
+        XCTAssertNil(window.attachedSheet, "nothing modal: the window is not dimmed")
+        assertNotEditing()
+        XCTAssertEqual(cell(fade, "target"), "2")
+        // Esc leaves it alone.
+        try press("t", code: 17)
+        try press("\u{1B}", code: 53)
+        assertNotEditing()
+    }
+
+    /// With the inspector hidden its message line cannot be seen: the refusal is a sheet then, never silent.
+    func testARefusedTypedTargetIsSeenWithTheInspectorHidden() async throws {
+        try await editWorkspace()
+        wc.setVisible(.inspector, false)
+        try await focusList(on: fade)
+        let window = try XCTUnwrap(wc.window)
+        try press("t", code: 17)
+        try type("99")
+        try pressReturn()
+        await assertEventually("the refusal is a sheet") { window.attachedSheet != nil }
+        XCTAssertTrue(sheetTexts(window).contains(loc(InspectorEdit.Rejection.unknownTarget.messageKey)))
+        window.endSheet(try XCTUnwrap(window.attachedSheet))
+        XCTAssertEqual(cell(fade, "target"), "1", "the cell holds what the cue holds")
+    }
+
+    /// T on a file cue opens the file chooser; the chosen file replaces the cue's, and a cancelled
+    /// chooser changes nothing.
+    func testTKeyOnAFileCueChoosesAFile() async throws {
+        try await editWorkspace()
+        let wav = try tempFiles(["chosen.wav"])[0]
+        var picked: URL?
+        var asked = 0
+        wc.pickAudioFile = {
+            asked += 1
+            return picked
+        }
+        let before = store.model?.cue(cues[1])?.raw["kind"]?["media"]?.stringValue
+        try press("t", code: 17)
+        XCTAssertEqual(asked, 0, "the chooser opens after the key is consumed, not inside it")
+        await assertEventually { asked == 1 }
+        XCTAssertNil(wc.cueList.editingCell, "a file target has no number to type")
+        XCTAssertEqual(store.model?.cue(cues[1])?.raw["kind"]?["media"]?.stringValue, before, "cancelled")
+        picked = wav
+        try press("t", code: 17)
+        await assertEventually { asked == 2 }
+        await assertEventually {
+            self.store.model?.cue(self.cues[1])?.raw["kind"]?["media"]?.stringValue == wav.standardizedFileURL.path
+        }
+        XCTAssertEqual(goes(), 0)
+    }
+
+    func testTKeyDoesNothingInShowModeOrOffTheListOrWithTwoCues() async throws {
+        try await editWorkspace()
+        let window = try XCTUnwrap(wc.window)
+        var asked = 0
+        wc.pickAudioFile = {
+            asked += 1
+            return nil
+        }
+        wc.setShowMode(true)
+        try press("t", code: 17)
+        XCTAssertEqual(asked, 0, "Show Mode locks the target")
+        XCTAssertNil(wc.cueList.editingCell)
+        XCTAssertFalse(wc.cueList.beginCellEdit(fade, column: "target"))
+        wc.setShowMode(false)
+        wc.cueList.selectAsUser([cues[0], cues[1]])
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
+        try press("t", code: 17)
+        XCTAssertEqual(asked, 0, "two cues are highlighted")
+        wc.cueList.selectAsUser([cues[1]])
+        XCTAssertTrue(window.makeFirstResponder(wc.inspector.nameField))
+        try press("t", code: 17)
+        XCTAssertEqual(asked, 0, "the focus is in the inspector")
+        XCTAssertNil(wc.cueList.editingCell)
+    }
+
+    /// A cue that takes no target (a Memo) opens no editor.
+    func testTKeyOnACueWithNoTargetOpensNothing() async throws {
+        try await editWorkspace()
+        let added = await wc.editor.add(.memo, after: [cues[1]])
+        let memo = try XCTUnwrap(added)
+        try await focusList(on: memo)
+        try press("t", code: 17)
+        XCTAssertNil(wc.cueList.editingCell)
+    }
+
+    /// The list has no type-to-select: a letter moves neither the highlight nor the playhead, the edit-target
+    /// key included when it has nothing to edit (a Memo, a Network cue, anything in Show Mode), or the next GO
+    /// would fire a cue the operator never chose.
+    func testNoLetterKeyMovesTheSelectionOrThePlayhead() async throws {
+        try await editWorkspace()
+        guard case .success = await store.send(command: .setProperty(cues[0], .name("Thunder rumble"))) else {
+            return XCTFail("rename")
+        }
+        let addedMemo = await wc.editor.add(.memo, after: [fade])
+        let xylo = try XCTUnwrap(addedMemo)
+        guard case .success = await store.send(command: .setProperty(xylo, .name("Xylophone"))) else {
+            return XCTFail("rename")
+        }
+        let addedNet = await wc.editor.add(.network, after: [xylo])
+        let net = try XCTUnwrap(addedNet)
+        await sync()
+        for id in [xylo, net] {
+            try await focusList(on: id)
+            try press("t", code: 17)
+            try await assertAllOn(id)
+            XCTAssertNil(wc.cueList.editingCell, "nothing to edit")
+        }
+        try await focusList(on: fade)
+        try press("x", code: 7)
+        try await assertAllOn(fade)
+        try press("t", code: 17)
+        try assertEditing(fade, "target", text: "1")
+        try press("\u{1B}", code: 53)
+        assertNotEditing()
+        try await assertAllOn(fade)
+        wc.setShowMode(true)
+        for letter: (String, UInt16) in [("t", 17), ("x", 7), ("n", 45), ("q", 12)] {
+            try await focusList(on: fade)
+            try press(letter.0, code: letter.1)
+            try await assertAllOn(fade)
+            XCTAssertNil(wc.cueList.editingCell)
+        }
+    }
+
     /// A cue whose hotkey is N is started by it, and the key opens no editor.
     func testACueHotkeyOnNStartsTheCueAndOpensNoEditor() async throws {
         try await editWorkspace()
@@ -4449,16 +4603,13 @@ final class CueListDrawingTests: XCTestCase {
         }
         XCTAssertEqual(asked, 4)
         XCTAssertEqual(rig.store.model?.cue(H.door)?.raw["kind"]?["media"]?.stringValue, doorMedia)
-        // Show Mode: the button is gone, the cell is empty, and a click already on its way asks nothing.
+        // Show Mode: the column is drawn as in Edit Mode, and a click already on its way asks nothing.
         let onChoose = try XCTUnwrap(targetCell(wc, H.door)?.onChoose)
+        let editPixels = try cellPixels(wc, H.door)
         wc.setShowMode(true)
-        await assertEventually {
-            [empty, H.intro, H.door].allSatisfy { self.targetCell(wc, $0)?.chooseButton.isHidden == true }
-        }
-        XCTAssertEqual(targetCell(wc, H.intro)?.label.stringValue, "")
-        for id in [empty, H.intro, H.door] {
-            XCTAssertEqual(try cellPixels(wc, id).count(Self.drawn), 0, "nothing drawn in Show Mode")
-        }
+        await settle()
+        XCTAssertTrue([empty, H.intro, H.door].allSatisfy { self.targetCell(wc, $0)?.chooseButton.isHidden == false })
+        XCTAssertEqual(drawnMask(try cellPixels(wc, H.door)), drawnMask(editPixels), "the same glyph in Show Mode")
         onChoose()
         XCTAssertEqual(asked, 4)
     }
@@ -4470,12 +4621,12 @@ final class CueListDrawingTests: XCTestCase {
         show(wc.inspector.view)
         wc.cueList.selectAsUser([empty])
         await assertEventually { wc.inspector.cueForEdit?.id == empty }
-        XCTAssertTrue(wc.inspector.clearTargetButton.isHidden, "no target: no clear glyph")
+        XCTAssertFalse(wc.inspector.clearTargetButton.isEnabled, "no target: nothing to clear")
         XCTAssertNotNil(wc.inspector.chooseButton.image)
         wc.cueList.selectAsUser([H.door])
         await assertEventually { wc.inspector.cueForEdit?.id == H.door }
         let clear = wc.inspector.clearTargetButton
-        XCTAssertFalse(clear.isHidden)
+        XCTAssertTrue(clear.isEnabled)
         XCTAssertEqual(clear.image?.accessibilityDescription, loc("inspector.target.clear"))
         let drawnClear = try drawnGlyphs(clear, .fieldClear, label: loc("inspector.target.clear"))
         XCTAssertGreaterThan(drawnClear.shown.count(Self.drawn), 8, "the clear glyph is drawn")
@@ -4487,7 +4638,7 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { (rig.store.model?.cue(H.door)?.raw["kind"]?["media"]?.stringValue ?? "").isEmpty }
         await assertEventually { wc.inspector.targetField.stringValue == "" }
         XCTAssertEqual(targetCell(wc, H.door)?.label.stringValue, "", "the list cell holds no file")
-        await assertEventually { wc.inspector.clearTargetButton.isHidden }
+        await assertEventually { !wc.inspector.clearTargetButton.isEnabled }
     }
 
     func testGroupModeChangesTheTypeIcon() async throws {

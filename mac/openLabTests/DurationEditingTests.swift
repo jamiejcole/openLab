@@ -409,7 +409,11 @@ final class CueListDurationTests: XCTestCase {
             XCTAssertEqual(h.vc.cellEditor.frame, h.spy.frameOfCell(atColumn: index, row: row))
             h.vc.cancelCellEdit()
         }
-        XCTAssertFalse(h.vc.beginCellEdit(H.intro, column: "target"), "only Number, Name and Duration edit")
+        XCTAssertFalse(h.vc.beginCellEdit(H.intro, column: "target"), "a file cue's target is not typed")
+        XCTAssertTrue(h.vc.beginCellEdit(H.fade, column: "target"))
+        XCTAssertEqual(h.vc.cellEditor.accessibilityLabel(), loc("cuelist.targetEditor.label"))
+        XCTAssertEqual(h.vc.cellEditor.accessibilityIdentifier(), AX.cueTargetEditor)
+        h.vc.cancelCellEdit()
         XCTAssertEqual(log.sent, 0, "cancelled: nothing sent")
     }
 

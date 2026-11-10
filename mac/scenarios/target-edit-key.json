@@ -1,0 +1,10 @@
+{
+  "about": "The edit-target key on the Fade opens a number field in its Target cell. The missing-file trash glyph needs a file that goes missing while the window is open, which a scenario cannot do; the unit tests draw and compare it.",
+  "show": "Targets",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "3"},
+    {"key": "t"},
+    {"shot": "edit-target-key"}
+  ]
+}
