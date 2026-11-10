@@ -49,6 +49,7 @@ final class ProgressFillView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        NSBezierPath.clip(bounds)
         guard let progress, progress.fraction > 0 else { return }
         let box = bounds.insetBy(dx: 1, dy: 2)
         let rect = NSRect(
@@ -1426,7 +1427,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private func restingDuration(_ node: CueNode) -> Double? {
         switch node.cue.kindType {
         case "fade", "wait": return node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0
-        case "audio": return store.mediaDurations[node.id]?.duration
+        case "audio": return store.mediaDurations[node.id]?.shownDuration
         default: return nil
         }
     }

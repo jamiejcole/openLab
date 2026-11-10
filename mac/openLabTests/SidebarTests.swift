@@ -101,6 +101,26 @@ final class SidebarTests: XCTestCase {
 
     // MARK: Cue lists
 
+    /// Each transport icon is drawn inside its button's shape with a margin, at the default and the
+    /// minimum sidebar width: the glyph at the size the button sets, against the cell's content
+    /// area.
+    func testTransportIconsFitInsideTheirButtons() async throws {
+        let wc = try await make()
+        wc.sidebar.loadViewIfNeeded()
+        for width: CGFloat in [280, 200] {
+            wc.sidebar.view.frame = NSRect(x: 0, y: 0, width: width, height: 600)
+            wc.sidebar.view.layoutSubtreeIfNeeded()
+            for (id, button) in wc.sidebar.transportButtons {
+                let cell = try XCTUnwrap(button.cell as? NSButtonCell)
+                let content = cell.drawingRect(forBounds: button.bounds)
+                let config = try XCTUnwrap(button.symbolConfiguration)
+                let image = try XCTUnwrap(button.image?.withSymbolConfiguration(config))
+                XCTAssertLessThanOrEqual(image.size.height + 4, content.height, "\(id) height at \(width)")
+                XCTAssertLessThanOrEqual(image.size.width + 4, content.width, "\(id) width at \(width)")
+            }
+        }
+    }
+
     func testListsShowEveryListAndTheShownOneIsSelected() async throws {
         let wc = try await make()
         XCTAssertEqual(wc.sidebar.lists.map(\.name), ["Main", "Second"])

@@ -1,0 +1,10 @@
+{
+  "about": "The OSC tab of the workspace settings in a new workspace, light: greyed boxes must read as unavailable here too.",
+  "show": "new",
+  "appearance": "light",
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "osc"},
+    {"shot": "new-workspace-light"}
+  ]
+}

@@ -551,7 +551,7 @@ FAKE
   wedged_report 9 9 >"$att_cut/r.txt"
   wedged_report 3 9 >"$att_bad/r.txt"
   printf '{"testFailures":[%s,{"failureText":"Test exceeded execution time allowance of 3 minutes","targetName":"openLabTests","testIdentifierString":"Flow/testHung()"}]}' "$started" >"$d/cut-short.json"
-  WEDGED_ATT="$att_cut" FIRST_SUMMARY="$d/cut-short.json" wedged_case cut-short 65 1 "65" -only-testing:everything
+  WEDGED_ATT="$att_cut" FIRST_SUMMARY="$d/cut-short.json" wedged_case cut-short 75 1 "65" -only-testing:everything
   grep -q '::warning.*re-run the job' "$d/cut-short/out" || fail wedged-run "a run cut short must say the job needs a re-run: $(cat "$d/cut-short/out")"
   WEDGED_ATT="$att_bad" FIRST_SUMMARY="$d/cut-short.json" wedged_case cut-short-unproven 65 1 "65"
   ! grep -q 're-run the job' "$d/cut-short-unproven/out" || fail wedged-run "a restart not proven wedged must not be called a wedge"
@@ -572,6 +572,37 @@ FAKE
   PASSED=0 wedged_case retry-ran-nothing 65 2 "65 0"
   NO_RETRY_BUNDLE=1 wedged_case retry-left-no-bundle 65 2 "65 0"
   unset WEDGED_ATT FIRST_SUMMARY
+  make_test_mac_cases "$d"
+}
+# `make test-mac` with a stub in place of the test wrapper: the stub exits with the given codes, one per
+# call; wanted is make's exit code and the number of processes it started.
+make_test_mac_case() { # dir, name, wanted exit code, wanted calls, stub exit codes
+  local c="$1/make-$2" rc n want
+  mkdir -p "$c"
+  printf '%s\n' $5 >"$c/rcs"
+  : >"$c/calls"
+  cat >"$c/stub" <<'STUB'
+#!/bin/sh
+d=$(dirname "$0")
+echo "$*" >>"$d/calls"
+exit "$(sed -n "$(wc -l <"$d/calls" | tr -d ' ')p" "$d/rcs")"
+STUB
+  chmod +x "$c/stub"
+  make -s -o project test-mac MAC_TESTS_WITH_LIMIT="$c/stub" >"$c/out" 2>&1
+  rc=$?
+  n=$(wc -l <"$c/calls" | tr -d ' ')
+  # make reports a failed recipe as exit 2 and "Error <recipe's code>".
+  if [ "$3" = 0 ]; then want=0; else want=2; fi
+  { [ "$rc" = "$want" ] && [ "$n" = "$4" ] && { [ "$3" = 0 ] || grep -q "Error $3\$" "$c/out"; }; } \
+    || fail make-test-mac "$2: want exit $3 and $4 process(es), got make exit $rc and $n: $(cat "$c/out")"
+}
+make_test_mac_cases() {
+  make_test_mac_case "$1" cut-short 75 1 "75 0"
+  grep -q 'not starting the second' "$1/make-cut-short/out" || fail make-test-mac "a skipped second process must say why"
+  make_test_mac_case "$1" pass 0 2 "0 0"
+  make_test_mac_case "$1" first-fails 65 2 "65 0"
+  make_test_mac_case "$1" second-fails 70 2 "0 70"
+  make_test_mac_case "$1" both-fail 70 2 "65 70"
 }
 
 # 12. Every identifier in scripts/ui-smoke.txt and scripts/core-flows.txt names an existing test, so a

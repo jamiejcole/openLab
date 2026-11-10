@@ -13,7 +13,7 @@ import XCTest
 final class WorkspaceSettingsTests: XCTestCase {
     private let patch = ModelID("00000000-0000-0000-0000-000000000001")
     private let device = "openLab Virtual Output"
-    private var engine: TestEngine!
+    var engine: TestEngine!
 
     override func setUp() async throws {
         engine = try await TestEngine.start()
@@ -45,7 +45,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         rig.wire.sent.compactMap { if case .request(_, let r) = $0 { return r } else { return nil } }
     }
 
-    private func commands(_ rig: Rig) -> [JSONValue] { rig.wire.commands.map(\.json) }
+    func commands(_ rig: Rig) -> [JSONValue] { rig.wire.commands.map(\.json) }
 
     /// The engine's mapping of the demo's patch, read back from it.
     private func mapping(_ rig: Rig) async throws -> PatchMapping? {
@@ -417,7 +417,7 @@ final class WorkspaceSettingsTests: XCTestCase {
     }
 
     /// Types `text` into `field` and ends the editing, as a user does with Return.
-    private func type(_ text: String, into field: NSTextField) throws {
+    func type(_ text: String, into field: NSTextField) throws {
         let window = try XCTUnwrap(field.window)
         window.makeFirstResponder(field)
         let editor = try XCTUnwrap(field.currentEditor(), "the field is being edited")

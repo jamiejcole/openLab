@@ -404,6 +404,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             case .runtime(let cues, _):
                 MainActor.assumeIsolated {
                     self?.updatePreviewButton()
+                    if let self, let cue = self.cue, cues.contains(cue.id), cue.kindType == "audio" { self.render() }
                     // The file's length may have come (or changed): the waveform follows.
                     if let self, let cue = self.cueForEdit, cues.contains(cue.id) { self.renderTimeLoops(cue) }
                     // A probe also tells the matrix how many channels the file has.
@@ -629,7 +630,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         messageLabel.isHidden = false
         emptyLabel.isHidden = true
         for f in InspectorField.allCases where force.contains(f) || !isEditing(f) {
-            let text = InspectorEdit.display(f, cue: cue, model: model)
+            let text = InspectorEdit.display(f, cue: cue, model: model, media: store.mediaDurations[cue.id])
             if f == .notes {
                 if notesView.string != text { notesView.string = text }
             } else if let tf = field(f), tf.stringValue != text {

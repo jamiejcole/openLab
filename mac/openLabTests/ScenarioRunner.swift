@@ -42,6 +42,10 @@ final class ScenarioRunner {
         case resize(CGSize)
         /// `{"tab": "timeLoops"}`: the inspector tab with that identifier.
         case tab(String)
+        /// `{"focus": "settings"}`: the workspace settings window (opened without taking focus) is
+        /// the one the next steps and shots use, its `tab` the settings tab (general, audio, osc);
+        /// `"workspace"` goes back to the workspace window.
+        case focus(String)
         /// `{"shot": "name"}`: `<OUT>/<n>-<name>.png`, the whole window at 2x.
         case shot(String)
     }
@@ -49,6 +53,7 @@ final class ScenarioRunner {
     struct Scenario {
         /// A test show's name (`mac/TestShows`), or a path to a `.openlab` file (relative: to the
         /// scenario file), opened where it is and never saved.
+        /// `"new"`: a new untitled workspace, as File > New makes it.
         var show: String
         /// `{"media/a.wav": 60}`: test tones of that many seconds written into the test show's copy first.
         var media: [(path: String, seconds: Double)] = []
@@ -59,7 +64,7 @@ final class ScenarioRunner {
 
     static let stepKinds = [
         "select", "click", "double_click", "drag", "type", "key", "scroll", "magnify", "advance", "resize", "tab",
-        "shot",
+        "focus", "shot",
     ]
 
     // MARK: Parsing
@@ -195,6 +200,12 @@ final class ScenarioRunner {
             }
             return .resize(try size(a[0], a[1], "resize"))
         case "tab": return .tab(try string("tab"))
+        case "focus":
+            let which = try string("focus")
+            guard ["workspace", "settings"].contains(which) else {
+                throw Failure("\"focus\" must be \"workspace\" or \"settings\"")
+            }
+            return .focus(which)
         default:
             let name = try string("shot")
             guard name.range(of: #"^[A-Za-z0-9_-]{1,60}$"#, options: .regularExpression) != nil else {
@@ -246,7 +257,9 @@ final class ScenarioRunner {
     private var rig: Rig!
     private var wc: WorkspaceWindowController!
     private var app: AppController!
-    private var window: NSWindow { wc.window! }
+    /// The settings window while a step has focused it (the steps then act on it).
+    private var focused: NSWindow?
+    private var window: NSWindow { focused ?? wc.window! }
 
     init(scenario: Scenario, out: URL) {
         self.scenario = scenario
@@ -285,12 +298,18 @@ final class ScenarioRunner {
     private func note(_ line: String) { log.append(line) }
 
     private func start() async throws {
-        let showPath = try showToOpen()
+        let isNew = scenario.show == "new"
+        let showPath = isNew ? nil : try showToOpen()
         let engine = try await TestEngine.start()
         self.engine = engine
         let doc: ModelID
         do {
-            if let showPath {
+            if isNew {
+                guard case .success(let ok) = await engine.app.send({ .request(id: $0, .new) }),
+                    case .opened(let made)? = ok.data
+                else { throw Failure("the engine refused a new workspace") }
+                doc = made
+            } else if let showPath {
                 doc = try await engine.open(path: showPath)
             } else {
                 let media = scenario.media
@@ -424,6 +443,21 @@ final class ScenarioRunner {
             e.delta = (dx, dy)
             e.precise = precise
             e.flags = mods
+            // A scroll view's own `scrollWheel` runs an event-tracking loop that lets queued main-actor
+            // work run inside this async step, which aborts the process (out-of-order task
+            // deallocation). Its clip view is moved instead, by the wheel's distance as it would be.
+            if let scroll = view as? NSScrollView {
+                let clip = scroll.contentView
+                let factor: CGFloat = precise ? 1 : 10
+                var origin = clip.bounds.origin
+                origin.y -= dy * factor * (clip.isFlipped ? 1 : -1)
+                origin.x -= dx * factor
+                origin = clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin
+                clip.scroll(to: origin)
+                scroll.reflectScrolledClipView(clip)
+                note("scrolled \(id) to y \(Int(origin.y.rounded()))")
+                break
+            }
             let target = try hitView(at: e.point, inside: view)
             target.scrollWheel(with: e)
             note(
@@ -449,11 +483,24 @@ final class ScenarioRunner {
         case .resize(let size):
             window.setContentSize(size)
             note("resize \(Int(size.width))x\(Int(size.height))")
+        case .focus(let which):
+            if which == "settings" {
+                let sc = wc.settingsWindow
+                let w = try XCTUnwrap(sc.window)
+                w.title = String(format: loc("settings.title.workspace"), wc.workspaceName)
+                w.appearance = wc.window?.appearance
+                await sc.model.refresh()
+                sc.render()
+                focused = w
+            } else {
+                focused = nil
+            }
+            note("focus \(which)")
         case .tab(let id):
-            let tabs = wc.inspector.tabView
+            let tabs = focused != nil ? wc.settingsWindow.tabs : wc.inspector.tabView
             let ids = tabs.tabViewItems.compactMap { $0.identifier as? String }
             guard ids.contains(id) else {
-                throw Failure("no inspector tab \"\(id)\" for this selection; tabs: \(ids.joined(separator: ", "))")
+                throw Failure("no tab \"\(id)\" for this selection; tabs: \(ids.joined(separator: ", "))")
             }
             tabs.selectTabViewItem(withIdentifier: id)
             note("tab \(id)")
@@ -674,6 +721,7 @@ final class ScenarioRunner {
         case .advance(let s): return "advance \(s)"
         case .resize(let s): return "resize \(Int(s.width))x\(Int(s.height))"
         case .tab(let t): return "tab \(t)"
+        case .focus(let w): return "focus \(w)"
         case .shot(let s): return "shot \(s)"
         }
     }

@@ -1,0 +1,16 @@
+{
+  "about": "Zoomed in and scrolled to the start of the file while playing: the trim and playhead lines are out of view to the right, and none is drawn outside the waveform.",
+  "show": "Demo",
+  "media": {"media/a.wav": 60},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"key": "space"},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"magnify": "time-loops-waveform", "by": 3, "at": [0, 0.5]},
+    {"scroll": "time-loops-waveform", "dx": 5000, "dy": 0, "precise": true},
+    {"advance": 4},
+    {"shot": "scrolled-start"}
+  ]
+}

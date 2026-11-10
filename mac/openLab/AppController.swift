@@ -86,6 +86,8 @@ final class AppController {
     /// Entries in the per-workspace key cache (tests: evicted when a workspace closes).
     var keyCacheCount: Int { keyCache.count }
     var keySubs: [ObjectIdentifier: AnyCancellable] = [:]
+    /// Per window: follows its store's document state for the edited dot.
+    var editedSubs: [ObjectIdentifier: AnyCancellable] = [:]
     var keyCache:
         [ObjectIdentifier: (
             hotkeys: JSONValue?, shadowed: Set<KeyChord>,

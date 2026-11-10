@@ -30,7 +30,7 @@ Q70 | Text refused in an inspector field as typing ends with a playhead move hel
 ## Cue list and editing
 Q32 | Active Cues row for a paused cue keeps frozen elapsed/remaining and bar, led by the state name ("Paused ..."); stopping row likewise | assumed
 Q18 | Pre-Wait, Action, Post-Wait columns count down while running; a running group shows elapsed. Engine sends elapsed and remaining; UI picks display | assumed (asked 2026-10-29, unanswered); manual: waits count down
-Q20 | Duration for an Audio cue whose last slice/file loops until devamped: engine sends one-pass length and no `duration`; column decides display | assumed (asked 2026-10-29, unanswered)
+Q20 | Duration for an Audio cue whose last slice/file loops until devamped: engine sends one-pass length (`trimmed`) and no `duration`; the cue list's Duration cell and the inspector's Basics Duration field (read-only for Audio) show that one pass, before GO, while running and after a stop, so it never reads as an unprobed file | assumed (asked 2026-10-29, unanswered; manual search for a looping cue's Duration found nothing; 2026-11-08 shown as one pass)
 Q56 | Duration cell of a running cue: outlined and filled green from the left to the played fraction, still reading the duration; paused: bar stays, yellow; ends: bar goes. Unknown-end cues (looping, group) draw no bar | assumed 2026-11-01 (user's own observation of QLab)
 Q57 | Duration header chevron flips a running cue's cell to time left; Pre-Wait/Post-Wait columns keep countdown, flipping to elapsed over total | assumed 2026-11-01
 Q42 | New cue list from the sidebar button: "Cue List N" (N = position), after the last list, shown at once | assumed

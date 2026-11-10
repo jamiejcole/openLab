@@ -4209,7 +4209,7 @@ final class CueListDrawingTests: XCTestCase {
     }
 
     /// Audio cue 1 (10 s), Audio cue 2 (5 s), Memo cue 3: the Demo show with its cues replaced.
-    private func timingRig() async throws -> Rig {
+    private func timingRig(loopsForever: Bool = false) async throws -> Rig {
         let (five, memo) = (self.five, self.memo)
         return try await Rig.open(
             "Demo",
@@ -4222,13 +4222,15 @@ final class CueListDrawingTests: XCTestCase {
                         var kind = one["kind"]
                     else { return }
                     kind.set("media", .string("media/ten.wav"))
-                    kind.set("last_slice_play_count", .int(1))  // the Demo loops until devamped: no duration
+                    // The Demo loops until devamped (no duration); `loopsForever` keeps that for cue 1 only.
+                    kind.set("last_slice_play_count", .int(loopsForever ? 0 : 1))
                     one.set("kind", kind)
                     var two = one
                     two.set("id", .string(five.raw))
                     two.set("number", .string("2"))
                     two.set("name", .string("Two"))
                     kind.set("media", .string("media/five.wav"))
+                    kind.set("last_slice_play_count", .int(1))
                     two.set("kind", kind)
                     var note = one
                     note.set("id", .string(memo.raw))
@@ -4727,6 +4729,24 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(h.cell("duration", five)?.label.stringValue, "00:05.00")
         XCTAssertEqual(h.cell("duration", memo)?.label.stringValue, "", "an instantaneous cue has none")
         XCTAssertEqual(try pixels(h, "duration", ten).count(Self.greenish), 0, "and no progress outline")
+    }
+
+    func testALoopingCueShowsOnePassInTheDurationCellBeforeGoWhileRunningAndAfterAStop() async throws {
+        let rig = try await timingRig(loopsForever: true)
+        let h = try await harness(rig)
+        await assertEventually { rig.store.mediaDurations[self.five]?.duration == 5 }
+        XCTAssertNil(rig.store.mediaDurations[ten]?.duration, "the engine sends no duration for a forever loop")
+        XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00", "before GO")
+        XCTAssertEqual(h.cell("duration", five)?.label.stringValue, "00:05.00", "a play-once cue is unchanged")
+        try await go(rig)
+        try await rig.advance(12)  // past one pass: it is still looping
+        await assertEventually { (rig.store.progress[self.ten]?.elapsed ?? 0) >= 11.9 }
+        XCTAssertEqual(rig.store.cueStates[ten]?.state, .running)
+        XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00", "while running")
+        guard case .success = await rig.store.transport(.stop(cue: ten, fadeOut: nil)) else { return XCTFail("stop") }
+        try await rig.advance(1)
+        await assertEventually { rig.store.cueStates[self.ten]?.state != .running }
+        XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00", "after a stop")
     }
 
     func testRunningCueShowsProgressInTheDurationCell() async throws {
