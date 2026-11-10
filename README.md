@@ -7,6 +7,11 @@ show, timing and audio; a native Swift/AppKit app on macOS is the operator inter
 playback. See [`REQUIREMENTS.md`](REQUIREMENTS.md) and the skills in `.claude/skills/` (architecture and behaviour); open work is in
 GitHub issues and milestones.
 
+## Using and contributing
+
+- [Getting started](docs/getting-started.md): a first show, the cue types, Show Mode and a show-day checklist.
+- [Contributing](CONTRIBUTING.md): how the code is laid out, the rules and the tests.
+
 ## Licence
 
 GNU General Public License v3.0 or later. See [`LICENSE`](LICENSE).
