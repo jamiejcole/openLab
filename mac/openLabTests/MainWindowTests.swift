@@ -1317,9 +1317,9 @@ final class WindowLayoutTests: XCTestCase {
         store.save(layout, forPath: path)
         let (_, again) = try await open(url)
         settle(again)
-        XCTAssertEqual(
-            again.inspector.view.frame.height, WorkspaceWindowController.minInspectorHeight, accuracy: 1,
-            "150 was raised to the least height")
+        let least = WorkspaceWindowController.minInspectorHeight
+        XCTAssertEqual(again.inspectorHeightConstraint?.constant, least, "150 was raised to the least height")
+        XCTAssertGreaterThanOrEqual(again.inspector.view.frame.height, least)
     }
 
     func testAWindowSqueezeKeepsTheDraggedSidebarWidth() async throws {
