@@ -141,9 +141,9 @@ final class CueCell: NSTableCellView {
     @objc private func chooseClicked() { onChoose?() }
 
     /// Shows the Target cell's button.
-    func showChoose(onChoose: @escaping () -> Void) {
-        let label = loc("inspector.target.choose")
-        let image = Icon.targetFile.image(label, compact: true)
+    func showChoose(missing: Bool, onChoose: @escaping () -> Void) {
+        let label = loc(missing ? "cuelist.target.fileMissing" : "inspector.target.choose")
+        let image = (missing ? Icon.targetFileMissing : Icon.targetFile).image(label, compact: true)
         // Plain, not a template, for the same reason as `setImage`.
         chooseButton.image = TimeHeaderCell.tinted(
             image, .secondaryLabelColor, size: image.size, description: label)
@@ -292,6 +292,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.outlineTableColumn = outlineView.tableColumns.first { $0.identifier.rawValue == "name" }
         outlineView.usesAlternatingRowBackgroundColors = true
         outlineView.allowsMultipleSelection = true
+        // Letters are cue hotkeys and edit keys here; none may jump the selection, and with it the playhead.
+        outlineView.allowsTypeSelect = false
         // A fixed height keeps AppKit from asking for every row's height.
         outlineView.rowHeight = Self.rowHeight
         outlineView.dataSource = self
@@ -402,6 +404,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
     /// A validated drop: the cues go before child `index` of the parent (nil: top level).
     var onMove: (([ModelID], ModelID?, Int) -> Void)?
+    /// A validated drop on a Target cell: the cues to set, and the cue they now target.
+    var onDropTarget: (([ModelID], ModelID) -> Void)?
     private var dragged: [CueNode] = []
     static let dragType = NSPasteboard.PasteboardType("dev.openlab.cue-id")
 
@@ -959,6 +963,42 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return (node.parent, (siblings.firstIndex { $0 === node } ?? siblings.count - 1) + 1)
     }
 
+    /// What a drop of the list's own rows would do.
+    enum CueDrop: Equatable {
+        /// These cues now target that one; the order is left alone.
+        case setTarget([ModelID], ModelID)
+        case move([ModelID], ModelID?, Int)
+    }
+
+    /// What dropping `dragged` does, or nil to refuse it. Only a drop on a row's Target cell sets a target
+    /// (QLab 5, manual p. 94, and 5.0's change log: it makes a target hard to change by accident while
+    /// reordering); where no target can be set, or anywhere else on the row, it reorders as ever.
+    func cueDrop(_ dragged: [CueNode], item: Any?, index: Int, inTargetColumn: Bool) -> CueDrop? {
+        guard !isEditLocked, !dragged.isEmpty else { return nil }
+        if inTargetColumn, index == NSOutlineViewDropOnItemIndex, let node = item as? CueNode,
+            let set = CueEditor.targetDrop(dragged.map(\.cue), onto: node.cue)
+        {
+            return .setTarget(set.cues, set.target)
+        }
+        let target = dropTarget(item, index)
+        guard CueEditor.canDrop(dragged, into: target.parent) else { return nil }
+        return .move(dragged.map(\.id), target.parent?.id, target.index)
+    }
+
+    func perform(_ drop: CueDrop) {
+        switch drop {
+        case .setTarget(let cues, let target): onDropTarget?(cues, target)
+        case .move(let ids, let parent, let at): onMove?(ids, parent, at)
+        }
+    }
+
+    /// Whether the drag is over the Target column.
+    private func overTargetColumn(_ info: NSDraggingInfo) -> Bool {
+        let column = outlineView.column(at: outlineView.convert(info.draggingLocation, from: nil))
+        return outlineView.tableColumns.indices.contains(column)
+            && outlineView.tableColumns[column].identifier.rawValue == "target"
+    }
+
     /// What a drop of files from Finder would do.
     enum FileDrop: Equatable {
         case replace(ModelID, URL)
@@ -1010,11 +1050,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             }
             return .copy
         }
-        guard !isEditLocked, !dragged.isEmpty else { return [] }
-        let target = dropTarget(item, index)
-        guard CueEditor.canDrop(dragged, into: target.parent) else { return [] }
-        outlineView.setDropItem(target.parent, dropChildIndex: target.index)
-        return .move
+        switch cueDrop(dragged, item: item, index: index, inTargetColumn: overTargetColumn(info)) {
+        case nil: return []
+        case .setTarget?: return .move  // the row stays highlighted: the drop is on it, not between rows
+        case .move(_, let parent, let at)?:
+            outlineView.setDropItem(parent.flatMap { nodes[$0] }, dropChildIndex: at)
+            return .move
+        }
     }
 
     func outlineView(
@@ -1026,10 +1068,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             onFileDrop?(plan, Self.skipped(files, plan))
             return true
         }
-        guard !isEditLocked, !dragged.isEmpty else { return false }
-        let target = dropTarget(item, index)
-        guard CueEditor.canDrop(dragged, into: target.parent) else { return false }
-        onMove?(dragged.map(\.id), target.parent?.id, target.index)
+        guard let drop = cueDrop(dragged, item: item, index: index, inTargetColumn: overTargetColumn(info)) else {
+            return false
+        }
+        perform(drop)
         return true
     }
 
@@ -1037,7 +1079,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     // manual pp. 92-95; the edit-number and edit-name keys open the same fields)
 
     /// The columns that edit in place, and the inspector field each one is.
-    static let editableColumns: [String: InspectorField] = ["number": .number, "name": .name, "duration": .duration]
+    static let editableColumns: [String: InspectorField] = [
+        "number": .number, "name": .name, "duration": .duration, "target": .target,
+    ]
 
     /// The field laid over the cell being edited. It lives in the outline, not in the cell, so the
     /// per-tick refresh of the Duration column (progress) and model echoes cannot replace it mid-typing.
@@ -1064,18 +1108,33 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         Task { @MainActor [weak self] in self?.beginCellEdit(id, column: name) }
     }
 
-    /// The edit-number and edit-name keys (N, Q): the selected cue's cell opens for typing. Only
-    /// with the list itself focused and exactly one cue highlighted; false (the key is not taken)
-    /// otherwise, in Show Mode, and while text is being typed (the key is a letter then).
+    /// The edit-number, edit-name and edit-target keys (N, Q, T): the selected cue's cell opens for typing,
+    /// or for T on a file cue the file chooser opens (after the key is consumed, not inside it). Only
+    /// with the list itself focused and exactly one cue highlighted. With the list focused the key is
+    /// always taken (it does nothing in Show Mode, with several cues or on a cue with nothing to edit);
+    /// false (not taken) only while text is being typed or the focus is elsewhere (the key is a letter then).
     @discardableResult
     func beginEditFromKey(_ column: String) -> Bool {
         guard !isTextEditing, view.window?.firstResponder === outlineView else { return false }
+        // From here the key is an edit key of the list: taken even when it does nothing (Show Mode, several
+        // cues, a cue with nothing to edit), so it never goes on as a letter to the list.
         let selected = selectedIDs()
-        guard selected.count == 1, let id = selected.first else { return false }
-        return beginCellEdit(id, column: column)
+        guard selected.count == 1, let id = selected.first else { return true }
+        // A file cue's target is chosen in the file chooser, a cue target's typed as a cue number.
+        if column == "target", store.model?.cue(id)?.kindType == "audio" {
+            guard !isEditLocked, onChooseFile != nil else { return true }
+            // The chooser is modal: opening it inside the key monitor would nest its loop there.
+            Task { @MainActor [weak self] in
+                guard let self, !self.isEditLocked else { return }
+                self.onChooseFile?(id)
+            }
+            return true
+        }
+        _ = beginCellEdit(id, column: column)
+        return true
     }
 
-    /// Opens `column` ("number", "name" or "duration") of `id` for typing, its text selected. False
+    /// Opens `column` ("number", "name", "target" or "duration") of `id` for typing, its text selected. False
     /// (nothing happens) in Show Mode or for a Duration that is not set by hand. A cell already open
     /// elsewhere is committed first.
     @discardableResult
@@ -1083,6 +1142,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard !isEditLocked, let field = Self.editableColumns[column], let node = nodes[id],
             outlineView.row(forItem: node) >= 0,
             field != .duration || InspectorEdit.durationKinds.contains(node.cue.kindType),
+            field != .target || InspectorEdit.targetKinds.contains(node.cue.kindType),
             let model = store.model
         else { return false }
         if let pending = takeCellEdit() { onEditCell?(pending.id, pending.column, pending.text) }
@@ -1093,6 +1153,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         switch column {
         case "number": cellEditor.setAX(AX.cueNumberEditor, label: loc("cuelist.numberEditor.label"))
         case "name": cellEditor.setAX(AX.cueNameEditor, label: loc("cuelist.nameEditor.label"))
+        case "target": cellEditor.setAX(AX.cueTargetEditor, label: loc("cuelist.targetEditor.label"))
         default: cellEditor.setAX(AX.cueDurationEditor, label: loc("cuelist.durationEditor.label"))
         }
         outlineView.scrollRowToVisible(outlineView.row(forItem: node))
@@ -1173,6 +1234,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             return
         }
         guard cell.column != "duration" || InspectorEdit.durationKinds.contains(node.cue.kindType),
+            cell.column != "target" || InspectorEdit.targetKinds.contains(node.cue.kindType),
             let column = outlineView.tableColumns.firstIndex(where: { $0.identifier.rawValue == cell.column })
         else { return cancelCellEdit() }
         let row = outlineView.row(forItem: node)
@@ -1317,8 +1379,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 let shown = targetText(cue)
                 text(shown ?? loc("cue.target.missing"))
                 if shown == nil { cell.label.textColor = .systemYellow }
-            } else if cue.kindType == "network" {
-                text(InspectorViewController.networkTargetText(cue, model: store.model))
             }
         case "preWait", "postWait":
             // A wait in progress counts down what is left, as QLab's columns do.
@@ -1348,12 +1408,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     private var cueLookup: (ModelID) -> Cue? { { [weak self] in self?.nodes[$0]?.cue ?? self?.store.model?.cue($0) } }
 
-    /// An Audio cue's Target cell is one button that chooses its file, the same whether it holds one or not, and
-    /// is empty in a locked (Show Mode) list, as QLab's Target column is.
+    /// An Audio cue's Target cell is one button that chooses its file: a file glyph, or a trash can while the
+    /// file is missing. It is empty in a locked (Show Mode) list, as QLab's Target column is.
     private func fillFileTargetButton(_ cell: CueCell, _ cue: Cue) {
-        guard !isEditLocked else { return }
         let id = cue.id
-        cell.showChoose { [weak self] in
+        // Drawn in Show Mode too, so the column does not change with the mode; the click does nothing there.
+        // A file that is gone shows a trash can until it is back (the engine re-checks, so it clears itself).
+        let missing = (store.problems[id] ?? []).contains { $0.type == "media_missing" }
+        cell.showChoose(missing: missing) { [weak self] in
             guard let self, !self.isEditLocked else { return }
             self.onChooseFile?(id)
         }

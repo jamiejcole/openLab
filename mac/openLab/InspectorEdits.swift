@@ -17,6 +17,8 @@ enum InspectorEdit {
         case duplicateNumber
         case unknownTarget
         case selfTarget
+        /// The engine would mark the cue broken: a Fade or Devamp cannot act on that kind of cue.
+        case wrongTargetKind
         case notApplicable
         case invalidOSC
         /// The cue's duration comes from its content (or it has none): only Wait and Fade cues.
@@ -37,6 +39,7 @@ enum InspectorEdit {
             case .duplicateNumber: return "inspector.invalid.duplicateNumber"
             case .unknownTarget: return "inspector.invalid.unknownTarget"
             case .selfTarget: return "inspector.invalid.selfTarget"
+            case .wrongTargetKind: return "inspector.invalid.wrongTargetKind"
             case .notApplicable: return "inspector.invalid.notApplicable"
             case .decimalComma: return "inspector.invalid.decimalComma"
             case .invalidOSC: return "inspector.invalid.osc"
@@ -86,16 +89,21 @@ enum InspectorEdit {
                 address: kind?["address"]?.stringValue ?? "", args: kind?["args"]?.arrayValue ?? [])
         case .target:
             guard let id = cue.raw["kind"]?["target"]?.stringValue else { return "" }
-            guard let target = model.cue(ModelID(id)) else { return loc("inspector.target.missing") }
-            return target.number ?? target.displayName
+            // A target that is gone shows an empty field; the note beside it says why.
+            guard let target = model.cue(ModelID(id)) else { return "" }
+            // The number only; the name shows beside the field (QLab 5, manual p. 127).
+            return target.number ?? ""
         }
     }
 
     /// The command for `text` in `field`; `.success(nil)` when it changes nothing.
     static func command(
-        _ field: InspectorField, text: String, cue: Cue, model: WorkspaceModel
+        _ field: InspectorField, text: String, cue: Cue, model: WorkspaceModel, typed: Bool = false
     ) -> Result<Command?, Rejection> {
-        if text == display(field, cue: cue, model: model) { return .success(nil) }
+        // An empty field over a target that is gone is a target to clear only when the operator emptied it:
+        // a field that was only passed through must not change the cue.
+        let dangling = typed && field == .target && hasMissingTarget(cue, model: model)
+        if text == display(field, cue: cue, model: model) && !dangling { return .success(nil) }
         switch field {
         case .name:
             // Clearing an unnamed cue's field changes nothing: it goes on following its file.
@@ -141,13 +149,35 @@ enum InspectorEdit {
             let n = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if n.isEmpty { return .success(.setProperty(cue.id, .target(nil))) }
             guard let target = model.cue(number: n) else { return .failure(.unknownTarget) }
-            if target.id == cue.id { return .failure(.selfTarget) }
+            if let rejection = targetRejection(of: cue, target: target) { return .failure(rejection) }
             return .success(.setProperty(cue.id, .target(target.id)))
         }
     }
 }
 
 extension InspectorEdit {
+    /// Whether `cue` names a target that is no longer in the show.
+    static func hasMissingTarget(_ cue: Cue, model: WorkspaceModel) -> Bool {
+        guard let id = cue.raw["kind"]?["target"]?.stringValue else { return false }
+        return model.cue(ModelID(id)) == nil
+    }
+
+    /// Why `cue` cannot act on `target`, nil when it can: the one check for every way of setting a
+    /// cue target by hand (the inspector's field, the Target column, a drag). The kinds are core's
+    /// `can_target`: Fade takes Audio and Group, Devamp takes Audio and a playlist Group.
+    static func targetRejection(of cue: Cue, target: Cue) -> Rejection? {
+        guard targetKinds.contains(cue.kindType) else { return .notApplicable }
+        if target.id == cue.id { return .selfTarget }
+        switch cue.kindType {
+        case "fade":
+            return ["audio", "group"].contains(target.kindType) ? nil : .wrongTargetKind
+        case "devamp":
+            let playlist = target.kindType == "group" && target.raw["kind"]?["mode"]?["type"]?.stringValue == "playlist"
+            return target.kindType == "audio" || playlist ? nil : .wrongTargetKind
+        default: return nil
+        }
+    }
+
     /// Seconds from what the user typed (`CueTime.parse`), or why not: a decimal comma has
     /// its own message, since it is the likeliest slip.
     static func time(_ text: String) -> Result<Double, Rejection> {

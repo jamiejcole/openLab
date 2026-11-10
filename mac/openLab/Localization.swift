@@ -50,6 +50,7 @@ enum AX {
     static let cueDurationEditor = "cue-duration-editor"
     static let cueNumberEditor = "cue-number-editor"
     static let cueNameEditor = "cue-name-editor"
+    static let cueTargetEditor = "cue-target-editor"
     static let inspectorTarget = "inspector-target"
     static let inspectorColour = "inspector-colour"
     static let inspectorContinue = "inspector-continue"

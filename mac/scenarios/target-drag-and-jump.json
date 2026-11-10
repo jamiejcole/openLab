@@ -1,0 +1,12 @@
+{
+  "about": "Type the Fade's target and jump to it from the inspector. The runner's press hook cannot carry a drag from one row to another row's Target cell (the press lands on the table background and the run stops), so drag-to-target is covered by the flow tests, not here.",
+  "show": "Targets",
+  "media": {"media/a.wav": 5},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "3"},
+    {"type": "inspector-target", "text": "1"},
+    {"click": "inspector-target-jump"},
+    {"shot": "after-jump"}
+  ]
+}

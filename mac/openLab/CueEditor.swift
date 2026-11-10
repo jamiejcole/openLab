@@ -20,8 +20,8 @@ import AppKit
 ///
 /// Part 2 (CueEditor+Clipboard.swift; QLab's pages are silent on drops): a Finder drop makes one audio
 /// cue per file in drop order (one undo step) and is refused whole if any item is a folder or not audio;
-/// one file dropped on an idle audio cue replaces its file; a cue dropped on a cue only reorders (targets
-/// are set in the inspector). Copy, cut and paste carry cue subtrees as JSON on a private pasteboard
+/// one file dropped on an idle audio cue replaces its file. A cue dropped on another's Target cell sets
+/// a target (`targetDrop`, QLab's p. 94); dropped anywhere else it only reorders. Copy, cut and paste carry cue subtrees as JSON on a private pasteboard
 /// type (versioned); paste goes where a new cue would, as core's `paste` with the cues prepared like `prepare_paste`. Cmd-D clears
 /// the selected cues' numbers (undoable, no prompt).
 @MainActor
@@ -33,6 +33,9 @@ final class CueEditor {
     var commitPending: () async -> Bool = { true }
     /// Tells the operator why an edit was refused (a sheet in the app; recorded by tests).
     var notify: (String) -> Void = { _ in NSSound.beep() }
+    /// A Target typed in the list that cannot be set: said where the inspector says it for its own field
+    /// (never a sheet), the cell going back to what the cue holds.
+    var refuseTarget: (String) -> Void = { _ in NSSound.beep() }
     /// Typed notes that were not saved: tells the operator and offers the text (Copy Text). Nothing
     /// is held afterwards; the fields show what the cue holds.
     var notesNotSaved: (NotesNotice) -> Void = { _ in NSSound.beep() }
@@ -121,9 +124,12 @@ final class CueEditor {
         var commands: [Command] = []
         for d in dragged {
             let same = d.parent === parent
+            let from = sim.firstIndex(of: d.id)
             if same { sim.removeAll { $0 == d.id } }
             let at = anchor.flatMap { a in sim.firstIndex(of: a) } ?? sim.count
             sim.insert(d.id, at: at)
+            // Already there: a command would only leave an undo step that does nothing.
+            if same && from == at { continue }
             commands.append(
                 same ? .moveCue(d.id, index: at) : .reparentCue(d.id, list: list, parent: parent?.id, index: at))
         }
@@ -273,6 +279,30 @@ final class CueEditor {
         _ = report(await store.send(command: command))
     }
 
+    /// Cues dropped on `onto`'s Target cell: which cues get a target and which cue that is, or nil when
+    /// neither way round can be done. If both could target each other the dragged cue becomes the target
+    /// of the one it is dropped on (QLab 5 change log, pp. 5-7). Several cues dragged can only all
+    /// target the one they land on: a cue holds one target.
+    static func targetDrop(_ dragged: [Cue], onto: Cue) -> (cues: [ModelID], target: ModelID)? {
+        if dragged.count == 1, let cue = dragged.first, InspectorEdit.targetRejection(of: onto, target: cue) == nil {
+            return ([onto.id], cue.id)
+        }
+        guard dragged.allSatisfy({ InspectorEdit.targetRejection(of: $0, target: onto) == nil }) else { return nil }
+        return (dragged.map(\.id), onto.id)
+    }
+
+    /// A drop on a Target cell (already validated; checked again here, as the commit before it may have
+    /// changed the model): `cues` now target `target`, as one undo step. Cues already on it send nothing.
+    func setTarget(of cues: [ModelID], to target: ModelID) async {
+        guard await begin(), let model = store.model, let targetCue = model.cue(target) else { return }
+        let commands = cues.compactMap { model.cue($0) }.filter { cue in
+            InspectorEdit.targetRejection(of: cue, target: targetCue) == nil
+                && cue.raw["kind"]?["target"]?.stringValue != target.raw
+        }.map { Command.setProperty($0.id, .target(target)) }
+        guard let command = Command.transaction(commands) else { return }
+        _ = report(await store.send(command: command))
+    }
+
     /// The cue list's in-place Duration (QLab: double-click the column): checked as the inspector
     /// checks it, so a bad time or a cue without a settable duration is refused here and never sent.
     /// True when there was nothing to send or the engine took it.
@@ -292,18 +322,19 @@ final class CueEditor {
         }
     }
 
-    /// Sends what was typed in a cue list cell (`column`: number, name or duration) for the cue the
+    /// Sends what was typed in a cue list cell (`column`: number, name, target or duration) for the cue the
     /// edit was begun for.
     @discardableResult
     func setCell(_ column: String, of id: ModelID, text: String) async -> Bool {
         switch CueListViewController.editableColumns[column] {
         case .number?: return await setCellText(.number, of: id, text: text)
         case .name?: return await setCellText(.name, of: id, text: text)
+        case .target?: return await setCellText(.target, of: id, text: text)
         default: return await setDuration(of: id, text: text)
         }
     }
 
-    /// Sets a cue's number or name (`field`) from the cue list's in-place editor, through the
+    /// Sets a cue's number, name or target (`field`) from the cue list's in-place editor, through the
     /// inspector's own check: a number another cue has is refused with the inspector's message,
     /// an emptied name goes back to the cue's default. The cue is the one the edit was begun for.
     /// True when there was nothing to send or the engine took it.
@@ -316,7 +347,7 @@ final class CueEditor {
         }
         switch InspectorEdit.command(field, text: text, cue: cue, model: model) {
         case .failure(let rejection):
-            notify(loc(rejection.messageKey))
+            if field == .target { refuseTarget(loc(rejection.messageKey)) } else { notify(loc(rejection.messageKey)) }
             return false
         case .success(nil): return true
         case .success(let command?): return report(await store.send(command: command))

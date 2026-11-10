@@ -18,7 +18,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let nameField = NSTextField()
     let preWaitField = NSTextField()
     let postWaitField = NSTextField()
-    let targetField = NSTextField()
+    let targetField = TargetField()
     let oscField = NSTextField()
     let hotkeyField = HotkeyRecorder()
     let hotkeyClear = NSButton(title: loc("inspector.hotkey.clear"), target: nil, action: nil)
@@ -52,6 +52,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     static let devampModes = ["current_slice", "looping_cue"]
     /// Clears the Target: an Audio cue's file or a control cue's target cue.
     let clearTargetButton = NSButton(title: "", target: nil, action: nil)
+    /// Moves the selection to a control cue's target cue.
+    let jumpTargetButton = NSButton(title: "", target: nil, action: nil)
+    /// Beside the Target field: the target cue's name, or why there is none.
+    let targetNote = NSTextField(labelWithString: "")
+    /// A cue target's field holds a number and leaves the row to the note; a file path takes the row.
+    lazy var targetFieldWidth = targetField.widthAnchor.constraint(equalToConstant: 90)
     /// The timing and loops tab of an Audio cue (AUD-11, AUD-12, AUD-14), in the tab view only while
     /// one is selected.
     let timeLoops = TimeLoopsPanel()
@@ -86,6 +92,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// Choose... next to an Audio cue's file: opens the file chooser (set by the window controller).
     let chooseButton = NSButton(title: loc("inspector.target.choose"), target: nil, action: nil)
     var onChooseFile: ((ModelID) -> Void)?
+    /// The jump button was clicked: the target cue to select.
+    var onJumpToTarget: ((ModelID) -> Void)?
     /// A drag in the Levels or Time & Loops tabs starts or ends: it edits the selected cue all the way.
     var onGestureHold: ((Bool) -> Void)?
     /// Sends a transport action (set by the window controller).
@@ -307,9 +315,28 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         clearTargetButton.action = #selector(clearTargetClicked)
         clearTargetButton.setContentHuggingPriority(.required, for: .horizontal)
         clearTargetButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let targetRow = NSStackView(views: [targetField, clearTargetButton, chooseButton])
+        jumpTargetButton.setAX("inspector-target-jump")
+        jumpTargetButton.isBordered = false
+        jumpTargetButton.image = Icon.fieldJump.image(loc("inspector.target.jump"), compact: true)
+        jumpTargetButton.toolTip = loc("inspector.target.jump")
+        jumpTargetButton.target = self
+        jumpTargetButton.action = #selector(jumpToTargetClicked)
+        jumpTargetButton.setContentHuggingPriority(.required, for: .horizontal)
+        jumpTargetButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        targetNote.setAX("inspector-target-note")
+        targetNote.textColor = .secondaryLabelColor
+        targetNote.lineBreakMode = .byTruncatingTail
+        targetNote.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        targetNote.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Shown by `renderTarget`: until then they must not widen the inspector's least width.
+        jumpTargetButton.isHidden = true
+        targetNote.isHidden = true
+        targetField.onDoubleClick = { [weak self] in self?.chooseClicked() }
+        let targetRow = NSStackView(views: [targetField, targetNote, clearTargetButton, jumpTargetButton, chooseButton])
         targetRow.spacing = 6
         targetField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        // A long path truncates; it must not hold the inspector, and so the window, wider.
+        targetField.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         targetField.lineBreakMode = .byTruncatingMiddle  // the file name at the end is the part that matters
         targetField.widthAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
         chooseButton.setContentHuggingPriority(.required, for: .horizontal)
@@ -617,22 +644,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         nameField.placeholderString = followed.isEmpty ? CueKindStyle.kindLabel(kind) : followed
         let style = CueKindStyle.kinds[kind]
         kindIcon.image = style.map { $0.icon.image(CueKindStyle.kindLabel(kind), compact: true) }
-        let isTarget = InspectorEdit.targetKinds.contains(kind)
-        let noFile = kind == "audio" && (cue.raw["kind"]?["media"]?.stringValue ?? "").isEmpty
-        targetField.placeholderString =
-            isTarget ? (noFile ? loc("inspector.target.noFile") : nil) : loc("inspector.target.notApplicable")
-        chooseButton.isEnabled = kind == "audio" && !isLocked
-        let targetKey = kind == "audio" ? "media" : "target"
-        let hasTarget = (isTarget || kind == "audio") && !(cue.raw["kind"]?[targetKey]?.stringValue ?? "").isEmpty
-        clearTargetButton.isEnabled = hasTarget && !isLocked
-        clearTargetButton.isHidden = !hasTarget
-        if kind == "audio" {
-            targetField.stringValue = cue.raw["kind"]?["media"]?.stringValue ?? ""
-        } else if !isTarget {
-            targetField.stringValue = ""
-        }
-        targetField.isEnabled = isTarget
-        targetField.toolTip = targetField.stringValue.isEmpty ? nil : targetField.stringValue
+        renderTarget(cue, model: model)
         // Only Wait and Fade cues have a duration to type; others take theirs from content or have none.
         durationField.isEnabled = InspectorEdit.durationKinds.contains(kind)
         syncTabs(forKind: kind)
@@ -669,6 +681,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         previewButton.isEnabled = previewable && (connected ?? (store.connectionState == .connected))
     }
 
+    /// The Choose button, and a double-click on a file cue's Target field (QLab 5, manual pp. 120, 126).
     @objc private func chooseClicked() {
         guard !isLocked, let cue, cue.kindType == "audio" else { return }
         onChooseFile?(cue.id)
@@ -725,7 +738,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             return true
         }
         let text = f == .notes ? notesView.string : (field(f)?.stringValue ?? "")
-        switch InspectorEdit.command(f, text: text, cue: cue, model: model) {
+        switch InspectorEdit.command(f, text: text, cue: cue, model: model, typed: wasDirty) {
         case .failure(let r):
             show(rejection: r)
             render(force: [f])

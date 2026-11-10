@@ -1,0 +1,18 @@
+{
+  "about": "The inspector's Target row for a Fade with no target, with a typed target, after clear, for a file cue and for a Memo, with the list's Target column beside it.",
+  "show": "Targets",
+  "media": {"media/a.wav": 5},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "3"},
+    {"shot": "fade-no-target"},
+    {"type": "inspector-target", "text": "1"},
+    {"shot": "fade-typed-1"},
+    {"click": "inspector-target-clear"},
+    {"shot": "fade-cleared"},
+    {"select": "1"},
+    {"shot": "audio-file"},
+    {"select": "4"},
+    {"shot": "memo-no-target"}
+  ]
+}
