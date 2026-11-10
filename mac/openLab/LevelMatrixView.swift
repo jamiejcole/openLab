@@ -93,6 +93,7 @@ final class LevelMatrixView: NSView {
     // MARK: Drawing
 
     override func draw(_ dirty: NSRect) {
+        NSBezierPath.clip(bounds)
         guard let levels else { return }
         let small = NSFont.systemFont(ofSize: 10)
         let label: [NSAttributedString.Key: Any] = [.font: small, .foregroundColor: NSColor.secondaryLabelColor]

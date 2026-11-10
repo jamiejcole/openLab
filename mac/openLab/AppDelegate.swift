@@ -216,16 +216,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor @objc func showLauncherWindow(_ sender: Any?) { appController.showLauncher() }
     @MainActor @objc func selectNextCue(_ sender: Any?) { appController.selectAdjacentCue(by: 1) }
     @MainActor @objc func selectPreviousCue(_ sender: Any?) { appController.selectAdjacentCue(by: -1) }
+    /// The editor whose workspace owns the key window, its settings window included.
+    @MainActor private var undoEditor: CueEditor? { appController.undoController?.editor }
+
     @MainActor @objc func undoEdit(_ sender: Any?) {
         switch CueEditor.textUndo(textEditor, redo: false) {
-        case nil: Task { await editor?.undo() }
+        case nil: Task { await undoEditor?.undo() }
         case false?: NSSound.beep()
         case true?: break
         }
     }
     @MainActor @objc func redoEdit(_ sender: Any?) {
         switch CueEditor.textUndo(textEditor, redo: true) {
-        case nil: Task { await editor?.redo() }
+        case nil: Task { await undoEditor?.redo() }
         case false?: NSSound.beep()
         case true?: break
         }
@@ -300,8 +303,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return appController.frontController != nil && !appController.isTextEditing()
         case #selector(deleteNumbers(_:))?, #selector(deleteCues(_:))?:
             return textEditor == nil && canEditFront
-        case #selector(undoEdit(_:))?: return textEditor != nil || (editor?.canUndo ?? false)
-        case #selector(redoEdit(_:))?: return textEditor != nil || (editor?.canRedo ?? false)
+        case #selector(undoEdit(_:))?: return textEditor != nil || (undoEditor?.canUndo ?? false)
+        case #selector(redoEdit(_:))?: return textEditor != nil || (undoEditor?.canRedo ?? false)
         case #selector(saveWorkspace(_:))?, #selector(saveWorkspaceAs(_:))?:
             return appController.canSaveFront
         case #selector(recoverAutosaves(_:))?: return engineSession.connectionState == .connected

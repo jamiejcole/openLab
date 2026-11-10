@@ -552,6 +552,21 @@ pub fn decode_client(text: &str) -> Result<ClientMessage, ProtocolError> {
     Ok(message)
 }
 
+/// The request id of a frame [`decode_client`] refused, if it still has a string `type` and a
+/// `u64` `id`. Only those two fields are read (the rest is skipped), so a hostile frame costs no
+/// more than a decode.
+pub fn request_id_of_frame(text: &str) -> Option<RequestId> {
+    #[derive(Deserialize)]
+    struct Envelope {
+        #[serde(rename = "type")]
+        kind: Option<String>,
+        id: Option<u64>,
+    }
+    let envelope: Envelope = serde_json::from_str(text).ok()?;
+    envelope.kind?;
+    envelope.id.map(RequestId)
+}
+
 /// Reads the first frame of a connection, before the token has been checked: at most
 /// [`MAX_HELLO_FRAME_BYTES`], and it must be a `hello`. Anything else is refused as a bad token
 /// by the server (the error here says why).

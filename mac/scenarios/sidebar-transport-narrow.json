@@ -1,0 +1,13 @@
+{
+  "about": "The sidebar in a narrow window, so it is at or near its minimum width: each transport icon sits inside its button with a margin.",
+  "show": "Demo",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 640, "height": 800},
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"select": "1"},
+    {"key": "space"},
+    {"advance": 1},
+    {"shot": "sidebar-narrow"}
+  ]
+}

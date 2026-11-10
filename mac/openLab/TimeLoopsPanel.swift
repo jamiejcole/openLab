@@ -301,6 +301,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         view.addArrangedSubview(left)
         view.addArrangedSubview(right)
         right.heightAnchor.constraint(equalTo: view.heightAnchor).isActive = true
+        // Start stays at the top; whatever does not fit in a short inspector is cut at the bottom.
+        left.topAnchor.constraint(equalTo: view.topAnchor).isActive = true
     }
 
     // MARK: Showing

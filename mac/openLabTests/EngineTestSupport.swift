@@ -51,8 +51,11 @@ enum Fixtures {
 /// checks, up to `timeout` seconds: a bound on a hang, never a timing the test relies on (the
 /// engine's clock is its stepped virtual device, which moves only on `advance`).
 @MainActor
-func eventually(timeout: Double = 15, _ condition: @MainActor () async -> Bool) async -> Bool {
-    let deadline = ProcessInfo.processInfo.systemUptime + timeout
+func eventually(
+    timeout: Double = 15, now: @MainActor () -> Double = { ProcessInfo.processInfo.systemUptime },
+    _ condition: @MainActor () async -> Bool
+) async -> Bool {
+    let deadline = now() + timeout
     var checks = 0
     while true {
         if await condition() { return true }
@@ -60,7 +63,14 @@ func eventually(timeout: Double = 15, _ condition: @MainActor () async -> Bool) 
         if checks < 300 {
             await Task.yield()
         } else {
-            if ProcessInfo.processInfo.systemUptime > deadline { return false }
+            if now() > deadline {
+                // A main-thread stall can carry the clock past the deadline before queued
+                // main-actor work (an engine message) has run; give it a turn, then look once more.
+                for _ in 0..<50 { await Task.yield() }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                for _ in 0..<50 { await Task.yield() }
+                return await condition()
+            }
             try? await Task.sleep(nanoseconds: 1_000_000)
         }
     }
