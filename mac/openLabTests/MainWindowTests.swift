@@ -770,6 +770,37 @@ final class MainWindowTests: XCTestCase {
             MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero).standbyFontSize)
     }
 
+    /// A cue with a 120-character name standing by: the window keeps its width and the name is cut short
+    /// inside the masthead, in Show Mode at 1200 pt and in Edit Mode at the smallest width the window allows.
+    func testALongStandbyNameIsCutShortAndNeverWidensTheWindow() async throws {
+        let (wc, rig) = try await demoController()
+        let window = try XCTUnwrap(wc.window)
+        window.orderFront(nil)
+        defer { window.close() }
+        let long = String(repeating: "Thunder rumble in the distance ", count: 4)
+        XCTAssertGreaterThanOrEqual(long.count, 120)
+        func check(_ what: String, width: CGFloat) {
+            window.setContentSize(NSSize(width: width, height: 700))
+            window.contentView?.layoutSubtreeIfNeeded()
+            let field = wc.masthead.standbyField
+            XCTAssertEqual(window.contentView?.bounds.width ?? 0, width, accuracy: 0.5, "\(what): the window's width")
+            let frame = field.convert(field.bounds, to: wc.masthead)
+            XCTAssertTrue(wc.masthead.bounds.contains(frame), "\(what): the name at \(frame) is inside the masthead")
+            XCTAssertGreaterThan(
+                field.intrinsicContentSize.width, field.bounds.width, "\(what): the name is longer than its field")
+            XCTAssertEqual(field.lineBreakMode, .byTruncatingTail, "\(what): cut short with an ellipsis")
+        }
+        window.setContentSize(NSSize(width: 1200, height: 700))
+        guard case .success = await rig.store.send(command: .setProperty(TestSnapshots.intro, .name(long))) else {
+            return XCTFail("rename")
+        }
+        await assertEventually { wc.masthead.standbyField.stringValue.hasSuffix(long) }
+        wc.setShowMode(true)
+        check("Show Mode at 1200", width: 1200)
+        wc.setShowMode(false)
+        check("Edit Mode at the least width", width: window.minSize.width)
+    }
+
     func testShowModePaletteMeetsContrastTargets() {
         typealias P = ShowModePalette
         // WCAG AAA (7:1) for the text a performer reads at a distance, 3:1 for the GO button's edge.
