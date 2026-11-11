@@ -220,7 +220,8 @@ final class PlayheadClickUITests: XCTestCase {
 }
 
 /// #494's flows that need real mouse and key events (QLab 5 manual pp. 94, 120, 127), on the "Targets" show.
-/// A drag lands on the Target cell, as only that cell sets a target (5.0's change log); between rows it reorders.
+/// Drag-to-target is tested through the cue list on the real engine (`CueTargetFlowTests`): a synthetic drag
+/// does not move the pointer on the CI Macs.
 @MainActor
 final class CueTargetUITests: XCTestCase {
     private func launchTargets() -> XCUIApplication {
@@ -229,67 +230,14 @@ final class CueTargetUITests: XCTestCase {
         return app
     }
 
-    private func outline(_ app: XCUIApplication) -> XCUIElement { app.outlines["cue-list"] }
-
     /// The unnamed Fade's row: the only one that shows its number, 3.
     private func fadeRow(_ app: XCUIApplication) -> XCUIElement { cueRow("3", in: app) }
-
-    private func drag(_ from: XCUIElement, to: XCUICoordinate) {
-        center(from).press(forDuration: 0.4, thenDragTo: to)
-    }
-
-    private func center(_ element: XCUIElement) -> XCUICoordinate {
-        element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-    }
-
-    /// The titles down the list, top to bottom, read from its rows: the inspector can show the same words.
-    private func titles(_ app: XCUIApplication) -> [String] {
-        ["intro", "pad", "note"].map { ($0, cueRow($0, in: app).frame.minY) }
-            .sorted { $0.1 < $1.1 }.map(\.0)
-    }
 
     private func assertFadeTarget(_ shown: String, line: UInt = #line) {
         let app = XCUIApplication()
         XCTAssertTrue(
             fadeRow(app).staticTexts[shown].waitForExistence(timeout: 10), "the Fade's Target column shows \(shown)",
             line: line)
-    }
-
-    func testDragTheActingCueOntoItsTarget() {
-        let app = launchTargets()
-        let introTarget = cueRow("intro", in: app).buttons["cue-target-choose"]
-        XCTAssertTrue(introTarget.waitForExistence(timeout: 5))
-        drag(fadeRow(app).staticTexts["3"], to: center(introTarget))
-        assertFadeTarget("1")
-        XCTAssertTrue(app.staticTexts["Fade intro"].waitForExistence(timeout: 10), "its default name follows")
-        XCTAssertEqual(titles(app), ["intro", "pad", "note"])
-        XCTAssertLessThan(
-            cueRow("pad", in: app).frame.minY, fadeRow(app).frame.minY, "the Fade stayed below pad")
-    }
-
-    func testDragTheTargetOntoTheActingCue() {
-        let app = launchTargets()
-        let cell = fadeRow(app).staticTexts["?"]
-        XCTAssertTrue(cell.waitForExistence(timeout: 5))
-        drag(cueRow("intro", in: app).staticTexts["intro"], to: center(cell))
-        assertFadeTarget("1")
-        XCTAssertEqual(titles(app), ["intro", "pad", "note"])
-        XCTAssertLessThan(cueRow("intro", in: app).frame.minY, fadeRow(app).frame.minY)
-    }
-
-    func testDropBetweenRowsStillReorders() {
-        let app = launchTargets()
-        let row = cueRow("intro", in: app)
-        XCTAssertTrue(row.waitForExistence(timeout: 5))
-        let gap = row.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 1.0))
-        drag(fadeRow(app).staticTexts["3"], to: gap)
-        let moved = NSPredicate { _, _ in
-            MainActor.assumeIsolated { self.fadeRow(app).frame.minY < self.cueRow("pad", in: app).frame.minY }
-        }
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: moved, object: nil)], timeout: 10), .completed,
-            "the Fade moved between intro and pad")
-        assertFadeTarget("?")
     }
 
     /// Typing a number with real keys, the name beside it, then the jump button: the highlight, the
