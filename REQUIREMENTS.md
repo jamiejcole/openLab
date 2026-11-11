@@ -305,7 +305,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 
 ## 20. Documentation
 - [ ] **DOC-01** `v0.0.1` User manual (getting started, every cue type, show-day checklist).
-- [x] **DOC-02** `v0.0.1` OSC API reference.
+- [ ] **DOC-02** `v0.0.2` OSC API reference, written for end users.
 - [x] **DOC-03** `v0.0.1` Workspace file format specification.
 - [ ] **DOC-04** `v0.0.1` Contributor guide (build, architecture, testing rules).
 
@@ -333,6 +333,7 @@ Where a tagged requirement is only partly in v0.0.1, the limit is:
 - **UI-02** fixed QLab-like layout; docking later.
 - **DST-01** macOS `.dmg` only.
 - **DOC-01** getting-started guide only.
+- **DOC-02** moved to v0.0.2 (user decision 2026-11-11): the end-user OSC reference, and with it the "documented" part of NET-01.
 - **DST-02** moved to v0.0.2 (user decision 2026-10-28): no update check in v0.0.1.
 
 ### v0.0.2 — basic video

@@ -261,21 +261,29 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    private var fittedWidth: CGFloat = 0
-
-    /// The Name column is fitted to the list's width whenever that width changes, a window that opens
-    /// narrow included (the table fits its columns by itself only on a later resize).
+    /// The Name column is sized to what the other columns leave of the list's width, whenever the list is
+    /// laid out (a window that opens narrow included) or another column is resized.
     override func viewDidLayout() {
         super.viewDidLayout()
-        fitColumns()
+        fitNameColumn()
     }
 
-    /// Fits to the width the list actually shows (the clip view's: less than the scroll view's when a
-    /// scroll bar is always shown), which is only known once the scroll view has laid itself out.
-    @objc private func fitColumns() {
-        guard let clip = outlineView.enclosingScrollView?.contentView, clip.bounds.width != fittedWidth else { return }
-        fittedWidth = clip.bounds.width
-        outlineView.sizeToFit()
+    /// The width is worked out from the scroll view's own frame, with room kept for a vertical scroll bar
+    /// where the system always shows one: never from the clip view, whose width changes as scroll bars come
+    /// and go and would feed back into the fit.
+    private func fitNameColumn() {
+        guard let scroll = view as? NSScrollView,
+            let name = outlineView.tableColumns.first(where: { $0.identifier.rawValue == "name" })
+        else { return }
+        let room = NSScrollView.contentSize(
+            forFrameSize: scroll.frame.size, horizontalScrollerClass: nil, verticalScrollerClass: NSScroller.self,
+            borderType: scroll.borderType, controlSize: .regular, scrollerStyle: scroll.scrollerStyle
+        ).width
+        let columns = outlineView.tableColumns
+        let others = columns.filter { $0 !== name }.reduce(0) { $0 + $1.width }
+        let spacing = outlineView.intercellSpacing.width * CGFloat(columns.count)
+        let width = max(Self.nameMinWidth, (room - others - spacing).rounded(.down))
+        if abs(name.width - width) >= 1 { name.width = width }
     }
 
     override func loadView() {
@@ -291,10 +299,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             // The Name column takes up and gives up width with the window; the others keep theirs, so the
             // times stay readable in a narrow window.
             column.minWidth = spec.id == "name" ? Self.nameMinWidth : 24
-            column.resizingMask = spec.id == "name" ? [.autoresizingMask, .userResizingMask] : [.userResizingMask]
+            column.resizingMask = spec.id == "name" ? [] : [.userResizingMask]
             outlineView.addTableColumn(column)
         }
-        outlineView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        outlineView.columnAutoresizingStyle = .noColumnAutoresizing
         outlineView.outlineTableColumn = outlineView.tableColumns.first { $0.identifier.rawValue == "name" }
         outlineView.usesAlternatingRowBackgroundColors = true
         outlineView.allowsMultipleSelection = true
@@ -329,9 +337,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
         view = scroll
-        scroll.contentView.postsFrameChangedNotifications = true
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(fitColumns), name: NSView.frameDidChangeNotification, object: scroll.contentView)
         outlineView.reloadData()
         // The tree was built before the table had a data source, so nothing is open yet.
         func open(_ nodes: [CueNode]) {
@@ -1229,7 +1234,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         if flagged(node) { return .solid }
         return node.isGroup && !expanded && anyFlagged(node) ? .hollow : nil
     }
-    func outlineViewColumnDidResize(_ notification: Notification) { replaceEditorAfterLayoutChange() }
+    func outlineViewColumnDidResize(_ notification: Notification) {
+        fitNameColumn()
+        replaceEditorAfterLayoutChange()
+    }
     func outlineViewColumnDidMove(_ notification: Notification) { replaceEditorAfterLayoutChange() }
     private func replaceEditorAfterLayoutChange() { if !rebuilding && !batching { placeCellEditor() } }
 
