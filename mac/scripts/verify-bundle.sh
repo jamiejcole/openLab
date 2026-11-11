@@ -45,5 +45,18 @@ if [ "$code" != 2 ]; then
     echo "error: $engine did not refuse --virtual-device (exit $code, expected 2)" >&2
     exit 1
 fi
+# One version for the release: the app's and the bundled engine's agree (mac/project.yml MARKETING_VERSION
+# and engine/Cargo.toml), and the app has its icon.
+app_version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app/Contents/Info.plist")
+engine_version=$("$engine" --version | awk '{ print $2 }')
+if [ -z "$app_version" ] || [ "$app_version" != "$engine_version" ]; then
+    echo "error: app version '$app_version' and engine version '$engine_version' differ" >&2
+    exit 1
+fi
+icon=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIconName" "$app/Contents/Info.plist" 2>/dev/null || true)
+if [ "$icon" != "AppIcon" ] || [ ! -f "$app/Contents/Resources/AppIcon.icns" ]; then
+    echo "error: $app has no app icon" >&2
+    exit 1
+fi
 codesign --verify --deep --strict "$app"
 echo "verify-bundle: $app ok"

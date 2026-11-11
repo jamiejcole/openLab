@@ -157,27 +157,28 @@ final class PlayheadClickUITests: XCTestCase {
         XCTAssertFalse(cueState("Running", of: "entrance", in: app).exists, "Return did not fire GO")
     }
 
-    /// Double-clicking a Fade cue's Target cell opens the cue-number editor over it, with its own name for
-    /// accessibility; Return with the number unchanged sends nothing and fires no GO.
-    func testDoubleClickTargetOpensTheCueNumberEditor() {
+    /// Double-clicking a Fade cue's Target cell opens a field over it; a cue number typed there and Return
+    /// retargets the Fade: the cell and the inspector show the new target, and Return fires no GO.
+    func testDoubleClickTargetRetargetsTheFade() {
         let app = launchDemo()
         let fade = row("Fade and stop Intro", in: app)
         XCTAssertTrue(fade.waitForExistence(timeout: 10))
-        // The Target column starts 452 points in (status, type, number and name before it) and is 60 wide.
-        let cell = fade.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 482, dy: 12))
+        // Its Target cell shows the target's number, the only "1" in the row (the Fade has no number of its
+        // own): the columns move with the window's width, so the cell is found by what it shows.
+        let cell = fade.staticTexts["1"].firstMatch
+        XCTAssertTrue(cell.waitForExistence(timeout: 10), "the Target cell shows 1")
         cell.doubleClick()
-        let editor = app.textFields["cue-target-editor"]
-        XCTAssertTrue(editor.waitForExistence(timeout: 10), "the editor opens")
-        XCTAssertEqual(editor.label, "Edit target")
-        XCTAssertTrue(waitFor("hasKeyboardFocus == true", editor), "and has the focus")
-        app.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
-        XCTAssertTrue(waitFor("exists == false", editor), "Return closes it")
+        // As the other cell editors, the field is reached by keyboard focus, not by an accessibility query.
+        app.typeText("2.1\r")
+        XCTAssertTrue(
+            waitFor("value == '2.1'", app.textFields["inspector-target"]), "the inspector shows the new target")
+        XCTAssertTrue(app.staticTexts["Fade and stop Door slam"].waitForExistence(timeout: 10), "the name follows it")
         XCTAssertFalse(cueStates("Running", in: app).firstMatch.exists, "Return did not fire GO")
     }
 
-    /// T on a file cue opens the file chooser from a real key press, and Esc still panics while it is up (it
-    /// is the app-wide panic key, taken before the chooser sees it).
-    func testTKeyOpensTheFileChooserAndEscStillPanics() {
+    /// T on a file cue opens the file chooser from a real key press. The chooser is modal and takes Esc as
+    /// its Cancel: the cue keeps running, and the next Esc is the panic.
+    func testTKeyOpensTheFileChooserEscClosesItAndTheNextEscPanics() {
         let app = launchThree()
         app.typeKey(XCUIKeyboardKey.space.rawValue, modifierFlags: [])
         XCTAssertTrue(cueState("Running", of: "One", in: app).waitForExistence(timeout: 10))
@@ -187,8 +188,10 @@ final class PlayheadClickUITests: XCTestCase {
         XCTAssertTrue(panel.waitForExistence(timeout: 10), "the file chooser opens")
         XCTAssertTrue(cueState("Running", of: "One", in: app).exists, "and One still runs")
         app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
-        XCTAssertTrue(waitFor("exists == false", cueState("Running", of: "One", in: app)), "Esc panicked One")
-        XCTAssertTrue(waitFor("exists == false", panel), "and closed the chooser")
+        XCTAssertTrue(waitFor("exists == false", panel), "Esc closed the chooser")
+        XCTAssertTrue(cueState("Running", of: "One", in: app).exists, "and One still runs")
+        app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+        XCTAssertTrue(waitFor("exists == false", cueState("Running", of: "One", in: app)), "the next Esc panicked One")
     }
 
     /// In Show Mode a double-click edits nothing.

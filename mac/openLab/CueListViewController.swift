@@ -267,8 +267,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// narrow included (the table fits its columns by itself only on a later resize).
     override func viewDidLayout() {
         super.viewDidLayout()
-        guard view.bounds.width != fittedWidth else { return }
-        fittedWidth = view.bounds.width
+        fitColumns()
+    }
+
+    /// Fits to the width the list actually shows (the clip view's: less than the scroll view's when a
+    /// scroll bar is always shown), which is only known once the scroll view has laid itself out.
+    @objc private func fitColumns() {
+        guard let clip = outlineView.enclosingScrollView?.contentView, clip.bounds.width != fittedWidth else { return }
+        fittedWidth = clip.bounds.width
         outlineView.sizeToFit()
     }
 
@@ -323,6 +329,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
         view = scroll
+        scroll.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(fitColumns), name: NSView.frameDidChangeNotification, object: scroll.contentView)
         outlineView.reloadData()
         // The tree was built before the table had a data source, so nothing is open yet.
         func open(_ nodes: [CueNode]) {

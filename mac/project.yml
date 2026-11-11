@@ -29,6 +29,7 @@ targets:
         # The engine build script reads ../engine and writes engine/target.
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.music
         INFOPLIST_KEY_NSHumanReadableCopyright: "Licensed under the GNU GPL v3 or later."
     postCompileScripts:
