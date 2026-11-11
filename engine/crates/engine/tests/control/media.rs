@@ -194,11 +194,19 @@ fn a_failed_stream_probes_the_file_it_read_not_the_cues_current_one() {
     }
     set_kind(&mut s, 1, kind);
     s.settle_media();
-    // Ticks with nothing rendered: only the stream poll can see the failure.
-    for _ in 0..1000 {
-        if s.control().media_tickets() > before + 1 {
+    // Ticks with nothing rendered: only the stream poll can see the failure, once the stream's
+    // thread has hit it (each pass gives that thread a step: it may not have run yet).
+    for _ in 0..5000 {
+        // The probe of the failed file answers on its own thread, after the ticket is taken.
+        if s.control().media_tickets() > before + 1 || !PROBED.lock().unwrap().is_empty() {
             break;
         }
+        s.tick();
+        s.settle_media();
+        s.wait_step();
+    }
+    // Long enough for a second, wrong probe to have been asked for and answered.
+    for _ in 0..50 {
         s.tick();
         s.settle_media();
     }
