@@ -164,6 +164,15 @@ impl OfflineShow {
         }
     }
 
+    /// Gives a worker thread (a stream being read) one short step to get on, handling whatever
+    /// reaches the inbox meanwhile. For a loop that waits on something only a tick's poll can see:
+    /// without it the loop can run through its ticks before the thread has run at all.
+    pub fn wait_step(&mut self) {
+        if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
+            let _ = self.control.handle(msg);
+        }
+    }
+
     /// Waits until every host look-up and queued network message has been handled by its worker
     /// and the answers are applied. Bounded by [`SETTLE_TIMEOUT`], counted in [`Self::stalls`].
     pub fn settle_net(&mut self) {
