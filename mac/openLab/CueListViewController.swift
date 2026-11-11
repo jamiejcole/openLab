@@ -268,8 +268,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         fitNameColumn()
     }
 
-    /// The width is worked out from the scroll view's own frame, with room kept for a vertical scroll bar
-    /// where the system always shows one: never from the clip view, whose width changes as scroll bars come
+    /// The width is worked out from the scroll view's own frame, with room always kept for a vertical scroll
+    /// bar (some systems always show one): never from the clip view, whose width changes as scroll bars come
     /// and go and would feed back into the fit.
     private func fitNameColumn() {
         guard let scroll = view as? NSScrollView,
@@ -277,7 +277,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         else { return }
         let room = NSScrollView.contentSize(
             forFrameSize: scroll.frame.size, horizontalScrollerClass: nil, verticalScrollerClass: NSScroller.self,
-            borderType: scroll.borderType, controlSize: .regular, scrollerStyle: scroll.scrollerStyle
+            borderType: scroll.borderType, controlSize: .regular, scrollerStyle: .legacy
         ).width
         let columns = outlineView.tableColumns
         let others = columns.filter { $0 !== name }.reduce(0) { $0 + $1.width }
