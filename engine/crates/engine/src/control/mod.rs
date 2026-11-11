@@ -1179,6 +1179,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::Open { .. } => "open",
         Request::OpenRecovery { .. } => "open_recovery",
         Request::ScanRecovery => "scan_recovery",
+        Request::DiscardRecovery { .. } => "discard_recovery",
         Request::Save => "save",
         Request::SaveAs { .. } => "save_as",
         Request::Relink { .. } => "relink",

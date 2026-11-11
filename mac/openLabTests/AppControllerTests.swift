@@ -56,9 +56,17 @@ final class ScriptedAlerts: WorkspaceAlerts {
     }
 
     var restoreAutosaves = true
-    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> Bool {
+    /// Overrides `restoreAutosaves` when set (a set-aside prompt's Delete).
+    var autosaveChoice: AutosaveChoice?
+    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> AutosaveChoice {
         log.append(setAside ? "setAsideAutosave:\(name)" : "autosave:\(name)")
-        return restoreAutosaves
+        return autosaveChoice ?? (restoreAutosaves ? .restore : .skip)
+    }
+
+    var confirmDelete = true
+    func confirmDeleteAutosave(name: String) -> Bool {
+        log.append("confirmDelete:\(name)")
+        return confirmDelete
     }
 }
 

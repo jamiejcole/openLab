@@ -729,7 +729,7 @@ final class TimeLoopsTests: XCTestCase {
         type(panel.endField, "50")
         await assertEventually { self.panel.endTime == 50 }
         await answered()
-        panel.showProgress(elapsed: 3)  // playing
+        panel.showProgress(position: 23)  // playing
         let width = wave.bounds.width
         for _ in 0..<5 { pinch(0.5, at: windowPoint(atSeconds: 22)) }
         await peaksSettled()
@@ -824,21 +824,99 @@ final class TimeLoopsTests: XCTestCase {
         }
     }
 
-    /// While it plays, the playhead line is where the cue is in the file; looping, it wraps.
-    func testThePlayheadFollowsProgress() async {
+    /// Slice 1 (0 to 10 s) of the 62.5 s file plays three times, then the rest once; the cue is
+    /// started on the real engine.
+    private func startLoopingSlice(count: Int = 3) async {
         await showIntro()
-        type(panel.startField, "10")
-        await assertEventually { self.panel.startTime == 10 }
+        await addSlice(at: 10, expect: 1)
+        panel.editSliceCount(0)
+        type(panel.sliceCountField, count == 0 ? "\u{221E}" : String(count))
+        await assertEventually { self.panel.sliceMarks.first?.playCount == count }
         await answered()
-        panel.showProgress(elapsed: 3)
+        _ = await rig.store.transport(.start(cue: Self.intro))
+    }
+
+    /// Plays on `seconds` and returns where the line is drawn (a position in the file).
+    private func playhead(after seconds: Double) async throws -> Double? {
+        try await rig.advance(seconds)
+        await assertEventually("progress shown") { self.rig.store.progress[Self.intro] != nil }
+        return wave.playhead
+    }
+
+    /// A sliced cue with a looping slice, played past the end of that slice: the playhead returns
+    /// to the slice's start each pass and stays within it, as the engine reports the file position.
+    func testALoopingSlicesPlayheadReturnsToItsStartEachPass() async throws {
+        await startLoopingSlice()
+        var seen: [Double] = []
+        for _ in 0..<27 {
+            guard let p = try await playhead(after: 1) else { return XCTFail("no playhead while playing") }
+            seen.append(p)
+            XCTAssertLessThanOrEqual(p, 10.2, "stays within the slice while it loops: \(seen)")
+        }
+        let wraps = zip(seen, seen.dropFirst()).filter { $1 < $0 }.count
+        XCTAssertEqual(wraps, 2, "returned to the slice start on each new pass: \(seen)")
+        let later = try await playhead(after: 5)
+        XCTAssertEqual(later ?? 0, 10 + 2, accuracy: 1.0, "on into the rest of the file")
+    }
+
+    /// A cue stopped draws no playhead line.
+    func testAStoppedCueDrawsNoPlayhead() async throws {
+        await startLoopingSlice()
+        let playing = try await playhead(after: 4)
+        XCTAssertNotNil(playing)
+        _ = await rig.store.transport(.hardStop(cue: Self.intro))
+        try await rig.advance(1)
+        await assertEventually("progress ended") { self.rig.store.progress[Self.intro] == nil }
+        XCTAssertNil(wave.playhead, "the line is gone once the cue stopped")
+    }
+
+    /// Esc (the engine's panic) while a slice loops: the cue fades out, and once the fade has
+    /// ended the Time & Loops waveform draws no playhead line.
+    func testAfterEscTheWaveformDrawsNoPlayhead() async throws {
+        await startLoopingSlice()
+        let playing = try await playhead(after: 4)
+        XCTAssertNotNil(playing)
+        _ = await rig.store.transport(.panic)
+        try await rig.advance(0.1)
+        try await rig.advance(10)
+        await assertEventually("progress ended") { self.rig.store.progress[Self.intro] == nil }
+        XCTAssertNil(wave.playhead, "no line once the panic fade is over")
+    }
+
+    /// Devamped while looping slice 1: the playhead has stayed within that slice, then moves on past
+    /// its end into the next slice and keeps rising.
+    func testDevampingMovesThePlayheadToTheNextSlice() async throws {
+        await startLoopingSlice(count: 0)
+        let devampID: ModelID = "00000000-0000-0000-0000-0000000000d1"
+        var devamp = try XCTUnwrap(NewCueKind.devamp.cueJSON(id: devampID, patch: nil))
+        var kind = try XCTUnwrap(devamp["kind"])
+        kind.set("target", .string(Self.intro.raw))
+        kind.set("devamp_mode", .string("current_slice"))
+        devamp.set("kind", kind)
+        let added = await rig.store.send(
+            command: .addCue(devamp, list: TestSnapshots.mainList, parent: nil, index: 1))
+        guard case .success = added else { return XCTFail("\(added)") }
+        for _ in 0..<12 {
+            let p = try await playhead(after: 1)
+            XCTAssertLessThanOrEqual(p ?? 99, 10.2, "looping inside slice 1 before the devamp")
+        }
+        _ = await rig.store.transport(.start(cue: devampID))
+        var seen: [Double] = []
+        for _ in 0..<12 {
+            if let p = try await playhead(after: 1) { seen.append(p) }
+        }
+        XCTAssertGreaterThan(seen.last ?? 0, 10.5, "moved on past slice 1: \(seen)")
+        let moved = try XCTUnwrap(seen.firstIndex { $0 > 10.2 })
+        let rest = Array(seen[moved...])
+        XCTAssertEqual(rest, rest.sorted(), "rises once it has moved on: \(seen)")
+    }
+
+    /// The line is drawn where the engine says it is.
+    func testThePlayheadIsDrawnAtTheReportedPosition() async {
+        await showIntro()
+        panel.showProgress(position: 13)
         XCTAssertEqual(wave.playhead, 13)
-        panel.loopRadio.state = .on
-        fire(panel.loopRadio)
-        await assertEventually { self.panel.playCount == 0 }
-        await answered()
-        panel.showProgress(elapsed: 52.5 + 2)
-        XCTAssertEqual(wave.playhead ?? 0, 12, accuracy: 1e-9, "the second pass")
-        panel.showProgress(elapsed: nil)
+        panel.showProgress(position: nil)
         XCTAssertNil(wave.playhead)
     }
 

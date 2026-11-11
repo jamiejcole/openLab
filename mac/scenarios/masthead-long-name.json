@@ -1,0 +1,15 @@
+{
+  "about": "A cue with a very long name standing by: the masthead cuts the name short and the window keeps its width, in Edit Mode at 1200 pt, at 800 pt, and in Show Mode.",
+  "show": "Demo",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"type": "inspector-name", "text": "Thunder rumble in the distance, rolling in from stage left and building under the dialogue until the blackout at the end of the scene"},
+    {"shot": "edit-1200"},
+    {"resize": [800, 600]},
+    {"shot": "edit-800"},
+    {"resize": [1200, 800]},
+    {"click": "mode-switch", "at": [0.75, 0.5]},
+    {"shot": "show-1200"}
+  ]
+}

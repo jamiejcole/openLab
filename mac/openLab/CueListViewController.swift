@@ -191,6 +191,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         ("continue", nil, 36),
     ]
     static let rowHeight: CGFloat = 24
+    /// The least the Name column shrinks to; a narrower list scrolls sideways.
+    static let nameMinWidth: CGFloat = 60
 
     let store: WorkspaceStore
     let outlineView: NSOutlineView
@@ -259,6 +261,17 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    private var fittedWidth: CGFloat = 0
+
+    /// The Name column is fitted to the list's width whenever that width changes, a window that opens
+    /// narrow included (the table fits its columns by itself only on a later resize).
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        guard view.bounds.width != fittedWidth else { return }
+        fittedWidth = view.bounds.width
+        outlineView.sizeToFit()
+    }
+
     override func loadView() {
         for spec in Self.columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.id))
@@ -269,9 +282,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 updateTimeHeader(column)
             }
             column.width = spec.width
-            column.minWidth = 24
+            // The Name column takes up and gives up width with the window; the others keep theirs, so the
+            // times stay readable in a narrow window.
+            column.minWidth = spec.id == "name" ? Self.nameMinWidth : 24
+            column.resizingMask = spec.id == "name" ? [.autoresizingMask, .userResizingMask] : [.userResizingMask]
             outlineView.addTableColumn(column)
         }
+        outlineView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         outlineView.outlineTableColumn = outlineView.tableColumns.first { $0.identifier.rawValue == "name" }
         outlineView.usesAlternatingRowBackgroundColors = true
         outlineView.allowsMultipleSelection = true

@@ -272,6 +272,14 @@ fn all_requests() -> Vec<(&'static str, Request)> {
         ("advance", Request::Advance { frames: 4800 }),
         ("lose_device", Request::LoseDevice),
         ("restore_device", Request::RestoreDevice),
+        (
+            "discard_recovery",
+            Request::DiscardRecovery {
+                workspace_id: workspace_id(7),
+                path_hash: Some("0123456789abcdef".into()),
+                modified_ms: Some(1_700_000_000_000),
+            },
+        ),
     ]
 }
 
@@ -932,11 +940,13 @@ fn fixtures() -> Vec<(String, Sample)> {
                     cue: cue_id(10),
                     elapsed: 1.5,
                     remaining: Some(58.5),
+                    position: Some(31.5),
                 },
                 ProgressItem {
                     cue: cue_id(11),
                     elapsed: 0.25,
                     remaining: None,
+                    position: None,
                 },
             ],
             waits: vec![],
@@ -950,6 +960,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                 cue: cue_id(12),
                 elapsed: 1.0,
                 remaining: Some(4.0),
+                position: None,
             }],
             waits: vec![
                 WaitProgress {
@@ -1605,7 +1616,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 24);
-    assert_eq!(all_requests().len(), 20);
+    assert_eq!(all_requests().len(), 21);
 }
 
 #[test]
@@ -2083,6 +2094,7 @@ fn progress_and_meters_are_sanitised_not_refused() {
             cue: cue_id(1),
             elapsed,
             remaining,
+            position: None,
         }],
         waits: vec![WaitProgress {
             cue: cue_id(2),
@@ -3780,6 +3792,18 @@ fn arb_request() -> impl Strategy<Value = Request> {
                 }
             }),
         Just(Request::ScanRecovery),
+        (
+            any::<u128>(),
+            proptest::option::of("[0-9a-f]{16}"),
+            proptest::option::of(any::<i64>()),
+        )
+            .prop_map(|(id, path_hash, modified_ms)| {
+                Request::DiscardRecovery {
+                    workspace_id: workspace_id(id),
+                    path_hash,
+                    modified_ms,
+                }
+            }),
         Just(Request::Save),
         arb_abs_path().prop_map(|path| Request::SaveAs { path }),
         arb_abs_path().prop_map(|folder| Request::Relink { folder }),

@@ -37,6 +37,8 @@ final class MastheadView: NSView, NSTextViewDelegate {
         standbyField.setAX(AX.standbyField)
         standbyField.lineBreakMode = .byTruncatingTail
         standbyField.maximumNumberOfLines = 1
+        // A long name is cut short with an ellipsis; it never widens the window to fit.
+        standbyField.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         notesView.setAX(AX.standbyNotes, label: loc("masthead.notes.label"))
         // Only editable in Edit Mode with a cue. Locked, it takes no focus: a focused text view

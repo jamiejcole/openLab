@@ -39,6 +39,9 @@ impl Voices {
                     fx.feedback.push(Input::DevampScheduled { cue, run, at });
                     // The voice's end is known again: where it leaves the loop plus what
                     // follows (nothing for a devamp stop).
+                    if let Some(r) = self.recs.get_mut(&voice) {
+                        r.note_devamp_cut(at);
+                    }
                     if let Some(r) = self.recs.get(&voice)
                         && !r.preview
                         && let Some(frames) = r.length_after_devamp(at)

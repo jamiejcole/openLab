@@ -4,8 +4,10 @@
 //!
 //! A recovery file is never deleted because of a timestamp comparison (file times are unreliable
 //! on network and removable volumes). Files that look stale are moved aside as
-//! `<stem>.<modified-ms>.stale.openlab`, the newest [`KEEP_STALE`] are kept, and they are
-//! deleted only after a successful save of that workspace.
+//! `<stem>.<modified-ms>.stale.openlab` and the newest [`KEEP_STALE`] are kept. Nothing removes
+//! them but being pruned past that limit: a save or a Save As removes only the current recovery
+//! file this run wrote, since a file moved aside came from an earlier run and may hold newer work
+//! than the saved file.
 
 use std::fs;
 use std::io;
@@ -42,36 +44,19 @@ pub fn write_recovery(
     Ok(path)
 }
 
-/// Removes the recovery file for this workspace and show path, and the stale files moved aside
-/// from it. Call after a successful save. Missing is fine.
-pub fn clear_recovery(
-    dirs: &AppDirs,
-    workspace: WorkspaceId,
-    show_path: Option<&Path>,
-) -> Result<(), PersistError> {
-    let active = dirs.recovery_path(workspace, show_path);
-    let mut result = remove_if_present(&active);
-    for stale in stale_files(dirs, &recovery_stem(workspace, show_path)) {
-        let removed = remove_if_present(&stale);
-        if result.is_ok() {
-            result = removed;
-        }
-    }
-    result
-}
-
-/// Removes only the current recovery file for this workspace and show path: the operator dropped
-/// the edits it holds. Files moved aside stay: nobody has looked at them, and they may hold the
+/// Removes only the current recovery file for this workspace and show path: it holds edits this
+/// run wrote, and they are on disk elsewhere (a save) or were dropped by the operator. Files
+/// moved aside stay: an earlier run wrote them, nobody has looked at them, and they may hold the
 /// newest work. Missing is fine.
 pub fn discard_recovery(
     dirs: &AppDirs,
     workspace: WorkspaceId,
     show_path: Option<&Path>,
 ) -> Result<(), PersistError> {
-    remove_if_present(&dirs.recovery_path(workspace, show_path))
+    remove_exact(&dirs.recovery_path(workspace, show_path))
 }
 
-fn remove_if_present(path: &Path) -> Result<(), PersistError> {
+pub(super) fn remove_exact(path: &Path) -> Result<(), PersistError> {
     crate::persist::remove_if_present(path).map_err(PersistError::io("remove", path))
 }
 

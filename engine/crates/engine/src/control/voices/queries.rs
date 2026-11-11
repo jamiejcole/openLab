@@ -172,9 +172,11 @@ impl Voices {
         }
     }
 
-    /// Show cues playing on rendered sample `t`: position in the action and frames left.
-    pub fn progress(&self, t: SampleTime) -> Vec<(CueId, u64, Option<u64>)> {
-        let mut v: Vec<(CueId, u64, Option<u64>)> = self
+    /// Show cues playing on rendered sample `t`: position in the action, frames left, and the
+    /// frame of the media file the voice is at (its slices, loops and devamps applied; `None`
+    /// without a slice table).
+    pub fn progress(&self, t: SampleTime) -> Vec<(CueId, u64, Option<u64>, Option<u64>)> {
+        let mut v: Vec<(CueId, u64, Option<u64>, Option<u64>)> = self
             .recs
             .values()
             .filter(|r| !r.preview)
@@ -183,10 +185,10 @@ impl Voices {
                 let left = r
                     .total
                     .map(|total| r.offset.saturating_add(total).saturating_sub(pos));
-                Some((r.cue, pos, left))
+                Some((r.cue, pos, left, r.file_frame(pos)))
             })
             .collect();
-        v.sort_by_key(|(c, _, _)| *c);
+        v.sort_by_key(|(c, _, _, _)| *c);
         v
     }
 
