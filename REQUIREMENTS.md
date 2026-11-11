@@ -18,51 +18,51 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 ## 1. Non-Functional Requirements
 
 ### 1.1 Reliability & safety (highest priority — this runs live shows)
-- [ ] **NFR-01** `v0.0.1` Playback MUST NOT stop, glitch or crash because of a UI fault, an editing action, a slow disk read, or a malformed input. The playback engine is isolated from UI failure.
-- [ ] **NFR-02** `v0.0.1` The real-time audio path MUST be real-time safe: no memory allocation, locks, blocking I/O, or logging on the audio thread.
-- [ ] **NFR-03** `v0.0.1` Every external input (workspace files, media files, OSC/MIDI/network messages, plugin output, settings) MUST be validated; bad input produces a warning, never a crash or hang.
+- [x] **NFR-01** `v0.0.1` Playback MUST NOT stop, glitch or crash because of a UI fault, an editing action, a slow disk read, or a malformed input. The playback engine is isolated from UI failure.
+- [x] **NFR-02** `v0.0.1` The real-time audio path MUST be real-time safe: no memory allocation, locks, blocking I/O, or logging on the audio thread.
+- [x] **NFR-03** `v0.0.1` Every external input (workspace files, media files, OSC/MIDI/network messages, plugin output, settings) MUST be validated; bad input produces a warning, never a crash or hang.
 - [x] **NFR-04** `v0.0.1` Saves MUST be atomic (write-temp-then-rename). A crash or power loss during save never corrupts the existing file.
-- [ ] **NFR-05** `v0.0.1` Autosave to a recovery file at a configurable interval; on launch after an unclean exit, offer to restore.
-- [ ] **NFR-06** `v0.0.1` Keep N rolling timestamped backups of each workspace (configurable, default on).
-- [ ] **NFR-07** `v0.0.1` Missing/unsupported media, missing audio/MIDI devices and Network cues with no or an unusable network patch or a malformed message MUST be reported as "broken" cue state before the show, not discovered at GO. As in QLab 5, whether the destination is reachable or its host name resolves is not checked: a failed send is a warning at GO.
+- [x] **NFR-05** `v0.0.1` Autosave to a recovery file at a configurable interval; on launch after an unclean exit, offer to restore.
+- [x] **NFR-06** `v0.0.1` Keep N rolling timestamped backups of each workspace (configurable, default on).
+- [x] **NFR-07** `v0.0.1` Missing/unsupported media, missing audio/MIDI devices and Network cues with no or an unusable network patch or a malformed message MUST be reported as "broken" cue state before the show, not discovered at GO. As in QLab 5, whether the destination is reachable or its host name resolves is not checked: a failed send is a warning at GO.
 - [ ] **NFR-08** `v0.0.1` Device hot-unplug/replug (audio interface, MIDI, display) MUST be survived without a crash; reconnect automatically where possible, warn loudly otherwise.
-- [ ] **NFR-09** `v0.0.1` The app MUST run for 24 hours continuously with no memory growth, timing drift or performance degradation (soak-tested).
-- [ ] **NFR-10** `v0.0.1` No network connection is ever required. No telemetry by default. No modal dialogs, update prompts or OS notifications from openLab during Show Mode.
-- [ ] **NFR-11** `v0.0.1` A single misbehaving cue (bad file, failing script, unreachable OSC host) MUST NOT affect other running cues.
+- [x] **NFR-09** `v0.0.1` The app MUST run for 24 hours continuously with no memory growth, timing drift or performance degradation (soak-tested).
+- [x] **NFR-10** `v0.0.1` No network connection is ever required. No telemetry by default. No modal dialogs, update prompts or OS notifications from openLab during Show Mode.
+- [x] **NFR-11** `v0.0.1` A single misbehaving cue (bad file, failing script, unreachable OSC host) MUST NOT affect other running cues.
 
 ### 1.2 Performance & timing
-- [ ] **NFR-20** `v0.0.1` GO-to-sound latency for a loaded cue ≤ 10 ms beyond the audio device's buffer latency.
-- [ ] **NFR-21** `v0.0.1` Cues started together (same GO, group, or auto-continue with zero wait) MUST start sample-accurately relative to each other.
-- [ ] **NFR-22** `v0.0.1` Waits, fades and timecode triggers MUST be scheduled against the audio clock (not UI timers) with ≤ 1 ms jitter.
+- [x] **NFR-20** `v0.0.1` GO-to-sound latency for a loaded cue ≤ 10 ms beyond the audio device's buffer latency.
+- [x] **NFR-21** `v0.0.1` Cues started together (same GO, group, or auto-continue with zero wait) MUST start sample-accurately relative to each other.
+- [x] **NFR-22** `v0.0.1` Waits, fades and timecode triggers MUST be scheduled against the audio clock (not UI timers) with ≤ 1 ms jitter.
 - [ ] **NFR-23** `v0.0.1` Minimum spec target: 2014 Mac mini (Intel dual-core, macOS 12 Monterey) and low-end Windows 10/11 x64 laptops. On minimum spec: ≥ 32 simultaneous stereo audio cues streaming from disk at 48 kHz with fades, without dropouts.
-- [ ] **NFR-24** `v0.0.1` Workspaces with ≥ 2,000 cues MUST open in < 3 s and edit without UI lag on minimum spec.
+- [x] **NFR-24** `v0.0.1` Workspaces with ≥ 2,000 cues MUST open in < 3 s and edit without UI lag on minimum spec.
 - [ ] **NFR-25** `v0.0.1` Idle CPU < 2% on minimum spec with a workspace open and no cues running.
-- [ ] **NFR-26** `v0.0.1` UI rendering MUST NOT compete with the audio engine for priority; meters/waveforms degrade gracefully under load.
-- [ ] **NFR-27** `v0.0.1` Audio dropout (xrun) counter visible to the operator and logged.
+- [x] **NFR-26** `v0.0.1` UI rendering MUST NOT compete with the audio engine for priority; meters/waveforms degrade gracefully under load.
+- [x] **NFR-27** `v0.0.1` Audio dropout (xrun) counter visible to the operator and logged.
 
 ### 1.3 Platform
-- [ ] **NFR-30** `v0.0.1` macOS 12 Monterey or later, Universal binary (x86_64 + arm64). Priority platform.
-- [ ] **NFR-31** `v0.0.1` Windows 10 and 11 (x64). All platform-specific code is isolated behind a thin layer from day one so Windows is a port, not a rewrite.
-- [ ] **NFR-32** `v0.0.1` Workspace files are fully portable between macOS and Windows (path separators, line endings, case sensitivity, file-name encoding).
+- [x] **NFR-30** `v0.0.1` macOS 12 Monterey or later, Universal binary (x86_64 + arm64). Priority platform.
+- [x] **NFR-31** `v0.0.1` Windows 10 and 11 (x64). All platform-specific code is isolated behind a thin layer from day one so Windows is a port, not a rewrite.
+- [x] **NFR-32** `v0.0.1` Workspace files are fully portable between macOS and Windows (path separators, line endings, case sensitivity, file-name encoding).
 - [ ] **NFR-33** Linux MAY be supported later; nothing in the design should preclude it.
 
 ### 1.4 Maintainability & openness
 - [x] **NFR-40** `v0.0.1` Workspace file format is open, documented, versioned, human-readable and diff-friendly (text-based), with automatic forward migration of older versions.
-- [ ] **NFR-41** `v0.0.1` Core engine logic (cue model, scheduling, state machine, routing, fades) is UI-independent and testable headlessly.
-- [ ] **NFR-42** `v0.0.1` Licensed GPLv3-or-later. All dependencies must be GPLv3-compatible. LICENSE file and SPDX headers present.
-- [ ] **NFR-43** `v0.0.1` Reproducible builds via a single documented command per platform; CI builds every commit.
+- [x] **NFR-41** `v0.0.1` Core engine logic (cue model, scheduling, state machine, routing, fades) is UI-independent and testable headlessly.
+- [x] **NFR-42** `v0.0.1` Licensed GPLv3-or-later. All dependencies must be GPLv3-compatible. LICENSE file and SPDX headers present.
+- [x] **NFR-43** `v0.0.1` Reproducible builds via a single documented command per platform; CI builds every commit.
 
 ---
 
 ## 2. Workspace & Files
-- [ ] **WS-01** `v0.0.1` A workspace is a single document containing cue lists, carts, patches, settings and references to media.
-- [ ] **WS-02** `v0.0.1` New / Open / Save / Save As / Close; multiple workspaces open at once (no Revert, as QLab 5).
-- [ ] **WS-03** `v0.0.1` Media referenced by relative path when inside the workspace folder, absolute otherwise; relink missing media (single and batch "find in folder").
+- [x] **WS-01** `v0.0.1` A workspace is a single document containing cue lists, carts, patches, settings and references to media.
+- [x] **WS-02** `v0.0.1` New / Open / Save / Save As / Close; multiple workspaces open at once (no Revert, as QLab 5).
+- [x] **WS-03** `v0.0.1` Media referenced by relative path when inside the workspace folder, absolute otherwise; relink missing media (single and batch "find in folder").
 - [ ] **WS-04** "Bundle workspace": copy workspace + all referenced media into one self-contained folder for transport between machines.
 - [ ] **WS-05** Workspace templates (start a new show from a saved template).
-- [ ] **WS-06** `v0.0.1` Per-workspace settings (patches, MIDI/OSC config, hotkeys, defaults) travel with the file; per-machine settings (device names, window layout) do not.
-- [ ] **WS-07** `v0.0.1` Device patch mapping: a workspace refers to logical outputs; on a different machine the operator maps them to physical devices once.
-- [ ] **WS-08** `v0.0.1` Recent files, open-on-launch option.
+- [x] **WS-06** `v0.0.1` Per-workspace settings (patches, MIDI/OSC config, hotkeys, defaults) travel with the file; per-machine settings (device names, window layout) do not.
+- [x] **WS-07** `v0.0.1` Device patch mapping: a workspace refers to logical outputs; on a different machine the operator maps them to physical devices once.
+- [x] **WS-08** `v0.0.1` Recent files, open-on-launch option.
 - [ ] **WS-09** Import/export cue list as CSV (number, name, notes, type, timings).
 - [ ] **WS-10** Print / export cue sheet to PDF.
 - [ ] **WS-11** `nice-to-have` Best-effort import of QLab workspaces (cue structure, names, numbers, timings, audio file references).
@@ -70,26 +70,26 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 ---
 
 ## 3. Cue Lists & Carts
-- [ ] **CL-01** `v0.0.1` Multiple cue lists per workspace, each with its own playhead.
-- [ ] **CL-02** `v0.0.1` Cue list shows, in QLab 5's fixed column order: status, type icon, number, name, target, pre-wait, duration, post-wait, continue mode; cue colour tints the row, a flag shows in the status column; column widths are remembered. *(Column show/hide/reorder dropped 2026-10-29: QLab 5 has none.)*
+- [x] **CL-01** `v0.0.1` Multiple cue lists per workspace, each with its own playhead.
+- [x] **CL-02** `v0.0.1` Cue list shows, in QLab 5's fixed column order: status, type icon, number, name, target, pre-wait, duration, post-wait, continue mode; cue colour tints the row, a flag shows in the status column; column widths are remembered. *(Column show/hide/reorder dropped 2026-10-29: QLab 5 has none.)*
 - [x] **CL-03** `v0.0.1` Hierarchical display of groups (expand/collapse).
 - [ ] **CL-04** Carts: grid of cues fired directly by click/hotkey/trigger, independent of the playhead. Configurable grid size.
 - [x] **CL-05** `v0.0.1` Cue list / cart switching via tabs or sidebar.
-- [ ] **CL-06** `v0.0.1` Playhead visibly distinct; "standing by" cue shown large with name and notes.
-- [ ] **CL-07** `v0.0.1` Open a cue list in a new window (sidebar button and context menu; a second window on the same workspace), as QLab 5.
+- [x] **CL-06** `v0.0.1` Playhead visibly distinct; "standing by" cue shown large with name and notes.
+- [ ] **CL-07** `v0.0.2` Open a cue list in a new window (sidebar button and context menu; a second window on the same workspace), as QLab 5.
 
 ---
 
 ## 4. Cue Model (common to all cues)
 - [x] **CUE-01** `v0.0.1` Fields: number (free text, unique within workspace or empty), name, notes, colour, flag, armed/disarmed.
-- [ ] **CUE-02** `v0.0.1` Timing: pre-wait, action (duration), post-wait.
-- [ ] **CUE-03** `v0.0.1` Continue modes: do not continue, auto-continue (after pre-wait/post-wait), auto-follow (after action completes).
-- [ ] **CUE-04** `v0.0.1` Lifecycle states: idle, loaded, pre-waiting, running, paused, post-waiting, fading, stopping, broken — with defined, tested transitions.
-- [ ] **CUE-05** `v0.0.1` Operations on any cue: start, stop, pause, resume, load, load-to-time, reset, preview/audition.
-- [ ] **CUE-06** `v0.0.1` Broken state with human-readable reason(s), shown in the list and the inspector.
-- [ ] **CUE-07** `v0.0.1` Disarmed cues are skipped/ignored when triggered (still visible).
+- [x] **CUE-02** `v0.0.1` Timing: pre-wait, action (duration), post-wait.
+- [x] **CUE-03** `v0.0.1` Continue modes: do not continue, auto-continue (after pre-wait/post-wait), auto-follow (after action completes).
+- [x] **CUE-04** `v0.0.1` Lifecycle states: idle, loaded, pre-waiting, running, paused, post-waiting, fading, stopping, broken — with defined, tested transitions.
+- [x] **CUE-05** `v0.0.1` Operations on any cue: start, stop, pause, resume, load, load-to-time, reset, preview/audition.
+- [x] **CUE-06** `v0.0.1` Broken state with human-readable reason(s), shown in the list and the inspector.
+- [x] **CUE-07** `v0.0.1` Disarmed cues are skipped/ignored when triggered (still visible).
 - [x] **CUE-08** `v0.0.1` Unique persistent internal ID per cue, independent of cue number (used by targets, OSC, scripts).
-- [ ] **CUE-09** `v0.0.1` Hotkey, MIDI, OSC, timecode and wall-clock triggers assignable per cue (see §10).
+- [x] **CUE-09** `v0.0.1` Hotkey, MIDI, OSC, timecode and wall-clock triggers assignable per cue (see §10).
 - [ ] **CUE-10** Default settings per cue type, configurable per workspace.
 
 ---
@@ -97,7 +97,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 ## 5. Cue Types
 
 ### 5.1 Media
-- [ ] **CT-01** `v0.0.1` **Audio** — plays an audio file through the routing matrix (see §7).
+- [x] **CT-01** `v0.0.1` **Audio** — plays an audio file through the routing matrix (see §7).
 - [ ] **CT-02** **Mic** — routes live audio input(s) through the matrix with levels/fades/effects.
 - [ ] **CT-03** `v0.0.2` **Video** — plays a video file or still image to a video surface (see §8).
 - [ ] **CT-04** **Camera** — displays a live video input on a surface.
@@ -105,23 +105,23 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - ~~**CT-06** **Light** — sets lighting levels with a fade time (see §9).~~ *(retired: lighting deferred)*
 
 ### 5.2 Control
-- [ ] **CT-10** `v0.0.1` **Fade** — fades levels (audio), geometry/opacity (video) of a target cue/group, with duration and curve; option to stop target when done.
-- [ ] **CT-11** `v0.0.1` **Start** — starts its target.
-- [ ] **CT-12** `v0.0.1` **Stop** — stops its target (optionally with fade).
-- [ ] **CT-13** `v0.0.1` **Pause** — pauses its target.
-- [ ] **CT-14** `v0.0.1` **Load** — loads its target to a given time.
-- [ ] **CT-15** `v0.0.1` **Reset** — resets target to its saved state.
-- [ ] **CT-16** `v0.0.1` **Devamp** — exits the current loop of a target at the end of the loop, optionally starting the next cue.
-- [ ] **CT-17** `v0.0.1` **GoTo** — moves the playhead to the target (optionally and GO).
+- [x] **CT-10** `v0.0.1` **Fade** — fades levels (audio), geometry/opacity (video) of a target cue/group, with duration and curve; option to stop target when done.
+- [x] **CT-11** `v0.0.1` **Start** — starts its target.
+- [x] **CT-12** `v0.0.1` **Stop** — stops its target (optionally with fade).
+- [x] **CT-13** `v0.0.1` **Pause** — pauses its target.
+- [x] **CT-14** `v0.0.1` **Load** — loads its target to a given time.
+- [x] **CT-15** `v0.0.1` **Reset** — resets target to its saved state.
+- [x] **CT-16** `v0.0.1` **Devamp** — exits the current loop of a target at the end of the loop, optionally starting the next cue.
+- [x] **CT-17** `v0.0.1` **GoTo** — moves the playhead to the target (optionally and GO).
 - [ ] **CT-18** **Target** — changes another cue's target at run time.
-- [ ] **CT-19** `v0.0.1` **Arm / Disarm** — arms or disarms a target.
-- [ ] **CT-20** `v0.0.1` **Wait** — does nothing for its duration (used for timing in sequences).
-- [ ] **CT-21** `v0.0.1` **Memo** — does nothing; notes for the operator.
-- [ ] **CT-22** `v0.0.1` **Group** — contains cues; modes: start all simultaneously (timeline), start first and enter, start first and go to next, playlist (sequential, optional loop/shuffle), start random child.
+- [x] **CT-19** `v0.0.1` **Arm / Disarm** — arms or disarms a target.
+- [x] **CT-20** `v0.0.1` **Wait** — does nothing for its duration (used for timing in sequences).
+- [x] **CT-21** `v0.0.1` **Memo** — does nothing; notes for the operator.
+- [x] **CT-22** `v0.0.1` **Group** — contains cues; modes: start all simultaneously (timeline), start first and enter, start first and go to next, playlist (sequential, optional loop/shuffle), start random child.
 - [ ] **CT-23** `low` **Script** — runs a script in the embedded scripting language (see §13), sandboxed with timeout.
 
 ### 5.3 Show control output
-- [ ] **CT-30** `v0.0.1` **Network** — sends OSC (UDP/TCP) or raw UDP/TCP string messages to a configured destination; parameter fades for OSC values.
+- [x] **CT-30** `v0.0.1` **Network** — sends OSC (UDP/TCP) or raw UDP/TCP string messages to a configured destination; parameter fades for OSC values.
 - [ ] **CT-31** **MIDI** — sends note, CC, program change, pitch bend, SysEx, MIDI Show Control (MSC) messages; CC fades.
 - [ ] **CT-32** **MIDI File** — plays a Standard MIDI File to a MIDI output, synced to the cue clock.
 - [ ] **CT-33** **Timecode** — generates LTC (via audio output) or MTC (via MIDI) at a chosen frame rate and start time.
@@ -129,43 +129,43 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 ---
 
 ## 6. Playback & Show Control
-- [ ] **PB-01** `v0.0.1` GO: starts the cue at the playhead and advances the playhead per continue mode.
-- [ ] **PB-02** `v0.0.1` Double-GO protection: configurable minimum interval between GOs.
-- [ ] **PB-03** `v0.0.1` Panic / Stop All: fades all cues out over a configurable time; a second press during the fade stops instantly.
-- [ ] **PB-04** `v0.0.1` Pause All / Resume All.
-- [ ] **PB-05** `v0.0.1` Playhead navigation (next/previous, jump to cue by number) without firing.
+- [x] **PB-01** `v0.0.1` GO: starts the cue at the playhead and advances the playhead per continue mode.
+- [x] **PB-02** `v0.0.1` Double-GO protection: configurable minimum interval between GOs.
+- [x] **PB-03** `v0.0.1` Panic / Stop All: fades all cues out over a configurable time; a second press during the fade stops instantly.
+- [x] **PB-04** `v0.0.1` Pause All / Resume All.
+- [x] **PB-05** `v0.0.1` Playhead navigation (next/previous, jump to cue by number) without firing.
 - [ ] **PB-06** Load-to-time: start the show (or a cue) from an arbitrary point with correct state, including what should already be playing (for rehearsal pick-ups).
-- [ ] **PB-07** `v0.0.1` Active Cues panel: running cues with elapsed/remaining time, progress, and per-cue stop/pause/fade-out controls. No meters here (QLab 5 has none).
+- [x] **PB-07** `v0.0.1` Active Cues panel: running cues with elapsed/remaining time, progress, and per-cue stop/pause/fade-out controls. No meters here (QLab 5 has none).
 - [ ] **PB-08** Per-cue live level adjustment while running (temporary, not saved unless chosen).
 - [ ] **PB-09** Audition / preview: play a cue to a separate audition output without affecting show outputs or triggering follow-ons.
-- [ ] **PB-10** `v0.0.1` Global output overrides: independently disable MIDI, OSC/network, timecode output (for rehearsal/editing), with clear on-screen indication.
-- [ ] **PB-11** `v0.0.1` Per-patch main level and per-output level in the patch editor, within the workspace's output dB limits. *(Global master dropped 2026-10-29: QLab 5 has none.)*
+- [x] **PB-10** `v0.0.1` Global output overrides: independently disable MIDI, OSC/network, timecode output (for rehearsal/editing), with clear on-screen indication.
+- [x] **PB-11** `v0.0.1` Per-patch main level and per-output level in the patch editor, within the workspace's output dB limits. *(Global master dropped 2026-10-29: QLab 5 has none.)*
 - [x] **PB-12** `v0.0.1` Wall clock and per-show countdown/elapsed timers visible.
 
 ---
 
 ## 7. Audio Engine
-- [ ] **AUD-01** `v0.0.1` Device back-ends: CoreAudio (macOS); WASAPI and ASIO (Windows).
+- [x] **AUD-01** `v0.0.1` Device back-ends: CoreAudio (macOS); WASAPI and ASIO (Windows).
 - [ ] **AUD-02** Multiple simultaneous output devices (required — common in practice, but after v0.0.1); aggregate/device-sync guidance where clocks differ.
-- [ ] **AUD-03** `v0.0.1` Arbitrary channel counts (at least 64 outputs per device).
-- [ ] **AUD-04** `v0.0.1` File formats: WAV, AIFF, FLAC, MP3, AAC/M4A, OGG; 16/24/32-bit int and float; any common sample rate with high-quality resampling to the device rate.
-- [ ] **AUD-05** `v0.0.1` Stream from disk with read-ahead buffering; optional preload-to-RAM per cue for short or critical files.
-- [ ] **AUD-06** `v0.0.1` Routing matrix per cue: file channels → cue outputs → patch outputs, with crosspoint levels (dB) and mute.
-- [ ] **AUD-07** `v0.0.1` Output patches: named logical outputs mapped to device channels, with per-output level, mute and polarity (no per-output delay: QLab 5 has none).
-- [ ] **AUD-08** `v0.0.1` Cue master level, per-channel levels, ganging of channels.
-- [ ] **AUD-09** `v0.0.1` Fade curves: linear, equal-power, S-curve, logarithmic, exponential; custom curves.
-- [ ] **AUD-10** `v0.0.1` Integrated fade-in/fade-out inside an Audio cue.
-- [ ] **AUD-11** `v0.0.1` Start/end trim (in/out points).
-- [ ] **AUD-12** `v0.0.1` Slices and loops: mark slice points; each slice can loop N times or infinitely; Devamp support.
+- [x] **AUD-03** `v0.0.1` Arbitrary channel counts (at least 64 outputs per device).
+- [x] **AUD-04** `v0.0.1` File formats: WAV, AIFF, FLAC, MP3, AAC/M4A, OGG; 16/24/32-bit int and float; any common sample rate with high-quality resampling to the device rate.
+- [x] **AUD-05** `v0.0.1` Stream from disk with read-ahead buffering; optional preload-to-RAM per cue for short or critical files.
+- [x] **AUD-06** `v0.0.1` Routing matrix per cue: file channels → cue outputs → patch outputs, with crosspoint levels (dB) and mute.
+- [x] **AUD-07** `v0.0.1` Output patches: named logical outputs mapped to device channels, with per-output level, mute and polarity (no per-output delay: QLab 5 has none).
+- [x] **AUD-08** `v0.0.1` Cue master level, per-channel levels, ganging of channels.
+- [x] **AUD-09** `v0.0.1` Fade curves: linear, equal-power, S-curve, logarithmic, exponential; custom curves.
+- [x] **AUD-10** `v0.0.1` Integrated fade-in/fade-out inside an Audio cue.
+- [x] **AUD-11** `v0.0.1` Start/end trim (in/out points).
+- [x] **AUD-12** `v0.0.1` Slices and loops: mark slice points; each slice can loop N times or infinitely; Devamp support.
 - [ ] **AUD-13** Playback rate change, with optional pitch preservation.
-- [ ] **AUD-14** `v0.0.1` Waveform display with zoom; drag to set trims, fades, slice points.
+- [x] **AUD-14** `v0.0.1` Waveform display with zoom; drag to set trims, fades, slice points.
 - [ ] **AUD-15** Loudness analysis (LUFS/peak) and optional normalisation per cue (non-destructive).
 - [ ] **AUD-16** Built-in effects per cue and per output: parametric EQ, compressor/limiter, delay, reverb, high/low-pass.
 - ~~**AUD-17** Third-party plugin hosting: Audio Unit (macOS), VST3 (both). Plugins run in a way that a plugin crash cannot take down playback.~~ *(retired: not required)*
 - ~~**AUD-18** Output protection: optional brick-wall limiter per output.~~ *(retired: not required)*
-- [ ] **AUD-19** `v0.0.1` Metering: peak meters beside the faders in the cue's levels and trim tabs and in the patch editor, as QLab 5; none in the Active Cues panel or the cue list.
+- [x] **AUD-19** `v0.0.1` Metering: peak meters beside the faders in the cue's levels and trim tabs and in the patch editor, as QLab 5; none in the Active Cues panel or the cue list.
 - [ ] **AUD-20** Live input (Mic cues) with selectable input device/channels and low-latency monitoring.
-- [ ] **AUD-21** `v0.0.1` Configurable audio buffer size per machine (app preferences, Hardware). ~~Sample-rate chooser and latency readout~~ *(dropped 2026-10-29: QLab 5 has no equivalent; the rate comes from the device.)*
+- [ ] **AUD-21** `v0.0.2` Configurable audio buffer size per machine (app preferences, Hardware). ~~Sample-rate chooser and latency readout~~ *(dropped 2026-10-29: QLab 5 has no equivalent; the rate comes from the device.)*
 
 ---
 
@@ -200,19 +200,19 @@ Lighting is out of scope until further notice. Items kept for reference only.
 ---
 
 ## 10. Triggers & Inputs
-- [ ] **TRG-01** `v0.0.1` Keyboard hotkeys for GO, Stop All, Pause/Resume All, playhead navigation, and per-cue triggers; fully remappable; work regardless of which panel has focus (in Show Mode).
+- [x] **TRG-01** `v0.0.1` Keyboard hotkeys for GO, Stop All, Pause/Resume All, playhead navigation, and per-cue triggers; fully remappable; work regardless of which panel has focus (in Show Mode).
 - [ ] **TRG-02** MIDI input triggers: note, CC, program change, MSC; per-cue and global (GO/Stop via MIDI).
-- [ ] **TRG-03** `v0.0.1` OSC input triggers: per-cue and global.
+- [x] **TRG-03** `v0.0.1` OSC input triggers: per-cue and global.
 - [ ] **TRG-04** Timecode input (LTC via audio, MTC via MIDI) triggering cues at specific timecode values; chase/freewheel handling for dropouts.
 - [ ] **TRG-05** Wall-clock triggers (time of day, with day-of-week).
 - [ ] **TRG-06** Generic USB/HID controllers (foot pedals, Stream Deck via Companion) through MIDI/OSC/hotkey mapping.
-- [ ] **TRG-07** `v0.0.1` The key map includes QLab 5's cue-editing keys column: edit number, name, notes, target, cycle target type, pre-wait, action duration, post-wait, cycle continue mode, flag/unflag; plus Preview Selected as remappable; Esc and double-Esc shown read-only.
+- [ ] **TRG-07** `v0.0.2` The key map includes QLab 5's cue-editing keys column: edit number, name, notes, target, cycle target type, pre-wait, action duration, post-wait, cycle continue mode, flag/unflag; plus Preview Selected as remappable; Esc and double-Esc shown read-only.
 
 ---
 
 ## 11. Network, Remote & Integration
-- [ ] **NET-01** `v0.0.1` OSC API for full control and query (GO, stop, playhead, cue properties, state), documented. Address space compatible with QLab 5's OSC dictionary so existing remotes, Stream Deck/Companion setups and scripts work unchanged where the feature exists.
-- [ ] **NET-02** `v0.0.1` OSC passcode / access control for the API.
+- [x] **NET-01** `v0.0.1` OSC API for full control and query (GO, stop, playhead, cue properties, state), documented. Address space compatible with QLab 5's OSC dictionary so existing remotes, Stream Deck/Companion setups and scripts work unchanged where the feature exists.
+- [x] **NET-02** `v0.0.1` OSC passcode / access control for the API.
 - [ ] **NET-03** Web-based remote (phone/tablet browser) served by openLab: GO, Stop, playhead, active cues, notes. No app install required.
 - [ ] **NET-04** `low` Bitfocus Companion module.
 - [x] **NET-05** `v0.0.1` Status feedback over OSC (playhead changes, cue starts/stops) for external displays.
@@ -234,80 +234,80 @@ Lighting is out of scope until further notice. Items kept for reference only.
 ---
 
 ## 14. Editing & Workflow
-- [ ] **ED-01** `v0.0.1` Inspector panel for the selected cue(s), with tabs per concern (basics, triggers, time & loops, audio levels, effects, etc.).
-- [ ] **ED-02** `v0.0.1` Drag-and-drop media files from Finder/Explorer to create cues (one per file; multi-file drop creates multiple cues or a group).
-- [ ] **ED-03** `v0.0.1` Drag to reorder cues, move into/out of groups, drop onto a cue to set its target.
-- [ ] **ED-04** `v0.0.1` Multi-select with batch editing of shared properties.
-- [ ] **ED-05** `v0.0.1` Cut / copy / paste / duplicate cues, including across workspaces.
+- [x] **ED-01** `v0.0.1` Inspector panel for the selected cue(s), with tabs per concern (basics, triggers, time & loops, audio levels, effects, etc.).
+- [x] **ED-02** `v0.0.1` Drag-and-drop media files from Finder/Explorer to create cues (one per file; multi-file drop creates multiple cues or a group).
+- [x] **ED-03** `v0.0.1` Drag to reorder cues, move into/out of groups, drop onto a cue to set its target.
+- [x] **ED-04** `v0.0.1` Multi-select with batch editing of shared properties.
+- [x] **ED-05** `v0.0.1` Cut / copy / paste / duplicate cues, including across workspaces.
 - [ ] **ED-06** Paste properties (selectively) from one cue to others.
-- [ ] **ED-07** `v0.0.1` Unlimited undo/redo covering every edit, including routing and settings.
-- [ ] **ED-08** `v0.0.1` Auto-numbering on cue creation (configurable start/increment) and bulk renumber.
-- [ ] **ED-09** `v0.0.1` Find bar (by name, number, notes, type, file): found count, previous/next, select found. ~~Find-and-replace~~ *(dropped 2026-10-29: QLab 5 has none.)*
+- [x] **ED-07** `v0.0.1` Unlimited undo/redo covering every edit, including routing and settings.
+- [x] **ED-08** `v0.0.1` Auto-numbering on cue creation (configurable start/increment) and bulk renumber.
+- [x] **ED-09** `v0.0.1` Find bar (by name, number, notes, type, file): found count, previous/next, select found. ~~Find-and-replace~~ *(dropped 2026-10-29: QLab 5 has none.)*
 - ~~**ED-10** Create fade/stop cues for selected cue in one action ("fade this out").~~ *(dropped 2026-10-29: QLab 5 has no built-in command; the Cues menu only creates an empty Fade cue.)*
 - [ ] **ED-11** Timeline view for group cues showing child timing graphically, with drag editing.
-- [ ] **ED-12** `v0.0.1` Fully keyboard-operable editing (create cue types, navigate, edit fields).
-- [ ] **ED-13** `v0.0.1` Cue colours and flags (set per cue and per selection). ~~Filter/highlight by colour/flag/state~~ *(dropped 2026-10-29: QLab 5 has none; Find covers lookup.)*
-- [ ] **ED-14** `v0.0.1` Transport actions live where QLab 5 puts them, with no openLab Transport menu: sidebar top row (Reset/Pause/Resume/Panic All), cue right-click menu (Load, Preview, Panic, Move playhead), View menu (playhead moves, select/move to cue).
+- [x] **ED-12** `v0.0.1` Fully keyboard-operable editing (create cue types, navigate, edit fields).
+- [x] **ED-13** `v0.0.1` Cue colours and flags (set per cue and per selection). ~~Filter/highlight by colour/flag/state~~ *(dropped 2026-10-29: QLab 5 has none; Find covers lookup.)*
+- [x] **ED-14** `v0.0.1` Transport actions live where QLab 5 puts them, with no openLab Transport menu: sidebar top row (Reset/Pause/Resume/Panic All), cue right-click menu (Load, Preview, Panic, Move playhead), View menu (playhead moves, select/move to cue).
 
 ---
 
 ## 15. Show Mode & Operator Safety
-- [ ] **SM-01** `v0.0.1` Edit Mode vs Show Mode. Show Mode hides the cue-type toolbar and the inspector (as QLab 5), enlarges the GO button and standby display, and disables destructive actions.
+- [x] **SM-01** `v0.0.1` Edit Mode vs Show Mode. Show Mode hides the cue-type toolbar and the inspector (as QLab 5), enlarges the GO button and standby display, and disables destructive actions.
 - ~~**SM-02** Optional password to leave Show Mode.~~ *(retired: not required)*
-- [ ] **SM-03** `v0.0.1` Large, high-contrast standby/GO display usable at a distance in a dark booth.
-- [ ] **SM-04** `v0.0.1` Dark UI by default; brightness-appropriate for blacked-out booths.
-- [ ] **SM-05** `v0.0.1` Accidental-quit protection: confirm quit while cues are running or Show Mode is active.
-- [ ] **SM-06** `v0.0.1` Pre-show check: one action lists all broken cues, missing media, missing devices and unreachable targets.
-- [ ] **SM-07** `v0.0.1` Prevent system sleep, screen saver and display sleep while a workspace is open in Show Mode.
+- [x] **SM-03** `v0.0.1` Large, high-contrast standby/GO display usable at a distance in a dark booth.
+- [x] **SM-04** `v0.0.1` Dark UI by default; brightness-appropriate for blacked-out booths.
+- [x] **SM-05** `v0.0.1` Accidental-quit protection: confirm quit while cues are running or Show Mode is active.
+- [x] **SM-06** `v0.0.1` Pre-show check: one action lists all broken cues, missing media, missing devices and unreachable targets.
+- [x] **SM-07** `v0.0.1` Prevent system sleep, screen saver and display sleep while a workspace is open in Show Mode.
 
 ---
 
 ## 16. Diagnostics & Logging
-- [ ] **DX-01** `v0.0.1` Warnings listing every broken cue and system problem, click-through to the cue: a footer popover plus the status window (as QLab 5); no sidebar Warnings tab.
-- [ ] **DX-02** `v0.0.1` Show log: timestamped record of every GO, cue start/stop, trigger received, error — viewable in-app and written to disk.
+- [x] **DX-01** `v0.0.1` Warnings listing every broken cue and system problem, click-through to the cue: a footer popover plus the status window (as QLab 5); no sidebar Warnings tab.
+- [x] **DX-02** `v0.0.1` Show log: timestamped record of every GO, cue start/stop, trigger received, error — viewable in-app and written to disk.
 - [x] **DX-03** `v0.0.1` System status: CPU, audio engine load, disk read health, xrun count, device status.
-- [ ] **DX-04** `v0.0.1` Crash reports captured locally (with workspace path and last log lines); sending is opt-in.
+- [x] **DX-04** `v0.0.1` Crash reports captured locally (with workspace path and last log lines); sending is opt-in.
 - [ ] **DX-05** Diagnostic bundle export (logs, settings, system info) for bug reports.
 
 ---
 
 ## 17. Preferences & UI
-- [ ] **UI-01** `v0.0.1` Settings split as in QLab 5. Application preferences (per machine): launch behaviour, autosave interval, audio devices and buffer size, MIDI devices. Workspace settings (travel with the show file, WS-06): GO protection, Panic time, backups, output patches and dB limits, hotkeys. ~~Theme~~ *(dropped 2026-10-29: QLab 5 has no theme control.)*
-- [ ] **UI-02** `v0.0.1` Resizable, dockable panels; layouts saved per machine.
-- [ ] **UI-03** `v0.0.1` UI scaling / font size for small laptop screens and high-DPI displays.
-- [ ] **UI-04** `v0.0.1` Cue state is never conveyed by colour alone (icon/shape too) — colour-blind safe. A cue colour is a row highlight only, as in QLab; it is not a state.
+- [x] **UI-01** `v0.0.1` Settings split as in QLab 5. Application preferences (per machine): launch behaviour, autosave interval, audio devices and buffer size, MIDI devices. Workspace settings (travel with the show file, WS-06): GO protection, Panic time, backups, output patches and dB limits, hotkeys. ~~Theme~~ *(dropped 2026-10-29: QLab 5 has no theme control.)*
+- [x] **UI-02** `v0.0.1` Resizable, dockable panels; layouts saved per machine.
+- [ ] **UI-03** `v0.0.2` UI scaling / font size for small laptop screens and high-DPI displays.
+- [x] **UI-04** `v0.0.1` Cue state is never conveyed by colour alone (icon/shape too) — colour-blind safe. A cue colour is a row highlight only, as in QLab; it is not a state.
 - [ ] **UI-05** Basic screen-reader support (VoiceOver / Narrator) for core list and transport controls.
-- [ ] **UI-06** `v0.0.1` UI text externalised for future localisation.
-- [ ] **UI-07** `v0.0.1` Layout, workflow, terminology and keyboard shortcuts closely follow QLab 5 so existing QLab users can switch with minimal retraining (main window: toolbar + GO/standby area, cue list, inspector tabs at the bottom, sidebar for lists/carts/active cues).
-- [ ] **UI-08** `v0.0.1` All visual assets are original: no QLab icons, logos, artwork, screenshots, colour branding, product names or copied documentation text.
+- [x] **UI-06** `v0.0.1` UI text externalised for future localisation.
+- [x] **UI-07** `v0.0.1` Layout, workflow, terminology and keyboard shortcuts closely follow QLab 5 so existing QLab users can switch with minimal retraining (main window: toolbar + GO/standby area, cue list, inspector tabs at the bottom, sidebar for lists/carts/active cues).
+- [x] **UI-08** `v0.0.1` All visual assets are original: no QLab icons, logos, artwork, screenshots, colour branding, product names or copied documentation text.
 
 ---
 
 ## 18. Distribution & Updates
-- [ ] **DST-01** `v0.0.1` macOS: `.dmg` (ad-hoc signed until an Apple Developer account exists; signed + notarised later); Windows: signed installer and a portable zip.
+- [x] **DST-01** `v0.0.1` macOS: `.dmg` (ad-hoc signed until an Apple Developer account exists; signed + notarised later); Windows: signed installer and a portable zip.
 - [ ] **DST-02** `v0.0.2` Update check is opt-in, manual or on launch only, never during Show Mode; no silent auto-install.
-- [ ] **DST-03** `v0.0.1` Versioned releases with changelog; side-by-side install of multiple versions possible (so a show can stay pinned to a known-good version).
+- [x] **DST-03** `v0.0.1` Versioned releases with changelog; side-by-side install of multiple versions possible (so a show can stay pinned to a known-good version).
 
 ---
 
 ## 19. Quality Assurance (process requirements)
-- [ ] **QA-01** `v0.0.1` Unit tests for all engine logic (cue state machine, scheduling, continue modes, groups, fades, routing math, file format).
-- [ ] **QA-02** `v0.0.1` Scheduler and engine testable against a virtual clock — deterministic, no real-time sleeps in tests.
-- [ ] **QA-03** `v0.0.1` Offline render tests: run cue sequences headlessly, render audio to buffers, assert on sample-level output (timing, levels, fades).
+- [x] **QA-01** `v0.0.1` Unit tests for all engine logic (cue state machine, scheduling, continue modes, groups, fades, routing math, file format).
+- [x] **QA-02** `v0.0.1` Scheduler and engine testable against a virtual clock — deterministic, no real-time sleeps in tests.
+- [x] **QA-03** `v0.0.1` Offline render tests: run cue sequences headlessly, render audio to buffers, assert on sample-level output (timing, levels, fades).
 - [x] **QA-04** `v0.0.1` Fuzz testing of workspace loader, media decoders, OSC and MIDI parsers. (v0.0.1: loader, decoders, OSC and the protocol are fuzzed in CI; there is no MIDI input in v0.0.1 — TRG-02 is untagged — so the MIDI parser gets its fuzz target when it exists.)
-- [ ] **QA-05** `v0.0.1` Soak tests (24 h continuous random cue playback) with memory/CPU/drift checks.
-- [ ] **QA-06** `v0.0.1` Performance benchmarks with regression gates in CI.
-- [ ] **QA-07** `v0.0.1` CI on macOS (Intel + Apple Silicon) and Windows for every commit; tests must pass to merge.
+- [x] **QA-05** `v0.0.1` Soak tests (24 h continuous random cue playback) with memory/CPU/drift checks.
+- [x] **QA-06** `v0.0.1` Performance benchmarks with regression gates in CI.
+- [x] **QA-07** `v0.0.1` CI on macOS (Intel + Apple Silicon) and Windows for every commit; tests must pass to merge.
 - [ ] **QA-08** Before 1.0 deployment: manual run on minimum-spec hardware (2014 Mac mini / Monterey). Not available during development, so until then the macOS 12 deployment target, Intel (x86_64) CI runs and CPU budgets in performance tests stand in for it.
-- [ ] **QA-09** `v0.0.1` Sanitizer builds (address, thread, undefined-behaviour) run in CI where the toolchain supports them.
+- [x] **QA-09** `v0.0.1` Sanitizer builds (address, thread, undefined-behaviour) run in CI where the toolchain supports them.
 
 ---
 
 ## 20. Documentation
-- [ ] **DOC-01** `v0.0.1` User manual (getting started, every cue type, show-day checklist).
+- [x] **DOC-01** `v0.0.1` User manual (getting started, every cue type, show-day checklist).
 - [ ] **DOC-02** `v0.0.2` OSC API reference, written for end users.
 - [x] **DOC-03** `v0.0.1` Workspace file format specification.
-- [ ] **DOC-04** `v0.0.1` Contributor guide (build, architecture, testing rules).
+- [x] **DOC-04** `v0.0.1` Contributor guide (build, architecture, testing rules).
 
 ---
 
@@ -333,6 +333,12 @@ Where a tagged requirement is only partly in v0.0.1, the limit is:
 - **UI-02** fixed QLab-like layout; docking later.
 - **DST-01** macOS `.dmg` only.
 - **DOC-01** getting-started guide only.
+- **NFR-08 / NFR-23 / NFR-25** stay unticked until the manual hardware runs are recorded (device unplug and replug; the minimum-spec figures on the 2014 Mac mini). CI's device-loss tests and performance gates stand in until then.
+- **NFR-05 / NFR-06 / UI-01** autosave runs at a fixed 30 s interval; the number of backups kept is `backup_keep` in the per-machine `settings.json` (default 20). There is no preferences pane for either (issue cut, user decision 2026-11-08). Workspace Settings has General, Audio and OSC.
+- **TRG-01 / ED-12** the default keys work and a show's key map is read from its settings; there is no key-map editor, and the cue-editing keys are N, Q and T only (issue cut 2026-11-08; the editor and the rest of the column are TRG-07, v0.0.2).
+- **ED-14** the sidebar row, the cue menu and the View menu hold the transport actions as QLab 5 does; openLab's own Transport menu also stays in v0.0.1 (issue cut 2026-11-08).
+- **DX-01** warnings show in the footer popover and the Pre-Show Check; the sidebar's Warnings tab also stays in v0.0.1 (issue cut 2026-11-08).
+- **CL-07 / TRG-07 / UI-03 / AUD-21** moved to v0.0.2 (issue cut, user decision 2026-11-08): a cue list in a second window, the key-map editor with the cue-editing keys column, the row-size setting, and a configurable audio buffer size (v0.0.1 asks the device for 256 frames).
 - **DOC-02** moved to v0.0.2 (user decision 2026-11-11): the end-user OSC reference, and with it the "documented" part of NET-01.
 - **DST-02** moved to v0.0.2 (user decision 2026-10-28): no update check in v0.0.1.
 

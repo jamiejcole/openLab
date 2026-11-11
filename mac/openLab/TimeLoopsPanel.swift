@@ -278,6 +278,9 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         left.alignment = .leading
         left.spacing = 8
         left.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        // As tall as its rows and no taller: stretched to the panel's height it has spare room to put
+        // anywhere, and the layout then sometimes put the rows above the inspector.
+        left.setHuggingPriority(.defaultHigh, for: .vertical)
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         let strip = NSStackView(views: [
