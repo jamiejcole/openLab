@@ -808,6 +808,16 @@ final class TimeLoopsTests: XCTestCase {
         let top = panel.startField.convert(panel.startField.bounds, to: vc.view).maxY
         let waveTop = wave.convert(wave.bounds, to: vc.view).maxY
         XCTAssertEqual(top, waveTop, accuracy: 12, "Start is level with the top of the waveform")
+        // One place for the column, not several the layout may pick between: with more than one, Start
+        // was now and then laid out above the inspector after a resize. With the note, and without it.
+        let column = try XCTUnwrap(panel.startField.superview?.superview)
+        XCTAssertFalse(column.hasAmbiguousLayout, "the left column has one layout with the slices note")
+        panel.deleteSlicesButton.performClick(nil)
+        await assertEventually { self.panel.slicesNote.isHidden }
+        vc.view.layoutSubtreeIfNeeded()
+        XCTAssertFalse(column.hasAmbiguousLayout, "the left column has one layout without the note")
+        let frame = panel.startField.convert(panel.startField.bounds, to: vc.view)
+        XCTAssertTrue(vc.view.bounds.contains(frame), "Start at \(frame) is inside \(vc.view.bounds)")
     }
 
     /// With the view at the file's start and end the two trim handles sit on the waveform's edges
