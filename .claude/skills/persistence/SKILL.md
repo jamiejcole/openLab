@@ -37,7 +37,7 @@ The show-file JSON schema and the stored media-path spelling are in `docs/file-f
 1. `save_show` serialises and checks the text loads back; failure is `PersistError::Serialize` and nothing is written.
 2. If the file exists and `keep > 0`, its current bytes go to the backup folder. A failed backup is a warning in `SaveReport`, not a failed save.
 3. New text goes to `<name>.<pid>-<n>.tmp` beside the show file: unique per write, opened with `create_new` (never follows a symlink or overwrites another file), fsynced, renamed over the original, then the folder is fsynced (Unix, best effort). Any error before the rename removes the temp file, leaves the original and removes the step-2 backup again.
-4. Backups beyond `keep` are deleted; recovery files for this workspace and show path (and the pre-first-save one) and their moved-aside stale files are removed, only now.
+4. Backups beyond `keep` are deleted; the current recovery files this run wrote for this workspace and show path (and the pre-first-save one) are removed, only now. Files moved aside as stale stay: an earlier run wrote them and they may hold later work than the saved file.
 5. Save As: the recovery file at the path the workspace was saved away from is removed too, only if this engine run wrote it. One already there at open and kept with `ignore` holds edits that are nowhere else and is never touched. A path another open workspace holds, saves to, or has an `open` reading is skipped and looked at again after the next save or autosave.
 Removal waits until the new path holds every edit: at once if no edit was made while the save was written, else after the next successful save or autosave there (`Control::clear_left_autosaves`).
 
@@ -58,14 +58,14 @@ Details of the replace:
 - `keep` is `MachineSettings::backup_keep` (default 20, at most 1000). 0 turns backups off and leaves existing ones alone.
 
 ## Autosave and recovery (NFR-05)
-- `write_recovery` writes the bound recovery file atomically and never touches the show file. `clear_recovery` removes it and the files moved aside from it after a save. `discard_recovery` removes only the current file (`close` with `discard_changes`).
+- `write_recovery` writes the bound recovery file atomically and never touches the show file. `discard_recovery` removes only the current file, never the files moved aside: after a save, after a Save As (at the path left) and on `close` with `discard_changes`.
 - `check_recovery(dirs, workspace_id, show_path)` compares file modification times with `decide_recovery`:
 
 | Situation | Result |
 |---|---|
 | No recovery file for this show path | `None` |
 | Recovery newer than the show file, or the show file missing | `Offer`, carrying the parsed workspace |
-| Recovery not newer (equal counts as not newer) | `Stale`: moved aside to `<stem>.<modified-ms>.stale.openlab`, newest 5 kept, never deleted. A successful save of the workspace deletes them |
+| Recovery not newer (equal counts as not newer) | `Stale`: moved aside to `<stem>.<modified-ms>.stale.openlab`, pruned to the newest 5, otherwise kept until the operator deletes one (`discard_recovery`) or restores one and saves (a save leaves them) |
 | Unreadable, invalid, or for another workspace | `Unusable { warning }`; renamed `.corrupt` (`.corrupt.1`, ... if one exists) so the warning is not repeated and earlier evidence is kept |
 
 - `other_copies`: recovery files with the same workspace id but another show path (a duplicated show, or work from before the first save). Never offered to this file, never touched; reported as a `recovery_other_copies` notice at open.
@@ -82,6 +82,7 @@ Details of the replace:
 - Names are parsed strictly (lower-case hyphenated UUID, optional `-` and 16 lower-case hex digits; `parse_recovery_file_name` / `parse_store_name`). Anything else is skipped with a warning.
 - Bounds: at most `max_entries` returned (`MAX_RECOVERY_ENTRIES` default); newest by mtime among the first 5000 directory entries (more is `truncated`); no recursion; a file over `MAX_NAME_READ_BYTES` (4 MiB) is listed without a name instead of being parsed.
 - It parses files, so it runs on the document worker, never the control thread. `open_recovery` opens one entry, dirty.
+- `discard_recovery` (same selector, same worker and one-read gate) deletes exactly that file: `not_found` for no match, `command_refused` for the current autosave of an open doc, `io` when the removal fails. A doc restored from a set-aside file (`Loaded.restored_from`) removes that file through the writer after its first successful save or Save As; a restore that is never saved leaves it.
 - An autosave names its show file: `core::save_recovery` writes a top-level `show_path` (UTF-8 paths only; a recovery file's name holds only a hash of the path, and a show file never has the key).
 - `open_recovery` binds to that file, as `open` with `restore`, so relative media resolves, Save goes to the file and the app reopens it next launch, only when all hold: it is the current autosave, not one set aside; `decide_recovery` says it is newer than the file; `show_path` is absolute, at most 4096 bytes, and hashes to the hash in the file's name; the file reads, loads and holds the entry's workspace id; no other doc holds it.
 - Otherwise it is **untitled**: a save chooses a path, the autosave stays until then, and a Save As clears the never-saved autosave of the workspace id. When it named a file that could not be used, a `recovery_untitled` notice says why. A file that does not answer holds up the whole request, as an `open` would (`io`, past the read timeout).

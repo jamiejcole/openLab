@@ -441,7 +441,8 @@ extension ClientMessage {
             switch r {
             // A first waveform reads the whole file on the engine's waveform reader, which fails it
             // itself after its timeout.
-            case .new, .open, .openRecovery, .scanRecovery, .save, .saveAs, .relink, .waveform: return false
+            case .new, .open, .openRecovery, .scanRecovery, .discardRecovery, .save, .saveAs, .relink, .waveform:
+                return false
             case .listDevices, .setOutputDevice, .listPatchMappings, .preshowCheck, .logTail, .setOutputOverrides,
                 .setShowMode, .setPatchMapping,
                 .snapshot:

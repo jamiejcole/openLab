@@ -9,7 +9,7 @@ The disk may be slow or hung while autosave keeps firing, so the queue is bounde
 - At most `MAX_PENDING_TARGETS` targets wait in the normal queue. A new target beyond that moves the oldest waiting autosave to a write-through queue that runs first, so the cap itself never costs an autosave. That queue still coalesces per target and is capped at `MAX_FORCED_TARGETS`, because during a long disk hang closed workspaces and Save As paths add targets beyond the open ones (at most 8 docs).
   When full, the oldest forced autosave is shed (`Ok(None)`, counted by `shed_autosaves()`). A later autosave of a still-open workspace replaces it anyway.
 - Manual saves run before pending autosaves. An autosave whose revision is not newer than the last durably saved one of its workspace is dropped (`Ok(None)`), so saved state never gets a recovery file.
-- `clear_recovery(workspace, show_path)` runs after any job in flight that writes that recovery file, removes that target's file, and cancels only that target's pending autosave.
+- `discard_recovery(workspace, show_path)` runs after any job in flight that writes that recovery file, removes that target's current file (never the moved-aside ones), and cancels only that target's pending autosave.
 - Dropping the writer finishes running jobs and pending manual saves and **discards pending autosaves**.
 
 ## Two threads never write the same file

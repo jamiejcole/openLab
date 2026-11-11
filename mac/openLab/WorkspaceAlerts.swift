@@ -35,10 +35,15 @@ protocol WorkspaceAlerts {
     func showInfo(_ message: String)
     /// `open` found an autosave newer than the show file (NFR-05). nil: Cancel, nothing opens.
     func recoveryOffer(workspace: String, modifiedMs: Int64) -> RecoveryChoice?
-    /// After an unclean engine exit: open this autosave as an untitled workspace? True: open it.
-    /// `setAside`: the engine set it aside as not newer than its show file (it may still be).
-    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> Bool
+    /// After an unclean engine exit: open this autosave as an untitled workspace? `setAside`: the
+    /// engine set it aside as not newer than its show file (it may still be); only then can the
+    /// operator choose `delete`.
+    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> AutosaveChoice
+    /// Delete is final: True when the operator confirms it.
+    func confirmDeleteAutosave(name: String) -> Bool
 }
+
+enum AutosaveChoice: Equatable { case restore, skip, delete }
 
 /// The real thing. Cancel is the default (Return) button on the destructive prompts: a stray
 /// keypress during a show must not close a playing workspace.
@@ -106,14 +111,29 @@ struct AppKitAlerts: WorkspaceAlerts {
         }
     }
 
-    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> Bool {
+    func confirmDeleteAutosave(name: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = String(format: loc("alert.autosaveDelete.title"), name)
+        alert.informativeText = loc("alert.autosaveDelete.message")
+        alert.alertStyle = .warning
+        // Cancel first: a stray Return must not delete work.
+        for key in ["alert.cancel", "alert.autosaveDelete.delete"] { alert.addButton(withTitle: loc(key)) }
+        return alert.runModal() == .alertSecondButtonReturn
+    }
+
+    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> AutosaveChoice {
         let alert = NSAlert()
         alert.messageText = String(format: loc("alert.autosave.title"), name)
         alert.informativeText = String(
             format: loc(setAside ? "alert.autosave.setAsideMessage" : "alert.autosave.message"),
             modifiedMs.map(Self.date) ?? "?")
         for key in ["alert.autosave.open", "alert.autosave.skip"] { alert.addButton(withTitle: loc(key)) }
-        return alert.runModal() == .alertFirstButtonReturn
+        if setAside { alert.addButton(withTitle: loc("alert.autosave.delete")) }
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .restore
+        case .alertThirdButtonReturn: return .delete
+        default: return .skip
+        }
     }
 
     private static func date(_ ms: Int64) -> String {
@@ -157,7 +177,8 @@ struct ShowModeGatedAlerts: WorkspaceAlerts {
     func recoveryOffer(workspace: String, modifiedMs: Int64) -> RecoveryChoice? {
         base.recoveryOffer(workspace: workspace, modifiedMs: modifiedMs)
     }
-    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> Bool {
+    func offerAutosave(name: String, modifiedMs: Int64?, setAside: Bool) -> AutosaveChoice {
         base.offerAutosave(name: name, modifiedMs: modifiedMs, setAside: setAside)
     }
+    func confirmDeleteAutosave(name: String) -> Bool { base.confirmDeleteAutosave(name: name) }
 }

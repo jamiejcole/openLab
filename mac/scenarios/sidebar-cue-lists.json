@@ -1,0 +1,12 @@
+{
+  "about": "The sidebar's Cue Lists tab: the show's one list as a named row, then a second list added with New List as its own named row.",
+  "show": "Demo",
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"shot": "one-list"},
+    {"click": "new-list-button"},
+    {"advance": 0.2},
+    {"shot": "two-lists"}
+  ]
+}

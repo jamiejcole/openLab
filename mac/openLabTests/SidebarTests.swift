@@ -208,6 +208,31 @@ final class SidebarTests: XCTestCase {
         XCTAssertFalse(WireCueState.idle.isActive || WireCueState.loaded.isActive || WireCueState.broken.isActive)
     }
 
+    /// The names the Cue Lists table draws, one per row (not what the controller holds).
+    private func drawnListNames(_ side: SidebarViewController) -> [String] {
+        side.view.layoutSubtreeIfNeeded()
+        return (0..<side.listTable.numberOfRows).map { row in
+            let cell = side.listTable.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView
+            return cell?.textField?.stringValue ?? "(no cell)"
+        }
+    }
+
+    /// The Cue Lists tab draws a row with each list's name: the one list of a show, then a second added
+    /// with New List as its own named row.
+    func testEachCueListIsDrawnAsARowWithItsName() async throws {
+        let wired = try await Rig.open()
+        side = SidebarViewController(store: wired.store, activeTable: spy)
+        side.view.frame = NSRect(x: 0, y: 0, width: 280, height: 600)
+        XCTAssertEqual(drawnListNames(side), ["Main"])
+        side.newListButton.performClick(nil)
+        await assertEventually { self.drawnListNames(self.side) == ["Main", "Cue List 2"] }
+        let cell = try XCTUnwrap(side.listTable.view(atColumn: 0, row: 1, makeIfNecessary: true) as? NSTableCellView)
+        let name = try XCTUnwrap(cell.textField)
+        cell.layoutSubtreeIfNeeded()
+        XCTAssertTrue(cell.bounds.contains(name.frame), "the name at \(name.frame) is inside its row")
+        XCTAssertGreaterThan(name.frame.width, 40)
+    }
+
     /// CL-01: New List asks the engine for an empty list after the last one and shows it once the
     /// engine has accepted; New Cart stays off (CL-05).
     func testNewListAddsAnEmptyListAtTheEndAndShowsIt() async throws {

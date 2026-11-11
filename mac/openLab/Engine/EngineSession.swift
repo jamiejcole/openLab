@@ -138,6 +138,13 @@ final class EngineSession: ObservableObject, EngineClientDelegate {
         }
     }
 
+    /// Deletes one autosave file the engine listed; it cannot be undone.
+    func discardRecovery(_ entry: RecoveryEntryInfo) async -> Result<Void, EngineError> {
+        let result = await docRequest(
+            .discardRecovery(workspaceId: entry.workspaceId, pathHash: entry.pathHash, modifiedMs: entry.modifiedMs))
+        return result.map { _ in () }
+    }
+
     func scanRecovery() async -> Result<[RecoveryEntryInfo], EngineError> {
         switch await docRequest(.scanRecovery) {
         case .success(let ok):

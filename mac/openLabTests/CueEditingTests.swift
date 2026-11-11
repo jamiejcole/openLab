@@ -153,6 +153,21 @@ final class CueEditingTests: XCTestCase {
         XCTAssertTrue(log.notices.isEmpty)
     }
 
+    /// A new cue of every kind is accepted by the engine: it appears in the list as that kind, selected,
+    /// and nothing is refused (a kind missing a field the engine requires adds no cue).
+    func testANewCueOfEveryKindAppearsInTheListAndIsSelected() async throws {
+        let (h, editor, log) = try await harness()
+        for kind in NewCueKind.allCases {
+            h.vc.select([H.intro])
+            let added = await editor.add(kind)
+            let new = try XCTUnwrap(added, "\(kind): \(log.notices)")
+            await assertEventually("\(kind) selected") { h.vc.selectedIDs() == [new] }
+            XCTAssertEqual(h.vc.node(new)?.cue.kindType, kind.wireType, "\(kind)")
+            XCTAssertNotNil(h.cell("number", new), "\(kind) has a row")
+        }
+        XCTAssertTrue(log.notices.isEmpty, "\(log.notices)")
+    }
+
     func testAddWithAGroupSelectedPutsTheCueInsideItLast() async throws {
         let (h, editor, _) = try await harness()
         h.vc.select([H.group])

@@ -275,7 +275,7 @@ fn clear_for_one_target_leaves_another_targets_pending_and_in_flight_autosaves()
     assert_eq!(gate.started.recv().unwrap(), JobKind::Autosave);
     let ra = gate.writer.autosave(a.clone(), pa.clone(), 2);
     let rc = gate.writer.autosave(c.clone(), pc.clone(), 2);
-    let clear = gate.writer.clear_recovery(a.id, pa.clone());
+    let clear = gate.writer.discard_recovery(a.id, pa.clone());
     assert!(matches!(ra.try_recv().unwrap(), Ok(None)));
     for _ in 0..2 {
         gate.release.send(()).unwrap();
@@ -295,7 +295,7 @@ fn clear_runs_after_the_in_flight_write_of_its_own_target() {
     let (a, pa) = target(&env, 1);
     let ra = gate.writer.autosave(a.clone(), pa.clone(), 2);
     assert_eq!(gate.started.recv().unwrap(), JobKind::Autosave);
-    let clear = gate.writer.clear_recovery(a.id, pa.clone());
+    let clear = gate.writer.discard_recovery(a.id, pa.clone());
     // The in-flight write is not cancelled; it finishes and is then removed.
     gate.release.send(()).unwrap();
     assert!(ra.recv().unwrap().unwrap().is_some());
@@ -393,7 +393,7 @@ fn clearing_a_write_through_target_cancels_its_write() {
     let n = MAX_PENDING_TARGETS as u64 + 3;
     let (first, answers) = overflowed(&env, &gate, n);
     let (w, p) = target(&env, 2);
-    let clear = gate.writer.clear_recovery(w.id, p.clone());
+    let clear = gate.writer.discard_recovery(w.id, p.clone());
     assert!(matches!(answers[1].try_recv().unwrap(), Ok(None)));
     gate.release.send(()).unwrap();
     first.recv().unwrap().unwrap();

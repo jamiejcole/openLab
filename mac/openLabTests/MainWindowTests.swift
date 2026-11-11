@@ -146,6 +146,49 @@ final class MainWindowTests: XCTestCase {
         XCTAssertTrue(outline.usesAlternatingRowBackgroundColors)
     }
 
+    /// In a narrow window the Name column is the one that gives up width: the Pre-Wait, Duration and
+    /// Post-Wait columns keep their widths and are drawn whole inside the list. Widened again, the time
+    /// columns are unchanged and the Name column takes the room back.
+    func testTheNameColumnGivesUpWidthInANarrowWindowAndTheTimesStayWhole() throws {
+        let wc = try controller()
+        let window = try XCTUnwrap(wc.window)
+        window.orderFront(nil)
+        defer { window.close() }
+        let outline = wc.cueList.outlineView
+        func column(_ id: String) throws -> NSTableColumn {
+            try XCTUnwrap(outline.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(id)))
+        }
+        func size(_ width: CGFloat) {
+            window.setFrame(NSRect(x: 0, y: 0, width: width, height: 640), display: true)
+            window.contentView?.layoutSubtreeIfNeeded()
+        }
+        let times = ["preWait", "duration", "postWait"]
+        let widths = Dictionary(uniqueKeysWithValues: CueListViewController.columns.map { ($0.id, $0.width) })
+        // Scroll bars always shown (a system setting) take the most room from the list.
+        outline.enclosingScrollView?.scrollerStyle = .legacy
+        // A window that opens at its narrowest: fitted before any resize.
+        size(window.minSize.width)
+        let last = outline.rect(ofColumn: outline.numberOfColumns - 1)
+        let shown = try XCTUnwrap(outline.enclosingScrollView).contentView.bounds
+        XCTAssertLessThanOrEqual(last.maxX, shown.maxX, "every column is inside a window that opens narrow")
+        size(1200)
+        let wideName = try column("name").width
+        size(window.minSize.width)
+        XCTAssertEqual(window.frame.width, window.minSize.width, "the narrowest window")
+        let visible = try XCTUnwrap(outline.enclosingScrollView).contentView.bounds
+        for id in times {
+            XCTAssertEqual(try column(id).width, try XCTUnwrap(widths[id]), "\(id) keeps its width")
+            let header = outline.rect(ofColumn: outline.column(withIdentifier: NSUserInterfaceItemIdentifier(id)))
+            XCTAssertGreaterThanOrEqual(header.minX, visible.minX, "\(id) starts inside the list")
+            XCTAssertLessThanOrEqual(header.maxX, visible.maxX, "\(id) ends inside the list, not cut off")
+        }
+        XCTAssertLessThan(try column("name").width, wideName, "the Name column gave up the width")
+        XCTAssertGreaterThanOrEqual(try column("name").width, CueListViewController.nameMinWidth)
+        size(1200)
+        for id in times { XCTAssertEqual(try column(id).width, try XCTUnwrap(widths[id]), "\(id) after widening") }
+        XCTAssertEqual(try column("name").width, wideName, accuracy: 1, "the Name column took the room back")
+    }
+
     func testSidebarHiddenByDefault() throws {
         let wc = try controller()
         XCTAssertFalse(wc.isVisible(.sidebar))
@@ -770,6 +813,37 @@ final class MainWindowTests: XCTestCase {
             MastheadMetrics.make(showMode: true, window: wc.window?.contentView?.bounds.size ?? .zero).standbyFontSize)
     }
 
+    /// A cue with a 120-character name standing by: the window keeps its width and the name is cut short
+    /// inside the masthead, in Show Mode at 1200 pt and in Edit Mode at the smallest width the window allows.
+    func testALongStandbyNameIsCutShortAndNeverWidensTheWindow() async throws {
+        let (wc, rig) = try await demoController()
+        let window = try XCTUnwrap(wc.window)
+        window.orderFront(nil)
+        defer { window.close() }
+        let long = String(repeating: "Thunder rumble in the distance ", count: 4)
+        XCTAssertGreaterThanOrEqual(long.count, 120)
+        func check(_ what: String, width: CGFloat) {
+            window.setContentSize(NSSize(width: width, height: 700))
+            window.contentView?.layoutSubtreeIfNeeded()
+            let field = wc.masthead.standbyField
+            XCTAssertEqual(window.contentView?.bounds.width ?? 0, width, accuracy: 0.5, "\(what): the window's width")
+            let frame = field.convert(field.bounds, to: wc.masthead)
+            XCTAssertTrue(wc.masthead.bounds.contains(frame), "\(what): the name at \(frame) is inside the masthead")
+            XCTAssertGreaterThan(
+                field.intrinsicContentSize.width, field.bounds.width, "\(what): the name is longer than its field")
+            XCTAssertEqual(field.lineBreakMode, .byTruncatingTail, "\(what): cut short with an ellipsis")
+        }
+        window.setContentSize(NSSize(width: 1200, height: 700))
+        guard case .success = await rig.store.send(command: .setProperty(TestSnapshots.intro, .name(long))) else {
+            return XCTFail("rename")
+        }
+        await assertEventually { wc.masthead.standbyField.stringValue.hasSuffix(long) }
+        wc.setShowMode(true)
+        check("Show Mode at 1200", width: 1200)
+        wc.setShowMode(false)
+        check("Edit Mode at the least width", width: window.minSize.width)
+    }
+
     func testShowModePaletteMeetsContrastTargets() {
         typealias P = ShowModePalette
         // WCAG AAA (7:1) for the text a performer reads at a distance, 3:1 for the GO button's edge.
@@ -1275,6 +1349,51 @@ final class WindowLayoutTests: XCTestCase {
         let path = try XCTUnwrap(app.session.workspaces.first { $0.doc == doc }?.path)
         let saved = WindowLayoutStore(defaults: defaults).layout(forPath: path).inspectorHeight
         XCTAssertEqual(try XCTUnwrap(saved), tall, accuracy: 1, "the shrink did not overwrite it")
+    }
+
+    /// The divider dragged down to leave the inspector 120 pt: it stays at its least height or more, and
+    /// the Time & Loops Start and End fields are whole inside it.
+    func testADividerDragNeverLeavesTheInspectorShorterThanItsLeastHeight() async throws {
+        let url = try showFile("ShortInspector")
+        let (_, wc) = try await open(url)
+        wc.window?.setFrame(frame(wc), display: true)
+        let added = await wc.editor.add(.audio)
+        let cue = try XCTUnwrap(added, "a new audio cue")
+        wc.cueList.selectAsUser([cue])
+        await assertEventually { wc.inspector.cueForEdit?.id == cue }
+        wc.inspector.tabView.selectTabViewItem(withIdentifier: "timeLoops")
+        settle(wc)
+        let room = wc.verticalSplit.bounds.height - wc.verticalSplit.dividerThickness
+        wc.verticalSplit.setPosition(room - 120, ofDividerAt: 0)
+        settle(wc)
+        let least = WorkspaceWindowController.minInspectorHeight
+        XCTAssertGreaterThanOrEqual(wc.inspector.view.frame.height, least, "the drag stopped at the least height")
+        let panel = wc.inspector.timeLoops
+        for (name, field) in [("Start", panel.startField), ("End", panel.endField)] {
+            let frame = field.convert(field.bounds, to: wc.inspector.view)
+            XCTAssertTrue(
+                wc.inspector.view.bounds.contains(frame),
+                "\(name) at \(frame) is outside the inspector \(wc.inspector.view.bounds)")
+        }
+    }
+
+    /// A saved inspector height below the least comes back as the least.
+    func testASavedInspectorHeightBelowTheLeastComesBackAsTheLeast() async throws {
+        let url = try showFile("SavedShort")
+        let (doc, wc) = try await open(url)
+        wc.window?.setFrame(frame(wc), display: true)
+        settle(wc)
+        let path = try XCTUnwrap(app.session.workspaces.first { $0.doc == doc }?.path)
+        await close(doc)
+        let store = WindowLayoutStore(defaults: defaults)
+        var layout = store.layout(forPath: path)
+        layout.inspectorHeight = 150
+        store.save(layout, forPath: path)
+        let (_, again) = try await open(url)
+        settle(again)
+        let least = WorkspaceWindowController.minInspectorHeight
+        XCTAssertEqual(again.inspectorHeightConstraint?.constant, least, "150 was raised to the least height")
+        XCTAssertGreaterThanOrEqual(again.inspector.view.frame.height, least)
     }
 
     func testAWindowSqueezeKeepsTheDraggedSidebarWidth() async throws {

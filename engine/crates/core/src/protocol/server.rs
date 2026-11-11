@@ -685,12 +685,15 @@ pub struct PlayheadEntry {
 }
 
 /// Seconds. `remaining` is `null` when there is no end (an infinite loop, a cue waiting for a
-/// feedback that has not come).
+/// feedback that has not come). `position` is where in the media file an audio cue's voice is
+/// (slices, loops and devamps applied); absent for a cue without a voice.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProgressItem {
     pub cue: CueId,
     pub elapsed: f64,
     pub remaining: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<f64>,
 }
 
 /// A pre-wait or post-wait counting down, in seconds. A cue can have both an action item and a
@@ -745,6 +748,7 @@ impl ServerMessage {
                 for item in items {
                     item.elapsed = clean(item.elapsed);
                     item.remaining = item.remaining.map(clean);
+                    item.position = item.position.map(clean);
                 }
                 for wait in waits {
                     wait.elapsed = clean(wait.elapsed);

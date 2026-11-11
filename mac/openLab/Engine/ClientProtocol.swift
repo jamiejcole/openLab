@@ -140,6 +140,8 @@ enum Request: Hashable, Sendable, Codable {
     case open(path: String, recovery: RecoveryChoice? = nil)
     case openRecovery(workspaceId: ModelID, pathHash: String? = nil, modifiedMs: Int64? = nil)
     case scanRecovery
+    /// Deletes the one autosave file `openRecovery` would open for these fields (not undoable).
+    case discardRecovery(workspaceId: ModelID, pathHash: String? = nil, modifiedMs: Int64? = nil)
     case save
     case saveAs(path: String)
     case relink(folder: String)
@@ -194,6 +196,11 @@ enum Request: Hashable, Sendable, Codable {
             opt(&f, "modified_ms", m)
             return ("open_recovery", f)
         case .scanRecovery: return ("scan_recovery", [])
+        case .discardRecovery(let w, let h, let m):
+            f.append(("workspace_id", w))
+            opt(&f, "path_hash", h)
+            opt(&f, "modified_ms", m)
+            return ("discard_recovery", f)
         case .save: return ("save", [])
         case .saveAs(let p): return ("save_as", [("path", p)])
         case .relink(let folder): return ("relink", [("folder", folder)])
@@ -237,6 +244,11 @@ enum Request: Hashable, Sendable, Codable {
                 pathHash: try c.decodeIfPresent(String.self, forKey: "path_hash"),
                 modifiedMs: try c.decodeIfPresent(Int64.self, forKey: "modified_ms"))
         case "scan_recovery": self = .scanRecovery
+        case "discard_recovery":
+            self = .discardRecovery(
+                workspaceId: try c.decode(ModelID.self, forKey: "workspace_id"),
+                pathHash: try c.decodeIfPresent(String.self, forKey: "path_hash"),
+                modifiedMs: try c.decodeIfPresent(Int64.self, forKey: "modified_ms"))
         case "save": self = .save
         case "save_as": self = .saveAs(path: try c.decode(String.self, forKey: "path"))
         case "relink": self = .relink(folder: try c.decode(String.self, forKey: "folder"))

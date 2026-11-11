@@ -191,3 +191,129 @@ fn a_docs_timers_go_to_that_doc_only() {
     assert!(docs.len() >= 10, "{}", docs.len());
     assert!(docs.iter().all(|d| *d == Some(doc)), "{docs:?}");
 }
+
+/// What the voice's output was playing, as a file frame, at the sample `elapsed` seconds into the
+/// cue (the ramp file's sample `i` is `(i + 1) / 2^20`).
+fn heard_frame(ch: &[f32], first: usize, elapsed: f64) -> Option<f64> {
+    let at = first + (elapsed * f64::from(RATE)).round() as usize;
+    ch.get(at).map(|v| f64::from(*v) * 1_048_576.0 - 1.0)
+}
+
+fn item_positions(msgs: &[ServerMessage], cue: u128) -> Vec<(f64, f64)> {
+    reports(msgs)
+        .iter()
+        .flat_map(|(items, _)| items.iter())
+        .filter(|i| i.cue == id(cue))
+        .filter_map(|i| i.position.map(|p| (i.elapsed, p)))
+        .collect()
+}
+
+fn frames_of(seconds: f64) -> f64 {
+    seconds * f64::from(RATE)
+}
+
+#[test]
+fn a_looping_slice_reports_file_positions_inside_the_slice_on_every_pass() {
+    // 1600 frames cut at 800: the first slice plays three times, then the rest once.
+    let path = wav(&ramp(1600));
+    let c = with_slices(audio(1, &path, 0), &[(secs(800), 3)], 1);
+    let mut s = show(workspace(vec![c]));
+    s.take_outbound();
+    start(&mut s, 1);
+    s.run(3200);
+    let msgs = s.take_outbound();
+    let ch = s.channel(0);
+    let first = first_nonzero(&ch).unwrap();
+    let pos = item_positions(&msgs, 1);
+    assert!(pos.len() >= 8, "{}", pos.len());
+    let wraps = pos.windows(2).filter(|w| w[1].1 < w[0].1).count();
+    // Three passes of the slice: it returned to the start twice, then moved on to the rest.
+    assert_eq!(wraps, 2, "{pos:?}");
+    for &(elapsed, p) in &pos {
+        if frames_of(elapsed) < 2400.0 - 200.0 {
+            assert!(
+                (0.0..800.0).contains(&frames_of(p)),
+                "{elapsed} {}",
+                frames_of(p)
+            );
+        }
+        // It is where the audio is.
+        if let Some(heard) = heard_frame(&ch, first, elapsed) {
+            assert!(
+                (heard - frames_of(p)).abs() <= 1.0,
+                "{elapsed}: {heard} vs {}",
+                frames_of(p)
+            );
+        }
+    }
+    assert!(pos.iter().any(|(_, p)| frames_of(*p) >= 800.0));
+    for m in &msgs {
+        check_wire(m);
+    }
+}
+
+fn devamp_cue(n: u128, target: u128, stop: bool) -> openlab_core::Cue {
+    cue(
+        n,
+        CueKind::Devamp {
+            target: Some(id(target)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: stop,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    )
+}
+
+#[test]
+fn after_a_devamp_the_file_position_moves_on_to_the_next_slice() {
+    // Loop 0..800 until devamped, then 800..1600 once.
+    let path = wav(&ramp(1600));
+    let looped = with_slices(audio(1, &path, 0), &[(secs(800), 0)], 1);
+    let mut s = show(workspace(vec![looped, devamp_cue(2, 1, false)]));
+    s.take_outbound();
+    start(&mut s, 1);
+    s.run(2000);
+    let looping = item_positions(&s.take_outbound(), 1);
+    assert!(
+        looping.iter().all(|(_, p)| frames_of(*p) < 800.0),
+        "{looping:?}"
+    );
+    start(&mut s, 2);
+    s.run(2400);
+    let msgs = s.take_outbound();
+    let ch = s.channel(0);
+    let first = first_nonzero(&ch).unwrap();
+    let after = item_positions(&msgs, 1);
+    let moved = after
+        .iter()
+        .position(|(_, p)| frames_of(*p) >= 800.0)
+        .unwrap_or_else(|| panic!("it moved on to the next slice: {after:?}"));
+    // It never goes back once it has moved on, and it is where the audio is.
+    for w in after[moved..].windows(2) {
+        assert!(w[1].1 >= w[0].1, "{after:?}");
+    }
+    for &(elapsed, p) in &after {
+        if let Some(heard) = heard_frame(&ch, first, elapsed) {
+            assert!(
+                (heard - frames_of(p)).abs() <= 1.0,
+                "{elapsed}: {heard} vs {}",
+                frames_of(p)
+            );
+        }
+    }
+}
+
+#[test]
+fn a_devamp_stop_keeps_the_position_inside_the_loop() {
+    let path = wav(&ramp(1600));
+    let looped = with_slices(audio(1, &path, 0), &[(secs(800), 0)], 1);
+    let mut s = show(workspace(vec![looped, devamp_cue(2, 1, true)]));
+    start(&mut s, 1);
+    s.run(1000);
+    start(&mut s, 2);
+    s.take_outbound();
+    s.run(2400);
+    let pos = item_positions(&s.take_outbound(), 1);
+    assert!(!pos.is_empty());
+    assert!(pos.iter().all(|(_, p)| frames_of(*p) < 800.0), "{pos:?}");
+}

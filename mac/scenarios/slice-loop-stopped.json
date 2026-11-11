@@ -1,0 +1,24 @@
+{
+  "about": "The sliced, looping cue played for 8 s, then stopped with Esc: the Time & Loops waveform draws no playhead line.",
+  "show": "Demo",
+  "media": {"media/a.wav": 20},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"click": "time-loops-waveform", "at": [0.25, 0.5]},
+    {"click": "time-loops-add-slice"},
+    {"double_click": "time-loops-waveform", "at": [0.1, 0.97]},
+    {"type": "time-loops-slice-count", "text": "3"},
+    {"key": "space"},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 8},
+    {"shot": "playing"},
+    {"key": "escape"},
+    {"advance": 1},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"shot": "after-stop"}
+  ]
+}

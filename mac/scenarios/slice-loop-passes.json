@@ -1,0 +1,25 @@
+{
+  "about": "A cue sliced at 5 s whose first slice plays three times, on the Time & Loops tab at 3 s (first pass), 8 s (second pass), 13 s (third pass) and 17 s (past the loop, into the rest of the file): the playhead returns to the slice start each pass and stays inside it, then moves on.",
+  "show": "Demo",
+  "media": {"media/a.wav": 20},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"click": "time-loops-waveform", "at": [0.25, 0.5]},
+    {"click": "time-loops-add-slice"},
+    {"double_click": "time-loops-waveform", "at": [0.1, 0.97]},
+    {"type": "time-loops-slice-count", "text": "3"},
+    {"key": "space"},
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 3},
+    {"shot": "pass-1"},
+    {"advance": 5},
+    {"shot": "pass-2"},
+    {"advance": 5},
+    {"shot": "pass-3"},
+    {"advance": 4},
+    {"shot": "after-loop"}
+  ]
+}

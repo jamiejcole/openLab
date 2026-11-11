@@ -8,7 +8,7 @@ use std::fs;
 use crate::common::*;
 use openlab_core::{DeviceInfo, MachineSettings, PatchMapping, PatchResolution, resolve_patch};
 use openlab_engine::persist::{
-    AppDirs, RecoveryCheck, check_recovery, clear_recovery, load_machine_settings,
+    AppDirs, RecoveryCheck, check_recovery, discard_recovery, load_machine_settings,
     save_machine_settings, save_workspace, write_recovery,
 };
 
@@ -134,7 +134,7 @@ fn a_stale_recovery_file_never_replaces_another() {
 }
 
 #[test]
-fn stale_files_are_bounded_and_removed_by_a_save() {
+fn stale_files_are_bounded_and_kept_by_a_save() {
     let env = env();
     show_with_mtime(&env, SHOW_T);
     for i in 0..8_u64 {
@@ -155,7 +155,11 @@ fn stale_files_are_bounded_and_removed_by_a_save() {
     // The oldest were the ones removed.
     assert!(names(&dir).iter().all(|n| !n.contains("000000000001000.")));
     save_workspace(&env.dirs, &env.show_path(), &example(), 5, 20).unwrap();
-    assert_eq!(stale(&dir), 0, "a successful save is what deletes them");
+    assert_eq!(
+        stale(&dir),
+        5,
+        "a save leaves files set aside by an earlier run"
+    );
 }
 
 #[test]
@@ -291,8 +295,8 @@ fn autosave_does_not_touch_the_show_file_and_clear_is_idempotent() {
     let path = write_recovery(&env.dirs, &ws, Some(&env.show_path())).unwrap();
     assert_eq!(fs::read(env.show_path()).unwrap(), before);
     assert!(path.exists());
-    clear_recovery(&env.dirs, ws.id, Some(&env.show_path())).unwrap();
-    clear_recovery(&env.dirs, ws.id, Some(&env.show_path())).unwrap();
+    discard_recovery(&env.dirs, ws.id, Some(&env.show_path())).unwrap();
+    discard_recovery(&env.dirs, ws.id, Some(&env.show_path())).unwrap();
     assert!(!path.exists());
 }
 
