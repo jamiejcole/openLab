@@ -275,15 +275,31 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard let scroll = view as? NSScrollView,
             let name = outlineView.tableColumns.first(where: { $0.identifier.rawValue == "name" })
         else { return }
-        let room = NSScrollView.contentSize(
-            forFrameSize: scroll.frame.size, horizontalScrollerClass: nil, verticalScrollerClass: NSScroller.self,
+        let inside = NSScrollView.contentSize(
+            forFrameSize: scroll.frame.size, horizontalScrollerClass: nil, verticalScrollerClass: nil,
             borderType: scroll.borderType, controlSize: .regular, scrollerStyle: .legacy
         ).width
+        let room = inside - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
         let columns = outlineView.tableColumns
         let others = columns.filter { $0 !== name }.reduce(0) { $0 + $1.width }
-        let spacing = outlineView.intercellSpacing.width * CGFloat(columns.count)
-        let width = max(Self.nameMinWidth, (room - others - spacing).rounded(.down))
+        let width = max(Self.nameMinWidth, (room - others - tableExtra(name, others: others)).rounded(.down))
         if abs(name.width - width) >= 1 { name.width = width }
+    }
+
+    private var measuredExtra: CGFloat?
+
+    /// What the table adds to its columns' widths (cell spacing and its own insets, which depend on the
+    /// system's table style): measured once, with the Name column made wide enough that the table's frame
+    /// is its content's width and not the scroll view's.
+    private func tableExtra(_ name: NSTableColumn, others: CGFloat) -> CGFloat {
+        if let measuredExtra { return measuredExtra }
+        let was = name.width
+        name.width = 10_000
+        outlineView.tile()
+        let extra = outlineView.frame.width - others - name.width
+        name.width = was
+        measuredExtra = extra
+        return extra
     }
 
     override func loadView() {
@@ -1235,7 +1251,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return node.isGroup && !expanded && anyFlagged(node) ? .hollow : nil
     }
     func outlineViewColumnDidResize(_ notification: Notification) {
-        fitNameColumn()
+        // Not while the Name column itself is being measured or set.
+        let resized = notification.userInfo?["NSTableColumn"] as? NSTableColumn
+        if resized?.identifier.rawValue != "name" { fitNameColumn() }
         replaceEditorAfterLayoutChange()
     }
     func outlineViewColumnDidMove(_ notification: Notification) { replaceEditorAfterLayoutChange() }
