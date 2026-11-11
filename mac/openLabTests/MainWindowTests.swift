@@ -185,6 +185,9 @@ final class MainWindowTests: XCTestCase {
         XCTAssertLessThan(try column("name").width, wideName, "the Name column gave up the width")
         XCTAssertGreaterThanOrEqual(try column("name").width, CueListViewController.nameMinWidth)
         size(1200)
+        XCTAssertLessThanOrEqual(
+            outline.frame.width, try XCTUnwrap(outline.enclosingScrollView).contentView.bounds.width,
+            "the list is no wider than what shows: no sideways scrolling in a wide window")
         for id in times { XCTAssertEqual(try column(id).width, try XCTUnwrap(widths[id]), "\(id) after widening") }
         XCTAssertEqual(try column("name").width, wideName, accuracy: 1, "the Name column took the room back")
     }
