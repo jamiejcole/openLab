@@ -71,6 +71,53 @@ final class WorkspaceSettingsModel: ObservableObject {
         }
     }
 
+    // MARK: Output patches (add, rename, remove)
+
+    /// Adds a two-output patch after the last one, named by its place. Returns its id.
+    @discardableResult
+    func addPatch() async -> ModelID? {
+        let count = store.model?.patches.count ?? 0
+        let id = ModelID(UUID().uuidString.lowercased())
+        let output = JSONValue.object(["level_db": .double(0), "mute": .bool(false), "polarity_inverted": .bool(false)])
+        let patch = JSONValue.object([
+            "id": .string(id.raw), "name": .string(String(format: loc("settings.audio.newPatchName"), count + 1)),
+            "master_db": .double(0), "outputs": .array([output, output]),
+        ])
+        let command = Command(
+            .object(["type": .string("add_patch"), "index": .int(Int64(count)), "patch": patch]))
+        return await sendPatch(command) ? id : nil
+    }
+
+    /// Renames a patch. An unchanged name sends nothing.
+    @discardableResult
+    func renamePatch(_ id: ModelID, to name: String) async -> Bool {
+        guard let row = patches.first(where: { $0.id == id }), row.name != name else { return true }
+        return await sendPatch(
+            Command(
+                .object([
+                    "type": .string("set_patch_property"), "id": .string(id.raw),
+                    "property": .object(["type": .string("name"), "value": .string(name)]),
+                ])))
+    }
+
+    /// Removes a patch. The engine refuses one a cue plays through, and the last one; it says why.
+    @discardableResult
+    func removePatch(_ id: ModelID) async -> Bool {
+        await sendPatch(Command(.object(["type": .string("remove_patch"), "id": .string(id.raw)])))
+    }
+
+    private func sendPatch(_ command: Command) async -> Bool {
+        switch await store.send(command: command) {
+        case .success:
+            message = nil
+            await refresh()
+            return true
+        case .failure(let e):
+            message = e.detailText
+            return false
+        }
+    }
+
     /// The device the engine is playing on now, from the status message.
     var playing: DeviceStatus? { store.status?.device }
 

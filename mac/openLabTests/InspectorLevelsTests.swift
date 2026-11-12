@@ -103,7 +103,7 @@ final class InspectorLevelsTests: XCTestCase {
 
     func testLevelsTabIsForAudioCuesAndFadeTabForFadeCues() {
         vc.setSelection([Self.intro])
-        XCTAssertEqual(tabs(), ["basics", "triggers", "timeLoops", "levels"])
+        XCTAssertEqual(tabs(), ["basics", "triggers", "io", "timeLoops", "levels"])
         vc.setSelection([Self.fade])
         XCTAssertEqual(tabs(), ["basics", "triggers", "curve", "fadeLevels"])
         vc.setSelection([TestSnapshots.group])

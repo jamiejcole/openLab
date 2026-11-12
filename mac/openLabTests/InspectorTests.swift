@@ -2126,4 +2126,105 @@ final class UserTestFlowTests: XCTestCase {
         await assertEventually { settings.shownNetwork?.count == 1 }
         XCTAssertEqual(try field("name").stringValue, "Desk")
     }
+
+    func testTheRowMenusEditItemsSetTheWholeSelectionAndMarkWhatItHas() async throws {
+        wc.cueList.selectAsUser([Self.intro, Self.fade])
+        await assertEventually { self.wc.cueList.selectedIDs() == [Self.intro, Self.fade] }
+        func edit() throws -> NSMenu {
+            let menu = NSMenu()
+            wc.cueList.prepareRowMenu(menu, row: wc.cueList.outlineView.row(forItem: wc.cueList.node(Self.intro)))
+            return try XCTUnwrap(menu.items.last { $0.title == loc("cuelist.menu.edit") }?.submenu)
+        }
+        func choose(_ title: String, in menu: NSMenu) throws {
+            let item = try XCTUnwrap(menu.items.first { $0.title == title })
+            XCTAssertTrue(item.isEnabled)
+            _ = item.target?.perform(item.action, with: item)
+        }
+        func raw(_ id: ModelID, _ key: String) -> JSONValue? { rig.store.model?.cue(id)?.raw[key] }
+        var menu = try edit()
+        XCTAssertEqual(menu.items.first { $0.title == loc("inspector.flagged") }?.state, .off)
+        try choose(loc("inspector.flagged"), in: menu)
+        await assertEventually { raw(Self.intro, "flagged") == .bool(true) && raw(Self.fade, "flagged") == .bool(true) }
+        try choose(loc("inspector.continue.auto_continue"), in: menu)
+        await assertEventually {
+            [Self.intro, Self.fade].allSatisfy { raw($0, "continue_mode")?.stringValue == "auto_continue" }
+        }
+        let colours = try XCTUnwrap(menu.items.first { $0.title == loc("inspector.colour") }?.submenu)
+        try choose(loc("cue.colour.red"), in: colours)
+        await assertEventually { [Self.intro, Self.fade].allSatisfy { raw($0, "color")?.stringValue == "red" } }
+        // One cue changed by itself: the menu marks the selection as mixed.
+        guard case .success = await rig.store.send(command: .setProperty(Self.fade, .flagged(false))) else {
+            return XCTFail("unflag")
+        }
+        await assertEventually { raw(Self.fade, "flagged") == .bool(false) }
+        menu = try edit()
+        XCTAssertEqual(menu.items.first { $0.title == loc("inspector.flagged") }?.state, .mixed)
+        XCTAssertEqual(menu.items.first { $0.title == loc("inspector.continue.auto_continue") }?.state, .on)
+        // Disarm both in one undo step.
+        try choose(loc("inspector.armed"), in: menu)
+        await assertEventually { [Self.intro, Self.fade].allSatisfy { raw($0, "armed") == .bool(false) } }
+        await wc.editor.undo()
+        await assertEventually { [Self.intro, Self.fade].allSatisfy { raw($0, "armed") != .bool(false) } }
+    }
+
+    func testAnAudioCuesOutputPatchIsChosenOnItsIOTabAndPatchesAreAddedRenamedAndRemovedInSettings() async throws {
+        let settings = WorkspaceSettingsWindowController(store: rig.store)
+        defer { settings.window?.close() }
+        await settings.present().value
+        settings.tabs.selectTabViewItem(withIdentifier: "audio")
+        XCTAssertEqual(settings.patchPopup.numberOfItems, 1)
+        XCTAssertFalse(settings.patchRemoveButton.isEnabled, "the only patch stays")
+        // With the caret in the name field, as after renaming a patch.
+        XCTAssertTrue(try XCTUnwrap(settings.window).makeFirstResponder(settings.patchNameField))
+        settings.patchAddButton.performClick(nil)
+        await assertEventually { self.rig.store.model?.patches.count == 2 }
+        await assertEventually("the pop-up lists it (\(settings.model.message ?? "no message"))") {
+            settings.patchPopup.numberOfItems == 2
+        }
+        await assertEventually { settings.patchNameField.stringValue == "Patch 2" }
+        settings.patchNameField.stringValue = "Foldback"
+        settings.controlTextDidEndEditing(
+            Notification(name: NSControl.textDidEndEditingNotification, object: settings.patchNameField))
+        await assertEventually { self.rig.store.model?.patches.last?.raw["name"]?.stringValue == "Foldback" }
+        await assertEventually { settings.patchPopup.titleOfSelectedItem == "Foldback" }
+        let foldback = try XCTUnwrap(rig.store.model?.patches.last?.id)
+
+        // The cue is sent to it from its I/O tab.
+        await select(Self.intro)
+        XCTAssertEqual(
+            inspector.tabView.tabViewItems.compactMap { $0.identifier as? String },
+            ["basics", "triggers", "io", "timeLoops", "levels"])
+        inspector.tabView.selectTabViewItem(withIdentifier: "io")
+        wc.window?.layoutIfNeeded()
+        let popup = inspector.outputPatchPopup
+        XCTAssertFalse(popup.isHiddenOrHasHiddenAncestor)
+        await assertEventually { popup.itemTitles == ["Main", "Foldback"] }
+        XCTAssertEqual(popup.titleOfSelectedItem, "Main")
+        popup.selectItem(at: 1)
+        _ = popup.target?.perform(popup.action, with: popup)
+        await assertEventually {
+            self.rig.store.model?.cue(Self.intro)?.raw["kind"]?["patch"]?.stringValue == foldback.raw
+        }
+        // A patch a cue plays through is not removed; once the cue is back on Main it is.
+        settings.patchRemoveButton.performClick(nil)
+        await assertEventually { !settings.messageLabel.stringValue.isEmpty }
+        XCTAssertEqual(rig.store.model?.patches.count, 2)
+        popup.selectItem(at: 0)
+        _ = popup.target?.perform(popup.action, with: popup)
+        await assertEventually {
+            self.rig.store.model?.cue(Self.intro)?.raw["kind"]?["patch"]?.stringValue != foldback.raw
+        }
+        settings.patchRemoveButton.performClick(nil)
+        await assertEventually { self.rig.store.model?.patches.count == 1 }
+        await assertEventually { settings.patchPopup.numberOfItems == 1 }
+    }
+
+    func testTheToolbarFollowsQLabsOrder() {
+        XCTAssertEqual(
+            CueToolbarView.kinds.flatMap { $0 },
+            [
+                .group, .audio, .fade, .network, .start, .stop, .pause, .load, .reset, .devamp, .goto, .arm,
+                .disarm, .wait, .memo,
+            ])
+    }
 }

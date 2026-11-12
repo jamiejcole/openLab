@@ -22,6 +22,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let maxLimitField = NSTextField()
     let minLimitField = NSTextField()
     let patchEditButton = NSButton(title: loc("settings.audio.edit"), target: nil, action: nil)
+    let patchAddButton = NSButton(title: loc("settings.audio.newPatch"), target: nil, action: nil)
+    let patchRemoveButton = NSButton(title: loc("settings.audio.removePatch"), target: nil, action: nil)
+    /// The shown patch's name, typed in place.
+    let patchNameField = NSTextField()
     /// The patch editor of the patch last edited; the window lives as long as this window does.
     private(set) var patchEditor: PatchEditorWindowController?
 
@@ -199,6 +203,16 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         patchDevicePopup.setAX(AX.settingsPatchDevicePopup, label: loc("settings.audio.patchDevice"))
         patchDevicePopup.target = self
         patchDevicePopup.action = #selector(patchDeviceChosen)
+        patchNameField.setAX("settings-patch-name", label: loc("settings.audio.patchName"))
+        patchNameField.delegate = self
+        patchNameField.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        patchAddButton.setAX("settings-patch-add", label: loc("settings.audio.newPatch"))
+        patchRemoveButton.setAX("settings-patch-remove", label: loc("settings.audio.removePatch"))
+        for b in [patchAddButton, patchRemoveButton] { b.target = self }
+        patchAddButton.action = #selector(patchAddClicked)
+        patchRemoveButton.action = #selector(patchRemoveClicked)
+        let patchButtons = NSStackView(views: [patchAddButton, patchRemoveButton])
+        patchButtons.spacing = 8
         channelsStack.orientation = .vertical
         channelsStack.alignment = .leading
         channelsStack.spacing = 6
@@ -208,6 +222,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             devicePopup, deviceStatusLabel, deviceNoteLabel,
             heading(loc("settings.audio.patches")),
             row(nil, patchPopup, patchEditButton),
+            row(loc("settings.audio.patchName"), patchNameField, patchButtons),
             row(loc("settings.audio.patchDevice"), patchDevicePopup, nil),
             channelsStack, patchMeter, patchProblemLabel,
             heading(loc("settings.audio.limits")),
@@ -381,6 +396,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             return
         }
         shownPatch = row.id
+        if patchNameField.currentEditor() == nil { patchNameField.stringValue = row.name }
+        patchNameField.isEnabled = model.store.model != nil
+        patchRemoveButton.isEnabled = model.patches.count > 1
         patchMeter.source = .output(row.id)
         patchPopup.selectItem(at: model.patches.firstIndex { $0.id == row.id } ?? 0)
 
@@ -450,9 +468,34 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     }
 
     @objc private func patchChosen() {
+        endPatchNameTyping()
         shownPatch = (patchPopup.selectedItem?.representedObject as? String).map { ModelID($0) }
         lastDrawn = nil
         render()
+    }
+
+    /// A name still being typed belongs to the patch shown now: it is committed before another is shown.
+    private func endPatchNameTyping() {
+        if patchNameField.currentEditor() != nil { window?.makeFirstResponder(nil) }
+    }
+
+    @objc private func patchAddClicked() {
+        endPatchNameTyping()
+        Task {
+            if let id = await model.addPatch() { shownPatch = id }
+            lastDrawn = nil
+            render()
+        }
+    }
+
+    @objc private func patchRemoveClicked() {
+        endPatchNameTyping()
+        guard let row = shownRow else { return }
+        Task {
+            if await model.removePatch(row.id) { shownPatch = nil }
+            lastDrawn = nil
+            render()
+        }
     }
 
     @objc private func patchDeviceChosen() {
@@ -510,6 +553,15 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             return
         }
         let text = field.stringValue
+        if field === patchNameField {
+            guard let row = shownRow else { return }
+            Task {
+                await model.renamePatch(row.id, to: text)
+                lastDrawn = nil
+                render()
+            }
+            return
+        }
         Task {
             if field === panicField {
                 await model.setPanicDuration(text)

@@ -1203,7 +1203,8 @@ extension CueListTests {
     private func enabled(_ menu: NSMenu) -> [CueRowMenu.Item: Bool] {
         var out: [CueRowMenu.Item: Bool] = [:]
         menu.update()  // AppKit's own pass must not change what the rules decided
-        for item in menu.items where !item.isSeparatorItem {
+        // The Edit submenu's item is not one of the rule-driven items (its tag is -1).
+        for item in menu.items where !item.isSeparatorItem && CueRowMenu.Item.allCases.indices.contains(item.tag) {
             out[CueRowMenu.Item.allCases[item.tag]] = item.isEnabled
         }
         return out
@@ -1222,9 +1223,11 @@ extension CueListTests {
             m.items.map { $0.isSeparatorItem ? "-" : $0.title },
             [
                 "Preview", "Load", "Panic", "-", "Move Playhead to This Cue", "Reveal Target in Finder", "-", "Cut",
-                "Copy", "Paste", "Delete",
+                "Copy", "Paste", "Delete", "-", "Edit",
             ])
-        XCTAssertTrue(m.items.filter { !$0.isSeparatorItem }.allSatisfy { $0.target === h.vc }, "this window's own")
+        XCTAssertTrue(
+            m.items.filter { !$0.isSeparatorItem && $0.submenu == nil }.allSatisfy { $0.target === h.vc },
+            "this window's own")
         let transport = m.items.filter { $0.action == #selector(CueListViewController.rowCommand(_:)) }
         XCTAssertEqual(
             transport.compactMap { $0.representedObject as? String },

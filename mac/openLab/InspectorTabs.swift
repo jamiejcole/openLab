@@ -8,7 +8,7 @@ enum InspectorTabs {
     static func ids(forKind kind: String) -> [String] {
         let common = ["basics", "triggers"]
         switch kind {
-        case "audio": return common + ["timeLoops", "levels"]
+        case "audio": return common + ["io", "timeLoops", "levels"]
         case "fade": return common + ["curve", "fadeLevels"]
         case "group": return common + ["mode"]
         case "load": return common + ["loadTime"]

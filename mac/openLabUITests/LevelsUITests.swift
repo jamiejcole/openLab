@@ -10,21 +10,25 @@ final class LevelsUITests: XCTestCase {
         tabButton(tab, in: app).click()
     }
 
-    /// Clicks the matrix cell at `row` (0 is the cue outputs' row) and `column` (-1 is the master's).
-    private func clickCell(_ matrix: XCUIElement, row: Int, column: Int) {
+    /// The middle of the value box at `row` (0 is the top row: the main level and the cue outputs;
+    /// 1 and up are the file channels) and `column` (-1 is the main level's).
+    private func cell(_ matrix: XCUIElement, row: Int, column: Int) -> XCUICoordinate {
         let x = column < 0 ? 28 : 56 + CGFloat(column) * 46 + 23
-        let y = 18 + CGFloat(row) * 20 + 10
-        matrix.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: x, dy: y)).click()
+        let y = row == 0 ? 10 : 38 + CGFloat(row - 1) * 20 + 10
+        return matrix.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: x, dy: y))
     }
 
-    /// Clicks the cell until the matrix's label names it: a click that lands while the matrix is
-    /// redrawing after the previous edit selects nothing.
-    private func clickCell(_ matrix: XCUIElement, row: Int, column: Int, selecting name: String, label: XCUIElement) {
+    /// Double-clicks a value box, which opens it for typing, and returns the field laid over it.
+    private func openCell(
+        _ matrix: XCUIElement, row: Int, column: Int, field id: String, in app: XCUIApplication
+    ) -> XCUIElement {
+        let field = app.textFields[id]
         for _ in 0..<3 {
-            clickCell(matrix, row: row, column: column)
-            if waitFor("value == '\(name)'", label, timeout: 4) { return }
+            cell(matrix, row: row, column: column).doubleClick()
+            if field.waitForExistence(timeout: 4) { return field }
         }
-        XCTFail("the cell \(name) does not get selected")
+        XCTFail("the value box did not open for typing")
+        return field
     }
 
     private func type(_ text: String, into field: XCUIElement) {
@@ -41,25 +45,26 @@ final class LevelsUITests: XCTestCase {
         selectCue("Intro", in: app)
         open("Levels", in: app)
 
-        let field = app.textFields["levels-field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
-        XCTAssertEqual(field.value as? String, "0.0", "the cue master")
-        type("-6", into: field)
-        XCTAssertTrue(waitFor("value == '-6.0'", field), "the cue master takes -6 dB")
-
         let matrix = app.groups["levels-matrix"]
         XCTAssertTrue(matrix.waitForExistence(timeout: 5))
-        clickCell(matrix, row: 2, column: 1)  // file channel 2 to cue output 2
+        var field = openCell(matrix, row: 0, column: -1, field: "levels-field", in: app)
+        XCTAssertEqual(field.value as? String, "0.0", "the main level")
+        type("-6", into: field)
+        XCTAssertTrue(waitFor("exists == false", field), "Return closes the box")
+
+        field = openCell(matrix, row: 2, column: 1, field: "levels-field", in: app)  // file channel 2 to output 2
         let label = app.staticTexts["levels-cell"]
-        XCTAssertTrue(waitFor("value == 'File channel 2 to output 2'", label), "the clicked crosspoint is selected")
+        XCTAssertTrue(waitFor("value == 'File channel 2 to output 2'", label), "the crosspoint is the chosen level")
         XCTAssertEqual(field.value as? String, "-inf", "a route that is not listed is silent")
         type("-12", into: field)
-        XCTAssertTrue(waitFor("value == '-12.0'", field), "the crosspoint takes -12 dB")
+        XCTAssertTrue(waitFor("exists == false", field))
 
-        clickCell(matrix, row: 0, column: -1)
-        XCTAssertTrue(waitFor("value == '-6.0'", field), "the master kept its level")
-        clickCell(matrix, row: 2, column: 1, selecting: "File channel 2 to output 2", label: label)
-        XCTAssertTrue(waitFor("value == '-12.0'", field), "and so did the crosspoint")
+        field = openCell(matrix, row: 0, column: -1, field: "levels-field", in: app)
+        XCTAssertTrue(waitFor("value == '-6.0'", field), "the main level kept -6 dB")
+        field.typeText("\r")
+        XCTAssertTrue(waitFor("exists == false", field))
+        field = openCell(matrix, row: 2, column: 1, field: "levels-field", in: app)
+        XCTAssertTrue(waitFor("value == '-12.0'", field), "and the crosspoint -12 dB")
     }
 
     func testFadeCueTargetLevel() {
@@ -76,13 +81,15 @@ final class LevelsUITests: XCTestCase {
         open("Levels", in: app)
         let matrix = app.groups["fade-matrix"]
         XCTAssertTrue(matrix.waitForExistence(timeout: 5))
-        clickCell(matrix, row: 0, column: 1)  // cue output 2: not faded yet
+        cell(matrix, row: 0, column: 1).click()  // cue output 2: not faded yet
         let active = app.checkBoxes["fade-active"]
         XCTAssertTrue(waitFor("value == 0", active), "this level is not faded yet")
-        let field = app.textFields["fade-field"]
+        var field = openCell(matrix, row: 0, column: 1, field: "fade-field", in: app)
         type("-20", into: field)
+        XCTAssertTrue(waitFor("value == 1", active), "typing a level makes the Fade move it")
+        field = openCell(matrix, row: 0, column: 1, field: "fade-field", in: app)
         XCTAssertTrue(waitFor("value == '-20.0'", field), "the Fade moves output 2 to -20 dB")
-        XCTAssertTrue(waitFor("value == 1", active), "which makes it active")
+        field.typeText("\r")
 
         open("Curve", in: app)
         type("3", into: duration)

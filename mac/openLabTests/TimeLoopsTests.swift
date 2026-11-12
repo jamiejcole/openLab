@@ -131,11 +131,11 @@ final class TimeLoopsTests: XCTestCase {
 
     // MARK: The tab
 
-    func testTheTabIsThirdForAudioCuesOnly() {
+    func testTheTabFollowsIOForAudioCuesOnly() {
         vc.setSelection([Self.intro])
         XCTAssertEqual(
             vc.tabView.tabViewItems.compactMap { $0.identifier as? String },
-            ["basics", "triggers", "timeLoops", "levels"])
+            ["basics", "triggers", "io", "timeLoops", "levels"])
         vc.setSelection([TestSnapshots.fade])
         XCTAssertFalse(vc.tabView.tabViewItems.contains { $0.identifier as? String == "timeLoops" })
     }

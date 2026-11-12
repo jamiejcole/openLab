@@ -73,6 +73,14 @@ enum CueRowMenu {
     }
 }
 
+/// What an item of the row menu's Edit submenu sets on the selection.
+enum RowEdit: Equatable {
+    case continueMode(String)
+    case flagged(Bool)
+    case armed(Bool)
+    case colour(String)
+}
+
 extension CueListViewController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         prepareRowMenu(menu, row: outlineView.clickedRow)
@@ -116,11 +124,71 @@ extension CueListViewController: NSMenuDelegate {
             entry(.delete, #selector(rowDelete(_:))),
         ]
         items.compactMap { $0 }.forEach(menu.addItem)
+        menu.addItem(.separator())
+        menu.addItem(editSubmenu(for: selected, locked: store.showMode))
         // The rules decide; AppKit's own validation pass must not overwrite them.
         menu.autoenablesItems = false
         for item in menu.items where CueRowMenu.Item.allCases.indices.contains(item.tag) && !item.isSeparatorItem {
             item.isEnabled = CueRowMenu.isEnabled(CueRowMenu.Item.allCases[item.tag], context)
         }
+    }
+
+    /// The row menu's Edit submenu (QLab 5's has the same four): continue mode, flagged, armed and
+    /// colour, set on every selected cue in one undo step. A mark shows what the whole selection
+    /// has; a dash where the cues differ. Greyed in Show Mode.
+    func editSubmenu(for selected: [CueNode], locked: Bool) -> NSMenuItem {
+        let parent = NSMenuItem(title: loc("cuelist.menu.edit"), action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+        func state(_ matches: (Cue) -> Bool) -> NSControl.StateValue {
+            let n = selected.filter { matches($0.cue) }.count
+            return n == 0 ? .off : n == selected.count ? .on : .mixed
+        }
+        func add(_ title: String, _ edit: RowEdit, _ mark: NSControl.StateValue, to menu: NSMenu) {
+            let item = menu.addItem(withTitle: title, action: #selector(rowEdit(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = edit
+            item.state = mark
+            item.isEnabled = !locked
+        }
+        for mode in InspectorViewController.continueModes {
+            add(
+                loc("inspector.continue.\(mode)"), .continueMode(mode),
+                state { ($0.raw["continue_mode"]?.stringValue ?? "do_not_continue") == mode }, to: sub)
+        }
+        sub.addItem(.separator())
+        let flagged = state { $0.raw["flagged"] == .bool(true) }
+        add(loc("inspector.flagged"), .flagged(flagged != .on), flagged, to: sub)
+        let armed = state { $0.raw["armed"] != .bool(false) }
+        add(loc("inspector.armed"), .armed(armed != .on), armed, to: sub)
+        sub.addItem(.separator())
+        let colours = NSMenuItem(title: loc("inspector.colour"), action: nil, keyEquivalent: "")
+        let colourMenu = NSMenu()
+        colourMenu.autoenablesItems = false
+        for colour in InspectorViewController.colours {
+            add(
+                loc("cue.colour.\(colour)"), .colour(colour),
+                state { ($0.raw["color"]?.stringValue ?? "none") == colour }, to: colourMenu)
+        }
+        colours.submenu = colourMenu
+        colours.isEnabled = !locked
+        sub.addItem(colours)
+        parent.submenu = sub
+        parent.tag = -1  // not one of `CueRowMenu.Item`
+        parent.isEnabled = !selected.isEmpty
+        return parent
+    }
+
+    @objc func rowEdit(_ sender: NSMenuItem) {
+        guard let edit = sender.representedObject as? RowEdit, let cues = rowMenuCues else { return }
+        let property: CueProperty
+        switch edit {
+        case .continueMode(let mode): property = .continueMode(mode)
+        case .flagged(let on): property = .flagged(on)
+        case .armed(let on): property = .armed(on)
+        case .colour(let colour): property = .color(colour)
+        }
+        Task { await editor?.setProperty(property, of: cues) }
     }
 
     func revealURL(_ node: CueNode) -> URL? {
