@@ -128,7 +128,9 @@ run_watched() {
     while kill -0 "$pid" 2>/dev/null; do
       sleep 5
       grep -q -e 'Testing started' -e '^Test Suite' "$log" 2>/dev/null || continue
-      if [ $(($(date +%s) - $(stat -f %m "$log"))) -ge "$SILENCE_LIMIT" ]; then
+      # BSD stat, then GNU stat (the repo checks run this on Linux).
+      changed=$(stat -f %m "$log" 2>/dev/null) || changed=$(stat -c %Y "$log" 2>/dev/null) || continue
+      if [ $(($(date +%s) - changed)) -ge "$SILENCE_LIMIT" ]; then
         echo "run-mac-tests: no output for ${SILENCE_LIMIT}s after the tests started: stopping the run" | tee -a "$log"
         : >"$work/silenced"
         kill "$pid" 2>/dev/null
