@@ -2227,4 +2227,32 @@ final class UserTestFlowTests: XCTestCase {
                 .disarm, .wait, .memo,
             ])
     }
+
+    func testAnUnnamedWaitReadsItsLengthANetworkCueItsMessageAndADevampItsTarget() async throws {
+        func name(_ id: ModelID) -> String? { cell("name", id)?.label.stringValue }
+        let made = await wc.editor.add(.wait)
+        let wait = try XCTUnwrap(made)
+        await assertEventually { name(wait) == "Wait 00:05.00" }
+        guard case .success = await rig.store.send(command: .setProperty(wait, .duration(2.5))) else {
+            return XCTFail("duration")
+        }
+        await assertEventually("the name follows the length") { name(wait) == "Wait 00:02.50" }
+        let sent = await wc.editor.add(.network)
+        let network = try XCTUnwrap(sent)
+        await assertEventually { self.wc.cueList.node(network) != nil }
+        guard case .success = await rig.store.send(command: .setProperty(network, .address("/desk/go"))),
+            case .success = await rig.store.send(
+                command: .setProperty(network, .args([.object(["type": .string("int"), "value": .int(12)])])))
+        else { return XCTFail("message") }
+        await assertEventually { name(network) == "/desk/go 12" }
+        await select(Self.intro)
+        let left = await wc.editor.add(.devamp)
+        let devamp = try XCTUnwrap(left)
+        await assertEventually { name(devamp) == "Devamp intro" }
+        // A typed name wins, as for every cue.
+        guard case .success = await rig.store.send(command: .setProperty(wait, .name("Hold"))) else {
+            return XCTFail("name")
+        }
+        await assertEventually { name(wait) == "Hold" }
+    }
 }

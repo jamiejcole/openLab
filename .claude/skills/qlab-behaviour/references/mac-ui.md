@@ -55,6 +55,7 @@ Q249 | The row menu ends with an Edit submenu: the three continue modes, Flagged
 Q250 | An Audio cue's output patch is chosen on its I/O tab (third tab), among the workspace's output patches | UI map inspector.audio.i-o (ours has the pop-up only)
 Q251 | Audio settings: New Patch adds a two-output patch named by its place; the shown patch's name is typed in place; Remove takes it away unless a cue plays through it or it is the only one | UI map settings.audio.audio-outputs (table layout still to do)
 Q252 | Cue toolbar order: Group, Audio, Fade, Network, then Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm, Wait, Memo | UI map workspace.toolbar
+Q253 | Unnamed cues: a Wait shows "Wait" and its length, a Network cue its message as typed, a Devamp "Devamp" and its target's name (as the other cues that act on a cue); never stored, a typed name wins | manual p. 93
 Q42 | New cue list from the sidebar button: "Cue List N" (N = position), after the last list, shown at once | assumed
 Q46 | New cue or paste with a Group selected goes inside as its last child (expanded or not; list opens it); with a cue inside a group selected, after that cue in the group | assumed 2026-10-31
 Q47 | New Group from several selected cues: placed where the first selected (list order) was, cues in list order, mixed parents all taken in (a selected cue inside a selected group goes with it); one undo step; busy cues moved, never stopped | assumed 2026-10-31
