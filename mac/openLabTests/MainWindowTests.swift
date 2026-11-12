@@ -35,6 +35,27 @@ final class MainWindowTests: XCTestCase {
     /// Runs `body` with stderr captured and returns the layout reports AppKit made there (other lines, from
     /// other threads, are not this test's business). The pipe is drained on a thread so a noisy body cannot
     /// block on a full pipe.
+    /// A closed window gives up its views: every test (and every workspace an operator closes) makes
+    /// one, and views that outlived their windows piled up until the test machine's window server stalled.
+    func testAClosedWindowsViewsAreReleased() throws {
+        weak var split: NSSplitView?
+        weak var list: NSView?
+        try autoreleasepool {
+            let wc = try controller()
+            wc.window?.layoutIfNeeded()
+            split = wc.horizontalSplit
+            list = wc.cueList.view
+            XCTAssertFalse(wc.layoutObservers.isEmpty, "the dividers are followed from the start")
+            wc.window?.close()
+            XCTAssertTrue(wc.layoutObservers.isEmpty, "and no longer once the window has closed")
+        }
+        retained.removeAll()
+        // AppKit holds views it has queued for layout or display until the run loop next turns.
+        for _ in 0..<5 { autoreleasepool { _ = RunLoop.main.run(mode: .default, before: Date()) } }
+        XCTAssertNil(split, "the split view went with its window")
+        XCTAssertNil(list, "and the cue list with it")
+    }
+
     private func stderrText(_ body: () -> Void) -> String {
         let pipe = Pipe()
         let collected = Collected()

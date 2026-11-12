@@ -55,9 +55,11 @@ extension WorkspaceWindowController {
         guard layoutObservers.isEmpty else { return }
         sidebar.onTabChange = { [weak self] in self?.saveLayout() }
         let center = NotificationCenter.default
+        // The centre keeps each block until it is removed (`stopSavingLayout`, when the window closes), and
+        // a block that held its split view would keep the window's whole view tree alive after that.
         layoutObservers = [verticalSplit, horizontalSplit].map { split in
             center.addObserver(forName: NSSplitView.didResizeSubviewsNotification, object: split, queue: .main) {
-                [weak self] note in
+                [weak self, weak split] note in
                 // A divider moved by the user carries NSSplitViewUserResizeKey; a layout pass after a
                 // window resize carries at most the divider's index.
                 let keyed = note.userInfo?["NSSplitViewUserResizeKey"] != nil
@@ -69,6 +71,13 @@ extension WorkspaceWindowController {
                 }
             }
         }
+    }
+
+    /// The window is closing: its observers leave the notification centre, which would otherwise hold
+    /// them, and through them the window's views, for the life of the app.
+    func stopSavingLayout() {
+        layoutObservers.forEach(NotificationCenter.default.removeObserver)
+        layoutObservers = []
     }
 
     /// A divider moved. A drag sets the preferred size of the area beside it (the soft size

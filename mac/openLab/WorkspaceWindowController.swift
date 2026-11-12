@@ -663,6 +663,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// A report about a workspace that is gone must not float on over the next one.
     func windowWillClose(_ notification: Notification) {
+        stopSavingLayout()
         inspector.endGestures()
         preshowController?.close()
         settingsController?.close()
