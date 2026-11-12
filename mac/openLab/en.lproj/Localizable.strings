@@ -182,6 +182,7 @@
 "cuelist.nameEditor.label" = "Edit name";
 "cuelist.targetEditor.label" = "Edit target";
 "cue.name.afterTarget" = "%1$@ %2$@";
+"cue.name.wait" = "Wait %@";
 "cue.name.fadeAndStop" = "%1$@ and stop %2$@";
 "cuelist.edit.cueGone" = "The cue you were editing no longer exists.";
 "cuelist.col.postWait" = "Post-Wait";

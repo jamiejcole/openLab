@@ -63,9 +63,9 @@ struct Cue: Hashable, Sendable, Decodable {
     }
 
     /// Kinds whose default name is the kind and the name of the cue they act on (QLab 5, manual pp.
-    /// 93, 126: Fade, Start, Stop, Pause, Load, Reset, Go To, Arm, Disarm).
+    /// 93, 126: Fade, Start, Stop, Pause, Load, Reset, Devamp, Go To, Arm, Disarm).
     static let namedAfterTarget: Set<String> = [
-        "fade", "start", "stop", "pause", "load", "reset", "go_to", "arm", "disarm",
+        "fade", "start", "stop", "pause", "load", "reset", "go_to", "arm", "disarm", "devamp",
     ]
 
     /// The default name of an unnamed cue that acts on another: its kind and the target's shown name
@@ -76,6 +76,15 @@ struct Cue: Hashable, Sendable, Decodable {
     }
 
     private func targetDefaultName(lookup: (ModelID) -> Cue?, depth: Int) -> String {
+        // A Wait reads its length and a Network cue its message (QLab 5, manual p. 93).
+        if name.isEmpty, kindType == "wait" {
+            return String(format: loc("cue.name.wait"), CueTime.running(raw["kind"]?["duration"]?.doubleValue ?? 0))
+        }
+        if name.isEmpty, kindType == "network" {
+            let address = raw["kind"]?["address"]?.stringValue ?? ""
+            return address.isEmpty
+                ? "" : NetworkMessage.format(address: address, args: raw["kind"]?["args"]?.arrayValue ?? [])
+        }
         guard name.isEmpty, Self.namedAfterTarget.contains(kindType), depth < 8,
             let id = raw["kind"]?["target"]?.stringValue.map({ ModelID($0) }), let target = lookup(id)
         else { return "" }
