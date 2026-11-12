@@ -153,6 +153,21 @@ run_watched() {
   return "$rc"
 }
 
+# Whether the window server is stuck in the hosted Mac's virtual GPU driver right now: a sample of it
+# (needs password-less sudo, which the hosted runners have) whose main thread sits in the driver. That
+# is the runner's fault, not a test's: nothing drawn by any process gets through until the VM is gone.
+# The sample's main thread is printed, so the job's log holds the evidence.
+windowserver_stalled() {
+  local f="$work/windowserver-sample.txt"
+  sudo -n sample WindowServer 2 -file "$f" >/dev/null 2>&1 || return 1
+  awk '
+    /^ +[0-9]+ Thread_/ { main = /ws_main_thread|com\.apple\.main-thread/ }
+    main { if (lines++ < 60) print > "/dev/stderr" }
+    main && /AppleParavirt/ { found = 1 }
+    END { exit !found }
+  ' "$f"
+}
+
 # Ends a failed run: HUNG_RC when a test of it hung, else the given code.
 hung=
 give_up() {
@@ -165,7 +180,11 @@ run_watched first "${base[@]}" "$@" test
 rc=$?
 [ "$rc" = 0 ] && exit 0
 if [ -e "$work/silenced" ]; then
-  echo "::warning title=App tests went silent::the run printed nothing for ${SILENCE_LIMIT}s and was stopped; re-run the job"
+  if windowserver_stalled; then
+    echo "::warning title=WindowServer wedged on the runner::the run went silent and a sample shows the window server stuck in the GPU driver (above); re-run the job"
+    exit "$CUT_SHORT_RC"
+  fi
+  echo "::warning title=App tests went silent::the run printed nothing for ${SILENCE_LIMIT}s and was stopped, and the window server is not shown stuck in the GPU driver: find out why before re-running"
   exit "$HUNG_RC"
 fi
 
