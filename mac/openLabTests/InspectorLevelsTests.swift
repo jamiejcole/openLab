@@ -293,7 +293,8 @@ final class InspectorLevelsTests: XCTestCase {
     }
 
     private func typeInto(_ field: NSTextField, _ text: String) throws {
-        window.makeFirstResponder(field)
+        // A level is typed in its box, which a double-click (or Return) opens.
+        for p in [vc.audioLevels, vc.fadeLevels] where field === p.levelField { p.beginTyping(p.selection) }
         let editor = try XCTUnwrap(field.currentEditor(), "the field is being edited")
         editor.string = text
         // What the field editor posts as each character goes in.
@@ -323,7 +324,7 @@ final class InspectorLevelsTests: XCTestCase {
     func testLeavingAFieldWithoutTypingTakesAPeersChangeAndWritesNothing() async throws {
         showCue(Self.intro)
         let p = vc.audioLevels
-        window.makeFirstResponder(p.levelField)
+        p.beginTyping(p.selection)  // the box opens for typing
         XCTAssertNotNil(p.levelField.currentEditor())
         try await peerSetsMaster(-20)
         await assertEventually { p.levelField.stringValue == LevelText.format(-20) }
@@ -383,7 +384,7 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually { self.sent.contains { self.kindOf($0.command) != nil } }
         XCTAssertEqual(p.levelField.stringValue, LevelText.format(-10), "the field follows the fader")
         let before = sent.count
-        window.makeFirstResponder(p.levelField)
+        p.beginTyping(p.selection)  // the box opens for typing
         window.makeFirstResponder(nil)
         await rig.sync()
         XCTAssertEqual(sent.count, before, "clicking in and out with nothing typed sends nothing")
@@ -411,7 +412,7 @@ final class InspectorLevelsTests: XCTestCase {
         try typeAndEscape(p)
         try await peerSetsMaster(-20)
         await assertEventually { p.levelField.stringValue == LevelText.format(-20) }
-        window.makeFirstResponder(p.levelField)
+        p.beginTyping(p.selection)  // the box opens for typing
         window.makeFirstResponder(nil)
         await rig.sync()
         XCTAssertFalse(sent.contains { kindOf($0.command) != nil })
@@ -437,7 +438,7 @@ final class InspectorLevelsTests: XCTestCase {
         try await peerSetsMaster(-6.25)
         await assertEventually { p.levels?.master == -6.25 }
         XCTAssertEqual(p.levelField.stringValue, LevelText.format(-6.25), "shown to one decimal")
-        window.makeFirstResponder(p.levelField)
+        p.beginTyping(p.selection)  // the box opens for typing
         window.makeFirstResponder(nil)
         await rig.sync()
         XCTAssertFalse(sent.contains { kindOf($0.command) != nil }, "nothing was typed, nothing is sent")
@@ -622,7 +623,7 @@ final class InspectorLevelsTests: XCTestCase {
         p.select(.master)
         vc.tabView.selectTabViewItem(withIdentifier: "levels")
         window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(p.levelField)
+        p.beginTyping(p.selection)  // the box opens for typing
         let editor = try XCTUnwrap(p.levelField.currentEditor())
         editor.selectAll(nil)
         window.sendEvent(
@@ -710,18 +711,131 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertFalse(edited, "the row was removed under the mouse")
     }
 
+    // MARK: Faders, value boxes, curve and fade mode
+
+    func testEachOutputHasAFaderOverItsValueBoxAndMovingOneSetsThatOutput() async throws {
+        showCue(Self.intro)
+        window.layoutIfNeeded()
+        let p = vc.audioLevels
+        let outputs = p.matrix.outputCount
+        XCTAssertGreaterThanOrEqual(outputs, 2)
+        XCTAssertEqual(p.faders.count, outputs + 1, "the main level and one per cue output")
+        for (n, f) in p.faders.enumerated() {
+            let box = p.board.convert(p.matrix.rect(of: n == 0 ? .master : .output(n - 1)), from: p.matrix)
+            XCTAssertTrue(f.isVertical)
+            XCTAssertEqual(f.frame.midX, box.midX, accuracy: 0.5, "fader \(n) is over its box")
+            XCTAssertLessThanOrEqual(f.frame.maxY, box.minY, "and above it")
+            XCTAssertGreaterThanOrEqual(f.frame.height, LevelsPanel.minFaderHeight)
+            XCTAssertFalse(f.isHiddenOrHasHiddenAncestor)
+        }
+        let second = p.faders[2]
+        second.onGestureBegin?()
+        second.doubleValue = -12
+        fire(second)
+        second.onGestureEnd?()
+        XCTAssertEqual(p.selection, .output(1), "the level it moves is the chosen one")
+        await assertEventually {
+            self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?[1]["db"] == .double(-12)
+        }
+        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?[0]["db"], .double(0), "the others stay")
+    }
+
+    func testAValueBoxIsTypedInAfterADoubleClickAndTheFieldGoesWhenTypingEnds() async throws {
+        showCue(Self.intro)
+        window.layoutIfNeeded()
+        let p = vc.audioLevels
+        XCTAssertTrue(p.levelField.isHidden, "no field until a box is opened")
+        let box = p.matrix.rect(of: .output(0))
+        let doubleClick = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown, location: p.matrix.convert(NSPoint(x: box.midX, y: box.midY), to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                clickCount: 2, pressure: 1))
+        p.matrix.mouseDown(with: doubleClick)
+        XCTAssertFalse(p.levelField.isHidden)
+        XCTAssertEqual(p.levelField.frame.midX, p.board.convert(box, from: p.matrix).midX, accuracy: 1, "over that box")
+        XCTAssertTrue(window.firstResponder === p.levelField.currentEditor())
+        try typeInto(p.levelField, "-9")
+        try press(returnKey, in: p.levelField)
+        XCTAssertTrue(p.levelField.isHidden)
+        await assertEventually {
+            self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?[0]["db"] == .double(-9)
+        }
+    }
+
+    func testSetDefaultLevelsPutsANewCuesLevelsBack() async throws {
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        fire(p.silentButton)
+        await assertEventually { self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(LevelText.silence) }
+        fire(p.defaultButton)
+        await assertEventually { self.modelKind(Self.intro)?["levels"]?["master_db"] == .double(0) }
+        let levels = modelKind(Self.intro)?["levels"]
+        XCTAssertEqual(levels?["outputs"]?.arrayValue?.map { $0["db"] }, [.double(0), .double(0)])
+        let routes = (levels?["crosspoints"]?.arrayValue ?? []).map {
+            [$0["input"]?.doubleValue, $0["output"]?.doubleValue, $0["db"]?.doubleValue]
+        }
+        XCTAssertEqual(routes, [[0, 0, 0], [1, 1, 0]], "file channel n to cue output n")
+    }
+
+    func testAFadesModeIsChosenOnItsLevelsTabAndStored() async throws {
+        showCue(Self.fade)
+        window.layoutIfNeeded()
+        let popup = vc.fadeSettings.modePopup
+        XCTAssertFalse(popup.isHiddenOrHasHiddenAncestor, "on the Levels tab")
+        XCTAssertEqual(popup.titleOfSelectedItem, loc("fade.mode.absolute"), "absolute until chosen otherwise")
+        popup.selectItem(at: 1)
+        fire(popup)
+        await assertEventually { self.modelKind(Self.fade)?["mode"] == .string("relative") }
+        vc.setSelection([Self.intro])
+        showCue(Self.fade)
+        XCTAssertEqual(popup.titleOfSelectedItem, loc("fade.mode.relative"))
+    }
+
+    func testTheCurveTabDrawsTheChosenCurveRisingAndFalling() async throws {
+        vc.setSelection([Self.fade])
+        vc.tabView.selectTabViewItem(withIdentifier: "curve")
+        window.layoutIfNeeded()
+        let s = vc.fadeSettings
+        XCTAssertFalse(s.risingView.isHiddenOrHasHiddenAncestor)
+        XCTAssertGreaterThan(s.risingView.frame.width, 100)
+        XCTAssertEqual(s.risingView.frame.width, s.fallingView.frame.width, accuracy: 1)
+        let i = try XCTUnwrap(FadeSettingsPanel.curves.firstIndex(of: "equal_power"))
+        s.curvePopup.selectItem(at: i)
+        fire(s.curvePopup)
+        await assertEventually { self.modelKind(Self.fade)?["curve"] == .string("equal_power") }
+        await assertEventually { s.risingView.curve == "equal_power" }
+        XCTAssertEqual(s.risingView.duration, modelKind(Self.fade)?["duration"]?.doubleValue)
+        // The engine's shapes: half way an equal-power fade is at sin(45 deg); falling mirrors rising.
+        XCTAssertEqual(s.risingView.value(at: 0.5), sin(Double.pi / 4), accuracy: 1e-9)
+        XCTAssertEqual(s.fallingView.value(at: 0.25), s.risingView.value(at: 0.75), accuracy: 1e-9)
+        XCTAssertEqual(FadeCurveView.shape("linear", 0.3), 0.3, accuracy: 1e-12)
+        XCTAssertEqual(FadeCurveView.shape("s_curve", 0.5), 0.5, accuracy: 1e-12)
+        XCTAssertEqual(FadeCurveView.shape("exponential", 0.5), expm1(log(1000) / 2) / 999, accuracy: 1e-9)
+        XCTAssertEqual(FadeCurveView.shape("logarithmic", 0.5), 1 - FadeCurveView.shape("exponential", 0.5), accuracy: 1e-9)
+        // And it is drawn: a yellow line from the bottom left to the top right of the rising graph.
+        let rep = try renderView(s.risingView)
+        func yellow(_ x: Int, _ y: Int) -> Bool {
+            guard let c = rep.colorAt(x: x, y: y) else { return false }
+            return c.redComponent > 0.8 && c.greenComponent > 0.6 && c.blueComponent < 0.4
+        }
+        let left = (0..<rep.pixelsHigh).filter { yellow(3, $0) }
+        let right = (0..<rep.pixelsHigh).filter { yellow(rep.pixelsWide - 4, $0) }
+        XCTAssertGreaterThan(try XCTUnwrap(left.min()), rep.pixelsHigh * 3 / 4, "low at the start")
+        XCTAssertLessThan(try XCTUnwrap(right.max()), rep.pixelsHigh / 4, "high at the end")
+    }
+
     func testMatrixHitTesting() {
         vc.setSelection([Self.intro])
         let m = vc.audioLevels.matrix
-        let row1 = LevelMatrixView.headerH + LevelMatrixView.cellH * 1.5
+        // The value boxes are the top row, their names under them, then the crosspoint rows.
+        let row1 = LevelMatrixView.crossTop + LevelMatrixView.cellH * 0.5
         XCTAssertEqual(m.slot(at: NSPoint(x: LevelMatrixView.headW + 5, y: row1)), .cross(input: 0, output: 0))
-        XCTAssertEqual(m.slot(at: NSPoint(x: 5, y: LevelMatrixView.headerH + 5)), .master)
-        XCTAssertEqual(
-            m.slot(at: NSPoint(x: LevelMatrixView.headW + LevelMatrixView.cellW + 5, y: LevelMatrixView.headerH + 5)),
-            .output(1))
+        XCTAssertEqual(m.slot(at: NSPoint(x: 5, y: 5)), .master)
+        XCTAssertEqual(m.slot(at: NSPoint(x: LevelMatrixView.headW + LevelMatrixView.cellW + 5, y: 5)), .output(1))
         XCTAssertNil(m.slot(at: NSPoint(x: 5, y: row1)), "a row label")
         XCTAssertNil(m.slot(at: NSPoint(x: 5000, y: 5)))
-        XCTAssertNil(m.slot(at: NSPoint(x: LevelMatrixView.headW + 5, y: 5)), "the header")
+        XCTAssertNil(m.slot(at: NSPoint(x: LevelMatrixView.headW + 5, y: LevelMatrixView.cellH + 5)), "the names")
     }
 
     func testGangedOutputsMoveTogether() async throws {

@@ -369,7 +369,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         targetRow.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         scroll.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         let right = column(
-            [previewButton, row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 110)
+            [previewButton, row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 103)
         let columns = NSStackView(views: [left, centre, right])
         columns.orientation = .horizontal
         columns.alignment = .top
@@ -643,6 +643,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             messageLabel.isHidden = true
             emptyLabel.isHidden = false
             emptyLabel.stringValue = loc(selection.count > 1 ? "inspector.multiple" : "inspector.empty")
+            updatePreviewButton()  // nothing to preview
             return
         }
         tabView.isHidden = false
