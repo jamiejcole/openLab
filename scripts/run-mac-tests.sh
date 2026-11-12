@@ -133,6 +133,13 @@ run_watched() {
       if [ $(($(date +%s) - changed)) -ge "$SILENCE_LIMIT" ]; then
         echo "run-mac-tests: no output for ${SILENCE_LIMIT}s after the tests started: stopping the run" | tee -a "$log"
         : >"$work/silenced"
+        # Interrupt first: xcodebuild then closes its result bundle, which holds the hang reports of
+        # the tests that timed out before the silence. Killed outright, the bundle is left unreadable.
+        kill -INT "$pid" 2>/dev/null
+        for _ in $(seq 1 45); do
+          kill -0 "$pid" 2>/dev/null || break
+          sleep 1
+        done
         kill "$pid" 2>/dev/null
         break
       fi

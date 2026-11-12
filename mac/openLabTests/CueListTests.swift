@@ -1203,7 +1203,8 @@ extension CueListTests {
     private func enabled(_ menu: NSMenu) -> [CueRowMenu.Item: Bool] {
         var out: [CueRowMenu.Item: Bool] = [:]
         menu.update()  // AppKit's own pass must not change what the rules decided
-        for item in menu.items where !item.isSeparatorItem {
+        // The Edit submenu's item is not one of the rule-driven items (its tag is -1).
+        for item in menu.items where !item.isSeparatorItem && CueRowMenu.Item.allCases.indices.contains(item.tag) {
             out[CueRowMenu.Item.allCases[item.tag]] = item.isEnabled
         }
         return out
