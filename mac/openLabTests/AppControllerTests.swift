@@ -1548,15 +1548,14 @@ final class AppControllerTests: XCTestCase {
         first.setShowMode(true)
         XCTAssertTrue(first.inspector.isLocked)
         XCTAssertTrue(first.cueToolbar.segmentedControls.allSatisfy { !$0.isEnabled })
-        XCTAssertFalse(first.footer.showModeLabel.isHidden)
         XCTAssertEqual(first.footer.modeSwitch.selectedSegment, 1)
         XCTAssertFalse(other.isShowMode)
         XCTAssertFalse(other.inspector.isLocked)
-        XCTAssertTrue(other.footer.showModeLabel.isHidden)
+        XCTAssertEqual(other.footer.modeSwitch.selectedSegment, 0)
         first.setShowMode(false)
         XCTAssertFalse(first.inspector.isLocked)
         XCTAssertTrue(first.cueToolbar.segmentedControls.allSatisfy(\.isEnabled))
-        XCTAssertTrue(first.footer.showModeLabel.isHidden)
+        XCTAssertEqual(first.footer.modeSwitch.selectedSegment, 0)
     }
 
     /// The `set_show_mode` requests the engine received, in order.

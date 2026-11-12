@@ -184,11 +184,19 @@ final class CueEditor {
             setup = [.addNetworkPatch(patch, index: 0)]
             network = patch["id"]?.stringValue.map { ModelObject(id: ModelID($0), raw: patch) }
         }
-        guard let cue = kind.cueJSON(id: id, patch: store.model?.patches.first, networkPatch: network) else {
+        let selected = selectedNodes(of: cues)
+        // A new cue that takes a target starts on the one selected cue when that cue can be its
+        // target (QLab 5: a Fade made with an Audio cue selected fades that cue).
+        let target = selected.count == 1
+            && InspectorEdit.targetRejection(ofKind: kind.wireType, target: selected[0].cue) == nil
+            ? selected[0].id : nil
+        guard
+            let cue = kind.cueJSON(
+                id: id, patch: store.model?.patches.first, networkPatch: network, target: target)
+        else {
             notify(loc("edit.error.noPatch"))
             return nil
         }
-        let selected = selectedNodes(of: cues)
         let roots = cueList?.roots ?? []
         let command: Command
         if kind == .group,

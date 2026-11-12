@@ -69,8 +69,6 @@ final class FooterBar: NSView {
     var onSettings: (() -> Void)?
     /// The switch was used (true: Show Mode).
     var onModeChange: ((Bool) -> Void)?
-    /// "SHOW MODE" text: the mode is never shown by colour alone.
-    let showModeLabel = NSTextField(labelWithString: "")
 
     let modeSwitch = NSSegmentedControl(
         labels: [loc("footer.mode.edit"), loc("footer.mode.show")],
@@ -113,11 +111,6 @@ final class FooterBar: NSView {
         modeSwitch.setAX(AX.modeSwitch, label: loc("footer.mode.label"))
         modeSwitch.target = self
         modeSwitch.action = #selector(modeChanged)
-        showModeLabel.setAX(AX.showModeLabel, label: loc("footer.showMode.indicator"))
-        showModeLabel.stringValue = loc("footer.showMode.indicator")
-        showModeLabel.font = .systemFont(ofSize: 12, weight: .bold)
-        showModeLabel.textColor = .systemOrange
-        showModeLabel.isHidden = true
         overrideBadge.isBordered = false
         overrideBadge.wantsLayer = true
         overrideBadge.layer?.backgroundColor = NSColor.systemRed.cgColor
@@ -178,7 +171,7 @@ final class FooterBar: NSView {
         settingsButton.bezelStyle = .texturedRounded
 
         let left = NSStackView(
-            views: [modeSwitch, showModeLabel, overrideBadge] + [.toolbar, .masthead].compactMap { toggles[$0] })
+            views: [modeSwitch, overrideBadge] + [.toolbar, .masthead].compactMap { toggles[$0] })
         let right = NSStackView(views: [clock] + [.inspector, .sidebar].compactMap { toggles[$0] } + [settingsButton])
         let centre = NSStackView(views: [countLabel, warningsButton, statusButton, noticeLabel])
         let bar = NSStackView(views: [left, centre, right])
@@ -287,7 +280,6 @@ final class FooterBar: NSView {
     /// Reflects the window's mode in the switch and the indicator (also when set from the menu).
     func setShowMode(_ on: Bool) {
         modeSwitch.selectedSegment = on ? 1 : 0
-        showModeLabel.isHidden = !on
     }
 
     @objc private func settingsClicked() { onSettings?() }

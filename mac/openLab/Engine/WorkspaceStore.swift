@@ -54,6 +54,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var appNotices: [String] = []
     /// Warnings that arrived as runtime changes, newest last.
     @Published private(set) var runtimeWarnings: [WireWarning] = []
+    static let unlistedWarnings: Set<String> = ["trigger_ignored", "target_not_running"]
     /// The latest `status` (system health, DX-03); nil until the first one arrives.
     @Published private(set) var status: SystemStatus?
     @Published private(set) var logEntries: [LogEntry] = []
@@ -531,6 +532,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 if active { previewing.insert(cue) } else { previewing.remove(cue) }
                 cues.insert(cue)
             case .warning(let w):
+                // Nothing went wrong in these: the operator pressed a key twice, or a fade ran with
+                // nothing to fade. QLab shows nothing for them, so they are not listed or counted.
+                if Self.unlistedWarnings.contains(w.type) { continue }
                 runtimeWarnings.append(w)
                 noticed = true
                 if runtimeWarnings.count > Self.maxRuntimeWarnings {

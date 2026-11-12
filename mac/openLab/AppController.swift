@@ -125,6 +125,10 @@ final class AppController {
     let layoutDefaults: UserDefaults?
     /// The app is starting and has not yet done what the launch choice says: no launcher meanwhile.
     var launching = false
+    /// `applyLaunchBehavior` has run: the engine is up and a show file can be opened at once.
+    var launchApplied = false
+    /// Show files asked for before `launchApplied`.
+    var filesToOpen: [URL] = []
     /// Files just saved with Save As, by store: the save's reply may overtake the message that gives
     /// the store its new path, and a quit records the open files before that message can arrive.
     var savedAsPaths: [ObjectIdentifier: String] = [:]

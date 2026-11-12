@@ -49,7 +49,9 @@ extension WorkspaceWindowController {
         saveLayout()
     }
 
-    private func startSavingLayout() {
+    /// Follows the dividers from the window's first moment: a drag sets the area's preferred size in
+    /// a workspace with no file yet too (nothing is saved for it; without this the divider sprang back).
+    func startSavingLayout() {
         guard layoutObservers.isEmpty else { return }
         sidebar.onTabChange = { [weak self] in self?.saveLayout() }
         let center = NotificationCenter.default

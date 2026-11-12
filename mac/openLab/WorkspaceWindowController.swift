@@ -262,6 +262,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         footer.onSettings = { [weak self] in self?.showSettings() }
         footer.onWarnings = { [weak self] in self?.showWarnings() }
         setVisible(.sidebar, false)
+        startSavingLayout()
         wire(masthead.goButton, #selector(goClicked))
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
         wire(sidebar.transportButtons[AX.transportResume], #selector(resumeAllClicked))

@@ -166,9 +166,14 @@ extension InspectorEdit {
     /// cue target by hand (the inspector's field, the Target column, a drag). The kinds are core's
     /// `can_target`: Fade takes Audio and Group, Devamp takes Audio and a playlist Group.
     static func targetRejection(of cue: Cue, target: Cue) -> Rejection? {
-        guard targetKinds.contains(cue.kindType) else { return .notApplicable }
         if target.id == cue.id { return .selfTarget }
-        switch cue.kindType {
+        return targetRejection(ofKind: cue.kindType, target: target)
+    }
+
+    /// The same for a cue of `kind` that is not `target` itself (a cue about to be made).
+    static func targetRejection(ofKind kind: String, target: Cue) -> Rejection? {
+        guard targetKinds.contains(kind) else { return .notApplicable }
+        switch kind {
         case "fade":
             return ["audio", "group"].contains(target.kindType) ? nil : .wrongTargetKind
         case "devamp":

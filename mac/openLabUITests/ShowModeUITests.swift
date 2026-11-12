@@ -14,7 +14,6 @@ final class ShowModeUITests: XCTestCase {
         XCTAssertTrue(name.isEnabled)
 
         app.radioGroups["mode-switch"].radioButtons["Show"].click()
-        XCTAssertTrue(app.staticTexts["show-mode-indicator"].waitForExistence(timeout: 5))
         XCTAssertTrue(waitFor("exists == false", name, timeout: 5), "the inspector is hidden in Show Mode")
 
         let running = cueStates("Running", in: app)

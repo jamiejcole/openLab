@@ -121,6 +121,28 @@ enum Icon: CaseIterable {
         }
     }
 
+    /// Panic's own picture (no symbol says "fade everything out"): a level falling to nothing inside
+    /// a frame. A template, so it takes the button's colour.
+    static func fadeOut(_ label: String) -> NSImage {
+        let image = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { rect in
+            let box = rect.insetBy(dx: 2, dy: 2)
+            let frame = NSBezierPath(roundedRect: box, xRadius: 2, yRadius: 2)
+            frame.lineWidth = 1.5
+            NSColor.black.set()
+            frame.stroke()
+            let wedge = NSBezierPath()
+            wedge.move(to: NSPoint(x: box.minX, y: box.maxY))
+            wedge.line(to: NSPoint(x: box.minX, y: box.minY))
+            wedge.line(to: NSPoint(x: box.maxX, y: box.minY))
+            wedge.close()
+            wedge.fill()
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = label
+        return image
+    }
+
     /// The symbol name the table gives this concept.
     var symbol: String { entry.symbol }
 
@@ -136,6 +158,7 @@ enum Icon: CaseIterable {
     /// by the fallback symbol; if that is also missing the image is `label` drawn as text
     /// (`compact`: its first letter, for a slot only 16 points wide).
     func image(_ label: String, compact: Bool = false) -> NSImage {
+        if self == .transportPanic || self == .activeCuePanic { return Self.fadeOut(label) }
         let first = nameForThisSystem
         if let image = IconLookup.shared.image(first, description: label) { return image }
         IconLookup.shared.reportMissing(first, concept: self)

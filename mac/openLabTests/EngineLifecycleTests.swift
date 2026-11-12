@@ -1205,8 +1205,8 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertFalse(editable.isShowMode)
         // What the operator sees: the footer's indicator, the title, the hidden cue-type row and
         // inspector, locked editing, and the same cue standing by as the editable copy shows.
-        XCTAssertFalse(locked.footer.showModeLabel.isHidden)
-        XCTAssertTrue(editable.footer.showModeLabel.isHidden)
+        XCTAssertEqual(locked.footer.modeSwitch.selectedSegment, 1)
+        XCTAssertEqual(editable.footer.modeSwitch.selectedSegment, 0)
         XCTAssertEqual(locked.window?.title, String(format: loc("window.main.title.showMode"), "Saved In Show Mode"))
         XCTAssertEqual(editable.window?.title, "Saved In Edit Mode")
         XCTAssertTrue(locked.cueToolbar.isHidden)

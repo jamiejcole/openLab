@@ -70,8 +70,15 @@ enum NewCueKind: String, CaseIterable, Sendable {
     }
 
     /// A whole new cue (no number: `auto_number` gives it one).
-    func cueJSON(id: ModelID, patch: ModelObject?, networkPatch: ModelObject? = nil) -> JSONValue? {
-        guard let kind = kindJSON(patch: patch, networkPatch: networkPatch) else { return nil }
+    /// `target`: the cue a new cue that takes a target starts with.
+    func cueJSON(
+        id: ModelID, patch: ModelObject?, networkPatch: ModelObject? = nil, target: ModelID? = nil
+    ) -> JSONValue? {
+        guard var kind = kindJSON(patch: patch, networkPatch: networkPatch) else { return nil }
+        if let target, case .object(var fields) = kind, fields["target"] != nil {
+            fields["target"] = .string(target.raw)
+            kind = .object(fields)
+        }
         return .object([
             "id": .string(id.raw), "number": .null, "name": .string(""), "notes": .string(""),
             "color": .string("none"), "flagged": .bool(false), "armed": .bool(true), "pre_wait": .double(0),

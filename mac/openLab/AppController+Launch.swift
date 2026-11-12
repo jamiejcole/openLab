@@ -21,18 +21,39 @@ extension AppController {
     func applyLaunchBehavior() async {
         let behavior = launchPreferences.behavior
         let live = !session.workspaces.isEmpty || !session.stores.isEmpty
+        let asked = filesToOpen
+        filesToOpen = []
         if live {
             engineLog.notice("launch: the engine already runs workspaces: the launch choice is not applied")
         } else {
             switch behavior {
             case .launcher, .nothing: break
-            case .newBlank: await newWorkspace()
+            // The app was started by opening a show: that show, not a blank one beside it.
+            case .newBlank: if asked.isEmpty { await newWorkspace() }
             case .restore: await restoreWorkspaces(launchPreferences.openFiles)
             }
         }
+        for url in asked { await openWorkspace(url: url) }
         launching = false
+        launchApplied = true
+        // Asked for while those were opening.
+        let late = filesToOpen
+        filesToOpen = []
+        for url in late { await openWorkspace(url: url) }
         // Nothing opened (nothing to restore, every file missing): the launcher, not an empty app.
         if live || behavior != .nothing { showLauncherIfNoWindows() }
+    }
+
+    /// Show files the system asked the app to open (a double-click in Finder, a drop on the Dock
+    /// icon). Until the engine is up and the launch choice is done they wait, then open after it.
+    func openFiles(_ urls: [URL]) {
+        let shows = urls.filter { $0.pathExtension.lowercased() == "openlab" }
+        guard !shows.isEmpty else { return }
+        if !launchApplied {
+            filesToOpen += shows
+        } else {
+            Task { for url in shows { await openWorkspace(url: url) } }
+        }
     }
 
     /// Opens `paths` in order. A file that cannot be opened is reported in the log and the footer

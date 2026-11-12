@@ -295,7 +295,7 @@
 "transport.reset" = "Reset all";
 "transport.pause" = "Pause all";
 "transport.resume" = "Resume all";
-"transport.panic" = "Panic";
+"transport.panic" = "Panic All";
 "sidebar.tabs.label" = "Sidebar view";
 "sidebar.tab.cueLists" = "Cue Lists";
 "sidebar.tab.activeCues" = "Active Cues";
@@ -553,7 +553,6 @@
 "relink.log.unmatched" = "No match found for %@.";
 
 "window.main.title.showMode" = "%@ (Show Mode)";
-"footer.showMode.indicator" = "SHOW MODE";
 "showMode.error.engine" = "The engine could not be told about Show Mode (%@). It is told again when it reconnects; until then the Mac may sleep.";
 "alert.closeShowMode.title" = "Close this workspace?";
 "alert.closeShowMode.message" = "The workspace is in Show Mode.";

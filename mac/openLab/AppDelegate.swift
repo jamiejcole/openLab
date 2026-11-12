@@ -88,6 +88,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if isSecondInstance { return }
+        appController.openFiles(urls)
+    }
+
     /// A show must survive an accidental window close: never quit, and bring a window back.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
