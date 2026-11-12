@@ -1,0 +1,17 @@
+{
+  "about": "A cue running with the next standing by: the Duration cell counts up beside its bar, the playhead is a white triangle at the row's left edge, and the sidebar's Cue Lists tab has its list opened to show the cues; then the Active Cues tab, and the settings' Network tab.",
+  "show": "Demo",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 1300, "height": 850},
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"click": "sidebar-list", "at": [0.04, 0.02]},
+    {"select": "1"},
+    {"key": "space"},
+    {"advance": 4},
+    {"shot": "running"},
+    {"focus": "settings"},
+    {"tab": "network"},
+    {"shot": "settings-network"}
+  ]
+}
