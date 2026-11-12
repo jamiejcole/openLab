@@ -19,9 +19,19 @@
 #
 # Exit codes: xcodebuild's own, except 75 (CUT_SHORT_RC): the run was cut short by a proven stall and the
 # job needs a re-run. `make test-mac` starts no second process on seeing it (the runner is wedged).
+# And 76 (HUNG_RC): a test hung (it passed its time allowance, the app never connected, or the run went
+# silent) and no proven stall with a passing retry excuses it. Whatever the cause, the next process on
+# this machine would most likely hang too, to the step's limit: `make test-mac` starts none, so a hang
+# costs minutes, not the rest of the step.
+#
+# A run that prints nothing for SILENCE_LIMIT seconds once its tests have started is stopped: a test
+# prints as it starts and ends and a hung one is ended by its own allowance, so that long a silence means
+# the app is not coming up.
 set -uo pipefail
 
 CUT_SHORT_RC=75
+HUNG_RC=76
+SILENCE_LIMIT=${OPENLAB_TEST_SILENCE_LIMIT:-300}
 
 # A report whose every sample has WindowServer's main thread in the paravirtual GPU driver and the
 # tested process's main thread waiting on WindowServer. A moment in the driver in passing is not
@@ -105,17 +115,62 @@ bundles() { find build/Logs/Test -maxdepth 1 -name '*.xcresult' 2>/dev/null | so
 
 # Left in the temporary folder: what it exports after a failure is worth reading.
 work=$(mktemp -d)
+
+# Runs the command with its output also kept in a file, and stops it after SILENCE_LIMIT seconds without
+# output once the tests have started (the build before them can be quiet for longer).
+run_watched() {
+  local log="$work/out.$1" pid dog rc
+  shift
+  : >"$log"
+  "$@" > >(tee -a "$log") 2>&1 &
+  pid=$!
+  (
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep 5
+      grep -q -e 'Testing started' -e '^Test Suite' "$log" 2>/dev/null || continue
+      if [ $(($(date +%s) - $(stat -f %m "$log"))) -ge "$SILENCE_LIMIT" ]; then
+        echo "run-mac-tests: no output for ${SILENCE_LIMIT}s after the tests started: stopping the run" | tee -a "$log"
+        : >"$work/silenced"
+        kill "$pid" 2>/dev/null
+        break
+      fi
+    done
+  ) &
+  dog=$!
+  wait "$pid"
+  rc=$?
+  kill "$dog" 2>/dev/null
+  wait "$dog" 2>/dev/null
+  return "$rc"
+}
+
+# Ends a failed run: HUNG_RC when a test of it hung, else the given code.
+hung=
+give_up() {
+  [ -z "$hung" ] || exit "$HUNG_RC"
+  exit "$1"
+}
+
 bundles >"$work/before"
-"${base[@]}" "$@" test
+run_watched first "${base[@]}" "$@" test
 rc=$?
 [ "$rc" = 0 ] && exit 0
+if [ -e "$work/silenced" ]; then
+  echo "::warning title=App tests went silent::the run printed nothing for ${SILENCE_LIMIT}s and was stopped; re-run the job"
+  exit "$HUNG_RC"
+fi
 
 # Only this run's bundle: an older one must not excuse a run that left none.
 bundle=$(bundles | comm -13 "$work/before" - | tail -n 1)
 [ -n "$bundle" ] || exit "$rc"
 xcrun xcresulttool get test-results summary --path "$bundle" >"$work/summary.json" || exit "$rc"
-xcrun xcresulttool export attachments --only-failures --path "$bundle" --output-path "$work/att" >/dev/null || exit "$rc"
-retry=$(classify "$work/summary.json" "$work/att") || exit "$rc"
+if jq -e '[.testFailures[]?.failureText
+    | select(test("exceeded execution time allowance|hung before establishing connection"))] | length > 0' \
+  "$work/summary.json" >/dev/null 2>&1; then
+  hung=1
+fi
+xcrun xcresulttool export attachments --only-failures --path "$bundle" --output-path "$work/att" >/dev/null || give_up "$rc"
+retry=$(classify "$work/summary.json" "$work/att") || give_up "$rc"
 
 if [ "$retry" = "--cut-short" ]; then
   echo "::warning title=WindowServer wedged on the runner::the GPU driver stalled and the app could not start again, so the tests after the hang never ran; re-run the job"
@@ -136,9 +191,10 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 fi
 bundles >"$work/before-retry"
 # shellcheck disable=SC2086 # one argument per line, none with a space (test names)
-"${base[@]}" $retry test
+run_watched retry "${base[@]}" $retry test
 retry_rc=$?
-[ "$retry_rc" = 0 ] || exit "$retry_rc"
+[ ! -e "$work/silenced" ] || exit "$HUNG_RC"
+[ "$retry_rc" = 0 ] || give_up "$retry_rc"
 
 # xcodebuild succeeds on a selection that runs no test: the retried tests must really have passed.
 bundle=$(bundles | comm -13 "$work/before-retry" - | tail -n 1)
@@ -149,5 +205,5 @@ if [ -n "$bundle" ]; then
 fi
 if ! [ "$passed" -ge "$want" ] 2>/dev/null; then
   echo "run-mac-tests: the retry passed ${passed:-no} tests of $want"
-  exit "$rc"
+  give_up "$rc"
 fi

@@ -292,7 +292,8 @@ jobs:
         timeout-minutes: 12
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       # 12 + 38 plus about 1.5 of setup fit the job's 60 minutes, so a hung run is cancelled here and the
-      # step below still uploads its results.
+      # step below still uploads its results. A hung test does not get that far: the wrapper ends the run
+      # (exit 76) and `make test-mac` starts no second process (scripts/run-mac-tests.sh).
       - timeout-minutes: 38
         if: ${{ !cancelled() }}
         run: make ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'test-mac-ui-full' || (needs.changes.outputs.app_engine == 'true' && 'test-mac' || 'test-mac-unit') }}

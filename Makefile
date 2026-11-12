@@ -3,7 +3,7 @@ XCODEBUILD := xcodebuild -project mac/openLab.xcodeproj -scheme openLab -derived
 # A hung test fails by name in minutes, not as a job stuck until the runner's limit; a hang the spindump
 # proves is the runner's WindowServer, not the test, runs again once (scripts/run-mac-tests.sh).
 MAC_TESTS_WITH_LIMIT := scripts/run-mac-tests.sh $(XCODEBUILD) -destination "platform=macOS,arch=$$(uname -m)" \
-	-test-timeouts-enabled YES -default-test-execution-time-allowance 180
+	-test-timeouts-enabled YES -default-test-execution-time-allowance 60
 # The per-PR UI tests (scripts/ui-smoke.txt) as -only-testing arguments.
 UI_SMOKE := $(foreach t,$(shell grep -Ev '^[[:space:]]*(\#|$$)' scripts/ui-smoke.txt),-only-testing:$(t))
 # The unit test classes `make test-mac` runs in its second test process.
@@ -102,6 +102,7 @@ test-mac: project
 	rc=0; \
 	$(MAC_TESTS_WITH_LIMIT) -- -only-testing:openLabTests $(foreach c,$(LATE_TEST_CLASSES),-skip-testing:openLabTests/$(c)) || rc=$$?; \
 	if [ "$$rc" = 75 ]; then echo "test-mac: the first test process was cut short by a WindowServer stall on the runner; not starting the second. Re-run the job."; exit $$rc; fi; \
+	if [ "$$rc" = 76 ]; then echo "test-mac: a test hung in the first test process; not starting the second, which would most likely hang to the step's limit. Read the hang report in the result bundle, then re-run the job."; exit $$rc; fi; \
 	$(MAC_TESTS_WITH_LIMIT) -- $(foreach c,$(LATE_TEST_CLASSES),-only-testing:openLabTests/$(c)) $(UI_SMOKE) || rc=$$?; \
 	exit $$rc
 
