@@ -54,6 +54,12 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var appNotices: [String] = []
     /// Warnings that arrived as runtime changes, newest last.
     @Published private(set) var runtimeWarnings: [WireWarning] = []
+    static let unlistedWarnings: Set<String> = ["trigger_ignored", "target_not_running"]
+
+    /// The states in which a cue's progress is shown: an ended cue reads its duration again.
+    static func keepsProgress(_ state: WireCueState) -> Bool {
+        state == .running || state == .fading || state == .paused || state == .stopping
+    }
     /// The latest `status` (system health, DX-03); nil until the first one arrives.
     @Published private(set) var status: SystemStatus?
     @Published private(set) var logEntries: [LogEntry] = []
@@ -327,7 +333,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         case .progress(let items, let w):
             let old = progress
             let oldWaits = waits
-            progress = Dictionary(items.map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
+            // A voice fading out after its cue has ended (a panic) is still reported; the engine sends
+            // nothing once all is quiet, so an item taken for an ended cue would never be cleared.
+            let live = items.filter { item in cueStates[item.cue].map { Self.keepsProgress($0.state) } ?? true }
+            progress = Dictionary(live.map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
             var next: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
             for wait in w { next[wait.cue, default: [:]][wait.wait] = wait }
             waits = next
@@ -507,8 +516,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 cues.insert(cue)
                 // A paused or stopping cue keeps its (frozen or elapsed) progress: the engine still
                 // reports it, and dropping it here would only have the next `progress` put it back.
-                let keepsProgress = state == .running || state == .fading || state == .paused || state == .stopping
-                if !keepsProgress, progress[cue] != nil {
+                if !Self.keepsProgress(state), progress[cue] != nil {
                     progress[cue] = nil
                     progressEnded.insert(cue)
                 }
@@ -531,6 +539,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 if active { previewing.insert(cue) } else { previewing.remove(cue) }
                 cues.insert(cue)
             case .warning(let w):
+                // Nothing went wrong in these: the operator pressed a key twice, or a fade ran with
+                // nothing to fade. QLab shows nothing for them, so they are not listed or counted.
+                if Self.unlistedWarnings.contains(w.type) { continue }
                 runtimeWarnings.append(w)
                 noticed = true
                 if runtimeWarnings.count > Self.maxRuntimeWarnings {

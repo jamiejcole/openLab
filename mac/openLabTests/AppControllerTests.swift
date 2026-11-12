@@ -1548,15 +1548,14 @@ final class AppControllerTests: XCTestCase {
         first.setShowMode(true)
         XCTAssertTrue(first.inspector.isLocked)
         XCTAssertTrue(first.cueToolbar.segmentedControls.allSatisfy { !$0.isEnabled })
-        XCTAssertFalse(first.footer.showModeLabel.isHidden)
         XCTAssertEqual(first.footer.modeSwitch.selectedSegment, 1)
         XCTAssertFalse(other.isShowMode)
         XCTAssertFalse(other.inspector.isLocked)
-        XCTAssertTrue(other.footer.showModeLabel.isHidden)
+        XCTAssertEqual(other.footer.modeSwitch.selectedSegment, 0)
         first.setShowMode(false)
         XCTAssertFalse(first.inspector.isLocked)
         XCTAssertTrue(first.cueToolbar.segmentedControls.allSatisfy(\.isEnabled))
-        XCTAssertTrue(first.footer.showModeLabel.isHidden)
+        XCTAssertEqual(first.footer.modeSwitch.selectedSegment, 0)
     }
 
     /// The `set_show_mode` requests the engine received, in order.
@@ -2146,7 +2145,7 @@ final class AppControllerTests: XCTestCase {
         wc.inspector.setSelection([TestSnapshots.intro])
         wc.inspector.tabView.selectTabViewItem(withIdentifier: "levels")
         let field = wc.inspector.audioLevels.levelField
-        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(field))
+        wc.inspector.audioLevels.beginTyping(wc.inspector.audioLevels.selection)  // the box opens for typing
         try XCTUnwrap(field.currentEditor()).string = "-6"
         wc.inspector.audioLevels.controlTextDidChange(
             Notification(name: NSControl.textDidChangeNotification, object: field))
@@ -2159,7 +2158,7 @@ final class AppControllerTests: XCTestCase {
         wc.inspector.setSelection([fade])
         wc.inspector.tabView.selectTabViewItem(withIdentifier: "fadeLevels")
         let field = wc.inspector.fadeLevels.levelField
-        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(field))
+        wc.inspector.fadeLevels.beginTyping(wc.inspector.fadeLevels.selection)  // the box opens for typing
         try XCTUnwrap(field.currentEditor()).string = "-6"
         wc.inspector.fadeLevels.controlTextDidChange(
             Notification(name: NSControl.textDidChangeNotification, object: field))

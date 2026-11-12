@@ -240,6 +240,7 @@ Option on macOS).
 | `levels.output_db` | array of level or `null` | Indexed by cue output; `null` entries are left alone. |
 | `levels.crosspoints` | array of `{"input", "output", "db"}` | Listed crosspoints fade to their `db` (by it, for a Group target; a silent crosspoint stays silent); others are left alone. Mutes are never changed by a fade. |
 | `stop_target_when_done` | bool | Stop the target when the fade completes. |
+| `mode` | `"absolute"` \| `"relative"` | For an Audio target: `absolute` ends the target's levels at the Fade's; `relative` moves each by the Fade's dB from where it is when the Fade starts (a silent level stays silent), within the workspace limits. A Group target always moves by them. Absent: `absolute`. |
 
 **`group`** — contains cues.
 

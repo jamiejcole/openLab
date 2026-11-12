@@ -1205,8 +1205,8 @@ final class EngineCrashFlowTests: XCTestCase {
         XCTAssertFalse(editable.isShowMode)
         // What the operator sees: the footer's indicator, the title, the hidden cue-type row and
         // inspector, locked editing, and the same cue standing by as the editable copy shows.
-        XCTAssertFalse(locked.footer.showModeLabel.isHidden)
-        XCTAssertTrue(editable.footer.showModeLabel.isHidden)
+        XCTAssertEqual(locked.footer.modeSwitch.selectedSegment, 1)
+        XCTAssertEqual(editable.footer.modeSwitch.selectedSegment, 0)
         XCTAssertEqual(locked.window?.title, String(format: loc("window.main.title.showMode"), "Saved In Show Mode"))
         XCTAssertEqual(editable.window?.title, "Saved In Edit Mode")
         XCTAssertTrue(locked.cueToolbar.isHidden)
@@ -1765,7 +1765,8 @@ final class EngineCrashFlowTests: XCTestCase {
 
     /// The app started as the system starts it: the delegate's launch, on a real engine run (an
     /// engine already running is attached to), until the launch choice has been carried out.
-    private func startApp() async throws {
+    /// `opening`: show files the system hands over as it starts the app (a double-click in Finder).
+    private func startApp(opening: [URL] = []) async throws {
         let support = runs.support
         processes = SystemEngineProcesses(
             infoURL: runs.infoURL, watchStderr: false,
@@ -1786,6 +1787,7 @@ final class EngineCrashFlowTests: XCTestCase {
         app.recentURLs = { [] }
         alarm = delegate.alarmController
         delegate.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
+        if !opening.isEmpty { delegate.application(NSApplication.shared, open: opening) }
         delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         let wanted = LaunchPreferences(defaults: prefs).behavior == .launcher
         XCTAssertEqual(launcherShown, wanted, "the launcher shows at once only when it is the choice")
@@ -2102,6 +2104,18 @@ final class EngineCrashFlowTests: XCTestCase {
         let notice = app.launcher.noticeLabel
         XCTAssertFalse(notice.isHidden)
         XCTAssertTrue(notice.stringValue.contains("gone.openlab"), notice.stringValue)
+    }
+
+    func testAShowOpenedFromFinderOpensOnceTheEngineIsUpAndALaterOneAtOnce() async throws {
+        makePrefs(.newBlank)
+        let a = URL(fileURLWithPath: try runs.show("Demo", named: "A"))
+        let b = URL(fileURLWithPath: try runs.show("Demo", named: "B"))
+        try await startApp(opening: [a])
+        await assertEventually { self.openNames() == ["A"] }
+        await settle()
+        XCTAssertEqual(openNames(), ["A"], "the show that was asked for, and no blank workspace beside it")
+        try XCTUnwrap(delegate).application(NSApplication.shared, open: [b, URL(fileURLWithPath: "/tmp/notes.txt")])
+        await assertEventually { self.openNames() == ["A", "B"] }
     }
 
     func testNothingToRestoreShowsTheLauncher() async throws {

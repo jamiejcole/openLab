@@ -527,8 +527,10 @@ final class InspectorTests: XCTestCase {
     }
 
     func testPreviewButtonIsDisabledForOtherKindsAndShowModeKeepsItUsable() throws {
+        vc.setSelection([Self.group])
+        XCTAssertTrue(vc.previewButton.isEnabled, "a group is previewed through its audio cues")
         vc.setSelection([Self.fade])
-        XCTAssertFalse(vc.previewButton.isEnabled, "a fade cue cannot be previewed")
+        XCTAssertTrue(vc.previewButton.isEnabled, "a Fade's preview runs it on its target")
         vc.setSelection([])
         XCTAssertFalse(vc.previewButton.isEnabled)
         vc.setSelection([Self.intro])
@@ -1566,10 +1568,12 @@ final class CueTargetFlowTests: XCTestCase {
     func testSeveralDraggedCuesAllTargetTheOneDroppedOnInOneUndoStep() async throws {
         let start = try await add(.start)
         let stop = try await add(.stop)
+        // Each new cue started on the cue selected when it was made; the drop moves both to Intro.
+        let before = [target(start), target(stop)]
         XCTAssertEqual(try drop([start, stop], on: Self.intro), .setTarget([start, stop], Self.intro))
         await assertEventually { self.targetCell(start) == "1" && self.targetCell(stop) == "1" }
         await wc.editor.undo()
-        await assertEventually { self.target(start) == nil && self.target(stop) == nil }
+        await assertEventually { [self.target(start), self.target(stop)] == before }
     }
 
     func testADropOnAGroupsTargetCellMakesItTheTargetAndAnywhereElseMovesIn() async throws {
@@ -1750,5 +1754,376 @@ final class CueTargetFlowTests: XCTestCase {
         let log = CueEditingTests.SendLog(rig)
         await wc.editor.setTarget(of: [Self.fade], to: Self.pad)
         XCTAssertEqual(log.sent, 0, "a drop on its way is refused too")
+    }
+}
+
+/// What the user's run of the release build found (2026-11-12), each as the flow they did, on the
+/// real engine: the `Targets` show (cue 1 `intro`, `pad`, Fade 3 with no target, memo 4).
+@MainActor
+final class UserTestFlowTests: XCTestCase {
+    private static let intro: ModelID = "00000000-0000-0000-0000-000000000101"
+    private static let fade: ModelID = "00000000-0000-0000-0000-000000000103"
+    private static let memo: ModelID = "00000000-0000-0000-0000-000000000104"
+
+    private var rig: Rig!
+    private var wc: WorkspaceWindowController!
+    private var inspector: InspectorViewController { wc.inspector }
+    private var list: ModelID { wc.cueList.listID ?? "" }
+
+    override func setUp() async throws {
+        rig = try await Rig.open("Targets")
+        wc = WorkspaceWindowController(store: rig.store)
+        let store = rig.store
+        wc.onCueAction = { action in Task { _ = await store.transport(action) } }
+        wc.window?.makeKeyAndOrderFront(nil)
+        await assertEventually { self.wc.cueList.roots.isEmpty == false }
+    }
+
+    override func tearDown() async throws {
+        wc?.window?.close()
+        wc = nil
+        rig = nil
+    }
+
+    private func select(_ id: ModelID) async {
+        wc.cueList.selectAsUser([id])
+        await assertEventually { self.inspector.cue?.id == id }
+    }
+
+    private func cell(_ column: String, _ id: ModelID) -> CueCell? {
+        let o = wc.cueList.outlineView
+        guard let node = wc.cueList.node(id) else { return nil }
+        let col = o.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
+        return o.view(atColumn: col, row: o.row(forItem: node), makeIfNecessary: true) as? CueCell
+    }
+
+    private func target(_ id: ModelID) -> String? { rig.store.model?.cue(id)?.raw["kind"]?["target"]?.stringValue }
+
+    private func start(_ id: ModelID) async throws {
+        guard case .success = await rig.store.transport(.start(cue: id)) else { return XCTFail("start") }
+        try await rig.advance(0.2)
+    }
+
+    /// The Fade targets `intro` and fades its main level, so the engine no longer counts it broken.
+    private func aimFadeAtIntro() async {
+        await wc.editor.setTarget(of: [Self.fade], to: Self.intro)
+        await assertEventually { self.target(Self.fade) == Self.intro.raw }
+        let levels = JSONValue.object([
+            "master_db": .double(-6), "output_db": .array([]), "crosspoints": .array([]),
+        ])
+        guard case .success = await rig.store.send(command: .setProperty(Self.fade, .kindFields(["levels": levels])))
+        else { return XCTFail("the Fade's level") }
+        await assertEventually { (self.rig.store.problems[Self.fade] ?? []).isEmpty }
+    }
+
+    func testANewFadeMadeWithAnAudioCueSelectedTargetsItAndOneMadeOnAMemoHasNone() async throws {
+        await select(Self.intro)
+        let made = await wc.editor.add(.fade)
+        let fade = try XCTUnwrap(made)
+        await assertEventually { self.wc.cueList.node(fade) != nil }
+        XCTAssertEqual(target(fade), Self.intro.raw)
+        XCTAssertEqual(cell("target", fade)?.label.stringValue, "1", "the list shows the target's number")
+        await select(Self.memo)
+        let other = await wc.editor.add(.fade)
+        let second = try XCTUnwrap(other)
+        await assertEventually { self.wc.cueList.node(second) != nil }
+        XCTAssertNil(target(second), "a memo cannot be faded")
+    }
+
+    func testDraggingACueOverATargetCellOutlinesItSolidInTheCellAndDashedBesideIt() async throws {
+        wc.window?.layoutIfNeeded()
+        let list = wc.cueList
+        let o = list.outlineView
+        let intro = try XCTUnwrap(list.node(Self.intro))
+        let fade = try XCTUnwrap(list.node(Self.fade))
+        func frame(_ column: String, _ node: CueNode) -> NSRect {
+            o.frameOfCell(
+                atColumn: o.column(withIdentifier: NSUserInterfaceItemIdentifier(column)), row: o.row(forItem: node))
+        }
+        let box = frame("target", fade)
+        let inCell = try XCTUnwrap(list.targetOutlineFor([intro], at: NSPoint(x: box.midX, y: box.midY)))
+        XCTAssertTrue(inCell.node === fade)
+        XCTAssertEqual(inCell.kind, .sets, "in the cell the drop sets the target")
+        let name = frame("name", fade)
+        XCTAssertEqual(
+            list.targetOutlineFor([intro], at: NSPoint(x: name.midX, y: name.midY))?.kind, .near,
+            "beside it the drop moves the cue")
+        let memoBox = frame("target", try XCTUnwrap(list.node(Self.memo)))
+        XCTAssertNil(
+            list.targetOutlineFor([intro], at: NSPoint(x: memoBox.midX, y: memoBox.midY)),
+            "a memo takes no target and cannot be one for an audio cue")
+        // Drawn over the cell: accent colour on a plain row, white on a highlighted one, dashed beside it.
+        list.showTargetOutline(inCell)
+        XCTAssertTrue(list.targetOutline.superview === o)
+        XCTAssertEqual(list.targetOutline.frame, box)
+        XCTAssertFalse(list.targetOutline.onSelectedRow)
+        let white: (NSBitmapImageRep) -> Int = { rep in
+            var n = 0
+            for x in 0..<rep.pixelsWide {
+                for y in 0..<rep.pixelsHigh {
+                    guard let c = rep.colorAt(x: x, y: y) else { continue }
+                    if c.alphaComponent > 0.9, c.redComponent > 0.95, c.greenComponent > 0.95, c.blueComponent > 0.95 {
+                        n += 1
+                    }
+                }
+            }
+            return n
+        }
+        XCTAssertEqual(white(try renderView(list.targetOutline)), 0, "not white on a row that is not highlighted")
+        await select(Self.fade)
+        list.showTargetOutline(inCell)
+        XCTAssertTrue(list.targetOutline.onSelectedRow)
+        let solid = white(try renderView(list.targetOutline))
+        XCTAssertGreaterThan(solid, 100, "a white line round the cell of the highlighted row")
+        list.showTargetOutline((fade, .near))
+        let dashed = white(try renderView(list.targetOutline))
+        XCTAssertGreaterThan(dashed, 30)
+        XCTAssertLessThan(dashed, solid * 3 / 4, "the dashed line has gaps")
+        list.showTargetOutline(nil)
+        XCTAssertNil(list.targetOutline.superview, "gone when the drag ends")
+    }
+
+    func testTheMovePlayheadMenuCommandIsNotTakenByTheCueList() {
+        // The list's view controller is in the responder chain: a method of the same name there took
+        // the menu-bar command, and the dialog never opened.
+        XCTAssertFalse(wc.cueList.responds(to: #selector(AppDelegate.movePlayheadToCue(_:))))
+        XCTAssertFalse(wc.cueList.responds(to: #selector(AppDelegate.selectCue(_:))))
+        XCTAssertNil(wc.applyCueNumber("3", movePlayhead: true))
+    }
+
+    func testMovePlayheadToCueByNumberMovesThePlayhead() async throws {
+        XCTAssertNil(wc.applyCueNumber("3", movePlayhead: true), "cue 3 exists")
+        await assertEventually { self.rig.store.playheads[self.list] == Self.fade }
+        XCTAssertNotNil(wc.applyCueNumber("99", movePlayhead: true), "no such cue: the operator is told")
+    }
+
+    func testASecondStartOfARunningCueAndAFadeOfAnIdleTargetListNoWarning() async throws {
+        await aimFadeAtIntro()
+        try await start(Self.intro)
+        await assertEventually { self.rig.store.cueStates[Self.intro]?.state == .running }
+        try await start(Self.intro)  // already running: ignored
+        guard case .success = await rig.store.transport(.hardStop(cue: Self.intro)) else { return XCTFail("stop") }
+        try await rig.advance(0.2)
+        await assertEventually { self.rig.store.cueStates[Self.intro]?.state != .running }
+        try await start(Self.fade)  // its target is not running
+        try await rig.advance(0.5)
+        await rig.sync()
+        XCTAssertEqual(rig.store.runtimeWarnings.map(\.type), [], "neither is a warning the operator sees")
+    }
+
+    func testAFadesPreviewRunsItOnItsTargetAndLeavesThePlayhead() async throws {
+        await aimFadeAtIntro()
+        try await start(Self.intro)
+        await select(Self.fade)
+        await assertEventually { self.rig.store.playheads[self.list] == Self.fade }
+        inspector.tabView.selectTabViewItem(withIdentifier: "fadeLevels")
+        wc.window?.layoutIfNeeded()
+        XCTAssertFalse(inspector.fadePreviewButton.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(inspector.fadePreviewButton.isEnabled)
+        inspector.fadePreviewButton.performClick(nil)
+        try await rig.advance(0.3)
+        await assertEventually("the Fade runs") {
+            [.running, .fading].contains(self.rig.store.cueStates[Self.fade]?.state)
+        }
+        XCTAssertEqual(rig.store.playheads[list], Self.fade, "the playhead did not move on")
+    }
+
+    func testAListTimeShowsTwoDecimalsAndTheInspectorKeepsTheMilliseconds() async throws {
+        guard case .success = await rig.store.send(command: .setProperty(Self.fade, .duration(1.234))) else {
+            return XCTFail("duration")
+        }
+        await assertEventually { self.cell("duration", Self.fade)?.label.stringValue == "00:01.23" }
+        await select(Self.fade)
+        inspector.tabView.selectTabViewItem(at: 0)
+        XCTAssertEqual(inspector.durationField.stringValue, "00:01.234")
+    }
+
+    func testAFileTargetIsDrawnAsAPathAndACueWithoutAFileShowsThePlainField() async throws {
+        await select(Self.intro)
+        inspector.tabView.selectTabViewItem(at: 0)
+        wc.window?.layoutIfNeeded()
+        XCTAssertFalse(inspector.targetPath.isHiddenOrHasHiddenAncestor, "the path is drawn")
+        XCTAssertTrue(inspector.targetField.isHidden)
+        XCTAssertEqual(inspector.targetPath.pathItems.last?.title, "a.wav", "ending in the file")
+        XCTAssertGreaterThan(inspector.targetPath.pathItems.count, 1, "after its folders")
+        XCTAssertNotNil(inspector.targetPath.pathItems.last?.image, "each with its icon")
+        inspector.clearTargetButton.performClick(nil)
+        await assertEventually { self.inspector.targetPath.isHidden && !self.inspector.targetField.isHidden }
+        XCTAssertEqual(inspector.targetField.placeholderString, loc("inspector.target.noFile"))
+    }
+
+    func testAFileInTheHomeFolderIsShownFromTheHomeFolderDown() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let url = home.appendingPathComponent("Shows/media/a.wav")
+        let control = NSPathControl()
+        control.url = url
+        let shown = InspectorViewController.shownPathItems(control.pathItems, of: url)
+        XCTAssertEqual(shown.map(\.title).suffix(3), ["Shows", "media", "a.wav"])
+        XCTAssertEqual(shown.count, 4, "the home folder, then the rest")
+        let outside = URL(fileURLWithPath: "/Volumes/Show/a.wav")
+        control.url = outside
+        XCTAssertEqual(
+            InspectorViewController.shownPathItems(control.pathItems, of: outside).count, control.pathItems.count)
+    }
+
+    func testTheContinuePopUpShowsEveryModesWholeTitle() async throws {
+        await select(Self.intro)
+        inspector.tabView.selectTabViewItem(at: 0)
+        wc.window?.layoutIfNeeded()
+        let popup = inspector.continuePopup
+        for item in popup.itemArray {
+            popup.select(item)
+            XCTAssertLessThanOrEqual(
+                try XCTUnwrap(popup.cell).cellSize.width, popup.frame.width + 0.5, "\(item.title) is cut short")
+        }
+    }
+
+    func testADraggedSidebarWidthStaysInAWorkspaceThatHasNoFile() async throws {
+        // No layout is kept for this window (it has no file): the divider must still stay where it is put.
+        let window = try XCTUnwrap(wc.window)
+        window.setFrame(NSRect(x: 0, y: 0, width: 1400, height: 800), display: true)
+        wc.setVisible(.sidebar, true)
+        window.layoutIfNeeded()
+        let across = wc.horizontalSplit.bounds.width - wc.horizontalSplit.dividerThickness
+        wc.horizontalSplit.setPosition(across - 420, ofDividerAt: 0)
+        window.layoutIfNeeded()
+        XCTAssertEqual(wc.sidebar.view.frame.width, 420, accuracy: 1, "the drag took")
+        XCTAssertEqual(
+            try XCTUnwrap(wc.sidebarWidthConstraint?.constant), 420, accuracy: 1, "and is the width it keeps")
+        window.setFrame(NSRect(x: 0, y: 0, width: 1300, height: 800), display: true)
+        window.layoutIfNeeded()
+        XCTAssertEqual(wc.sidebar.view.frame.width, 420, accuracy: 1, "it did not spring back")
+    }
+
+    func testTheSidebarsPanicButtonSaysItPanicsEverythingAndHasItsOwnPicture() throws {
+        let panic = try XCTUnwrap(wc.sidebar.transportButtons[AX.transportPanic])
+        XCTAssertEqual(panic.toolTip, "Panic All")
+        let reset = try XCTUnwrap(wc.sidebar.transportButtons[AX.transportReset])
+        XCTAssertNotEqual(panic.image?.tiffRepresentation, reset.image?.tiffRepresentation)
+    }
+
+    func testASidebarListOpensToShowItsCuesAndChoosingOneSelectsIt() async throws {
+        wc.setVisible(.sidebar, true)
+        wc.window?.layoutIfNeeded()
+        let side = wc.sidebar
+        XCTAssertEqual(side.listTable.numberOfRows, 1, "closed: the list alone")
+        let row = try XCTUnwrap(side.listTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? CueListNameCell)
+        XCTAssertFalse(row.disclosure.isHidden)
+        row.disclosure.performClick(nil)
+        XCTAssertEqual(side.listTable.numberOfRows, 5, "open: the list and its four cues")
+        func text(_ r: Int) -> String? {
+            (side.listTable.view(atColumn: 0, row: r, makeIfNecessary: true) as? CueListNameCell)?.name.stringValue
+        }
+        XCTAssertEqual(text(1), "1  intro")
+        XCTAssertEqual(text(2), "pad")
+        XCTAssertEqual(text(4), "4  note")
+        side.listTable.selectRowIndexes(IndexSet(integer: 4), byExtendingSelection: false)
+        await assertEventually { self.wc.cueList.selectedIDs() == [Self.memo] }
+        // A renamed cue is redrawn while the list is open.
+        guard case .success = await rig.store.send(command: .setProperty(Self.memo, .name("interval"))) else {
+            return XCTFail("rename")
+        }
+        await assertEventually { text(4) == "4  interval" }
+        let again = try XCTUnwrap(side.listTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? CueListNameCell)
+        again.disclosure.performClick(nil)
+        XCTAssertEqual(side.listTable.numberOfRows, 1)
+    }
+
+    // MARK: From the comparison with QLab 5
+
+    func testAWaitIsTypedInItsCellOfTheList() async throws {
+        wc.window?.layoutIfNeeded()
+        XCTAssertTrue(wc.cueList.beginCellEdit(Self.intro, column: "preWait"), "a double-click opens the cell")
+        let o = wc.cueList.outlineView
+        let box = o.frameOfCell(
+            atColumn: o.column(withIdentifier: NSUserInterfaceItemIdentifier("preWait")),
+            row: o.row(forItem: wc.cueList.node(Self.intro)))
+        XCTAssertTrue(wc.cueList.cellEditor.superview === o)
+        XCTAssertTrue(box.intersects(wc.cueList.cellEditor.frame), "the editor is over that cell")
+        wc.cueList.cancelCellEdit()
+        let taken = await wc.editor.setCell("preWait", of: Self.intro, text: "1.5")
+        XCTAssertTrue(taken)
+        await assertEventually { self.cell("preWait", Self.intro)?.label.stringValue == "00:01.50" }
+        let post = await wc.editor.setCell("postWait", of: Self.intro, text: "2")
+        XCTAssertTrue(post)
+        await assertEventually { self.cell("postWait", Self.intro)?.label.stringValue == "00:02.00" }
+    }
+
+    func testTheContinueCellsMenuSetsTheModeAndAutoFollowShowsTheDurationAsItsPostWait() async throws {
+        wc.window?.layoutIfNeeded()
+        await assertEventually { self.cell("duration", Self.intro)?.label.stringValue.isEmpty == false }
+        let row = wc.cueList.outlineView.row(forItem: wc.cueList.node(Self.intro))
+        let menu = try XCTUnwrap(wc.cueList.continueMenu(row: row))
+        XCTAssertEqual(menu.items.count, 3)
+        XCTAssertEqual(menu.items.filter { $0.state == .on }.map(\.title), [loc("inspector.continue.do_not_continue")])
+        let follow = try XCTUnwrap(menu.items.last)
+        XCTAssertEqual(follow.title, loc("inspector.continue.auto_follow"))
+        _ = follow.target?.perform(follow.action, with: follow)
+        await assertEventually {
+            self.rig.store.model?.cue(Self.intro)?.raw["continue_mode"]?.stringValue == "auto_follow"
+        }
+        let length = try XCTUnwrap(cell("duration", Self.intro)?.label.stringValue)
+        await assertEventually { self.cell("postWait", Self.intro)?.label.stringValue == length }
+        XCTAssertFalse(wc.cueList.beginCellEdit(Self.intro, column: "postWait"), "it is the duration: not typed")
+        XCTAssertEqual(
+            try XCTUnwrap(wc.cueList.continueMenu(row: row)).items.filter { $0.state == .on }.map(\.title),
+            [loc("inspector.continue.auto_follow")])
+    }
+
+    func testTheSidebarsTabsCountTheListsAndTheActiveCues() async throws {
+        wc.setVisible(.sidebar, true)
+        let tabs = wc.sidebar.tabs
+        XCTAssertEqual(tabs.label(forSegment: 0), "1 Cue List")
+        XCTAssertEqual(tabs.label(forSegment: 1), "0 Active Cues")
+        try await start(Self.intro)
+        await assertEventually { tabs.label(forSegment: 1) == "1 Active Cue" }
+    }
+
+    func testNetworkDestinationsAreAddedEditedAndRemovedInTheSettings() async throws {
+        let settings = WorkspaceSettingsWindowController(store: rig.store)
+        defer { settings.window?.close() }
+        await settings.present().value
+        settings.tabs.selectTabViewItem(withIdentifier: "network")
+        // The show has one destination, which nothing sends to yet; a second is added after it.
+        await assertEventually { settings.shownNetwork?.count == 1 }
+        // With the caret in a field of the table, as it is after typing there.
+        let first = try XCTUnwrap(settings.networkFields.first)
+        XCTAssertTrue(try XCTUnwrap(settings.window).makeFirstResponder(first))
+        settings.networkAddButton.performClick(nil)
+        await assertEventually { settings.shownNetwork?.count == 2 }
+        func field(_ key: String) throws -> NSTextField {
+            try XCTUnwrap(settings.networkFields.last { $0.identifier?.rawValue == key })
+        }
+        func stored(_ key: String) -> JSONValue? { rig.store.model?.networkPatches.last?.raw[key] }
+        XCTAssertEqual(try field("name").stringValue, "Network 2")
+        XCTAssertEqual(try field("port").stringValue, "53000")
+        // The address and port of the desk are typed in.
+        func type(_ key: String, _ text: String) throws {
+            let f = try field(key)
+            f.stringValue = text
+            settings.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: f))
+        }
+        try type("host", "10.0.0.20")
+        await assertEventually { stored("host")?.stringValue == "10.0.0.20" }
+        try type("port", "8000")
+        await assertEventually { stored("port")?.doubleValue == 8000 }
+        await assertEventually { (try? field("port").stringValue) == "8000" }
+        try type("port", "seventy")
+        await assertEventually { settings.messageLabel.stringValue == loc("settings.network.badPort") }
+        await assertEventually { (try? field("port").stringValue) == "8000" }
+        let tcp = try XCTUnwrap(settings.networkTransportPopups.last)
+        tcp.selectItem(at: 1)
+        _ = tcp.target?.perform(tcp.action, with: tcp)
+        await assertEventually { stored("protocol")?.stringValue == "tcp" }
+        // A new Network cue sends to the first destination: that one is not removed; the unused one is.
+        let made = await wc.editor.add(.network)
+        _ = try XCTUnwrap(made)
+        try XCTUnwrap(settings.networkDeleteButtons.first).performClick(nil)
+        await assertEventually { !settings.messageLabel.stringValue.isEmpty }
+        XCTAssertEqual(rig.store.model?.networkPatches.count, 2, "still there")
+        try XCTUnwrap(settings.networkDeleteButtons.last).performClick(nil)
+        await assertEventually { self.rig.store.model?.networkPatches.count == 1 }
+        await assertEventually { settings.shownNetwork?.count == 1 }
+        XCTAssertEqual(try field("name").stringValue, "Desk")
     }
 }

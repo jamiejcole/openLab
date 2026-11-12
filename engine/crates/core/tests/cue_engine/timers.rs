@@ -250,6 +250,7 @@ fn a_cue_with_static_problems_keeps_its_waits_but_shows_no_action() {
                 crosspoints: vec![],
             },
             stop_target_when_done: false,
+            mode: Default::default(),
         },
     );
     let mut rig = Rig::panicking(vec![timed(fade, 1.0, 4.0, AC), memo(2)]);

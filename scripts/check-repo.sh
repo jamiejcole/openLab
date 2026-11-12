@@ -518,6 +518,7 @@ wedged_run() {
 echo "$*" >>calls
 n=$(wc -l <calls | tr -d ' ')
 if [ -z "$NO_BUNDLE" ] && { [ "$n" = 1 ] || [ -z "$NO_RETRY_BUNDLE" ]; }; then mkdir "build/Logs/Test/Test-$n.xcresult"; fi
+if [ -n "$SILENT" ]; then echo "Testing started"; sleep 60; fi
 exit "$(sed -n "${n}p" rcs)"
 FAKE
   cat >"$d/bin/xcrun" <<'FAKE'
@@ -534,6 +535,7 @@ FAKE
   printf '{"testFailures":[{"failureText":"Test exceeded execution time allowance of 3 minutes","targetName":"openLabTests","testIdentifierString":"Flow/testHung()"},{"failureText":"XCTAssertEqual failed","targetName":"openLabTests","testIdentifierString":"Flow/testBad()"}]}' >"$d/mixed.json"
   printf '[{"testIdentifier":"Flow/testHung()","attachments":[{"exportedFileName":"s.txt","isAssociatedWithFailure":true,"suggestedHumanReadableName":"x-Spindump_0.txt"}]}]' >"$d/att/manifest.json"
   wedged_report 9 9 >"$d/att/s.txt"
+  printf '{"testFailures":[{"failureText":"XCTAssertEqual failed","targetName":"openLabTests","testIdentifierString":"Flow/testWrong()"}]}' >"$d/plain.json"
   export WEDGED_ATT="$d/att" FIRST_SUMMARY="$d/hung.json"
 
   # The app that could not start again after the hang: no second start (the stall has outlasted the
@@ -553,24 +555,29 @@ FAKE
   printf '{"testFailures":[%s,{"failureText":"Test exceeded execution time allowance of 3 minutes","targetName":"openLabTests","testIdentifierString":"Flow/testHung()"}]}' "$started" >"$d/cut-short.json"
   WEDGED_ATT="$att_cut" FIRST_SUMMARY="$d/cut-short.json" wedged_case cut-short 75 1 "65" -only-testing:everything
   grep -q '::warning.*re-run the job' "$d/cut-short/out" || fail wedged-run "a run cut short must say the job needs a re-run: $(cat "$d/cut-short/out")"
-  WEDGED_ATT="$att_bad" FIRST_SUMMARY="$d/cut-short.json" wedged_case cut-short-unproven 65 1 "65"
+  WEDGED_ATT="$att_bad" FIRST_SUMMARY="$d/cut-short.json" wedged_case cut-short-unproven 76 1 "65"
   ! grep -q 're-run the job' "$d/cut-short-unproven/out" || fail wedged-run "a restart not proven wedged must not be called a wedge"
 
   wedged_case proven 0 2 "65 0" -only-testing:everything
   grep -q '::warning' "$d/proven/out" || fail wedged-run "a retry must warn"
   [ "$(sed -n 2p "$d/proven/calls")" = "base -only-testing:openLabTests/Flow/testHung test" ] \
     || fail wedged-run "the retry must select the one test: $(sed -n 2p "$d/proven/calls")"
-  wedged_case retry-fails 65 2 "65 65"
-  wedged_case retry-other-code 70 2 "65 70"
+  wedged_case retry-fails 76 2 "65 65"
+  wedged_case retry-other-code 76 2 "65 70"
   NO_BUNDLE=1 wedged_case no-bundle 70 1 "70"
   NO_BUNDLE=1 OLD_BUNDLE=1 wedged_case old-bundle-only 70 1 "70"
   BAD_SUMMARY=1 wedged_case bad-summary 65 1 "65"
-  BAD_EXPORT=1 wedged_case bad-export 65 1 "65"
-  FIRST_SUMMARY="$d/mixed.json" wedged_case mixed 65 1 "65"
+  BAD_EXPORT=1 wedged_case bad-export 76 1 "65"
+  FIRST_SUMMARY="$d/mixed.json" wedged_case mixed 76 1 "65"
   wedged_case passes 0 1 "0"
   [ "$(cat "$d/passes/calls")" = "base test" ] || fail wedged-run "an empty selection: $(cat "$d/passes/calls")"
-  PASSED=0 wedged_case retry-ran-nothing 65 2 "65 0"
-  NO_RETRY_BUNDLE=1 wedged_case retry-left-no-bundle 65 2 "65 0"
+  PASSED=0 wedged_case retry-ran-nothing 76 2 "65 0"
+  NO_RETRY_BUNDLE=1 wedged_case retry-left-no-bundle 76 2 "65 0"
+  # A failure that is no hang keeps xcodebuild's own code.
+  FIRST_SUMMARY="$d/plain.json" wedged_case plain-failure 65 1 "65"
+  # A run that goes silent once its tests have started is stopped and counts as a hang.
+  SILENT=1 OPENLAB_TEST_SILENCE_LIMIT=2 wedged_case silent 76 1 "0"
+  grep -q 'no output for 2s' "$d/silent/out" || fail wedged-run "a silenced run must say so: $(cat "$d/silent/out")"
   unset WEDGED_ATT FIRST_SUMMARY
   make_test_mac_cases "$d"
 }
@@ -599,6 +606,8 @@ STUB
 make_test_mac_cases() {
   make_test_mac_case "$1" cut-short 75 1 "75 0"
   grep -q 'not starting the second' "$1/make-cut-short/out" || fail make-test-mac "a skipped second process must say why"
+  make_test_mac_case "$1" hung 76 1 "76 0"
+  grep -q 'not starting the second' "$1/make-hung/out" || fail make-test-mac "a hang must stop the second process and say why"
   make_test_mac_case "$1" pass 0 2 "0 0"
   make_test_mac_case "$1" first-fails 65 2 "65 0"
   make_test_mac_case "$1" second-fails 70 2 "0 70"

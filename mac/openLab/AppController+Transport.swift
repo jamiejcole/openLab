@@ -145,14 +145,16 @@ extension AppController {
             let nodes = selected.compactMap { wc.cueList.node($0) }
             let previewable = nodes.filter { node in
                 switch node.cue.kindType {
-                case "network": return true
+                // A Fade's preview runs the Fade on its target now, the playhead left where it is.
+                case "network", "fade": return true
                 case "audio", "group":
                     return !store.previewing.contains(node.id)
                         && !coveredByGroupPreview(node, nodes, previewing: store.previewing)
                 default: return false
                 }
             }
-            await runAll(previewable.map { .preview(cue: $0.id) }, on: store)
+            await runAll(
+                previewable.map { $0.cue.kindType == "fade" ? .start(cue: $0.id) : .preview(cue: $0.id) }, on: store)
         case .pauseResumeSelected:
             let actions: [TransportAction] = selected.compactMap { id in
                 switch store.cueStates[id]?.state {

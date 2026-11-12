@@ -21,10 +21,12 @@ final class CueNode: NSObject {
     var targetID: ModelID? { cue.raw["kind"]?["target"]?.stringValue.map { ModelID($0) } }
 }
 
-/// Row background: the cue's colour as a tint, and a bar on the playhead's row.
+/// Row background: the cue's colour as a tint, and the playhead's pointer on its row: a solid
+/// triangle at the row's left edge, as tall as the row, pointing at the cue (QLab's playhead).
 final class CueRowView: NSTableRowView {
     var tint: NSColor? { didSet { if tint != oldValue { needsDisplay = true } } }
     var isPlayhead = false { didSet { if isPlayhead != oldValue { needsDisplay = true } } }
+    static let pointerWidth: CGFloat = 10
 
     override func drawBackground(in dirtyRect: NSRect) {
         super.drawBackground(in: dirtyRect)
@@ -32,10 +34,61 @@ final class CueRowView: NSTableRowView {
             tint.withAlphaComponent(0.22).setFill()
             bounds.fill()
         }
-        if isPlayhead {
-            NSColor.controlAccentColor.setFill()
-            NSRect(x: 0, y: 0, width: 3, height: bounds.height).fill()
+        if !isSelected { drawPointer() }
+    }
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        super.drawSelection(in: dirtyRect)
+        drawPointer()
+    }
+
+    private func drawPointer() {
+        guard isPlayhead else { return }
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: 0, y: 0))
+        path.line(to: NSPoint(x: Self.pointerWidth, y: bounds.midY))
+        path.line(to: NSPoint(x: 0, y: bounds.height))
+        path.close()
+        // White on the dark list and on a highlighted row; the text colour on a light list.
+        (isSelected && isEmphasized ? NSColor.white : PlayheadStyle.colour).setFill()
+        path.fill()
+    }
+}
+
+/// The outline of the Target cell a dragged cue is over: solid when the drop sets the target, dashed
+/// when the pointer is on the row but outside the cell, where the drop moves the cue instead.
+final class TargetDropOutline: NSView {
+    enum Kind: Equatable { case sets, near }
+    var kind: Kind = .sets { didSet { if kind != oldValue { needsDisplay = true } } }
+    /// The row under it is highlighted: the solid outline is white there, the accent colour elsewhere.
+    var onSelectedRow = false { didSet { if onSelectedRow != oldValue { needsDisplay = true } } }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5), xRadius: 5, yRadius: 5)
+        path.lineWidth = 2
+        switch kind {
+        case .sets:
+            let colour: NSColor = onSelectedRow ? .white : .controlAccentColor
+            colour.withAlphaComponent(0.25).setFill()
+            path.fill()
+            colour.setStroke()
+        case .near:
+            path.setLineDash([4, 3], count: 2, phase: 0)
+            NSColor.white.setStroke()
         }
+        path.stroke()
+    }
+}
+
+/// The list's outline view: it tells the list when a drag leaves it.
+final class CueOutlineView: NSOutlineView {
+    var onDragExit: (() -> Void)?
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        super.draggingExited(sender)
+        onDragExit?()
     }
 }
 
@@ -219,12 +272,12 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private var batchTouched = Set<ModelID>()
     private var batchNewGroups = Set<ModelID>()
     private var batchCollapsed = Set<ModelID>()
-    /// Whether a running time shows the whole time or the time left, per time column; each window
-    /// has its own. A wait counts down by default, as it always has; Duration shows the cue's duration, also while it runs.
+    /// Whether a running time counts up (the time gone) or down (the time left), per time column;
+    /// each window has its own. Every column counts up until its header is clicked, as QLab's do.
     /// Kept for the life of the window only (no window-state persistence exists yet).
     static let timeColumns = ["preWait", "duration", "postWait"]
     private(set) var timeShown: [String: TimeShown] = [
-        "preWait": .remaining, "duration": .full, "postWait": .remaining,
+        "preWait": .full, "duration": .full, "postWait": .full,
     ]
     /// Where Paste looks for cues (tests use a private one).
     var pasteboard: NSPasteboard = .general
@@ -237,7 +290,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     var rowMenuCues: [ModelID]?
 
     /// `outlineView` is a parameter so tests can count the calls made on it.
-    init(store: WorkspaceStore, outlineView: NSOutlineView = NSOutlineView()) {
+    init(store: WorkspaceStore, outlineView: NSOutlineView = CueOutlineView()) {
         self.store = store
         self.outlineView = outlineView
         super.init(nibName: nil, bundle: nil)
@@ -321,6 +374,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.columnAutoresizingStyle = .noColumnAutoresizing
         outlineView.outlineTableColumn = outlineView.tableColumns.first { $0.identifier.rawValue == "name" }
         outlineView.usesAlternatingRowBackgroundColors = true
+        // Rows reach both edges of the list, so the playhead's pointer sits at the window's edge.
+        if #available(macOS 11.0, *) { outlineView.style = .fullWidth }
         outlineView.allowsMultipleSelection = true
         // Letters are cue hotkeys and edit keys here; none may jump the selection, and with it the playhead.
         outlineView.allowsTypeSelect = false
@@ -329,6 +384,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.setAX(AX.cueList, label: loc("cuelist.label"))
+        (outlineView as? CueOutlineView)?.onDragExit = { [weak self] in self?.showTargetOutline(nil) }
         outlineView.registerForDraggedTypes([Self.dragType, .fileURL])
         outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
         outlineView.target = self
@@ -496,7 +552,47 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// A click on a row (the table's action, after any selection change). Clicking the one row that
     /// is already highlighted changes no selection, so it puts the playhead back on that cue here
     /// (the playhead can be elsewhere while a text field was being typed in).
-    @objc private func clicked() { rowClicked(outlineView.clickedRow) }
+    @objc private func clicked() {
+        let column = outlineView.clickedColumn
+        if outlineView.tableColumns.indices.contains(column),
+            outlineView.tableColumns[column].identifier.rawValue == "continue"
+        {
+            showContinueMenu(row: outlineView.clickedRow)
+        }
+        rowClicked(outlineView.clickedRow)
+    }
+
+    /// A continue mode was chosen from a row's own menu.
+    var onSetContinue: ((ModelID, String) -> Void)?
+
+    /// The three continue modes for the cue of `row`, the current one ticked (nil: no menu, as in
+    /// Show Mode or off the rows).
+    func continueMenu(row: Int) -> NSMenu? {
+        guard !isEditLocked, let node = outlineView.item(atRow: row) as? CueNode else { return nil }
+        let current = node.cue.raw["continue_mode"]?.stringValue ?? "do_not_continue"
+        let menu = NSMenu()
+        for mode in InspectorViewController.continueModes {
+            let item = menu.addItem(
+                withTitle: loc("inspector.continue.\(mode)"), action: #selector(continueChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = [node.id.raw, mode]
+            item.state = mode == current ? .on : .off
+        }
+        return menu
+    }
+
+    /// A click on a row's continue cell opens the modes there (QLab 5: the cell is a menu).
+    private func showContinueMenu(row: Int) {
+        guard let menu = continueMenu(row: row) else { return }
+        let column = outlineView.column(withIdentifier: NSUserInterfaceItemIdentifier("continue"))
+        let cell = outlineView.frameOfCell(atColumn: column, row: row)
+        menu.popUp(positioning: nil, at: NSPoint(x: cell.minX, y: cell.maxY), in: outlineView)
+    }
+
+    @objc private func continueChosen(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+        onSetContinue?(ModelID(pair[0]), pair[1])
+    }
 
     func rowClicked(_ row: Int) {
         guard row >= 0, let node = outlineView.item(atRow: row) as? CueNode, selectedIDs() == [node.id] else {
@@ -980,6 +1076,38 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         operation: NSDragOperation
     ) {
         dragged = []
+        showTargetOutline(nil)
+    }
+
+    /// The outline drawn over a row's Target cell during a drag of cues (nil while there is none).
+    let targetOutline = TargetDropOutline()
+
+    /// Outlines `node`'s Target cell as `kind`, or takes the outline away.
+    func showTargetOutline(_ shown: (node: CueNode, kind: TargetDropOutline.Kind)?) {
+        let row = shown.map { outlineView.row(forItem: $0.node) } ?? -1
+        let column = outlineView.column(withIdentifier: NSUserInterfaceItemIdentifier("target"))
+        guard let shown, row >= 0, column >= 0 else {
+            targetOutline.removeFromSuperview()
+            return
+        }
+        targetOutline.kind = shown.kind
+        targetOutline.onSelectedRow = outlineView.isRowSelected(row)
+        targetOutline.frame = outlineView.frameOfCell(atColumn: column, row: row)
+        if targetOutline.superview !== outlineView { outlineView.addSubview(targetOutline) }
+    }
+
+    /// Which Target cell a drag of `dragged` at `point` (in the outline) outlines, and how: the row
+    /// under the pointer when the dragged cues and it can be made a cue and its target.
+    func targetOutlineFor(_ dragged: [CueNode], at point: NSPoint) -> (node: CueNode, kind: TargetDropOutline.Kind)? {
+        guard !isEditLocked, !dragged.isEmpty,
+            let node = outlineView.item(atRow: outlineView.row(at: point)) as? CueNode,
+            CueEditor.targetDrop(dragged.map(\.cue), onto: node.cue) != nil
+        else { return nil }
+        let column = outlineView.column(at: point)
+        let inCell =
+            outlineView.tableColumns.indices.contains(column)
+            && outlineView.tableColumns[column].identifier.rawValue == "target"
+        return (node, inCell ? .sets : .near)
     }
 
     /// Where a drop lands, as (parent, index): dropping on a group puts the cue at its end, on any
@@ -1073,6 +1201,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         proposedChildIndex index: Int
     ) -> NSDragOperation {
         let files = fileURLs(info)
+        showTargetOutline(targetOutlineFor(dragged, at: outlineView.convert(info.draggingLocation, from: nil)))
         if !files.isEmpty {
             guard let plan = fileDropPlan(files, item: item, index: index) else { return [] }
             if case .insert(_, let parent, let at) = plan {
@@ -1092,6 +1221,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     func outlineView(
         _ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int
     ) -> Bool {
+        showTargetOutline(nil)
         let files = fileURLs(info)
         if !files.isEmpty {
             guard let plan = fileDropPlan(files, item: item, index: index) else { return false }
@@ -1110,7 +1240,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// The columns that edit in place, and the inspector field each one is.
     static let editableColumns: [String: InspectorField] = [
-        "number": .number, "name": .name, "duration": .duration, "target": .target,
+        "number": .number, "name": .name, "duration": .duration, "target": .target, "preWait": .preWait,
+        "postWait": .postWait,
     ]
 
     /// The field laid over the cell being edited. It lives in the outline, not in the cell, so the
@@ -1173,6 +1304,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             outlineView.row(forItem: node) >= 0,
             field != .duration || InspectorEdit.durationKinds.contains(node.cue.kindType),
             field != .target || InspectorEdit.targetKinds.contains(node.cue.kindType),
+            // An auto-follow cue's post-wait is its duration, shown and not typed.
+            field != .postWait || node.cue.raw["continue_mode"]?.stringValue != "auto_follow",
             let model = store.model
         else { return false }
         if let pending = takeCellEdit() { onEditCell?(pending.id, pending.column, pending.text) }
@@ -1366,7 +1499,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         switch column {
         case "status":
             if isPlayheadRow(node.id) {
-                cell.setImage(0, icon: .playhead, label: loc("cue.playhead"), tint: PlayheadStyle.colour)
+                // The row draws the pointer at its left edge; this slot keeps the room and the label.
+                cell.setImage(0, icon: .playhead, label: loc("cue.playhead"), tint: .clear)
             } else if isPlayheadInside(node.id) {
                 cell.setImage(
                     0, icon: .playheadInside, label: loc("cue.playhead.inside"), tint: PlayheadStyle.colour)
@@ -1416,16 +1550,21 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 if shown == nil { cell.label.textColor = .systemYellow }
             }
         case "preWait", "postWait":
-            // A wait in progress counts down what is left, as QLab's columns do.
+            // A wait in progress counts, as QLab's columns do.
             if let wait = store.waits[cue.id]?[column == "preWait" ? .preWait : .postWait] {
-                text(
-                    timeShown[column] == .full
-                        ? CueTime.progress(elapsed: wait.elapsed, remaining: wait.remaining)
-                        : CueTime.running(wait.remaining))
+                text(CueTime.running(timeShown[column] == .full ? wait.elapsed : wait.remaining))
+                break
+            }
+            // An auto-follow cue goes on when it ends: its post-wait reads its duration (QLab 5).
+            if column == "postWait", cue.raw["continue_mode"]?.stringValue == "auto_follow",
+                let length = restingDuration(node)
+            {
+                text(CueTime.running(length))
+                cell.label.textColor = .secondaryLabelColor
                 break
             }
             let seconds = cue.raw[column == "preWait" ? "pre_wait" : "post_wait"]?.doubleValue ?? 0
-            text(CueTime.format(seconds))
+            text(CueTime.running(seconds))
             if seconds == 0 { cell.label.textColor = .secondaryLabelColor }  // zero is dimmed, as in QLab
         case "duration":
             text(durationText(node))
@@ -1465,15 +1604,32 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return target.listName(lookup: cueLookup)
     }
 
-    /// The Duration column's text: the cue's duration, or while it runs and the column shows the time
-    /// left, that time. Instantaneous cues (and Audio cues whose file is unknown) have none.
+    /// The Duration column's text: the cue's duration; while it runs, the time gone, or the time
+    /// left when the column shows that. A cue looping a slice with no end counts inside the slice
+    /// and starts again each pass. Instantaneous cues (and Audio cues whose file is unknown) have none.
     private func durationText(_ node: CueNode) -> String {
-        let p = store.progress[node.id]
-        if timeShown["duration"] == .remaining, let left = p?.remaining { return CueTime.running(left) }
-        if let seconds = restingDuration(node) { return CueTime.format(seconds) }
-        // A running cue whose length the model does not hold (a group, a looping cue) shows what the engine knows.
-        if let p, let left = p.remaining { return CueTime.running(p.elapsed + left) }
+        let remaining = timeShown["duration"] == .remaining
+        if let p = store.progress[node.id] {
+            if let left = p.remaining { return CueTime.running(remaining ? left : p.elapsed) }
+            if let pass = loopPass(node, p) { return CueTime.running(remaining ? pass.length - pass.gone : pass.gone) }
+            return CueTime.running(p.elapsed)
+        }
+        if let seconds = restingDuration(node) { return CueTime.running(seconds) }
         return ""
+    }
+
+    /// For a cue with no end whose voice is inside a slice: how far into the slice it is, and the
+    /// slice's length.
+    private func loopPass(_ node: CueNode, _ p: ProgressItem) -> (gone: Double, length: Double)? {
+        guard p.remaining == nil, let position = p.position, node.cue.kindType == "audio" else { return nil }
+        let kind = node.cue.raw["kind"] ?? .null
+        let start = kind["start_time"]?.doubleValue ?? 0
+        let end = kind["end_time"]?.doubleValue ?? store.mediaDurations[node.id]?.file ?? position
+        let marks = (kind["slices"]?.arrayValue ?? []).compactMap { $0["time"]?.doubleValue }.sorted()
+        let from = marks.last { $0 <= position } ?? start
+        let to = marks.first { $0 > position } ?? end
+        guard to > from else { return nil }
+        return (min(max(0, position - from), to - from), to - from)
     }
 
     private func restingDuration(_ node: CueNode) -> Double? {
@@ -1487,10 +1643,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// How far a running or paused cue is, drawn in its Duration cell: green running, yellow paused
     /// (the Active Cues bar's colours).
     private func durationProgress(_ node: CueNode) -> (fraction: Double, colour: NSColor)? {
-        guard let p = store.progress[node.id], let left = p.remaining else { return nil }
+        guard let p = store.progress[node.id] else { return nil }
+        let paused = displayState(node.id).state == .paused
+        let colour: NSColor = paused ? .systemYellow : .systemGreen
+        guard let left = p.remaining else {
+            return loopPass(node, p).map { ($0.gone / $0.length, colour) }
+        }
         let total = p.elapsed + left
         guard total > 0 else { return nil }
-        let paused = displayState(node.id).state == .paused
-        return (p.elapsed / total, paused ? .systemYellow : .systemGreen)
+        return (p.elapsed / total, colour)
     }
 }

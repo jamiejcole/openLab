@@ -32,6 +32,22 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.music
         INFOPLIST_KEY_NSHumanReadableCopyright: "Licensed under the GNU GPL v3 or later."
+    # Merged with the generated Info.plist: the keys a build setting cannot hold. A show file is a
+    # document of this app, so Finder opens it here.
+    info:
+      path: openLab/Info.plist
+      properties:
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: openLab Show
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes: [dev.openlab.show]
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: dev.openlab.show
+            UTTypeDescription: openLab Show
+            UTTypeConformsTo: [public.json]
+            UTTypeTagSpecification:
+              public.filename-extension: [openlab]
     postCompileScripts:
       - name: Build openlab-engine
         script: '"$SRCROOT/scripts/build-engine.sh"'

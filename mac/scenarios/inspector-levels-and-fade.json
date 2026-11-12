@@ -1,0 +1,18 @@
+{
+  "about": "The Levels tab of an Audio cue (a fader per output over its value box, the crosspoints below), then a Fade's Curve tab (the curve drawn rising and falling) and its Levels tab (mode and Preview at the foot of the column), then the Audio cue's Basics with its file drawn as a path.",
+  "show": "Targets",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 1400, "height": 900},
+  "steps": [
+    {"select": "1"},
+    {"tab": "levels"},
+    {"shot": "audio-levels"},
+    {"tab": "basics"},
+    {"shot": "audio-basics"},
+    {"select": "3"},
+    {"tab": "curve"},
+    {"shot": "fade-curve"},
+    {"tab": "fadeLevels"},
+    {"shot": "fade-levels"}
+  ]
+}

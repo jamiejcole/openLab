@@ -209,7 +209,8 @@
                   "output_db": [],
                   "crosspoints": []
                 },
-                "stop_target_when_done": true
+                "stop_target_when_done": true,
+                "mode": "absolute"
               }
             }
           ]

@@ -19,6 +19,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let preWaitField = NSTextField()
     let postWaitField = NSTextField()
     let targetField = TargetField()
+    /// A file cue's Target, drawn as a path (shown in place of `targetField` while the cue has a file).
+    let targetPath = TargetPathControl()
     let oscField = NSTextField()
     let hotkeyField = HotkeyRecorder()
     let hotkeyClear = NSButton(title: loc("inspector.hotkey.clear"), target: nil, action: nil)
@@ -89,6 +91,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let messageLabel = NSTextField(labelWithString: "")
     /// Preview / Stop Preview of the selected audio cue or group. The Time & Loops tab should host it.
     let previewButton = NSButton(title: loc("inspector.preview"), target: nil, action: nil)
+    /// The same for a Fade, on its Levels tab where its levels are set.
+    let fadePreviewButton = NSButton(title: loc("inspector.preview"), target: nil, action: nil)
     /// Choose... next to an Audio cue's file: opens the file chooser (set by the window controller).
     let chooseButton = NSButton(title: loc("inspector.target.choose"), target: nil, action: nil)
     var onChooseFile: ((ModelID) -> Void)?
@@ -298,7 +302,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             s.alignment = .firstBaseline
             return s
         }
-        continuePopup.widthAnchor.constraint(equalToConstant: 94).isActive = true
+        // Wide enough for the longest mode's whole title.
+        continuePopup.controlSize = .small
+        continuePopup.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        continuePopup.widthAnchor.constraint(equalToConstant: 124).isActive = true
         let left = column(
             [
                 labelled(loc("cuelist.col.number"), numberField),
@@ -306,7 +313,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 labelled(loc("cuelist.col.preWait"), preWaitField),
                 labelled(loc("cuelist.col.postWait"), postWaitField),
                 labelled(loc("inspector.continue"), continuePopup),
-            ], width: 152)
+            ], width: 182)
         clearTargetButton.setAX("inspector-target-clear")
         clearTargetButton.isBordered = false
         clearTargetButton.image = Icon.fieldClear.image(loc("inspector.target.clear"), compact: true)
@@ -332,7 +339,19 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         jumpTargetButton.isHidden = true
         targetNote.isHidden = true
         targetField.onDoubleClick = { [weak self] in self?.chooseClicked() }
-        let targetRow = NSStackView(views: [targetField, targetNote, clearTargetButton, jumpTargetButton, chooseButton])
+        targetPath.onDoubleClick = { [weak self] in self?.chooseClicked() }
+        targetPath.setAX("inspector-target-path", label: loc("cuelist.col.target"))
+        targetPath.pathStyle = .standard
+        targetPath.isEditable = false
+        targetPath.controlSize = .small
+        targetPath.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        targetPath.isHidden = true
+        // A long path gives up its middle folders; it must not hold the inspector, and so the window, wider.
+        targetPath.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        targetPath.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        targetPath.widthAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
+        let targetRow = NSStackView(
+            views: [targetField, targetPath, targetNote, clearTargetButton, jumpTargetButton, chooseButton])
         targetRow.spacing = 6
         targetField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         // A long path truncates; it must not hold the inspector, and so the window, wider.
@@ -350,7 +369,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         targetRow.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         scroll.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         let right = column(
-            [previewButton, row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 110)
+            [previewButton, row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 103)
         let columns = NSStackView(views: [left, centre, right])
         columns.orientation = .horizontal
         columns.alignment = .top
@@ -624,6 +643,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             messageLabel.isHidden = true
             emptyLabel.isHidden = false
             emptyLabel.stringValue = loc(selection.count > 1 ? "inspector.multiple" : "inspector.empty")
+            updatePreviewButton()  // nothing to preview
             return
         }
         tabView.isHidden = false
@@ -677,8 +697,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     func updatePreviewButton(connected: Bool? = nil) {
         let active = cue.map { store.previewing.contains($0.id) } ?? false
         previewButton.title = loc(active ? "inspector.stopPreview" : "inspector.preview")
-        let previewable = ["audio", "group"].contains(cue?.kindType)
-        previewButton.isEnabled = previewable && (connected ?? (store.connectionState == .connected))
+        let previewable = ["audio", "group", "fade"].contains(cue?.kindType)
+        let on = connected ?? (store.connectionState == .connected)
+        previewButton.isEnabled = previewable && on
+        fadePreviewButton.isEnabled = cue?.kindType == "fade" && on
     }
 
     /// The Choose button, and a double-click on a file cue's Target field (QLab 5, manual pp. 120, 126).
@@ -687,8 +709,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         onChooseFile?(cue.id)
     }
 
-    @objc private func previewClicked() {
+    @objc func previewClicked() {
         guard let id = cue?.id else { return }
+        // A Fade's preview runs it on its target now; the playhead stays where it is.
+        if cue?.kindType == "fade" { return onTransport?(.start(cue: id)) ?? () }
         onTransport?(store.previewing.contains(id) ? .stopPreview(cue: id) : .preview(cue: id))
     }
 

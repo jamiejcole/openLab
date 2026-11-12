@@ -96,7 +96,6 @@ enum AX {
     static let transportPanic = "transport-panic"
     static let footer = "footer"
     static let modeSwitch = "mode-switch"
-    static let showModeLabel = "show-mode-indicator"
     static let statusLabel = "status-label"
     static let statusDetails = "status-details"
     static let overrideBadge = "override-badge"
@@ -134,6 +133,7 @@ enum AX {
     static let settingsMessage = "settings-message"
     /// Prefix of the OSC tab's controls: `-add`, `-none-view`, `-code-N`, `-view-N`, `-delete-N`.
     static let settingsOsc = "settings-osc"
+    static let settingsNetwork = "settings-network"
     static let settingsOscAdd = "settings-osc-add"
     static let settingsDone = "settings-done"
     static let settingsLimitMax = "settings-limit-max"

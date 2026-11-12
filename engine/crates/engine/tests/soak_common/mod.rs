@@ -293,6 +293,7 @@ pub fn build() -> Built {
                     crosspoints: vec![],
                 },
                 stop_target_when_done: true,
+                mode: Default::default(),
             },
         ),
         cue(

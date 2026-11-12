@@ -45,10 +45,12 @@ struct CueStateStyle: Equatable {
     }
 }
 
-/// The playhead's pointer: a light grey, never the green of a running cue, and not a template so a
-/// highlighted row cannot turn it white.
+/// The playhead's pointer: white on a dark list and near-black on a light one, never the green of
+/// a running cue.
 enum PlayheadStyle {
-    static let colour = NSColor(white: 0.62, alpha: 1)
+    static let colour = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .white : NSColor(white: 0.15, alpha: 1)
+    }
 }
 
 /// Symbols and labels for the cue kinds, colours and continue modes (cell content).

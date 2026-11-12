@@ -3,7 +3,7 @@
 Audio levels only (video fades are later). Sources: `fade.rs`, `level.rs`, `live_levels.rs`.
 
 ## Fade cues (CT-10)
-- A Fade of an audio cue is absolute: over its duration, with its curve, it moves the target's levels from their current values to the Fade's values.
+- A Fade of an audio cue is absolute unless its `mode` is `relative` (then it moves the cue's levels as a Fade of a group does, below): over its duration, with its curve, it moves the target's levels from their current values to the Fade's values.
 - A Fade of a group is relative: each level of each audio cue in it moves by the Fade's value (current + Fade's dB, i.e. gain times the Fade's gain), never above `MAX_DB` (+12 dB, `cue.rs`). Relative to the level on the ramp's first sample `S`, including where an earlier Fade has put or is moving it; stacking of concurrent relative fades is not modelled. A level silent then (an unlisted crosspoint) stays silent and gets no ramp.
 - What it fades: at its action start `A`, every playing audio cue it targets (the target, or every audio cue inside a group, any depth). Playing = in its action with a started voice (running, fading, paused, stopping), not broken. Cues that start later are not faded.
 - Which levels: `master_db`, each set `output_db[o]`, each listed crosspoint, per target. Indices beyond the target's outputs (and crosspoint inputs of 64 or more) are ignored. A muted output or crosspoint is not faded (a fade never changes mutes). An unlisted crosspoint of an absolute fade is silent and fades up from silence.

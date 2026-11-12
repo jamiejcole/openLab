@@ -72,6 +72,7 @@ fn fade_to(n: u128, target: u128) -> Cue {
                 crosspoints: vec![],
             },
             stop_target_when_done: false,
+            mode: Default::default(),
         },
     )
 }

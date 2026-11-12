@@ -35,6 +35,13 @@ if grep -q -a "openLab Virtual Output" "$engine"; then
     echo "error: $engine contains the virtual audio device" >&2
     exit 1
 fi
+# Finder opens a show file in the app only if the bundle declares the type.
+ext=$(/usr/libexec/PlistBuddy -c "Print :UTExportedTypeDeclarations:0:UTTypeTagSpecification:public.filename-extension:0" "$app/Contents/Info.plist" 2>/dev/null || true)
+doc=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDocumentTypes:0:LSItemContentTypes:0" "$app/Contents/Info.plist" 2>/dev/null || true)
+if [ "$ext" != "openlab" ] || [ "$doc" != "dev.openlab.show" ]; then
+    echo "error: $app does not declare .openlab show files as its documents" >&2
+    exit 1
+fi
 support=$(mktemp -d)
 set +e
 "$engine" --virtual-device stepped --app-support "$support" --watch-stdin </dev/null >/dev/null 2>&1

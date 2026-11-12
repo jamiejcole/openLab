@@ -26,6 +26,7 @@ fn fade_to(
             curve,
             levels,
             stop_target_when_done: stop,
+            mode: Default::default(),
         },
     )
 }
@@ -407,6 +408,34 @@ fn stopping_a_paused_fade_sends_nothing_more() {
 }
 
 #[test]
+fn a_relative_fade_of_an_audio_cue_moves_its_level_by_the_fades_db() {
+    let mut fade = master_fade(2, 1.0, -6.0);
+    if let CueKind::Fade { mode, .. } = &mut fade.kind {
+        *mode = FadeMode::Relative;
+    }
+    // A second, absolute Fade to the same value, to tell the two apart.
+    let mut rig = Rig::new(vec![sound(1), fade, master_fade(3, 1.0, -6.0)]);
+    rig.start(0, 1);
+    // The cue's master is 0 dB: 6 dB down from there, and again from where that ended.
+    let first = rig.start(1000, 2);
+    assert_eq!(
+        ramps(&first),
+        vec![ramp(1, 1000, M, db_to_gain(-6.0), 1000)]
+    );
+    rig.tick(2000);
+    let second = rig.start(3000, 2);
+    let twice = db_to_gain(-6.0) * db_to_gain(-6.0);
+    assert_eq!(ramps(&second), vec![ramp(1, 3000, M, twice, 1000)]);
+    rig.tick(4000);
+    // The absolute Fade ends at its own value wherever the level was.
+    let third = rig.start(5000, 3);
+    assert_eq!(
+        ramps(&third),
+        vec![ramp(1, 5000, M, db_to_gain(-6.0), 1000)]
+    );
+}
+
+#[test]
 fn a_fade_on_a_group_fades_its_playing_audio_cues() {
     let mut short = sound(4);
     if let CueKind::Audio { levels, .. } = &mut short.kind {
@@ -521,6 +550,7 @@ fn fade_with_missing_or_wrong_targets_is_broken() {
                 curve: FadeCurve::Linear,
                 levels: master(0.0),
                 stop_target_when_done: false,
+                mode: Default::default(),
             },
         ),
         fade_to(4, 99, 1.0, FadeCurve::Linear, master(0.0), true),

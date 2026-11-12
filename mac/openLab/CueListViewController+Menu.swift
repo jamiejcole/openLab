@@ -107,7 +107,7 @@ extension CueListViewController: NSMenuDelegate {
             // QLab's row Panic is the cue's own: the selection fades, the rest plays on.
             entry(.panic, transport, command: TransportCommand.panicSelected.rawValue),
             .separator(),
-            entry(.movePlayhead, #selector(movePlayheadToCue(_:))),
+            entry(.movePlayhead, #selector(rowMovePlayhead(_:))),
             entry(.revealTarget, #selector(revealTargetInFinder(_:))),
             .separator(),
             entry(.cut, #selector(rowCut(_:))),
@@ -142,7 +142,7 @@ extension CueListViewController: NSMenuDelegate {
     @objc func rowPaste(_ sender: Any?) { Task { [rowMenuCues] in await editor?.paste(after: rowMenuCues) } }
     @objc func rowDelete(_ sender: Any?) { Task { [rowMenuCues] in await editor?.deleteSelection(of: rowMenuCues) } }
 
-    @objc func movePlayheadToCue(_ sender: NSMenuItem) {
+    @objc func rowMovePlayhead(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String else { return }
         setPlayhead(ModelID(raw))
     }

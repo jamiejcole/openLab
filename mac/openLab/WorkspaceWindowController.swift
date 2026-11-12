@@ -132,6 +132,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     static let minCueListHeight: CGFloat = 56
     /// The least the inspector may be: enough for the Time & Loops tab's left column (Start, End,
     /// play count, Loop) below the tab strip. The smallest window leaves this much.
+    /// The inspector's height until the operator drags it: room for the level faders and the notes.
+    static let defaultInspectorHeight: CGFloat = 320
     static let minInspectorHeight: CGFloat = 180
     static let minCueListWidth: CGFloat = 200
     var layoutObservers: [NSObjectProtocol] = []
@@ -192,6 +194,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cueList.onEditCell = { [weak self] id, column, text in
             Task { await self?.editor.setCell(column, of: id, text: text) }
         }
+        cueList.onSetContinue = { [weak self] id, mode in Task { await self?.editor.setContinue(of: id, to: mode) } }
         cueList.onEditedCueGone = { [weak self] in self?.showNotice(loc("cuelist.edit.cueGone")) }
         cueList.onFileDrop = { [weak self] drop, skipped in
             Task {
@@ -262,6 +265,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         footer.onSettings = { [weak self] in self?.showSettings() }
         footer.onWarnings = { [weak self] in self?.showWarnings() }
         setVisible(.sidebar, false)
+        startSavingLayout()
         wire(masthead.goButton, #selector(goClicked))
         wire(sidebar.transportButtons[AX.transportPause], #selector(pauseAllClicked))
         wire(sidebar.transportButtons[AX.transportResume], #selector(resumeAllClicked))
@@ -659,6 +663,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// A report about a workspace that is gone must not float on over the next one.
     func windowWillClose(_ notification: Notification) {
+        stopSavingLayout()
         inspector.endGestures()
         preshowController?.close()
         settingsController?.close()
@@ -731,7 +736,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         verticalSplit.setHoldingPriority(NSLayoutConstraint.Priority(250), forSubviewAt: 0)
         verticalSplit.setHoldingPriority(NSLayoutConstraint.Priority(251), forSubviewAt: 1)
         inspector.view.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.minInspectorHeight).isActive = true
-        let inspectorHeight = inspector.view.heightAnchor.constraint(equalToConstant: 240)
+        let inspectorHeight = inspector.view.heightAnchor.constraint(equalToConstant: Self.defaultInspectorHeight)
         // Like the sidebar's: below what a divider drag needs, so a dragged height stays.
         inspectorHeight.priority = NSLayoutConstraint.Priority(300)
         inspectorHeight.isActive = true

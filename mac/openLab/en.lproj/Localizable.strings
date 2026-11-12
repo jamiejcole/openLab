@@ -166,7 +166,6 @@
 "cue.type.reset" = "Reset";
 "cue.type.devamp" = "Devamp";
 "cue.type.goto" = "Go To";
-"cue.type.target" = "Target";
 "cue.type.arm" = "Arm";
 "cue.type.disarm" = "Disarm";
 "cue.type.network" = "Network";
@@ -295,8 +294,13 @@
 "transport.reset" = "Reset all";
 "transport.pause" = "Pause all";
 "transport.resume" = "Resume all";
-"transport.panic" = "Panic";
+"transport.panic" = "Panic All";
+"sidebar.list.open" = "Show the cues of %@";
 "sidebar.tabs.label" = "Sidebar view";
+"sidebar.tab.cueLists.count" = "%d Cue Lists";
+"sidebar.tab.cueLists.one" = "1 Cue List";
+"sidebar.tab.activeCues.count" = "%d Active Cues";
+"sidebar.tab.activeCues.one" = "1 Active Cue";
 "sidebar.tab.cueLists" = "Cue Lists";
 "sidebar.tab.activeCues" = "Active Cues";
 "sidebar.list.label" = "Cue lists";
@@ -330,6 +334,17 @@
 "settings.tab.general" = "General";
 "settings.tab.audio" = "Audio";
 "settings.tab.osc" = "OSC";
+"settings.tab.network" = "Network";
+"settings.network.add" = "New destination";
+"settings.network.note" = "Each destination is a device or program that Network cues send to.";
+"settings.network.col.name" = "Name";
+"settings.network.col.host" = "Address";
+"settings.network.col.port" = "Port";
+"settings.network.col.protocol" = "Type";
+"settings.network.col.delete" = "";
+"settings.network.delete" = "Remove";
+"settings.network.newName" = "Network %d";
+"settings.network.badPort" = "A port is a number from 1 to 65535.";
 "settings.osc.add" = "New passcode";
 "settings.osc.note" = "What an OSC client may do depends on the passcode it connects with.";
 "settings.osc.col.passcode" = "Passcode";
@@ -553,7 +568,6 @@
 "relink.log.unmatched" = "No match found for %@.";
 
 "window.main.title.showMode" = "%@ (Show Mode)";
-"footer.showMode.indicator" = "SHOW MODE";
 "showMode.error.engine" = "The engine could not be told about Show Mode (%@). It is told again when it reconnects; until then the Mac may sleep.";
 "alert.closeShowMode.title" = "Close this workspace?";
 "alert.closeShowMode.message" = "The workspace is in Show Mode.";
@@ -607,8 +621,15 @@
 "inspector.target.clear" = "Clear target";
 "inspector.target.jump" = "Select the target cue";
 "inspector.target.none" = "(no target)";
+"fade.curve.rising" = "Curve of a level fading up";
+"fade.curve.falling" = "Curve of a level fading down";
+"fade.mode" = "Fade mode";
+"fade.mode.absolute" = "Absolute";
+"fade.mode.relative" = "Relative";
 "levels.matrix" = "Levels matrix";
-"levels.master" = "Cue master";
+"levels.master" = "Main level";
+"levels.main" = "main";
+"levels.setDefault" = "Set Default Levels";
 "levels.output" = "Cue output %d";
 "levels.cross" = "File channel %d to output %d";
 "levels.mute" = "Mute";

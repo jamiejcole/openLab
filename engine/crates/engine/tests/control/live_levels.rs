@@ -189,6 +189,7 @@ fn master_fade(n: u128, target: u128, frames: u64, db: f64) -> openlab_core::Cue
                 crosspoints: vec![],
             },
             stop_target_when_done: false,
+            mode: Default::default(),
         },
     )
 }
@@ -638,6 +639,7 @@ fn a_faded_output_keeps_the_fade_level_when_its_patch_adds_it() {
                 crosspoints: vec![],
             },
             stop_target_when_done: false,
+            mode: Default::default(),
         },
     );
     let mut s = two_patch_show(side(), 1, vec![fade]);

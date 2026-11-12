@@ -46,7 +46,7 @@ enum NewCueKind: String, CaseIterable, Sendable {
             fields.merge([
                 "target": .null, "duration": .double(3), "curve": .string("linear"),
                 "levels": .object(["master_db": .null, "output_db": .array([]), "crosspoints": .array([])]),
-                "stop_target_when_done": .bool(false),
+                "stop_target_when_done": .bool(false), "mode": .string("absolute"),
             ]) { a, _ in a }
         case .stop: fields.merge(["target": .null, "fade_out": fade]) { a, _ in a }
         case .load: fields.merge(["target": .null, "load_to_time": .double(0)]) { a, _ in a }
@@ -70,8 +70,15 @@ enum NewCueKind: String, CaseIterable, Sendable {
     }
 
     /// A whole new cue (no number: `auto_number` gives it one).
-    func cueJSON(id: ModelID, patch: ModelObject?, networkPatch: ModelObject? = nil) -> JSONValue? {
-        guard let kind = kindJSON(patch: patch, networkPatch: networkPatch) else { return nil }
+    /// `target`: the cue a new cue that takes a target starts with.
+    func cueJSON(
+        id: ModelID, patch: ModelObject?, networkPatch: ModelObject? = nil, target: ModelID? = nil
+    ) -> JSONValue? {
+        guard var kind = kindJSON(patch: patch, networkPatch: networkPatch) else { return nil }
+        if let target, case .object(var fields) = kind, fields["target"] != nil {
+            fields["target"] = .string(target.raw)
+            kind = .object(fields)
+        }
         return .object([
             "id": .string(id.raw), "number": .null, "name": .string(""), "notes": .string(""),
             "color": .string("none"), "flagged": .bool(false), "armed": .bool(true), "pre_wait": .double(0),
@@ -93,6 +100,20 @@ extension Command {
     /// `AddNetworkPatch` at `index`.
     static func addNetworkPatch(_ patch: JSONValue, index: Int) -> Command {
         Command(.object(["type": .string("add_network_patch"), "index": .int(Int64(index)), "patch": patch]))
+    }
+
+    /// `RemoveNetworkPatch`: refused while a cue still sends to it.
+    static func removeNetworkPatch(_ id: ModelID) -> Command {
+        Command(.object(["type": .string("remove_network_patch"), "id": .string(id.raw)]))
+    }
+
+    /// `SetNetworkPatchProperty`: `property` is `name`, `host`, `port` or `protocol`.
+    static func setNetworkPatch(_ id: ModelID, _ property: String, _ value: JSONValue) -> Command {
+        Command(
+            .object([
+                "type": .string("set_network_patch_property"), "id": .string(id.raw),
+                "property": .object(["type": .string(property), "value": value]),
+            ]))
     }
 
     /// `AddCue` with the next automatic number (ED-08).

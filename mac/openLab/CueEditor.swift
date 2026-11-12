@@ -176,7 +176,7 @@ final class CueEditor {
         guard await begin(), let list = cueList?.listID else { return nil }
         let id = ModelID(UUID().uuidString.lowercased())
         // A Network cue needs a destination. A workspace with none gets a default one in the same
-        // undo step (the app has no network patch editor yet; the inspector picks another later).
+        // undo step (the workspace settings edit it; the inspector picks among them).
         var setup: [Command] = []
         var network = store.model?.networkPatches.first
         if kind == .network, network == nil {
@@ -184,11 +184,20 @@ final class CueEditor {
             setup = [.addNetworkPatch(patch, index: 0)]
             network = patch["id"]?.stringValue.map { ModelObject(id: ModelID($0), raw: patch) }
         }
-        guard let cue = kind.cueJSON(id: id, patch: store.model?.patches.first, networkPatch: network) else {
+        let selected = selectedNodes(of: cues)
+        // A new cue that takes a target starts on the one selected cue when that cue can be its
+        // target (QLab 5: a Fade made with an Audio cue selected fades that cue).
+        let target =
+            selected.count == 1
+                && InspectorEdit.targetRejection(ofKind: kind.wireType, target: selected[0].cue) == nil
+            ? selected[0].id : nil
+        guard
+            let cue = kind.cueJSON(
+                id: id, patch: store.model?.patches.first, networkPatch: network, target: target)
+        else {
             notify(loc("edit.error.noPatch"))
             return nil
         }
-        let selected = selectedNodes(of: cues)
         let roots = cueList?.roots ?? []
         let command: Command
         if kind == .group,
@@ -330,6 +339,8 @@ final class CueEditor {
         case .number?: return await setCellText(.number, of: id, text: text)
         case .name?: return await setCellText(.name, of: id, text: text)
         case .target?: return await setCellText(.target, of: id, text: text)
+        case .preWait?: return await setCellText(.preWait, of: id, text: text)
+        case .postWait?: return await setCellText(.postWait, of: id, text: text)
         default: return await setDuration(of: id, text: text)
         }
     }
@@ -352,6 +363,12 @@ final class CueEditor {
         case .success(nil): return true
         case .success(let command?): return report(await store.send(command: command))
         }
+    }
+
+    /// A continue mode chosen from the row's own menu.
+    func setContinue(of id: ModelID, to mode: String) async {
+        guard await begin(), store.model?.cue(id) != nil else { return }
+        _ = report(await store.send(command: .setProperty(id, .continueMode(mode))))
     }
 
     /// Sets a cue's notes from the masthead, through the inspector's notes command. Refused in

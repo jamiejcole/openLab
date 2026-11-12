@@ -1021,22 +1021,36 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(reload.rows, IndexSet(integer: 0))
         XCTAssertEqual(reload.columns.map { h.spy.tableColumns[$0].identifier.rawValue }, ["duration"])
         XCTAssertEqual(h.spy.wholeReloads, 0)
-        // The cell keeps reading the cue's duration (the probed 120 s) while it runs.
-        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "02:00.00")
+        // The cell counts the time gone while the cue runs.
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:02.50")
         // Next tick: the same row again; when it ends, that row once more.
         h.spy.resetCounts()
         try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":3.0,"remaining":null}]}"#)
         XCTAssertEqual(h.spy.rowsReloaded, 1)
-        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "02:00.00")
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:03.00")
         h.spy.resetCounts()
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"idle"}"#)
         XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "02:00.00")
         XCTAssertEqual(h.spy.wholeReloads, 0)
     }
 
-    /// M18: a pre-wait or post-wait in progress counts down in its own column (QLab: "counting
-    /// down its pre-wait"), touching only those cells; it ends with the run.
-    func testWaitsCountDownInTheirColumns() async throws {
+    /// A panicked cue's voice is still reported while it fades out, after the cue itself has ended:
+    /// the cell must read the duration again, not stay on the last time counted.
+    func testProgressReportedForACueThatHasEndedIsNotShown() async throws {
+        let h = try await H()
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"running"}"#)
+        try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":2.5,"remaining":7.5}]}"#)
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:02.50")
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"idle"}"#)
+        try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":2.8,"remaining":7.2}]}"#)
+        XCTAssertNil(h.vc.store.progress[H.intro])
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "02:00.00", "the duration again")
+        XCTAssertNil(h.cell("duration", H.intro)?.progress.progress, "and no bar")
+    }
+
+    /// A pre-wait or post-wait in progress counts in its own column, touching only those cells; it
+    /// ends with the run.
+    func testWaitsCountInTheirColumns() async throws {
         let h = try await H()
         h.spy.resetCounts()
         let waits = #"[{"cue":"\#(H.intro)","wait":"pre_wait","elapsed":0.5,"remaining":1.5}]"#
@@ -1044,12 +1058,12 @@ final class CueListTests: XCTestCase {
         let reload = try XCTUnwrap(h.spy.rowReloads.first)
         XCTAssertEqual(
             reload.columns.map { h.spy.tableColumns[$0].identifier.rawValue }, ["preWait", "postWait"])
-        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:01.50")
+        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:00.50")
         try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"idle"}"#)
         XCTAssertNil(h.vc.store.waits[H.intro])
         XCTAssertEqual(
             h.cell("preWait", H.intro)?.label.stringValue,
-            CueTime.format(h.vc.store.model?.cue(H.intro)?.raw["pre_wait"]?.doubleValue ?? 0))
+            CueTime.running(h.vc.store.model?.cue(H.intro)?.raw["pre_wait"]?.doubleValue ?? 0))
     }
 
     // MARK: Playhead marker across model changes
@@ -1283,7 +1297,7 @@ extension CueListTests {
         XCTAssertNil(CueRowMenu.mediaURL(nil, showPath: "/shows/x.openlab"))
     }
 
-    func testTimeHeaderTogglesBetweenWholeTimeAndTimeLeftPerWindow() async throws {
+    func testTimeHeaderTogglesBetweenTimeGoneAndTimeLeftPerWindow() async throws {
         let h = try await H()
         let other = try await H()
         let columns = h.spy.tableColumns
@@ -1291,25 +1305,25 @@ extension CueListTests {
         XCTAssertTrue(duration.headerCell is TimeHeaderCell)
         XCTAssertFalse(try XCTUnwrap(columns.first { $0.identifier.rawValue == "number" }).headerCell is TimeHeaderCell)
         try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":2.5,"remaining":7.5}]}"#)
-        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "02:00.00")
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:02.50", "counting up")
         // A header click (the delegate hook) switches Duration to the time left, in place.
         h.vc.outlineView(h.spy, didClick: duration)
         XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:07.50")
         XCTAssertEqual((duration.headerCell as? TimeHeaderCell)?.shown, .remaining)
         XCTAssertEqual(duration.headerToolTip, loc("cuelist.time.showFull"))
-        // The next tick keeps the choice; an unknown end falls back to the duration.
+        // The next tick keeps the choice; with no known end there is no time left, so it counts up.
         try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":3.0,"remaining":null}]}"#)
-        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "02:00.00")
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:03.00")
         h.vc.toggleTimeShown("duration")
         XCTAssertEqual(h.vc.timeShown["duration"], .full)
-        // Waits default to counting down; the toggle shows elapsed / total.
+        // Waits count up too; the toggle shows what is left.
         let waits = #"[{"cue":"\#(H.intro)","wait":"pre_wait","elapsed":0.5,"remaining":1.5}]"#
         try h.receive(#"{"type":"progress","items":[],"waits":\#(waits)}"#)
-        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:01.50")
+        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:00.50")
         h.vc.toggleTimeShown("preWait")
-        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:00.50 / 00:02.00")
+        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, "00:01.50")
         // Another window keeps its own choice; non-time columns ignore the toggle.
-        XCTAssertEqual(other.vc.timeShown["preWait"], .remaining)
+        XCTAssertEqual(other.vc.timeShown["preWait"], .full)
         h.vc.toggleTimeShown("name")
         XCTAssertNil(h.vc.timeShown["name"])
     }
@@ -3587,7 +3601,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await assertAllOn(cues[1])
         XCTAssertEqual(p.levels?.db(.master), master(cues[1]) ?? 0, "the panel shows cue 2")
         p.select(.output(0))
-        XCTAssertTrue(window.makeFirstResponder(p.levelField))
+        p.beginTyping(p.selection)  // the box opens for typing
         p.levelField.currentEditor()?.selectAll(nil)
         try typeKeys("-20", in: window)
         try typeKeys("\r", in: window, code: 36)
@@ -3885,7 +3899,7 @@ final class PlayheadFlowTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         showTab("levels")
         let field = wc.inspector.audioLevels.levelField
-        XCTAssertTrue(window.makeFirstResponder(field))
+        wc.inspector.audioLevels.beginTyping(wc.inspector.audioLevels.selection)  // the box opens for typing
         field.currentEditor()?.selectAll(nil)
         try typeKeys("-9", in: window)
         try typeKeys("\r", in: window, code: 36)
@@ -4044,7 +4058,7 @@ final class PlayheadFlowTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         showTab("levels")
         let field = wc.inspector.audioLevels.levelField
-        XCTAssertTrue(window.makeFirstResponder(field))
+        wc.inspector.audioLevels.beginTyping(wc.inspector.audioLevels.selection)  // the box opens for typing
         field.currentEditor()?.selectAll(nil)
         try typeKeys("-9", in: window)
         try typeKeys("\u{1B}", in: window, code: 53)
@@ -4267,7 +4281,16 @@ final class CueListDrawingTests: XCTestCase {
         try pixels(h.spy, column, item: h.vc.node(id))
     }
 
-    private func pixels(_ outline: NSOutlineView, _ column: String, item: Any?) throws -> Pixels {
+    /// The same on a dark list, where the playhead's pointer is white.
+    private func darkPixels(_ h: H, _ column: String, _ id: ModelID) throws -> Pixels {
+        h.spy.appearance = NSAppearance(named: .darkAqua)
+        return try pixels(h.spy, column, item: h.vc.node(id), background: .black, fromRowEdge: true)
+    }
+
+    private func pixels(
+        _ outline: NSOutlineView, _ column: String, item: Any?, background: NSColor = .white,
+        fromRowEdge: Bool = false
+    ) throws -> Pixels {
         let row = outline.row(forItem: item)
         let col = outline.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
         XCTAssertGreaterThanOrEqual(row, 0)
@@ -4275,10 +4298,13 @@ final class CueListDrawingTests: XCTestCase {
         rowView.layoutSubtreeIfNeeded()
         let cell = outline.frameOfCell(atColumn: col, row: row)
         let rowFrame = outline.rect(ofRow: row)
-        let region = NSRect(x: cell.minX - rowFrame.minX, y: 0, width: cell.width, height: rowFrame.height)
+        // `fromRowEdge`: with what the row draws left of the cell (the playhead's pointer).
+        let left = fromRowEdge ? 0 : cell.minX - rowFrame.minX
+        let region = NSRect(x: left, y: 0, width: cell.maxX - rowFrame.minX - left, height: rowFrame.height)
         rowView.layoutSubtreeIfNeeded()
         let scale = max(1, rowView.window?.backingScaleFactor ?? 2)
-        return Pixels(rep: try render(rowView, scale: scale), region: region, scale: scale)
+        return Pixels(
+            rep: try renderView(rowView, scale: scale, background: background), region: region, scale: scale)
     }
 
     /// `view` drawn into a bitmap on the window's light background (under a clear row).
@@ -4326,8 +4352,9 @@ final class CueListDrawingTests: XCTestCase {
     private static let yellowish: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in
         r > 0.85 && g > 0.7 && r - b > 0.2 && abs(r - g) < 0.3
     }
-    private static let playheadGrey: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in
-        abs(r - 0.62) < 0.04 && abs(g - 0.62) < 0.04 && abs(b - 0.62) < 0.04
+    /// The playhead's pointer on a dark list: white.
+    private static let pointerWhite: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in
+        r > 0.97 && g > 0.97 && b > 0.97
     }
 
     private func go(_ rig: Rig) async throws {
@@ -4335,17 +4362,19 @@ final class CueListDrawingTests: XCTestCase {
         try await rig.advance()
     }
 
-    func testPlayheadMarkerDistinctFromRunning() async throws {
+    func testThePlayheadIsAWhiteTriangleAtTheRowsLeftEdge() async throws {
         let rig = try await timingRig()
         let h = try await harness(rig)
         await assertEventually { rig.store.playheads[TestSnapshots.mainList] == self.ten }
-        let one = try pixels(h, "status", ten)
-        XCTAssertGreaterThan(one.count(Self.playheadGrey), 8, "cue 1 shows the light grey pointer")
+        let one = try darkPixels(h, "status", ten)
+        XCTAssertGreaterThan(one.count(Self.pointerWhite), 40, "cue 1 shows the white pointer")
         XCTAssertEqual(one.count(Self.green), 0, "and no green triangle")
-        XCTAssertEqual(try pixels(h, "status", five).count(Self.playheadGrey), 0, "no other row shows a pointer")
-        XCTAssertEqual(try pixels(h, "status", memo).count(Self.playheadGrey), 0)
-        // At the far left edge of the row.
-        XCTAssertLessThan(try XCTUnwrap(one.extent(Self.playheadGrey)).lowerBound, 0.15)
+        XCTAssertEqual(try darkPixels(h, "status", five).count(Self.pointerWhite), 0, "no other row shows a pointer")
+        XCTAssertEqual(try darkPixels(h, "status", memo).count(Self.pointerWhite), 0)
+        // From the row's very edge, about ten points wide: a triangle, widest at the edge.
+        let reach = try XCTUnwrap(one.extent(Self.pointerWhite))
+        XCTAssertEqual(reach.lowerBound, 0, accuracy: 0.02)
+        XCTAssertEqual(reach.upperBound * Double(one.region.width), Double(CueRowView.pointerWidth), accuracy: 2)
     }
 
     func testRunningAndStandingByAtOnce() async throws {
@@ -4354,21 +4383,19 @@ final class CueListDrawingTests: XCTestCase {
         try await go(rig)
         await assertEventually { rig.store.cueStates[self.ten]?.state == .running }
         await assertEventually { rig.store.playheads[TestSnapshots.mainList] == self.five }
-        let one = try pixels(h, "status", ten)
+        let one = try darkPixels(h, "status", ten)
         XCTAssertGreaterThan(one.count(Self.green), 8, "cue 1 shows a green running triangle")
-        XCTAssertEqual(one.count(Self.playheadGrey), 0)
-        let two = try pixels(h, "status", five)
-        XCTAssertGreaterThan(two.count(Self.playheadGrey), 8, "cue 2 shows the grey pointer")
+        XCTAssertEqual(one.count(Self.pointerWhite), 0)
+        let two = try darkPixels(h, "status", five)
+        XCTAssertGreaterThan(two.count(Self.pointerWhite), 40, "cue 2 shows the pointer")
         XCTAssertEqual(two.count(Self.green), 0)
-        // The two read apart by colour and position (the icons' shapes are alike).
         let running = try XCTUnwrap(h.cell("status", ten)).images[1]
         let pointer = try XCTUnwrap(h.cell("status", five)).images[0]
-        XCTAssertNotEqual(Icon.stateRunning.symbol, Icon.playhead.symbol)
         XCTAssertEqual(running.accessibilityLabel(), loc("cue.state.running"))
         XCTAssertEqual(pointer.accessibilityLabel(), loc("cue.playhead"))
     }
 
-    func testHighlightedRowsKeepIconColours() async throws {
+    func testHighlightedRowsKeepTheRunningColourAndThePointer() async throws {
         let rig = try await timingRig()
         let h = try await harness(rig)
         try await go(rig)
@@ -4382,10 +4409,9 @@ final class CueListDrawingTests: XCTestCase {
         // A test process is not the active app, so AppKit draws the selection unfocused; draw it as a
         // focused one (white-on-accent is what turns template icons white).
         for row in 0...1 { h.spy.rowView(atRow: row, makeIfNecessary: true)?.isEmphasized = true }
-        XCTAssertGreaterThan(try pixels(h, "status", ten).count(Self.green), 8, "running triangle stays green")
-        let two = try pixels(h, "status", five)
-        XCTAssertGreaterThan(two.count(Self.playheadGrey), 8, "pointer stays grey")
-        XCTAssertEqual(two.count { r, g, b in r > 0.97 && g > 0.97 && b > 0.97 }, 0, "and nothing turns white")
+        XCTAssertGreaterThan(try darkPixels(h, "status", ten).count(Self.green), 8, "running triangle stays green")
+        XCTAssertGreaterThan(
+            try darkPixels(h, "status", five).count(Self.pointerWhite), 40, "the pointer is drawn over the highlight")
     }
 
     func testCueTypeColumn() async throws {
@@ -4679,7 +4705,9 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(try pixels(h, "duration", ten).count(Self.greenish), 0, "and no progress outline")
     }
 
-    func testALoopingCueShowsOnePassInTheDurationCellBeforeGoWhileRunningAndAfterAStop() async throws {
+    /// A cue that loops with no end: one pass before GO and after a stop; while it runs the cell counts
+    /// inside the pass and starts again each time round, and the bar follows it.
+    func testALoopingCueCountsInsideEachPassInTheDurationCell() async throws {
         let rig = try await timingRig(loopsForever: true)
         let h = try await harness(rig)
         await assertEventually { rig.store.mediaDurations[self.five]?.duration == 5 }
@@ -4687,29 +4715,39 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00", "before GO")
         XCTAssertEqual(h.cell("duration", five)?.label.stringValue, "00:05.00", "a play-once cue is unchanged")
         try await go(rig)
-        try await rig.advance(12)  // past one pass: it is still looping
+        try await rig.advance(4)
+        await assertEventually { (rig.store.progress[self.ten]?.elapsed ?? 0) >= 3.9 }
+        let first = try XCTUnwrap(CueTime.parse(h.cell("duration", ten)?.label.stringValue ?? ""))
+        XCTAssertEqual(first, 4, accuracy: 0.1, "four seconds into the first pass")
+        let bar = try XCTUnwrap(try pixels(h, "duration", ten).extent(Self.greenish), "the bar is drawn")
+        XCTAssertEqual(bar.upperBound, 0.4, accuracy: 0.06)
+        try await rig.advance(8)  // into the second pass
         await assertEventually { (rig.store.progress[self.ten]?.elapsed ?? 0) >= 11.9 }
         XCTAssertEqual(rig.store.cueStates[ten]?.state, .running)
-        XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00", "while running")
+        let second = try XCTUnwrap(CueTime.parse(h.cell("duration", ten)?.label.stringValue ?? ""))
+        XCTAssertEqual(second, 2, accuracy: 0.1, "it started again: two seconds into the second pass")
+        XCTAssertEqual(
+            try XCTUnwrap(try pixels(h, "duration", ten).extent(Self.greenish)).upperBound, 0.2, accuracy: 0.06)
         guard case .success = await rig.store.transport(.stop(cue: ten, fadeOut: nil)) else { return XCTFail("stop") }
         try await rig.advance(1)
         await assertEventually { rig.store.cueStates[self.ten]?.state != .running }
         XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00", "after a stop")
     }
 
-    func testRunningCueShowsProgressInTheDurationCell() async throws {
+    func testRunningCueCountsAndShowsProgressInTheDurationCell() async throws {
         let rig = try await timingRig()
         let h = try await harness(rig)
         await assertEventually { rig.store.mediaDurations[self.ten]?.duration == 10 }
         try await go(rig)
         try await rig.advance(4)
         await assertEventually { (rig.store.progress[self.ten]?.elapsed ?? 0) >= 3.9 }
-        XCTAssertEqual(h.cell("duration", ten)?.label.stringValue, "00:10.00", "still reads the duration")
+        let gone = try XCTUnwrap(CueTime.parse(h.cell("duration", ten)?.label.stringValue ?? ""))
+        XCTAssertEqual(gone, 4, accuracy: 0.1, "the text counts the time gone")
         let drawn = try pixels(h, "duration", ten)
         let reach = try XCTUnwrap(drawn.extent(Self.greenish), "outlined and filled in green")
         XCTAssertEqual(reach.upperBound, 0.4, accuracy: 0.06, "to about 40 % of the cell")
         XCTAssertEqual(reach.lowerBound, 0, accuracy: 0.03)
-        // It ends: the outline is gone.
+        // It ends: the outline is gone and the cell reads the duration again.
         try await rig.advance(7)
         await assertEventually { rig.store.cueStates[self.ten]?.state != .running }
         XCTAssertEqual(try pixels(h, "duration", ten).count(Self.greenish), 0)

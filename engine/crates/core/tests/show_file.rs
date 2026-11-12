@@ -1035,15 +1035,28 @@ fn fade_kind() -> impl Strategy<Value = CueKind> {
             output_db,
             crosspoints,
         });
-    (target(), time(), curve(), levels, any::<bool>()).prop_map(
-        |(target, duration, curve, levels, stop_target_when_done)| CueKind::Fade {
-            target,
-            duration,
-            curve,
-            levels,
-            stop_target_when_done,
-        },
+    (
+        target(),
+        time(),
+        curve(),
+        levels,
+        any::<bool>(),
+        any::<bool>(),
     )
+        .prop_map(
+            |(target, duration, curve, levels, stop_target_when_done, relative)| CueKind::Fade {
+                target,
+                duration,
+                curve,
+                levels,
+                stop_target_when_done,
+                mode: if relative {
+                    openlab_core::FadeMode::Relative
+                } else {
+                    openlab_core::FadeMode::Absolute
+                },
+            },
+        )
 }
 
 fn osc_arg() -> impl Strategy<Value = OscArg> {

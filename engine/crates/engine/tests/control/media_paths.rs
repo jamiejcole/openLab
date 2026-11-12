@@ -233,6 +233,7 @@ fn clipboard() -> Vec<openlab_core::Cue> {
                 crosspoints: vec![],
             },
             stop_target_when_done: false,
+            mode: Default::default(),
         },
     );
     fade_cue.number = Some("9".into());

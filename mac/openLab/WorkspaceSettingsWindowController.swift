@@ -55,6 +55,15 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// The last passcode edit on its way to the engine; the next waits for it.
     var oscCommits: Task<Void, Never>?
 
+    let networkAddButton = NSButton(title: loc("settings.network.add"), target: nil, action: nil)
+    let networkGrid = NSGridView()
+    /// The name, host and port fields of every row, in row order.
+    var networkFields: [NSTextField] = []
+    var networkTransportPopups: [NSPopUpButton] = []
+    var networkDeleteButtons: [NSButton] = []
+    var shownNetwork: [NetworkPatchRow]?
+    var networkCommits: Task<Void, Never>?
+
     let messageLabel = NSTextField(wrappingLabelWithString: "")
     let doneButton = DoneButton(title: loc("settings.done"), target: nil, action: nil)
 
@@ -214,6 +223,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         for (label, view, id) in [
             (loc("settings.tab.general"), general, "general"), (loc("settings.tab.audio"), audio, "audio"),
             (loc("settings.tab.osc"), buildOscTab(), "osc"),
+            (loc("settings.tab.network"), buildNetworkTab(), "network"),
         ] {
             let item = NSTabViewItem(identifier: id)
             item.label = label
@@ -221,7 +231,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             view.translatesAutoresizingMaskIntoConstraints = false
             holder.addSubview(view)
             // The OSC table takes the pane's height.
-            if id == "osc" { view.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -16).isActive = true }
+            if id == "osc" || id == "network" {
+                view.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -16).isActive = true
+            }
             NSLayoutConstraint.activate([
                 view.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 16),
                 view.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -16),
@@ -289,6 +301,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         lastDrawn = state
         renderCount += 1
         renderOsc(state.osc, forced: forced)
+        renderNetwork(state.network, forced: forced)
         renderGeneral()
         renderDevice()
         renderPatch()
@@ -488,6 +501,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// engine's value comes back.
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let field = notification.object as? NSTextField else { return }
+        if networkFields.contains(field) {
+            networkFieldCommitted(field)
+            return
+        }
         if oscCodeFields.contains(field) {
             oscCodeCommitted(field)
             return

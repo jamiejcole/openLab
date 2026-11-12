@@ -16,3 +16,4 @@ DerivedData/
 # Claude Code (local settings, agent worktrees)
 /.claude/settings.local.json
 /.claude/worktrees/
+/mac/openLab/Info.plist

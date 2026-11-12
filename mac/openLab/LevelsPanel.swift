@@ -14,28 +14,58 @@ final class LevelFader: NSSlider {
     }
 }
 
-/// The matrix mixer and the strip that edits its selected level: the body of an Audio cue's Levels
-/// tab (AUD-06, AUD-08) and of a Fade cue's levels (CT-10). Edits are applied to the panel's own
+/// The scroll view around the levels: it says when it has been laid out, so the faders fill its height.
+final class LevelsScrollView: NSScrollView {
+    var onLayout: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
+    }
+}
+
+/// What the levels scroll over: the faders, the value boxes under them and the field that types in a box.
+final class LevelsBoard: NSView {
+    override var isFlipped: Bool { true }
+}
+
+/// An Audio cue's Levels tab (AUD-06, AUD-08) and a Fade cue's levels (CT-10), laid out as QLab's
+/// are: buttons in a column on the left; on the right a fader for the main level and for each cue
+/// output, each over its value box, and the crosspoints below. Edits are applied to the panel's own
 /// copy at once and reported as a whole new `LevelSet`; the inspector sends them and calls `show`
 /// again with the model, which also takes back an edit the engine refused.
 @MainActor
 final class LevelsPanel: NSObject, NSTextFieldDelegate {
     let isFade: Bool
     let view = NSStackView()
+    /// The left column; the inspector adds a Fade's own controls at its end.
+    let side = NSStackView()
     let matrix = LevelMatrixView()
-    let scroll = NSScrollView()
+    let board = LevelsBoard()
+    let scroll = LevelsScrollView()
+    /// The name of the chosen level, over the controls that act on it.
     let cellLabel = NSTextField(labelWithString: "")
+    /// Types in the chosen level's box: laid over it while typing, hidden otherwise.
     let levelField = NSTextField()
-    let fader = LevelFader(
-        value: LevelText.floorDb, minValue: LevelText.floorDb, maxValue: 0, target: nil, action: nil)
+    /// The main level's fader, then one per cue output.
+    private(set) var faders: [LevelFader] = []
+    /// The chosen level's fader (the main one while a crosspoint is chosen: those have none).
+    var fader: LevelFader {
+        if case .output(let o) = selection, faders.indices.contains(o + 1) { return faders[o + 1] }
+        return faders[0]
+    }
     let muteCheck = NSButton(checkboxWithTitle: loc("levels.mute"), target: nil, action: nil)
     let activeCheck = NSButton(checkboxWithTitle: loc("levels.active"), target: nil, action: nil)
     let gangField = NSTextField()
     let gangLabel = NSTextField(labelWithString: loc("levels.gang"))
-    /// Peaks of the cue's output channels beside the fader (an Audio cue's Levels tab only).
+    /// Peaks of the cue's output channels (an Audio cue's Levels tab only).
     let meter = MeterView()
+    let defaultButton = NSButton(title: loc("levels.setDefault"), target: nil, action: nil)
     let silentButton = NSButton(title: loc("levels.setSilent"), target: nil, action: nil)
     let fromTargetButton = NSButton(title: loc("levels.fromTarget"), target: nil, action: nil)
+    static let sideWidth: CGFloat = 170
+    /// The least height a fader has; a shorter tab scrolls.
+    static let minFaderHeight: CGFloat = 70
 
     /// A whole new level set, and the gesture it belongs to (nil for a one-off edit such as a typed value).
     var onEdit: ((LevelSet, Int?) -> Void)?
@@ -73,26 +103,25 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         matrix.setAX("\(prefix)-matrix", label: loc("levels.matrix"))
         cellLabel.setAX("\(prefix)-cell")
         levelField.setAX("\(prefix)-field")
-        fader.setAX("\(prefix)-fader")
         meter.setAX("\(prefix)-meter")
         muteCheck.setAX("\(prefix)-mute")
         activeCheck.setAX("\(prefix)-active")
         gangField.setAX("\(prefix)-gang")
+        defaultButton.setAX("\(prefix)-default")
         silentButton.setAX("\(prefix)-silent")
         fromTargetButton.setAX("\(prefix)-from-target")
         levelField.delegate = self
         gangField.delegate = self
-        levelField.alignment = .right
-        levelField.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        levelField.alignment = .center
+        levelField.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        levelField.isHidden = true
         gangField.widthAnchor.constraint(equalToConstant: 40).isActive = true
-        fader.isContinuous = true
-        fader.widthAnchor.constraint(equalToConstant: 180).isActive = true
-        for c in [fader as NSControl, muteCheck, activeCheck, silentButton, fromTargetButton] { c.target = self }
-        fader.action = #selector(faderMoved)
-        fader.onGestureBegin = { [weak self] in self?.beginGesture() }
-        fader.onGestureEnd = { [weak self] in self?.endGesture() }
+        for c in [muteCheck, activeCheck, defaultButton, silentButton, fromTargetButton] as [NSControl] {
+            c.target = self
+        }
         muteCheck.action = #selector(muteToggled)
         activeCheck.action = #selector(activeToggled)
+        defaultButton.action = #selector(setDefaults)
         silentButton.action = #selector(silenceAll)
         fromTargetButton.action = #selector(setFromTarget)
         matrix.onSelect = { [weak self] slot in self?.select(slot) }
@@ -107,31 +136,123 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         matrix.onPress = { [weak self] on in
             if on { self?.beginGesture() } else { self?.endGesture() }
         }
+        matrix.onType = { [weak self] slot in self?.beginTyping(slot) }
 
-        scroll.documentView = matrix
+        board.addSubview(matrix)
+        board.addSubview(levelField)
+        syncFaders(outputs: 0)
+        scroll.documentView = board
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
-        scroll.borderType = .bezelBorder
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
+        scroll.onLayout = { [weak self] in self?.layoutBoard() }
 
-        let buttons: [NSView] = isFade ? [silentButton, fromTargetButton] : [silentButton]
-        var strip: [NSView] = [cellLabel, levelField, fader]
-        if !isFade { strip.append(meter) }
-        strip += isFade ? [activeCheck] : [muteCheck, gangLabel, gangField]
-        let stripRow = NSStackView(views: strip)
-        stripRow.spacing = 8
-        let buttonRow = NSStackView(views: buttons)
-        buttonRow.spacing = 8
-        view.orientation = .vertical
-        view.alignment = .leading
-        view.spacing = 6
-        for v in [scroll, stripRow, buttonRow] {
-            view.addArrangedSubview(v)
+        let buttons: [NSButton] = isFade ? [fromTargetButton, silentButton] : [defaultButton, silentButton]
+        let gangRow = NSStackView(views: [gangLabel, gangField])
+        gangRow.spacing = 6
+        let chosen: [NSView] = isFade ? [cellLabel, activeCheck] : [cellLabel, muteCheck, gangRow, meter]
+        cellLabel.font = .systemFont(ofSize: 11)
+        cellLabel.textColor = .secondaryLabelColor
+        cellLabel.lineBreakMode = .byTruncatingTail
+        cellLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        side.orientation = .vertical
+        side.alignment = .leading
+        side.spacing = 8
+        for b in buttons {
+            b.controlSize = .small
+            b.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            side.addArrangedSubview(b)
+            b.widthAnchor.constraint(equalTo: side.widthAnchor).isActive = true
         }
-        scroll.widthAnchor.constraint(equalTo: view.widthAnchor).isActive = true
-        fromTargetButton.isHidden = !isFade
+        side.setCustomSpacing(16, after: buttons[buttons.count - 1])
+        for v in chosen { side.addArrangedSubview(v) }
+        if !isFade { meter.widthAnchor.constraint(equalTo: side.widthAnchor).isActive = true }
+        side.widthAnchor.constraint(equalToConstant: Self.sideWidth).isActive = true
+        side.setHuggingPriority(.defaultHigh, for: .vertical)
+        view.orientation = .horizontal
+        view.alignment = .top
+        view.spacing = 12
+        view.addArrangedSubview(side)
+        view.addArrangedSubview(scroll)
+        scroll.heightAnchor.constraint(equalTo: view.heightAnchor).isActive = true
+        scroll.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         refreshStrip()
+    }
+
+    // MARK: Faders and the board
+
+    /// One fader for the main level and one per cue output, made or dropped to match `outputs`.
+    private func syncFaders(outputs: Int) {
+        let wanted = outputs + 1
+        while faders.count > wanted { faders.removeLast().removeFromSuperview() }
+        while faders.count < wanted {
+            let n = faders.count
+            let f = LevelFader(
+                value: LevelText.floorDb, minValue: LevelText.floorDb, maxValue: 0, target: self,
+                action: #selector(faderMoved(_:)))
+            f.isVertical = true
+            f.isContinuous = true
+            f.controlSize = .small
+            f.tag = n
+            let prefix = isFade ? "fade" : "levels"
+            // The main fader keeps the name the single fader had.
+            f.setAX(n == 0 ? "\(prefix)-fader" : "\(prefix)-fader-\(n)", label: Self.name(of: Self.slot(ofFader: n)))
+            f.onGestureBegin = { [weak self] in
+                self?.select(Self.slot(ofFader: n))
+                self?.beginGesture()
+            }
+            f.onGestureEnd = { [weak self] in self?.endGesture() }
+            faders.append(f)
+            board.addSubview(f)
+        }
+    }
+
+    private static func slot(ofFader n: Int) -> LevelSet.Slot { n == 0 ? .master : .output(n - 1) }
+
+    static func name(of slot: LevelSet.Slot) -> String {
+        switch slot {
+        case .master: return loc("levels.master")
+        case .output(let o): return String(format: loc("levels.output"), o + 1)
+        case .cross(let i, let o): return String(format: loc("levels.cross"), i + 1, o + 1)
+        }
+    }
+
+    /// Sizes the board to the scroll view and puts the faders over their boxes: the boxes sit at the
+    /// bottom and the faders take the height above them. Worked out from the scroll view's frame,
+    /// never its clip view (whose size changes as scroll bars come and go).
+    func layoutBoard() {
+        let bar = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+        let top: CGFloat = 4
+        let gap: CGFloat = 6
+        let least = top + Self.minFaderHeight + gap + matrix.frame.height
+        let size = NSSize(
+            width: max(matrix.frame.width, 1), height: max(least, (scroll.frame.height - bar).rounded(.down)))
+        if board.frame.size != size { board.setFrameSize(size) }
+        let boxesTop = size.height - matrix.frame.height
+        if matrix.frame.origin != NSPoint(x: 0, y: boxesTop) { matrix.setFrameOrigin(NSPoint(x: 0, y: boxesTop)) }
+        for (n, f) in faders.enumerated() {
+            let box = matrix.rect(of: Self.slot(ofFader: n))
+            let frame = NSRect(x: box.midX - 11, y: top, width: 22, height: boxesTop - gap - top)
+            if f.frame != frame { f.frame = frame }
+        }
+        if !levelField.isHidden { levelField.frame = fieldFrame(selection) }
+    }
+
+    private func fieldFrame(_ slot: LevelSet.Slot) -> NSRect {
+        board.convert(matrix.rect(of: slot), from: matrix).insetBy(dx: 1, dy: 0)
+    }
+
+    /// Opens the chosen level's box for typing (a double-click on it, or Return).
+    func beginTyping(_ slot: LevelSet.Slot) {
+        guard !isLocked, levels != nil else { return }
+        select(slot)
+        levelField.frame = fieldFrame(slot)
+        levelField.isHidden = false
+        levelField.window?.makeFirstResponder(levelField)
+        levelField.currentEditor()?.selectAll(nil)
     }
 
     // MARK: Showing the model
@@ -166,6 +287,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         self.levels = levels
         matrix.levels = levels
         matrix.resize(inputs: levels == nil ? 0 : inputs, outputs: levels == nil ? 0 : outputs)
+        syncFaders(outputs: matrix.outputCount)
+        layoutBoard()
         if !isValid(selection) { selection = .master }
         matrix.selection = selection
         refreshStrip()
@@ -188,28 +311,29 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     private func refreshStrip() {
         guard let levels else {
-            for c in [levelField, fader, muteCheck, activeCheck, gangField, silentButton, fromTargetButton]
+            for c in [levelField, muteCheck, activeCheck, gangField, defaultButton, silentButton, fromTargetButton]
                 as [NSControl]
             {
                 c.isEnabled = false
             }
+            for f in faders { f.isEnabled = false }
             cellLabel.stringValue = ""
             return
         }
         let slot = selection
-        switch slot {
-        case .master: cellLabel.stringValue = loc("levels.master")
-        case .output(let o): cellLabel.stringValue = String(format: loc("levels.output"), o + 1)
-        case .cross(let i, let o): cellLabel.stringValue = String(format: loc("levels.cross"), i + 1, o + 1)
-        }
+        cellLabel.stringValue = Self.name(of: slot)
         let active = levels.isActive(slot)
         let db = levels.db(slot)
         if !isDirty { levelField.stringValue = db.map(LevelText.format) ?? "" }
-        // The fader runs from the minimum limit and stops at 0 dB (QLab manual p. 181), or at the
+        let free = !isLocked
+        // A fader runs from the minimum limit and stops at 0 dB (QLab manual p. 181), or at the
         // maximum if that is lower; a level above it shows pinned there.
-        fader.minValue = limits.min
-        fader.maxValue = min(limits.max, 0)
-        fader.doubleValue = min(max(db ?? limits.min, limits.min), fader.maxValue)
+        for (n, f) in faders.enumerated() {
+            f.minValue = limits.min
+            f.maxValue = min(limits.max, 0)
+            f.doubleValue = min(max(levels.db(Self.slot(ofFader: n)) ?? limits.min, limits.min), f.maxValue)
+            f.isEnabled = free
+        }
         activeCheck.state = active ? .on : .off
         muteCheck.state = levels.isMuted(slot) ? .on : .off
         var isOutput = false
@@ -219,9 +343,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             gangText = levels.gang(of: o).map(LevelSet.gangLetter) ?? ""
         }
         if !isDirty { gangField.stringValue = gangText }
-        let free = !isLocked
         levelField.isEnabled = free
-        fader.isEnabled = free
         activeCheck.isEnabled = free
         // A mute belongs to a cue output or a route that exists (a route not listed is silent already).
         var hasMute = false
@@ -232,6 +354,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         }
         muteCheck.isEnabled = free && hasMute && !levels.isFade
         gangField.isEnabled = free && isOutput && !levels.isFade
+        defaultButton.isEnabled = free
         silentButton.isEnabled = free
         fromTargetButton.isEnabled = free && canSetFromTarget
     }
@@ -278,11 +401,12 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         onEdit?(new, gesture)
     }
 
-    @objc private func faderMoved() {
-        let v = fader.doubleValue
+    @objc private func faderMoved(_ sender: LevelFader) {
+        let v = sender.doubleValue
         let limits = limits
         let db = v <= limits.min ? LevelText.silence : (v * 10).rounded() / 10
-        let slot = selection
+        let slot = Self.slot(ofFader: sender.tag)
+        if selection != slot { select(slot) }
         edit(gesture: gesture) { $0.set(slot, db: db, drag: true, limits: limits) }
     }
 
@@ -305,6 +429,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     }
 
     @objc private func silenceAll() { edit { $0.silenceAll() } }
+
+    /// A new Audio cue's levels: everything at 0 dB, file channel n to cue output n.
+    @objc private func setDefaults() { edit { $0.setDefaults() } }
 
     @objc private func setFromTarget() { onSetFromTarget?() }
 
@@ -329,6 +456,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         let typed = typedField
         typedField = nil
         if let typed, field != nil { commitText(of: typed) }
+        if field == nil || field === levelField { levelField.isHidden = true }
         if let held = heldSize, gesture == nil {
             place(levels, inputs: held.inputs, outputs: held.outputs)
         } else {

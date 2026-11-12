@@ -55,7 +55,7 @@ final class FooterWarningsTests: XCTestCase {
         XCTAssertTrue(footer.bounds.contains(frame), "\(frame) in \(footer.bounds)")
         let others: [NSView] =
             [
-                footer.modeSwitch, footer.showModeLabel, footer.overrideBadge, footer.statusButton,
+                footer.modeSwitch, footer.overrideBadge, footer.statusButton,
                 footer.noticeLabel, footer.countLabel, footer.clock, footer.settingsButton,
             ] + Array(footer.toggles.values)
         for other in others where !other.isHiddenOrHasHiddenAncestor {

@@ -96,6 +96,7 @@ pub fn fade(target: u128) -> CueKind {
             crosspoints: vec![],
         },
         stop_target_when_done: true,
+        mode: Default::default(),
     }
 }
 

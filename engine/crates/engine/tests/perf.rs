@@ -132,6 +132,7 @@ fn scaled_workspace(k: u128) -> openlab_core::Workspace {
                     crosspoints: vec![],
                 },
                 stop_target_when_done: i % 2 == 0,
+                mode: Default::default(),
             },
         ));
     }

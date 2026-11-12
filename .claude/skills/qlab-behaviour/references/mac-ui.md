@@ -32,7 +32,25 @@ Q32 | Active Cues row for a paused cue keeps frozen elapsed/remaining and bar, l
 Q18 | Pre-Wait, Action, Post-Wait columns count down while running; a running group shows elapsed. Engine sends elapsed and remaining; UI picks display | assumed (asked 2026-10-29, unanswered); manual: waits count down
 Q20 | Duration for an Audio cue whose last slice/file loops until devamped: engine sends one-pass length (`trimmed`) and no `duration`; the cue list's Duration cell and the inspector's Basics Duration field (read-only for Audio) show that one pass, before GO, while running and after a stop, so it never reads as an unprobed file | assumed (asked 2026-10-29, unanswered; manual search for a looping cue's Duration found nothing; 2026-11-08 shown as one pass)
 Q56 | Duration cell of a running cue: outlined and filled green from the left to the played fraction, still reading the duration; paused: bar stays, yellow; ends: bar goes. Unknown-end cues (looping, group) draw no bar | assumed 2026-11-01 (user's own observation of QLab)
-Q57 | Duration header chevron flips a running cue's cell to time left; Pre-Wait/Post-Wait columns keep countdown, flipping to elapsed over total | assumed 2026-11-01
+Q57 | Every time column counts up (the time gone) while its wait or cue runs; its header chevron flips it to the time left. List times always show two decimals (the inspector keeps milliseconds). A cue looping a slice with no end counts inside the slice and starts again each pass, bar included | user 2026-11-12
+Q231 | Playhead: a solid triangle at the row's left edge, row height, white on the dark list (near-black on a light one); rows reach both window edges | user 2026-11-12
+Q232 | Dragging cues over a row that can take or give a target outlines that row's Target cell: solid when the pointer is in the cell (the drop sets the target; white on a highlighted row, accent colour otherwise), dashed white when it is elsewhere on the row (the drop moves the cue) | user 2026-11-12
+Q233 | A new cue that takes a target starts targeting the one selected cue when that cue can be its target (a Fade made with an Audio cue selected) | user 2026-11-12
+Q234 | No warning is listed when a trigger is ignored (cue already running) or a Fade's target is not running | user 2026-11-12
+Q235 | Show Mode adds no text to the footer: the Edit/Show switch says it | user 2026-11-12
+Q236 | Sidebar Cue Lists: a list opens (triangle) to show its cues, number then name, set in by group depth; choosing a cue row shows its list and selects the cue. GO (Space) goes on the list chosen there | user 2026-11-12
+Q237 | Levels tab: a column of buttons on the left; a vertical fader for the main level and each cue output over its value box, names under the boxes, crosspoint boxes below; a box is typed in after a double-click or Return. Fade Levels adds the absolute/relative pop-up and Preview at the foot of the column | user 2026-11-12
+Q238 | Fade mode relative: an Audio target's levels move by the Fade's dB from where they are (as a Group target always does); absolute is the default | user 2026-11-12
+Q239 | Preview of a Fade (button, menu, key) starts the Fade on its target now and leaves the playhead | user 2026-11-12 (how) assumed
+Q240 | Curve tab draws the curve twice, for a level going up and one going down, over the duration; standard curves only, not edited by dragging | user 2026-11-12, editing assumed out
+Q241 | A file target in the inspector is drawn as its folders and file with icons and separators, from the home folder down; other paths whole | user 2026-11-12
+Q242 | Pre-Wait and Post-Wait are typed in their cells of the list (double-click), as Number, Name, Duration and Target are | manual pp. 94-95
+Q243 | A click on a row's continue cell opens the three modes there, the current one ticked; nothing in Show Mode | manual p. 95
+Q244 | An auto-follow cue's Post-Wait cell reads the cue's duration and is not typed | manual p. 95
+Q245 | Sidebar tabs count their lists and active cues ("2 Cue Lists", "1 Active Cue") | UI map sidebar.lists
+Q246 | Progress the engine still reports for a cue that has ended (its voice fading out after a panic) is not shown: the Duration cell reads the duration again | assumed 2026-11-12
+Q247 | Network destinations are edited in the workspace settings' Network tab: name, address, port, UDP or TCP, add and remove; one a cue sends to is not removed | UI map settings.network (ours has no interface or passcode column)
+Q248 | The inspector is 320 pt tall until dragged; level faders stop at 0 dB (manual p. 181) even where the workspace maximum is higher | assumed 2026-11-12
 Q42 | New cue list from the sidebar button: "Cue List N" (N = position), after the last list, shown at once | assumed
 Q46 | New cue or paste with a Group selected goes inside as its last child (expanded or not; list opens it); with a cue inside a group selected, after that cue in the group | assumed 2026-10-31
 Q47 | New Group from several selected cues: placed where the first selected (list order) was, cues in list order, mixed parents all taken in (a selected cue inside a selected group goes with it); one undo step; busy cues moved, never stopped | assumed 2026-10-31

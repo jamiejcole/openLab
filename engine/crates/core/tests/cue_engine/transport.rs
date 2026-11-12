@@ -26,6 +26,7 @@ fn master_fade(n: u128, target: u128, seconds: f64, db: f64) -> Cue {
                 crosspoints: vec![],
             },
             stop_target_when_done: true,
+            mode: Default::default(),
         },
     )
 }
