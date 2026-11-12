@@ -296,6 +296,7 @@
 "transport.pause" = "Pause all";
 "transport.resume" = "Resume all";
 "transport.panic" = "Panic All";
+"sidebar.list.open" = "Show the cues of %@";
 "sidebar.tabs.label" = "Sidebar view";
 "sidebar.tab.cueLists" = "Cue Lists";
 "sidebar.tab.activeCues" = "Active Cues";

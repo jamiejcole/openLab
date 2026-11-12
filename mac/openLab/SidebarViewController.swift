@@ -70,9 +70,14 @@ final class ActiveCueCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 }
 
-/// One Cue Lists row: the list's name, cut short when the sidebar is narrow.
+/// One Cue Lists row: a list's name with a triangle that opens it, or under an open list one of its
+/// cues (number, then name), set in by its depth. Text is cut short when the sidebar is narrow.
 final class CueListNameCell: NSTableCellView {
     let name = NSTextField(labelWithString: "")
+    let disclosure = NSButton()
+    private var leading: NSLayoutConstraint?
+    /// How far a cue row is set in: past the triangle, then by its depth in groups.
+    var indent: CGFloat = 0 { didSet { leading?.constant = 4 + indent } }
 
     init() {
         super.init(frame: .zero)
@@ -80,10 +85,21 @@ final class CueListNameCell: NSTableCellView {
         name.lineBreakMode = .byTruncatingTail
         name.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         name.translatesAutoresizingMaskIntoConstraints = false
+        disclosure.bezelStyle = .disclosure
+        disclosure.setButtonType(.pushOnPushOff)
+        disclosure.title = ""
+        disclosure.translatesAutoresizingMaskIntoConstraints = false
+        disclosure.setAccessibilityIdentifier("cue-list-disclosure")
+        addSubview(disclosure)
         addSubview(name)
         textField = name
+        let lead = disclosure.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
+        leading = lead
         NSLayoutConstraint.activate([
-            name.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            lead,
+            disclosure.centerYAnchor.constraint(equalTo: centerYAnchor),
+            disclosure.widthAnchor.constraint(equalToConstant: 14),
+            name.leadingAnchor.constraint(equalTo: disclosure.trailingAnchor, constant: 4),
             name.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             name.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -187,7 +203,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     var onNotice: ((String) -> Void)?
 
     private(set) var transportButtons: [String: NSButton] = [:]
-    private(set) var lists: [CueList] = []
+    private(set) var lists: [CueList] = [] { didSet { rebuildListRows() } }
     /// The list the window shows; asked for whenever the selection is drawn, never cached.
     var shownProvider: () -> ModelID? = { nil }
     var shownList: ModelID? { shownProvider() }
@@ -219,6 +235,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         self.warningsTable = warningsTable
         super.init(nibName: nil, bundle: nil)
         lists = store.model?.cueLists ?? []
+        rebuildListRows()  // no observer runs for an assignment in init
         activeCues = Self.ordered(store: store)
         setWarnings(WarningRows.make(store: store))
         sub = store.changes.sink { [weak self] change in
@@ -338,7 +355,58 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// The list row the menu opened on; nil when the click missed every row.
     private var menuList: CueList? {
-        lists.indices.contains(listTable.clickedRow) ? lists[listTable.clickedRow] : nil
+        guard listRows.indices.contains(listTable.clickedRow), case .list(let i) = listRows[listTable.clickedRow]
+        else { return nil }
+        return lists.indices.contains(i) ? lists[i] : nil
+    }
+
+    // MARK: Rows of the Cue Lists tab
+
+    /// A row of the Cue Lists tab: a list, or under an open list one of its cues.
+    enum ListRow: Equatable {
+        case list(Int)
+        case cue(list: Int, id: ModelID, depth: Int)
+    }
+    private(set) var listRows: [ListRow] = []
+    /// The lists opened to show their cues. Closed until the operator opens one.
+    private(set) var openLists: Set<ModelID> = []
+
+    private func rebuildListRows() {
+        var rows: [ListRow] = []
+        for (i, list) in lists.enumerated() {
+            rows.append(.list(i))
+            guard openLists.contains(list.id) else { continue }
+            // Iterative: a deep show must not overflow the stack.
+            var stack: [(cues: [Cue], next: Int, depth: Int)] = [(list.cues, 0, 1)]
+            while var top = stack.popLast() {
+                guard top.next < top.cues.count else { continue }
+                let cue = top.cues[top.next]
+                top.next += 1
+                stack.append(top)
+                rows.append(.cue(list: i, id: cue.id, depth: top.depth))
+                if !cue.children.isEmpty { stack.append((cue.children, 0, top.depth + 1)) }
+            }
+        }
+        listRows = rows
+    }
+
+    /// Opens or closes a list in the Cue Lists tab (its triangle).
+    func setOpen(_ open: Bool, list id: ModelID) {
+        guard open != openLists.contains(id) else { return }
+        if open { openLists.insert(id) } else { openLists.remove(id) }
+        lists = store.model?.cueLists ?? []
+        rebuildListRows()
+        guard isViewLoaded else { return }
+        listTable.reloadData()
+        syncSelection()
+    }
+
+    @objc private func disclosureClicked(_ sender: NSButton) {
+        let row = listTable.row(for: sender)
+        guard listRows.indices.contains(row), case .list(let i) = listRows[row], lists.indices.contains(i) else {
+            return
+        }
+        setOpen(sender.state == .on, list: lists[i].id)
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -424,12 +492,20 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         let current = store.model?.cueLists ?? []
         if lists.map(\.id) != current.map(\.id) || lists.map(\.name) != current.map(\.name) {
             lists = current
+            rebuildListRows()
             listTable.reloadData()
         }
         settingSelection = true
         defer { settingSelection = false }
         // The cue list falls back to the first list when the shown one is gone; so does the highlight.
-        if let row = lists.firstIndex(where: { $0.id == shownList }) ?? (lists.isEmpty ? nil : 0) {
+        let shown = lists.firstIndex(where: { $0.id == shownList }) ?? (lists.isEmpty ? nil : 0)
+        // A cue row of the shown list keeps the highlight the operator put on it.
+        if let shown, listRows.indices.contains(listTable.selectedRow),
+            case .cue(let inList, _, _) = listRows[listTable.selectedRow], inList == shown
+        {
+            return
+        }
+        if let row = shown.flatMap({ listRows.firstIndex(of: .list($0)) }) {
             listTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         } else {
             listTable.deselectAll(nil)
@@ -438,6 +514,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     private func reloadLists() {
         lists = store.model?.cueLists ?? []
+        openLists.formIntersection(lists.map(\.id))
+        rebuildListRows()
         if isViewLoaded {
             listTable.reloadData()
             syncSelection()
@@ -471,7 +549,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
                 default: break
                 }
             }
-            if listsChanged { reloadLists() }
+            // An open list shows its cues: any cue change may add, drop, move or rename one.
+            if listsChanged || (!openLists.isEmpty && !touched.isEmpty) { reloadLists() }
             // A deleted cue leaves the panel; a renamed one is redrawn. A removed list takes its
             // cues with it without a delete for each.
             if listsChanged || !touched.isDisjoint(with: activeCues) { syncActive(changed: touched) }
@@ -625,7 +704,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     // MARK: Table data
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        if tableView === listTable { return lists.count }
+        if tableView === listTable { return listRows.count }
         return tableView === warningsTable ? warningRows.count : activeCues.count
     }
 
@@ -651,18 +730,45 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         }
         guard !settingSelection, (notification.object as? NSTableView) === listTable else { return }
         let row = listTable.selectedRow
-        guard lists.indices.contains(row) else { return }
-        onSelectList?(lists[row].id)
+        guard listRows.indices.contains(row) else { return }
+        switch listRows[row] {
+        case .list(let i):
+            if lists.indices.contains(i) { onSelectList?(lists[i].id) }
+        case .cue(let i, let id, _):
+            // A cue of a list: that list is shown and the cue chosen in it, as a click on it there.
+            guard lists.indices.contains(i) else { return }
+            if shownList != lists[i].id { onSelectList?(lists[i].id) }
+            onSelectCue?(id)
+        }
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         if tableView === warningsTable { return warningCell(row) }
         if tableView === listTable {
-            guard lists.indices.contains(row) else { return nil }
+            guard listRows.indices.contains(row) else { return nil }
             let cell =
                 (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("cue-list-name"), owner: nil)
                     as? CueListNameCell) ?? CueListNameCell()
-            cell.name.stringValue = lists[row].name
+            cell.disclosure.target = self
+            cell.disclosure.action = #selector(disclosureClicked(_:))
+            switch listRows[row] {
+            case .list(let i):
+                guard lists.indices.contains(i) else { return nil }
+                cell.indent = 0
+                cell.disclosure.isHidden = false
+                cell.disclosure.state = openLists.contains(lists[i].id) ? .on : .off
+                cell.disclosure.setAccessibilityLabel(String(format: loc("sidebar.list.open"), lists[i].name))
+                cell.name.stringValue = lists[i].name
+                cell.name.textColor = .labelColor
+            case .cue(_, let id, let depth):
+                let cue = store.model?.cue(id)
+                cell.indent = CGFloat(depth) * 12
+                cell.disclosure.isHidden = true
+                let shown = cue.map { $0.shownName(lookup: { [store] in store.model?.cue($0) }) } ?? ""
+                let label = shown.isEmpty ? CueKindStyle.kindLabel(cue?.kindType ?? "") : shown
+                cell.name.stringValue = [cue?.number ?? "", label].filter { !$0.isEmpty }.joined(separator: "  ")
+                cell.name.textColor = shown.isEmpty ? .secondaryLabelColor : .labelColor
+            }
             return cell
         }
         guard tableView === activeTable, activeCues.indices.contains(row) else { return nil }
