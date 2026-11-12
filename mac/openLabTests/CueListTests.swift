@@ -1222,9 +1222,11 @@ extension CueListTests {
             m.items.map { $0.isSeparatorItem ? "-" : $0.title },
             [
                 "Preview", "Load", "Panic", "-", "Move Playhead to This Cue", "Reveal Target in Finder", "-", "Cut",
-                "Copy", "Paste", "Delete",
+                "Copy", "Paste", "Delete", "-", "Edit",
             ])
-        XCTAssertTrue(m.items.filter { !$0.isSeparatorItem }.allSatisfy { $0.target === h.vc }, "this window's own")
+        XCTAssertTrue(
+            m.items.filter { !$0.isSeparatorItem && $0.submenu == nil }.allSatisfy { $0.target === h.vc },
+            "this window's own")
         let transport = m.items.filter { $0.action == #selector(CueListViewController.rowCommand(_:)) }
         XCTAssertEqual(
             transport.compactMap { $0.representedObject as? String },

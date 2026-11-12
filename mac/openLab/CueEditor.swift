@@ -367,8 +367,16 @@ final class CueEditor {
 
     /// A continue mode chosen from the row's own menu.
     func setContinue(of id: ModelID, to mode: String) async {
-        guard await begin(), store.model?.cue(id) != nil else { return }
-        _ = report(await store.send(command: .setProperty(id, .continueMode(mode))))
+        await setProperty(.continueMode(mode), of: [id])
+    }
+
+    /// One property set on every cue of `cues` still in the show, as one undo step (the row menu's
+    /// Edit items: continue mode, flagged, armed, colour for the whole selection).
+    func setProperty(_ property: CueProperty, of cues: [ModelID]) async {
+        guard await begin(), let model = store.model else { return }
+        let commands = cues.filter { model.cue($0) != nil }.map { Command.setProperty($0, property) }
+        guard let command = Command.transaction(commands) else { return }
+        _ = report(await store.send(command: command))
     }
 
     /// Sets a cue's notes from the masthead, through the inspector's notes command. Refused in

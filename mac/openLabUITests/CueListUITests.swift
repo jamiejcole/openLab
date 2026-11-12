@@ -11,7 +11,7 @@ final class CueListUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Act One"].exists)
         XCTAssertTrue(app.buttons["cue-target-choose"].firstMatch.exists, "the audio cue's button")
-        XCTAssertFalse(app.staticTexts["a.wav"].exists, "and not its file name")
+        XCTAssertFalse(app.outlines["cue-list"].staticTexts["a.wav"].exists, "and not its file name")
     }
 
     func testRunningCueShowsAStateIconWithALabel() {
@@ -273,8 +273,8 @@ final class CueTargetUITests: XCTestCase {
     func testDoubleClickingTheFileFieldOpensTheChooser() {
         let app = launchTargets()
         selectCue("intro", in: app)
-        // Not typed in, so accessibility reports it as text and not as a text field.
-        let field = app.staticTexts["inspector-target"]
+        // The file is drawn as a path: a double-click anywhere on it opens the chooser.
+        let field = app.descendants(matching: .any)["inspector-target-path"]
         XCTAssertTrue(waitFor("isHittable == true", field))
         field.doubleClick()
         XCTAssertTrue(app.buttons["Choose"].waitForExistence(timeout: 10), "the file chooser opens")

@@ -380,6 +380,10 @@
 "settings.audio.problem.channelsMissing" = "The device does not have the channels this patch uses.";
 "settings.audio.problem.outputCount" = "The number of channels does not match the patch's outputs.";
 "settings.audio.edit" = "Edit";
+"settings.audio.newPatch" = "New Patch";
+"settings.audio.removePatch" = "Remove";
+"settings.audio.patchName" = "Name";
+"settings.audio.newPatchName" = "Patch %d";
 "settings.audio.limits" = "Volume limits";
 "settings.audio.limitMax" = "Maximum";
 "settings.audio.limitMin" = "Minimum";
@@ -608,6 +612,8 @@
 "inspector.tab.curve" = "Curve";
 "inspector.tab.devamp" = "Devamp";
 "inspector.tab.network" = "Settings";
+"inspector.tab.io" = "I/O";
+"inspector.io.patch" = "Output patch";
 "inspector.network.patch" = "Patch";
 "inspector.network.message" = "Message";
 "inspector.network.messageHint" = "/address 1 2.5 \"text\" \\T";
@@ -724,6 +730,7 @@
 "cuelist.menu.preview" = "Preview";
 "cuelist.menu.load" = "Load";
 "cuelist.menu.panic" = "Panic";
+"cuelist.menu.edit" = "Edit";
 "cuelist.menu.movePlayhead" = "Move Playhead to This Cue";
 "cuelist.menu.revealTarget" = "Reveal Target in Finder";
 "footer.count" = "%1$@ in %2$@";

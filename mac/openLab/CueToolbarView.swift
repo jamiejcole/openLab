@@ -4,20 +4,19 @@ import AppKit
 
 /// Row of cue-type buttons in rounded segments; a click asks `onAdd` for a cue of that kind.
 final class CueToolbarView: NSView {
+    /// QLab 5's order for the kinds openLab has: Group, Audio, Fade, Network, then the cues that act
+    /// on cues, with Wait and Memo last.
     private static let groups: [[(icon: Icon, key: String)]] = [
+        [(.kindGroup, "cue.type.group")],
         [(.kindAudio, "cue.type.audio")],
-        [
-            (.kindGroup, "cue.type.group"), (.kindMemo, "cue.type.memo"),
-            (.kindWait, "cue.type.wait"), (.kindFade, "cue.type.fade"),
-        ],
+        [(.kindFade, "cue.type.fade")],
         [(.kindNetwork, "cue.type.network")],
         [
             (.kindStart, "cue.type.start"), (.kindStop, "cue.type.stop"),
             (.kindPause, "cue.type.pause"), (.kindLoad, "cue.type.load"),
             (.kindReset, "cue.type.reset"), (.kindDevamp, "cue.type.devamp"),
-        ],
-        [
             (.kindGoTo, "cue.type.goto"), (.kindArm, "cue.type.arm"), (.kindDisarm, "cue.type.disarm"),
+            (.kindWait, "cue.type.wait"), (.kindMemo, "cue.type.memo"),
         ],
     ]
 

@@ -51,6 +51,10 @@ Q245 | Sidebar tabs count their lists and active cues ("2 Cue Lists", "1 Active 
 Q246 | Progress the engine still reports for a cue that has ended (its voice fading out after a panic) is not shown: the Duration cell reads the duration again | assumed 2026-11-12
 Q247 | Network destinations are edited in the workspace settings' Network tab: name, address, port, UDP or TCP, add and remove; one a cue sends to is not removed | UI map settings.network (ours has no interface or passcode column)
 Q248 | The inspector is 320 pt tall until dragged; level faders stop at 0 dB (manual p. 181) even where the workspace maximum is higher | assumed 2026-11-12
+Q249 | The row menu ends with an Edit submenu: the three continue modes, Flagged, Armed and a Color submenu, each set on the whole selection in one undo step; a tick shows what every selected cue has, a dash where they differ; greyed in Show Mode | UI map context.cue-row
+Q250 | An Audio cue's output patch is chosen on its I/O tab (third tab), among the workspace's output patches | UI map inspector.audio.i-o (ours has the pop-up only)
+Q251 | Audio settings: New Patch adds a two-output patch named by its place; the shown patch's name is typed in place; Remove takes it away unless a cue plays through it or it is the only one | UI map settings.audio.audio-outputs (table layout still to do)
+Q252 | Cue toolbar order: Group, Audio, Fade, Network, then Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm, Wait, Memo | UI map workspace.toolbar
 Q42 | New cue list from the sidebar button: "Cue List N" (N = position), after the last list, shown at once | assumed
 Q46 | New cue or paste with a Group selected goes inside as its last child (expanded or not; list opens it); with a cue inside a group selected, after that cue in the group | assumed 2026-10-31
 Q47 | New Group from several selected cues: placed where the first selected (list order) was, cues in list order, mixed parents all taken in (a selected cue inside a selected group goes with it); one undo step; busy cues moved, never stopped | assumed 2026-10-31

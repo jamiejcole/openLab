@@ -42,6 +42,8 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
 - `WorkspaceStore` drops `progress` items for cues whose state does not keep progress (`keepsProgress`): the engine sends no last empty `progress`, so an item taken for an ended cue would never clear.
 - In-place list editing covers `preWait` and `postWait` too (`editableColumns`; not an auto-follow cue's post-wait, which shows its duration). A click in the continue column opens `continueMenu(row:)`.
 - Workspace settings tabs: General, Audio, OSC, Network. The Network tab (`+Network` files) is a grid of destinations drawn from the model like the OSC table; files added to `mac/openLab` need `make project` before a build sees them.
+- `WorkspaceWindowController` removes its split observers in `windowWillClose` (`stopSavingLayout`), and their blocks hold the split weakly: a block-based observer left in the notification centre keeps what it captured for the life of the app, and every closed window's view tree stayed alive. `testAClosedWindowsViewsAreReleased` guards it.
+- The row menu's Edit submenu (`editSubmenu`, `RowEdit`) sets one property on `rowMenuCues` through `CueEditor.setProperty(_:of:)`, one transaction. The Audio I/O tab is `InspectorIO.swift`; the patch goes out as `kindFields(["patch": id])`.
 - A trim handle drawn at an edge of the waveform is moved inside it so it is whole (`drawHandle`). The playhead, slice and insertion lines are not: at the very edge the clip cuts half their width.
 
 ## Seeing the app

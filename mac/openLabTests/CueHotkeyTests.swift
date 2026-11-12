@@ -223,8 +223,8 @@ final class TriggersTabTests: XCTestCase {
         XCTAssertEqual(
             vc.tabView.tabViewItems.map(\.label),
             [
-                loc("inspector.tab.basics"), loc("inspector.tab.triggers"), loc("inspector.tab.timeLoops"),
-                loc("inspector.tab.levels"),
+                loc("inspector.tab.basics"), loc("inspector.tab.triggers"), loc("inspector.tab.io"),
+                loc("inspector.tab.timeLoops"), loc("inspector.tab.levels"),
             ])
     }
 

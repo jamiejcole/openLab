@@ -578,12 +578,12 @@ final class CueEditingTests: XCTestCase {
         let toolbar = CueToolbarView()
         var asked: [NewCueKind] = []
         toolbar.onAdd = { asked.append($0) }
-        toolbar.add(group: 0, segment: 0)
-        toolbar.add(group: 1, segment: 1)
-        toolbar.add(group: 2, segment: 0)
+        toolbar.add(group: 1, segment: 0)
+        toolbar.add(group: 4, segment: 10)
+        toolbar.add(group: 3, segment: 0)
         XCTAssertEqual(asked, [.audio, .memo, .network])
         toolbar.isLocked = true
-        toolbar.add(group: 0, segment: 0)  // even if a control were live, a locked toolbar adds nothing
+        toolbar.add(group: 1, segment: 0)  // even if a control were live, a locked toolbar adds nothing
         XCTAssertEqual(asked, [.audio, .memo, .network])
         // Every button adds a cue: none is there for a kind the model does not have.
         XCTAssertTrue(CueToolbarView.kinds.allSatisfy { $0.allSatisfy { $0 != nil } })

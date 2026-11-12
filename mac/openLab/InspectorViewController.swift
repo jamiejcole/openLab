@@ -78,6 +78,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// The Network cue's Settings tab: its patch, message and Send. The pop-up's items follow the
     /// workspace's network patches; `networkPatchIDs[i]` is item i's patch (nil: separator, no patch).
     let networkPatchPopup = NSPopUpButton()
+    /// An Audio cue's output patch (the I/O tab), and the patches its menu lists.
+    let outputPatchPopup = NSPopUpButton()
+    var outputPatchIDs: [ModelID] = []
+    var outputPatchNames: [String] = []
     let networkMessageField = NSTextField()
     let networkSendButton = NSButton(title: loc("inspector.network.send"), target: nil, action: nil)
     var networkPatchIDs: [ModelID?] = []
@@ -386,9 +390,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         loadTimeItem = loadTimeTab(row: row, column: column)
         let devamp = devampTab(row: row, column: column)
         let network = networkTab(row: row, column: column)
+        let io = ioTab(row: row, column: column)
         buildLevelsTabs()
         buildTimeLoopsTab()
-        for i in [item, triggers, devamp, network]
+        for i in [item, triggers, devamp, network, io]
             + [modeItem, loadTimeItem, levelsItem, curveItem, fadeLevelsItem, timeLoopsItem].compactMap({ $0 })
         {
             if let id = i.identifier as? String { tabItems[id] = i }
@@ -686,6 +691,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         renderMode(cue)
         renderDevamp(cue)
         renderNetwork(cue, model: model)
+        renderIO(cue, model: model)
         renderLevels(cueForEdit ?? cue, model: model)
         renderTimeLoops(cueForEdit ?? cue)
         updatePreviewButton()
@@ -720,7 +726,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         [
             numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField, oscField,
             hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck,
-            devampModePopup, networkPatchPopup, networkMessageField, networkSendButton,
+            devampModePopup, networkPatchPopup, outputPatchPopup, networkMessageField, networkSendButton,
             secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck,
         ]
