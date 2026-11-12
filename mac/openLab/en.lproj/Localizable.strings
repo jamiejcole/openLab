@@ -606,8 +606,15 @@
 "inspector.target.clear" = "Clear target";
 "inspector.target.jump" = "Select the target cue";
 "inspector.target.none" = "(no target)";
+"fade.curve.rising" = "Curve of a level fading up";
+"fade.curve.falling" = "Curve of a level fading down";
+"fade.mode" = "Fade mode";
+"fade.mode.absolute" = "Absolute";
+"fade.mode.relative" = "Relative";
 "levels.matrix" = "Levels matrix";
-"levels.master" = "Cue master";
+"levels.master" = "Main level";
+"levels.main" = "main";
+"levels.setDefault" = "Set Default Levels";
 "levels.output" = "Cue output %d";
 "levels.cross" = "File channel %d to output %d";
 "levels.mute" = "Mute";

@@ -46,7 +46,7 @@ enum NewCueKind: String, CaseIterable, Sendable {
             fields.merge([
                 "target": .null, "duration": .double(3), "curve": .string("linear"),
                 "levels": .object(["master_db": .null, "output_db": .array([]), "crosspoints": .array([])]),
-                "stop_target_when_done": .bool(false),
+                "stop_target_when_done": .bool(false), "mode": .string("absolute"),
             ]) { a, _ in a }
         case .stop: fields.merge(["target": .null, "fade_out": fade]) { a, _ in a }
         case .load: fields.merge(["target": .null, "load_to_time": .double(0)]) { a, _ in a }

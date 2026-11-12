@@ -220,6 +220,7 @@ fn kind(ws: &Workspace, p: &Pick) -> CueKind {
                     crosspoints: vec![],
                 },
                 stop_target_when_done: false,
+                mode: Default::default(),
             }
         }
         5 => CueKind::Arm {

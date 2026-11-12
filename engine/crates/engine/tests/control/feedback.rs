@@ -519,6 +519,7 @@ fn a_fade_with_nothing_to_fade_is_broken_in_the_snapshot_and_go_skips_it() {
                 crosspoints: vec![],
             },
             stop_target_when_done: true,
+            mode: Default::default(),
         },
     );
     let mut s = show(workspace(vec![audio(1, &long, 0), nothing]));

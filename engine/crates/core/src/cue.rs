@@ -374,6 +374,17 @@ pub struct FadeLevels {
     pub crosspoints: Vec<FadeCrosspoint>,
 }
 
+/// How a Fade cue's levels are read for an Audio target (a Group target always moves by them).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FadeMode {
+    /// The target's levels end at the Fade's.
+    #[default]
+    Absolute,
+    /// Each level moves by the Fade's dB from where it is when the Fade starts.
+    Relative,
+}
+
 /// How a Group starts its children (CT-22).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -430,6 +441,10 @@ pub enum CueKind {
         curve: FadeCurve,
         levels: FadeLevels,
         stop_target_when_done: bool,
+        /// Whether the levels are where an Audio target ends or how far it moves. Absent in a
+        /// file: absolute.
+        #[serde(default)]
+        mode: FadeMode,
     },
     Group {
         mode: GroupMode,

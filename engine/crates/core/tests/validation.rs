@@ -591,6 +591,7 @@ fn routing_beyond_64_channels_is_dropped() {
             }],
         },
         stop_target_when_done: false,
+        mode: Default::default(),
     };
     let mut ws = workspace(vec![cue(1, a), cue(2, f)]);
     ws.patches = vec![patch(1, 64)];
@@ -661,6 +662,7 @@ fn repeated_crosspoints_and_gang_members_are_removed() {
             ],
         },
         stop_target_when_done: false,
+        mode: Default::default(),
     };
     let mut ws = workspace(vec![cue(1, a), cue(2, f)]);
     let repeated = |n, field, count| warning(n, IssueKind::DuplicateEntries { field, count });

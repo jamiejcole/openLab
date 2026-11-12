@@ -1105,6 +1105,7 @@ fn fade_with(n: u128, levels: FadeLevels, stop: bool) -> Cue {
             curve: FadeCurve::Linear,
             levels,
             stop_target_when_done: stop,
+            mode: Default::default(),
         },
     )
 }

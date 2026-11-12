@@ -35,6 +35,22 @@ extension InspectorViewController {
             self?.showRefusal(loc("inspector.invalid.time"))
         }
 
+        // Under a Fade's level buttons, at the foot of the column: how the levels are read, and Preview.
+        fadePreviewButton.setAX("fade-preview")
+        fadePreviewButton.controlSize = .small
+        fadePreviewButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        fadePreviewButton.target = self
+        fadePreviewButton.action = #selector(previewClicked)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        let foot = NSStackView(views: [fadeSettings.modePopup, fadePreviewButton])
+        foot.spacing = 6
+        foot.distribution = .fillEqually
+        fadeLevels.side.addArrangedSubview(spacer)
+        fadeLevels.side.addArrangedSubview(foot)
+        foot.widthAnchor.constraint(equalTo: fadeLevels.side.widthAnchor).isActive = true
+        fadeLevels.side.heightAnchor.constraint(equalTo: fadeLevels.view.heightAnchor).isActive = true
+
         let levels = NSTabViewItem(identifier: "levels")
         levels.label = loc("inspector.tab.levels")
         levels.view = padded(audioLevels.view)
@@ -177,6 +193,7 @@ extension InspectorViewController {
                 case .duration: break  // sent above
                 case .curve(let curve): kind.set("curve", .string(curve))
                 case .stopTarget(let stop): kind.set("stop_target_when_done", .bool(stop))
+                case .mode(let mode): kind.set("mode", .string(mode))
                 }
                 return kind
             }, key: "fade")

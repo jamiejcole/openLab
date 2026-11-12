@@ -342,6 +342,7 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
                     }],
                 },
                 stop_target_when_done: s.flag,
+                mode: Default::default(),
             },
             _ => CueKind::Group {
                 mode: group_mode(s.group_mode),
@@ -370,6 +371,7 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
                         crosspoints: vec![],
                     },
                     stop_target_when_done: s.flag,
+                    mode: Default::default(),
                 },
                 29 => CueKind::Stop {
                     target: Some(cue_id(sound)),
@@ -2710,6 +2712,7 @@ proptest! {
                     crosspoints: vec![],
                 },
                 stop_target_when_done: false,
+                mode: Default::default(),
             },
         };
         let timed = matches!(kind, CueKind::Wait { .. } | CueKind::Fade { .. });

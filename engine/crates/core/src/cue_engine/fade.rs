@@ -19,7 +19,8 @@ use super::{Ctx, CueEngine};
 impl CueEngine {
     /// The action of Fade cue `cue` started on `at`: every playing audio cue it targets ramps
     /// from its current levels to the fade's, ending when the fade's action ends. A group
-    /// target's audio cues move by the fade's levels instead (relative: each level's gain is
+    /// target's audio cues, and an audio target of a Fade in relative mode, move by the fade's
+    /// levels instead (relative: each level's gain is
     /// multiplied by the fade's, i.e. its dB are added), as QLab does (check F2).
     pub(super) fn fade_begin(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         let ws = cx.ws;
@@ -28,6 +29,7 @@ impl CueEngine {
             curve,
             levels,
             stop_target_when_done,
+            mode,
             ..
         }) = ws.find_cue(cue).map(|c| &c.kind)
         else {
@@ -50,7 +52,8 @@ impl CueEngine {
         let Some(target_model) = ws.find_cue(target) else {
             return cx.warn(EngineWarning::TargetMissing { cue, target });
         };
-        let relative = matches!(target_model.kind, CueKind::Group { .. });
+        let relative = matches!(target_model.kind, CueKind::Group { .. })
+            || *mode == crate::cue::FadeMode::Relative;
         let limits = ws.settings.limits();
         let candidates: Vec<&Cue> = match &target_model.kind {
             CueKind::Audio { .. } => vec![target_model],

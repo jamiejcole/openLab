@@ -28,6 +28,7 @@ fn fade_master(n: u128, target: u128, seconds: f64, db: f64) -> Cue {
                 crosspoints: vec![],
             },
             stop_target_when_done: false,
+            mode: Default::default(),
         },
     )
 }
@@ -219,6 +220,7 @@ fn two_level_fade(stop: bool) -> Vec<Cue> {
                 crosspoints: vec![],
             },
             stop_target_when_done: stop,
+            mode: Default::default(),
         },
     );
     vec![
@@ -328,6 +330,7 @@ fn an_edit_during_a_group_fade_out_and_stop_stops_no_child() {
                 crosspoints: vec![],
             },
             stop_target_when_done: true,
+            mode: Default::default(),
         },
     );
     let mut rig = Rig::new(vec![group, fade]);
@@ -507,6 +510,7 @@ fn fade_output0(n: u128, target: u128, db: f64) -> Cue {
                 crosspoints: vec![],
             },
             stop_target_when_done: false,
+            mode: Default::default(),
         },
     )
 }

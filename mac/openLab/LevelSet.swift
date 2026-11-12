@@ -245,6 +245,16 @@ struct LevelSet: Equatable {
         }
     }
 
+    /// An Audio cue's levels as a new cue has them: main and outputs at 0 dB, unmuted, and file
+    /// channel n routed to cue output n at 0 dB. Gangs are kept. Nothing for a Fade.
+    mutating func setDefaults() {
+        guard !isFade else { return }
+        master = 0
+        for o in outputs.indices { outputs[o] = Output(db: 0) }
+        crosspoints = [:]
+        for n in outputs.indices { crosspoints[.init(input: n, output: n)] = Cross(db: 0) }
+    }
+
     /// Puts cue output `o` in the gang lettered `letter` (gangs are lettered A, B, ... in array
     /// order; a letter with no gang starts a new one), or in none for an empty `letter`. An output
     /// is in at most one gang; emptied gangs are dropped (so the letters of later gangs may move up).

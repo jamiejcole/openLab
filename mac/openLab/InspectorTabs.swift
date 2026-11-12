@@ -120,6 +120,18 @@ extension InspectorViewController {
             targetField.stringValue = ""
         }
         targetField.toolTip = targetField.stringValue.isEmpty ? nil : targetField.stringValue
+        // A file is drawn as its folders and name with their icons, from the home folder down
+        // (QLab 5's Target row); the plain field stays for a cue with no file, and for cue targets.
+        let fileURL = isFile && !media.isEmpty ? CueRowMenu.mediaURL(media, showPath: store.document?.path) : nil
+        targetPath.isHidden = fileURL == nil
+        targetField.isHidden = fileURL != nil
+        if let fileURL, targetPath.url != fileURL {
+            targetPath.url = fileURL
+            targetPath.pathItems = Self.shownPathItems(targetPath.pathItems, of: fileURL)
+        } else if fileURL == nil {
+            targetPath.url = nil
+        }
+        targetPath.toolTip = fileURL?.path
         chooseButton.isHidden = !isFile
         chooseButton.isEnabled = isFile && !isLocked
         clearTargetButton.isHidden = !isFile && !isCueTarget
@@ -164,6 +176,30 @@ extension InspectorViewController {
 }
 
 /// The Target field. A file cue's is not typed in: a double-click on it chooses the file.
+extension InspectorViewController {
+    /// The path items a file's Target row shows: a file in the user's home folder starts at that
+    /// folder (the volume and the folders above it say nothing); any other path is shown whole.
+    static func shownPathItems(_ items: [NSPathControlItem], of url: URL) -> [NSPathControlItem] {
+        let all = url.standardizedFileURL.pathComponents.filter { $0 != "/" }
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.pathComponents.filter {
+            $0 != "/"
+        }
+        guard !home.isEmpty, all.count > home.count, Array(all.prefix(home.count)) == home else { return items }
+        // The control's items end at the file; the home folder is `all.count - home.count` before it.
+        let keep = all.count - home.count + 1
+        return items.count >= keep ? Array(items.suffix(keep)) : items
+    }
+}
+
+/// A file cue's Target drawn as a path; a double-click chooses another file.
+final class TargetPathControl: NSPathControl {
+    var onDoubleClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        if isEnabled, event.clickCount == 2 { onDoubleClick?() }
+    }
+}
+
 final class TargetField: NSTextField {
     var onDoubleClick: (() -> Void)?
 

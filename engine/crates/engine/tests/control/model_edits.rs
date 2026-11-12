@@ -723,6 +723,7 @@ fn fade_of_steady(
                 crosspoints: vec![],
             },
             stop_target_when_done,
+            mode: Default::default(),
         },
     )
 }

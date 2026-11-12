@@ -129,6 +129,7 @@ fn a_fade_cue_whose_target_changed_unsignalled_only_warns() {
             crosspoints: vec![],
         },
         stop_target_when_done: false,
+        mode: Default::default(),
     };
     let ws = workspace(vec![
         cue(1, fade, 1.0),

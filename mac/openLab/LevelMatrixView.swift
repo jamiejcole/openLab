@@ -2,12 +2,13 @@
 
 import AppKit
 
-/// The cue levels matrix mixer (AUD-06, AUD-08): the master and each cue output's level in the top
-/// row, a row per file channel below it with a crosspoint per cue output. Drawn by hand and only
-/// where visible, so a 64 x 64 matrix is one view, not 4,096 (AUD-03).
+/// The value boxes of the cue levels (AUD-06, AUD-08), laid out as QLab's Levels tab is: the main
+/// level and each cue output's level in the top row (the panel puts a fader above each), their
+/// names under them, then a row per file channel with a crosspoint per cue output. Drawn by hand
+/// and only where visible, so a 64 x 64 matrix is one view, not 4,096 (AUD-03).
 ///
-/// A click selects a level; the panel's strip below edits it (field, fader, mute). Dragging a
-/// level up or down changes it, as in QLab (manual p. 181); a drag never goes above 0 dB.
+/// A click selects a level and a double-click types in it. Dragging a level up or down changes it,
+/// as in QLab (manual p. 181); a drag never goes above 0 dB.
 @MainActor
 final class LevelMatrixView: NSView {
     /// The workspace volume limits the levels live in.
@@ -17,7 +18,10 @@ final class LevelMatrixView: NSView {
     static let cellW: CGFloat = 46
     static let cellH: CGFloat = 20
     static let headW: CGFloat = 56
+    /// The row of names under the top row's boxes.
     static let headerH: CGFloat = 18
+    /// Where the crosspoint rows start.
+    static var crossTop: CGFloat { cellH + headerH }
 
     var levels: LevelSet? {
         didSet { needsDisplay = true }
@@ -36,6 +40,8 @@ final class LevelMatrixView: NSView {
     var onDragEnd: (() -> Void)?
     /// The mouse button goes down or up here: a press can become a drag at any point until it is up.
     var onPress: ((Bool) -> Void)?
+    /// A level was double-clicked, or Return pressed on the chosen one: type in it.
+    var onType: ((LevelSet.Slot) -> Void)?
 
     private var dragStartY: CGFloat = 0
     private var dragStartDb = 0.0
@@ -51,7 +57,7 @@ final class LevelMatrixView: NSView {
         setFrameSize(
             NSSize(
                 width: Self.headW + CGFloat(outputCount) * Self.cellW,
-                height: Self.headerH + Self.cellH * CGFloat(self.inputs + 1)))
+                height: Self.crossTop + Self.cellH * CGFloat(self.inputs)))
         // A drag that began on a row the file no longer has must not keep editing it.
         if let s = dragSlot, !isInGrid(s) { dragSlot = nil }
         needsDisplay = true
@@ -70,24 +76,24 @@ final class LevelMatrixView: NSView {
     /// The cell of `slot`.
     func rect(of slot: LevelSet.Slot) -> NSRect {
         switch slot {
-        case .master: return NSRect(x: 0, y: Self.headerH, width: Self.headW, height: Self.cellH)
+        case .master: return NSRect(x: 0, y: 0, width: Self.headW, height: Self.cellH)
         case .output(let o):
-            return NSRect(
-                x: Self.headW + CGFloat(o) * Self.cellW, y: Self.headerH, width: Self.cellW, height: Self.cellH)
+            return NSRect(x: Self.headW + CGFloat(o) * Self.cellW, y: 0, width: Self.cellW, height: Self.cellH)
         case .cross(let i, let o):
             return NSRect(
-                x: Self.headW + CGFloat(o) * Self.cellW, y: Self.headerH + Self.cellH * CGFloat(i + 1),
+                x: Self.headW + CGFloat(o) * Self.cellW, y: Self.crossTop + Self.cellH * CGFloat(i),
                 width: Self.cellW, height: Self.cellH)
         }
     }
 
     func slot(at p: NSPoint) -> LevelSet.Slot? {
-        guard p.y >= Self.headerH, p.x >= 0 else { return nil }
-        let row = Int((p.y - Self.headerH) / Self.cellH)
+        guard p.y >= 0, p.x >= 0 else { return nil }
         let col = p.x < Self.headW ? -1 : Int((p.x - Self.headW) / Self.cellW)
-        guard row <= inputs, col < outputCount else { return nil }
-        if row == 0 { return col < 0 ? .master : .output(col) }
-        return col < 0 ? nil : .cross(input: row - 1, output: col)
+        guard col < outputCount else { return nil }
+        if p.y < Self.cellH { return col < 0 ? .master : .output(col) }
+        guard p.y >= Self.crossTop, col >= 0 else { return nil }
+        let row = Int((p.y - Self.crossTop) / Self.cellH)
+        return row < inputs ? .cross(input: row, output: col) : nil
     }
 
     // MARK: Drawing
@@ -100,12 +106,21 @@ final class LevelMatrixView: NSView {
         // Only the cells in `dirty`: a scroll or a one-cell change redraws a handful, not the grid.
         let firstCol = max(0, Int((dirty.minX - Self.headW) / Self.cellW))
         let lastCol = min(outputCount - 1, Int((dirty.maxX - Self.headW) / Self.cellW))
-        let firstRow = max(0, Int((dirty.minY - Self.headerH) / Self.cellH))
-        let lastRow = min(inputs, Int((dirty.maxY - Self.headerH) / Self.cellH))
-        if dirty.minY < Self.headerH, firstCol <= lastCol {
+        let namesRow = NSRect(x: 0, y: Self.cellH, width: bounds.width, height: Self.headerH)
+        if dirty.minX < Self.headW {
+            if dirty.minY < Self.cellH { cell(.master, levels) }
+            if dirty.intersects(namesRow) {
+                centred(
+                    loc("levels.main"),
+                    in: NSRect(x: 0, y: Self.cellH, width: Self.headW, height: Self.headerH), attributes: label)
+            }
+        }
+        if firstCol <= lastCol {
             for o in firstCol...lastCol {
+                if dirty.minY < Self.cellH { cell(.output(o), levels) }
+                guard dirty.intersects(namesRow) else { continue }
                 let r = NSRect(
-                    x: Self.headW + CGFloat(o) * Self.cellW, y: 0, width: Self.cellW, height: Self.headerH)
+                    x: Self.headW + CGFloat(o) * Self.cellW, y: Self.cellH, width: Self.cellW, height: Self.headerH)
                 var text = "\(o + 1)"
                 if let g = levels.gang(of: o) {
                     gangColour(g).setFill()
@@ -115,20 +130,18 @@ final class LevelMatrixView: NSView {
                 centred(text, in: r, attributes: label)
             }
         }
-        if firstRow <= lastRow {
-            for row in firstRow...lastRow {
-                if dirty.minX < Self.headW {
-                    if row == 0 {
-                        cell(.master, levels)
-                    } else {
-                        let r = NSRect(
-                            x: 0, y: Self.headerH + CGFloat(row) * Self.cellH, width: Self.headW, height: Self.cellH)
-                        centred("\(row)", in: r, attributes: label)
-                    }
-                }
-                guard firstCol <= lastCol else { continue }
-                for o in firstCol...lastCol { cell(row == 0 ? .output(o) : .cross(input: row - 1, output: o), levels) }
+        guard inputs > 0 else { return }
+        let firstRow = max(0, Int((dirty.minY - Self.crossTop) / Self.cellH))
+        let lastRow = min(inputs - 1, Int((dirty.maxY - Self.crossTop) / Self.cellH))
+        guard firstRow <= lastRow else { return }
+        for row in firstRow...lastRow {
+            if dirty.minX < Self.headW {
+                let r = NSRect(
+                    x: 0, y: Self.crossTop + CGFloat(row) * Self.cellH, width: Self.headW, height: Self.cellH)
+                centred("\(row + 1)", in: r, attributes: label)
             }
+            guard firstCol <= lastCol else { continue }
+            for o in firstCol...lastCol { cell(.cross(input: row, output: o), levels) }
         }
     }
 
@@ -142,12 +155,9 @@ final class LevelMatrixView: NSView {
             NSColor.quaternaryLabelColor.setFill()
         } else if levels.isFade {
             NSColor.systemYellow.withAlphaComponent(0.55).setFill()
-        } else if let db, db > LevelText.silence {
-            // Louder routes are denser; -inf and a muted route stay plain.
-            let t = CGFloat((max(db, limits.min) - limits.min) / (limits.max - limits.min))
-            NSColor.controlAccentColor.withAlphaComponent(muted ? 0.1 : 0.12 + 0.5 * t).setFill()
         } else {
-            NSColor.controlBackgroundColor.setFill()
+            // A value box is dark whatever it holds, as QLab's are; the number says how loud.
+            NSColor(white: 0, alpha: 0.45).setFill()
         }
         path.fill()
         NSColor.separatorColor.setStroke()
@@ -190,6 +200,11 @@ final class LevelMatrixView: NSView {
         guard let s = dragSlot else { return }
         selection = s
         onSelect?(s)
+        if event.clickCount == 2, !isLocked {
+            dragSlot = nil
+            onPress?(false)
+            return onType?(s) ?? ()
+        }
         dragStartY = p.y
         // From -inf a drag starts at the bottom of the fader's travel.
         dragStartDb = max(levels?.db(s) ?? limits.min, limits.min)
@@ -228,6 +243,7 @@ final class LevelMatrixView: NSView {
         case 124: (dc, dr) = (1, 0)
         case 125: (dc, dr) = (0, 1)
         case 126: (dc, dr) = (0, -1)
+        case 36, 76: return isLocked ? () : onType?(selection) ?? ()
         default: return super.keyDown(with: event)
         }
         // Column -1 is the master's; row 0 the outputs'; rows below are file channels.
