@@ -102,6 +102,20 @@ extension Command {
         Command(.object(["type": .string("add_network_patch"), "index": .int(Int64(index)), "patch": patch]))
     }
 
+    /// `RemoveNetworkPatch`: refused while a cue still sends to it.
+    static func removeNetworkPatch(_ id: ModelID) -> Command {
+        Command(.object(["type": .string("remove_network_patch"), "id": .string(id.raw)]))
+    }
+
+    /// `SetNetworkPatchProperty`: `property` is `name`, `host`, `port` or `protocol`.
+    static func setNetworkPatch(_ id: ModelID, _ property: String, _ value: JSONValue) -> Command {
+        Command(
+            .object([
+                "type": .string("set_network_patch_property"), "id": .string(id.raw),
+                "property": .object(["type": .string(property), "value": value]),
+            ]))
+    }
+
     /// `AddCue` with the next automatic number (ED-08).
     static func addCue(_ cue: JSONValue, list: ModelID, parent: ModelID?, index: Int) -> Command {
         Command(

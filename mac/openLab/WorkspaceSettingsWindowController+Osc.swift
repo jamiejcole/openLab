@@ -178,7 +178,10 @@ extension WorkspaceSettingsWindowController {
     // MARK: Actions
 
     @objc private func oscAddClicked() {
+        // A code still being typed is committed first: the table is not rebuilt under a caret.
+        if oscCodeFields.contains(where: { $0.currentEditor() != nil }) { window?.makeFirstResponder(nil) }
         Task {
+            await oscCommits?.value
             let added = await model.addOscPasscode()
             redrawOsc()
             // From about ten rows on the new one is below the visible part of the table.

@@ -39,6 +39,9 @@ Stack rules (Swift 6, AppKit, macOS 12.0, no SwiftUI/Observation/third-party pac
 - Split observers (`startSavingLayout`) run from the window's start, file or not: a divider drag must update the soft size constraint or the divider springs back.
 - `application(_:open:)` hands show files to `AppController.openFiles`, which holds them until `launchApplied`. The document type is declared in `mac/project.yml` (`info.properties`); `verify-bundle.sh` checks it.
 - A row-menu action must not share a selector name with a menu-bar action: the list's view controller is in the responder chain and would take the menu-bar item.
+- `WorkspaceStore` drops `progress` items for cues whose state does not keep progress (`keepsProgress`): the engine sends no last empty `progress`, so an item taken for an ended cue would never clear.
+- In-place list editing covers `preWait` and `postWait` too (`editableColumns`; not an auto-follow cue's post-wait, which shows its duration). A click in the continue column opens `continueMenu(row:)`.
+- Workspace settings tabs: General, Audio, OSC, Network. The Network tab (`+Network` files) is a grid of destinations drawn from the model like the OSC table; files added to `mac/openLab` need `make project` before a build sees them.
 - A trim handle drawn at an edge of the waveform is moved inside it so it is whole (`drawHandle`). The playhead, slice and insertion lines are not: at the very edge the clip cuts half their width.
 
 ## Seeing the app

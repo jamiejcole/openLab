@@ -1837,7 +1837,8 @@ final class UserTestFlowTests: XCTestCase {
         let intro = try XCTUnwrap(list.node(Self.intro))
         let fade = try XCTUnwrap(list.node(Self.fade))
         func frame(_ column: String, _ node: CueNode) -> NSRect {
-            o.frameOfCell(atColumn: o.column(withIdentifier: NSUserInterfaceItemIdentifier(column)), row: o.row(forItem: node))
+            o.frameOfCell(
+                atColumn: o.column(withIdentifier: NSUserInterfaceItemIdentifier(column)), row: o.row(forItem: node))
         }
         let box = frame("target", fade)
         let inCell = try XCTUnwrap(list.targetOutlineFor([intro], at: NSPoint(x: box.midX, y: box.midY)))
@@ -1961,7 +1962,8 @@ final class UserTestFlowTests: XCTestCase {
         XCTAssertEqual(shown.count, 4, "the home folder, then the rest")
         let outside = URL(fileURLWithPath: "/Volumes/Show/a.wav")
         control.url = outside
-        XCTAssertEqual(InspectorViewController.shownPathItems(control.pathItems, of: outside).count, control.pathItems.count)
+        XCTAssertEqual(
+            InspectorViewController.shownPathItems(control.pathItems, of: outside).count, control.pathItems.count)
     }
 
     func testTheContinuePopUpShowsEveryModesWholeTitle() async throws {
@@ -1986,7 +1988,8 @@ final class UserTestFlowTests: XCTestCase {
         wc.horizontalSplit.setPosition(across - 420, ofDividerAt: 0)
         window.layoutIfNeeded()
         XCTAssertEqual(wc.sidebar.view.frame.width, 420, accuracy: 1, "the drag took")
-        XCTAssertEqual(try XCTUnwrap(wc.sidebarWidthConstraint?.constant), 420, accuracy: 1, "and is the width it keeps")
+        XCTAssertEqual(
+            try XCTUnwrap(wc.sidebarWidthConstraint?.constant), 420, accuracy: 1, "and is the width it keeps")
         window.setFrame(NSRect(x: 0, y: 0, width: 1300, height: 800), display: true)
         window.layoutIfNeeded()
         XCTAssertEqual(wc.sidebar.view.frame.width, 420, accuracy: 1, "it did not spring back")
@@ -2024,5 +2027,103 @@ final class UserTestFlowTests: XCTestCase {
         let again = try XCTUnwrap(side.listTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? CueListNameCell)
         again.disclosure.performClick(nil)
         XCTAssertEqual(side.listTable.numberOfRows, 1)
+    }
+
+    // MARK: From the comparison with QLab 5
+
+    func testAWaitIsTypedInItsCellOfTheList() async throws {
+        wc.window?.layoutIfNeeded()
+        XCTAssertTrue(wc.cueList.beginCellEdit(Self.intro, column: "preWait"), "a double-click opens the cell")
+        let o = wc.cueList.outlineView
+        let box = o.frameOfCell(
+            atColumn: o.column(withIdentifier: NSUserInterfaceItemIdentifier("preWait")),
+            row: o.row(forItem: wc.cueList.node(Self.intro)))
+        XCTAssertTrue(wc.cueList.cellEditor.superview === o)
+        XCTAssertTrue(box.intersects(wc.cueList.cellEditor.frame), "the editor is over that cell")
+        wc.cueList.cancelCellEdit()
+        let taken = await wc.editor.setCell("preWait", of: Self.intro, text: "1.5")
+        XCTAssertTrue(taken)
+        await assertEventually { self.cell("preWait", Self.intro)?.label.stringValue == "00:01.50" }
+        let post = await wc.editor.setCell("postWait", of: Self.intro, text: "2")
+        XCTAssertTrue(post)
+        await assertEventually { self.cell("postWait", Self.intro)?.label.stringValue == "00:02.00" }
+    }
+
+    func testTheContinueCellsMenuSetsTheModeAndAutoFollowShowsTheDurationAsItsPostWait() async throws {
+        wc.window?.layoutIfNeeded()
+        await assertEventually { self.cell("duration", Self.intro)?.label.stringValue.isEmpty == false }
+        let row = wc.cueList.outlineView.row(forItem: wc.cueList.node(Self.intro))
+        let menu = try XCTUnwrap(wc.cueList.continueMenu(row: row))
+        XCTAssertEqual(menu.items.count, 3)
+        XCTAssertEqual(menu.items.filter { $0.state == .on }.map(\.title), [loc("inspector.continue.do_not_continue")])
+        let follow = try XCTUnwrap(menu.items.last)
+        XCTAssertEqual(follow.title, loc("inspector.continue.auto_follow"))
+        _ = follow.target?.perform(follow.action, with: follow)
+        await assertEventually {
+            self.rig.store.model?.cue(Self.intro)?.raw["continue_mode"]?.stringValue == "auto_follow"
+        }
+        let length = try XCTUnwrap(cell("duration", Self.intro)?.label.stringValue)
+        await assertEventually { self.cell("postWait", Self.intro)?.label.stringValue == length }
+        XCTAssertFalse(wc.cueList.beginCellEdit(Self.intro, column: "postWait"), "it is the duration: not typed")
+        XCTAssertEqual(
+            try XCTUnwrap(wc.cueList.continueMenu(row: row)).items.filter { $0.state == .on }.map(\.title),
+            [loc("inspector.continue.auto_follow")])
+    }
+
+    func testTheSidebarsTabsCountTheListsAndTheActiveCues() async throws {
+        wc.setVisible(.sidebar, true)
+        let tabs = wc.sidebar.tabs
+        XCTAssertEqual(tabs.label(forSegment: 0), "1 Cue List")
+        XCTAssertEqual(tabs.label(forSegment: 1), "0 Active Cues")
+        try await start(Self.intro)
+        await assertEventually { tabs.label(forSegment: 1) == "1 Active Cue" }
+    }
+
+    func testNetworkDestinationsAreAddedEditedAndRemovedInTheSettings() async throws {
+        let settings = WorkspaceSettingsWindowController(store: rig.store)
+        defer { settings.window?.close() }
+        await settings.present().value
+        settings.tabs.selectTabViewItem(withIdentifier: "network")
+        // The show has one destination, which nothing sends to yet; a second is added after it.
+        await assertEventually { settings.shownNetwork?.count == 1 }
+        // With the caret in a field of the table, as it is after typing there.
+        let first = try XCTUnwrap(settings.networkFields.first)
+        XCTAssertTrue(try XCTUnwrap(settings.window).makeFirstResponder(first))
+        settings.networkAddButton.performClick(nil)
+        await assertEventually { settings.shownNetwork?.count == 2 }
+        func field(_ key: String) throws -> NSTextField {
+            try XCTUnwrap(settings.networkFields.last { $0.identifier?.rawValue == key })
+        }
+        func stored(_ key: String) -> JSONValue? { rig.store.model?.networkPatches.last?.raw[key] }
+        XCTAssertEqual(try field("name").stringValue, "Network 2")
+        XCTAssertEqual(try field("port").stringValue, "53000")
+        // The address and port of the desk are typed in.
+        func type(_ key: String, _ text: String) throws {
+            let f = try field(key)
+            f.stringValue = text
+            settings.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: f))
+        }
+        try type("host", "10.0.0.20")
+        await assertEventually { stored("host")?.stringValue == "10.0.0.20" }
+        try type("port", "8000")
+        await assertEventually { stored("port")?.doubleValue == 8000 }
+        await assertEventually { (try? field("port").stringValue) == "8000" }
+        try type("port", "seventy")
+        await assertEventually { settings.messageLabel.stringValue == loc("settings.network.badPort") }
+        await assertEventually { (try? field("port").stringValue) == "8000" }
+        let tcp = try XCTUnwrap(settings.networkTransportPopups.last)
+        tcp.selectItem(at: 1)
+        _ = tcp.target?.perform(tcp.action, with: tcp)
+        await assertEventually { stored("protocol")?.stringValue == "tcp" }
+        // A new Network cue sends to the first destination: that one is not removed; the unused one is.
+        let made = await wc.editor.add(.network)
+        _ = try XCTUnwrap(made)
+        try XCTUnwrap(settings.networkDeleteButtons.first).performClick(nil)
+        await assertEventually { !settings.messageLabel.stringValue.isEmpty }
+        XCTAssertEqual(rig.store.model?.networkPatches.count, 2, "still there")
+        try XCTUnwrap(settings.networkDeleteButtons.last).performClick(nil)
+        await assertEventually { self.rig.store.model?.networkPatches.count == 1 }
+        await assertEventually { settings.shownNetwork?.count == 1 }
+        XCTAssertEqual(try field("name").stringValue, "Desk")
     }
 }

@@ -1034,6 +1034,20 @@ final class CueListTests: XCTestCase {
         XCTAssertEqual(h.spy.wholeReloads, 0)
     }
 
+    /// A panicked cue's voice is still reported while it fades out, after the cue itself has ended:
+    /// the cell must read the duration again, not stay on the last time counted.
+    func testProgressReportedForACueThatHasEndedIsNotShown() async throws {
+        let h = try await H()
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"running"}"#)
+        try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":2.5,"remaining":7.5}]}"#)
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "00:02.50")
+        try h.runtime(#"{"type":"cue_state","cue":"\#(H.intro)","state":"idle"}"#)
+        try h.receive(#"{"type":"progress","items":[{"cue":"\#(H.intro)","elapsed":2.8,"remaining":7.2}]}"#)
+        XCTAssertNil(h.vc.store.progress[H.intro])
+        XCTAssertEqual(h.cell("duration", H.intro)?.label.stringValue, "02:00.00", "the duration again")
+        XCTAssertNil(h.cell("duration", H.intro)?.progress.progress, "and no bar")
+    }
+
     /// A pre-wait or post-wait in progress counts in its own column, touching only those cells; it
     /// ends with the run.
     func testWaitsCountInTheirColumns() async throws {
@@ -4712,7 +4726,8 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(rig.store.cueStates[ten]?.state, .running)
         let second = try XCTUnwrap(CueTime.parse(h.cell("duration", ten)?.label.stringValue ?? ""))
         XCTAssertEqual(second, 2, accuracy: 0.1, "it started again: two seconds into the second pass")
-        XCTAssertEqual(try XCTUnwrap(try pixels(h, "duration", ten).extent(Self.greenish)).upperBound, 0.2, accuracy: 0.06)
+        XCTAssertEqual(
+            try XCTUnwrap(try pixels(h, "duration", ten).extent(Self.greenish)).upperBound, 0.2, accuracy: 0.06)
         guard case .success = await rig.store.transport(.stop(cue: ten, fadeOut: nil)) else { return XCTFail("stop") }
         try await rig.advance(1)
         await assertEventually { rig.store.cueStates[self.ten]?.state != .running }

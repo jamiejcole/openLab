@@ -737,7 +737,8 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually {
             self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?[1]["db"] == .double(-12)
         }
-        XCTAssertEqual(modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?[0]["db"], .double(0), "the others stay")
+        XCTAssertEqual(
+            modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?[0]["db"], .double(0), "the others stay")
     }
 
     func testAValueBoxIsTypedInAfterADoubleClickAndTheFieldGoesWhenTypingEnds() async throws {
@@ -812,7 +813,8 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(FadeCurveView.shape("linear", 0.3), 0.3, accuracy: 1e-12)
         XCTAssertEqual(FadeCurveView.shape("s_curve", 0.5), 0.5, accuracy: 1e-12)
         XCTAssertEqual(FadeCurveView.shape("exponential", 0.5), expm1(log(1000) / 2) / 999, accuracy: 1e-9)
-        XCTAssertEqual(FadeCurveView.shape("logarithmic", 0.5), 1 - FadeCurveView.shape("exponential", 0.5), accuracy: 1e-9)
+        XCTAssertEqual(
+            FadeCurveView.shape("logarithmic", 0.5), 1 - FadeCurveView.shape("exponential", 0.5), accuracy: 1e-9)
         // And it is drawn: a yellow line from the bottom left to the top right of the rising graph.
         let rep = try renderView(s.risingView)
         func yellow(_ x: Int, _ y: Int) -> Bool {

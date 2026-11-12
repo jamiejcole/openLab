@@ -51,6 +51,8 @@ final class ActiveCueCell: NSTableCellView {
         text.spacing = 1
         for v in [title, times, bar] { v.widthAnchor.constraint(equalTo: text.widthAnchor).isActive = true }
         let row = NSStackView(views: [pauseButton, text, panicButton])
+        // The name and times take the row's width between the two buttons.
+        text.setHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         row.spacing = 6
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
@@ -203,12 +205,26 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     var onNotice: ((String) -> Void)?
 
     private(set) var transportButtons: [String: NSButton] = [:]
-    private(set) var lists: [CueList] = [] { didSet { rebuildListRows() } }
+    private(set) var lists: [CueList] = [] {
+        didSet {
+            rebuildListRows()
+            updateTabTitles()
+        }
+    }
+
+    /// The first two tabs say how many lists and active cues there are, as QLab's do.
+    func updateTabTitles() {
+        func title(_ key: String, _ n: Int) -> String {
+            n == 1 ? loc("\(key).one") : String(format: loc("\(key).count"), n)
+        }
+        tabs.setLabel(title("sidebar.tab.cueLists", lists.count), forSegment: 0)
+        tabs.setLabel(title("sidebar.tab.activeCues", activeCues.count), forSegment: 1)
+    }
     /// The list the window shows; asked for whenever the selection is drawn, never cached.
     var shownProvider: () -> ModelID? = { nil }
     var shownList: ModelID? { shownProvider() }
     /// Active cues in the order they started; a snapshot starts them in list order.
-    private(set) var activeCues: [ModelID] = []
+    private(set) var activeCues: [ModelID] = [] { didSet { updateTabTitles() } }
     /// Rows redrawn in place by updates, oldest first (tests check that only the rows that
     /// changed were touched).
     private(set) var updatedActiveRows: [ModelID] = []
@@ -237,6 +253,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         lists = store.model?.cueLists ?? []
         rebuildListRows()  // no observer runs for an assignment in init
         activeCues = Self.ordered(store: store)
+        updateTabTitles()
         setWarnings(WarningRows.make(store: store))
         sub = store.changes.sink { [weak self] change in
             MainActor.assumeIsolated { self?.handle(change) }

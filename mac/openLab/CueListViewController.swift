@@ -552,7 +552,47 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// A click on a row (the table's action, after any selection change). Clicking the one row that
     /// is already highlighted changes no selection, so it puts the playhead back on that cue here
     /// (the playhead can be elsewhere while a text field was being typed in).
-    @objc private func clicked() { rowClicked(outlineView.clickedRow) }
+    @objc private func clicked() {
+        let column = outlineView.clickedColumn
+        if outlineView.tableColumns.indices.contains(column),
+            outlineView.tableColumns[column].identifier.rawValue == "continue"
+        {
+            showContinueMenu(row: outlineView.clickedRow)
+        }
+        rowClicked(outlineView.clickedRow)
+    }
+
+    /// A continue mode was chosen from a row's own menu.
+    var onSetContinue: ((ModelID, String) -> Void)?
+
+    /// The three continue modes for the cue of `row`, the current one ticked (nil: no menu, as in
+    /// Show Mode or off the rows).
+    func continueMenu(row: Int) -> NSMenu? {
+        guard !isEditLocked, let node = outlineView.item(atRow: row) as? CueNode else { return nil }
+        let current = node.cue.raw["continue_mode"]?.stringValue ?? "do_not_continue"
+        let menu = NSMenu()
+        for mode in InspectorViewController.continueModes {
+            let item = menu.addItem(
+                withTitle: loc("inspector.continue.\(mode)"), action: #selector(continueChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = [node.id.raw, mode]
+            item.state = mode == current ? .on : .off
+        }
+        return menu
+    }
+
+    /// A click on a row's continue cell opens the modes there (QLab 5: the cell is a menu).
+    private func showContinueMenu(row: Int) {
+        guard let menu = continueMenu(row: row) else { return }
+        let column = outlineView.column(withIdentifier: NSUserInterfaceItemIdentifier("continue"))
+        let cell = outlineView.frameOfCell(atColumn: column, row: row)
+        menu.popUp(positioning: nil, at: NSPoint(x: cell.minX, y: cell.maxY), in: outlineView)
+    }
+
+    @objc private func continueChosen(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+        onSetContinue?(ModelID(pair[0]), pair[1])
+    }
 
     func rowClicked(_ row: Int) {
         guard row >= 0, let node = outlineView.item(atRow: row) as? CueNode, selectedIDs() == [node.id] else {
@@ -1059,11 +1099,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// Which Target cell a drag of `dragged` at `point` (in the outline) outlines, and how: the row
     /// under the pointer when the dragged cues and it can be made a cue and its target.
     func targetOutlineFor(_ dragged: [CueNode], at point: NSPoint) -> (node: CueNode, kind: TargetDropOutline.Kind)? {
-        guard !isEditLocked, !dragged.isEmpty, let node = outlineView.item(atRow: outlineView.row(at: point)) as? CueNode,
+        guard !isEditLocked, !dragged.isEmpty,
+            let node = outlineView.item(atRow: outlineView.row(at: point)) as? CueNode,
             CueEditor.targetDrop(dragged.map(\.cue), onto: node.cue) != nil
         else { return nil }
         let column = outlineView.column(at: point)
-        let inCell = outlineView.tableColumns.indices.contains(column)
+        let inCell =
+            outlineView.tableColumns.indices.contains(column)
             && outlineView.tableColumns[column].identifier.rawValue == "target"
         return (node, inCell ? .sets : .near)
     }
@@ -1198,7 +1240,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// The columns that edit in place, and the inspector field each one is.
     static let editableColumns: [String: InspectorField] = [
-        "number": .number, "name": .name, "duration": .duration, "target": .target,
+        "number": .number, "name": .name, "duration": .duration, "target": .target, "preWait": .preWait,
+        "postWait": .postWait,
     ]
 
     /// The field laid over the cell being edited. It lives in the outline, not in the cell, so the
@@ -1261,6 +1304,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             outlineView.row(forItem: node) >= 0,
             field != .duration || InspectorEdit.durationKinds.contains(node.cue.kindType),
             field != .target || InspectorEdit.targetKinds.contains(node.cue.kindType),
+            // An auto-follow cue's post-wait is its duration, shown and not typed.
+            field != .postWait || node.cue.raw["continue_mode"]?.stringValue != "auto_follow",
             let model = store.model
         else { return false }
         if let pending = takeCellEdit() { onEditCell?(pending.id, pending.column, pending.text) }
@@ -1508,6 +1553,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             // A wait in progress counts, as QLab's columns do.
             if let wait = store.waits[cue.id]?[column == "preWait" ? .preWait : .postWait] {
                 text(CueTime.running(timeShown[column] == .full ? wait.elapsed : wait.remaining))
+                break
+            }
+            // An auto-follow cue goes on when it ends: its post-wait reads its duration (QLab 5).
+            if column == "postWait", cue.raw["continue_mode"]?.stringValue == "auto_follow",
+                let length = restingDuration(node)
+            {
+                text(CueTime.running(length))
+                cell.label.textColor = .secondaryLabelColor
                 break
             }
             let seconds = cue.raw[column == "preWait" ? "pre_wait" : "post_wait"]?.doubleValue ?? 0

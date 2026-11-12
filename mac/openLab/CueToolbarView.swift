@@ -17,8 +17,7 @@ final class CueToolbarView: NSView {
             (.kindReset, "cue.type.reset"), (.kindDevamp, "cue.type.devamp"),
         ],
         [
-            (.kindGoTo, "cue.type.goto"), (.kindTarget, "cue.type.target"),
-            (.kindArm, "cue.type.arm"), (.kindDisarm, "cue.type.disarm"),
+            (.kindGoTo, "cue.type.goto"), (.kindArm, "cue.type.arm"), (.kindDisarm, "cue.type.disarm"),
         ],
     ]
 
@@ -28,7 +27,7 @@ final class CueToolbarView: NSView {
     private(set) var segmentedControls: [NSSegmentedControl] = []
     var onAdd: ((NewCueKind) -> Void)?
 
-    /// The kind each button adds, in `groups` order; nil: the model has no such cue (Target).
+    /// The kind each button adds, in `groups` order.
     static let kinds: [[NewCueKind?]] = groups.map {
         $0.map { NewCueKind(rawValue: String($0.key.dropFirst("cue.type.".count))) }
     }

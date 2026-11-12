@@ -198,7 +198,8 @@ final class PlayheadClickUITests: XCTestCase {
     func testDoubleClickInShowModeDoesNothing() {
         let app = launchThree()
         app.radioGroups["mode-switch"].radioButtons["Show"].click()
-        XCTAssertTrue(waitFor("exists == false", app.textFields["inspector-name"], timeout: 5), "Show Mode hides the inspector")
+        XCTAssertTrue(
+            waitFor("exists == false", app.textFields["inspector-name"], timeout: 5), "Show Mode hides the inspector")
         app.staticTexts["2"].doubleClick()
         XCTAssertFalse(app.textFields["cue-number-editor"].waitForExistence(timeout: 1), "no editor opens")
         XCTAssertTrue(app.staticTexts["2"].exists, "the number is unchanged")

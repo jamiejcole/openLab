@@ -9,7 +9,7 @@ final class SidebarUITests: XCTestCase {
     func testRunningCueAppearsInActiveCuesAndItsPanicButtonStopsIt() {
         let app = launchDemo()
         app.checkBoxes["toggle-sidebar"].click()
-        tabButton("Active Cues", in: app).click()
+        tabButton("0 Active Cues", in: app).click()  // the tab counts them
         let panics = app.buttons.matching(identifier: "active-cue-panic")
         XCTAssertEqual(panics.count, 0, "nothing plays when the show opens")
 

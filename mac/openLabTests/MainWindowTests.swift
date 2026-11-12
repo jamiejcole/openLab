@@ -1483,7 +1483,8 @@ final class WindowLayoutTests: XCTestCase {
         wc.window?.setFrame(NSRect(origin: frame(wc).origin, size: wc.window?.minSize ?? .zero), display: true)
         settle(wc)
         XCTAssertGreaterThanOrEqual(wc.cueList.view.frame.height, 56)
-        XCTAssertEqual(wc.inspector.view.frame.height, 240, accuracy: 1)
+        // The least window has no room for the inspector's usual height: it keeps what the list leaves.
+        XCTAssertGreaterThanOrEqual(wc.inspector.view.frame.height, 240)
     }
 
     // MARK: Logic

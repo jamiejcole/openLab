@@ -44,6 +44,13 @@ Q238 | Fade mode relative: an Audio target's levels move by the Fade's dB from w
 Q239 | Preview of a Fade (button, menu, key) starts the Fade on its target now and leaves the playhead | user 2026-11-12 (how) assumed
 Q240 | Curve tab draws the curve twice, for a level going up and one going down, over the duration; standard curves only, not edited by dragging | user 2026-11-12, editing assumed out
 Q241 | A file target in the inspector is drawn as its folders and file with icons and separators, from the home folder down; other paths whole | user 2026-11-12
+Q242 | Pre-Wait and Post-Wait are typed in their cells of the list (double-click), as Number, Name, Duration and Target are | manual pp. 94-95
+Q243 | A click on a row's continue cell opens the three modes there, the current one ticked; nothing in Show Mode | manual p. 95
+Q244 | An auto-follow cue's Post-Wait cell reads the cue's duration and is not typed | manual p. 95
+Q245 | Sidebar tabs count their lists and active cues ("2 Cue Lists", "1 Active Cue") | UI map sidebar.lists
+Q246 | Progress the engine still reports for a cue that has ended (its voice fading out after a panic) is not shown: the Duration cell reads the duration again | assumed 2026-11-12
+Q247 | Network destinations are edited in the workspace settings' Network tab: name, address, port, UDP or TCP, add and remove; one a cue sends to is not removed | UI map settings.network (ours has no interface or passcode column)
+Q248 | The inspector is 320 pt tall until dragged; level faders stop at 0 dB (manual p. 181) even where the workspace maximum is higher | assumed 2026-11-12
 Q42 | New cue list from the sidebar button: "Cue List N" (N = position), after the last list, shown at once | assumed
 Q46 | New cue or paste with a Group selected goes inside as its last child (expanded or not; list opens it); with a cue inside a group selected, after that cue in the group | assumed 2026-10-31
 Q47 | New Group from several selected cues: placed where the first selected (list order) was, cues in list order, mixed parents all taken in (a selected cue inside a selected group goes with it); one undo step; busy cues moved, never stopped | assumed 2026-10-31

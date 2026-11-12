@@ -97,13 +97,14 @@ final class WorkspaceSettingsModel: ObservableObject {
         var goInterval: Double?
         var limits: VolumeLimits
         var osc: OscAccessTable
+        var network: [NetworkPatchRow]
     }
 
     var displayState: DisplayState {
         DisplayState(
             devices: devices, chosen: chosenDevice, patches: patches, playingName: playing?.name,
             playingState: playing?.state.raw, loaded: loaded, message: message, panic: panicDuration,
-            goInterval: minGoInterval, limits: limits, osc: osc)
+            goInterval: minGoInterval, limits: limits, osc: osc, network: networkPatches)
     }
 
     /// The playing device is lost, failed or absent: patches on it are silent until it is back.

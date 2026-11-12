@@ -48,7 +48,8 @@ final class EditingUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Intro"].waitForExistence(timeout: 10))
         app.staticTexts["Intro"].click()
         app.radioGroups["mode-switch"].radioButtons["Show"].click()
-        XCTAssertTrue(waitFor("exists == false", app.textFields["inspector-name"], timeout: 5), "Show Mode hides the inspector")
+        XCTAssertTrue(
+            waitFor("exists == false", app.textFields["inspector-name"], timeout: 5), "Show Mode hides the inspector")
         app.typeKey("0", modifierFlags: .command)
         app.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: .command)
         app.typeKey("z", modifierFlags: .command)
