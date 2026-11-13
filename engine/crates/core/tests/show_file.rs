@@ -74,6 +74,7 @@ fn golden_fixture_loads_cleanly_and_covers_every_cue_kind_and_group_mode() {
     modes.sort_by_key(|d| format!("{d:?}"));
     modes.dedup();
     assert_eq!(modes.len(), 5);
+    assert_eq!(loaded.workspace.stages.len(), 1, "the example has a stage");
 }
 
 /// An autosave names its show file (its file name only holds a hash); a show file never does,
@@ -103,6 +104,14 @@ fn an_autosave_names_its_show_file_and_loads_as_the_same_workspace() {
     }
 }
 
+/// The current example as an older fixture migrates to: the same show without its stages,
+/// which only the current version's example has (stages are optional; no migration adds one).
+fn example_before_stages() -> Workspace {
+    let mut ws = load_show(EXAMPLE).unwrap().workspace;
+    ws.stages.clear();
+    ws
+}
+
 #[test]
 fn golden_fixture_is_in_canonical_form() {
     let loaded = load_show(EXAMPLE).unwrap();
@@ -116,7 +125,7 @@ fn golden_fixture_is_in_canonical_form() {
 fn v3_fixture_with_a_passcode_migrates_to_a_row_with_all_rights() {
     let loaded = load_show(V3_EXAMPLE).unwrap();
     assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
-    let current = load_show(EXAMPLE).unwrap().workspace;
+    let current = example_before_stages();
     assert_eq!(loaded.workspace, current);
     assert_eq!(
         current.settings.osc_access,
@@ -142,7 +151,7 @@ fn v3_fixture_without_a_passcode_migrates_to_open_no_passcode_rights() {
     );
     assert!(loaded.workspace.settings.osc_access.passcodes.is_empty());
     // Apart from the table it is the same show.
-    let mut current = load_show(EXAMPLE).unwrap().workspace;
+    let mut current = example_before_stages();
     current.settings.osc_access = OscAccess::default();
     assert_eq!(loaded.workspace, current);
 }
@@ -171,7 +180,7 @@ fn v4_fixture_migrates_to_the_selected_cue_keys() {
         ),
         (&None, &None, &None)
     );
-    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+    assert_eq!(loaded.workspace, example_before_stages());
 }
 
 /// v6 dropped the Next / Previous Cue keys (QLab's key map has none and takes no arrow keys).
@@ -181,7 +190,7 @@ fn v4_fixture_migrates_to_the_selected_cue_keys() {
 fn v5_fixture_migrates_by_dropping_the_playhead_keys() {
     let loaded = load_show(V5_EXAMPLE).unwrap();
     assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
-    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+    assert_eq!(loaded.workspace, example_before_stages());
     let migrated = migrate(serde_json::from_str(V5_EXAMPLE).unwrap(), 5).unwrap();
     let keys = &migrated["workspace"]["settings"]["hotkeys"];
     assert!(keys.get("playhead_next").is_none() && keys.get("playhead_previous").is_none());
@@ -215,14 +224,14 @@ fn v6_fixture_migrates_by_dropping_the_output_delays_with_one_warning() {
     let loaded = load_show(V6_EXAMPLE).unwrap();
     assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     assert!(loaded.warnings[1].to_string().contains("undelayed"));
-    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+    assert_eq!(loaded.workspace, example_before_stages());
     let migrated = migrate(serde_json::from_str(V6_EXAMPLE).unwrap(), 6).unwrap();
     let outputs = &migrated["workspace"]["patches"][0]["outputs"];
     assert!(outputs[1].get("delay_ms").is_none());
     assert_eq!(outputs[1]["level_db"], -1.5, "the other settings stay");
     assert_eq!(migrated["format_version"], FORMAT_VERSION);
     let text = save_show(&loaded.workspace).unwrap();
-    assert_eq!(text, EXAMPLE);
+    assert_eq!(text, save_show(&example_before_stages()).unwrap());
     assert_eq!(load_show(&text).unwrap().warnings, vec![]);
 }
 
@@ -245,7 +254,7 @@ fn a_v6_output_delay_warns_only_when_it_was_set() {
         }
         load_show(&doc.to_string()).unwrap()
     };
-    let current = load_show(EXAMPLE).unwrap().workspace;
+    let current = example_before_stages();
     for (delay, warned) in [
         (Some(serde_json::json!(0.0)), false),
         (Some(serde_json::json!(0)), false),
@@ -296,7 +305,7 @@ fn a_custom_playhead_key_is_dropped_with_one_warning() {
     let default_next = key("down", true, true);
     let default_previous = key("up", true, true);
     let none = serde_json::Value::Null;
-    let current = load_show(EXAMPLE).unwrap().workspace;
+    let current = example_before_stages();
     for (next, previous, warnings) in [
         (default_next.clone(), default_previous.clone(), 0),
         (none.clone(), none.clone(), 0),
@@ -470,7 +479,7 @@ fn v1_fixture_migrates_with_default_second_triggers() {
         SecondTrigger::Nothing
     );
     // The current example differs only in the settings it sets (and the v3 Devamp mode).
-    let current = load_show(EXAMPLE).unwrap().workspace;
+    let current = example_before_stages();
     for list in &mut ws.cue_lists {
         for cue in &mut list.cues {
             let other = cue_named(&current, &cue.name);
@@ -518,7 +527,7 @@ fn v2_fixture_migrates_with_devamp_mode_current_slice() {
     assert_eq!(loaded.warnings, vec![master_removed(), delays_removed()]);
     let mut ws = loaded.workspace;
     assert_eq!(devamp_modes(&ws), vec![DevampMode::CurrentSlice]);
-    let current = load_show(EXAMPLE).unwrap().workspace;
+    let current = example_before_stages();
     assert_eq!(devamp_modes(&current), vec![DevampMode::LoopingCue]);
     set_devamp_modes(&mut ws, DevampMode::LoopingCue);
     assert_eq!(ws, current);
@@ -1623,10 +1632,13 @@ fn v7_fixture_migrates_to_edit_mode() {
     let loaded = load_show(V7_EXAMPLE).unwrap();
     assert_eq!(loaded.warnings, vec![master_removed()]);
     assert!(!loaded.workspace.show_mode);
-    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+    assert_eq!(loaded.workspace, example_before_stages());
     let migrated = migrate(serde_json::from_str(V7_EXAMPLE).unwrap(), 7).unwrap();
     assert_eq!(migrated["format_version"], FORMAT_VERSION);
-    assert_eq!(save_show(&loaded.workspace).unwrap(), EXAMPLE);
+    assert_eq!(
+        save_show(&loaded.workspace).unwrap(),
+        save_show(&example_before_stages()).unwrap()
+    );
 }
 
 /// A v7 reader ignored unknown keys, so a `show_mode` in a v7 file was never the user's: it is
@@ -1711,7 +1723,7 @@ fn v8_fixture_drops_the_global_master_with_one_warning_and_no_level_changes() {
         vec![&IssueKind::GlobalMasterRemoved]
     );
     assert!(loaded.warnings[0].to_string().contains("global master"));
-    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+    assert_eq!(loaded.workspace, example_before_stages());
     let settings = &loaded.workspace.settings;
     assert_eq!(
         (settings.output_max_db, settings.output_min_db),
@@ -1721,7 +1733,7 @@ fn v8_fixture_drops_the_global_master_with_one_warning_and_no_level_changes() {
     assert!(migrated["workspace"]["settings"].get("master_db").is_none());
     assert_eq!(migrated["format_version"], FORMAT_VERSION);
     let text = save_show(&loaded.workspace).unwrap();
-    assert_eq!(text, EXAMPLE);
+    assert_eq!(text, save_show(&example_before_stages()).unwrap());
     assert_eq!(load_show(&text).unwrap().warnings, vec![]);
 }
 

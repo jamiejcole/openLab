@@ -53,6 +53,7 @@ fn workspace(cues: Vec<Cue>) -> Workspace {
         },
         patches: vec![],
         network_patches: vec![],
+        stages: Vec::new(),
         show_mode: false,
         cue_lists: vec![CueList {
             id: CueListId(Uuid::from_u128(1)),

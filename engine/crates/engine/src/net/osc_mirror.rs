@@ -694,6 +694,7 @@ mod tests {
             },
             patches: vec![],
             network_patches: vec![],
+            stages: Vec::new(),
             show_mode: false,
             cue_lists: vec![CueList {
                 id: list_id(),

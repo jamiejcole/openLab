@@ -48,7 +48,7 @@ test-rust:
 # crashes land in engine/fuzz/artifacts/.
 fuzz:
 	mkdir -p engine/fuzz/corpus/show_file engine/fuzz/corpus/decode engine/fuzz/corpus/osc \
-		engine/fuzz/corpus/osc_session engine/fuzz/corpus/protocol
+		engine/fuzz/corpus/osc_session engine/fuzz/corpus/protocol engine/fuzz/corpus/stage_link
 	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run show_file fuzz/corpus/show_file fixtures/show fuzz/seeds \
 		-- -max_total_time=$(FUZZ_TIME) -dict=fuzz/show_file.dict
 	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run decode fuzz/corpus/decode crates/audio/tests/fixtures fuzz/decode-seeds \
@@ -59,6 +59,8 @@ fuzz:
 		-- -max_total_time=$(FUZZ_TIME) -max_len=65536 -timeout=10
 	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run protocol fuzz/corpus/protocol fixtures/protocol/client \
 		fixtures/protocol/server fuzz/protocol-seeds -- -max_total_time=$(FUZZ_TIME) -max_len=65536 -timeout=10
+	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run stage_link fuzz/corpus/stage_link fuzz/stage-link-seeds \
+		-- -max_total_time=$(FUZZ_TIME) -max_len=200000 -timeout=10
 
 # Nightly CI and local: engine tests under ASan and TSan, then Miri on openlab-core (QA-09).
 # Needs: rustup toolchain install $(SAN_TOOLCHAIN) --profile minimal -c rust-src -c miri

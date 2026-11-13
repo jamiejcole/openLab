@@ -1469,6 +1469,7 @@ mod tests {
             },
             patches: vec![],
             network_patches: vec![],
+            stages: Vec::new(),
             show_mode: false,
             cue_lists: vec![openlab_core::CueList {
                 id: openlab_core::CueListId(uuid_zero()),

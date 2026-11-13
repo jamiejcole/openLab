@@ -216,3 +216,14 @@ Fields: `Snapshot` in `server.rs`. `workspace` never carries `show_mode`. `cue_s
 - `command_refused`: the engine refused a valid message (validation, limit, busy). Nothing changed.
 - `not_found`, `already_open`, `unsaved_changes`, `io`, `bad_show_file`, `unsupported`, `internal`.
 - `no_workspace`: no doc to act on (none open, a closed doc, an app connection, or a save with no path yet).
+
+## 5. Stage host link (engine <-> `openlab-stage`)
+
+Not seen by clients. The engine spawns the stage host (the process that owns the video output windows; skill `video`) and speaks to it over the child's stdin (engine to stage host) and stdout (stage host to engine): one JSON object per line, UTF-8, `\n`-terminated. Types: `openlab-core::stage_link` (`engine/crates/core/src/stage_link.rs`); seed lines in `engine/fuzz/stage-link-seeds/`.
+
+- **Version.** The engine's first line is `hello { version }`; the stage host answers `hello { version, pid, video }` and quits when the versions differ (`LINK_VERSION`, 1). `video: false`: this build has no video output (every stage `failed`).
+- **Engine to stage host:** `stages { stages: [{id, width, height, display?, keep_black}] }` is every stage of every open workspace and replaces the previous set; `display` is a display id from `displays` (absent: no display on this machine). `ping { seq }` is answered by `pong { seq }`. `quit` closes every window and ends the process.
+- **Stage host to engine:** `displays { displays: [{id, name, width, height}] }` after `hello` and after every display change (ids are stable across restarts: on macOS the display UUID; sizes in pixels). `stage_status { stage, state }` when a stage's state changes: `{"state":"shown","display"}`, `hidden` (keep-black off and nothing plays), `no_display`, `{"state":"display_missing","display"}`, `{"state":"failed","reason"}`. `log { level: info|warn|error, message }` goes to the show log.
+- **Limits** (checked by both ends after parsing; a line breaking one is refused as a whole): a line at most 64 KiB; at most 32 displays and 512 stages; ids, names and messages at most 512 bytes without control characters (a message may hold newlines), ids and names not empty; sizes 1 to 16384. A refused line is a `warn` log and is otherwise ignored; the reader never holds more than one line.
+- **Lifetime.** The stage host exits when its stdin ends, so it never outlives the engine. The engine's supervision (watchdog, relaunch, quit) is in skill `video`.
+- **Test support** (test-support builds of both ends only): `test_card { stage, frame }` draws the test card (skill `video`), `probe { stage, points: [[x, y]] }` (1 to 64 points, fractions of the stage from the top left) is answered by `probed { stage, frame?, colours: [[r, g, b, a]] }`, and `hang` makes the stage host stop answering.

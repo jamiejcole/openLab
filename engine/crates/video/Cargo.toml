@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "openlab-video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# The stage host: the process the engine spawns that owns the video output windows. It is the
+# only crate that links a GUI framework, so the engine never does.
+[[bin]]
+name = "openlab-stage"
+path = "src/main.rs"
+
+[features]
+# Test seams (virtual displays, the test card, probes, a simulated hang) for the real-engine
+# tests; never in a shipped build (scripts/rust-checks.sh checks).
+test-support = ["openlab-core/test-support"]
+
+[dependencies]
+openlab-core = { version = "0.0.1", path = "../core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The system frameworks' bindings, default features off: only the headers used are built.
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std"] }
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-quartz-core", "NSApplication", "NSColor", "NSGraphics", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFString", "CFUUID"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "libc", "CGDirectDisplay", "CGDisplayConfiguration", "CGError"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSGeometry", "NSString", "NSValue"] }
+objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLDrawable", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLTexture", "MTLTypes"] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "objc2-metal", "objc2-core-foundation", "CALayer", "CAMetalLayer"] }
+
+[dev-dependencies]
+# The crate itself with its test seams, so the tests' `openlab-stage` binary has them.
+openlab-video = { path = ".", features = ["test-support"] }
+openlab-core = { path = "../core", features = ["test-support"] }
+openlab-engine = { path = "../engine", features = ["test-support"] }
+openlab-audio = { version = "0.0.1", path = "../audio" }
+uuid = { version = "1.29.0", default-features = false }
