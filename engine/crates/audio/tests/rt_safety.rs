@@ -776,3 +776,43 @@ fn the_duck_stage_ramps_without_allocating_or_jumping_and_a_new_voice_starts_und
     assert_eq!(out[0], 1.0, "a new voice starts with no duck");
     assert_eq!(ctl.faults(), 0);
 }
+
+/// `DuckCap`: a boost (duck above 1.0) never takes master × duck past the cap, also while the two
+/// ramp in opposite directions (their product would bulge above both ends), and never lowers a
+/// voice below its own master; without a boost it does nothing. No allocation.
+#[test]
+fn the_duck_cap_bounds_a_boost_while_master_and_duck_cross() {
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 0, 1, source(&[1.0; 6000]), 1);
+    let ramp = |at, target, gain, frames| {
+        (
+            at,
+            CommandKind::Ramp {
+                voice: VoiceId(1),
+                target,
+                gain,
+                fade: Fade::new(frames, Curve::Linear),
+            },
+        )
+    };
+    let cap = 4.0;
+    for (at, cmd) in [
+        ramp(0, GainTarget::Master, 0.25, 0),
+        ramp(0, GainTarget::DuckCap, cap, 0),
+        ramp(0, GainTarget::Duck, 4.0, 0),
+        // The master rises to 1.0 while the boost comes down to none: 1.0 at both ends, about
+        // 1.56 half way without the cap, which is 1.0 from here.
+        ramp(1000, GainTarget::DuckCap, 1.0, 0),
+        ramp(1000, GainTarget::Master, 1.0, 1000),
+        ramp(1000, GainTarget::Duck, 1.0, 1000),
+    ] {
+        ctl.send(at, cmd);
+    }
+    let mut out = vec![0.0; 3000];
+    no_alloc(|| r.render_into(&mut out, &[64, 333, 1024]));
+    assert!((out[500] - 1.0).abs() < 1e-6, "{}", out[500]);
+    let peak = out[1000..].iter().copied().fold(0.0f32, f32::max);
+    assert!(peak <= 1.0 + 1e-6, "{peak}");
+    assert!((out[2500] - 1.0).abs() < 1e-6);
+    assert_eq!(ctl.faults(), 0);
+}

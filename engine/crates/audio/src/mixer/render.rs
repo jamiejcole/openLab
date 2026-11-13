@@ -254,7 +254,16 @@ fn render_voice(
     v.master.fill(vg, shapes);
     if v.duck.is_ramping() || v.duck.current() != 1.0 {
         v.duck.fill(tmp, shapes);
-        vg.iter_mut().zip(tmp.iter()).for_each(|(g, t)| *g *= t);
+        // A boost stops at the cap (but never takes the voice below its own master), so a
+        // master raised while a boost comes down cannot overshoot the workspace maximum.
+        let cap = v.duck_cap.current();
+        vg.iter_mut().zip(tmp.iter()).for_each(|(g, d)| {
+            let m = *g;
+            *g = m * d;
+            if *d > 1.0 {
+                *g = g.min(cap.max(m));
+            }
+        });
     }
     if v.stop.is_ramping() || v.stop.current() != 1.0 {
         v.stop.fill(tmp, shapes);
@@ -387,7 +396,13 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
         return;
     };
     let shapes = &mut s.shapes;
-    let g = v.master.current() * v.duck.current() * v.stop.current() * v.declick.current();
+    let (m, d) = (v.master.current(), v.duck.current());
+    let ducked = if d > 1.0 {
+        (m * d).min(v.duck_cap.current().max(m))
+    } else {
+        m * d
+    };
+    let g = ducked * v.stop.current() * v.declick.current();
     for (j, x) in vg.iter_mut().enumerate() {
         *x = g * p.gain(p.done + j as u64);
     }

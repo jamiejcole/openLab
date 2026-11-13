@@ -947,8 +947,14 @@ fn panic_during_a_duck_leaves_no_ducked_level_on_the_next_run() {
     rig.start(0, 1);
     rig.start(0, 2);
     let out = rig.at(100, Input::Panic);
-    // A cue fading out in the panic is not brought back up while it goes.
-    assert!(ducks(&out).is_empty(), "{out:?}");
+    // A cue fading out in the panic is not brought back up while it goes: the duck still on its
+    // way down is held where it is (a ramp of 0 frames on the panic sample), nothing more.
+    assert!(
+        ducks(&out)
+            .iter()
+            .all(|(c, at, _, f)| (*c, *at, *f) == (id(1), 100, 0)),
+        "{out:?}"
+    );
     let out = rig.tick(1100);
     assert!(ducks(&out).is_empty(), "{out:?}");
     assert_eq!(rig.state(1), CueState::Idle);
@@ -1042,4 +1048,98 @@ fn a_boost_comes_down_when_an_edit_raises_the_master_so_the_maximum_holds() {
     assert_eq!(got.len(), 1, "{out:?}");
     assert!((got[0].2 - gain(3.0)).abs() < 1e-6, "{got:?}");
     assert_eq!(got[0].3, 10, "within the edit ramp");
+}
+
+/// Duck ramps sent for `n` in `out` that would raise it: any to a gain above `level` with frames,
+/// which a voice going away must never get.
+fn raises(out: &[Action], n: u128, level: f32) -> Vec<(CueId, SampleTime, f32, SampleTime)> {
+    ducks(out)
+        .into_iter()
+        .filter(|(c, _, g, _)| *c == id(n) && *g > level + 1e-6)
+        .collect()
+}
+
+#[test]
+fn panic_during_a_duck_never_raises_a_ducked_cue_whatever_the_cue_order() {
+    for ducker_first in [true, false] {
+        let ducker = ducking_others(wait(2, 5.0), -20.0, 1.0);
+        let cues = if ducker_first {
+            vec![ducker, sound(1)]
+        } else {
+            vec![sound(1), ducker]
+        };
+        let mut rig = Rig::panicking(cues);
+        rig.start(0, 1);
+        rig.start(0, 2);
+        let out = rig.at(2000, Input::Panic);
+        assert!(
+            raises(&out, 1, gain(-20.0)).is_empty(),
+            "ducker first {ducker_first}: {out:?}"
+        );
+        let out = rig.tick(3100);
+        assert!(raises(&out, 1, gain(-20.0)).is_empty(), "{out:?}");
+    }
+}
+
+#[test]
+fn a_duck_return_under_way_is_held_where_it_is_by_a_panic_a_stop_fade_or_fade_and_stop_others() {
+    // The ducking Wait ends at 3 s; its 2 s return is under way at 3.1 s.
+    let setup = |extra: Vec<Cue>| {
+        let mut cues = vec![sound(1), ducking_others(wait(2, 3.0), -40.0, 2.0)];
+        cues.extend(extra);
+        let mut rig = Rig::panicking(cues);
+        rig.start(0, 1);
+        rig.start(0, 2);
+        rig.tick(3000);
+        rig
+    };
+    let check = |out: &[Action], what: &str| {
+        let got = ducks(out);
+        assert_eq!(got.len(), 1, "{what}: {out:?}");
+        let (cue, at, g, frames) = got[0];
+        assert_eq!(
+            (cue, at, frames),
+            (id(1), 3100, 0),
+            "{what}: held on that sample"
+        );
+        assert!(g > gain(-40.0) && g < 1.0, "{what}: where it was, {g}");
+    };
+    let mut rig = setup(vec![]);
+    check(&rig.at(3100, Input::Panic), "panic");
+    let mut rig = setup(vec![]);
+    let out = rig.at(
+        3100,
+        Input::Stop {
+            cue: id(1),
+            fade_out: Some(FadeSpec {
+                duration: 1.0,
+                curve: FadeCurve::Linear,
+            }),
+        },
+    );
+    check(&out, "stop with a fade");
+    let mut rig = setup(vec![fading_others(memo(3), OthersScope::Peers, 1.0)]);
+    check(&rig.start(3100, 3), "fade and stop others");
+    // After it, nothing more is sent to the fading voice.
+    assert!(ducks(&rig.tick(5200)).is_empty());
+}
+
+#[test]
+fn stop_all_during_a_duck_sends_no_duck_ramp_whatever_the_cue_order() {
+    for ducker_first in [true, false] {
+        let ducker = ducking_others(wait(2, 5.0), -20.0, 1.0);
+        let cues = if ducker_first {
+            vec![ducker, sound(1)]
+        } else {
+            vec![sound(1), ducker]
+        };
+        let mut rig = Rig::new(cues);
+        rig.start(0, 1);
+        rig.start(0, 2);
+        let out = rig.at(2000, Input::StopAll);
+        assert!(
+            ducks(&out).is_empty(),
+            "ducker first {ducker_first}: {out:?}"
+        );
+    }
 }

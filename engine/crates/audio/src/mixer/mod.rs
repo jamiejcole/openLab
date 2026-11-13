@@ -122,6 +122,13 @@ pub enum GainTarget {
     /// one ("duck or boost others"). Kept apart so the cue's own master, a level edit and a Fade
     /// cue keep moving `Master` while a duck is on; a start resets it to 1.0.
     Duck,
+    /// The most `Master` × `Duck` may come to while `Duck` boosts (above 1.0): the workspace's
+    /// maximum level, so no rendered sample of a boosted voice goes past it, also while the master
+    /// and the duck ramp in opposite directions. Set at once (no ramp); [`MAX_GAIN`] (no cap)
+    /// at every start. It never lowers a voice below its own `Master`.
+    ///
+    /// [`MAX_GAIN`]: crate::MAX_GAIN
+    DuckCap,
     CueOutput(u16),
     Crosspoint {
         input: u16,

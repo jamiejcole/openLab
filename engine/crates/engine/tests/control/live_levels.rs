@@ -826,11 +826,23 @@ fn duck_others_minus_12_db_is_heard_reached_held_and_returned_without_a_step() {
         );
     };
     let rate = RATE as usize;
+    // Half way along the duck's curve (the exponential one, even in dB), down and back up.
+    let g = db_to_gain(-12.0);
+    let half = |from: f32, to: f32| {
+        LEVEL
+            * openlab_core::ramp_gain(
+                from,
+                to,
+                RATE as u64 / 2,
+                RATE as u64,
+                FadeCurve::Exponential,
+            )
+    };
     near(&out, at - 1, LEVEL);
-    near(&out, at + rate / 2, (LEVEL + ducked) / 2.0);
+    near(&out, at + rate / 2, half(1.0, g));
     near(&out, at + rate + 10, ducked);
     // The Wait ends at 2 s: back over 1 s.
-    near(&out, at + 2 * rate + rate / 2, (LEVEL + ducked) / 2.0);
+    near(&out, at + 2 * rate + rate / 2, half(g, 1.0));
     near(&out, at + 3 * rate + 10, LEVEL);
     let jump = out[at - 10..at + 4 * rate]
         .windows(2)
@@ -869,4 +881,180 @@ fn panic_during_a_duck_leaves_no_ducked_level_on_the_next_run() {
         "{}",
         out[again + 10]
     );
+}
+
+/// The largest rise from one sample to the next from `from` on, as a ratio in dB of the level
+/// at `from` (0 when it never rises).
+fn rise_after(out: &[f32], from: usize) -> f32 {
+    let mut worst = 0.0f32;
+    for w in out[from..].windows(2) {
+        if w[1] > w[0] + 1e-7 {
+            worst = worst.max(w[1] - w[0]);
+        }
+    }
+    worst
+}
+
+/// A ducking Wait and a playing cue, `ducker_first` saying which is listed first.
+fn ducked_show(ducker_first: bool, wait_s: f64, db: f64, time: f64) -> OfflineShow {
+    let path = wav(&dc(RATE as usize * 10, LEVEL));
+    let mut ducker = cue(2, CueKind::Wait { duration: wait_s });
+    ducker.duck_others = openlab_core::DuckOthers {
+        enabled: true,
+        db,
+        duration: time,
+    };
+    let music = audio(1, &path, 0);
+    let cues = if ducker_first {
+        vec![ducker, music]
+    } else {
+        vec![music, ducker]
+    };
+    let mut ws = workspace(cues);
+    ws.settings.panic_duration = 1.0;
+    let mut s = show(ws);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s
+}
+
+/// Panic during a -40 dB duck: the ducked cue only goes down from the panic on, whichever of
+/// the two cues is listed first.
+#[test]
+fn panic_during_a_duck_never_brings_the_ducked_cue_up_whatever_the_cue_order() {
+    for ducker_first in [true, false] {
+        let mut s = ducked_show(ducker_first, 5.0, -40.0, 1.0);
+        s.run(u64::from(RATE) * 2);
+        let p = s.now() as usize;
+        s.transport(TransportAction::Panic);
+        s.run(u64::from(RATE) * 2);
+        let out = s.channel(0);
+        assert_eq!(rise_after(&out, p), 0.0, "ducker first {ducker_first}");
+    }
+}
+
+/// A duck coming off (its cue ended) when a Panic, a stop with a fade or fade-and-stop-others
+/// starts: the return stops where it is and the sound only goes down.
+#[test]
+fn a_duck_return_under_way_stops_rising_when_the_cue_starts_fading_out() {
+    let stop_fade = TransportAction::Stop {
+        cue: id(1),
+        fade_out: Some(openlab_core::FadeSpec {
+            duration: 1.0,
+            curve: FadeCurve::Linear,
+        }),
+    };
+    for (what, action) in [
+        ("panic", TransportAction::Panic),
+        ("stop with a fade", stop_fade),
+    ] {
+        let mut s = ducked_show(false, 3.0, -40.0, 2.0);
+        s.run(u64::from(RATE) * 31 / 10);
+        let p = s.now() as usize;
+        s.transport(action);
+        s.run(u64::from(RATE) * 2);
+        let out = s.channel(0);
+        // The de-zipper that holds it may move it by a hair: never by more than the ramp did
+        // in those few samples.
+        assert!(rise_after(&out, p + 64) == 0.0, "{what}");
+        assert!(
+            out[p + 64] < out[p] * 1.05,
+            "{what}: {} then {}",
+            out[p],
+            out[p + 64]
+        );
+    }
+    // Fade and stop others.
+    let path = wav(&dc(RATE as usize * 10, LEVEL));
+    let mut ducker = cue(2, CueKind::Wait { duration: 3.0 });
+    ducker.duck_others = openlab_core::DuckOthers {
+        enabled: true,
+        db: -40.0,
+        duration: 2.0,
+    };
+    let mut stopper = cue(3, CueKind::Memo);
+    stopper.fade_and_stop_others = openlab_core::FadeAndStopOthers {
+        enabled: true,
+        scope: openlab_core::OthersScope::Peers,
+        duration: 1.0,
+    };
+    let mut s = show(workspace(vec![audio(1, &path, 0), ducker, stopper]));
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(u64::from(RATE) * 31 / 10);
+    let p = start(&mut s, 3) as usize;
+    s.run(u64::from(RATE) * 2);
+    let out = s.channel(0);
+    assert!(rise_after(&out, p + 64) == 0.0);
+    assert!(out[p + 64] < out[p] * 1.05);
+}
+
+/// A +12 dB boost with the workspace maximum at +12: whatever raises the boosted cue's master
+/// (an edit, a Fade cue) or lowers the maximum, no rendered sample goes past the maximum.
+#[test]
+fn a_boost_never_takes_a_rendered_sample_past_the_workspace_maximum() {
+    let make = || {
+        let path = wav(&dc(RATE as usize * 8, 0.1));
+        let mut a = audio(1, &path, 0);
+        if let CueKind::Audio { levels, .. } = &mut a.kind {
+            levels.master_db = -12.0;
+        }
+        let mut booster = cue(2, CueKind::Wait { duration: 6.0 });
+        booster.duck_others = openlab_core::DuckOthers {
+            enabled: true,
+            db: 12.0,
+            duration: 0.05,
+        };
+        let mut fade = cue(3, CueKind::Memo);
+        fade.kind = CueKind::Fade {
+            target: Some(id(1)),
+            duration: 0.2,
+            curve: FadeCurve::Linear,
+            levels: FadeLevels {
+                master_db: Some(12.0),
+                output_db: vec![],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: false,
+            mode: openlab_core::FadeMode::Absolute,
+        };
+        let mut s = show(workspace(vec![a, booster, fade]));
+        start(&mut s, 1);
+        start(&mut s, 2);
+        s.run(u64::from(RATE) / 2);
+        s
+    };
+    let cap = 0.1 * db_to_gain(12.0) * 1.0001;
+    // A level edit.
+    let mut s = make();
+    let at = set_levels(&mut s, 1, |l| l.master_db = 12.0);
+    s.run(800);
+    let out = s.channel(0);
+    let peak = out[at - 10..].iter().copied().fold(0.0f32, f32::max);
+    assert!(peak <= cap, "edit: {peak} over {cap}");
+    // A Fade cue.
+    let mut s = make();
+    let at = start(&mut s, 3) as usize;
+    s.run(800);
+    let out = s.channel(0);
+    let peak = out[at - 10..].iter().copied().fold(0.0f32, f32::max);
+    assert!(peak <= cap, "fade: {peak} over {cap}");
+    // The maximum lowered to +6 dB: within the edit ramp nothing is above it.
+    let mut s = make();
+    let rid = s.request_id();
+    let at = s.now() as usize;
+    s.send(ClientMessage::Command {
+        id: rid,
+        command: Box::new(Command::SetWorkspaceSetting {
+            setting: openlab_core::WorkspaceSetting::OutputMaxDb { value: 6.0 },
+        }),
+        coalesce: None,
+    });
+    s.run(800);
+    let out = s.channel(0);
+    let low = 0.1 * db_to_gain(6.0) * 1.0001;
+    let peak = out[at + 200..].iter().copied().fold(0.0f32, f32::max);
+    assert!(peak <= low, "lowered maximum: {peak} over {low}");
+    let peak = out[at - 10..].iter().copied().fold(0.0f32, f32::max);
+    assert!(peak <= cap, "{peak}");
 }

@@ -16,7 +16,8 @@ audio thread: voice reads ring -> trims/loops/slices -> integrated fades -> chan
 ## Signal path
 Per sample, voice routed through patch P, input channel i, cue output o, device output d:
 ```
-voice_gain   = master(t) * duck(t) * stop(t) * fade_env(p)
+voice_gain   = boosted(master(t), duck(t)) * stop(t) * fade_env(p)
+boosted(m,d) = m * d, but no more than max(duck_cap, m) while d > 1
 bus_P[o]    += sum_i input[i] * crosspoint[i][o](t) * (cue_out[o](t) * voice_gain)
 dev[d]       = sum_P sum_o bus_P[o] * patch_P[o][d](t)
 out[d]       = dev[d] * global_master(t)
@@ -29,7 +30,7 @@ out[d]       = dev[d] * global_master(t)
 ## Commands
 | Command | Semantics |
 |---|---|
-| `Ramp { voice, target, gain, fade }` | ramps one voice gain (`Master`, `Duck`, `CueOutput(o)`, `Crosspoint { input, output }`) to `gain` with `fade.curve` over `fade.frames`. `Duck` is a second whole-voice gain for "duck or boost others", 1.0 at every start; at exactly 1.0 and not ramping it is skipped, so a voice no cue ducks pays nothing for it |
+| `Ramp { voice, target, gain, fade }` | ramps one voice gain (`Master`, `Duck`, `CueOutput(o)`, `Crosspoint { input, output }`) to `gain` with `fade.curve` over `fade.frames`. `Duck` is a second whole-voice gain for "duck or boost others", 1.0 at every start; at exactly 1.0 and not ramping it is skipped, so a voice no cue ducks pays nothing for it. `DuckCap` (set at once, never ramped; `MAX_GAIN` at every start) bounds master x duck while the duck boosts |
 | `SetPatchRouting { patch, cue_output, device_output, gain }` | one patch's cue-output to device-output gain; default is identity in every patch (AUD-07) |
 | `SnapPatch { patch }` | the matrix takes the gains its routing is ramping to at once. Used for a matrix just given to a patch that nothing plays through, so a cue started on that sample is heard at its level on that patch's outputs only. Unknown patch ignored |
 | `MoveVoice { voice, patch }` | moves a playing voice to another patch matrix |

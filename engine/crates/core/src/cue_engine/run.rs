@@ -151,9 +151,46 @@ pub(super) struct Run {
     /// Wait and Fade cues in their action: the duration (samples) the action is timed by, so
     /// an edit of a running cue's duration re-times it (`follow_duration_edits`).
     pub duration: Option<SampleTime>,
-    /// Audio cues with a started voice: the duck gain (linear) last sent to it, 1.0 when no
-    /// other cue ducks or boosts it (`others.rs`).
-    pub duck: f32,
+    /// Audio cues with a started voice: where its duck stage is and is going (`others.rs`).
+    pub duck: DuckLevel,
+}
+
+/// A voice's duck stage as the mixer plays it: a ramp from `from` on `start` to `to` over
+/// `frames` (as heard: a 0-frame ramp is the de-zipper), then `to`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DuckLevel {
+    pub from: f32,
+    pub to: f32,
+    pub start: SampleTime,
+    pub frames: SampleTime,
+    pub curve: FadeCurve,
+}
+
+impl DuckLevel {
+    /// No duck: 1.0, still.
+    pub const NONE: Self = Self {
+        from: 1.0,
+        to: 1.0,
+        start: 0,
+        frames: 0,
+        curve: FadeCurve::Linear,
+    };
+
+    /// The gain on sample `at`.
+    pub fn value(&self, at: SampleTime) -> f32 {
+        super::level::ramp_gain(
+            self.from,
+            self.to,
+            at.saturating_sub(self.start),
+            self.frames,
+            self.curve,
+        )
+    }
+
+    /// Whether it is still moving on sample `at`.
+    pub fn moving(&self, at: SampleTime) -> bool {
+        self.from != self.to && at < self.start.saturating_add(self.frames)
+    }
 }
 
 /// The levels an audio cue's voice has been given: the model's at its start, and each edit
@@ -327,7 +364,7 @@ impl Run {
             devamp: None,
             fade: None,
             duration: None,
-            duck: 1.0,
+            duck: DuckLevel::NONE,
         }
     }
 

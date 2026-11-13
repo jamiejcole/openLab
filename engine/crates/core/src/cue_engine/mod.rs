@@ -85,6 +85,10 @@ pub struct CueEngine {
     /// Some voice may play at a duck gain other than 1.0: `sync_ducks` has work while this is
     /// set or a duck is in force, and costs nothing otherwise.
     duck_live: bool,
+    /// Stops of many cues under way (`with_ducks_held`), and the ducks that ended in them, to be
+    /// undone at their end: `(sample, ramp frames)`.
+    duck_held: u32,
+    duck_owed: Vec<(SampleTime, SampleTime)>,
     /// Groups whose run has fired its continue during the playhead's current visit (forgotten
     /// when they start again, are reset, or the playhead enters them any way but the GO on the
     /// group: `forget_continues`): the playhead leaving such a group from a child skips its
@@ -173,6 +177,8 @@ impl CueEngine {
             played: BTreeSet::new(),
             ducks: BTreeMap::new(),
             duck_live: false,
+            duck_held: 0,
+            duck_owed: Vec::new(),
             continued: BTreeSet::new(),
             armed: BTreeMap::new(),
             problems: broken::Problems::default(),

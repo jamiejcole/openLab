@@ -9,13 +9,13 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use crate::cue::{FadeSpec, LevelLimits, MAX_DB, OthersScope, SILENCE_DB};
+use crate::cue::{FadeCurve, FadeSpec, LevelLimits, MAX_DB, OthersScope, SILENCE_DB};
 use crate::model::CueId;
 use crate::tree;
 
 use super::group::{ancestors, descendants};
 use super::level::{self, LevelParam, db_to_gain};
-use super::run::{Phase, Run, Slot, Voice};
+use super::run::{DuckLevel, Phase, Run, Slot, Voice};
 use super::time::SampleTime;
 use super::transport::PANIC_CURVE;
 use super::types::Action;
@@ -67,6 +67,65 @@ fn master_of(run: &Run) -> f32 {
         .map_or(given, |l| given.max(l.from).max(l.to))
 }
 
+/// The shape of a duck's ramps: the mixer's exponential curve, close to even in dB over the
+/// range a duck spans, so a return from a deep duck is heard rising steadily rather than most of
+/// the way in its first moments (as a straight line in amplitude would be).
+pub const DUCK_CURVE: FadeCurve = FadeCurve::Exponential;
+
+/// Sends `run`'s voice a duck ramp to `gain` over `frames` from `at` (dated no earlier than what
+/// is committed for it) and records what the mixer makes of it. `cap` is the workspace maximum
+/// (linear).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call shape for the three senders"
+)]
+fn send_duck(
+    cue: CueId,
+    run: &mut Run,
+    at: SampleTime,
+    gain: f32,
+    frames: SampleTime,
+    rate: u32,
+    cap: f32,
+    cx: &mut Ctx,
+) {
+    let Voice::Started {
+        at: started, first, ..
+    } = run.voice
+    else {
+        return;
+    };
+    let at = run.commit(at.max(started));
+    let from = run.duck.value(at);
+    let (heard, curve) = level::heard(at, frames, DUCK_CURVE, first, rate);
+    run.duck = DuckLevel {
+        from,
+        to: gain,
+        start: at,
+        frames: heard,
+        curve,
+    };
+    cx.out.push(Action::DuckVoice {
+        cue,
+        run: run.run,
+        at,
+        gain,
+        frames,
+        curve: DUCK_CURVE,
+        cap,
+    });
+}
+
+/// A voice starting to fade out (a stop with a fade, a panic) on `at`: its duck stage stays where
+/// it is from there, so a duck still coming off cannot bring up a sound that is going away.
+pub(super) fn hold_duck(cue: CueId, run: &mut Run, at: SampleTime, rate: u32, cx: &mut Ctx) {
+    if run.duck.moving(at) {
+        let here = run.duck.value(at);
+        let cap = level::db_to_gain(cx.ws.settings.output_max_db);
+        send_duck(cue, run, at, here, 0, rate, cap, cx);
+    }
+}
+
 impl CueEngine {
     /// Whether `cue` is ducking now: its run is in its action and not broken (paused, or fading
     /// out to a stop, it still is).
@@ -87,20 +146,41 @@ impl CueEngine {
     }
 
     /// After a state change of `cue` on `at`: a duck it was doing that has ended (its action
-    /// ended, it stopped, broke or was removed) is undone over its own time from `at`.
+    /// ended, it stopped, broke or was removed) is undone over its own time from `at`. Inside a
+    /// stop of many cues (`with_ducks_held`) the undoing waits for its end, so every voice going
+    /// away has its fade first, whatever the cues' order.
     pub(super) fn end_duck_if_over(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         if self.ducks.contains_key(&cue)
             && !self.ducking(cue)
             && let Some(d) = self.ducks.remove(&cue)
         {
-            self.apply_ducks(at, d.frames, cx);
+            if self.duck_held > 0 {
+                self.duck_owed.push((at, d.frames));
+            } else {
+                self.apply_ducks(at, d.frames, cx);
+            }
+        }
+    }
+
+    /// Runs `f`, a stop of many cues (Panic, Stop All, a cue's own panic, a stop of a cue and
+    /// what is inside it, fade and stop others, a lost device), with the undoing of ducks that end
+    /// in it put off to its end.
+    pub(super) fn with_ducks_held(&mut self, cx: &mut Ctx, f: impl FnOnce(&mut Self, &mut Ctx)) {
+        self.duck_held = self.duck_held.saturating_add(1);
+        f(self, cx);
+        self.duck_held = self.duck_held.saturating_sub(1);
+        if self.duck_held == 0 {
+            for (at, frames) in std::mem::take(&mut self.duck_owed) {
+                self.apply_ducks(at, frames, cx);
+            }
         }
     }
 
     /// Once per call, after everything else: a duck whose cue ended without a state report (a
     /// deleted cue) is undone, and a voice whose boost no longer fits under the maximum (an edit
-    /// or a Fade raised its master) is brought down within the edit ramp. Nothing to do, and
-    /// nothing looked at past two fields, while no cue ducks.
+    /// or a Fade raised its master) is brought down within the edit ramp (the mixer's `DuckCap`
+    /// keeps every sample under the maximum meanwhile). Nothing to do, and nothing looked at past
+    /// two fields, while no cue ducks.
     pub(super) fn sync_ducks(&mut self, cx: &mut Ctx) {
         if self.ducks.is_empty() && !self.duck_live {
             return;
@@ -161,11 +241,13 @@ impl CueEngine {
 
     /// Sends every playing audio voice whose duck gain is not what the ducks in force make it a
     /// ramp to it over `frames` from `at` (never before a command already committed for it).
-    /// Voices fading out to a stop or in a panic are left as they are, so a duck coming off
-    /// never brings up a sound that is going away.
+    /// Voices fading out to a stop or in a panic are left as they are (`hold_duck` stopped their
+    /// duck where it was), so a duck coming off never brings up a sound that is going away.
     fn apply_ducks(&mut self, at: SampleTime, frames: SampleTime, cx: &mut Ctx) {
         let scopes = self.duck_scopes(cx);
         let limits = cx.ws.settings.limits();
+        let cap = level::db_to_gain(limits.max_db);
+        let rate = self.config.sample_rate().get();
         let ws = cx.ws;
         let mut wanted: BTreeMap<CueId, f32> = BTreeMap::new();
         let mut live = false;
@@ -176,7 +258,7 @@ impl CueEngine {
                 || run.panicked
                 || run.is_broken()
             {
-                live |= run.duck != 1.0;
+                live |= run.duck.to != 1.0;
                 continue;
             }
             let gain = match tree::find_path(ws, *id) {
@@ -184,32 +266,20 @@ impl CueEngine {
                 None => 1.0,
             };
             live |= gain != 1.0;
-            if gain != run.duck {
+            if gain != run.duck.to {
                 wanted.insert(*id, gain);
             }
         }
         for (cue, gain) in wanted {
-            let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
-                continue;
-            };
-            let Voice::Started { at: started, .. } = run.voice else {
-                continue;
-            };
-            let at = run.commit(at.max(started));
-            run.duck = gain;
-            cx.out.push(Action::DuckVoice {
-                cue,
-                run: run.run,
-                at,
-                gain,
-                frames,
-            });
+            if let Some(Slot::Active(run)) = self.slots.get_mut(&cue) {
+                send_duck(cue, run, at, gain, frames, rate, cap, cx);
+            }
         }
         self.duck_live = live;
     }
 
-    /// A voice just started on `at` for `cue`: while a duck is in force it starts at its duck
-    /// (on its start sample, so nothing of it is heard unducked).
+    /// A voice just started for `cue`: while a duck is in force it starts at its duck (on its
+    /// start sample, so nothing of it is heard unducked).
     pub(super) fn duck_new_voice(&mut self, cue: CueId, cx: &mut Ctx) {
         if self.ducks.is_empty() {
             return;
@@ -223,24 +293,20 @@ impl CueEngine {
             return;
         };
         let gain = self.duck_for(cue, list, &scopes, run, limits);
+        let rate = self.config.sample_rate().get();
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
         };
         let Voice::Started { at, .. } = run.voice else {
             return;
         };
-        if gain != run.duck {
-            run.duck = gain;
+        if gain != run.duck.to {
             self.duck_live |= gain != 1.0;
-            cx.out.push(Action::DuckVoice {
-                cue,
-                run: run.run,
-                at,
-                gain,
-                frames: 0,
-            });
+            let cap = level::db_to_gain(limits.max_db);
+            send_duck(cue, run, at, gain, 0, rate, cap, cx);
         }
     }
+
     /// `cue`'s action has started with "fade and stop others" on: every other cue in its scope
     /// that is active fades out over the set time and stops, children before their groups, with
     /// the Stop operation (a playing voice fades; a paused, pre-waiting or post-waiting cue, or
@@ -298,8 +364,10 @@ impl CueEngine {
             duration: settings.duration,
             curve: PANIC_CURVE,
         };
-        for (_, id) in targets {
-            self.stop_one(id, Some(fade), cx);
-        }
+        self.with_ducks_held(cx, |e, cx| {
+            for (_, id) in targets {
+                e.stop_one(id, Some(fade), cx);
+            }
+        });
     }
 }
