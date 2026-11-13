@@ -3308,3 +3308,38 @@ fn two_devices_with_one_name_are_told_apart_in_list_devices() {
         vec![primary(OutputState::Up), entry(DEV_NAME, 2)]
     );
 }
+
+/// A cue on the second device ducks a cue on the primary; the second device is unplugged: the
+/// ducking cue breaks (device lost), the duck comes off over its time, and the primary's cue is
+/// heard back at its own level, never left ducked.
+#[test]
+fn a_duck_from_a_cue_on_a_lost_device_comes_off_the_other_devices_cue() {
+    let a = wav(&dc(40_000, 0.25));
+    let b = wav(&dc(40_000, 0.5));
+    let mut ducker = audio_b(2, &b, 0);
+    ducker.duck_others = openlab_core::DuckOthers {
+        enabled: true,
+        db: -12.0,
+        duration: secs(100),
+    };
+    let mut s = two_device_show(vec![audio(1, &a, 0), ducker]);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(BLOCK * 8);
+    let ch = s.channel(0);
+    let ducked = 0.25 * openlab_core::db_to_gain(-12.0);
+    assert!(
+        (ch[ch.len() - 1] - ducked).abs() < 1e-3,
+        "{}",
+        ch[ch.len() - 1]
+    );
+    unplug(&mut s, DEV2);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    s.run(BLOCK * 8);
+    let ch = s.channel(0);
+    assert!(
+        (ch[ch.len() - 1] - 0.25).abs() < 1e-4,
+        "{}",
+        ch[ch.len() - 1]
+    );
+}

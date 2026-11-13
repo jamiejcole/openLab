@@ -113,7 +113,35 @@ pub struct Cue {
     /// When its action starts, the other cues in a scope fade out and stop. Absent in a file: off.
     #[serde(default)]
     pub fade_and_stop_others: FadeAndStopOthers,
+    /// While its action runs, every other audio cue of its list is ducked or boosted. Absent in
+    /// a file: off.
+    #[serde(default)]
+    pub duck_others: DuckOthers,
     pub kind: CueKind,
+}
+
+/// "Duck or boost others" (QLab 5 Triggers tab, manual p. 130): while the cue's action runs
+/// (from the end of its pre-wait), every other audio cue of its cue list plays `db` louder
+/// (negative: quieter), reached over `duration` seconds and undone over the same time when it
+/// ends. Kept with its settings while off.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DuckOthers {
+    pub enabled: bool,
+    /// The change in dB, [`SILENCE_DB`] (silence) to [`MAX_DB`]; negative ducks, positive boosts.
+    pub db: f64,
+    /// Seconds, 0 to [`MAX_TIME`].
+    pub duration: f64,
+}
+
+impl Default for DuckOthers {
+    /// Off, -12 dB, one second.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            db: -12.0,
+            duration: 1.0,
+        }
+    }
 }
 
 /// "Fade and stop others" (QLab 5 Triggers tab, manual pp. 129-130): when the cue's action

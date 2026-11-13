@@ -247,10 +247,32 @@ fn render_voice(
         return;
     };
 
-    // Voice gain: master × stop fade × integrated fade envelope. Multiplying by an exact 1.0 is
-    // an identity, so skipping it keeps output independent of block segmentation.
+    // Voice gain: master × duck × stop fade × integrated fade envelope. Multiplying by an exact
+    // 1.0 is an identity, so skipping it keeps output independent of block segmentation, and a
+    // voice nothing ducks pays nothing for the duck stage.
     let shapes = &mut s.shapes;
     v.master.fill(vg, shapes);
+    if v.duck.is_ramping() || v.duck.current() != 1.0 {
+        v.duck.fill(tmp);
+        // A boost stops at the cap (but never takes the voice below its own master), so a
+        // master raised while a boost comes down cannot overshoot the workspace maximum. The
+        // cap moves over the de-zipper like any gain, so a lowered maximum is no step; `og` is
+        // free until the outputs are mixed below.
+        if v.duck_cap.is_ramping() {
+            v.duck_cap.fill(og, shapes);
+        } else {
+            og.fill(v.duck_cap.current());
+        }
+        for ((g, d), cap) in vg.iter_mut().zip(tmp.iter()).zip(og.iter()) {
+            let m = *g;
+            *g = m * d;
+            if *d > 1.0 {
+                *g = g.min(cap.max(m));
+            }
+        }
+    } else if v.duck_cap.is_ramping() {
+        v.duck_cap.advance(len);
+    }
     if v.stop.is_ramping() || v.stop.current() != 1.0 {
         v.stop.fill(tmp, shapes);
         vg.iter_mut().zip(tmp.iter()).for_each(|(g, t)| *g *= t);
@@ -382,7 +404,13 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
         return;
     };
     let shapes = &mut s.shapes;
-    let g = v.master.current() * v.stop.current() * v.declick.current();
+    let (m, d) = (v.master.current(), v.duck.current());
+    let ducked = if d > 1.0 {
+        (m * d).min(v.duck_cap.current().max(m))
+    } else {
+        m * d
+    };
+    let g = ducked * v.stop.current() * v.declick.current();
     for (j, x) in vg.iter_mut().enumerate() {
         *x = g * p.gain(p.done + j as u64);
     }

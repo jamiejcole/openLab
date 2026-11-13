@@ -1501,6 +1501,7 @@ mod tests {
                     second_trigger: openlab_core::SecondTrigger::Nothing,
                     second_trigger_on_release: false,
                     fade_and_stop_others: openlab_core::FadeAndStopOthers::default(),
+                    duck_others: openlab_core::DuckOthers::default(),
                     kind: CueKind::Memo,
                 }],
             }],

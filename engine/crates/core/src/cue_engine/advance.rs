@@ -263,6 +263,14 @@ impl CueEngine {
         if !skipped && model.fade_and_stop_others.enabled {
             self.as_of(at, cx, |e, cx| e.fade_and_stop_others(cue, cx));
         }
+        // A voice started while another cue ducks its list starts ducked.
+        if act == Act::Voice {
+            self.duck_new_voice(cue, cx);
+        }
+        // From the action start too (QLab 5, manual p. 130: after the pre-wait).
+        if !skipped && model.duck_others.enabled {
+            self.start_duck(cue, at, cx);
+        }
         // The cue is in its action while it acts, so a trigger cycle back to it is ignored.
         match act {
             Act::Group => self.start_children(cue, at, cx),
@@ -353,6 +361,7 @@ impl CueEngine {
     }
 
     pub(super) fn report(&mut self, cue: CueId, before: CueState, at: SampleTime, cx: &mut Ctx) {
+        self.end_duck_if_over(cue, at, cx);
         let state = self.state(cue);
         if state != before {
             cx.out.push(Action::StateChanged { cue, state, at });

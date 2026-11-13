@@ -231,6 +231,11 @@
               "scope": "peers",
               "duration": 1.0
             },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
             "kind": {
               "type": "memo"
             }
@@ -266,6 +271,11 @@
             "fade_and_stop_others": {
               "enabled": false,
               "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
               "duration": 1.0
             },
             "kind": {
@@ -354,6 +364,11 @@
               "scope": "peers",
               "duration": 1.0
             },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
             "kind": {
               "type": "fade",
               "target": "00000000-0000-0000-0000-000000000002",
@@ -402,6 +417,11 @@
               "scope": "peers",
               "duration": 1.0
             },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
             "kind": {
               "type": "group",
               "mode": {
@@ -431,6 +451,11 @@
                   "fade_and_stop_others": {
                     "enabled": false,
                     "scope": "peers",
+                    "duration": 1.0
+                  },
+                  "duck_others": {
+                    "enabled": false,
+                    "db": -12.0,
                     "duration": 1.0
                   },
                   "kind": {
@@ -492,6 +517,11 @@
                     "scope": "peers",
                     "duration": 1.0
                   },
+                  "duck_others": {
+                    "enabled": false,
+                    "db": -12.0,
+                    "duration": 1.0
+                  },
                   "kind": {
                     "type": "network",
                     "destination": "00000000-0000-0000-0000-000000000001",
@@ -541,6 +571,11 @@
                     "scope": "peers",
                     "duration": 1.0
                   },
+                  "duck_others": {
+                    "enabled": false,
+                    "db": -12.0,
+                    "duration": 1.0
+                  },
                   "kind": {
                     "type": "wait",
                     "duration": 2.5
@@ -574,6 +609,11 @@
               "scope": "peers",
               "duration": 1.0
             },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
             "kind": {
               "type": "start",
               "target": "00000000-0000-0000-0000-000000000004"
@@ -602,6 +642,11 @@
             "fade_and_stop_others": {
               "enabled": false,
               "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
               "duration": 1.0
             },
             "kind": {
@@ -638,6 +683,11 @@
               "scope": "peers",
               "duration": 1.0
             },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
             "kind": {
               "type": "pause",
               "target": "00000000-0000-0000-0000-000000000002"
@@ -666,6 +716,11 @@
             "fade_and_stop_others": {
               "enabled": false,
               "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
               "duration": 1.0
             },
             "kind": {
@@ -699,6 +754,11 @@
               "scope": "peers",
               "duration": 1.0
             },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
             "kind": {
               "type": "reset",
               "target": "00000000-0000-0000-0000-000000000002"
@@ -727,6 +787,11 @@
             "fade_and_stop_others": {
               "enabled": false,
               "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
               "duration": 1.0
             },
             "kind": {
@@ -762,6 +827,11 @@
               "scope": "peers",
               "duration": 1.0
             },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
             "kind": {
               "type": "go_to",
               "target": "00000000-0000-0000-0000-000000000001",
@@ -793,6 +863,11 @@
               "scope": "peers",
               "duration": 1.0
             },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
             "kind": {
               "type": "arm",
               "target": "00000000-0000-0000-0000-000000000004"
@@ -821,6 +896,11 @@
             "fade_and_stop_others": {
               "enabled": false,
               "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
               "duration": 1.0
             },
             "kind": {
@@ -859,6 +939,11 @@
               "scope": "peers",
               "duration": 1.0
             },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
             "kind": {
               "type": "group",
               "mode": {
@@ -890,6 +975,11 @@
                   "fade_and_stop_others": {
                     "enabled": false,
                     "scope": "peers",
+                    "duration": 1.0
+                  },
+                  "duck_others": {
+                    "enabled": false,
+                    "db": -12.0,
                     "duration": 1.0
                   },
                   "kind": {
@@ -949,6 +1039,11 @@
                   "fade_and_stop_others": {
                     "enabled": false,
                     "scope": "peers",
+                    "duration": 1.0
+                  },
+                  "duck_others": {
+                    "enabled": false,
+                    "db": -12.0,
                     "duration": 1.0
                   },
                   "kind": {
@@ -1013,6 +1108,11 @@
               "scope": "peers",
               "duration": 1.0
             },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
             "kind": {
               "type": "group",
               "mode": {
@@ -1042,6 +1142,11 @@
                   "fade_and_stop_others": {
                     "enabled": false,
                     "scope": "peers",
+                    "duration": 1.0
+                  },
+                  "duck_others": {
+                    "enabled": false,
+                    "db": -12.0,
                     "duration": 1.0
                   },
                   "kind": {
@@ -1106,6 +1211,11 @@
               "scope": "peers",
               "duration": 1.0
             },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
             "kind": {
               "type": "group",
               "mode": {
@@ -1135,6 +1245,11 @@
                   "fade_and_stop_others": {
                     "enabled": false,
                     "scope": "peers",
+                    "duration": 1.0
+                  },
+                  "duck_others": {
+                    "enabled": false,
+                    "db": -12.0,
                     "duration": 1.0
                   },
                   "kind": {
@@ -1169,6 +1284,11 @@
               "scope": "peers",
               "duration": 1.0
             },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
             "kind": {
               "type": "group",
               "mode": {
@@ -1198,6 +1318,11 @@
                   "fade_and_stop_others": {
                     "enabled": false,
                     "scope": "peers",
+                    "duration": 1.0
+                  },
+                  "duck_others": {
+                    "enabled": false,
+                    "db": -12.0,
                     "duration": 1.0
                   },
                   "kind": {
