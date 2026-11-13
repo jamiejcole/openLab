@@ -30,6 +30,10 @@ final class LevelMatrixView: NSView {
     var mixed: Set<LevelSet.Slot> = [] {
         didSet { if mixed != oldValue { needsDisplay = true } }
     }
+    /// The cues shown are ganged differently: no gang letter or colour is drawn.
+    var hidesGangs = false {
+        didSet { if hidesGangs != oldValue { needsDisplay = true } }
+    }
     private(set) var inputs = 0
     private(set) var outputCount = 0
     var selection: LevelSet.Slot = .master {
@@ -126,7 +130,7 @@ final class LevelMatrixView: NSView {
                 let r = NSRect(
                     x: Self.headW + CGFloat(o) * Self.cellW, y: Self.cellH, width: Self.cellW, height: Self.headerH)
                 var text = "\(o + 1)"
-                if let g = levels.gang(of: o) {
+                if !hidesGangs, let g = levels.gang(of: o) {
                     gangColour(g).setFill()
                     r.insetBy(dx: 1, dy: 1).fill()
                     text += " " + LevelSet.gangLetter(g)

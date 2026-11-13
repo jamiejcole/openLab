@@ -67,9 +67,6 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// A levels or fade edit sends only its changed `kind_fields`, but is built from the kind as the
     /// previous unanswered edit left it, so those fields start from what was sent (as `pendingTriggers`).
     var pendingKinds: [ModelID: JSONValue] = [:]
-    /// Several Audio cues shown: the levels the Levels tab last showed or sent, which an edit is
-    /// measured from (only what it changed goes to each cue).
-    var batchLevels: LevelSet?
     static let groupModes = [
         "timeline", "playlist", "start_first_and_enter", "start_first_and_go_to_next", "start_random",
     ]
@@ -841,7 +838,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// kind edits start from until the engine answers (one cue's comes from `command` itself).
     func send(
         _ command: Command, cue: ModelID, key: String, revert: Set<InspectorField>, coalesce: String? = nil,
-        kinds: [ModelID: JSONValue] = [:]
+        kinds: [ModelID: JSONValue] = [:], notes: String? = nil
     ) {
         guard !isLocked else { return }
         // The selection the edit was made for: a several-cue edit's refusal shows their values again
@@ -883,7 +880,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 if selection == shown { render() }
             }
             if case .failure(let error) = outcome {
-                if key == "\(InspectorField.notes)", let text = property?["value"]?.stringValue {
+                if key == "\(InspectorField.notes)", let text = property?["value"]?.stringValue ?? notes {
                     // The notice carries the text (Copy Text); the field shows what the cue holds, and
                     // Close and Save go on.
                     onNotesNotSaved?(cue, text, error)

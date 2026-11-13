@@ -142,23 +142,39 @@ extension LevelSet {
         return d
     }
 
-    /// These levels with what an edit changed from `old` to `new` set as `new` has it, the rest
-    /// kept: one level edited across several cues sets that level, not every other level, on each.
-    func applying(from old: LevelSet, to new: LevelSet) -> LevelSet {
+    /// What one action in the Levels tab did, so each of several cues can do the same to its own levels.
+    enum Edit: Equatable {
+        /// A fader, a drag or a typed value moved this level.
+        case level(Slot)
+        case mute(Slot)
+        case gang(output: Int, letter: String)
+        case silenceAll
+        case defaults
+    }
+
+    /// These levels after `edit`, which left the shown levels as `shown`: the one level moved (an
+    /// output with this cue's own gang, as a drag on it would), its mute, its gang, or the whole-set
+    /// action. Nothing else is written, and a level this cue does not have is left alone.
+    func taking(_ edit: Edit, from shown: LevelSet, limits: VolumeLimits, drag: Bool = false) -> LevelSet {
         var s = self
-        if old.master != new.master { s.master = new.master }
-        for o in s.outputs.indices {
-            let was = old.outputs.indices.contains(o) ? old.outputs[o] : nil
-            let now = new.outputs.indices.contains(o) ? new.outputs[o] : nil
-            if was != now, let now { s.outputs[o] = now }
+        func has(_ slot: Slot) -> Bool {
+            switch slot {
+            case .master: return true
+            case .output(let o): return s.outputs.indices.contains(o)
+            case .cross(_, let o): return s.outputs.indices.contains(o)
+            }
         }
-        for p in Set(old.crosspoints.keys).union(new.crosspoints.keys)
-        where old.crosspoints[p] != new.crosspoints[p] && (s.isFade || p.output < s.outputs.count) {
-            s.crosspoints[p] = new.crosspoints[p]
-        }
-        if old.gangs != new.gangs {
-            let count = s.outputs.count
-            s.gangs = new.gangs.map { $0.filter { $0 < count } }.filter { !$0.isEmpty }
+        switch edit {
+        case .level(let slot):
+            guard has(slot), let db = shown.db(slot) else { return s }
+            s.set(slot, db: db, drag: drag, limits: limits)
+        case .mute(let slot):
+            guard has(slot) else { return s }
+            s.setMute(slot, shown.isMuted(slot))
+        case .gang(let o, let letter):
+            s.setGang(of: o, letter: letter)
+        case .silenceAll: s.silenceAll()
+        case .defaults: s.setDefaults()
         }
         return s
     }

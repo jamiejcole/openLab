@@ -168,7 +168,7 @@ extension InspectorViewController {
         let inputs = cues.map { Self.inputRows(of: $0, durations: store.mediaDurations) }.max() ?? 0
         let outputs = sets.map(\.outputs.count).max() ?? 0
         audioLevels.show(base, inputs: inputs, outputs: outputs)
-        batchLevels = audioLevels.levels
+        audioLevels.gangsMixed = Set(sets.map(\.gangs)).count > 1
         audioLevels.mixed = LevelSet.mixedSlots(sets, inputs: inputs, outputs: outputs)
     }
 
@@ -216,7 +216,7 @@ extension InspectorViewController {
         }
         for c in singleCueControls + [numberField, loadTimeField, networkMessageField] { c.isEnabled = !isLocked }
         audioLevels.mixed = []
-        batchLevels = nil
+        audioLevels.gangsMixed = false
         for (f, text) in [
             (InspectorField.osc, "inspector.osc.placeholder"), (.message, "inspector.network.messageHint"),
         ] {
@@ -287,7 +287,8 @@ extension InspectorViewController {
             return true
         }
         messageLabel.stringValue = ""
-        send(command, cue: first.id, key: "\(f)", revert: [f])
+        // Notes sent to several cues and not saved are offered back as one cue's are.
+        send(command, cue: first.id, key: "\(f)", revert: [f], notes: f == .notes ? text : nil)
         if [.preWait, .postWait, .duration, .loadTime].contains(f), let s = CueTime.parse(text) {
             field(f)?.stringValue = CueTime.format(s)
             field(f)?.placeholderString = nil
@@ -295,17 +296,18 @@ extension InspectorViewController {
         return true
     }
 
-    /// A levels edit while several Audio cues are shown: what changed from the levels last shown is
-    /// set on every cue, each cue's other levels kept. The changed levels are no longer mixed.
+    /// A levels edit while several Audio cues are shown: each cue does what the operator did to the
+    /// shown levels, to its own levels (the level moved, with its own gang; a mute; a gang; set all
+    /// silent or to the defaults). No other level of any cue is written.
     func sendBatchLevels(_ set: LevelSet, gesture: Int?) {
-        guard let old = batchLevels else { return }
-        batchLevels = set
-        let changed = Set(audioLevels.mixed.filter { set.db($0) != old.db($0) || set.isMuted($0) != old.isMuted($0) })
-        audioLevels.mixed.subtract(changed)
+        guard let action = audioLevels.lastEdit else { return }
+        if case .level(let slot) = action { audioLevels.mixed.remove(slot) }
+        if case .mute(let slot) = action { audioLevels.mixed.remove(slot) }
+        let limits = audioLevels.limits
         sendKindEach(
             { _, kind in
                 guard let own = LevelSet(kind: kind) else { return kind }
-                return own.applying(from: old, to: set).json(into: kind)
+                return own.taking(action, from: set, limits: limits, drag: gesture != nil).json(into: kind)
             }, key: "levels", coalesce: gesture.map { "levels:batch:\(Self.launchToken):\($0)" })
     }
 }

@@ -79,12 +79,44 @@ final class PastePropertiesRuleTests: XCTestCase {
         other.master = -20
         var edited = base
         edited.set(.output(0), db: -3)
-        let result = other.applying(from: base, to: edited)
+        let result = other.taking(.level(.output(0)), from: edited, limits: VolumeLimits())
         XCTAssertEqual(result.db(.output(0)), -3)
         XCTAssertEqual(result.db(.output(1)), -12, "an output the edit did not touch keeps the cue's own")
         XCTAssertEqual(result.master, -20)
         XCTAssertEqual(
             LevelSet.mixedSlots([base, other], inputs: 1, outputs: 2), [.master, .output(1)])
+    }
+
+    /// An output the first cue lacks, set on several cues: the shown levels grow to it, and no cue
+    /// takes the outputs that growth added (they were silencing every other output of a wider cue).
+    func testAnOutputSetOnSeveralCuesWritesThatOutputAlone() throws {
+        let narrow = try XCTUnwrap(LevelSet(kind: try audio("a", outputs: 2).raw["kind"] ?? .null))
+        let wide = try XCTUnwrap(LevelSet(kind: try audio("b", outputs: 8).raw["kind"] ?? .null))
+        var shown = narrow
+        shown.set(.output(5), db: -6)
+        let result = wide.taking(.level(.output(5)), from: shown, limits: VolumeLimits())
+        XCTAssertEqual(result.outputs.map(\.db), [0, 0, 0, 0, 0, -6, 0, 0])
+        XCTAssertEqual(narrow.taking(.level(.output(5)), from: shown, limits: VolumeLimits()), narrow)
+    }
+
+    /// A ganged output moved on several cues moves each cue's own gang: a cue without that gang has
+    /// only that output moved.
+    func testAGangedOutputMovesOnlyEachCuesOwnGang() throws {
+        var ganged = try XCTUnwrap(LevelSet(kind: try audio("a").raw["kind"] ?? .null))
+        ganged.gangs = [[0, 1]]
+        ganged.outputs = [LevelSet.Output(db: 0), LevelSet.Output(db: -10)]
+        var plain = ganged
+        plain.gangs = []
+        plain.set(.output(0), db: -3)
+        plain.set(.output(1), db: -3)
+        var shown = ganged
+        shown.set(.output(0), db: -5, drag: true)
+        XCTAssertEqual(
+            plain.taking(.level(.output(0)), from: shown, limits: VolumeLimits(), drag: true).outputs.map(\.db),
+            [-5, -3])
+        XCTAssertEqual(
+            ganged.taking(.level(.output(0)), from: shown, limits: VolumeLimits(), drag: true).outputs.map(\.db),
+            [-5, -15])
     }
 
     /// What is remembered: the ticks of the properties offered this time, others' earlier ticks kept.
@@ -163,6 +195,20 @@ extension PlayheadFlowTests {
     }
 
     private var sheet: PastePropertiesSheet? { wc.pasteSheet }
+
+    private func outputs(_ id: ModelID) -> [Double?] {
+        LevelSet(kind: store.model?.cue(id)?.raw["kind"] ?? .null)?.outputs.map(\.db) ?? []
+    }
+
+    /// Types `text` in level `slot` of the Levels tab, as a double-click on its box and the keys do.
+    private func typeLevel(_ slot: LevelSet.Slot, _ text: String) throws {
+        inspector.tabView.selectTabViewItem(withIdentifier: "levels")
+        let levels = inspector.audioLevels
+        levels.select(slot)
+        levels.beginTyping(slot)
+        try type(text)
+        try pressReturn()
+    }
 
     /// Edit > Paste Properties, as the menu bar runs it: validated, then chosen.
     private func chooseFromEditMenu() async throws {
@@ -282,6 +328,105 @@ extension PlayheadFlowTests {
         await wc.editor.undo()
         await assertEventually("one undo") { [self.cues[0], self.cues[1]].allSatisfy { self.master($0) == 0 } }
         XCTAssertEqual(goes(), 0, "Return fired no GO")
+    }
+
+    /// Cues with different output counts: an output only the wider cue has is set on it alone, and its
+    /// other outputs keep their levels (they were silenced, and heard so at once on a playing cue).
+    func testAnOutputLevelSetOnCuesWithDifferentOutputCountsLeavesTheirOtherOutputs() async throws {
+        try await pasteWorkspace()
+        try await setLevels(cues[1]) { set in
+            set.outputs = Array(repeating: LevelSet.Output(db: 0), count: 8)
+        }
+        await assertEventually("cue 2 has 8 outputs") { self.outputs(self.cues[1]).count == 8 }
+        await selectAll([cues[0], cues[1]])
+        try typeLevel(.output(5), "6")
+        await assertEventually("output 6 of cue 2 is at -6") { self.outputs(self.cues[1])[5] == -6 }
+        XCTAssertEqual(outputs(cues[1]), [0, 0, 0, 0, 0, -6, 0, 0], "no other output changed")
+        XCTAssertEqual(outputs(cues[0]), [0, 0], "cue 1 has no output 6")
+        await wc.editor.undo()
+        await assertEventually("one undo") { self.outputs(self.cues[1]) == Array(repeating: 0, count: 8) }
+    }
+
+    /// Cues ganged differently: no gang is drawn or can be set, and a ganged output moved moves each
+    /// cue's own gang only.
+    func testGangsThatDifferAreNotDrawnAndAMovedOutputMovesEachCuesOwnGang() async throws {
+        try await pasteWorkspace()
+        try await setLevels(cues[0]) { set in
+            set.gangs = [[0, 1]]
+            set.outputs = [LevelSet.Output(db: 0), LevelSet.Output(db: -10)]
+        }
+        try await setLevels(cues[1]) { set in
+            set.outputs = [LevelSet.Output(db: -3), LevelSet.Output(db: -3)]
+        }
+        await sync()
+        await selectAll([cues[0], cues[1]])
+        let levels = inspector.audioLevels
+        XCTAssertTrue(levels.matrix.hidesGangs)
+        inspector.tabView.selectTabViewItem(withIdentifier: "levels")
+        levels.select(.output(0))
+        XCTAssertFalse(levels.gangField.isEnabled, "a gang cannot be set while they differ")
+        try typeLevel(.output(0), "5")
+        await assertEventually("both outputs 1 at -5") {
+            self.outputs(self.cues[0]).first == -5 && self.outputs(self.cues[1]).first == -5
+        }
+        XCTAssertEqual(outputs(cues[0]), [-5, -15], "cue 1's gang moved with it")
+        XCTAssertEqual(outputs(cues[1]), [-5, -3], "cue 2 has no gang: its output 2 stays")
+        XCTAssertEqual(store.model?.cue(cues[1])?.raw["kind"]?["levels"]?["gangs"]?.arrayValue?.count ?? 0, 0)
+        // Ganged alike: the gang is drawn and can be set again.
+        try await setLevels(cues[1]) { $0.gangs = [[0, 1]] }
+        await assertEventually("ganged alike") { !levels.matrix.hidesGangs }
+        levels.select(.output(0))
+        XCTAssertTrue(levels.gangField.isEnabled)
+    }
+
+    /// Notes typed with several cues selected and refused (over the engine's bound) are offered back,
+    /// as one cue's are, not dropped.
+    func testNotesTypedForSeveralCuesAndRefusedAreOffered() async throws {
+        try await pasteWorkspace()
+        var offered: [String] = []
+        inspector.onNotesNotSaved = { _, text, _ in offered.append(text) }
+        await selectAll([cues[0], cues[1]])
+        let big = String(repeating: "x", count: 70 * 1024)
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(inspector.notesView))
+        inspector.notesView.string = big
+        inspector.textDidChange(Notification(name: NSText.didChangeNotification, object: inspector.notesView))
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(nil))
+        await assertEventually("the text is offered") { offered == [big] }
+        XCTAssertEqual(raw(cues[0], "notes")?.stringValue ?? "", "", "nothing was saved")
+    }
+
+    /// Keys pressed in the sheet are the sheet's: a cue hotkey on Return, on a letter or on Space
+    /// fires no cue, and Space fires no GO. Return applies the paste.
+    func testKeysInTheSheetFireNoCueHotkeyAndReturnApplies() async throws {
+        try await pasteWorkspace()
+        for (chars, code) in [("\r", UInt16(36)), ("k", UInt16(40)), (" ", UInt16(49))] {
+            let chord = try XCTUnwrap(KeyChord(event: try key(chars, code: code)))
+            let target = try XCTUnwrap(store.model?.cue(cues[1]))
+            await send(InspectorEdit.setTriggers(target, hotkey: .some(chord.hotkeyJSON)))
+            await sync()
+            _ = await wc.editor.copySelection(of: [cues[0]])
+            await selectAll([fade])
+            try await chooseFromEditMenu()
+            try tick(.colour)
+            let hotkeys = wire.sent.filter { if case .hotkey = $0 { return true } else { return false } }.count
+            if chars == "\r" {
+                try pressInSheet(chars, code: code)
+                await assertEventually("Return applied the paste") { self.wc.window?.attachedSheet == nil }
+            } else {
+                try pressInSheet(chars, code: code)
+                XCTAssertNotNil(wc.window?.attachedSheet, "\(chars.debugDescription) stays with the sheet")
+                sheet?.cancel()
+                await assertEventually { self.wc.window?.attachedSheet == nil }
+            }
+            await sync()
+            try await play(0.2)
+            XCTAssertEqual(
+                wire.sent.filter { if case .hotkey = $0 { return true } else { return false } }.count, hotkeys,
+                "no hotkey for \(chars.debugDescription)")
+            XCTAssertNotEqual(store.cueStates[cues[1]]?.state, .running, "cue 2 was not started")
+            XCTAssertEqual(goes(), 0)
+            await send(.setProperty(fade, .color("none")))
+        }
     }
 
     /// QLab 5, manual p. 123: an edit made with the mouse in the list sets that cue alone.

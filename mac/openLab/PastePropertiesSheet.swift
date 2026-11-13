@@ -171,7 +171,7 @@ final class PastePropertiesSheet: NSObject {
 }
 
 /// Return and Esc are the buttons' keys; Enter (the keypad's) applies too, as in QLab.
-final class PasteSheetWindow: NSWindow {
+final class PasteSheetWindow: NSPanel {
     var onEnter: (() -> Void)?
     var onCancel: (() -> Void)?
 
