@@ -29,8 +29,8 @@ use crate::command_model::{
     apply_model, no_change,
 };
 use crate::cue::{
-    ContinueMode, Cue, CueColor, CueKind, FadeAndStopOthers, GroupMode, MediaRef, OscArg,
-    SecondTrigger, Triggers,
+    ContinueMode, Cue, CueColor, CueKind, DuckOthers, FadeAndStopOthers, GroupMode, MediaRef,
+    OscArg, SecondTrigger, Triggers,
 };
 use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace,
@@ -110,6 +110,10 @@ pub enum CueProperty {
     /// Its "fade and stop others" settings. The duration is finite, 0 to `MAX_TIME`.
     FadeAndStopOthers {
         value: FadeAndStopOthers,
+    },
+    /// Its "duck or boost others" settings: dB from -120 to +12, time 0 to `MAX_TIME`.
+    DuckOthers {
+        value: DuckOthers,
     },
     /// Only for kinds that have a target.
     Target {

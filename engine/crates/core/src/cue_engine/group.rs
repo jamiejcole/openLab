@@ -906,12 +906,14 @@ impl CueEngine {
 
     /// Stops the cue and every descendant, children before their groups.
     pub(super) fn stop_tree(&mut self, cue: CueId, fade_out: Option<FadeSpec>, cx: &mut Ctx) {
-        for id in self.inside(cue, cx).into_iter().rev() {
-            if self.slots.contains_key(&id) {
-                self.stop_one(id, fade_out, cx);
+        self.with_ducks_held(cx, |e, cx| {
+            for id in e.inside(cue, cx).into_iter().rev() {
+                if e.slots.contains_key(&id) {
+                    e.stop_one(id, fade_out, cx);
+                }
             }
-        }
-        self.stop_one(cue, fade_out, cx);
+            e.stop_one(cue, fade_out, cx);
+        });
     }
 
     /// Resets the cue and every descendant, children before their groups; each shows its first

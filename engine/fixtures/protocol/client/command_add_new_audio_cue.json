@@ -33,6 +33,11 @@
         "scope": "peers",
         "duration": 1.0
       },
+      "duck_others": {
+        "enabled": false,
+        "db": -12.0,
+        "duration": 1.0
+      },
       "kind": {
         "type": "audio",
         "media": "/Volumes/Show/thunder.wav",

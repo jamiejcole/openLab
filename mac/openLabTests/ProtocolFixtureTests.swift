@@ -340,4 +340,17 @@ final class ProtocolFixtureTests: XCTestCase {
         let again = try JSONDecoder().decode(ClientMessage.self, from: Data(try close.text().utf8))
         XCTAssertEqual(again, close)
     }
+
+    /// The Basics and Triggers properties encode as core's fixtures (`command_set_cue_*`).
+    func testOthersPropertiesEncodeAsTheFixtures() throws {
+        let cue: ModelID = "00000000-0000-0000-0000-00000000000c"
+        let cases: [(CueProperty, String)] = [
+            (.duckOthers(enabled: true, db: -18, duration: 1.5), "command_set_cue_duck_others"),
+            (.fadeAndStopOthers(enabled: true, scope: "list", duration: 2), "command_set_cue_fade_and_stop_others"),
+        ]
+        for (property, name) in cases {
+            let encoded = normalised(JSONValue.parse(try Command.setProperty(cue, property).json.text()))
+            XCTAssertEqual(encoded, normalised(try Fixtures.json("client", name)["command"]), name)
+        }
+    }
 }

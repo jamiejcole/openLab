@@ -187,6 +187,7 @@ impl CueEngine {
         let before = self.state(cue);
         let now = cx.now;
         let frames = fade_out.map_or(0, |f| cx.secs(f.duration, &self.config));
+        let rate = self.config.sample_rate().get();
         self.release_moved_runs(cue, cx.ws);
         let busy_children = self.any_busy_child(cue);
         match self.slots.get_mut(&cue) {
@@ -237,6 +238,7 @@ impl CueEngine {
                         fade: Some(StopFade { frames, curve }),
                     });
                     run.stop_end = Some(at.saturating_add(frames));
+                    super::others::hold_duck(cue, run, at, rate, cx);
                     run.post_wait = None;
                     run.follow = false;
                     // A stopped target cancels a pending devamp and its next cue.

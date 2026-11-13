@@ -240,6 +240,11 @@
                 "scope": "peers",
                 "duration": 1.0
               },
+              "duck_others": {
+                "enabled": false,
+                "db": -12.0,
+                "duration": 1.0
+              },
               "kind": {
                 "type": "audio",
                 "media": "media/a.wav",
@@ -297,6 +302,11 @@
               "fade_and_stop_others": {
                 "enabled": false,
                 "scope": "peers",
+                "duration": 1.0
+              },
+              "duck_others": {
+                "enabled": false,
+                "db": -12.0,
                 "duration": 1.0
               },
               "kind": {

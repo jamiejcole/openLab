@@ -407,6 +407,13 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
         // shape: a third of the cues pass over when disarmed, a fifth auto-load.
         c.skip_if_disarmed = s.target % 3 == 0;
         c.auto_load = s.second % 5 == 1;
+        if s.target % 11 == 4 {
+            c.duck_others = DuckOthers {
+                enabled: true,
+                db: [-12.0, -120.0, 6.0][usize::from(s.mode % 3)],
+                duration: f64::from(s.pre) * 0.25,
+            };
+        }
         if s.target % 7 == 2 {
             c.fade_and_stop_others = FadeAndStopOthers {
                 enabled: true,
@@ -1446,6 +1453,7 @@ impl Run {
                 | Action::StopVoice { run, at, .. }
                 | Action::PauseVoice { run, at, .. }
                 | Action::Ramp { run, at, .. }
+                | Action::DuckVoice { run, at, .. }
                 | Action::DevampVoice { run, at, .. }
                 | Action::PreviewStart { run, at, .. }
                 | Action::PreviewStop { run, at, .. } => Some((*run, *run, *at)),
@@ -2409,9 +2417,12 @@ impl Run {
             });
             let state = self.engine.state(cue);
             // A GO that double-GO protection (or the chain limit) ignored never reached the cue.
-            let go_ignored = actions
-                .iter()
-                .any(|a| matches!(a, Action::GoIgnored { .. }));
+            // Only the operator's GO: a GoTo-and-GO the trigger itself set off may be ignored too
+            // (its playhead on a skipped cue with nothing after it) after the cue did act.
+            let go_ignored = matches!(self.input, Input::Go { .. } | Input::GoFrom { .. })
+                && actions
+                    .iter()
+                    .any(|a| matches!(a, Action::GoIgnored { .. }));
             let option = if go_ignored {
                 SecondTrigger::Nothing
             } else {
