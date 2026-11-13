@@ -549,6 +549,20 @@ pub enum Action {
         frames: SampleTime,
         curve: FadeCurve,
     },
+    /// Set the duck gain of the run's voice (the mixer's separate per-voice `Duck` stage, which
+    /// multiplies the rest of its gains) to `gain` (linear) with a ramp of `frames` samples from
+    /// sample `at`, even in dB; `frames` 0 is the de-zipper, or at once on the voice's start
+    /// sample. `cap` (linear) is the most the voice's master times a boost may come to (the
+    /// mixer's `DuckCap`, moved over the same `frames`): the workspace maximum. "Duck or boost others"
+    /// (`others.rs`): 1.0 is no duck.
+    DuckVoice {
+        cue: CueId,
+        run: RunId,
+        at: SampleTime,
+        gain: f32,
+        frames: SampleTime,
+        cap: f32,
+    },
     /// Leave the run's voice's current loop at the end of the play under way when the command
     /// applies on sample `at` (the mixer's `Devamp`); `stop` ends the voice there. The audio side
     /// answers with [`Input::DevampScheduled`] or [`Input::DevampIgnored`].

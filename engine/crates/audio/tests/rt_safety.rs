@@ -550,6 +550,18 @@ fn no_allocation_on_the_128_cue_output_paths() {
             fade: Fade::NONE,
         },
     );
+    // A duck on the 128-output voices.
+    for id in [0u64, 4] {
+        ctl.send(
+            100,
+            CommandKind::Ramp {
+                voice: VoiceId(id),
+                target: GainTarget::Duck,
+                gain: 0.25,
+                fade: Fade::new(200, Curve::Linear),
+            },
+        );
+    }
     for (row, dev) in [(127u16, 63u16), (90, 5), (3, 3)] {
         ctl.send(
             730,
@@ -692,5 +704,117 @@ fn a_fader_drag_of_retargeted_short_ramps_allocates_nothing_and_never_jumps() {
     assert!(jump < 1e-3, "{jump}");
     // Every ramp was carried out: the gains got down to where the drag left them.
     assert!(out[out.len() - 1] < 0.5, "{}", out[out.len() - 1]);
+    assert_eq!(ctl.faults(), 0);
+}
+
+/// The duck stage ("duck or boost others"): a ramp of it multiplies the rest of the voice's gains
+/// with no allocation and no jump; set on the start sample it is heard from the first sample; a
+/// voice that reuses the slot starts with no duck.
+#[test]
+fn the_duck_stage_ramps_without_allocating_or_jumping_and_a_new_voice_starts_unducked() {
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 0, 1, source(&[1.0; 20_000]), 1);
+    let duck = |gain, frames| CommandKind::Ramp {
+        voice: VoiceId(1),
+        target: GainTarget::Duck,
+        gain,
+        fade: Fade::new(frames, Curve::Linear),
+    };
+    // The master moves at the same time: the two multiply.
+    ctl.send(1000, duck(0.25, 1000));
+    ctl.send(
+        1500,
+        CommandKind::Ramp {
+            voice: VoiceId(1),
+            target: GainTarget::Master,
+            gain: 0.5,
+            fade: Fade::new(1000, Curve::Linear),
+        },
+    );
+    ctl.send(4000, duck(1.0, 1000));
+    let mut out = vec![0.0; 6000];
+    no_alloc(|| r.render_into(&mut out, &[64, 333, 1024, 7]));
+    assert!(out.iter().all(|s| s.is_finite()));
+    assert_eq!(out[999], 1.0, "nothing before the duck");
+    // Half way in dB (-6 dB of -12), the master not moved yet.
+    assert!((out[1500] - 0.5).abs() < 1e-3, "{}", out[1500]);
+    assert!(
+        (out[3000] - 0.125).abs() < 1e-4,
+        "duck x master: {}",
+        out[3000]
+    );
+    assert!(
+        (out[5500] - 0.5).abs() < 1e-4,
+        "back up, the master kept: {}",
+        out[5500]
+    );
+    let jump = out
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0f32, f32::max);
+    // The steepest the two ramps make it move together (0.75 and 0.5 over 1000 frames each),
+    // nothing like a step.
+    assert!(jump < 1.5e-3, "{jump}");
+    // A voice ducked on its start sample is ducked from its first sample, and the next voice of
+    // the slot plays with none.
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 0, 2, source(&[1.0; 100]), 1);
+    ctl.send(
+        0,
+        CommandKind::Ramp {
+            voice: VoiceId(2),
+            target: GainTarget::Duck,
+            gain: 0.5,
+            fade: Fade::NONE,
+        },
+    );
+    let mut out = vec![0.0; 200];
+    no_alloc(|| r.render_into(&mut out, &[200]));
+    assert_eq!(out[0], 0.5);
+    assert_eq!(out[99], 0.5);
+    start(&mut ctl, 200, 3, source(&[1.0; 100]), 1);
+    no_alloc(|| r.render_into(&mut out, &[200]));
+    assert_eq!(out[0], 1.0, "a new voice starts with no duck");
+    assert_eq!(ctl.faults(), 0);
+}
+
+/// `DuckCap`: a boost (duck above 1.0) never takes master × duck past the cap, also while the two
+/// ramp in opposite directions (their product would bulge above both ends), and never lowers a
+/// voice below its own master; without a boost it does nothing. No allocation.
+#[test]
+fn the_duck_cap_bounds_a_boost_while_master_and_duck_cross() {
+    let (mut ctl, mut r) = setup(config(1));
+    start(&mut ctl, 0, 1, source(&[1.0; 6000]), 1);
+    let ramp = |at, target, gain, frames| {
+        (
+            at,
+            CommandKind::Ramp {
+                voice: VoiceId(1),
+                target,
+                gain,
+                fade: Fade::new(frames, Curve::Linear),
+            },
+        )
+    };
+    let cap = 4.0;
+    for (at, cmd) in [
+        ramp(0, GainTarget::Master, 0.25, 0),
+        ramp(0, GainTarget::DuckCap, cap, 0),
+        ramp(0, GainTarget::Duck, 4.0, 0),
+        // The cap comes down to 1.0 first (over the de-zipper: no step); then the master rises to
+        // 1.0 while the boost comes down to none, 1.0 at both ends and above it between them
+        // without the cap.
+        ramp(500, GainTarget::DuckCap, 1.0, 0),
+        ramp(1000, GainTarget::Master, 1.0, 1000),
+        ramp(1000, GainTarget::Duck, 1.0, 1000),
+    ] {
+        ctl.send(at, cmd);
+    }
+    let mut out = vec![0.0; 3000];
+    no_alloc(|| r.render_into(&mut out, &[64, 333, 1024]));
+    assert!((out[500] - 1.0).abs() < 1e-6, "{}", out[500]);
+    let peak = out[1000..].iter().copied().fold(0.0f32, f32::max);
+    assert!(peak <= 1.0 + 1e-6, "{peak}");
+    assert!((out[2500] - 1.0).abs() < 1e-6);
     assert_eq!(ctl.faults(), 0);
 }

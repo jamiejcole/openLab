@@ -509,6 +509,7 @@ impl RuntimeChange {
             | Action::ResumeVoice { .. }
             | Action::Ramp { .. }
             | Action::DevampVoice { .. }
+            | Action::DuckVoice { .. }
             | Action::SetArmed { .. }
             | Action::PreviewStart { .. }
             | Action::PreviewStop { .. }
