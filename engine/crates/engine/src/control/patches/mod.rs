@@ -576,20 +576,17 @@ impl Patches {
         }
     }
 
-    /// The mixer disabled slot `slot` after repeated faults (it is silent and ignores routing):
-    /// it is never handed out again until the mixer is rebuilt. The patch that had it gets
+    /// Output `out`'s mixer disabled slot `slot` after repeated faults (it is silent and ignores
+    /// routing there): it is never handed out again until that mixer is rebuilt. The patch that had it gets
     /// another at the doc's next sync (or none is free: it cannot play, as when the slots run
     /// out).
-    pub fn quarantine(&mut self, slot: u16) {
+    pub fn quarantine(&mut self, slot: u16, out: OutputKey) {
         for d in self.docs.values_mut() {
             d.slots.retain(|_, &mut (s, _)| s != slot);
             d.retired.remove(&slot);
         }
         self.free.retain(|&s| s != slot);
         let i = usize::from(slot);
-        let Some(out) = self.slot_output(slot) else {
-            return;
-        };
         if let Some(base) = self.bases.get_mut(i) {
             base.fill(0.0);
             let n = self.device_outputs;

@@ -135,7 +135,7 @@ impl Control {
         let mut told = None;
         let faults = &mut self.eng.stage_faults.disabled;
         match stage {
-            FaultStage::Patch(slot) => self.patch_faulted(slot, disabled, tell),
+            FaultStage::Patch(slot) => self.patch_faulted(out, slot, disabled, tell),
             FaultStage::Output(o) if disabled => {
                 faults.outputs.insert(o);
             }
@@ -183,10 +183,10 @@ impl Control {
 
     /// Mixer slot `slot` was reset (sent its gains again) or disabled (quarantined; the cues on
     /// it break and its patch takes another slot). `tell`: the operator is told.
-    fn patch_faulted(&mut self, slot: u16, disabled: bool, tell: bool) {
+    fn patch_faulted(&mut self, out: OutputKey, slot: u16, disabled: bool, tell: bool) {
         let owner = self.eng.patches.owner(slot);
         if disabled {
-            self.eng.patches.quarantine(slot);
+            self.eng.patches.quarantine(slot, out);
         } else {
             let now = self.eng.now();
             let commands = self.eng.patches.resend(slot);

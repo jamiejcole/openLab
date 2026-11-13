@@ -1848,7 +1848,23 @@ fn two_patches_on_two_devices_each_play_only_their_own_cue() {
     );
     start(&mut s, 1);
     start(&mut s, 2);
-    s.run(3000);
+    s.run(1000);
+    // Each patch's meters come from its own device's mixer.
+    let peak = |msgs: &[ServerMessage], patch| {
+        msgs.iter()
+            .filter_map(|m| match m {
+                ServerMessage::Meters { outputs, .. } => outputs
+                    .iter()
+                    .find(|o| o.patch == patch)
+                    .map(|o| o.peaks[0]),
+                _ => None,
+            })
+            .fold(0.0f32, f32::max)
+    };
+    let msgs = s.take_outbound();
+    assert!((peak(&msgs, patch_id()) - 0.25).abs() < 1e-3, "{msgs:?}");
+    assert!((peak(&msgs, patch_b()) - 0.5).abs() < 1e-3, "{msgs:?}");
+    s.run(2000);
     assert_eq!(heard(&s.device_channel(DEV, 0)), vec![0.25]);
     assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
     assert_eq!(heard(&s.device_channel(DEV, 1)), Vec::<f32>::new());
@@ -1955,6 +1971,36 @@ fn a_patch_mapped_to_an_absent_device_is_missing_and_the_other_patches_play() {
         "{p2:?}"
     );
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    // The patch itself carries the warning (the pre-show check lists it with its reason).
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::PreshowCheck,
+    });
+    let report = replies
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::Result {
+                outcome:
+                    Outcome::Ok(openlab_core::protocol::OkBody {
+                        data: Some(ResultData::PreshowCheck(report)),
+                        ..
+                    }),
+                ..
+            } => Some((**report).clone()),
+            _ => None,
+        })
+        .unwrap();
+    let listed: Vec<_> = report.patches.iter().map(|p| p.patch).collect();
+    assert_eq!(listed, vec![patch_b()], "{report:?}");
+    assert!(
+        matches!(
+            report.patches[0].resolution,
+            Some(openlab_core::protocol::WireResolution::DeviceMissing { .. })
+        ),
+        "{report:?}"
+    );
+    assert!(!report.ok);
     start(&mut s, 1);
     s.run(400);
     assert_eq!(heard(&s.channel(0)), vec![0.25]);
@@ -2312,4 +2358,51 @@ fn a_device_that_cannot_reopen_at_its_new_size_is_lost() {
     assert!(broken_device_lost(&msgs, 2));
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     assert!(!s.control().device_down());
+}
+
+/// Checklist: a cue is playing on patch A; patch B's device is changed: A's cue plays on
+/// without a dropout, and the next cue started on B plays on the new device.
+#[test]
+fn changing_patch_bs_device_leaves_patch_as_cue_playing_and_moves_bs_next_cue() {
+    let a = wav(&dc(20_000, 0.25));
+    let b = wav(&dc(500, 0.5));
+    let mut s = two_patch_show(
+        vec![audio(1, &a, 0), audio_b(2, &b, 0)],
+        DEV_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+    );
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::SetPatchMapping {
+            patch: patch_b(),
+            mapping: Some(PatchMapping {
+                device: DEV2_NAME.into(),
+                channels: vec![0, 1],
+            }),
+        },
+    });
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+    s.wait_output(DEV2_NAME);
+    s.run(BLOCK * 2);
+    start(&mut s, 2);
+    s.run(1000);
+    // Cue 2 on the new device only; cue 1 on the first, never interrupted.
+    assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
+    let ch = s.device_channel(DEV, 0);
+    let first = first_nonzero(&ch).unwrap();
+    assert!(ch.len() > first + 1000);
+    assert!(ch[first..].iter().all(|&v| v == 0.25), "cue 1 dropped out");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
 }

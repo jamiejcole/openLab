@@ -227,7 +227,7 @@ fn a_faulted_slot_gets_its_gains_again_and_a_disabled_one_is_never_reused_until_
 
     // Disabled: the patch moves to slot 1 at the next sync; slot 0 never comes back, even
     // when the doc closes.
-    p.quarantine(0);
+    p.quarantine(0, 0);
     assert_eq!(p.owner(0), None);
     let (cmds, _) = p.sync(D0, &ws, &settings(&ws, vec![3, 1]), &device(4), &idle());
     assert_eq!(p.mixer_patch(D0, pid()), Some(1));
@@ -472,4 +472,105 @@ fn slots_are_keyed_by_doc_and_patch_and_a_closed_docs_go_back() {
     // The other doc's slot was never touched.
     assert_eq!(p.sent[&(0, 1)], routed);
     assert!(p.release_doc(D0).is_empty(), "closing twice does nothing");
+}
+
+fn routes_on(cmds: &[(OutputKey, CommandKind)], out: OutputKey) -> Vec<(u16, u16, u16, f32)> {
+    routes(cmds)
+        .into_iter()
+        .zip(
+            cmds.iter()
+                .filter(|(_, c)| matches!(c, CommandKind::SetPatchRouting { .. })),
+        )
+        .filter(|(_, (o, _))| *o == out)
+        .map(|(r, _)| r)
+        .collect()
+}
+
+/// Two devices, "Dev" on output 0 and "Two" on output 1.
+fn two_devices(n: u32) -> Vec<(DeviceInfo, OutputKey)> {
+    let mut d = device(n);
+    d.push((
+        DeviceInfo {
+            name: "Two".into(),
+            output_channels: n,
+        },
+        1,
+    ));
+    d
+}
+
+fn on_device(ws: &Workspace, device: &str, channels: Vec<u32>) -> MachineSettings {
+    let mut s = MachineSettings::default();
+    s.set_patch_mapping(
+        ws.id,
+        pid(),
+        PatchMapping {
+            device: device.into(),
+            channels,
+        },
+    )
+    .unwrap();
+    s
+}
+
+/// AUD-02: a slot's gains go to its patch's device's mixer. Moved to another device with no
+/// voice on it, the slot follows in place: silenced on the device it leaves, routed on the new
+/// one. Under a playing voice it is retired where it is and the patch takes a fresh slot there.
+#[test]
+fn a_slot_follows_its_patch_to_another_device_unless_a_voice_plays_through_it() {
+    let ws = ws_with(vec![out(0.0, false, false), out(0.0, false, false)]);
+    let mut p = Patches::new(2, 2);
+    let (cmds, _) = p.sync(
+        D0,
+        &ws,
+        &on_device(&ws, "Dev", vec![0, 1]),
+        &two_devices(2),
+        &idle(),
+    );
+    let slot = p.mixer_patch(D0, pid()).unwrap();
+    assert_eq!(p.slot_output(slot), Some(0));
+    assert!(cmds.iter().all(|(o, _)| *o == 0));
+    // Idle: moves in place.
+    let (cmds, changed) = p.sync(
+        D0,
+        &ws,
+        &on_device(&ws, "Two", vec![0, 1]),
+        &two_devices(2),
+        &idle(),
+    );
+    assert_eq!(changed.len(), 1);
+    assert_eq!(p.mixer_patch(D0, pid()), Some(slot));
+    assert_eq!(p.slot_output(slot), Some(1));
+    let left = routes_on(&cmds, 0);
+    assert!(
+        !left.is_empty() && left.iter().all(|r| r.3 == 0.0),
+        "{left:?}"
+    );
+    let gains: Vec<_> = routes_on(&cmds, 1)
+        .into_iter()
+        .filter(|r| r.3 != 0.0)
+        .collect();
+    assert_eq!(gains.len(), 2, "{gains:?}");
+    // Busy: retired on "Two"; the patch takes a fresh slot on "Dev".
+    let (_, _) = p.sync(
+        D0,
+        &ws,
+        &on_device(&ws, "Dev", vec![0, 1]),
+        &two_devices(2),
+        &busy(&[slot]),
+    );
+    let fresh = p.mixer_patch(D0, pid()).unwrap();
+    assert_ne!(fresh, slot);
+    assert_eq!(p.slot_output(fresh), Some(0));
+    assert_eq!(p.slot_output(slot), Some(1));
+    assert!(p.has_retired(D0));
+    // Once the voice has gone, the retired slot is freed.
+    p.sync(
+        D0,
+        &ws,
+        &on_device(&ws, "Dev", vec![0, 1]),
+        &two_devices(2),
+        &idle(),
+    );
+    assert!(!p.has_retired(D0));
 }
