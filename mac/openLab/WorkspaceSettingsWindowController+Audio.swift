@@ -49,10 +49,14 @@ extension WorkspaceSettingsWindowController {
         }
         // A grid, so the two fields line up whatever their labels' widths.
         let limitGrid = NSGridView(views: [
-            [NSTextField(labelWithString: loc("settings.audio.limitMaxShort")), maxLimitField,
-             NSTextField(labelWithString: loc("settings.db"))],
-            [NSTextField(labelWithString: loc("settings.audio.limitMinShort")), minLimitField,
-             NSTextField(labelWithString: loc("settings.db"))],
+            [
+                NSTextField(labelWithString: loc("settings.audio.limitMaxShort")), maxLimitField,
+                NSTextField(labelWithString: loc("settings.db")),
+            ],
+            [
+                NSTextField(labelWithString: loc("settings.audio.limitMinShort")), minLimitField,
+                NSTextField(labelWithString: loc("settings.db")),
+            ],
         ])
         limitGrid.rowSpacing = 8
         limitGrid.columnSpacing = 6

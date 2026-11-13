@@ -589,8 +589,8 @@ final class ScenarioRunner {
                 focused != nil && focused === prefs?.window
                 ? prefs!.tabs
                 : focused === wc.settingsWindow.patchEditor?.window && focused != nil
-                ? wc.settingsWindow.patchEditor!.tabs
-                : focused != nil && !(focused is PasteSheetWindow) ? wc.settingsWindow.tabs : wc.inspector.tabView
+                    ? wc.settingsWindow.patchEditor!.tabs
+                    : focused != nil && !(focused is PasteSheetWindow) ? wc.settingsWindow.tabs : wc.inspector.tabView
             let ids = tabs.tabViewItems.compactMap { $0.identifier as? String }
             guard ids.contains(id) else {
                 throw Failure("no tab \"\(id)\" for this selection; tabs: \(ids.joined(separator: ", "))")

@@ -521,7 +521,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         sc.patchAddButton.performClick(nil)
         await assertEventually { sc.patchRemoveButtons.count == 2 }
         let second = try XCTUnwrap(sc.model.patches.last?.id)
-        guard case .success = await rig.store.send(command: .setProperty(intro, .kindFields(["patch": .string(second.raw)])))
+        guard
+            case .success = await rig.store.send(
+                command: .setProperty(intro, .kindFields(["patch": .string(second.raw)])))
         else { return XCTFail("repatch") }
         await settle()
         sc.window?.contentView?.layoutSubtreeIfNeeded()
