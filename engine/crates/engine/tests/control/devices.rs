@@ -2587,7 +2587,17 @@ fn a_device_no_patch_uses_closes_and_its_unplugging_raises_nothing() {
         !s.control().output_up(DEV2_NAME),
         "the unused device stayed open"
     );
+    // A playing cue does not move to its patch's new device: it played on to its end where it
+    // started, and the primary heard none of it.
     assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
+    assert_eq!(
+        s.device_channel(DEV2, 0)
+            .iter()
+            .filter(|&&x| x != 0.0)
+            .count(),
+        800
+    );
+    assert!(heard(&s.channel(0)).is_empty());
     s.take_outbound();
     s.fake.unplug(DEV2, true);
     s.wait_wall(Duration::from_secs(1), 2);
