@@ -195,6 +195,9 @@ struct ErrorBody: Hashable, Sendable, Decodable {
 struct PatchMappingEntry: Hashable, Sendable, Decodable {
     let patch: ModelID
     let mapping: PatchMapping?
+    /// Where the patch plays now (the device and channels), or why it cannot; nil from an engine
+    /// that predates it.
+    let resolution: WireVariant?
 }
 
 struct DeviceEntry: Hashable, Sendable, Decodable {
@@ -204,8 +207,12 @@ struct DeviceEntry: Hashable, Sendable, Decodable {
     let isDefault: Bool
     /// AUD-21: frames per callback this device is asked for on this machine.
     let bufferFrames: Int
+    /// AUD-02: where the engine's output on this device is; nil when it has never opened one there.
+    let state: OutputState?
+    /// The engine's primary device (opened at start; its clock is the show's).
+    let primary: Bool
     enum CodingKeys: String, CodingKey {
-        case name
+        case name, state, primary
         case outputChannels = "output_channels"
         case isDefault = "is_default"
         case bufferFrames = "buffer_frames"
@@ -217,6 +224,50 @@ struct DeviceEntry: Hashable, Sendable, Decodable {
         outputChannels = try c.decode(Int.self, forKey: .outputChannels)
         isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
         bufferFrames = try c.decode(Int.self, forKey: .bufferFrames)
+        state = try c.decodeIfPresent(OutputState.self, forKey: .state)
+        primary = try c.decodeIfPresent(Bool.self, forKey: .primary) ?? false
+    }
+}
+
+/// AUD-02: where an open output device is. A string so a state added later still decodes.
+struct OutputState: Hashable, Sendable, Decodable, ExpressibleByStringLiteral {
+    let raw: String
+    init(stringLiteral value: String) { raw = value }
+    init(from decoder: Decoder) throws { raw = try decoder.singleValueContainer().decode(String.self) }
+    static let up: OutputState = "up"
+    static let opening: OutputState = "opening"
+    static let lost: OutputState = "lost"
+    static let reconfiguring: OutputState = "reconfiguring"
+    static let closed: OutputState = "closed"
+    static let failed: OutputState = "failed"
+}
+
+/// AUD-02: one output device the engine has opened, in `status.outputs`; `channels` is 0 and
+/// `blockFrames` nil until its first open answers.
+struct OutputStatus: Hashable, Sendable, Decodable {
+    let name: String
+    let state: OutputState
+    let primary: Bool
+    let sampleRate: UInt32
+    let channels: UInt32
+    let blockFrames: UInt32?
+    let latencyMs: Double?
+    enum CodingKeys: String, CodingKey {
+        case name, state, primary, channels
+        case sampleRate = "sample_rate"
+        case blockFrames = "block_frames"
+        case latencyMs = "latency_ms"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        state = try c.decode(OutputState.self, forKey: .state)
+        primary = try c.decodeIfPresent(Bool.self, forKey: .primary) ?? false
+        sampleRate = try c.decode(UInt32.self, forKey: .sampleRate)
+        channels = try c.decode(UInt32.self, forKey: .channels)
+        blockFrames = try c.decodeIfPresent(UInt32.self, forKey: .blockFrames)
+        latencyMs = try c.decodeIfPresent(Double.self, forKey: .latencyMs)
     }
 }
 
@@ -295,6 +346,9 @@ struct SystemStatus: Hashable, Sendable, Decodable {
     let xruns: UInt64
     let disk: DiskStatus
     let device: DeviceStatus
+    /// AUD-02: every output device the engine has opened since start (closed ones included), the
+    /// primary first; empty from an engine that predates it.
+    let outputs: [OutputStatus]
     let logDropped: UInt64
     /// The newest show-log record's `seq`; above the last `log_entry` received means a push was
     /// lost. 0 when absent (an engine from before the field).
@@ -302,7 +356,7 @@ struct SystemStatus: Hashable, Sendable, Decodable {
     /// PB-10: the network output override is on, so Network cues send nothing.
     let networkOutputDisabled: Bool
     enum CodingKeys: String, CodingKey {
-        case xruns, disk, device
+        case xruns, disk, device, outputs
         case cpuPercent = "cpu_percent"
         case engineLoad = "engine_load"
         case logDropped = "log_dropped"
@@ -317,6 +371,7 @@ struct SystemStatus: Hashable, Sendable, Decodable {
         xruns = try c.decode(UInt64.self, forKey: .xruns)
         disk = try c.decode(DiskStatus.self, forKey: .disk)
         device = try c.decode(DeviceStatus.self, forKey: .device)
+        outputs = try c.decodeIfPresent([OutputStatus].self, forKey: .outputs) ?? []
         logDropped = try c.decode(UInt64.self, forKey: .logDropped)
         logSeq = try c.decodeIfPresent(UInt64.self, forKey: .logSeq) ?? 0
         networkOutputDisabled = try c.decodeIfPresent(Bool.self, forKey: .networkOutputDisabled) ?? false

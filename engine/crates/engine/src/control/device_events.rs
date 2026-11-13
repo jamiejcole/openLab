@@ -734,6 +734,8 @@ impl Engine {
                     output_channels: u32::from(l.max_channels()),
                     is_default: l.is_default,
                     buffer_frames: self.config.machine.buffer_frames_for(&l.name),
+                    state: self.output_on(Some(&l.id), &l.name).map(|(_, o)| o.state()),
+                    primary: self.output_on(Some(&l.id), &l.name).map(|(k, _)| k) == Some(0),
                 })
                 .collect(),
             None => self
@@ -745,9 +747,24 @@ impl Engine {
                     output_channels: d.output_channels,
                     is_default: false,
                     buffer_frames: self.config.machine.buffer_frames_for(&d.name),
+                    state: self.output_on(None, &d.name).map(|(_, o)| o.state()),
+                    primary: self.output_on(None, &d.name).map(|(k, _)| k) == Some(0),
                 })
                 .collect(),
         }
+    }
+
+    /// The engine's output on the listed device with host id `id` (by `name` for the offline
+    /// driver, whose devices have no id), if it has one. By id: two interfaces of one model
+    /// share a name.
+    fn output_on(&self, id: Option<&str>, name: &str) -> Option<(OutputKey, &Output)> {
+        self.outputs
+            .iter()
+            .find(|(_, o)| match (o.backend.device(), id) {
+                (Some(d), Some(id)) => d.info().device_id == id,
+                (None, None) => o.name == name,
+                _ => false,
+            })
     }
 }
 

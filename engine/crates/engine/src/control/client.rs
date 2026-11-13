@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use openlab_core::Command;
 use openlab_core::protocol::{
     ClientMessage, ErrorCode, HotkeyPhase, MAX_COALESCE_KEY, OkBody, Outcome, PatchMappingEntry,
-    Request, ResultData, ServerMessage, TransportAction,
+    Request, ResultData, ServerMessage, TransportAction, WireResolution,
 };
 
 use super::docs::DocSource;
@@ -448,6 +448,11 @@ impl DocCx<'_> {
                                 .machine
                                 .patch_mapping(workspace, p.id)
                                 .cloned(),
+                            resolution: self
+                                .eng
+                                .patches
+                                .resolution(self.doc.id, p.id)
+                                .map(WireResolution::from),
                         })
                         .collect();
                     reply(

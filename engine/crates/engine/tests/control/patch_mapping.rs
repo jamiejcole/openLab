@@ -539,10 +539,19 @@ fn list_patch_mappings_reports_the_stored_mapping_of_each_patch() {
             })
             .expect("patch_mappings")
     };
+    // Each answer also says where the patch resolves now.
     let entry = |m: Option<PatchMapping>| {
+        let resolution = Some(match &m {
+            Some(m) => openlab_core::protocol::WireResolution::Mapped {
+                device: m.device.clone(),
+                channels: m.channels.clone(),
+            },
+            None => openlab_core::protocol::WireResolution::Unmapped,
+        });
         vec![openlab_core::protocol::PatchMappingEntry {
             patch: patch_id(),
             mapping: m,
+            resolution,
         }]
     };
     assert_eq!(listed(&mut s), entry(Some(mapping("Offline", &[0, 1]))));

@@ -15,13 +15,15 @@
 use std::time::Duration;
 
 use openlab_core::protocol::{
-    ClientMessage, DeviceEntry, ErrorCode, LogLevel, Outcome, Request, ResultData, RuntimeChange,
-    ServerMessage, TransportAction, WireBrokenReason, WireCueState, WireProblem, WireWarning,
+    ClientMessage, DeviceEntry, ErrorCode, LogLevel, Outcome, OutputState, OutputStatus,
+    PatchMappingEntry, Request, ResultData, RuntimeChange, ServerMessage, TransportAction,
+    WireBrokenReason, WireCueState, WireProblem, WireResolution, WireWarning,
 };
 use openlab_core::{
     ContinueMode, CueKind, CueState, GroupMode, MachineSettings, PatchMapping, Workspace,
 };
-use openlab_engine::control::{ControlConfig, MAX_WAIT};
+use openlab_engine::control::{ControlConfig, MAX_WAIT, ManualClock};
+use openlab_engine::diag::StatusConfig;
 use std::sync::Arc;
 
 use crate::show::device::{DeviceShow, Fake, FakeLayer, listed};
@@ -92,6 +94,17 @@ fn entry(name: &str, output_channels: u32) -> DeviceEntry {
         output_channels,
         is_default: false,
         buffer_frames: openlab_core::DEFAULT_BUFFER_FRAMES,
+        state: None,
+        primary: false,
+    }
+}
+
+/// The primary device's `list_devices` entry, its output in `state`.
+fn primary(state: OutputState) -> DeviceEntry {
+    DeviceEntry {
+        state: Some(state),
+        primary: true,
+        ..entry(DEV_NAME, 2)
     }
 }
 
@@ -166,7 +179,7 @@ fn replug(s: &mut DeviceShow) {
 fn list_devices_answers_from_the_host_list_and_follows_hot_plug() {
     let path = wav(&dc(100, 0.5));
     let mut s = device_show(workspace(vec![audio(1, &path, 0)]));
-    assert_eq!(list_devices(&mut s), vec![entry(DEV_NAME, 2)]);
+    assert_eq!(list_devices(&mut s), vec![primary(OutputState::Up)]);
     s.take_outbound();
 
     // Another device comes and goes: the list follows; the patches do not change.
@@ -174,11 +187,11 @@ fn list_devices_answers_from_the_host_list_and_follows_hot_plug() {
     s.wait_wall(Duration::from_secs(1), 1);
     assert_eq!(
         list_devices(&mut s),
-        vec![entry(DEV_NAME, 2), entry("Fake 2", 8)]
+        vec![primary(OutputState::Up), entry("Fake 2", 8)]
     );
     s.fake.unplug("fake:2", false);
     s.wait_wall(Duration::from_secs(1), 1);
-    assert_eq!(list_devices(&mut s), vec![entry(DEV_NAME, 2)]);
+    assert_eq!(list_devices(&mut s), vec![primary(OutputState::Up)]);
     let msgs = s.take_outbound();
     assert!(problems(&msgs, 1).is_empty());
     assert!(!s.control().device_down());
@@ -200,7 +213,7 @@ fn list_devices_answers_from_the_host_list_and_follows_hot_plug() {
 
     // Plugged back in: reopened, the patch maps again, the cue is playable.
     replug(&mut s);
-    assert_eq!(list_devices(&mut s), vec![entry(DEV_NAME, 2)]);
+    assert_eq!(list_devices(&mut s), vec![primary(OutputState::Up)]);
     let msgs = s.take_outbound();
     assert_eq!(problems(&msgs, 1), vec![vec![]]);
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
@@ -233,7 +246,7 @@ fn a_slow_device_open_does_not_hold_up_the_inbox() {
         request: Request::Snapshot,
     });
     assert_eq!(replies.len(), 2);
-    assert_eq!(list_devices(&mut s), vec![entry(DEV_NAME, 2)]);
+    assert_eq!(list_devices(&mut s), vec![primary(OutputState::Lost)]);
     let at = go(&mut s);
     let replies = s.transport(TransportAction::Panic);
     assert!(matches!(
@@ -391,7 +404,7 @@ fn a_device_thread_stuck_in_an_open_makes_the_device_unrecoverable_but_not_the_l
     s.wait_list();
     assert_eq!(
         list_devices(&mut s),
-        vec![entry(DEV_NAME, 2), entry("Fake 2", 8)]
+        vec![primary(OutputState::Failed), entry("Fake 2", 8)]
     );
     // A late answer still counts.
     s.fake.open_gate();
@@ -445,7 +458,7 @@ fn a_panic_in_the_device_layer_during_an_open_is_caught() {
         "{codes:?}"
     );
     // The show still answers.
-    assert_eq!(list_devices(&mut s), vec![entry(DEV_NAME, 2)]);
+    assert_eq!(list_devices(&mut s), vec![primary(OutputState::Failed)]);
 }
 
 #[test]
@@ -1791,6 +1804,16 @@ fn two_patch_show(
     b: &str,
     devices: Vec<devices::ListedDevice>,
 ) -> DeviceShow {
+    two_patch_show_with(cues, b, devices, |_| {})
+}
+
+/// [`two_patch_show`] with the config changed by `tweak` first.
+fn two_patch_show_with(
+    cues: Vec<openlab_core::Cue>,
+    b: &str,
+    devices: Vec<devices::ListedDevice>,
+    tweak: impl FnOnce(&mut ControlConfig),
+) -> DeviceShow {
     let mut ws = workspace(cues);
     let mut patch = ws.patches[0].clone();
     patch.id = patch_b();
@@ -1808,6 +1831,7 @@ fn two_patch_show(
             },
         )
         .unwrap();
+    tweak(&mut c);
     DeviceShow::new(ws, devices, c)
 }
 
@@ -2503,6 +2527,13 @@ fn a_second_device_hung_in_a_buffer_size_change_is_lost_alone() {
         s.control().engine().state(id(1)),
         s.control().engine().broken_reason(id(2)),
     );
+    // Reported to the app as needing a restart; the primary plays on.
+    let outputs: Vec<OutputState> = s
+        .control()
+        .output_statuses()
+        .into_iter()
+        .map(|o| o.state)
+        .collect();
     s.fake.open_gate();
     assert!(
         broken_device_lost(&msgs, 2),
@@ -2512,6 +2543,7 @@ fn a_second_device_hung_in_a_buffer_size_change_is_lost_alone() {
     assert_eq!(states.0, CueState::Running);
     assert_eq!(states.1, Some(openlab_core::BrokenReason::DeviceLost));
     assert!(!s.control().device_down());
+    assert_eq!(outputs, vec![OutputState::Up, OutputState::Failed]);
 }
 
 /// The only device hangs in a buffer size change: as a sole-device loss, its cues stop and
@@ -2741,4 +2773,319 @@ fn a_lost_device_its_patch_moved_away_from_is_closed_and_forgets_its_voices() {
     assert!(s.device_channel(DEV2, 0).len() > before + 1000);
     assert!(heard(&s.device_channel(DEV2, 0)[before..]).is_empty());
     assert_eq!(s.control().live_voices(), 0);
+}
+
+fn list_patch_mappings(s: &mut DeviceShow) -> Vec<PatchMappingEntry> {
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id,
+        request: Request::ListPatchMappings,
+    });
+    replies
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::Result {
+                outcome:
+                    Outcome::Ok(openlab_core::protocol::OkBody {
+                        data: Some(ResultData::PatchMappings { patches }),
+                        ..
+                    }),
+                ..
+            } => Some(patches.clone()),
+            _ => None,
+        })
+        .expect("patch_mappings")
+}
+
+/// Each listed device's engine output state and whether it is the primary.
+fn listed_states(s: &mut DeviceShow) -> Vec<(String, Option<OutputState>, bool)> {
+    list_devices(s)
+        .into_iter()
+        .map(|d| (d.name, d.state, d.primary))
+        .collect()
+}
+
+/// Each patch's resolution, in workspace order.
+fn resolutions(s: &mut DeviceShow) -> Vec<Option<WireResolution>> {
+    list_patch_mappings(s)
+        .into_iter()
+        .map(|p| p.resolution)
+        .collect()
+}
+
+/// The status sent once the epoch clock has moved `ms` on: each output's name and state.
+fn output_states(s: &mut DeviceShow, clock: &ManualClock, ms: i64) -> Vec<(String, OutputState)> {
+    clock.advance(ms);
+    s.tick();
+    let sent = statuses(s.take_outbound());
+    let last = sent.last().expect("a status");
+    last.outputs
+        .iter()
+        .map(|o| (o.name.clone(), o.state))
+        .collect()
+}
+
+/// The app sees every device: `status` describes each open output (state, rate, channels,
+/// buffer, which is the primary), `list_devices` marks which listed devices the engine has open
+/// and in what state, and `list_patch_mappings` says where each patch resolves, through a loss,
+/// a return and a device closing once no patch uses it.
+#[test]
+fn status_list_devices_and_patch_mappings_describe_every_device() {
+    let clock = ManualClock::new(1_700_000_000_000);
+    let epoch = clock.clock();
+    let mut s = two_patch_show_with(
+        vec![],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        |c| {
+            c.clock = epoch;
+            c.status = Some(StatusConfig::default());
+        },
+    );
+    s.wait_output(DEV2_NAME);
+    clock.advance(1000);
+    s.tick();
+    let status = statuses(s.take_outbound()).pop().expect("a status");
+    let block = Some(s.fake.block());
+    assert_eq!(
+        status.outputs,
+        vec![
+            OutputStatus {
+                name: DEV_NAME.into(),
+                state: OutputState::Up,
+                primary: true,
+                sample_rate: RATE,
+                channels: 2,
+                block_frames: block,
+                latency_ms: None,
+            },
+            OutputStatus {
+                name: DEV2_NAME.into(),
+                state: OutputState::Up,
+                primary: false,
+                sample_rate: RATE,
+                channels: 2,
+                block_frames: block,
+                latency_ms: None,
+            },
+        ]
+    );
+    assert_eq!(status.device.name.as_deref(), Some(DEV_NAME));
+    assert_eq!(
+        listed_states(&mut s),
+        vec![
+            (DEV_NAME.to_owned(), Some(OutputState::Up), true),
+            (DEV2_NAME.to_owned(), Some(OutputState::Up), false),
+        ]
+    );
+    let mapped = |device: &str| {
+        Some(WireResolution::Mapped {
+            device: device.into(),
+            channels: vec![0, 1],
+        })
+    };
+    assert_eq!(
+        resolutions(&mut s),
+        vec![mapped(DEV_NAME), mapped(DEV2_NAME)]
+    );
+
+    // The second device is unplugged: a status goes out early (after the minimum gap) with it
+    // lost, the list no longer has it, and its patch says why it cannot play.
+    unplug(&mut s, DEV2);
+    assert_eq!(
+        output_states(&mut s, &clock, 300),
+        vec![
+            (DEV_NAME.to_owned(), OutputState::Up),
+            (DEV2_NAME.to_owned(), OutputState::Lost),
+        ]
+    );
+    s.wait_wall(Duration::from_secs(1), 2);
+    assert_eq!(
+        listed_states(&mut s),
+        vec![(DEV_NAME.to_owned(), Some(OutputState::Up), true)]
+    );
+    assert_eq!(
+        resolutions(&mut s),
+        vec![
+            mapped(DEV_NAME),
+            Some(WireResolution::DeviceMissing {
+                device: DEV2_NAME.into()
+            })
+        ]
+    );
+
+    // Back: up again and listed.
+    s.fake.plug(listed(DEV2, DEV2_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.wait_output(DEV2_NAME);
+    assert_eq!(
+        output_states(&mut s, &clock, 300),
+        vec![
+            (DEV_NAME.to_owned(), OutputState::Up),
+            (DEV2_NAME.to_owned(), OutputState::Up),
+        ]
+    );
+
+    // No patch maps to it any more: it closes, and says so.
+    map_b(&mut s, DEV_NAME);
+    s.settle_devices();
+    assert!(!s.control().output_up(DEV2_NAME));
+    assert_eq!(
+        output_states(&mut s, &clock, 300),
+        vec![
+            (DEV_NAME.to_owned(), OutputState::Up),
+            (DEV2_NAME.to_owned(), OutputState::Closed),
+        ]
+    );
+    assert_eq!(
+        listed_states(&mut s),
+        vec![
+            (DEV_NAME.to_owned(), Some(OutputState::Up), true),
+            (DEV2_NAME.to_owned(), Some(OutputState::Closed), false),
+        ]
+    );
+    assert_eq!(
+        resolutions(&mut s),
+        vec![mapped(DEV_NAME), mapped(DEV_NAME)]
+    );
+}
+
+/// A closed device a patch maps to again shows as opening until its open answers, and one
+/// changing its buffer size as reconfiguring until it is back.
+#[test]
+fn an_opening_or_reconfiguring_device_is_reported_as_such() {
+    let mut s = two_patch_show(
+        vec![],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+    );
+    let state = |s: &DeviceShow, name: &str| {
+        s.control()
+            .output_statuses()
+            .into_iter()
+            .find(|o| o.name == name)
+            .map(|o| o.state)
+    };
+    s.wait_output(DEV2_NAME);
+    assert_eq!(state(&s, DEV2_NAME), Some(OutputState::Up));
+    // Closed when no patch maps to it; mapped again, it is opening until the device thread's
+    // answer is taken in (a tick without the inbox).
+    map_b(&mut s, DEV_NAME);
+    s.settle_devices();
+    assert_eq!(state(&s, DEV2_NAME), Some(OutputState::Closed));
+    map_b(&mut s, DEV2_NAME);
+    s.control_mut().tick();
+    assert_eq!(state(&s, DEV2_NAME), Some(OutputState::Opening));
+    s.wait_output(DEV2_NAME);
+    assert_eq!(state(&s, DEV2_NAME), Some(OutputState::Up));
+    // The close and reopen run on the device thread: until the loop takes the answers in, the
+    // device is reconfiguring.
+    s.fake.set_device_block(DEV2, 128);
+    assert_eq!(set_buffer(&mut s, DEV2_NAME, 128), Ok(()));
+    assert_eq!(state(&s, DEV2_NAME), Some(OutputState::Reconfiguring));
+    assert_eq!(state(&s, DEV_NAME), Some(OutputState::Up));
+    s.settle_devices();
+    assert_eq!(state(&s, DEV2_NAME), Some(OutputState::Up));
+    let dev2 = s
+        .control()
+        .output_statuses()
+        .into_iter()
+        .find(|o| o.name == DEV2_NAME)
+        .unwrap();
+    assert_eq!(dev2.block_frames, Some(128));
+}
+
+/// A device a patch is mapped to for the first time is opening until its first open answers:
+/// in `status.outputs` (with no channels or buffer size yet, nothing being known of it) and in
+/// `list_devices`.
+#[test]
+fn a_device_whose_first_open_is_pending_is_reported_as_opening() {
+    let mut s = two_patch_show(
+        vec![],
+        DEV_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+    );
+    s.settle_devices();
+    assert_eq!(s.control().outputs().len(), 1, "nothing maps to device 2");
+    s.fake.close_gate();
+    map_b(&mut s, DEV2_NAME);
+    s.control_mut().tick();
+    let outputs = s.control().output_statuses();
+    let dev2 = outputs.iter().find(|o| o.name == DEV2_NAME).unwrap();
+    assert_eq!(
+        (dev2.state, dev2.primary, dev2.channels, dev2.block_frames),
+        (OutputState::Opening, false, 0, None)
+    );
+    assert_eq!(dev2.latency_ms, None);
+    assert_eq!(
+        listed_states(&mut s),
+        vec![
+            (DEV_NAME.to_owned(), Some(OutputState::Up), true),
+            (DEV2_NAME.to_owned(), Some(OutputState::Opening), false),
+        ]
+    );
+    s.fake.open_gate();
+    s.wait_output(DEV2_NAME);
+    let outputs = s.control().output_statuses();
+    let dev2 = outputs.iter().find(|o| o.name == DEV2_NAME).unwrap();
+    assert_eq!(
+        (dev2.state, dev2.channels, dev2.block_frames),
+        (OutputState::Up, 2, Some(s.fake.block()))
+    );
+}
+
+/// A closed device mapped to again whose reopen keeps failing (it left the system while the
+/// open was under way) stays opening, retried with the backoff, never lost: nothing played on
+/// it, so there is no outage to report. Its patch says why it cannot play.
+#[test]
+fn a_closed_device_whose_reopen_keeps_failing_stays_opening() {
+    let mut s = two_device_show(vec![]);
+    map_b(&mut s, DEV_NAME);
+    s.settle_devices();
+    s.fake.close_gate();
+    map_b(&mut s, DEV2_NAME);
+    s.control_mut().tick();
+    s.fake.unplug(DEV2, false);
+    s.fake.open_gate();
+    s.take_outbound();
+    s.wait_wall(Duration::from_secs(10), 20);
+    let opens = s.fake.opens();
+    assert!(opens >= 3, "retried: {opens} opens");
+    let state = s
+        .control()
+        .output_statuses()
+        .into_iter()
+        .find(|o| o.name == DEV2_NAME)
+        .map(|o| o.state);
+    assert_eq!(state, Some(OutputState::Opening));
+    assert_eq!(
+        resolutions(&mut s)[1],
+        Some(WireResolution::DeviceMissing {
+            device: DEV2_NAME.into()
+        })
+    );
+    let msgs = s.take_outbound();
+    assert!(
+        !workspace_warnings(&msgs)
+            .unwrap_or_default()
+            .contains(&"device_lost".to_owned())
+    );
+}
+
+/// Two interfaces of one model share a name: `list_devices` gives the engine's output state and
+/// the primary mark only to the one it has open, matched by the host's id.
+#[test]
+fn two_devices_with_one_name_are_told_apart_in_list_devices() {
+    let ws = workspace(vec![]);
+    let c = device_config(&ws);
+    let mut s = DeviceShow::new(
+        ws,
+        vec![listed(DEV, DEV_NAME, 2), listed("fake:9", DEV_NAME, 2)],
+        c,
+    );
+    s.settle_devices();
+    assert_eq!(
+        list_devices(&mut s),
+        vec![primary(OutputState::Up), entry(DEV_NAME, 2)]
+    );
 }

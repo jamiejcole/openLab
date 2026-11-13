@@ -43,8 +43,8 @@ One structured record per event, made on the control thread (`control/observe.rs
 ## Status
 
 Sent when `ControlConfig::status` is set (the host does; offline tests do not).
-- **Cadence is wall-clock** (`EpochClock`), so a lost device, whose audio clock has stopped, still reports: at least every second, early when `xruns`, disk health or device state changes, never closer than 250 ms.
-- The control thread only reads counters that already exist, and only when a status is due (each tick: a few atomics and the device name to decide). The CPU probe and the rest are gathered when one goes out.
+- **Cadence is wall-clock** (`EpochClock`), so a lost device, whose audio clock has stopped, still reports: at least every second, early when `xruns`, disk health, the primary's state or any output device's opening or state changes, never closer than 250 ms.
+- The control thread only reads counters that already exist, and only when a status is due (each tick: a few atomics, the device name and the output states packed into one number, `diag::outputs_fingerprint`, to decide). The CPU probe and the rest are gathered when one goes out.
 - `cpu_percent` is process CPU seconds (`diag::cpu`: `/proc/self/stat` on Linux, `getrusage` on macOS, `GetProcessTimes` on Windows) differenced over wall time. The macOS and Windows calls are two small `extern` declarations with `// SAFETY:` comments; only CI exercises them.
 - `engine_load` is `null` when no callback ran since the previous status (device lost) and offline (measurement in skill `devices`). `disk.healthy` is false for ten seconds after any underrun rise.
 - `device.state` (`ok`, `lost`, `failed`; `absent` offline) stays `ok` while the stall watchdog's first stage is up; the stall is a workspace warning and `warn` log only.
