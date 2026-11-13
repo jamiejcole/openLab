@@ -179,28 +179,7 @@ impl Platform for Mac {
 
 /// A borderless, never-key window covering `frame`, with a Metal layer.
 fn open_window(mtm: MainThreadMarker, frame: NSRect, gpu: &Gpu) -> Result<StageWindow, String> {
-    // SAFETY: AppKit on the main thread (the marker proves it); a borderless buffered window.
-    let window = unsafe {
-        NSWindow::initWithContentRect_styleMask_backing_defer(
-            mtm.alloc::<NSWindow>(),
-            frame,
-            NSWindowStyleMask::Borderless,
-            NSBackingStoreType::Buffered,
-            false,
-        )
-    };
-    // SAFETY: the window is released by our `Retained`, not by AppKit on close.
-    unsafe { window.setReleasedWhenClosed(false) };
-    window.setLevel(NSScreenSaverWindowLevel);
-    window.setCollectionBehavior(
-        NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::Stationary
-            | NSWindowCollectionBehavior::IgnoresCycle
-            | NSWindowCollectionBehavior::FullScreenAuxiliary,
-    );
-    window.setIgnoresMouseEvents(true);
-    window.setHasShadow(false);
-    window.setBackgroundColor(Some(&NSColor::blackColor()));
+    let window = output_window(mtm, frame);
     let layer = CAMetalLayer::new();
     layer.setDevice(Some(gpu.device()));
     layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
@@ -215,6 +194,90 @@ fn open_window(mtm: MainThreadMarker, frame: NSRect, gpu: &Gpu) -> Result<StageW
         layer,
         display: String::new(),
     })
+}
+
+/// The collection behaviour of an output window: on every Space, staying put in Mission
+/// Control, out of window cycling, beside full-screen apps.
+fn output_behaviour() -> NSWindowCollectionBehavior {
+    NSWindowCollectionBehavior::CanJoinAllSpaces
+        | NSWindowCollectionBehavior::Stationary
+        | NSWindowCollectionBehavior::IgnoresCycle
+        | NSWindowCollectionBehavior::FullScreenAuxiliary
+}
+
+/// An output window covering `frame`, not yet ordered front: borderless (so it can never
+/// become key or main), at screen-saver level, ignoring the mouse, without a shadow, black.
+fn output_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSWindow> {
+    // SAFETY: AppKit on the main thread (the marker proves it); a borderless buffered window.
+    let window = unsafe {
+        NSWindow::initWithContentRect_styleMask_backing_defer(
+            mtm.alloc::<NSWindow>(),
+            frame,
+            NSWindowStyleMask::Borderless,
+            NSBackingStoreType::Buffered,
+            false,
+        )
+    };
+    // SAFETY: the window is released by our `Retained`, not by AppKit on close.
+    unsafe { window.setReleasedWhenClosed(false) };
+    window.setLevel(NSScreenSaverWindowLevel);
+    window.setCollectionBehavior(output_behaviour());
+    window.setIgnoresMouseEvents(true);
+    window.setHasShadow(false);
+    window.setBackgroundColor(Some(&NSColor::blackColor()));
+    window
+}
+
+/// Test support: what an output window built for the main screen's frame is, read back from
+/// AppKit. The window is never ordered front, so nothing appears on any display.
+#[cfg(feature = "test-support")]
+pub struct WindowReport {
+    pub level: isize,
+    pub screen_saver_level: isize,
+    pub behaviour_as_built: bool,
+    pub ignores_mouse: bool,
+    pub can_become_key: bool,
+    pub can_become_main: bool,
+    pub has_shadow: bool,
+    pub borderless: bool,
+    pub frame_is_the_screens: bool,
+    pub visible: bool,
+}
+
+/// Test support: builds an output window on the main thread for the main screen's frame and
+/// reads its properties back; `None` off the main thread or without a screen.
+#[cfg(feature = "test-support")]
+pub fn window_report() -> Option<WindowReport> {
+    let mtm = MainThreadMarker::new()?;
+    let screen = NSScreen::mainScreen(mtm)?;
+    let frame = screen.frame();
+    let window = output_window(mtm, frame);
+    let got = window.frame();
+    let report = WindowReport {
+        level: window.level(),
+        screen_saver_level: NSScreenSaverWindowLevel,
+        behaviour_as_built: window.collectionBehavior() == output_behaviour(),
+        ignores_mouse: window.ignoresMouseEvents(),
+        can_become_key: window.canBecomeKeyWindow(),
+        can_become_main: window.canBecomeMainWindow(),
+        has_shadow: window.hasShadow(),
+        borderless: window.styleMask() == NSWindowStyleMask::Borderless,
+        frame_is_the_screens: got.origin.x == frame.origin.x
+            && got.origin.y == frame.origin.y
+            && got.size.width == frame.size.width
+            && got.size.height == frame.size.height,
+        visible: window.isVisible(),
+    };
+    window.close();
+    Some(report)
+}
+
+/// Ends the process at once, from any thread: no exit handlers and no stdio flush, so a hung
+/// main thread holding a lock cannot keep the stage host alive after the engine is gone.
+fn end_now() -> ! {
+    // SAFETY: `_exit` takes a status and never returns; nothing is left to clean up that the
+    // kernel does not (windows go with the process).
+    unsafe { libc::_exit(0) }
 }
 
 /// The AppKit screen of CoreGraphics display `cg`.
@@ -275,7 +338,7 @@ fn read_engine() {
     loop {
         line.clear();
         let message = match read_line(&mut input, &mut line) {
-            Ok(Line::End) | Err(_) => std::process::exit(0),
+            Ok(Line::End) | Err(_) => end_now(),
             Ok(Line::TooLong(bytes)) => {
                 Err(format!("ignored a line of {bytes} bytes from the engine"))
             }
@@ -308,7 +371,7 @@ fn on_main(message: ToStage) {
 fn send(mut answers: Vec<FromStage>) {
     if write_all(&mut std::io::stdout().lock(), &mut answers).is_err() {
         // The engine is gone.
-        std::process::exit(0);
+        end_now();
     }
 }
 
@@ -320,15 +383,26 @@ unsafe extern "C-unwind" fn reconfigured(
     if flags.contains(CGDisplayChangeSummaryFlags::BeginConfigurationFlag) {
         return;
     }
-    DispatchQueue::main().exec_async(|| {
-        let mut out = Vec::new();
-        HOST.with(|h| {
-            if let Some(host) = h.borrow_mut().as_mut() {
-                host.displays_changed(&mut out);
-            }
-        });
-        send(out);
+    DispatchQueue::main().exec_async(read_displays_again);
+    // AppKit's screen list may not have caught up when the first read runs (a display just
+    // plugged back in would stay missing until the next display event), so read once more
+    // a moment later; a read that finds nothing new changes and reports nothing.
+    if let Ok(later) = dispatch2::DispatchTime::try_from(SECOND_DISPLAY_READ) {
+        let _ = DispatchQueue::main().after(later, read_displays_again);
+    }
+}
+
+/// How long after a display change the displays are read a second time.
+const SECOND_DISPLAY_READ: std::time::Duration = std::time::Duration::from_millis(500);
+
+fn read_displays_again() {
+    let mut out = Vec::new();
+    HOST.with(|h| {
+        if let Some(host) = h.borrow_mut().as_mut() {
+            host.displays_changed(&mut out);
+        }
     });
+    send(out);
 }
 
 /// Test support: `ID:WxH,ID:WxH...` displays drawn offscreen, no windows.

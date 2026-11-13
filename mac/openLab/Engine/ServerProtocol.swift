@@ -530,8 +530,10 @@ enum ResultData: Sendable, Equatable, Decodable {
     /// VID-01: `video` is false where this machine has no video output, nil before the stage host started.
     case displays([StageDisplay], video: Bool?)
     case stageMappings([StageMappingEntry])
-    /// Test support: the test card's frame number the stage shows, and the RGBA colour at each point.
-    case stageProbe(frame: UInt16?, colours: [[UInt8]])
+    #if DEBUG
+        /// Test support: the test card's frame number the stage shows, and the RGBA colour at each point.
+        case stageProbe(frame: UInt16?, colours: [[UInt8]])
+    #endif
     /// A data type this client does not know; the raw object is kept.
     case other(type: String, json: JSONValue)
 
@@ -570,10 +572,12 @@ enum ResultData: Sendable, Equatable, Decodable {
                 try c.decode([StageDisplay].self, forKey: "displays"),
                 video: try c.decodeIfPresent(Bool.self, forKey: "video"))
         case "stage_mappings": self = .stageMappings(try c.decode([StageMappingEntry].self, forKey: "stages"))
-        case "stage_probe":
-            self = .stageProbe(
-                frame: try c.decodeIfPresent(UInt16.self, forKey: "frame"),
-                colours: try c.decode([[UInt8]].self, forKey: "colours"))
+        #if DEBUG
+            case "stage_probe":
+                self = .stageProbe(
+                    frame: try c.decodeIfPresent(UInt16.self, forKey: "frame"),
+                    colours: try c.decode([[UInt8]].self, forKey: "colours"))
+        #endif
         default: self = .other(type: type, json: try JSONValue(from: decoder))
         }
     }

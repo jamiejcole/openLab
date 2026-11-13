@@ -18,8 +18,9 @@ use crate::video::{MAX_STAGES, side_ok};
 
 /// The link version both ends speak; a stage host answering another version is not used.
 pub const LINK_VERSION: u32 = 1;
-/// Longest line either end accepts, newline excluded.
-pub const MAX_LINE_BYTES: usize = 64 * 1024;
+/// Longest line either end accepts, newline excluded: enough for a `stages` set of
+/// [`MAX_LINK_STAGES`] stages whose display ids are all [`MAX_TEXT_BYTES`] long.
+pub const MAX_LINE_BYTES: usize = 512 * 1024;
 /// Most displays one `displays` message lists.
 pub const MAX_DISPLAYS: usize = 32;
 /// Longest display id, display name or log message, in bytes.
@@ -405,6 +406,25 @@ mod tests {
             let line = encode(&m).unwrap();
             assert_eq!(decode_from_stage(line.as_bytes()).unwrap(), m);
         }
+    }
+
+    /// The largest stage set the link allows (every stage with the longest display id) fits in
+    /// one line and reads back.
+    #[test]
+    fn the_largest_stage_set_fits_one_line() {
+        let stages: Vec<StageOutput> = (0..MAX_LINK_STAGES as u128)
+            .map(|n| StageOutput {
+                id: stage(n),
+                width: crate::MAX_STAGE_PIXELS,
+                height: crate::MAX_STAGE_PIXELS,
+                display: Some("d".repeat(MAX_TEXT_BYTES)),
+                keep_black: true,
+            })
+            .collect();
+        let message = ToStage::Stages { stages };
+        let line = encode(&message).unwrap();
+        assert!(line.len() <= MAX_LINE_BYTES + 1, "{} bytes", line.len());
+        assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), message);
     }
 
     #[test]

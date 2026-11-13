@@ -60,7 +60,7 @@ fuzz:
 	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run protocol fuzz/corpus/protocol fixtures/protocol/client \
 		fixtures/protocol/server fuzz/protocol-seeds -- -max_total_time=$(FUZZ_TIME) -max_len=65536 -timeout=10
 	cd engine && cargo +$(FUZZ_TOOLCHAIN) fuzz run stage_link fuzz/corpus/stage_link fuzz/stage-link-seeds \
-		-- -max_total_time=$(FUZZ_TIME) -max_len=200000 -timeout=10
+		-- -max_total_time=$(FUZZ_TIME) -max_len=600000 -timeout=10
 
 # Nightly CI and local: engine tests under ASan and TSan, then Miri on openlab-core (QA-09).
 # Needs: rustup toolchain install $(SAN_TOOLCHAIN) --profile minimal -c rust-src -c miri

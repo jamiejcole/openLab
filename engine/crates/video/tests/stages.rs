@@ -522,6 +522,172 @@ fn a_stage_host_logging_in_a_burst_is_rate_limited() {
     assert!((1..=40).contains(&seen), "{seen} burst lines logged");
 }
 
+/// The shipped (windowed) stage host ends when the engine's pipe closes: it answers `hello`,
+/// then exits as soon as its input ends. It is given no stage, so it opens no window.
+#[test]
+fn the_windowed_stage_host_exits_when_its_input_closes() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(STAGE_HOST)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, r#"{{"type":"hello","version":1}}"#).unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    out.read_line(&mut line).unwrap();
+    assert!(line.contains(r#""type":"hello""#), "{line}");
+    let pid = child.id();
+    drop(stdin);
+    // Its output ends when it exits (a hang guard: the read returns at its end).
+    let mut rest = String::new();
+    let _ = std::io::Read::read_to_string(&mut out, &mut rest);
+    let status = child.wait().unwrap();
+    assert!(status.success(), "{status:?}");
+    assert!(!alive(pid));
+}
+
+/// An engine killed outright (SIGKILL: no shutdown, no `quit`) takes its stage host with it:
+/// the stage host's input closes and it ends.
+#[test]
+fn a_killed_engine_leaves_no_stage_host_behind() {
+    use std::process::{Command, Stdio};
+    let engine = std::path::Path::new(STAGE_HOST).with_file_name("openlab-engine");
+    assert!(
+        engine.is_file(),
+        "{} is missing: build the workspace (`cargo test --workspace` builds it)",
+        engine.display()
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = Command::new(&engine)
+        .args([
+            "--virtual-device",
+            "stepped",
+            "--virtual-displays",
+            "V1:64x36",
+        ])
+        .arg("--app-support")
+        .arg(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let engine_pid = child.id();
+    // Its stage host appears as its child (bounded by a count of checks, no clock).
+    let stage = (0..20_000)
+        .find_map(|_| child_named(engine_pid, "openlab-stage"))
+        .expect("the engine started no stage host");
+    let killed = Command::new("kill")
+        .args(["-9", &engine_pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let _ = child.wait();
+    assert!(
+        gone_within(stage, 20_000),
+        "stage host {stage} outlived its engine"
+    );
+}
+
+/// The pid of a child of `parent` whose command is `name`, if there is one now.
+fn child_named(parent: u32, name: &str) -> Option<u32> {
+    let out = std::process::Command::new("pgrep")
+        .args(["-P", &parent.to_string(), name])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .and_then(|l| l.trim().parse().ok())
+}
+
+/// A stage host that sends a burst of state changes (under the kill threshold) and states for
+/// stages it was never given: the engine keeps only the stages it sent and puts at most a
+/// second's budget of report lines in the show log.
+#[test]
+fn a_stage_host_reporting_in_a_burst_neither_floods_the_log_nor_grows_memory() {
+    let known = stage_id(1).to_string();
+    let script = format!(
+        r#"printf '{{"type":"hello","version":1,"pid":1,"video":true}}\n'
+i=0
+while [ $i -lt 1000 ]; do
+  if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
+  printf '{{"type":"stage_status","stage":"{known}","state":{{"state":"%s"}}}}\n' $s
+  i=$((i+1))
+done
+i=0
+while [ $i -lt 900 ]; do
+  printf '{{"type":"stage_status","stage":"00000000-0000-0000-0000-%012d","state":{{"state":"hidden"}}}}\n' $((i+100000))
+  i=$((i+1))
+done
+printf '{{"type":"displays","displays":[{{"id":"END","name":"End","width":8,"height":8}}]}}\n'
+cat > /dev/null"#
+    );
+    let mut host = host_config(&["-c", &script]);
+    host.program = PathBuf::from("/bin/sh");
+    let ws = with_stages(vec![], vec![stage(1)]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(host);
+    // One second of report budget for the whole burst, whatever the machine's speed.
+    c.clock = openlab_engine::control::ManualClock::new(1_000).clock();
+    let mut s = show_with(ws, c);
+    assert!(s.wait_for(|c| c.displays().iter().any(|d| d.id == "END")));
+    let lines = s
+        .take_outbound()
+        .iter()
+        .filter(|m| matches!(m, ServerMessage::Log { message, .. } if message.starts_with("stage 'Stage 1'")))
+        .count();
+    assert!((1..=20).contains(&lines), "{lines} report lines");
+    assert_eq!(
+        s.control().stage_states_known(),
+        1,
+        "only the stage it was given"
+    );
+}
+
+/// Starts long ago do not count against a crash now: four quick exits at load-in, a healthy
+/// run longer than the restart window, then a kill, and the stage host is relaunched at once
+/// (it used to pause video output for the retry time).
+#[test]
+fn a_crash_after_a_long_healthy_run_is_relaunched_at_once() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let count = dir.path().join("starts");
+    let script = format!(
+        "n=$(cat '{c}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{c}'; \
+         if [ $n -le 4 ]; then exit 0; fi; exec '{STAGE_HOST}' --virtual-displays V1:64x36",
+        c = count.display()
+    );
+    let mut host = host_config(&["-c", &script]);
+    host.program = PathBuf::from("/bin/sh");
+    host.max_restarts = 5;
+    host.restart_window = Duration::from_secs(60);
+    host.retry_after = Duration::from_secs(3600);
+    let base = std::time::Instant::now();
+    let offset = Arc::new(AtomicU64::new(0));
+    let reading = Arc::clone(&offset);
+    host.clock = openlab_engine::stage::StageClock::from_fn(move || {
+        base + Duration::from_secs(reading.load(Ordering::SeqCst))
+    });
+    let ws = with_stages(vec![], vec![stage(1)]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(host);
+    let mut s = show_with(ws, c);
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some()));
+    let first = s.control().stage_host_pid().unwrap();
+    // Two minutes of healthy running, then it is killed.
+    offset.store(120, Ordering::SeqCst);
+    let killed = std::process::Command::new("kill")
+        .args(["-9", &first.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != first)));
+}
 /// A stage host that never answers `hello` is killed and does not hold the engine.
 #[test]
 fn a_silent_stage_host_is_killed_after_the_answer_time() {

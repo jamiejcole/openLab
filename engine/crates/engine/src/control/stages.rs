@@ -18,6 +18,9 @@ use super::inbox::reply;
 use super::{Control, DocId, Engine, Inbox, ReplyTx, failed, ok};
 use crate::stage::{StageEvent, StageHost};
 
+/// Log lines from the stage host's reports put in the show log per second.
+const MAX_REPORT_LINES_PER_SECOND: u32 = 20;
+
 /// The stage host as the control thread knows it.
 #[derive(Default)]
 pub(super) struct Stages {
@@ -34,6 +37,9 @@ pub(super) struct Stages {
     sent: Option<Vec<StageOutput>>,
     /// The no-video warning went out.
     no_video_warned: bool,
+    /// Log lines from the stage host's reports in the current second: (second, lines,
+    /// dropped). At most [`MAX_REPORT_LINES_PER_SECOND`] a second reach the show log.
+    report_lines: (i64, u32, u32),
     /// Test support: probes waiting for their answer, oldest first.
     #[cfg(feature = "test-support")]
     probes: Vec<(StageId, RequestId, ReplyTx)>,
@@ -90,6 +96,28 @@ impl Engine {
         if !displays.is_empty() {
             self.save_machine();
         }
+    }
+
+    /// A log line from the stage host's reports (states, displays, its own log): at most
+    /// [`MAX_REPORT_LINES_PER_SECOND`] a second, the rest counted and said once the second
+    /// is over, so a stage host cannot flood the log or the clients.
+    fn report_line(&mut self, level: LogLevel, message: String) {
+        let second = self.config.clock.now_ms().div_euclid(1000);
+        let (current, lines, dropped) = self.stages.report_lines;
+        if second != current {
+            self.stages.report_lines = (second, 0, 0);
+            if dropped > 0 {
+                self.log(
+                    LogLevel::Warn,
+                    format!("{dropped} more video output reports were not logged"),
+                );
+            }
+        } else if lines >= MAX_REPORT_LINES_PER_SECOND {
+            self.stages.report_lines.2 = dropped.saturating_add(1);
+            return;
+        }
+        self.stages.report_lines.1 += 1;
+        self.log(level, message);
     }
 
     /// The stage host has been told about every stage and has said where each one is.
@@ -174,22 +202,29 @@ impl Control {
                     .iter()
                     .map(|d| format!("{} ({}x{})", d.name, d.width, d.height))
                     .collect();
-                self.eng.log(
-                    LogLevel::Info,
-                    format!(
-                        "displays: {}",
-                        if names.is_empty() {
-                            "none".into()
-                        } else {
-                            names.join(", ")
-                        }
-                    ),
-                );
+                let text = if names.is_empty() {
+                    "none".to_owned()
+                } else {
+                    names.join(", ")
+                };
                 self.eng.stages.displays = displays;
+                self.eng
+                    .report_line(LogLevel::Info, format!("displays: {text}"));
             }
             StageEvent::Status { stage, state } => {
-                if let Some(message) = self.stage_state_message(stage, &state) {
-                    self.eng.log(message.0, message.1);
+                // Only stages the stage host was given are kept, so the map stays bounded by
+                // the stages that exist.
+                let known = self
+                    .eng
+                    .stages
+                    .sent
+                    .as_ref()
+                    .is_some_and(|s| s.iter().any(|o| o.id == stage));
+                if !known {
+                    return;
+                }
+                if let Some((level, message)) = self.stage_state_message(stage, &state) {
+                    self.eng.report_line(level, message);
                 }
                 self.eng.stages.states.insert(stage, state);
             }
@@ -226,7 +261,7 @@ impl Control {
                     LinkLevel::Warn => LogLevel::Warn,
                     LinkLevel::Error => LogLevel::Error,
                 };
-                self.eng.log(level, message);
+                self.eng.report_line(level, message);
             }
             #[cfg(feature = "test-support")]
             StageEvent::Probed {
@@ -508,6 +543,11 @@ impl Control {
     /// Where the stage host last said `stage` is.
     pub fn stage_state(&self, stage: StageId) -> Option<&StageState> {
         self.eng.stages.states.get(&stage)
+    }
+
+    /// How many stages the engine holds a state for (bounded by the stages it sent).
+    pub fn stage_states_known(&self) -> usize {
+        self.eng.stages.states.len()
     }
 
     /// The displays the stage host last listed.
