@@ -295,6 +295,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         tabs.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         bottom.setContentHuggingPriority(.required, for: .vertical)
         root.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        // Every tab fills the window's width, whatever its page would choose for itself (the Keys
+        // page's wrapping labels would otherwise size the tab view to them).
+        tabs.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -24).isActive = true
         return root
     }
 

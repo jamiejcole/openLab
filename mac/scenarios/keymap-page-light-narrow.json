@@ -10,6 +10,9 @@
     {"click": "settings-keys-edit_post_wait"},
     {"key": "up"},
     {"shot": "reserved-refused"},
+    {"click": "settings-keys-edit_name"},
+    {"key": "delete"},
+    {"shot": "delete-refused-in-cue-editing-column"},
     {"click": "settings-keys-stop_selected"},
     {"key": "s", "modifiers": ["command"]},
     {"shot": "menu-key-taken"}

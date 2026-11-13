@@ -59,6 +59,15 @@ extension WorkspaceSettingsModel {
         }
     }
 
+    /// The most of a cue's number and name a reason shows: the sentence around it must fit beside a
+    /// field at the window's least size.
+    static let reasonCueLength = 24
+
+    /// `title` cut to `reasonCueLength` characters, with an ellipsis when cut.
+    static func shortened(_ title: String) -> String {
+        title.count <= reasonCueLength ? title : String(title.prefix(reasonCueLength - 1)) + "\u{2026}"
+    }
+
     /// The reason in words: which action or cue already has the key.
     func refusalText(_ error: KeyBindError, chord: KeyChord) -> String {
         switch error {
@@ -71,7 +80,7 @@ extension WorkspaceSettingsModel {
             let name = id.flatMap { id in
                 store.model.flatMap { m in m.cue(id).map { WarningRows.cueTitle($0, name: m.listName($0)) } }
             }
-            return name.map { String(format: loc("settings.keys.refused.cue"), $0) }
+            return name.map { String(format: loc("settings.keys.refused.cue"), Self.shortened($0)) }
                 ?? loc("settings.keys.refused.anyCue")
         }
     }

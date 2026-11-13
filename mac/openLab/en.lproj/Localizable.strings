@@ -342,12 +342,12 @@
 "settings.keys.clearKey" = "Remove the key of %@";
 "settings.keys.escOnce" = "Esc";
 "settings.keys.escTwice" = "Esc twice";
-"settings.keys.panicAll" = "Panic, all cues (fixed)";
-"settings.keys.stopAll" = "Stop all at once (fixed)";
+"settings.keys.panicAll" = "Panic all (fixed)";
+"settings.keys.stopAll" = "Hard stop all (fixed)";
 "settings.keys.refused.reserved" = "Esc and the up and down arrows cannot be used.";
-"settings.keys.refused.unsupported" = "That key cannot be used.";
+"settings.keys.refused.unsupported" = "Delete and keys past F12 cannot be stored in a show file.";
 "settings.keys.refused.action" = "Already the key of %@.";
-"settings.keys.refused.cue" = "Already the hotkey of cue %@.";
+"settings.keys.refused.cue" = "Already the hotkey of cue “%@”.";
 "settings.keys.refused.anyCue" = "Already a cue's hotkey.";
 "keymap.action.edit_number" = "Edit number";
 "keymap.action.edit_name" = "Edit name";

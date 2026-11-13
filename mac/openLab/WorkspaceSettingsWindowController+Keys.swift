@@ -15,7 +15,7 @@ extension WorkspaceSettingsWindowController {
             let stack = NSStackView(views: [heading] + rows + footer)
             stack.orientation = .vertical
             stack.alignment = .leading
-            stack.spacing = 6
+            stack.spacing = 4
             // Each row takes the column's width, so its name and reason wrap within it.
             for row in rows { row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
             return stack
@@ -26,10 +26,13 @@ extension WorkspaceSettingsWindowController {
         .enumerated().map { index, pair -> NSView in
             let key = NSTextField(labelWithString: loc(pair.0))
             key.alignment = .center
-            key.widthAnchor.constraint(equalToConstant: Self.keyFieldWidth + 24).isActive = true
-            let action = NSTextField(labelWithString: loc(pair.1))
+            key.widthAnchor.constraint(equalToConstant: Self.keyFieldWidth).isActive = true
+            // Wraps rather than widen its column past half the pane.
+            let action = NSTextField(wrappingLabelWithString: loc(pair.1))
+            action.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             for label in [key, action] { label.textColor = .secondaryLabelColor }
             let row = NSStackView(views: [key, action])
+            row.alignment = .firstBaseline
             row.spacing = 6
             row.setAX("\(AX.settingsKeys)-escape-\(index + 1)", label: "\(loc(pair.0)), \(loc(pair.1))")
             return row
@@ -42,6 +45,9 @@ extension WorkspaceSettingsWindowController {
         columns.alignment = .top
         columns.distribution = .fillEqually
         columns.spacing = 16
+        // The two columns share the pane equally whatever their contents would ask for.
+        workspace.widthAnchor.constraint(equalTo: editing.widthAnchor).isActive = true
+        for row in escape { row.widthAnchor.constraint(equalTo: workspace.widthAnchor).isActive = true }
         columns.setAX(AX.settingsKeys)
         return columns
     }
@@ -84,9 +90,8 @@ extension WorkspaceSettingsWindowController {
         reason.font = .systemFont(ofSize: 11)
         reason.textColor = .systemRed
         reason.isHidden = true
-        // A cue's name can be long: two lines at most, the whole reason in the tooltip.
-        reason.maximumNumberOfLines = 2
-        reason.cell?.truncatesLastVisibleLine = true
+        // As many lines as the reason needs: a cue's long name is shortened in the text itself
+        // (`WorkspaceSettingsModel.refusalText`), so the sentence is always whole.
         reason.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         reason.setAX("\(AX.settingsKeys)-reason-\(key.rawValue)")
         keyReasons[key] = reason
