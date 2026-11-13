@@ -32,9 +32,9 @@ extension WorkspaceSettingsWindowController {
         NSLayoutConstraint.activate([
             holder.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             holder.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            // The table is as wide as the pane less a scroller's width, whether one shows or not
-            // (as the cue list): the rows do not move when the list grows a scroller.
-            holder.widthAnchor.constraint(equalTo: scroll.widthAnchor, constant: -Self.scrollerReserve),
+            // The table is as wide as the pane; its device column is sized from the scroll view less a
+            // scroller's width, whether one shows or not, so the rows do not move when one appears.
+            holder.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
         ])
         scroll.setAX(AX.settingsPatchTable, label: loc("settings.audio.patches"))
@@ -125,7 +125,7 @@ extension WorkspaceSettingsWindowController {
             grid.topAnchor.constraint(equalTo: holder.topAnchor, constant: 8),
             grid.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 8),
             grid.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -8),
-            grid.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -8),
+            grid.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -8),
         ])
         patchGrid = grid
     }
@@ -174,11 +174,6 @@ extension WorkspaceSettingsWindowController {
             popup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             popup.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
-            // The device column takes the width the table has to spare (QLab's table gives it most).
-            let wide = popup.widthAnchor.constraint(
-                equalTo: patchGridHolder.widthAnchor, constant: -Self.fixedColumns)
-            wide.priority = NSLayoutConstraint.Priority(750)
-            wide.isActive = true
             popup.setAX("\(AX.settingsPatch)-device-\(n)", label: "\(shownName), \(loc("settings.audio.patchDevice"))")
 
             let edit = NSButton(
@@ -198,6 +193,14 @@ extension WorkspaceSettingsWindowController {
             remove.isEnabled = enabled && model.patches.count > 1
             remove.setAX("\(AX.settingsPatch)-remove-\(n)", label: "\(loc("settings.audio.removePatch")) \(shownName)")
             patchGrid.addRow(with: [name, popup, edit, remove])
+            // The device column takes the width the table has to spare (QLab's table gives it most).
+            // Made once the pop-up is in the table: a constraint to a view outside its window's
+            // tree throws.
+            let wide = popup.widthAnchor.constraint(
+                equalTo: patchGridHolder.enclosingScrollView?.widthAnchor ?? patchGridHolder.widthAnchor,
+                constant: -Self.fixedColumns - Self.scrollerReserve)
+            wide.priority = NSLayoutConstraint.Priority(750)
+            wide.isActive = true
 
             // Why the patch cannot play, under its row across the table; the text wraps in it.
             let problem = NSTextField(wrappingLabelWithString: model.problem(of: row).map(model.problemText) ?? "")
