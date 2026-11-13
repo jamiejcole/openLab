@@ -544,10 +544,10 @@ fn patch_property(p: &Pick) -> PatchProperty {
             value: p.d.is_multiple_of(2),
         },
         5 => PatchProperty::ChannelCount {
-            value: [1, 2, 3, 8, 0, 65, usize::MAX][p.d as usize % 7],
+            value: [1, 2, 3, 8, 0, 128, 129, usize::MAX][p.d as usize % 8],
         },
         _ => PatchProperty::Outputs {
-            value: vec![patch_output_from(p); [1, 2, 0, 65][p.d as usize % 4]],
+            value: vec![patch_output_from(p); [1, 2, 0, 128, 129][p.d as usize % 5]],
         },
     }
 }
@@ -603,7 +603,7 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
         12 => {
             let mut new = common::patch(
                 1 + u128::from(p.c % 5),
-                [1, 2, 4, 8, 0, 65][p.d as usize % 6],
+                [1, 2, 4, 8, 0, 128, 129][p.d as usize % 7],
             );
             new.master_db = level(p.a / 16);
             new.name = name_pool(p.a);

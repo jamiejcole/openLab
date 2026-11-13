@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::backup::{DEFAULT_BACKUP_KEEP, MAX_BACKUP_KEEP};
-use crate::cue::MAX_CHANNELS;
+use crate::cue::MAX_CUE_OUTPUTS;
 use crate::model::{OutputPatch, PatchId, WorkspaceId};
 
 pub const SETTINGS_VERSION: u32 = 1;
@@ -272,7 +272,7 @@ fn mapping_problem(patch: &str, mapping: &PatchMapping) -> Option<String> {
     if mapping.device.is_empty() || mapping.device.len() > MAX_DEVICE_NAME_BYTES {
         return Some("invalid device name".into());
     }
-    if mapping.channels.is_empty() || mapping.channels.len() > MAX_CHANNELS as usize {
+    if mapping.channels.is_empty() || mapping.channels.len() > MAX_CUE_OUTPUTS as usize {
         return Some("wrong number of channels".into());
     }
     if mapping.channels.iter().any(|&c| c > MAX_DEVICE_CHANNEL) {
@@ -722,10 +722,16 @@ mod tests {
         );
         assert!(
             settings
-                .set_patch_mapping(ws(1), pid(1), mapping("A", &[0; 65]))
+                .set_patch_mapping(ws(1), pid(1), mapping("A", &[0; 129]))
                 .is_err()
         );
         assert_eq!(settings, MachineSettings::default());
+        // One device channel per cue output: a 128-output patch can be mapped.
+        assert!(
+            settings
+                .set_patch_mapping(ws(1), pid(1), mapping("A", &[0; 128]))
+                .is_ok()
+        );
     }
 
     #[test]

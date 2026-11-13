@@ -19,7 +19,7 @@ An openLab workspace is one UTF-8 JSON text file with the extension **`.openlab`
 - **Times** are seconds as JSON numbers (`f64`), from 0 to 24 hours (86 400 s) unless a field says
   otherwise. Integers are accepted (`2` = `2.0`).
 - **Levels** are decibels (`f64`). `-120.0` or lower means silence; openLab writes `-120.0`. The highest level is `+12.0`.
-- **Indices** (cue outputs, file channels) are 0-based integers. A patch, cue or file has at most 64
+- **Indices** (cue outputs, file channels) are 0-based integers. A patch or cue has at most 128 cue outputs and a file at most 64
   channels.
 - **Mute** flags sit beside a level and keep it, so unmuting restores the level.
 
@@ -81,9 +81,9 @@ cue, and the cue shows as broken where it cannot run.
 | Two slice markers at the same time | Warning; the second is removed |
 | A slice marker less than 50 ms (`MIN_SLICE_SECONDS`) after `start_time` or the marker before it, or before `end_time` | Warning; every slice, and so every loop, is at least 50 ms long. The marker moves to make the short slice exactly 50 ms (keeping its play count, so a stutter or vamp stays one); only when the neighbouring slice cannot give the room is the marker removed and the two slices become one, playing as the longer did. Without an `end_time` the last slice meets only the audio engine's loop floor (`MIN_LOOP_MS`) at voice planning |
 | More than 254 slice markers (`MAX_SLICE_MARKERS`; the audio engine plays at most 256 slice entries, and a start offset inside a slice splits it) | Warning (`TooManySlices`); the markers after the 254th are removed. An edit, paste or duplicate that would exceed it is refused |
-| A patch with no outputs, or more than 64 | Warning; one output added, or the extras removed |
+| A patch with no outputs, or more than 128 | Warning; one output added, or the extras removed |
 | More Audio cue outputs than its patch has | Warning; kept, but the extra outputs are silent until the patch has them again |
-| More than 64 cue outputs; a crosspoint or gang naming channel or output 64 or more; Fade levels naming output or channel 64 or more | Warning; those entries are removed |
+| More than 128 cue outputs; a crosspoint naming channel 64 or more or output 128 or more; a gang naming output 128 or more; Fade levels naming output 128 or more or channel 64 or more | Warning; those entries are removed |
 | The same crosspoint (input and output) listed twice, or a cue output in more than one gang or twice in one | Warning; the first is kept, the repeats removed |
 | A hotkey key name that is empty or has upper-case letters, spaces or control characters | Warning; the key will not fire |
 | Migration notices: a pre-v9 `master_db` other than 0 (`GlobalMasterRemoved`), a pre-v3 Fade aimed at a Group (`GroupFadeNowRelative`), a pre-v6 playhead key the user changed (`PlayheadKeysRemoved`), a pre-v7 output delay other than 0 (`OutputDelaysRemoved`) | Warning, once (the Fade one per cue); the migration removes the field or leaves the cue as it is |
@@ -155,7 +155,7 @@ outputs reach is configured per machine.
 | `id` | UUID | |
 | `name` | string | |
 | `master_db` | level | Patch master. |
-| `outputs` | array of outputs | 1 to 64 entries; the patch's channel count is the length. Each is `{"level_db": level, "mute": bool, "polarity_inverted": bool}`. |
+| `outputs` | array of outputs | 1 to 128 entries (QLab 5's patch range); the patch's channel count is the length. Each is `{"level_db": level, "mute": bool, "polarity_inverted": bool}`. |
 
 ### 4.5 Network patches
 
@@ -224,7 +224,7 @@ Option on macOS).
 | `slices` | array of `{"time", "play_count"}` | Slice markers in increasing time order, seconds from the start of the file, strictly between the trim points, each slice at least 50 ms long. Each marker ends a slice; that slice plays `play_count` times. `0` = loop until devamped. |
 | `last_slice_play_count` | integer | Play count of the slice after the last marker (or of the whole file when there are none). `0` = loop until devamped. |
 | `levels.master_db` | level | Cue master. |
-| `levels.outputs` | array of `{"db": level, "mute": bool}` | One per cue output, at most 64. Cue output `i` feeds output `i` of the patch; outputs beyond the patch's are silent but kept. |
+| `levels.outputs` | array of `{"db": level, "mute": bool}` | One per cue output, at most 128. Cue output `i` feeds output `i` of the patch; outputs beyond the patch's are silent but kept. |
 | `levels.crosspoints` | array of crosspoints | Routing matrix from file channels to cue outputs. Sparse: a crosspoint not listed is silent. Each input/output pair appears at most once. |
 | `levels.gangs` | array of arrays of cue output indices | Outputs in the same set move together when edited. An output is in at most one gang. |
 | `preload` | bool | Decode the whole file into memory when the cue loads. |

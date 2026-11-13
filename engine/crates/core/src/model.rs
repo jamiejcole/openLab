@@ -192,9 +192,10 @@ pub struct OutputPatch {
     pub name: String,
     /// Patch master level (PB-11).
     pub master_db: f64,
-    /// One entry per output; the patch's channel count is its length, 1 to [`MAX_CHANNELS`].
+    /// One entry per output; the patch's channel count is its length, 1 to
+    /// [`MAX_CUE_OUTPUTS`].
     ///
-    /// [`MAX_CHANNELS`]: crate::MAX_CHANNELS
+    /// [`MAX_CUE_OUTPUTS`]: crate::MAX_CUE_OUTPUTS
     pub outputs: Vec<PatchOutput>,
 }
 
