@@ -357,7 +357,7 @@
 "keymap.action.edit_pre_wait" = "Edit pre-wait";
 "keymap.action.edit_duration" = "Edit duration";
 "keymap.action.edit_post_wait" = "Edit post-wait";
-"keymap.action.cycle_continue" = "Next continue mode";
+"keymap.action.cycle_continue" = "Continue mode";
 "keymap.action.toggle_flag" = "Flag or unflag";
 "settings.tab.audio" = "Audio";
 "settings.tab.osc" = "OSC";

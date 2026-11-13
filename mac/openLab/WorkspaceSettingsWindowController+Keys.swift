@@ -11,10 +11,13 @@ extension WorkspaceSettingsWindowController {
         func column(_ title: String, _ keys: [WorkspaceKey], footer: [NSView]) -> NSStackView {
             let heading = NSTextField(labelWithString: title)
             heading.font = .systemFont(ofSize: 13, weight: .semibold)
-            let stack = NSStackView(views: [heading] + keys.map(keyRow) + footer)
+            let rows = keys.map(keyRow)
+            let stack = NSStackView(views: [heading] + rows + footer)
             stack.orientation = .vertical
             stack.alignment = .leading
             stack.spacing = 6
+            // Each row takes the column's width, so its name and reason wrap within it.
+            for row in rows { row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
             return stack
         }
         let escape = [("settings.keys.escOnce", "settings.keys.panicAll"), ("settings.keys.escTwice", "settings.keys.stopAll")]
@@ -41,7 +44,7 @@ extension WorkspaceSettingsWindowController {
         return columns
     }
 
-    static let keyFieldWidth: CGFloat = 78
+    static let keyFieldWidth: CGFloat = 84
 
     private func keyRow(_ key: WorkspaceKey) -> NSView {
         let title = loc(key.titleKey)
@@ -52,6 +55,11 @@ extension WorkspaceSettingsWindowController {
         field.idlePlaceholder = loc("settings.keys.none")
         field.recordingPlaceholder = loc("settings.keys.press")
         field.placeholderString = field.idlePlaceholder
+        field.clearsWhileRecording = true
+        // One line always: the prompt must not make the row taller while a key is awaited.
+        field.usesSingleLineMode = true
+        field.cell?.wraps = false
+        field.lineBreakMode = .byTruncatingTail
         field.setAX("\(AX.settingsKeys)-\(key.rawValue)", label: title)
         field.widthAnchor.constraint(equalToConstant: Self.keyFieldWidth).isActive = true
         field.onRecord = { [weak self] event in self?.keyTyped(event, for: key) }
@@ -66,13 +74,16 @@ extension WorkspaceSettingsWindowController {
         clear.setContentHuggingPriority(.required, for: .horizontal)
         keyClearButtons[key] = clear
 
-        let name = NSTextField(labelWithString: title)
-        name.lineBreakMode = .byTruncatingTail
+        let name = NSTextField(wrappingLabelWithString: title)
+        name.alignment = .left
         name.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         let reason = NSTextField(wrappingLabelWithString: "")
         reason.font = .systemFont(ofSize: 11)
         reason.textColor = .systemRed
         reason.isHidden = true
+        // A cue's name can be long: two lines at most, the whole reason in the tooltip.
+        reason.maximumNumberOfLines = 2
+        reason.cell?.truncatesLastVisibleLine = true
         reason.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         reason.setAX("\(AX.settingsKeys)-reason-\(key.rawValue)")
         keyReasons[key] = reason
@@ -80,11 +91,13 @@ extension WorkspaceSettingsWindowController {
         words.orientation = .vertical
         words.alignment = .leading
         words.spacing = 1
+        for label in [name, reason] { label.widthAnchor.constraint(equalTo: words.widthAnchor).isActive = true }
         words.setHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         let row = NSStackView(views: [field, clear, words])
         row.orientation = .horizontal
         row.alignment = .firstBaseline
+        row.distribution = .fill  // the words take what the field and button leave
         row.spacing = 6
         return row
     }
@@ -99,6 +112,7 @@ extension WorkspaceSettingsWindowController {
             keyClearButtons[key]?.isEnabled = enabled && keys[key] != nil
             let reason = keyReasons[key]
             reason?.stringValue = refusal?.key == key ? refusal?.text ?? "" : ""
+            reason?.toolTip = reason?.stringValue
             reason?.isHidden = refusal?.key != key
         }
     }

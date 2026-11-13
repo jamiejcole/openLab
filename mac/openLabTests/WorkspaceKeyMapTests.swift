@@ -191,6 +191,40 @@ final class KeyMapPageTests: XCTestCase {
         await assertEventually { self.reason(.pauseAll) == nil }
     }
 
+    /// At the window's least size, with a cue's long name in a refusal beside a wrapped action name,
+    /// every field, button, name and the fixed Esc lines lie inside the pane; the reason keeps to two
+    /// lines and a field waiting for a key stays one line high.
+    func testAtTheLeastSizeEveryRowOfTheKeyMapIsInsideThePane() async throws {
+        let cue = try XCTUnwrap(rig.store.model?.cueLists.first?.cues.first)
+        let long = String(repeating: "A very long cue name ", count: 20)
+        guard case .success = await rig.store.send(command: .setProperty(cue.id, .name(long))),
+            case .success = await rig.store.send(
+                command: .setProperty(cue.id, .triggers(hotkey: KeyChord("x").hotkeyJSON, osc: nil)))
+        else { return XCTFail("setup") }
+        await assertEventually { self.rig.store.model?.cueHotkeys.count == 1 }
+        let window = try XCTUnwrap(sc.window)
+        window.setContentSize(window.contentMinSize)
+        try type("x", code: 7, into: .pauseResumeSelected)
+        await assertEventually { self.reason(.pauseResumeSelected) != nil }
+        let field = try XCTUnwrap(sc.keyFields[.editNotes])
+        let height = field.fittingSize.height
+        XCTAssertTrue(window.makeFirstResponder(field))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(field.fittingSize.height, height, "the prompt does not wrap")
+        let pane = try XCTUnwrap(sc.tabs.selectedTabViewItem?.view)
+        let columns = try XCTUnwrap(pane.subviews.first as? NSStackView)
+        var views: [NSView] = columns.arrangedSubviews.flatMap { ($0 as? NSStackView)?.arrangedSubviews ?? [] }
+        views += Array(sc.keyReasons.values.filter { !$0.isHidden })
+        for view in views {
+            let frame = view.convert(view.bounds, to: pane)
+            XCTAssertTrue(pane.bounds.contains(frame), "\(view) at \(frame) outside \(pane.bounds)")
+        }
+        let reason = try XCTUnwrap(sc.keyReasons[.pauseResumeSelected])
+        let line = try XCTUnwrap(reason.font).boundingRectForFont.height
+        XCTAssertLessThanOrEqual(reason.frame.height, line * 2 + 2, "two lines at most")
+        XCTAssertEqual(reason.toolTip, reason.stringValue)
+    }
+
     /// The engine cannot be reached: the key is not taken, and the field says why.
     func testAKeyTheEngineCannotTakeSaysWhyBesideTheField() async throws {
         let offline = try Rig.offline()

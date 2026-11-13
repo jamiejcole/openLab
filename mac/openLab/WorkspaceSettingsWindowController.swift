@@ -259,6 +259,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             if id == "osc" || id == "network" {
                 view.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -16).isActive = true
             }
+            // The key map's two columns share the pane's width, so a long action name wraps in its own.
+            if id == "keys" {
+                view.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -16).isActive = true
+            }
             NSLayoutConstraint.activate([
                 view.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 16),
                 view.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -16),

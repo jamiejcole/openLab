@@ -124,15 +124,25 @@ final class HotkeyRecorder: NSTextField {
     /// What the empty field says, idle and while waiting for the key.
     var idlePlaceholder = loc("inspector.hotkey.click")
     var recordingPlaceholder = loc("inspector.hotkey.recording")
+    /// The key shown is taken out while waiting for the next one, so the prompt shows; it comes back
+    /// if none is pressed.
+    var clearsWhileRecording = false
+    private var shownBeforeRecording: String?
 
     override var acceptsFirstResponder: Bool { isEnabled }
     override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self) }
     override func becomeFirstResponder() -> Bool {
         placeholderString = recordingPlaceholder
+        if clearsWhileRecording {
+            shownBeforeRecording = stringValue
+            stringValue = ""
+        }
         return super.becomeFirstResponder()
     }
     override func resignFirstResponder() -> Bool {
         placeholderString = idlePlaceholder
+        if let shown = shownBeforeRecording, stringValue.isEmpty { stringValue = shown }
+        shownBeforeRecording = nil
         NotificationCenter.default.post(name: Self.didEndRecording, object: self)
         return super.resignFirstResponder()
     }

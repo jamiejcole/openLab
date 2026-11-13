@@ -1,0 +1,17 @@
+{
+  "about": "The notes key: a cue selected and O pressed shows the inspector on its Basics tab with the caret in the notes, from another tab and with the inspector hidden.",
+  "show": "Demo",
+  "steps": [
+    {"select": "1"},
+    {"tab": "triggers"},
+    {"key": "o"},
+    {"key": "h"},
+    {"key": "i"},
+    {"shot": "notes-typed"},
+    {"click": "toggle-inspector"},
+    {"select": "2"},
+    {"shot": "inspector-hidden"},
+    {"key": "o"},
+    {"shot": "inspector-shown-for-notes"}
+  ]
+}
