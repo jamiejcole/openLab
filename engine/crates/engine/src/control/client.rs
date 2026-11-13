@@ -211,6 +211,16 @@ impl Control {
                         },
                     );
                 }
+                Request::SetBufferSize { device, frames } => {
+                    let outcome = self.set_buffer_size(&device, frames);
+                    reply(
+                        to,
+                        match outcome {
+                            Ok(()) => ok(id, None),
+                            Err(error) => failed(id, error),
+                        },
+                    );
+                }
                 Request::LogTail { max } => {
                     let (entries, dropped, seq) = self.eng.log_tail(max);
                     reply(

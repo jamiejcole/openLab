@@ -55,8 +55,6 @@ use crate::platform::{exit, power, relaunch, signals};
 use engine_file::{EngineFile, EngineInfo};
 use stop::Stop;
 
-/// Frames per device callback asked for: about 5 ms at 48 kHz.
-const BUFFER_FRAMES: u32 = 256;
 /// Rates tried, in order, when the device supports several.
 const RATES: [u32; 3] = [48_000, 44_100, 96_000];
 
@@ -424,9 +422,15 @@ fn run_with(
         ..MixerConfig::default()
     };
     let (ctl, mixer) = Mixer::new(mixer_config).map_err(HostError::Mixer)?;
+    // The buffer size set for this device on this machine (AUD-21), else the default.
+    let buffer_frames = machine
+        .as_ref()
+        .map_or(openlab_core::DEFAULT_BUFFER_FRAMES, |(loaded, _)| {
+            loaded.settings.buffer_frames_for(&device.name)
+        });
     let request = OpenRequest {
         device_id: Some(device.id.clone()),
-        buffer_frames: Some(BUFFER_FRAMES),
+        buffer_frames: Some(buffer_frames),
     };
     let (inbox_tx, inbox) = crossbeam_channel::unbounded();
     let device = devices::start(layer, mixer, request, devices, inbox_tx.clone(), wall)?
@@ -439,7 +443,6 @@ fn run_with(
     config.mixer_patches = MAX_PATCHES;
     // Further devices a patch maps to play with mixers like the primary's.
     config.output_mixer = Some(mixer_config);
-    config.output_buffer_frames = Some(BUFFER_FRAMES);
     config.show_log = show_log;
     config.status = Some(StatusConfig::default());
     config.push_log = true;

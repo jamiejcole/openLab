@@ -4,10 +4,16 @@
 //! outage and its recovery in every doc, the device list, and the device warnings.
 
 use openlab_audio::{CommandKind, VoiceId};
-use openlab_core::protocol::{DeviceEntry, LogLevel, RuntimeChange, WireWarning};
-use openlab_core::{BrokenReason, CueId, CueKind, CueState, DeviceInfo, Input, PatchResolution};
+use openlab_core::protocol::{
+    DeviceEntry, ErrorBody, ErrorCode, LogLevel, RuntimeChange, WireWarning,
+};
+use openlab_core::{
+    BrokenReason, CueId, CueKind, CueState, DeviceInfo, Input, MAX_BUFFER_FRAMES,
+    MIN_BUFFER_FRAMES, PatchResolution,
+};
 
 use super::devices::{Device, DeviceAnswer, DeviceEvent, OutputKey};
+use super::outputs::Output;
 use super::{Backend, Control, DocCx, Engine, notice};
 
 impl Control {
@@ -60,8 +66,28 @@ impl Control {
             self.eng.outputs.follow_clock();
             match event {
                 DeviceEvent::Lost { why } => self.device_lost(key, &name, &why),
-                DeviceEvent::Restored => self.device_restored(&name, "is back"),
-                DeviceEvent::Opened => self.device_restored(&name, "opened"),
+                DeviceEvent::Restored => {
+                    self.device_restored(&name, "is back");
+                    self.eng.check_buffer(key);
+                }
+                DeviceEvent::Opened => {
+                    self.device_restored(&name, "opened");
+                    self.eng.check_buffer(key);
+                }
+                DeviceEvent::Reconfigured => {
+                    self.follow_block();
+                    let frames = self.eng.outputs.get(key).and_then(Output::block);
+                    self.eng.log_device(
+                        LogLevel::Info,
+                        match frames {
+                            Some(b) => {
+                                format!("audio device \"{name}\" reopened with {b}-frame buffers")
+                            }
+                            None => format!("audio device \"{name}\" reopened"),
+                        },
+                    );
+                    self.eng.check_buffer(key);
+                }
                 // Patches resolve against the devices that play, so a change in the list changes
                 // them only through a loss or a reopen; resolving again is cheap. A device a
                 // patch maps to may have come.
@@ -256,7 +282,7 @@ impl Control {
             };
             let request = openlab_audio::OpenRequest {
                 device_id: Some(device.id.clone()),
-                buffer_frames: self.eng.config.output_buffer_frames,
+                buffer_frames: Some(self.eng.config.machine.buffer_frames_for(&name)),
             };
             let key = self.eng.outputs.next_key();
             let inbox = self.eng.inbox.clone();
@@ -272,7 +298,7 @@ impl Control {
             };
             match spawned {
                 Ok(d) => {
-                    let output = super::outputs::Output {
+                    let output = Output {
                         name: name.clone(),
                         mixer: ctl,
                         backend: Backend::Device(Box::new(d)),
@@ -291,6 +317,44 @@ impl Control {
                 ),
             }
         }
+    }
+
+    /// `set_buffer_size` (AUD-21): device `device`'s buffer size on this machine, 16 to 1024
+    /// frames. Validated first (nothing changes on a refusal), stored and saved; a device the
+    /// engine plays on reopens at once at that size, the others untouched.
+    pub(super) fn set_buffer_size(&mut self, device: &str, frames: u32) -> Result<(), ErrorBody> {
+        if !(MIN_BUFFER_FRAMES..=MAX_BUFFER_FRAMES).contains(&frames) {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                format!(
+                    "a buffer size of {frames} frames is outside {MIN_BUFFER_FRAMES} to \
+                     {MAX_BUFFER_FRAMES}"
+                ),
+            ));
+        }
+        if !self.eng.device_list().iter().any(|d| d.name == device) {
+            return Err(ErrorBody::new(
+                ErrorCode::NotFound,
+                format!("no output device named \"{device}\""),
+            ));
+        }
+        self.eng.require_saveable()?;
+        self.eng
+            .config
+            .machine
+            .set_buffer_frames(device, frames)
+            .map_err(|why| ErrorBody::new(ErrorCode::BadRequest, why))?;
+        self.eng.save_machine();
+        self.eng.log_device(
+            LogLevel::Info,
+            format!("audio device \"{device}\": buffer size set to {frames} frames"),
+        );
+        if let Some(key) = self.eng.outputs.by_name(device)
+            && let Some(Backend::Device(d)) = self.eng.outputs.get_mut(key).map(|o| &mut o.backend)
+        {
+            d.set_buffer(frames);
+        }
+        Ok(())
     }
 
     /// A device that could not be opened as an output: logged once per device.
@@ -551,6 +615,26 @@ impl DocCx<'_> {
 }
 
 impl Engine {
+    /// Output `key`'s stream runs at another buffer size than it asked for (the device could
+    /// not do it and negotiation took the nearest it could): a `warn` log says so.
+    pub(super) fn check_buffer(&mut self, key: OutputKey) {
+        let Some(o) = self.outputs.get(key) else {
+            return;
+        };
+        let Backend::Device(d) = &o.backend else {
+            return;
+        };
+        if let (Some(asked), Some(got)) = (d.requested_buffer(), d.info().block_frames)
+            && asked != got
+        {
+            let message = format!(
+                "audio device \"{}\" cannot use {asked}-frame buffers; it plays with {got}",
+                o.name
+            );
+            self.log_device(LogLevel::Warn, message);
+        }
+    }
+
     /// The output devices for a `list_devices` request.
     pub(super) fn device_list(&self) -> Vec<DeviceEntry> {
         match self.outputs.primary().backend.device() {
@@ -561,6 +645,7 @@ impl Engine {
                     name: l.name.clone(),
                     output_channels: u32::from(l.max_channels()),
                     is_default: l.is_default,
+                    buffer_frames: self.config.machine.buffer_frames_for(&l.name),
                 })
                 .collect(),
             None => self
@@ -571,6 +656,7 @@ impl Engine {
                     name: d.name.clone(),
                     output_channels: d.output_channels,
                     is_default: false,
+                    buffer_frames: self.config.machine.buffer_frames_for(&d.name),
                 })
                 .collect(),
         }

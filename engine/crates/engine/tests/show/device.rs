@@ -75,6 +75,8 @@ struct State {
     block: u32,
     /// Frames per callback reported by streams opened on these devices from now on.
     device_blocks: Vec<(String, u32)>,
+    /// Each open asked of a device: its id and the frames per callback asked for.
+    requests: Vec<(String, Option<u32>)>,
     /// What those streams report instead of `block` (a host that cannot say, or says wrong).
     reported_block: Option<Option<u32>>,
     reported_rate: Option<u32>,
@@ -221,6 +223,16 @@ impl Fake {
         self.state.lock().unwrap().opens
     }
 
+    /// The frames per callback each open of device `id` asked for, in order.
+    pub fn requested(&self, id: &str) -> Vec<Option<u32>> {
+        let s = self.state.lock().unwrap();
+        s.requests
+            .iter()
+            .filter(|(d, _)| d == id)
+            .map(|&(_, b)| b)
+            .collect()
+    }
+
     /// The primary's stream is open and calls back.
     pub fn is_rendering(&self) -> bool {
         let s = self.state.lock().unwrap();
@@ -291,6 +303,9 @@ impl DeviceLayer for FakeLayer {
         }
         let mut s = self.0.state.lock().unwrap();
         s.opens += 1;
+        if let Some(id) = &request.device_id {
+            s.requests.push((id.clone(), request.buffer_frames));
+        }
         if s.panic_on_open {
             drop(s);
             panic!("the stand-in layer panics during open");
@@ -402,9 +417,6 @@ impl DeviceShow {
     /// another listed device opens it too.
     pub fn new(ws: Workspace, devices: Vec<ListedDevice>, mut config: ControlConfig) -> Self {
         config.output_mixer.get_or_insert_with(mixer_config);
-        config
-            .output_buffer_frames
-            .get_or_insert(u32::try_from(BLOCK).unwrap());
         let fake = Fake::new(devices.clone());
         let (ctl, mixer) = Mixer::new(mixer_config()).unwrap();
         let (inbox_tx, inbox) = crossbeam_channel::unbounded();

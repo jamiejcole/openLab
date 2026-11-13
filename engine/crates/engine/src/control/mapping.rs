@@ -308,7 +308,7 @@ impl Engine {
     /// Refuses an operator's change to the machine settings that could not be kept: they would
     /// work until the app quits and then be gone, and the reply would have said all was well.
     /// With no settings folder configured (tests, the offline driver) there is nothing to keep.
-    fn require_saveable(&self) -> Result<(), ErrorBody> {
+    pub(super) fn require_saveable(&self) -> Result<(), ErrorBody> {
         if self.config.app_dirs.is_none() {
             return Ok(());
         }
@@ -327,7 +327,7 @@ impl Engine {
 
     /// Hands the machine settings to the writer, unless they are defaults standing in for a file
     /// that could not be read (the operator's mappings would be lost) or there is no writer.
-    fn save_machine(&mut self) {
+    pub(super) fn save_machine(&mut self) {
         if !self.config.machine_writable {
             if !std::mem::replace(&mut self.unwritable_warned, true) {
                 self.log(

@@ -199,10 +199,9 @@ pub struct ControlConfig {
     pub mixer_patches: usize,
     /// The mixer every further output device is built with (at the primary's rate and
     /// output count): a patch mapped to a listed device other than the primary opens that
-    /// device. `None`: the engine plays on the primary device only.
+    /// device, asked for its buffer size from `machine`. `None`: the engine plays on the
+    /// primary device only.
     pub output_mixer: Option<openlab_audio::MixerConfig>,
-    /// Frames per callback asked of a further output device.
-    pub output_buffer_frames: Option<u32>,
     pub streamer: StreamerConfig,
     /// Memory all preloaded media may take together (AUD-05).
     pub preload_budget: u64,
@@ -279,7 +278,6 @@ impl ControlConfig {
             devices: Vec::new(),
             mixer_patches: 1,
             output_mixer: None,
-            output_buffer_frames: None,
             streamer: StreamerConfig::new(sample_rate),
             preload_budget: openlab_audio::DEFAULT_PRELOAD_BUDGET,
             app_dirs: None,
@@ -773,6 +771,7 @@ impl Control {
         );
         eng.refresh_playable();
         eng.size_meters();
+        eng.check_buffer(0);
         let mut control = Self {
             eng,
             docs: Vec::new(),
@@ -1304,6 +1303,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::Relink { .. } => "relink",
         Request::ListDevices => "list_devices",
         Request::SetOutputDevice { .. } => "set_output_device",
+        Request::SetBufferSize { .. } => "set_buffer_size",
         Request::PreshowCheck => "preshow_check",
         Request::ListPatchMappings => "list_patch_mappings",
         Request::SetShowMode { .. } => "set_show_mode",

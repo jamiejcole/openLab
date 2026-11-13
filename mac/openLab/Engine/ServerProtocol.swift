@@ -202,10 +202,13 @@ struct DeviceEntry: Hashable, Sendable, Decodable {
     let outputChannels: Int
     /// The system default device: what an engine with no chosen device opens at start.
     let isDefault: Bool
+    /// AUD-21: frames per callback this device is asked for on this machine.
+    let bufferFrames: Int
     enum CodingKeys: String, CodingKey {
         case name
         case outputChannels = "output_channels"
         case isDefault = "is_default"
+        case bufferFrames = "buffer_frames"
     }
 
     init(from decoder: Decoder) throws {
@@ -213,6 +216,7 @@ struct DeviceEntry: Hashable, Sendable, Decodable {
         name = try c.decode(String.self, forKey: .name)
         outputChannels = try c.decode(Int.self, forKey: .outputChannels)
         isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
+        bufferFrames = try c.decode(Int.self, forKey: .bufferFrames)
     }
 }
 

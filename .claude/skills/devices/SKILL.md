@@ -29,7 +29,7 @@ Two layers. **Mechanism** is in `openlab-audio`: `negotiate.rs` (pure), `output.
 - **Channels:** the exact count if offered; else the smallest larger count (extra device channels silent); else the largest smaller count. With fewer channels, mixer outputs `0..mapped` reach the device and the rest are not heard: `outputs_dropped` is reported so the engine warns.
 - At most 64 mixer outputs are used; a device with more channels opens at its own count and channels above 64 stay silent.
 - **Format** at that channel count: f32, f64, i32, i16, u16. Others (i24, u8, DSD) are skipped; none usable gives `NoConfigs`.
-- **Buffer:** the requested size if in range, else the nearest end. A host that cannot report a range gets the requested size, and if it refuses, the host default.
+- **Buffer:** the requested size if in range, else the nearest end. The engine asks each device for its size from machine settings (`set_buffer_size`, 16 to 1024 frames, default 512; AUD-21) and logs a `warn` when the stream runs at another (`Engine::check_buffer`). A host that cannot report a range gets the requested size, and if it refuses, the host default.
 - `open_output(mixer, &OpenRequest)` negotiates, builds and starts the stream. Failure is an `OpenError` with a `DeviceError` kind (NotFound, Unavailable, Busy, PermissionDenied, UnsupportedConfig, `Negotiate(..)`, Backend); `OpenError::take_mixer()` returns the mixer. A default device whose id the host cannot report fails with Backend rather than storing an empty id.
 
 ## The stream never follows the system default
@@ -139,6 +139,7 @@ Decided from measuring QLab 5; there is no grace period and no exact-sample resu
 - **Routing.** Slot numbers are shared by every mixer; a slot's gains go to the mixer of its patch's device (`Patches::slot_output`). A voice plays in the mixer of its start's slot (`Outputs::route`); every later command of it goes there. A voice never moves between mixers: a cue whose patch moves to another device plays on where it started.
 - **Clock.** The primary's sample counter is the master clock while it plays. Another device's commands are dated `local_rendered + (at - master_rendered)` from the counters read when they are sent, never before what that device has rendered and never before an earlier command of the same voice; its events come back through the inverse. Starts on two devices land within one buffer of each other and then drift (as QLab).
 - **Primary away, another device playing:** the master clock runs on the primary's wall clock from the last sample it rendered; when it returns its counter is offset to go on from there. With no device playing it stands still. It never goes back (`Outputs::follow_clock`).
+- **Buffer size change** (`Device::set_buffer`): a device that plays closes and opens again at once at the new size with its mixer as it was (voices and its counter carry on after the gap; `DeviceEvent::Reconfigured`, not an outage). The other devices are untouched. A reopen that fails is a loss.
 - **Lookahead** is the largest buffer of the devices that play, so every deadline is committed before the callback that renders it on each.
 - Engine load, xruns and underruns are summed or the worst over every device; `status.device` and `list_devices` describe the primary.
 

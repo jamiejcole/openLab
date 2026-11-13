@@ -30,7 +30,8 @@ description: "Load when changing or reviewing the engine control thread, engine/
   1. master clock follows the devices; each device (a loss or return acts on every doc); devices a mapping names opened; every mixer's events routed to the owning doc; catalog key changes and media watch batches; one meter read (every mixer) when due;
   2. each doc's tick (events, streams, deadlines, priming, progress, warnings, saves);
   3. probe and document-worker watchdogs; freed slots handed to docs waiting; autosave removals; settings, health, status; every mixer's `pump()`.
-- Client messages arrive as `Inbox::Conn { doc, .. }` (a WebSocket or OSC connection bound to a doc, or the app connection `None`). `Control::app_scope` takes the app-scope messages first: `new open open_recovery scan_recovery list_devices log_tail set_output_overrides close panic hotkey`. Everything else goes to the sender's doc (`no_workspace` for an app connection or a closed doc). `Inbox::Client` (tests, offline driver) addresses the first doc.
+- Client messages arrive as `Inbox::Conn { doc, .. }` (a WebSocket or OSC connection bound to a doc, or the app connection `None`).
+  `Control::app_scope` takes the app-scope messages first: `new open open_recovery scan_recovery discard_recovery list_devices set_output_device set_buffer_size log_tail set_output_overrides close panic hotkey`. Everything else goes to the sender's doc (`no_workspace` for an app connection or a closed doc). `Inbox::Client` (tests, offline driver) addresses the first doc.
 - Every broadcast is an `Outgoing { doc, message }`: a doc's reports tagged with it; the engine's own (`log`, `log_entry`, `status`, `workspaces`) with `None`.
 
 ### Threads

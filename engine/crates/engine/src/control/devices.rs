@@ -403,6 +403,7 @@ pub fn start_with_timeout(
         jobs: jobs_tx,
         lists: Some(lists_tx),
         opened: true,
+        reconfiguring: false,
         wall,
         in_flight: VecDeque::new(),
         listing: None,
@@ -465,6 +466,7 @@ fn spawn(
         jobs: jobs_tx,
         lists: None,
         opened: false,
+        reconfiguring: false,
         wall,
         in_flight: VecDeque::new(),
         listing: None,
@@ -698,6 +700,9 @@ pub enum DeviceEvent {
     Lost { why: String },
     /// A device started without waiting ([`spawn`]) opened for the first time.
     Opened,
+    /// The stream was closed and opened again at another buffer size ([`Device::set_buffer`]),
+    /// its mixer as it was.
+    Reconfigured,
     /// The device plays again (the stream was reopened).
     Restored,
     /// The stream has not called back for `ms` ms (first stage of the stall watchdog): a
@@ -737,6 +742,8 @@ pub struct Device {
     lists: Option<Sender<()>>,
     /// The stream has been up at least once.
     opened: bool,
+    /// The stream was closed to be opened again at once at another buffer size.
+    reconfiguring: bool,
     wall: WallClock,
     /// Open and close jobs sent whose answer has not come back, oldest first.
     in_flight: VecDeque<(Instant, JobKind)>,
@@ -824,6 +831,33 @@ impl Device {
         self.opened
     }
 
+    /// The frames per callback the device is asked for.
+    pub fn requested_buffer(&self) -> Option<u32> {
+        self.request.buffer_frames
+    }
+
+    /// Asks for `frames` per callback from now on (AUD-21). A stream that plays is closed and
+    /// opened again at once at that size, its mixer as it was: voices and its clock carry on
+    /// after the gap, which is not an outage. A device that is away or opening takes the size
+    /// at its next open. If the reopen fails, that is a loss ([`DeviceEvent::Lost`]).
+    pub fn set_buffer(&mut self, frames: u32) {
+        self.request.buffer_frames = Some(frames);
+        if self.outage.is_some() || !matches!(self.stream, Stream::Up) {
+            return;
+        }
+        let now = (self.wall)();
+        self.alloc_base = self
+            .alloc_base
+            .saturating_add(self.info.monitor.alloc_violations());
+        self.stall.warned = false;
+        self.stream = if self.send(Job::Close, JobKind::Close, now) {
+            self.reconfiguring = true;
+            Stream::Closing
+        } else {
+            Stream::Gone
+        };
+    }
+
     /// Why sound cannot come back without a restart, if it cannot.
     pub fn unrecoverable(&self) -> Option<&str> {
         self.stuck.as_deref()
@@ -877,6 +911,9 @@ impl Device {
         {
             self.stream = Stream::Down(Box::new(m));
         }
+        if self.reconfiguring && matches!(self.stream, Stream::Down(_)) {
+            self.reopen();
+        }
         if let Some(o) = &self.outage
             && now >= o.next_try
             && matches!(self.stream, Stream::Down(_))
@@ -923,7 +960,9 @@ impl Device {
                         self.stream = Stream::Up;
                         self.up_since = now;
                         let first = !std::mem::replace(&mut self.opened, true);
-                        events.push(if first {
+                        events.push(if std::mem::take(&mut self.reconfiguring) {
+                            DeviceEvent::Reconfigured
+                        } else if first {
                             DeviceEvent::Opened
                         } else {
                             DeviceEvent::Restored
@@ -931,6 +970,16 @@ impl Device {
                     }
                     Err(failure) => {
                         self.take_back(failure.mixer, now, &mut events);
+                        if std::mem::take(&mut self.reconfiguring) {
+                            // It did not come back at the new size: an outage like a loss.
+                            self.outage = Some(Outage { next_try: now });
+                            events.push(DeviceEvent::Lost {
+                                why: format!(
+                                    "it could not be opened again at the new buffer size ({})",
+                                    failure.error
+                                ),
+                            });
+                        }
                         if let Some(o) = &mut self.outage {
                             let retry_in = backoff(self.attempts);
                             o.next_try = now + retry_in;
@@ -946,6 +995,9 @@ impl Device {
             DeviceAnswer::Closed(back) => {
                 self.answered(JobKind::Close);
                 self.take_back(back, now, &mut events);
+                if self.reconfiguring && matches!(self.stream, Stream::Down(_)) {
+                    self.reopen();
+                }
             }
         }
         self.watchdog(now, &mut events);

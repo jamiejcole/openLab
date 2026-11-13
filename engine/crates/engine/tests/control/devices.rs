@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use openlab_core::protocol::{
-    ClientMessage, DeviceEntry, LogLevel, Outcome, Request, ResultData, RuntimeChange,
+    ClientMessage, DeviceEntry, ErrorCode, LogLevel, Outcome, Request, ResultData, RuntimeChange,
     ServerMessage, TransportAction, WireBrokenReason, WireCueState, WireProblem, WireWarning,
 };
 use openlab_core::{
@@ -91,6 +91,7 @@ fn entry(name: &str, output_channels: u32) -> DeviceEntry {
         name: name.into(),
         output_channels,
         is_default: false,
+        buffer_frames: openlab_core::DEFAULT_BUFFER_FRAMES,
     }
 }
 
@@ -2149,4 +2150,166 @@ fn a_patch_edit_during_a_primary_outage_applies_as_soon_as_it_returns() {
     let got = heard(&s.channel(0)[before..]);
     assert_eq!(got.len(), 1, "{got:?}");
     assert!((got[0] - level).abs() < 1e-4, "{got:?}");
+}
+
+// AUD-21: the buffer size is set per device (16 to 1024 frames, 512 by default).
+
+fn set_buffer(s: &mut DeviceShow, device: &str, frames: u32) -> Result<(), ErrorCode> {
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id,
+        request: Request::SetBufferSize {
+            device: device.into(),
+            frames,
+        },
+    });
+    match replies.iter().find_map(|m| match m {
+        ServerMessage::Result { outcome, .. } => Some(outcome.clone()),
+        _ => None,
+    }) {
+        Some(Outcome::Ok(_)) => Ok(()),
+        Some(Outcome::Error(e)) => Err(e.code),
+        None => panic!("{replies:?}"),
+    }
+}
+
+/// Checklist: a device's buffer size is changed: that device reopens at that size, the cue on
+/// it carries on, and the other device is untouched.
+#[test]
+fn changing_a_devices_buffer_size_reopens_only_that_device() {
+    let a = wav(&dc(20_000, 0.25));
+    let b = wav(&dc(20_000, 0.5));
+    let mut s = two_device_show(vec![audio(1, &a, 0), audio_b(2, &b, 0)]);
+    assert_eq!(s.fake.requested(DEV2), vec![Some(512)], "the default size");
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(BLOCK * 4);
+    s.take_outbound();
+    let primary_opens = s.fake.requested(DEV).len();
+    s.fake.set_device_block(DEV2, 128);
+    assert_eq!(set_buffer(&mut s, DEV2_NAME, 128), Ok(()));
+    s.settle_devices();
+    assert_eq!(s.fake.requested(DEV2).last(), Some(&Some(128)));
+    assert_eq!(
+        s.fake.requested(DEV).len(),
+        primary_opens,
+        "the primary was not reopened"
+    );
+    let msgs = s.take_outbound();
+    assert!(
+        logs(&msgs, LogLevel::Info)
+            .iter()
+            .any(|m| m.contains("reopened with 128-frame buffers")),
+        "{:?}",
+        logs(&msgs, LogLevel::Info)
+    );
+    assert!(logs(&msgs, LogLevel::Warn).is_empty(), "{msgs:?}");
+    assert!(!broken_device_lost(&msgs, 2));
+    // The lookahead follows the larger buffer.
+    assert_eq!(s.control().block_frames(), 128);
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    // Neither device dropped its cue: each still plays it, at its level.
+    assert_eq!(heard(&s.device_channel(DEV, 0)), vec![0.25]);
+    assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
+    let ch = s.device_channel(DEV2, 0);
+    let first = first_nonzero(&ch).unwrap();
+    assert!(ch[first..].iter().all(|&v| v == 0.5), "a gap in cue 2");
+    // Kept on this machine and listed.
+    assert_eq!(s.control().machine().buffer_frames_for(DEV2_NAME), 128);
+    let listed = list_devices(&mut s);
+    assert_eq!(
+        listed.iter().map(|d| d.buffer_frames).collect::<Vec<_>>(),
+        vec![512, 128]
+    );
+}
+
+/// A size the device cannot do: it plays at the nearest size it can, with a warning.
+#[test]
+fn a_buffer_size_the_device_refuses_falls_back_with_a_warning() {
+    let mut s = two_device_show(vec![]);
+    s.fake.set_device_block(DEV2, 256);
+    assert_eq!(set_buffer(&mut s, DEV2_NAME, 128), Ok(()));
+    s.settle_devices();
+    let warned = logs(&s.take_outbound(), LogLevel::Warn);
+    assert_eq!(
+        warned,
+        vec![format!(
+            "audio device \"{DEV2_NAME}\" cannot use 128-frame buffers; it plays with 256"
+        )]
+    );
+    assert!(s.control().output_up(DEV2_NAME));
+}
+
+/// Every path that sets a buffer size checks it: out of 16 to 1024 frames or for a device that
+/// is not listed, the request is refused and nothing changes or reopens.
+#[test]
+fn a_buffer_size_outside_16_to_1024_or_for_an_unknown_device_is_refused() {
+    let mut s = two_device_show(vec![]);
+    let opens = s.fake.opens();
+    for frames in [0, 15, 1025, u32::MAX] {
+        assert_eq!(
+            set_buffer(&mut s, DEV2_NAME, frames),
+            Err(ErrorCode::BadRequest),
+            "{frames}"
+        );
+    }
+    assert_eq!(set_buffer(&mut s, "Gone", 256), Err(ErrorCode::NotFound));
+    s.settle_devices();
+    assert_eq!(s.fake.opens(), opens);
+    assert!(s.control().machine().buffer_frames.is_empty());
+    // The ends of the range are accepted.
+    assert_eq!(set_buffer(&mut s, DEV2_NAME, 16), Ok(()));
+    assert_eq!(set_buffer(&mut s, DEV2_NAME, 1024), Ok(()));
+}
+
+/// A device opens at the buffer size set for it on this machine.
+#[test]
+fn a_device_opens_at_the_buffer_size_set_for_it() {
+    let mut ws = workspace(vec![]);
+    let mut patch = ws.patches[0].clone();
+    patch.id = patch_b();
+    ws.patches.push(patch);
+    let mut c = device_config(&ws);
+    c.machine
+        .set_patch_mapping(
+            ws.id,
+            patch_b(),
+            PatchMapping {
+                device: DEV2_NAME.into(),
+                channels: vec![0, 1],
+            },
+        )
+        .unwrap();
+    c.machine.set_buffer_frames(DEV2_NAME, 256).unwrap();
+    let mut s = DeviceShow::new(
+        ws,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        c,
+    );
+    s.wait_output(DEV2_NAME);
+    assert_eq!(s.fake.requested(DEV2), vec![Some(256)]);
+}
+
+/// A device that cannot be opened again at its new size is lost: its cues stop, the other
+/// device plays on.
+#[test]
+fn a_device_that_cannot_reopen_at_its_new_size_is_lost() {
+    let a = wav(&dc(20_000, 0.25));
+    let b = wav(&dc(20_000, 0.5));
+    let mut s = two_device_show(vec![audio(1, &a, 0), audio_b(2, &b, 0)]);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(BLOCK * 4);
+    s.take_outbound();
+    // Gone from the host before the list says so: the reopen finds no device.
+    s.fake.unplug(DEV2, false);
+    assert_eq!(set_buffer(&mut s, DEV2_NAME, 128), Ok(()));
+    s.settle_devices();
+    let msgs = s.take_outbound();
+    assert!(!s.control().output_up(DEV2_NAME));
+    assert!(broken_device_lost(&msgs, 2));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert!(!s.control().device_down());
 }

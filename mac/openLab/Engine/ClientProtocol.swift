@@ -146,9 +146,12 @@ enum Request: Hashable, Sendable, Codable {
     case saveAs(path: String)
     case relink(folder: String)
     case listDevices
-    /// Chooses the output device the engine opens at its next start (nil: the system default).
-    /// App-scope; the engine plays on one device for its whole run.
+    /// Chooses the primary output device the engine opens at its next start (nil: the system
+    /// default). App-scope; the engine keeps its primary device for its whole run.
     case setOutputDevice(device: String?)
+    /// AUD-21: frames per callback asked of an output device on this machine, 16 to 1024. A
+    /// device the engine plays on reopens at that size. App-scope.
+    case setBufferSize(device: String, frames: UInt32)
     /// Where each of the workspace's patches plays on this machine (WS-07).
     case listPatchMappings
     case preshowCheck
@@ -213,6 +216,8 @@ enum Request: Hashable, Sendable, Codable {
         case .logTail(let max):
             opt(&f, "max", max)
             return ("log_tail", f)
+        case .setBufferSize(let device, let frames):
+            return ("set_buffer_size", [("device", device), ("frames", frames)])
         case .setOutputOverrides(let disabled): return ("set_output_overrides", [("network_disabled", disabled)])
         case .setShowMode(let on): return ("set_show_mode", [("on", on)])
         case .setPatchMapping(let patch, let mapping):
@@ -258,6 +263,10 @@ enum Request: Hashable, Sendable, Codable {
         case "list_patch_mappings": self = .listPatchMappings
         case "preshow_check": self = .preshowCheck
         case "log_tail": self = .logTail(max: try c.decodeIfPresent(UInt32.self, forKey: "max"))
+        case "set_buffer_size":
+            self = .setBufferSize(
+                device: try c.decode(String.self, forKey: "device"),
+                frames: try c.decode(UInt32.self, forKey: "frames"))
         case "set_output_overrides":
             self = .setOutputOverrides(networkDisabled: try c.decode(Bool.self, forKey: "network_disabled"))
         case "set_show_mode": self = .setShowMode(on: try c.decode(Bool.self, forKey: "on"))
