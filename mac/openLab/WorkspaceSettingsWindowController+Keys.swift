@@ -20,18 +20,20 @@ extension WorkspaceSettingsWindowController {
             for row in rows { row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
             return stack
         }
-        let escape = [("settings.keys.escOnce", "settings.keys.panicAll"), ("settings.keys.escTwice", "settings.keys.stopAll")]
-            .enumerated().map { index, pair -> NSView in
-                let key = NSTextField(labelWithString: loc(pair.0))
-                key.alignment = .center
-                key.widthAnchor.constraint(equalToConstant: Self.keyFieldWidth + 24).isActive = true
-                let action = NSTextField(labelWithString: loc(pair.1))
-                for label in [key, action] { label.textColor = .secondaryLabelColor }
-                let row = NSStackView(views: [key, action])
-                row.spacing = 6
-                row.setAX("\(AX.settingsKeys)-escape-\(index + 1)", label: "\(loc(pair.0)), \(loc(pair.1))")
-                return row
-            }
+        let escape = [
+            ("settings.keys.escOnce", "settings.keys.panicAll"), ("settings.keys.escTwice", "settings.keys.stopAll"),
+        ]
+        .enumerated().map { index, pair -> NSView in
+            let key = NSTextField(labelWithString: loc(pair.0))
+            key.alignment = .center
+            key.widthAnchor.constraint(equalToConstant: Self.keyFieldWidth + 24).isActive = true
+            let action = NSTextField(labelWithString: loc(pair.1))
+            for label in [key, action] { label.textColor = .secondaryLabelColor }
+            let row = NSStackView(views: [key, action])
+            row.spacing = 6
+            row.setAX("\(AX.settingsKeys)-escape-\(index + 1)", label: "\(loc(pair.0)), \(loc(pair.1))")
+            return row
+        }
         let workspace = column(
             loc("settings.keys.workspace"), WorkspaceKey.workspaceActions, footer: escape)
         let editing = column(loc("settings.keys.editing"), WorkspaceKey.editingActions, footer: [])
@@ -70,7 +72,8 @@ extension WorkspaceSettingsWindowController {
         clear.isBordered = false
         clear.imagePosition = .imageOnly
         clear.identifier = NSUserInterfaceItemIdentifier(key.rawValue)
-        clear.setAX("\(AX.settingsKeys)-clear-\(key.rawValue)", label: String(format: loc("settings.keys.clearKey"), title))
+        clear.setAX(
+            "\(AX.settingsKeys)-clear-\(key.rawValue)", label: String(format: loc("settings.keys.clearKey"), title))
         clear.setContentHuggingPriority(.required, for: .horizontal)
         keyClearButtons[key] = clear
 

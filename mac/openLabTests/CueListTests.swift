@@ -1943,7 +1943,8 @@ final class PlayheadFlowTests: XCTestCase {
     func testDoubleClickOnNumberNameOrTargetEditsInPlaceEnterCommitsEscLeavesItUnchanged() async throws {
         try await editWorkspace()
         for (id, column, typed, shown) in [
-            (cues[1], "number", "2.5", "2.5"), (cues[0], "name", "entrance", "entrance"), (fade, "target", "2.5", "2.5"),
+            (cues[1], "number", "2.5", "2.5"), (cues[0], "name", "entrance", "entrance"),
+            (fade, "target", "2.5", "2.5"),
         ] {
             let before = cell(id, column)
             try doubleClick(id, column)

@@ -98,9 +98,12 @@ final class KeyMapPageTests: XCTestCase {
         _ chars: String, code: UInt16 = 0, _ flags: NSEvent.ModifierFlags = [], into action: WorkspaceKey
     ) throws {
         let field = try XCTUnwrap(sc.keyFields[action])
-        field.mouseDown(with: try XCTUnwrap(NSEvent.mouseEvent(
-            with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
-            eventNumber: 0, clickCount: 1, pressure: 1)))
+        field.mouseDown(
+            with: try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                    context: nil,
+                    eventNumber: 0, clickCount: 1, pressure: 1)))
         XCTAssertTrue(sc.window?.firstResponder === field, "the field waits for a key")
         XCTAssertEqual(field.placeholderString, loc("settings.keys.press"))
         field.keyDown(with: try key(chars, code: code, flags))
@@ -154,8 +157,12 @@ final class KeyMapPageTests: XCTestCase {
     /// is beside that field, the field keeps its key and nothing reaches the engine.
     func testAKeyUsedByAnotherActionOrACueHotkeyIsRefusedWithTheReasonBesideTheField() async throws {
         let cue = try XCTUnwrap(rig.store.model?.cueLists.first?.cues.first)
-        guard case .success = await rig.store.send(command: .setProperty(cue.id, .triggers(
-            hotkey: KeyChord("x").hotkeyJSON, osc: nil)))
+        guard
+            case .success = await rig.store.send(
+                command: .setProperty(
+                    cue.id,
+                    .triggers(
+                        hotkey: KeyChord("x").hotkeyJSON, osc: nil)))
         else { return XCTFail("cue hotkey") }
         await assertEventually { self.rig.store.model?.cueHotkeys.count == 1 }
         let sent = rig.wire.commands.count
