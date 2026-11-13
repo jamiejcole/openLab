@@ -316,7 +316,7 @@ fn a_hotkey_follows_the_edited_key_map_of_each_doc() {
 #[test]
 fn a_hotkey_release_reaches_every_doc() {
     let key = Hotkey {
-        key: "q".into(),
+        key: "k".into(),
         modifiers: Modifiers::default(),
     };
     let f = wav(&dc(20_000, 0.25));

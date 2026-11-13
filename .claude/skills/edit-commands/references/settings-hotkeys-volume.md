@@ -3,6 +3,7 @@
 `WorkspaceSetting` variants (see `command_model.rs`): `min_go_interval`, `panic_duration`, `autosave_interval`, `output_max_db` (-30 to +12 dB), `output_min_db` (-180 to -40 dB; levels at or below it are silent), `hotkey { key, value }` (`key` is a `TransportKey`; `value` null = no key), `hotkeys { value }`, `auto_number_start`, `auto_number_increment`. Each carries the whole new value. A limit outside its range is refused.
 
 ## Hotkey map
+- The map (`TransportHotkeys`) holds the transport keys, the selected-cue keys and the cue-editing keys (`edit_number` ... `toggle_flag`, TRG-07). The engine does nothing on an editing key except keep it from starting a cue; the app edits the selected cues. A file older than v9 gets each editing key unless a cue hotkey or another key of its map is that chord.
 - `hotkeys { value }` replaces the whole key map (`settings.hotkeys`), for swapping two keys or a Reset, which one key at a time would refuse halfway. **Every key must be present** (`null` for none); an unknown field is refused as `bad_request`, so a client bug cannot silently clear keys it left out.
 - A key the edit **changes to a value** is refused (`HotkeyRefused { field, reason }`, as `command_refused`) when it:
   - is reserved: Esc with any modifiers (always panic), Up or Down with any modifiers (`is_reserved_key`);

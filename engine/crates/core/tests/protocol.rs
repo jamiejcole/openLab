@@ -4025,6 +4025,15 @@ fn a_partial_or_misspelt_key_map_is_bad_request() {
         "reset_selected",
         "preview_selected",
         "panic_selected",
+        "edit_number",
+        "edit_name",
+        "edit_notes",
+        "edit_target",
+        "edit_pre_wait",
+        "edit_duration",
+        "edit_post_wait",
+        "cycle_continue",
+        "toggle_flag",
     ];
     let all = |extra: &str| {
         let body: Vec<String> = keys.iter().map(|k| format!(r#""{k}":null"#)).collect();
