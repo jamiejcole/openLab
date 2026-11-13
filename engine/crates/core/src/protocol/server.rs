@@ -509,6 +509,8 @@ pub struct DeviceEntry {
     /// The system default device (what an unchosen engine opens at start).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_default: bool,
+    /// Frames per callback this device is asked for on this machine (`set_buffer_size`).
+    pub buffer_frames: u32,
 }
 
 /// A missing file that matched several; the operator picks (a `set_cue_property` command).

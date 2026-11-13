@@ -246,6 +246,14 @@ pub struct DeviceMonitor {
 }
 
 impl DeviceMonitor {
+    /// A monitor of no stream: every count stays 0 and nothing needs a reopen. It stands in for
+    /// a stream that has not been opened yet.
+    pub fn idle() -> Self {
+        DeviceMonitor {
+            shared: Arc::new(DeviceShared::new()),
+        }
+    }
+
     /// Error counts since the previous call (read-and-reset, so each report is seen once).
     /// Single consumer: the counts are shared by all clones, so one owner (the engine's control
     /// loop) should take them and pass them on; a second poller would steal reports.

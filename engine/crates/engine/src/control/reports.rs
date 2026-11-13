@@ -23,19 +23,14 @@ impl Control {
     /// Reads the output and voice meters once when a report is due; each doc takes its part in
     /// its tick ([`DocCx::reports`]).
     pub(super) fn begin_meter_round(&mut self) {
-        let rendered = self.eng.mixer.samples_rendered();
+        let rendered = self.eng.rendered();
         let period = (u64::from(self.eng.rate.get()) / REPORT_HZ).max(1);
         if self.eng.last_meters.is_some_and(|l| rendered < l + period) {
             return;
         }
         self.eng.last_meters = Some(rendered);
-        self.eng
-            .mixer
-            .read_output_meters_into(&mut self.eng.out_peaks);
-        let listed = self
-            .eng
-            .mixer
-            .read_voice_meters_into(&mut self.eng.meter_ids, &mut self.eng.meter_peaks);
+        self.eng.read_output_meters();
+        let listed = self.eng.read_voice_meters();
         let prev = self.eng.last_meter_read.replace(rendered);
         self.eng.meter_round = Some(MeterRound {
             rendered,
@@ -56,6 +51,8 @@ impl Control {
                 .find(|d| d.id == owner)
                 .is_some_and(|d| d.voices.knows(id))
         });
+        let ids = &self.eng.voice_ids;
+        self.eng.outputs.retain_voices(|id| ids.owner(id).is_some());
     }
 
     /// The open docs as the app connections list them, in open order.
@@ -127,7 +124,7 @@ impl DocCx<'_> {
     /// Progress and meters, each at most [`REPORT_HZ`] in sample time; reconciliation of lost
     /// voice ends rides on the voice-meter read.
     pub(super) fn reports(&mut self) {
-        let rendered = self.eng.mixer.samples_rendered();
+        let rendered = self.eng.rendered();
         let period = (u64::from(self.eng.rate.get()) / REPORT_HZ).max(1);
         let due = |last: Option<SampleTime>| last.is_none_or(|l| rendered >= l + period);
         if due(self.doc.last_progress) {
@@ -237,12 +234,21 @@ impl DocCx<'_> {
             .iter()
             .filter_map(|p| {
                 let channels = self.eng.patches.channels(self.doc.id, p.id)?;
+                // The patch's device's meters.
+                let base = self
+                    .eng
+                    .patches
+                    .mixer_patch(self.doc.id, p.id)
+                    .and_then(|slot| self.eng.patches.slot_output(slot))
+                    .unwrap_or(0)
+                    * self.eng.cue_outputs;
                 let peaks = channels
                     .iter()
                     .map(|&c| {
                         usize::try_from(c)
                             .ok()
-                            .and_then(|c| self.eng.out_peaks.get(c))
+                            .filter(|&c| c < self.eng.cue_outputs)
+                            .and_then(|c| self.eng.out_peaks.get(base + c))
                             .copied()
                             .unwrap_or(0.0)
                     })
@@ -267,7 +273,11 @@ impl DocCx<'_> {
         let Some(prev) = prev else {
             return;
         };
-        let lost_events = self.eng.mixer.dropped_events() > 0;
+        let lost_events = self
+            .eng
+            .outputs
+            .iter()
+            .any(|(_, o)| o.mixer.dropped_events() > 0);
         let started: Vec<(VoiceId, SampleTime)> = self.doc.voices.started().collect();
         let mut fx = Effects::default();
         for (id, start) in started {

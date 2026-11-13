@@ -40,7 +40,7 @@ pub enum Inbox {
     /// drops it if that doc has closed since.
     Probe(super::DocId, ProbeAnswer),
     /// The device thread's answer (internal feedback).
-    Device(super::devices::DeviceAnswer),
+    Device(super::devices::OutputKey, super::devices::DeviceAnswer),
     /// A network worker's answer: a message that could not be sent, a host look-up done
     /// (internal feedback), for the doc that sent it (dropped
     /// if it has closed since).

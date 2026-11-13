@@ -280,6 +280,13 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 modified_ms: Some(1_700_000_000_000),
             },
         ),
+        (
+            "set_buffer_size",
+            Request::SetBufferSize {
+                device: "Scarlett 2i2".into(),
+                frames: 256,
+            },
+        ),
     ]
 }
 
@@ -1084,6 +1091,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                         name: "Scarlett 2i2".into(),
                         output_channels: 2,
                         is_default: true,
+                        buffer_frames: 512,
                     }],
                     selected: Some("Scarlett 2i2".into()),
                 }),
@@ -1616,7 +1624,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 24);
-    assert_eq!(all_requests().len(), 21);
+    assert_eq!(all_requests().len(), 22);
 }
 
 #[test]
@@ -3812,6 +3820,8 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::PreshowCheck),
         Just(Request::ListPatchMappings),
         proptest::option::of("[ -~]{1,20}").prop_map(|device| Request::SetOutputDevice { device }),
+        ("[ -~]{1,20}", any::<u32>())
+            .prop_map(|(device, frames)| Request::SetBufferSize { device, frames }),
         any::<bool>().prop_map(|on| Request::SetShowMode { on }),
         (
             any::<u128>(),

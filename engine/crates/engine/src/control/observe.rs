@@ -92,7 +92,7 @@ fn elapsed(now: i64, then: i64, gap: i64) -> bool {
 impl Engine {
     /// Seconds of audio rendered: the show's own time.
     fn show_time(&self) -> f64 {
-        self.mixer.samples_rendered() as f64 / f64::from(self.rate.get())
+        self.rendered() as f64 / f64::from(self.rate.get())
     }
 
     /// Adds a record to the show log (ring and disk) and, when the host asked for it, offers it
@@ -306,13 +306,13 @@ impl Engine {
 
     /// What decides whether a status is due: atomics and borrowed fields, no copies.
     fn status_peek(&self) -> Peek<'_> {
-        let (device_name, device_state) = match self.backend.device() {
+        let (device_name, device_state) = match self.outputs.primary().backend.device() {
             Some(d) => (Some(d.info().name.as_str()), wire_device_state(d)),
             None => (None, DeviceState::Absent),
         };
         Peek {
-            xruns: self.mixer.xruns(),
-            underrun_frames: self.mixer.underrun_frames(),
+            xruns: self.xruns(),
+            underrun_frames: self.underrun_frames(),
             device_name,
             device_state,
             network_output_disabled: self.network_disabled(),
@@ -320,7 +320,7 @@ impl Engine {
     }
 
     fn status_counters(&self) -> Counters {
-        let device = match self.backend.device() {
+        let device = match self.outputs.primary().backend.device() {
             Some(d) => {
                 let info = d.info();
                 DeviceStatus {
@@ -342,8 +342,8 @@ impl Engine {
             },
         };
         Counters {
-            xruns: self.mixer.xruns(),
-            underrun_frames: self.mixer.underrun_frames(),
+            xruns: self.xruns(),
+            underrun_frames: self.underrun_frames(),
             streams: u32::try_from(self.streamer.open_streams()).unwrap_or(u32::MAX),
             log_dropped: self.config.show_log.dropped(),
             log_seq: self.config.show_log.seq(),
@@ -353,11 +353,26 @@ impl Engine {
             // Worst callback since the previous status (read-and-reset; this is its only
             // reader). Offline there is no audio callback to time.
             engine_load: self
-                .backend
-                .device()
-                .and_then(|d| d.info().monitor.take_engine_load())
-                .filter(|l| l.is_finite()),
+                .outputs
+                .iter()
+                .filter_map(|(_, o)| o.backend.device())
+                .filter_map(|d| d.info().monitor.take_engine_load())
+                .filter(|l| l.is_finite())
+                .reduce(f64::max),
         }
+    }
+
+    /// Xruns of every output device's mixer.
+    fn xruns(&self) -> u64 {
+        self.outputs.iter().map(|(_, o)| o.mixer.xruns()).sum()
+    }
+
+    /// Voice underruns of every output device's mixer.
+    fn underrun_frames(&self) -> u64 {
+        self.outputs
+            .iter()
+            .map(|(_, o)| o.mixer.underrun_frames())
+            .sum()
     }
 }
 
