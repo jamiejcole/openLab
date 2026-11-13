@@ -1,0 +1,21 @@
+{
+  "about": "Two Audio cues selected (2.1 and 2.2, 2.2 given a pre-wait, a flag and a main level of -10 first): the inspector stays live with Basics, Triggers, I/O and Levels; the name, pre-wait, flag and main level differ and are drawn as mixed, the rest shows the shared value.",
+  "show": "Demo",
+  "steps": [
+    {"select": "2.2"},
+    {"type": "inspector-pre-wait", "text": "1.5"},
+    {"click": "inspector-flagged"},
+    {"tab": "levels"},
+    {"double_click": "levels-matrix", "at": [0.19, 0.13]},
+    {"type": "levels-field", "text": "10"},
+    {"select": ["2.1", "2.2"]},
+    {"tab": "basics"},
+    {"shot": "basics-mixed"},
+    {"tab": "triggers"},
+    {"shot": "triggers"},
+    {"tab": "io"},
+    {"shot": "io"},
+    {"tab": "levels"},
+    {"shot": "levels-mixed"}
+  ]
+}

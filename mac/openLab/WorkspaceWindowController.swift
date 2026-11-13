@@ -408,6 +408,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// The Paste Cue Properties sheet while it is up, and where its ticks are remembered.
     var pasteSheet: PastePropertiesSheet?
     var pasteDefaults = UserDefaults.standard
+    /// Puts the sheet up (nil: as a sheet on this window). The scenario runner keeps it off screen.
+    var presentSheet: ((NSWindow) -> Void)?
     /// Show Mode was asked for: its commit raises nothing, as Show Mode itself does not.
     private var enteringShowMode = false
 

@@ -21,8 +21,12 @@ final class ScenarioRunner {
 
     /// One step of a scenario: one JSON object whose single action key names the step.
     enum Step {
-        /// `{"select": "1"}`: the cue with that number (else that name) selected as a click on its row.
-        case select(String)
+        /// `{"select": "1"}`: the cue with that number (else that name) selected as a click on its row;
+        /// `{"select": ["1", "2"]}`: those cues selected together.
+        case select([String])
+        /// `{"paste_properties": "1", "tick": ["colour"]}`: cue 1 copied, then the Paste Properties sheet
+        /// opened for the selection with those properties ticked. Shots show the sheet over the window.
+        case pasteProperties(String, tick: [String])
         /// `{"click": id, "at": [fx, fy], "modifiers": [...]}`: a press and release at a fraction of
         /// the control's bounds from its top-left (default its middle).
         case click(id: String, at: CGPoint, modifiers: NSEvent.ModifierFlags, clicks: Int)
@@ -64,7 +68,7 @@ final class ScenarioRunner {
 
     static let stepKinds = [
         "select", "click", "double_click", "drag", "type", "key", "scroll", "magnify", "advance", "resize", "tab",
-        "focus", "shot",
+        "focus", "paste_properties", "shot",
     ]
 
     // MARK: Parsing
@@ -144,7 +148,7 @@ final class ScenarioRunner {
         let options: [String: Set<String>] = [
             "click": ["at", "modifiers"], "double_click": ["at", "modifiers"], "drag": ["from", "to", "modifiers"],
             "type": ["text", "enter"], "key": ["modifiers"], "scroll": ["dx", "dy", "precise", "modifiers", "at"],
-            "magnify": ["by", "at"],
+            "magnify": ["by", "at"], "paste_properties": ["tick"],
         ]
         let allowed = options[kind, default: []].union([kind])
         if let extra = o.keys.first(where: { !allowed.contains($0) }) {
@@ -169,7 +173,19 @@ final class ScenarioRunner {
         }
         let mods = try modifiers(o["modifiers"])
         switch kind {
-        case "select": return .select(try string("select"))
+        case "select":
+            if let many = o["select"] as? [String], !many.isEmpty, many.allSatisfy({ !$0.isEmpty }) {
+                return .select(many)
+            }
+            return .select([try string("select")])
+        case "paste_properties":
+            let tick = o["tick"] as? [String] ?? []
+            if let bad = tick.first(where: { PasteProperty(rawValue: $0) == nil }) {
+                throw Failure(
+                    "unknown property \"\(bad)\"; known: \(PasteProperty.allCases.map(\.rawValue).joined(separator: ", "))"
+                )
+            }
+            return .pasteProperties(try string("paste_properties"), tick: tick)
         case "click": return .click(id: try string("click"), at: try point("at"), modifiers: mods, clicks: 1)
         case "double_click":
             return .click(id: try string("double_click"), at: try point("at"), modifiers: mods, clicks: 2)
@@ -324,6 +340,12 @@ final class ScenarioRunner {
         guard await rig.connect() else { throw Failure("the workspace connection did not come up") }
         guard await eventually({ self.rig.store.model != nil }) else { throw Failure("the workspace never loaded") }
         wc = WorkspaceWindowController(store: rig.store)
+        // The sheet is never put on screen, and copies stay off the user's pasteboard and settings.
+        wc.presentSheet = { _ in }
+        let board = NSPasteboard.withUniqueName()
+        wc.editor.pasteboard = board
+        wc.cueList.pasteboard = board
+        wc.pasteDefaults = UserDefaults(suiteName: "openlab-scenario-\(UUID().uuidString)") ?? .standard
         wireApp()
         window.appearance = NSAppearance(named: scenario.dark ? .darkAqua : .aqua)
         window.setContentSize(scenario.size)
@@ -404,9 +426,21 @@ final class ScenarioRunner {
     private func perform(_ step: Step) async throws {
         switch step {
         case .select(let what):
-            let node = try cue(what)
-            wc.cueList.selectAsUser([node.id])
-            note("select \(what): cue \(node.cue.number ?? "-") \"\(node.cue.displayName)\"")
+            let nodes = try what.map(cue)
+            wc.cueList.selectAsUser(nodes.map(\.id))
+            for node in nodes { note("select \(what): cue \(node.cue.number ?? "-") \"\(node.cue.displayName)\"") }
+        case .pasteProperties(let from, let tick):
+            let node = try cue(from)
+            guard await wc.editor.copySelection(of: [node.id]) else { throw Failure("cue \(from) was not copied") }
+            wc.promptPasteProperties(onto: wc.cueList.selectedIDs())
+            guard let sheet = wc.pasteSheet else { throw Failure("the sheet did not open") }
+            for name in tick {
+                guard let p = PasteProperty(rawValue: name), let box = sheet.propertyChecks[p] else {
+                    throw Failure("\(name) is not listed for these cues")
+                }
+                if box.state != .on { box.performClick(nil) }
+            }
+            note("paste_properties from \(from): \(sheet.categoryChecks.count) categories, ticked \(tick)")
         case .click(let id, let at, let mods, let clicks):
             let view = try control(id)
             let p = try windowPoint(at, in: view)
@@ -702,16 +736,35 @@ final class ScenarioRunner {
     private func shot(to url: URL) throws {
         guard let frame = window.contentView?.superview else { throw Failure("the window has no frame view") }
         frame.layoutSubtreeIfNeeded()
-        let rep = try renderView(frame, scale: 2, background: window.backgroundColor)
+        var rep = try renderView(frame, scale: 2, background: window.backgroundColor)
+        if focused == nil, let sheet = wc.pasteSheet?.window { rep = try overlay(sheet, on: rep) }
         guard let png = rep.representation(using: .png, properties: [:]) else { throw Failure("PNG encoding failed") }
         try png.write(to: url)
+    }
+
+    /// `sheet` drawn where AppKit puts a sheet: centred, under the window's title bar.
+    private func overlay(_ sheet: NSWindow, on rep: NSBitmapImageRep) throws -> NSBitmapImageRep {
+        sheet.appearance = window.appearance
+        guard let frame = sheet.contentView else { throw Failure("the sheet has no content") }
+        frame.layoutSubtreeIfNeeded()
+        let top = try renderView(frame, scale: 2, background: .windowBackgroundColor)
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { throw Failure("no context") }
+        let titleBar = (window.frame.height - window.contentLayoutRect.height) * 2
+        let x = (CGFloat(rep.pixelsWide) - CGFloat(top.pixelsWide)) / 2
+        let y = CGFloat(rep.pixelsHigh) - titleBar - CGFloat(top.pixelsHigh)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        top.draw(in: NSRect(x: x, y: y, width: CGFloat(top.pixelsWide), height: CGFloat(top.pixelsHigh)))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
     }
 
     // MARK: Text
 
     static func describe(_ step: Step) -> String {
         switch step {
-        case .select(let s): return "select \(s)"
+        case .select(let s): return "select \(s.joined(separator: ", "))"
+        case .pasteProperties(let s, _): return "paste_properties \(s)"
         case .click(let id, _, _, let n): return "\(n == 2 ? "double_click" : "click") \(id)"
         case .drag(let id, _, _, _): return "drag \(id)"
         case .type(let id, _, _): return "type \(id)"

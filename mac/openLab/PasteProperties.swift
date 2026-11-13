@@ -99,7 +99,8 @@ enum PasteProperty: String, CaseIterable {
         case .flagged: return set(.flagged(raw["flagged"] == .bool(true)))
         case .armed: return set(.armed(raw["armed"] != .bool(false)))
         case .secondTrigger: return set(.secondTrigger(raw["second_trigger"]?.stringValue ?? "nothing"))
-        case .secondTriggerOnRelease: return set(.secondTriggerOnRelease(raw["second_trigger_on_release"] == .bool(true)))
+        case .secondTriggerOnRelease:
+            return set(.secondTriggerOnRelease(raw["second_trigger_on_release"] == .bool(true)))
         case .outputPatch: return field("patch")
         case .levels:
             if cue.kindType == "fade" { return field("levels") }
@@ -112,7 +113,8 @@ enum PasteProperty: String, CaseIterable {
         case .fadeStopTarget: return field("stop_target_when_done")
         case .groupMode:
             guard let mode = kind["mode"], let type = mode["type"]?.stringValue else { return [] }
-            return set(.groupMode(type: type, loop: mode["loop"] == .bool(true), shuffle: mode["shuffle"] == .bool(true)))
+            return set(
+                .groupMode(type: type, loop: mode["loop"] == .bool(true), shuffle: mode["shuffle"] == .bool(true)))
         case .loadTime: return set(.loadToTime(kind["load_to_time"]?.doubleValue ?? 0))
         case .devampMode: return field("devamp_mode")
         case .devampStartNext: return field("start_next_cue")

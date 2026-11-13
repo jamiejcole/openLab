@@ -7,13 +7,14 @@ import AppKit
 extension WorkspaceWindowController {
     /// The item can be chosen: Edit Mode, a cue on the pasteboard, cues selected, no sheet up.
     var canPasteProperties: Bool {
-        !isShowMode && editor.clipboardCue != nil && !cueList.selectedIDs().isEmpty && window?.attachedSheet == nil
+        !isShowMode && pasteSheet == nil && window?.attachedSheet == nil && !cueList.selectedIDs().isEmpty
+            && editor.clipboardCue != nil
     }
 
     /// Opens the sheet for `cues` (the selection when it was chosen: the playhead may move it while
     /// the sheet is up, and the paste is for what the operator chose).
     func promptPasteProperties(onto cues: [ModelID]) {
-        guard !isShowMode, let window, window.attachedSheet == nil, let source = editor.clipboardCue,
+        guard !isShowMode, pasteSheet == nil, let window, window.attachedSheet == nil, let source = editor.clipboardCue,
             let model = store.model
         else { return NSSound.beep() }
         let targets = cues.compactMap { model.cue($0) }
@@ -36,6 +37,6 @@ extension WorkspaceWindowController {
             PastePropertiesSheet.remember(ticked, offered: all, in: pasteDefaults)
             Task { await self.editor.pasteProperties(ticked, from: source, onto: cues) }
         }
-        window.beginSheet(sheet.window)
+        if let presentSheet { presentSheet(sheet.window) } else { window.beginSheet(sheet.window) }
     }
 }

@@ -92,7 +92,8 @@ extension InspectorViewController {
                     let d = c.raw["kind"]?["destination"]?.stringValue ?? ""
                     return known.contains(d) ? d : ""
                 }
-                showChoice(networkPatchPopup, networkPatchIDs.map { $0?.raw }, chosen, fallback: networkPatchIDs.count - 1)
+                showChoice(
+                    networkPatchPopup, networkPatchIDs.map { $0?.raw }, chosen, fallback: networkPatchIDs.count - 1)
             default: break
             }
         }
@@ -112,10 +113,11 @@ extension InspectorViewController {
         targetField.isEnabled = cueTargets || files
         targetFieldWidth.isActive = !files
         if files {
-            let paths = Set(cues.map { c -> String in
-                let media = c.raw["kind"]?["media"]?.stringValue ?? ""
-                return CueRowMenu.mediaURL(media, showPath: store.document?.path)?.path ?? media
-            })
+            let paths = Set(
+                cues.map { c -> String in
+                    let media = c.raw["kind"]?["media"]?.stringValue ?? ""
+                    return CueRowMenu.mediaURL(media, showPath: store.document?.path)?.path ?? media
+                })
             targetField.stringValue = paths.count == 1 ? paths.first ?? "" : ""
             targetField.placeholderString = paths.count == 1 ? nil : loc("inspector.mixed")
         } else if !cueTargets {
@@ -204,18 +206,23 @@ extension InspectorViewController {
     /// What one cue shows: tick boxes take two states again, and the controls only one cue can set
     /// come back. Called before the single-cue render sets each control from the cue.
     func endBatchControls() {
-        for c in [flaggedCheck, armedCheck, onReleaseCheck, groupLoopCheck, groupShuffleCheck, devampStartNextCheck,
-            devampStopCheck]
-        {
+        for c in [
+            flaggedCheck, armedCheck, onReleaseCheck, groupLoopCheck, groupShuffleCheck, devampStartNextCheck,
+            devampStopCheck,
+        ] {
             c.allowsMixedState = false
         }
         for c in singleCueControls + [numberField, loadTimeField, networkMessageField] { c.isEnabled = !isLocked }
         audioLevels.mixed = []
         batchLevels = nil
-        for (f, text) in [(InspectorField.osc, "inspector.osc.placeholder"), (.message, "inspector.network.messageHint")] {
+        for (f, text) in [
+            (InspectorField.osc, "inspector.osc.placeholder"), (.message, "inspector.network.messageHint"),
+        ] {
             field(f)?.placeholderString = loc(text)
         }
-        for f in [InspectorField.number, .preWait, .postWait, .duration, .loadTime] { field(f)?.placeholderString = nil }
+        for f in [InspectorField.number, .preWait, .postWait, .duration, .loadTime] {
+            field(f)?.placeholderString = nil
+        }
     }
 
     // MARK: Editing several cues

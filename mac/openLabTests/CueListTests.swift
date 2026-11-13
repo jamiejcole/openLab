@@ -1416,14 +1416,14 @@ extension CueListTests {
 /// display.
 @MainActor
 final class PlayheadFlowTests: XCTestCase {
-    private var app: AppController!
-    private var engine: TestEngine!
-    private let wire = WireTap()
+    var app: AppController!
+    var engine: TestEngine!
+    let wire = WireTap()
     private let sessionScheduler = ManualScheduler()
-    private var doc: ModelID = "none"
-    private var wc: WorkspaceWindowController { app.windows[doc]! }
-    private var store: WorkspaceStore { wc.store }
-    private var list: ModelID { wc.cueList.listID! }
+    var doc: ModelID = "none"
+    var wc: WorkspaceWindowController { app.windows[doc]! }
+    var store: WorkspaceStore { wc.store }
+    var list: ModelID { wc.cueList.listID! }
 
     override func setUp() async throws {
         engine = try await TestEngine.start()
@@ -1454,7 +1454,7 @@ final class PlayheadFlowTests: XCTestCase {
 
     // MARK: Doing what the operator does
 
-    private func key(
+    func key(
         _ chars: String, code: UInt16, _ flags: NSEvent.ModifierFlags = [], windowNumber: Int = 0
     ) throws -> NSEvent {
         try XCTUnwrap(
@@ -1465,16 +1465,16 @@ final class PlayheadFlowTests: XCTestCase {
     }
 
     /// The GOs the window sent.
-    private func goes() -> Int {
+    func goes() -> Int {
         wire.sent.filter { if case .transport(_, .go) = $0 { return true } else { return false } }.count
     }
 
     /// The engine has answered a request sent now: replies sent before it are in. A broadcast can be
     /// overtaken by a reply (`hub::distribute`), so what it brings is waited for, not assumed.
-    private func sync() async { _ = await store.client.send({ .request(id: $0, .listPatchMappings) }) }
+    func sync() async { _ = await store.client.send({ .request(id: $0, .listPatchMappings) }) }
 
     /// `seconds` of device time.
-    private func play(_ seconds: Double) async throws {
+    func play(_ seconds: Double) async throws {
         try await engine.advance(seconds: seconds)
         await sync()
     }
@@ -1490,7 +1490,7 @@ final class PlayheadFlowTests: XCTestCase {
 
     /// What a click on `id`'s row does to the selection, without a press (real presses, with the
     /// table's mouse tracking, are in `PlayheadClickUITests`).
-    private func click(_ id: ModelID) { wc.cueList.selectAsUser([id]) }
+    func click(_ id: ModelID) { wc.cueList.selectAsUser([id]) }
 
     /// The Mode tab's popup set to `mode`, as the operator picks it.
     private func choose(_ mode: String) async throws {
@@ -1527,7 +1527,7 @@ final class PlayheadFlowTests: XCTestCase {
 
     /// The highlighted rows, the playhead marker and the standby display are all on `id` (nil:
     /// nothing highlighted, no marker, nothing standing by).
-    private func assertAllOn(_ id: ModelID?, file: StaticString = #filePath, line: UInt = #line) async throws {
+    func assertAllOn(_ id: ModelID?, file: StaticString = #filePath, line: UInt = #line) async throws {
         await assertEventually("the highlight and the playhead", file: file, line: line) {
             self.wc.cueList.selectedIDs() == (id.map { [$0] } ?? []) && self.store.playheads[self.list] == id
         }
@@ -1539,7 +1539,7 @@ final class PlayheadFlowTests: XCTestCase {
 
     // MARK: #489: the selection follows the playhead
 
-    private var cues: [ModelID] = []
+    var cues: [ModelID] = []
     /// The left mouse button, as the cue list reads it: these tests drive gestures with no real mouse.
     private var mouseIsDown = true
 
@@ -1756,11 +1756,11 @@ final class PlayheadFlowTests: XCTestCase {
 
     // MARK: In-place cue number and name (#493)
 
-    private var fade: ModelID = "none"
+    var fade: ModelID = "none"
 
     /// The issue's workspace: Audio cue 1 named "intro", Audio cue 2, a Fade cue 3 fading cue 1 with its
     /// default name. Cue 2 is highlighted and the cue list has the focus, as after a click.
-    private func editWorkspace() async throws {
+    func editWorkspace() async throws {
         wc.cueList.isLeftButtonDown = { false }
         let window = try XCTUnwrap(wc.window)
         window.makeKeyAndOrderFront(nil)
@@ -1781,14 +1781,14 @@ final class PlayheadFlowTests: XCTestCase {
         try await focusList(on: cues[1])
     }
 
-    private func focusList(on id: ModelID) async throws {
+    func focusList(on id: ModelID) async throws {
         click(id)
         try await assertAllOn(id)
         XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
     }
 
     /// The text the cue list draws in `column` of `id`'s row.
-    private func cell(_ id: ModelID, _ column: String) -> String? {
+    func cell(_ id: ModelID, _ column: String) -> String? {
         let ov = wc.cueList.outlineView
         guard let node = wc.cueList.node(id) else { return nil }
         let row = ov.row(forItem: node)
@@ -1799,17 +1799,17 @@ final class PlayheadFlowTests: XCTestCase {
     }
 
     /// A key as the app takes it: the key monitor, then the window's dispatch to the first responder.
-    private func press(_ chars: String, code: UInt16 = 0) throws {
+    func press(_ chars: String, code: UInt16 = 0) throws {
         let window = try XCTUnwrap(wc.window)
         let event = try key(chars, code: code, windowNumber: window.windowNumber)
         if let passed = app.handleKeyDown(event) { window.sendEvent(passed) }
     }
 
-    private func type(_ text: String) throws {
+    func type(_ text: String) throws {
         for c in text { try press(String(c), code: c == "." ? 47 : 0) }
     }
 
-    private func pressReturn() throws { try press("\r", code: 36) }
+    func pressReturn() throws { try press("\r", code: 36) }
 
     /// The words of the sheet the window shows (a refusal or a notice).
     private func sheetTexts(_ window: NSWindow) -> [String] {
@@ -1970,7 +1970,7 @@ final class PlayheadFlowTests: XCTestCase {
     /// What the table's double action does for a double-click on `id`'s `column` cell. The table's own
     /// mouse tracking needs the window to be key, which a test run cannot count on; the real presses
     /// are in `CueListUITests` (double-click Number, Name and Target, then Return).
-    private func doubleClick(_ id: ModelID, _ column: String) throws {
+    func doubleClick(_ id: ModelID, _ column: String) throws {
         let ov = wc.cueList.outlineView
         let row = ov.row(forItem: try XCTUnwrap(wc.cueList.node(id)))
         let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier(column))

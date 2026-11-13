@@ -50,14 +50,16 @@ final class PastePropertiesSheet: NSObject {
         list.spacing = 4
         list.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
         for (category, properties) in offered {
-            let head = NSButton(checkboxWithTitle: loc(category.titleKey), target: self, action: #selector(categoryClicked))
+            let head = NSButton(
+                checkboxWithTitle: loc(category.titleKey), target: self, action: #selector(categoryClicked))
             head.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
             head.setAX("paste-category-\(category.rawValue)")
             categoryChecks[category] = head
             if let last = list.arrangedSubviews.last { list.setCustomSpacing(10, after: last) }
             list.addArrangedSubview(head)
             for property in properties {
-                let box = NSButton(checkboxWithTitle: loc(property.titleKey), target: self, action: #selector(propertyClicked))
+                let box = NSButton(
+                    checkboxWithTitle: loc(property.titleKey), target: self, action: #selector(propertyClicked))
                 box.setAX("paste-property-\(property.rawValue)")
                 box.state = ticked.contains(property) ? .on : .off
                 propertyChecks[property] = box
@@ -94,7 +96,9 @@ final class PastePropertiesSheet: NSObject {
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         let buttons = NSStackView(views: [cancelButton, spacer, applyButton])
-        for b in [cancelButton, applyButton] { b.widthAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true }
+        for b in [cancelButton, applyButton] {
+            b.widthAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
+        }
         let content = NSView()
         for v in [titleLabel, scroll, buttons] {
             v.translatesAutoresizingMaskIntoConstraints = false
