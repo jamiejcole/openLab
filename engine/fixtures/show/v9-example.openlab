@@ -205,7 +205,8 @@
         "name": "Stage 1",
         "width": 1920,
         "height": 1080,
-        "keep_black": true
+        "keep_black": true,
+        "layer": 1
       }
     ],
     "cue_lists": [

@@ -1,0 +1,9 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "move_stage",
+    "id": "00000000-0000-0000-0000-000000000080",
+    "index": 1
+  }
+}

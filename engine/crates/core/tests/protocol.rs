@@ -311,6 +311,13 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 points: vec![[0.25, 0.3], [0.75, 0.8]],
             },
         ),
+        (
+            "display_probe",
+            Request::DisplayProbe {
+                display: "V1".into(),
+                points: vec![[0.5, 0.5]],
+            },
+        ),
     ]
 }
 
@@ -849,6 +856,10 @@ fn fixtures() -> Vec<(String, Sample)> {
                     index: 0,
                     patch: workspace(vec![]).network_patches[0].clone(),
                 },
+                Upsert::Stage {
+                    index: 0,
+                    stage: sample_stage(),
+                },
                 Upsert::Settings {
                     name: "Hamlet".into(),
                     settings: Box::new(workspace(vec![]).settings),
@@ -859,6 +870,9 @@ fn fixtures() -> Vec<(String, Sample)> {
                 Delete::CueList { id: list_id(2) },
                 Delete::Patch { id: patch_id(2) },
                 Delete::NetworkPatch { id: net_id(2) },
+                Delete::Stage {
+                    id: StageId(uuid::Uuid::from_u128(0x81)),
+                },
             ],
         }),
     );
@@ -1768,7 +1782,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 24);
-    assert_eq!(all_requests().len(), 27);
+    assert_eq!(all_requests().len(), 28);
 }
 
 #[test]
@@ -3365,6 +3379,14 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
 
 /// One sample of every command that edits more than the cue tree, named for its
 /// fixture.
+/// A stage as the samples use it.
+fn sample_stage() -> Stage {
+    let mut stage = Stage::new(StageId(uuid::Uuid::from_u128(0x80)), "Stage 1", 1920, 1080);
+    stage.keep_black = true;
+    stage.layer = 10;
+    stage
+}
+
 fn model_commands() -> Vec<(String, Command)> {
     let net = NetworkPatch {
         id: net_id(4),
@@ -3579,10 +3601,49 @@ fn property_commands() -> Vec<(String, Command)> {
             },
         ));
     }
+    out.push((
+        "add_stage".into(),
+        Command::AddStage {
+            index: 0,
+            stage: sample_stage(),
+        },
+    ));
+    out.push((
+        "remove_stage".into(),
+        Command::RemoveStage {
+            id: sample_stage().id,
+        },
+    ));
+    out.push((
+        "move_stage".into(),
+        Command::MoveStage {
+            id: sample_stage().id,
+            index: 1,
+        },
+    ));
+    for property in [
+        StageProperty::Name {
+            value: "Cyc".into(),
+        },
+        StageProperty::Size {
+            width: 3840,
+            height: 2160,
+        },
+        StageProperty::KeepBlack { value: true },
+        StageProperty::Layer { value: 100 },
+    ] {
+        out.push((
+            format!("set_stage_property_{}", tag(&property)),
+            Command::SetStageProperty {
+                id: sample_stage().id,
+                property,
+            },
+        ));
+    }
     out
 }
 
-const MODEL_COMMAND_COUNT: usize = 17;
+const MODEL_COMMAND_COUNT: usize = 21;
 /// Index of a model command; `None` for the cue-tree commands. Exhaustive, so a new command
 /// stops compiling here until it has an index and a sample in [`model_commands`].
 fn model_command_idx(c: &Command) -> Option<usize> {
@@ -3615,6 +3676,10 @@ fn model_command_idx(c: &Command) -> Option<usize> {
         Command::RemoveOscPasscode { .. } => 14,
         Command::SetOscRights { .. } => 15,
         Command::RenameWorkspace { .. } => 16,
+        Command::AddStage { .. } => 17,
+        Command::RemoveStage { .. } => 18,
+        Command::MoveStage { .. } => 19,
+        Command::SetStageProperty { .. } => 20,
     })
 }
 

@@ -522,6 +522,215 @@ fn a_stage_host_logging_in_a_burst_is_rate_limited() {
     assert!((1..=40).contains(&seen), "{seen} burst lines logged");
 }
 
+
+fn command(s: &mut OfflineShow, command: openlab_core::Command) -> Outcome {
+    let id = s.request_id();
+    s.send(ClientMessage::Command {
+        id,
+        command: Box::new(command),
+        coalesce: None,
+    })
+    .into_iter()
+    .find_map(|m| match m {
+        ServerMessage::Result { id: got, outcome } if got == id => Some(outcome),
+        _ => None,
+    })
+    .unwrap_or_else(|| panic!("no answer to command {id:?}"))
+}
+
+fn undo(s: &mut OfflineShow) {
+    let id = s.request_id();
+    assert!(
+        s.send(ClientMessage::Undo { id })
+            .iter()
+            .any(|m| matches!(m, ServerMessage::Result { outcome: Outcome::Ok(_), .. })),
+        "undo refused"
+    );
+}
+
+fn stage_names(s: &OfflineShow) -> Vec<String> {
+    s.control()
+        .workspace()
+        .stages
+        .iter()
+        .map(|st| st.name.clone())
+        .collect()
+}
+
+/// What display `display` shows: the test card frame on top, if any.
+fn display_frame(s: &mut OfflineShow, display: &str) -> Option<u16> {
+    let id = s.request_id();
+    let replies = s.send_until(
+        ClientMessage::Request {
+            id,
+            request: Request::DisplayProbe {
+                display: display.into(),
+                points: vec![[0.5, 0.5]],
+            },
+        },
+        |c| c.stages_settled(),
+    );
+    match replies.into_iter().find_map(|m| match m {
+        ServerMessage::Result { id: got, outcome } if got == id => Some(outcome),
+        _ => None,
+    }) {
+        Some(Outcome::Ok(body)) => match body.data {
+            Some(ResultData::StageProbe { frame, .. }) => frame,
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+}
+
+fn test_card(s: &mut OfflineShow, n: u128, frame: u16) {
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id,
+        request: Request::StageTestCard {
+            stage: stage_id(n),
+            frame,
+        },
+    });
+    assert!(matches!(&replies[..], [ServerMessage::Result { outcome: Outcome::Ok(_), .. }]));
+}
+
+/// #642 flow 3: New stage adds a stage with a chosen display or none; rename in place; remove;
+/// each one undo step. The stage host follows each step.
+#[test]
+fn new_rename_and_remove_a_stage_are_one_undo_step_each() {
+    let mut s = stage_show(with_stages(vec![], vec![stage(1)]), virtual_host(), Some("V1"));
+    // New stage, no display.
+    let new = openlab_core::Stage::new(stage_id(2), "Stage 2", 1280, 720);
+    assert!(matches!(
+        command(
+            &mut s,
+            openlab_core::Command::AddStage {
+                index: 1,
+                stage: new
+            }
+        ),
+        Outcome::Ok(_)
+    ));
+    s.settle_stages();
+    assert_eq!(stage_names(&s), ["Stage 1", "Stage 2"]);
+    assert_eq!(state(&mut s, 2), Some(StageState::NoDisplay));
+    // Its display chosen, then renamed in place.
+    assert!(matches!(
+        request(
+            &mut s,
+            Request::SetStageMapping {
+                stage: stage_id(2),
+                display: Some("V2".into())
+            }
+        ),
+        Outcome::Ok(_)
+    ));
+    assert!(matches!(
+        command(
+            &mut s,
+            openlab_core::Command::SetStageProperty {
+                id: stage_id(2),
+                property: openlab_core::StageProperty::Name {
+                    value: "Cyc".into()
+                }
+            }
+        ),
+        Outcome::Ok(_)
+    ));
+    s.settle_stages();
+    assert_eq!(stage_names(&s), ["Stage 1", "Cyc"]);
+    assert_eq!(
+        state(&mut s, 2),
+        Some(StageState::Hidden),
+        "keep-black off: hidden while nothing plays, on V2"
+    );
+    // Removed: gone from the stage host too.
+    assert!(matches!(
+        command(&mut s, openlab_core::Command::RemoveStage { id: stage_id(2) }),
+        Outcome::Ok(_)
+    ));
+    s.settle_stages();
+    assert_eq!(stage_names(&s), ["Stage 1"]);
+    assert_eq!(s.control().stage_state(stage_id(2)), None);
+    // Each step is one undo step, back to the start.
+    undo(&mut s);
+    s.settle_stages();
+    assert_eq!(stage_names(&s), ["Stage 1", "Cyc"]);
+    assert_eq!(state(&mut s, 2), Some(StageState::Hidden), "back on its display");
+    undo(&mut s);
+    assert_eq!(stage_names(&s), ["Stage 1", "Stage 2"]);
+    undo(&mut s);
+    s.settle_stages();
+    assert_eq!(stage_names(&s), ["Stage 1"]);
+    // A size outside the limits is refused and changes nothing.
+    let mut bad = openlab_core::Stage::new(stage_id(3), "Big", 1, 1);
+    bad.width = 0;
+    match command(
+        &mut s,
+        openlab_core::Command::AddStage {
+            index: 0,
+            stage: bad,
+        },
+    ) {
+        Outcome::Error(e) => assert_eq!(e.code, ErrorCode::CommandRefused),
+        o => panic!("{o:?}"),
+    }
+    assert_eq!(stage_names(&s), ["Stage 1"]);
+    assert_eq!(s.stalls(), 0);
+}
+
+/// #642 flow 8: two stages on the same display: the one on the higher layer is drawn on top;
+/// on one layer, the one whose name sorts first (QLab 5 manual p. 227).
+#[test]
+fn two_stages_on_one_display_stack_by_layer() {
+    let mut low = stage(1);
+    low.name = "Mary".into();
+    let mut high = stage(2);
+    high.name = "Angelica".into();
+    high.layer = 100;
+    let ws = with_stages(vec![], vec![low, high]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(virtual_host());
+    for n in [1, 2] {
+        c.machine
+            .set_stage_mapping(ws.id, stage_id(n), Some(mapping("V1")))
+            .unwrap();
+    }
+    let mut s = show_with(ws, c);
+    s.settle_stages();
+    test_card(&mut s, 1, 111);
+    test_card(&mut s, 2, 222);
+    s.settle_stages();
+    assert_eq!(display_frame(&mut s, "V1"), Some(222), "layer 100 on top");
+    // Mary's layer raised above Angelica's: Mary on top.
+    assert!(matches!(
+        command(
+            &mut s,
+            openlab_core::Command::SetStageProperty {
+                id: stage_id(1),
+                property: openlab_core::StageProperty::Layer { value: 200 }
+            }
+        ),
+        Outcome::Ok(_)
+    ));
+    s.settle_stages();
+    assert_eq!(display_frame(&mut s, "V1"), Some(111), "layer 200 on top");
+    // The same layer: Angelica sorts before Mary and is on top.
+    assert!(matches!(
+        command(
+            &mut s,
+            openlab_core::Command::SetStageProperty {
+                id: stage_id(2),
+                property: openlab_core::StageProperty::Layer { value: 200 }
+            }
+        ),
+        Outcome::Ok(_)
+    ));
+    s.settle_stages();
+    assert_eq!(display_frame(&mut s, "V1"), Some(222), "same layer: name order");
+    assert_eq!(s.stalls(), 0);
+}
+
 /// A stage host that never answers `hello` is killed and does not hold the engine.
 #[test]
 fn a_silent_stage_host_is_killed_after_the_answer_time() {

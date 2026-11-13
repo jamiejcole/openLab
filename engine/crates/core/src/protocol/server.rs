@@ -709,6 +709,11 @@ pub enum Upsert {
         index: u64,
         patch: NetworkPatch,
     },
+    /// A video stage (VID-01).
+    Stage {
+        index: u64,
+        stage: crate::video::Stage,
+    },
     /// The workspace's name and settings.
     Settings {
         name: String,
@@ -724,6 +729,7 @@ pub enum Delete {
     CueList { id: CueListId },
     Patch { id: PatchId },
     NetworkPatch { id: NetworkPatchId },
+    Stage { id: crate::StageId },
 }
 
 /// Everything about the open workspace and the running show.

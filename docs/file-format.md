@@ -188,6 +188,7 @@ A stage is a named raster Video cues are drawn on (VID-01; QLab 5 manual pp. 207
 | `name` | string | |
 | `width`, `height` | integer 1–16384 | Pixel size. A size outside the range is clamped with a warning (`StageSize`). |
 | `keep_black` | boolean, optional | `true`: the stage's display shows black while no cue plays on it (QLab's "keep rendering between cues", p. 227). `false` (the default when absent, as in QLab): its window is hidden then and the desktop shows, so a stage on the operator's own display never covers it between cues. |
+| `layer` | integer 0–1000, optional | Stacking order among stages on the same display (QLab 5 manual p. 227): a higher layer is drawn on top; on the same layer the stage whose name sorts first is on top. Default 1. A value above 1000 is clamped with a warning (`StageLayer`). |
 
 At most 64 stages; a file with more keeps the first 64 with a warning (`TooManyStages`).
 

@@ -25,10 +25,12 @@ use crate::command::{Command, CommandError, Inverse};
 use crate::cue::{CueKind, Hotkey, MAX_CUE_OUTPUTS};
 use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, NetworkProtocol, OutputPatch, PatchId,
-    PatchOutput, TransportHotkeys, Workspace, WorkspaceSettings, hotkey_field, is_reserved_key,
+    PatchOutput, StageId, TransportHotkeys, Workspace, WorkspaceSettings, hotkey_field,
+    is_reserved_key,
 };
 use crate::osc_access::{MAX_OSC_PASSCODES, OscPasscode, OscRights, is_valid_new_passcode};
 use crate::validate::{host_problem, name_problem, patch_problems, settings_problems, visit};
+use crate::video::{MAX_STAGE_LAYER, MAX_STAGES, Stage, StageProperty, stage_problem};
 
 /// The inverse of a change that changed nothing. `History` ignores it.
 pub(crate) fn no_change() -> Inverse {
@@ -921,6 +923,75 @@ fn network_index(ws: &Workspace, id: NetworkPatchId) -> Result<usize, CommandErr
 }
 
 // ---------------------------------------------------------------------------------------------
+// Stages
+
+fn add_stage(
+    ws: &mut Workspace,
+    index: usize,
+    stage: &Stage,
+    restoring: bool,
+) -> Result<Inverse, CommandError> {
+    if ws.stages.iter().any(|s| s.id == stage.id) {
+        return Err(CommandError::DuplicateStageId(stage.id));
+    }
+    check_index(index, ws.stages.len(), true)?;
+    if ws.stages.len() >= MAX_STAGES {
+        return Err(CommandError::InvalidValue(
+            "a workspace has at most 64 stages",
+        ));
+    }
+    // Load clamps size and layer, so a stage in a workspace always passes; only its name may
+    // be one load keeps with a warning, which an undo must be able to put back.
+    if let Some(why) = stage_problem(stage)
+        && !(restoring && stage.size_ok() && stage.layer <= MAX_STAGE_LAYER)
+    {
+        return Err(CommandError::InvalidValue(why));
+    }
+    ws.stages.insert(index, stage.clone());
+    Ok(Command::RemoveStage { id: stage.id })
+}
+
+fn remove_stage(ws: &mut Workspace, id: StageId) -> Result<Inverse, CommandError> {
+    let at = stage_index(ws, id)?;
+    let stage = ws.stages.remove(at);
+    Ok(Command::AddStage { index: at, stage })
+}
+
+fn set_stage_property(
+    ws: &mut Workspace,
+    id: StageId,
+    property: &StageProperty,
+    restoring: bool,
+) -> Result<Inverse, CommandError> {
+    let at = stage_index(ws, id)?;
+    let stage = ws
+        .stages
+        .get_mut(at)
+        .ok_or(CommandError::StageNotFound(id))?;
+    let old = property.current(stage);
+    if old == *property {
+        return Ok(no_change());
+    }
+    let mut changed = stage.clone();
+    property.write(&mut changed);
+    let name_only = matches!(property, StageProperty::Name { .. });
+    if let Some(why) = stage_problem(&changed)
+        && !(restoring && name_only)
+    {
+        return Err(CommandError::InvalidValue(why));
+    }
+    *stage = changed;
+    Ok(Command::SetStageProperty { id, property: old })
+}
+
+fn stage_index(ws: &Workspace, id: StageId) -> Result<usize, CommandError> {
+    ws.stages
+        .iter()
+        .position(|s| s.id == id)
+        .ok_or(CommandError::StageNotFound(id))
+}
+
+// ---------------------------------------------------------------------------------------------
 // Workspace name
 
 /// Renames the workspace (the `name` of `Upsert::Settings`). Not the file: Save As names that.
@@ -1101,6 +1172,22 @@ pub(crate) fn apply_model(
         Command::SetNetworkPatchProperty { id, property } => {
             set_network_patch_property(ws, *id, property, restoring)
         }
+        Command::AddStage { index, stage } => add_stage(ws, *index, stage, restoring),
+        Command::RemoveStage { id } => remove_stage(ws, *id),
+        Command::MoveStage { id, index } => stage_index(ws, *id).and_then(|from| {
+            let moved = reposition(&mut ws.stages, from, *index)?;
+            Ok(if moved {
+                Command::MoveStage {
+                    id: *id,
+                    index: from,
+                }
+            } else {
+                no_change()
+            })
+        }),
+        Command::SetStageProperty { id, property } => {
+            set_stage_property(ws, *id, property, restoring)
+        }
         Command::AddCueList { index, id, name } => add_cue_list(ws, *index, *id, name, restoring),
         Command::RemoveCueList { id } => remove_cue_list(ws, *id),
         Command::MoveCueList { id, index } => list_index(ws, *id).and_then(|from| {
@@ -1171,6 +1258,9 @@ impl Command {
                 (3, id.0, hash(&|h| std::mem::discriminant(property).hash(h)))
             }
             Self::RenameCueList { id, .. } => (4, id.0, 0),
+            Self::SetStageProperty { id, property } => {
+                (6, id.0, hash(&|h| std::mem::discriminant(property).hash(h)))
+            }
             Self::RenameWorkspace { .. } => (5, uuid::Uuid::nil(), 0),
             _ => return None,
         })
@@ -1196,6 +1286,11 @@ impl Command {
                 Self::SetNetworkPatchProperty { id: a, property: p },
                 Self::SetNetworkPatchProperty { id: b, property: q },
             ) => a == b && std::mem::discriminant(p) == std::mem::discriminant(q),
+            (
+                Self::SetStageProperty { id: a, property: p },
+                Self::SetStageProperty { id: b, property: q },
+            ) => a == b && std::mem::discriminant(p) == std::mem::discriminant(q),
+            (Self::MoveStage { id: a, .. }, Self::MoveStage { id: b, .. }) => a == b,
             (Self::RenameCueList { id: a, .. }, Self::RenameCueList { id: b, .. }) => a == b,
             (Self::RenameWorkspace { .. }, Self::RenameWorkspace { .. }) => true,
             (Self::MoveCue { id: a, .. }, Self::MoveCue { id: b, .. }) => a == b,

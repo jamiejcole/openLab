@@ -1336,6 +1336,8 @@ fn request_name(r: &Request) -> &'static str {
         #[cfg(feature = "test-support")]
         Request::StageProbe { .. } => "stage_probe",
         #[cfg(feature = "test-support")]
+        Request::DisplayProbe { .. } => "display_probe",
+        #[cfg(feature = "test-support")]
         Request::Advance { .. } => "advance",
         #[cfg(feature = "test-support")]
         Request::LoseDevice => "lose_device",

@@ -52,6 +52,13 @@ pub enum ToStage {
         stage: StageId,
         points: Vec<[f32; 2]>,
     },
+    /// Test support: read what `display` shows (every stage on it, stacked) at `points`,
+    /// answered by `display_probed`.
+    #[cfg(feature = "test-support")]
+    ProbeDisplay {
+        display: String,
+        points: Vec<[f32; 2]>,
+    },
     /// Test support: stop reading and answering, as a hung stage host would.
     #[cfg(feature = "test-support")]
     Hang,
@@ -72,6 +79,10 @@ pub struct StageOutput {
     pub display: Option<String>,
     /// Black stays up while nothing plays; off, the window is hidden while nothing plays.
     pub keep_black: bool,
+    /// Stacking rank among all stages, 0 at the bottom: of the stages on one display, a higher
+    /// rank is drawn on top (the engine ranks them by layer, then name).
+    #[serde(default)]
+    pub stack: u32,
 }
 
 /// A message from the stage host to the engine.
@@ -107,6 +118,14 @@ pub enum FromStage {
     #[cfg(feature = "test-support")]
     Probed {
         stage: StageId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        frame: Option<u16>,
+        colours: Vec<[u8; 4]>,
+    },
+    /// Test support: the answer to `probe_display`, as `probed` is to `probe`.
+    #[cfg(feature = "test-support")]
+    DisplayProbed {
+        display: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         frame: Option<u16>,
         colours: Vec<[u8; 4]>,
@@ -232,6 +251,21 @@ fn check_displays(displays: &[Display]) -> Result<(), LinkError> {
     Ok(())
 }
 
+#[cfg(feature = "test-support")]
+fn check_points(points: &[[f32; 2]]) -> Result<(), LinkError> {
+    if points.is_empty() || points.len() > MAX_PROBE_POINTS {
+        return Err(LinkError::Invalid("wrong number of probe points"));
+    }
+    if points
+        .iter()
+        .flatten()
+        .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+    {
+        return Err(LinkError::Invalid("probe point outside the stage"));
+    }
+    Ok(())
+}
+
 fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
     match message {
         ToStage::Stages { stages } => {
@@ -251,19 +285,14 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
         #[cfg(feature = "test-support")]
         ToStage::SetDisplays { displays } => check_displays(displays),
         #[cfg(feature = "test-support")]
-        ToStage::Probe { points, .. } => {
-            if points.is_empty() || points.len() > MAX_PROBE_POINTS {
-                return Err(LinkError::Invalid("wrong number of probe points"));
+        ToStage::ProbeDisplay { display, points } => {
+            if !text_ok(display) {
+                return Err(LinkError::Invalid("bad display id"));
             }
-            if points
-                .iter()
-                .flatten()
-                .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
-            {
-                return Err(LinkError::Invalid("probe point outside the stage"));
-            }
-            Ok(())
+            check_points(points)
         }
+        #[cfg(feature = "test-support")]
+        ToStage::Probe { points, .. } => check_points(points),
         _ => Ok(()),
     }
 }
@@ -288,6 +317,12 @@ fn check_from_stage(message: &FromStage) -> Result<(), LinkError> {
         #[cfg(feature = "test-support")]
         FromStage::Probed { colours, .. } if colours.len() > MAX_PROBE_POINTS => {
             Err(LinkError::Invalid("too many probe colours"))
+        }
+        #[cfg(feature = "test-support")]
+        FromStage::DisplayProbed {
+            display, colours, ..
+        } if colours.len() > MAX_PROBE_POINTS || !text_ok(display) => {
+            Err(LinkError::Invalid("bad display probe"))
         }
         _ => Ok(()),
     }
@@ -364,6 +399,7 @@ mod tests {
                     height: 1080,
                     display: Some("D1".into()),
                     keep_black: true,
+                    stack: 3,
                 }],
             },
             ToStage::Ping { seq: 7 },
@@ -475,6 +511,7 @@ mod tests {
                 height: 1080,
                 display: None,
                 keep_black: true,
+                stack: 0,
             }],
         };
         let line = encode(&big).unwrap();

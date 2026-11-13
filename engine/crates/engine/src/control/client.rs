@@ -277,6 +277,10 @@ impl Control {
                 Request::LoseDevice => return Ok(self.lose_device(id, to)),
                 #[cfg(feature = "test-support")]
                 Request::RestoreDevice => return Ok(self.restore_device(id, to)),
+                #[cfg(feature = "test-support")]
+                Request::DisplayProbe { display, points } => {
+                    self.display_probe(id, display, points, to);
+                }
                 request => return Err(ClientMessage::Request { id, request }),
             },
             ClientMessage::Close {

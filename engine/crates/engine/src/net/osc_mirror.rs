@@ -198,14 +198,17 @@ impl Mirror {
             match delete {
                 Delete::Cue { id } => push_unique(&mut touched, *id),
                 Delete::CueList { .. } => root = true,
-                Delete::Patch { .. } | Delete::NetworkPatch { .. } => {}
+                Delete::Patch { .. } | Delete::NetworkPatch { .. } | Delete::Stage { .. } => {}
             }
         }
         for upsert in upserts {
             match upsert {
                 Upsert::Cue { cue, .. } => push_unique(&mut touched, cue.id),
                 Upsert::CueList { .. } => root = true,
-                Upsert::Patch { .. } | Upsert::NetworkPatch { .. } | Upsert::Settings { .. } => {}
+                Upsert::Patch { .. }
+                | Upsert::NetworkPatch { .. }
+                | Upsert::Stage { .. }
+                | Upsert::Settings { .. } => {}
             }
         }
         // Where each cue was, judged before the edit (a deleted cue is gone afterwards).

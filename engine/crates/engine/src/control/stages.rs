@@ -18,6 +18,14 @@ use super::inbox::reply;
 use super::{Control, DocId, Engine, Inbox, ReplyTx, failed, ok};
 use crate::stage::{StageEvent, StageHost};
 
+/// What a test probe reads: one stage's own picture, or what a display shows.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProbeTarget {
+    Stage(StageId),
+    Display(String),
+}
+
 /// The stage host as the control thread knows it.
 #[derive(Default)]
 pub(super) struct Stages {
@@ -36,7 +44,7 @@ pub(super) struct Stages {
     no_video_warned: bool,
     /// Test support: probes waiting for their answer, oldest first.
     #[cfg(feature = "test-support")]
-    probes: Vec<(StageId, RequestId, ReplyTx)>,
+    probes: Vec<(ProbeTarget, RequestId, ReplyTx)>,
 }
 
 impl Engine {
@@ -125,8 +133,19 @@ impl Control {
                         .stage_mapping(ws.id, stage.id)
                         .map(|m| m.display.clone()),
                     keep_black: stage.keep_black,
+                    stack: 0,
                 });
             }
+        }
+        // Ranked across every open workspace: two workspaces' stages may share a display.
+        let order =
+            openlab_core::stack_order(self.docs.iter().flat_map(|d| d.model.ws().stages.iter()));
+        for output in &mut outputs {
+            output.stack = order
+                .iter()
+                .position(|id| *id == output.id)
+                .and_then(|p| u32::try_from(p).ok())
+                .unwrap_or(0);
         }
         if self.eng.stages.sent.as_ref() == Some(&outputs)
             || (self.eng.stages.sent.is_none() && outputs.is_empty())
@@ -230,12 +249,16 @@ impl Control {
             }
             #[cfg(feature = "test-support")]
             StageEvent::Probed {
-                stage,
+                target,
                 frame,
                 colours,
             } => {
+                let target = match target {
+                    crate::stage::Probed::Stage(stage) => ProbeTarget::Stage(stage),
+                    crate::stage::Probed::Display(display) => ProbeTarget::Display(display),
+                };
                 let probes = &mut self.eng.stages.probes;
-                if let Some(i) = probes.iter().position(|(s, ..)| *s == stage) {
+                if let Some(i) = probes.iter().position(|(s, ..)| *s == target) {
                     let (_, id, to) = probes.remove(i);
                     reply(
                         &to,
@@ -472,13 +495,47 @@ impl Control {
             (true, Some(host)) => match probe {
                 Some(points) => {
                     host.send(ToStage::Probe { stage, points });
-                    self.eng.stages.probes.push((stage, id, to.clone()));
+                    self.eng
+                        .stages
+                        .probes
+                        .push((ProbeTarget::Stage(stage), id, to.clone()));
                 }
                 None => {
                     host.send(ToStage::TestCard { stage, frame });
                     reply(to, ok(id, None));
                 }
             },
+        }
+    }
+
+    /// Test support: `display_probe`: reads what `display` shows (every stage on it, stacked).
+    #[cfg(feature = "test-support")]
+    pub(super) fn display_probe(
+        &mut self,
+        id: RequestId,
+        display: String,
+        points: Vec<[f32; 2]>,
+        to: &ReplyTx,
+    ) {
+        use openlab_core::stage_link::ToStage;
+        match self.eng.stages.host.as_ref().filter(|_| self.eng.stages.up) {
+            None => reply(
+                to,
+                failed(
+                    id,
+                    ErrorBody::new(ErrorCode::Unsupported, "video output is not running"),
+                ),
+            ),
+            Some(host) => {
+                host.send(ToStage::ProbeDisplay {
+                    display: display.clone(),
+                    points,
+                });
+                self.eng
+                    .stages
+                    .probes
+                    .push((ProbeTarget::Display(display), id, to.clone()));
+            }
         }
     }
 
