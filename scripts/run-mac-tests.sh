@@ -178,6 +178,7 @@ machine_state() {
     echo "  uptime: $(uptime 2>/dev/null)"
     echo "  seconds since last input: $(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }')"
     echo "  screen saver starts after: $(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null || echo unset) s"
+    echo "  screen saver running: $(pgrep -x ScreenSaverEngine >/dev/null 2>&1 && echo yes || echo no)"
     pmset -g 2>/dev/null | grep -E 'displaysleep|^ sleep|powernap|hibernatemode' | sed 's/^/  pmset:/'
     pmset -g assertions 2>/dev/null | grep -E 'PreventUserIdleDisplaySleep|PreventUserIdleSystemSleep|UserIsActive' | head -6 | sed 's/^/  assertion:/'
     pmset -g log 2>/dev/null | grep -E 'Display is turned|Entering Sleep|Wake from|DarkWake' | tail -6 | sed 's/^/  power log: /'
@@ -198,6 +199,11 @@ give_up() {
 machine_state "before the tests"
 if [ -n "${CI:-}" ] && command -v caffeinate >/dev/null 2>&1; then
   caffeinate -dimsu -w $$ &
+  # The first hosted runner to print its state already had display sleep off and held, and no screen
+  # saver delay set, so the system default applies (it starts after some minutes without input, and the
+  # runner has none from boot). A screen saver drawing through the same driver is the next candidate:
+  # switch it off for this machine, which is thrown away after the job.
+  defaults -currentHost write com.apple.screensaver idleTime -int 0 2>/dev/null || true
 fi
 
 bundles >"$work/before"
