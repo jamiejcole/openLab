@@ -9,7 +9,7 @@ import AppKit
 @MainActor
 final class PastePropertiesSheet: NSObject {
     /// Where the ticked properties are kept between uses (per Mac, as QLab keeps its last set).
-    static let defaultsKey = "pasteCueProperties.ticked"
+    static let defaultsKey = "PastePropertiesTicked"
 
     let window: NSWindow
     let titleLabel = NSTextField(wrappingLabelWithString: "")
