@@ -194,6 +194,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cueList.onEditCell = { [weak self] id, column, text in
             _ = await self?.editor.setCell(column, of: id, text: text)
         }
+        cueList.onPasteProperties = { [weak self] cues in self?.promptPasteProperties(onto: cues) }
         cueList.onSetContinue = { [weak self] id, mode in Task { await self?.editor.setContinue(of: id, to: mode) } }
         cueList.onEditedCueGone = { [weak self] in self?.showNotice(loc("cuelist.edit.cueGone")) }
         cueList.onEditNotes = { [weak self] id in
@@ -362,6 +363,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         guard on != isShowMode else { return }
         // Find is off in Show Mode (QLab): the bar gives the row back before the mode hides it.
         if on { closeFind() }
+        // Show Mode leaves no sheet up that could change the show: a paste under way is cancelled.
+        if on { pasteSheet?.cancel() }
         isShowMode = on
         inspector.isLocked = on
         masthead.isLocked = on
@@ -402,6 +405,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     /// Where Copy Text puts the typed notes.
     var notesPasteboard = NSPasteboard.general
+    /// The Paste Cue Properties sheet while it is up, and where its ticks are remembered.
+    var pasteSheet: PastePropertiesSheet?
+    var pasteDefaults = UserDefaults.standard
+    /// Puts the sheet up (nil: as a sheet on this window). The scenario runner keeps it off screen.
+    var presentSheet: ((NSWindow) -> Void)?
     /// Show Mode was asked for: its commit raises nothing, as Show Mode itself does not.
     private var enteringShowMode = false
 

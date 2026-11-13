@@ -1,0 +1,9 @@
+{
+  "about": "Cue 1 copied, cues 2.1 and 2.2 selected, Paste Properties opened with Color and Levels ticked: the sheet lists Basics, Triggers, Output and Levels with a tick box each; Basics shows mixed, Output clear, Levels on.",
+  "show": "Demo",
+  "steps": [
+    {"select": ["2.1", "2.2"]},
+    {"paste_properties": "1", "tick": ["colour", "levels"]},
+    {"shot": "sheet-two-audio"}
+  ]
+}

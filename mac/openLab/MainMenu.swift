@@ -135,6 +135,7 @@ enum MainMenu {
                 item("menu.edit.cut", #selector(AppDelegate.cutCues(_:)), "x"),
                 item("menu.edit.copy", #selector(AppDelegate.copyCues(_:)), "c"),
                 item("menu.edit.paste", #selector(AppDelegate.pasteCues(_:)), "v"),
+                item("menu.edit.pasteProperties", #selector(AppDelegate.pasteCueProperties(_:)), "V"),
                 deleteItem(),
                 item("menu.edit.selectAll", #selector(NSText.selectAll(_:)), "a"),
                 .separator(),
@@ -258,7 +259,7 @@ enum MainMenu {
     /// The editing commands Show Mode (SM-01) locks: the one list both the Edit menu and the cue
     /// row menu read. (The editor refuses them too, `CueEditor.begin`.)
     enum LockedEdit: CaseIterable {
-        case undo, redo, delete, cut, copy, paste, deleteNumbers, renumber, moveUp, moveDown
+        case undo, redo, delete, cut, copy, paste, pasteProperties, deleteNumbers, renumber, moveUp, moveDown
 
         /// The locked edit a menu action stands for (nil: not an edit).
         init?(action: Selector?) {
@@ -274,6 +275,7 @@ enum MainMenu {
             case .cut: return #selector(AppDelegate.cutCues(_:))
             case .copy: return #selector(AppDelegate.copyCues(_:))
             case .paste: return #selector(AppDelegate.pasteCues(_:))
+            case .pasteProperties: return #selector(AppDelegate.pasteCueProperties(_:))
             case .deleteNumbers: return #selector(AppDelegate.deleteNumbers(_:))
             case .renumber: return #selector(AppDelegate.renumberCues(_:))
             case .moveUp: return #selector(AppDelegate.moveCuesUp(_:))

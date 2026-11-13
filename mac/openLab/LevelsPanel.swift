@@ -7,10 +7,34 @@ final class LevelFader: NSSlider {
     var onGestureBegin: (() -> Void)?
     var onGestureEnd: (() -> Void)?
 
+    override class var cellClass: AnyClass? {
+        get { LevelFaderCell.self }
+        set {}
+    }
+
+    /// The level differs between the cues shown: no knob is drawn (no position is theirs); a press on
+    /// the track still sets it on all of them.
+    var isMixed: Bool {
+        get { (cell as? LevelFaderCell)?.isMixed ?? false }
+        set {
+            guard newValue != isMixed else { return }
+            (cell as? LevelFaderCell)?.isMixed = newValue
+            needsDisplay = true
+        }
+    }
+
     override func mouseDown(with event: NSEvent) {
         onGestureBegin?()
         super.mouseDown(with: event)  // tracks until the button is released
         onGestureEnd?()
+    }
+}
+
+final class LevelFaderCell: NSSliderCell {
+    var isMixed = false
+
+    override func drawKnob(_ knobRect: NSRect) {
+        if !isMixed { super.drawKnob(knobRect) }
     }
 }
 
@@ -85,6 +109,27 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         }
     }
     private(set) var levels: LevelSet?
+    /// Levels that differ between the cues shown (several selected): their boxes and field show no value.
+    var mixed: Set<LevelSet.Slot> = [] {
+        didSet {
+            guard mixed != oldValue else { return }
+            matrix.mixed = mixed
+            refreshStrip()
+        }
+    }
+    /// The cues shown are ganged differently: no gang is drawn and none can be set.
+    var gangsMixed = false {
+        didSet {
+            guard gangsMixed != oldValue else { return }
+            matrix.hidesGangs = gangsMixed
+            refreshStrip()
+        }
+    }
+    /// What the last edit did, for applying it to several cues each on its own levels.
+    private(set) var lastEdit: LevelSet.Edit?
+    /// Several cues are shown: an action is reported even when the shown (first) cue already has its
+    /// result, since another cue may not.
+    var editsSeveral = false
     private(set) var selection: LevelSet.Slot = .master
     /// The gesture a drag in progress belongs to; model updates wait until it ends.
     private(set) var gesture: Int?
@@ -129,7 +174,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             guard let self else { return }
             if first, self.gesture == nil { self.beginGesture() }
             let limits = self.limits
-            self.edit(gesture: self.gesture) { $0.set(slot, db: db, drag: true, limits: limits) }
+            self.edit(gesture: self.gesture, as: .level(slot)) { $0.set(slot, db: db, drag: true, limits: limits) }
         }
         matrix.onDragEnd = { [weak self] in self?.endGesture() }
         // From the press: a drag can start at any moment, and must start from this cue's values.
@@ -324,7 +369,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         cellLabel.stringValue = Self.name(of: slot)
         let active = levels.isActive(slot)
         let db = levels.db(slot)
-        if !isDirty { levelField.stringValue = db.map(LevelText.format) ?? "" }
+        if !isDirty { levelField.stringValue = mixed.contains(slot) ? "" : db.map(LevelText.format) ?? "" }
         let free = !isLocked
         // A fader runs from the minimum limit and stops at 0 dB (QLab manual p. 181), or at the
         // maximum if that is lower; a level above it shows pinned there.
@@ -332,6 +377,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             f.minValue = limits.min
             f.maxValue = min(limits.max, 0)
             f.doubleValue = min(max(levels.db(Self.slot(ofFader: n)) ?? limits.min, limits.min), f.maxValue)
+            f.isMixed = mixed.contains(Self.slot(ofFader: n))
             f.isEnabled = free
         }
         activeCheck.state = active ? .on : .off
@@ -342,7 +388,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             isOutput = true
             gangText = levels.gang(of: o).map(LevelSet.gangLetter) ?? ""
         }
-        if !isDirty { gangField.stringValue = gangText }
+        if !isDirty { gangField.stringValue = gangsMixed ? "" : gangText }
         levelField.isEnabled = free
         activeCheck.isEnabled = free
         // A mute belongs to a cue output or a route that exists (a route not listed is silent already).
@@ -353,7 +399,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         case .cross(let i, let o): hasMute = levels.crosspoints[.init(input: i, output: o)] != nil
         }
         muteCheck.isEnabled = free && hasMute && !levels.isFade
-        gangField.isEnabled = free && isOutput && !levels.isFade
+        gangField.isEnabled = free && isOutput && !levels.isFade && !gangsMixed
         defaultButton.isEnabled = free
         silentButton.isEnabled = free
         fromTargetButton.isEnabled = free && canSetFromTarget
@@ -391,10 +437,11 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     }
 
     /// Applies `change` to the panel's levels and reports the result, unless it changes nothing.
-    private func edit(gesture: Int? = nil, _ change: (inout LevelSet) -> Void) {
+    private func edit(gesture: Int? = nil, as action: LevelSet.Edit?, _ change: (inout LevelSet) -> Void) {
         guard !isLocked, var new = levels else { return }
         change(&new)
-        guard new != levels else { return }
+        guard new != levels || (editsSeveral && action != nil) else { return }
+        lastEdit = action
         levels = new
         matrix.levels = new
         refreshStrip()
@@ -407,13 +454,13 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         let db = v <= limits.min ? LevelText.silence : (v * 10).rounded() / 10
         let slot = Self.slot(ofFader: sender.tag)
         if selection != slot { select(slot) }
-        edit(gesture: gesture) { $0.set(slot, db: db, drag: true, limits: limits) }
+        edit(gesture: gesture, as: .level(slot)) { $0.set(slot, db: db, drag: true, limits: limits) }
     }
 
     @objc private func muteToggled() {
         let slot = selection
         let mute = muteCheck.state == .on
-        edit { $0.setMute(slot, mute) }
+        edit(as: .mute(slot)) { $0.setMute(slot, mute) }
     }
 
     @objc private func activeToggled() {
@@ -421,22 +468,22 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         if activeCheck.state == .on {
             // Activating takes the level it shows; a silent default is -inf, as in QLab.
             let limits = limits
-            edit { $0.set(slot, db: $0.db(slot) ?? LevelText.silence, limits: limits) }
+            edit(as: nil) { $0.set(slot, db: $0.db(slot) ?? LevelText.silence, limits: limits) }
         } else {
-            edit { $0.deactivate(slot) }
+            edit(as: nil) { $0.deactivate(slot) }
         }
         refreshStrip()
     }
 
-    @objc private func silenceAll() { edit { $0.silenceAll() } }
+    @objc private func silenceAll() { edit(as: .silenceAll) { $0.silenceAll() } }
 
     /// A new Audio cue's levels: everything at 0 dB, file channel n to cue output n.
-    @objc private func setDefaults() { edit { $0.setDefaults() } }
+    @objc private func setDefaults() { edit(as: .defaults) { $0.setDefaults() } }
 
     @objc private func setFromTarget() { onSetFromTarget?() }
 
     /// Replaces the levels with `new` as one edit (Set Levels from Target).
-    func replace(with new: LevelSet) { edit { $0 = new } }
+    func replace(with new: LevelSet) { edit(as: nil) { $0 = new } }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         // Esc aborts the editor, which posts no end of editing: the typing ends here.
@@ -474,10 +521,10 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             if LevelText.isStraySpace(text) || (text.isEmpty && levels?.isActive(slot) == false) { return }
             let limits = limits
             let db = LevelText.parse(text, limits: limits)
-            edit { $0.set(slot, db: db, limits: limits) }
+            edit(as: .level(slot)) { $0.set(slot, db: db, limits: limits) }
         } else if field === gangField, case .output(let o) = slot {
             let text = gangField.stringValue
-            edit { $0.setGang(of: o, letter: text) }
+            edit(as: .gang(output: o, letter: text)) { $0.setGang(of: o, letter: text) }
         }
     }
 }

@@ -1,0 +1,18 @@
+{
+  "about": "The least window, light: the paste sheet with the Triggers category row highlighted and ticked by Space, then Cancel clicked.",
+  "show": "Demo",
+  "appearance": "light",
+  "window": {"width": 800, "height": 500},
+  "steps": [
+    {"select": ["2.1", "2.2"]},
+    {"paste_properties": "1"},
+    {"focus": "sheet"},
+    {"key": "down"}, {"key": "down"}, {"key": "down"}, {"key": "down"}, {"key": "down"},
+    {"key": "down"}, {"key": "down"}, {"key": "down"}, {"key": "down"},
+    {"key": "space"},
+    {"shot": "category-ticked"},
+    {"click": "paste-properties-cancel"},
+    {"focus": "workspace"},
+    {"shot": "cancelled"}
+  ]
+}

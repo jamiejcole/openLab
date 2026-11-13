@@ -21,8 +21,12 @@ final class ScenarioRunner {
 
     /// One step of a scenario: one JSON object whose single action key names the step.
     enum Step {
-        /// `{"select": "1"}`: the cue with that number (else that name) selected as a click on its row.
-        case select(String)
+        /// `{"select": "1"}`: the cue with that number (else that name) selected as a click on its row;
+        /// `{"select": ["1", "2"]}`: those cues selected together.
+        case select([String])
+        /// `{"paste_properties": "1", "tick": ["colour"]}`: cue 1 copied, then the Paste Properties sheet
+        /// opened for the selection with those properties ticked. Shots show the sheet over the window.
+        case pasteProperties(String, tick: [String])
         /// `{"click": id, "at": [fx, fy], "modifiers": [...]}`: a press and release at a fraction of
         /// the control's bounds from its top-left (default its middle).
         case click(id: String, at: CGPoint, modifiers: NSEvent.ModifierFlags, clicks: Int)
@@ -64,7 +68,7 @@ final class ScenarioRunner {
 
     static let stepKinds = [
         "select", "click", "double_click", "drag", "type", "key", "scroll", "magnify", "advance", "resize", "tab",
-        "focus", "shot",
+        "focus", "paste_properties", "shot",
     ]
 
     // MARK: Parsing
@@ -144,7 +148,7 @@ final class ScenarioRunner {
         let options: [String: Set<String>] = [
             "click": ["at", "modifiers"], "double_click": ["at", "modifiers"], "drag": ["from", "to", "modifiers"],
             "type": ["text", "enter"], "key": ["modifiers"], "scroll": ["dx", "dy", "precise", "modifiers", "at"],
-            "magnify": ["by", "at"],
+            "magnify": ["by", "at"], "paste_properties": ["tick"],
         ]
         let allowed = options[kind, default: []].union([kind])
         if let extra = o.keys.first(where: { !allowed.contains($0) }) {
@@ -169,7 +173,19 @@ final class ScenarioRunner {
         }
         let mods = try modifiers(o["modifiers"])
         switch kind {
-        case "select": return .select(try string("select"))
+        case "select":
+            if let many = o["select"] as? [String], !many.isEmpty, many.allSatisfy({ !$0.isEmpty }) {
+                return .select(many)
+            }
+            return .select([try string("select")])
+        case "paste_properties":
+            let tick = o["tick"] as? [String] ?? []
+            if let bad = tick.first(where: { PasteProperty(rawValue: $0) == nil }) {
+                throw Failure(
+                    "unknown property \"\(bad)\"; known: \(PasteProperty.allCases.map(\.rawValue).joined(separator: ", "))"
+                )
+            }
+            return .pasteProperties(try string("paste_properties"), tick: tick)
         case "click": return .click(id: try string("click"), at: try point("at"), modifiers: mods, clicks: 1)
         case "double_click":
             return .click(id: try string("double_click"), at: try point("at"), modifiers: mods, clicks: 2)
@@ -202,8 +218,8 @@ final class ScenarioRunner {
         case "tab": return .tab(try string("tab"))
         case "focus":
             let which = try string("focus")
-            guard ["workspace", "settings"].contains(which) else {
-                throw Failure("\"focus\" must be \"workspace\" or \"settings\"")
+            guard ["workspace", "settings", "sheet"].contains(which) else {
+                throw Failure("\"focus\" must be \"workspace\", \"settings\" or \"sheet\"")
             }
             return .focus(which)
         default:
@@ -259,7 +275,11 @@ final class ScenarioRunner {
     private var app: AppController!
     /// The settings window while a step has focused it (the steps then act on it).
     private var focused: NSWindow?
-    private var window: NSWindow { focused ?? wc.window! }
+    private var window: NSWindow {
+        // The sheet, once it has closed, gives the steps back to the workspace window.
+        if let f = focused, f is PasteSheetWindow, wc.pasteSheet?.window !== f { return wc.window! }
+        return focused ?? wc.window!
+    }
 
     init(scenario: Scenario, out: URL) {
         self.scenario = scenario
@@ -324,6 +344,12 @@ final class ScenarioRunner {
         guard await rig.connect() else { throw Failure("the workspace connection did not come up") }
         guard await eventually({ self.rig.store.model != nil }) else { throw Failure("the workspace never loaded") }
         wc = WorkspaceWindowController(store: rig.store)
+        // The sheet is never put on screen, and copies stay off the user's pasteboard and settings.
+        wc.presentSheet = { _ in }
+        let board = NSPasteboard.withUniqueName()
+        wc.editor.pasteboard = board
+        wc.cueList.pasteboard = board
+        wc.pasteDefaults = UserDefaults(suiteName: "openlab-scenario-\(UUID().uuidString)") ?? .standard
         wireApp()
         window.appearance = NSAppearance(named: scenario.dark ? .darkAqua : .aqua)
         window.setContentSize(scenario.size)
@@ -404,9 +430,25 @@ final class ScenarioRunner {
     private func perform(_ step: Step) async throws {
         switch step {
         case .select(let what):
-            let node = try cue(what)
-            wc.cueList.selectAsUser([node.id])
-            note("select \(what): cue \(node.cue.number ?? "-") \"\(node.cue.displayName)\"")
+            let nodes = try what.map(cue)
+            wc.cueList.selectAsUser(nodes.map(\.id))
+            for node in nodes { note("select \(what): cue \(node.cue.number ?? "-") \"\(node.cue.displayName)\"") }
+        case .pasteProperties(let from, let tick):
+            let node = try cue(from)
+            if let open = wc.pasteSheet {
+                open.cancel()
+                note("  the open sheet was cancelled first")
+            }
+            guard await wc.editor.copySelection(of: [node.id]) else { throw Failure("cue \(from) was not copied") }
+            wc.promptPasteProperties(onto: wc.cueList.selectedIDs())
+            guard let sheet = wc.pasteSheet else { throw Failure("the sheet did not open") }
+            for name in tick {
+                guard let p = PasteProperty(rawValue: name), let box = sheet.propertyChecks[p] else {
+                    throw Failure("\(name) is not listed for these cues")
+                }
+                if box.state != .on { box.performClick(nil) }
+            }
+            note("paste_properties from \(from): \(sheet.categoryChecks.count) categories, ticked \(tick)")
         case .click(let id, let at, let mods, let clicks):
             let view = try control(id)
             let p = try windowPoint(at, in: view)
@@ -492,12 +534,15 @@ final class ScenarioRunner {
                 await sc.model.refresh()
                 sc.render()
                 focused = w
+            } else if which == "sheet" {
+                guard let sheet = wc.pasteSheet?.window else { throw Failure("no sheet is up") }
+                focused = sheet
             } else {
                 focused = nil
             }
             note("focus \(which)")
         case .tab(let id):
-            let tabs = focused != nil ? wc.settingsWindow.tabs : wc.inspector.tabView
+            let tabs = focused != nil && !(focused is PasteSheetWindow) ? wc.settingsWindow.tabs : wc.inspector.tabView
             let ids = tabs.tabViewItems.compactMap { $0.identifier as? String }
             guard ids.contains(id) else {
                 throw Failure("no tab \"\(id)\" for this selection; tabs: \(ids.joined(separator: ", "))")
@@ -700,18 +745,84 @@ final class ScenarioRunner {
 
     /// The whole window (title bar included) at 2x, drawn offscreen.
     private func shot(to url: URL) throws {
-        guard let frame = window.contentView?.superview else { throw Failure("the window has no frame view") }
+        // A focused sheet is shot over its workspace window, as it shows on screen.
+        let shown = window is PasteSheetWindow ? wc.window! : window
+        guard let frame = shown.contentView?.superview else { throw Failure("the window has no frame view") }
         frame.layoutSubtreeIfNeeded()
-        let rep = try renderView(frame, scale: 2, background: window.backgroundColor)
+        var rep = try renderView(frame, scale: 2, background: shown.backgroundColor)
+        if shown === wc.window, let sheet = wc.pasteSheet?.window { rep = try overlay(sheet, on: rep) }
         guard let png = rep.representation(using: .png, properties: [:]) else { throw Failure("PNG encoding failed") }
         try png.write(to: url)
+    }
+
+    /// A shown scroller draws through its own layer on screen, which a forced draw leaves out: its
+    /// slot and knob are drawn again where it is, so a shot shows that the list scrolls.
+    private func drawScrollers(in root: NSView, on rep: NSBitmapImageRep) {
+        var scrollers: [NSScroller] = []
+        func find(_ v: NSView) {
+            guard !v.isHidden else { return }
+            if let s = v as? NSScroller { scrollers.append(s) }
+            v.subviews.forEach(find)
+        }
+        find(root)
+        guard !scrollers.isEmpty, let context = NSGraphicsContext(bitmapImageRep: rep) else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        for s in scrollers {
+            let r = s.convert(s.bounds, to: root)
+            let cg = context.cgContext
+            cg.saveGState()
+            cg.scaleBy(x: 2, y: 2)
+            if s.isFlipped {
+                cg.translateBy(x: r.minX, y: r.maxY)
+                cg.scaleBy(x: 1, y: -1)
+            } else {
+                cg.translateBy(x: r.minX, y: r.minY)
+            }
+            s.drawKnobSlot(in: s.rect(for: .knobSlot), highlight: false)
+            s.drawKnob()
+            cg.restoreGState()
+            note("  drew the sheet's scroller")
+        }
+    }
+
+    /// `sheet` drawn where AppKit puts a sheet: centred, under the window's title bar.
+    private func overlay(_ sheet: NSWindow, on rep: NSBitmapImageRep) throws -> NSBitmapImageRep {
+        sheet.appearance = wc.window?.appearance
+        guard let frame = sheet.contentView else { throw Failure("the sheet has no content") }
+        frame.layoutSubtreeIfNeeded()
+        // On screen a scroll view tiles again once its document has its size (its scroller comes then).
+        func tile(_ v: NSView) {
+            (v as? NSScrollView)?.tile()
+            v.subviews.forEach(tile)
+        }
+        tile(frame)
+        frame.layoutSubtreeIfNeeded()
+        // Off screen the sheet's colours resolve in the drawing appearance: the window's, as on screen.
+        let drawing = NSAppearance.current
+        NSAppearance.current = sheet.appearance
+        defer { NSAppearance.current = drawing }
+        let top = try renderView(frame, scale: 2, background: .windowBackgroundColor)
+        drawScrollers(in: frame, on: top)
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { throw Failure("no context") }
+        let base = try XCTUnwrap(wc.window)
+        let titleBar = (base.frame.height - base.contentLayoutRect.height) * 2
+        let x = (CGFloat(rep.pixelsWide) - CGFloat(top.pixelsWide)) / 2
+        let y = CGFloat(rep.pixelsHigh) - titleBar - CGFloat(top.pixelsHigh)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        top.draw(in: NSRect(x: x, y: y, width: CGFloat(top.pixelsWide), height: CGFloat(top.pixelsHigh)))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
     }
 
     // MARK: Text
 
     static func describe(_ step: Step) -> String {
         switch step {
-        case .select(let s): return "select \(s)"
+        case .select(let s): return "select \(s.joined(separator: ", "))"
+        case .pasteProperties(let s, _): return "paste_properties \(s)"
         case .click(let id, _, _, let n): return "\(n == 2 ? "double_click" : "click") \(id)"
         case .drag(let id, _, _, _): return "drag \(id)"
         case .type(let id, _, _): return "type \(id)"

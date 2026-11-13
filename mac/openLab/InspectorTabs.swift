@@ -22,8 +22,9 @@ enum InspectorTabs {
 extension InspectorViewController {
     /// Brings the tab view to `ids` in order, keeping the shown tab when it stays. Idempotent, so a
     /// model change that keeps the kind does not touch the tabs (and a typed field keeps its focus).
-    func syncTabs(forKind kind: String) {
-        let wanted = InspectorTabs.ids(forKind: kind)
+    func syncTabs(forKind kind: String) { syncTabs(InspectorTabs.ids(forKind: kind)) }
+
+    func syncTabs(_ wanted: [String]) {
         guard tabView.tabViewItems.compactMap({ $0.identifier as? String }) != wanted else { return }
         endGestures()  // a drag's view may be about to go; this may render, and so may do what follows
         guard tabView.tabViewItems.compactMap({ $0.identifier as? String }) != wanted else { return }
@@ -60,9 +61,9 @@ extension InspectorViewController {
                 NSMenuItem(title: loc("inspector.devampMode.\(key)"), action: nil, keyEquivalent: ""))
         }
         for c in [devampStartNextCheck, devampStopCheck, devampModePopup as NSControl] { c.target = self }
-        devampStartNextCheck.action = #selector(devampChanged)
-        devampStopCheck.action = #selector(devampChanged)
-        devampModePopup.action = #selector(devampChanged)
+        devampStartNextCheck.action = #selector(devampChanged(_:))
+        devampStopCheck.action = #selector(devampChanged(_:))
+        devampModePopup.action = #selector(devampChanged(_:))
         let content = column(
             [row(loc("inspector.devampMode"), devampModePopup), devampStartNextCheck, devampStopCheck], nil)
         content.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
@@ -80,16 +81,29 @@ extension InspectorViewController {
         devampModePopup.selectItem(at: Self.devampModes.firstIndex(of: kind["devamp_mode"]?.stringValue ?? "") ?? 0)
     }
 
-    @objc func devampChanged() {
-        let start = devampStartNextCheck.state == .on
-        let stop = devampStopCheck.state == .on
-        let mode = Self.devampModes[max(0, min(devampModePopup.indexOfSelectedItem, Self.devampModes.count - 1))]
-        sendKind(
-            { kind in
+    /// Sets only the field of the control that changed, so with several cues selected the others keep
+    /// their own (a mixed box or pop-up is not written back).
+    @objc func devampChanged(_ sender: NSControl) {
+        let field: String
+        let value: JSONValue
+        if sender === devampModePopup {
+            let i = devampModePopup.indexOfSelectedItem
+            guard Self.devampModes.indices.contains(i) else { return }
+            (field, value) = ("devamp_mode", .string(Self.devampModes[i]))
+        } else if let check = sender as? NSButton {
+            let on = check.state != .off
+            check.allowsMixedState = false
+            check.state = on ? .on : .off
+            field = check === devampStartNextCheck ? "start_next_cue" : "stop_target_when_slice_ends"
+            value = .bool(on)
+        } else {
+            return
+        }
+        sendKindEach(
+            { cue, kind in
+                guard cue.kindType == "devamp" else { return kind }
                 var kind = kind
-                kind.set("start_next_cue", .bool(start))
-                kind.set("stop_target_when_slice_ends", .bool(stop))
-                kind.set("devamp_mode", .string(mode))
+                kind.set(field, value)
                 return kind
             }, key: "devamp")
         render()

@@ -30,6 +30,14 @@ final class LevelMatrixView: NSView {
     var levels: LevelSet? {
         didSet { needsDisplay = true }
     }
+    /// Levels that differ between the cues shown (several selected): drawn as mixed, not as a value.
+    var mixed: Set<LevelSet.Slot> = [] {
+        didSet { if mixed != oldValue { needsDisplay = true } }
+    }
+    /// The cues shown are ganged differently: no gang letter or colour is drawn.
+    var hidesGangs = false {
+        didSet { if hidesGangs != oldValue { needsDisplay = true } }
+    }
     private(set) var inputs = 0
     private(set) var outputCount = 0
     var selection: LevelSet.Slot = .master {
@@ -126,7 +134,7 @@ final class LevelMatrixView: NSView {
                 let r = NSRect(
                     x: Self.headW + CGFloat(o) * Self.cellW, y: Self.cellH, width: Self.cellW, height: Self.headerH)
                 var text = "\(o + 1)"
-                if let g = levels.gang(of: o) {
+                if !hidesGangs, let g = levels.gang(of: o) {
                     gangColour(g).setFill()
                     r.insetBy(dx: 1, dy: 1).fill()
                     text += " " + LevelSet.gangLetter(g)
@@ -173,12 +181,13 @@ final class LevelMatrixView: NSView {
             path.stroke()
         }
         guard active, let db else { return }
-        let text = (muted ? "M " : "") + LevelText.format(db)
+        let text = mixed.contains(slot) ? loc("inspector.mixed.level") : (muted ? "M " : "") + LevelText.format(db)
         centred(
             text, in: r,
             attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
-                .foregroundColor: muted ? NSColor.tertiaryLabelColor : NSColor.labelColor,
+                .foregroundColor: mixed.contains(slot)
+                    ? NSColor.secondaryLabelColor : muted ? NSColor.tertiaryLabelColor : NSColor.labelColor,
             ])
     }
 

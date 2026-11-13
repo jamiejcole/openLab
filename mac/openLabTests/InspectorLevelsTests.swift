@@ -1365,15 +1365,15 @@ final class InspectorTabOrderTests: XCTestCase {
     func testDevampSettingsEditTheKind() async {
         vc.setSelection([Self.devamp])
         XCTAssertEqual(vc.devampStartNextCheck.state, .off)
-        vc.devampStartNextCheck.state = .on
+        vc.devampStartNextCheck.performClick(nil)
+        await assertEventually { self.sent.count == 1 }
         vc.devampModePopup.selectItem(at: 1)
-        vc.devampChanged()
-        await assertEventually { !self.sent.isEmpty }
+        vc.devampChanged(vc.devampModePopup)
+        await assertEventually { self.sent.count == 2 }
         XCTAssertEqual(sent.last?["property"]?["type"], .string("kind_fields"))
+        XCTAssertEqual(normalised(sent.first?["property"]?["value"]), .object(["start_next_cue": .bool(true)]))
         let kind = normalised(sent.last?["property"]?["value"])
-        XCTAssertEqual(kind?["start_next_cue"], .bool(true))
-        XCTAssertEqual(kind?["devamp_mode"], .string("looping_cue"))
-        XCTAssertNil(kind?["target"], "only the changed fields are sent; the engine keeps the rest")
+        XCTAssertEqual(kind, .object(["devamp_mode": .string("looping_cue")]), "only the changed field is sent")
         await assertEventually("the engine stored it") {
             self.kind(Self.devamp)?["devamp_mode"] == .string("looping_cue")
         }
@@ -1389,7 +1389,7 @@ final class InspectorTabOrderTests: XCTestCase {
             XCTAssertFalse(c.isEnabled)
         }
         vc.devampStartNextCheck.state = .on
-        vc.devampChanged()
+        vc.devampChanged(vc.devampStartNextCheck)
         vc.clearTargetClicked()
         await settle()
         XCTAssertTrue(sent.isEmpty, "locked edits send nothing")

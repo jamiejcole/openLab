@@ -1,0 +1,12 @@
+{
+  "about": "An Audio cue and a Fade cue selected, light appearance: only Basics and Triggers; the duration and target fields are off (a file and a cue target are not one field), the kind icon is empty.",
+  "show": "Targets",
+  "media": {"media/a.wav": 30},
+  "appearance": "light",
+  "steps": [
+    {"select": ["1", "3"]},
+    {"shot": "basics"},
+    {"tab": "triggers"},
+    {"shot": "triggers"}
+  ]
+}

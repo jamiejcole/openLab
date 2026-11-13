@@ -173,6 +173,7 @@ extension InspectorViewController {
     }
 
     func sendLevels(_ set: LevelSet, gesture: Int?) {
+        if isBatch { return sendBatchLevels(set, gesture: gesture) }
         sendKind(
             { set.json(into: $0) }, key: "levels",
             coalesce: gesture.map { g in { "levels:\($0):\(Self.launchToken):\(g)" } })

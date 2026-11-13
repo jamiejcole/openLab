@@ -204,9 +204,10 @@ final class InspectorTests: XCTestCase {
         XCTAssertFalse(vc.emptyLabel.isHidden)
         XCTAssertEqual(vc.emptyLabel.stringValue, loc("inspector.empty"))
         XCTAssertTrue(vc.tabView.isHidden)
+        // Several cues: the inspector stays live (their shared tabs; the batch tests cover the rest).
         vc.setSelection([Self.intro, Self.fade])
-        XCTAssertEqual(vc.emptyLabel.stringValue, loc("inspector.multiple"))
-        XCTAssertTrue(vc.tabView.isHidden)
+        XCTAssertTrue(vc.emptyLabel.isHidden)
+        XCTAssertFalse(vc.tabView.isHidden)
         vc.setSelection(["00000000-0000-0000-0000-0000000000ff"])  // no such cue
         XCTAssertFalse(vc.emptyLabel.isHidden)
         vc.setSelection([Self.intro])

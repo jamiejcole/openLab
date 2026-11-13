@@ -1,0 +1,21 @@
+{
+  "about": "The paste sheet driven by its keys: Down twice highlights Notes, Space ticks it, Down to Color, Space; then Return pastes and the sheet closes.",
+  "show": "Demo",
+  "steps": [
+    {"select": ["2.1", "2.2"]},
+    {"paste_properties": "1"},
+    {"focus": "sheet"},
+    {"key": "down"},
+    {"key": "down"},
+    {"key": "space"},
+    {"key": "down"},
+    {"key": "down"},
+    {"key": "down"},
+    {"key": "down"},
+    {"key": "space"},
+    {"shot": "highlight-ticked"},
+    {"key": "return"},
+    {"focus": "workspace"},
+    {"shot": "pasted"}
+  ]
+}
