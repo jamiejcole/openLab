@@ -156,10 +156,16 @@ extension WorkspaceSettingsWindowController {
             popup.target = self
             popup.action = #selector(patchDeviceChosen(_:))
             popup.isEnabled = model.loaded
+            // The name is cut in a narrow window: the whole of it is the tip.
+            popup.toolTip = popup.titleOfSelectedItem
             // A long device name is cut: it never widens the window.
             popup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             popup.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
+            // The device column takes the width the table has to spare.
+            let wide = popup.widthAnchor.constraint(equalToConstant: 600)
+            wide.priority = NSLayoutConstraint.Priority(200)
+            wide.isActive = true
             popup.setAX("\(AX.settingsPatch)-device-\(n)", label: "\(shownName), \(loc("settings.audio.patchDevice"))")
 
             let edit = NSButton(

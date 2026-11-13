@@ -189,6 +189,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         root.distribution = .fill
         root.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
         for label in [problemLabel, messageLabel] { label.preferredMaxLayoutWidth = 480 }
+        // The tabs fill the window's width whatever their pages would choose.
+        tabs.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -28).isActive = true
         return root
     }
 
@@ -451,8 +453,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
                 ? loc("patchEditor.unused") : String(format: loc("patchEditor.feeds"), feeders.joined(separator: ", "))
             let detail = NSTextField(labelWithString: text)
             detail.textColor = c < state.usable ? .secondaryLabelColor : .tertiaryLabelColor
+            detail.toolTip = text
             detail.lineBreakMode = .byTruncatingTail
-            detail.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            // Cut only when it would pass the page's width (many cue outputs on one device output).
             detail.widthAnchor.constraint(lessThanOrEqualToConstant: 320).isActive = true
             detail.setAX("\(AX.patchEditorDeviceOutputs)-\(c + 1)")
             deviceGrid.addRow(with: [title, detail])
