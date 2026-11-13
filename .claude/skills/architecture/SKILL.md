@@ -24,9 +24,9 @@ engine process
 - **UI faults cannot stop playback** (NFR-01). If the UI dies the engine keeps playing and relaunches it.
 - **The audio thread never blocks.** Rules are in CLAUDE.md; fault confinement is below.
 - **The control thread does no disk I/O and nothing that can hang** (stat, decode, device open, name look-up, socket connect). Helper threads answer through the control inbox.
-- **The device sample counter is the master clock.** Wake jitter on the control thread must never shift audio.
-- **One engine process holds every open workspace** (limit in REQUIREMENTS §21) sharing one device, clock and mixer.
-- **Device loss hard-stops every cue and never auto-resumes.** Only the operator's GO restarts the show.
+- **The primary device's sample counter is the master clock** (another device's commands are translated from it; while the primary is away and another device plays, it runs on the wall clock: skill `devices`). Wake jitter on the control thread must never shift audio.
+- **One engine process holds every open workspace** (limit in REQUIREMENTS §21) sharing the output devices (one mixer each), clock and patch slots.
+- **Device loss hard-stops every cue on that device and never auto-resumes.** Only the operator's GO restarts them; the other devices play on.
 - **A caught fault is confined to its unit** (voice, patch, output, master, doc, peer) and reported; the show keeps running.
 - **No modal alert for a workspace in Show Mode.** Safety confirmations stay modal.
 - **An engine crash is the one unrecoverable case**, so the engine stays small and free of GUI frameworks.
@@ -103,7 +103,7 @@ audio thread: voice reads ring -> trims/loops/slices -> cue fades -> channel lev
 - Normal quit: confirm if cues run, then `goodbye { shutdown: true }`; the engine writes a final recovery file for every dirty doc and exits.
 - UI crash (socket drops without `goodbye`): the engine keeps playing, logs it and relaunches the app after 1 s with `open -b <bundle id>` (brings it to the front so keyboard GO works), at most 3 times a minute. If the pid the app gave in `hello` is still running with the same process name, do not relaunch; wait for it to reconnect. The relaunched UI gets a full snapshot.
 - Engine crash: the UI raises an unmissable alarm (floating non-modal always-on-top panel, sound, critical Dock bounce). It never takes keyboard focus, so transport keys keep working in windows bound to a live engine. It relaunches the engine and offers recovery.
-- One process widens the crash blast radius: a crash stops every open show. Accepted, as QLab shares one device, clock and port. Mitigations: no-panic rules, fuzz targets, soak runs, a recovery file per dirty doc.
+- One process widens the crash blast radius: a crash stops every open show. Accepted, as QLab shares its devices, clock and port. Mitigations: no-panic rules, fuzz targets, soak runs, a recovery file per dirty doc.
 - The engine asserts sleep prevention in Show Mode (IOPMAssertion), so it holds while the UI restarts. Details: skill `engine-lifecycle`.
 
 ## Error policy

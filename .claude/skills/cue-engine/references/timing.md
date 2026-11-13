@@ -27,7 +27,7 @@ Reported state derives in order: broken > paused > stopping > fading > pre-waiti
 - Run-time break (feedback; `voice_rejected`, `stream_failed`, `device_lost`): owns no voice, cannot start until reset; its pending auto-continue still fires on schedule, except after `device_lost`, which cancels it.
 - `device_lost` ends the run for good (pre-wait, auto-continue, auto-follow cancelled) and clears once the cue's patch is reported `mapped` again (`PatchStatus`, or when the run settles with the patch mapped; a patch never reported does not count).
 - A run that broke with a pending continue keeps showing `broken` until it fires, even if the device is back: clearing early would show a voiceless run as running.
-- `Input::DeviceLost` (sent after the binary failed the audio runs) hard-stops every other active run, so nothing scheduled before the loss fires after it.
+- `Input::DeviceLost` (sent when the last device that plays is lost, after the binary failed the audio runs) hard-stops every other active run, so nothing scheduled before the loss fires after it. The loss of one of several devices fails only the runs on it.
 - Static problems: `broken-and-edits.md`.
 
 ## Timer progress

@@ -15,9 +15,13 @@
 //! uses it, then it is zeroed and freed. A closed doc's slots are zeroed and freed at once
 //! ([`Patches::release_doc`]): its voices were stopped first.
 //!
-//! Patches resolve against the device the mixer plays on (the control loop's `playable` list:
-//! empty during a device outage). Output level, mute and polarity
-//! are in the matrix: the mixer has no other per-output setting.
+//! Patches resolve against the devices that play (the control loop's `playable` list: a device
+//! is left out while it is away). Each device has a mixer of its own; slot numbers are shared by
+//! every mixer, and a slot's gains are sent to the mixer of its patch's device. A slot follows
+//! its patch to another device in place while no voice plays through it; under a playing voice
+//! it is retired (the voice plays on where it started) and the patch takes a fresh slot, as for
+//! a resize. Output level, mute and polarity are in the matrix: the mixer has no other
+//! per-output setting.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
@@ -28,6 +32,10 @@ use openlab_core::{
 };
 
 use super::DocId;
+use super::devices::OutputKey;
+
+/// Mixer commands for patch slots, each with the output whose mixer it is for.
+pub type PatchCommands = Vec<(OutputKey, CommandKind)>;
 
 /// What a retired mixer slot was given to: a patch, at the output count it had then, and the
 /// device channels its outputs were mapped to (empty if it was not mapped).
@@ -62,67 +70,92 @@ pub struct Patches {
     /// A slot went back to the free list since [`Self::take_freed`]: a doc waiting for one
     /// can have it.
     freed: bool,
-    /// Gains sent to the mixer, per mixer slot, `[cue output][device output]` row-major.
-    sent: Vec<Vec<f32>>,
+    /// Gains sent to each output's mixer, per slot, `[cue output][device output]` row-major. A
+    /// slot no gain was sent to on an output is identity there, as a mixer starts it.
+    sent: HashMap<(OutputKey, u16), Vec<f32>>,
+    /// The output each slot's gains are on (the device of the patch that has it).
+    slot_out: Vec<OutputKey>,
     /// The same as sent, so a retired slot follows a change of its patch's levels too.
     bases: Vec<Vec<f32>>,
     device_outputs: usize,
-    /// Slots the mixer disabled after repeated faults ([`Self::quarantine`]).
-    quarantined: BTreeSet<u16>,
+    /// Slots a mixer disabled after repeated faults ([`Self::quarantine`]), with that mixer's
+    /// output.
+    quarantined: BTreeMap<u16, OutputKey>,
+    /// Slots that ever existed (the mixers' patch count).
+    count: usize,
 }
 
 impl Patches {
     /// `mixer_patches` matrices of `device_outputs` square, identity as the mixer starts them.
     pub fn new(mixer_patches: usize, device_outputs: usize) -> Self {
-        let identity: Vec<f32> = (0..device_outputs * device_outputs)
-            .map(|i| {
-                if i / device_outputs == i % device_outputs {
-                    1.0
-                } else {
-                    0.0
-                }
-            })
-            .collect();
         let count = mixer_patches.min(MAX_PATCHES);
         Self {
             docs: BTreeMap::new(),
             free: (0..count).filter_map(|p| u16::try_from(p).ok()).collect(),
             freed: false,
-            sent: vec![identity; count],
+            sent: HashMap::new(),
+            slot_out: vec![0; count],
             bases: vec![vec![0.0; device_outputs * device_outputs]; count],
             device_outputs,
-            quarantined: BTreeSet::new(),
+            quarantined: BTreeMap::new(),
+            count,
         }
     }
 
-    /// Follows doc `doc`'s patches and the devices present. `busy`: the slots a voice of that
-    /// doc in the mixer may still play through (`Voices::slots_in_use`; no other doc's voice
-    /// can be on its slots). Returns the mixer commands that bring the matrices up to date, and
-    /// the patches whose resolution changed (for `Input::PatchStatus`).
+    fn identity(&self) -> Vec<f32> {
+        let n = self.device_outputs;
+        (0..n * n)
+            .map(|i| if i / n == i % n { 1.0 } else { 0.0 })
+            .collect()
+    }
+
+    /// The output slot `slot`'s gains are on.
+    pub fn slot_output(&self, slot: u16) -> Option<OutputKey> {
+        self.slot_out.get(usize::from(slot)).copied()
+    }
+
+    /// Follows doc `doc`'s patches and the devices that play (`playable`: each with its
+    /// output). `busy`: the slots a voice of that doc in a mixer may still play through
+    /// (`Voices::slots_in_use`; no other doc's voice can be on its slots). Returns the mixer
+    /// commands, each for its output, that bring the matrices up to date, and the patches whose
+    /// resolution changed (for `Input::PatchStatus`).
     pub fn sync(
         &mut self,
         doc: DocId,
         ws: &Workspace,
         settings: &MachineSettings,
-        devices: &[DeviceInfo],
+        playable: &[(DeviceInfo, OutputKey)],
         busy: &BTreeSet<u16>,
-    ) -> (Vec<CommandKind>, Vec<(PatchId, PatchResolution)>) {
+    ) -> (PatchCommands, Vec<(PatchId, PatchResolution)>) {
+        let devices: Vec<DeviceInfo> = playable.iter().map(|(d, _)| d.clone()).collect();
         let mut d = self.docs.remove(&doc).unwrap_or_default();
+        // Resolved first: a slot follows its patch's device.
+        let mut resolved: HashMap<PatchId, (PatchResolution, Option<OutputKey>)> = HashMap::new();
+        for patch in &ws.patches {
+            let r = self.resolve(settings, ws, patch, &devices);
+            let out = match &r {
+                PatchResolution::Mapped { device, .. } => playable
+                    .iter()
+                    .find(|(i, _)| &i.name == device)
+                    .map(|&(_, k)| k),
+                _ => None,
+            };
+            resolved.insert(patch.id, (r, out));
+        }
         let mut commands = Vec::new();
         let mut changed = Vec::new();
-        let mut given = self.allocate(&mut d, ws, busy, &mut commands);
+        let mut given = self.allocate(&mut d, ws, &resolved, busy, &mut commands);
         d.outputs.clear();
         let mut seen = HashMap::new();
         for patch in &ws.patches {
-            let resolution = match d.slots.get(&patch.id) {
-                Some(&(slot, _)) => {
-                    let r = self.resolve(settings, ws, patch, devices);
+            let resolution = match (d.slots.get(&patch.id), resolved.remove(&patch.id)) {
+                (Some(&(slot, _)), Some((r, _))) => {
                     let base = self.matrix(patch, &r);
                     self.apply(slot, base, &mut commands);
                     r
                 }
                 // Every mixer slot is taken: the patch cannot play.
-                None => PatchResolution::Unmapped,
+                _ => PatchResolution::Unmapped,
             };
             d.outputs.insert(patch.id, patch.outputs.len());
             if d.resolutions.get(&patch.id) != Some(&resolution) {
@@ -134,7 +167,16 @@ impl Patches {
         let retired: Vec<(u16, Holder)> = d.retired.iter().map(|(&s, h)| (s, h.clone())).collect();
         for (slot, holder) in retired {
             let base = match ws.patches.iter().find(|p| p.id == holder.patch) {
-                Some(patch) => self.retired_base(&d, slot, &holder, patch),
+                Some(patch) => {
+                    // The patch's channels are for this slot's device only while the patch
+                    // plays there.
+                    let here = d
+                        .slots
+                        .get(&patch.id)
+                        .and_then(|&(s, _)| self.slot_output(s))
+                        == self.slot_output(slot);
+                    self.retired_base(&d, slot, &holder, patch, here)
+                }
                 None => self.bases.get(usize::from(slot)).cloned(),
             };
             if let Some(base) = base {
@@ -146,18 +188,17 @@ impl Patches {
         // from what they held before: a voice started or moved onto one on this sample is heard
         // on its own patch's outputs only.
         given.sort_unstable();
-        commands.extend(
-            given
-                .into_iter()
-                .map(|patch| CommandKind::SnapPatch { patch }),
-        );
+        for patch in given {
+            let out = self.slot_output(patch).unwrap_or(0);
+            commands.push((out, CommandKind::SnapPatch { patch }));
+        }
         self.docs.insert(doc, d);
         (commands, changed)
     }
 
     /// A doc closed (its voices were stopped first): every slot it had, in use or retired, is
     /// zeroed and freed. Returns the mixer commands.
-    pub fn release_doc(&mut self, doc: DocId) -> Vec<CommandKind> {
+    pub fn release_doc(&mut self, doc: DocId) -> Vec<(OutputKey, CommandKind)> {
         let mut commands = Vec::new();
         let Some(d) = self.docs.remove(&doc) else {
             return commands;
@@ -192,11 +233,12 @@ impl Patches {
         slot: u16,
         holder: &Holder,
         patch: &OutputPatch,
+        here: bool,
     ) -> Option<Vec<f32>> {
         let n = self.device_outputs;
         let mut m = self.bases.get(usize::from(slot))?.clone();
         let channels: &[u32] = match d.resolutions.get(&patch.id) {
-            Some(PatchResolution::Mapped { channels, .. }) => channels,
+            Some(PatchResolution::Mapped { channels, .. }) if here => channels,
             _ => &holder.channels,
         };
         let master = db_to_gain(patch.master_db);
@@ -222,7 +264,7 @@ impl Patches {
     }
 
     /// Sends slot `slot` the gains `base`.
-    fn apply(&mut self, slot: u16, base: Vec<f32>, commands: &mut Vec<CommandKind>) {
+    fn apply(&mut self, slot: u16, base: Vec<f32>, commands: &mut Vec<(OutputKey, CommandKind)>) {
         self.diff(slot, &base, commands);
         if let Some(b) = self.bases.get_mut(usize::from(slot)) {
             *b = base;
@@ -236,19 +278,30 @@ impl Patches {
         &mut self,
         d: &mut DocSlots,
         ws: &Workspace,
+        resolved: &HashMap<PatchId, (PatchResolution, Option<OutputKey>)>,
         busy: &BTreeSet<u16>,
-        commands: &mut Vec<CommandKind>,
+        commands: &mut Vec<(OutputKey, CommandKind)>,
     ) -> Vec<u16> {
         let live: HashMap<PatchId, usize> =
             ws.patches.iter().map(|p| (p.id, p.outputs.len())).collect();
-        // A slot leaves its patch when the patch is gone, or resized while a voice plays
-        // through it (the voice keeps the layout it started with; later starts get the new
-        // one). A resize with no voice on the slot is made in place.
+        let target = |patch: &PatchId| resolved.get(patch).and_then(|(_, o)| *o);
+        // A slot leaves its patch when the patch is gone, or resized or moved to another device
+        // while a voice plays through it (the voice keeps the layout and device it started
+        // with; later starts get the new ones). With no voice on the slot the change is made in
+        // place: a slot moving to another device is silenced on the one it leaves.
         let mut leaving = Vec::new();
+        let mut moving = Vec::new();
         for (&patch, (slot, outputs)) in &mut d.slots {
+            let here = self.slot_out.get(usize::from(*slot)).copied();
+            let moved = target(&patch).is_some_and(|t| Some(t) != here);
             match live.get(&patch) {
-                Some(&n) if n == *outputs => {}
-                Some(&n) if !busy.contains(slot) => *outputs = n,
+                Some(&n) if n == *outputs && !moved => {}
+                Some(&n) if !busy.contains(slot) => {
+                    *outputs = n;
+                    if let Some(t) = target(&patch).filter(|_| moved) {
+                        moving.push((*slot, t));
+                    }
+                }
                 _ => leaving.push((
                     *slot,
                     Holder {
@@ -266,16 +319,23 @@ impl Patches {
             d.slots.remove(&holder.patch);
             d.retired.insert(slot, holder);
         }
-        // A retired slot goes back to its patch when that has the same id and size again (an
-        // undo) and no slot; else it is zeroed and freed once no voice uses it.
         let zero = vec![0.0; self.device_outputs * self.device_outputs];
+        for (slot, to) in moving {
+            self.diff(slot, &zero, commands);
+            if let Some(o) = self.slot_out.get_mut(usize::from(slot)) {
+                *o = to;
+            }
+        }
+        // A retired slot goes back to its patch when that has the same id, size and device again
+        // (an undo) and no slot; else it is zeroed and freed once no voice uses it.
         let retired: Vec<(u16, PatchId, usize)> = d
             .retired
             .iter()
             .map(|(&s, h)| (s, h.patch, h.outputs))
             .collect();
         for (slot, patch, outputs) in retired {
-            if live.get(&patch) == Some(&outputs) && !d.slots.contains_key(&patch) {
+            let same_device = target(&patch).is_none_or(|t| self.slot_output(slot) == Some(t));
+            if live.get(&patch) == Some(&outputs) && same_device && !d.slots.contains_key(&patch) {
                 d.retired.remove(&slot);
                 d.slots.insert(patch, (slot, outputs));
             } else if !busy.contains(&slot) {
@@ -296,6 +356,13 @@ impl Patches {
             }
             match self.free.pop_front() {
                 Some(slot) => {
+                    // A free slot is silent on the device it was last on; it starts on its
+                    // patch's device (the primary for a patch that plays nowhere).
+                    if let Some(t) = target(&patch.id)
+                        && let Some(o) = self.slot_out.get_mut(usize::from(slot))
+                    {
+                        *o = t;
+                    }
                     d.slots.insert(patch.id, (slot, patch.outputs.len()));
                     given.push(slot);
                 }
@@ -336,7 +403,7 @@ impl Patches {
 
     /// Mixer slots the patches can have.
     pub fn capacity(&self) -> usize {
-        self.sent.len()
+        self.count
     }
 
     /// Slots no doc has (in use or retired).
@@ -393,12 +460,14 @@ impl Patches {
         m
     }
 
-    /// Sends slot `p` the entries of `want` that differ from what it has.
-    fn diff(&mut self, p: u16, want: &[f32], commands: &mut Vec<CommandKind>) {
+    /// Sends slot `p`, on its output, the entries of `want` that differ from what it has.
+    fn diff(&mut self, p: u16, want: &[f32], commands: &mut Vec<(OutputKey, CommandKind)>) {
         let n = self.device_outputs;
-        let Some(sent) = self.sent.get_mut(usize::from(p)) else {
+        let Some(out) = self.slot_output(p) else {
             return;
         };
+        let identity = self.identity();
+        let sent = self.sent.entry((out, p)).or_insert(identity);
         for (i, (s, &w)) in sent.iter_mut().zip(want).enumerate() {
             if s.to_bits() == w.to_bits() {
                 continue;
@@ -408,12 +477,15 @@ impl Patches {
                 continue;
             };
             *s = w;
-            commands.push(CommandKind::SetPatchRouting {
-                patch: p,
-                cue_output,
-                device_output,
-                gain: w,
-            });
+            commands.push((
+                out,
+                CommandKind::SetPatchRouting {
+                    patch: p,
+                    cue_output,
+                    device_output,
+                    gain: w,
+                },
+            ));
         }
     }
 
@@ -463,17 +535,26 @@ impl Patches {
     }
 
     /// The mixer reset slot `slot` to silence after a fault: what brings it back to the gains
-    /// last sent.
-    pub fn resend(&self, slot: u16) -> Vec<CommandKind> {
+    /// last sent, for the output the slot is on.
+    pub fn resend(&self, slot: u16) -> Vec<(OutputKey, CommandKind)> {
         let mut commands = Vec::new();
-        self.resend_into(slot, &mut commands);
+        if let Some(out) = self.slot_output(slot) {
+            self.resend_into(out, slot, &mut commands);
+        }
         commands
     }
 
-    fn resend_into(&self, slot: u16, commands: &mut Vec<CommandKind>) {
+    /// Slot `slot`'s gains as last sent to output `out` (a slot never sent to there is
+    /// identity, as the mixer starts it).
+    fn resend_into(&self, out: OutputKey, slot: u16, commands: &mut Vec<(OutputKey, CommandKind)>) {
         let n = self.device_outputs;
-        let Some(sent) = self.sent.get(usize::from(slot)) else {
-            return;
+        let identity;
+        let sent = match self.sent.get(&(out, slot)) {
+            Some(s) => s,
+            None => {
+                identity = self.identity();
+                &identity
+            }
         };
         for (i, &gain) in sent.iter().enumerate() {
             if gain == 0.0 {
@@ -483,12 +564,15 @@ impl Patches {
             else {
                 continue;
             };
-            commands.push(CommandKind::SetPatchRouting {
-                patch: slot,
-                cue_output,
-                device_output,
-                gain,
-            });
+            commands.push((
+                out,
+                CommandKind::SetPatchRouting {
+                    patch: slot,
+                    cue_output,
+                    device_output,
+                    gain,
+                },
+            ));
         }
     }
 
@@ -503,39 +587,52 @@ impl Patches {
         }
         self.free.retain(|&s| s != slot);
         let i = usize::from(slot);
-        if let (Some(sent), Some(base)) = (self.sent.get_mut(i), self.bases.get_mut(i)) {
-            sent.fill(0.0);
+        let Some(out) = self.slot_output(slot) else {
+            return;
+        };
+        if let Some(base) = self.bases.get_mut(i) {
             base.fill(0.0);
-            self.quarantined.insert(slot);
+            let n = self.device_outputs;
+            self.sent.insert((out, slot), vec![0.0; n * n]);
+            self.quarantined.insert(slot, out);
         }
     }
 
     /// Whether slot `slot` is quarantined ([`Self::quarantine`]).
     pub fn is_quarantined(&self, slot: u16) -> bool {
-        self.quarantined.contains(&slot)
+        self.quarantined.contains_key(&slot)
     }
 
-    /// The mixer rebuilt its non-voice state after repeated faults (every slot silent and
-    /// enabled, every device output enabled and the master at unity):
-    /// the commands that bring all of it back to what was last sent. Quarantined slots are free again.
-    pub fn rebuilt(&mut self) -> Vec<CommandKind> {
-        let back = std::mem::take(&mut self.quarantined);
+    /// Output `out`'s mixer rebuilt its non-voice state after repeated faults (every slot
+    /// silent and enabled, every device output enabled and the master at unity): the commands
+    /// that bring all of it back to what was last sent. The slots it had quarantined are free
+    /// again.
+    pub fn rebuilt(&mut self, out: OutputKey) -> Vec<(OutputKey, CommandKind)> {
+        let back: Vec<u16> = self
+            .quarantined
+            .iter()
+            .filter(|&(_, &o)| o == out)
+            .map(|(&s, _)| s)
+            .collect();
+        for slot in &back {
+            self.quarantined.remove(slot);
+        }
         if !back.is_empty() {
             self.free.extend(back);
             self.freed = true;
         }
-        self.resend_all()
+        self.resend_all(out)
     }
 
-    /// Every slot's gains and the master, as last sent. Sent again to a mixer that did not
-    /// reset them changes nothing.
-    pub fn resend_all(&self) -> Vec<CommandKind> {
+    /// Every slot's gains on output `out` and its master, as last sent. Sent again to a mixer
+    /// that did not reset them changes nothing.
+    pub fn resend_all(&self, out: OutputKey) -> Vec<(OutputKey, CommandKind)> {
         let mut commands = Vec::new();
-        for slot in (0..self.sent.len()).filter_map(|s| u16::try_from(s).ok()) {
-            self.resend_into(slot, &mut commands);
+        for slot in (0..self.count).filter_map(|s| u16::try_from(s).ok()) {
+            self.resend_into(out, slot, &mut commands);
         }
         // The mixer's master stays at unity.
-        commands.push(CommandKind::SetMaster { gain: 1.0 });
+        commands.push((out, CommandKind::SetMaster { gain: 1.0 }));
         commands
     }
 }

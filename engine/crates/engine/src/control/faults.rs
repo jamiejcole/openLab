@@ -14,6 +14,7 @@ use openlab_audio::{CommandKind, DisabledUnits, FaultStage, SampleTime};
 use openlab_core::PatchId;
 use openlab_core::protocol::{LogLevel, WireWarning};
 
+use super::devices::OutputKey;
 use super::voices::Effects;
 use super::{Control, DocCx, notice};
 
@@ -91,13 +92,13 @@ impl Disabled {
 }
 
 impl Control {
-    /// The mixer reported a fault in `stage` (`disabled`: it gave up on that unit).
-    pub(super) fn stage_faulted(&mut self, stage: FaultStage, disabled: bool) {
+    /// Output `out`'s mixer reported a fault in `stage` (`disabled`: it gave up on that unit).
+    pub(super) fn stage_faulted(&mut self, out: OutputKey, stage: FaultStage, disabled: bool) {
         self.eng.stage_reports += 1;
-        self.answer_stage_fault(stage, disabled);
+        self.answer_stage_fault(out, stage, disabled);
     }
 
-    fn answer_stage_fault(&mut self, stage: FaultStage, disabled: bool) {
+    fn answer_stage_fault(&mut self, out: OutputKey, stage: FaultStage, disabled: bool) {
         let now = self.eng.now();
         let tell = self
             .eng
@@ -119,7 +120,12 @@ impl Control {
                 (_, true) => format!("{what} kept failing and was disabled"),
                 (_, false) => format!("{what} failed and was reset"),
             };
-            let count = self.eng.mixer.faulted_stages();
+            let count: u64 = self
+                .eng
+                .outputs
+                .iter()
+                .map(|(_, o)| o.mixer.faulted_stages())
+                .sum();
             self.eng.log(
                 LogLevel::Error,
                 format!("audio engine fault: {how} ({count} mixer stage fault(s) so far)"),
@@ -153,7 +159,13 @@ impl Control {
             FaultStage::Meters => faults.meters |= disabled,
             FaultStage::Mixer => {
                 *faults = Disabled::default();
-                commands = self.eng.patches.rebuilt();
+                commands = self
+                    .eng
+                    .patches
+                    .rebuilt(out)
+                    .into_iter()
+                    .map(|(_, c)| c)
+                    .collect();
                 told = Some(
                     "the audio engine kept failing and its routing was rebuilt: sound may have \
                      dropped out briefly"
@@ -162,7 +174,7 @@ impl Control {
             }
         }
         self.eng
-            .send_commands(commands.into_iter().map(|c| (now, c)).collect());
+            .send_on(now, commands.into_iter().map(|c| (out, c)).collect());
         if let Some(message) = told.filter(|_| tell) {
             self.each_doc(|cx| cx.tell(message.clone()));
         }
@@ -178,8 +190,7 @@ impl Control {
         } else {
             let now = self.eng.now();
             let commands = self.eng.patches.resend(slot);
-            self.eng
-                .send_commands(commands.into_iter().map(|c| (now, c)).collect());
+            self.eng.send_on(now, commands);
         }
         if let Some((doc, patch)) = owner
             && let Some(mut cx) = self.cx_of(doc)
@@ -205,9 +216,10 @@ impl Control {
             ),
         );
         let now = self.eng.now();
-        let commands = self.eng.patches.resend_all();
-        self.eng
-            .send_commands(commands.into_iter().map(|c| (now, c)).collect());
+        for out in 0..self.eng.outputs.len() {
+            let commands = self.eng.patches.resend_all(out);
+            self.eng.send_on(now, commands);
+        }
     }
 }
 
@@ -216,7 +228,12 @@ impl Control {
     /// queued by then has been drained) and still has (`now`: a rebuild since re-enabled the
     /// others) that the control thread was never told of: their report was lost to a full
     /// event queue, so they are answered now as reported.
-    pub(super) fn lost_disabled_reports(&mut self, before: DisabledUnits, now: DisabledUnits) {
+    pub(super) fn lost_disabled_reports(
+        &mut self,
+        out: OutputKey,
+        before: DisabledUnits,
+        now: DisabledUnits,
+    ) {
         let still: Vec<FaultStage> = now.stages().collect();
         let unknown: Vec<FaultStage> = before
             .stages()
@@ -228,7 +245,7 @@ impl Control {
                 LogLevel::Error,
                 format!("audio engine fault: the report of a disabled {stage:?} was lost"),
             );
-            self.answer_stage_fault(stage, true);
+            self.answer_stage_fault(out, stage, true);
         }
     }
 
@@ -374,7 +391,7 @@ mod tests {
     fn mixer_does(s: &mut crate::control::offline::OfflineShow, kind: CommandKind) {
         let eng = &mut s.control_mut().eng;
         let at = eng.now();
-        eng.mixer.send(at, kind);
+        eng.outputs.primary_mut().mixer.send(at, kind);
     }
 
     /// NFR-01 (review of #300, H1): after a fault the mixer has reset a unit, and the control
@@ -418,17 +435,18 @@ mod tests {
 
         quiet_master(&mut s);
         assert_eq!(level_after(&mut s, 640), [0.0, 0.0]);
-        s.control_mut().stage_faulted(FaultStage::Master, false);
+        s.control_mut().stage_faulted(0, FaultStage::Master, false);
         assert_eq!(level_after(&mut s, 640), heard, "master");
 
         // An output has nothing to send back: it plays on as it was.
-        s.control_mut().stage_faulted(FaultStage::Output(0), false);
+        s.control_mut()
+            .stage_faulted(0, FaultStage::Output(0), false);
         assert_eq!(level_after(&mut s, 640), heard, "output");
 
         zero_slot(&mut s);
         assert_eq!(level_after(&mut s, 640), [0.0, 0.0]);
         s.control_mut()
-            .stage_faulted(FaultStage::Patch(slot), false);
+            .stage_faulted(0, FaultStage::Patch(slot), false);
         assert_eq!(level_after(&mut s, 640), heard, "patch");
 
         for (k, answer) in ["rebuild", "lost report"].into_iter().enumerate() {
@@ -436,7 +454,7 @@ mod tests {
             quiet_master(&mut s);
             assert_eq!(level_after(&mut s, 640), [0.0, 0.0]);
             if k == 0 {
-                s.control_mut().stage_faulted(FaultStage::Mixer, false);
+                s.control_mut().stage_faulted(0, FaultStage::Mixer, false);
             } else {
                 let counted = s.control().eng.stage_reports + 1;
                 s.control_mut().lost_stage_reports(counted);
@@ -461,16 +479,16 @@ mod tests {
             ..Default::default()
         };
         s.control_mut()
-            .lost_disabled_reports(flags, openlab_audio::DisabledUnits::default());
+            .lost_disabled_reports(0, flags, openlab_audio::DisabledUnits::default());
         assert_eq!(at(&s), Some(first));
-        s.control_mut().lost_disabled_reports(flags, flags);
+        s.control_mut().lost_disabled_reports(0, flags, flags);
         let moved = at(&s);
         assert!(moved.is_some_and(|m| m != first), "{moved:?}");
         s.run(64);
         let (_, list) = fault_notices(&s.take_outbound());
         assert!(list.unwrap().iter().any(|m| m.contains("device output 2")));
         // Known now: nothing more happens.
-        s.control_mut().lost_disabled_reports(flags, flags);
+        s.control_mut().lost_disabled_reports(0, flags, flags);
         assert_eq!(at(&s), moved);
     }
 
@@ -487,33 +505,36 @@ mod tests {
         let first = slot(&s).unwrap();
 
         // As the mixer's event queue hands it over.
-        s.control_mut()
-            .route_mixer_event(openlab_audio::Event::StageFaulted {
+        s.control_mut().route_mixer_event(
+            0,
+            openlab_audio::Event::StageFaulted {
                 stage: FaultStage::Patch(first),
                 at: 0,
                 disabled: false,
-            });
+            },
+        );
         assert_eq!(s.control().eng.stage_reports, 1);
         let (told, _) = fault_notices(&s.take_outbound());
         assert!(told.iter().any(|m| m.contains("\"Main\"")), "{told:?}");
         assert_eq!(slot(&s), Some(first));
         // A unit that keeps faulting is told about once a second, not once a fault.
         s.control_mut()
-            .stage_faulted(FaultStage::Patch(first), false);
+            .stage_faulted(0, FaultStage::Patch(first), false);
         assert!(s.take_outbound().is_empty());
         s.run(8000);
         s.take_outbound();
         s.control_mut()
-            .stage_faulted(FaultStage::Patch(first), false);
+            .stage_faulted(0, FaultStage::Patch(first), false);
         assert_eq!(fault_notices(&s.take_outbound()).0.len(), 1);
 
         s.control_mut()
-            .stage_faulted(FaultStage::Patch(first), true);
+            .stage_faulted(0, FaultStage::Patch(first), true);
         let moved = slot(&s).unwrap();
         assert_ne!(moved, first);
         assert_eq!(s.control().eng.patches.free_slots(), 0);
 
-        s.control_mut().stage_faulted(FaultStage::Output(1), true);
+        s.control_mut()
+            .stage_faulted(0, FaultStage::Output(1), true);
         s.run(64);
         let (_, list) = fault_notices(&s.take_outbound());
         assert!(
@@ -521,7 +542,7 @@ mod tests {
             "a disabled output is a warning in force"
         );
 
-        s.control_mut().stage_faulted(FaultStage::Mixer, false);
+        s.control_mut().stage_faulted(0, FaultStage::Mixer, false);
         s.run(64);
         let (told, list) = fault_notices(&s.take_outbound());
         assert!(told.iter().any(|m| m.contains("rebuilt")), "{told:?}");

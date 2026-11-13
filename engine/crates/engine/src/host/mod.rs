@@ -437,6 +437,9 @@ fn run_with(
         .map_or(mixer_config.max_block_frames as u64, u64::from);
     let mut config = ControlConfig::new(rate, block);
     config.mixer_patches = MAX_PATCHES;
+    // Further devices a patch maps to play with mixers like the primary's.
+    config.output_mixer = Some(mixer_config);
+    config.output_buffer_frames = Some(BUFFER_FRAMES);
     config.show_log = show_log;
     config.status = Some(StatusConfig::default());
     config.push_log = true;

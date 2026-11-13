@@ -1392,7 +1392,7 @@ impl DocCx<'_> {
         self.doc.pending_media.clear();
         self.doc.ready_media.clear();
         self.doc.events.clear();
-        self.eng.mixer.pump();
+        self.eng.outputs.pump();
     }
 
     /// Queues the removal of this doc's own current recovery file behind the writer's current
@@ -2470,7 +2470,7 @@ impl Control {
         reply_data(to, id, ResultData::Opened { doc: doc_id });
         self.eng.opened.push((id, doc_id));
         self.publish_workspaces();
-        self.eng.mixer.pump();
+        self.eng.outputs.pump();
     }
 
     /// Closes doc `doc` (WS-02): refused with `unsaved_changes` while it has unsaved edits,
@@ -2535,14 +2535,8 @@ impl Control {
         // Dated after the stops the panic sent (at `now` too): the slots go silent as the
         // voices on them end.
         let now = self.eng.now();
-        let commands = self
-            .eng
-            .patches
-            .release_doc(doc)
-            .into_iter()
-            .map(|c| (now, c))
-            .collect();
-        self.eng.send_commands(commands);
+        let commands = self.eng.patches.release_doc(doc);
+        self.eng.send_on(now, commands);
         // Its slots may be a waiting patch's in another doc.
         self.mark_warnings_dirty();
         self.eng.voice_ids.retain(|_, owner| owner != doc);
@@ -2558,7 +2552,7 @@ impl Control {
             .extend(std::mem::take(&mut closed.file.saves));
         self.eng.docs.discard(Box::new(closed));
         self.eng.docs.discard(unwatched);
-        self.eng.mixer.pump();
+        self.eng.outputs.pump();
         Ok(())
     }
 

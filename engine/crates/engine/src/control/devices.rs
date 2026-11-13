@@ -72,6 +72,10 @@ pub const FIRST_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// An output device as the host lists it.
 pub type ListedDevice = openlab_audio::DeviceInfo;
 
+/// Which open output device a device-thread answer is about: its place in the engine's table of
+/// outputs (0 is the primary device, opened at start; the place is never reused in a run).
+pub type OutputKey = usize;
+
 /// The wall clock of the device policy (backoff, list polling, watchdog). Tests inject
 /// their own.
 pub type WallClock = Arc<dyn Fn() -> Instant + Send + Sync>;
@@ -102,6 +106,8 @@ pub trait DeviceLayer: Send {
     ) -> Result<Box<dyn OpenStream>, OpenFailure>;
     /// What reads the device list, on its own thread.
     fn lister(&self) -> Box<dyn DeviceLister>;
+    /// A layer for another device's thread (each open device has a thread of its own).
+    fn another(&self) -> Box<dyn DeviceLayer>;
 }
 
 /// Reads the device list (may block).
@@ -206,6 +212,10 @@ impl DeviceLayer for CpalDevices {
     }
 
     fn lister(&self) -> Box<dyn DeviceLister> {
+        Box::new(CpalDevices)
+    }
+
+    fn another(&self) -> Box<dyn DeviceLayer> {
         Box::new(CpalDevices)
     }
 }
@@ -330,6 +340,7 @@ pub fn start_with_timeout(
     let (first_tx, first) = crossbeam_channel::bounded(1);
     let first_request = request.clone();
     let mut lister = layer.lister();
+    let spare = layer.another();
     let list_inbox = inbox.clone();
     thread::Builder::new()
         .name("openlab-device".into())
@@ -351,7 +362,7 @@ pub fn start_with_timeout(
                 // Given up on: the stream (and the mixer) go here.
                 return;
             }
-            worker(layer, &jobs, &inbox, Some(stream));
+            worker(layer, &jobs, &inbox, Some(stream), 0);
         })
         .map_err(StartError::Thread)?;
     let info = match first.recv_timeout(timeout) {
@@ -372,7 +383,7 @@ pub fn start_with_timeout(
                 let listed = catch_unwind(AssertUnwindSafe(|| lister.list()))
                     .unwrap_or_else(|_| Err(panicked("list")));
                 if list_inbox
-                    .send(Inbox::Device(DeviceAnswer::Listed(listed)))
+                    .send(Inbox::Device(0, DeviceAnswer::Listed(listed)))
                     .is_err()
                 {
                     break;
@@ -388,8 +399,10 @@ pub fn start_with_timeout(
         ..request
     };
     Ok(Device {
+        key: 0,
         jobs: jobs_tx,
-        lists: lists_tx,
+        lists: Some(lists_tx),
+        opened: true,
         wall,
         in_flight: VecDeque::new(),
         listing: None,
@@ -408,7 +421,72 @@ pub fn start_with_timeout(
         up_since: now,
         stuck: None,
         alloc_base: 0,
+        spare: Some(spare),
     })
+}
+
+/// Starts another output device without waiting: its thread opens `request`'s device for `mixer`
+/// and answers through the inbox tagged `key`. Until then the device is down (an outage that ends
+/// with the first open), and a failed open is retried with the reopen backoff like a lost device.
+/// It reads no list of its own: the list reader's reads are handed to it ([`Device::answer`]).
+fn spawn(
+    layer: Box<dyn DeviceLayer>,
+    mixer: Mixer,
+    request: OpenRequest,
+    from: &Device,
+    inbox: Sender<Inbox>,
+    key: OutputKey,
+) -> Result<Device, StartError> {
+    let (listed, wall, sleep_clock) = (from.listed.clone(), from.wall(), from.sleep_clock());
+    let (jobs_tx, jobs) = crossbeam_channel::unbounded();
+    let name = request
+        .device_id
+        .as_deref()
+        .and_then(|id| listed.iter().find(|d| d.id == id))
+        .map(|d| d.name.clone())
+        .unwrap_or_default();
+    let device_id = request.device_id.clone().unwrap_or_default();
+    thread::Builder::new()
+        .name("openlab-device".into())
+        .spawn(move || worker(layer, &jobs, &inbox, None, key))
+        .map_err(StartError::Thread)?;
+    let now = wall();
+    let info = StreamInfo {
+        device_id,
+        name,
+        channels: 0,
+        outputs_dropped: false,
+        block_frames: request.buffer_frames,
+        sample_rate: 0,
+        monitor: DeviceMonitor::idle(),
+    };
+    let mut device = Device {
+        key,
+        jobs: jobs_tx,
+        lists: None,
+        opened: false,
+        wall,
+        in_flight: VecDeque::new(),
+        listing: None,
+        list_stuck: false,
+        listed,
+        next_list: now,
+        missing_reads: 0,
+        callbacks_at_list: 0,
+        stall: Stall::new(&info, now, sleep_clock()),
+        sleep_clock,
+        request,
+        stream: Stream::Down(Box::new(mixer)),
+        info,
+        outage: Some(Outage { next_try: now }),
+        attempts: 0,
+        up_since: now,
+        stuck: None,
+        alloc_base: 0,
+        spare: None,
+    };
+    device.reopen();
+    Ok(device)
 }
 
 fn panicked(what: &str) -> DeviceError {
@@ -426,6 +504,7 @@ fn worker(
     jobs: &Receiver<Job>,
     inbox: &Sender<Inbox>,
     mut stream: Option<Box<dyn OpenStream>>,
+    key: OutputKey,
 ) {
     while let Ok(job) = jobs.recv() {
         let answer = match job {
@@ -450,7 +529,7 @@ fn worker(
                 None => MixerBack::Lost,
             }),
         };
-        if inbox.send(Inbox::Device(answer)).is_err() {
+        if inbox.send(Inbox::Device(key, answer)).is_err() {
             break;
         }
     }
@@ -617,6 +696,8 @@ struct Outage {
 pub enum DeviceEvent {
     /// The stream stopped playing on its device: an outage starts.
     Lost { why: String },
+    /// A device started without waiting ([`spawn`]) opened for the first time.
+    Opened,
     /// The device plays again (the stream was reopened).
     Restored,
     /// The stream has not called back for `ms` ms (first stage of the stall watchdog): a
@@ -648,8 +729,14 @@ pub enum DeviceEvent {
 
 /// The control thread's side of the device (the `Backend::Device` of the loop).
 pub struct Device {
+    /// Its place in the engine's outputs (tags its thread's answers).
+    key: OutputKey,
     jobs: Sender<Job>,
-    lists: Sender<()>,
+    /// The list thread, for the device that reads the list (the primary); the others are handed
+    /// its reads.
+    lists: Option<Sender<()>>,
+    /// The stream has been up at least once.
+    opened: bool,
     wall: WallClock,
     /// Open and close jobs sent whose answer has not come back, oldest first.
     in_flight: VecDeque<(Instant, JobKind)>,
@@ -676,6 +763,8 @@ pub struct Device {
     stuck: Option<String>,
     /// Allocation violations counted by streams closed since.
     alloc_base: u64,
+    /// A layer other devices' threads are made from (the primary keeps one).
+    spare: Option<Box<dyn DeviceLayer>>,
 }
 
 impl Device {
@@ -692,6 +781,47 @@ impl Device {
     /// The stream is not playing on its device (an outage).
     pub fn is_down(&self) -> bool {
         self.outage.is_some()
+    }
+
+    /// Its place in the engine's outputs.
+    pub fn key(&self) -> OutputKey {
+        self.key
+    }
+
+    /// The wall clock its policy runs on (the engine's clock while the primary device is away).
+    pub fn wall(&self) -> WallClock {
+        Arc::clone(&self.wall)
+    }
+
+    /// The clock that counts sleep.
+    pub fn sleep_clock(&self) -> SleepClock {
+        Arc::clone(&self.sleep_clock)
+    }
+
+    /// Starts another output device from this one ([`start`]ed, so it has a layer to spare),
+    /// on the same clocks and list, without waiting: its thread opens `request`'s device for
+    /// `mixer` and answers tagged `key`. Until then it is down; a failed open is retried with
+    /// the reopen backoff like a lost device. `None`: this device has no layer to spare.
+    pub fn start_another(
+        &self,
+        mixer: Mixer,
+        request: OpenRequest,
+        inbox: Sender<Inbox>,
+        key: OutputKey,
+    ) -> Option<Result<Device, StartError>> {
+        let layer = self.spare.as_ref()?.another();
+        Some(spawn(layer, mixer, request, self, inbox, key))
+    }
+
+    /// The device as the list names it, with the mixer outputs that reach it.
+    pub fn listed_info(&self) -> Option<&ListedDevice> {
+        self.listed.iter().find(|d| d.id == self.info.device_id)
+    }
+
+    /// The stream has been up at least once (a device started with [`spawn`] has not, until its
+    /// first open answers).
+    pub fn has_opened(&self) -> bool {
+        self.opened
     }
 
     /// Why sound cannot come back without a restart, if it cannot.
@@ -754,9 +884,12 @@ impl Device {
             self.reopen();
         }
         self.watchdog(now, &mut events);
-        if self.listing.is_none() && now >= self.next_list {
+        if self.listing.is_none()
+            && now >= self.next_list
+            && let Some(lists) = &self.lists
+        {
             self.next_list = now + DEVICE_POLL;
-            if self.lists.send(()).is_ok() {
+            if lists.send(()).is_ok() {
                 self.listing = Some(now);
             }
         }
@@ -789,7 +922,12 @@ impl Device {
                         self.arm_stall(now);
                         self.stream = Stream::Up;
                         self.up_since = now;
-                        events.push(DeviceEvent::Restored);
+                        let first = !std::mem::replace(&mut self.opened, true);
+                        events.push(if first {
+                            DeviceEvent::Opened
+                        } else {
+                            DeviceEvent::Restored
+                        });
                     }
                     Err(failure) => {
                         self.take_back(failure.mixer, now, &mut events);

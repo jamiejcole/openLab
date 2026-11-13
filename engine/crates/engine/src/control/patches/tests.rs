@@ -58,7 +58,7 @@ fn slot(p: &Patches, n: u128) -> Option<u16> {
     p.mixer_patch(D0, id(n))
 }
 
-fn touched(cmds: &[CommandKind]) -> BTreeSet<u16> {
+fn touched(cmds: &[(OutputKey, CommandKind)]) -> BTreeSet<u16> {
     routes(cmds).into_iter().map(|r| r.0).collect()
 }
 
@@ -119,16 +119,19 @@ fn settings(ws: &Workspace, channels: Vec<u32>) -> MachineSettings {
     s
 }
 
-fn device(n: u32) -> Vec<DeviceInfo> {
-    vec![DeviceInfo {
-        name: "Dev".into(),
-        output_channels: n,
-    }]
+fn device(n: u32) -> Vec<(DeviceInfo, OutputKey)> {
+    vec![(
+        DeviceInfo {
+            name: "Dev".into(),
+            output_channels: n,
+        },
+        0,
+    )]
 }
 
-fn routes(cmds: &[CommandKind]) -> Vec<(u16, u16, u16, f32)> {
+fn routes(cmds: &[(OutputKey, CommandKind)]) -> Vec<(u16, u16, u16, f32)> {
     cmds.iter()
-        .filter_map(|c| match c {
+        .filter_map(|(_, c)| match c {
             CommandKind::SetPatchRouting {
                 patch,
                 cue_output,
@@ -165,7 +168,7 @@ fn a_mapped_patch_routes_its_outputs_with_level_mute_and_polarity() {
     assert!(
         !cmds
             .iter()
-            .any(|c| matches!(c, CommandKind::SetMaster { .. }))
+            .any(|(_, c)| matches!(c, CommandKind::SetMaster { .. }))
     );
     // Nothing changed: nothing sent, nothing reported.
     let (again, changed) = p.sync(D0, &ws, &settings(&ws, vec![3, 0, 1]), &device(4), &idle());
@@ -234,12 +237,12 @@ fn a_faulted_slot_gets_its_gains_again_and_a_disabled_one_is_never_reused_until_
     assert_eq!(p.free_slots(), 1);
 
     // A rebuild frees it and sends every slot and the master again.
-    let all = p.rebuilt();
+    let all = p.rebuilt(0);
     assert_eq!(p.free_slots(), 2);
     assert!(p.take_freed());
     assert!(
         all.iter()
-            .any(|c| matches!(c, CommandKind::SetMaster { gain } if *gain == 1.0))
+            .any(|(_, c)| matches!(c, CommandKind::SetMaster { gain } if *gain == 1.0))
     );
 }
 
@@ -264,9 +267,9 @@ fn slots_follow_patch_ids_not_list_positions() {
     assert_eq!(slot(&p, 13), Some(3));
     // The kept patches' matrices are not touched; the freed slot is silenced.
     assert_eq!(touched(&cmds), busy(&[0, 3]));
-    assert_eq!(p.sent[1], before[1]);
-    assert_eq!(p.sent[2], before[2]);
-    assert!(p.sent[0].iter().all(|&g| g == 0.0));
+    assert_eq!(p.sent[&(0, 1)], before[&(0, 1)]);
+    assert_eq!(p.sent[&(0, 2)], before[&(0, 2)]);
+    assert!(p.sent[&(0, 0)].iter().all(|&g| g == 0.0));
     assert!(p.exhausted(D0).is_empty());
 }
 
@@ -276,7 +279,7 @@ fn a_removed_patch_keeps_its_routing_while_a_voice_uses_its_slot() {
     let ws = ws_of(&[10, 11]);
     let s = mapped(&ws, |n| (n - 10) as u32);
     p.sync(D0, &ws, &s, &device(2), &idle());
-    let routed = p.sent[0].clone();
+    let routed = p.sent[&(0, 0)].clone();
     // Patch 10 goes while a voice plays through its slot 0; patch 12 arrives.
     let ws2 = ws_of(&[11, 12]);
     let s2 = mapped(&ws2, |_| 1);
@@ -285,7 +288,7 @@ fn a_removed_patch_keeps_its_routing_while_a_voice_uses_its_slot() {
         !touched(&cmds).contains(&0),
         "the retired slot is left as it was"
     );
-    assert_eq!(p.sent[0], routed);
+    assert_eq!(p.sent[&(0, 0)], routed);
     assert!(p.has_retired(D0));
     assert!(!p.reclaimable(D0, &busy(&[0])));
     // No slot is free: 12 cannot play, and says why.
@@ -304,7 +307,7 @@ fn a_removed_patch_keeps_its_routing_while_a_voice_uses_its_slot() {
         [(pid, PatchResolution::Mapped { .. })] if *pid == id(12)
     ));
     // Patch 12 maps its output to device output 1.
-    assert_eq!(p.sent[0], vec![0.0, 1.0, 0.0, 0.0]);
+    assert_eq!(p.sent[&(0, 0)], vec![0.0, 1.0, 0.0, 0.0]);
 }
 
 #[test]
@@ -330,7 +333,7 @@ fn a_resize_under_a_playing_voice_moves_the_patch_and_freezes_the_old_slot() {
     let s = mapped(&ws, |_| 1);
     p.sync(D0, &ws, &s, &device(4), &idle());
     assert_eq!(slot(&p, 10), Some(0));
-    let routed = p.sent[0].clone();
+    let routed = p.sent[&(0, 0)].clone();
     // Two outputs now, while a voice plays through slot 0.
     ws.patches[0].outputs.push(out(0.0, false, false));
     let s2 = mapped(&ws, |_| 1);
@@ -338,7 +341,8 @@ fn a_resize_under_a_playing_voice_moves_the_patch_and_freezes_the_old_slot() {
     assert_eq!(slot(&p, 10), Some(1), "later starts get the new layout");
     assert_eq!(p.outputs(D0, id(10)), 2);
     assert_eq!(
-        p.sent[0], routed,
+        p.sent[&(0, 0)],
+        routed,
         "the playing voice keeps the layout it started with"
     );
     assert!(!touched(&cmds).contains(&0));
@@ -349,7 +353,7 @@ fn a_resize_under_a_playing_voice_moves_the_patch_and_freezes_the_old_slot() {
     // The voice ends: slot 0 is silenced and freed.
     let (cmds, _) = p.sync(D0, &ws, &s2, &device(4), &idle());
     assert!(touched(&cmds).contains(&0));
-    assert!(p.sent[0].iter().all(|&g| g == 0.0));
+    assert!(p.sent[&(0, 0)].iter().all(|&g| g == 0.0));
     assert_eq!(slot(&p, 10), Some(1));
     // A resize with no voice on the slot is made in place.
     ws.patches[0].outputs.pop();
@@ -378,19 +382,19 @@ fn a_resize_retired_slot_follows_the_mapping_and_keeps_outputs_the_patch_lost() 
     let mut ws = ws_of(&[10]);
     ws.patches[0].outputs.push(out(-6.0, false, false));
     p.sync(D0, &ws, &map(&ws, vec![1, 2]), &device(4), &idle());
-    let lost_row = p.sent[0][4..8].to_vec();
+    let lost_row = p.sent[&(0, 0)][4..8].to_vec();
     assert_eq!(lost_row, vec![0.0, 0.0, db_to_gain(-6.0), 0.0]);
     // One output now, remapped to device output 3, while a voice plays on slot 0.
     ws.patches[0].outputs.pop();
     p.sync(D0, &ws, &map(&ws, vec![3]), &device(4), &busy(&[0]));
     assert_eq!(slot(&p, 10), Some(1));
     // Output 1 follows the new mapping; output 2, gone from the patch, keeps its gain.
-    assert_eq!(&p.sent[0][0..4], &[0.0, 0.0, 0.0, 1.0]);
-    assert_eq!(&p.sent[0][4..8], lost_row.as_slice());
+    assert_eq!(&p.sent[&(0, 0)][0..4], &[0.0, 0.0, 0.0, 1.0]);
+    assert_eq!(&p.sent[&(0, 0)][4..8], lost_row.as_slice());
     // A mapping that no longer fits: the channels it had when it was retired.
     p.sync(D0, &ws, &map(&ws, vec![3, 0]), &device(4), &busy(&[0]));
-    assert_eq!(&p.sent[0][0..4], &[0.0, 1.0, 0.0, 0.0]);
-    assert_eq!(&p.sent[0][4..8], lost_row.as_slice());
+    assert_eq!(&p.sent[&(0, 0)][0..4], &[0.0, 1.0, 0.0, 0.0]);
+    assert_eq!(&p.sent[&(0, 0)][4..8], lost_row.as_slice());
 }
 
 #[test]
@@ -412,7 +416,7 @@ fn more_patches_than_slots_are_unmapped_with_no_panic_until_one_frees() {
     let (cmds, changed) = none.sync(D0, &ws, &s, &device(1), &idle());
     assert!(
         cmds.iter()
-            .all(|c| !matches!(c, CommandKind::SetPatchRouting { .. }))
+            .all(|(_, c)| !matches!(c, CommandKind::SetPatchRouting { .. }))
     );
     assert_eq!(changed.len(), 2);
 }
@@ -425,8 +429,14 @@ fn the_matrix_gains_are_patch_master_times_output_level() {
     p.sync(D0, &ws, &s, &device(2), &idle());
     // Bit for bit patch master × level, with polarity.
     let pm = db_to_gain(-6.0);
-    assert_eq!(p.sent[0][0].to_bits(), (pm * db_to_gain(-3.0)).to_bits());
-    assert_eq!(p.sent[0][3].to_bits(), (-(pm * db_to_gain(-1.5))).to_bits());
+    assert_eq!(
+        p.sent[&(0, 0)][0].to_bits(),
+        (pm * db_to_gain(-3.0)).to_bits()
+    );
+    assert_eq!(
+        p.sent[&(0, 0)][3].to_bits(),
+        (-(pm * db_to_gain(-1.5))).to_bits()
+    );
 }
 
 const D1: DocId = DocId(1);
@@ -450,16 +460,16 @@ fn slots_are_keyed_by_doc_and_patch_and_a_closed_docs_go_back() {
     assert!(p.exhausted(D0).is_empty());
     assert!(!p.take_freed());
     // The first closes: its slot is silenced and freed at once; the waiting doc takes it.
-    let routed = p.sent[1].clone();
+    let routed = p.sent[&(0, 1)].clone();
     let cmds = p.release_doc(D0);
     assert_eq!(touched(&cmds), busy(&[0]));
-    assert!(p.sent[0].iter().all(|&g| g == 0.0));
+    assert!(p.sent[&(0, 0)].iter().all(|&g| g == 0.0));
     assert!(p.take_freed());
     assert_eq!(p.mixer_patch(D0, id(10)), None);
     p.sync(D2, &ws, &s, &device(2), &idle());
     assert_eq!(p.mixer_patch(D2, id(10)), Some(0));
     assert!(p.exhausted(D2).is_empty());
     // The other doc's slot was never touched.
-    assert_eq!(p.sent[1], routed);
+    assert_eq!(p.sent[&(0, 1)], routed);
     assert!(p.release_doc(D0).is_empty(), "closing twice does nothing");
 }

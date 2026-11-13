@@ -104,9 +104,11 @@ impl DocCx<'_> {
             &busy,
         );
         let now = self.now();
-        // One batch (split only past the queue's size), so a limit change moves every patch
-        // on the same sample.
-        self.send_commands(cmds.into_iter().map(|cmd| (now, cmd)).collect());
+        // One batch per device (split only past the queue's size), so a limit change moves
+        // every patch on the same sample.
+        self.eng.send_on(now, cmds);
+        // A mapping may name a device that is not open yet.
+        self.eng.outputs_dirty = true;
         // After the routing: a voice whose cue now names another patch follows it (#293).
         let moves = self.doc.voices.follow_patches(
             self.doc.id,

@@ -151,8 +151,34 @@ impl Control {
         &self.eng.config.machine
     }
 
+    /// The primary device's mixer.
     pub fn mixer(&self) -> &MixerController {
-        &self.eng.mixer
+        &self.eng.outputs.primary().mixer
+    }
+
+    /// The mixer of output device `name`, if it is open.
+    pub fn output_mixer(&self, name: &str) -> Option<&MixerController> {
+        let key = self.eng.outputs.by_name(name)?;
+        self.eng.outputs.get(key).map(|o| &o.mixer)
+    }
+
+    /// The output devices open or opening, the primary first, and whether each plays.
+    pub fn outputs(&self) -> Vec<(String, bool)> {
+        self.eng
+            .outputs
+            .iter()
+            .map(|(_, o)| (o.name.clone(), o.is_up()))
+            .collect()
+    }
+
+    /// The master clock: samples of show time rendered (the primary's counter while it plays).
+    pub fn rendered(&self) -> SampleTime {
+        self.eng.rendered()
+    }
+
+    /// The master clock runs on the wall clock: the primary device is away and another plays.
+    pub fn clock_on_wall(&self) -> bool {
+        self.eng.outputs.on_wall_clock()
     }
 
     /// The first open doc's revision.
@@ -246,17 +272,35 @@ impl Control {
 
     /// Device-thread jobs not answered yet (a test driver waits for them; none offline).
     pub fn device_jobs_pending(&self) -> usize {
-        self.eng.backend.device().map_or(0, Device::jobs_in_flight)
+        self.eng
+            .outputs
+            .iter()
+            .filter_map(|(_, o)| o.backend.device())
+            .map(Device::jobs_in_flight)
+            .sum()
     }
 
-    /// The device is down: an outage, sample time standing still.
+    /// The primary device is down (an outage).
     pub fn device_down(&self) -> bool {
-        self.eng.backend.is_down()
+        !self.eng.outputs.primary().is_up()
+    }
+
+    /// Output device `name` is open and plays.
+    pub fn output_up(&self, name: &str) -> bool {
+        self.eng
+            .outputs
+            .iter()
+            .any(|(_, o)| o.name == name && o.is_up())
     }
 
     /// A device list read is under way (a test driver waits for it).
     pub fn device_listing(&self) -> bool {
-        self.eng.backend.device().is_some_and(Device::is_listing)
+        self.eng
+            .outputs
+            .primary()
+            .backend
+            .device()
+            .is_some_and(Device::is_listing)
     }
 
     /// Frames per block the loop schedules with (follows the open stream).
@@ -272,9 +316,7 @@ impl Control {
     /// Voices the mixer is playing or holding paused, from a voice-meter read (diagnostics and
     /// leak tests; the read takes the peaks the next meters message would have had).
     pub fn mixer_voice_count(&mut self) -> usize {
-        self.eng
-            .mixer
-            .read_voice_meters_into(&mut self.eng.meter_ids, &mut self.eng.meter_peaks)
+        self.eng.read_voice_meters()
     }
 
     /// Playing streams of every doc and the frames each must have written before rendered

@@ -5,12 +5,12 @@ description: "Load when changing or reviewing the engine control thread, engine/
 
 # Engine control loop
 
-`Control` is the engine's single control thread: it owns every open workspace, its undo history, its cue engine and the mixer controller, and turns cue-engine `Action`s into mixer, disk-stream and network commands, and mixer/stream/probe events back into cue-engine `Input`s.
+`Control` is the engine's single control thread: it owns every open workspace, its undo history, its cue engine and the output devices' mixer controllers, and turns cue-engine `Action`s into mixer, disk-stream and network commands, and mixer/stream/probe events back into cue-engine `Input`s.
   Semantics of the actions live in skill `cue-engine`; audio-thread behaviour in `audio-mixer`; devices and loss policy in `devices`; media probes and the stalled-volume gate in `media-files`; open/save/close and writers in `persistence`; startup/shutdown in `engine-lifecycle`; OSC and Network cue sending in `osc`.
 
 ## Must not break
 - **The control thread never touches the disk, sockets or the device layer.** Reads and saves go to the document worker and writer, probes and preloads to probe workers, sends to per-destination workers, device open/close/list to device threads. A GO never waits on any of them.
-- **No thread or clock of its own.** Time is the mixer's sample counter. Wall clock is used only by the device policy and the probe/document watchdogs.
+- **No thread or clock of its own.** Time is the master clock: the primary device's sample counter (skill `devices`, several devices). Wall clock is used only by the device policy, the master clock while the primary is away and another device plays, and the probe/document watchdogs.
 - **Every workspace edit reaches the cue engine** (only through `DocModel::edit()`; a forgotten signal must not compile). A refused or no-op command changes and broadcasts nothing.
 - Exactly one `result` per command/transport/undo/redo/request, and `model_changed` goes out before it.
 - `VoiceId`s are engine-wide and never reused; each has an owning doc. A voice event no open doc owns is dropped.
@@ -23,12 +23,13 @@ description: "Load when changing or reviewing the engine control thread, engine/
 
 ## Shape
 - Two drivers call the same `Control::handle(message)` and `Control::tick()`: `runner::run` (control thread on a device; the engine starts with no doc open; `--open FILE` goes through the same `open` request a client sends) and `offline::OfflineShow` (renders one block, then ticks; no sleeps or wall clock).
-- `Control` is one `Engine` (mixer controller, `Backend`, disk streamer, `VoiceIds`, `Patches`, probe pool, media watch, workers, outbound channel) plus its `Doc`s in open order, at most `MAX_DOCS`. A `Doc` is workspace, `History`, `CueEngine`, `Voices`, `MediaCatalog`, `PlanChecks`, `NetOut`, file state. `Backend` (`Device` or `Offline`) is what only a device has.
+- `Control` is one `Engine` (`Outputs`: per device a mixer controller and `Backend`, and the master clock; disk streamer, `VoiceIds`, `Patches`, probe pool, media watch, workers, outbound channel) plus its `Doc`s in open order, at most `MAX_DOCS`. A `Doc` is workspace, `History`, `CueEngine`, `Voices`, `MediaCatalog`, `PlanChecks`, `NetOut`, file state. `Backend` (`Device` or `Offline`) is what only a device has; the offline driver has one output.
+- **Every mixer command goes through `Engine::send_commands`** (voice commands, routed by voice to its device's mixer and dated there) **or `Engine::send_on`** (patch-slot commands, each for the output it names). Every mixer's events are dated back in master time before they reach a doc.
 - **`DocId` is handed out in open order and never reused**, so a late answer or event of a closed doc cannot be taken for another's. Worker answers are tagged with the doc (and a document-worker answer names its request) and dropped for a doc closed since.
 - **One wake (`Control::tick`)** runs the engine-wide steps once, with zero docs too, then each doc, then the closing steps:
-  1. device (a loss or return acts on every doc); mixer events routed to the owning doc; catalog key changes and media watch batches; one meter read when due;
+  1. master clock follows the devices; each device (a loss or return acts on every doc); devices a mapping names opened; every mixer's events routed to the owning doc; catalog key changes and media watch batches; one meter read (every mixer) when due;
   2. each doc's tick (events, streams, deadlines, priming, progress, warnings, saves);
-  3. probe and document-worker watchdogs; freed slots handed to docs waiting; autosave removals; settings, health, status; `MixerController::pump()`.
+  3. probe and document-worker watchdogs; freed slots handed to docs waiting; autosave removals; settings, health, status; every mixer's `pump()`.
 - Client messages arrive as `Inbox::Conn { doc, .. }` (a WebSocket or OSC connection bound to a doc, or the app connection `None`). `Control::app_scope` takes the app-scope messages first: `new open open_recovery scan_recovery list_devices log_tail set_output_overrides close panic hotkey`. Everything else goes to the sender's doc (`no_workspace` for an app connection or a closed doc). `Inbox::Client` (tests, offline driver) addresses the first doc.
 - Every broadcast is an `Outgoing { doc, message }`: a doc's reports tagged with it; the engine's own (`log`, `log_entry`, `status`, `workspaces`) with `None`.
 
@@ -66,9 +67,9 @@ description: "Load when changing or reviewing the engine control thread, engine/
 - `Workspace::apply_changes` is the reference client; property tests assert mirror == engine workspace after random command/undo/redo sequences.
 
 ## Time and wake
-- `block` = frames per device callback (offline: step size). **`now = samples_rendered + block`** is the earliest sample a command can still hit. `EngineConfig::lookahead = block`, so a call commits deadlines in `now .. now + block` and no voice start is scheduled beyond it.
+- `block` = frames per device callback, the largest of the devices that play (offline: step size). **`now = master clock + block`** is the earliest sample a command can still hit. `EngineConfig::lookahead = block`, so a call commits deadlines in `now .. now + block` and no voice start is scheduled beyond it.
 - `tick` runs `Input::Tick` only when `engine.is_due(now)`. `runner::run` waits until a message, the next deadline enters the window, a deferred report is due, or `MAX_WAIT`, then ticks. A message ends any wait at once, so GO is never delayed. Wake jitter never shifts audio: every transition is computed from sample time.
-- **No spin on a stalled clock.** A device can stall without an error; a deadline just outside the window would then give a tiny hint over and over (a full tick per wake). When the last tick saw `samples_rendered` unchanged, the hint is at least `MIN_STALL_WAIT` (or a quarter block if shorter). The first wake after progress is not floored; an outage keeps its `MAX_WAIT` hint.
+- **No spin on a stalled clock.** A device can stall without an error; a deadline just outside the window would then give a tiny hint over and over (a full tick per wake). When the last tick saw the master clock unchanged, the hint is at least `MIN_STALL_WAIT` (or a quarter block if shorter). The first wake after progress is not floored; while no device plays the hint is `MAX_WAIT`.
 - Tests pass a fixed `EngineConfig::seed`; the engine seeds from `entropy_seed()` so random groups differ per run. Each doc's seed is the configured seed plus its `DocId`.
 
 ## Voices and actions
@@ -100,7 +101,7 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 - Probe order, stuck-worker replacement and the stalled-volume gate: skill `media-files`. A re-probe keeps the last answer (primes, preloads) until the new one arrives.
 
 ## Patches and levels
-- Each patch uses the mixer slot allocated to its id (reference `patch-slots`). Each is resolved with `resolve_patch` against machine settings and the **playable** devices and sent as `Availability` on open and on every change (edits, device list, loss, reopen). The engine plays on one device: a patch mapped to another resolves `device_missing`; during an outage no device is playable.
+- Each patch uses the mixer slot allocated to its id (reference `patch-slots`), on its device's mixer. Each is resolved with `resolve_patch` against machine settings and the **playable** devices (the open devices that play, each with its output) and sent as `Availability` on open and on every change (edits, device list, loss, reopen, a device opening). A patch mapped to a device that is absent, away or not open yet resolves `device_missing`.
 - A mapped patch routes cue output `o` to its device channel at patch master x output level (muted 0; polarity: negative gain); all else 0. Only changed entries are sent. A workspace has no global master: `SetMaster` is never sent (unity). Level changes ramp with the de-zipper.
 - **Volume limits** (`settings.output_max_db`/`output_min_db`): every level the model holds is within them; a command clamps what it sets; a limit change puts every level above it at the limit **in the same undo step** (`Command::prepare`, one transaction). The cue engine pulls a Fade's or moving level within a narrowed limit in the same call, so nothing plays louder than the maximum 10 ms after it is lowered.
 - Default mapping and the set-mapping request: reference `patch-slots`.
@@ -122,7 +123,7 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
   The document worker builds the doc's parts (`DocParts`: workspace, followed cue engine, catalog index with paths resolved, slice-plan checks), so installing on the control thread is an insert plus probe jobs, slot commands (`SnapPatch`), first reports, `result { opened { doc } }` and the `workspaces` list. Install and close stay under half an audio block.
 - **Close** order: `no_workspace` if not open; `unsaved_changes` unless `discard_changes` (then the autosave it wrote is removed after any write in flight).
   Cues stop as a double Panic stops them; orphans and every voice it has in the mixer are hard stopped; then its slots are zeroed and freed on the same sample (`Patches::release_doc`); voice-id owners, logged states, warnings, watched files and waiting probe jobs dropped; the doc is dropped on the document worker (preloads can be hundreds of MB). Other docs are untouched.
-- **Device loss** stops every doc's cues (policy: skill `devices`); logged once with the total, each doc's clients get `device_lost` with their own count. A reopen with another block size sets the new lookahead in every doc's cue engine before the engine's block changes; if one cannot, all keep the old one and a warning says commands may land late.
+- **Device loss** stops every doc's cues on that device (policy: skill `devices`); logged once with the total, each doc's clients get `device_lost` with their own count. A device opening or reopening with another block size changes the largest block: the new lookahead goes into every doc's cue engine before the engine's block changes; if one cannot, all keep the old one and a warning says commands may land late.
 - Shared and counted once: probe pool, preload budget, prime pool, media watch, look-up bound, network override, meter read, health, status.
 - **Zero docs**: every engine-wide step still runs; workspace messages answer `no_workspace`; app-scope messages (including `new`/`open`) are still carried out; shutdown still shuts down. The engine starts with none (`Control::empty`); `Control::new(ws, ..)` is `empty` plus doc 0.
 

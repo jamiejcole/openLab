@@ -46,7 +46,7 @@ impl Control {
                     cx.probe_answer(answer);
                 }
             }
-            Inbox::Device(answer) => self.device_answer(answer),
+            Inbox::Device(key, answer) => self.device_answer(key, answer),
             Inbox::Net(doc, answer) => {
                 if let Some(mut cx) = self.cx_of(doc) {
                     cx.net_answer(answer);

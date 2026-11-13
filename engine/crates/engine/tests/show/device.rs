@@ -49,22 +49,32 @@ pub fn listed(id: &str, name: &str, channels: u16) -> ListedDevice {
     }
 }
 
+/// A stream open on one stand-in device.
+struct Live {
+    /// The device it is open on.
+    id: String,
+    host: OutputHost,
+    reporter: ErrorReporter,
+    /// The device delivers callbacks (false once it is lost).
+    rendering: bool,
+}
+
 #[derive(Default)]
 struct State {
     devices: Vec<ListedDevice>,
-    host: Option<OutputHost>,
-    reporter: Option<ErrorReporter>,
-    /// The device delivers callbacks (false once it is lost).
-    rendering: bool,
+    /// The device the show opens first (the primary): what the single-stream calls act on.
+    primary: String,
+    /// The open streams, in the order they opened.
+    live: Vec<Live>,
     /// `close` keeps the callback (as CoreAudio does briefly on a loss): the mixer comes back
     /// only once the test lets go of it.
     hold_on_close: bool,
     held: Option<OutputHost>,
     opens: u32,
-    /// The device the stream is open on.
-    open_id: Option<String>,
     /// Frames per callback of the streams opened from now on.
     block: u32,
+    /// Frames per callback reported by streams opened on these devices from now on.
+    device_blocks: Vec<(String, u32)>,
     /// What those streams report instead of `block` (a host that cannot say, or says wrong).
     reported_block: Option<Option<u32>>,
     reported_rate: Option<u32>,
@@ -88,6 +98,7 @@ impl Fake {
     pub fn new(devices: Vec<ListedDevice>) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State {
+                primary: devices.first().map(|d| d.id.clone()).unwrap_or_default(),
                 devices,
                 block: u32::try_from(BLOCK).unwrap(),
                 ..State::default()
@@ -107,19 +118,22 @@ impl Fake {
     pub fn unplug(&self, id: &str, report: bool) {
         let mut s = self.state.lock().unwrap();
         s.devices.retain(|d| d.id != id);
-        if s.open_id.as_deref() != Some(id) {
-            return;
-        }
-        s.rendering = false;
-        if report && let Some(r) = &s.reporter {
-            r.report(HostError::Lost);
+        for live in s.live.iter_mut().filter(|l| l.id == id) {
+            live.rendering = false;
+            if report {
+                live.reporter.report(HostError::Lost);
+            }
         }
     }
 
-    /// The open stream stops calling back, with no error and the device still listed (a host
-    /// that hangs): the stall watchdog's case.
+    /// The primary's stream stops calling back, with no error and the device still listed (a
+    /// host that hangs): the stall watchdog's case.
     pub fn stall(&self) {
-        self.state.lock().unwrap().rendering = false;
+        let mut s = self.state.lock().unwrap();
+        let primary = s.primary.clone();
+        for live in s.live.iter_mut().filter(|l| l.id == primary) {
+            live.rendering = false;
+        }
     }
 
     /// The next stream opened is silent from the start (a host slow to start calling back).
@@ -130,17 +144,18 @@ impl Fake {
     /// The stalled stream calls back again.
     pub fn unstall(&self) {
         let mut s = self.state.lock().unwrap();
-        s.rendering = s.host.is_some();
+        let primary = s.primary.clone();
+        for live in s.live.iter_mut().filter(|l| l.id == primary) {
+            live.rendering = true;
+        }
     }
 
-    /// A callback with no frames, for a clock move the stall watchdog takes as no evidence.
+    /// A callback with no frames on every stream that plays, for a clock move the stall
+    /// watchdog takes as no evidence.
     fn empty_callback(&self) {
         let mut s = self.state.lock().unwrap();
-        if !s.rendering {
-            return;
-        }
-        if let Some(host) = s.host.as_mut() {
-            host.render(&mut [0.0f32; 0], None);
+        for live in s.live.iter_mut().filter(|l| l.rendering) {
+            live.host.render(&mut [0.0f32; 0], None);
         }
     }
 
@@ -167,6 +182,16 @@ impl Fake {
     /// Streams opened from now on call back with `frames` frames.
     pub fn set_block(&self, frames: u32) {
         self.state.lock().unwrap().block = frames;
+    }
+
+    /// Streams opened on device `id` from now on report `frames` per callback (the test still
+    /// renders every stream in step).
+    pub fn set_device_block(&self, id: &str, frames: u32) {
+        self.state
+            .lock()
+            .unwrap()
+            .device_blocks
+            .push((id.to_owned(), frames));
     }
 
     /// Streams opened from now on report `frames` per callback, whatever they really make.
@@ -196,22 +221,37 @@ impl Fake {
         self.state.lock().unwrap().opens
     }
 
+    /// The primary's stream is open and calls back.
     pub fn is_rendering(&self) -> bool {
         let s = self.state.lock().unwrap();
-        s.rendering && s.host.is_some()
+        s.live.iter().any(|l| l.id == s.primary && l.rendering)
     }
 
-    /// One device callback of `frames` frames, if the device is up.
-    fn render(&self, frames: usize) -> Option<(usize, Vec<f32>)> {
+    /// Some stream is open and calls back.
+    pub fn any_rendering(&self) -> bool {
+        self.state.lock().unwrap().live.iter().any(|l| l.rendering)
+    }
+
+    /// Device `id` has a stream open that calls back.
+    pub fn is_rendering_on(&self, id: &str) -> bool {
+        let s = self.state.lock().unwrap();
+        s.live.iter().any(|l| l.id == id && l.rendering)
+    }
+
+    /// One callback of `frames` frames on every stream that plays: each device's id with its
+    /// channel count and interleaved frames.
+    fn render(&self, frames: usize) -> Vec<(String, usize, Vec<f32>)> {
         let mut s = self.state.lock().unwrap();
-        if !s.rendering {
-            return None;
-        }
-        let host = s.host.as_mut()?;
-        let ch = host.device_channels();
-        let mut buf = vec![0.0f32; frames * ch];
-        host.render(&mut buf, None);
-        Some((ch, buf))
+        s.live
+            .iter_mut()
+            .filter(|l| l.rendering)
+            .map(|l| {
+                let ch = l.host.device_channels();
+                let mut buf = vec![0.0f32; frames * ch];
+                l.host.render(&mut buf, None);
+                (l.id.clone(), ch, buf)
+            })
+            .collect()
     }
 }
 
@@ -231,6 +271,10 @@ impl DeviceLister for FakeLayer {
 
 impl DeviceLayer for FakeLayer {
     fn lister(&self) -> Box<dyn DeviceLister> {
+        Box::new(FakeLayer(Arc::clone(&self.0)))
+    }
+
+    fn another(&self) -> Box<dyn DeviceLayer> {
         Box::new(FakeLayer(Arc::clone(&self.0)))
     }
 
@@ -268,21 +312,32 @@ impl DeviceLayer for FakeLayer {
         let outputs = u16::try_from(mixer.output_channels()).unwrap();
         let channels = device.max_channels();
         let (host, link) = OutputHost::new(mixer, channels);
-        s.reporter = Some(link.reporter());
-        s.host = Some(host);
-        s.rendering = !std::mem::take(&mut s.silent_next_open);
-        s.open_id = Some(device.id.clone());
+        let rendering = !std::mem::take(&mut s.silent_next_open);
+        s.live.retain(|l| l.id != device.id);
+        s.live.push(Live {
+            id: device.id.clone(),
+            host,
+            reporter: link.reporter(),
+            rendering,
+        });
+        let block = s
+            .device_blocks
+            .iter()
+            .rev()
+            .find(|(id, _)| *id == device.id)
+            .map_or(s.block, |&(_, b)| b);
         let info = StreamInfo {
             device_id: device.id.clone(),
             name: device.name.clone(),
             channels: outputs.min(channels),
             outputs_dropped: channels < outputs,
-            block_frames: s.reported_block.unwrap_or(Some(s.block)),
+            block_frames: s.reported_block.unwrap_or(Some(block)),
             sample_rate: s.reported_rate.unwrap_or(RATE),
             monitor: link.monitor(),
         };
         Ok(Box::new(FakeStream {
             fake: Arc::clone(&self.0),
+            id: device.id,
             link,
             info,
         }))
@@ -291,6 +346,7 @@ impl DeviceLayer for FakeLayer {
 
 struct FakeStream {
     fake: Arc<Fake>,
+    id: String,
     link: HostLink,
     info: StreamInfo,
 }
@@ -301,13 +357,16 @@ impl OpenStream for FakeStream {
     }
 
     fn close(self: Box<Self>) -> MixerBack {
-        let FakeStream { fake, mut link, .. } = *self;
+        let FakeStream {
+            fake, id, mut link, ..
+        } = *self;
         {
             let mut s = fake.state.lock().unwrap();
-            s.rendering = false;
-            s.reporter = None;
-            s.open_id = None;
-            let host = s.host.take();
+            let host = s
+                .live
+                .iter()
+                .position(|l| l.id == id)
+                .map(|i| s.live.remove(i).host);
             if s.hold_on_close {
                 s.held = host;
             } else {
@@ -331,14 +390,21 @@ pub struct DeviceShow {
     inbox: Receiver<Inbox>,
     inbox_tx: Sender<Inbox>,
     outbound: OutboundRx,
-    /// Captured audio per device channel.
-    capture: Vec<Vec<f32>>,
+    /// The primary device's id.
+    primary: String,
+    /// Captured audio per device, per channel.
+    captures: Vec<(String, Vec<Vec<f32>>)>,
     next_id: u64,
 }
 
 impl DeviceShow {
-    /// A show of `ws` playing on the first of `devices`.
-    pub fn new(ws: Workspace, devices: Vec<ListedDevice>, config: ControlConfig) -> Self {
+    /// A show of `ws` playing on the first of `devices` (the primary); a patch mapped to
+    /// another listed device opens it too.
+    pub fn new(ws: Workspace, devices: Vec<ListedDevice>, mut config: ControlConfig) -> Self {
+        config.output_mixer.get_or_insert_with(mixer_config);
+        config
+            .output_buffer_frames
+            .get_or_insert(u32::try_from(BLOCK).unwrap());
         let fake = Fake::new(devices.clone());
         let (ctl, mixer) = Mixer::new(mixer_config()).unwrap();
         let (inbox_tx, inbox) = crossbeam_channel::unbounded();
@@ -355,8 +421,9 @@ impl DeviceShow {
             let (wall, slept) = (Arc::clone(&wall), Arc::clone(&slept));
             Arc::new(move || sys_base + *wall.lock().unwrap() + *slept.lock().unwrap())
         };
+        let primary = devices[0].id.clone();
         let request = OpenRequest {
-            device_id: Some(devices[0].id.clone()),
+            device_id: Some(primary.clone()),
             buffer_frames: Some(u32::try_from(BLOCK).unwrap()),
         };
         let device = devices::start(
@@ -387,7 +454,8 @@ impl DeviceShow {
             inbox,
             inbox_tx,
             outbound,
-            capture: Vec::new(),
+            primary,
+            captures: Vec::new(),
             next_id: 0,
         };
         show.settle_media();
@@ -521,17 +589,49 @@ impl DeviceShow {
 
     /// One device callback of `frames` frames, if the device is up, with its streams settled.
     fn callback(&mut self, frames: usize) {
-        if self.fake.is_rendering() {
+        if self.fake.any_rendering() {
             self.settle_streams(frames as u64);
         }
-        if let Some((ch, buf)) = self.fake.render(frames) {
-            if self.capture.len() < ch {
-                self.capture.resize(ch, Vec::new());
+        for (id, ch, buf) in self.fake.render(frames) {
+            let i = match self.captures.iter().position(|(d, _)| *d == id) {
+                Some(i) => i,
+                None => {
+                    self.captures.push((id, Vec::new()));
+                    self.captures.len() - 1
+                }
+            };
+            let capture = &mut self.captures[i].1;
+            if capture.len() < ch {
+                capture.resize(ch, Vec::new());
             }
-            for (k, c) in self.capture.iter_mut().enumerate() {
+            for (k, c) in capture.iter_mut().enumerate() {
                 c.extend(buf.iter().skip(k).step_by(ch));
             }
         }
+    }
+
+    /// Plays `frames` on every device that is up, one block at a time with the wall clock
+    /// moving with them, each block followed by a tick: how time passes while the primary
+    /// device is away (the master clock then runs on the wall clock).
+    pub fn play(&mut self, frames: u64) {
+        let block = Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE));
+        for _ in 0..frames.div_ceil(BLOCK) {
+            self.pump_inbox();
+            self.advance(block);
+            self.control.tick();
+        }
+    }
+
+    /// Waits until output device `name` plays (it opens on its own thread).
+    pub fn wait_output(&mut self, name: &str) {
+        for _ in 0..WAIT_STEPS {
+            if self.control.output_up(name) {
+                return;
+            }
+            self.tick();
+            self.wait_devices();
+        }
+        panic!("output device {name} never opened");
     }
 
     /// Steps until `frames` more have been rendered (the device must be up).
@@ -559,9 +659,19 @@ impl DeviceShow {
         }
     }
 
-    /// Captured audio of device channel `ch`.
+    /// Captured audio of the primary device's channel `ch`.
     pub fn channel(&self, ch: usize) -> Vec<f32> {
-        self.capture.get(ch).cloned().unwrap_or_default()
+        self.device_channel(&self.primary.clone(), ch)
+    }
+
+    /// Captured audio of device `id`'s channel `ch`, from the first callback of its first
+    /// stream.
+    pub fn device_channel(&self, id: &str, ch: usize) -> Vec<f32> {
+        self.captures
+            .iter()
+            .find(|(d, _)| d == id)
+            .and_then(|(_, c)| c.get(ch).cloned())
+            .unwrap_or_default()
     }
 
     pub fn send(&mut self, message: ClientMessage) -> Vec<ServerMessage> {
