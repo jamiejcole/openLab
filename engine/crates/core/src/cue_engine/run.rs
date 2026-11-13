@@ -155,15 +155,17 @@ pub(super) struct Run {
     pub duck: DuckLevel,
 }
 
-/// A voice's duck stage as the mixer plays it: a ramp from `from` on `start` to `to` over
-/// `frames` (as heard: a 0-frame ramp is the de-zipper), then `to`.
+/// A voice's duck stage as the mixer plays it: a ramp even in dB from `from` on `start` to `to`
+/// over `frames` (as heard: a 0-frame ramp is the de-zipper), then `to` (the mixer's `DbParam`:
+/// ends below -120 dB are taken at -120 dB, and a ramp to silence ends on 0.0).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DuckLevel {
     pub from: f32,
     pub to: f32,
     pub start: SampleTime,
     pub frames: SampleTime,
-    pub curve: FadeCurve,
+    /// The cap last sent with it (`Action::DuckVoice::cap`); 0.0 until one is.
+    pub cap: f32,
 }
 
 impl DuckLevel {
@@ -173,18 +175,20 @@ impl DuckLevel {
         to: 1.0,
         start: 0,
         frames: 0,
-        curve: FadeCurve::Linear,
+        cap: 0.0,
     };
 
     /// The gain on sample `at`.
     pub fn value(&self, at: SampleTime) -> f32 {
-        super::level::ramp_gain(
-            self.from,
-            self.to,
-            at.saturating_sub(self.start),
-            self.frames,
-            self.curve,
-        )
+        let pos = at.saturating_sub(self.start);
+        if pos >= self.frames {
+            return self.to;
+        }
+        let floor = 1e-6_f64;
+        let from = f64::from(self.from).max(floor);
+        let to = f64::from(self.to).max(floor);
+        let t = pos as f64 / self.frames as f64;
+        (from * (to / from).powf(t)) as f32
     }
 
     /// Whether it is still moving on sample `at`.

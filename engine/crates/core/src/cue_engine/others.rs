@@ -67,11 +67,6 @@ fn master_of(run: &Run) -> f32 {
         .map_or(given, |l| given.max(l.from).max(l.to))
 }
 
-/// The shape of a duck's ramps: the mixer's exponential curve, close to even in dB over the
-/// range a duck spans, so a return from a deep duck is heard rising steadily rather than most of
-/// the way in its first moments (as a straight line in amplitude would be).
-pub const DUCK_CURVE: FadeCurve = FadeCurve::Exponential;
-
 /// Sends `run`'s voice a duck ramp to `gain` over `frames` from `at` (dated no earlier than what
 /// is committed for it) and records what the mixer makes of it. `cap` is the workspace maximum
 /// (linear).
@@ -97,13 +92,15 @@ fn send_duck(
     };
     let at = run.commit(at.max(started));
     let from = run.duck.value(at);
-    let (heard, curve) = level::heard(at, frames, DUCK_CURVE, first, rate);
+    // A 0-frame ramp is the de-zipper's length (at once on the start sample); the mixer's duck
+    // stage moves evenly in dB whatever its length.
+    let (heard, _) = level::heard(at, frames, FadeCurve::Linear, first, rate);
     run.duck = DuckLevel {
         from,
         to: gain,
         start: at,
         frames: heard,
-        curve,
+        cap,
     };
     cx.out.push(Action::DuckVoice {
         cue,
@@ -111,7 +108,6 @@ fn send_duck(
         at,
         gain,
         frames,
-        curve: DUCK_CURVE,
         cap,
     });
 }
@@ -266,7 +262,8 @@ impl CueEngine {
                 None => 1.0,
             };
             live |= gain != 1.0;
-            if gain != run.duck.to {
+            // A boost also follows a new maximum (its cap moves with it).
+            if gain != run.duck.to || (gain > 1.0 && cap != run.duck.cap) {
                 wanted.insert(*id, gain);
             }
         }

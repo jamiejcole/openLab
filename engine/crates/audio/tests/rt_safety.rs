@@ -736,7 +736,8 @@ fn the_duck_stage_ramps_without_allocating_or_jumping_and_a_new_voice_starts_und
     no_alloc(|| r.render_into(&mut out, &[64, 333, 1024, 7]));
     assert!(out.iter().all(|s| s.is_finite()));
     assert_eq!(out[999], 1.0, "nothing before the duck");
-    assert!((out[1500] - 0.625).abs() < 1e-3, "{}", out[1500]);
+    // Half way in dB (-6 dB of -12), the master not moved yet.
+    assert!((out[1500] - 0.5).abs() < 1e-3, "{}", out[1500]);
     assert!(
         (out[3000] - 0.125).abs() < 1e-4,
         "duck x master: {}",
@@ -800,9 +801,10 @@ fn the_duck_cap_bounds_a_boost_while_master_and_duck_cross() {
         ramp(0, GainTarget::Master, 0.25, 0),
         ramp(0, GainTarget::DuckCap, cap, 0),
         ramp(0, GainTarget::Duck, 4.0, 0),
-        // The master rises to 1.0 while the boost comes down to none: 1.0 at both ends, about
-        // 1.56 half way without the cap, which is 1.0 from here.
-        ramp(1000, GainTarget::DuckCap, 1.0, 0),
+        // The cap comes down to 1.0 first (over the de-zipper: no step); then the master rises to
+        // 1.0 while the boost comes down to none, 1.0 at both ends and above it between them
+        // without the cap.
+        ramp(500, GainTarget::DuckCap, 1.0, 0),
         ramp(1000, GainTarget::Master, 1.0, 1000),
         ramp(1000, GainTarget::Duck, 1.0, 1000),
     ] {

@@ -253,17 +253,25 @@ fn render_voice(
     let shapes = &mut s.shapes;
     v.master.fill(vg, shapes);
     if v.duck.is_ramping() || v.duck.current() != 1.0 {
-        v.duck.fill(tmp, shapes);
+        v.duck.fill(tmp);
         // A boost stops at the cap (but never takes the voice below its own master), so a
-        // master raised while a boost comes down cannot overshoot the workspace maximum.
-        let cap = v.duck_cap.current();
-        vg.iter_mut().zip(tmp.iter()).for_each(|(g, d)| {
+        // master raised while a boost comes down cannot overshoot the workspace maximum. The
+        // cap moves over the de-zipper like any gain, so a lowered maximum is no step; `og` is
+        // free until the outputs are mixed below.
+        if v.duck_cap.is_ramping() {
+            v.duck_cap.fill(og, shapes);
+        } else {
+            og.fill(v.duck_cap.current());
+        }
+        for ((g, d), cap) in vg.iter_mut().zip(tmp.iter()).zip(og.iter()) {
             let m = *g;
             *g = m * d;
             if *d > 1.0 {
                 *g = g.min(cap.max(m));
             }
-        });
+        }
+    } else if v.duck_cap.is_ramping() {
+        v.duck_cap.advance(len);
     }
     if v.stop.is_ramping() || v.stop.current() != 1.0 {
         v.stop.fill(tmp, shapes);

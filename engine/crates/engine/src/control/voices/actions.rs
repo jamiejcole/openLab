@@ -47,21 +47,22 @@ impl Voices {
                 at,
                 gain,
                 frames,
-                curve,
                 cap,
                 ..
             } => {
-                // The cap first, so the boost is bounded from the ramp's first sample.
+                // The cap first, so the boost is bounded from the ramp's first sample; it moves over
+                // the same time (a new maximum over the edit ramp, so no step).
                 let cap = Queued::Ramp {
                     target: GainTarget::DuckCap,
                     gain: cap,
-                    fade: Fade::NONE,
+                    fade: Fade::new(frames, Curve::Linear),
                 };
                 self.command(run, at, cap, fx);
+                // The stage moves evenly in dB; a curve is not read.
                 let cmd = Queued::Ramp {
                     target: GainTarget::Duck,
                     gain,
-                    fade: Fade::new(frames, to_curve(curve)),
+                    fade: Fade::new(frames, Curve::Linear),
                 };
                 self.command(run, at, cmd, fx);
             }

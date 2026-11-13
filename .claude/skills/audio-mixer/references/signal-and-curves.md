@@ -30,7 +30,11 @@ out[d]       = dev[d] * global_master(t)
 ## Commands
 | Command | Semantics |
 |---|---|
-| `Ramp { voice, target, gain, fade }` | ramps one voice gain (`Master`, `Duck`, `CueOutput(o)`, `Crosspoint { input, output }`) to `gain` with `fade.curve` over `fade.frames`. `Duck` is a second whole-voice gain for "duck or boost others", 1.0 at every start; at exactly 1.0 and not ramping it is skipped, so a voice no cue ducks pays nothing for it. `DuckCap` (set at once, never ramped; `MAX_GAIN` at every start) bounds master x duck while the duck boosts |
+| `Ramp { voice, target, gain, fade }` | ramps one voice gain (`Master`, `Duck`, `DuckCap`, `CueOutput(o)`, `Crosspoint { input, output }`) to `gain` with `fade.curve` over `fade.frames`; `Duck` and `DuckCap` below |
+
+**Duck and DuckCap** ("duck or boost others")
+- `Duck` is a second whole-voice gain, 1.0 at every start. At exactly 1.0 and not ramping it is skipped, so a voice no cue ducks pays nothing for it. It ramps evenly in dB (`DbParam`); the ramp's curve is not read.
+- `DuckCap` ramps like any gain (a voice's first cap is set at once; `MAX_GAIN` at every start) and bounds master x duck, per sample, while the duck boosts. It never takes a voice below its own master.
 | `SetPatchRouting { patch, cue_output, device_output, gain }` | one patch's cue-output to device-output gain; default is identity in every patch (AUD-07) |
 | `SnapPatch { patch }` | the matrix takes the gains its routing is ramping to at once. Used for a matrix just given to a patch that nothing plays through, so a cue started on that sample is heard at its level on that patch's outputs only. Unknown patch ignored |
 | `MoveVoice { voice, patch }` | moves a playing voice to another patch matrix |

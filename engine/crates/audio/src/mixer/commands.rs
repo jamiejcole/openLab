@@ -174,13 +174,13 @@ impl Mixer {
                 } = self;
                 if let Some(v) = voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
                     let (frames, curve) = ramp_shape(fade, v.fresh, dezip);
-                    if let Some(p) = v.param_mut(target) {
-                        if target == GainTarget::DuckCap {
-                            p.set(sanitize_gain(gain));
-                        } else {
-                            p.ramp_to_in(sanitize_gain(gain), frames, curve, &mut scratch.shapes);
-                        }
-                    }
+                    v.ramp_gain(
+                        target,
+                        sanitize_gain(gain),
+                        frames,
+                        curve,
+                        &mut scratch.shapes,
+                    );
                     outbox.shared.meters.widen(v.slot, v.width);
                 }
             }
@@ -194,18 +194,13 @@ impl Mixer {
                 if let Some(v) = voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
                     let (frames, curve) = ramp_shape(fade, v.fresh, dezip);
                     for &(target, gain) in &*gains {
-                        if let Some(p) = v.param_mut(target) {
-                            if target == GainTarget::DuckCap {
-                                p.set(sanitize_gain(gain));
-                            } else {
-                                p.ramp_to_in(
-                                    sanitize_gain(gain),
-                                    frames,
-                                    curve,
-                                    &mut scratch.shapes,
-                                );
-                            }
-                        }
+                        v.ramp_gain(
+                            target,
+                            sanitize_gain(gain),
+                            frames,
+                            curve,
+                            &mut scratch.shapes,
+                        );
                     }
                     outbox.shared.meters.widen(v.slot, v.width);
                 }

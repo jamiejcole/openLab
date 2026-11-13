@@ -703,9 +703,127 @@ impl Param {
     }
 }
 
+/// The lowest gain a [`DbParam`] ramp works with: -120 dB. A ramp from or to silence (0.0) runs
+/// from or to it, and a ramp to silence ends on exactly 0.0.
+const DB_FLOOR: f64 = 1e-6;
+
+/// A gain that ramps evenly in dB: on sample `k` of an `n`-sample ramp from `a` to `b` it is
+/// `a * (b / a)^(k / n)` (ends below [`DB_FLOOR`] taken at it), so a duck of -12 dB is at -3, -6
+/// and -9 dB a quarter, half and three quarters of the way, both ways. Sample `k = 0` is exactly
+/// `a` and the ramp ends exactly on `b`. A new ramp starts from the value the old one would have
+/// had on its first sample. Each sample is one multiply (the per-sample ratio is worked out once
+/// when the ramp starts, in `f64`, so a long ramp does not drift audibly); no allocation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DbParam {
+    value: f32,
+    ramp: Option<DbRamp>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DbRamp {
+    /// The value of the next sample.
+    next: f64,
+    /// What each sample is multiplied by.
+    step: f64,
+    /// Samples left before `to`.
+    left: u64,
+    to: f32,
+}
+
+impl DbParam {
+    pub(crate) fn new(value: f32) -> Self {
+        Self { value, ramp: None }
+    }
+
+    /// Value at the next sample to be rendered.
+    pub(crate) fn current(&self) -> f32 {
+        match &self.ramp {
+            Some(r) => r.next as f32,
+            None => self.value,
+        }
+    }
+
+    pub(crate) fn is_ramping(&self) -> bool {
+        self.ramp.is_some()
+    }
+
+    pub(crate) fn set(&mut self, value: f32) {
+        self.value = value;
+        self.ramp = None;
+    }
+
+    /// Ramps from the current value to `to` over `frames` samples, evenly in dB.
+    pub(crate) fn ramp_to(&mut self, to: f32, frames: u64) {
+        let from = f64::from(self.current()).max(DB_FLOOR);
+        let end = f64::from(to).max(DB_FLOOR);
+        if frames == 0 || !from.is_finite() || !end.is_finite() {
+            return self.set(to);
+        }
+        let step = ((end / from).ln() / frames as f64).exp();
+        self.ramp = Some(DbRamp {
+            next: from,
+            step,
+            left: frames,
+            to,
+        });
+    }
+
+    /// Writes the next `out.len()` values.
+    pub(crate) fn fill(&mut self, out: &mut [f32]) {
+        let mut rest = out;
+        if let Some(r) = &mut self.ramp {
+            let n = usize::try_from(r.left)
+                .unwrap_or(usize::MAX)
+                .min(rest.len());
+            let (head, tail) = rest.split_at_mut(n);
+            for o in head.iter_mut() {
+                *o = r.next as f32;
+                r.next *= r.step;
+            }
+            r.left -= n as u64;
+            if r.left == 0 {
+                self.value = r.to;
+                self.ramp = None;
+            }
+            rest = tail;
+        }
+        rest.fill(self.value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_db_ramp_is_even_in_db_starts_where_it_was_and_ends_on_its_target() {
+        let mut p = DbParam::new(1.0);
+        let g = db_to_linear(-12.0);
+        p.ramp_to(g, 1000);
+        let mut out = vec![0.0f32; 1200];
+        p.fill(&mut out);
+        assert_eq!(out[0], 1.0);
+        for (k, db) in [(250, -3.0), (500, -6.0), (750, -9.0)] {
+            assert!((linear_to_db(out[k]) - db).abs() < 1e-3, "{k}: {}", out[k]);
+        }
+        assert_eq!(out[1000], g);
+        assert!(!p.is_ramping());
+        // To silence: on down to -120 dB, then exactly 0.0; and back up from it.
+        p.ramp_to(0.0, 100);
+        p.fill(&mut out[..100]);
+        assert_eq!(p.current(), 0.0);
+        p.ramp_to(1.0, 100);
+        p.fill(&mut out[..101]);
+        assert!((out[0] - 1e-6).abs() < 1e-9);
+        assert_eq!(out[100], 1.0);
+        // A retarget goes on from where it was.
+        p.ramp_to(0.25, 100);
+        p.fill(&mut out[..50]);
+        let here = p.current();
+        p.ramp_to(1.0, 100);
+        p.fill(&mut out[..1]);
+        assert_eq!(out[0], here);
+    }
 
     const ALL: [Curve; 5] = [
         Curve::Linear,
