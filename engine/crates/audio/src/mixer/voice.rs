@@ -245,8 +245,9 @@ pub(super) struct Voice {
     /// The cue outputs the voice uses: its start's, raised by a ramp naming a later one. Only
     /// these are rendered and metered.
     pub(super) width: usize,
-    /// Cue outputs whose gains may differ from a fresh start's (unity, no crosspoint, no ramp)
-    /// in any input row: what the next start must reset. Only these cost a start anything.
+    /// Cue outputs whose gains may differ from what a start leaves beyond its width (silent, no
+    /// crosspoint, no ramp) in any input row: what the next start must reset. Only these cost a
+    /// start anything.
     used: usize,
     /// Planar `[channel][frame]`, `max_block_frames` per channel.
     pub(super) input: Vec<f32>,
@@ -314,7 +315,7 @@ impl Voice {
             master: Param::new(1.0),
             stop: Param::new(1.0),
             stop_end: None,
-            cue_out: vec![Param::new(1.0); outputs],
+            cue_out: vec![Param::new(0.0); outputs],
             xp: vec![Param::new(0.0); max_channels * outputs],
             width: 0,
             used: 0,
@@ -426,14 +427,15 @@ impl Voice {
         self.master.set(sanitize_gain(s.gain));
         self.stop.set(1.0);
         self.stop_end = None;
-        // The start routes its first `width` cue outputs; the rest are as a fresh start leaves
-        // them (unity, no crosspoint), for a ramp that names one later. Only the outputs an
+        // The start routes its first `width` cue outputs; the rest start silent (gain 0, no
+        // crosspoint): a ramp that names one later sets what it plays at, and one never named (a
+        // muted or unlisted output of the cue) is never heard. Only the outputs an
         // earlier voice of this slot used are reset (in every input row, used or not), so a
         // start costs its own width, not the mixer's.
         let (outs, width) = (self.cue_out.len(), s.cue_outputs.len());
         let reset = self.used.max(width);
         for (o, p) in self.cue_out.iter_mut().enumerate().take(reset) {
-            p.set(s.cue_outputs.get(o).map_or(1.0, |g| sanitize_gain(*g)));
+            p.set(s.cue_outputs.get(o).map_or(0.0, |g| sanitize_gain(*g)));
         }
         for (i, row) in self.xp.chunks_mut(outs).enumerate() {
             let given = if i < self.channels {

@@ -410,6 +410,61 @@ fn a_playing_cue_follows_its_patch_change_without_a_click() {
     assert!(states(&s.take_outbound(), id(1)).is_empty());
 }
 
+/// A playing cue on a 2-output patch with output 4 muted (or not in its level list at all) and a
+/// crosspoint to it, moved to a 4-output patch: output 4 stays silent. The move sends levels only
+/// for the outputs it adds that are heard, so every cue output the voice did not start with
+/// must begin silent in the mixer.
+fn moved_to_four_outputs(levels_of: impl FnOnce(&mut CueLevels)) -> f32 {
+    let mut s = two_patch_show_with(patch_id(), 0, vec![], |ws, c| {
+        ws.patches[1].outputs = vec![ws.patches[1].outputs[0]; 4];
+        if let CueKind::Audio { levels, .. } = &mut ws.cue_lists[0].cues[0].kind {
+            levels_of(levels);
+            levels.crosspoints.push(Crosspoint {
+                input: 0,
+                output: 3,
+                db: 0.0,
+                mute: false,
+            });
+        }
+        c.machine
+            .set_patch_mapping(
+                ws.id,
+                side(),
+                PatchMapping {
+                    device: "Offline".into(),
+                    channels: vec![1; 4],
+                },
+            )
+            .unwrap();
+    });
+    go(&mut s);
+    s.run(800);
+    set_audio(&mut s, 1, |p, _| *p = side());
+    s.run(800);
+    *s.channel(1).last().unwrap()
+}
+
+#[test]
+fn a_muted_cue_output_stays_silent_when_the_playing_cue_moves_to_a_patch_that_has_it() {
+    let heard = moved_to_four_outputs(|levels| {
+        levels.outputs = vec![levels.outputs[0]; 4];
+        levels.outputs[3].mute = true;
+    });
+    assert!(
+        near(heard, LEVEL),
+        "only output 1 is heard: {heard}, want {LEVEL}"
+    );
+}
+
+#[test]
+fn an_unlisted_cue_output_stays_silent_when_the_playing_cue_moves_to_a_patch_that_has_it() {
+    let heard = moved_to_four_outputs(|levels| levels.outputs.truncate(1));
+    assert!(
+        near(heard, LEVEL),
+        "only output 1 is heard: {heard}, want {LEVEL}"
+    );
+}
+
 /// A playing cue moved from a 2-output patch to a 100-output one is heard on the new patch's
 /// later outputs too: the voice started 2 cue outputs wide (what its patch had) and the move's
 /// level ramps widen it to output 100.

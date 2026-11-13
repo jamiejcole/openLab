@@ -93,7 +93,7 @@ The mixer renders voices into the device buffer on the audio thread. The control
 ## Voices
 `StartVoice(Box<VoiceStart>)` carries the complete initial routing, so a voice is heard only as intended from its first sample. Field meanings are in the `VoiceStart` struct docs; the non-obvious semantics:
 - **Width.** A start routes 1 to `cue_outputs` cue outputs (the engine sends its patch's count); `crosspoints` is `channels x` that. Only those outputs are rendered and metered, and a patch clears and mixes only the bus rows its voices wrote that segment (`Patch::rows`), so a 128-row mixer costs a stereo show what 2 rows do.
-- A `Ramp`/`RampSet` naming a later cue output widens the voice to it (outputs beyond a start's begin at unity with no crosspoint). A start resets only the outputs earlier voices of its pool slot used, in every input row. A patch-routing ramp in a row no voice writes to still advances (`Patch::dirty_rows`).
+- A `Ramp`/`RampSet` naming a later cue output widens the voice to it. Outputs beyond a start's begin silent (gain 0, no crosspoint): the engine sends a level only for an output that is heard, so a muted or unlisted one stays silent. A start resets only the outputs earlier voices of its pool slot used, in every input row. A patch-routing ramp in a row no voice writes to still advances (`Patch::dirty_rows`).
 - `VoiceStart::new` starts with all crosspoints at 0 (silent), cue outputs and master 1.0, patch 0. Set routes with `set_crosspoint`.
 - The first source frame plays on sample `at` exactly, so voices started with the same `at` begin on the same output frame.
 - `source` is an `rtrb::Consumer<f32>` of interleaved device-rate frames; dropping the producer is the end-of-stream marker.
