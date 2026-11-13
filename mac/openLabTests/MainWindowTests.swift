@@ -878,6 +878,53 @@ final class MainWindowTests: XCTestCase {
         check("Edit Mode at the least width", width: window.minSize.width)
     }
 
+    /// Flow: the cue toolbar shows openLab's own drawing for each kind (a 16-point template read out
+    /// as the kind's name, not the text stand-in), each whole inside its button, at the default
+    /// window size and at the least one.
+    func testTheCueToolbarShowsTheSameDrawingsEachWholeInsideItsButton() async throws {
+        let (wc, _) = try await demoController()
+        let window = try XCTUnwrap(wc.window)
+        window.orderFront(nil)
+        defer { window.close() }
+        let content = try XCTUnwrap(window.contentView)
+        func check(_ what: String, size: NSSize) throws {
+            window.setFrame(NSRect(origin: window.frame.origin, size: size), display: true)
+            content.layoutSubtreeIfNeeded()
+            XCTAssertEqual(window.frame.size, size, what)
+            let bar = wc.cueToolbar
+            XCTAssertFalse(bar.isHidden, what)
+            var shown: [Icon] = []
+            for control in bar.segmentedControls {
+                let frame = control.convert(control.bounds, to: content)
+                XCTAssertTrue(content.bounds.contains(frame), "\(what): the button at \(frame) is in the window")
+                XCTAssertTrue(
+                    bar.convert(bar.bounds, to: content).contains(frame), "\(what): the button is in the toolbar")
+                for i in 0..<control.segmentCount {
+                    let image = try XCTUnwrap(control.image(forSegment: i), "\(what) \(i)")
+                    let icon = try XCTUnwrap(Icon.drawing(shownBy: image), "\(what) \(i): a drawing, not text")
+                    shown.append(icon)
+                    XCTAssertTrue(image.isTemplate, "\(what) \(icon)")
+                    XCTAssertEqual(image.size, NSSize(width: 16, height: 16), "\(what) \(icon)")
+                    XCTAssertEqual(image.accessibilityDescription, control.toolTip(forSegment: i), "\(what) \(icon)")
+                    XCTAssertLessThanOrEqual(image.size.width, control.width(forSegment: i), "\(what) \(icon)")
+                    XCTAssertLessThanOrEqual(image.size.height, control.bounds.height, "\(what) \(icon)")
+                }
+            }
+            XCTAssertEqual(shown, CueToolbarView.icons, what)
+            // The label each button is read out by is its kind's name.
+            let labels = Dictionary(uniqueKeysWithValues: CueKindStyle.kinds.values.map { ($0.icon, loc($0.labelKey)) })
+            for (control, icons) in zip(bar.segmentedControls, CueToolbarView.kinds) {
+                for i in icons.indices {
+                    XCTAssertEqual(
+                        control.image(forSegment: i)?.accessibilityDescription,
+                        Icon.drawing(shownBy: control.image(forSegment: i)).flatMap { labels[$0] }, what)
+                }
+            }
+        }
+        try check("the default size", size: window.frame.size)
+        try check("the least size", size: window.minSize)
+    }
+
     func testShowModePaletteMeetsContrastTargets() {
         typealias P = ShowModePalette
         // WCAG AAA (7:1) for the text a performer reads at a distance, 3:1 for the GO button's edge.

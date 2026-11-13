@@ -177,6 +177,50 @@ final class CueEditingTests: XCTestCase {
         XCTAssertTrue(log.notices.isEmpty, "\(log.notices)")
     }
 
+    /// Flow: a cue is selected and the inspector's type icon is the same drawing as its row's, read
+    /// out as the same name: a cue of every kind, then a Group in every mode, its mode changed in the
+    /// inspector itself.
+    func testACueIsSelectedTheInspectorsTypeIconIsTheSameDrawing() async throws {
+        let (h, editor, log) = try await harness()
+        let inspector = InspectorViewController(store: h.store)
+        _ = inspector.view
+        func check(_ id: ModelID, _ what: String) async throws {
+            let style = try XCTUnwrap(CueKindStyle.typeStyle(kind: h.store.model?.cue(id)?.raw["kind"]), what)
+            XCTAssertNotNil(style.icon.drawing, what)
+            await assertEventually("\(what): the inspector's drawing") {
+                Icon.drawing(shownBy: inspector.kindIcon.image) == style.icon
+            }
+            XCTAssertEqual(inspector.kindIcon.image?.accessibilityDescription, style.label, what)
+            XCTAssertEqual(inspector.kindIcon.image?.size, NSSize(width: 16, height: 16), what)
+            let row = try XCTUnwrap(h.cell("type", id), what).images[0]
+            XCTAssertEqual(Icon.drawing(shownBy: row.image), style.icon, "\(what): the row shows the same")
+            XCTAssertEqual(row.accessibilityLabel(), style.label, what)
+        }
+        for kind in NewCueKind.allCases {
+            h.vc.select([H.intro])
+            let added = await editor.add(kind)
+            let new = try XCTUnwrap(added, "\(kind): \(log.notices)")
+            await assertEventually("\(kind) in the list") { h.vc.node(new) != nil }
+            inspector.setSelection([new])
+            try await check(new, "\(kind)")
+        }
+        let group = H.group
+        inspector.setSelection([group])
+        try await check(group, "timeline")
+        let tab = try XCTUnwrap(inspector.tabView.tabViewItems.first { $0.identifier as? String == "mode" })
+        inspector.tabView.selectTabViewItem(tab)
+        for mode in InspectorViewController.groupModes.dropFirst() + ["timeline"] {
+            let popup = inspector.groupModePopup
+            popup.selectItem(at: try XCTUnwrap(InspectorViewController.groupModes.firstIndex(of: mode)))
+            _ = popup.sendAction(popup.action, to: popup.target)  // the menu choice, without a tracking menu
+            await assertEventually(mode) {
+                h.store.model?.cue(group)?.raw["kind"]?["mode"]?["type"]?.stringValue == mode
+            }
+            try await check(group, mode)
+        }
+        XCTAssertTrue(log.notices.isEmpty, "\(log.notices)")
+    }
+
     func testAddWithAGroupSelectedPutsTheCueInsideItLast() async throws {
         let (h, editor, _) = try await harness()
         h.vc.select([H.group])

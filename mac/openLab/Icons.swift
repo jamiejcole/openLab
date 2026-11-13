@@ -224,6 +224,9 @@ final class IconLookup: @unchecked Sendable {
         guard exists, let image = NSImage(named: name)?.copy() as? NSImage else { return nil }
         image.isTemplate = true
         image.accessibilityDescription = description
+        #if DEBUG
+            objc_setAssociatedObject(image, &Self.drawingKey, name, .OBJC_ASSOCIATION_COPY_NONATOMIC)
+        #endif
         return image
     }
 
@@ -245,6 +248,15 @@ final class IconLookup: @unchecked Sendable {
             has = newLookup ?? IconLookup.systemHas
             reported = []
             lock.unlock()
+        }
+
+        /// Tags each drawing's image with its name, so a test can tell which drawing a view shows
+        /// without comparing pixels (a copy of a named image keeps neither its name nor its representations).
+        nonisolated(unsafe) private static var drawingKey: UInt8 = 0
+
+        /// The name of the drawing `image` was made from; nil for a symbol or the text stand-in.
+        static func drawingName(of image: NSImage?) -> String? {
+            image.flatMap { objc_getAssociatedObject($0, &drawingKey) as? String }
         }
 
         var reportedNames: Set<String> {

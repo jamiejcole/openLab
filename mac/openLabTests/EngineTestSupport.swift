@@ -872,6 +872,15 @@ extension WorkspaceStore {
     }
 }
 
+extension Icon {
+    /// Which of openLab's own drawings `image` shows, nil for any other image (a symbol, the text
+    /// stand-in): read from the name the lookup tags each drawing's image with, not from pixels.
+    static func drawing(shownBy image: NSImage?) -> Icon? {
+        guard let name = IconLookup.drawingName(of: image) else { return nil }
+        return allCases.first { $0.drawing == name }
+    }
+}
+
 /// `view` and everything in it drawn into a bitmap of `scale` pixels per point, over `background`
 /// when given. The view tree is drawn straight into the bitmap: `cacheDisplay` skips layer-backed
 /// subviews, and a window never ordered on screen has nothing to read back. Each view's `draw`
