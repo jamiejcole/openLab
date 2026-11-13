@@ -100,6 +100,41 @@ final class LevelSetTests: XCTestCase {
         XCTAssertEqual(set.json(into: k)["levels"]?["gangs"], .array([.array([.int(0), .int(1)])]))
     }
 
+    /// Cue outputs go to 128 and file channels to 64. A level or route the set cannot hold (beyond
+    /// those, or not well formed) is written back untouched by any edit; only the whole-matrix
+    /// actions (set all silent, set defaults) drop it.
+    func testLevelsBeyondTheBoundsAreWrittenBackUntouched() throws {
+        var k = TestSnapshots.audioKind("a.wav")
+        let route = { (i: Int64, o: Int64, db: Double) -> JSONValue in
+            .object(["input": .int(i), "output": .int(o), "db": .double(db), "mute": .bool(false)])
+        }
+        let beyond: [JSONValue] = [
+            route(70, 0, -3), route(0, 200, -4), .object(["input": .int(1), "output": .int(1)]),
+        ]
+        var levels = try XCTUnwrap(k["levels"])
+        levels.set("crosspoints", .array([route(0, 127, -6), route(63, 0, -9)] + beyond))
+        levels.set("outputs", .array(Array(repeating: .object(["db": .double(-1), "mute": .bool(false)]), count: 128)))
+        k.set("levels", levels)
+        var set = try XCTUnwrap(LevelSet(kind: k))
+        XCTAssertEqual(set.crosspoints[.init(input: 0, output: 127)]?.db, -6, "output 128 is held")
+        XCTAssertEqual(set.crosspoints[.init(input: 63, output: 0)]?.db, -9, "channel 64 is held")
+        XCTAssertEqual(set.unread, beyond)
+        set.set(.output(127), db: -2)
+        set.set(.output(128), db: -2)
+        set.set(.cross(input: 64, output: 0), db: -2)
+        XCTAssertEqual(set.outputs.count, 128, "nothing beyond output 128 is made")
+        XCTAssertNil(set.crosspoints[.init(input: 64, output: 0)])
+        set.set(.master, db: -6)
+        let written = set.json(into: k)["levels"]
+        XCTAssertEqual(written?["outputs"]?.arrayValue?.count, 128)
+        XCTAssertEqual(written?["outputs"]?.arrayValue?[127]["db"], .double(-2))
+        let points = written?["crosspoints"]?.arrayValue ?? []
+        XCTAssertEqual(points.count, 5)
+        XCTAssertEqual(Array(points.suffix(3)), beyond, "what the set cannot hold goes back as it came")
+        set.silenceAll()
+        XCTAssertEqual(set.json(into: k)["levels"]?["crosspoints"], .array([]))
+    }
+
     func testSilentCrosspointIsDroppedUnlessMuted() {
         var s = audio()
         s.set(.cross(input: 0, output: 0), db: -3)

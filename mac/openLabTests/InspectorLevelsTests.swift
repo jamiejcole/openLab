@@ -168,7 +168,7 @@ final class InspectorLevelsTests: XCTestCase {
             return abs(c.redComponent + c.greenComponent + c.blueComponent - 1.5) > 0.03  // not the grey behind it
         }
         var rows = 0
-        while rows <= LevelSet.maxChannels, isDrawn(.cross(input: rows, output: 0)) { rows += 1 }
+        while rows <= LevelSet.maxInputs, isDrawn(.cross(input: rows, output: 0)) { rows += 1 }
         return rows
     }
 
@@ -507,6 +507,119 @@ final class InspectorLevelsTests: XCTestCase {
         let points = lastKind?["levels"]?["crosspoints"]?.arrayValue ?? []
         XCTAssertEqual(points.first?["input"], .double(4), "the hidden route is kept")
         XCTAssertEqual(points.first?["db"], .double(-3))
+    }
+
+    // MARK: Cue outputs above 64 (a patch has up to 128)
+
+    /// Reopens the demo show with cue `index`'s `levels` changed by `edit`.
+    private func reopenWithLevels(ofCue index: Int, _ edit: @escaping (inout JSONValue) -> Void) async throws {
+        try await reopen { show in
+            try editShow(show.appendingPathComponent("Demo.openlab")) { ws in
+                guard var lists = ws["cue_lists"]?.arrayValue, var cues = lists.first?["cues"]?.arrayValue,
+                    cues.indices.contains(index), var kind = cues[index]["kind"]
+                else { return XCTFail("the demo show has no cue \(index)") }
+                var levels = kind["levels"] ?? .object([:])
+                edit(&levels)
+                kind.set("levels", levels)
+                cues[index].set("kind", kind)
+                lists[0].set("cues", .array(cues))
+                ws.set("cue_lists", .array(lists))
+            }
+        }
+    }
+
+    private static func cross(_ input: Int, _ output: Int, _ db: Double) -> JSONValue {
+        .object(["input": .int(Int64(input)), "output": .int(Int64(output)), "db": .double(db), "mute": .bool(false)])
+    }
+
+    /// The crosspoint of `levels` from `input` to `output`, if listed.
+    private func crosspoint(_ levels: JSONValue?, _ input: Double, _ output: Double) -> JSONValue? {
+        levels?["crosspoints"]?.arrayValue?.first { $0["input"] == .double(input) && $0["output"] == .double(output) }
+    }
+
+    /// A cue routed to cue output 101 (beyond the 64 the tab shows) keeps that routing, its level
+    /// there and its gang when a level on a low output is edited in the inspector, and undo puts
+    /// back exactly what it had.
+    func testRoutingToACueOutputAbove64SurvivesAnInspectorEditAndUndo() async throws {
+        try await reopenWithLevels(ofCue: 0) { levels in
+            levels.set(
+                "outputs", .array(Array(repeating: .object(["db": .double(-1), "mute": .bool(false)]), count: 101)))
+            levels.set(
+                "crosspoints", .array([Self.cross(0, 0, 0), Self.cross(1, 1, 0), Self.cross(0, 100, -3)]))
+            levels.set("gangs", .array([.array([.int(99), .int(100)])]))
+        }
+        showCue(Self.intro)
+        let before = try XCTUnwrap(modelKind(Self.intro)?["levels"])
+        XCTAssertEqual(crosspoint(before, 0, 100)?["db"], .double(-3), "the engine keeps the route to output 101")
+        let p = vc.audioLevels
+        XCTAssertEqual(p.matrix.outputCount, 64, "the tab shows the first 64 outputs")
+        p.select(.output(1))
+        type(p, "-3.5")
+        await assertEventually {
+            self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?[1]["db"] == .double(-3.5)
+        }
+        let after = modelKind(Self.intro)?["levels"]
+        XCTAssertEqual(crosspoint(after, 0, 100)?["db"], .double(-3), "the route above 64 survives the edit")
+        XCTAssertEqual(after?["crosspoints"]?.arrayValue?.count, 3)
+        XCTAssertEqual(after?["outputs"]?.arrayValue?.count, 101)
+        XCTAssertEqual(after?["outputs"]?.arrayValue?[100]["db"], .double(-1))
+        XCTAssertEqual(after?["gangs"], .array([.array([.double(99), .double(100)])]))
+        _ = await store.undo()
+        await assertEventually("undo restores the levels exactly") { self.modelKind(Self.intro)?["levels"] == before }
+    }
+
+    /// A Fade's levels for cue output 101 and its crosspoint there survive an edit of its main
+    /// level in the Fade tab, and undo restores them exactly.
+    func testAFadesLevelsAbove64SurviveAnInspectorEditAndUndo() async throws {
+        try await reopenWithLevels(ofCue: 1) { levels in
+            var outputDb = Array(repeating: JSONValue.null, count: 101)
+            outputDb[100] = .double(-10)
+            levels.set("output_db", .array(outputDb))
+            levels.set(
+                "crosspoints",
+                .array([.object(["input": .int(0), "output": .int(100), "db": .double(-6)])]))
+        }
+        showCue(Self.fade)
+        let before = try XCTUnwrap(modelKind(Self.fade)?["levels"])
+        XCTAssertEqual(before["output_db"]?.arrayValue?.count, 101, "the engine keeps the level for output 101")
+        let p = vc.fadeLevels
+        p.select(.master)
+        type(p, "-6")
+        await assertEventually { self.modelKind(Self.fade)?["levels"]?["master_db"] == .double(-6) }
+        let after = modelKind(Self.fade)?["levels"]
+        XCTAssertEqual(after?["output_db"]?.arrayValue?.count, 101)
+        XCTAssertEqual(after?["output_db"]?.arrayValue?[100], .double(-10))
+        XCTAssertEqual(crosspoint(after, 0, 100)?["db"], .double(-6))
+        _ = await store.undo()
+        await assertEventually("undo restores the levels exactly") { self.modelKind(Self.fade)?["levels"] == before }
+    }
+
+    /// A cue with all 128 cue outputs selected: the Levels tab shows its first 64 (a fader and a
+    /// column each), and nothing of the board, its faders or the matrix lies outside the tab.
+    func testA128OutputCueShowsItsFirst64OutputsInsideTheLevelsTab() async throws {
+        try await reopenWithLevels(ofCue: 0) { levels in
+            levels.set(
+                "outputs", .array(Array(repeating: .object(["db": .double(0), "mute": .bool(false)]), count: 128)))
+            levels.set("crosspoints", .array((0..<128).map { Self.cross(0, $0, -3) }))
+        }
+        showCue(Self.intro)
+        await assertEventually { self.modelKind(Self.intro)?["levels"]?["outputs"]?.arrayValue?.count == 128 }
+        let p = vc.audioLevels
+        vc.view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(p.matrix.outputCount, 64)
+        XCTAssertEqual(p.faders.count, 65, "the main fader and one per shown output")
+        let m = p.matrix
+        XCTAssertEqual(m.frame.width, LevelMatrixView.headW + 64 * LevelMatrixView.cellW)
+        XCTAssertEqual(m.slot(at: NSPoint(x: m.bounds.maxX - 1, y: 1)), .output(63))
+        XCTAssertTrue(p.board.bounds.contains(m.frame), "the matrix lies on the board")
+        for (n, f) in p.faders.enumerated() {
+            XCTAssertTrue(p.board.bounds.contains(f.frame), "fader \(n) lies on the board")
+        }
+        // The board scrolls inside the tab: the scroll view, not the board, is what the tab holds.
+        let tab = try XCTUnwrap(p.scroll.superview)
+        XCTAssertTrue(tab.bounds.contains(p.scroll.frame), "the levels scroll view lies inside the tab")
+        XCTAssertTrue(p.scroll.documentView === p.board)
+        _ = try renderView(vc.view)
     }
 
     // MARK: Audio levels

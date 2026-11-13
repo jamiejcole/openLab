@@ -75,8 +75,10 @@ struct LevelSet: Equatable {
         case cross(input: Int, output: Int)
     }
 
-    /// The wire's most cue outputs, and file channels (AUD-03).
-    static let maxChannels = 64
+    /// The most file channels (crosspoint inputs) a cue's levels name (AUD-03).
+    static let maxInputs = 64
+    /// The most cue outputs a cue's levels name: a patch has 1 to 128 (QLab 5, manual p. 189).
+    static let maxCueOutputs = 128
 
     var isFade: Bool
     /// nil: a Fade leaves the master alone.
@@ -84,6 +86,10 @@ struct LevelSet: Equatable {
     var outputs: [Output]
     var crosspoints: [Point: Cross]
     var gangs: [[Int]]
+    /// Crosspoints read that this set cannot hold (beyond its bounds or not well formed): written
+    /// back untouched, so an edit never loses routing the app does not show. Only "set all silent"
+    /// and "set defaults", which replace the whole matrix, drop them.
+    var unread: [JSONValue] = []
 
     /// Reads `kind.levels` of an Audio or Fade cue; nil for anything else or a malformed object.
     init?(kind: JSONValue) {
@@ -107,8 +113,11 @@ struct LevelSet: Equatable {
         }
         for x in levels["crosspoints"]?.arrayValue ?? [] {
             guard let i = x["input"]?.doubleValue, let o = x["output"]?.doubleValue, let db = x["db"]?.doubleValue,
-                i >= 0, o >= 0, i < 64, o < 64
-            else { continue }
+                i >= 0, o >= 0, i < Double(Self.maxInputs), o < Double(Self.maxCueOutputs)
+            else {
+                unread.append(x)
+                continue
+            }
             crosspoints[Point(input: Int(i), output: Int(o))] = Cross(db: db, mute: x["mute"] == .bool(true))
         }
     }
@@ -127,7 +136,7 @@ struct LevelSet: Equatable {
             if !isFade { o["mute"] = .bool(c.mute) }
             return .object(o)
         }
-        levels.set("crosspoints", .array(points))
+        levels.set("crosspoints", .array(points + unread))
         if isFade {
             var out = outputs
             while out.last?.db == nil, !out.isEmpty { out.removeLast() }
@@ -183,7 +192,7 @@ struct LevelSet: Equatable {
         switch slot {
         case .master: master = db
         case .output(let o):
-            guard o >= 0, o < Self.maxChannels else { return }
+            guard o >= 0, o < Self.maxCueOutputs else { return }
             // Levels move on the fader's travel, where -inf is the bottom (the minimum limit): a member
             // at -inf is at the floor, not far below it, so the delta is what the control moved.
             func travel(_ x: Double) -> Double { max(x, limits.min) }
@@ -201,7 +210,7 @@ struct LevelSet: Equatable {
             }
             outputs[o].db = db
         case .cross(let i, let o):
-            guard i >= 0, o >= 0, i < Self.maxChannels, o < Self.maxChannels else { return }
+            guard i >= 0, o >= 0, i < Self.maxInputs, o < Self.maxCueOutputs else { return }
             let p = Point(input: i, output: o)
             if !isFade, db <= LevelText.silence, crosspoints[p]?.mute != true {
                 crosspoints[p] = nil  // absent is silent
@@ -236,6 +245,7 @@ struct LevelSet: Equatable {
     /// "Set all silent": an Audio cue's levels all to -inf; a Fade back to fading nothing.
     mutating func silenceAll() {
         crosspoints = [:]
+        unread = []
         if isFade {
             master = nil
             outputs = []
@@ -252,6 +262,7 @@ struct LevelSet: Equatable {
         master = 0
         for o in outputs.indices { outputs[o] = Output(db: 0) }
         crosspoints = [:]
+        unread = []
         for n in outputs.indices { crosspoints[.init(input: n, output: n)] = Cross(db: 0) }
     }
 
