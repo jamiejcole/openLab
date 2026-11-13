@@ -147,8 +147,8 @@ Decided from measuring QLab 5; there is no grace period and no exact-sample resu
   A reopen that fails, a close or reopen the device thread does not finish within `DEVICE_JOB_TIMEOUT` (with `device_unrecoverable`), or a mixer lost in it, is a loss (`DeviceEvent::Lost`): only its cues stop; as the sole or last device, as any sole-device loss.
 - **Lookahead** is the largest buffer of the devices that play, so every deadline is committed before the callback that renders it on each.
 - Mixer stage faults are each device's: its mixer's disabled units are its own (a rebuild clears only them), and with several devices their logs and warnings name the device.
-- Engine load, xruns and underruns are summed or the worst over every device. `status.device` is the primary; `status.outputs` lists every open output with its state (`Output::state`: up, opening, lost, reconfiguring, closed when parked, failed when unrecoverable), rate, channels, buffer and which is the primary.
-- `list_devices` marks each listed device the engine has open with that state and the primary; `list_patch_mappings` gives each patch's current resolution (`Patches::resolution`).
+- Engine load, xruns and underruns are summed or the worst over every device. `status.device` is the primary; `status.outputs` lists every output opened since start with its state (`Output::state`: up, opening, lost, reconfiguring, closed when parked, failed when unrecoverable), rate, channels and buffer (0 and none before its first open), and which is the primary.
+- `list_devices` marks each listed device the engine has an output on with that state and the primary, matched by host id (two interfaces can share a name); `list_patch_mappings` gives each patch's current resolution (`Patches::resolution`).
 
 ## Default patch mapping
 

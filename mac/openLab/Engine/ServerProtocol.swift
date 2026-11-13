@@ -207,7 +207,7 @@ struct DeviceEntry: Hashable, Sendable, Decodable {
     let isDefault: Bool
     /// AUD-21: frames per callback this device is asked for on this machine.
     let bufferFrames: Int
-    /// AUD-02: where the engine's output on this device is; nil when it has none open on it.
+    /// AUD-02: where the engine's output on this device is; nil when it has never opened one there.
     let state: OutputState?
     /// The engine's primary device (opened at start; its clock is the show's).
     let primary: Bool
@@ -242,7 +242,8 @@ struct OutputState: Hashable, Sendable, Decodable, ExpressibleByStringLiteral {
     static let failed: OutputState = "failed"
 }
 
-/// AUD-02: one output device the engine has open, in `status.outputs`.
+/// AUD-02: one output device the engine has opened, in `status.outputs`; `channels` is 0 and
+/// `blockFrames` nil until its first open answers.
 struct OutputStatus: Hashable, Sendable, Decodable {
     let name: String
     let state: OutputState
@@ -345,8 +346,8 @@ struct SystemStatus: Hashable, Sendable, Decodable {
     let xruns: UInt64
     let disk: DiskStatus
     let device: DeviceStatus
-    /// AUD-02: every output device the engine has open, the primary first; empty from an engine
-    /// that predates it.
+    /// AUD-02: every output device the engine has opened since start (closed ones included), the
+    /// primary first; empty from an engine that predates it.
     let outputs: [OutputStatus]
     let logDropped: UInt64
     /// The newest show-log record's `seq`; above the last `log_entry` received means a push was

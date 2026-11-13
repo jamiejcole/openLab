@@ -440,7 +440,8 @@ pub struct SystemStatus {
     pub disk: DiskStatus,
     /// The primary device: the one opened at start, whose clock is the show's.
     pub device: DeviceStatus,
-    /// Every output device the engine has open, the primary first, then the others in the order
+    /// Every output device the engine has opened since start (the primary, and each device a
+    /// patch was mapped to, closed ones included), the primary first, then the others in the order
     /// they opened (AUD-02). Absent from an engine that predates it: read as empty.
     #[serde(default)]
     pub outputs: Vec<OutputStatus>,
@@ -495,7 +496,7 @@ pub enum DeviceState {
     Absent,
 }
 
-/// One output device the engine has open (AUD-02), in `status.outputs`.
+/// One output device the engine has opened (AUD-02), in `status.outputs`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OutputStatus {
     /// The device's name, as patch mappings and `list_devices` name it.
@@ -505,10 +506,10 @@ pub struct OutputStatus {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub primary: bool,
     pub sample_rate: u32,
-    /// Mixer outputs that reach the device.
+    /// Mixer outputs that reach the device; 0 until its first open answers.
     pub channels: u32,
     /// Frames per callback of its stream (the last one while it is not playing), when the host
-    /// says.
+    /// says; absent until its first open answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_frames: Option<u32>,
     /// Callback to output, from the host's timestamps, when it gives them.
