@@ -300,7 +300,16 @@ impl Outputs {
         voice: Option<VoiceId>,
     ) -> SampleTime {
         if key == 0 {
-            return at.saturating_sub(self.offset);
+            if self.primary.is_up() {
+                return at.saturating_sub(self.offset);
+            }
+            // Away: dated from the sample it renders first when it is back, as far after that
+            // as the command is after the master clock now, not as far on as the master clock
+            // has run on the wall clock meanwhile. While no device plays this is the same as
+            // the offset (the clock stands on the primary's last sample).
+            let rendered = self.primary.mixer.samples_rendered();
+            let ahead = at.saturating_sub(master);
+            return rendered.saturating_add(ahead);
         }
         let Some(output) = self.get(key) else {
             return at;

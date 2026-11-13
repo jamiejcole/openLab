@@ -1797,6 +1797,7 @@ fn two_patch_show(
     patch.name = "B".into();
     ws.patches.push(patch);
     let mut c = device_config(&ws);
+    c.mixer_patches = 4;
     c.machine
         .set_patch_mapping(
             ws.id,
@@ -2152,27 +2153,29 @@ fn losing_the_last_device_that_plays_cancels_every_wait() {
     assert!(!s.control().engine().has_active_cues());
 }
 
-/// A patch edit made while the primary is away (the master clock running on the wall clock)
-/// applies on the first block after it returns, not as long after as the outage lasted.
+/// A command for the primary sent while it is away and the master clock runs on the wall
+/// clock (here a new patch's slot taking its gains) applies on the first blocks after the
+/// primary returns, not as long after its return as it was sent into the outage.
 #[test]
-fn a_patch_edit_during_a_primary_outage_applies_as_soon_as_it_returns() {
-    let a = wav(&dc(4000, 0.5));
+fn a_primary_command_sent_during_its_outage_applies_as_soon_as_it_returns() {
     let b = wav(&dc(40_000, 0.5));
-    let mut s = two_device_show(vec![audio(1, &a, 0), audio_b(2, &b, 0)]);
+    let mut s = two_device_show(vec![audio_b(2, &b, 0)]);
     start(&mut s, 2);
     s.run(BLOCK * 2);
     unplug(&mut s, DEV);
-    // A long outage: the master clock runs on far past the primary's counter.
-    for _ in 0..100 {
+    assert!(s.control().clock_on_wall());
+    // A long outage: the master clock runs on far past the primary's counter (and past the
+    // mixer's lookahead).
+    for _ in 0..200 {
         s.play(BLOCK);
     }
-    let id = s.request_id();
+    let mut patch = s.control().workspace().patches[0].clone();
+    patch.id = openlab_core::PatchId(uuid::Uuid::from_u128(903));
+    patch.name = "C".into();
+    let rid = s.request_id();
     let replies = s.send(ClientMessage::Command {
-        id,
-        command: Box::new(openlab_core::Command::SetPatchProperty {
-            id: patch_id(),
-            property: openlab_core::PatchProperty::MasterDb { value: -6.0 },
-        }),
+        id: rid,
+        command: Box::new(openlab_core::Command::AddPatch { index: 2, patch }),
         coalesce: None,
     });
     assert!(
@@ -2188,14 +2191,12 @@ fn a_patch_edit_during_a_primary_outage_applies_as_soon_as_it_returns() {
     s.fake.plug(listed(DEV, DEV_NAME, 2));
     s.wait_wall(Duration::from_secs(1), 2);
     assert!(!s.control().device_down());
-    s.run(400);
-    let before = s.channel(0).len();
-    start(&mut s, 1);
-    s.run(600);
-    let level = 0.5 * 10f32.powf(-6.0 / 20.0);
-    let got = heard(&s.channel(0)[before..]);
-    assert_eq!(got.len(), 1, "{got:?}");
-    assert!((got[0] - level).abs() < 1e-4, "{got:?}");
+    s.run(BLOCK * 3);
+    assert_eq!(
+        s.control().mixer().held(),
+        0,
+        "a command for the primary is still waiting after its return"
+    );
 }
 
 // AUD-21: the buffer size is set per device (16 to 1024 frames, 512 by default).
