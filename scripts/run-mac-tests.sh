@@ -171,7 +171,7 @@ windowserver_stalled() {
 # What the machine's display and power state is, for the job's log: it is not known what stalls the
 # GPU driver on a hosted Mac, and each stall so far has left no record of whether the display had gone
 # to sleep, a screen saver had started or the machine had sat without input. Printed before the tests
-# and again when a run goes silent, so the two can be compared. Never fails the run.
+# and again after a failed run, so the two can be compared. Never fails the run.
 machine_state() {
   {
     echo "run-mac-tests: machine state ($1):"
@@ -193,11 +193,12 @@ give_up() {
 
 # On a hosted runner nobody touches the machine, so its display may sleep or a screen saver may start
 # part-way through the tests. Whether that is what stalls the driver is not known: holding the display
-# awake for the length of the run rules it in or out (the state printed below says if it took).
+# awake for the length of the run rules it in or out. The state is printed first, so it shows the
+# machine as the build left it; the report after a failed run names the hold if it took.
+machine_state "before the tests"
 if [ -n "${CI:-}" ] && command -v caffeinate >/dev/null 2>&1; then
   caffeinate -dimsu -w $$ &
 fi
-machine_state "before the tests"
 
 bundles >"$work/before"
 run_watched first "${base[@]}" "$@" test
