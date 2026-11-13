@@ -513,6 +513,31 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(sc.model.problem(of: opening), .deviceOpening(device), "listed, no reason: opening")
     }
 
+    /// Remove on a patch a cue plays through: our own sentence names the patch and the cue by number
+    /// and name; nothing is sent, and the table does not move or shrink for the message.
+    func testRemovingAPatchACueUsesSaysWhichCueAndKeepsTheTableInPlace() async throws {
+        let (rig, sc) = try await open()
+        sc.window?.setContentSize(NSSize(width: 520, height: 540))
+        sc.patchAddButton.performClick(nil)
+        await assertEventually { sc.patchRemoveButtons.count == 2 }
+        let second = try XCTUnwrap(sc.model.patches.last?.id)
+        guard case .success = await rig.store.send(command: .setProperty(intro, .kindFields(["patch": .string(second.raw)])))
+        else { return XCTFail("repatch") }
+        await settle()
+        sc.window?.contentView?.layoutSubtreeIfNeeded()
+        let table = try XCTUnwrap(sc.patchGridHolder.enclosingScrollView)
+        let before = table.convert(table.bounds, to: nil)
+        let sent = commands(rig).count
+        sc.patchRemoveButtons[1].performClick(nil)
+        let expected = String(
+            format: loc("settings.audio.patchInUse"), String(format: loc("settings.audio.newPatchName"), 2), "1  Intro")
+        await assertEventually { sc.messageLabel.stringValue == expected }
+        XCTAssertEqual(commands(rig).count, sent, "nothing sent")
+        XCTAssertEqual(rig.store.model?.patches.count, 2)
+        sc.window?.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(table.convert(table.bounds, to: nil), before, "the table keeps its place and size")
+    }
+
     /// A patch set to no device in the table is warned about in its row and the status window.
     func testAPatchSetToNoDeviceIsWarnedInItsRowAndTheStatusWindow() async throws {
         let (rig, sc) = try await open()
@@ -548,10 +573,59 @@ final class WorkspaceSettingsTests: XCTestCase {
         let heard = try await peak(rig, channel: 1)
         XCTAssertGreaterThan(heard, 0.05, "device output 2 now carries cue output 1")
         XCTAssertEqual(rig.store.cueStates[intro]?.state, .running, "the cue plays on")
-        XCTAssertGreaterThan(rig.store.meters.level(.output(patch), channel: 1), 0, "the editor's meter row moves")
+        // What the editor's meter draws for row 2: its own source, read through the bank it is on.
+        let source = try XCTUnwrap(editor.meter.source)
+        XCTAssertTrue(editor.meter.bank === rig.store.meters)
+        XCTAssertGreaterThan(rig.store.meters.visibleCount, 0, "the editor's meter is registered")
+        XCTAssertGreaterThan(rig.store.meters.level(source, channel: 1), 0.05, "the editor's meter row moves")
         XCTAssertEqual(
             editor.deviceOutputLabels.map(\.stringValue),
             [loc("patchEditor.unused"), String(format: loc("patchEditor.feeds"), "1, 2")])
+    }
+
+    /// Esc while a patch name is typed in place, by the real key path (the app's key monitor, then
+    /// the window): the app panics, as Esc does from any window (Q104), and the event goes on to the
+    /// field, which drops the typing; the name stays and no rename is sent.
+    func testEscInAPatchNameFieldKeepsTheNameAndOnlyPanics() async throws {
+        let (rig, sc) = try await open(edit: sounding())
+        let url = engine.infoURL
+        let session = EngineSession(
+            transport: WebSocketTransport(), infoProvider: { EngineConnectionInfo.load(from: url) },
+            scheduler: ManualScheduler())
+        let app = AppController(session: session, scheduler: ManualScheduler())
+        app.keyWindow = { sc.window }
+        session.start()
+        defer { session.stop() }
+        await assertEventually { session.connectionState == .connected }
+        guard case .success = await rig.store.transport(.start(cue: intro)) else { return XCTFail("start") }
+        try await rig.advance(0.5)
+        XCTAssertEqual(rig.store.cueStates[intro]?.state, .running)
+
+        let window = try XCTUnwrap(sc.window)
+        let field = sc.patchNameFields[0]
+        window.makeFirstResponder(field)
+        let editor = try XCTUnwrap(field.currentEditor())
+        editor.string = "Typed"
+        (field.delegate as? NSTextFieldDelegate)?.controlTextDidChange?(
+            Notification(name: NSControl.textDidChangeNotification, object: field))
+        let sent = commands(rig).count
+        let esc = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false,
+                keyCode: 53))
+        let onward = app.handleKeyDown(esc)
+        XCTAssertTrue(onward === esc, "Esc goes on to the field")
+        window.sendEvent(esc)
+        window.makeFirstResponder(nil)
+        await settle()
+        try await rig.advance(1)
+        await assertEventually("the app panicked") { rig.store.cueStates[intro]?.state.isActive == false }
+        XCTAssertEqual(rig.store.model?.patches.first?.raw["name"]?.stringValue, "Main")
+        await assertEventually { sc.patchNameFields.first?.stringValue == "Main" }
+        XCTAssertFalse(
+            commands(rig).dropFirst(sent).contains { $0["property"]?["type"]?.stringValue == "name" },
+            "no rename sent")
     }
 
     /// Without a device the matrix takes no clicks and says why.
@@ -605,6 +679,60 @@ final class WorkspaceSettingsTests: XCTestCase {
             XCTAssertEqual(ew.contentView?.frame.size, PatchEditorWindowController.minSize, tab)
             assertNothingClippedOrOverlapping(in: ew.contentView, "the editor's \(tab) tab")
         }
+        editor.close()
+    }
+
+    /// The table at the default width shows a device's whole name; a large window widens the table
+    /// (the device column takes the spare width) and keeps the limits' title with its fields; the
+    /// rows do not move when the table grows a scroller.
+    func testTheTableUsesTheWindowsWidthAndKeepsItsColumnsInPlace() async throws {
+        let (_, sc) = try await open()
+        let window = try XCTUnwrap(sc.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        func fits(_ popup: NSPopUpButton) -> Bool { popup.cell!.cellSize.width <= popup.bounds.width + 0.5 }
+        XCTAssertTrue(fits(sc.patchDevicePopups[0]), "the whole device name shows at the default width")
+        let narrow = sc.patchDevicePopups[0].bounds.width
+        let editX = sc.patchEditButtons[0].convert(sc.patchEditButtons[0].bounds, to: nil).minX
+        for _ in 0..<12 { await sc.model.addPatch() }
+        await assertEventually { sc.patchEditButtons.count == 13 }
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(
+            sc.patchEditButtons[0].convert(sc.patchEditButtons[0].bounds, to: nil).minX, editX, accuracy: 0.5,
+            "a scroller does not move the rows")
+        window.setContentSize(NSSize(width: 1100, height: 1000))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(sc.patchDevicePopups[0].bounds.width, narrow + 300, "the device column widens")
+        let title = try XCTUnwrap(
+            sc.maxLimitField.superview?.superview?.subviews.compactMap { $0 as? NSTextField }.first {
+                $0.stringValue == loc("settings.audio.limits")
+            })
+        let titleX = title.convert(title.bounds, to: nil).minX
+        let maxRow = sc.maxLimitField.convert(sc.maxLimitField.bounds, to: nil)
+        let minRow = sc.minLimitField.convert(sc.minLimitField.bounds, to: nil)
+        XCTAssertLessThan(maxRow.minX - titleX, 60, "the title stays over its fields")
+        XCTAssertEqual(maxRow.minX, minRow.minX, accuracy: 0.5, "the two fields line up")
+    }
+
+    /// The editor's header (name, cue outputs, device) stays at the top left: at the default size, in
+    /// a large window, and after the workspace enters Show Mode with the editor open.
+    func testTheEditorsHeaderStaysAtTheTopLeft() async throws {
+        let rig = try await Rig.open("Demo", on: engine)
+        let wc = WorkspaceWindowController(store: rig.store)
+        let editor = try XCTUnwrap(wc.editPatch(patch))
+        await editor.editing?.value
+        let window = try XCTUnwrap(editor.window)
+        func left() -> CGFloat {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return editor.nameField.convert(editor.nameField.bounds, to: nil).minX
+        }
+        XCTAssertEqual(left(), 14, accuracy: 1)
+        window.setContentSize(NSSize(width: 1400, height: 1000))
+        XCTAssertEqual(left(), 14, accuracy: 1, "large window")
+        window.setContentSize(PatchEditorWindowController.minSize)
+        await wc.requestShowMode(true)
+        await settle()
+        editor.render()
+        XCTAssertEqual(left(), 14, accuracy: 1, "after Show Mode")
         editor.close()
     }
 

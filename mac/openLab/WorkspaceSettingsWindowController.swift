@@ -87,7 +87,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     init(store: WorkspaceStore) {
         model = WorkspaceSettingsModel(store: store)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 540),
+            // Wide enough by default for a device's whole name in the patch table.
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 540),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = loc("settings.title")
         window.identifier = NSUserInterfaceItemIdentifier(AX.settingsWindow)
@@ -250,7 +251,14 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         doneButton.target = self
         doneButton.action = #selector(doneClicked)
 
+        // The line takes two lines at most, cut after that, in a row of fixed height: a long
+        // refusal never moves the page above it.
+        messageLabel.maximumNumberOfLines = 2
+        messageLabel.font = .systemFont(ofSize: 11)
+        messageLabel.lineBreakMode = .byTruncatingTail
+        messageLabel.cell?.truncatesLastVisibleLine = true
         let bottom = NSStackView(views: [messageLabel, doneButton])
+        bottom.heightAnchor.constraint(equalToConstant: 32).isActive = true
         bottom.orientation = .horizontal
         // The line takes the free width, so Done stays at the right edge with or without a message.
         bottom.distribution = .fill
@@ -336,6 +344,15 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// Return in a field commits it and leaves the window open (the Done button's Return key
     /// would otherwise close the window with the typed text never sent).
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        // Esc drops what was typed (the app has already panicked, which Esc does from any window):
+        // the field shows the engine's value again and nothing is sent.
+        if selector == #selector(NSResponder.cancelOperation(_:)) {
+            control.abortEditing()
+            shownPatchTable = nil
+            lastDrawn = nil
+            render()
+            return true
+        }
         guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
         window?.makeFirstResponder(nil)
         return true

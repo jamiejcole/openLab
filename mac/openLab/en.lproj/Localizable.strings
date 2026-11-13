@@ -447,6 +447,7 @@
 "settings.audio.problem.unmapped" = "No audio device: cues that use this patch are silent.";
 "settings.audio.problem.deviceMissing" = "%@ is not connected: cues that use this patch are silent.";
 "settings.audio.problem.deviceUnusable" = "%1$@ cannot be used: %2$@. Cues that use this patch are silent.";
+"settings.audio.problem.tooSmall" = "No audio device: %1$@ has %2$ld outputs and this patch has %3$ld, so none was picked. Pick a device, or lower the cue outputs.";
 "settings.audio.problem.deviceOpening" = "%@ is being opened.";
 "settings.audio.problem.channelsMissing" = "openLab can use %2$ld outputs of %1$@ here (as many as the clock device has); this patch uses output %3$ld.";
 "settings.audio.problem.outputCount" = "The routing on this computer does not match the patch's cue outputs. Pick the device again.";
@@ -456,6 +457,7 @@
 "settings.audio.patchName" = "Name";
 "settings.audio.note" = "Each patch sends cues to an audio device on this computer.";
 "settings.audio.removeHelp" = "Remove this patch";
+"settings.audio.patchInUse" = "%1$@ cannot be removed: cue %2$@ plays through it. Put that cue on another patch first.";
 "settings.audio.notConnected" = "%@ (not connected)";
 "settings.audio.newPatchName" = "Patch %d";
 "settings.audio.limits" = "Volume limits";

@@ -42,10 +42,15 @@ final class PatchRoutingView: NSView {
     override var isFlipped: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    /// The width of what shows the matrix: it is at least that wide, so row stripes reach across.
+    var minWidth: CGFloat = 0 {
+        didSet { if minWidth != oldValue { resize() } }
+    }
+
     private func resize() {
         setFrameSize(
             NSSize(
-                width: Self.crossX + CGFloat(deviceOutputs) * Self.cellW + 8,
+                width: max(minWidth, Self.crossX + CGFloat(deviceOutputs) * Self.cellW + 8),
                 height: Self.headerH + CGFloat(rowLabels.count) * Self.rowH + 4))
         needsDisplay = true
     }

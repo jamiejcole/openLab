@@ -270,8 +270,16 @@ final class MeterView: NSView {
         updateLive()
     }
 
+    #if DEBUG
+        /// A scenario run draws windows that are never put on screen: their meters count as shown.
+        static var countsWindowsOffScreen = false
+    #endif
+
     var isOnScreen: Bool {
         guard let w = window, !isHiddenOrHasHiddenAncestor else { return false }
+        #if DEBUG
+            if Self.countsWindowsOffScreen { return !occluded }
+        #endif
         return w.isVisible && !w.isMiniaturized && !occluded
     }
 

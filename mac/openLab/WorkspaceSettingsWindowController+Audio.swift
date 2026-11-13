@@ -32,8 +32,9 @@ extension WorkspaceSettingsWindowController {
         NSLayoutConstraint.activate([
             holder.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             holder.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            // The table is as wide as the pane: the device column takes what the others leave.
-            holder.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            // The table is as wide as the pane less a scroller's width, whether one shows or not
+            // (as the cue list): the rows do not move when the list grows a scroller.
+            holder.widthAnchor.constraint(equalTo: scroll.widthAnchor, constant: -Self.scrollerReserve),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
         ])
         scroll.setAX(AX.settingsPatchTable, label: loc("settings.audio.patches"))
@@ -46,21 +47,21 @@ extension WorkspaceSettingsWindowController {
             field.delegate = self
             field.widthAnchor.constraint(equalToConstant: 48).isActive = true
         }
-        func limitRow(_ title: String, _ field: NSTextField) -> NSStackView {
-            let row = NSStackView(views: [
-                NSTextField(labelWithString: title), field, NSTextField(labelWithString: loc("settings.db")),
-            ])
-            row.spacing = 6
-            return row
-        }
+        // A grid, so the two fields line up whatever their labels' widths.
+        let limitGrid = NSGridView(views: [
+            [NSTextField(labelWithString: loc("settings.audio.limitMaxShort")), maxLimitField,
+             NSTextField(labelWithString: loc("settings.db"))],
+            [NSTextField(labelWithString: loc("settings.audio.limitMinShort")), minLimitField,
+             NSTextField(labelWithString: loc("settings.db"))],
+        ])
+        limitGrid.rowSpacing = 8
+        limitGrid.columnSpacing = 6
+        limitGrid.yPlacement = .center
         let limitsTitle = NSTextField(labelWithString: loc("settings.audio.limits"))
         limitsTitle.font = .systemFont(ofSize: 13, weight: .semibold)
-        let limits = NSStackView(views: [
-            limitsTitle, limitRow(loc("settings.audio.limitMaxShort"), maxLimitField),
-            limitRow(loc("settings.audio.limitMinShort"), minLimitField),
-        ])
+        let limits = NSStackView(views: [limitsTitle, limitGrid])
         limits.orientation = .vertical
-        limits.alignment = .trailing
+        limits.alignment = .leading
         limits.spacing = 8
         limits.setContentHuggingPriority(.required, for: .horizontal)
         limits.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -85,7 +86,13 @@ extension WorkspaceSettingsWindowController {
         return stack
     }
 
-    static let patchNameWidth: CGFloat = 120
+    static let patchNameWidth: CGFloat = 100
+    static let editWidth: CGFloat = 56
+    static let removeWidth: CGFloat = 22
+    /// A vertical scroller's width (and the border), always kept free beside the rows.
+    static var scrollerReserve: CGFloat { NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) + 2 }
+    /// The width of the table's columns other than the device's, with the spacing and insets.
+    static var fixedColumns: CGFloat { 16 + patchNameWidth + editWidth + removeWidth + 3 * 8 }
 
     /// A new, empty table with its column titles in place of the old one. The table is made again
     /// for each drawing: a row whose cells are merged (the problem lines) cannot be removed from a
@@ -103,6 +110,7 @@ extension WorkspaceSettingsWindowController {
         grid.addRow(with: headers)
         grid.rowSpacing = 6
         grid.columnSpacing = 8
+        grid.yPlacement = .center
         grid.column(at: 0).width = Self.patchNameWidth
         grid.column(at: 2).xPlacement = .center
         grid.column(at: 3).xPlacement = .center
@@ -162,15 +170,17 @@ extension WorkspaceSettingsWindowController {
             popup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             popup.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
-            // The device column takes the width the table has to spare.
-            let wide = popup.widthAnchor.constraint(equalToConstant: 600)
-            wide.priority = NSLayoutConstraint.Priority(200)
+            // The device column takes the width the table has to spare (QLab's table gives it most).
+            let wide = popup.widthAnchor.constraint(
+                equalTo: patchGridHolder.widthAnchor, constant: -Self.fixedColumns)
+            wide.priority = NSLayoutConstraint.Priority(750)
             wide.isActive = true
             popup.setAX("\(AX.settingsPatch)-device-\(n)", label: "\(shownName), \(loc("settings.audio.patchDevice"))")
 
             let edit = NSButton(
                 title: loc("settings.audio.edit"), target: self, action: #selector(editPatchClicked(_:)))
             edit.bezelStyle = .rounded
+            edit.widthAnchor.constraint(equalToConstant: Self.editWidth).isActive = true
             edit.tag = i
             edit.setAX("\(AX.settingsPatch)-edit-\(n)", label: "\(loc("settings.audio.edit")) \(shownName)")
 
@@ -178,6 +188,7 @@ extension WorkspaceSettingsWindowController {
             remove.image = Icon.fieldClear.image(loc("settings.audio.removePatch"), compact: true)
             remove.isBordered = false
             remove.imagePosition = .imageOnly
+            remove.widthAnchor.constraint(equalToConstant: Self.removeWidth).isActive = true
             remove.toolTip = loc("settings.audio.removeHelp")
             remove.tag = i
             remove.isEnabled = enabled && model.patches.count > 1

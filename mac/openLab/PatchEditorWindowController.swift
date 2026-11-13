@@ -82,6 +82,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         window.isReleasedWhenClosed = false
         window.contentMinSize = Self.minSize
         super.init(window: window)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowResized), name: NSWindow.didResizeNotification, object: window)
         window.contentView = buildContent()
         window.center()
         let later: (Any) -> Void = { [weak self] _ in DispatchQueue.main.async { self?.render() } }
@@ -144,11 +146,18 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         let deviceColumn = titled(loc("patchEditor.device"), devicePopup)
         deviceColumn.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         devicePopup.widthAnchor.constraint(equalTo: deviceColumn.widthAnchor).isActive = true
+        // The device column takes the spare width up to a pop-up's useful size; the spacer the rest.
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        devicePopup.widthAnchor.constraint(lessThanOrEqualToConstant: 360).isActive = true
         let top = NSStackView(views: [
             titled(loc("patchEditor.name"), nameField), titled(loc("patchEditor.count"), countField), deviceColumn,
+            spacer,
         ])
         top.orientation = .horizontal
         top.alignment = .top
+        top.distribution = .fill
         top.spacing = 14
         problemLabel.textColor = .systemRed
         problemLabel.setAX(AX.patchEditorProblem)
@@ -184,13 +193,16 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
 
         let root = NSStackView(views: [top, problemLabel, tabs, bottom])
         root.orientation = .vertical
-        root.alignment = .width
+        root.alignment = .leading
         root.spacing = 10
         root.distribution = .fill
         root.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
         for label in [problemLabel, messageLabel] { label.preferredMaxLayoutWidth = 480 }
-        // The tabs fill the window's width whatever their pages would choose.
-        tabs.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -28).isActive = true
+        // Each row is as wide as the window, whatever its content would choose, so the header stays
+        // at the top left at any size and in any state (Show Mode included).
+        for row in [top, problemLabel, tabs, bottom] as [NSView] {
+            row.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -28).isActive = true
+        }
         return root
     }
 
@@ -361,6 +373,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             return Int(c[i])
         }
         matrix.isEnabled = state.loaded && row?.mapping != nil
+        fitMatrixWidth()
         let metered = min(state.levels.count, MeterBank.maxChannels)
         meter.frame = matrix.meterRect(rows: metered)
         meter.fixedRows = metered
@@ -386,6 +399,11 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             : channels > state.usable ? String(format: loc("patchEditor.usable"), state.usable, channels) : ""
         deviceOutputsNote.isHidden = deviceOutputsNote.stringValue.isEmpty
         renderDeviceOutputs(channels: max(channels, maxRoute), state: state)
+    }
+
+    /// The matrix is at least as wide as its scroll view (followed on each layout of the window).
+    func fitMatrixWidth() {
+        if let clip = matrix.enclosingScrollView?.contentView { matrix.minWidth = clip.bounds.width }
     }
 
     /// A field shows `text` unless it is being typed in.
@@ -548,6 +566,11 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     }
 
     @objc private func doneClicked() { window?.close() }
+
+    @objc private func windowResized() {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        fitMatrixWidth()
+    }
 }
 
 extension WorkspaceSettingsModel {
@@ -569,6 +592,8 @@ extension WorkspaceSettingsModel {
     func problemText(_ problem: PatchProblem) -> String {
         switch problem {
         case .unmapped: return loc("settings.audio.problem.unmapped")
+        case .unmappedDeviceTooSmall(let device, let outputs, let needed):
+            return String(format: loc("settings.audio.problem.tooSmall"), device, outputs, needed)
         case .deviceMissing(let name): return String(format: loc("settings.audio.problem.deviceMissing"), name)
         case .deviceUnusable(let name, let reason):
             return String(format: loc("settings.audio.problem.deviceUnusable"), name, reason)

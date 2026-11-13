@@ -7,6 +7,9 @@ import Foundation
 /// the patch editor, so a silent patch is never a surprise at the show (QLab 5 manual p. 191).
 enum PatchProblem: Equatable {
     case unmapped
+    /// No device: the clock device has fewer outputs than the patch needs, so none was chosen
+    /// for it (the engine never maps a patch in part).
+    case unmappedDeviceTooSmall(device: String, outputs: Int, needed: Int)
     case deviceMissing(String)
     /// The device is connected but openLab cannot use it, and why (in the engine's words).
     case deviceUnusable(device: String, reason: String)
@@ -110,7 +113,26 @@ final class WorkspaceSettingsModel: ObservableObject {
     /// Removes a patch. The engine refuses one a cue plays through, and the last one; it says why.
     @discardableResult
     func removePatch(_ id: ModelID) async -> Bool {
-        await sendPatch(Command(.object(["type": .string("remove_patch"), "id": .string(id.raw)])))
+        // A patch a cue plays through is kept (the engine refuses it too); said here in our words,
+        // naming the cue the operator has to move.
+        if let model = store.model, let cue = Self.firstCue(in: model.cueLists.flatMap(\.cues), on: id) {
+            let name = model.patches.first { $0.id == id }?.raw["name"]?.stringValue ?? ""
+            message = String(
+                format: loc("settings.audio.patchInUse"),
+                name.isEmpty ? loc("settings.audio.untitledPatch") : name,
+                WarningRows.cueTitle(cue, name: model.listName(cue)))
+            return false
+        }
+        return await sendPatch(Command(.object(["type": .string("remove_patch"), "id": .string(id.raw)])))
+    }
+
+    /// The first Audio cue, in list order, that plays through `patch`.
+    private static func firstCue(in cues: [Cue], on patch: ModelID) -> Cue? {
+        for cue in cues {
+            if cue.kindType == "audio", cue.raw["kind"]?["patch"]?.stringValue == patch.raw { return cue }
+            if let hit = firstCue(in: cue.children, on: patch) { return hit }
+        }
+        return nil
     }
 
     /// Names cue output `output` of the patch (empty: its number). An unchanged name sends nothing.
@@ -181,7 +203,14 @@ final class WorkspaceSettingsModel: ObservableObject {
         if let r = row.resolution {
             let device = r.json["device"]?.stringValue ?? row.mapping?.device ?? ""
             switch r.type {
-            case "unmapped": return .unmapped
+            case "unmapped":
+                if row.mapping == nil, let clock = devices.first(where: { $0.primary }),
+                    clock.outputChannels < row.outputCount
+                {
+                    return .unmappedDeviceTooSmall(
+                        device: clock.name, outputs: clock.outputChannels, needed: row.outputCount)
+                }
+                return .unmapped
             case "device_missing":
                 if let reason = r.json["reason"]?.stringValue, !reason.isEmpty {
                     return .deviceUnusable(device: device, reason: reason)
