@@ -2543,3 +2543,92 @@ fn the_sole_device_hung_in_a_buffer_size_change_is_lost_like_any_sole_device() {
     assert_ne!(states.1, CueState::PreWaiting, "the wait was not cancelled");
     assert!(states.2, "the device counts as away");
 }
+
+fn map_b(s: &mut DeviceShow, device: &str) {
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::SetPatchMapping {
+            patch: patch_b(),
+            mapping: Some(PatchMapping {
+                device: device.into(),
+                channels: vec![0, 1],
+            }),
+        },
+    });
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+}
+
+/// A device no patch maps to any more closes once the cue still playing on it ends; unplugged
+/// then, it raises no warning, no error and no reopen attempts.
+#[test]
+fn a_device_no_patch_uses_closes_and_its_unplugging_raises_nothing() {
+    let b = wav(&dc(800, 0.5));
+    let mut s = two_device_show(vec![audio_b(2, &b, 0)]);
+    start(&mut s, 2);
+    s.run(BLOCK * 2);
+    map_b(&mut s, DEV_NAME);
+    s.run(BLOCK * 2);
+    // The cue on it plays to its end there first.
+    assert!(s.control().output_up(DEV2_NAME));
+    s.run(1200);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    s.settle_devices();
+    assert!(
+        !s.control().output_up(DEV2_NAME),
+        "the unused device stayed open"
+    );
+    assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
+    s.take_outbound();
+    s.fake.unplug(DEV2, true);
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.wait_wall(Duration::from_secs(4), 4);
+    let msgs = s.take_outbound();
+    assert!(logs(&msgs, LogLevel::Error).is_empty(), "{msgs:?}");
+    assert!(logs(&msgs, LogLevel::Warn).is_empty(), "{msgs:?}");
+    assert!(
+        !workspace_warnings(&msgs)
+            .unwrap_or_default()
+            .contains(&"device_lost".to_owned())
+    );
+    // Patch B now plays on the primary.
+    let before = s.channel(0).len();
+    start(&mut s, 2);
+    s.run(1000);
+    assert_eq!(heard(&s.channel(0)[before..]), vec![0.5]);
+}
+
+/// A closed device a patch maps to again opens again, and the patch plays there.
+#[test]
+fn a_closed_device_opens_again_when_a_patch_maps_to_it() {
+    let b = wav(&dc(300, 0.5));
+    let mut s = two_device_show(vec![audio_b(2, &b, 0)]);
+    map_b(&mut s, DEV_NAME);
+    s.settle_devices();
+    assert!(!s.control().output_up(DEV2_NAME));
+    // The stand-in reports the size the device was asked for.
+    s.fake
+        .set_device_block(DEV2, openlab_core::DEFAULT_BUFFER_FRAMES);
+    map_b(&mut s, DEV2_NAME);
+    s.wait_output(DEV2_NAME);
+    s.run(BLOCK * 4);
+    let before = s.device_channel(DEV2, 0).len();
+    start(&mut s, 2);
+    s.run(600);
+    assert_eq!(heard(&s.device_channel(DEV2, 0)[before..]), vec![0.5]);
+    let msgs = s.take_outbound();
+    assert!(
+        logs(&msgs, LogLevel::Warn).is_empty(),
+        "{:?}",
+        logs(&msgs, LogLevel::Warn)
+    );
+}

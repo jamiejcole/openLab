@@ -2545,6 +2545,8 @@ impl Control {
         self.eng.pool.leave(doc);
         self.eng.waveform_reader.forget(doc);
         self.eng.mapping_warned.retain(|(d, _, _, _)| *d != doc);
+        // A device only its patches played on closes.
+        self.eng.outputs_dirty = true;
         // Saves under way still finish on the writer and are answered then.
         self.eng
             .docs

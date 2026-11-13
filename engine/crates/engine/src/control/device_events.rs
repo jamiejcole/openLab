@@ -233,12 +233,13 @@ impl Control {
                 if let Some(m) = self.eng.config.machine.patch_entry(ws.id, patch.id)
                     && !m.device.is_empty()
                     && !wanted.contains(&m.device)
-                    && self.eng.outputs.by_name(&m.device).is_none()
                 {
                     wanted.push(m.device.clone());
                 }
             }
         }
+        self.park_outputs(&wanted);
+        wanted.retain(|name| self.eng.outputs.by_name(name).is_none());
         for name in wanted {
             let Some(device) = listed.iter().find(|d| d.name == name) else {
                 // Not here: its patches are `device_missing`; a list change tries again.
@@ -358,6 +359,44 @@ impl Control {
             self.device_events(key, events);
         }
         Ok(())
+    }
+
+    /// An open device no patch of any open doc maps to any more is parked (closed: not
+    /// watched, not reported lost) once no voice plays on it; one a patch maps to again
+    /// opens again. A device still holding a voice is looked at again next tick.
+    fn park_outputs(&mut self, wanted: &[String]) {
+        let mut changed = false;
+        for key in 1..self.eng.outputs.len() {
+            let busy = self.eng.outputs.has_voices(key);
+            let Some(o) = self.eng.outputs.get_mut(key) else {
+                continue;
+            };
+            let Backend::Device(d) = &mut o.backend else {
+                continue;
+            };
+            let want = wanted.contains(&o.name);
+            if want && d.is_parked() {
+                d.unpark();
+                changed = true;
+            } else if !want && !d.is_parked() {
+                if busy {
+                    self.eng.outputs_dirty = true;
+                } else {
+                    d.park();
+                    changed = true;
+                    let name = o.name.clone();
+                    self.eng.log_device(
+                        LogLevel::Info,
+                        format!("audio device \"{name}\" closed: no patch plays on it"),
+                    );
+                }
+            }
+        }
+        if changed {
+            self.eng.outputs.follow_clock();
+            self.eng.refresh_playable();
+            self.mark_warnings_dirty();
+        }
     }
 
     /// A device that could not be opened as an output: logged once per device.
@@ -536,7 +575,7 @@ impl DocCx<'_> {
                     ),
                     None,
                 ));
-            } else if d.is_down() && d.has_opened() {
+            } else if d.is_down() && d.has_opened() && !d.is_resuming() {
                 list.push(notice(
                     "device_lost",
                     format!(

@@ -424,9 +424,12 @@ impl DeviceShow {
     /// A show of `ws` playing on the first of `devices` (the primary); a patch mapped to
     /// another listed device opens it too.
     pub fn new(ws: Workspace, devices: Vec<ListedDevice>, mut config: ControlConfig) -> Self {
-        config.output_mixer.get_or_insert_with(mixer_config);
+        // As many patch matrices as the engine hands out slots.
+        let mut mixer = mixer_config();
+        mixer.patches = mixer.patches.max(config.mixer_patches);
+        config.output_mixer.get_or_insert(mixer);
         let fake = Fake::new(devices.clone());
-        let (ctl, mixer) = Mixer::new(mixer_config()).unwrap();
+        let (ctl, mixer) = Mixer::new(mixer).unwrap();
         let (inbox_tx, inbox) = crossbeam_channel::unbounded();
         let wall = Arc::new(Mutex::new(Duration::ZERO));
         let base = Instant::now();

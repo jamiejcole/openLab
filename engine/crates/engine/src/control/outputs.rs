@@ -2,8 +2,9 @@
 
 //! The output devices the engine plays on (AUD-02): one entry per open device, each with its
 //! own mixer and device supervisor. Entry 0 is the primary device, opened at start; the others
-//! open when a patch is mapped to them. A voice plays in the mixer of its patch's device, chosen
-//! at its start; every later command of it goes to that mixer.
+//! open when a patch is mapped to them and close when none is (once no voice plays there). A
+//! voice plays in the mixer of its patch's device, chosen at its start; every later command of
+//! it goes to that mixer.
 //!
 //! **Clock.** The engine's time (the master clock) is the primary device's sample counter while
 //! that device plays, so timing on it stays sample-accurate. Another device's commands are dated
@@ -221,6 +222,11 @@ impl Outputs {
             .into_iter()
             .filter(|&v| self.output_of(v) == key)
             .collect()
+    }
+
+    /// Whether a voice may still play on output `key`.
+    pub fn has_voices(&self, key: OutputKey) -> bool {
+        self.voices.values().any(|&(o, _)| o == key)
     }
 
     /// Forgets voices `keep` says are gone.

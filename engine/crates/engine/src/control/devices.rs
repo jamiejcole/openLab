@@ -404,6 +404,8 @@ pub fn start_with_timeout(
         lists: Some(lists_tx),
         opened: true,
         reconfiguring: false,
+        parked: false,
+        resuming: false,
         wall,
         in_flight: VecDeque::new(),
         listing: None,
@@ -467,6 +469,8 @@ fn spawn(
         lists: None,
         opened: false,
         reconfiguring: false,
+        parked: false,
+        resuming: false,
         wall,
         in_flight: VecDeque::new(),
         listing: None,
@@ -744,6 +748,11 @@ pub struct Device {
     opened: bool,
     /// The stream was closed to be opened again at once at another buffer size.
     reconfiguring: bool,
+    /// Closed because nothing plays on it any more ([`Device::park`]): not watched, not
+    /// reopened, not reported lost.
+    parked: bool,
+    /// Opened again after being parked: not reported as away while that open runs.
+    resuming: bool,
     wall: WallClock,
     /// Open and close jobs sent whose answer has not come back, oldest first.
     in_flight: VecDeque<(Instant, JobKind)>,
@@ -836,9 +845,64 @@ impl Device {
         self.request.buffer_frames
     }
 
-    /// The stream plays: not away, not opening, not closed for a buffer size change.
+    /// The stream plays: not away, not opening, not closed for a buffer size change, not
+    /// parked.
     pub fn is_playing(&self) -> bool {
-        self.outage.is_none() && !self.reconfiguring
+        self.outage.is_none() && !self.reconfiguring && !self.parked
+    }
+
+    /// Closed because nothing plays on it ([`Self::park`]).
+    pub fn is_parked(&self) -> bool {
+        self.parked
+    }
+
+    /// Opening again after being parked.
+    pub fn is_resuming(&self) -> bool {
+        self.resuming
+    }
+
+    /// Nothing plays on this device any more: its stream closes (the mixer comes back as it
+    /// was) and it is neither watched, reopened nor reported lost until [`Self::unpark`]. An
+    /// outage it was in ends. Only for a device other than the list reader's.
+    pub fn park(&mut self) {
+        if self.parked {
+            return;
+        }
+        self.parked = true;
+        self.resuming = false;
+        self.reconfiguring = false;
+        self.outage = None;
+        self.stall.warned = false;
+        if matches!(self.stream, Stream::Up) {
+            self.close_parked();
+        }
+    }
+
+    fn close_parked(&mut self) {
+        let now = (self.wall)();
+        self.alloc_base = self
+            .alloc_base
+            .saturating_add(self.info.monitor.alloc_violations());
+        self.stream = if self.send(Job::Close, JobKind::Close, now) {
+            Stream::Closing
+        } else {
+            Stream::Gone
+        };
+    }
+
+    /// A patch plays on this parked device again: it opens again at once (and as a device
+    /// coming back, with the reopen backoff, if that fails).
+    pub fn unpark(&mut self) {
+        if !std::mem::take(&mut self.parked) {
+            return;
+        }
+        if !matches!(self.stream, Stream::Up) {
+            self.resuming = true;
+            self.attempts = 0;
+            self.outage = Some(Outage {
+                next_try: (self.wall)(),
+            });
+        }
     }
 
     /// Asks for `frames` per callback from now on (AUD-21). A stream that plays is closed and
@@ -979,8 +1043,15 @@ impl Device {
             DeviceAnswer::Opened(result) => {
                 self.answered(JobKind::Open);
                 match result {
+                    Ok(info) if self.parked => {
+                        // Parked while it opened: closed again at once.
+                        self.info = info;
+                        self.stream = Stream::Up;
+                        self.close_parked();
+                    }
                     Ok(info) => {
                         self.outage = None;
+                        self.resuming = false;
                         self.callbacks_at_list = info.monitor.callbacks();
                         self.missing_reads = 0;
                         self.info = info;

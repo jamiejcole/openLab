@@ -836,7 +836,9 @@ impl Engine {
         let mut playable = Vec::new();
         for (key, o) in self.outputs.iter() {
             match &o.backend {
-                Backend::Device(d) if !d.is_down() => playable.push((playable_device(d), key)),
+                Backend::Device(d) if !d.is_down() && !d.is_parked() => {
+                    playable.push((playable_device(d), key));
+                }
                 Backend::Device(_) => {}
                 Backend::Offline => {
                     playable.extend(self.config.devices.iter().map(|d| (d.clone(), key)));
