@@ -108,6 +108,25 @@ pub struct Options {
 /// ([`mark_on_stop`]) and its removal at the very end, which take it in turn.
 type EngineSlot = Arc<Mutex<Option<EngineFile>>>;
 
+/// The stage host (video output): in the app bundle's helper app
+/// (`Contents/Helpers/openLab Stage.app/Contents/MacOS/openlab-stage`, the engine being in
+/// `Contents/MacOS`), else beside the engine (a development build).
+fn stage_host_program() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    stage_host_beside(exe.parent()?)
+}
+
+fn stage_host_beside(dir: &std::path::Path) -> Option<PathBuf> {
+    let name = format!("openlab-stage{}", std::env::consts::EXE_SUFFIX);
+    [
+        dir.join("../Helpers/openLab Stage.app/Contents/MacOS")
+            .join(&name),
+        dir.join(&name),
+    ]
+    .into_iter()
+    .find(|p| p.is_file())
+}
+
 /// How long shutdown waits for the log writer to write what is queued.
 const LOG_FLUSH_WAIT: Duration = Duration::from_secs(3);
 
@@ -446,6 +465,17 @@ fn run_with(
     config.show_log = show_log;
     config.status = Some(StatusConfig::default());
     config.push_log = true;
+    match stage_host_program() {
+        Some(program) => config.stage_host = Some(crate::stage::StageHostConfig::new(program)),
+        None => {
+            let _ = inbox_tx.send(Inbox::Log {
+                level: LogLevel::Warn,
+                message: "video output is off: the stage host (openlab-stage) is not installed \
+                          beside the engine"
+                    .to_owned(),
+            });
+        }
+    }
     #[cfg(feature = "test-support")]
     if let Some(vd) = virtual_device {
         say(&format!("audio: the virtual device ({:?})", vd.mode()));
@@ -688,6 +718,27 @@ mod tests {
             is_default: false,
             configs: Vec::new(),
         }
+    }
+
+    /// The stage host is found in the app bundle's helper app first, else beside the engine;
+    /// with neither there is none (video output off, logged).
+    #[test]
+    fn the_stage_host_is_found_in_the_bundle_or_beside_the_engine() {
+        let root = tempfile::tempdir().unwrap();
+        let macos = root.path().join("openLab.app/Contents/MacOS");
+        fs::create_dir_all(&macos).unwrap();
+        assert_eq!(stage_host_beside(&macos), None);
+        let name = format!("openlab-stage{}", std::env::consts::EXE_SUFFIX);
+        fs::write(macos.join(&name), b"").unwrap();
+        assert_eq!(stage_host_beside(&macos), Some(macos.join(&name)));
+        let helper = root
+            .path()
+            .join("openLab.app/Contents/Helpers/openLab Stage.app/Contents/MacOS");
+        fs::create_dir_all(&helper).unwrap();
+        fs::write(helper.join(&name), b"").unwrap();
+        let found = stage_host_beside(&macos).unwrap();
+        assert!(found.starts_with(&macos), "{found:?}");
+        assert!(found.ends_with(format!("Helpers/openLab Stage.app/Contents/MacOS/{name}")));
     }
 
     #[test]

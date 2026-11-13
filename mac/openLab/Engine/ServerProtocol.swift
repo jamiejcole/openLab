@@ -200,6 +200,38 @@ struct PatchMappingEntry: Hashable, Sendable, Decodable {
     let resolution: WireVariant?
 }
 
+/// VID-01: a display the stage host can show a stage on. `id` is stable across restarts (on
+/// macOS the display's UUID); sizes are pixels.
+struct StageDisplay: Hashable, Sendable, Decodable {
+    let id: String
+    let name: String
+    let width: UInt32
+    let height: UInt32
+}
+
+/// The display one stage is shown on, on this machine, as it was when chosen.
+struct StageMapping: Hashable, Sendable, Decodable {
+    let display: String
+    let name: String
+    let width: UInt32
+    let height: UInt32
+}
+
+/// Where a stage is: `shown` (on `display`), `hidden`, `no_display`, `display_missing` (its
+/// `display`), `failed` (with `reason`).
+struct StageState: Hashable, Sendable, Decodable {
+    let state: String
+    let display: String?
+    let reason: String?
+}
+
+struct StageMappingEntry: Hashable, Sendable, Decodable {
+    let stage: ModelID
+    let mapping: StageMapping?
+    /// Nil while the stage host has not said.
+    let state: StageState?
+}
+
 struct DeviceEntry: Hashable, Sendable, Decodable {
     let name: String
     let outputChannels: Int
@@ -495,6 +527,11 @@ enum ResultData: Sendable, Equatable, Decodable {
     case waveform(WaveformPeaks)
     /// The doc a `new` / `open` / `open_recovery` opened.
     case opened(doc: ModelID)
+    /// VID-01: `video` is false where this machine has no video output, nil before the stage host started.
+    case displays([StageDisplay], video: Bool?)
+    case stageMappings([StageMappingEntry])
+    /// Test support: the test card's frame number the stage shows, and the RGBA colour at each point.
+    case stageProbe(frame: UInt16?, colours: [[UInt8]])
     /// A data type this client does not know; the raw object is kept.
     case other(type: String, json: JSONValue)
 
@@ -528,6 +565,15 @@ enum ResultData: Sendable, Equatable, Decodable {
         case "preshow_check": self = .preshowCheck(try PreshowReport(from: decoder))
         case "waveform": self = .waveform(try WaveformPeaks(from: decoder))
         case "opened": self = .opened(doc: ModelID(doc: try c.decode(UInt64.self, forKey: "doc")))
+        case "displays":
+            self = .displays(
+                try c.decode([StageDisplay].self, forKey: "displays"),
+                video: try c.decodeIfPresent(Bool.self, forKey: "video"))
+        case "stage_mappings": self = .stageMappings(try c.decode([StageMappingEntry].self, forKey: "stages"))
+        case "stage_probe":
+            self = .stageProbe(
+                frame: try c.decodeIfPresent(UInt16.self, forKey: "frame"),
+                colours: try c.decode([[UInt8]].self, forKey: "colours"))
         default: self = .other(type: type, json: try JSONValue(from: decoder))
         }
     }

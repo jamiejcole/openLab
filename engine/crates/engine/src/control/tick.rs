@@ -42,6 +42,7 @@ impl Control {
         self.poll_orphan_saves();
         self.eng.resend_closed();
         self.publish_workspaces();
+        self.sync_stages();
         let awake = self
             .docs
             .iter()

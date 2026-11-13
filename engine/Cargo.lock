@@ -905,6 +905,7 @@ dependencies = [
 name = "openlab-video"
 version = "0.0.1"
 dependencies = [
+ "crossbeam-channel",
  "dispatch2",
  "objc2",
  "objc2-app-kit",
@@ -917,6 +918,7 @@ dependencies = [
  "openlab-core",
  "openlab-engine",
  "openlab-video",
+ "tempfile",
  "uuid",
 ]
 

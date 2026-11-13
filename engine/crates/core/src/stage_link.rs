@@ -55,6 +55,10 @@ pub enum ToStage {
     /// Test support: stop reading and answering, as a hung stage host would.
     #[cfg(feature = "test-support")]
     Hang,
+    /// Test support: a stage host on virtual displays now has these, as if displays were
+    /// plugged in or unplugged.
+    #[cfg(feature = "test-support")]
+    SetDisplays { displays: Vec<Display> },
 }
 
 /// One stage as the stage host draws it.
@@ -213,6 +217,21 @@ fn message_ok(text: &str) -> bool {
     text.len() <= MAX_TEXT_BYTES && !text.chars().any(|c| c.is_control() && c != '\n')
 }
 
+fn check_displays(displays: &[Display]) -> Result<(), LinkError> {
+    if displays.len() > MAX_DISPLAYS {
+        return Err(LinkError::Invalid("too many displays"));
+    }
+    for d in displays {
+        if !text_ok(&d.id) || !text_ok(&d.name) {
+            return Err(LinkError::Invalid("bad display id or name"));
+        }
+        if !side_ok(d.width) || !side_ok(d.height) {
+            return Err(LinkError::Invalid("display size out of range"));
+        }
+    }
+    Ok(())
+}
+
 fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
     match message {
         ToStage::Stages { stages } => {
@@ -229,6 +248,8 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
             }
             Ok(())
         }
+        #[cfg(feature = "test-support")]
+        ToStage::SetDisplays { displays } => check_displays(displays),
         #[cfg(feature = "test-support")]
         ToStage::Probe { points, .. } => {
             if points.is_empty() || points.len() > MAX_PROBE_POINTS {
@@ -249,20 +270,7 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
 
 fn check_from_stage(message: &FromStage) -> Result<(), LinkError> {
     match message {
-        FromStage::Displays { displays } => {
-            if displays.len() > MAX_DISPLAYS {
-                return Err(LinkError::Invalid("too many displays"));
-            }
-            for d in displays {
-                if !text_ok(&d.id) || !text_ok(&d.name) {
-                    return Err(LinkError::Invalid("bad display id or name"));
-                }
-                if !side_ok(d.width) || !side_ok(d.height) {
-                    return Err(LinkError::Invalid("display size out of range"));
-                }
-            }
-            Ok(())
-        }
+        FromStage::Displays { displays } => check_displays(displays),
         FromStage::StageStatus { state, .. } => match state {
             StageState::Shown { display } | StageState::DisplayMissing { display }
                 if !text_ok(display) =>

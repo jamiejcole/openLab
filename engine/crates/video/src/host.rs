@@ -46,6 +46,11 @@ pub trait Platform {
         picture: Picture,
         points: &[[f32; 2]],
     ) -> Result<Vec<[u8; 4]>, String>;
+    /// Test support: replaces virtual displays; `false` where the displays are real.
+    #[cfg(feature = "test-support")]
+    fn set_virtual_displays(&mut self, _displays: Vec<Display>) -> bool {
+        false
+    }
 }
 
 /// What the host loop does after a message.
@@ -104,6 +109,9 @@ impl<P: Platform> Host<P> {
                     }
                 }
                 self.stages = stages;
+                // Every stage's state is reported after a new set, changed or not, so the
+                // engine knows each stage it sent has been dealt with.
+                self.states.clear();
                 self.apply(out);
             }
             ToStage::Ping { seq } => out.push(FromStage::Pong { seq }),
@@ -124,6 +132,12 @@ impl<P: Platform> Host<P> {
             ToStage::Probe { stage, points } => out.push(self.probe(stage, &points)),
             #[cfg(feature = "test-support")]
             ToStage::Hang => return Flow::Hang,
+            #[cfg(feature = "test-support")]
+            ToStage::SetDisplays { displays } => {
+                if self.platform.set_virtual_displays(displays) {
+                    self.displays_changed(out);
+                }
+            }
         }
         Flow::Continue
     }
@@ -392,10 +406,16 @@ mod tests {
             ]
         );
         assert_eq!(h.platform.shown.len(), 1);
-        // The same set again changes nothing and reports nothing.
+        // The same set again is reported again (the engine waits for each set's states) and
+        // changes no window.
         out.clear();
         h.handle(ToStage::Stages { stages }, &mut out);
-        assert!(out.is_empty());
+        assert_eq!(states(&out).len(), 4);
+        assert_eq!(h.platform.shown.len(), 1);
+        // A display change reports only what changed.
+        out.clear();
+        h.displays_changed(&mut out);
+        assert!(out.is_empty(), "{out:?}");
     }
 
     /// A display unplugged takes its stage down and reports it; plugged back, the stage

@@ -13,7 +13,7 @@ use super::{
 use crate::command::Command;
 use crate::cue::{FadeSpec, Modifiers};
 use crate::media_path::{PathStyle, is_absolute, to_portable};
-use crate::model::{CueId, CueListId, PatchId, WorkspaceId};
+use crate::model::{CueId, CueListId, PatchId, StageId, WorkspaceId};
 use crate::settings::PatchMapping;
 
 /// Longest `coalesce` key of a `command`, bytes.
@@ -391,6 +391,22 @@ pub enum Request {
     /// Where each of the connection's workspace's patches plays on this machine (WS-07), for a
     /// patch editor: answers `patch_mappings`. Workspace-bound.
     ListPatchMappings,
+    /// The displays this machine can show stages on (VID-01), as the stage host lists them:
+    /// answers `displays`. Empty until the stage host has started (it starts when a workspace
+    /// with stages is open, or on this request). App-scope.
+    ListDisplays,
+    /// Where each of the connection's workspace's stages is shown on this machine (VID-01):
+    /// answers `stage_mappings`. Workspace-bound.
+    ListStageMappings,
+    /// Shows the connection's workspace's `stage` on `display` (an id `list_displays` names) on
+    /// this machine, or on no display (absent or null); kept in machine settings under the
+    /// workspace id and stage id, not in the show file. Answers `ok`, or `not_found` (stage or
+    /// display unknown); nothing changes on a refusal. Workspace-bound.
+    SetStageMapping {
+        stage: StageId,
+        #[serde(default)]
+        display: Option<String>,
+    },
     /// One report of every broken cue, missing file, unmapped device and unreachable target
     /// (SM-06), from the engine's current state.
     PreshowCheck,
@@ -430,6 +446,21 @@ pub enum Request {
     /// as it would a device plugged back in. App-scope.
     #[cfg(feature = "test-support")]
     RestoreDevice,
+    /// Test support only: the stage host draws its test card for `frame` on the connection's
+    /// workspace's `stage` (docs/protocol.md section 5). Answers `ok` once sent. Workspace-bound.
+    #[cfg(feature = "test-support")]
+    StageTestCard {
+        stage: StageId,
+        frame: u16,
+    },
+    /// Test support only: reads `stage`'s picture back from the stage host at `points`
+    /// (fractions of the stage from the top left, 1 to 64): answers `stage_probe`.
+    /// Workspace-bound.
+    #[cfg(feature = "test-support")]
+    StageProbe {
+        stage: StageId,
+        points: Vec<[f32; 2]>,
+    },
 }
 
 /// Most frames one `advance` may move device time by: ten minutes at 192 kHz.
@@ -521,6 +552,36 @@ impl ClientMessage {
                     });
                 }
                 Ok(())
+            }
+            Self::Request {
+                request:
+                    Request::SetStageMapping {
+                        display: Some(display),
+                        ..
+                    },
+                ..
+            } if display.is_empty()
+                || display.len() > crate::stage_link::MAX_TEXT_BYTES
+                || display.chars().any(char::is_control) =>
+            {
+                Err(ProtocolError::OutOfRange {
+                    field: "request.display",
+                })
+            }
+            #[cfg(feature = "test-support")]
+            Self::Request {
+                request: Request::StageProbe { points, .. },
+                ..
+            } if points.is_empty()
+                || points.len() > crate::stage_link::MAX_PROBE_POINTS
+                || points
+                    .iter()
+                    .flatten()
+                    .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)) =>
+            {
+                Err(ProtocolError::OutOfRange {
+                    field: "request.points",
+                })
             }
             #[cfg(feature = "test-support")]
             Self::Request {

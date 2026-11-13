@@ -3,4 +3,6 @@
 {"type":"ping","seq":7}
 {"type":"test_card","stage":"00000000-0000-0000-0000-000000000001","frame":42}
 {"type":"probe","stage":"00000000-0000-0000-0000-000000000001","points":[[0.5,0.5],[0,1]]}
+{"type":"set_displays","displays":[{"id":"V2","name":"Virtual V2","width":1280,"height":720}]}
+{"type":"hang"}
 {"type":"quit"}

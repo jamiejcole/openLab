@@ -155,6 +155,17 @@ impl Platform for Mac {
     }
 
     #[cfg(feature = "test-support")]
+    fn set_virtual_displays(&mut self, displays: Vec<Display>) -> bool {
+        match &mut self.virtual_displays {
+            Some(v) => {
+                *v = displays;
+                true
+            }
+            None => false,
+        }
+    }
+
+    #[cfg(feature = "test-support")]
     fn probe(
         &mut self,
         stage: &StageOutput,

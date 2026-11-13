@@ -1,11 +1,15 @@
 ---
 name: video
-description: "Load when changing or reviewing video: stages (core video.rs), the per-machine stage display choice (settings.rs), the engine-stage host link (core stage_link.rs), the stage host process openlab-stage (engine/crates/video: windows, displays, Metal drawing, test card), the engine's stage host supervisor, or video tests. The audio clock anchor video follows is skill devices."
+description: "Load when changing or reviewing video: stages and their per-machine display (core video.rs, settings.rs), the stage host link (core stage_link.rs), the stage host openlab-stage (engine/crates/video), its supervisor (engine stage.rs, control/stages.rs), or video tests."
 ---
 
 # Video (stages and the stage host)
 
-QLab 5 model: manual pp. 207-212 (Video cues), 225-230 (stages), 241-243 (Fade cues). Design decided by the user on 2026-11-13: decode and drawing live in a third process, the stage host; macOS decodes with AVFoundation/VideoToolbox (HAP in-house) and draws with Metal; video follows the audio clock; no video on Windows in v0.0.2. What is built so far: stages, their display choice, the stage host with black output windows and the test card.
+QLab 5 model: manual pp. 207-212 (Video cues), 225-230 (stages), 241-243 (Fade cues).
+
+Design decided by the user on 2026-11-13: decode and drawing live in a third process, the stage host; macOS decodes with AVFoundation/VideoToolbox (HAP in-house) and draws with Metal; video follows the audio clock; no video on Windows in v0.0.2.
+
+Built so far: stages, their per-machine display, the stage host with black output windows, its supervision by the engine, and the test card read back in tests. Video cues, decode, the clock and fades are not built.
 
 ## Must not break
 - A stage with keep-black on and its display connected shows black whenever nothing plays on it: never the desktop, never a frozen frame (VID-12).
@@ -21,18 +25,33 @@ QLab 5 model: manual pp. 207-212 (Video cues), 225-230 (stages), 241-243 (Fade c
 
 ## The link (`openlab-core` `stage_link.rs`; contract `docs/protocol.md` "Stage host link")
 - One JSON object per line; `LINK_VERSION` 1; lines at most `MAX_LINE_BYTES` (64 KiB).
-- Engine to stage host (`ToStage`): `hello`, `stages` (the full set, replacing the last: id, size, display id or none, keep_black), `ping`, `quit`; test support `test_card`, `probe`, `hang`.
+- Engine to stage host (`ToStage`): `hello`, `stages` (the full set, replacing the last: id, size, display id or none, keep_black), `ping`, `quit`; test support `test_card`, `probe`, `hang`, `set_displays` (virtual displays plugged or unplugged).
 - Stage host to engine (`FromStage`): `hello` (version, pid, `video`: false where the build has no video output), `displays` (after hello and on every change), `stage_status` (`shown`, `hidden`, `no_display`, `display_missing`, `failed`), `pong`, `log`; test support `probed`.
 - Limits checked after parsing: at most `MAX_DISPLAYS` (32) displays and `MAX_LINK_STAGES` stages, text 1 to `MAX_TEXT_BYTES` (512) bytes without control characters, sizes 1 to 16384, probe points 1 to 64 inside the stage.
 
 ## The stage host (`engine/crates/video`, binary `openlab-stage`)
-- `host.rs` is the same on every platform: `Host<P: Platform>` keeps the stages, the displays and each stage's state, and reports each state change once. A stage is shown only with its display connected and (while black) keep-black on; otherwise hidden with the reason. `serve` reads lines with `read_line` (never holds more than one line's limit; an over-long line is skipped and reported) and ends at end of input or a failed write.
+- `host.rs` is the same on every platform: `Host<P: Platform>` keeps the stages, the displays and each stage's state. A stage is shown only with its display connected and (while black) keep-black on; otherwise hidden with the reason. `serve` reads lines with `read_line` (never holds more than one line's limit; an over-long line is skipped and reported) and ends at end of input or a failed write.
+- After a `stages` message the host reports every stage's state (so the engine knows each was dealt with); after a display change only the states that changed.
 - macOS (`platform/mac`): an accessory app (no Dock icon or menu bar) whose windows come up with `orderFrontRegardless`, borderless, never key, ignoring the mouse, at screen-saver level over the display's whole frame (covering its menu bar and Dock), on every Space, out of Mission Control and window cycling. Never system full-screen. AppKit and Metal live on the main thread; a reader thread decodes lines and queues them on the main queue.
 - Displays: CoreGraphics' active list, named by ColorSync's display UUID (stable across restarts and reconnection), pixel size from the display mode, name from AppKit's screen (else "Built-in Display" / "Display N"). A reconfiguration callback re-reads them and moves every stage.
 - Drawing (`gpu.rs`): Metal clears the stage to black and draws each picture as a quad (nearest-neighbour sampling). A stage of another shape than its display is fitted, shape kept, black bars elsewhere (assumed; see skill `qlab-behaviour`).
 - Other platforms (`platform/none.rs`): `video: false`, no displays, every stage `failed` with the reason.
 
+## The engine side (`openlab-engine` `stage.rs`, `control/stages.rs`)
+- `stage::StageHost` is the supervisor: thread `openlab-stage-link` spawns the stage host (own process group, stdin/stdout/stderr piped), with a writer thread (bounded queue of `WRITE_QUEUE` lines; full means the child stopped reading: killed), a reader thread (`read_line` + `decode_from_stage`; bad lines become warnings, at most `MAX_BAD_LINES_LOGGED` per child) and a stderr thread (first `MAX_STDERR_LINES` lines to the log).
+- Health: `hello` and every `ping` (each `ping_every`, 1 s) must be answered within `answer_within` (5 s); a child that does not, sends more than `MAX_LINES_PER_SECOND`, or closes its output is killed (reaped on a thread of its own) and replaced at once with the last stage set.
+- More than `max_restarts` (5) starts in `restart_window` (60 s) pauses video output for `retry_after` (30 s), logged as an error. A stage host of another link version is never started again.
+- `StageHost`'s drop sends `quit`; the stage host gets 1 s, then is killed. Its stdin closing also ends it, so it never outlives the engine however the engine ends.
+- The control thread: `sync_stages` (every tick) builds every open doc's stages with this machine's display ids and hands the set to the supervisor when it changed; the stage host starts then (or on `list_displays`). A changed stage's state is forgotten until the stage host reports it again.
+- `StageEvent`s arrive through the inbox (`Inbox::Stage`): states and displays are kept for `list_stage_mappings`/`list_displays`; a state a stage cannot be seen in (`no_display`, `display_missing`, `failed`) is a `warn` log line, `shown`/`hidden` `info`; a stop is `warn` (restarting) or `error` (paused).
+- Where the stage host is: `Contents/Helpers/openLab Stage.app/Contents/MacOS/openlab-stage` beside the engine's `Contents/MacOS`, else `openlab-stage` beside the engine (development). Missing: video output off, one `warn` at start. Tests set `ControlConfig::stage_host`.
+- Requests (`docs/protocol.md`): `list_displays` (app-scope), `list_stage_mappings`, `set_stage_mapping { stage, display? }` (the display must be listed now; stored in `settings.json`, refused `io` when settings cannot be saved).
+
 ## Tests
-- Test support only (never in a shipped stage host: `scripts/rust-checks.sh` checks): `--virtual-displays ID:WxH,...` runs offscreen with those displays and no windows; `test_card` draws the test card (`card.rs`: a white guard cell, the frame number's 16 bits, a white guard cell across the top tenth; red, green, blue, yellow quadrants); `probe` draws the stage offscreen (at most 1024 px a side, the stage's shape) and reads colours back; `probed` carries the barcode's frame (or none) and the asked points' RGBA.
+- Test support only (never in a shipped stage host: `scripts/rust-checks.sh` checks): `--virtual-displays ID:WxH,...` runs offscreen with those displays and no windows.
+- `test_card` draws the test card (`card.rs`: a white guard cell, the frame number's 16 bits, a white guard cell across the top tenth; red, green, blue, yellow quadrants); `probe` draws the stage offscreen (at most 1024 px a side, the stage's shape) and reads colours back; `probed` carries the barcode's frame (or none) and the asked points' RGBA.
 - Tests assert what a stage shows by reading the barcode and a few point colours: never a stored image, never a hash.
 - `gpu.rs` tests draw on the machine's GPU (they fail, not skip, without Metal); `displays.rs` tests read the real display list and open no window. No test opens a window.
+- Real-engine tests: `engine/crates/video/tests/stages.rs` (macOS) runs the control loop on the offline driver (the engine's `tests/show` helpers) with the real test-support stage host (`CARGO_BIN_EXE_openlab-stage`, `--virtual-displays`) and reads stages back with `stage_probe`.
+- Covered there: black, the test card, display choice, no display, keep-black off, a display unplugged and back mid-cue, a killed and a hung stage host replaced while a cue's sound plays on, the stage host gone after shutdown, and `/bin/sh` stand-ins for a flooding and a silent stage host. `OfflineShow::settle_stages`, `wait_for` and `send_until` wait on the stage host (hang guards).
+- The link codec is fuzzed: `fuzz/fuzz_targets/stage_link.rs`, body `fuzz/src/stage_link_input.rs`, run on stable by core's `tests/fuzz_stage_link.rs` over `fuzz/stage-link-seeds`.

@@ -41,3 +41,6 @@ openlab-core = { path = "../core", features = ["test-support"] }
 openlab-engine = { path = "../engine", features = ["test-support"] }
 openlab-audio = { version = "0.0.1", path = "../audio" }
 uuid = { version = "1.29.0", default-features = false }
+# Used by the engine's control-test helpers the stage tests share (`engine/tests/show`).
+crossbeam-channel = "0.5.17"
+tempfile = "3.27.0"

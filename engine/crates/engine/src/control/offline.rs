@@ -142,6 +142,21 @@ impl OfflineShow {
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
+    /// Sends a client message, then waits until `done` holds (answers from other threads
+    /// handled, as [`Self::wait_for`]) and returns every reply to it, those sent meanwhile
+    /// included.
+    pub fn send_until(
+        &mut self,
+        message: ClientMessage,
+        done: impl Fn(&Control) -> bool,
+    ) -> Vec<ServerMessage> {
+        let (tx, mut rx) = reply_channel();
+        self.pump_inbox();
+        let _ = self.control.handle(Inbox::Client { message, reply: tx });
+        self.wait_for(done);
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
     /// Waits until the document worker and the writer thread have answered everything asked of
     /// them and the answers are applied (ticking, which is where the control loop collects
     /// them). Bounded by [`SETTLE_TIMEOUT`], counted in [`Self::stalls`].
@@ -158,6 +173,33 @@ impl OfflineShow {
                 break;
             }
             // The answer comes from another thread: wait for it rather than spin.
+            if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
+                let _ = self.control.handle(msg);
+            }
+        }
+    }
+
+    /// Waits until the stage host has been told every stage and has said where each one is, and
+    /// no probe waits (answers handled, ticking). Bounded by [`SETTLE_TIMEOUT`], counted in
+    /// [`Self::stalls`].
+    pub fn settle_stages(&mut self) {
+        self.wait_for(|c| c.stages_settled());
+    }
+
+    /// Handles inbox messages and ticks until `done` holds. Bounded by [`SETTLE_TIMEOUT`],
+    /// counted in [`Self::stalls`]; `false` when it gave up.
+    pub fn wait_for(&mut self, done: impl Fn(&Control) -> bool) -> bool {
+        let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+        loop {
+            self.pump_inbox();
+            self.control.tick();
+            if done(&self.control) {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                self.stalls += 1;
+                return false;
+            }
             if let Ok(msg) = self.inbox.recv_timeout(Duration::from_millis(2)) {
                 let _ = self.control.handle(msg);
             }

@@ -43,6 +43,7 @@ mod preshow;
 mod prime;
 mod reports;
 pub mod runner;
+mod stages;
 mod tick;
 mod transport;
 #[cfg(feature = "test-support")]
@@ -260,6 +261,9 @@ pub struct ControlConfig {
     /// Where the loop says whether the computer must stay awake (SM-07: a doc in Show Mode or
     /// a cue running; `platform::power`). `None`: nobody listens (offline tests).
     pub awake: Option<Sender<bool>>,
+    /// The stage host the engine runs for video output (docs/protocol.md section 5); `None`: no video
+    /// output (tests that do not need it).
+    pub stage_host: Option<crate::stage::StageHostConfig>,
     /// The virtual device the backend's stream runs on (`--virtual-device`): it answers the
     /// test-only `advance`, `lose_device` and `restore_device` requests.
     #[cfg(feature = "test-support")]
@@ -305,6 +309,7 @@ impl ControlConfig {
             net: NetTransport::default(),
             watch: watch::WatchConfig::default(),
             awake: None,
+            stage_host: None,
             #[cfg(feature = "test-support")]
             virtual_device: None,
         }
@@ -451,6 +456,8 @@ struct Engine {
     lookups: LookupThreads,
     /// Where workers answer (each new doc's network output gets a clone).
     inbox: Sender<Inbox>,
+    /// The stage host and what it last said (video output).
+    stages: stages::Stages,
     /// The next doc's id; never reused.
     next_doc: u64,
     /// Docs open (log lines name their doc while there are several).
@@ -740,6 +747,7 @@ impl Control {
             net_disabled: Arc::new(AtomicBool::new(false)),
             lookups: LookupThreads::default(),
             inbox,
+            stages: stages::Stages::default(),
             next_doc: 0,
             open_docs: 0,
             primes: std::collections::BTreeMap::new(),
@@ -1318,6 +1326,13 @@ fn request_name(r: &Request) -> &'static str {
         Request::SetOutputOverrides { .. } => "set_output_overrides",
         Request::Snapshot => "snapshot",
         Request::Waveform { .. } => "waveform",
+        Request::ListDisplays => "list_displays",
+        Request::ListStageMappings => "list_stage_mappings",
+        Request::SetStageMapping { .. } => "set_stage_mapping",
+        #[cfg(feature = "test-support")]
+        Request::StageTestCard { .. } => "stage_test_card",
+        #[cfg(feature = "test-support")]
+        Request::StageProbe { .. } => "stage_probe",
         #[cfg(feature = "test-support")]
         Request::Advance { .. } => "advance",
         #[cfg(feature = "test-support")]
