@@ -1857,6 +1857,62 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(goes(), 0)
     }
 
+    /// QLab 5's pre-wait, duration and post-wait keys (E, D, W) open that cell of the selected cue.
+    /// D on a cue whose duration is its file's opens nothing, and the key is still taken (no beep).
+    func testEDAndWKeysOpenTheWaitAndDurationCells() async throws {
+        try await editWorkspace()
+        try await focusList(on: fade)
+        for (chars, code, column) in [("e", UInt16(14), "preWait"), ("d", 2, "duration"), ("w", 13, "postWait")] {
+            try press(chars, code: code)
+            XCTAssertEqual(wc.cueList.editingCell?.id, fade, column)
+            XCTAssertEqual(wc.cueList.editingCell?.column, column)
+            XCTAssertTrue((wc.window?.firstResponder as? NSTextView)?.delegate === wc.cueList.cellEditor, column)
+            wc.cueList.cancelCellEdit()
+        }
+        try await focusList(on: cues[0])
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertNil(app.handleKeyDown(try key("d", code: 2, windowNumber: window.windowNumber)), "taken")
+        XCTAssertNil(wc.cueList.editingCell, "an Audio cue's duration is not typed")
+        XCTAssertEqual(goes(), 0)
+    }
+
+    /// C steps the selected cues' continue mode and F flags them: every selected cue takes the first
+    /// one's next value, the list draws it, and one undo takes it back. Nothing in Show Mode.
+    func testCAndFKeysStepTheContinueModeAndFlagTheSelection() async throws {
+        try await editWorkspace()
+        func mode(_ id: ModelID) -> String? { store.model?.cue(id)?.raw["continue_mode"]?.stringValue }
+        func flagged(_ id: ModelID) -> Bool { store.model?.cue(id)?.raw["flagged"] == .bool(true) }
+        try await focusList(on: cues[0])
+        try press("c", code: 8)
+        await assertEventually("auto-continue") { mode(self.cues[0]) == "auto_continue" }
+        try press("c", code: 8)
+        await assertEventually("auto-follow") { mode(self.cues[0]) == "auto_follow" }
+        XCTAssertEqual(wc.cueList.flagMarker(try XCTUnwrap(wc.cueList.node(cues[0])), expanded: true), nil)
+        wc.cueList.selectAsUser([cues[0], cues[1]])
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
+        try press("c", code: 8)
+        await assertEventually("both go to the first cue's next mode") {
+            mode(self.cues[0]) == "do_not_continue" && mode(self.cues[1]) == "do_not_continue"
+        }
+        try press("f", code: 3)
+        await assertEventually("both are flagged") { flagged(self.cues[0]) && flagged(self.cues[1]) }
+        XCTAssertEqual(wc.cueList.flagMarker(try XCTUnwrap(wc.cueList.node(cues[1])), expanded: true), .solid)
+        await wc.editor.undo()
+        await assertEventually("one undo unflags both") { !flagged(self.cues[0]) && !flagged(self.cues[1]) }
+        wc.setShowMode(true)
+        try press("f", code: 3)
+        try press("c", code: 8)
+        await sync()
+        XCTAssertFalse(flagged(cues[0]), "Show Mode locks the keys")
+        XCTAssertEqual(mode(cues[0]), "do_not_continue")
+        wc.setShowMode(false)
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.inspector.nameField))
+        try press("f", code: 3)
+        await sync()
+        XCTAssertFalse(flagged(cues[0]), "F typed in a field is a letter")
+        XCTAssertEqual(goes(), 0)
+    }
+
     func testReturnCommitsANumberTypedInPlace() async throws {
         try await editWorkspace()
         try press("n", code: 45)
@@ -2392,15 +2448,15 @@ final class PlayheadFlowTests: XCTestCase {
     func testAMenuItemNeedingTheFnKeyDoesNotTakeThePlainKey() async throws {
         try await threeCues()
         let menu = NSMenu()
-        menu.addItem(FnMenuItem(title: "fn key", action: nil, keyEquivalent: "f"))
+        menu.addItem(FnMenuItem(title: "fn key", action: nil, keyEquivalent: "j"))
         let chords: @MainActor () -> Set<KeyChord> = { HotkeyRules.menuChords(in: menu) }
         wc.inspector.menuChords = chords
         app.menuChords = chords
-        XCTAssertTrue(wc.inspector.record(KeyChord("f")), wc.inspector.messageLabel.stringValue)
+        XCTAssertTrue(wc.inspector.record(KeyChord("j")), wc.inspector.messageLabel.stringValue)
         await assertEventually("recorded") {
-            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
+            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "j"
         }
-        XCTAssertNil(app.handleKeyDown(try key("f", code: 3)), "the key goes to the cue's hotkey")
+        XCTAssertNil(app.handleKeyDown(try key("j", code: 38)), "the key goes to the cue's hotkey")
         try await play(0.1)
         await assertEventually("the cue runs") { running(cues[0]) }
     }
@@ -2409,20 +2465,20 @@ final class PlayheadFlowTests: XCTestCase {
     /// key goes on to the menus. Keys that always carry the fn flag still count.
     func testAKeyHeldWithFnIsNotThePlainKey() async throws {
         try await threeCues()
-        let fnF = try key("f", code: 3, [.function])
+        let fnJ = try key("j", code: 38, [.function])
         let recorder = wc.inspector.hotkeyField
         showTab("triggers")
         XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(recorder))
         wire.forgetSent()
-        recorder.keyDown(with: fnF)
+        recorder.keyDown(with: fnJ)
         await sync()
         await settle()
         XCTAssertEqual(commands(on: cues[0]), 0, "the recorder took nothing")
-        XCTAssertTrue(wc.inspector.record(KeyChord("f")), wc.inspector.messageLabel.stringValue)
+        XCTAssertTrue(wc.inspector.record(KeyChord("j")), wc.inspector.messageLabel.stringValue)
         await assertEventually("recorded") {
-            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
+            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "j"
         }
-        XCTAssertTrue(app.handleKeyDown(fnF) === fnF, "the key passes on")
+        XCTAssertTrue(app.handleKeyDown(fnJ) === fnJ, "the key passes on")
         try await play(0.1)
         await sync()
         await settle()
@@ -2447,11 +2503,11 @@ final class PlayheadFlowTests: XCTestCase {
         wire.forgetSent()
         try await moveElsewhere(to: cues[2])
         await assertHeldOnFirstCue(playheadOn: cues[2])
-        recorder.keyDown(with: try key("f", code: 3))
+        recorder.keyDown(with: try key("j", code: 38))
         XCTAssertEqual(wc.inspector.messageLabel.stringValue, "", "the key was not refused")
         XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, "the keys go back to the list")
         await assertEventually("recorded on its own cue") {
-            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "f"
+            self.store.model?.cue(self.cues[0])?.raw["triggers"]?["hotkey"]?["key"]?.stringValue == "j"
         }
         try await assertAllOn(cues[2])
         XCTAssertEqual(commands(on: cues[2]), 0)

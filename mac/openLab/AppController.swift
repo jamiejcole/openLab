@@ -201,10 +201,13 @@ final class AppController {
     /// The key opens the selected cue's cell in the front workspace's list when the list has the
     /// focus: a field being typed in, Show Mode (the list is locked) and a held key take nothing.
     private func beginCellEdit(for chord: KeyChord, event: NSEvent) -> Bool {
-        guard !event.isARepeat, let column = TransportKeys.editKeys[chord],
+        guard !event.isARepeat, !isTextEditing(), let key = TransportKeys.editKeys[chord],
             let list = frontController?.cueList
         else { return false }
-        return list.beginEditFromKey(column)
+        switch key {
+        case .cell(let column): return list.beginEditFromKey(column)
+        case .cycleContinue, .toggleFlag: return list.performEditKey(key)
+        }
     }
 
     /// A cue hotkey fires in every open workspace, key window or not: one

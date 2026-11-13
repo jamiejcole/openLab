@@ -86,6 +86,9 @@ final class HotkeyRulesTests: XCTestCase {
         XCTAssertEqual(validate(KeyChord("n")), .editKey, "N and Q edit the highlighted cue's number and name")
         XCTAssertEqual(validate(KeyChord("q")), .editKey)
         XCTAssertEqual(validate(KeyChord("t")), .editKey, "and T edits the target")
+        for key in ["e", "d", "w", "c", "f"] {
+            XCTAssertEqual(validate(KeyChord(key)), .editKey, "\(key) is a cue-editing key")
+        }
         XCTAssertNil(validate(KeyChord("n", .shift)), "only the plain keys")
         XCTAssertEqual(HotkeyRules.messageKey(.editKey), "inspector.hotkey.editKey")
         XCTAssertEqual(validate(KeyChord("\u{7F}")), .unsupported)
@@ -109,7 +112,7 @@ final class HotkeyRulesTests: XCTestCase {
         XCTAssertEqual(validateAgainstMenuBar("g", [.command]), .menuKey)
         XCTAssertEqual(validateAgainstMenuBar("g", [.command, .shift]), .menuKey)
         XCTAssertEqual(validateAgainstMenuBar("8", [.command]), .menuKey, "New Network Cue")
-        XCTAssertNil(validateAgainstMenuBar("f", []), "a plain F is still a cue's to take")
+        XCTAssertNil(validateAgainstMenuBar("j", []), "a plain J is still a cue's to take")
     }
 
     @MainActor

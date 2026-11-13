@@ -1298,6 +1298,27 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return true
     }
 
+    /// The continue-mode and flag keys (C, F): every selected cue takes the value the first one moves
+    /// to, as one undo step (QLab sets a batch-edited property to the same value on all, manual
+    /// p. 123). Taken or not as `beginEditFromKey`.
+    @discardableResult
+    func performEditKey(_ key: TransportKeys.EditKey) -> Bool {
+        guard !isTextEditing, view.window?.firstResponder === outlineView else { return false }
+        let selected = selectedIDs()
+        guard !isEditLocked, let first = selected.first.flatMap({ node($0) })?.cue else { return true }
+        let property: CueProperty
+        switch key {
+        case .cell: return true
+        case .cycleContinue:
+            let modes = ["do_not_continue", "auto_continue", "auto_follow"]
+            let now = modes.firstIndex(of: first.raw["continue_mode"]?.stringValue ?? "") ?? 0
+            property = .continueMode(modes[(now + 1) % modes.count])
+        case .toggleFlag: property = .flagged(first.raw["flagged"] != .bool(true))
+        }
+        Task { await editor?.setProperty(property, of: selected) }
+        return true
+    }
+
     /// Opens `column` ("number", "name", "target" or "duration") of `id` for typing, its text selected. False
     /// (nothing happens) in Show Mode or for a Duration that is not set by hand. A cell already open
     /// elsewhere is committed first.

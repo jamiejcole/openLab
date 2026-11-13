@@ -103,9 +103,23 @@ struct TransportKeys: Equatable {
     private(set) var chords: [TransportCommand: KeyChord] = [:]
     private(set) var warnings: [String] = []
 
-    /// QLab 5's edit-number, edit-name and edit-target keys, by default: key to the cue-list column they open.
-    /// Not in the key map; a cue hotkey cannot take them (`HotkeyRules`).
-    static let editKeys: [KeyChord: String] = [KeyChord("n"): "number", KeyChord("q"): "name", KeyChord("t"): "target"]
+    /// What a cue-editing key does to the selected cue.
+    enum EditKey: Equatable {
+        /// Opens that cue-list column's cell for typing.
+        case cell(String)
+        /// Steps the continue mode: none, auto-continue, auto-follow, none.
+        case cycleContinue
+        case toggleFlag
+    }
+
+    /// QLab 5's cue-editing keys, by default (manual pp. 69-70): number, name, target, pre-wait, duration
+    /// and post-wait open their cell; C steps the continue mode; F flags. Not in the key map; a cue
+    /// hotkey cannot take them (`HotkeyRules`).
+    static let editKeys: [KeyChord: EditKey] = [
+        KeyChord("n"): .cell("number"), KeyChord("q"): .cell("name"), KeyChord("t"): .cell("target"),
+        KeyChord("e"): .cell("preWait"), KeyChord("d"): .cell("duration"), KeyChord("w"): .cell("postWait"),
+        KeyChord("c"): .cycleContinue, KeyChord("f"): .toggleFlag,
+    ]
 
     private static let fields: [(String, TransportCommand, KeyChord?)] = [
         ("go", .go, KeyChord(" ")), ("stop_all", .stopAll, nil), ("pause_all", .pauseAll, KeyChord("[")),
