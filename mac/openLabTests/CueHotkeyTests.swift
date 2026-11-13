@@ -314,6 +314,9 @@ final class TriggersTabTests: XCTestCase {
         let added = await rig.store.send(
             command: .addCue(real, list: TestSnapshots.mainList, parent: nil, index: 0))
         guard case .success = added else { return XCTFail("\(added)") }
+        // The store was given a revision ahead of the engine's above, so the add's own
+        // `model_changed` reads as old and is dropped: the engine's copy comes by snapshot.
+        rig.client.requestSnapshot()
         await assertEventually { self.triggers(id)?["hotkey_enabled"] == .bool(false) }
         XCTAssertTrue(vc.record(KeyChord("a")))
         rig.client.requestSnapshot()  // the engine's own copy, not the one the store was given
