@@ -61,7 +61,6 @@ enum AX {
     static let inspectorMessage = "inspector-message"
     static let inspectorHotkey = "inspector-hotkey"
     static let inspectorHotkeyClear = "inspector-hotkey-clear"
-    static let inspectorOSC = "inspector-osc"
     static let inspectorSecondTrigger = "inspector-second-trigger"
     static let inspectorOnRelease = "inspector-on-release"
     static let inspectorGroupMode = "inspector-group-mode"

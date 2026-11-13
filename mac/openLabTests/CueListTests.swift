@@ -1689,7 +1689,7 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertNil(app.handleKeyDown(try key("k", code: 40)), "K is Load Selected")
         await assertEventually("K loaded the selected cue") { self.isLoaded(self.cues[0]) }
 
-        _ = await store.send(command: .setProperty(cues[1], .triggers(hotkey: KeyChord("l").hotkeyJSON, osc: nil)))
+        _ = await store.send(command: .setProperty(cues[1], .triggers(hotkey: KeyChord("l").hotkeyJSON, enabled: true)))
         await assertEventually { self.store.model?.cueHotkeys.contains { $0.chord == KeyChord("l") } == true }
         XCTAssertNil(app.handleKeyDown(try key("l", code: 37)), "the cue's hotkey takes L")
         await sync()
@@ -1703,7 +1703,8 @@ final class PlayheadFlowTests: XCTestCase {
     func testACueHotkeyOnAStillMappedSelectedCueKeyNeverStartsTheCue() async throws {
         try await threeCues()
         for (cue, chord) in [(cues[1], "l"), (cues[2], "p")] {
-            _ = await store.send(command: .setProperty(cue, .triggers(hotkey: KeyChord(chord).hotkeyJSON, osc: nil)))
+            _ = await store.send(
+                command: .setProperty(cue, .triggers(hotkey: KeyChord(chord).hotkeyJSON, enabled: true)))
         }
         await assertEventually { self.store.model?.cueHotkeys.count == 2 }
         XCTAssertNil(app.handleKeyDown(try key("l", code: 37)), "L is Load Selected")
@@ -2383,7 +2384,7 @@ final class PlayheadFlowTests: XCTestCase {
     func testACueHotkeyOnNFiresOnlyOnceTheEditNumberKeyHasMoved() async throws {
         try await editWorkspace()
         let hotkey = try XCTUnwrap(KeyChord("n").hotkeyJSON)
-        guard case .success = await store.send(command: .setProperty(cues[0], .triggers(hotkey: hotkey, osc: nil)))
+        guard case .success = await store.send(command: .setProperty(cues[0], .triggers(hotkey: hotkey, enabled: true)))
         else { return XCTFail("hotkey") }
         await assertEventually { self.store.model?.cueHotkeys.isEmpty == false }
         try press("n", code: 45)

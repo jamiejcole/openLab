@@ -94,9 +94,6 @@ impl OscShow for Show {
             _ => None,
         }
     }
-    fn cue_by_osc_trigger(&self, _address: &str) -> Option<CueId> {
-        None
-    }
     fn top_level_list(&self, cue: CueId) -> Option<CueListId> {
         self.cue_exists(cue).then_some(self.list)
     }

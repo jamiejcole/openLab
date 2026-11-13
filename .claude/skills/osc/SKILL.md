@@ -12,7 +12,7 @@ The address space follows QLab 5's OSC dictionary so existing remotes work. Anyt
 - OSC adds no engine behaviour: each accepted message becomes the same `command`/`transport` input a UI client sends (`docs/protocol.md`).
 - Everything is bounded (datagrams, frames, matches, matching work, replies, inputs, peers, connections, per-IP bytes). Hostile or malformed input is dropped and counted, never reaches the engine, never panics or hangs. A limit applies on every path that creates the data.
 - We must never become a reflection amplifier: a spoofable UDP source is held to a per-IP byte budget (see `listener-limits`).
-- Rights are judged on address and argument count before any cue lookup, so a refusal reveals nothing about which cues or triggers exist.
+- Rights are judged on address and argument count before any cue lookup, so a refusal reveals nothing about which cues exist.
 - A GO must not fire the wrong show: a workspace name shared by two open docs is refused, never guessed.
 - A wrong `/connect` never disconnects a connected peer or lowers its rights.
 - Identical messages within 100 ms from one peer are dropped, `/go` included (a double-tapped GO fires once).
@@ -41,7 +41,7 @@ The address space follows QLab 5's OSC dictionary so existing remotes work. Anyt
 ## The OSC copy and the per-doc gate
 - OSC keeps one workspace copy per open doc, built from a snapshot then `model_changed`, `runtime`, `document` and snapshot broadcasts, applied like a WebSocket client. Gap, failed apply, `document` with another path, or tap overflow means it asks for a new snapshot.
 - A doc's copy is **not ready** while it has none yet or a snapshot it asked for is out; while the doc list is out, no copy is ready. Broadcasts for a not-ready doc wait, so no copy goes back in time.
-- Input that may reach a not-ready doc waits too, so no `/cue/5` or trigger resolves against a copy known wrong. Input reaching only ready docs goes at once (a console on show A is not held while show B opens).
+- Input that may reach a not-ready doc waits too, so no `/cue/5` resolves against a copy known wrong. Input reaching only ready docs goes at once (a console on show A is not held while show B opens).
 - Reach is read from the addresses before handling. Un-prefixed messages, `/version`, `/workspaces` and undecodable packets reach every doc. `/workspace/{id}` reaches docs whose copy or list entry matches, else every not-ready doc (its name may be unknown yet). A bundle or TCP read waits whole if any message in it must.
 - Order is kept: input never overtakes earlier waiting input from the same peer, nor earlier waiting input reaching a doc it reaches. A TCP close waits behind its input. A TCP read from a peer that may ask in no ready doc waits undecoded so its frame limit is decided with the right copies.
 - Held input is bounded (`MAX_HELD_INPUTS`, 16 MiB); past it input stays in the queues (datagrams beyond the UDP queue are dropped, `udp_dropped`).
@@ -54,7 +54,7 @@ The address space follows QLab 5's OSC dictionary so existing remotes work. Anyt
 - No separate selection exists: selected is the playhead (QLab's default lock). `/select/...` equals `/playhead/...`; `/cue/selected/...` equals `/cue/playhead/...`.
 
 ## Addresses
-A message that succeeds gets **no reply** (actions, writes, `/updates`). A failure gets an `error` reply; an address nothing answers to (not a cue trigger) gets one too. Wrong argument type or count is an `error`; nothing goes to the engine. "The list" is the active list.
+A message that succeeds gets **no reply** (actions, writes, `/updates`). A failure gets an `error` reply; an address nothing answers to gets one too. Wrong argument type or count is an `error`; nothing goes to the engine. "The list" is the active list.
 
 | Address | Arguments | Becomes |
 |---|---|---|
@@ -83,7 +83,7 @@ A message that succeeds gets **no reply** (actions, writes, `/updates`). A failu
 | `/cue_id/{ID}/...` | as `/cue/{number}/...` | cue found by id (UUID, upper case) |
 | `/cue/selected/{property}`, `/cue/playhead/{property}` | as the property | cue at the active list's playhead. Reads only |
 | `/cue/active/{property}` | as the property | every running cue. Reads only |
-| any other address | none | if exactly some cue's OSC trigger (TRG-03): `transport start` for that cue; else `error` (`unknown_address`) |
+| any other address | none | `error` (`unknown_address`). A cue has no OSC address of its own (QLab 5 starts a cue by number or id); an `osc` key in an older show's triggers is ignored |
 
 Not implemented: level and time properties beyond pre-wait and post-wait, `/new`, `/save`, other QLab application and workspace queries.
 
@@ -92,7 +92,7 @@ The cue-number part of `/cue/{number}/{verb}` is a pattern when it has `*`, `?`,
 - A read answers once per match, with the matched cue's own address in the JSON (`/workspace/{ID}/cue/3/name`, or `/cue_id/{ID}/name` for a numberless cue); the OSC reply address is `/reply/` plus the address asked. `*` also matches cue lists (empty number): a list answers `name` and `number` (`""`) at its `cue_id` address, and is skipped by other properties and by actions. A match lacking the property gets its own `error`.
 - An action is sent per matched cue, in order. A write reaches every match. A wrong argument is an `error` per match.
 - No match, or an invalid pattern (unclosed `[`/`{`, nested `{`, stray `]`/`}`, over 64 alternatives): one `error`.
-- Pattern characters elsewhere are not expanded. The whole address may still equal a cue's trigger (looked up first), so triggers can contain them.
+- Pattern characters elsewhere are not expanded: the address is unknown (`error`).
 - Work is bounded: 1024 matches (`matches_capped`), 64 alternatives, 1M matching steps per read for all its messages, cue numbers over 256 characters never match by pattern.
 
 ## Connecting and the passcode (NET-02)
@@ -115,10 +115,9 @@ Every message except `/connect`, `/version`, `/workspaces` and `/updates` needs 
 |---|---|
 | View | every read (`/cue/{n}/{prop}` without argument, `selected|playhead|active`, `/cueLists`, `/runningCues`, `/runningOrPausedCues`, `/selectedCues`, `/playheadID`), writing `notes`, `/udpReplyPort`. A peer without View has the strict reply budget and the 4 KiB frame limit |
 | Edit | writing `name`, `number`, `preWait`, `postWait`, `armed`, `flagged`; `/select/...`. (A read-only property write is refused as `error` once allowed) |
-| Control | `/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, `/reset`, `/playhead/...`, cue verbs (start, stop, hardStop, panic, pause, resume, load, reset, preview; by number, id or pattern), and a cue's trigger address |
+| Control | `/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, `/reset`, `/playhead/...`, cue verbs (start, stop, hardStop, panic, pause, resume, load, reset, preview; by number, id or pattern), and any address nothing answers to |
 
-- An address nothing answers to counts as a possible trigger, so it needs Control: a peer without Control cannot probe which triggers exist.
-- A trigger shaped like a read (`/cue/zz*/name`) passes the read check, so Control is checked again once the trigger is found. A peer without Control gets the same `error` as for a missing cue (not `denied`, which would also hide real missing-cue errors from View peers) and nothing starts.
+- An address nothing answers to is classed with transport and needs Control: a peer without it gets `denied`, any other peer `error`.
 - Edit or Control without View are cleared on load (warning) and ignored by the access check, so a broken table never grants more than it says.
 - `/updates` works at any level (no right, no reply). Update data is sent only to subscribers that have View **when it goes out**; a subscriber without View keeps its subscription and starts receiving once it gets View.
 - A TCP peer's `/udpReplyPort` is ignored without a reply, whatever its rights.

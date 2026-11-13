@@ -1,6 +1,7 @@
 # `SetWorkspaceSetting`: hotkey map and volume limits
 
-`WorkspaceSetting` variants (see `command_model.rs`): `min_go_interval`, `panic_duration`, `autosave_interval`, `output_max_db` (-30 to +12 dB), `output_min_db` (-180 to -40 dB; levels at or below it are silent), `hotkey { key, value }` (`key` is a `TransportKey`; `value` null = no key), `hotkeys { value }`, `auto_number_start`, `auto_number_increment`. Each carries the whole new value. A limit outside its range is refused.
+`WorkspaceSetting` variants (see `command_model.rs`): `min_go_interval`, `panic_duration`, `autosave_interval`, `output_max_db` (-30 to +12 dB), `output_min_db` (-180 to -40 dB; levels at or below it are silent), `hotkey { key, value }` (`key` is a `TransportKey`; `value` null = no key), `hotkeys { value }`, `auto_number_start`, `auto_number_increment`, `new_cues_auto_load`. Each carries the whole new value. A limit outside its range is refused.
+- `new_cues_auto_load` is a bool: cues made by `AddCue` afterwards auto-load; existing cues keep theirs.
 
 ## Hotkey map
 - The map (`TransportHotkeys`) holds the transport keys, the selected-cue keys and the cue-editing keys (`edit_number` ... `toggle_flag`, TRG-07). The engine does nothing on an editing key except keep it from starting a cue; the app edits the selected cues. A file older than v9 gets each editing key unless a cue hotkey or another key of its map is that chord.

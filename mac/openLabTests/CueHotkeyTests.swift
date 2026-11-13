@@ -13,12 +13,12 @@ final class TriggerCommandTests: XCTestCase {
         let mods = #"{"shift":true,"control":false,"alt":false,"command":true}"#
         let cases: [(Command, String)] = [
             (
-                .setProperty(id, .triggers(hotkey: hk, osc: "/go/1")),
-                #"{"type":"triggers","value":{"hotkey":{"key":"k","modifiers":\#(mods)},"osc":"/go/1"}}"#
+                .setProperty(id, .triggers(hotkey: hk, enabled: true)),
+                #"{"type":"triggers","value":{"hotkey":{"key":"k","modifiers":\#(mods)},"hotkey_enabled":true}}"#
             ),
             (
-                .setProperty(id, .triggers(hotkey: nil, osc: nil)),
-                #"{"type":"triggers","value":{"hotkey":null,"osc":null}}"#
+                .setProperty(id, .triggers(hotkey: nil, enabled: false)),
+                #"{"type":"triggers","value":{"hotkey":null,"hotkey_enabled":false}}"#
             ),
             (.setProperty(id, .secondTrigger("hard_stop")), #"{"type":"second_trigger","value":"hard_stop"}"#),
             (.setProperty(id, .secondTriggerOnRelease(true)), #"{"type":"second_trigger_on_release","value":true}"#),
@@ -46,13 +46,20 @@ final class TriggerCommandTests: XCTestCase {
         XCTAssertEqual(KeyChord("k", [.command, .shift]).display, "⇧⌘K")
     }
 
-    func testOSCAddressValidation() {
-        for ok in ["/go", "/show/cue-1", "/a/b_c.d"] { XCTAssertTrue(InspectorEdit.isValidOSCAddress(ok), ok) }
-        for bad in [
-            "", "/", "go", "/a b", "/a*", "/a?", "/{x}", "/é", "/a\n", "/a#1", "/" + String(repeating: "a", count: 300),
-        ] {
-            XCTAssertFalse(InspectorEdit.isValidOSCAddress(bad), bad)
-        }
+    /// A hotkey edit keeps the trigger's switch as the cue has it (on when the show has none).
+    func testAHotkeyEditKeepsTheTriggerSwitch() throws {
+        var raw = try XCTUnwrap(NewCueKind.memo.cueJSON(id: id, patch: nil))
+        raw.set("triggers", .object(["hotkey": .null, "hotkey_enabled": .bool(false)]))
+        let off = try Cue(json: raw)
+        let hk = KeyChord("k").hotkeyJSON
+        XCTAssertEqual(
+            try shape(InspectorEdit.setTriggers(off, hotkey: .some(hk)))?["property"]?["value"]?["hotkey_enabled"],
+            .bool(false))
+        raw.set("triggers", .object(["hotkey": .null]))
+        let old = try Cue(json: raw)
+        XCTAssertEqual(
+            try shape(InspectorEdit.setTriggers(old, hotkey: .some(hk)))?["property"]?["value"]?["hotkey_enabled"],
+            .bool(true))
     }
 }
 
@@ -189,7 +196,7 @@ final class TriggersTabTests: XCTestCase {
         let before = rig.store.model?.cue(intro)
         vc.isLocked = true
         let controls: [NSControl] = [
-            vc.numberField, vc.nameField, vc.preWaitField, vc.postWaitField, vc.oscField, vc.hotkeyField,
+            vc.numberField, vc.nameField, vc.preWaitField, vc.postWaitField, vc.hotkeyField,
             vc.hotkeyClear, vc.secondTriggerPopup, vc.onReleaseCheck, vc.colourPopup, vc.continuePopup,
             vc.flaggedCheck, vc.armedCheck,
         ]
@@ -286,26 +293,10 @@ final class TriggersTabTests: XCTestCase {
         XCTAssertEqual(triggers()?["hotkey"], KeyChord("l").hotkeyJSON, "the engine stored it")
     }
 
-    func testClearKeepsTheOSCAddressAndOSCEditKeepsTheHotkey() async {
-        vc.oscField.stringValue = "/cue/one"
-        vc.commit(.osc)
-        await assertEventually { self.triggers()?["osc"]?.stringValue == "/cue/one" }
-        XCTAssertEqual(vc.oscField.stringValue, "/cue/one")
-        XCTAssertTrue(vc.record(KeyChord("a")))
-        await assertEventually { self.triggers()?["hotkey"] == KeyChord("a").hotkeyJSON }
-        XCTAssertEqual(triggers()?["osc"]?.stringValue, "/cue/one", "OSC kept")
-        await assertEventually { vc.hotkeyClear.isEnabled }
-        vc.clearHotkey()
-        await assertEventually { self.triggers()?["hotkey"] == .null && !vc.hotkeyClear.isEnabled }
-        XCTAssertEqual(triggers()?["osc"]?.stringValue, "/cue/one")
-        vc.oscField.stringValue = ""
-        vc.commit(.osc)
-        await assertEventually { self.triggers()?["osc"] == .null }
-    }
-
     /// The first edit is refused by the engine (the cue it names exists only in the store, as when
-    /// the store is behind); the cue is then added for real, and the next edit must not carry the
-    /// refused address along.
+    /// the store is behind); the cue is then added for real with its hotkey trigger off, and the
+    /// next edit must start from the engine's cue: neither the refused key nor the store's stale
+    /// "on" is sent again.
     func testRefusedTriggersAreNotSentAgainWithTheNextEdit() async throws {
         let id: ModelID = "00000000-0000-0000-0000-0000000000ee"
         var cue = try XCTUnwrap(NewCueKind.memo.cueJSON(id: id, patch: nil))
@@ -315,28 +306,22 @@ final class TriggersTabTests: XCTestCase {
             #"{"type":"model_changed","revision":\#(rig.store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#
         XCTAssertEqual(rig.store.receive(try ServerMessage.decode(frame)), .applied)
         vc.setSelection([id])
-        vc.oscField.stringValue = "/refused"
-        vc.commit(.osc)
+        XCTAssertTrue(vc.record(KeyChord("b")))
         await assertEventually { self.vc.messageLabel.stringValue.contains("does not exist") }
-        await assertEventually { vc.oscField.stringValue == "" }
-        // Now the engine has the cue (the store already shows it exactly so).
+        // Now the engine has the cue, its hotkey trigger off.
+        var real = cue
+        real.set("triggers", .object(["hotkey": .null, "hotkey_enabled": .bool(false)]))
         let added = await rig.store.send(
-            command: .addCue(cue, list: TestSnapshots.mainList, parent: nil, index: 0))
+            command: .addCue(real, list: TestSnapshots.mainList, parent: nil, index: 0))
         guard case .success = added else { return XCTFail("\(added)") }
+        // The store was given a revision ahead of the engine's above, so the add's own
+        // `model_changed` reads as old and is dropped: the engine's copy comes by snapshot.
+        rig.client.requestSnapshot()
+        await assertEventually { self.triggers(id)?["hotkey_enabled"] == .bool(false) }
         XCTAssertTrue(vc.record(KeyChord("a")))
         rig.client.requestSnapshot()  // the engine's own copy, not the one the store was given
         await assertEventually { self.triggers(id)?["hotkey"] == KeyChord("a").hotkeyJSON }
-        XCTAssertEqual(triggers(id)?["osc"], .null, "the refused address is gone")
-    }
-
-    func testBadOSCAddressRevertsWithoutSending() async {
-        let log = CueEditingTests.SendLog(rig)
-        vc.oscField.stringValue = "no slash"
-        XCTAssertFalse(vc.commit(.osc))
-        XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.osc"))
-        XCTAssertEqual(vc.oscField.stringValue, "")
-        await settle()
-        XCTAssertEqual(log.sent, 0)
+        XCTAssertEqual(triggers(id)?["hotkey_enabled"], .bool(false), "the store's stale switch was not sent")
     }
 
     func testSecondTriggerAndOnReleaseSend() async {
@@ -413,7 +398,7 @@ final class CueHotkeyFiringTests: XCTestCase {
         guard case .success = await store.send(command: .addCue(cue, list: list, parent: nil, index: 0)) else {
             return XCTFail("add")
         }
-        _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord("x").hotkeyJSON, osc: nil)))
+        _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord("x").hotkeyJSON, enabled: true)))
         await assertEventually { self.first.model?.cue(self.intro)?.raw["triggers"]?["hotkey"] != .null }
     }
 
@@ -465,7 +450,7 @@ final class CueHotkeyFiringTests: XCTestCase {
 
     func testModifiersGoOnTheWire() async throws {
         let chord = KeyChord("k", [.shift, .control])
-        _ = await first.send(command: .setProperty(intro, .triggers(hotkey: chord.hotkeyJSON, osc: nil)))
+        _ = await first.send(command: .setProperty(intro, .triggers(hotkey: chord.hotkeyJSON, enabled: true)))
         await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == chord } == true }
         XCTAssertNil(app.handleKeyDown(try event("k", [.shift, .control], code: 40)))
         await assertEventually { await self.hotkeys() == 1 }
@@ -545,7 +530,7 @@ final class CueHotkeyFiringTests: XCTestCase {
 
     func testAMenuKeyIsNeverTakenByACue() async throws {
         _ = await first.send(
-            command: .setProperty(intro, .triggers(hotkey: KeyChord("q", [.command]).hotkeyJSON, osc: nil)))
+            command: .setProperty(intro, .triggers(hotkey: KeyChord("q", [.command]).hotkeyJSON, enabled: true)))
         await assertEventually {
             self.first.model?.cueHotkeys.contains { $0.chord == KeyChord("q", [.command]) } == true
         }
@@ -559,7 +544,7 @@ final class CueHotkeyFiringTests: XCTestCase {
     /// A cue hotkey a menu command shadows never fires, so the show log says so (once).
     func testACueHotkeyOnAMenuKeyIsWarnedAboutInTheLog() async throws {
         let chord = KeyChord("q", [.command])
-        _ = await first.send(command: .setProperty(intro, .triggers(hotkey: chord.hotkeyJSON, osc: nil)))
+        _ = await first.send(command: .setProperty(intro, .triggers(hotkey: chord.hotkeyJSON, enabled: true)))
         await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == chord } == true }
         let message = String(format: loc("hotkeys.warn.menuShadowed"), chord.display)
         await assertEventually { self.first.logEntries.contains { $0.level == .warn && $0.message == message } }
@@ -656,7 +641,8 @@ final class CueHotkeyFiringTests: XCTestCase {
         await assertEventually { self.playing(self.first, self.intro) }
         for (n, key) in ["v", "s"].enumerated() {
             let shadowed = n == 0 ? doorSlam : rain
-            _ = await first.send(command: .setProperty(shadowed, .triggers(hotkey: KeyChord(key).hotkeyJSON, osc: nil)))
+            _ = await first.send(
+                command: .setProperty(shadowed, .triggers(hotkey: KeyChord(key).hotkeyJSON, enabled: true)))
             await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == KeyChord(key) } == true }
             await assertEventually {
                 _ = self.app.frontKeys
@@ -701,7 +687,7 @@ final class CueHotkeyFiringTests: XCTestCase {
 
     func testTransportKeyWinsOverACueHotkeyOnTheSameChord() async throws {
         keyDoc = demoDoc
-        _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord(" ").hotkeyJSON, osc: nil)))
+        _ = await first.send(command: .setProperty(intro, .triggers(hotkey: KeyChord(" ").hotkeyJSON, enabled: true)))
         await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == KeyChord(" ") } == true }
         XCTAssertEqual(app.frontKeys.chord(for: .go), KeyChord(" "), "GO keeps its key")
         await assertEventually {
@@ -764,7 +750,7 @@ final class CueHotkeyFiringTests: XCTestCase {
 
     func testEscStillPanicsWhateverTheCueHotkeys() async throws {
         _ = await first.send(
-            command: .setProperty(intro, .triggers(hotkey: KeyChord(KeyChord.escape).hotkeyJSON, osc: nil)))
+            command: .setProperty(intro, .triggers(hotkey: KeyChord(KeyChord.escape).hotkeyJSON, enabled: true)))
         await assertEventually { self.first.model?.cue(self.intro)?.raw["triggers"]?["hotkey"] != .null }
         _ = await first.transport(.start(cue: intro))
         try await run()

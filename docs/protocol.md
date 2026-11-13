@@ -180,7 +180,7 @@ What an audio cue's file gives it to play, for the Duration column (CL-02): deri
 
 ### Snapshot
 
-Fields: `Snapshot` in `server.rs`. `workspace` never carries `show_mode`. `cue_states` lists cues not idle. `group_warnings` lists groups with a broken descendant; one with no run of its own is `broken` in `cue_states` with no `reason` and no `problems` entry. A previewed group is listed in `previewing` with its audio cues.
+Fields: `Snapshot` in `server.rs`. `workspace` never carries `show_mode`. `cue_states` lists cues not idle. `played` (absent: none) lists the cues started since they were last reset, whose rows show their `second_color`. `group_warnings` lists groups with a broken descendant; one with no run of its own is `broken` in `cue_states` with no `reason` and no `problems` entry. A previewed group is listed in `previewing` with its audio cues.
 
 ### Model changes
 
@@ -195,9 +195,10 @@ Fields: `Snapshot` in `server.rs`. `workspace` never carries `show_mode`. `cue_s
 
 ### Runtime changes
 
-`runtime.seq` rises by 1 per message (a gap means request a snapshot). Change types, from `RuntimeChange` (`protocol/changes.rs`): `cue_state`, `problems`, `group_warning`, `playhead`, `preview`, `warning`, `media_duration`.
+`runtime.seq` rises by 1 per message (a gap means request a snapshot). Change types, from `RuntimeChange` (`protocol/wire.rs`): `cue_state`, `problems`, `group_warning`, `playhead`, `preview`, `played`, `warning`, `media_duration`.
 
 - `cue_state { cue, state, reason? }`: `reason` (`voice_rejected`, `stream_failed`, `device_lost`) is set when the cue broke while running. A `broken` state with no `reason` is a cue with static problems (listed in `problems`) or, with neither, a group with a broken descendant (it has no problems of its own and still starts).
+- `played { cue, played }`: the cue was started for the first time since it was last reset (`true`), or a reset (of the cue, a group around it, Reset All) made it unplayed (`false`). A played cue with a `second_color` shows that colour. Runtime only: a newly opened show has none played.
 - `problems`: the full list of static problems, empty when none. `group_warning { group, warning }`: why a group shows broken (its `cue_state` is `broken` while it has no run).
 - `warning` mirrors the engine's warnings, plus `go_ignored {list, reason}` and `notice {code, message, cue?}` for what only the binary knows.
 - `media_duration` does not come from the cue engine: it comes from the control loop's plan checks (above).

@@ -13,7 +13,7 @@ A control cue is a cue like any other. At its action start `A` (after its own pr
 | Stop | Stop with the cue's `fade_out` (duration 0 = hard) |
 | Pause | Pause (a paused or idle target is left) |
 | Load | Load to `load_to_time` (active target: `LoadIgnored`; broken: `CueBroken`) |
-| Reset | Reset (clears broken). Does not undo Arm/Disarm |
+| Reset | Reset (clears broken) of the target and its descendants, which also become unplayed (first colour again, `panic-transport.md` "Played"). Does not undo Arm/Disarm |
 | Devamp, GoTo, Arm, Disarm | below |
 | Wait | nothing; action lasts its `duration` |
 | Memo | nothing; action completes at once |

@@ -52,6 +52,11 @@
       "active": true
     },
     {
+      "type": "played",
+      "cue": "00000000-0000-0000-0000-00000000000a",
+      "played": true
+    },
+    {
       "type": "warning",
       "warning": {
         "type": "trigger_ignored",

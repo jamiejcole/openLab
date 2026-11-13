@@ -77,6 +77,7 @@ impl Control {
                 group_warnings: Vec::new(),
                 playheads: Vec::new(),
                 previewing: Vec::new(),
+                played: Vec::new(),
                 warnings: Vec::new(),
                 media_durations: Vec::new(),
             },

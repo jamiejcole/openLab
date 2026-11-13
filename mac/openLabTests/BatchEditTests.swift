@@ -279,7 +279,7 @@ extension PlayheadFlowTests {
         XCTAssertEqual(inspector.armedCheck.state, .on)
         XCTAssertFalse(inspector.numberField.isEnabled, "a number names one cue")
         XCTAssertFalse(inspector.hotkeyField.isEnabled)
-        for off in [inspector.numberField, inspector.oscField, inspector.hotkeyField] as [NSTextField] {
+        for off in [inspector.numberField, inspector.hotkeyField] as [NSTextField] {
             XCTAssertEqual(off.alphaValue, InspectorViewController.offAlpha, "an empty field that is off is dimmed")
         }
         XCTAssertEqual(inspector.nameField.alphaValue, 1)
