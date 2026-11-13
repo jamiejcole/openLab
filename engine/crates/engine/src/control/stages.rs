@@ -102,22 +102,32 @@ impl Engine {
     /// [`MAX_REPORT_LINES_PER_SECOND`] a second, the rest counted and said once the second
     /// is over, so a stage host cannot flood the log or the clients.
     fn report_line(&mut self, level: LogLevel, message: String) {
-        let second = self.config.clock.now_ms().div_euclid(1000);
-        let (current, lines, dropped) = self.stages.report_lines;
-        if second != current {
-            self.stages.report_lines = (second, 0, 0);
-            if dropped > 0 {
-                self.log(
-                    LogLevel::Warn,
-                    format!("{dropped} more video output reports were not logged"),
-                );
-            }
-        } else if lines >= MAX_REPORT_LINES_PER_SECOND {
+        self.flush_report_lines();
+        let (_, lines, dropped) = self.stages.report_lines;
+        if lines >= MAX_REPORT_LINES_PER_SECOND {
             self.stages.report_lines.2 = dropped.saturating_add(1);
             return;
         }
         self.stages.report_lines.1 += 1;
         self.log(level, message);
+    }
+
+    /// Starts a new second of report budget once the clock has left the last one, saying how
+    /// many lines that second dropped. Called every tick too, so a burst followed by quiet
+    /// still says what it dropped.
+    pub(super) fn flush_report_lines(&mut self) {
+        let second = self.config.clock.now_ms().div_euclid(1000);
+        let (current, _, dropped) = self.stages.report_lines;
+        if second == current {
+            return;
+        }
+        self.stages.report_lines = (second, 0, 0);
+        if dropped > 0 {
+            self.log(
+                LogLevel::Warn,
+                format!("{dropped} more video output reports were not logged"),
+            );
+        }
     }
 
     /// The stage host has been told about every stage and has said where each one is.
