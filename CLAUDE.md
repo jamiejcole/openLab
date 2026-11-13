@@ -75,7 +75,7 @@ This file is the only copy of every rule below; other files link here instead of
 - Review limit (user decision 2026-11-04): two full rounds per PR. After round 2 the reviewer checks only the fix commits, and only a High or a bug those commits cause blocks the PR. Any other Medium becomes a `severity:medium` issue in the current milestone, which blocks the milestone, not the PR.
 
 ## Work and git
-- Work only on assigned issues. Tick an issue's Checklist box when that part is implemented **and tested**; say what is missing for any left open. Report extra work found; don't expand scope. Niche QLab parity not needed for v0.0.1 → `v0.0.2` milestone; what QLab users do every rehearsal (GO, panic, playhead, editing in the list, targeting) is never niche.
+- Work only on assigned issues. Tick an issue's Checklist box when that part is implemented **and tested**; say what is missing for any left open. Report extra work found; don't expand scope. Niche QLab parity not needed for v0.0.2 → `v0.0.3` milestone; what QLab users do every rehearsal (GO, panic, playhead, editing in the list, targeting) is never niche.
 - Fewer, flow-complete batches: an issue closes only when every flow on it passes and, for a change to what the app draws, `ui-qa` reports no open High or Medium (one deferred by the review limit is tracked by its `severity:medium` issue and does not hold the feature issue open).
 - Milestone and task IDs (`M5.4`) may appear in issues, PR titles and orchestrator state, never in code, comments, skills or test names (requirement IDs are fine there).
 - Only the orchestrator ticks `REQUIREMENTS.md`, after merge. Notes and decisions go in the issue, the PR or the skill.

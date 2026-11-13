@@ -34,9 +34,9 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - [x] **NFR-20** `v0.0.1` GO-to-sound latency for a loaded cue ≤ 10 ms beyond the audio device's buffer latency.
 - [x] **NFR-21** `v0.0.1` Cues started together (same GO, group, or auto-continue with zero wait) MUST start sample-accurately relative to each other.
 - [x] **NFR-22** `v0.0.1` Waits, fades and timecode triggers MUST be scheduled against the audio clock (not UI timers) with ≤ 1 ms jitter.
-- [ ] **NFR-23** `v0.0.1` Minimum spec target: 2014 Mac mini (Intel dual-core, macOS 12 Monterey) and low-end Windows 10/11 x64 laptops. On minimum spec: ≥ 32 simultaneous stereo audio cues streaming from disk at 48 kHz with fades, without dropouts.
+- [x] **NFR-23** `v0.0.1` Minimum spec target: 2014 Mac mini (Intel dual-core, macOS 12 Monterey) and low-end Windows 10/11 x64 laptops. On minimum spec: ≥ 32 simultaneous stereo audio cues streaming from disk at 48 kHz with fades, without dropouts.
 - [x] **NFR-24** `v0.0.1` Workspaces with ≥ 2,000 cues MUST open in < 3 s and edit without UI lag on minimum spec.
-- [ ] **NFR-25** `v0.0.1` Idle CPU < 2% on minimum spec with a workspace open and no cues running.
+- [x] **NFR-25** `v0.0.1` Idle CPU < 2% on minimum spec with a workspace open and no cues running.
 - [x] **NFR-26** `v0.0.1` UI rendering MUST NOT compete with the audio engine for priority; meters/waveforms degrade gracefully under load.
 - [x] **NFR-27** `v0.0.1` Audio dropout (xrun) counter visible to the operator and logged.
 
@@ -73,7 +73,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - [x] **CL-01** `v0.0.1` Multiple cue lists per workspace, each with its own playhead.
 - [x] **CL-02** `v0.0.1` Cue list shows, in QLab 5's fixed column order: status, type icon, number, name, target, pre-wait, duration, post-wait, continue mode; cue colour tints the row, a flag shows in the status column; column widths are remembered. *(Column show/hide/reorder dropped 2026-10-29: QLab 5 has none.)*
 - [x] **CL-03** `v0.0.1` Hierarchical display of groups (expand/collapse).
-- [ ] **CL-04** Carts: grid of cues fired directly by click/hotkey/trigger, independent of the playhead. Configurable grid size.
+- [ ] **CL-04** `v0.0.3` Carts: grid of cues fired directly by click/hotkey/trigger, independent of the playhead. Configurable grid size.
 - [x] **CL-05** `v0.0.1` Cue list / cart switching via tabs or sidebar.
 - [x] **CL-06** `v0.0.1` Playhead visibly distinct; "standing by" cue shown large with name and notes.
 - [ ] **CL-07** `v0.0.2` Open a cue list in a new window (sidebar button and context menu; a second window on the same workspace), as QLab 5.
@@ -90,7 +90,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - [x] **CUE-07** `v0.0.1` Disarmed cues are skipped/ignored when triggered (still visible).
 - [x] **CUE-08** `v0.0.1` Unique persistent internal ID per cue, independent of cue number (used by targets, OSC, scripts).
 - [x] **CUE-09** `v0.0.1` Hotkey, MIDI, OSC, timecode and wall-clock triggers assignable per cue (see §10).
-- [ ] **CUE-10** Default settings per cue type, configurable per workspace.
+- [ ] **CUE-10** `v0.0.3` Default settings per cue type, configurable per workspace.
 
 ---
 
@@ -98,7 +98,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 
 ### 5.1 Media
 - [x] **CT-01** `v0.0.1` **Audio** — plays an audio file through the routing matrix (see §7).
-- [ ] **CT-02** **Mic** — routes live audio input(s) through the matrix with levels/fades/effects.
+- [ ] **CT-02** `v0.0.3` **Mic** — routes live audio input(s) through the matrix with levels/fades/effects.
 - [ ] **CT-03** `v0.0.2` **Video** — plays a video file or still image to a video surface (see §8).
 - [ ] **CT-04** **Camera** — displays a live video input on a surface.
 - [ ] **CT-05** **Text** — renders styled text to a video surface.
@@ -146,7 +146,7 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 
 ## 7. Audio Engine
 - [x] **AUD-01** `v0.0.1` Device back-ends: CoreAudio (macOS); WASAPI and ASIO (Windows).
-- [ ] **AUD-02** Multiple simultaneous output devices (required — common in practice, but after v0.0.1); aggregate/device-sync guidance where clocks differ.
+- [ ] **AUD-02** `v0.0.2` Multiple simultaneous output devices (a device per output patch, as QLab 5); aggregate/device-sync guidance where clocks differ.
 - [x] **AUD-03** `v0.0.1` Arbitrary channel counts (at least 64 outputs per device).
 - [x] **AUD-04** `v0.0.1` File formats: WAV, AIFF, FLAC, MP3, AAC/M4A, OGG; 16/24/32-bit int and float; any common sample rate with high-quality resampling to the device rate.
 - [x] **AUD-05** `v0.0.1` Stream from disk with read-ahead buffering; optional preload-to-RAM per cue for short or critical files.
@@ -157,14 +157,14 @@ This is the master list. Scope for each release (starting with v0.0.1) is chosen
 - [x] **AUD-10** `v0.0.1` Integrated fade-in/fade-out inside an Audio cue.
 - [x] **AUD-11** `v0.0.1` Start/end trim (in/out points).
 - [x] **AUD-12** `v0.0.1` Slices and loops: mark slice points; each slice can loop N times or infinitely; Devamp support.
-- [ ] **AUD-13** Playback rate change, with optional pitch preservation.
+- [ ] **AUD-13** `v0.0.3` Playback rate change, with optional pitch preservation.
 - [x] **AUD-14** `v0.0.1` Waveform display with zoom; drag to set trims, fades, slice points.
 - [ ] **AUD-15** Loudness analysis (LUFS/peak) and optional normalisation per cue (non-destructive).
 - [ ] **AUD-16** Built-in effects per cue and per output: parametric EQ, compressor/limiter, delay, reverb, high/low-pass.
 - ~~**AUD-17** Third-party plugin hosting: Audio Unit (macOS), VST3 (both). Plugins run in a way that a plugin crash cannot take down playback.~~ *(retired: not required)*
 - ~~**AUD-18** Output protection: optional brick-wall limiter per output.~~ *(retired: not required)*
 - [x] **AUD-19** `v0.0.1` Metering: peak meters beside the faders in the cue's levels and trim tabs and in the patch editor, as QLab 5; none in the Active Cues panel or the cue list.
-- [ ] **AUD-20** Live input (Mic cues) with selectable input device/channels and low-latency monitoring.
+- [ ] **AUD-20** `v0.0.3` Live input (Mic cues) with selectable input device/channels and low-latency monitoring.
 - [ ] **AUD-21** `v0.0.2` Configurable audio buffer size per machine (app preferences, Hardware). ~~Sample-rate chooser and latency readout~~ *(dropped 2026-10-29: QLab 5 has no equivalent; the rate comes from the device.)*
 
 ---
@@ -201,7 +201,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 
 ## 10. Triggers & Inputs
 - [x] **TRG-01** `v0.0.1` Keyboard hotkeys for GO, Stop All, Pause/Resume All, playhead navigation, and per-cue triggers; fully remappable; work regardless of which panel has focus (in Show Mode).
-- [ ] **TRG-02** MIDI input triggers: note, CC, program change, MSC; per-cue and global (GO/Stop via MIDI).
+- [ ] **TRG-02** `v0.0.3` MIDI input triggers: note, CC, program change, MSC; per-cue and global (GO/Stop via MIDI).
 - [x] **TRG-03** `v0.0.1` OSC input triggers: per-cue and global.
 - [ ] **TRG-04** Timecode input (LTC via audio, MTC via MIDI) triggering cues at specific timecode values; chase/freewheel handling for dropouts.
 - [ ] **TRG-05** Wall-clock triggers (time of day, with day-of-week).
@@ -239,12 +239,12 @@ Lighting is out of scope until further notice. Items kept for reference only.
 - [x] **ED-03** `v0.0.1` Drag to reorder cues, move into/out of groups, drop onto a cue to set its target.
 - [x] **ED-04** `v0.0.1` Multi-select with batch editing of shared properties.
 - [x] **ED-05** `v0.0.1` Cut / copy / paste / duplicate cues, including across workspaces.
-- [ ] **ED-06** Paste properties (selectively) from one cue to others.
+- [ ] **ED-06** `v0.0.2` Paste properties (selectively) from one cue to others.
 - [x] **ED-07** `v0.0.1` Unlimited undo/redo covering every edit, including routing and settings.
 - [x] **ED-08** `v0.0.1` Auto-numbering on cue creation (configurable start/increment) and bulk renumber.
 - [x] **ED-09** `v0.0.1` Find bar (by name, number, notes, type, file): found count, previous/next, select found. ~~Find-and-replace~~ *(dropped 2026-10-29: QLab 5 has none.)*
 - ~~**ED-10** Create fade/stop cues for selected cue in one action ("fade this out").~~ *(dropped 2026-10-29: QLab 5 has no built-in command; the Cues menu only creates an empty Fade cue.)*
-- [ ] **ED-11** Timeline view for group cues showing child timing graphically, with drag editing.
+- [ ] **ED-11** `v0.0.3` Timeline view for group cues showing child timing graphically, with drag editing.
 - [x] **ED-12** `v0.0.1` Fully keyboard-operable editing (create cue types, navigate, edit fields).
 - [x] **ED-13** `v0.0.1` Cue colours and flags (set per cue and per selection). ~~Filter/highlight by colour/flag/state~~ *(dropped 2026-10-29: QLab 5 has none; Find covers lookup.)*
 - [x] **ED-14** `v0.0.1` Transport actions live where QLab 5 puts them, with no openLab Transport menu: sidebar top row (Reset/Pause/Resume/Panic All), cue right-click menu (Load, Preview, Panic, Move playhead), View menu (playhead moves, select/move to cue).
@@ -285,7 +285,7 @@ Lighting is out of scope until further notice. Items kept for reference only.
 
 ## 18. Distribution & Updates
 - [x] **DST-01** `v0.0.1` macOS: `.dmg` (ad-hoc signed until an Apple Developer account exists; signed + notarised later); Windows: signed installer and a portable zip.
-- [ ] **DST-02** `v0.0.2` Update check is opt-in, manual or on launch only, never during Show Mode; no silent auto-install.
+- [ ] **DST-02** Update check is opt-in, manual or on launch only, never during Show Mode; no silent auto-install.
 - [x] **DST-03** `v0.0.1` Versioned releases with changelog; side-by-side install of multiple versions possible (so a show can stay pinned to a known-good version).
 
 ---
@@ -333,14 +333,20 @@ Where a tagged requirement is only partly in v0.0.1, the limit is:
 - **UI-02** fixed QLab-like layout; docking later.
 - **DST-01** macOS `.dmg` only.
 - **DOC-01** getting-started guide only.
-- **NFR-08 / NFR-23 / NFR-25** stay unticked until the manual hardware runs are recorded (device unplug and replug; the minimum-spec figures on the 2014 Mac mini). CI's device-loss tests and performance gates stand in until then.
+- **NFR-08** stays unticked until the manual device unplug and replug run is recorded (moved to v0.0.2, user decision 2026-11-13); CI's device-loss tests stand in until then. **NFR-23 / NFR-25**: the user ran the minimum-spec check on the 2014 Mac mini and reported it passed (2026-11-13; no figures recorded).
 - **NFR-05 / NFR-06 / UI-01** autosave runs at a fixed 30 s interval; the number of backups kept is `backup_keep` in the per-machine `settings.json` (default 20). There is no preferences pane for either (issue cut, user decision 2026-11-08). Workspace Settings has General, Audio and OSC.
 - **TRG-01 / ED-12** the default keys work and a show's key map is read from its settings; there is no key-map editor, and the cue-editing keys are N, Q and T only (issue cut 2026-11-08; the editor and the rest of the column are TRG-07, v0.0.2).
 - **ED-14** the sidebar row, the cue menu and the View menu hold the transport actions as QLab 5 does; openLab's own Transport menu also stays in v0.0.1 (issue cut 2026-11-08).
 - **DX-01** warnings show in the footer popover and the Pre-Show Check; the sidebar's Warnings tab also stays in v0.0.1 (issue cut 2026-11-08).
 - **CL-07 / TRG-07 / UI-03 / AUD-21** moved to v0.0.2 (issue cut, user decision 2026-11-08): a cue list in a second window, the key-map editor with the cue-editing keys column, the row-size setting, and a configurable audio buffer size (v0.0.1 asks the device for 256 frames).
 - **DOC-02** moved to v0.0.2 (user decision 2026-11-11): the end-user OSC reference, and with it the "documented" part of NET-01.
-- **DST-02** moved to v0.0.2 (user decision 2026-10-28): no update check in v0.0.1.
+- **DST-02** has no release (user decision 2026-11-13): no update check in v0.0.1 or v0.0.2.
 
-### v0.0.2 — basic video
-Video cues, surfaces, geometry, opacity/geometry fades (CT-10 video part), video audio through the audio engine, black-when-idle.
+### v0.0.2 — audio parity, then basic video
+Scope decided by the user on 2026-11-13; the work is the open issues of the `v0.0.2` milestone. Audio and editing parity with QLab 5 comes first, then video.
+- **Audio and editing:** a device per output patch with several devices open at once (AUD-02, AUD-21) and the patch editor; the cue-editing keys and key-map editor (TRG-07); editing several selected cues and Paste Cue Properties (ED-06); auto-load, skip if disarmed, second colour, trigger enables, fade-and-stop others and duck others; a cue list in its own window and the row size (CL-07, UI-03); workspace settings as categories and one status window; the end-user OSC reference (DOC-02); Find Missing Files; the manual device-loss run (NFR-08).
+- **Video:** Video cues (video files and stills), stages each sent to a chosen display, geometry, opacity and geometry fades (CT-10 video part), the video's audio through the audio engine, black when idle, a stage monitor window.
+- **VID-01 / VID-02** a stage is one region on one display; stages spanning several displays, masks and warping are later.
+- **VID-04** no blend modes (they sit with video effects, VID-10).
+- **VID-07** no playback rate (with AUD-13, v0.0.3).
+- **Not in v0.0.2:** Camera and Text cues, NDI, Syphon, video effects, edge blending; cue templates, carts, Mic cues, MIDI triggers, the group timeline view and playback rate are v0.0.3.
