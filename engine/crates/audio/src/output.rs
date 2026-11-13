@@ -133,6 +133,73 @@ impl StreamErrors {
 
 const UNKNOWN: u64 = u64::MAX;
 
+/// Where the device's sample clock stands on the host's clock: mixer sample `sample` (the first
+/// frame of a callback's buffer) reaches the device output at host time `host_ns` (nanoseconds
+/// on the clock `CallbackTime` uses). Video picks its frames from this, so picture follows the
+/// audio clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClockAnchor {
+    pub sample: u64,
+    pub host_ns: u64,
+}
+
+/// The latest [`ClockAnchor`], written by the audio thread and read by any thread: a sequence
+/// lock of three atomics, so the writer never waits (three stores, no allocation, no lock, no
+/// syscall). An odd sequence means a write is in progress; a reader retries a bounded number of
+/// times and gives up rather than spin.
+struct AnchorCell {
+    seq: AtomicU64,
+    sample: AtomicU64,
+    host_ns: AtomicU64,
+}
+
+/// Reads a racing writer can force before [`AnchorCell::read`] gives up. The writer publishes
+/// once per callback (at least ~1.3 ms apart), so a reader that loses twice in a row is
+/// preempted, not racing.
+const ANCHOR_READ_TRIES: usize = 16;
+
+impl AnchorCell {
+    fn new() -> Self {
+        AnchorCell {
+            seq: AtomicU64::new(0),
+            sample: AtomicU64::new(0),
+            host_ns: AtomicU64::new(0),
+        }
+    }
+
+    /// Single writer (the audio thread). Real-time safe.
+    fn write(&self, a: ClockAnchor) {
+        let seq = self.seq.load(Ordering::Relaxed);
+        self.seq.store(seq.wrapping_add(1), Ordering::Relaxed);
+        // The odd sequence is visible before either value changes.
+        std::sync::atomic::fence(Ordering::Release);
+        self.sample.store(a.sample, Ordering::Relaxed);
+        self.host_ns.store(a.host_ns, Ordering::Relaxed);
+        self.seq.store(seq.wrapping_add(2), Ordering::Release);
+    }
+
+    fn read(&self) -> Option<ClockAnchor> {
+        for _ in 0..ANCHOR_READ_TRIES {
+            let before = self.seq.load(Ordering::Acquire);
+            if before == 0 {
+                return None;
+            }
+            if before % 2 == 1 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let sample = self.sample.load(Ordering::Relaxed);
+            let host_ns = self.host_ns.load(Ordering::Relaxed);
+            // The values are read before the sequence is checked again.
+            std::sync::atomic::fence(Ordering::Acquire);
+            if self.seq.load(Ordering::Relaxed) == before {
+                return Some(ClockAnchor { sample, host_ns });
+            }
+        }
+        None
+    }
+}
+
 struct DeviceShared {
     errors: [AtomicU64; KINDS],
     needs_reopen: AtomicBool,
@@ -142,6 +209,7 @@ struct DeviceShared {
     frames_delivered: AtomicU64,
     last_frames: AtomicU32,
     device_latency_ns: AtomicU64,
+    anchor: AnchorCell,
     callback_faults: AtomicU64,
     alloc_violations: AtomicU64,
     leaked_mixers: AtomicU64,
@@ -198,6 +266,7 @@ impl DeviceShared {
             frames_delivered: AtomicU64::new(0),
             last_frames: AtomicU32::new(0),
             device_latency_ns: AtomicU64::new(UNKNOWN),
+            anchor: AnchorCell::new(),
             callback_faults: AtomicU64::new(0),
             alloc_violations: AtomicU64::new(0),
             leaked_mixers: AtomicU64::new(0),
@@ -296,6 +365,13 @@ impl DeviceMonitor {
     /// Frames in the most recent callback.
     pub fn last_callback_frames(&self) -> Option<u32> {
         Some(self.shared.last_frames.load(Ordering::Relaxed)).filter(|f| *f > 0)
+    }
+
+    /// The latest clock anchor: which mixer sample reaches the output when. `None` before the
+    /// first callback with timestamps (and, rarely, when the audio thread kept writing while
+    /// this read was preempted: ask again next tick).
+    pub fn clock_anchor(&self) -> Option<ClockAnchor> {
+        self.shared.anchor.read()
     }
 
     /// Callback-to-output time from the last callback's host timestamps.
@@ -548,6 +624,15 @@ impl OutputHost {
             .store(u32::try_from(frames).unwrap_or(u32::MAX), Ordering::Relaxed);
         if let Some(t) = time {
             self.observe_time(t, frames as u64);
+            // An unknown output time (a host that gave none) is no anchor at all.
+            if let Some(p) = self.parts.as_ref()
+                && t.playback_ns != UNKNOWN
+            {
+                self.shared.anchor.write(ClockAnchor {
+                    sample: p.mixer.now(),
+                    host_ns: t.playback_ns,
+                });
+            }
         }
         let Some(Parts { mixer, scratch }) = self.parts.as_mut() else {
             body.fill(S::SILENCE);
