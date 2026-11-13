@@ -2632,3 +2632,54 @@ fn a_closed_device_opens_again_when_a_patch_maps_to_it() {
         logs(&msgs, LogLevel::Warn)
     );
 }
+
+/// A patch mapped to channels a second device has but openLab cannot use yet (above the
+/// primary's output count) is warned about truthfully: not as a device with too few channels.
+#[test]
+fn channels_above_the_primarys_output_count_are_warned_about_truthfully() {
+    let mut ws = workspace(vec![]);
+    let mut patch = ws.patches[0].clone();
+    patch.id = patch_b();
+    patch.name = "B".into();
+    ws.patches.push(patch);
+    let mut c = device_config(&ws);
+    c.machine
+        .set_patch_mapping(
+            ws.id,
+            patch_b(),
+            PatchMapping {
+                device: DEV2_NAME.into(),
+                channels: vec![4, 5],
+            },
+        )
+        .unwrap();
+    let mut s = DeviceShow::new(
+        ws,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 8)],
+        c,
+    );
+    s.wait_output(DEV2_NAME);
+    s.tick();
+    let warnings: Vec<String> = s
+        .take_outbound()
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::Warnings { warnings } => Some(warnings.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap()
+        .into_iter()
+        .filter_map(|w| match w {
+            WireWarning::Notice { code, message, .. } if code == "outputs_dropped" => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        warnings,
+        vec![format!(
+            "patch \"B\" maps channel 6 of \"{DEV2_NAME}\", but openLab uses only its first 2 \
+             outputs (as many as the primary device has): its cues cannot play"
+        )]
+    );
+}

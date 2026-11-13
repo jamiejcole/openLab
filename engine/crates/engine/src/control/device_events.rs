@@ -624,15 +624,29 @@ impl DocCx<'_> {
                 available,
             }) = self.eng.patches.resolution(self.doc.id, patch.id)
             {
-                list.push(notice(
-                    "outputs_dropped",
+                // The device itself may have the channels: every device's mixer has only as
+                // many outputs as the primary's (#654), so channels beyond those cannot be used.
+                let has = self
+                    .eng
+                    .device_list()
+                    .into_iter()
+                    .find(|d| &d.name == device)
+                    .map_or(*available, |d| d.output_channels);
+                let message = if has >= *needed {
+                    format!(
+                        "patch \"{}\" maps channel {needed} of \"{device}\", but openLab uses \
+                         only its first {available} outputs (as many as the primary device \
+                         has): its cues cannot play",
+                        patch.name
+                    )
+                } else {
                     format!(
                         "patch \"{}\" maps {needed} channel(s) of \"{device}\", which has \
-                         {available}: its cues cannot play",
+                         {has}: its cues cannot play",
                         patch.name
-                    ),
-                    None,
-                ));
+                    )
+                };
+                list.push(notice("outputs_dropped", message, None));
             }
         }
         for &id in self.eng.patches.exhausted(self.doc.id) {
