@@ -1,0 +1,58 @@
+{
+  "about": "Every cue kind's own drawing in the cue toolbar and the type column, a Group in each mode, each mode group selected so the inspector's icon and a highlighted row show, then the least window. Dark.",
+  "show": "cue-kind-icons/cue-kind-icons.openlab",
+  "window": {
+    "width": 1200,
+    "height": 1150
+  },
+  "steps": [
+    {
+      "shot": "every-kind"
+    },
+    {
+      "select": "14"
+    },
+    {
+      "shot": "playlist-group-selected"
+    },
+    {
+      "select": "15"
+    },
+    {
+      "shot": "random-group-selected"
+    },
+    {
+      "select": "16"
+    },
+    {
+      "shot": "enter-group-selected"
+    },
+    {
+      "select": "17"
+    },
+    {
+      "shot": "next-group-selected"
+    },
+    {
+      "select": "4"
+    },
+    {
+      "shot": "timeline-group-selected"
+    },
+    {
+      "select": "3"
+    },
+    {
+      "shot": "fade-selected"
+    },
+    {
+      "resize": [
+        1024,
+        700
+      ]
+    },
+    {
+      "shot": "least-window"
+    }
+  ]
+}

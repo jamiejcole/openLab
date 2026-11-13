@@ -679,8 +679,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // its kind when it has none; an Audio cue's file name is the field's text.
         let followed = store.model.map { m in cue.targetDefaultName(lookup: { m.cue($0) }) } ?? ""
         nameField.placeholderString = followed.isEmpty ? CueKindStyle.kindLabel(kind) : followed
-        let style = CueKindStyle.kinds[kind]
-        kindIcon.image = style.map { $0.icon.image(CueKindStyle.kindLabel(kind), compact: true) }
+        // The same drawing and label as the row's type column, so a Group shows its mode's.
+        let style = CueKindStyle.typeStyle(kind: cue.raw["kind"])
+        kindIcon.image = style.map { $0.icon.image($0.label, compact: true) }
         renderTarget(cue, model: model)
         // Only Wait and Fade cues have a duration to type; others take theirs from content or have none.
         durationField.isEnabled = InspectorEdit.durationKinds.contains(kind)

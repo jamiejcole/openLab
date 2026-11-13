@@ -4931,7 +4931,9 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { !wc.inspector.clearTargetButton.isEnabled }
     }
 
-    func testGroupModeChangesTheTypeIcon() async throws {
+    /// Flow: a Group cue's mode is changed in the inspector, and its row's type column shows that
+    /// mode's drawing, read out as the mode's name, for every mode and back to the timeline.
+    func testAGroupCuesModeIsChangedItsRowIconChangesToThatModesDrawing() async throws {
         let rig = try await Rig.open()
         let h = try await harness(rig)
         let inspector = InspectorViewController(store: rig.store)
@@ -4940,23 +4942,26 @@ final class CueListDrawingTests: XCTestCase {
         h.vc.selectAsUser([group])
         inspector.setSelection([group])
         await assertEventually { inspector.cueForEdit?.id == group }
-        let before = try pixels(h, "type", group)
-        let beforeLabel = try XCTUnwrap(h.cell("type", group)).images[0].accessibilityLabel()
-        XCTAssertEqual(beforeLabel, loc("cue.type.group.timeline"))
         let tab = try XCTUnwrap(inspector.tabView.tabViewItems.first { $0.identifier as? String == "mode" })
         inspector.tabView.selectTabViewItem(tab)
-        let popup = inspector.groupModePopup
-        popup.selectItem(at: InspectorViewController.groupModes.firstIndex(of: "playlist") ?? 1)
-        _ = popup.sendAction(popup.action, to: popup.target)  // the menu choice, without a tracking menu
-        await assertEventually {
-            rig.store.model?.cue(group)?.raw["kind"]?["mode"]?["type"]?.stringValue == "playlist"
+        func rowIcon() -> NSImageView? { h.cell("type", group)?.images[0] }
+        XCTAssertEqual(Icon.drawing(shownBy: rowIcon()?.image), .kindGroup)
+        XCTAssertEqual(rowIcon()?.accessibilityLabel(), loc("cue.type.group.timeline"))
+        let modes = InspectorViewController.groupModes.dropFirst() + ["timeline"]
+        for mode in modes {
+            let expected = try XCTUnwrap(CueKindStyle.groupModes[mode], mode)
+            let popup = inspector.groupModePopup
+            popup.selectItem(at: try XCTUnwrap(InspectorViewController.groupModes.firstIndex(of: mode)))
+            _ = popup.sendAction(popup.action, to: popup.target)  // the menu choice, without a tracking menu
+            await assertEventually(mode) {
+                rig.store.model?.cue(group)?.raw["kind"]?["mode"]?["type"]?.stringValue == mode
+            }
+            await assertEventually("\(mode): the row's drawing") {
+                Icon.drawing(shownBy: rowIcon()?.image) == expected.icon
+            }
+            XCTAssertEqual(rowIcon()?.accessibilityLabel(), loc(expected.labelKey), mode)
+            XCTAssertEqual(rowIcon()?.isHidden, false, mode)
         }
-        await assertEventually {
-            self.window?.layoutIfNeeded()
-            return (try? self.pixels(h, "type", group))?.rep.tiffRepresentation != before.rep.tiffRepresentation
-        }
-        XCTAssertEqual(
-            try XCTUnwrap(h.cell("type", group)).images[0].accessibilityLabel(), loc("cue.type.group.playlist"))
     }
 
     func testDurationShowsTheDuration() async throws {
