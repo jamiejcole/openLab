@@ -151,6 +151,9 @@ pub(super) struct Run {
     /// Wait and Fade cues in their action: the duration (samples) the action is timed by, so
     /// an edit of a running cue's duration re-times it (`follow_duration_edits`).
     pub duration: Option<SampleTime>,
+    /// Audio cues with a started voice: the duck gain (linear) last sent to it, 1.0 when no
+    /// other cue ducks or boosts it (`others.rs`).
+    pub duck: f32,
 }
 
 /// The levels an audio cue's voice has been given: the model's at its start, and each edit
@@ -324,6 +327,7 @@ impl Run {
             devamp: None,
             fade: None,
             duration: None,
+            duck: 1.0,
         }
     }
 

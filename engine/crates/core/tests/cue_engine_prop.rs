@@ -407,6 +407,13 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
         // shape: a third of the cues pass over when disarmed, a fifth auto-load.
         c.skip_if_disarmed = s.target % 3 == 0;
         c.auto_load = s.second % 5 == 1;
+        if s.target % 11 == 4 {
+            c.duck_others = DuckOthers {
+                enabled: true,
+                db: [-12.0, -120.0, 6.0][usize::from(s.mode % 3)],
+                duration: f64::from(s.pre) * 0.25,
+            };
+        }
         if s.target % 7 == 2 {
             c.fade_and_stop_others = FadeAndStopOthers {
                 enabled: true,

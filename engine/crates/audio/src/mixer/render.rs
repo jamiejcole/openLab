@@ -247,10 +247,15 @@ fn render_voice(
         return;
     };
 
-    // Voice gain: master × stop fade × integrated fade envelope. Multiplying by an exact 1.0 is
-    // an identity, so skipping it keeps output independent of block segmentation.
+    // Voice gain: master × duck × stop fade × integrated fade envelope. Multiplying by an exact
+    // 1.0 is an identity, so skipping it keeps output independent of block segmentation, and a
+    // voice nothing ducks pays nothing for the duck stage.
     let shapes = &mut s.shapes;
     v.master.fill(vg, shapes);
+    if v.duck.is_ramping() || v.duck.current() != 1.0 {
+        v.duck.fill(tmp, shapes);
+        vg.iter_mut().zip(tmp.iter()).for_each(|(g, t)| *g *= t);
+    }
     if v.stop.is_ramping() || v.stop.current() != 1.0 {
         v.stop.fill(tmp, shapes);
         vg.iter_mut().zip(tmp.iter()).for_each(|(g, t)| *g *= t);
@@ -382,7 +387,7 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
         return;
     };
     let shapes = &mut s.shapes;
-    let g = v.master.current() * v.stop.current() * v.declick.current();
+    let g = v.master.current() * v.duck.current() * v.stop.current() * v.declick.current();
     for (j, x) in vg.iter_mut().enumerate() {
         *x = g * p.gain(p.done + j as u64);
     }

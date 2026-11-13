@@ -42,6 +42,20 @@ impl Voices {
                 };
                 self.command(run, at, cmd, fx);
             }
+            Action::DuckVoice {
+                run,
+                at,
+                gain,
+                frames,
+                ..
+            } => {
+                let cmd = Queued::Ramp {
+                    target: GainTarget::Duck,
+                    gain,
+                    fade: Fade::new(frames, Curve::Linear),
+                };
+                self.command(run, at, cmd, fx);
+            }
             Action::DevampVoice { run, at, stop, .. } => {
                 if let Some(r) = self.by_run.get(&run).and_then(|id| self.recs.get_mut(id)) {
                     r.devamp_stop = stop;

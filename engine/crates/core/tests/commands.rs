@@ -903,6 +903,13 @@ fn every_common_property_can_be_set_and_undone() {
                 duration: 3.0,
             },
         },
+        CueProperty::DuckOthers {
+            value: DuckOthers {
+                enabled: true,
+                db: 6.0,
+                duration: 0.5,
+            },
+        },
         CueProperty::SkipIfDisarmed { value: true },
         CueProperty::PreWait { value: 1.5 },
         CueProperty::PostWait { value: 2.5 },

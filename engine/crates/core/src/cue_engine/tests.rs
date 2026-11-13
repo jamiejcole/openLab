@@ -36,6 +36,7 @@ fn cue(n: u128, kind: CueKind, pre_wait: f64) -> Cue {
         second_trigger: SecondTrigger::Nothing,
         second_trigger_on_release: false,
         fade_and_stop_others: crate::cue::FadeAndStopOthers::default(),
+        duck_others: crate::cue::DuckOthers::default(),
         kind,
     }
 }

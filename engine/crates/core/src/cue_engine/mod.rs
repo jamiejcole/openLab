@@ -80,6 +80,11 @@ pub struct CueEngine {
     /// or of a group around it, Reset All): they show their second colour (QLab 5, manual
     /// p. 127). Runtime only, never saved: a reopened show starts with none.
     played: BTreeSet<CueId>,
+    /// Ducks and boosts in force, by the cue doing them (`others.rs`).
+    ducks: BTreeMap<CueId, others::Duck>,
+    /// Some voice may play at a duck gain other than 1.0: `sync_ducks` has work while this is
+    /// set or a duck is in force, and costs nothing otherwise.
+    duck_live: bool,
     /// Groups whose run has fired its continue during the playhead's current visit (forgotten
     /// when they start again, are reset, or the playhead enters them any way but the GO on the
     /// group: `forget_continues`): the playhead leaving such a group from a child skips its
@@ -166,6 +171,8 @@ impl CueEngine {
             rng: SplitMix64::new(config.seed()),
             random_cycles: BTreeMap::new(),
             played: BTreeSet::new(),
+            ducks: BTreeMap::new(),
+            duck_live: false,
             continued: BTreeSet::new(),
             armed: BTreeMap::new(),
             problems: broken::Problems::default(),
@@ -342,6 +349,7 @@ impl CueEngine {
         self.drain(&mut cx);
         self.advance(&mut cx);
         self.settle_groups(&mut cx);
+        self.sync_ducks(&mut cx);
         // `limit - budget` is what this call and the earlier ones at `now` started (a raised
         // limit raises the budget by as much, see `budget_left`).
         self.spent = (now, cx.limit.saturating_sub(cx.budget));

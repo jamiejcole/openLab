@@ -236,6 +236,8 @@ pub(super) struct Voice {
     env_in: CurveRamp,
     env_out: CurveRamp,
     pub(super) master: Param,
+    /// See [`GainTarget::Duck`].
+    pub(super) duck: Param,
     pub(super) stop: Param,
     pub(super) stop_end: Option<SampleTime>,
     /// One per cue output of the mixer; the first `width` are the voice's.
@@ -313,6 +315,7 @@ impl Voice {
             env_in: CurveRamp::new(0.0, 1.0, 0, Curve::Linear),
             env_out: CurveRamp::new(1.0, 0.0, 0, Curve::Linear),
             master: Param::new(1.0),
+            duck: Param::new(1.0),
             stop: Param::new(1.0),
             stop_end: None,
             cue_out: vec![Param::new(0.0); outputs],
@@ -425,6 +428,7 @@ impl Voice {
         self.fade_in = s.fade_in;
         self.fade_out = s.fade_out;
         self.master.set(sanitize_gain(s.gain));
+        self.duck.set(1.0);
         self.stop.set(1.0);
         self.stop_end = None;
         // The start routes its first `width` cue outputs; the rest start silent (gain 0, no
@@ -471,6 +475,7 @@ impl Voice {
         let outs = self.cue_out.len();
         let o = match target {
             GainTarget::Master => return Some(&mut self.master),
+            GainTarget::Duck => return Some(&mut self.duck),
             GainTarget::CueOutput(o) => usize::from(o),
             GainTarget::Crosspoint { input, output } => {
                 if usize::from(input) >= self.channels {
@@ -487,7 +492,7 @@ impl Voice {
         match target {
             GainTarget::CueOutput(_) => self.cue_out.get_mut(o),
             GainTarget::Crosspoint { input, .. } => self.xp.get_mut(usize::from(input) * outs + o),
-            GainTarget::Master => None,
+            GainTarget::Master | GainTarget::Duck => None,
         }
     }
 
