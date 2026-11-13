@@ -21,6 +21,7 @@ use std::time::Instant;
 
 use openlab_audio::{CommandKind, Event, MixerController, VoiceId};
 use openlab_core::SampleTime;
+use openlab_core::protocol::OutputState;
 
 use super::Backend;
 use super::devices::{OutputKey, WallClock};
@@ -42,6 +43,26 @@ impl Output {
         match &self.backend {
             Backend::Device(d) => d.is_playing(),
             Backend::Offline => true,
+        }
+    }
+
+    /// Where the device is, as `status.outputs` and `list_devices` report it.
+    pub fn state(&self) -> OutputState {
+        let Backend::Device(d) = &self.backend else {
+            return OutputState::Up;
+        };
+        if d.unrecoverable().is_some() {
+            OutputState::Failed
+        } else if d.is_parked() {
+            OutputState::Closed
+        } else if d.is_reconfiguring() {
+            OutputState::Reconfiguring
+        } else if !d.has_opened() || d.is_resuming() {
+            OutputState::Opening
+        } else if d.is_down() {
+            OutputState::Lost
+        } else {
+            OutputState::Up
         }
     }
 

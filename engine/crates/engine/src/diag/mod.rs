@@ -14,5 +14,5 @@ pub mod time;
 pub mod writer;
 
 pub use log::{ShowLog, format_entry};
-pub use status::{Counters, Peek, StatusConfig, StatusReporter};
+pub use status::{Counters, Peek, StatusConfig, StatusReporter, outputs_fingerprint};
 pub use writer::{LogLimits, LogSink, LogWriter};

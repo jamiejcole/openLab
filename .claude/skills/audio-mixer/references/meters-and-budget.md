@@ -15,7 +15,7 @@
 - If `process` panics, the peaks it held locally are dropped (its output was replaced with silence). A voice that finished earlier in that call already published its final peaks.
 
 **Voice attribution (invariant: a peak is never reported under another voice's id)**
-- Each voice-pool slot has its meters, one per cue output, and publishes the `VoiceId` it holds. A slot's epoch changes whenever it gets a new id (a start, or a resume with `new_id`), and every voice peak carries its epoch in its top 32 bits, so `fetch_max` never mixes two voices' peaks.
+- Each voice-pool slot has its meters, one per cue output, and publishes the `VoiceId` it holds. Each slot also keeps the widest any of its voices was (`Meters::widen`, only grows): flushes, retires and reads stop there, so 128 cue outputs cost a stereo voice 2 words. A slot's epoch changes whenever it gets a new id (a start, or a resume with `new_id`), and every voice peak carries its epoch in its top 32 bits, so `fetch_max` never mixes two voices' peaks.
 - On an epoch change, unread peaks of the old one move to a second word per meter. A voice that ended or was re-keyed since the last read gets one more entry with its last non-zero peaks under its old id, even if the slot was reused.
 - The reader remembers each slot's id and epoch from its last read. A voice it never saw (started and ended between reads) is not reported; when a slot changes hands twice between reads the earlier voice's last peaks are dropped. At 30 Hz that is a voice shorter than about 33 ms.
 - A slot's `(id, epoch, active)` is published with a sequence lock: the audio thread writes without waiting; the reader retries 64 times, then leaves the slot for its next read.

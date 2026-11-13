@@ -1038,6 +1038,25 @@ fn fixtures() -> Vec<(String, Sample)> {
         channels: 2,
         latency_ms: None,
     };
+    lost.outputs = [
+        OutputState::Lost,
+        OutputState::Up,
+        OutputState::Closed,
+        OutputState::Failed,
+    ]
+    .into_iter()
+    .zip(["Scarlett 2i2", "MOTU 828", "Headphones", "USB Box"])
+    .enumerate()
+    .map(|(k, (state, name))| OutputStatus {
+        name: name.into(),
+        state,
+        primary: k == 0,
+        sample_rate: 48_000,
+        channels: 2,
+        block_frames: Some(512),
+        latency_ms: None,
+    })
+    .collect();
     add(
         "status_device_lost",
         server(ServerMessage::Status {
@@ -1087,12 +1106,32 @@ fn fixtures() -> Vec<(String, Sample)> {
             outcome: Outcome::Ok(OkBody {
                 revision: None,
                 data: Some(ResultData::Devices {
-                    devices: vec![DeviceEntry {
-                        name: "Scarlett 2i2".into(),
-                        output_channels: 2,
-                        is_default: true,
-                        buffer_frames: 512,
-                    }],
+                    devices: vec![
+                        DeviceEntry {
+                            name: "Scarlett 2i2".into(),
+                            output_channels: 2,
+                            is_default: true,
+                            buffer_frames: 512,
+                            state: Some(OutputState::Up),
+                            primary: true,
+                        },
+                        DeviceEntry {
+                            name: "MOTU 828".into(),
+                            output_channels: 28,
+                            is_default: false,
+                            buffer_frames: 256,
+                            state: Some(OutputState::Reconfiguring),
+                            primary: false,
+                        },
+                        DeviceEntry {
+                            name: "Headphones".into(),
+                            output_channels: 2,
+                            is_default: false,
+                            buffer_frames: 512,
+                            state: None,
+                            primary: false,
+                        },
+                    ],
                     selected: Some("Scarlett 2i2".into()),
                 }),
             }),
@@ -1151,10 +1190,25 @@ fn fixtures() -> Vec<(String, Sample)> {
                                 device: "Scarlett 2i2".into(),
                                 channels: vec![0, 1],
                             }),
+                            resolution: Some(WireResolution::Mapped {
+                                device: "Scarlett 2i2".into(),
+                                channels: vec![0, 1],
+                            }),
                         },
                         PatchMappingEntry {
                             patch: PatchId(uuid::Uuid::from_u128(0x71)),
                             mapping: None,
+                            resolution: Some(WireResolution::Unmapped),
+                        },
+                        PatchMappingEntry {
+                            patch: PatchId(uuid::Uuid::from_u128(0x72)),
+                            mapping: Some(PatchMapping {
+                                device: "MOTU 828".into(),
+                                channels: vec![2, 3],
+                            }),
+                            resolution: Some(WireResolution::DeviceMissing {
+                                device: "MOTU 828".into(),
+                            }),
                         },
                     ],
                 }),
@@ -2021,6 +2075,7 @@ fn status_is_sanitised_not_refused() {
     bad.cpu_percent = Some(f64::NAN);
     bad.engine_load = Some(f64::INFINITY);
     bad.device.latency_ms = Some(-1.0);
+    bad.outputs[0].latency_ms = Some(f64::NAN);
     let wire = encode_server(&ServerMessage::Status {
         status: Box::new(bad),
     })
@@ -2031,6 +2086,27 @@ fn status_is_sanitised_not_refused() {
     assert_eq!(status.cpu_percent, Some(0.0));
     assert_eq!(status.engine_load, Some(0.0));
     assert_eq!(status.device.latency_ms, Some(0.0));
+    assert_eq!(status.outputs[0].latency_ms, Some(0.0));
+}
+
+/// A status, device list or patch-mapping answer from an engine that predates the per-device
+/// fields still decodes: no outputs, no state, no resolution.
+#[test]
+fn per_device_fields_are_optional_on_the_wire() {
+    let status: SystemStatus = serde_json::from_str(
+        r#"{"cpu_percent":null,"engine_load":null,"xruns":0,
+            "disk":{"streams":0,"underrun_frames":0,"healthy":true},
+            "device":{"name":null,"state":"absent","sample_rate":48000,"channels":2},
+            "log_dropped":0}"#,
+    )
+    .unwrap();
+    assert!(status.outputs.is_empty());
+    let entry: DeviceEntry =
+        serde_json::from_str(r#"{"name":"A","output_channels":2,"buffer_frames":512}"#).unwrap();
+    assert_eq!((entry.state, entry.primary), (None, false));
+    let mapping: PatchMappingEntry =
+        serde_json::from_str(r#"{"patch":"00000000-0000-0000-0000-000000000070"}"#).unwrap();
+    assert_eq!(mapping.resolution, None);
 }
 
 #[test]
@@ -3060,6 +3136,26 @@ fn status_sample() -> SystemStatus {
             channels: 2,
             latency_ms: Some(11.5),
         },
+        outputs: vec![
+            OutputStatus {
+                name: "Scarlett 2i2".into(),
+                state: OutputState::Up,
+                primary: true,
+                sample_rate: 48_000,
+                channels: 2,
+                block_frames: Some(256),
+                latency_ms: Some(11.5),
+            },
+            OutputStatus {
+                name: "MOTU 828".into(),
+                state: OutputState::Opening,
+                primary: false,
+                sample_rate: 48_000,
+                channels: 2,
+                block_frames: None,
+                latency_ms: None,
+            },
+        ],
         log_dropped: 0,
         log_seq: 42,
         network_output_disabled: false,

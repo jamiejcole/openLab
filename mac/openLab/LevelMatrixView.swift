@@ -15,6 +15,10 @@ final class LevelMatrixView: NSView {
     var limits = VolumeLimits() {
         didSet { if limits != oldValue { needsDisplay = true } }
     }
+    /// The most cue-output columns shown: a patch can have 128 cue outputs, but the tab shows the
+    /// first 64. Levels and routing to the others are kept on every edit (`LevelSet`), only not
+    /// shown or edited here.
+    static let maxShownOutputs = 64
     static let cellW: CGFloat = 46
     static let cellH: CGFloat = 20
     static let headW: CGFloat = 56
@@ -60,8 +64,8 @@ final class LevelMatrixView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     func resize(inputs: Int, outputs: Int) {
-        self.inputs = max(0, min(inputs, LevelSet.maxChannels))
-        outputCount = max(0, min(outputs, LevelSet.maxChannels))
+        self.inputs = max(0, min(inputs, LevelSet.maxInputs))
+        outputCount = max(0, min(outputs, Self.maxShownOutputs))
         setFrameSize(
             NSSize(
                 width: Self.headW + CGFloat(outputCount) * Self.cellW,

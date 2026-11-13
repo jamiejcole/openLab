@@ -9,6 +9,19 @@
           "name": "Scarlett 2i2",
           "output_channels": 2,
           "is_default": true,
+          "buffer_frames": 512,
+          "state": "up",
+          "primary": true
+        },
+        {
+          "name": "MOTU 828",
+          "output_channels": 28,
+          "buffer_frames": 256,
+          "state": "reconfiguring"
+        },
+        {
+          "name": "Headphones",
+          "output_channels": 2,
           "buffer_frames": 512
         }
       ],

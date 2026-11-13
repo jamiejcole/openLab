@@ -14,8 +14,8 @@ use std::hash::Hash;
 
 use crate::cue::{Cue, FadeLevels, GroupMode, Hotkey};
 use crate::cue::{
-    CueKind, CueLevels, LevelLimits, MAX_CHANNELS, MAX_DB, MAX_SLICE_MARKERS, MAX_TIME,
-    OUTPUT_MAX_DB_RANGE, OUTPUT_MIN_DB_RANGE, OscArg, SILENCE_DB, SliceMarker,
+    CueKind, CueLevels, LevelLimits, MAX_CHANNELS, MAX_CUE_OUTPUTS, MAX_DB, MAX_SLICE_MARKERS,
+    MAX_TIME, OUTPUT_MAX_DB_RANGE, OUTPUT_MIN_DB_RANGE, OscArg, SILENCE_DB, SliceMarker,
 };
 use crate::limits::{fade_holds_levels, group_ids};
 use crate::model::{
@@ -178,7 +178,7 @@ pub enum IssueKind {
     /// A hotkey's key name is empty or has upper-case letters, whitespace or control
     /// characters, so it would never fire. Left as is.
     InvalidHotkey { field: &'static str },
-    /// A patch had no outputs (one was added) or more than [`MAX_CHANNELS`] (extras removed).
+    /// A patch had no outputs (one was added) or more than [`MAX_CUE_OUTPUTS`] (extras removed).
     PatchChannelCount { patch: PatchId },
     /// A patch level or delay was out of range; it was clamped.
     InvalidPatchValue { patch: PatchId, field: &'static str },
@@ -304,7 +304,7 @@ impl fmt::Display for ValidationIssue {
             IssueKind::InvalidHotkey { field } => write!(f, "invalid key name in {field}"),
             IssueKind::PatchChannelCount { patch } => write!(
                 f,
-                "patch {} must have 1 to {MAX_CHANNELS} outputs; corrected",
+                "patch {} must have 1 to {MAX_CUE_OUTPUTS} outputs; corrected",
                 patch.0
             ),
             IssueKind::HotkeyUsedByWorkspace { action } => write!(
@@ -750,7 +750,7 @@ impl Checker {
 
     fn patch(&mut self, patch: &mut OutputPatch) {
         let id = patch.id;
-        let max = MAX_CHANNELS as usize;
+        let max = MAX_CUE_OUTPUTS as usize;
         if patch.outputs.is_empty() || patch.outputs.len() > max {
             patch.outputs.truncate(max);
             if patch.outputs.is_empty() {
@@ -859,7 +859,7 @@ impl Checker {
                     .patch_outputs
                     .get(patch)
                     .copied()
-                    .unwrap_or(MAX_CHANNELS as usize);
+                    .unwrap_or(MAX_CUE_OUTPUTS as usize);
                 self.cue_levels(id, levels, outputs);
             }
             CueKind::Fade {
@@ -1026,7 +1026,7 @@ impl Checker {
     }
 
     fn cue_levels(&mut self, id: Option<CueId>, levels: &mut CueLevels, patch_outputs: usize) {
-        let max = MAX_CHANNELS as usize;
+        let max = MAX_CUE_OUTPUTS as usize;
         self.level(id, "levels.master_db", &mut levels.master_db);
         let extra = levels.outputs.len().saturating_sub(max);
         levels.outputs.truncate(max);
@@ -1041,7 +1041,7 @@ impl Checker {
             self.level(id, "levels.outputs.db", &mut output.db);
         }
         let dropped = retain_counted(&mut levels.crosspoints, |c| {
-            c.input < MAX_CHANNELS && c.output < MAX_CHANNELS
+            c.input < MAX_CHANNELS && c.output < MAX_CUE_OUTPUTS
         });
         self.count(id, "levels.crosspoints", dropped);
         let duplicates = dedupe(&mut levels.crosspoints, |c| (c.input, c.output));
@@ -1051,7 +1051,7 @@ impl Checker {
         }
         let (mut dropped, mut seen, mut duplicates) = (0, HashSet::new(), 0);
         for gang in &mut levels.gangs {
-            dropped += retain_counted(gang, |&i| i < MAX_CHANNELS);
+            dropped += retain_counted(gang, |&i| i < MAX_CUE_OUTPUTS);
             // An output belongs to at most one gang; the first wins.
             duplicates += retain_counted(gang, |&i| seen.insert(i));
         }
@@ -1073,7 +1073,7 @@ impl Checker {
         if let Some(db) = &mut levels.master_db {
             self.level(id, "levels.master_db", db);
         }
-        let max = MAX_CHANNELS as usize;
+        let max = MAX_CUE_OUTPUTS as usize;
         let extra = levels.output_db.len().saturating_sub(max);
         levels.output_db.truncate(max);
         self.count(id, "levels.output_db", extra);
@@ -1081,7 +1081,7 @@ impl Checker {
             self.level(id, "levels.output_db", db);
         }
         let dropped = retain_counted(&mut levels.crosspoints, |c| {
-            c.input < MAX_CHANNELS && c.output < MAX_CHANNELS
+            c.input < MAX_CHANNELS && c.output < MAX_CUE_OUTPUTS
         });
         self.count(id, "levels.crosspoints", dropped);
         let duplicates = dedupe(&mut levels.crosspoints, |c| (c.input, c.output));

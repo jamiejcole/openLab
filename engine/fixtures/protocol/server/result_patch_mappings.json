@@ -13,10 +13,35 @@
               0,
               1
             ]
+          },
+          "resolution": {
+            "type": "mapped",
+            "device": "Scarlett 2i2",
+            "channels": [
+              0,
+              1
+            ]
           }
         },
         {
-          "patch": "00000000-0000-0000-0000-000000000071"
+          "patch": "00000000-0000-0000-0000-000000000071",
+          "resolution": {
+            "type": "unmapped"
+          }
+        },
+        {
+          "patch": "00000000-0000-0000-0000-000000000072",
+          "mapping": {
+            "device": "MOTU 828",
+            "channels": [
+              2,
+              3
+            ]
+          },
+          "resolution": {
+            "type": "device_missing",
+            "device": "MOTU 828"
+          }
         }
       ]
     }

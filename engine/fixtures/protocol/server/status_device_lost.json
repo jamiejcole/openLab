@@ -15,6 +15,37 @@
       "sample_rate": 48000,
       "channels": 2
     },
+    "outputs": [
+      {
+        "name": "Scarlett 2i2",
+        "state": "lost",
+        "primary": true,
+        "sample_rate": 48000,
+        "channels": 2,
+        "block_frames": 512
+      },
+      {
+        "name": "MOTU 828",
+        "state": "up",
+        "sample_rate": 48000,
+        "channels": 2,
+        "block_frames": 512
+      },
+      {
+        "name": "Headphones",
+        "state": "closed",
+        "sample_rate": 48000,
+        "channels": 2,
+        "block_frames": 512
+      },
+      {
+        "name": "USB Box",
+        "state": "failed",
+        "sample_rate": 48000,
+        "channels": 2,
+        "block_frames": 512
+      }
+    ],
     "log_dropped": 0,
     "log_seq": 42,
     "network_output_disabled": true

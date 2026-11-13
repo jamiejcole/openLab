@@ -13,7 +13,8 @@ use openlab_core::protocol::{
     TransportAction, WireResolution,
 };
 use openlab_core::{
-    CueKind, CueState, DeviceInfo, MachineSettings, PatchId, PatchMapping, Workspace,
+    Command, CueKind, CueState, DeviceInfo, MachineSettings, PatchId, PatchMapping, PatchProperty,
+    Workspace,
 };
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
@@ -319,6 +320,129 @@ fn invalid_mappings_are_refused_and_change_nothing() {
     );
 }
 
+/// Sends a model command; the error code if it was refused.
+fn edit(s: &mut OfflineShow, command: Command) -> Result<(), ErrorCode> {
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Command {
+        id,
+        command: Box::new(command),
+        coalesce: None,
+    });
+    match replies.iter().find_map(|m| match m {
+        ServerMessage::Result { outcome, .. } => Some(outcome.clone()),
+        _ => None,
+    }) {
+        Some(Outcome::Ok(_)) => Ok(()),
+        Some(Outcome::Error(e)) => Err(e.code),
+        None => panic!("{replies:?}"),
+    }
+}
+
+fn channel_count(value: usize) -> Command {
+    Command::SetPatchProperty {
+        id: patch_id(),
+        property: PatchProperty::ChannelCount { value },
+    }
+}
+
+/// Checklist: a patch's cue-output count is set from 1 to 128, and cues on it show that many
+/// outputs; a count outside the range is refused on every path that sets it (QLab 5 manual
+/// p. 189). The 128th cue output plays through its row of the patch to the device channel it
+/// is mapped to, and the cue's meter has a peak per patch output; undo takes the patch back to
+/// its two outputs and the meter follows. 0 and 129 are refused and change nothing, as is a
+/// mapping of 129 channels.
+#[test]
+fn a_patchs_cue_output_count_is_set_from_1_to_128_and_cues_on_it_show_that_many_outputs() {
+    let env = env();
+    let path = wav(&dc(48_000, 0.5));
+    // The cue sends its one file channel to cue output 128 (index 127): silent while the patch
+    // has two outputs.
+    let mut wide = audio(1, &path, 127);
+    if let CueKind::Audio { levels, .. } = &mut wide.kind {
+        levels.outputs = vec![
+            openlab_core::CueOutput {
+                db: 0.0,
+                mute: false,
+            };
+            128
+        ];
+    }
+    let ws = workspace(vec![wide, audio(2, &path, 0)]);
+    let mut s = start_show(ws.clone(), from_disk(&env, vec![device("Offline", 4)]));
+    let cue_meters = |msgs: &[ServerMessage], n: u128| -> Vec<Vec<f32>> {
+        msgs.iter()
+            .filter_map(|m| match m {
+                ServerMessage::Meters { cues, .. } => cues
+                    .iter()
+                    .find(|c| c.cue == id(n))
+                    .map(|c| c.peaks.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    for value in [0, 129, usize::MAX] {
+        assert_eq!(
+            edit(&mut s, channel_count(value)),
+            Err(ErrorCode::CommandRefused),
+            "{value}"
+        );
+    }
+    assert_eq!(s.control().workspace().patches[0].outputs.len(), 2);
+    assert_eq!(edit(&mut s, channel_count(1)), Ok(()));
+    assert_eq!(s.control().workspace().patches[0].outputs.len(), 1);
+    assert_eq!(edit(&mut s, channel_count(128)), Ok(()));
+    assert_eq!(s.control().workspace().patches[0].outputs.len(), 128);
+
+    // One device channel per cue output: the 128th goes to device output 4.
+    let mut channels = vec![0u32; 128];
+    channels[127] = 3;
+    assert_eq!(
+        set(&mut s, patch_id(), Some(mapping("Offline", &[0; 129]))),
+        Err(ErrorCode::BadRequest)
+    );
+    assert_eq!(
+        set(&mut s, patch_id(), Some(mapping("Offline", &channels))),
+        Ok(())
+    );
+    s.take_outbound();
+    s.transport(TransportAction::Start { cue: id(1) });
+    s.transport(TransportAction::Start { cue: id(2) });
+    s.run(4000);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    let out4 = s.channel(3);
+    assert!(
+        out4[out4.len() - 100..].iter().all(|&x| x == 0.5),
+        "cue output 128 heard on device output 4"
+    );
+    let msgs = s.take_outbound();
+    let wide = cue_meters(&msgs, 1);
+    let last = wide.last().expect("cue 1 metered");
+    assert_eq!(last.len(), 128, "a peak per patch output");
+    assert!(last[127] > 0.4 && last[..127].iter().all(|&p| p == 0.0));
+    // Cue 2 is on the same patch: 128 peaks too, its own on output 1.
+    let narrow = cue_meters(&msgs, 2);
+    assert_eq!(narrow.last().map(Vec::len), Some(128));
+
+    // Back to one output (undo), mapped again to one channel: the next start meters one
+    // output.
+    s.transport(TransportAction::HardStop { cue: id(1) });
+    s.transport(TransportAction::HardStop { cue: id(2) });
+    s.run(2000);
+    let id_undo = s.request_id();
+    s.send(ClientMessage::Undo { id: id_undo });
+    assert_eq!(s.control().workspace().patches[0].outputs.len(), 1);
+    assert_eq!(
+        set(&mut s, patch_id(), Some(mapping("Offline", &[0]))),
+        Ok(())
+    );
+    s.take_outbound();
+    s.transport(TransportAction::Start { cue: id(2) });
+    s.run(2000);
+    let msgs = s.take_outbound();
+    assert_eq!(cue_meters(&msgs, 2).last().map(Vec::len), Some(1));
+}
+
 #[test]
 fn a_mapping_with_the_wrong_count_is_reported_and_setting_it_right_fixes_it() {
     let env = env();
@@ -539,10 +663,19 @@ fn list_patch_mappings_reports_the_stored_mapping_of_each_patch() {
             })
             .expect("patch_mappings")
     };
+    // Each answer also says where the patch resolves now.
     let entry = |m: Option<PatchMapping>| {
+        let resolution = Some(match &m {
+            Some(m) => openlab_core::protocol::WireResolution::Mapped {
+                device: m.device.clone(),
+                channels: m.channels.clone(),
+            },
+            None => openlab_core::protocol::WireResolution::Unmapped,
+        });
         vec![openlab_core::protocol::PatchMappingEntry {
             patch: patch_id(),
             mapping: m,
+            resolution,
         }]
     };
     assert_eq!(listed(&mut s), entry(Some(mapping("Offline", &[0, 1]))));

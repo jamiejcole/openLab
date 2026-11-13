@@ -22,7 +22,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::command::{Command, CommandError, Inverse};
-use crate::cue::{CueKind, Hotkey, MAX_CHANNELS};
+use crate::cue::{CueKind, Hotkey, MAX_CUE_OUTPUTS};
 use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, NetworkProtocol, OutputPatch, PatchId,
     PatchOutput, TransportHotkeys, Workspace, WorkspaceSettings, hotkey_field, is_reserved_key,
@@ -600,7 +600,7 @@ pub enum PatchProperty {
         output: usize,
         value: bool,
     },
-    /// 1 to [`MAX_CHANNELS`]. New outputs start at 0 dB, unmuted, polarity normal. Shrinking drops the
+    /// 1 to [`MAX_CUE_OUTPUTS`]. New outputs start at 0 dB, unmuted, polarity normal. Shrinking drops the
     /// last outputs' settings (undo brings them back); cues keep their routing to them.
     ChannelCount {
         value: usize,
@@ -667,9 +667,10 @@ impl PatchProperty {
             }
             Self::ChannelCount { value } => {
                 // Bound before allocating: the count comes from the wire.
-                if !(1..=MAX_CHANNELS as usize).contains(value) {
-                    const _: () = assert!(MAX_CHANNELS == 64, "the message below names the limit");
-                    return Err(CommandError::InvalidValue("a patch has 1 to 64 outputs"));
+                if !(1..=MAX_CUE_OUTPUTS as usize).contains(value) {
+                    const _: () =
+                        assert!(MAX_CUE_OUTPUTS == 128, "the message below names the limit");
+                    return Err(CommandError::InvalidValue("a patch has 1 to 128 outputs"));
                 }
                 patch.outputs.resize(*value, default_output());
             }

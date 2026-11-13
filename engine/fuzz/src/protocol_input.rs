@@ -127,6 +127,7 @@ fn new_show(scratch: &Scratch) -> Result<OfflineShow, String> {
     let mixer = MixerConfig {
         sample_rate: RATE,
         output_channels: 2,
+        cue_outputs: openlab_audio::MAX_CUE_OUTPUTS,
         max_block_frames: BLOCK as usize,
         max_voices: 16,
         max_voice_channels: 8,

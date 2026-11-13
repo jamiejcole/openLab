@@ -7,13 +7,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use openlab_core::protocol::{
-    DeviceState, DeviceStatus, LogEntry, LogKind, LogLevel, RuntimeChange, ServerMessage,
-    TransportAction, WireCueState,
+    DeviceState, DeviceStatus, LogEntry, LogKind, LogLevel, OutputStatus, RuntimeChange,
+    ServerMessage, TransportAction, WireCueState,
 };
 use openlab_core::{CueId, CueListId};
 
 use super::{Control, ControlConfig, DocCx, DocId, Engine};
-use crate::diag::{Counters, Peek, StatusReporter};
+use crate::diag::{Counters, Peek, StatusReporter, outputs_fingerprint};
 
 /// Entries `log_tail` returns when the request names no limit: the whole ring.
 const TAIL_ALL: usize = usize::MAX;
@@ -315,8 +315,49 @@ impl Engine {
             underrun_frames: self.underrun_frames(),
             device_name,
             device_state,
+            outputs: outputs_fingerprint(self.outputs.iter().map(|(_, o)| o.state())),
             network_output_disabled: self.network_disabled(),
         }
+    }
+
+    /// The fingerprint that decides an early status tells apart the states of up to 16 outputs.
+    const _FINGERPRINT_FITS: () = assert!(super::outputs::MAX_OUTPUTS <= 16);
+
+    /// Every open output device, the primary first (`status.outputs`).
+    pub(super) fn output_statuses(&self) -> Vec<OutputStatus> {
+        self.outputs
+            .iter()
+            .map(|(key, o)| {
+                let (channels, block_frames, latency_ms) = match o.backend.device() {
+                    // Nothing is known of a stream that has never opened: its info holds only
+                    // what was asked for.
+                    Some(d) if !d.has_opened() => (0, None, None),
+                    Some(d) => {
+                        let info = d.info();
+                        (
+                            u32::from(info.channels),
+                            info.block_frames,
+                            info.monitor.device_latency_seconds().map(|s| s * 1000.0),
+                        )
+                    }
+                    None => (
+                        u32::try_from(self.device_outputs).unwrap_or(u32::MAX),
+                        u32::try_from(self.block).ok(),
+                        None,
+                    ),
+                };
+                OutputStatus {
+                    name: o.name.clone(),
+                    state: o.state(),
+                    primary: key == 0,
+                    // Every device runs at the primary's rate.
+                    sample_rate: self.rate.get(),
+                    channels,
+                    block_frames,
+                    latency_ms,
+                }
+            })
+            .collect()
     }
 
     fn status_counters(&self) -> Counters {
@@ -337,7 +378,7 @@ impl Engine {
                 state: DeviceState::Absent,
                 sample_rate: self.rate.get(),
                 block_frames: u32::try_from(self.block).ok(),
-                channels: u32::try_from(self.cue_outputs).unwrap_or(u32::MAX),
+                channels: u32::try_from(self.device_outputs).unwrap_or(u32::MAX),
                 latency_ms: None,
             },
         };
@@ -349,6 +390,7 @@ impl Engine {
             log_seq: self.config.show_log.seq(),
             network_output_disabled: self.network_disabled(),
             device,
+            outputs: self.output_statuses(),
             cpu_seconds: (self.config.cpu_probe)(),
             // Worst callback since the previous status (read-and-reset; this is its only
             // reader). Offline there is no audio callback to time.

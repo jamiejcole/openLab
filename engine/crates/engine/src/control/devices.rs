@@ -861,6 +861,11 @@ impl Device {
         self.resuming
     }
 
+    /// Closed to be opened again at once at another buffer size ([`Self::set_buffer`]).
+    pub fn is_reconfiguring(&self) -> bool {
+        self.reconfiguring
+    }
+
     /// Nothing plays on this device any more: its stream closes (the mixer comes back as it
     /// was) and it is neither watched, reopened nor reported lost until [`Self::unpark`]. An
     /// outage it was in ends. Only for a device other than the list reader's.

@@ -36,7 +36,8 @@ The mixer renders voices into the device buffer on the audio thread. The control
 | Field | Default | Limit |
 |---|---|---|
 | `sample_rate` | 48000 | 1 to 384000 |
-| `output_channels` | 2 | 1 to 64; every patch has this many cue outputs |
+| `output_channels` | 2 | 1 to 64 (device outputs: the columns of every patch matrix) |
+| `cue_outputs` | 128 | 1 to 128 (`MAX_CUE_OUTPUTS`): the rows of every patch matrix, the most a voice can use |
 | `max_block_frames` | 1024 | 1 to 8192; internal chunk size, any device block size is accepted and split |
 | `max_voices` | 128 | 1 to 4096 |
 | `max_voice_channels` | 8 | 1 to 64 |
@@ -91,13 +92,15 @@ The mixer renders voices into the device buffer on the audio thread. The control
 
 ## Voices
 `StartVoice(Box<VoiceStart>)` carries the complete initial routing, so a voice is heard only as intended from its first sample. Field meanings are in the `VoiceStart` struct docs; the non-obvious semantics:
+- **Width.** A start routes 1 to `cue_outputs` cue outputs (the engine sends its patch's count); `crosspoints` is `channels x` that. Only those outputs are rendered and metered, and a patch clears and mixes only the bus rows its voices wrote that segment (`Patch::rows`), so a 128-row mixer costs a stereo show what 2 rows do.
+- A `Ramp`/`RampSet` naming a later cue output widens the voice to it. Outputs beyond a start's begin silent (gain 0, no crosspoint): the engine sends a level only for an output that is heard, so a muted or unlisted one stays silent. A start resets only the outputs earlier voices of its pool slot used, in every input row. A patch-routing ramp in a row no voice writes to still advances (`Patch::dirty_rows`).
 - `VoiceStart::new` starts with all crosspoints at 0 (silent), cue outputs and master 1.0, patch 0. Set routes with `set_crosspoint`.
 - The first source frame plays on sample `at` exactly, so voices started with the same `at` begin on the same output frame.
 - `source` is an `rtrb::Consumer<f32>` of interleaved device-rate frames; dropping the producer is the end-of-stream marker.
 - A fade-out needs `play_frames` or `slices`. `slices` replaces `play_frames` and `skip_frames` (the table carries its own start).
 - `skip_frames`/`play_frames` give mixer-side sample-exact in and out points (AUD-11); the disk thread normally seeks to the in point.
 
-**Rejection** (`Event::VoiceRejected`, box returned): `PoolFull`, `DuplicateId` (id already active), `BadChannelCount` (0 or above `max_voice_channels`), `BadRouting` (patch out of range or a routing vector of the wrong length), `BadFade` (fade-out without `play_frames`/`slices`), `BadSlices` (table with `play_frames`/`skip_frames`, an empty slice, `Times(0)`, or more than `MAX_SLICES`).
+**Rejection** (`Event::VoiceRejected`, box returned): `PoolFull`, `DuplicateId` (id already active), `BadChannelCount` (0 or above `max_voice_channels`), `BadRouting` (patch out of range, no cue outputs or more than `cue_outputs`, or crosspoints not `channels x` that), `BadFade` (fade-out without `play_frames`/`slices`), `BadSlices` (table with `play_frames`/`skip_frames`, an empty slice, `Times(0)`, or more than `MAX_SLICES`).
 
 **End** is `Event::VoiceFinished { at, reason }`, `at` = first sample after the voice's last:
 - `EndOfStream`: producer dropped and every whole frame consumed.

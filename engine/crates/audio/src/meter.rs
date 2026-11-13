@@ -16,7 +16,7 @@
 //! `(id, epoch, active)` is published with a sequence lock that only the reader ever retries.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence};
 
 use crate::mixer::{Shared, VoiceId};
 
@@ -89,6 +89,10 @@ pub(crate) struct Meters {
     slots: Vec<Slot>,
     /// `[slot][cue output]`.
     voices: Vec<Word>,
+    /// Per slot, the most cue outputs any of its voices used (it only grows): no word of the
+    /// slot beyond it was ever written, so reads and flushes stop there. A mixer with 128 cue
+    /// outputs and stereo cues costs what 2 outputs do.
+    widths: Vec<AtomicUsize>,
 }
 
 impl Meters {
@@ -98,6 +102,23 @@ impl Meters {
             cue_outputs,
             slots: (0..slots).map(|_| Slot::default()).collect(),
             voices: (0..slots * cue_outputs).map(|_| Word::default()).collect(),
+            widths: (0..slots).map(|_| AtomicUsize::new(0)).collect(),
+        }
+    }
+
+    /// The words of `slot` that may have been written.
+    fn width(&self, slot: usize) -> usize {
+        self.widths
+            .get(slot)
+            .map_or(0, |w| w.load(Ordering::Acquire))
+            .min(self.cue_outputs)
+    }
+
+    /// A voice of `slot` uses `width` cue outputs (audio thread, before it writes any of their
+    /// peaks).
+    pub(crate) fn widen(&self, slot: usize, width: usize) {
+        if let Some(w) = self.widths.get(slot) {
+            w.fetch_max(width, Ordering::Release);
         }
     }
 
@@ -117,7 +138,7 @@ impl Meters {
     pub(crate) fn flush_voice(&self, slot: usize, epoch: u32, local: &mut [f32]) {
         let tag = u64::from(epoch) << 32;
         let row = self.voices.iter().skip(slot * self.cue_outputs);
-        for (w, m) in row.zip(local.iter_mut()) {
+        for (w, m) in row.zip(local.iter_mut()).take(self.width(slot)) {
             if *m > 0.0 {
                 // Release: a reader that sees this tag also sees the identity published for it.
                 w.live
@@ -130,7 +151,7 @@ impl Meters {
     /// Moves the slot's unread peaks out of the way of a new epoch. Call before changing it.
     pub(crate) fn retire(&self, slot: usize) {
         let row = self.voices.iter().skip(slot * self.cue_outputs);
-        for w in row.take(self.cue_outputs) {
+        for w in row.take(self.width(slot)) {
             let old = w.live.swap(0, Ordering::AcqRel);
             if old != 0 {
                 w.retired.fetch_max(old, Ordering::Release);
@@ -267,7 +288,12 @@ impl MeterReader {
                 *cursor = slot;
                 return n;
             }
-            let row = m.voices.iter().skip(slot * outs).take(outs);
+            // Words past the slot's width were never written: they read as nothing.
+            let width = m.width(slot);
+            let row = m.voices.iter().skip(slot * outs).take(width);
+            for r in raw.iter_mut().skip(width) {
+                *r = [0, 0];
+            }
             for (r, w) in raw.iter_mut().zip(row.clone()) {
                 *r = [take(&w.live), take(&w.retired)];
             }
@@ -421,6 +447,7 @@ mod tests {
             ..Shared::default()
         });
         let m = &shared.meters;
+        m.widen(0, 1);
         m.assign(0, VoiceId(5), 1, true);
         m.flush_voice(0, 1, &mut [0.5]);
         let mut r = MeterReader::new(Arc::clone(&shared));
@@ -441,6 +468,8 @@ mod tests {
             ..Shared::default()
         });
         let m = &shared.meters;
+        m.widen(0, 1);
+        m.widen(1, 1);
         m.assign(0, VoiceId(1), 1, true);
         m.assign(1, VoiceId(2), 1, true);
         m.flush_voice(0, 1, &mut [0.25]);
@@ -456,11 +485,37 @@ mod tests {
         assert_eq!(&peaks, &[0.75, 0.0]);
     }
 
+    /// A slot's words past the widest voice it had are never touched: a flush stops there,
+    /// and widening (a voice using more cue outputs) makes the next ones count.
+    #[test]
+    fn a_slot_flushes_and_reads_only_the_outputs_its_voices_used() {
+        let shared = Arc::new(Shared {
+            meters: Meters::new(1, 1, 4),
+            ..Shared::default()
+        });
+        let m = &shared.meters;
+        m.assign(0, VoiceId(1), 1, true);
+        m.widen(0, 2);
+        let mut local = [0.25, 0.5, 0.75, 1.0];
+        m.flush_voice(0, 1, &mut local);
+        assert_eq!(local, [0.0, 0.0, 0.75, 1.0], "only two flushed");
+        let mut r = MeterReader::new(Arc::clone(&shared));
+        let (mut ids, mut peaks) = ([VoiceId(0); 2], [9.0; 8]);
+        assert_eq!(r.read_voices(&mut ids, &mut peaks), 1);
+        assert_eq!(&peaks[..4], &[0.25, 0.5, 0.0, 0.0]);
+        m.widen(0, 4);
+        m.widen(0, 1);
+        m.flush_voice(0, 1, &mut local);
+        assert_eq!(r.read_voices(&mut ids, &mut peaks), 1);
+        assert_eq!(&peaks[..4], &[0.0, 0.0, 0.75, 1.0]);
+    }
+
     fn meters(slots: usize) -> (Arc<Shared>, MeterReader) {
         let shared = Arc::new(Shared {
             meters: Meters::new(1, slots, 1),
             ..Shared::default()
         });
+        (0..slots).for_each(|k| shared.meters.widen(k, 1));
         let r = MeterReader::new(Arc::clone(&shared));
         (shared, r)
     }

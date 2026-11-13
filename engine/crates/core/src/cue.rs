@@ -67,8 +67,11 @@ impl LevelLimits {
 
 /// Longest time any time field may hold (24 h). Validation clamps anything above it.
 pub const MAX_TIME: f64 = 24.0 * 60.0 * 60.0;
-/// Most channels a patch, cue or media file may have (AUD-03).
+/// Most channels a media file (and so a crosspoint input) may have (AUD-03).
 pub const MAX_CHANNELS: u32 = 64;
+/// Most cue outputs a patch (and so a cue's levels, crosspoint outputs and gangs) may have
+/// (AUD-07; QLab 5 allows 1 to 128).
+pub const MAX_CUE_OUTPUTS: u32 = 128;
 /// Most slice markers an Audio cue may hold. The audio engine plays at most 256 slice entries
 /// (`openlab_audio::MAX_SLICES`): n markers make n + 1 slices, and a start offset inside a slice
 /// splits it in two. The engine crate tests that the two limits agree.
@@ -316,7 +319,7 @@ pub struct CueOutput {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CueLevels {
     pub master_db: f64,
-    /// Cue output `i` feeds output `i` of the cue's patch. At most [`MAX_CHANNELS`]; outputs
+    /// Cue output `i` feeds output `i` of the cue's patch. At most [`MAX_CUE_OUTPUTS`]; outputs
     /// beyond the patch's are kept but silent.
     pub outputs: Vec<CueOutput>,
     /// Sparse: crosspoints not listed are silent.

@@ -415,10 +415,12 @@ fn transport_hotkeys_have_defaults() {
     }
 }
 
+/// Load: a patch has 1 to 128 outputs (QLab 5, manual p. 189); 128 loads as it is, 129 is cut
+/// to 128 with a warning.
 #[test]
-fn patch_channel_count_must_be_1_to_64() {
+fn patch_channel_count_must_be_1_to_128() {
     let mut ws = workspace(vec![]);
-    ws.patches = vec![patch(1, 0), patch(2, 65), patch(3, 64)];
+    ws.patches = vec![patch(1, 0), patch(2, 129), patch(3, 128)];
     assert_eq!(
         repair(&mut ws),
         vec![
@@ -435,7 +437,7 @@ fn patch_channel_count_must_be_1_to_64() {
         ]
     );
     let counts: Vec<usize> = ws.patches.iter().map(|p| p.outputs.len()).collect();
-    assert_eq!(counts, vec![1, 64, 64]);
+    assert_eq!(counts, vec![1, 128, 128]);
 }
 
 #[test]
@@ -565,17 +567,19 @@ fn xp(input: u32, output: u32, db: f64) -> Crosspoint {
     }
 }
 
+/// Cue outputs (levels, crosspoint outputs, gangs, Fade output levels) go to 128, file channels
+/// (crosspoint inputs) to 64: what names one beyond is dropped with a warning.
 #[test]
-fn routing_beyond_64_channels_is_dropped() {
+fn routing_beyond_128_outputs_or_64_channels_is_dropped() {
     let a = audio_with(|levels, _, _, _| {
-        levels.outputs = vec![out(0.0); 66];
+        levels.outputs = vec![out(0.0); 130];
         levels.crosspoints = vec![
             xp(0, 0, 0.0),
             xp(64, 0, 0.0),
-            xp(0, 64, 0.0),
-            xp(63, 63, 0.0),
+            xp(0, 128, 0.0),
+            xp(63, 127, 0.0),
         ];
-        levels.gangs = vec![vec![0, 1], vec![70, 64]];
+        levels.gangs = vec![vec![0, 127], vec![130, 128]];
     });
     let f = CueKind::Fade {
         target: Some(cue_id(1)),
@@ -583,18 +587,25 @@ fn routing_beyond_64_channels_is_dropped() {
         curve: FadeCurve::Linear,
         levels: FadeLevels {
             master_db: None,
-            output_db: vec![Some(0.0); 66],
-            crosspoints: vec![FadeCrosspoint {
-                input: 0,
-                output: 64,
-                db: 0.0,
-            }],
+            output_db: vec![Some(0.0); 130],
+            crosspoints: vec![
+                FadeCrosspoint {
+                    input: 0,
+                    output: 128,
+                    db: 0.0,
+                },
+                FadeCrosspoint {
+                    input: 63,
+                    output: 127,
+                    db: 0.0,
+                },
+            ],
         },
         stop_target_when_done: false,
         mode: Default::default(),
     };
     let mut ws = workspace(vec![cue(1, a), cue(2, f)]);
-    ws.patches = vec![patch(1, 64)];
+    ws.patches = vec![patch(1, 128)];
     let dropped = |n, field, count| warning(n, IssueKind::IndexOutOfRange { field, count });
     assert_eq!(
         repair(&mut ws),
@@ -607,9 +618,9 @@ fn routing_beyond_64_channels_is_dropped() {
         ]
     );
     let levels = audio_parts(&ws, 1).0;
-    assert_eq!(levels.outputs.len(), 64);
-    assert_eq!(levels.crosspoints, vec![xp(0, 0, 0.0), xp(63, 63, 0.0)]);
-    assert_eq!(levels.gangs, vec![vec![0, 1]]);
+    assert_eq!(levels.outputs.len(), 128);
+    assert_eq!(levels.crosspoints, vec![xp(0, 0, 0.0), xp(63, 127, 0.0)]);
+    assert_eq!(levels.gangs, vec![vec![0, 127]]);
 }
 
 #[test]
