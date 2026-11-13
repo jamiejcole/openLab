@@ -23,24 +23,22 @@ pub struct Stage {
     pub width: u32,
     pub height: u32,
     /// Black stays up on the stage's display while no cue plays on it (QLab's "keep rendering
-    /// between cues", p. 227). Off: the stage's window is hidden while nothing plays.
-    #[serde(default = "keep_black_default")]
+    /// between cues", p. 227). Off (the default, as QLab draws a stage only while a cue runs on
+    /// it): the stage's window is hidden while nothing plays, so a stage on the operator's own
+    /// display never covers it between cues.
+    #[serde(default)]
     pub keep_black: bool,
 }
 
-fn keep_black_default() -> bool {
-    true
-}
-
 impl Stage {
-    /// A stage sized as `width` x `height`, black between cues.
+    /// A stage sized as `width` x `height`, hidden between cues.
     pub fn new(id: StageId, name: impl Into<String>, width: u32, height: u32) -> Self {
         Self {
             id,
             name: name.into(),
             width: clamp_side(width),
             height: clamp_side(height),
-            keep_black: true,
+            keep_black: false,
         }
     }
 
@@ -86,11 +84,11 @@ mod tests {
     }
 
     #[test]
-    fn a_stage_without_keep_black_in_its_file_keeps_black() {
+    fn a_stage_without_keep_black_in_its_file_is_hidden_between_cues() {
         let s: Stage = serde_json::from_str(
             r#"{"id":"00000000-0000-0000-0000-000000000001","name":"S","width":1920,"height":1080}"#,
         )
         .unwrap();
-        assert!(s.keep_black);
+        assert!(!s.keep_black);
     }
 }

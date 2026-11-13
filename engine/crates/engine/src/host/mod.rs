@@ -102,6 +102,11 @@ pub struct Options {
     /// builds only).
     #[cfg(feature = "test-support")]
     pub virtual_device: Option<VirtualMode>,
+    /// The stage host's virtual displays (`--virtual-displays ID:WxH,...`; test-support builds
+    /// only). An engine on the virtual device runs a stage host only with these: drawn offscreen,
+    /// never a window on the test machine's own displays.
+    #[cfg(feature = "test-support")]
+    pub virtual_displays: Option<String>,
 }
 
 /// This run's `engine.json` once written: shared by the run, the thread that marks it stopping
@@ -468,8 +473,10 @@ fn run_with(
     match stage_host_program() {
         Some(program) => config.stage_host = Some(crate::stage::StageHostConfig::new(program)),
         None => {
+            // Info, not a warning: a build without video output (or a development engine run on
+            // its own) is not a fault of the show; `list_displays` then has no `video` flag.
             let _ = inbox_tx.send(Inbox::Log {
-                level: LogLevel::Warn,
+                level: LogLevel::Info,
                 message: "video output is off: the stage host (openlab-stage) is not installed \
                           beside the engine"
                     .to_owned(),
@@ -485,6 +492,13 @@ fn run_with(
             config.cpu_probe = no_cpu;
         }
         config.virtual_device = Some(vd.with_inbox(inbox.clone()));
+        config.stage_host = match (&options.virtual_displays, config.stage_host.take()) {
+            (Some(list), Some(mut host)) => {
+                host.args = vec!["--virtual-displays".to_owned(), list.clone()];
+                Some(host)
+            }
+            _ => None,
+        };
     }
     // Not essential: without it the computer may sleep, which the log says. A test engine on
     // the virtual device never keeps the test machine awake.

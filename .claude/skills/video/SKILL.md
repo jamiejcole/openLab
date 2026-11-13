@@ -19,7 +19,7 @@ Built so far: stages, their per-machine display, the stage host with black outpu
 - The stage host never activates or takes key focus: the operator's keys stay with the app.
 
 ## Stages (`openlab-core` `video.rs`, `model.rs`)
-- `Workspace.stages: Vec<Stage>`: `id` (`StageId`), `name`, `width`/`height` in pixels (1 to `MAX_STAGE_PIXELS` 16384, p. 208), `keep_black` (default true: QLab's "keep rendering between cues", p. 227). At most `MAX_STAGES` (64). File format §4.7.
+- `Workspace.stages: Vec<Stage>`: `id` (`StageId`), `name`, `width`/`height` in pixels (1 to `MAX_STAGE_PIXELS` 16384, p. 208), `keep_black` (QLab's "keep rendering between cues", p. 227; default off, so a stage on the operator's display never covers it between cues). At most `MAX_STAGES` (64). File format §4.7.
 - Load: a size outside the range is clamped (`StageSize` warning), stages past 64 are dropped (`TooManyStages`), two with one id refuse the file (`DuplicateStageId`), odd names warn (`stages.name`).
 - Which display shows a stage is per machine: `settings.json` `workspaces.<id>.stages.<stage id>` = `StageMapping { display, name, width, height }` (the display's id plus what it was when chosen). `MachineSettings::stage_mapping` / `set_stage_mapping` (refuses empty or over-long text, control characters, sizes out of range). A damaged entry in the file drops only itself with a warning.
 
@@ -42,9 +42,11 @@ Built so far: stages, their per-machine display, the stage host with black outpu
 - Health: `hello` and every `ping` (each `ping_every`, 1 s) must be answered within `answer_within` (5 s); a child that does not, sends more than `MAX_LINES_PER_SECOND`, or closes its output is killed (reaped on a thread of its own) and replaced at once with the last stage set.
 - More than `max_restarts` (5) starts in `restart_window` (60 s) pauses video output for `retry_after` (30 s), logged as an error. A stage host of another link version is never started again.
 - `StageHost`'s drop sends `quit`; the stage host gets 1 s, then is killed. Its stdin closing also ends it, so it never outlives the engine however the engine ends.
-- The control thread: `sync_stages` (every tick) builds every open doc's stages with this machine's display ids and hands the set to the supervisor when it changed; the stage host starts then (or on `list_displays`). A changed stage's state is forgotten until the stage host reports it again.
+- The control thread: `sync_stages` (every tick) builds every open doc's stages with this machine's display ids and hands the set to the supervisor when it changed. The stage host starts with the control loop (`Control::empty`), so its displays are known when a new workspace is made. A changed stage's state is forgotten until the stage host reports it again.
 - `StageEvent`s arrive through the inbox (`Inbox::Stage`): states and displays are kept for `list_stage_mappings`/`list_displays`; a state a stage cannot be seen in (`no_display`, `display_missing`, `failed`) is a `warn` log line, `shown`/`hidden` `info`; a stop is `warn` (restarting) or `error` (paused).
-- Where the stage host is: `Contents/Helpers/openLab Stage.app/Contents/MacOS/openlab-stage` beside the engine's `Contents/MacOS`, else `openlab-stage` beside the engine (development). Missing: video output off, one `warn` at start. Tests set `ControlConfig::stage_host`.
+- An engine on the virtual device (`--virtual-device`) runs a stage host only with `--virtual-displays ID:WxH,...` (test-support builds), passed on to it: test engines never open windows on the machine's displays, and their scripts stay deterministic.
+- Where the stage host is: `Contents/Helpers/openLab Stage.app/Contents/MacOS/openlab-stage` beside the engine's `Contents/MacOS`, else `openlab-stage` beside the engine (development). Missing: video output off, one `info` log line at start (a build or development engine without it is not a show fault). Tests set `ControlConfig::stage_host`.
+- A new workspace gets one stage per listed display (QLab 5 manual p. 226): "Stage 1", "Stage 2"... in display order, sized as the display, keep-black off, each shown on its display on this machine (`Engine::add_display_stages`, from `fresh_workspace`).
 - Requests (`docs/protocol.md`): `list_displays` (app-scope), `list_stage_mappings`, `set_stage_mapping { stage, display? }` (the display must be listed now; stored in `settings.json`, refused `io` when settings cannot be saved).
 
 ## Tests

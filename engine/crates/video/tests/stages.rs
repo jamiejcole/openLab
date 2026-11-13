@@ -34,8 +34,11 @@ fn stage_id(n: u128) -> StageId {
     StageId(Uuid::from_u128(0x5_0000 + n))
 }
 
+/// A 1920 x 1080 stage that keeps black between cues.
 fn stage(n: u128) -> Stage {
-    Stage::new(stage_id(n), format!("Stage {n}"), 1920, 1080)
+    let mut s = Stage::new(stage_id(n), format!("Stage {n}"), 1920, 1080);
+    s.keep_black = true;
+    s
 }
 
 fn host_config(args: &[&str]) -> StageHostConfig {
@@ -186,6 +189,40 @@ fn a_stage_on_its_chosen_display_shows_black_and_then_the_test_card() {
         }]
     ));
     assert_eq!(probe(&mut s, 1), (Some(4321), QUADRANTS.to_vec()));
+    assert_eq!(s.stalls(), 0);
+}
+
+/// A new workspace on a Mac with two displays has one stage per display (QLab 5 manual
+/// p. 226): named, with its display's pixel size, shown on it on this machine, and hidden while
+/// nothing plays (keep-black off), so the operator's own display is never covered.
+#[test]
+fn a_new_workspace_has_one_stage_per_display() {
+    let mut c: ControlConfig = config(&workspace(vec![]));
+    c.stage_host = Some(virtual_host());
+    let mut s = OfflineShow::empty(mixer_config(), c).unwrap();
+    assert!(s.wait_for(|c| c.displays().len() == 2));
+    s.open_doc(openlab_engine::control::DocSource::New).unwrap();
+    s.settle_stages();
+    let ws = s.control().workspace().clone();
+    assert_eq!(
+        ws.stages
+            .iter()
+            .map(|st| (st.name.as_str(), st.width, st.height, st.keep_black))
+            .collect::<Vec<_>>(),
+        [
+            ("Stage 1", 1920, 1080, false),
+            ("Stage 2", 1280, 720, false)
+        ]
+    );
+    let entries = mappings(&mut s);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| e.mapping.as_ref().map(|m| m.display.as_str()))
+            .collect::<Vec<_>>(),
+        [Some("V1"), Some("V2")]
+    );
+    assert!(entries.iter().all(|e| e.state == Some(StageState::Hidden)));
     assert_eq!(s.stalls(), 0);
 }
 

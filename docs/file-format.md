@@ -187,7 +187,7 @@ A stage is a named raster Video cues are drawn on (VID-01; QLab 5 manual pp. 207
 | `id` | UUID | Two stages with one id refuse the file. |
 | `name` | string | |
 | `width`, `height` | integer 1–16384 | Pixel size. A size outside the range is clamped with a warning (`StageSize`). |
-| `keep_black` | boolean, optional | `true` (the default when absent): the stage's display shows black while no cue plays on it. `false`: its window is hidden then, and the desktop shows (QLab's "keep rendering between cues" off, p. 227). |
+| `keep_black` | boolean, optional | `true`: the stage's display shows black while no cue plays on it (QLab's "keep rendering between cues", p. 227). `false` (the default when absent, as in QLab): its window is hidden then and the desktop shows, so a stage on the operator's own display never covers it between cues. |
 
 At most 64 stages; a file with more keeps the first 64 with a warning (`TooManyStages`).
 

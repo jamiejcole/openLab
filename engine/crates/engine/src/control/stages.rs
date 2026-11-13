@@ -2,8 +2,8 @@
 
 //! Video stages on the control thread (VID-01, VID-12): which display each open workspace's
 //! stages are shown on, handed to the stage host supervisor (`crate::stage`), and what the stage
-//! host says back. The stage host starts when a workspace with stages is open (or the displays
-//! are asked for); the control thread never waits on it.
+//! host says back. The stage host starts with the control loop, so its displays are known when
+//! a new workspace is made; the control thread never waits on it.
 
 use std::collections::HashMap;
 
@@ -41,7 +41,7 @@ pub(super) struct Stages {
 
 impl Engine {
     /// Starts the stage host supervisor if the engine has one configured and it is not running.
-    fn start_stage_host(&mut self) {
+    pub(super) fn start_stage_host(&mut self) {
         if self.stages.host.is_some() {
             return;
         }
@@ -58,6 +58,37 @@ impl Engine {
                 LogLevel::Error,
                 format!("could not start the video output supervisor ({e}); stages are not shown"),
             ),
+        }
+    }
+
+    /// A new workspace's stages (QLab 5 manual p. 226): one per connected display, named
+    /// "Stage 1", "Stage 2"... in the stage host's display order, sized as the display and
+    /// shown on it on this machine. None while the stage host has listed no display yet.
+    pub(super) fn add_display_stages(&mut self, ws: &mut openlab_core::Workspace) {
+        let displays = self.stages.displays.clone();
+        for (n, display) in displays.iter().enumerate().take(openlab_core::MAX_STAGES) {
+            let stage = openlab_core::Stage::new(
+                StageId(super::docs::random_id()),
+                format!("Stage {}", n + 1),
+                display.width,
+                display.height,
+            );
+            let mapping = openlab_core::StageMapping {
+                display: display.id.clone(),
+                name: display.name.clone(),
+                width: display.width,
+                height: display.height,
+            };
+            // A refusal cannot happen for a display the link accepted; the stage then has no
+            // display, which is shown as such.
+            let _ = self
+                .config
+                .machine
+                .set_stage_mapping(ws.id, stage.id, Some(mapping));
+            ws.stages.push(stage);
+        }
+        if !displays.is_empty() {
+            self.save_machine();
         }
     }
 

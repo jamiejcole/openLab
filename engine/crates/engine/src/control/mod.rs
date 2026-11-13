@@ -790,6 +790,8 @@ impl Control {
             none,
         };
         control.eng.outputs.pump();
+        // Started now, so its displays are known by the time a new workspace asks for stages.
+        control.eng.start_stage_host();
         Ok(control)
     }
 
