@@ -91,7 +91,6 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         messageLabel.textColor = .systemRed
         messageLabel.setAX(Self.id + "-message")
 
-
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
