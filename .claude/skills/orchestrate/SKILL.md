@@ -63,7 +63,7 @@ Never paste large file contents into briefs — point at paths. Agent hand-back 
 - Spawn a fresh `subagent_type: "pr-reviewer"` with: issue numbers, base and branch/commit range, the shot paths from the implementer's report (for a mac drawing change), and any area you're suspicious of. Every PR gets one (CLAUDE.md "Review").
 - For a change to what the mac app draws, spawn a `subagent_type: "ui-qa"` at the same time with: issue numbers and the worktree path. Never pass it the diff or the implementer's report beyond its scenario paths. Its defects go to the implementer with the reviewer's findings; check a defect by Reading its shot. On a round-2 re-review it re-runs only its failing scenarios.
 - Re-run each High and Medium's command or test before sending it on; a finding that doesn't reproduce goes back to the reviewer or to a second reviewer, not to the implementer.
-- Triage per CLAUDE.md "Findings policy". Niche QLab parity → the `v0.0.2` milestone.
+- Triage per CLAUDE.md "Findings policy". Niche QLab parity → the `v0.0.3` milestone.
 - Send findings to the **same implementer** via `SendMessage` (it keeps its context), then re-review the fix commits, within the limit in CLAUDE.md "Review". A reviewer-implementer disagreement still unresolved after that goes to the user.
 
 ## 5. Land it (PR into `main`)
