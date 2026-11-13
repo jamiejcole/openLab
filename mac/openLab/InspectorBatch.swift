@@ -7,7 +7,7 @@ import AppKit
 /// for cues of different kinds, and some of the kind's own tabs when all are of one kind. A value that
 /// is not the same on every cue is drawn as mixed (an empty field, a dash, a mixed tick box); an edit
 /// sets that one value on every selected cue, the rest of each cue kept, as one undo step. A cue's
-/// number, hotkey and OSC address name one cue, so they are not edited here.
+/// number and hotkey name one cue, so they are not edited here.
 extension InspectorViewController {
     /// The kind tabs that hold fields set on several cues at once. Time & Loops (each cue's own file)
     /// and a Fade's curve and levels (each fades its own target) are edited one cue at a time.
@@ -38,7 +38,7 @@ extension InspectorViewController {
 
     /// The controls only one cue at a time can set: off while several are selected.
     var singleCueControls: [NSControl] {
-        [numberField, oscField, hotkeyField, hotkeyClear, networkSendButton, chooseButton, clearTargetButton]
+        [numberField, hotkeyField, hotkeyClear, networkSendButton, chooseButton, clearTargetButton]
     }
 
     // MARK: Showing several cues
@@ -214,7 +214,7 @@ extension InspectorViewController {
     /// come back. Called before the single-cue render sets each control from the cue.
     /// The text fields several selected cues can turn off, and how faint they are then.
     var batchDimmed: [NSTextField] {
-        [numberField, durationField, targetField, oscField, hotkeyField, loadTimeField, networkMessageField]
+        [numberField, durationField, targetField, hotkeyField, loadTimeField, networkMessageField]
     }
     static let offAlpha: CGFloat = 0.45
 
@@ -230,11 +230,7 @@ extension InspectorViewController {
         audioLevels.mixed = []
         audioLevels.gangsMixed = false
         audioLevels.editsSeveral = false
-        for (f, text) in [
-            (InspectorField.osc, "inspector.osc.placeholder"), (.message, "inspector.network.messageHint"),
-        ] {
-            field(f)?.placeholderString = loc(text)
-        }
+        field(.message)?.placeholderString = loc("inspector.network.messageHint")
         for f in [InspectorField.number, .preWait, .postWait, .duration, .loadTime] {
             field(f)?.placeholderString = nil
         }

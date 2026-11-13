@@ -42,6 +42,10 @@ Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
 - "Next cue" is the cue after this one in its list or group when the trigger fires; the last cue triggers nothing. Timeline and playlist groups ignore their children's continue modes; random and start-first apply them.
 - Triggering is the Start operation. A cue is idle when its action is complete and no post-wait or fade-out is pending. Stop or Reset cancels the pending post-wait and auto-follow.
 
+### Auto-load
+- When a cue starts (`start` makes a run: GO, continue, trigger, a group starting it), the next sibling that is there (`next_sibling`, skipped cues passed over) is loaded as `Load { time: 0 }` (`load_tree`: a group loads the children its action starts first) if it has `auto_load` (QLab 5, manual p. 128; when assumed, skill `qlab-behaviour`).
+- Only an idle cue, armed, without static problems: one loaded (to any time), active or broken at run time is left alone, and a disarmed or broken one is not loaded (it would play nothing). No warning either way. A load is no start: no chain budget.
+
 ### Load to time
 `Load { time }` loads the cue `t` seconds into its timeline (pre-wait, then action). The pre-wait/action split is made at load with the pre-wait the cue has then (so `LoadVoice.offset` and `StartVoice.offset` agree); later pre-wait edits do not change it. Armedness and kind are read only at start.
 - `t < P`: pre-wait has `P - t` left; action from the beginning.

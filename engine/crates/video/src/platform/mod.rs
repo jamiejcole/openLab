@@ -7,6 +7,8 @@ use std::process::ExitCode;
 
 #[cfg(target_os = "macos")]
 mod mac;
+#[cfg(all(target_os = "macos", feature = "test-support"))]
+pub use mac::{WindowReport, window_report};
 #[cfg(any(not(target_os = "macos"), test))]
 mod none;
 

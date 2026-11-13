@@ -103,6 +103,10 @@ impl CueEngine {
         }
         self.continued.clear();
         self.random_cycles.clear();
+        // Every row shows its first colour again (QLab 5, manual p. 127).
+        for cue in std::mem::take(&mut self.played) {
+            cx.out.push(Action::PlayedChanged { cue, played: false });
+        }
         let ws = cx.ws;
         for list in &ws.cue_lists {
             let first = super::playhead::positions(&list.cues).first().copied();

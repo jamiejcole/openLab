@@ -29,7 +29,8 @@ use crate::command_model::{
     apply_model, no_change,
 };
 use crate::cue::{
-    ContinueMode, Cue, CueColor, CueKind, GroupMode, MediaRef, OscArg, SecondTrigger, Triggers,
+    ContinueMode, Cue, CueColor, CueKind, FadeAndStopOthers, GroupMode, MediaRef, OscArg,
+    SecondTrigger, Triggers,
 };
 use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, StageId, Workspace,
@@ -71,10 +72,20 @@ pub enum CueProperty {
     Color {
         value: CueColor,
     },
+    /// The colour shown once the cue has been started; `none` turns the second colour off.
+    SecondColor {
+        value: CueColor,
+    },
     Flagged {
         value: bool,
     },
     Armed {
+        value: bool,
+    },
+    AutoLoad {
+        value: bool,
+    },
+    SkipIfDisarmed {
         value: bool,
     },
     PreWait {
@@ -96,6 +107,10 @@ pub enum CueProperty {
     },
     SecondTriggerOnRelease {
         value: bool,
+    },
+    /// Its "fade and stop others" settings. The duration is finite, 0 to `MAX_TIME`.
+    FadeAndStopOthers {
+        value: FadeAndStopOthers,
     },
     /// Only for kinds that have a target.
     Target {
@@ -158,6 +173,10 @@ pub struct NumberAssignment {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one command per edit, never on the audio path; boxing the cue would only move it"
+)]
 pub enum Command {
     /// Adds one cue, with its children if it is a Group. With `auto_number`, its number is
     /// replaced by [`next_auto_number`] (ED-08).
@@ -589,6 +608,11 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
             }
             if !restoring {
                 ws.clamp_new_cues(std::slice::from_mut(&mut cue));
+                // A cue made while the setting is on loads itself (QLab 5, manual p. 128); a
+                // paste is a copy and keeps what it had, an undo puts back what was there.
+                if ws.settings.new_cues_auto_load {
+                    walk_mut(std::slice::from_mut(&mut cue), &mut |c| c.auto_load = true);
+                }
             }
             let id = cue.id;
             insert(ws, &at, vec![cue], restoring)?;

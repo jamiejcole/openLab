@@ -294,7 +294,8 @@ final class EngineSessionTests: XCTestCase {
                 "shift": .bool(false), "control": .bool(false), "alt": .bool(false), "command": .bool(false),
             ]),
         ])
-        guard case .success = await store.send(command: .setProperty(intro, .triggers(hotkey: key, osc: nil))) else {
+        guard case .success = await store.send(command: .setProperty(intro, .triggers(hotkey: key, enabled: true)))
+        else {
             return XCTFail("set the hotkey")
         }
         guard case .success = await s.hotkey(key: "j", modifiers: none, up: false) else { return XCTFail() }

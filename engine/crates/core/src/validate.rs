@@ -857,6 +857,11 @@ impl Checker {
             self.hotkey(id, "triggers.hotkey", cue.triggers.hotkey.as_ref());
             self.time(id, "pre_wait", &mut cue.pre_wait);
             self.time(id, "post_wait", &mut cue.post_wait);
+            self.time(
+                id,
+                "fade_and_stop_others.duration",
+                &mut cue.fade_and_stop_others.duration,
+            );
             self.kind_values(id, &mut cue.kind);
             if let CueKind::Group { children, .. } = &mut cue.kind {
                 self.cues(children, depth + 1);

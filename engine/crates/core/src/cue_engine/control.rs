@@ -103,6 +103,12 @@ impl CueEngine {
         self.armed.get(&cue.id).copied().unwrap_or(cue.armed)
     }
 
+    /// Whether a cue is passed over as if absent: disarmed (as [`Self::is_armed`] says) with
+    /// "skip if disarmed" set.
+    pub(super) fn is_skipped(&self, cue: &Cue) -> bool {
+        cue.skipped(self.is_armed(cue))
+    }
+
     fn set_armed(&mut self, target: CueId, armed: bool, cx: &mut Ctx) {
         let Some(model) = cx.ws.find_cue(target) else {
             return;
@@ -174,6 +180,10 @@ impl CueEngine {
                 .and_then(|id| playhead::locate(cues, id));
         }
         let Some(path) = path else {
+            return Err(GoIgnoredReason::NoCue);
+        };
+        // A skipped cue is not there: the GO acts on the next cue that is.
+        let Some(path) = playhead::first_present(path, |c| self.is_armed(c)) else {
             return Err(GoIgnoredReason::NoCue);
         };
         let Some(cue) = path.last().and_then(|&(level, index)| level.get(index)) else {

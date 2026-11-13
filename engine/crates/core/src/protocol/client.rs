@@ -392,8 +392,8 @@ pub enum Request {
     /// patch editor: answers `patch_mappings`. Workspace-bound.
     ListPatchMappings,
     /// The displays this machine can show stages on (VID-01), as the stage host lists them:
-    /// answers `displays`. Empty until the stage host has started (it starts when a workspace
-    /// with stages is open, or on this request). App-scope.
+    /// answers `displays`. Empty until the stage host, which starts with the engine's control
+    /// loop, has listed them. App-scope.
     ListDisplays,
     /// Where each of the connection's workspace's stages is shown on this machine (VID-01):
     /// answers `stage_mappings`. Workspace-bound.

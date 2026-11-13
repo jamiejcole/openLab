@@ -180,7 +180,7 @@ What an audio cue's file gives it to play, for the Duration column (CL-02): deri
 
 ### Snapshot
 
-Fields: `Snapshot` in `server.rs`. `workspace` never carries `show_mode`. `cue_states` lists cues not idle. `group_warnings` lists groups with a broken descendant; one with no run of its own is `broken` in `cue_states` with no `reason` and no `problems` entry. A previewed group is listed in `previewing` with its audio cues.
+Fields: `Snapshot` in `server.rs`. `workspace` never carries `show_mode`. `cue_states` lists cues not idle. `played` (absent: none) lists the cues started since they were last reset, whose rows show their `second_color`. `group_warnings` lists groups with a broken descendant; one with no run of its own is `broken` in `cue_states` with no `reason` and no `problems` entry. A previewed group is listed in `previewing` with its audio cues.
 
 ### Model changes
 
@@ -195,9 +195,10 @@ Fields: `Snapshot` in `server.rs`. `workspace` never carries `show_mode`. `cue_s
 
 ### Runtime changes
 
-`runtime.seq` rises by 1 per message (a gap means request a snapshot). Change types, from `RuntimeChange` (`protocol/changes.rs`): `cue_state`, `problems`, `group_warning`, `playhead`, `preview`, `warning`, `media_duration`.
+`runtime.seq` rises by 1 per message (a gap means request a snapshot). Change types, from `RuntimeChange` (`protocol/wire.rs`): `cue_state`, `problems`, `group_warning`, `playhead`, `preview`, `played`, `warning`, `media_duration`.
 
 - `cue_state { cue, state, reason? }`: `reason` (`voice_rejected`, `stream_failed`, `device_lost`) is set when the cue broke while running. A `broken` state with no `reason` is a cue with static problems (listed in `problems`) or, with neither, a group with a broken descendant (it has no problems of its own and still starts).
+- `played { cue, played }`: the cue was started for the first time since it was last reset (`true`), or a reset (of the cue, a group around it, Reset All) made it unplayed (`false`). A played cue with a `second_color` shows that colour. Runtime only: a newly opened show has none played.
 - `problems`: the full list of static problems, empty when none. `group_warning { group, warning }`: why a group shows broken (its `cue_state` is `broken` while it has no run).
 - `warning` mirrors the engine's warnings, plus `go_ignored {list, reason}` and `notice {code, message, cue?}` for what only the binary knows.
 - `media_duration` does not come from the cue engine: it comes from the control loop's plan checks (above).
@@ -230,6 +231,6 @@ Not seen by clients. The engine spawns the stage host (the process that owns the
 - **Version.** The engine's first line is `hello { version }`; the stage host answers `hello { version, pid, video }` and quits when the versions differ (`LINK_VERSION`, 1). `video: false`: this build has no video output (every stage `failed`).
 - **Engine to stage host:** `stages { stages: [{id, width, height, display?, keep_black}] }` is every stage of every open workspace and replaces the previous set; `display` is a display id from `displays` (absent: no display on this machine). `ping { seq }` is answered by `pong { seq }`. `quit` closes every window and ends the process.
 - **Stage host to engine:** `displays { displays: [{id, name, width, height}] }` after `hello` and after every display change (ids are stable across restarts: on macOS the display UUID; sizes in pixels). `stage_status { stage, state }` when a stage's state changes: `{"state":"shown","display"}`, `hidden` (keep-black off and nothing plays), `no_display`, `{"state":"display_missing","display"}`, `{"state":"failed","reason"}`. `log { level: info|warn|error, message }` goes to the show log.
-- **Limits** (checked by both ends after parsing; a line breaking one is refused as a whole): a line at most 64 KiB; at most 32 displays and 512 stages; ids, names and messages at most 512 bytes without control characters (a message may hold newlines), ids and names not empty; sizes 1 to 16384. A refused line is a `warn` log and is otherwise ignored; the reader never holds more than one line.
+- **Limits** (checked by both ends after parsing; a line breaking one is refused as a whole): a line at most 512 KiB (a full stage set with the longest display ids fits); at most 32 displays and 512 stages; ids, names and messages at most 512 bytes without control characters (a message may hold newlines), ids and names not empty; sizes 1 to 16384. A refused line is a `warn` log and is otherwise ignored; the reader never holds more than one line.
 - **Lifetime.** The stage host exits when its stdin ends, so it never outlives the engine. The engine's supervision (watchdog, relaunch, quit) is in skill `video`.
 - **Test support** (test-support builds of both ends only): `test_card { stage, frame }` draws the test card (skill `video`), `probe { stage, points: [[x, y]] }` (1 to 64 points, fractions of the stage from the top left) is answered by `probed { stage, frame?, colours: [[r, g, b, a]] }`, `hang` makes the stage host stop answering, and `set_displays { displays }` replaces a stage host's virtual displays (as if displays were plugged in or unplugged).

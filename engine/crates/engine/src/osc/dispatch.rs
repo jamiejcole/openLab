@@ -43,8 +43,6 @@ pub trait OscShow {
     fn cue_exists(&self, id: CueId) -> bool;
     /// The value `/cue/{n}/{field}` reports; `None` when the cue has no such field.
     fn cue_property(&self, id: CueId, field: CueField) -> Option<Value>;
-    /// The cue whose OSC trigger (TRG-03) is exactly this address.
-    fn cue_by_osc_trigger(&self, address: &str) -> Option<CueId>;
     /// The cue list that holds `cue` directly, not inside a group: a playhead only rests on such
     /// a cue.
     fn top_level_list(&self, _cue: CueId) -> Option<CueListId> {
@@ -265,12 +263,11 @@ pub enum Address {
         verb: Verb,
     },
     Query(Query),
-    /// Not in the API; may still be a cue's own OSC trigger. Holds the address without any
-    /// `/workspace/{id}` prefix.
+    /// Not in the API (answered with an error). Holds the address without any `/workspace/{id}`
+    /// prefix.
     Other(String),
-    /// Contains pattern characters outside the cue-number part. Not expanded; the address (without
-    /// prefix) may still be exactly a cue's OSC trigger, which can therefore contain such
-    /// characters.
+    /// Contains pattern characters outside the cue-number part. Not expanded (answered with an
+    /// error); holds the address without prefix.
     Pattern(String),
     /// In the API's shape but not something this build does.
     Unsupported(&'static str),
@@ -428,9 +425,8 @@ fn verb_of(part: &str) -> Option<Verb> {
 /// - Edit: writing any other cue property (name, number, pre-wait, post-wait, armed, flagged),
 ///   and `/select`.
 /// - Control: transport (`/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, `/reset`, the cue
-///   verbs `start` ... `preview`, `/playhead`) and a cue's own OSC trigger address. An address
-///   nothing answers to counts as a trigger, so a peer without Control learns nothing about which
-///   triggers exist.
+///   verbs `start` ... `preview`, `/playhead`), and an address nothing answers to (a peer
+///   without Control is told `denied` for it, as for any transport).
 pub fn required_right(address: &Address, args: &[OscType]) -> Option<OscRight> {
     Some(match address {
         // QLab: `/updates` works at any access level; what an update carries is filtered by the
@@ -531,19 +527,9 @@ pub struct Resolved {
     /// The message matched more than [`MAX_MATCHES`] cues, or its patterns used up their budget:
     /// what was found is used, the rest is not.
     pub capped: bool,
-    /// The inputs start a cue through its own OSC trigger address. That needs Control whatever
-    /// the address looks like (a trigger may be shaped like a read), so the caller checks it.
-    pub trigger: bool,
 }
 
 impl Resolved {
-    fn trigger(cue: CueId) -> Self {
-        Self {
-            trigger: true,
-            ..Self::input(TransportAction::Start { cue })
-        }
-    }
-
     fn input(action: TransportAction) -> Self {
         Self {
             inputs: vec![OscInput::Transport(action)],
@@ -612,7 +598,11 @@ pub fn resolve(
         | Address::Version
         | Address::Workspaces
         | Address::Unsupported(_) => Resolved::error(),
-        Address::Pattern(path) => trigger_or_unknown(show, path),
+        Address::Pattern(_) | Address::Other(_) => Resolved {
+            replies: vec![Reply::error()],
+            unknown: true,
+            ..Resolved::default()
+        },
         Address::Stop => Resolved::input(TransportAction::StopAll),
         Address::HardStop => Resolved::input(TransportAction::HardStopAll),
         Address::Panic => Resolved::input(TransportAction::Panic),
@@ -622,19 +612,7 @@ pub fn resolve(
         Address::Go => go(show, args),
         Address::Playhead(target) | Address::Select(target) => playhead(show, target),
         Address::Query(query) => query_reply(show, *query),
-        Address::Cue { cue, verb } => cue_message(show, parsed, cue, *verb, args, budget),
-        Address::Other(path) => trigger_or_unknown(show, path),
-    }
-}
-
-fn trigger_or_unknown(show: &dyn OscShow, path: &str) -> Resolved {
-    match show.cue_by_osc_trigger(path) {
-        Some(cue) => Resolved::trigger(cue),
-        None => Resolved {
-            replies: vec![Reply::error()],
-            unknown: true,
-            ..Resolved::default()
-        },
+        Address::Cue { cue, verb } => cue_message(show, cue, *verb, args, budget),
     }
 }
 
@@ -728,7 +706,6 @@ fn query_reply(show: &dyn OscShow, query: Query) -> Resolved {
 /// `/cue/...` and `/cue_id/...`: one cue, a pattern's cues, or the playhead / running cues.
 fn cue_message(
     show: &dyn OscShow,
-    parsed: &Parsed,
     cue: &CueRef,
     verb: Verb,
     args: &[OscType],
@@ -776,9 +753,6 @@ fn cue_message(
     };
     if targets.is_empty() {
         // QLab: an error for an address that reaches nothing (the address as asked).
-        if let Some(cue) = pattern_trigger(show, parsed, cue) {
-            return Resolved::trigger(cue);
-        }
         out.replies.push(Reply::error());
         return out;
     }
@@ -800,14 +774,6 @@ fn cue_message(
         }
     }
     out
-}
-
-/// A cue whose own OSC trigger is this very address (a trigger may contain pattern characters,
-/// and it is looked up first for them).
-fn pattern_trigger(show: &dyn OscShow, parsed: &Parsed, cue: &CueRef) -> Option<CueId> {
-    matches!(cue, CueRef::Pattern(_))
-        .then(|| show.cue_by_osc_trigger(&parsed.path))
-        .flatten()
 }
 
 /// The targets whose number matches, in workspace order, at most [`MAX_MATCHES`].

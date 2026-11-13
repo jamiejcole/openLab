@@ -54,6 +54,9 @@ enum RuntimeChange: Sendable, Decodable {
     case groupWarning(group: ModelID, warning: Bool)
     case playhead(list: ModelID, cue: ModelID?)
     case preview(cue: ModelID, active: Bool)
+    /// The cue was started since it was last reset (`true`) or a reset undid that: a played cue shows
+    /// its second colour.
+    case played(cue: ModelID, played: Bool)
     case warning(WireWarning)
     /// Every field nil: the cue's lengths are not known now (drop what is held).
     case mediaDuration(CueMediaDuration)
@@ -80,6 +83,9 @@ enum RuntimeChange: Sendable, Decodable {
         case "preview":
             self = .preview(
                 cue: try c.decode(ModelID.self, forKey: "cue"), active: try c.decode(Bool.self, forKey: "active"))
+        case "played":
+            self = .played(
+                cue: try c.decode(ModelID.self, forKey: "cue"), played: try c.decode(Bool.self, forKey: "played"))
         case "warning":
             self = .warning(try c.decode(WireWarning.self, forKey: "warning"))
         case "media_duration":
@@ -116,11 +122,13 @@ struct Snapshot: Sendable, Decodable {
     var groupWarnings: [ModelID]
     var playheads: [PlayheadEntry]
     var previewing: [ModelID]
+    /// Cues started since they were last reset (absent: none).
+    var played: [ModelID]?
     var warnings: [WireWarning]
     /// Absent (none known): nil.
     var mediaDurations: [CueMediaDuration]?
     enum CodingKeys: String, CodingKey {
-        case revision, document, workspace, problems, playheads, previewing, warnings
+        case revision, document, workspace, problems, playheads, previewing, played, warnings
         case runtimeSeq = "runtime_seq"
         case cueStates = "cue_states"
         case groupWarnings = "group_warnings"
@@ -530,8 +538,10 @@ enum ResultData: Sendable, Equatable, Decodable {
     /// VID-01: `video` is false where this machine has no video output, nil before the stage host started.
     case displays([StageDisplay], video: Bool?)
     case stageMappings([StageMappingEntry])
-    /// Test support: the test card's frame number the stage shows, and the RGBA colour at each point.
-    case stageProbe(frame: UInt16?, colours: [[UInt8]])
+    #if DEBUG
+        /// Test support: the test card's frame number the stage shows, and the RGBA colour at each point.
+        case stageProbe(frame: UInt16?, colours: [[UInt8]])
+    #endif
     /// A data type this client does not know; the raw object is kept.
     case other(type: String, json: JSONValue)
 
@@ -570,10 +580,12 @@ enum ResultData: Sendable, Equatable, Decodable {
                 try c.decode([StageDisplay].self, forKey: "displays"),
                 video: try c.decodeIfPresent(Bool.self, forKey: "video"))
         case "stage_mappings": self = .stageMappings(try c.decode([StageMappingEntry].self, forKey: "stages"))
-        case "stage_probe":
-            self = .stageProbe(
-                frame: try c.decodeIfPresent(UInt16.self, forKey: "frame"),
-                colours: try c.decode([[UInt8]].self, forKey: "colours"))
+        #if DEBUG
+            case "stage_probe":
+                self = .stageProbe(
+                    frame: try c.decodeIfPresent(UInt16.self, forKey: "frame"),
+                    colours: try c.decode([[UInt8]].self, forKey: "colours"))
+        #endif
         default: self = .other(type: type, json: try JSONValue(from: decoder))
         }
     }

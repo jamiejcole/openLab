@@ -374,7 +374,7 @@ fn two_cues_with_the_same_hotkey_both_start_with_no_warning() {
     let keyed = |c: Cue| Cue {
         triggers: Triggers {
             hotkey: Some(w.clone()),
-            osc: None,
+            hotkey_enabled: true,
         },
         ..c
     };

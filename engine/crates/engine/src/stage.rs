@@ -32,6 +32,32 @@ use openlab_core::stage_link::{
     decode_from_stage, encode, read_line,
 };
 
+/// Where the supervisor reads the time for its deadlines and restart counts: the system's
+/// monotonic clock, or a test's.
+#[derive(Clone)]
+pub struct StageClock(Arc<dyn Fn() -> Instant + Send + Sync>);
+
+impl StageClock {
+    pub fn system() -> Self {
+        Self(Arc::new(Instant::now))
+    }
+
+    /// A clock read by `now` (tests).
+    pub fn from_fn(now: impl Fn() -> Instant + Send + Sync + 'static) -> Self {
+        Self(Arc::new(now))
+    }
+
+    fn now(&self) -> Instant {
+        (self.0)()
+    }
+}
+
+impl std::fmt::Debug for StageClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StageClock")
+    }
+}
+
 /// How the engine runs its stage host.
 #[derive(Clone, Debug)]
 pub struct StageHostConfig {
@@ -46,6 +72,7 @@ pub struct StageHostConfig {
     pub restart_window: Duration,
     /// The pause after too many starts.
     pub retry_after: Duration,
+    pub clock: StageClock,
 }
 
 impl StageHostConfig {
@@ -58,6 +85,7 @@ impl StageHostConfig {
             max_restarts: 5,
             restart_window: Duration::from_secs(60),
             retry_after: Duration::from_secs(30),
+            clock: StageClock::system(),
         }
     }
 }
@@ -210,7 +238,7 @@ impl Supervisor {
 
     fn run(mut self) {
         loop {
-            let now = Instant::now();
+            let now = self.config.clock.now();
             if self.running.is_none() && self.may_start(now) {
                 self.start(now);
             }
@@ -244,7 +272,8 @@ impl Supervisor {
                 },
                 default(wait) => {}
             }
-            self.check_health(Instant::now());
+            let now = self.config.clock.now();
+            self.check_health(now);
         }
     }
 
@@ -274,15 +303,20 @@ impl Supervisor {
         }
     }
 
-    fn start(&mut self, now: Instant) {
-        self.starts.push_back(now);
+    /// Forgets starts older than the restart window, so only recent ones count.
+    fn forget_old_starts(&mut self, now: Instant) {
         while self
             .starts
             .front()
-            .is_some_and(|t| now.duration_since(*t) > self.config.restart_window)
+            .is_some_and(|t| now.saturating_duration_since(*t) > self.config.restart_window)
         {
             self.starts.pop_front();
         }
+    }
+
+    fn start(&mut self, now: Instant) {
+        self.forget_old_starts(now);
+        self.starts.push_back(now);
         match spawn(&self.config, &self.events) {
             Ok((child, to_child, from_child)) => {
                 self.running = Some(Running {
@@ -308,7 +342,16 @@ impl Supervisor {
 
     fn write(&mut self, message: &ToStage) {
         let Some(r) = &self.running else { return };
-        let Ok(line) = encode(message) else { return };
+        let line = match encode(message) {
+            Ok(line) => line,
+            Err(e) => {
+                (self.events)(StageEvent::Log {
+                    level: LinkLevel::Error,
+                    message: format!("could not send the stage host a message: {e}"),
+                });
+                return;
+            }
+        };
         match r.to_child.try_send(line) {
             Ok(()) | Err(TrySendError::Disconnected(_)) => {}
             Err(TrySendError::Full(_)) => self.stop("it stopped reading its input".into()),
@@ -316,7 +359,7 @@ impl Supervisor {
     }
 
     fn heard(&mut self, line: FromChild) {
-        let now = Instant::now();
+        let now = self.config.clock.now();
         let Some(r) = self.running.as_mut() else {
             return;
         };
@@ -369,6 +412,16 @@ impl Supervisor {
                 return;
             }
             FromStage::Displays { displays } => StageEvent::Displays(displays),
+            // Only the stages it was given: an id it made up is dropped, so what it sends cannot
+            // grow the engine's memory.
+            FromStage::StageStatus { stage, .. }
+                if !self
+                    .stages
+                    .as_ref()
+                    .is_some_and(|s| s.iter().any(|o| o.id == stage)) =>
+            {
+                return;
+            }
             FromStage::StageStatus { stage, state } => StageEvent::Status { stage, state },
             FromStage::Log { .. } if r.logs >= MAX_LOGS_PER_SECOND => return,
             FromStage::Log { level, message } => {
@@ -437,9 +490,13 @@ impl Supervisor {
     }
 
     fn stopped(&mut self, reason: String) {
+        // Starts long ago (a crash loop at load-in, then an hour's healthy run) do not count
+        // against a crash now: it is relaunched at once.
+        let now = self.config.clock.now();
+        self.forget_old_starts(now);
         let restarting = !self.incompatible && self.starts.len() < self.config.max_restarts;
         if !restarting && !self.incompatible {
-            self.paused_until = Some(Instant::now() + self.config.retry_after);
+            self.paused_until = Some(now + self.config.retry_after);
         }
         (self.events)(StageEvent::Stopped { reason, restarting });
     }

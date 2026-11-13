@@ -35,17 +35,21 @@ pub fn cue(n: u128, kind: CueKind) -> Cue {
         name: String::new(),
         notes: String::new(),
         color: CueColor::None,
+        second_color: CueColor::None,
         flagged: false,
         armed: true,
+        auto_load: false,
+        skip_if_disarmed: false,
         pre_wait: 0.0,
         post_wait: 0.0,
         continue_mode: ContinueMode::DoNotContinue,
         triggers: Triggers {
             hotkey: None,
-            osc: None,
+            hotkey_enabled: true,
         },
         second_trigger: SecondTrigger::Nothing,
         second_trigger_on_release: false,
+        fade_and_stop_others: openlab_core::FadeAndStopOthers::default(),
         kind,
     }
 }
@@ -143,6 +147,7 @@ pub fn workspace(cues: Vec<Cue>) -> Workspace {
             hotkeys: TransportHotkeys::default(),
             auto_number_start: 1.0,
             auto_number_increment: 1.0,
+            new_cues_auto_load: false,
         },
         patches: vec![patch(1, 2)],
         network_patches: vec![NetworkPatch {

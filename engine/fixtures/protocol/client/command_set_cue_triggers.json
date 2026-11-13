@@ -1,0 +1,23 @@
+{
+  "type": "command",
+  "id": 3,
+  "command": {
+    "type": "set_cue_property",
+    "id": "00000000-0000-0000-0000-00000000000c",
+    "property": {
+      "type": "triggers",
+      "value": {
+        "hotkey": {
+          "key": "j",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "hotkey_enabled": false
+      }
+    }
+  }
+}

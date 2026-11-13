@@ -550,10 +550,6 @@ impl OscShow for MirrorShow<'_> {
         })
     }
 
-    fn cue_by_osc_trigger(&self, address: &str) -> Option<CueId> {
-        self.find(|c| c.triggers.osc.as_deref() == Some(address))
-    }
-
     fn top_level_list(&self, cue: CueId) -> Option<CueListId> {
         self.0
             .workspace
@@ -656,17 +652,21 @@ mod tests {
             name: format!("cue {n}"),
             notes: String::new(),
             color: CueColor::None,
+            second_color: CueColor::None,
             flagged: false,
             armed: true,
+            auto_load: false,
+            skip_if_disarmed: false,
             pre_wait: 0.0,
             post_wait: 0.0,
             continue_mode: ContinueMode::DoNotContinue,
             triggers: Triggers {
                 hotkey: None,
-                osc: None,
+                hotkey_enabled: true,
             },
             second_trigger: SecondTrigger::Nothing,
             second_trigger_on_release: false,
+            fade_and_stop_others: openlab_core::FadeAndStopOthers::default(),
             kind: CueKind::Memo,
         }
     }
@@ -694,6 +694,7 @@ mod tests {
                 hotkeys: TransportHotkeys::default(),
                 auto_number_start: 1.0,
                 auto_number_increment: 1.0,
+                new_cues_auto_load: false,
             },
             patches: vec![],
             network_patches: vec![],
@@ -724,6 +725,7 @@ mod tests {
                 cue: Some(cue_id(1)),
             }],
             previewing: vec![],
+            played: vec![],
             warnings: vec![],
             media_durations: vec![],
         })
@@ -1020,7 +1022,6 @@ mod tests {
         let mut m = mirror(2);
         let mut child = cue(11);
         child.number = Some("2".into());
-        child.triggers.osc = Some("/x".into());
         m.workspace.cue_lists[0]
             .cues
             .insert(0, group(10, vec![child]));
@@ -1029,7 +1030,6 @@ mod tests {
         assert_eq!(show.cue_by_number("2"), Some(cue_id(11)));
         assert_eq!(show.cue_by_number("1"), Some(cue_id(1)));
         assert_eq!(show.cue_by_number("nope"), None);
-        assert_eq!(show.cue_by_osc_trigger("/x"), Some(cue_id(11)));
         assert!(show.cue_exists(cue_id(11)));
         assert_eq!(show.active_list(), Some(list_id()));
         // Only a cue directly in a list can have the playhead.
@@ -1116,6 +1116,7 @@ mod tests {
             group_warnings: vec![],
             playheads: vec![],
             previewing: vec![],
+            played: vec![],
             warnings: vec![],
             media_durations: vec![],
         });

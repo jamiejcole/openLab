@@ -121,6 +121,7 @@ impl Workspace {
                 hotkeys: TransportHotkeys::default(),
                 auto_number_start: 1.0,
                 auto_number_increment: 1.0,
+                new_cues_auto_load: false,
             },
             patches: vec![OutputPatch {
                 id: patch,
@@ -164,7 +165,8 @@ impl Workspace {
             .flat_map(|list| crate::tree::descendants(&list.cues))
     }
 
-    /// Every cue whose hotkey is `hotkey` (same key and modifiers), in workspace order (lists in
+    /// Every cue whose enabled hotkey is `hotkey` (same key and modifiers; a cue whose hotkey
+    /// trigger is switched off keeps its key but is not started by it), in workspace order (lists in
     /// order, cues depth-first). A press starts all of them: as in QLab 5, cues may share a
     /// hotkey and that is not a problem (QLab check K1). None when a workspace transport
     /// key is `hotkey`: the workspace action wins and no cue is started by that key (QLab check
@@ -177,7 +179,7 @@ impl Workspace {
         }
         out.extend(
             self.cues()
-                .filter(|cue| cue.triggers.hotkey.as_ref() == Some(hotkey))
+                .filter(|cue| cue.triggers.active_hotkey() == Some(hotkey))
                 .map(|cue| cue.id),
         );
         out
@@ -262,6 +264,10 @@ pub struct WorkspaceSettings {
     pub auto_number_start: f64,
     /// Step between auto-numbered cues; greater than 0.
     pub auto_number_increment: f64,
+    /// Cues made from now on have `auto_load` set (QLab 5, Workspace Settings, General; manual
+    /// p. 128). Cues already in the workspace are not changed. Absent in a file: off.
+    #[serde(default)]
+    pub new_cues_auto_load: bool,
 }
 
 impl WorkspaceSettings {

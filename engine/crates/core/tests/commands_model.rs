@@ -2494,7 +2494,7 @@ fn undo_is_not_stuck_on_a_cue_trigger_warning_the_show_was_loaded_with() {
             key: key.into(),
             modifiers: Modifiers::default(),
         }),
-        osc: None,
+        hotkey_enabled: true,
     };
     let mut loaded = cue(1, CueKind::Memo);
     loaded.triggers = hotkey("Space");

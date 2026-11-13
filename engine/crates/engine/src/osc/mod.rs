@@ -64,7 +64,7 @@ pub struct OscStats {
     pub oversize_frames: u64,
     /// Addresses that were not usable (too long, empty parts, not starting with `/`).
     pub bad_address: u64,
-    /// Valid addresses nothing answers to, and that are no cue's trigger (answered with an error).
+    /// Valid addresses nothing answers to (answered with an error).
     pub unknown_address: u64,
     /// `/workspace/{id}/...` for another workspace (or the right id in the wrong case); answered
     /// with an error.
@@ -821,13 +821,6 @@ impl Osc {
         }
         if resolved.capped {
             self.stats.matches_capped += 1;
-        }
-        if resolved.trigger && !rights.allows(OscRight::Control) {
-            // The same `error` as an address nothing answers to, so a peer without Control
-            // cannot tell a trigger from a missing cue.
-            self.stats.rejected += 1;
-            self.push_reply(&ask, &Reply::error(), out);
-            return false;
         }
         for input in resolved.inputs {
             if out.inputs.len() >= MAX_INPUTS_PER_CALL {
