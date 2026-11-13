@@ -129,6 +129,7 @@ patch plays through, are stored on each machine, not in the show file (WS-07).
 | `hotkeys` | object | The workspace key map (TRG-01, TRG-07). Transport keys `go`, `stop_all`, `pause_all`, `resume_all`; selected-cue keys `load_selected`, `pause_resume_selected`, `start_selected`, `stop_selected`, `reset_selected`, `preview_selected`, `panic_selected`; cue-editing keys `edit_number`, `edit_name`, `edit_notes`, `edit_target`, `edit_pre_wait`, `edit_duration`, `edit_post_wait`, `cycle_continue`, `toggle_flag` (they act on the cues selected in the app; the engine only keeps them from cue hotkeys). Each is `null` or a hotkey object (§5.1). New workspaces get Space, none, `[`, `]`, `l`, `p`, none, none, none, `v`, `s`, then `n`, `q`, `o`, `t`, `e`, `d`, `w`, `c`, `f`. A file older than v9 gets each key the v9 step added (`preview_selected` onward) unless a cue hotkey or another key of its map is that chord, which then keeps it and the action gets none. Panic All (Esc) is outside the map; there is no Next / Previous Cue key. **Reserved** (refused by the edit command): Esc with any modifiers, Up / Down with any modifiers. A cue hotkey equal to any key of the map never starts the cue (`HotkeyUsedByWorkspace`, §3). The loader keeps a reserved or repeated key a hand edit put here; the app binds no reserved key and only the first of a repeated one. |
 | `auto_number_start` | number, 0–1 000 000 | Number given to the first auto-numbered cue. |
 | `auto_number_increment` | number, above 0 up to 1 000 000 | Step between auto-numbered cues. |
+| `new_cues_auto_load` | bool | Optional (absent: `false`). A cue made while it is on (`AddCue`, not a paste or an undo) gets `auto_load`, a group's children too; cues already there keep theirs. |
 
 ### 4.3 Media paths
 
@@ -187,15 +188,19 @@ A destination for Network cues. A new workspace starts with one, "Network 1" (`1
 | `number` | string or `null` | Free text, unique within the workspace when set. |
 | `name` | string | The name the user typed. Empty means "named after the file": the UI shows `display_name` (the Audio cue's file name with its extension).  Assigning or following a file never writes `name`. |
 | `notes` | string | Operator notes. |
-| `color` | `"none"` \| `"red"` \| `"orange"` \| `"green"` \| `"blue"` \| `"purple"` | |
+| `color` | colour | The row's highlight. A colour is `"none"`, one of the eight basic `"red"`, `"orange"`, `"yellow"`, `"green"`, `"cyan"`, `"blue"`, `"purple"`, `"magenta"`, or one of the twelve more `"dark_red"`, `"apricot"`, `"olive"`, `"dark_green"`, `"light_blue"`, `"navy"`, `"indigo"`, `"lilac"`, `"plum"`, `"raspberry"`, `"pink"`, `"grey"`. |
+| `second_color` | colour | Optional (absent: `"none"`). The colour the row shows once the cue has been started, until Reset All, a reset of the cue (or of a group around it) or the show is opened again; `"none"` = no second colour. Whether it has been started is not saved. |
 | `flagged` | bool | Marked for attention. |
 | `armed` | bool | A disarmed cue is skipped when triggered but stays visible. |
+| `auto_load` | bool | Optional (absent: `false`). The cue is loaded when the cue before it at its level (passing over skipped cues) starts. Semantics: skill `cue-engine`. |
+| `skip_if_disarmed` | bool | Optional (absent: `false`). While the cue is disarmed it is passed over as if it were not in the list: GO, continues and groups go to the cue after it and its own continue never fires. No effect on an armed cue. |
 | `pre_wait` | seconds | Delay between the cue being triggered and its action starting. |
 | `post_wait` | seconds | Delay used by `auto_continue` before the next cue, counted from the start of the action. Ignored otherwise. |
 | `continue_mode` | `"do_not_continue"` \| `"auto_continue"` \| `"auto_follow"` | `auto_continue`: start the next cue `post_wait` after this one's action starts (after its pre-wait). `auto_follow`: start the next cue when this one's action finishes. Semantics: skill `cue-engine`. |
-| `triggers` | object | `hotkey`: `null` or `{"key", "modifiers"}`; `osc`: `null` or an OSC address that starts the cue. |
+| `triggers` | object | `hotkey`: `null` or `{"key", "modifiers"}`; `hotkey_enabled` (bool, optional, absent: `true`): whether the hotkey starts the cue; off keeps the key. A cue has no OSC address of its own (OSC starts it by number or id); an `osc` key from an older file is ignored. |
 | `second_trigger` | `"nothing"` \| `"panic"` \| `"stop"` \| `"hard_stop"` \| `"hard_stop_and_restart"` \| `"devamp"` \| `"play_next"` \| `"play_previous"` | What a trigger does while the cue is already active; semantics in skill `cue-engine`. `play_next`/`play_previous` are for Playlist groups only. |
 | `second_trigger_on_release` | bool | Releasing the hotkey or MIDI key that triggers the cue counts as a second trigger. |
+| `fade_and_stop_others` | object | Optional (absent: off, `peers`, 1 s). `{"enabled": bool, "scope": "peers" \| "list" \| "all", "duration": seconds}`: when the cue's action starts, the other active cues of its level (each with what is inside it), of its list, or of the workspace fade out over `duration` and stop. Kept while off. A bad `duration` is put in range with `InvalidTime`. Semantics: skill `cue-engine`. |
 | `kind` | object | What the cue does: `{"type": …, …}`, §5.3. |
 
 `triggers.hotkey.key` is a lower-case key name (`"a"`, `"space"`, `"f5"`).

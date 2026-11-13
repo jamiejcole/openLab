@@ -18,8 +18,8 @@ use super::{
     encode_message,
 };
 
-/// A one-list, one-cue show for the OSC fuzz targets: list 2 holds cue 3, numbered `1` and `2.5`
-/// and triggered by `/trigger`. Workspace `1` is named "one", any other "two".
+/// A one-list, one-cue show for the OSC fuzz targets: list 2 holds cue 3, numbered `1` and `2.5`.
+/// Workspace `1` is named "one", any other "two".
 pub struct FuzzShow {
     pub id: u128,
     pub access: OscAccess,
@@ -46,9 +46,6 @@ impl OscShow for FuzzShow {
     }
     fn cue_property(&self, _id: CueId, _field: CueField) -> Option<Value> {
         Some(json!("x"))
-    }
-    fn cue_by_osc_trigger(&self, address: &str) -> Option<CueId> {
-        (address == "/trigger").then_some(CueId(Uuid::from_u128(3)))
     }
     fn top_level_list(&self, cue: CueId) -> Option<CueListId> {
         self.cue_exists(cue)

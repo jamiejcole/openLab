@@ -165,9 +165,6 @@ impl OscShow for Show {
             _ => None,
         }
     }
-    fn cue_by_osc_trigger(&self, address: &str) -> Option<CueId> {
-        matches!(address, "/lights/blackout" | "/fx/all*" | "/cue/zz*/name").then_some(TRIGGERED)
-    }
     fn top_level_list(&self, cue: CueId) -> Option<CueListId> {
         match cue {
             CUE_20 => Some(LIST_B),
@@ -388,11 +385,6 @@ fn each_supported_address_becomes_its_protocol_input() {
             "/cue_id/00000000-0000-0000-0000-000000000102/start",
             vec![],
             transport(TransportAction::Start { cue: CUE_25 }),
-        ),
-        (
-            "/lights/blackout",
-            vec![],
-            transport(TransportAction::Start { cue: TRIGGERED }),
         ),
     ];
     for (addr, args, expected) in cases {
@@ -1626,17 +1618,17 @@ fn empty_cue_numbers_and_trailing_stars_are_charged_and_bounded() {
     assert_eq!(p.is_match("axxb", &mut budget), Ok(true));
 }
 
+/// A cue has no OSC address of its own (QLab 5 starts a cue by its number or id): an address
+/// outside the API starts nothing and is answered with an error, with or without patterns.
 #[test]
-fn a_cue_trigger_may_contain_pattern_characters() {
+fn an_address_outside_the_api_starts_no_cue() {
     let show = Show::open();
     let mut osc = quiet_osc();
-    assert_eq!(
-        one_input(&mut osc, &show, "/fx/all*", vec![]),
-        transport(TransportAction::Start { cue: TRIGGERED })
-    );
-    // An address with pattern characters that is no trigger is still refused.
-    let out = send(&mut osc, &show, udp(), T0, &msg("/fx/some*", vec![]));
-    assert_eq!(reply_json(&out.replies[0])["status"], "error");
+    for address in ["/lights/blackout", "/fx/all*", "/cue/zz*/name"] {
+        let out = send(&mut osc, &show, udp(), T0, &msg(address, vec![]));
+        assert!(out.inputs.is_empty(), "{address}: {out:?}");
+        assert_eq!(reply_json(&out.replies[0])["status"], "error", "{address}");
+    }
 }
 
 #[test]
@@ -1962,9 +1954,6 @@ impl OscShow for Numbered {
     }
     fn cue_property(&self, _: CueId, field: CueField) -> Option<Value> {
         (field == CueField::Armed).then_some(json!(true))
-    }
-    fn cue_by_osc_trigger(&self, _: &str) -> Option<CueId> {
-        None
     }
     fn visit_targets(&self, visit: &mut dyn FnMut(Target, &str) -> ControlFlow<()>) {
         for (i, number) in self.0.iter().enumerate() {
@@ -3608,7 +3597,7 @@ fn classified() -> Vec<(OscMessage, OscRight)> {
         (msg(&format!("{cue}/name"), vec![s("By id")]), Edit),
         (msg("/select/1", vec![]), Edit),
         (msg("/select/next", vec![]), Edit),
-        // Control: transport, the playhead and a cue's own trigger.
+        // Control: transport and the playhead.
         (msg("/go", vec![]), Control),
         (msg("/go", vec![s("1")]), Control),
         (msg("/stop", vec![]), Control),
@@ -3631,8 +3620,7 @@ fn classified() -> Vec<(OscMessage, OscRight)> {
         (msg("/cue/1/preview", vec![]), Control),
         (msg("/cue/*/start", vec![]), Control),
         (msg(&format!("{cue}/start"), vec![]), Control),
-        (msg("/lights/blackout", vec![]), Control),
-        // Nothing answers to this: it could be a trigger, so it needs Control too.
+        // Nothing answers to this; it is classed with transport.
         (msg("/no/such/thing", vec![]), Control),
     ]
 }
@@ -3821,33 +3809,6 @@ fn a_denied_write_changes_nothing_and_an_allowed_one_becomes_a_command() {
         T0,
         &msg("/select/1", vec![])
     )));
-}
-
-#[test]
-fn a_trigger_shaped_like_a_read_still_needs_control() {
-    // `/cue/zz*/name` with no argument looks like a read of every cue named zz*, but no cue
-    // matches and a cue's own trigger has exactly that address.
-    let trigger = msg("/cue/zz*/name", vec![]);
-    let show = Show::with_access(table(rights(true, true, false)));
-    for peer in [udp(), tcp_peer(1)] {
-        let mut osc = quiet_osc();
-        let out = send(&mut osc, &show, peer, T0, &trigger);
-        assert!(out.inputs.is_empty(), "{out:?}");
-        // The same `error` as a read of a cue that does not exist, so a peer without Control
-        // cannot tell a trigger from a missing cue.
-        let missing = send(&mut osc, &show, peer, T0, &msg("/cue/qq*/name", vec![]));
-        assert_eq!(out.replies.len(), 1, "{out:?}");
-        assert_eq!(
-            reply_json(&out.replies[0])["status"],
-            reply_json(&missing.replies[0])["status"]
-        );
-        assert_eq!(reply_json(&out.replies[0])["status"], "error");
-    }
-    // With Control it starts the cue.
-    let mut osc = quiet_osc();
-    connect_status(&mut osc, &show, udp(), T0, VIEW_CONTROL);
-    let out = send(&mut osc, &show, udp(), T0, &trigger);
-    assert_eq!(out.inputs.len(), 1);
 }
 
 #[test]

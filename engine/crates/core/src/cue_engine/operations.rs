@@ -70,6 +70,15 @@ impl CueEngine {
                 Some(Slot::Loaded(_)) | None => {}
             }
         }
+        // A skipped cue (disarmed, "skip if disarmed") is not there (QLab 5, manual p. 128): a
+        // trigger starts nothing and no continue of its own fires. One still running from before
+        // it was disarmed took its second trigger above; one fading out in a panic is let go on
+        // fading, not restarted.
+        if self.is_skipped(model)
+            && !matches!(self.slots.get(&cue), Some(Slot::Active(r)) if !r.panicked)
+        {
+            return;
+        }
         if !self.budget_left(cx) {
             return cx.warn(EngineWarning::ChainLimit {
                 cue,
@@ -139,7 +148,38 @@ impl CueEngine {
         }
         self.slots.insert(cue, Slot::Active(new));
         self.report(cue, before, at, cx);
+        if self.played.insert(cue) {
+            cx.out.push(Action::PlayedChanged { cue, played: true });
+        }
         self.release_panicking_parents(cue, at, cx);
+        self.auto_load_after(cue, cx);
+    }
+
+    /// `cue` has started: the cue after it at its level (passing over skipped ones) is loaded
+    /// if it is set to auto-load (QLab 5, manual p. 128). Only an idle one, armed and without
+    /// problems: one already loaded, running or broken is left as it is, and a disarmed or
+    /// broken cue would play nothing, so loading it would only show a loaded mark that means
+    /// nothing. A group loads as Load does (the children its action starts first).
+    fn auto_load_after(&mut self, cue: CueId, cx: &mut Ctx) {
+        let ws = cx.ws;
+        let Some(next) = self.next_sibling(ws, cue).and_then(|id| ws.find_cue(id)) else {
+            return;
+        };
+        if !next.auto_load
+            || !self.is_armed(next)
+            || self.slots.contains_key(&next.id)
+            || self.has_problems(next.id)
+        {
+            return;
+        }
+        self.load_tree(next.id, 0.0, cx);
+    }
+
+    /// Forgets that `cue` was started: its row shows its first colour again.
+    pub(super) fn forget_played(&mut self, cue: CueId, cx: &mut Ctx) {
+        if self.played.remove(&cue) {
+            cx.out.push(Action::PlayedChanged { cue, played: false });
+        }
     }
 
     /// Stops one cue (a group: itself only; `stop_tree` stops its descendants first).
@@ -321,6 +361,10 @@ impl CueEngine {
         let Some(model) = cx.ws.find_cue(cue) else {
             return cx.warn(EngineWarning::UnknownCue { cue });
         };
+        // A skipped cue is not there to load.
+        if self.is_skipped(model) {
+            return;
+        }
         if matches!(self.slots.get(&cue), Some(Slot::Loaded(_)) | None) && self.refuses(cue, cx) {
             return cx.warn(EngineWarning::CueBroken { cue });
         }

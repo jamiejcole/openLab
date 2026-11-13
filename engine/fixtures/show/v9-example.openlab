@@ -169,7 +169,8 @@
         }
       },
       "auto_number_start": 1.0,
-      "auto_number_increment": 0.5
+      "auto_number_increment": 0.5,
+      "new_cues_auto_load": false
     },
     "patches": [
       {
@@ -210,17 +211,25 @@
             "name": "House open",
             "notes": "",
             "color": "purple",
+            "second_color": "none",
             "flagged": true,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "memo"
             }
@@ -231,8 +240,11 @@
             "name": "Preshow music",
             "notes": "Loops until the house is called.",
             "color": "green",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "auto_continue",
@@ -246,10 +258,15 @@
                   "command": true
                 }
               },
-              "osc": "/preshow"
+              "hotkey_enabled": true
             },
             "second_trigger": "panic",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "audio",
               "media": "media/preshow.wav",
@@ -317,17 +334,25 @@
             "name": "Fade preshow",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 1.0,
             "post_wait": 0.5,
             "continue_mode": "auto_follow",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "fade",
               "target": "00000000-0000-0000-0000-000000000002",
@@ -357,17 +382,25 @@
             "name": "Storm",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "group",
               "mode": {
@@ -380,17 +413,25 @@
                   "name": "Thunder",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
+                  "fade_and_stop_others": {
+                    "enabled": false,
+                    "scope": "peers",
+                    "duration": 1.0
+                  },
                   "kind": {
                     "type": "audio",
                     "media": "/Volumes/Show/sfx/thunder.aif",
@@ -431,17 +472,25 @@
                   "name": "Lightning",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.25,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
+                  "fade_and_stop_others": {
+                    "enabled": false,
+                    "scope": "peers",
+                    "duration": 1.0
+                  },
                   "kind": {
                     "type": "network",
                     "destination": "00000000-0000-0000-0000-000000000001",
@@ -472,17 +521,25 @@
                   "name": "Hold",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
+                  "fade_and_stop_others": {
+                    "enabled": false,
+                    "scope": "peers",
+                    "duration": 1.0
+                  },
                   "kind": {
                     "type": "wait",
                     "duration": 2.5
@@ -497,17 +554,25 @@
             "name": "Start storm",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "start",
               "target": "00000000-0000-0000-0000-000000000004"
@@ -519,17 +584,25 @@
             "name": "Stop preshow",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "stop",
               "target": "00000000-0000-0000-0000-000000000002",
@@ -545,17 +618,25 @@
             "name": "Pause preshow",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "pause",
               "target": "00000000-0000-0000-0000-000000000002"
@@ -567,17 +648,25 @@
             "name": "Cue up preshow",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "load",
               "target": "00000000-0000-0000-0000-000000000002",
@@ -590,17 +679,25 @@
             "name": "Reset preshow",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "reset",
               "target": "00000000-0000-0000-0000-000000000002"
@@ -612,17 +709,25 @@
             "name": "Leave loop",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "devamp",
               "target": "00000000-0000-0000-0000-000000000002",
@@ -637,17 +742,25 @@
             "name": "Back to top",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "go_to",
               "target": "00000000-0000-0000-0000-000000000001",
@@ -660,17 +773,25 @@
             "name": "Arm storm",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "arm",
               "target": "00000000-0000-0000-0000-000000000004"
@@ -682,17 +803,25 @@
             "name": "Disarm storm",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "disarm",
               "target": "00000000-0000-0000-0000-000000000004"
@@ -710,17 +839,25 @@
             "name": "Walk-in playlist",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "play_next",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "group",
               "mode": {
@@ -735,17 +872,25 @@
                   "name": "Track 1",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
+                  "fade_and_stop_others": {
+                    "enabled": false,
+                    "scope": "peers",
+                    "duration": 1.0
+                  },
                   "kind": {
                     "type": "audio",
                     "media": "media/walkin/01.mp3",
@@ -786,17 +931,25 @@
                   "name": "Track 2",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
+                  "fade_and_stop_others": {
+                    "enabled": false,
+                    "scope": "peers",
+                    "duration": 1.0
+                  },
                   "kind": {
                     "type": "audio",
                     "media": "media/walkin/02.mp3",
@@ -840,17 +993,25 @@
             "name": "Doorbell",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "hard_stop_and_restart",
             "second_trigger_on_release": true,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "group",
               "mode": {
@@ -863,17 +1024,25 @@
                   "name": "Bell A",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
+                  "fade_and_stop_others": {
+                    "enabled": false,
+                    "scope": "peers",
+                    "duration": 1.0
+                  },
                   "kind": {
                     "type": "audio",
                     "media": "media/a.wav",
@@ -917,17 +1086,25 @@
             "name": "Scene change",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "group",
               "mode": {
@@ -940,17 +1117,25 @@
                   "name": "Note",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
+                  "fade_and_stop_others": {
+                    "enabled": false,
+                    "scope": "peers",
+                    "duration": 1.0
+                  },
                   "kind": {
                     "type": "memo"
                   }
@@ -964,17 +1149,25 @@
             "name": "Sequence",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
             "kind": {
               "type": "group",
               "mode": {
@@ -987,17 +1180,25 @@
                   "name": "Pause",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
+                  "fade_and_stop_others": {
+                    "enabled": false,
+                    "scope": "peers",
+                    "duration": 1.0
+                  },
                   "kind": {
                     "type": "wait",
                     "duration": 1.0

@@ -258,6 +258,11 @@ impl CueEngine {
         run.follow = !failed && continue_mode == ContinueMode::AutoFollow;
         self.settle(cue, at, cx);
         self.report(cue, before, at, cx);
+        // On its action start (after the pre-wait), as the duck does (QLab 5, manual p. 130); a
+        // disarmed or broken cue acts on nothing.
+        if !skipped && model.fade_and_stop_others.enabled {
+            self.as_of(at, cx, |e, cx| e.fade_and_stop_others(cue, cx));
+        }
         // The cue is in its action while it acts, so a trigger cycle back to it is ignored.
         match act {
             Act::Group => self.start_children(cue, at, cx),
@@ -280,9 +285,21 @@ impl CueEngine {
         {
             self.continued.insert(cue);
         }
-        if let Some(next) = next_sibling(cx.ws, cue) {
+        if let Some(next) = self.next_sibling(cx.ws, cue) {
             self.start(next, at, cx);
         }
+    }
+
+    /// The cue after `cue` among its siblings, passing over skipped ones (disarmed with "skip
+    /// if disarmed": as if they were not there).
+    pub(super) fn next_sibling(&self, ws: &Workspace, cue: CueId) -> Option<CueId> {
+        let path = tree::find_path(ws, cue)?;
+        let (parents, index) = path.split()?;
+        tree::container(ws, path.list, parents)?
+            .iter()
+            .skip(index.checked_add(1)?)
+            .find(|c| !self.is_skipped(c))
+            .map(|c| c.id)
     }
 
     /// Forgets a run that has nothing left to do (on sample `at`); a broken one stays broken.
@@ -348,14 +365,6 @@ impl CueEngine {
         self.next_run = self.next_run.saturating_add(1);
         run
     }
-}
-
-fn next_sibling(ws: &Workspace, cue: CueId) -> Option<CueId> {
-    let path = tree::find_path(ws, cue)?;
-    let (parents, index) = path.split()?;
-    tree::container(ws, path.list, parents)?
-        .get(index.checked_add(1)?)
-        .map(|c| c.id)
 }
 
 /// What a cue's action does.

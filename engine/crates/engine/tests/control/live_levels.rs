@@ -754,3 +754,39 @@ fn a_faded_output_keeps_the_fade_level_when_its_patch_adds_it() {
         x[at + MOVE]
     );
 }
+
+/// "Fade and stop others", peers, 1 s: the cue playing beside it is heard fading out from its
+/// level along a straight line over that second, and is silent and stopped after it.
+#[test]
+fn fade_and_stop_others_fades_a_playing_peer_out_over_its_time_and_stops_it() {
+    let path = wav(&dc(RATE as usize * 4, LEVEL));
+    let mut stopper = cue(2, CueKind::Memo);
+    stopper.fade_and_stop_others = openlab_core::FadeAndStopOthers {
+        enabled: true,
+        scope: openlab_core::OthersScope::Peers,
+        duration: 1.0,
+    };
+    let mut s = show(workspace(vec![audio(1, &path, 0), stopper]));
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    let at = start(&mut s, 2) as usize;
+    s.run(u64::from(RATE) * 2);
+    let out = s.channel(0);
+    let near = |i: usize, want: f32| {
+        assert!(
+            (out[i] - want).abs() < 0.01,
+            "sample {i}: {} not {want}",
+            out[i]
+        );
+    };
+    near(at - 1, LEVEL);
+    near(at + RATE as usize / 4, LEVEL * 0.75);
+    near(at + RATE as usize / 2, LEVEL * 0.5);
+    near(at + RATE as usize * 3 / 4, LEVEL * 0.25);
+    assert!(
+        out[at + RATE as usize..].iter().all(|&v| v == 0.0),
+        "silent after the fade"
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().live_voices(), 0);
+}

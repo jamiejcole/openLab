@@ -403,6 +403,18 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
             c.post_wait += 3.0;
         }
         c.armed = s.armed;
+        // Drawn from bits the other fields leave free, so the cases already found keep their
+        // shape: a third of the cues pass over when disarmed, a fifth auto-load.
+        c.skip_if_disarmed = s.target % 3 == 0;
+        c.auto_load = s.second % 5 == 1;
+        if s.target % 7 == 2 {
+            c.fade_and_stop_others = FadeAndStopOthers {
+                enabled: true,
+                scope: [OthersScope::Peers, OthersScope::List, OthersScope::All]
+                    [usize::from(s.pre % 3)],
+                duration: f64::from(s.post) * 0.25,
+            };
+        }
         c.second_trigger = second_trigger(s.second);
         c.second_trigger_on_release = s.release;
         if pair.is_some() {
@@ -1472,6 +1484,11 @@ impl Run {
             && !actions
                 .iter()
                 .any(|a| matches!(a, Action::GoIgnored { .. }))
+            // A GO from a skipped cue acts on the next cue that is there (maybe outside the
+            // group): this rule is about a GO on the playhead cue itself.
+            && !ph_before
+                .and_then(|p| self.ws.find_cue(p))
+                .is_some_and(|c| c.skipped(c.armed))
         {
             let cues = &self.ws.cue_lists[0].cues;
             let old = ph_before
@@ -1492,7 +1509,24 @@ impl Run {
                     flatten(g.children(), &mut inside);
                 }
                 let at = positions.iter().position(|p| *p == outer).unwrap();
-                let expected = positions.get(at + 1 + inside.len()).copied();
+                // Skipped cues (disarmed, "skip if disarmed") are not there: the playhead
+                // stands on the first position after the group that is, a skipped group's
+                // children passed over with it.
+                let mut next = at + 1 + inside.len();
+                let expected = loop {
+                    let Some(p) = positions.get(next).copied() else {
+                        break None;
+                    };
+                    let Some(c) = self.ws.find_cue(p) else {
+                        break Some(p);
+                    };
+                    if !c.skipped(c.armed) {
+                        break Some(p);
+                    }
+                    let mut below = Vec::new();
+                    flatten(c.children(), &mut below);
+                    next += 1 + below.len();
+                };
                 prop_assert_eq!(
                     self.ph,
                     expected,

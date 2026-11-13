@@ -414,6 +414,13 @@ pub enum RuntimeChange {
         cue: CueId,
         active: bool,
     },
+    /// The cue was started for the first time since it was last reset (`played` true), or a
+    /// reset (of the cue, a group around it, or Reset All) undid that: while played, a cue
+    /// with a second colour shows it.
+    Played {
+        cue: CueId,
+        played: bool,
+    },
     Warning {
         warning: WireWarning,
     },
@@ -486,6 +493,10 @@ impl RuntimeChange {
             Action::GroupWarningChanged { group, warning } => Self::GroupWarning {
                 group: *group,
                 warning: *warning,
+            },
+            Action::PlayedChanged { cue, played } => Self::Played {
+                cue: *cue,
+                played: *played,
             },
             Action::Warning(warning) => Self::Warning {
                 warning: WireWarning::from_engine(warning, rate),

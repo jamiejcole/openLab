@@ -169,6 +169,41 @@ fn a_disarm_cue_changes_the_model_as_a_runtime_change() {
     assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
 }
 
+/// The second colour shows after a cue's first start until Reset All: the engine tells every
+/// client which cues have played (`played` runtime changes, the snapshot's `played`).
+#[test]
+fn a_second_colour_cue_reports_played_after_its_first_start_until_reset_all() {
+    use openlab_core::protocol::RuntimeChange;
+    let path = wav(&dc(300, 0.5));
+    let mut one = audio(1, &path, 0);
+    one.second_color = openlab_core::CueColor::LightBlue;
+    let mut s = show(workspace(vec![one]));
+    s.take_outbound();
+    assert!(s.control().snapshot().played.is_empty());
+    go(&mut s);
+    s.run(BLOCK * 2);
+    let played = |msgs: &[ServerMessage]| -> Vec<bool> {
+        changes(msgs)
+            .into_iter()
+            .filter_map(|c| match c {
+                RuntimeChange::Played { cue, played } if cue == id(1) => Some(played),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(played(&s.take_outbound()), vec![true]);
+    s.run(1000);
+    assert_eq!(
+        s.control().snapshot().played,
+        vec![id(1)],
+        "still after it ended"
+    );
+    s.transport(TransportAction::ResetAll);
+    s.run(BLOCK);
+    assert_eq!(played(&s.take_outbound()), vec![false]);
+    assert!(s.control().snapshot().played.is_empty());
+}
+
 #[test]
 fn relink_of_a_missing_folder_is_refused_and_snapshot_answers() {
     let path = wav(&dc(300, 0.5));

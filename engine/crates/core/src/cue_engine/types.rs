@@ -603,6 +603,12 @@ pub enum Action {
         group: CueId,
         warning: bool,
     },
+    /// The cue was started for the first time since it was last reset (`played` true), or a
+    /// reset made it unplayed again: a row with a second colour shows it while played.
+    PlayedChanged {
+        cue: CueId,
+        played: bool,
+    },
     Warning(EngineWarning),
 }
 

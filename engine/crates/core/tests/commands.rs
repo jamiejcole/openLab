@@ -492,6 +492,65 @@ fn auto_number_replaces_the_cues_own_number_and_survives_undo_and_redo() {
     assert_eq!(ws, after);
 }
 
+/// Workspace Settings, General, "new cues auto-load" (QLab 5, manual p. 128): a cue made
+/// afterwards has auto-load set (a group's children with it); cues already there, a pasted copy
+/// and an undo keep what they had.
+#[test]
+fn a_cue_made_with_new_cues_auto_load_on_auto_loads_and_existing_cues_are_unchanged() {
+    let mut ws = workspace(vec![memo(1)]);
+    let mut history = History::new();
+    history
+        .execute(
+            &mut ws,
+            Command::SetWorkspaceSetting {
+                setting: WorkspaceSetting::NewCuesAutoLoad { value: true },
+            },
+        )
+        .unwrap();
+    assert!(ws.settings.new_cues_auto_load);
+    assert!(
+        !ws.find_cue(cue_id(1)).unwrap().auto_load,
+        "existing cue unchanged"
+    );
+    history
+        .execute(&mut ws, add(pos(None, 1), grp(2, vec![memo(3)])))
+        .unwrap();
+    assert!(ws.find_cue(cue_id(2)).unwrap().auto_load);
+    assert!(ws.find_cue(cue_id(3)).unwrap().auto_load);
+    // A paste is a copy: it keeps the copied cue's value.
+    history
+        .execute(
+            &mut ws,
+            Command::Paste {
+                at: pos(None, 2),
+                cues: vec![memo(4)],
+            },
+        )
+        .unwrap();
+    assert!(!ws.find_cue(cue_id(4)).unwrap().auto_load);
+    // Undo and redo put back what was there.
+    let after = ws.clone();
+    assert!(history.undo(&mut ws).unwrap());
+    assert!(history.undo(&mut ws).unwrap());
+    assert!(ws.find_cue(cue_id(2)).is_none());
+    assert!(history.redo(&mut ws).unwrap());
+    assert!(history.redo(&mut ws).unwrap());
+    assert_eq!(ws, after);
+    // Off again: a new cue comes as the client sent it.
+    history
+        .execute(
+            &mut ws,
+            Command::SetWorkspaceSetting {
+                setting: WorkspaceSetting::NewCuesAutoLoad { value: false },
+            },
+        )
+        .unwrap();
+    history
+        .execute(&mut ws, add(pos(None, 3), memo(5)))
+        .unwrap();
+    assert!(!ws.find_cue(cue_id(5)).unwrap().auto_load);
+}
+
 #[test]
 fn auto_numbering_with_invalid_settings_is_refused() {
     for (start, increment) in [
@@ -831,8 +890,20 @@ fn every_common_property_can_be_set_and_undone() {
         CueProperty::Color {
             value: CueColor::Red,
         },
+        CueProperty::SecondColor {
+            value: CueColor::Raspberry,
+        },
         CueProperty::Flagged { value: true },
         CueProperty::Armed { value: false },
+        CueProperty::AutoLoad { value: true },
+        CueProperty::FadeAndStopOthers {
+            value: FadeAndStopOthers {
+                enabled: true,
+                scope: OthersScope::All,
+                duration: 3.0,
+            },
+        },
+        CueProperty::SkipIfDisarmed { value: true },
         CueProperty::PreWait { value: 1.5 },
         CueProperty::PostWait { value: 2.5 },
         CueProperty::ContinueMode {
@@ -841,7 +912,7 @@ fn every_common_property_can_be_set_and_undone() {
         CueProperty::Triggers {
             value: Triggers {
                 hotkey: Some(hotkey),
-                osc: Some("/cue/1".into()),
+                hotkey_enabled: false,
             },
         },
     ];
@@ -1090,7 +1161,7 @@ fn set_property_refuses_non_finite_and_out_of_range_values() {
                             key: "A".into(),
                             modifiers: Modifiers::default()
                         }),
-                        osc: None,
+                        hotkey_enabled: true,
                     },
                 }
             )
@@ -2215,4 +2286,63 @@ fn a_kind_replacement_between_duration_edits_of_one_cue_undoes_to_the_start() {
     }
     history.undo(&mut ws).unwrap();
     assert_eq!(ws, before);
+}
+
+/// "Fade and stop others" holds a time like a pre-wait: every path that sets it keeps it finite,
+/// 0 to 24 h. A command and a paste refuse a bad one; a file has it put in range with a warning.
+#[test]
+fn a_bad_fade_and_stop_others_time_is_refused_by_a_command_and_a_paste_and_repaired_on_load() {
+    let field = "fade_and_stop_others.duration";
+    let with = |duration: f64| FadeAndStopOthers {
+        enabled: true,
+        scope: OthersScope::List,
+        duration,
+    };
+    let mut ws = workspace(vec![memo(1)]);
+    for bad in [f64::NAN, f64::INFINITY, -0.5, MAX_TIME + 1.0] {
+        let error = refused(
+            &mut ws,
+            set(1, CueProperty::FadeAndStopOthers { value: with(bad) }),
+        );
+        let CommandError::InvalidCue(issues) = error else {
+            panic!("{bad}: {error:?}")
+        };
+        assert_eq!(
+            issues.iter().map(|i| i.kind.clone()).collect::<Vec<_>>(),
+            vec![IssueKind::InvalidTime { field }],
+            "{bad}"
+        );
+        let mut pasted = memo(2);
+        pasted.fade_and_stop_others = with(bad);
+        assert!(matches!(
+            refused(
+                &mut ws,
+                Command::Paste {
+                    at: pos(None, 1),
+                    cues: vec![pasted],
+                }
+            ),
+            CommandError::InvalidCue(_)
+        ));
+    }
+    round_trip(
+        &mut ws,
+        set(1, CueProperty::FadeAndStopOthers { value: with(2.5) }),
+    );
+    // A show file: the time is put in range (NaN to 0) and the cue named.
+    let mut bad = memo(1);
+    bad.fade_and_stop_others = with(-3.0);
+    let loaded = load_show(&show_text(&workspace(vec![bad]))).unwrap();
+    assert_eq!(
+        loaded.workspace.cue_lists[0].cues[0]
+            .fade_and_stop_others
+            .duration,
+        0.0
+    );
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.cue_id == Some(cue_id(1)) && w.kind == IssueKind::InvalidTime { field })
+    );
 }

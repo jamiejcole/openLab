@@ -393,6 +393,7 @@ mod tests {
                 group_warnings: vec![],
                 playheads: vec![],
                 previewing: vec![],
+                played: vec![],
                 warnings: vec![],
                 media_durations: vec![],
             }),
@@ -503,6 +504,7 @@ mod tap_tests {
             group_warnings: vec![],
             playheads: vec![],
             previewing: vec![],
+            played: vec![],
             warnings: vec![],
             media_durations: vec![],
         }

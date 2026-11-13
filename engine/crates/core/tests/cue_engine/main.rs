@@ -6,6 +6,7 @@
 mod common;
 
 mod basics;
+mod basics_triggers;
 mod broken;
 mod cleanups;
 mod control;
