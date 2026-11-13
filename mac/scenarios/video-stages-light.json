@@ -1,0 +1,39 @@
+{
+  "about": "The three stages of video-stages in the light appearance.",
+  "show": "video-stages.openlab",
+  "displays": "V1:1920x1080,V2:1280x720",
+  "settings": {
+    "settings_version": 1,
+    "workspaces": {
+      "00000000-0000-0000-0000-0000000000e1": {
+        "patches": {},
+        "stages": {
+          "00000000-0000-0000-0000-0000000000e3": {
+            "display": "GONE",
+            "name": "Projector",
+            "width": 3840,
+            "height": 1080
+          },
+          "00000000-0000-0000-0000-0000000000e4": {
+            "display": "V1",
+            "name": "Virtual V1",
+            "width": 1920,
+            "height": 1080
+          }
+        }
+      }
+    }
+  },
+  "appearance": "light",
+  "steps": [
+    {
+      "focus": "settings"
+    },
+    {
+      "tab": "video"
+    },
+    {
+      "shot": "video"
+    }
+  ]
+}

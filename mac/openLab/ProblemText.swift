@@ -127,6 +127,17 @@ enum WarningRows {
         for text in store.appNotices {
             rows.append(WarningRow(id: "k:\(text)", cue: nil, title: text, detail: "", canRelink: false))
         }
+        // A stage that cannot be seen on this computer (VID-01): no display chosen, its display
+        // unplugged, or failing.
+        for entry in store.videoOutputs.stages {
+            guard let state = entry.state, let why = VideoSettingsPane.warning(state) else { continue }
+            let name =
+                model?.stages.first { $0.id == entry.stage }?.raw["name"]?.stringValue ?? entry.stage.raw
+            rows.append(
+                WarningRow(
+                    id: "v:\(entry.stage.raw)", cue: nil, title: String(format: loc("warnings.stage"), name, why),
+                    detail: "", canRelink: false))
+        }
         return rows
     }
 

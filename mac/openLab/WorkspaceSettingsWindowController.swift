@@ -73,6 +73,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var keyClearButtons: [WorkspaceKey: NSButton] = [:]
     var keyReasons: [WorkspaceKey: NSTextField] = [:]
 
+    /// The Video page (stages), in its own file.
+    let videoPane: VideoSettingsPane
+
     let messageLabel = NSTextField(wrappingLabelWithString: "")
     let doneButton = DoneButton(title: loc("settings.done"), target: nil, action: nil)
 
@@ -88,6 +91,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
 
     init(store: WorkspaceStore) {
         model = WorkspaceSettingsModel(store: store)
+        videoPane = VideoSettingsPane(store: store)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 540),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -158,6 +162,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         showWindow(nil)
         return Task {
             await model.refresh()
+            await videoPane.refresh()
             render()
         }
     }
@@ -247,6 +252,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             (loc("settings.tab.audio"), audio, "audio"),
             (loc("settings.tab.osc"), buildOscTab(), "osc"),
             (loc("settings.tab.network"), buildNetworkTab(), "network"),
+            (loc("settings.tab.video"), videoPane.view, "video"),
         ] {
             let item = NSTabViewItem(identifier: id)
             item.label = label
@@ -254,11 +260,11 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             view.translatesAutoresizingMaskIntoConstraints = false
             holder.addSubview(view)
             // The OSC table takes the pane's height.
-            if id == "osc" || id == "network" {
+            if id == "osc" || id == "network" || id == "video" {
                 view.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -16).isActive = true
             }
             // The key map's two columns share the pane's width, so a long action name wraps in its own.
-            if id == "keys" {
+            if id == "keys" || id == "video" {
                 view.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -16).isActive = true
             }
             NSLayoutConstraint.activate([

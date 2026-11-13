@@ -314,6 +314,14 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         return receive(message)
     }
 
+    /// Takes the displays and stage states (a push or the lists' answers); stage problems are
+    /// workspace notices (the Warnings list shows them), so notice views redraw.
+    func setVideoOutputs(_ v: VideoOutputs) {
+        guard v != videoOutputs else { return }
+        videoOutputs = v
+        changes.send(.notices)
+    }
+
     /// Applies one server message. `.gap` means the caller must request a snapshot.
     @discardableResult
     func receive(_ message: ServerMessage) -> ApplyOutcome {
@@ -377,7 +385,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         case .meters(let outputs, let cues):
             meters.ingest(outputs: outputs, cues: cues)
         case .videoOutputs(let v):
-            videoOutputs = v
+            setVideoOutputs(v)
         case .result, .error, .appWelcome, .workspaces, .unknown:
             // These belong to the client or session.
             break
