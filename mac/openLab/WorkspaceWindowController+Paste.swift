@@ -30,6 +30,7 @@ extension WorkspaceWindowController {
         let sheet = PastePropertiesSheet(
             title: title, offered: offered, ticked: PastePropertiesSheet.remembered(pasteDefaults).intersection(all))
         pasteSheet = sheet
+        sheet.window.appearance = window.appearance
         sheet.onDone = { [weak self] ticked in
             guard let self else { return }
             pasteSheet = nil

@@ -747,6 +747,10 @@ final class ScenarioRunner {
         sheet.appearance = window.appearance
         guard let frame = sheet.contentView else { throw Failure("the sheet has no content") }
         frame.layoutSubtreeIfNeeded()
+        // Off screen the sheet's colours resolve in the drawing appearance: the window's, as on screen.
+        let drawing = NSAppearance.current
+        NSAppearance.current = sheet.appearance
+        defer { NSAppearance.current = drawing }
         let top = try renderView(frame, scale: 2, background: .windowBackgroundColor)
         guard let context = NSGraphicsContext(bitmapImageRep: rep) else { throw Failure("no context") }
         let titleBar = (window.frame.height - window.contentLayoutRect.height) * 2

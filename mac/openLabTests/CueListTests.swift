@@ -1223,7 +1223,7 @@ extension CueListTests {
             m.items.map { $0.isSeparatorItem ? "-" : $0.title },
             [
                 "Preview", "Load", "Panic", "-", "Move Playhead to This Cue", "Reveal Target in Finder", "-", "Cut",
-                "Copy", "Paste", "Delete", "-", "Edit",
+                "Copy", "Paste", "Paste Properties…", "Delete", "-", "Edit",
             ])
         XCTAssertTrue(
             m.items.filter { !$0.isSeparatorItem && $0.submenu == nil }.allSatisfy { $0.target === h.vc },

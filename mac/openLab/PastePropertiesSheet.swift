@@ -30,7 +30,7 @@ final class PastePropertiesSheet: NSObject {
     ) {
         self.offered = offered
         window = PasteSheetWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 400), styleMask: [.titled], backing: .buffered,
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 440), styleMask: [.titled], backing: .buffered,
             defer: true)
         super.init()
         window.isReleasedWhenClosed = false
@@ -47,7 +47,7 @@ final class PastePropertiesSheet: NSObject {
         let list = NSStackView()
         list.orientation = .vertical
         list.alignment = .leading
-        list.spacing = 4
+        list.spacing = 2
         list.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
         for (category, properties) in offered {
             let head = NSButton(
@@ -116,7 +116,7 @@ final class PastePropertiesSheet: NSObject {
             buttons.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             buttons.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
             content.widthAnchor.constraint(equalToConstant: 460),
-            content.heightAnchor.constraint(equalToConstant: 400),
+            content.heightAnchor.constraint(equalToConstant: 440),
         ])
         window.contentView = content
         window.initialFirstResponder = propertyChecks[offered.first?.properties.first ?? .name]

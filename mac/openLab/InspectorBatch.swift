@@ -57,7 +57,9 @@ extension InspectorViewController {
                 if notesView.string != text { notesView.string = text }
             } else if let tf = field(f) {
                 if tf.stringValue != text { tf.stringValue = text }
-                tf.placeholderString = shown.count > 1 ? loc("inspector.mixed") : nil
+                // A number belongs to one cue: its field is off and empty, not mixed.
+                tf.placeholderString = shown.count > 1 && f != .number ? loc("inspector.mixed") : nil
+                if f == .number { tf.stringValue = "" }
             }
         }
         let style = kind.flatMap { _ in CueKindStyle.typeStyle(kind: cues.first?.raw["kind"]) }
