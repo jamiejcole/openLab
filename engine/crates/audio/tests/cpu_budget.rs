@@ -185,7 +185,9 @@ impl Workload {
                         slices,
                     })
                     .map_err(|e| format!("prepare: {e:?}"))?;
-                let (v, h) = prepared.into_voice(vid, ctl.cue_outputs());
+                // As the engine starts a voice: as wide as its patch (two cue outputs) in a
+                // mixer of 128.
+                let (v, h) = prepared.into_voice(vid, 2);
                 (v, None, Some(h))
             }
             _ => {
@@ -195,7 +197,7 @@ impl Workload {
                     .into_iter()
                     .flat_map(|s| [s, -s])
                     .collect();
-                let v = openlab_audio::VoiceStart::new(vid, rx, 2, ctl.cue_outputs());
+                let v = openlab_audio::VoiceStart::new(vid, rx, 2, 2);
                 (v, Some((tx, src, 0)), None)
             }
         };

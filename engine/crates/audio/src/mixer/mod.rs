@@ -34,6 +34,8 @@ pub type SampleTime = u64;
 pub struct VoiceId(pub u64);
 
 pub const MAX_OUTPUT_CHANNELS: usize = 64;
+/// Most cue outputs a patch matrix has (QLab 5: a patch has 1 to 128).
+pub const MAX_CUE_OUTPUTS: usize = 128;
 pub const MAX_VOICE_CHANNELS: usize = 64;
 pub const MAX_PATCHES: usize = 64;
 pub const MAX_SAMPLE_RATE: u32 = 384_000;
@@ -42,7 +44,7 @@ pub const MAX_BLOCK_FRAMES: usize = 8192;
 pub const COMMAND_CAPACITY: usize = 1024;
 /// The most gains one [`CommandKind::RampSet`] the engine sends holds: every gain of a voice at the
 /// largest size. A longer run of ramps (several Fades of one voice sent together) is split.
-pub const MAX_RAMP_SET: usize = 1 + MAX_OUTPUT_CHANNELS + MAX_VOICE_CHANNELS * MAX_OUTPUT_CHANNELS;
+pub const MAX_RAMP_SET: usize = 1 + MAX_CUE_OUTPUTS + MAX_VOICE_CHANNELS * MAX_CUE_OUTPUTS;
 /// Capacity of the mixer's time-ordered pending set.
 pub const PENDING_CAPACITY: usize = 4096;
 const EVENT_CAPACITY: usize = 1024;
@@ -52,8 +54,11 @@ const DEZIP_SECONDS: f64 = 0.005;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MixerConfig {
     pub sample_rate: u32,
-    /// Device outputs. Every patch has this many cue outputs.
+    /// Device outputs.
     pub output_channels: usize,
+    /// Cue outputs: the rows of every patch matrix. A voice uses as many as its start routes
+    /// (and any a later ramp names); only those cost anything to render.
+    pub cue_outputs: usize,
     /// Internal render chunk; any device block size is accepted and split into chunks this size.
     pub max_block_frames: usize,
     pub max_voices: usize,
@@ -70,6 +75,7 @@ impl Default for MixerConfig {
         MixerConfig {
             sample_rate: 48_000,
             output_channels: 2,
+            cue_outputs: MAX_CUE_OUTPUTS,
             max_block_frames: 1024,
             max_voices: 128,
             max_voice_channels: 8,
@@ -83,6 +89,7 @@ impl Default for MixerConfig {
 pub enum ConfigError {
     SampleRate,
     OutputChannels,
+    CueOutputs,
     BlockFrames,
     Voices,
     VoiceChannels,
@@ -95,6 +102,7 @@ impl fmt::Display for ConfigError {
         f.write_str(match self {
             ConfigError::SampleRate => "sample rate must be 1..=384000",
             ConfigError::OutputChannels => "output channels must be 1..=64",
+            ConfigError::CueOutputs => "cue outputs must be 1..=128",
             ConfigError::BlockFrames => "max block frames must be 1..=8192",
             ConfigError::Voices => "max voices must be 1..=4096",
             ConfigError::VoiceChannels => "max voice channels must be 1..=64",
@@ -127,9 +135,10 @@ pub struct VoiceStart {
     pub patch: u16,
     /// Voice master gain (linear).
     pub gain: f32,
-    /// One gain per cue output (`output_channels` of them).
+    /// One gain per cue output the voice uses: 1 to the mixer's `cue_outputs` (the outputs of
+    /// its patch). Only these are rendered until a ramp names a later one.
     pub cue_outputs: Vec<f32>,
-    /// Row-major `[input][cue output]`, `channels × output_channels`.
+    /// Row-major `[input][cue output]`, `channels × cue_outputs.len()`.
     pub crosspoints: Vec<f32>,
     /// Frames discarded from the source before playback (in point).
     pub skip_frames: u64,
@@ -147,7 +156,7 @@ pub struct VoiceStart {
 
 impl VoiceStart {
     /// Silent routing (all crosspoints 0), unity cue outputs and master, patch 0, no trims or
-    /// fades. `cue_outputs` must equal the mixer's `output_channels`.
+    /// fades. `cue_outputs`: 1 to the mixer's cue outputs.
     pub fn new(voice: VoiceId, source: Consumer<f32>, channels: u16, cue_outputs: usize) -> Self {
         VoiceStart {
             voice,
@@ -406,8 +415,14 @@ struct Patch {
     bus: Vec<f32>,
     /// A voice wrote to `bus` in the current segment.
     live: bool,
+    /// While `live`: the bus rows cleared for this segment (the widest voice written to it).
+    /// Only these are mixed, so a patch costs what its voices use, not the matrix size.
+    rows: usize,
     /// A routing change may still be ramping; unused patches must advance it.
     dirty: bool,
+    /// Rows a routing change was made in since the patch last had no ramp: the rows whose
+    /// ramps must advance though no voice writes to them.
+    dirty_rows: usize,
     /// A disabled patch is not mixed and ignores routing commands.
     health: Health,
 }
@@ -418,7 +433,24 @@ impl Patch {
         self.gains.iter_mut().for_each(|g| g.set(0.0));
         self.bus.fill(0.0);
         self.live = false;
+        self.rows = 0;
         self.dirty = false;
+        self.dirty_rows = 0;
+    }
+
+    /// Makes the patch live for this segment with at least `rows` bus rows cleared (the first
+    /// `len` frames of each).
+    fn reach(&mut self, rows: usize, block: usize, len: usize) {
+        if !self.live {
+            self.live = true;
+            self.rows = 0;
+        }
+        if rows > self.rows {
+            if let Some(b) = self.bus.get_mut(self.rows * block..rows * block) {
+                render::clear(b, block, len);
+            }
+            self.rows = rows;
+        }
     }
 }
 
@@ -427,6 +459,7 @@ impl Patch {
 pub struct Mixer {
     rate: u32,
     outputs: usize,
+    cue_outputs: usize,
     block: usize,
     max_voice_channels: usize,
     dezip: u64,
@@ -475,6 +508,7 @@ impl Mixer {
         let MixerConfig {
             sample_rate,
             output_channels: outs,
+            cue_outputs,
             max_block_frames: block,
             max_voices,
             max_voice_channels,
@@ -486,6 +520,9 @@ impl Mixer {
         }
         if !(1..=MAX_OUTPUT_CHANNELS).contains(&outs) {
             return Err(ConfigError::OutputChannels);
+        }
+        if !(1..=MAX_CUE_OUTPUTS).contains(&cue_outputs) {
+            return Err(ConfigError::CueOutputs);
         }
         if !(1..=MAX_BLOCK_FRAMES).contains(&block) {
             return Err(ConfigError::BlockFrames);
@@ -512,7 +549,7 @@ impl Mixer {
         let (ret_tx, ret_rx) =
             RingBuffer::new(COMMAND_CAPACITY + PENDING_CAPACITY + max_voices + 1);
         let shared = Arc::new(Shared {
-            meters: Meters::new(outs, max_voices, outs),
+            meters: Meters::new(outs, max_voices, cue_outputs),
             ..Shared::default()
         });
 
@@ -520,6 +557,7 @@ impl Mixer {
         let mixer = Mixer {
             rate: sample_rate,
             outputs: outs,
+            cue_outputs,
             block,
             max_voice_channels,
             dezip,
@@ -533,14 +571,18 @@ impl Mixer {
                 shared: Arc::clone(&shared),
             },
             voices: (0..max_voices)
-                .map(|k| Voice::new(k, outs, max_voice_channels, block, dezip as usize))
+                .map(|k| Voice::new(k, cue_outputs, max_voice_channels, block, dezip as usize))
                 .collect(),
             patches: (0..patches)
                 .map(|_| Patch {
-                    gains: (0..outs * outs).map(|k| Param::new(identity(k))).collect(),
-                    bus: vec![0.0; outs * block],
+                    gains: (0..cue_outputs * outs)
+                        .map(|k| Param::new(identity(k)))
+                        .collect(),
+                    bus: vec![0.0; cue_outputs * block],
                     live: false,
+                    rows: 0,
                     dirty: false,
+                    dirty_rows: 0,
                     health: Health::OK,
                 })
                 .collect(),
@@ -550,7 +592,7 @@ impl Mixer {
             meter_health: Health::OK,
             unblamed: FaultWindow::EMPTY,
             dev: vec![0.0; outs * block],
-            move_bus: vec![0.0; outs * block],
+            move_bus: vec![0.0; cue_outputs * block],
             out_peak: vec![0.0; outs],
             scratch: Scratch {
                 vgain: vec![0.0; block],
@@ -575,12 +617,18 @@ impl Mixer {
             #[cfg(test)]
             panic_apply: None,
         };
-        let controller = MixerController::new(cmd_tx, ev_rx, ret_rx, shared, outs, lookahead);
+        let controller =
+            MixerController::new(cmd_tx, ev_rx, ret_rx, shared, cue_outputs, outs, lookahead);
         Ok((controller, mixer))
     }
 
     pub fn output_channels(&self) -> usize {
         self.outputs
+    }
+
+    /// The rows of every patch matrix ([`MixerConfig::cue_outputs`]).
+    pub fn cue_outputs(&self) -> usize {
+        self.cue_outputs
     }
 
     /// The rate this mixer was built for ([`MixerConfig::sample_rate`]); a device must run at it.
@@ -685,6 +733,8 @@ mod tests {
             bad(|c| c.output_channels = 65),
             Some(ConfigError::OutputChannels)
         );
+        assert_eq!(bad(|c| c.cue_outputs = 0), Some(ConfigError::CueOutputs));
+        assert_eq!(bad(|c| c.cue_outputs = 129), Some(ConfigError::CueOutputs));
         assert_eq!(
             bad(|c| c.max_block_frames = 0),
             Some(ConfigError::BlockFrames)
@@ -705,6 +755,7 @@ mod tests {
         assert!(
             Mixer::new(MixerConfig {
                 output_channels: 64,
+                cue_outputs: 128,
                 ..Default::default()
             })
             .is_ok()

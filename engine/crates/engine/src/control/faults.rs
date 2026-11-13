@@ -374,6 +374,7 @@ mod tests {
         let mixer = openlab_audio::MixerConfig {
             sample_rate: 8000,
             output_channels: 2,
+            cue_outputs: openlab_audio::MAX_CUE_OUTPUTS,
             max_block_frames: 64,
             max_voices: 8,
             max_voice_channels: 2,
@@ -592,6 +593,7 @@ mod tests {
         let config = openlab_audio::MixerConfig {
             sample_rate: 8000,
             output_channels: 2,
+            cue_outputs: openlab_audio::MAX_CUE_OUTPUTS,
             max_block_frames: 64,
             max_voices: 8,
             max_voice_channels: 2,

@@ -25,9 +25,12 @@ pub fn no_alloc<T>(f: impl FnOnce() -> T) -> T {
     r
 }
 
+/// A mixer with as many cue outputs as device outputs: each test sizes its voices and reads its
+/// meters at that width. The full 128-row matrix has tests of its own.
 pub fn config(outputs: usize) -> MixerConfig {
     MixerConfig {
         output_channels: outputs,
+        cue_outputs: outputs,
         max_block_frames: 256,
         max_voices: 16,
         ..MixerConfig::default()

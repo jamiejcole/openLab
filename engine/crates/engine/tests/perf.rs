@@ -971,6 +971,7 @@ fn render_rate(split: bool) -> f64 {
     let mixer = openlab_audio::MixerConfig {
         sample_rate: RATE48,
         output_channels: 2,
+        cue_outputs: openlab_audio::MAX_CUE_OUTPUTS,
         max_block_frames: BLOCK48 as usize,
         max_voices: 96,
         max_voice_channels: 8,

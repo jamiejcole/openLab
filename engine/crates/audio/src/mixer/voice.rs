@@ -238,9 +238,17 @@ pub(super) struct Voice {
     pub(super) master: Param,
     pub(super) stop: Param,
     pub(super) stop_end: Option<SampleTime>,
+    /// One per cue output of the mixer; the first `width` are the voice's.
     pub(super) cue_out: Vec<Param>,
-    /// Row-major `[input][cue output]`.
+    /// Row-major `[input][cue output]`, a row per input as wide as `cue_out`.
     pub(super) xp: Vec<Param>,
+    /// The cue outputs the voice uses: its start's, raised by a ramp naming a later one. Only
+    /// these are rendered and metered.
+    pub(super) width: usize,
+    /// Cue outputs whose gains may differ from what a start leaves beyond its width (silent, no
+    /// crosspoint, no ramp) in any input row: what the next start must reset. Only these cost a
+    /// start anything.
+    used: usize,
     /// Planar `[channel][frame]`, `max_block_frames` per channel.
     pub(super) input: Vec<f32>,
     /// Not yet rendered: gain sets apply without de-zipper.
@@ -307,8 +315,10 @@ impl Voice {
             master: Param::new(1.0),
             stop: Param::new(1.0),
             stop_end: None,
-            cue_out: vec![Param::new(1.0); outputs],
+            cue_out: vec![Param::new(0.0); outputs],
             xp: vec![Param::new(0.0); max_channels * outputs],
+            width: 0,
+            used: 0,
             input: vec![0.0; max_channels * block],
             fresh: false,
             underrunning: false,
@@ -417,12 +427,31 @@ impl Voice {
         self.master.set(sanitize_gain(s.gain));
         self.stop.set(1.0);
         self.stop_end = None;
-        for (p, g) in self.cue_out.iter_mut().zip(&s.cue_outputs) {
-            p.set(sanitize_gain(*g));
+        // The start routes its first `width` cue outputs; the rest start silent (gain 0, no
+        // crosspoint): a ramp that names one later sets what it plays at, and one never named (a
+        // muted or unlisted output of the cue) is never heard. Only the outputs an
+        // earlier voice of this slot used are reset (in every input row, used or not), so a
+        // start costs its own width, not the mixer's.
+        let (outs, width) = (self.cue_out.len(), s.cue_outputs.len());
+        let reset = self.used.max(width);
+        for (o, p) in self.cue_out.iter_mut().enumerate().take(reset) {
+            p.set(s.cue_outputs.get(o).map_or(0.0, |g| sanitize_gain(*g)));
         }
-        for (p, g) in self.xp.iter_mut().zip(&s.crosspoints) {
-            p.set(sanitize_gain(*g));
+        for (i, row) in self.xp.chunks_mut(outs).enumerate() {
+            let given = if i < self.channels {
+                s.crosspoints
+                    .get(i * width..(i + 1) * width)
+                    .unwrap_or_default()
+            } else {
+                &[]
+            };
+            for (o, p) in row.iter_mut().enumerate().take(reset) {
+                p.set(given.get(o).map_or(0.0, |g| sanitize_gain(*g)));
+            }
         }
+        self.width = width;
+        self.used = width;
+        meters.widen(self.slot, width);
         self.fresh = true;
         self.underrunning = false;
         self.paused = None;
@@ -436,19 +465,29 @@ impl Voice {
         self.enter(0);
     }
 
+    /// The gain `target` names, if the voice has it. Naming a cue output beyond the ones it
+    /// uses widens it to that output (the caller publishes the new width to the meters).
     pub(super) fn param_mut(&mut self, target: GainTarget) -> Option<&mut Param> {
         let outs = self.cue_out.len();
-        match target {
-            GainTarget::Master => Some(&mut self.master),
-            GainTarget::CueOutput(o) => self.cue_out.get_mut(usize::from(o)),
+        let o = match target {
+            GainTarget::Master => return Some(&mut self.master),
+            GainTarget::CueOutput(o) => usize::from(o),
             GainTarget::Crosspoint { input, output } => {
-                let (i, o) = (usize::from(input), usize::from(output));
-                if i < self.channels && o < outs {
-                    self.xp.get_mut(i * outs + o)
-                } else {
-                    None
+                if usize::from(input) >= self.channels {
+                    return None;
                 }
+                usize::from(output)
             }
+        };
+        if o >= outs {
+            return None;
+        }
+        self.width = self.width.max(o + 1);
+        self.used = self.used.max(self.width);
+        match target {
+            GainTarget::CueOutput(_) => self.cue_out.get_mut(o),
+            GainTarget::Crosspoint { input, .. } => self.xp.get_mut(usize::from(input) * outs + o),
+            GainTarget::Master => None,
         }
     }
 

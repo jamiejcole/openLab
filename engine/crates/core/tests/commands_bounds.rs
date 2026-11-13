@@ -450,3 +450,87 @@ fn more_slice_markers_than_the_audio_engine_plays_are_refused_on_every_path() {
         )
         .unwrap();
 }
+
+/// An Audio cue routed to `outputs` cue outputs: one level each, a crosspoint and a gang on the
+/// last.
+fn routed_to(n: u128, outputs: u32) -> Cue {
+    let mut kind = audio();
+    if let CueKind::Audio { levels, .. } = &mut kind {
+        levels.outputs = vec![out(0.0); outputs as usize];
+        levels.crosspoints = vec![Crosspoint {
+            input: 0,
+            output: outputs - 1,
+            db: 0.0,
+            mute: false,
+        }];
+        levels.gangs = vec![vec![0, outputs - 1]];
+    }
+    with_kind(n, kind)
+}
+
+/// A cue's levels reach at most 128 cue outputs (a patch's most, QLab 5 manual p. 189): a cue
+/// routed to all 128 of a 128-output patch is added, pasted and pasted from the clipboard; one
+/// routed to a 129th is refused on each of those paths and as a kind change, and changes
+/// nothing.
+#[test]
+fn cue_levels_reach_128_outputs_and_no_more_on_every_path_that_makes_a_cue() {
+    let mut w = ws();
+    w.patches = vec![patch(1, 128)];
+    let wide = routed_to(5, 128);
+    for command in [
+        Command::AddCue {
+            at: at_end(),
+            cue: wide.clone(),
+            auto_number: false,
+        },
+        Command::Paste {
+            at: at_end(),
+            cues: vec![wide.clone()],
+        },
+        Command::PasteClipboard {
+            at: at_end(),
+            cues: vec![wide.clone()],
+            source_dir: None,
+        },
+    ] {
+        let mut work = w.clone();
+        let command = prepared(&work, command).unwrap();
+        History::new().execute(&mut work, command).unwrap();
+        let levels = work.cue_lists[0]
+            .cues
+            .iter()
+            .find_map(|c| match &c.kind {
+                CueKind::Audio { levels, .. } => Some(levels.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(levels.outputs.len(), 128);
+        assert_eq!(levels.crosspoints[0].output, 127);
+        assert_eq!(levels.gangs, vec![vec![0, 127]]);
+    }
+    let over = routed_to(5, 129);
+    for command in [
+        Command::AddCue {
+            at: at_end(),
+            cue: over.clone(),
+            auto_number: false,
+        },
+        Command::Paste {
+            at: at_end(),
+            cues: vec![over.clone()],
+        },
+        Command::PasteClipboard {
+            at: at_end(),
+            cues: vec![over.clone()],
+            source_dir: None,
+        },
+        Command::SetCueProperty {
+            id: cue_id(1),
+            property: CueProperty::Kind {
+                value: over.kind.clone(),
+            },
+        },
+    ] {
+        assert_refused(&w, command);
+    }
+}

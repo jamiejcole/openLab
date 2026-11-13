@@ -341,7 +341,7 @@ impl Engine {
                         )
                     }
                     None => (
-                        u32::try_from(self.cue_outputs).unwrap_or(u32::MAX),
+                        u32::try_from(self.device_outputs).unwrap_or(u32::MAX),
                         u32::try_from(self.block).ok(),
                         None,
                     ),
@@ -378,7 +378,7 @@ impl Engine {
                 state: DeviceState::Absent,
                 sample_rate: self.rate.get(),
                 block_frames: u32::try_from(self.block).ok(),
-                channels: u32::try_from(self.cue_outputs).unwrap_or(u32::MAX),
+                channels: u32::try_from(self.device_outputs).unwrap_or(u32::MAX),
                 latency_ms: None,
             },
         };

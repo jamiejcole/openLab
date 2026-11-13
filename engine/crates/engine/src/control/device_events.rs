@@ -634,7 +634,7 @@ impl DocCx<'_> {
                         "audio device \"{name}\" has {} output channel(s), fewer than the {} \
                          the show was opened with: the others are not heard",
                         d.info().channels,
-                        self.eng.cue_outputs
+                        self.eng.device_outputs
                     ),
                     None,
                 ));

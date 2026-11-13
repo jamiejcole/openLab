@@ -160,7 +160,7 @@ struct CueMediaDuration: Hashable, Sendable, Decodable {
     /// The matrix rows this file gives: `channels` when it is a count a file can have, else nil. The
     /// engine only sends 1 to 64; anything else from a peer is treated as not known.
     var fileChannels: Int? {
-        channels.flatMap { (1...LevelSet.maxChannels).contains($0) ? $0 : nil }
+        channels.flatMap { (1...LevelSet.maxInputs).contains($0) ? $0 : nil }
     }
 }
 

@@ -100,6 +100,41 @@ final class LevelSetTests: XCTestCase {
         XCTAssertEqual(set.json(into: k)["levels"]?["gangs"], .array([.array([.int(0), .int(1)])]))
     }
 
+    /// Cue outputs go to 128 and file channels to 64. A level or route the set cannot hold (beyond
+    /// those, or not well formed) is written back untouched by any edit; only the whole-matrix
+    /// actions (set all silent, set defaults) drop it.
+    func testLevelsBeyondTheBoundsAreWrittenBackUntouched() throws {
+        var k = TestSnapshots.audioKind("a.wav")
+        let route = { (i: Int64, o: Int64, db: Double) -> JSONValue in
+            .object(["input": .int(i), "output": .int(o), "db": .double(db), "mute": .bool(false)])
+        }
+        let beyond: [JSONValue] = [
+            route(70, 0, -3), route(0, 200, -4), .object(["input": .int(1), "output": .int(1)]),
+        ]
+        var levels = try XCTUnwrap(k["levels"])
+        levels.set("crosspoints", .array([route(0, 127, -6), route(63, 0, -9)] + beyond))
+        levels.set("outputs", .array(Array(repeating: .object(["db": .double(-1), "mute": .bool(false)]), count: 128)))
+        k.set("levels", levels)
+        var set = try XCTUnwrap(LevelSet(kind: k))
+        XCTAssertEqual(set.crosspoints[.init(input: 0, output: 127)]?.db, -6, "output 128 is held")
+        XCTAssertEqual(set.crosspoints[.init(input: 63, output: 0)]?.db, -9, "channel 64 is held")
+        XCTAssertEqual(set.unread, beyond)
+        set.set(.output(127), db: -2)
+        set.set(.output(128), db: -2)
+        set.set(.cross(input: 64, output: 0), db: -2)
+        XCTAssertEqual(set.outputs.count, 128, "nothing beyond output 128 is made")
+        XCTAssertNil(set.crosspoints[.init(input: 64, output: 0)])
+        set.set(.master, db: -6)
+        let written = set.json(into: k)["levels"]
+        XCTAssertEqual(written?["outputs"]?.arrayValue?.count, 128)
+        XCTAssertEqual(written?["outputs"]?.arrayValue?[127]["db"], .double(-2))
+        let points = written?["crosspoints"]?.arrayValue ?? []
+        XCTAssertEqual(points.count, 5)
+        XCTAssertEqual(Array(points.suffix(3)), beyond, "what the set cannot hold goes back as it came")
+        set.silenceAll()
+        XCTAssertEqual(set.json(into: k)["levels"]?["crosspoints"], .array([]))
+    }
+
     func testSilentCrosspointIsDroppedUnlessMuted() {
         var s = audio()
         s.set(.cross(input: 0, output: 0), db: -3)
@@ -202,17 +237,38 @@ final class LevelSetTests: XCTestCase {
         XCTAssertTrue(s.crosspoints.isEmpty)
     }
 
+    /// Cue outputs go to 128 (a patch's most) and file channels to 64: nothing beyond either is
+    /// made by an edit, and an entry read beyond them is not trusted as a level (it is only written
+    /// back as it came).
     func testChannelLimitsHold() {
         var s = audio()
-        s.set(.output(64), db: 0)
+        s.set(.output(128), db: 0)
         s.set(.cross(input: 64, output: 0), db: 0)
-        s.set(.cross(input: 0, output: 64), db: 0)
-        XCTAssertEqual(s.outputs.count, 4)
-        XCTAssertTrue(s.crosspoints.isEmpty)
+        s.set(.cross(input: 0, output: 128), db: 0)
+        XCTAssertEqual(s.outputs.count, 4, "nothing made beyond output 128")
+        XCTAssertTrue(s.crosspoints.isEmpty, "nothing made beyond channel 64 or output 128")
+        s.set(.output(127), db: 0)
+        s.set(.cross(input: 63, output: 127), db: 0)
+        XCTAssertEqual(s.outputs.count, 128, "output 128 is held")
+        XCTAssertEqual(Array(s.crosspoints.keys), [.init(input: 63, output: 127)], "channel 64 to output 128 is held")
         var raw = TestSnapshots.audioKind("a.wav")
-        raw["levels"]?.set(
-            "crosspoints",
-            .array([.object(["input": .int(70), "output": .int(0), "db": .double(0), "mute": .bool(false)])]))
-        XCTAssertEqual(LevelSet(kind: raw)?.crosspoints.count, 0, "a damaged entry is ignored, not trusted")
+        let damaged = JSONValue.object(["input": .int(70), "output": .int(0), "db": .double(0), "mute": .bool(false)])
+        raw["levels"]?.set("crosspoints", .array([damaged]))
+        let read = LevelSet(kind: raw)
+        XCTAssertEqual(read?.crosspoints.count, 0, "a damaged entry is ignored, not trusted")
+        XCTAssertEqual(read?.unread, [damaged], "but kept to be written back")
+    }
+
+    /// "Set defaults" on a cue of 100 outputs routes file channel n to output n only for the
+    /// channels a file can have (64): a route from channel 65 or more is one the engine refuses,
+    /// and with it the whole edit.
+    func testSetDefaultsRoutesOnlyTheChannelsAFileCanHave() {
+        var s = audio()
+        s.set(.output(99), db: -6)
+        XCTAssertEqual(s.outputs.count, 100)
+        s.setDefaults()
+        XCTAssertEqual(s.crosspoints.count, 64)
+        XCTAssertTrue(s.crosspoints.keys.allSatisfy { $0.input == $0.output && $0.input < 64 })
+        XCTAssertTrue(s.outputs.allSatisfy { $0.db == 0 })
     }
 }

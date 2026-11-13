@@ -208,10 +208,18 @@ impl DocCx<'_> {
                 .cue_of(*id)
                 .or_else(|| gone.iter().find(|(g, _)| g == id).map(|(_, c)| *c));
             let Some(cue) = cue else { continue };
+            // A cue's meter has one peak per output of its patch, not one per mixer cue output.
+            let located = self.doc.media.index().locate(self.doc.model.ws(), cue);
+            let width = match located.map(|c| &c.kind) {
+                Some(openlab_core::CueKind::Audio { patch, .. }) => {
+                    self.eng.patches.outputs(self.doc.id, *patch).clamp(1, outs)
+                }
+                _ => outs,
+            };
             let peaks = self
                 .eng
                 .meter_peaks
-                .get(k * outs..(k + 1) * outs)
+                .get(k * outs..k * outs + width)
                 .unwrap_or(&[]);
             match cues.iter_mut().find(|m| m.cue == cue) {
                 Some(m) => {
@@ -241,13 +249,13 @@ impl DocCx<'_> {
                     .mixer_patch(self.doc.id, p.id)
                     .and_then(|slot| self.eng.patches.slot_output(slot))
                     .unwrap_or(0)
-                    * self.eng.cue_outputs;
+                    * self.eng.device_outputs;
                 let peaks = channels
                     .iter()
                     .map(|&c| {
                         usize::try_from(c)
                             .ok()
-                            .filter(|&c| c < self.eng.cue_outputs)
+                            .filter(|&c| c < self.eng.device_outputs)
                             .and_then(|c| self.eng.out_peaks.get(base + c))
                             .copied()
                             .unwrap_or(0.0)

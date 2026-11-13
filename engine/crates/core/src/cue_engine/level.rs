@@ -7,7 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cue::{
-    CueKind, CueLevels, FadeCurve, FadeLevels, LevelLimits, MAX_CHANNELS, SILENCE_DB,
+    CueKind, CueLevels, FadeCurve, FadeLevels, LevelLimits, MAX_CHANNELS, MAX_CUE_OUTPUTS,
+    SILENCE_DB,
 };
 use crate::model::CueId;
 
@@ -84,9 +85,10 @@ pub(super) type Played = (f32, bool);
 const SILENT: Played = (0.0, false);
 
 /// What a voice is given under `levels`, as the binary starts one: the master, each listed
-/// output (below [`MAX_CHANNELS`]) and each listed crosspoint (both indices below it; the first
-/// listed wins, as for [`model_gain`], and the model has no duplicates once validated). Any
-/// other parameter is silent. Bounded by the levels' size (at most 1 + 64 + 64 × 64 entries).
+/// output (below [`MAX_CUE_OUTPUTS`]) and each listed crosspoint (input below [`MAX_CHANNELS`],
+/// output below [`MAX_CUE_OUTPUTS`]; the first listed wins, as for [`model_gain`], and the model
+/// has no duplicates once validated). Any other parameter is silent. Bounded by the levels' size
+/// (at most 1 + 128 + 64 × 128 entries).
 pub(super) fn played(levels: &CueLevels) -> BTreeMap<LevelParam, Played> {
     let gain = |db: f64, mute: bool| {
         if mute {
@@ -99,13 +101,13 @@ pub(super) fn played(levels: &CueLevels) -> BTreeMap<LevelParam, Played> {
     out.insert(LevelParam::Master, gain(levels.master_db, false));
     for (o, output) in levels.outputs.iter().enumerate() {
         if let Ok(o) = u32::try_from(o)
-            && o < MAX_CHANNELS
+            && o < MAX_CUE_OUTPUTS
         {
             out.insert(LevelParam::Output(o), gain(output.db, output.mute));
         }
     }
     for c in &levels.crosspoints {
-        if c.input < MAX_CHANNELS && c.output < MAX_CHANNELS {
+        if c.input < MAX_CHANNELS && c.output < MAX_CUE_OUTPUTS {
             let param = LevelParam::Crosspoint {
                 input: c.input,
                 output: c.output,

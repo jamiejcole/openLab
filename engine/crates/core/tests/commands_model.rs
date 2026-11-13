@@ -935,7 +935,7 @@ fn bad_patches_are_not_added() {
         CommandError::InvalidModel(_)
     ));
     assert!(matches!(
-        refused(&ws, add(0, patch(2, 65))),
+        refused(&ws, add(0, patch(2, 129))),
         CommandError::InvalidModel(_)
     ));
     let mut loud = patch(2, 2);
@@ -1153,17 +1153,79 @@ fn shrinking_a_patch_leaves_cue_routing_to_the_dropped_outputs() {
     assert_eq!(shrunk.cue_lists[0].cues, ws.cue_lists[0].cues);
 }
 
+/// QLab 5 (manual p. 189): a patch has 1 to 128 cue outputs. 128 is accepted and 129 refused
+/// on every command path that sets the count (channel count, every output at once, a new
+/// patch), and undo and redo put a 128-output patch back exactly.
+#[test]
+fn a_patch_has_1_to_128_outputs_on_every_command_path() {
+    let ws = workspace(vec![]);
+    let wide = round_trip(
+        &ws,
+        patch_prop(1, PatchProperty::ChannelCount { value: 128 }),
+    );
+    assert_eq!(wide.patches[0].outputs.len(), 128);
+    let wide = round_trip(
+        &ws,
+        patch_prop(
+            1,
+            PatchProperty::Outputs {
+                value: vec![patch_output(); 128],
+            },
+        ),
+    );
+    assert_eq!(wide.patches[0].outputs.len(), 128);
+    // Undo of a shrink from 128 puts every output back.
+    let shrunk = round_trip(
+        &wide,
+        patch_prop(1, PatchProperty::ChannelCount { value: 2 }),
+    );
+    assert_eq!(shrunk.patches[0].outputs.len(), 2);
+    assert!(matches!(
+        refused(
+            &wide,
+            patch_prop(1, PatchProperty::ChannelCount { value: 129 })
+        ),
+        CommandError::InvalidValue(_)
+    ));
+    // A new patch, and the undo of its removal.
+    let added = round_trip(
+        &ws,
+        Command::AddPatch {
+            index: 1,
+            patch: common::patch(2, 128),
+        },
+    );
+    assert_eq!(added.patches[1].outputs.len(), 128);
+    round_trip(
+        &added,
+        Command::RemovePatch {
+            id: patch_id(2),
+            even_if_used: false,
+        },
+    );
+    assert!(matches!(
+        refused(
+            &ws,
+            Command::AddPatch {
+                index: 1,
+                patch: common::patch(2, 129),
+            },
+        ),
+        CommandError::InvalidModel(_)
+    ));
+}
+
 #[test]
 fn bad_patch_edits_are_refused() {
     let ws = workspace(vec![]);
     for (property, want) in [
         (PatchProperty::ChannelCount { value: 0 }, "value"),
-        (PatchProperty::ChannelCount { value: 65 }, "value"),
+        (PatchProperty::ChannelCount { value: 129 }, "value"),
         (PatchProperty::ChannelCount { value: usize::MAX }, "value"),
         (PatchProperty::Outputs { value: vec![] }, "model"),
         (
             PatchProperty::Outputs {
-                value: vec![patch_output(); 65],
+                value: vec![patch_output(); 129],
             },
             "model",
         ),

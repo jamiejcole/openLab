@@ -13,7 +13,7 @@ Rule for all limits: they apply to the **value being set only**. Load keeps an o
 | Network cue arguments | 1024 arguments; each string argument 64 KiB; no non-finite float (JSON cannot hold one) | as above | as above |
 | OSC passcode (via command) | 1 to 32 ASCII digits; at most 16 rows | `InvalidValue(&'static str)` (the table is not changed); a bad index is `IndexOutOfRange` | a show file may hold other text; kept with a warning |
 | Network patch port (new or changed value) | 1 to 65535 | `InvalidValue` | port 0 accepted at load |
-| Patch outputs / `channel_count` | 1 to 64 | `channel_count` edit: `InvalidValue`; `AddPatch` or outputs edit with 0 or over 64: `InvalidModel` carrying `PatchChannelCount`; a bad output index: `PatchOutputOutOfRange` | per `docs/file-format.md` |
+| Patch outputs / `channel_count` | 1 to 128 (`MAX_CUE_OUTPUTS`) | `channel_count` edit: `InvalidValue`; `AddPatch` or outputs edit with 0 or over 128: `InvalidModel` carrying `PatchChannelCount`; a bad output index: `PatchOutputOutOfRange` | per `docs/file-format.md` |
 
 Why:
 - Newlines in names are allowed as in QLab 5. The 1024 scalar limit for names is our choice (QLab sets none we know of).

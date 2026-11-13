@@ -1,7 +1,7 @@
 # Patch slots, default mapping, set-mapping
 
 ## Slots (`Patches`, `control/patches/`)
-- A patch's mixer matrix (slot) is allocated by `(DocId, PatchId)`, not by index in `Workspace::patches`, from one free list for all docs and devices (least recently freed first). Slot numbers are the same in every device's mixer; a slot's gains are sent to the mixer of its patch's device (`slot_output`), and a slot never sent to on a mixer is identity there.
+- A patch's mixer matrix (slot) is allocated by `(DocId, PatchId)`, not by index in `Workspace::patches`, from one free list for all docs and devices (least recently freed first). Slot numbers are the same in every device's mixer; a slot's gains are sent to the mixer of its patch's device (`slot_output`), and a slot never sent to on a mixer is identity there. Every matrix is the mixers' cue outputs (128) by their device outputs (`Patches::new`); only entries that change are sent.
   A slot belongs to one doc's patch at a time. So inserting, removing, moving a patch (and undo/redo) is allowed while voices play and never re-routes or silences one.
 - A voice keeps the slot its `VoiceStart` named until it ends, except that **a playing cue edited to name another patch follows it** (`Voices::follow_patches`, after every `sync_patches`): its voice (started, paused or stopping; not a preview) gets `MoveVoice` to the new slot, dated no earlier than its start/resume, and crossfades over the de-zipper.
   Outputs the new patch adds get their levels first (`Ramp`s, the model's with crosspoints, except a level a Fade cue set). No free slot for the new patch: the voice stays where it is until a later sync.
