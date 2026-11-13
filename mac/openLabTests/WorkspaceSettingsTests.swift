@@ -517,7 +517,7 @@ final class WorkspaceSettingsTests: XCTestCase {
     /// and name; nothing is sent, and the table does not move or shrink for the message.
     func testRemovingAPatchACueUsesSaysWhichCueAndKeepsTheTableInPlace() async throws {
         let (rig, sc) = try await open()
-        sc.window?.setContentSize(NSSize(width: 520, height: 540))
+        sc.window?.setContentSize(try XCTUnwrap(sc.window?.contentMinSize))
         sc.patchAddButton.performClick(nil)
         await assertEventually { sc.patchRemoveButtons.count == 2 }
         let second = try XCTUnwrap(sc.model.patches.last?.id)

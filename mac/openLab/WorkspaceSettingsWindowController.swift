@@ -109,7 +109,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             store.$status.map { $0?.outputs.map(\.state) }.removeDuplicates().sink { [weak self] _ in
                 self?.rereadSoon()
             })
-        window.contentMinSize = NSSize(width: 520, height: 540)
+        // Taller than the pages need by the message row's two lines, which never take the pages' room.
+        window.contentMinSize = NSSize(width: 520, height: 552)
         window.delegate = self
         tabs.delegate = self
         render()

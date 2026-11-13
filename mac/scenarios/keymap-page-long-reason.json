@@ -9,7 +9,7 @@
     {"tab": "basics"},
     {"type": "inspector-name", "text": "A very long cue name that goes on and on past any width a settings window could ever give it"},
     {"focus": "settings"},
-    {"resize": [520, 540]},
+    {"resize": [520, 552]},
     {"tab": "keys"},
     {"click": "settings-keys-pause_resume_selected"},
     {"key": "x"},

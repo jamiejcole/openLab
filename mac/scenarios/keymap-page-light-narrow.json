@@ -4,7 +4,7 @@
   "appearance": "light",
   "steps": [
     {"focus": "settings"},
-    {"resize": [520, 540]},
+    {"resize": [520, 552]},
     {"tab": "keys"},
     {"shot": "least-size"},
     {"click": "settings-keys-edit_post_wait"},

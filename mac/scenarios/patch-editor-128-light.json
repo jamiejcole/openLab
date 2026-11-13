@@ -20,7 +20,7 @@
     {"tab": "deviceOutputs"},
     {"shot": "device-outputs-least-size"},
     {"focus": "settings"},
-    {"resize": [520, 540]},
+    {"resize": [520, 552]},
     {"shot": "table-least-size"}
   ]
 }
