@@ -755,16 +755,56 @@ final class ScenarioRunner {
         try png.write(to: url)
     }
 
+    /// A shown scroller draws through its own layer on screen, which a forced draw leaves out: its
+    /// slot and knob are drawn again where it is, so a shot shows that the list scrolls.
+    private func drawScrollers(in root: NSView, on rep: NSBitmapImageRep) {
+        var scrollers: [NSScroller] = []
+        func find(_ v: NSView) {
+            guard !v.isHidden else { return }
+            if let s = v as? NSScroller { scrollers.append(s) }
+            v.subviews.forEach(find)
+        }
+        find(root)
+        guard !scrollers.isEmpty, let context = NSGraphicsContext(bitmapImageRep: rep) else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        for s in scrollers {
+            let r = s.convert(s.bounds, to: root)
+            let cg = context.cgContext
+            cg.saveGState()
+            cg.scaleBy(x: 2, y: 2)
+            if s.isFlipped {
+                cg.translateBy(x: r.minX, y: r.maxY)
+                cg.scaleBy(x: 1, y: -1)
+            } else {
+                cg.translateBy(x: r.minX, y: r.minY)
+            }
+            s.drawKnobSlot(in: s.rect(for: .knobSlot), highlight: false)
+            s.drawKnob()
+            cg.restoreGState()
+            note("  drew the sheet's scroller")
+        }
+    }
+
     /// `sheet` drawn where AppKit puts a sheet: centred, under the window's title bar.
     private func overlay(_ sheet: NSWindow, on rep: NSBitmapImageRep) throws -> NSBitmapImageRep {
         sheet.appearance = wc.window?.appearance
         guard let frame = sheet.contentView else { throw Failure("the sheet has no content") }
+        frame.layoutSubtreeIfNeeded()
+        // On screen a scroll view tiles again once its document has its size (its scroller comes then).
+        func tile(_ v: NSView) {
+            (v as? NSScrollView)?.tile()
+            v.subviews.forEach(tile)
+        }
+        tile(frame)
         frame.layoutSubtreeIfNeeded()
         // Off screen the sheet's colours resolve in the drawing appearance: the window's, as on screen.
         let drawing = NSAppearance.current
         NSAppearance.current = sheet.appearance
         defer { NSAppearance.current = drawing }
         let top = try renderView(frame, scale: 2, background: .windowBackgroundColor)
+        drawScrollers(in: frame, on: top)
         guard let context = NSGraphicsContext(bitmapImageRep: rep) else { throw Failure("no context") }
         let base = try XCTUnwrap(wc.window)
         let titleBar = (base.frame.height - base.contentLayoutRect.height) * 2
