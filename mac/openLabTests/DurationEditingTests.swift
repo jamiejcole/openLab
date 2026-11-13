@@ -143,7 +143,7 @@ final class DurationEditingTests: XCTestCase {
 
     func testEveryRejectionHasAMessage() {
         let all: [InspectorEdit.Rejection] = [
-            .invalidTime, .decimalComma, .duplicateNumber, .unknownTarget, .selfTarget, .notApplicable, .invalidOSC,
+            .invalidTime, .decimalComma, .duplicateNumber, .unknownTarget, .selfTarget, .notApplicable,
             .noEditableDuration, .noLoadTime, .negativeLoadTime,
         ]
         for r in all { XCTAssertNotEqual(loc(r.messageKey), r.messageKey, "\(r) has no string") }

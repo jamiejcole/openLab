@@ -70,10 +70,20 @@ pub enum CueProperty {
     Color {
         value: CueColor,
     },
+    /// The colour shown once the cue has been started; `none` turns the second colour off.
+    SecondColor {
+        value: CueColor,
+    },
     Flagged {
         value: bool,
     },
     Armed {
+        value: bool,
+    },
+    AutoLoad {
+        value: bool,
+    },
+    SkipIfDisarmed {
         value: bool,
     },
     PreWait {
@@ -565,6 +575,11 @@ fn single(ws: &mut Workspace, command: Command, restoring: bool) -> Result<Inver
             }
             if !restoring {
                 ws.clamp_new_cues(std::slice::from_mut(&mut cue));
+                // A cue made while the setting is on loads itself (QLab 5, manual p. 128); a
+                // paste is a copy and keeps what it had, an undo puts back what was there.
+                if ws.settings.new_cues_auto_load {
+                    walk_mut(std::slice::from_mut(&mut cue), &mut |c| c.auto_load = true);
+                }
             }
             let id = cue.id;
             insert(ws, &at, vec![cue], restoring)?;

@@ -38,7 +38,7 @@ extension InspectorViewController {
 
     /// The controls only one cue at a time can set: off while several are selected.
     var singleCueControls: [NSControl] {
-        [numberField, oscField, hotkeyField, hotkeyClear, networkSendButton, chooseButton, clearTargetButton]
+        [numberField, hotkeyField, hotkeyClear, networkSendButton, chooseButton, clearTargetButton]
     }
 
     // MARK: Showing several cues
@@ -214,7 +214,7 @@ extension InspectorViewController {
     /// come back. Called before the single-cue render sets each control from the cue.
     /// The text fields several selected cues can turn off, and how faint they are then.
     var batchDimmed: [NSTextField] {
-        [numberField, durationField, targetField, oscField, hotkeyField, loadTimeField, networkMessageField]
+        [numberField, durationField, targetField, hotkeyField, loadTimeField, networkMessageField]
     }
     static let offAlpha: CGFloat = 0.45
 
@@ -230,11 +230,7 @@ extension InspectorViewController {
         audioLevels.mixed = []
         audioLevels.gangsMixed = false
         audioLevels.editsSeveral = false
-        for (f, text) in [
-            (InspectorField.osc, "inspector.osc.placeholder"), (.message, "inspector.network.messageHint"),
-        ] {
-            field(f)?.placeholderString = loc(text)
-        }
+        field(.message)?.placeholderString = loc("inspector.network.messageHint")
         for f in [InspectorField.number, .preWait, .postWait, .duration, .loadTime] {
             field(f)?.placeholderString = nil
         }

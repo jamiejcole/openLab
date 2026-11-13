@@ -209,9 +209,10 @@ impl TwoDocs {
         use openlab_core::protocol::RuntimeChange as C;
         let beside = show::id(BESIDE);
         match c {
-            C::CueState { cue, .. } | C::Problems { cue, .. } | C::Preview { cue, .. } => {
-                *cue == beside
-            }
+            C::CueState { cue, .. }
+            | C::Problems { cue, .. }
+            | C::Preview { cue, .. }
+            | C::Played { cue, .. } => *cue == beside,
             C::Playhead { cue, .. } => *cue == Some(beside),
             _ => false,
         }

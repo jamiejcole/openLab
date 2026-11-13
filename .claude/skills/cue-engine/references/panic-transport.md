@@ -28,8 +28,12 @@
 `Input::ResetAll`, one input, in order:
 - Stop All (a panic fade under way included; no panic window is left).
 - Reset every cue that still has a runtime, children before groups: broken-at-run-time cleared (pending continue cancelled), loaded cues unload (`UnloadVoice`). Static problems stay.
-- Random groups forget their cycle. Every list's playhead moves to its first cue (none if empty); the binary primes from there (`engine-control`).
+- Every played cue becomes unplayed (`PlayedChanged { played: false }`, below). Random groups forget their cycle. Every list's playhead moves to its first cue (none if empty); the binary primes from there (`engine-control`).
 - Kept: Arm/Disarm changes and level edits (model edits, saved with the show), double-GO's timer.
+
+## Played (second colour)
+- The first `start` that makes a run of a cue since it was last reset marks it played: `PlayedChanged { cue, played: true }`, `played()` lists them. A played cue's row shows its `second_color` (QLab 5, manual p. 127). A skipped cue never plays; a disarmed one that is triggered does.
+- Reset of a cue (operator Reset, a Reset cue) unplays it and every descendant; Reset All unplays every cue. Nothing else does (stop, panic, edits). Runtime only: a new engine (a reopened show) has none played.
 
 ## Pause All and Resume All (PB-04)
 - `PauseAll` pauses every active cue of every list at every depth, groups before children, with the Pause operation (timers, `PauseVoice`, Fade cues holding ramps, devamps kept). Stopping, loaded, idle and broken cues are left as Pause leaves them. Then every playing preview pauses.

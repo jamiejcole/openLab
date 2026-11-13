@@ -289,9 +289,6 @@
 "hotkeys.reason.menuKey" = "it is the same key as a menu command";
 "hotkeys.reason.editKey" = "the key edits the selected cues";
 "hotkeys.reason.unsupported" = "the key is not supported";
-"inspector.osc" = "OSC address";
-"inspector.osc.placeholder" = "/my/trigger";
-"inspector.invalid.osc" = "Enter an OSC address starting with /, with no spaces or wildcards.";
 "inspector.secondTrigger" = "When triggered again";
 "inspector.secondTrigger.nothing" = "Do nothing";
 "inspector.secondTrigger.panic" = "Panic (fade out)";

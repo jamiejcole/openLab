@@ -161,7 +161,7 @@ final class KeyMapPageTests: XCTestCase {
                 command: .setProperty(
                     cue.id,
                     .triggers(
-                        hotkey: KeyChord("x").hotkeyJSON, osc: nil)))
+                        hotkey: KeyChord("x").hotkeyJSON, enabled: true)))
         else { return XCTFail("cue hotkey") }
         await assertEventually { self.rig.store.model?.cueHotkeys.count == 1 }
         let sent = rig.wire.commands.count
@@ -204,7 +204,7 @@ final class KeyMapPageTests: XCTestCase {
         let long = String(repeating: "A very long cue name ", count: 20)
         guard case .success = await rig.store.send(command: .setProperty(cue.id, .name(long))),
             case .success = await rig.store.send(
-                command: .setProperty(cue.id, .triggers(hotkey: KeyChord("x").hotkeyJSON, osc: nil)))
+                command: .setProperty(cue.id, .triggers(hotkey: KeyChord("x").hotkeyJSON, enabled: true)))
         else {
             XCTFail("setup")
             throw XCTSkip("setup")

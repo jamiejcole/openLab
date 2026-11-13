@@ -492,6 +492,65 @@ fn auto_number_replaces_the_cues_own_number_and_survives_undo_and_redo() {
     assert_eq!(ws, after);
 }
 
+/// Workspace Settings, General, "new cues auto-load" (QLab 5, manual p. 128): a cue made
+/// afterwards has auto-load set (a group's children with it); cues already there, a pasted copy
+/// and an undo keep what they had.
+#[test]
+fn a_cue_made_with_new_cues_auto_load_on_auto_loads_and_existing_cues_are_unchanged() {
+    let mut ws = workspace(vec![memo(1)]);
+    let mut history = History::new();
+    history
+        .execute(
+            &mut ws,
+            Command::SetWorkspaceSetting {
+                setting: WorkspaceSetting::NewCuesAutoLoad { value: true },
+            },
+        )
+        .unwrap();
+    assert!(ws.settings.new_cues_auto_load);
+    assert!(
+        !ws.find_cue(cue_id(1)).unwrap().auto_load,
+        "existing cue unchanged"
+    );
+    history
+        .execute(&mut ws, add(pos(None, 1), grp(2, vec![memo(3)])))
+        .unwrap();
+    assert!(ws.find_cue(cue_id(2)).unwrap().auto_load);
+    assert!(ws.find_cue(cue_id(3)).unwrap().auto_load);
+    // A paste is a copy: it keeps the copied cue's value.
+    history
+        .execute(
+            &mut ws,
+            Command::Paste {
+                at: pos(None, 2),
+                cues: vec![memo(4)],
+            },
+        )
+        .unwrap();
+    assert!(!ws.find_cue(cue_id(4)).unwrap().auto_load);
+    // Undo and redo put back what was there.
+    let after = ws.clone();
+    assert!(history.undo(&mut ws).unwrap());
+    assert!(history.undo(&mut ws).unwrap());
+    assert!(ws.find_cue(cue_id(2)).is_none());
+    assert!(history.redo(&mut ws).unwrap());
+    assert!(history.redo(&mut ws).unwrap());
+    assert_eq!(ws, after);
+    // Off again: a new cue comes as the client sent it.
+    history
+        .execute(
+            &mut ws,
+            Command::SetWorkspaceSetting {
+                setting: WorkspaceSetting::NewCuesAutoLoad { value: false },
+            },
+        )
+        .unwrap();
+    history
+        .execute(&mut ws, add(pos(None, 3), memo(5)))
+        .unwrap();
+    assert!(!ws.find_cue(cue_id(5)).unwrap().auto_load);
+}
+
 #[test]
 fn auto_numbering_with_invalid_settings_is_refused() {
     for (start, increment) in [
@@ -831,8 +890,13 @@ fn every_common_property_can_be_set_and_undone() {
         CueProperty::Color {
             value: CueColor::Red,
         },
+        CueProperty::SecondColor {
+            value: CueColor::Raspberry,
+        },
         CueProperty::Flagged { value: true },
         CueProperty::Armed { value: false },
+        CueProperty::AutoLoad { value: true },
+        CueProperty::SkipIfDisarmed { value: true },
         CueProperty::PreWait { value: 1.5 },
         CueProperty::PostWait { value: 2.5 },
         CueProperty::ContinueMode {
@@ -841,7 +905,7 @@ fn every_common_property_can_be_set_and_undone() {
         CueProperty::Triggers {
             value: Triggers {
                 hotkey: Some(hotkey),
-                osc: Some("/cue/1".into()),
+                hotkey_enabled: false,
             },
         },
     ];
@@ -1090,7 +1154,7 @@ fn set_property_refuses_non_finite_and_out_of_range_values() {
                             key: "A".into(),
                             modifiers: Modifiers::default()
                         }),
-                        osc: None,
+                        hotkey_enabled: true,
                     },
                 }
             )

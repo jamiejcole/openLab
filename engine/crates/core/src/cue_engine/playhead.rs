@@ -294,8 +294,13 @@ pub(super) fn after_go(
         },
     ) = level.get(index)
         && armed(group)
-        && let Some(c) =
-            children.get(chain_end(children, 0, true, &armed, &broken).saturating_add(1))
+        && let Some(first) = next_present(children, None, &armed)
+        && let Some(c) = next_present(
+            children,
+            Some(chain_end(children, first, true, &armed, &broken)),
+            &armed,
+        )
+        .and_then(|i| children.get(i))
     {
         return Some(c.id);
     }
@@ -323,14 +328,35 @@ pub(super) fn after_go(
                 | GroupMode::StartRandom,
             ) => chain_end(level, index, true, &armed, &broken),
         };
-        level.get(last.saturating_add(1)).map(|c| c.id)
+        next_present(level, Some(last), &armed)
+            .and_then(|i| level.get(i))
+            .map(|c| c.id)
     })
+}
+
+/// The first cue of `level` after index `after` (from the start for `None`) that is there: a
+/// skipped cue (disarmed, as `armed` says, with "skip if disarmed") is passed over as if absent
+/// (QLab 5, manual p. 128).
+fn next_present(
+    level: &[Cue],
+    after: Option<usize>,
+    armed: &impl Fn(&Cue) -> bool,
+) -> Option<usize> {
+    let from = after.map_or(Some(0), |i| i.checked_add(1))?;
+    level
+        .iter()
+        .enumerate()
+        .skip(from)
+        .find(|(_, c)| !c.skipped(armed(c)))
+        .map(|(i, _)| i)
 }
 
 /// Index of the last cue of the continue chain that starts at `index` (just `index` when the
 /// level's continue modes do not chain). An armed Devamp cue with "start next cue" ends the
 /// chain: the playhead stands on the cue it will start when the loop is left (QLab 5), whatever
-/// its own continue mode, which that replaces.
+/// its own continue mode, which that replaces. Skipped cues are not in the chain: a continue
+/// starts the next cue that is there, and a skipped cue's own continue never fires (a GO on
+/// one, the playhead put there by hand, starts nothing).
 fn chain_end(
     level: &[Cue],
     index: usize,
@@ -341,14 +367,15 @@ fn chain_end(
     let mut last = index;
     while chains
         && let Some(c) = level.get(last)
+        && !c.skipped(armed(c))
         && !super::starts_next_on_devamp(c, armed(c) && !broken(c))
         && matches!(
             c.continue_mode,
             ContinueMode::AutoContinue | ContinueMode::AutoFollow
         )
-        && last.saturating_add(1) < level.len()
+        && let Some(next) = next_present(level, Some(last), armed)
     {
-        last += 1;
+        last = next;
     }
     last
 }

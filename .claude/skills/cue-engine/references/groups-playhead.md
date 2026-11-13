@@ -70,6 +70,14 @@ Starting a cue inside a group (`Start`, GO on a child, a Start cue, a hotkey) do
 - Start on an active group applies the group's second-trigger option to the group as a whole.
 - Nesting is bounded by `MAX_GROUP_DEPTH` (32, `validate.rs`), enforced by validation and commands. Engine walks are iterative; `Workspace::find_cue` / `tree::find_path` recurse, bounded by that depth in any validated workspace.
 
+## Skip if disarmed
+A cue is skipped when it is disarmed (`is_armed`, an Arm/Disarm cue's change in the call included) and has `skip_if_disarmed` (`Cue::skipped`, `CueEngine::is_skipped`). It is passed over as if absent (QLab 5, manual p. 128); armed, the flag does nothing.
+- A trigger (GO, Start cue, hotkey, OSC, continue) on it starts nothing: no run, no `pre-waiting`, no warning, no chain budget; its own continue never fires. A run it already had (disarmed since) keeps rule 1. Load of it does nothing (an auto-load passes over it).
+- A continue starts the next sibling that is there (`next_sibling`); with none, nothing. A chain `chain_end` walks the cues that are there; the playhead goes to the next position that is there at that level (a skipped group with its children), else up a level, else past the end.
+- GO with the playhead put on a skipped cue starts nothing and moves the playhead to the next cue that is there (assumed, skill `qlab-behaviour`).
+- Groups: timeline never starts it; start-first modes start the first child that is there (the playhead enters after its chain); a playlist passes over it at once (no timing kept); a random group never picks it, also when nothing else is playable. Its nominal span is 0. A group's Load loads the first children that are there.
+- Navigation (`PlayheadNext`/`Previous`, `SetPlayhead`) can still stand on it; only GO and chains pass over it.
+
 ## GO and double-GO (PB-01, PB-02)
 - `Go { list }` starts the cue at the list's playhead at `now` and moves the playhead to the cue after the last cue of its continue chain (every following cue reached through auto-continue/auto-follow, as the model stands, is skipped). A chain to the list's end puts the playhead past the end.
 - Only an armed `StartFirstAndEnter` group is entered: the playhead goes to the child after the first child's chain (a disarmed one starts nothing and is skipped as a unit). Every other group is one unit: GO on it, or a chain reaching it, moves the playhead after the group's chain, never onto its children.

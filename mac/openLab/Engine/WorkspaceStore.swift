@@ -42,6 +42,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var groupWarnings: Set<ModelID> = []
     @Published private(set) var playheads: [ModelID: ModelID] = [:]
     @Published private(set) var previewing: Set<ModelID> = []
+    /// Cues started since they were last reset: their rows show the second colour, if they have one.
+    @Published private(set) var played: Set<ModelID> = []
     @Published private(set) var progress: [ModelID: ProgressItem] = [:]
     /// Audio cues' media lengths as the engine probed them (`media_durations`, `media_duration`).
     @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:]
@@ -389,6 +391,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         groupWarnings = Set(s.groupWarnings)
         playheads = Dictionary(s.playheads.compactMap { e in e.cue.map { (e.list, $0) } }, uniquingKeysWith: { $1 })
         previewing = Set(s.previewing)
+        played = Set(s.played ?? [])
         mediaDurations = Dictionary((s.mediaDurations ?? []).map { ($0.cue, $0) }, uniquingKeysWith: { $1 })
         warnings = s.warnings
         progress = [:]
@@ -537,6 +540,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 playheads[list] = cue
             case .preview(let cue, let active):
                 if active { previewing.insert(cue) } else { previewing.remove(cue) }
+                cues.insert(cue)
+            case .played(let cue, let on):
+                if on { played.insert(cue) } else { played.remove(cue) }
                 cues.insert(cue)
             case .warning(let w):
                 // Nothing went wrong in these: the operator pressed a key twice, or a fade ran with

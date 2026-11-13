@@ -887,7 +887,7 @@ fn setting_a_workspace_key_as_a_cue_hotkey_is_not_refused() {
         property: CueProperty::Triggers {
             value: Triggers {
                 hotkey: Some(hotkey("space")),
-                osc: None,
+                hotkey_enabled: true,
             },
         },
     };

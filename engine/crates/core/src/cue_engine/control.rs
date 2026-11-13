@@ -103,6 +103,12 @@ impl CueEngine {
         self.armed.get(&cue.id).copied().unwrap_or(cue.armed)
     }
 
+    /// Whether a cue is passed over as if absent: disarmed (as [`Self::is_armed`] says) with
+    /// "skip if disarmed" set.
+    pub(super) fn is_skipped(&self, cue: &Cue) -> bool {
+        cue.skipped(self.is_armed(cue))
+    }
+
     fn set_armed(&mut self, target: CueId, armed: bool, cx: &mut Ctx) {
         let Some(model) = cx.ws.find_cue(target) else {
             return;

@@ -35,6 +35,7 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 - Auto-continue does not depend on success. A cue that breaks keeps its auto-continue on the original schedule (action start + post-wait), also if it breaks in its pre-wait (action skipped, timing kept).
 - Auto-follow needs a clean end. A cue that breaks at run time after its voice played audio (`ActionFailed`) never fires its auto-follow.
 - A cue with static problems is skipped like a disarmed cue, so its auto-follow fires at its action start.
+- A disarmed cue with `skip_if_disarmed` is not skipped but absent: no run, no timing, no continue of its own; chains, GO and groups go to the next cue that is there (`references/groups-playhead.md` "Skip if disarmed").
 - A cue whose voice fails before any audio (`StartFailed`) was only skipped: its auto-follow fires on the failure sample. It reports `broken` while the continue is pending; Stop or Reset cancels it. Its voice is released at once.
 - Applies to single cues and to children of timeline, random and start-first groups. A group whose run saw a child break at run time does not auto-follow; its auto-continue still fires.
 - A playlist whose current child breaks while playing halts and keeps the group's auto-follow instead (`references/groups-playhead.md`). A broken child met by a playlist is skipped and the group still follows out.

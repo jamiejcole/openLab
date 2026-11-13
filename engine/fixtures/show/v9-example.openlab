@@ -169,7 +169,8 @@
         }
       },
       "auto_number_start": 1.0,
-      "auto_number_increment": 0.5
+      "auto_number_increment": 0.5,
+      "new_cues_auto_load": false
     },
     "patches": [
       {
@@ -210,14 +211,17 @@
             "name": "House open",
             "notes": "",
             "color": "purple",
+            "second_color": "none",
             "flagged": true,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -231,8 +235,11 @@
             "name": "Preshow music",
             "notes": "Loops until the house is called.",
             "color": "green",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "auto_continue",
@@ -246,7 +253,7 @@
                   "command": true
                 }
               },
-              "osc": "/preshow"
+              "hotkey_enabled": true
             },
             "second_trigger": "panic",
             "second_trigger_on_release": false,
@@ -317,14 +324,17 @@
             "name": "Fade preshow",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 1.0,
             "post_wait": 0.5,
             "continue_mode": "auto_follow",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -357,14 +367,17 @@
             "name": "Storm",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -380,14 +393,17 @@
                   "name": "Thunder",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
@@ -431,14 +447,17 @@
                   "name": "Lightning",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.25,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
@@ -472,14 +491,17 @@
                   "name": "Hold",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
@@ -497,14 +519,17 @@
             "name": "Start storm",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -519,14 +544,17 @@
             "name": "Stop preshow",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -545,14 +573,17 @@
             "name": "Pause preshow",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -567,14 +598,17 @@
             "name": "Cue up preshow",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -590,14 +624,17 @@
             "name": "Reset preshow",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -612,14 +649,17 @@
             "name": "Leave loop",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -637,14 +677,17 @@
             "name": "Back to top",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -660,14 +703,17 @@
             "name": "Arm storm",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -682,14 +728,17 @@
             "name": "Disarm storm",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -710,14 +759,17 @@
             "name": "Walk-in playlist",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "play_next",
             "second_trigger_on_release": false,
@@ -735,14 +787,17 @@
                   "name": "Track 1",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
@@ -786,14 +841,17 @@
                   "name": "Track 2",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
@@ -840,14 +898,17 @@
             "name": "Doorbell",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "hard_stop_and_restart",
             "second_trigger_on_release": true,
@@ -863,14 +924,17 @@
                   "name": "Bell A",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
@@ -917,14 +981,17 @@
             "name": "Scene change",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -940,14 +1007,17 @@
                   "name": "Note",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,
@@ -964,14 +1034,17 @@
             "name": "Sequence",
             "notes": "",
             "color": "none",
+            "second_color": "none",
             "flagged": false,
             "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
             "pre_wait": 0.0,
             "post_wait": 0.0,
             "continue_mode": "do_not_continue",
             "triggers": {
               "hotkey": null,
-              "osc": null
+              "hotkey_enabled": true
             },
             "second_trigger": "nothing",
             "second_trigger_on_release": false,
@@ -987,14 +1060,17 @@
                   "name": "Pause",
                   "notes": "",
                   "color": "none",
+                  "second_color": "none",
                   "flagged": false,
                   "armed": true,
+                  "auto_load": false,
+                  "skip_if_disarmed": false,
                   "pre_wait": 0.0,
                   "post_wait": 0.0,
                   "continue_mode": "do_not_continue",
                   "triggers": {
                     "hotkey": null,
-                    "osc": null
+                    "hotkey_enabled": true
                   },
                   "second_trigger": "nothing",
                   "second_trigger_on_release": false,

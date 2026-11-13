@@ -118,6 +118,7 @@ fn snapshot(revision: u64) -> Snapshot {
         group_warnings: vec![],
         playheads: vec![],
         previewing: vec![],
+        played: vec![],
         warnings: vec![],
         media_durations: vec![],
     }

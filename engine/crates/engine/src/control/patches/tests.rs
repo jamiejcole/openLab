@@ -80,6 +80,7 @@ fn ws_with(outputs: Vec<PatchOutput>) -> Workspace {
             hotkeys: TransportHotkeys::default(),
             auto_number_start: 1.0,
             auto_number_increment: 1.0,
+            new_cues_auto_load: false,
         },
         patches: vec![OutputPatch {
             id: pid(),

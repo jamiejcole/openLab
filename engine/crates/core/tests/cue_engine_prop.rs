@@ -403,6 +403,10 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
             c.post_wait += 3.0;
         }
         c.armed = s.armed;
+        // Drawn from bits the other fields leave free, so the cases already found keep their
+        // shape: a third of the cues pass over when disarmed, a fifth auto-load.
+        c.skip_if_disarmed = s.target % 3 == 0;
+        c.auto_load = s.second % 5 == 1;
         c.second_trigger = second_trigger(s.second);
         c.second_trigger_on_release = s.release;
         if pair.is_some() {
@@ -1492,7 +1496,24 @@ impl Run {
                     flatten(g.children(), &mut inside);
                 }
                 let at = positions.iter().position(|p| *p == outer).unwrap();
-                let expected = positions.get(at + 1 + inside.len()).copied();
+                // Skipped cues (disarmed, "skip if disarmed") are not there: the playhead
+                // stands on the first position after the group that is, a skipped group's
+                // children passed over with it.
+                let mut next = at + 1 + inside.len();
+                let expected = loop {
+                    let Some(p) = positions.get(next).copied() else {
+                        break None;
+                    };
+                    let Some(c) = self.ws.find_cue(p) else {
+                        break Some(p);
+                    };
+                    if !c.skipped(c.armed) {
+                        break Some(p);
+                    }
+                    let mut below = Vec::new();
+                    flatten(c.children(), &mut below);
+                    next += 1 + below.len();
+                };
                 prop_assert_eq!(
                     self.ph,
                     expected,

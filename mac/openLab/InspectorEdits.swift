@@ -5,7 +5,7 @@ import Foundation
 /// The inspector's text fields: the Basics tab's, the Triggers tab's OSC address and the Load Time
 /// tab's time, and the Network cue's message.
 enum InspectorField: Hashable, CaseIterable {
-    case number, name, notes, preWait, postWait, target, osc, duration, loadTime, message
+    case number, name, notes, preWait, postWait, target, duration, loadTime, message
 }
 
 /// Turns what the user typed into a model command, or rejects it locally so nothing is sent.
@@ -20,7 +20,6 @@ enum InspectorEdit {
         /// The engine would mark the cue broken: a Fade or Devamp cannot act on that kind of cue.
         case wrongTargetKind
         case notApplicable
-        case invalidOSC
         /// The cue's duration comes from its content (or it has none): only Wait and Fade cues.
         case noEditableDuration
         /// Only Load cues have a load time.
@@ -42,7 +41,6 @@ enum InspectorEdit {
             case .wrongTargetKind: return "inspector.invalid.wrongTargetKind"
             case .notApplicable: return "inspector.invalid.notApplicable"
             case .decimalComma: return "inspector.invalid.decimalComma"
-            case .invalidOSC: return "inspector.invalid.osc"
             case .noEditableDuration: return "inspector.invalid.noDuration"
             case .noLoadTime: return "inspector.invalid.noLoadTime"
             case .negativeLoadTime: return "inspector.invalid.negativeLoadTime"
@@ -73,7 +71,6 @@ enum InspectorEdit {
         case .notes: return cue.raw["notes"]?.stringValue ?? ""
         case .preWait: return CueTime.format(cue.raw["pre_wait"]?.doubleValue ?? 0)
         case .postWait: return CueTime.format(cue.raw["post_wait"]?.doubleValue ?? 0)
-        case .osc: return cue.raw["triggers"]?["osc"]?.stringValue ?? ""
         case .duration:
             // An Audio cue's length is read-only: what its file gives, as the cue list shows it.
             if cue.kindType == "audio" { return media?.shownDuration.map(CueTime.format) ?? "" }
@@ -139,11 +136,6 @@ enum InspectorEdit {
                 return .success(.setProperty(cue.id, .loadToTime(seconds)))
             }
         case .message: return messageCommand(text: text, cue: cue)
-        case .osc:
-            let a = text.trimmingCharacters(in: .whitespaces)
-            if a.isEmpty { return .success(setTriggers(cue, osc: .some(nil))) }
-            guard isValidOSCAddress(a) else { return .failure(.invalidOSC) }
-            return .success(a == display(.osc, cue: cue, model: model) ? nil : setTriggers(cue, osc: .some(a)))
         case .target:
             guard targetKinds.contains(cue.kindType) else { return .failure(.notApplicable) }
             let n = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -223,20 +215,13 @@ extension InspectorEdit {
         return .success(Command.transaction(commands))
     }
 
-    /// An OSC address that starts a cue: `/`, then printable ASCII with no spaces (QLab's OSC is
-    /// ASCII only) and none of the pattern characters, since the trigger is matched literally.
-    static func isValidOSCAddress(_ a: String) -> Bool {
-        let banned = "*?[]{}#,".unicodeScalars
-        return a.hasPrefix("/") && a.count > 1 && a.count <= 256
-            && a.unicodeScalars.allSatisfy { $0.value > 0x20 && $0.value < 0x7F && !banned.contains($0) }
-    }
-
-    /// `triggers` with the hotkey and/or OSC address replaced (`.some(nil)` clears), the other kept.
-    static func setTriggers(_ cue: Cue, hotkey: JSONValue?? = nil, osc: String?? = nil) -> Command {
+    /// `triggers` with the hotkey replaced (`.some(nil)` clears it) and/or the hotkey trigger
+    /// switched, whatever is not named kept as the cue has it (a show without the switch has it on).
+    static func setTriggers(_ cue: Cue, hotkey: JSONValue?? = nil, enabled: Bool? = nil) -> Command {
         let current = cue.raw["triggers"]
         let kept: JSONValue? = current?["hotkey"].flatMap { $0 == .null ? nil : $0 }
-        return .setProperty(
-            cue.id, .triggers(hotkey: hotkey ?? kept, osc: osc ?? current?["osc"]?.stringValue))
+        let on = enabled ?? (current?["hotkey_enabled"] != .bool(false))
+        return .setProperty(cue.id, .triggers(hotkey: hotkey ?? kept, enabled: on))
     }
 }
 

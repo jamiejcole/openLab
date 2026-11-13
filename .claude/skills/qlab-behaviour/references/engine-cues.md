@@ -87,3 +87,10 @@ C-Q8 | Preview uses the cue's own levels and built-in fade-in (linear curve) | u
 Q209 | Preview skips pre-waits, ignores auto-continue/auto-follow; several previews start through normal outputs | manual: auditioning-cues
 Q210 | StopPreview fade is 50 ms | assumed
 Q211 | Only audio cue kinds preview (no video kind built) | manual: auditioning-cues
+
+## Basics and Triggers fields
+Q270 | Auto-load: the cue is loaded (to 0) when the cue before it at its level (skipped cues passed over) starts, not when that cue ends. Only an idle, armed cue without static problems loads; one already loaded, running or broken is left alone, a disarmed one is not loaded. A group auto-loads as Load does | manual p. 128 + assumed (asked 2026-11-13, unanswered: auto-load-when)
+Q271 | Skip if disarmed: the playhead steps over a skipped cue after GO; a GO with the playhead put on one by hand starts nothing and moves on to the next cue that is there. Any trigger of it starts nothing; a playlist passes over it at once, a random group never picks it, a start-first group starts the first child that is there | manual p. 128 + assumed (asked 2026-11-13, unanswered: skip-playhead)
+Q272 | Second colour: a cue counts as started from the first trigger that makes it run (a disarmed cue's timing run too; a skipped cue never). A Reset (operator or Reset cue) of a group brings back the first colour of its children too; stop and panic do not | manual p. 127 + assumed (searched: second color, reset)
+Q273 | A hotkey trigger switched off keeps its key and starts nothing (also on release); a show from before the switch has its hotkeys on. A cue has no OSC address of its own: OSC starts a cue by number or id | manual pp. 128-129
+Q274 | Colours: eight basic and twelve extended, stored under openLab's own names (none, red, orange, yellow, green, cyan, blue, purple, magenta; dark_red, apricot, olive, dark_green, light_blue, navy, indigo, lilac, plum, raspberry, pink, grey) | manual p. 127, UI map context.cart-tile (order)

@@ -178,6 +178,7 @@ fn snapshot(ws: &Workspace, revision: u64) -> Snapshot {
         group_warnings: vec![],
         playheads: vec![],
         previewing: vec![],
+        played: vec![],
         warnings: vec![],
         media_durations: vec![],
     }
@@ -369,7 +370,6 @@ fn test_workspace() -> Workspace {
         ),
     ]);
     ws.cue_lists[0].cues[0].name = "Opening".into();
-    ws.cue_lists[0].cues[1].triggers.osc = Some("/lights/blackout".into());
     ws
 }
 
@@ -690,10 +690,10 @@ async fn go_over_udp_reaches_control() {
         .wait_seen("/go", |seen| seen.iter().any(is_input))
         .await;
     assert_eq!(blank_ids(f.control.inputs()), vec![go()]);
-    // The workspace-prefixed form, and the cue's own trigger address.
+    // The workspace-prefixed form, and a cue started by its number.
     f.udp_send(&msg(&format!("/workspace/{}/go", ws_id()), vec![]))
         .await;
-    f.udp_send(&msg("/lights/blackout", vec![])).await;
+    f.udp_send(&msg("/cue/2/start", vec![])).await;
     f.control
         .wait_seen("three inputs", |seen| {
             seen.iter().filter(|m| is_input(m)).count() == 3

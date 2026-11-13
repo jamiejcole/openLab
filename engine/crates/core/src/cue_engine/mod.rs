@@ -75,6 +75,10 @@ pub struct CueEngine {
     rng: SplitMix64,
     /// Each random group's round-robin cycle (QLab 5: memory lasts while the engine does).
     random_cycles: BTreeMap<CueId, group::RandomCycle>,
+    /// Cues started since the engine began or since they were last reset (a Reset of the cue
+    /// or of a group around it, Reset All): they show their second colour (QLab 5, manual
+    /// p. 127). Runtime only, never saved: a reopened show starts with none.
+    played: BTreeSet<CueId>,
     /// Groups whose run has fired its continue during the playhead's current visit (forgotten
     /// when they start again, are reset, or the playhead enters them any way but the GO on the
     /// group: `forget_continues`): the playhead leaving such a group from a child skips its
@@ -160,6 +164,7 @@ impl CueEngine {
             next_seq: 0,
             rng: SplitMix64::new(config.seed()),
             random_cycles: BTreeMap::new(),
+            played: BTreeSet::new(),
             continued: BTreeSet::new(),
             armed: BTreeMap::new(),
             problems: broken::Problems::default(),
@@ -422,6 +427,13 @@ impl CueEngine {
             all.entry(id).or_insert(CueState::Broken);
         }
         all.into_iter()
+    }
+
+    /// Every cue that has been started since the engine began or since it was last reset, in id
+    /// order: the cues whose row shows its second colour. `Action::PlayedChanged` reports each
+    /// change.
+    pub fn played(&self) -> impl Iterator<Item = CueId> + '_ {
+        self.played.iter().copied()
     }
 
     /// Whether the cue is paused, including a cue that broke while paused (its state reads

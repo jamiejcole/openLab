@@ -103,6 +103,7 @@ fn snapshot() -> Snapshot {
             cue: Some(cue_id(11)),
         }],
         previewing: vec![cue_id(10)],
+        played: vec![cue_id(10)],
         warnings: vec![WireWarning::Notice {
             code: "media_damaged".into(),
             message: "intro.wav has a damaged tail".into(),
@@ -585,10 +586,33 @@ fn fixtures() -> Vec<(String, Sample)> {
             coalesce: None,
         }),
     );
-    // A Wait or Fade cue's duration and a Load cue's time, alone.
+    // A Wait or Fade cue's duration, a Load cue's time, and the Basics and Triggers fields, alone.
     for (name, property) in [
         ("duration", CueProperty::Duration { value: 12.5 }),
         ("load_to_time", CueProperty::LoadToTime { value: 90.25 }),
+        (
+            "second_color",
+            CueProperty::SecondColor {
+                value: CueColor::LightBlue,
+            },
+        ),
+        ("auto_load", CueProperty::AutoLoad { value: true }),
+        (
+            "skip_if_disarmed",
+            CueProperty::SkipIfDisarmed { value: true },
+        ),
+        (
+            "triggers",
+            CueProperty::Triggers {
+                value: Triggers {
+                    hotkey: Some(Hotkey {
+                        key: "j".into(),
+                        modifiers: Modifiers::default(),
+                    }),
+                    hotkey_enabled: false,
+                },
+            },
+        ),
     ] {
         add(
             &format!("command_set_cue_{name}"),
@@ -905,6 +929,10 @@ fn fixtures() -> Vec<(String, Sample)> {
                 RuntimeChange::Preview {
                     cue: cue_id(10),
                     active: true,
+                },
+                RuntimeChange::Played {
+                    cue: cue_id(10),
+                    played: true,
                 },
                 RuntimeChange::Warning {
                     warning: WireWarning::TriggerIgnored {
@@ -2335,6 +2363,16 @@ fn engine_actions_map_to_runtime_changes() {
         })
     );
     assert_eq!(
+        map(Action::PlayedChanged {
+            cue: c,
+            played: false
+        }),
+        Some(RuntimeChange::Played {
+            cue: c,
+            played: false
+        })
+    );
+    assert_eq!(
         map(Action::GroupWarningChanged {
             group: c,
             warning: true
@@ -3429,6 +3467,7 @@ fn property_commands() -> Vec<(String, Command)> {
         },
         WorkspaceSetting::AutoNumberStart { value: 10.0 },
         WorkspaceSetting::AutoNumberIncrement { value: 0.5 },
+        WorkspaceSetting::NewCuesAutoLoad { value: true },
     ];
     let properties = [
         PatchProperty::Name {
