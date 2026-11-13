@@ -177,6 +177,7 @@ pub fn mixer_config_at(rate: u32, block: u64) -> MixerConfig {
     MixerConfig {
         sample_rate: rate,
         output_channels: 2,
+        cue_outputs: openlab_audio::MAX_CUE_OUTPUTS,
         max_block_frames: block as usize,
         max_voices: 64,
         max_voice_channels: 8,

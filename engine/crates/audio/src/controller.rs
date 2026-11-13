@@ -44,6 +44,7 @@ pub struct MixerController {
     returns: Consumer<Returned>,
     shared: Arc<Shared>,
     cue_outputs: usize,
+    device_outputs: usize,
     lookahead: u64,
     /// Batches waiting on the control thread, keyed by `(earliest at, first send order)`; a
     /// batch is released whole or not at all.
@@ -60,6 +61,7 @@ impl MixerController {
         returns: Consumer<Returned>,
         shared: Arc<Shared>,
         cue_outputs: usize,
+        device_outputs: usize,
         lookahead: u64,
     ) -> Self {
         MixerController {
@@ -69,6 +71,7 @@ impl MixerController {
             meters: MeterReader::new(Arc::clone(&shared)),
             shared,
             cue_outputs,
+            device_outputs,
             lookahead,
             held: BTreeMap::new(),
             held_commands: 0,
@@ -76,9 +79,15 @@ impl MixerController {
         }
     }
 
-    /// Number of cue outputs a [`crate::VoiceStart`] must route (= the mixer's output channels).
+    /// The rows of every patch matrix: the most cue outputs a [`crate::VoiceStart`] may route,
+    /// and the stride of a voice-meter read.
     pub fn cue_outputs(&self) -> usize {
         self.cue_outputs
+    }
+
+    /// The mixer's device outputs: the columns of every patch matrix.
+    pub fn device_outputs(&self) -> usize {
+        self.device_outputs
     }
 
     /// Schedules a command for sample `at`. Never drops it: if it is beyond the lookahead or the

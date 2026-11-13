@@ -410,6 +410,48 @@ fn a_playing_cue_follows_its_patch_change_without_a_click() {
     assert!(states(&s.take_outbound(), id(1)).is_empty());
 }
 
+/// A playing cue moved from a 2-output patch to a 100-output one is heard on the new patch's
+/// later outputs too: the voice started 2 cue outputs wide (what its patch had) and the move's
+/// level ramps widen it to output 100.
+#[test]
+fn a_playing_cue_moved_to_a_wider_patch_is_heard_on_its_later_outputs() {
+    let mut s = two_patch_show_with(patch_id(), 0, vec![], |ws, c| {
+        ws.patches[1].outputs = vec![ws.patches[1].outputs[0]; 100];
+        if let CueKind::Audio { levels, .. } = &mut ws.cue_lists[0].cues[0].kind {
+            levels.outputs = vec![levels.outputs[0]; 100];
+            levels.crosspoints.push(Crosspoint {
+                input: 0,
+                output: 99,
+                db: 0.0,
+                mute: false,
+            });
+        }
+        c.machine
+            .set_patch_mapping(
+                ws.id,
+                side(),
+                PatchMapping {
+                    device: "Offline".into(),
+                    channels: vec![1; 100],
+                },
+            )
+            .unwrap();
+    });
+    go(&mut s);
+    s.run(800);
+    // On Main only its output 1 is heard (output 100 is beyond Main's two).
+    let ch0 = s.channel(0);
+    assert!(near(*ch0.last().unwrap(), LEVEL));
+    let at = set_audio(&mut s, 1, |p, _| *p = side());
+    s.run(800);
+    let ch1 = s.channel(1);
+    assert!(
+        ch1[at + MOVE + 10..].iter().all(|&v| near(v, 2.0 * LEVEL)),
+        "outputs 1 and 100 of Side both on device output 2"
+    );
+    assert_eq!(s.control().live_voices(), 1);
+}
+
 /// #346: the slot a voice moved off keeps its routing while the crossfade out of it plays,
 /// even when its patch is removed by the same edit. Buffers shorter than the 5 ms crossfade
 /// (as 64 frames at 48 kHz are) let a sync run during it: the slot must not be zeroed then.

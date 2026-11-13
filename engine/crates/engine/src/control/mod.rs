@@ -418,7 +418,10 @@ struct Engine {
     /// `samples_rendered` at the last tick, and whether that tick saw it unchanged.
     last_tick_rendered: SampleTime,
     last_tick_stalled: bool,
+    /// The mixers' cue outputs: the most a patch can have, the stride of a voice-meter read.
     cue_outputs: usize,
+    /// The mixers' device outputs (every device runs at the primary's channel count).
+    device_outputs: usize,
     seen: Seen,
     /// Mixer stage fault reports handled ([`Control::stage_faulted`]).
     stage_reports: u64,
@@ -663,8 +666,8 @@ impl Control {
         if let Some(volume) = config.probe_volume {
             pool.set_volume_of(volume);
         }
-        let cue_outputs = mixer.cue_outputs();
-        let patches = Patches::new(config.mixer_patches, cue_outputs);
+        let (cue_outputs, device_outputs) = (mixer.cue_outputs(), mixer.device_outputs());
+        let patches = Patches::new(config.mixer_patches, cue_outputs, device_outputs);
         let name = match backend.device() {
             Some(d) => d.info().name.clone(),
             None => config
@@ -719,13 +722,14 @@ impl Control {
             last_tick_rendered: 0,
             last_tick_stalled: false,
             cue_outputs,
+            device_outputs,
             seen: Seen::default(),
             stage_reports: 0,
             stage_faults: faults::StageFaults::default(),
             last_meters: None,
             last_meter_read: None,
             meter_round: None,
-            out_peaks: vec![0.0; cue_outputs],
+            out_peaks: vec![0.0; device_outputs],
             meter_ids: Vec::new(),
             meter_peaks: Vec::new(),
             observe,
@@ -857,7 +861,7 @@ impl Engine {
             .sum();
         self.meter_ids = vec![VoiceId(0); cap];
         self.meter_peaks = vec![0.0; cap * self.cue_outputs.max(1)];
-        self.out_peaks = vec![0.0; self.cue_outputs * self.outputs.len()];
+        self.out_peaks = vec![0.0; self.device_outputs * self.outputs.len()];
     }
 
     /// Reads every mixer's voice meters into `meter_ids`/`meter_peaks`, one after another.
@@ -877,9 +881,9 @@ impl Engine {
         n
     }
 
-    /// Reads every mixer's output meters into `out_peaks`, output `k`'s at `k * cue_outputs`.
+    /// Reads every mixer's output meters into `out_peaks`, output `k`'s at `k * device_outputs`.
     fn read_output_meters(&mut self) {
-        let n = self.cue_outputs;
+        let n = self.device_outputs;
         for (k, o) in self.outputs.iter_mut().enumerate() {
             if let Some(out) = self.out_peaks.get_mut(k * n..(k + 1) * n) {
                 o.mixer.read_output_meters_into(out);
@@ -1433,6 +1437,7 @@ mod tests {
         let mixer = openlab_audio::MixerConfig {
             sample_rate: 8000,
             output_channels: 2,
+            cue_outputs: openlab_audio::MAX_CUE_OUTPUTS,
             max_block_frames: 64,
             max_voices: 8,
             max_voice_channels: 2,

@@ -57,6 +57,7 @@ pub struct Env<'a> {
     /// Where new voice ids come from (shared by the engine, not the voice table).
     pub ids: &'a mut VoiceIds,
     pub rate: NonZeroU32,
+    /// The mixers' cue outputs: the widest a voice can be.
     pub cue_outputs: usize,
     /// The scheduling time of the call.
     pub now: SampleTime,
@@ -568,7 +569,10 @@ fn voice_start(
     };
     let mixer_patch = env.patches.mixer_patch(env.doc, *patch)?;
     let patch_outputs = env.patches.outputs(env.doc, *patch);
-    let (mut vs, handle) = prepared.into_voice(id, env.cue_outputs);
+    // As many cue outputs as the patch has (a voice costs the mixer only those); a later move
+    // to a bigger patch widens it with the ramps that give the new outputs their levels.
+    let width = patch_outputs.clamp(1, env.cue_outputs.max(1));
+    let (mut vs, handle) = prepared.into_voice(id, width);
     vs.patch = mixer_patch;
     vs.gain = db_to_gain(levels.master_db);
     for (o, g) in vs.cue_outputs.iter_mut().enumerate() {

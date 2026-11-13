@@ -434,6 +434,119 @@ fn patch_routing_maps_cue_outputs_to_device_outputs() {
     assert_eq!(&out[1050 * 2..1051 * 2], &[0.0, 0.5]);
 }
 
+/// A mixer with 128 cue outputs on a 2-output device: a patch matrix has 128 rows (QLab 5: a
+/// patch has 1 to 128 cue outputs). A voice using all 128 is heard through every row routed to
+/// a device output; one asking for 129 is refused.
+#[test]
+fn a_voice_on_all_128_cue_outputs_is_heard_through_each_routed_row() {
+    let cfg = MixerConfig {
+        cue_outputs: 128,
+        ..config(2)
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    assert_eq!(ctl.cue_outputs(), 128);
+    // Rows 0 and 1 are identity; row 64 also to device 0, row 127 to device 1.
+    ctl.send(0, patch(0, 64, 0, 0.25));
+    ctl.send(0, patch(0, 127, 1, 0.5));
+    let mut v = VoiceStart::new(VoiceId(1), mono_dc(2000), 1, 128);
+    for o in [0, 64, 127] {
+        v.set_crosspoint(0, o, 1.0);
+    }
+    send_start(&mut ctl, 1000, v);
+    let wide = VoiceStart::new(VoiceId(2), mono_dc(2000), 1, 129);
+    send_start(&mut ctl, 1000, wide);
+    let out = r.render(1100, &[64]);
+    assert_eq!(&out[1050 * 2..1051 * 2], &[1.25, 0.5]);
+    assert_eq!(
+        events(&mut ctl),
+        [Event::VoiceRejected {
+            voice: VoiceId(2),
+            at: 1000,
+            reason: RejectReason::BadRouting
+        }]
+    );
+    let peaks = ctl.voice_meters();
+    assert_eq!(peaks.len(), 1);
+    assert_eq!(peaks[0].1.len(), 128);
+    let lit: Vec<usize> = (0..128).filter(|&o| peaks[0].1[o] > 0.0).collect();
+    assert_eq!(lit, vec![0, 64, 127]);
+}
+
+/// A voice started on 2 cue outputs (its patch's) costs 2: a ramp naming a later cue output
+/// widens it, and that output is heard from then on through its row, at the ramp's gain. An
+/// earlier, wider voice of the same pool slot leaves nothing behind in those rows.
+#[test]
+fn a_narrow_voice_widens_when_a_ramp_names_a_later_cue_output() {
+    let cfg = MixerConfig {
+        cue_outputs: 128,
+        max_voices: 1,
+        ..config(2)
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    ctl.send(0, patch(0, 100, 1, 1.0));
+    // A first voice routes input 0 to cue output 100, then ends.
+    let mut first = VoiceStart::new(VoiceId(1), mono_dc(100), 1, 128);
+    first.set_crosspoint(0, 100, 1.0);
+    send_start(&mut ctl, 0, first);
+    r.render(200, &[64]);
+    // The next one in the same slot uses 2 outputs, then is widened to 101 by a cue-output
+    // ramp: the crosspoint the first voice left there is gone (silent).
+    let mut v = VoiceStart::new(VoiceId(2), mono_dc(4000), 1, 2);
+    v.set_crosspoint(0, 0, 1.0);
+    send_start(&mut ctl, 200, v);
+    let up = |target| CommandKind::Ramp {
+        voice: VoiceId(2),
+        target,
+        gain: 0.5,
+        fade: Fade::NONE,
+    };
+    ctl.send(500, up(GainTarget::CueOutput(100)));
+    let out = r.render(1000, &[64]);
+    assert!(
+        channel(&out, 2, 1).iter().all(|&x| x == 0.0),
+        "no stale route"
+    );
+    // The crosspoint to it, set now, is heard after the de-zipper.
+    ctl.send(
+        1200,
+        up(GainTarget::Crosspoint {
+            input: 0,
+            output: 100,
+        }),
+    );
+    let out = r.render(1000, &[64]);
+    let ch1 = channel(&out, 2, 1);
+    assert_eq!(ch1[0], 0.0);
+    assert_eq!(*ch1.last().unwrap(), 0.25);
+    assert_eq!(channel(&out, 2, 0).last(), Some(&1.0));
+    let peaks = ctl.voice_meters();
+    assert_eq!(peaks[0].1[100], 0.25);
+}
+
+/// A routing change in a row no voice writes to still ramps to its end while other rows of the
+/// patch play: a voice reaching that row later hears the final gain, not a ramp frozen part way.
+#[test]
+fn a_patch_ramp_in_an_unused_row_completes_while_other_rows_play() {
+    let cfg = MixerConfig {
+        cue_outputs: 128,
+        ..config(2)
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    start(&mut ctl, 0, 1, mono_dc(8000), 1);
+    // Row 90 → device 1, faded in over the de-zipper while voice 1 plays rows 0..1.
+    ctl.send(100, patch(0, 90, 1, 0.5));
+    r.render(2000, &[64]);
+    let mut v = VoiceStart::new(VoiceId(2), mono_dc(4000), 1, 91);
+    v.set_crosspoint(0, 90, 1.0);
+    send_start(&mut ctl, 2000, v);
+    let out = r.render(100, &[64]);
+    assert!(
+        channel(&out, 2, 1).iter().all(|&x| x == 0.5),
+        "{:?}",
+        channel(&out, 2, 1)
+    );
+}
+
 /// Each voice goes through its own patch.
 #[test]
 fn voices_route_through_their_own_patch() {

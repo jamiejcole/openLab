@@ -61,10 +61,7 @@ impl Mixer {
             let Some(p) = patches.get_mut(v.patch) else {
                 continue;
             };
-            if !p.live {
-                p.live = true;
-                clear(&mut p.bus, block, len);
-            }
+            p.reach(v.width, block, len);
             if v.paused.is_some() {
                 render_tail(v, len, block, &mut p.bus, scratch);
             } else {
@@ -84,19 +81,28 @@ impl Mixer {
             .filter(|(_, p)| !p.health.disabled)
         {
             stage.enter(Stage::Patch(k));
+            // Rows no voice wrote to in this segment are not mixed (their bus is stale), but a
+            // ramp in them still moves on.
+            let mixed = if p.live { p.rows } else { 0 };
+            let was_dirty = std::mem::take(&mut p.dirty);
+            if was_dirty && p.dirty_rows > mixed {
+                let rest = p
+                    .gains
+                    .get_mut(mixed * outs..p.dirty_rows * outs)
+                    .unwrap_or_default();
+                for g in rest.iter_mut().filter(|g| g.is_ramping()) {
+                    g.advance(len);
+                    p.dirty |= g.is_ramping();
+                }
+            }
             if !p.live {
-                if p.dirty {
-                    p.dirty = false;
-                    for g in p.gains.iter_mut().filter(|g| g.is_ramping()) {
-                        g.advance(len);
-                        p.dirty |= g.is_ramping();
-                    }
+                if !p.dirty {
+                    p.dirty_rows = 0;
                 }
                 continue;
             }
-            p.dirty = false;
             for (d, dv) in dev.chunks_exact_mut(block).enumerate() {
-                for (o, bo) in p.bus.chunks_exact(block).enumerate() {
+                for (o, bo) in p.bus.chunks_exact(block).enumerate().take(mixed) {
                     let Some(g) = p.gains.get_mut(o * outs + d) else {
                         continue;
                     };
@@ -116,6 +122,9 @@ impl Mixer {
                         *y += x * g;
                     }
                 }
+            }
+            if !p.dirty {
+                p.dirty_rows = 0;
             }
         }
 
@@ -169,7 +178,10 @@ fn render_moving(
     s: &mut Scratch,
     outbox: &mut Outbox,
 ) {
-    clear(move_bus, block, len);
+    let width = v.width;
+    if let Some(b) = move_bus.get_mut(..width * block) {
+        clear(b, block, len);
+    }
     if v.paused.is_some() {
         render_tail(v, len, block, move_bus, s);
     } else {
@@ -179,14 +191,12 @@ fn render_moving(
         let Some(p) = patches.get_mut(k) else {
             continue;
         };
-        if !p.live {
-            p.live = true;
-            clear(&mut p.bus, block, len);
-        }
+        p.reach(width, block, len);
         for (bo, vo) in p
             .bus
             .chunks_exact_mut(block)
             .zip(move_bus.chunks_exact(block))
+            .take(width)
         {
             for (j, (y, x)) in bo.iter_mut().zip(vo).take(len).enumerate() {
                 let g = m.gain(j);
@@ -281,10 +291,11 @@ fn render_voice(
         input,
         channels,
         meter,
+        width,
         ..
     } = v;
     let (outs, ch) = (cue_out.len(), *channels);
-    for (o, co) in cue_out.iter_mut().enumerate() {
+    for (o, co) in cue_out.iter_mut().enumerate().take(*width) {
         let audible = (0..ch).any(|i| xp.get(i * outs + o).is_some_and(|p| !p.is_silent()));
         if !audible || co.is_silent() {
             co.advance(len);
@@ -390,10 +401,11 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
         input,
         channels,
         meter,
+        width,
         ..
     } = v;
     let (outs, ch) = (cue_out.len(), *channels);
-    for (o, co) in cue_out.iter().enumerate() {
+    for (o, co) in cue_out.iter().enumerate().take(*width) {
         let co = co.current_in(shapes);
         // As in `render_voice`: an output nothing reaches costs nothing (Pause All on many
         // voices × outputs renders every tail in one block).
@@ -428,7 +440,7 @@ fn render_tail(v: &mut Voice, len: usize, block: usize, bus: &mut [f32], s: &mut
 }
 
 /// Zeroes the first `len` frames of each `block`-frame channel of `bus`.
-fn clear(bus: &mut [f32], block: usize, len: usize) {
+pub(super) fn clear(bus: &mut [f32], block: usize, len: usize) {
     for b in bus.chunks_exact_mut(block) {
         b.iter_mut().take(len).for_each(|x| *x = 0.0);
     }
@@ -532,6 +544,30 @@ mod tests {
     use crate::OfflineRenderer;
     use crate::mixer::{CommandKind, MixerConfig, VoiceId, VoiceStart};
     use rtrb::RingBuffer;
+
+    /// A stereo voice in a 128-cue-output mixer renders its 2 cue outputs only, and its patch
+    /// clears and mixes 2 bus rows: the wide matrix costs a 2-output show nothing.
+    #[test]
+    fn a_two_output_voice_costs_two_cue_outputs_in_a_128_row_mixer() {
+        let cfg = MixerConfig {
+            cue_outputs: 128,
+            ..MixerConfig::default()
+        };
+        let (mut ctl, mixer) = Mixer::new(cfg).unwrap();
+        let (mut tx, rx) = RingBuffer::new(8192);
+        tx.push_entire_slice(&[0.5; 8192]).unwrap();
+        let mut v = VoiceStart::new(VoiceId(1), rx, 2, 2);
+        v.set_crosspoint(0, 0, 1.0);
+        v.set_crosspoint(1, 1, 1.0);
+        ctl.send(0, CommandKind::StartVoice(Box::new(v)));
+        let mut r = OfflineRenderer::new(mixer);
+        r.render(1000, &[]);
+        let m = r.mixer_mut();
+        assert_eq!(m.scratch.metered, 2 * 1000, "two outputs metered per frame");
+        assert_eq!(m.voices[0].width, 2);
+        assert_eq!(m.patches[0].rows, 2);
+        assert!(m.patches[0].live);
+    }
 
     #[test]
     fn a_pause_tail_meters_only_the_outputs_it_reaches() {

@@ -7,8 +7,8 @@ mod common;
 
 use common::*;
 use openlab_audio::{
-    CommandKind, Curve, Event, Fade, FinishReason, GainTarget, MixerConfig, PENDING_CAPACITY,
-    RejectReason, VoiceId,
+    CommandKind, Curve, Event, Fade, FinishReason, GainTarget, MAX_RAMP_SET, MixerConfig,
+    PENDING_CAPACITY, RejectReason, VoiceId, VoiceStart,
 };
 
 #[test]
@@ -490,6 +490,120 @@ fn a_full_command_burst_applies_in_one_block_without_allocating() {
 /// Meters (AUD-19) on 64 voices × 2 cue outputs and 64 device outputs: publishing them in every
 /// block, voice ends, slot reuse, pause and re-keying resume, xrun notes, and reading them into
 /// caller buffers all run without allocating.
+/// The widest mixer (128 cue outputs, 64 device outputs) allocates nothing on any of its wide
+/// paths: starts at every width (a slot reused by a narrower voice), a ramp set of every gain
+/// of a 64-channel voice ([`MAX_RAMP_SET`]), a narrow voice widened by a ramp, patch routing in
+/// rows no voice uses, moves between patches, pause and resume, and meter reads.
+#[test]
+fn no_allocation_on_the_128_cue_output_paths() {
+    let cfg = MixerConfig {
+        output_channels: 64,
+        cue_outputs: 128,
+        max_voice_channels: 64,
+        max_block_frames: 256,
+        max_voices: 8,
+        patches: 4,
+        ..MixerConfig::default()
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    let wide: Vec<f32> = vec![0.01; 64 * 3000];
+    for id in 0..8u64 {
+        let width = [128, 2, 64, 1][id as usize % 4];
+        let mut v = VoiceStart::new(VoiceId(id), source(&wide), 64, width);
+        v.crosspoints.fill(0.25);
+        v.patch = (id % 4) as u16;
+        if id % 2 == 0 {
+            v.play_frames = Some(400);
+        }
+        send_start(&mut ctl, id, v);
+    }
+    // Slots freed early are reused by narrow voices.
+    for id in 0..4u64 {
+        let v = VoiceStart::new(VoiceId(100 + id), source(&wide), 64, 2);
+        send_start(&mut ctl, 600 + id, v);
+    }
+    let mut every: Vec<(GainTarget, f32)> = vec![(GainTarget::Master, 0.5)];
+    every.extend((0..128).map(|o| (GainTarget::CueOutput(o), 0.5)));
+    every.extend((0..64).flat_map(|i| {
+        (0..128).map(move |o| {
+            (
+                GainTarget::Crosspoint {
+                    input: i,
+                    output: o,
+                },
+                0.125,
+            )
+        })
+    }));
+    assert_eq!(every.len(), MAX_RAMP_SET);
+    ctl.send(
+        700,
+        CommandKind::RampSet {
+            voice: VoiceId(101),
+            gains: every.into(),
+            fade: Fade::new(64, Curve::EqualPower),
+        },
+    );
+    ctl.send(
+        720,
+        CommandKind::Ramp {
+            voice: VoiceId(103),
+            target: GainTarget::CueOutput(127),
+            gain: 0.5,
+            fade: Fade::NONE,
+        },
+    );
+    for (row, dev) in [(127u16, 63u16), (90, 5), (3, 3)] {
+        ctl.send(
+            730,
+            CommandKind::SetPatchRouting {
+                patch: 1,
+                cue_output: row,
+                device_output: dev,
+                gain: 0.75,
+            },
+        );
+    }
+    ctl.send(750, CommandKind::SnapPatch { patch: 2 });
+    for (id, to) in [(1u64, 2u16), (101, 3), (103, 0)] {
+        ctl.send(
+            800,
+            CommandKind::MoveVoice {
+                voice: VoiceId(id),
+                patch: to,
+            },
+        );
+    }
+    ctl.send(900, CommandKind::PauseVoice { voice: VoiceId(3) });
+    ctl.send(
+        1000,
+        CommandKind::ResumeVoice {
+            voice: VoiceId(3),
+            new_id: VoiceId(33),
+        },
+    );
+    let cap = ctl.voice_meter_capacity();
+    let (mut ids, mut peaks, mut outs) = (vec![VoiceId(0); cap], vec![0.0; cap * 128], [0.0; 64]);
+    let mut out = vec![0.0; 64 * 300];
+    for _ in 0..6 {
+        ctl.pump();
+        no_alloc(|| {
+            r.render_into(&mut out, &[1, 64, 7, 228]);
+            ctl.read_output_meters_into(&mut outs);
+            ctl.read_voice_meters_into(&mut ids, &mut peaks);
+        });
+        assert!(out.iter().all(|x| x.is_finite()));
+    }
+    assert!(
+        events(&mut ctl)
+            .iter()
+            .all(|e| !matches!(e, Event::VoiceRejected { .. })),
+        "every width started"
+    );
+    assert_eq!(ctl.faults(), 0);
+    assert_eq!(ctl.leaked_returns(), 0);
+}
+
 #[test]
 fn no_allocation_with_meters_active_on_64_voices() {
     let cfg = MixerConfig {

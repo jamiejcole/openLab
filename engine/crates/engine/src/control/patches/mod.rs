@@ -77,6 +77,9 @@ pub struct Patches {
     slot_out: Vec<OutputKey>,
     /// The same as sent, so a retired slot follows a change of its patch's levels too.
     bases: Vec<Vec<f32>>,
+    /// Rows of every matrix: the mixers' cue outputs (the most a patch can have).
+    cue_outputs: usize,
+    /// Columns of every matrix: the mixers' device outputs.
     device_outputs: usize,
     /// Slots a mixer disabled after repeated faults ([`Self::quarantine`]), with that mixer's
     /// output.
@@ -86,8 +89,9 @@ pub struct Patches {
 }
 
 impl Patches {
-    /// `mixer_patches` matrices of `device_outputs` square, identity as the mixer starts them.
-    pub fn new(mixer_patches: usize, device_outputs: usize) -> Self {
+    /// `mixer_patches` matrices of `cue_outputs` rows by `device_outputs` columns, identity as
+    /// the mixer starts them.
+    pub fn new(mixer_patches: usize, cue_outputs: usize, device_outputs: usize) -> Self {
         let count = mixer_patches.min(MAX_PATCHES);
         Self {
             docs: BTreeMap::new(),
@@ -95,7 +99,8 @@ impl Patches {
             freed: false,
             sent: HashMap::new(),
             slot_out: vec![0; count],
-            bases: vec![vec![0.0; device_outputs * device_outputs]; count],
+            bases: vec![vec![0.0; cue_outputs * device_outputs]; count],
+            cue_outputs,
             device_outputs,
             quarantined: BTreeMap::new(),
             count,
@@ -104,9 +109,14 @@ impl Patches {
 
     fn identity(&self) -> Vec<f32> {
         let n = self.device_outputs;
-        (0..n * n)
+        (0..self.cells())
             .map(|i| if i / n == i % n { 1.0 } else { 0.0 })
             .collect()
+    }
+
+    /// Gains in one matrix.
+    fn cells(&self) -> usize {
+        self.cue_outputs * self.device_outputs
     }
 
     /// The output slot `slot`'s gains are on.
@@ -203,7 +213,7 @@ impl Patches {
         let Some(d) = self.docs.remove(&doc) else {
             return commands;
         };
-        let zero = vec![0.0; self.device_outputs * self.device_outputs];
+        let zero = vec![0.0; self.cells()];
         let mut slots: Vec<u16> = d
             .slots
             .values()
@@ -242,7 +252,10 @@ impl Patches {
             _ => &holder.channels,
         };
         let master = db_to_gain(patch.master_db);
-        let rows = holder.outputs.min(patch.outputs.len()).min(n);
+        let rows = holder
+            .outputs
+            .min(patch.outputs.len())
+            .min(self.cue_outputs);
         for o in 0..rows {
             if let Some(row) = m.get_mut(o * n..(o + 1) * n) {
                 row.fill(0.0);
@@ -319,7 +332,7 @@ impl Patches {
             d.slots.remove(&holder.patch);
             d.retired.insert(slot, holder);
         }
-        let zero = vec![0.0; self.device_outputs * self.device_outputs];
+        let zero = vec![0.0; self.cells()];
         for (slot, to) in moving {
             self.diff(slot, &zero, commands);
             if let Some(o) = self.slot_out.get_mut(usize::from(slot)) {
@@ -443,14 +456,14 @@ impl Patches {
     /// master × the output's level; silent when unmapped.
     fn matrix(&self, patch: &OutputPatch, r: &PatchResolution) -> Vec<f32> {
         let n = self.device_outputs;
-        let mut m = vec![0.0; n * n];
+        let mut m = vec![0.0; self.cells()];
         let PatchResolution::Mapped { channels, .. } = r else {
             return m;
         };
         let master = db_to_gain(patch.master_db);
         for (o, (out, &ch)) in patch.outputs.iter().zip(channels).enumerate() {
             let Ok(d) = usize::try_from(ch) else { continue };
-            if o >= n || d >= n {
+            if o >= self.cue_outputs || d >= n {
                 continue;
             }
             if let Some(slot) = m.get_mut(o * n + d) {
@@ -589,8 +602,7 @@ impl Patches {
         let i = usize::from(slot);
         if let Some(base) = self.bases.get_mut(i) {
             base.fill(0.0);
-            let n = self.device_outputs;
-            self.sent.insert((out, slot), vec![0.0; n * n]);
+            self.sent.insert((out, slot), vec![0.0; self.cells()]);
             self.quarantined.insert(slot, out);
         }
     }

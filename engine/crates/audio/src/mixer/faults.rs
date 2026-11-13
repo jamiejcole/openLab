@@ -808,7 +808,11 @@ mod tests {
 
     #[test]
     fn a_faulted_block_reports_no_meter_peaks() {
-        let (mut ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
+        let (mut ctl, mixer) = Mixer::new(MixerConfig {
+            cue_outputs: 2,
+            ..MixerConfig::default()
+        })
+        .unwrap();
         let (mut tx, rx) = RingBuffer::new(4096);
         tx.push_entire_slice(&[0.5; 4096]).unwrap();
         let mut v = VoiceStart::new(VoiceId(1), rx, 1, 2);

@@ -167,18 +167,25 @@ impl Mixer {
                 fade,
             } => {
                 let Mixer {
-                    voices, scratch, ..
+                    voices,
+                    scratch,
+                    outbox,
+                    ..
                 } = self;
                 if let Some(v) = voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
                     let (frames, curve) = ramp_shape(fade, v.fresh, dezip);
                     if let Some(p) = v.param_mut(target) {
                         p.ramp_to_in(sanitize_gain(gain), frames, curve, &mut scratch.shapes);
                     }
+                    outbox.shared.meters.widen(v.slot, v.width);
                 }
             }
             CommandKind::RampSet { voice, gains, fade } => {
                 let Mixer {
-                    voices, scratch, ..
+                    voices,
+                    scratch,
+                    outbox,
+                    ..
                 } = self;
                 if let Some(v) = voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
                     let (frames, curve) = ramp_shape(fade, v.fresh, dezip);
@@ -187,6 +194,7 @@ impl Mixer {
                             p.ramp_to_in(sanitize_gain(gain), frames, curve, &mut scratch.shapes);
                         }
                     }
+                    outbox.shared.meters.widen(v.slot, v.width);
                 }
                 self.outbox.give_back_gains(gains);
             }
@@ -197,7 +205,7 @@ impl Mixer {
                 gain,
             } => {
                 let (o, d) = (usize::from(cue_output), usize::from(device_output));
-                if o < outs
+                if o < self.cue_outputs
                     && d < outs
                     && let Some(p) = self.patches.get_mut(usize::from(patch))
                     && !p.health.disabled
@@ -205,6 +213,7 @@ impl Mixer {
                 {
                     g.ramp_to(sanitize_gain(gain), dezip, Curve::Linear);
                     p.dirty = true;
+                    p.dirty_rows = p.dirty_rows.max(o + 1);
                 }
             }
             CommandKind::SnapPatch { patch } => {
@@ -294,8 +303,9 @@ impl Mixer {
         let reject = if ch == 0 || ch > self.max_voice_channels {
             Some(RejectReason::BadChannelCount)
         } else if usize::from(s.patch) >= self.patches.len()
-            || s.cue_outputs.len() != self.outputs
-            || s.crosspoints.len() != ch * self.outputs
+            || s.cue_outputs.is_empty()
+            || s.cue_outputs.len() > self.cue_outputs
+            || s.crosspoints.len() != ch * s.cue_outputs.len()
         {
             Some(RejectReason::BadRouting)
         } else if !s.slices.is_empty()
