@@ -86,9 +86,22 @@ pub struct Cue {
     pub name: String,
     pub notes: String,
     pub color: CueColor,
+    /// The colour the row shows once the cue has been started, until Reset All, a reset of the
+    /// cue or the show is reopened; `none` = no second colour (QLab 5's locked second colour).
+    /// Absent in a file: `none`.
+    #[serde(default = "no_color")]
+    pub second_color: CueColor,
     pub flagged: bool,
     /// Disarmed cues are skipped when triggered (CUE-07).
     pub armed: bool,
+    /// Loaded when the cue before it at its level starts. Absent in a file: off.
+    #[serde(default)]
+    pub auto_load: bool,
+    /// A disarmed cue with this set is passed over as if it were not there: GO, continues and
+    /// groups go straight to the cue after it, and its own continue never fires. No effect on an
+    /// armed cue. Absent in a file: off.
+    #[serde(default)]
+    pub skip_if_disarmed: bool,
     pub pre_wait: f64,
     pub post_wait: f64,
     pub continue_mode: ContinueMode,
@@ -97,10 +110,60 @@ pub struct Cue {
     pub second_trigger: SecondTrigger,
     /// Releasing the hotkey or MIDI key that triggers the cue counts as a second trigger.
     pub second_trigger_on_release: bool,
+    /// When its action starts, the other cues in a scope fade out and stop. Absent in a file: off.
+    #[serde(default)]
+    pub fade_and_stop_others: FadeAndStopOthers,
     pub kind: CueKind,
 }
 
+/// "Fade and stop others" (QLab 5 Triggers tab, manual pp. 129-130): when the cue's action
+/// starts, every other active cue in `scope` fades out over `duration` seconds and stops. Kept
+/// with its settings while off.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FadeAndStopOthers {
+    pub enabled: bool,
+    pub scope: OthersScope,
+    /// Seconds, 0 to [`MAX_TIME`]; 0 stops them at once.
+    pub duration: f64,
+}
+
+impl Default for FadeAndStopOthers {
+    /// Off, peers, one second (QLab's defaults).
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            scope: OthersScope::Peers,
+            duration: 1.0,
+        }
+    }
+}
+
+/// Which other cues "fade and stop others" reaches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OthersScope {
+    /// The cues at the same level: the other cues of its group, or of its list at the top level,
+    /// each with everything inside it.
+    #[default]
+    Peers,
+    /// Every other cue of its cue list.
+    List,
+    /// Every other cue of the workspace.
+    All,
+}
+
+fn no_color() -> CueColor {
+    CueColor::None
+}
+
 impl Cue {
+    /// Whether the cue is passed over as if absent: disarmed with `skip_if_disarmed` (QLab 5,
+    /// manual p. 128). `armed` is the cue's armed state as the caller knows it (an Arm/Disarm cue
+    /// may have changed it in the call under way).
+    pub fn skipped(&self, armed: bool) -> bool {
+        !armed && self.skip_if_disarmed
+    }
+
     /// Child cues of a Group; empty for every other kind.
     pub fn children(&self) -> &[Cue] {
         match &self.kind {
@@ -133,15 +196,59 @@ pub fn display_name(cue: &Cue) -> Cow<'_, str> {
     }
 }
 
+/// A cue's highlight colour: eight basic colours, then twelve more (QLab 5.2's twenty, manual
+/// p. 127; named in openLab's own words).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CueColor {
     None,
     Red,
     Orange,
+    Yellow,
     Green,
+    Cyan,
     Blue,
     Purple,
+    Magenta,
+    DarkRed,
+    Apricot,
+    Olive,
+    DarkGreen,
+    LightBlue,
+    Navy,
+    Indigo,
+    Lilac,
+    Plum,
+    Raspberry,
+    Pink,
+    Grey,
+}
+
+impl CueColor {
+    /// Every colour, `None` first, then the basic eight and the twelve more, in menu order.
+    pub const ALL: [CueColor; 21] = [
+        Self::None,
+        Self::Red,
+        Self::Orange,
+        Self::Yellow,
+        Self::Green,
+        Self::Cyan,
+        Self::Blue,
+        Self::Purple,
+        Self::Magenta,
+        Self::DarkRed,
+        Self::Apricot,
+        Self::Olive,
+        Self::DarkGreen,
+        Self::LightBlue,
+        Self::Navy,
+        Self::Indigo,
+        Self::Lilac,
+        Self::Plum,
+        Self::Raspberry,
+        Self::Pink,
+        Self::Grey,
+    ];
 }
 
 /// What happens after this cue starts (CUE-03).
@@ -219,11 +326,26 @@ impl SecondTrigger {
     }
 }
 
+/// The ways to start a cue directly (CUE-09). OSC starts a cue by its number or id
+/// (`/cue/{number}/start`), not by an address of its own, as in QLab 5.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Triggers {
     pub hotkey: Option<Hotkey>,
-    /// OSC address that starts this cue (TRG-03).
-    pub osc: Option<String>,
+    /// Whether `hotkey` starts the cue. Off keeps the key, which then starts nothing. Absent in
+    /// a file: on (a show from before the switch had only working hotkeys).
+    #[serde(default = "enabled")]
+    pub hotkey_enabled: bool,
+}
+
+fn enabled() -> bool {
+    true
+}
+
+impl Triggers {
+    /// The key that starts the cue: its hotkey while that trigger is enabled.
+    pub fn active_hotkey(&self) -> Option<&Hotkey> {
+        self.hotkey.as_ref().filter(|_| self.hotkey_enabled)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

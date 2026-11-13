@@ -1,0 +1,16 @@
+{
+  "type": "command",
+  "id": 3,
+  "command": {
+    "type": "set_cue_property",
+    "id": "00000000-0000-0000-0000-00000000000c",
+    "property": {
+      "type": "fade_and_stop_others",
+      "value": {
+        "enabled": true,
+        "scope": "list",
+        "duration": 2.0
+      }
+    }
+  }
+}

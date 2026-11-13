@@ -70,6 +70,15 @@ Starting a cue inside a group (`Start`, GO on a child, a Start cue, a hotkey) do
 - Start on an active group applies the group's second-trigger option to the group as a whole.
 - Nesting is bounded by `MAX_GROUP_DEPTH` (32, `validate.rs`), enforced by validation and commands. Engine walks are iterative; `Workspace::find_cue` / `tree::find_path` recurse, bounded by that depth in any validated workspace.
 
+## Skip if disarmed
+A cue is skipped when it is disarmed (`is_armed`, an Arm/Disarm cue's change in the call included) and has `skip_if_disarmed` (`Cue::skipped`, `CueEngine::is_skipped`). It is passed over as if absent (QLab 5, manual p. 128); armed, the flag does nothing.
+- A trigger (GO, Start cue, hotkey, OSC, continue) on it starts nothing: no run, no `pre-waiting`, no warning, no chain budget; its own continue never fires. A run it already had (disarmed since) keeps rule 1. Load of it does nothing (an auto-load passes over it).
+- A continue starts the next sibling that is there (`next_sibling`); with none, nothing. A chain `chain_end` walks the cues that are there; the playhead goes to the next position that is there at that level (a skipped group with its children), else up a level, else past the end.
+- The playhead may rest on a skipped cue (navigation, the first cue on open or after Reset All, a cue disarmed while standing by), but no GO is dead because of one: `go_on` takes `first_present` of the playhead's path (further along its level, else after the group around it, outwards) and starts that cue; `after_go` works from it. With no cue left it is `GoIgnored { no_cue }` (QLab 5, manual p. 128; skill `qlab-behaviour` Q271).
+- A cue fading out in a panic and skipped since is not restarted by a trigger (its fade goes on).
+- Groups: timeline never starts it; start-first modes start the first child that is there (the playhead enters after its chain); a playlist passes over it at once (no timing kept); a random group never picks it, also when nothing else is playable. Its nominal span is 0. A group's Load loads the first children that are there.
+- Navigation (`PlayheadNext`/`Previous`, `SetPlayhead`) can still stand on it, so it can be selected and armed again.
+
 ## GO and double-GO (PB-01, PB-02)
 - `Go { list }` starts the cue at the list's playhead at `now` and moves the playhead to the cue after the last cue of its continue chain (every following cue reached through auto-continue/auto-follow, as the model stands, is skipped). A chain to the list's end puts the playhead past the end.
 - Only an armed `StartFirstAndEnter` group is entered: the playhead goes to the child after the first child's chain (a disarmed one starts nothing and is skipped as a unit). Every other group is one unit: GO on it, or a chain reaching it, moves the playhead after the group's chain, never onto its children.

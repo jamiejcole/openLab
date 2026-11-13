@@ -16,7 +16,7 @@ use openlab_core::protocol::{
     WireWarning,
 };
 use openlab_core::{
-    Command, ContinueMode, CueState, Hotkey, MachineSettings, Modifiers, NetworkPatch,
+    Command, ContinueMode, CueProperty, CueState, Hotkey, MachineSettings, Modifiers, NetworkPatch,
     NetworkPatchId, NetworkProtocol, PatchMapping, TransportKey, Workspace, WorkspaceId,
     WorkspaceSetting,
 };
@@ -269,6 +269,43 @@ fn a_hotkey_fires_in_every_doc() {
     let later = s.now() as usize;
     s.run(1000);
     assert!(s.channel(0)[later..].iter().all(|&v| v == 0.0));
+}
+
+/// An unticked hotkey trigger keeps its key but does not fire (QLab 5, manual p. 128); ticked
+/// again, the same key starts the cue.
+#[test]
+fn an_unticked_hotkey_trigger_keeps_its_key_but_does_not_fire() {
+    let key = Hotkey {
+        key: "a".into(),
+        modifiers: Modifiers::default(),
+    };
+    let a = wav(&dc(500, 0.25));
+    let mut c = audio(1, &a, 0);
+    c.triggers.hotkey = Some(key.clone());
+    c.triggers.hotkey_enabled = false;
+    let (mut s, _) = docs_show(workspace(vec![c]), vec![]);
+    s.run(BLOCK);
+    s.hotkey(&key);
+    s.run(1000);
+    assert!(s.channel(0).iter().all(|&v| v == 0.0), "the key started it");
+    let cue = s.control().workspace().find_cue(id(1)).unwrap();
+    assert_eq!(cue.triggers.hotkey, Some(key.clone()), "the key is kept");
+    let mut triggers = cue.triggers.clone();
+    triggers.hotkey_enabled = true;
+    let rid = s.request_id();
+    s.send(ClientMessage::Command {
+        id: rid,
+        command: Box::new(Command::SetCueProperty {
+            id: id(1),
+            property: CueProperty::Triggers { value: triggers },
+        }),
+        coalesce: None,
+    });
+    s.run(BLOCK);
+    let at = s.now() as usize;
+    s.hotkey(&key);
+    s.run(1000);
+    assert_eq!(first_nonzero(&s.channel(0)), Some(at));
 }
 
 /// (TRG-01): the app-scope hotkey follows each doc's edited key map. A key edit that

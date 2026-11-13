@@ -109,6 +109,10 @@ pub enum WorkspaceSetting {
     AutoNumberIncrement {
         value: f64,
     },
+    /// Whether cues made from now on are set to auto-load; existing cues keep theirs.
+    NewCuesAutoLoad {
+        value: bool,
+    },
 }
 
 /// The wire form of [`WorkspaceSetting::Hotkeys`]: every key present (`null` = no key) and no
@@ -226,6 +230,9 @@ impl WorkspaceSetting {
             Self::AutoNumberIncrement { .. } => Self::AutoNumberIncrement {
                 value: s.auto_number_increment,
             },
+            Self::NewCuesAutoLoad { .. } => Self::NewCuesAutoLoad {
+                value: s.new_cues_auto_load,
+            },
         }
     }
 
@@ -240,6 +247,7 @@ impl WorkspaceSetting {
             Self::Hotkeys { value } => s.hotkeys.clone_from(&**value),
             Self::AutoNumberStart { value } => s.auto_number_start = *value,
             Self::AutoNumberIncrement { value } => s.auto_number_increment = *value,
+            Self::NewCuesAutoLoad { value } => s.new_cues_auto_load = *value,
         }
     }
 

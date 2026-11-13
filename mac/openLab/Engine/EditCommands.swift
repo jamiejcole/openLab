@@ -8,16 +8,24 @@ enum CueProperty: Hashable, Sendable {
     case name(String)
     case notes(String)
     case color(String)
+    /// The colour shown once the cue has been started (`none`: no second colour).
+    case secondColor(String)
     case flagged(Bool)
     case armed(Bool)
+    case autoLoad(Bool)
+    case skipIfDisarmed(Bool)
     case preWait(Double)
     case postWait(Double)
     case continueMode(String)
     case target(ModelID?)
-    /// `triggers { hotkey, osc }`; the hotkey is a show-file hotkey object (`KeyChord.hotkeyJSON`).
-    case triggers(hotkey: JSONValue?, osc: String?)
+    /// `triggers { hotkey, hotkey_enabled }`; the hotkey is a show-file hotkey object
+    /// (`KeyChord.hotkeyJSON`). With `enabled` false the key is kept but starts nothing.
+    case triggers(hotkey: JSONValue?, enabled: Bool)
     case secondTrigger(String)
     case secondTriggerOnRelease(Bool)
+    /// "Fade and stop others": on, `scope` (`peers`, `list`, `all`) and the fade time in seconds
+    /// (0 to 24 h). Kept while off.
+    case fadeAndStopOthers(enabled: Bool, scope: String, duration: Double)
     /// The whole kind (a different audio file, say); never to or from a Group.
     case kind(JSONValue)
     /// Named fields of the cue's kind alone (`levels`, `curve`, `slices`, ...): the engine merges them
@@ -47,16 +55,23 @@ enum CueProperty: Hashable, Sendable {
         case .name(let v): return p("name", .string(v))
         case .notes(let v): return p("notes", .string(v))
         case .color(let v): return p("color", .string(v))
+        case .secondColor(let v): return p("second_color", .string(v))
         case .flagged(let v): return p("flagged", .bool(v))
         case .armed(let v): return p("armed", .bool(v))
+        case .autoLoad(let v): return p("auto_load", .bool(v))
+        case .skipIfDisarmed(let v): return p("skip_if_disarmed", .bool(v))
         case .preWait(let v): return p("pre_wait", .double(v))
         case .postWait(let v): return p("post_wait", .double(v))
         case .continueMode(let v): return p("continue_mode", .string(v))
         case .target(let v): return p("target", v.map { .string($0.raw) } ?? .null)
-        case .triggers(let hotkey, let osc):
-            return p("triggers", .object(["hotkey": hotkey ?? .null, "osc": osc.map { .string($0) } ?? .null]))
+        case .triggers(let hotkey, let enabled):
+            return p("triggers", .object(["hotkey": hotkey ?? .null, "hotkey_enabled": .bool(enabled)]))
         case .secondTrigger(let v): return p("second_trigger", .string(v))
         case .secondTriggerOnRelease(let v): return p("second_trigger_on_release", .bool(v))
+        case .fadeAndStopOthers(let enabled, let scope, let duration):
+            return p(
+                "fade_and_stop_others",
+                .object(["enabled": .bool(enabled), "scope": .string(scope), "duration": .double(duration)]))
         case .kind(let v): return p("kind", v)
         case .kindFields(let v): return p("kind_fields", .object(v))
         case .media(let v): return p("media", v.map { .string($0) } ?? .null)
@@ -116,6 +131,13 @@ extension Command {
     /// (0 to 10 s). The engine refuses a value out of range.
     static func setWorkspaceNumber(_ type: String, _ value: Double) -> Command {
         let setting = JSONValue.object(["type": .string(type), "value": .double(value)])
+        return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
+    }
+
+    /// `SetWorkspaceSetting { new_cues_auto_load }`: cues made from now on auto-load (existing cues
+    /// keep theirs).
+    static func setNewCuesAutoLoad(_ on: Bool) -> Command {
+        let setting = JSONValue.object(["type": .string("new_cues_auto_load"), "value": .bool(on)])
         return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
     }
 

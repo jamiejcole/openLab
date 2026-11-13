@@ -177,7 +177,8 @@
           }
         },
         "auto_number_start": 1.0,
-        "auto_number_increment": 1.0
+        "auto_number_increment": 1.0,
+        "new_cues_auto_load": false
       },
       "patches": [
         {
@@ -218,17 +219,25 @@
               "name": "Intro",
               "notes": "",
               "color": "none",
+              "second_color": "none",
               "flagged": false,
               "armed": true,
+              "auto_load": false,
+              "skip_if_disarmed": false,
               "pre_wait": 0.0,
               "post_wait": 0.0,
               "continue_mode": "do_not_continue",
               "triggers": {
                 "hotkey": null,
-                "osc": null
+                "hotkey_enabled": true
               },
               "second_trigger": "nothing",
               "second_trigger_on_release": false,
+              "fade_and_stop_others": {
+                "enabled": false,
+                "scope": "peers",
+                "duration": 1.0
+              },
               "kind": {
                 "type": "audio",
                 "media": "media/a.wav",
@@ -269,17 +278,25 @@
               "name": "",
               "notes": "",
               "color": "none",
+              "second_color": "none",
               "flagged": false,
               "armed": true,
+              "auto_load": false,
+              "skip_if_disarmed": false,
               "pre_wait": 0.0,
               "post_wait": 0.0,
               "continue_mode": "do_not_continue",
               "triggers": {
                 "hotkey": null,
-                "osc": null
+                "hotkey_enabled": true
               },
               "second_trigger": "nothing",
               "second_trigger_on_release": false,
+              "fade_and_stop_others": {
+                "enabled": false,
+                "scope": "peers",
+                "duration": 1.0
+              },
               "kind": {
                 "type": "fade",
                 "target": "00000000-0000-0000-0000-00000000000a",
@@ -325,6 +342,9 @@
       }
     ],
     "previewing": [
+      "00000000-0000-0000-0000-00000000000a"
+    ],
+    "played": [
       "00000000-0000-0000-0000-00000000000a"
     ],
     "warnings": [

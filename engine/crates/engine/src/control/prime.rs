@@ -154,7 +154,7 @@ impl DocCx<'_> {
 }
 
 /// The cues to keep primed: from each list's playhead the next `per_list` cues (any kind; the
-/// audio ones count), the targets of those cues, then every cue with a hotkey or OSC trigger. Disarmed and running cues are left out (a start of a running cue makes
+/// audio ones count), the targets of those cues, then every cue whose hotkey trigger is on. Disarmed and running cues are left out (a start of a running cue makes
 /// a new voice anyway).
 ///
 /// Reads the playhead window and the targets through the cue index, so they cost the cues
@@ -250,7 +250,7 @@ impl Wanted {
 
     fn add_triggered(&mut self, ws: &Workspace, engine: &CueEngine) {
         for c in ws.cues() {
-            if c.triggers.hotkey.is_some() || c.triggers.osc.is_some() {
+            if c.triggers.active_hotkey().is_some() {
                 self.add(c, engine);
             }
         }
@@ -293,7 +293,7 @@ mod tests {
                 key: "a".into(),
                 modifiers: Modifiers::default(),
             });
-            c.triggers.osc = (rng.below(12) == 0).then(|| "/x".to_owned());
+            c.triggers.hotkey_enabled = rng.below(4) != 0;
             match rng.below(6) {
                 0 => {
                     let inner = rng.below(6);
@@ -390,7 +390,7 @@ mod tests {
         c.armed = true;
         c.continue_mode = openlab_core::ContinueMode::DoNotContinue;
         c.triggers.hotkey = None;
-        c.triggers.osc = None;
+        c.triggers.hotkey_enabled = true;
         if let CueKind::Audio { media, .. } = &mut c.kind {
             *media = Some(MediaRef::new("a.wav"));
         }
@@ -398,9 +398,9 @@ mod tests {
     }
 
     /// Exact answers for the cases the property test cannot name: a running cue and a disarmed
-    /// one in the window are left out, a cue with only an OSC trigger or only a hotkey is
-    /// added after the window, and a playhead standing on a cue of another list starts the
-    /// list at its first cue.
+    /// one in the window are left out, a cue with a hotkey is added after the window but one
+    /// whose hotkey trigger is off is not, and a playhead standing on a cue of another list
+    /// starts the list at its first cue.
     #[test]
     fn prime_set_leaves_out_running_and_disarmed_and_adds_triggers() {
         let (mut ws, template) = example();
@@ -408,14 +408,16 @@ mod tests {
         second.id = CueListId(uuid::Uuid::from_u128(9_999_999));
         ws.cue_lists.push(second);
         let n = |k: u128| audio(&template, k);
-        let (mut disarmed, mut osc, mut hotkey) = (n(2), n(4), n(6));
+        let (mut disarmed, mut off, mut hotkey) = (n(2), n(4), n(6));
         disarmed.armed = false;
-        osc.triggers.osc = Some("/x".to_owned());
-        hotkey.triggers.hotkey = Some(Hotkey {
+        let key = Hotkey {
             key: "a".into(),
             modifiers: Modifiers::default(),
-        });
-        ws.cue_lists[0].cues = vec![n(1), disarmed, n(3), osc, n(5), hotkey, n(10)];
+        };
+        off.triggers.hotkey = Some(key.clone());
+        off.triggers.hotkey_enabled = false;
+        hotkey.triggers.hotkey = Some(key);
+        ws.cue_lists[0].cues = vec![n(1), disarmed, n(3), off, n(5), hotkey, n(10)];
         ws.cue_lists[1].cues = vec![n(10), n(11), n(12), n(13)];
         let first = ws.cue_lists[0].id;
         let mut engine = CueEngine::new(EngineConfig::new(1000, 5, 1).unwrap());
@@ -440,7 +442,7 @@ mod tests {
         let index = CueIndex::build(&ws);
         let got = prime_set(&ws, &engine, &index, 3);
         let ids = |ks: &[u128]| ks.iter().map(|k| cue_id(*k)).collect::<Vec<_>>();
-        assert_eq!(got, ids(&[3, 11, 12, 13, 4, 6]));
+        assert_eq!(got, ids(&[3, 11, 12, 13, 6]));
         assert_eq!(got, prime_set_walk(&ws, &engine, 3));
     }
 

@@ -44,7 +44,7 @@ Variants are in `command.rs` / `command_model.rs`; only non-obvious rules here.
 
 | Command | Rules |
 |---|---|
-| `AddCue { at, cue, auto_number }` | A Group brings its children. `auto_number` replaces the number with `next_auto_number`. |
+| `AddCue { at, cue, auto_number }` | A Group brings its children. `auto_number` replaces the number with `next_auto_number`. With the setting `new_cues_auto_load` on, the cue and its children get `auto_load` (not on undo or redo, which put back what was there; a `Paste` keeps the copied value). |
 | `Paste { at, cues }` | One undo step. Ids must be fresh (build with `prepare_paste`). Still accepted on the wire; its media is converted too. |
 | `PasteClipboard { at, cues, source_dir? }` | The raw clipboard (cues copied in any workspace). Core's `apply` refuses it (`NotPrepared`); only `Command::prepare` turns it into a `Paste` of `prepare_paste` (one undo step). A clipboard nested deeper than the limit is refused. |
 | `source_dir` of `PasteClipboard` | Absolute folder of the show the cues came from (absent for a never-saved show). Relative media paths are read against it and stored for this show by the media-path rule. Missing, relative or same-as-this-show leaves paths as written. |
@@ -59,7 +59,7 @@ Variants are in `command.rs` / `command_model.rs`; only non-obvious rules here.
 
 `Position { list, parent, index }`: `parent` is `None` for the top level. `index` counts the cues already there (after taking out the moved cue, when moving).
 
-**`SetCueProperty`.** `CueProperty` names the simple fields (name, notes, colour, flagged, armed, waits, continue mode, triggers, target, group mode, ...), the whole `Kind` (never to or from Group), or `KindFields`.
+**`SetCueProperty`.** `CueProperty` names the simple fields (name, notes, colour, second colour, flagged, armed, auto-load, skip if disarmed, waits, continue mode, triggers (the hotkey and its on/off switch), fade and stop others (its time judged as a pre-wait is), target, group mode, ...), the whole `Kind` (never to or from Group), or `KindFields`.
 - `KindFields` merges the named fields into the kind the cue has **when the command arrives**, so a change another client made to other fields meanwhile is kept. Two clients changing the same field: last write wins. `type`, `children` and `media` cannot be named. Not allowed in `BatchSet`. Undo restores the whole old kind. A fader or matrix drag sends every move with one `coalesce` key; typed values are one-off edits.
 - Audio `media`: the file alone (`value` a path or `null`; levels, routing, fades, slices untouched).
 - Wait/Fade `duration` and Load `load_to_time`: seconds, finite, 0 to `MAX_TIME` (24 h); anything else is `InvalidCue` with an `InvalidTime` issue naming the field. A running Wait or Fade takes the new duration (a Fade keeping its rate); a Load cue reads its time when its action starts.

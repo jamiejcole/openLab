@@ -28,8 +28,17 @@ impl CueProperty {
                 value: cue.notes.clone(),
             },
             Self::Color { .. } => Self::Color { value: cue.color },
+            Self::SecondColor { .. } => Self::SecondColor {
+                value: cue.second_color,
+            },
             Self::Flagged { .. } => Self::Flagged { value: cue.flagged },
             Self::Armed { .. } => Self::Armed { value: cue.armed },
+            Self::AutoLoad { .. } => Self::AutoLoad {
+                value: cue.auto_load,
+            },
+            Self::SkipIfDisarmed { .. } => Self::SkipIfDisarmed {
+                value: cue.skip_if_disarmed,
+            },
             Self::PreWait { .. } => Self::PreWait {
                 value: cue.pre_wait,
             },
@@ -47,6 +56,9 @@ impl CueProperty {
             },
             Self::SecondTriggerOnRelease { .. } => Self::SecondTriggerOnRelease {
                 value: cue.second_trigger_on_release,
+            },
+            Self::FadeAndStopOthers { .. } => Self::FadeAndStopOthers {
+                value: cue.fade_and_stop_others,
             },
             Self::Target { .. } => {
                 if !cue.kind.has_target() {
@@ -113,14 +125,18 @@ impl CueProperty {
             Self::Name { value } => cue.name.clone_from(value),
             Self::Notes { value } => cue.notes.clone_from(value),
             Self::Color { value } => cue.color = *value,
+            Self::SecondColor { value } => cue.second_color = *value,
             Self::Flagged { value } => cue.flagged = *value,
             Self::Armed { value } => cue.armed = *value,
+            Self::AutoLoad { value } => cue.auto_load = *value,
+            Self::SkipIfDisarmed { value } => cue.skip_if_disarmed = *value,
             Self::PreWait { value } => cue.pre_wait = *value,
             Self::PostWait { value } => cue.post_wait = *value,
             Self::ContinueMode { value } => cue.continue_mode = *value,
             Self::Triggers { value } => cue.triggers.clone_from(value),
             Self::SecondTrigger { value } => cue.second_trigger = *value,
             Self::SecondTriggerOnRelease { value } => cue.second_trigger_on_release = *value,
+            Self::FadeAndStopOthers { value } => cue.fade_and_stop_others = *value,
             Self::Target { value } => return cue.kind.set_target(*value),
             Self::GroupMode { value } => match &mut cue.kind {
                 CueKind::Group { mode, .. } => *mode = *value,
@@ -191,17 +207,21 @@ fn blank_cue(id: CueId) -> Cue {
         name: String::new(),
         notes: String::new(),
         color: CueColor::None,
+        second_color: CueColor::None,
         flagged: false,
         armed: true,
+        auto_load: false,
+        skip_if_disarmed: false,
         pre_wait: 0.0,
         post_wait: 0.0,
         continue_mode: ContinueMode::DoNotContinue,
         triggers: Triggers {
             hotkey: None,
-            osc: None,
+            hotkey_enabled: true,
         },
         second_trigger: SecondTrigger::Nothing,
         second_trigger_on_release: false,
+        fade_and_stop_others: crate::cue::FadeAndStopOthers::default(),
         kind: CueKind::Memo,
     }
 }
@@ -289,6 +309,7 @@ pub(super) fn set_property(
                 | CueProperty::PreWait { .. }
                 | CueProperty::PostWait { .. }
                 | CueProperty::Triggers { .. }
+                | CueProperty::FadeAndStopOthers { .. }
         )
     {
         property.write(&mut probe);

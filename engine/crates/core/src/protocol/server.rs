@@ -715,6 +715,10 @@ pub struct Snapshot {
     pub group_warnings: Vec<CueId>,
     pub playheads: Vec<PlayheadEntry>,
     pub previewing: Vec<CueId>,
+    /// Cues started since they were last reset (their rows show a second colour if they have
+    /// one); later changes come as `played` runtime changes. Absent: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub played: Vec<CueId>,
     /// As in `warnings`.
     pub warnings: Vec<WireWarning>,
     /// The media lengths of the audio cues whose file is probed and playable, by cue id;

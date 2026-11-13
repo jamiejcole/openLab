@@ -174,7 +174,8 @@ impl CueEngine {
                 }
             }
             GroupMode::StartFirstAndEnter | GroupMode::StartFirstAndGoToNext => {
-                if let Some(first) = children.first() {
+                // A skipped child is not there: the first is the first that is.
+                if let Some(first) = children.iter().find(|c| !self.is_skipped(c)) {
                     self.start(first.id, at, cx);
                 }
             }
@@ -212,8 +213,9 @@ impl CueEngine {
     /// playable children not yet picked in the current cycle, as the group stands now (a child
     /// added mid-cycle joins it, a removed or disarmed one drops out); when none is left a new
     /// cycle starts, which never opens with the child picked last when there is another. With
-    /// no playable child at all the same rule runs over every child, so one child is always
-    /// picked (its start then reports it disarmed or broken).
+    /// no playable child at all the same rule runs over every child that is not skipped (a
+    /// disarmed child with "skip if disarmed"), so one child is picked whenever there is one
+    /// (its start then reports it disarmed or broken).
     fn pick_random(&mut self, group: CueId, children: &[Cue]) -> Option<CueId> {
         let playable: Vec<CueId> = children
             .iter()
@@ -221,7 +223,12 @@ impl CueEngine {
             .map(|c| c.id)
             .collect();
         let pool = if playable.is_empty() {
-            children.iter().map(|c| c.id).collect()
+            // A skipped child is not there at all, so it is never the one picked.
+            children
+                .iter()
+                .filter(|c| !self.is_skipped(c))
+                .map(|c| c.id)
+                .collect()
         } else {
             playable
         };
@@ -669,7 +676,7 @@ impl CueEngine {
     /// once (broken at run time) takes nothing; a disarmed one or one with static problems
     /// takes its pre-wait only. `depth` bounds the walk into nested groups.
     fn nominal_span(&self, cue: &Cue, depth: usize, cx: &Ctx) -> Option<SampleTime> {
-        if matches!(self.slots.get(&cue.id), Some(Slot::Broken(_))) {
+        if matches!(self.slots.get(&cue.id), Some(Slot::Broken(_))) || self.is_skipped(cue) {
             return Some(0);
         }
         let pre = cx.secs(cue.pre_wait, &self.config);
@@ -907,13 +914,17 @@ impl CueEngine {
         self.stop_one(cue, fade_out, cx);
     }
 
+    /// Resets the cue and every descendant, children before their groups; each shows its first
+    /// colour again.
     pub(super) fn reset_tree(&mut self, cue: CueId, cx: &mut Ctx) {
         for id in self.inside(cue, cx).into_iter().rev() {
             if self.slots.contains_key(&id) {
                 self.reset_one(id, cx);
             }
+            self.forget_played(id, cx);
         }
         self.reset_one(cue, cx);
+        self.forget_played(cue, cx);
     }
 
     pub(super) fn pause_tree(&mut self, cue: CueId, cx: &mut Ctx) {
@@ -1001,7 +1012,9 @@ impl CueEngine {
                 | GroupMode::Playlist { shuffle: false, .. } => 1,
                 GroupMode::Playlist { shuffle: true, .. } | GroupMode::StartRandom => 0,
             };
-            work.extend(children.iter().take(first).rev().map(|c| (c.id, inner)));
+            let present = children.iter().filter(|c| !self.is_skipped(c));
+            let firsts: Vec<CueId> = present.take(first).map(|c| c.id).collect();
+            work.extend(firsts.into_iter().rev().map(|c| (c, inner)));
         }
     }
 }

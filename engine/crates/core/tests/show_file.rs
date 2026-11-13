@@ -1130,14 +1130,7 @@ fn group_mode() -> impl Strategy<Value = GroupMode> {
 }
 
 fn color() -> impl Strategy<Value = CueColor> {
-    prop_oneof![
-        Just(CueColor::None),
-        Just(CueColor::Red),
-        Just(CueColor::Orange),
-        Just(CueColor::Green),
-        Just(CueColor::Blue),
-        Just(CueColor::Purple),
-    ]
+    proptest::sample::select(CueColor::ALL.to_vec())
 }
 
 fn continue_mode() -> impl Strategy<Value = ContinueMode> {
@@ -1162,7 +1155,10 @@ fn hotkey() -> impl Strategy<Value = Hotkey> {
 }
 
 fn triggers() -> impl Strategy<Value = Triggers> {
-    (option::of(hotkey()), option::of(text())).prop_map(|(hotkey, osc)| Triggers { hotkey, osc })
+    (option::of(hotkey()), any::<bool>()).prop_map(|(hotkey, hotkey_enabled)| Triggers {
+        hotkey,
+        hotkey_enabled,
+    })
 }
 
 /// A cue with id and number left for [`assign_ids`]; `number` is `Some` when it should get one.
@@ -1179,20 +1175,35 @@ fn second_trigger() -> impl Strategy<Value = SecondTrigger> {
     ]
 }
 
+fn fade_and_stop() -> impl Strategy<Value = FadeAndStopOthers> {
+    let scope = proptest::sample::select(vec![
+        OthersScope::Peers,
+        OthersScope::List,
+        OthersScope::All,
+    ]);
+    (any::<bool>(), scope, time()).prop_map(|(enabled, scope, duration)| FadeAndStopOthers {
+        enabled,
+        scope,
+        duration,
+    })
+}
+
 fn with_common(kind: impl Strategy<Value = CueKind>) -> impl Strategy<Value = Cue> {
     (
         (option::of(Just(String::new())), text(), text()),
-        (color(), any::<bool>(), any::<bool>()),
+        (color(), color(), any::<bool>(), any::<bool>()),
+        (any::<bool>(), any::<bool>()),
         (time(), time(), continue_mode(), triggers()),
-        (second_trigger(), any::<bool>()),
+        (second_trigger(), any::<bool>(), fade_and_stop()),
         kind,
     )
         .prop_map(
             |(
                 (number, name, notes),
-                (color, flagged, armed),
+                (color, second_color, flagged, armed),
+                (auto_load, skip_if_disarmed),
                 (pre_wait, post_wait, continue_mode, triggers),
-                (second_trigger, second_trigger_on_release),
+                (second_trigger, second_trigger_on_release, fade_and_stop_others),
                 kind,
             )| {
                 Cue {
@@ -1200,14 +1211,18 @@ fn with_common(kind: impl Strategy<Value = CueKind>) -> impl Strategy<Value = Cu
                     name,
                     notes,
                     color,
+                    second_color,
                     flagged,
                     armed,
+                    auto_load,
+                    skip_if_disarmed,
                     pre_wait,
                     post_wait,
                     continue_mode,
                     triggers,
                     second_trigger,
                     second_trigger_on_release,
+                    fade_and_stop_others,
                     ..cue(0, kind)
                 }
             },
@@ -1320,14 +1335,14 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
         (num(0.0..=10.0), num(0.0..=60.0), num(5.0..=3600.0)),
         any_access(),
         hotkeys,
-        (num(0.0..=100.0), num(0.1..=10.0)),
+        (num(0.0..=100.0), num(0.1..=10.0), any::<bool>()),
     )
         .prop_map(
             |(
                 (min_go_interval, panic_duration, autosave_interval),
                 osc_access,
                 hotkeys,
-                (start, step),
+                (start, step, new_cues_auto_load),
             )| {
                 WorkspaceSettings {
                     min_go_interval,
@@ -1340,6 +1355,7 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
                     hotkeys,
                     auto_number_start: start,
                     auto_number_increment: step,
+                    new_cues_auto_load,
                 }
             },
         )
@@ -1909,4 +1925,91 @@ fn loading_clamps_a_fade_unless_it_is_aimed_at_a_group() {
     assert_eq!(master("a1"), Some(-3.0), "aimed at an Audio cue");
     assert_eq!(master("a2"), Some(6.0), "aimed at a Group: a change in dB");
     assert_eq!(master("a3"), Some(-3.0), "aimed at nothing");
+}
+
+/// The twenty cue colours and none, each stored under its own name, round-trip through a save
+/// (QLab 5.2's eight basic and twelve extended colours, manual p. 127).
+#[test]
+fn every_cue_colour_and_second_colour_round_trips() {
+    let names: Vec<String> = CueColor::ALL
+        .iter()
+        .map(|c| {
+            serde_json::to_value(c)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(names.len(), 21);
+    assert_eq!(names[0], "none");
+    let unique: std::collections::BTreeSet<&String> = names.iter().collect();
+    assert_eq!(unique.len(), 21, "{names:?}");
+    let cues = CueColor::ALL
+        .iter()
+        .zip(CueColor::ALL.iter().rev())
+        .enumerate()
+        .map(|(n, (color, second))| Cue {
+            color: *color,
+            second_color: *second,
+            ..cue(n as u128 + 1, CueKind::Memo)
+        })
+        .collect();
+    let ws = workspace(cues);
+    let loaded = load_show(&save_show(&ws).unwrap()).unwrap();
+    assert_eq!(loaded.workspace, ws);
+    assert_eq!(loaded.warnings, vec![]);
+}
+
+/// The Basics and Triggers keys are optional in a file: a cue without them loads with the
+/// second colour off, auto-load and skip off and its hotkey trigger on, and the settings with
+/// "new cues auto-load" off. A cue's OSC trigger address (openLab had one; QLab 5 does not) is
+/// an unknown key now and is dropped.
+#[test]
+fn a_file_without_the_basics_and_triggers_keys_loads_with_their_defaults() {
+    let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    let cue = &mut doc["workspace"]["cue_lists"][0]["cues"][0];
+    for key in ["second_color", "auto_load", "skip_if_disarmed"] {
+        cue.as_object_mut().unwrap().remove(key).unwrap();
+    }
+    let triggers = cue["triggers"].as_object_mut().unwrap();
+    triggers.remove("hotkey_enabled").unwrap();
+    triggers.insert("osc".into(), "/lights/blackout".into());
+    doc["workspace"]["settings"]
+        .as_object_mut()
+        .unwrap()
+        .remove("new_cues_auto_load")
+        .unwrap();
+    let loaded = load_show(&doc.to_string()).unwrap();
+    assert_eq!(loaded.warnings, vec![]);
+    assert_eq!(loaded.workspace, load_show(EXAMPLE).unwrap().workspace);
+    let first = &loaded.workspace.cue_lists[0].cues[0];
+    assert_eq!(first.second_color, CueColor::None);
+    assert!(!first.auto_load && !first.skip_if_disarmed);
+    assert!(first.triggers.hotkey_enabled);
+    assert!(!loaded.workspace.settings.new_cues_auto_load);
+}
+
+/// A value that is not one of the colours (or not a boolean) is refused like any wrongly typed
+/// field: the file does not load, nothing panics.
+#[test]
+fn a_bad_basics_value_refuses_the_file() {
+    for (key, bad) in [
+        ("second_color", serde_json::json!("beige")),
+        ("auto_load", serde_json::json!("yes")),
+        ("skip_if_disarmed", serde_json::json!(1)),
+    ] {
+        let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+        doc["workspace"]["cue_lists"][0]["cues"][0][key] = bad;
+        assert!(
+            matches!(load_show(&doc.to_string()), Err(LoadError::Model(_))),
+            "{key}"
+        );
+    }
+    let mut doc: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
+    doc["workspace"]["cue_lists"][0]["cues"][0]["triggers"]["hotkey_enabled"] = "on".into();
+    assert!(matches!(
+        load_show(&doc.to_string()),
+        Err(LoadError::Model(_))
+    ));
 }

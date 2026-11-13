@@ -21,7 +21,6 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let targetField = TargetField()
     /// A file cue's Target, drawn as a path (shown in place of `targetField` while the cue has a file).
     let targetPath = TargetPathControl()
-    let oscField = NSTextField()
     let hotkeyField = HotkeyRecorder()
     let hotkeyClear = NSButton(title: loc("inspector.hotkey.clear"), target: nil, action: nil)
     let secondTriggerPopup = NSPopUpButton()
@@ -197,7 +196,6 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .preWait: return preWaitField
         case .postWait: return postWaitField
         case .target: return targetField
-        case .osc: return oscField
         case .duration: return durationField
         case .loadTime: return loadTimeField
         case .message: return networkMessageField
@@ -215,7 +213,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         emptyLabel.textColor = .tertiaryLabelColor
         for (f, id) in [
             (numberField, AX.inspectorNumber), (nameField, AX.inspectorName), (preWaitField, AX.inspectorPreWait),
-            (postWaitField, AX.inspectorPostWait), (targetField, AX.inspectorTarget), (oscField, AX.inspectorOSC),
+            (postWaitField, AX.inspectorPostWait), (targetField, AX.inspectorTarget),
             (durationField, AX.inspectorDuration), (loadTimeField, AX.inspectorLoadTime),
             (networkMessageField, "inspector-network-message"),
         ] {
@@ -450,7 +448,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         render()
     }
 
-    /// The Triggers tab: hotkey (recorder, Clear), second trigger and on-release, OSC address.
+    /// The Triggers tab: hotkey (recorder, Clear), second trigger and on-release.
     private func triggersTab(
         row: (String, NSView) -> NSView, column: ([NSView], CGFloat?) -> NSStackView
     ) -> NSTabViewItem {
@@ -476,14 +474,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         onReleaseCheck.setAX(AX.inspectorOnRelease)
         onReleaseCheck.target = self
         onReleaseCheck.action = #selector(checkChanged(_:))
-        oscField.placeholderString = loc("inspector.osc.placeholder")
         hotkeyField.widthAnchor.constraint(equalToConstant: 200).isActive = true
-        oscField.widthAnchor.constraint(equalToConstant: 260).isActive = true
         let hotkeyRow = NSStackView(views: [hotkeyField, hotkeyClear])
         hotkeyRow.spacing = 6
         let left = column(
             [
-                row(loc("inspector.hotkey"), hotkeyRow), onReleaseCheck, row(loc("inspector.osc"), oscField),
+                row(loc("inspector.hotkey"), hotkeyRow), onReleaseCheck,
             ], nil)
         let right = column([row(loc("inspector.secondTrigger"), secondTriggerPopup)], 200)
         let columns = NSStackView(views: [left, right])
@@ -744,7 +740,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     private var lockedControls: [NSControl] {
         [
-            numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField, oscField,
+            numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField,
             hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck,
             devampModePopup, networkPatchPopup, outputPatchPopup, editPatchButton, networkMessageField,
             networkSendButton,

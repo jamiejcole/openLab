@@ -295,7 +295,7 @@ fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
                         key: (*key).into(),
                         modifiers: Modifiers::default(),
                     }),
-                osc: p.c.is_multiple_of(2).then(|| "/go".into()),
+                hotkey_enabled: p.c.is_multiple_of(2),
             },
         },
         9 => CueProperty::Target {
