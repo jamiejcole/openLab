@@ -1860,6 +1860,85 @@ fn unplug(s: &mut DeviceShow, id: &str) {
     s.settle_devices();
 }
 
+/// The last workspace warnings list sent, as (code, message) of each notice.
+fn notice_texts(msgs: &[ServerMessage]) -> Option<Vec<(String, String)>> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            ServerMessage::Warnings { warnings } => Some(
+                warnings
+                    .iter()
+                    .filter_map(|w| match w {
+                        WireWarning::Notice { code, message, .. } => {
+                            Some((code.clone(), message.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .next_back()
+}
+
+/// QLab 5 warns about a patch whose device is missing (manual p. 191): a patch on a device that
+/// is unplugged is a workspace warning naming both, gone again once the device is back.
+#[test]
+fn a_patch_whose_device_is_unplugged_is_warned_about_until_it_is_back() {
+    let mut s = two_device_show(vec![]);
+    unplug(&mut s, DEV2);
+    s.wait_wall(Duration::from_secs(1), 1);
+    let texts = notice_texts(&s.take_outbound()).unwrap();
+    let missing: Vec<&String> = texts
+        .iter()
+        .filter(|(code, _)| code == "patch_device_missing")
+        .map(|(_, m)| m)
+        .collect();
+    assert_eq!(missing.len(), 1, "{texts:?}");
+    assert!(
+        missing[0].contains("\"B\"") && missing[0].contains(DEV2_NAME),
+        "{}",
+        missing[0]
+    );
+    s.fake.plug(listed(DEV2, DEV2_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.wait_output(DEV2_NAME);
+    s.tick();
+    let after = notice_texts(&s.take_outbound()).expect("the list is sent again");
+    assert!(
+        !after.iter().any(|(code, _)| code == "patch_device_missing"),
+        "{after:?}"
+    );
+}
+
+/// A patch the operator set to no device carries its own warning (QLab 5 manual p. 191).
+#[test]
+fn a_patch_set_to_no_device_is_warned_about() {
+    let mut s = two_patch_show_with(
+        vec![],
+        DEV_NAME,
+        vec![listed(DEV, DEV_NAME, 2)],
+        |c| {
+            let ws = workspace(vec![]);
+            c.machine
+                .set_patch_mapping(ws.id, patch_b(), PatchMapping::none())
+                .unwrap();
+        },
+    );
+    let texts = notice_texts(&s.take_outbound()).unwrap();
+    assert_eq!(
+        texts
+            .iter()
+            .filter(|(code, m)| code == "patch_no_device" && m.contains("\"B\""))
+            .count(),
+        1,
+        "{texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|(code, _)| code == "patch_device_missing"),
+        "{texts:?}"
+    );
+}
+
 /// Checklist: two patches on two devices, one Audio cue on each, GO both: each device carries
 /// only its own patch's cue.
 #[test]

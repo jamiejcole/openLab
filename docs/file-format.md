@@ -155,7 +155,7 @@ outputs reach is configured per machine.
 | `id` | UUID | |
 | `name` | string | |
 | `master_db` | level | Patch master. |
-| `outputs` | array of outputs | 1 to 128 entries (QLab 5's patch range); the patch's channel count is the length. Each is `{"level_db": level, "mute": bool, "polarity_inverted": bool}`. |
+| `outputs` | array of outputs | 1 to 128 entries (QLab 5's patch range); the patch's channel count is the length. Each is `{"name"?: string, "level_db": level, "mute": bool, "polarity_inverted": bool}`; `name` is what a cue's Levels tab shows under that output (absent or empty: its number), checked like a patch name. |
 
 ### 4.5 Network patches
 

@@ -518,6 +518,7 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
 
 fn patch_output_from(p: &Pick) -> PatchOutput {
     PatchOutput {
+        name: String::new(),
         level_db: level(p.c),
         mute: p.d.is_multiple_of(2),
         polarity_inverted: p.b.is_multiple_of(2),
@@ -526,8 +527,12 @@ fn patch_output_from(p: &Pick) -> PatchOutput {
 
 fn patch_property(p: &Pick) -> PatchProperty {
     let output = p.c as usize % 4;
-    match p.b % 7 {
+    match p.b % 8 {
         0 => PatchProperty::Name {
+            value: name_pool(p.d),
+        },
+        7 => PatchProperty::OutputName {
+            output,
             value: name_pool(p.d),
         },
         1 => PatchProperty::MasterDb { value: level(p.d) },

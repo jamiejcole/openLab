@@ -600,6 +600,11 @@ pub enum PatchProperty {
         output: usize,
         value: bool,
     },
+    /// The name a cue's Levels tab shows under the output's fader; empty shows its number.
+    OutputName {
+        output: usize,
+        value: String,
+    },
     /// 1 to [`MAX_CUE_OUTPUTS`]. New outputs start at 0 dB, unmuted, polarity normal. Shrinking drops the
     /// last outputs' settings (undo brings them back); cues keep their routing to them.
     ChannelCount {
@@ -642,6 +647,10 @@ impl PatchProperty {
                 output: *output,
                 value: out(*output)?.polarity_inverted,
             },
+            Self::OutputName { output, .. } => Self::OutputName {
+                output: *output,
+                value: out(*output)?.name.clone(),
+            },
             // Shrinking loses data, so both are undone by putting every output back.
             Self::ChannelCount { .. } | Self::Outputs { .. } => Self::Outputs {
                 value: patch.outputs.clone(),
@@ -665,6 +674,7 @@ impl PatchProperty {
             Self::OutputPolarity { output, value } => {
                 out(patch, *output)?.polarity_inverted = *value;
             }
+            Self::OutputName { output, value } => out(patch, *output)?.name.clone_from(value),
             Self::ChannelCount { value } => {
                 // Bound before allocating: the count comes from the wire.
                 if !(1..=MAX_CUE_OUTPUTS as usize).contains(value) {
@@ -683,7 +693,8 @@ impl PatchProperty {
         let output = |p: &Self| match p {
             Self::OutputLevel { output, .. }
             | Self::OutputMute { output, .. }
-            | Self::OutputPolarity { output, .. } => Some(*output),
+            | Self::OutputPolarity { output, .. }
+            | Self::OutputName { output, .. } => Some(*output),
             _ => None,
         };
         std::mem::discriminant(self) == std::mem::discriminant(other)
@@ -693,6 +704,7 @@ impl PatchProperty {
 
 fn default_output() -> PatchOutput {
     PatchOutput {
+        name: String::new(),
         level_db: 0.0,
         mute: false,
         polarity_inverted: false,
@@ -763,6 +775,14 @@ fn set_patch_property(
     if let PatchProperty::Name { value } = property
         && !restoring
         && *value != patch.name
+    {
+        check_name(value)?;
+    }
+    // Same rule as a patch name: an over-long or control-character name is refused; an undo
+    // may put back what a loaded file had.
+    if let PatchProperty::OutputName { output, value } = property
+        && !restoring
+        && patch.outputs.get(*output).is_some_and(|o| o.name != *value)
     {
         check_name(value)?;
     }
@@ -1155,7 +1175,8 @@ impl Command {
                     }
                     PatchProperty::OutputLevel { output, .. }
                     | PatchProperty::OutputMute { output, .. }
-                    | PatchProperty::OutputPolarity { output, .. } => *output,
+                    | PatchProperty::OutputPolarity { output, .. }
+                    | PatchProperty::OutputName { output, .. } => *output,
                     _ => usize::MAX,
                 };
                 (

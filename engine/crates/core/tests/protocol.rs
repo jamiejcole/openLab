@@ -3447,6 +3447,10 @@ fn property_commands() -> Vec<(String, Command)> {
             output: 0,
             value: true,
         },
+        PatchProperty::OutputName {
+            output: 1,
+            value: "Sub".into(),
+        },
         PatchProperty::ChannelCount { value: 6 },
         PatchProperty::Outputs {
             value: vec![patch_output(); 2],

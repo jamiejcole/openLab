@@ -221,7 +221,7 @@ pub enum IssueKind {
     /// The OSC passcode in row `row` is not made of digits only (QLab's are numeric): kept, since
     /// removing it would change who can connect, but the user should replace it.
     OscPasscodeNotDigits { row: usize },
-    /// The name or host in `field` (`name`, `cue_lists.name`, `patches.name`,
+    /// The name or host in `field` (`name`, `cue_lists.name`, `patches.name`, `patches.outputs.name`,
     /// `network_patches.name`, `network_patches.host`) is over-long or has a control character:
     /// kept as it is, since load never refuses a show; editing it needs a valid value.
     InvalidName { field: &'static str },
@@ -755,6 +755,7 @@ impl Checker {
             patch.outputs.truncate(max);
             if patch.outputs.is_empty() {
                 patch.outputs.push(PatchOutput {
+                    name: String::new(),
                     level_db: 0.0,
                     mute: false,
                     polarity_inverted: false,
@@ -1107,6 +1108,13 @@ impl Checker {
             (
                 "patches.name",
                 bad(workspace.patches.iter().map(|p| p.name.as_str())),
+            ),
+            (
+                "patches.outputs.name",
+                bad(workspace
+                    .patches
+                    .iter()
+                    .flat_map(|p| p.outputs.iter().map(|o| o.name.as_str()))),
             ),
             (
                 "network_patches.name",

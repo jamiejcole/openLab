@@ -640,7 +640,44 @@ impl DocCx<'_> {
                 ));
             }
         }
+        let ws_id = self.doc.model.ws().id;
         for patch in &self.doc.model.ws().patches {
+            match self.eng.patches.resolution(self.doc.id, patch.id) {
+                // Only a device the list lacks: one being opened for the patch resolves the same
+                // way for a moment, and is not missing.
+                Some(PatchResolution::DeviceMissing { device })
+                    if !self.eng.device_list().iter().any(|d| &d.name == device) =>
+                {
+                    list.push(notice(
+                        "patch_device_missing",
+                        format!(
+                            "patch \"{}\": audio device \"{device}\" is not connected: its cues \
+                             cannot play",
+                            patch.name
+                        ),
+                        None,
+                    ));
+                }
+                // The operator chose no device for it (a patch never mapped gets the default).
+                Some(PatchResolution::Unmapped)
+                    if self
+                        .eng
+                        .config
+                        .machine
+                        .patch_entry(ws_id, patch.id)
+                        .is_some_and(|m| m.device.is_empty()) =>
+                {
+                    list.push(notice(
+                        "patch_no_device",
+                        format!(
+                            "patch \"{}\" has no audio device: its cues cannot play",
+                            patch.name
+                        ),
+                        None,
+                    ));
+                }
+                _ => {}
+            }
             if let Some(PatchResolution::ChannelsMissing {
                 device,
                 needed,

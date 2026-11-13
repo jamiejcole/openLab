@@ -97,6 +97,7 @@ impl Workspace {
         network: NetworkPatchId,
     ) -> Self {
         let output = PatchOutput {
+            name: String::new(),
             level_db: 0.0,
             mute: false,
             polarity_inverted: false,
@@ -209,9 +210,12 @@ impl OutputPatch {
     }
 }
 
-/// One output of a patch. Muting keeps `level_db`.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// One output of a patch (a cue output). Muting keeps `level_db`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PatchOutput {
+    /// What a cue's Levels tab shows under this output's fader; empty shows its number.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     pub level_db: f64,
     pub mute: bool,
     pub polarity_inverted: bool,
