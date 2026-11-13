@@ -231,6 +231,11 @@ pub struct PatchMappingEntry {
     pub patch: PatchId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mapping: Option<crate::settings::PatchMapping>,
+    /// Where the patch plays now: the device and channels it resolves to, or why it cannot
+    /// play (`unmapped` also while the patch waits for a free mixer slot). Absent from an engine
+    /// that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<WireResolution>,
 }
 
 /// An Audio cue's file waveform over file seconds `start..end`. `channels[c]` holds file channel
@@ -433,7 +438,12 @@ pub struct SystemStatus {
     /// Output underruns and overruns the device layer reported, since start.
     pub xruns: u64,
     pub disk: DiskStatus,
+    /// The primary device: the one opened at start, whose clock is the show's.
     pub device: DeviceStatus,
+    /// Every output device the engine has open, the primary first, then the others in the order
+    /// they opened (AUD-02). Absent from an engine that predates it: read as empty.
+    #[serde(default)]
+    pub outputs: Vec<OutputStatus>,
     /// Show-log records lost since start because the disk could not keep up.
     pub log_dropped: u64,
     /// Sequence number of the newest show-log record (as in `log_entry` and `log_tail`; 0:
@@ -485,6 +495,45 @@ pub enum DeviceState {
     Absent,
 }
 
+/// One output device the engine has open (AUD-02), in `status.outputs`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OutputStatus {
+    /// The device's name, as patch mappings and `list_devices` name it.
+    pub name: String,
+    pub state: OutputState,
+    /// The primary device: opened at start, its clock is the show's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub primary: bool,
+    pub sample_rate: u32,
+    /// Mixer outputs that reach the device.
+    pub channels: u32,
+    /// Frames per callback of its stream (the last one while it is not playing), when the host
+    /// says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_frames: Option<u32>,
+    /// Callback to output, from the host's timestamps, when it gives them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
+}
+
+/// Where an open output device is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputState {
+    /// It plays.
+    Up,
+    /// Opening for a patch mapped to it (first open, or opening again after being closed).
+    Opening,
+    /// Gone or silent; the engine is trying to reopen it. Its patches are `device_missing`.
+    Lost,
+    /// Closed and opening again at once at another buffer size; its cues play on after the gap.
+    Reconfiguring,
+    /// Closed because no patch is mapped to it any more; it opens again when one is.
+    Closed,
+    /// Will not come back without a restart.
+    Failed,
+}
+
 /// One autosave file found by `scan_recovery`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryEntryInfo {
@@ -511,6 +560,13 @@ pub struct DeviceEntry {
     pub is_default: bool,
     /// Frames per callback this device is asked for on this machine (`set_buffer_size`).
     pub buffer_frames: u32,
+    /// Where the engine's output on this device is (AUD-02); absent when the engine has none
+    /// open on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<OutputState>,
+    /// The engine's primary device (opened at start; its clock is the show's).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub primary: bool,
 }
 
 /// A missing file that matched several; the operator picks (a `set_cue_property` command).
@@ -773,6 +829,9 @@ impl ServerMessage {
                 status.cpu_percent = status.cpu_percent.map(clean);
                 status.engine_load = status.engine_load.map(clean);
                 status.device.latency_ms = status.device.latency_ms.map(clean);
+                for o in &mut status.outputs {
+                    o.latency_ms = o.latency_ms.map(clean);
+                }
             }
             _ => {}
         }

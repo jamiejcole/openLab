@@ -4,7 +4,9 @@
 //! the counters and passes them in with the wall-clock time, so tests use fake counters and a
 //! manual clock.
 
-use openlab_core::protocol::{DeviceState, DeviceStatus, DiskStatus, SystemStatus};
+use openlab_core::protocol::{
+    DeviceState, DeviceStatus, DiskStatus, OutputState, OutputStatus, SystemStatus,
+};
 
 /// A disk is healthy when no underrun happened in this long.
 pub const DISK_RECOVERY_MS: i64 = 10_000;
@@ -38,6 +40,8 @@ pub struct Counters {
     pub log_seq: u64,
     pub network_output_disabled: bool,
     pub device: DeviceStatus,
+    /// Every open output device, the primary first.
+    pub outputs: Vec<OutputStatus>,
     /// Process CPU seconds so far, if the platform says.
     pub cpu_seconds: Option<f64>,
     /// Worst audio callback load since the previous status, if the audio thread measures it.
@@ -52,7 +56,37 @@ pub struct Peek<'a> {
     pub underrun_frames: u64,
     pub device_name: Option<&'a str>,
     pub device_state: DeviceState,
+    /// The open output devices and their states, packed so a change is seen without a copy
+    /// ([`outputs_fingerprint`]).
+    pub outputs: u64,
     pub network_output_disabled: bool,
+}
+
+/// The number of outputs and each one's state in a few bits each: two fingerprints differ when
+/// an output opened or one's state changed. Outputs past the bits available are not told
+/// apart (the periodic status still reports them).
+pub fn outputs_fingerprint(states: impl Iterator<Item = OutputState>) -> u64 {
+    let mut packed = 0u64;
+    let mut count = 0u64;
+    for (k, state) in states.enumerate() {
+        count += 1;
+        let code = match state {
+            OutputState::Up => 0u64,
+            OutputState::Opening => 1,
+            OutputState::Lost => 2,
+            OutputState::Reconfiguring => 3,
+            OutputState::Closed => 4,
+            OutputState::Failed => 5,
+        };
+        if let Some(shifted) = u32::try_from(k * 3)
+            .ok()
+            .filter(|&b| b < 48)
+            .and_then(|b| code.checked_shl(b))
+        {
+            packed |= shifted;
+        }
+    }
+    packed | (count.min(0xFF) << 48)
 }
 
 impl<'a> Peek<'a> {
@@ -62,6 +96,7 @@ impl<'a> Peek<'a> {
             underrun_frames: c.underrun_frames,
             device_name: c.device.name.as_deref(),
             device_state: c.device.state,
+            outputs: outputs_fingerprint(c.outputs.iter().map(|o| o.state)),
             network_output_disabled: c.network_output_disabled,
         }
     }
@@ -74,6 +109,7 @@ struct Discrete {
     underrun_frames: u64,
     healthy: bool,
     device: (Option<String>, DeviceState),
+    outputs: u64,
     network_output_disabled: bool,
 }
 
@@ -84,6 +120,7 @@ impl Discrete {
             underrun_frames: p.underrun_frames,
             healthy,
             device: (p.device_name.map(str::to_owned), p.device_state),
+            outputs: p.outputs,
             network_output_disabled: p.network_output_disabled,
         }
     }
@@ -95,6 +132,7 @@ impl Discrete {
             && self.healthy == healthy
             && self.device.0.as_deref() == p.device_name
             && self.device.1 == p.device_state
+            && self.outputs == p.outputs
             && self.network_output_disabled == p.network_output_disabled
     }
 }
@@ -173,6 +211,7 @@ impl StatusReporter {
                 healthy,
             },
             device: counters.device.clone(),
+            outputs: counters.outputs.clone(),
             log_dropped: counters.log_dropped,
             log_seq: counters.log_seq,
             network_output_disabled: counters.network_output_disabled,
@@ -207,6 +246,15 @@ mod tests {
                 channels: 2,
                 latency_ms: None,
             },
+            outputs: vec![OutputStatus {
+                name: "Dev".into(),
+                state: OutputState::Up,
+                primary: true,
+                sample_rate: 48_000,
+                channels: 2,
+                block_frames: Some(256),
+                latency_ms: None,
+            }],
             cpu_seconds: Some(1.0),
             engine_load: None,
         }
@@ -270,6 +318,55 @@ mod tests {
         assert!(poll(&mut r, 600, &c).is_none(), "nothing new since");
         c.network_output_disabled = false;
         assert!(!poll(&mut r, 850, &c).unwrap().network_output_disabled);
+    }
+
+    /// Any output device opening or changing state sends a status early; the same states do
+    /// not.
+    #[test]
+    fn an_output_device_opening_or_changing_state_sends_early() {
+        let mut r = StatusReporter::new(StatusConfig::default());
+        let mut c = counters();
+        assert!(poll(&mut r, 0, &c).is_some());
+        let mut second = c.outputs[0].clone();
+        second.name = "Other".into();
+        second.primary = false;
+        second.state = OutputState::Opening;
+        c.outputs.push(second);
+        assert!(poll(&mut r, 100, &c).is_none(), "inside the gap");
+        assert_eq!(poll(&mut r, 250, &c).expect("opened").outputs.len(), 2);
+        assert!(poll(&mut r, 600, &c).is_none(), "nothing new since");
+        for (t, state) in [
+            (850, OutputState::Up),
+            (1100, OutputState::Reconfiguring),
+            (1350, OutputState::Lost),
+            (1600, OutputState::Closed),
+            (1850, OutputState::Failed),
+        ] {
+            c.outputs[1].state = state;
+            let s = poll(&mut r, t, &c).expect("state changed");
+            assert_eq!(s.outputs[1].state, state);
+        }
+        // Every state of every output it can hold is told apart.
+        let all = [
+            OutputState::Up,
+            OutputState::Opening,
+            OutputState::Lost,
+            OutputState::Reconfiguring,
+            OutputState::Closed,
+            OutputState::Failed,
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for k in 0..16 {
+            for &state in &all {
+                let states = (0..16).map(|i| if i == k { state } else { OutputState::Up });
+                seen.insert(outputs_fingerprint(states));
+            }
+        }
+        assert_eq!(seen.len(), 16 * 5 + 1);
+        assert_ne!(
+            outputs_fingerprint([OutputState::Up].into_iter()),
+            outputs_fingerprint([OutputState::Up, OutputState::Up].into_iter())
+        );
     }
 
     #[test]

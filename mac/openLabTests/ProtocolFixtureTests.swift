@@ -82,15 +82,32 @@ final class ProtocolFixtureTests: XCTestCase {
         guard case .result(_, .ok(let devices)) = try ServerMessage.decode(devicesText),
             case .devices(let list, let selected)? = devices.data
         else { return XCTFail("devices") }
-        XCTAssertEqual(list.map(\.name), ["Scarlett 2i2"])
+        XCTAssertEqual(list.map(\.name), ["Scarlett 2i2", "MOTU 828", "Headphones"])
+        XCTAssertEqual(list.map(\.state), [.up, .reconfiguring, nil])
+        XCTAssertEqual(list.map(\.primary), [true, false, false])
         XCTAssertEqual(selected, "Scarlett 2i2")
         let mappingsText = try Fixtures.text("server", "result_patch_mappings")
         guard case .result(_, .ok(let ok)) = try ServerMessage.decode(mappingsText),
             case .patchMappings(let entries)? = ok.data
         else { return XCTFail("patch_mappings") }
-        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries.count, 3)
         XCTAssertEqual(entries[0].mapping, PatchMapping(device: "Scarlett 2i2", channels: [0, 1]))
         XCTAssertNil(entries[1].mapping)
+        XCTAssertEqual(entries.map { $0.resolution?.type }, ["mapped", "unmapped", "device_missing"])
+    }
+
+    /// AUD-02: `status` describes every open output device, the primary first.
+    func testStatusListsEveryOutputDevice() throws {
+        guard case .status(let ok) = try ServerMessage.decode(try Fixtures.text("server", "status")) else {
+            return XCTFail("status")
+        }
+        XCTAssertEqual(ok.outputs.map(\.name), ["Scarlett 2i2", "MOTU 828"])
+        XCTAssertEqual(ok.outputs.map(\.state), [.up, .opening])
+        XCTAssertEqual(ok.outputs.map(\.primary), [true, false])
+        XCTAssertEqual(ok.outputs.map(\.blockFrames), [256, nil])
+        guard case .status(let lost) = try ServerMessage.decode(try Fixtures.text("server", "status_device_lost"))
+        else { return XCTFail("status_device_lost") }
+        XCTAssertEqual(lost.outputs.map(\.state), [.lost, .up, .closed, .failed])
     }
 
     func testSetPatchMappingSetsAndClears() throws {

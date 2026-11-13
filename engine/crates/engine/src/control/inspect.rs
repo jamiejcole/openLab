@@ -4,7 +4,7 @@
 //! the open docs ([`DocView`]), the first doc's model and engine, and cost and leak counters.
 
 use openlab_audio::MixerController;
-use openlab_core::protocol::{DocumentState, Snapshot, WireWarning};
+use openlab_core::protocol::{DocumentState, OutputStatus, Snapshot, WireWarning};
 use openlab_core::{CueEngine, CueId, MachineSettings, SampleTime, Workspace};
 
 use super::devices::Device;
@@ -169,6 +169,11 @@ impl Control {
             .iter()
             .map(|(_, o)| (o.name.clone(), o.is_up()))
             .collect()
+    }
+
+    /// Every open output device as `status.outputs` reports it, the primary first.
+    pub fn output_statuses(&self) -> Vec<OutputStatus> {
+        self.eng.output_statuses()
     }
 
     /// The master clock: samples of show time rendered (the primary's counter while it plays).
