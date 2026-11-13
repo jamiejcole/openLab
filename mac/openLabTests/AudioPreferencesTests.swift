@@ -75,6 +75,24 @@ final class AudioPreferencesTests: XCTestCase {
         XCTAssertTrue(prefs.audioMessage.isHidden)
     }
 
+    /// Drawn again, the device table holds only what the engine lists now: the rows of an earlier
+    /// drawing are gone, an unplugged device's with them.
+    func testReloadingDrawsOnlyTheListedDevices() async throws {
+        let prefs = try await open()
+        prefs.reload()
+        await prefs.refreshing?.value
+        prefs.reload()
+        await prefs.refreshing?.value
+        XCTAssertEqual(prefs.deviceGrid.numberOfRows, 1)
+        XCTAssertEqual(prefs.deviceGrid.subviews.count, prefs.deviceGrid.numberOfRows * 2, "one name, one pop-up")
+        guard case .success = await engine.request(.loseDevice) else { return XCTFail("lose_device") }
+        try await engine.advance(seconds: 1.5)
+        prefs.reload()
+        await prefs.refreshing?.value
+        XCTAssertEqual(prefs.deviceGrid.numberOfRows, 0)
+        XCTAssertTrue(prefs.deviceGrid.subviews.isEmpty, "the unplugged device's row is gone")
+    }
+
     func testTheDeviceListComesFromTheEngine() async throws {
         let prefs = try await open()
         XCTAssertEqual(prefs.clockPopup.itemTitles, [loc("settings.audio.systemDefault"), device])

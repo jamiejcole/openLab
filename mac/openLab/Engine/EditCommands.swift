@@ -126,8 +126,7 @@ extension Command {
         return Command(.object(["type": .string("set_workspace_setting"), "setting": setting]))
     }
 
-    /// `SetPatchProperty` of a patch's main level (`output` nil) or one output's level, in dB (-120 is
-    /// silence). The engine puts it within the workspace volume limits.
+    /// `SetPatchProperty` of one property of a patch, as the engine takes it.
     static func setPatchProperty(_ patch: ModelID, _ property: [String: JSONValue]) -> Command {
         Command(
             .object([
@@ -146,6 +145,8 @@ extension Command {
         setPatchProperty(patch, ["type": .string("channel_count"), "value": .int(Int64(count))])
     }
 
+    /// `SetPatchProperty` of a patch's main level (`output` nil) or one output's level, in dB (-120 is
+    /// silence). The engine puts it within the workspace volume limits.
     static func setPatchLevel(_ patch: ModelID, output: Int?, db: Double) -> Command {
         var property: [String: JSONValue] = ["value": .double(db)]
         if let output {
@@ -154,10 +155,7 @@ extension Command {
         } else {
             property["type"] = .string("master_db")
         }
-        return Command(
-            .object([
-                "type": .string("set_patch_property"), "id": .string(patch.raw), "property": .object(property),
-            ]))
+        return setPatchProperty(patch, property)
     }
 
     /// `RenameWorkspace { name }`: the show title, undoable. At most 1024 Unicode scalars; a newline

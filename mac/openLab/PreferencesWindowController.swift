@@ -167,7 +167,12 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         clockNote.stringValue = notes.joined(separator: "\n")
         clockNote.isHidden = notes.isEmpty
 
-        while deviceGrid.numberOfRows > 0 { deviceGrid.removeRow(at: 0) }
+        // Removing a row leaves its views in the grid: each goes first.
+        while deviceGrid.numberOfRows > 0 {
+            let row = deviceGrid.row(at: deviceGrid.numberOfRows - 1)
+            for c in 0..<row.numberOfCells { row.cell(at: c).contentView?.removeFromSuperview() }
+            deviceGrid.removeRow(at: deviceGrid.numberOfRows - 1)
+        }
         bufferPopups = []
         for (i, d) in devices.enumerated() {
             let name = NSTextField(labelWithString: d.name)
