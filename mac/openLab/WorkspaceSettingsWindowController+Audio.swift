@@ -47,27 +47,28 @@ extension WorkspaceSettingsWindowController {
             field.delegate = self
             field.widthAnchor.constraint(equalToConstant: 48).isActive = true
         }
-        // A grid, so the two fields line up whatever their labels' widths.
-        let limitGrid = NSGridView(views: [
-            [
-                NSTextField(labelWithString: loc("settings.audio.limitMaxShort")), maxLimitField,
-                NSTextField(labelWithString: loc("settings.db")),
-            ],
-            [
-                NSTextField(labelWithString: loc("settings.audio.limitMinShort")), minLimitField,
-                NSTextField(labelWithString: loc("settings.db")),
-            ],
-        ])
-        limitGrid.rowSpacing = 8
-        limitGrid.columnSpacing = 6
-        limitGrid.yPlacement = .center
+        // The labels share one width, so the two fields line up.
+        func limitRow(_ title: String, _ field: NSTextField) -> NSStackView {
+            let label = NSTextField(labelWithString: title)
+            label.widthAnchor.constraint(equalToConstant: 34).isActive = true
+            let row = NSStackView(views: [label, field, NSTextField(labelWithString: loc("settings.db"))])
+            row.spacing = 6
+            return row
+        }
         let limitsTitle = NSTextField(labelWithString: loc("settings.audio.limits"))
         limitsTitle.font = .systemFont(ofSize: 13, weight: .semibold)
-        let limits = NSStackView(views: [limitsTitle, limitGrid])
+        let limits = NSStackView(views: [
+            limitsTitle, limitRow(loc("settings.audio.limitMaxShort"), maxLimitField),
+            limitRow(loc("settings.audio.limitMinShort"), minLimitField),
+        ])
         limits.orientation = .vertical
         limits.alignment = .leading
         limits.spacing = 8
-        limits.setContentHuggingPriority(.required, for: .horizontal)
+        // Its own size in both directions: the table takes the spare width, nothing spreads the
+        // limits' rows apart.
+        for orientation in [NSLayoutConstraint.Orientation.horizontal, .vertical] {
+            limits.setHuggingPriority(.required, for: orientation)
+        }
         limits.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         let body = NSStackView(views: [scroll, limits])
@@ -207,7 +208,9 @@ extension WorkspaceSettingsWindowController {
             problem.textColor = .systemRed
             problem.font = .systemFont(ofSize: 11)
             problem.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-            problem.preferredMaxLayoutWidth = 260
+            // Wraps at the table's width (the label spans every column).
+            let across = patchGridHolder.bounds.width - 16
+            problem.preferredMaxLayoutWidth = across > 100 ? across : 260
             problem.setAX("\(AX.settingsPatch)-problem-\(n)")
             let problemRow = patchGrid.addRow(with: [problem])
             patchGrid.cell(atColumnIndex: 0, rowIndex: patchGrid.numberOfRows - 1).xPlacement = .fill

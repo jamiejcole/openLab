@@ -14,7 +14,7 @@ import Combine
 /// model, and an edit goes to the engine (which puts a level within the workspace volume limits);
 /// what comes back is what is shown.
 @MainActor
-final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate {
+final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate, NSTabViewDelegate {
     let model: WorkspaceSettingsModel
     var store: WorkspaceStore { model.store }
     let patchID: ModelID
@@ -144,11 +144,12 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             return stack
         }
         let deviceColumn = titled(loc("patchEditor.device"), devicePopup)
-        deviceColumn.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        // Grows before the spacer does, up to the pop-up's most.
+        deviceColumn.setHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         devicePopup.widthAnchor.constraint(equalTo: deviceColumn.widthAnchor).isActive = true
         // The device column takes the spare width up to a pop-up's useful size; the spacer the rest.
         let spacer = NSView()
-        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(2), for: .horizontal)
         spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         devicePopup.widthAnchor.constraint(lessThanOrEqualToConstant: 360).isActive = true
         let top = NSStackView(views: [
@@ -174,6 +175,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             tabs.addTabViewItem(item)
         }
         tabs.selectTabViewItem(withIdentifier: "routing")
+        tabs.delegate = self
         tabs.setAX(AX.patchEditorTabs)
         tabs.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         tabs.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .vertical)
@@ -566,6 +568,11 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     }
 
     @objc private func doneClicked() { window?.close() }
+
+    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        fitMatrixWidth()
+    }
 
     @objc private func windowResized() {
         window?.contentView?.layoutSubtreeIfNeeded()

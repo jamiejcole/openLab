@@ -150,6 +150,16 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         render()
     }
 
+    /// A problem line under a patch wraps at the table's width, which follows the window's.
+    func windowDidResize(_ notification: Notification) {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        let across = patchGridHolder.bounds.width - 16
+        guard across > 100 else { return }
+        for label in patchProblemLabels where label.preferredMaxLayoutWidth != across {
+            label.preferredMaxLayoutWidth = across
+        }
+    }
+
     func windowWillClose(_ notification: Notification) {
         model.message = nil
         model.keyRefusal = nil

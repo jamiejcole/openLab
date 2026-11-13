@@ -10,6 +10,8 @@
     {"type": "patch-editor-count", "text": "128"},
     {"tab": "routing"},
     {"shot": "routing-128"},
+    {"scroll": "patch-editor-matrix", "dy": -3000},
+    {"shot": "routing-128-scrolled"},
     {"tab": "cueOutputs"},
     {"shot": "cue-outputs-128"},
     {"resize": [520, 460]},
