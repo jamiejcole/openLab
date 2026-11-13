@@ -67,8 +67,28 @@ final class PastePropertiesRuleTests: XCTestCase {
         let pasted = from.pasted(onto: to)
         XCTAssertEqual(pasted.master, -3)
         XCTAssertEqual(pasted.outputs.count, 2)
-        XCTAssertEqual(Array(pasted.crosspoints.keys), [.init(input: 0, output: 1)])
+        XCTAssertEqual(
+            Set(pasted.crosspoints.keys), [.init(input: 0, output: 1), .init(input: 0, output: 3)],
+            "the whole routing, a route to an output the cue lacks too")
         XCTAssertEqual(pasted.gangs, [[1]])
+    }
+
+    /// Routing this app cannot hold travels with a paste; a level moved on several cues leaves each
+    /// cue's own alone, and Set All Silent drops it as it replaces the matrix.
+    func testRoutingTheAppCannotReadTravelsWithAPasteAndStaysOnALevelEdit() throws {
+        var kind = try audio("a").raw["kind"] ?? .null
+        var levels = kind["levels"] ?? .object([:])
+        let far: JSONValue = .object(["input": .int(70), "output": .int(0), "db": .double(-3), "mute": .bool(false)])
+        levels.set("crosspoints", .array([far]))
+        kind.set("levels", levels)
+        let from = try XCTUnwrap(LevelSet(kind: kind))
+        XCTAssertEqual(from.unread, [far])
+        let to = try XCTUnwrap(LevelSet(kind: try audio("b").raw["kind"] ?? .null))
+        XCTAssertEqual(from.pasted(onto: to).unread, [far], "a paste copies the whole routing")
+        var shown = to
+        shown.set(.master, db: -6)
+        XCTAssertEqual(from.taking(.level(.master), from: shown, limits: VolumeLimits()).unread, [far])
+        XCTAssertEqual(from.taking(.silenceAll, from: shown, limits: VolumeLimits()).unread, [])
     }
 
     /// A level changed across several cues sets that level on each and leaves the others as each had them.
@@ -536,6 +556,25 @@ extension PlayheadFlowTests {
         XCTAssertEqual(s.listScroll.scrollerStyle, .legacy)
         XCTAssertFalse(try XCTUnwrap(s.listScroll.verticalScroller).isHidden, "the scroller shows")
         s.cancel()
+    }
+
+    /// Pasted levels carry the whole routing: a route to cue output 100 arrives on a cue whose patch
+    /// has two outputs, and one undo takes it away again.
+    func testPastedLevelsCarryARouteToOutput100() async throws {
+        try await pasteWorkspace()
+        try await setLevels(cues[0]) { $0.set(.cross(input: 0, output: 99), db: -4) }
+        func route(_ id: ModelID) -> Double? {
+            LevelSet(kind: store.model?.cue(id)?.raw["kind"] ?? .null)?.crosspoints[.init(input: 0, output: 99)]?.db
+        }
+        await assertEventually("cue 1 routes to output 100") { route(self.cues[0]) == -4 }
+        _ = await wc.editor.copySelection(of: [cues[0]])
+        await selectAll([cues[1]])
+        try await chooseFromEditMenu()
+        try tick(.levels)
+        try XCTUnwrap(sheet).applyButton.performClick(nil)
+        await assertEventually("the route arrives") { route(self.cues[1]) == -4 }
+        await wc.editor.undo()
+        await assertEventually("one undo") { route(self.cues[1]) == nil }
     }
 
     /// A press and release of the left button at the middle of `view`, as the control takes a real

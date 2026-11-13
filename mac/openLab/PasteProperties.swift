@@ -130,14 +130,16 @@ enum PasteProperty: String, CaseIterable {
 
 extension LevelSet {
     /// These levels as an Audio cue with `dest`'s outputs takes them: the main level, each output
-    /// both have, the routing and the gangs to its outputs. An output the cue lacks is left out (it
-    /// has no fader to set); one these levels lack keeps the cue's own.
+    /// both have, the whole routing (a route to an output the cue's patch lacks is kept, silent, as
+    /// the engine keeps one; entries this app cannot read go too), and the gangs of its outputs. An
+    /// output fader the cue lacks is left out; one these levels lack keeps the cue's own.
     func pasted(onto dest: LevelSet) -> LevelSet {
         var d = dest
         d.master = master
         for o in d.outputs.indices where outputs.indices.contains(o) { d.outputs[o] = outputs[o] }
         let count = d.outputs.count
-        d.crosspoints = crosspoints.filter { $0.key.output < count }
+        d.crosspoints = crosspoints
+        d.unread = unread
         d.gangs = gangs.map { $0.filter { $0 < count } }.filter { !$0.isEmpty }
         return d
     }
