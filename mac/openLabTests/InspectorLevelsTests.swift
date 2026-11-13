@@ -511,7 +511,8 @@ final class InspectorLevelsTests: XCTestCase {
 
     // MARK: Cue outputs above 64 (a patch has up to 128)
 
-    /// Reopens the demo show with cue `index`'s `levels` changed by `edit`.
+    /// Reopens the demo show with cue `index`'s `levels` changed by `edit`, and its patch given as
+    /// many cue outputs as those levels name (the Levels tab shows the patch's count).
     private func reopenWithLevels(ofCue index: Int, _ edit: @escaping (inout JSONValue) -> Void) async throws {
         try await reopen { show in
             try editShow(show.appendingPathComponent("Demo.openlab")) { ws in
@@ -524,6 +525,13 @@ final class InspectorLevelsTests: XCTestCase {
                 cues[index].set("kind", kind)
                 lists[0].set("cues", .array(cues))
                 ws.set("cue_lists", .array(lists))
+                let wanted = levels["outputs"]?.arrayValue?.count ?? 0
+                if var patches = ws["patches"]?.arrayValue, let outputs = patches.first?["outputs"]?.arrayValue,
+                    let first = outputs.first, wanted > outputs.count
+                {
+                    patches[0].set("outputs", .array(Array(repeating: first, count: wanted)))
+                    ws.set("patches", .array(patches))
+                }
             }
         }
     }
