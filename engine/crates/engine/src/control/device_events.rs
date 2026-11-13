@@ -68,14 +68,18 @@ impl Control {
             match event {
                 DeviceEvent::Lost { why } => self.device_lost(key, &name, &why),
                 DeviceEvent::Restored => {
+                    // It plays: no reason it could not be used holds any more.
+                    self.eng.unusable.remove(&name);
                     self.device_restored(&name, "is back");
                     self.eng.check_buffer(key);
                 }
                 DeviceEvent::Opened => {
+                    self.eng.unusable.remove(&name);
                     self.device_restored(&name, "opened");
                     self.eng.check_buffer(key);
                 }
                 DeviceEvent::Reconfigured => {
+                    self.eng.unusable.remove(&name);
                     self.follow_block();
                     let frames = self.eng.outputs.get(key).and_then(Output::block);
                     self.eng.log_device(
@@ -93,6 +97,14 @@ impl Control {
                 // them only through a loss or a reopen; resolving again is cheap. A device a
                 // patch maps to may have come.
                 DeviceEvent::ListChanged => {
+                    // A device that left the list is missing, whatever kept it from playing
+                    // before: it is reported as not connected.
+                    if !self.eng.unusable.is_empty() {
+                        let listed = self.eng.device_list();
+                        self.eng
+                            .unusable
+                            .retain(|n, _| listed.iter().any(|d| &d.name == n));
+                    }
                     self.eng.outputs_dirty = true;
                     self.each_doc(|cx| {
                         let now = cx.now();
@@ -106,14 +118,15 @@ impl Control {
                     error,
                     retry_in,
                 } => {
-                    // A device that never played: its patches say why it cannot be used.
+                    // A listed device that never played: its patches say why it cannot be used.
+                    // One the list lacks is not connected, which says enough.
                     let never = self
                         .eng
                         .outputs
                         .get(key)
                         .and_then(|o| o.backend.device())
                         .is_some_and(|d| !d.has_opened());
-                    if never {
+                    if never && self.eng.device_list().iter().any(|d| d.name == name) {
                         self.eng
                             .unusable
                             .insert(name.clone(), format!("it could not be opened ({error})"));
