@@ -80,6 +80,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let networkPatchPopup = NSPopUpButton()
     /// An Audio cue's output patch (the I/O tab), and the patches its menu lists.
     let outputPatchPopup = NSPopUpButton()
+    let editPatchButton = NSButton(title: loc("inspector.io.editPatch"), target: nil, action: nil)
+    /// Opens the patch editor of a patch (set by the window controller).
+    var onEditPatch: ((ModelID) -> Void)?
     var outputPatchIDs: [ModelID] = []
     var outputPatchNames: [String] = []
     let networkMessageField = NSTextField()
@@ -743,7 +746,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         [
             numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField, oscField,
             hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck,
-            devampModePopup, networkPatchPopup, outputPatchPopup, networkMessageField, networkSendButton,
+            devampModePopup, networkPatchPopup, outputPatchPopup, editPatchButton, networkMessageField, networkSendButton,
             secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck,
         ]

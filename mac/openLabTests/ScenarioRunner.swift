@@ -48,7 +48,8 @@ final class ScenarioRunner {
         case tab(String)
         /// `{"focus": "settings"}`: the workspace settings window (opened without taking focus) is
         /// the one the next steps and shots use, its `tab` the settings tab (general, audio, osc);
-        /// `"workspace"` goes back to the workspace window.
+        /// `"workspace"` goes back to the workspace window. `"patch-editor"`: the patch editor last
+        /// opened (a click on a row's Edit or the inspector's patch buttons), its `tab` the editor's.
         case focus(String)
         /// `{"shot": "name"}`: `<OUT>/<n>-<name>.png`, the whole window at 2x.
         case shot(String)
@@ -218,8 +219,8 @@ final class ScenarioRunner {
         case "tab": return .tab(try string("tab"))
         case "focus":
             let which = try string("focus")
-            guard ["workspace", "settings", "sheet"].contains(which) else {
-                throw Failure("\"focus\" must be \"workspace\", \"settings\" or \"sheet\"")
+            guard ["workspace", "settings", "sheet", "patch-editor"].contains(which) else {
+                throw Failure("\"focus\" must be \"workspace\", \"settings\", \"patch-editor\" or \"sheet\"")
             }
             return .focus(which)
         default:
@@ -346,6 +347,7 @@ final class ScenarioRunner {
         wc = WorkspaceWindowController(store: rig.store)
         // The sheet is never put on screen, and copies stay off the user's pasteboard and settings.
         wc.presentSheet = { _ in }
+        wc.settingsWindow.presentsEditors = false
         let board = NSPasteboard.withUniqueName()
         wc.editor.pasteboard = board
         wc.cueList.pasteboard = board
@@ -537,12 +539,22 @@ final class ScenarioRunner {
             } else if which == "sheet" {
                 guard let sheet = wc.pasteSheet?.window else { throw Failure("no sheet is up") }
                 focused = sheet
+            } else if which == "patch-editor" {
+                guard let editor = wc.settingsWindow.patchEditor, let w = editor.window else {
+                    throw Failure("no patch editor was opened (click a settings-patch-edit-N first)")
+                }
+                w.appearance = wc.window?.appearance
+                await editor.editing?.value
+                focused = w
             } else {
                 focused = nil
             }
             note("focus \(which)")
         case .tab(let id):
-            let tabs = focused != nil && !(focused is PasteSheetWindow) ? wc.settingsWindow.tabs : wc.inspector.tabView
+            let tabs =
+                focused === wc.settingsWindow.patchEditor?.window && focused != nil
+                ? wc.settingsWindow.patchEditor!.tabs
+                : focused != nil && !(focused is PasteSheetWindow) ? wc.settingsWindow.tabs : wc.inspector.tabView
             let ids = tabs.tabViewItems.compactMap { $0.identifier as? String }
             guard ids.contains(id) else {
                 throw Failure("no tab \"\(id)\" for this selection; tabs: \(ids.joined(separator: ", "))")

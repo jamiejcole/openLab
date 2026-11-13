@@ -128,6 +128,24 @@ extension Command {
 
     /// `SetPatchProperty` of a patch's main level (`output` nil) or one output's level, in dB (-120 is
     /// silence). The engine puts it within the workspace volume limits.
+    static func setPatchProperty(_ patch: ModelID, _ property: [String: JSONValue]) -> Command {
+        Command(
+            .object([
+                "type": .string("set_patch_property"), "id": .string(patch.raw), "property": .object(property),
+            ]))
+    }
+
+    /// `SetPatchProperty { output_name }`: what cue output `output` is called (empty: its number).
+    static func setPatchOutputName(_ patch: ModelID, output: Int, name: String) -> Command {
+        setPatchProperty(
+            patch, ["type": .string("output_name"), "output": .int(Int64(output)), "value": .string(name)])
+    }
+
+    /// `SetPatchProperty { channel_count }`: how many cue outputs the patch has (1 to 128).
+    static func setPatchOutputCount(_ patch: ModelID, _ count: Int) -> Command {
+        setPatchProperty(patch, ["type": .string("channel_count"), "value": .int(Int64(count))])
+    }
+
     static func setPatchLevel(_ patch: ModelID, output: Int?, db: Double) -> Command {
         var property: [String: JSONValue] = ["value": .double(db)]
         if let output {

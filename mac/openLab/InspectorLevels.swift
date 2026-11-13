@@ -24,6 +24,7 @@ extension InspectorViewController {
 
     func buildLevelsTabs() {
         audioLevels.onEdit = { [weak self] set, gesture in self?.sendLevels(set, gesture: gesture) }
+        audioLevels.onEditPatch = { [weak self] in self?.editPatchClicked() }
         fadeLevels.onEdit = { [weak self] set, gesture in self?.sendLevels(set, gesture: gesture) }
         audioLevels.onGestureEnd = { [weak self] in self?.render() }
         audioLevels.onHold = { [weak self] in self?.gestureHold($0) }
@@ -89,14 +90,25 @@ extension InspectorViewController {
         let set = LevelSet(kind: kind)
         audioLevels.meter.bank = store.meters
         audioLevels.meter.source = audio ? .cue(cue.id) : nil
+        audioLevels.matrix.outputNames = Self.outputNames(of: cue, model: model)
         if audio, let set {
             audioLevels.show(
                 set, inputs: Self.inputRows(of: cue, durations: store.mediaDurations), outputs: set.outputs.count)
         }
         if fade {
+            fadeLevels.matrix.outputNames = Self.outputNames(of: cue, model: model)
             fadeSettings.show(kind: kind)
             showFadeLevels(kind: kind, model: model)
         }
+    }
+
+    /// The names of the cue outputs of the patch an Audio cue plays through, or a Fade's target's.
+    static func outputNames(of cue: Cue, model: WorkspaceModel) -> [String] {
+        let audio = cue.kindType == "fade" ? cue.raw["kind"]?["target"]?.stringValue.flatMap { model.cue(ModelID($0)) } : cue
+        guard let id = audio?.raw["kind"]?["patch"]?.stringValue,
+            let outputs = model.patches.first(where: { $0.id.raw == id })?.raw["outputs"]?.arrayValue
+        else { return [] }
+        return outputs.map { $0["name"]?.stringValue ?? "" }
     }
 
     /// The panels draw and read levels in the workspace's limits, which a settings edit can change

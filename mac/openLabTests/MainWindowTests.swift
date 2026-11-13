@@ -129,7 +129,8 @@ final class MainWindowTests: XCTestCase {
             stderrText {
                 built.append(WorkspaceWindowController(store: store))
                 built.append(WorkspaceSettingsWindowController(store: store))
-                built.append(PatchEditorWindowController(store: store, patch: patch))
+                built.append(
+                    PatchEditorWindowController(model: WorkspaceSettingsModel(store: store), patch: patch))
             }, "")
         XCTAssertEqual(built.count, 3)
     }

@@ -34,6 +34,11 @@ final class LevelMatrixView: NSView {
     var mixed: Set<LevelSet.Slot> = [] {
         didSet { if mixed != oldValue { needsDisplay = true } }
     }
+    /// The names of the cue outputs (from the cue's patch), drawn under their boxes; an empty or
+    /// missing one shows the output's number (QLab 5 manual p. 189).
+    var outputNames: [String] = [] {
+        didSet { if outputNames != oldValue { needsDisplay = true } }
+    }
     /// The cues shown are ganged differently: no gang letter or colour is drawn.
     var hidesGangs = false {
         didSet { if hidesGangs != oldValue { needsDisplay = true } }
@@ -133,13 +138,15 @@ final class LevelMatrixView: NSView {
                 guard dirty.intersects(namesRow) else { continue }
                 let r = NSRect(
                     x: Self.headW + CGFloat(o) * Self.cellW, y: Self.cellH, width: Self.cellW, height: Self.headerH)
-                var text = "\(o + 1)"
+                let name = outputNames.indices.contains(o) ? outputNames[o] : ""
+                // A name of two lines (QLab allows a second line) is shown as one.
+                var text = name.isEmpty ? "\(o + 1)" : name.replacingOccurrences(of: "\n", with: " ")
                 if !hidesGangs, let g = levels.gang(of: o) {
                     gangColour(g).setFill()
                     r.insetBy(dx: 1, dy: 1).fill()
                     text += " " + LevelSet.gangLetter(g)
                 }
-                centred(text, in: r, attributes: label)
+                fitted(text, in: r.insetBy(dx: 2, dy: 0), attributes: label)
             }
         }
         guard inputs > 0 else { return }
@@ -194,6 +201,18 @@ final class LevelMatrixView: NSView {
     private func gangColour(_ g: Int) -> NSColor {
         let palette: [NSColor] = [.systemTeal, .systemPink, .systemIndigo, .systemOrange, .systemGreen, .systemPurple]
         return palette[g % palette.count].withAlphaComponent(0.35)
+    }
+
+    /// Centred, and cut with an ellipsis when it is wider than `r`: a long name stays in its column.
+    private func fitted(_ text: String, in r: NSRect, attributes: [NSAttributedString.Key: Any]) {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        style.lineBreakMode = .byTruncatingTail
+        var a = attributes
+        a[.paragraphStyle] = style
+        let s = NSAttributedString(string: text, attributes: a)
+        let h = s.size().height
+        s.draw(with: NSRect(x: r.minX, y: r.midY - h / 2, width: r.width, height: h), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
     }
 
     private func centred(_ text: String, in r: NSRect, attributes: [NSAttributedString.Key: Any]) {
