@@ -46,7 +46,7 @@ impl Control {
                     cx.probe_answer(answer);
                 }
             }
-            Inbox::Device(answer) => self.device_answer(answer),
+            Inbox::Device(key, answer) => self.device_answer(key, answer),
             Inbox::Net(doc, answer) => {
                 if let Some(mut cx) = self.cx_of(doc) {
                     cx.net_answer(answer);
@@ -203,6 +203,16 @@ impl Control {
                 ),
                 Request::SetOutputDevice { device } => {
                     let outcome = self.eng.set_output_device(device);
+                    reply(
+                        to,
+                        match outcome {
+                            Ok(()) => ok(id, None),
+                            Err(error) => failed(id, error),
+                        },
+                    );
+                }
+                Request::SetBufferSize { device, frames } => {
+                    let outcome = self.set_buffer_size(&device, frames);
                     reply(
                         to,
                         match outcome {

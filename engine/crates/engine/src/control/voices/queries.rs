@@ -3,19 +3,22 @@
 use super::*;
 
 impl Voices {
-    /// Runs whose voice is on the device: started in the mixer, or started and waiting for
-    /// their file's probe. Loaded runs are not (a load only prepares a stream).
-    pub fn on_device(&self) -> Vec<(CueId, RunId)> {
+    /// Runs whose voice is on a device: started in a mixer, or started and waiting for their
+    /// file's probe, for which `on(voice, cue, in_mixer)` holds. Loaded runs are not (a load
+    /// only prepares a stream).
+    pub fn on_device_where(
+        &self,
+        on: impl Fn(VoiceId, CueId, bool) -> bool,
+    ) -> Vec<(CueId, RunId)> {
         let mut v: Vec<(CueId, RunId)> = self
             .recs
-            .values()
-            .filter(|r| {
-                matches!(
-                    r.phase,
-                    Phase::Playing | Phase::Waiting { start: Some(_), .. }
-                )
+            .iter()
+            .filter(|(id, r)| match r.phase {
+                Phase::Playing => on(**id, r.cue, true),
+                Phase::Waiting { start: Some(_), .. } => on(**id, r.cue, false),
+                _ => false,
             })
-            .map(|r| (r.cue, r.run))
+            .map(|(_, r)| (r.cue, r.run))
             .collect();
         v.sort();
         v
@@ -61,6 +64,11 @@ impl Voices {
             let Some(slot) = patches.mixer_patch(doc, *patch) else {
                 continue;
             };
+            // A voice cannot leave its device's mixer: one whose new patch plays on another
+            // device plays on where it started.
+            if r.slot.and_then(|s| patches.slot_output(s)) != patches.slot_output(slot) {
+                continue;
+            }
             // Not before the voice's own (re)start, which may still be queued in the mixer.
             let at = now.max(r.start_at).max(r.resumed_at.unwrap_or(0));
             let outputs = patches.outputs(doc, *patch);

@@ -3,8 +3,8 @@
 //! The control thread: owns the workspace, its undo
 //! history, the cue engine and the mixer controller, and wires them to the disk streams.
 //!
-//! The state is split: an `Engine` every workspace shares (mixer,
-//! device, disk streamer, voice-id and patch-slot allocators, machine settings, document worker,
+//! The state is split: an `Engine` every workspace shares (the output devices, each with its
+//! mixer, and the master clock; disk streamer, voice-id and patch-slot allocators, machine settings, document worker,
 //! outbound channel, show log, probe pool, media watch) and a `Doc` per open workspace (model,
 //! history, cue engine, voices, media catalog, file state), at most [`MAX_DOCS`]. Per-doc work
 //! runs on a `DocCx` (one doc and the engine); engine-wide work (the device, mixer events and
@@ -14,8 +14,9 @@
 //! [`Control::handle_doc`] address any doc by its [`DocId`].
 //!
 //! [`Control`] is the loop's state and logic, with no thread or clock of its own: time is the
-//! mixer's sample counter (`samples_rendered`), whether a device callback ([`runner::run`]) or
-//! the offline render driver ([`offline::OfflineShow`], tests) advances it. Both call the same
+//! primary device's mixer's sample counter (`samples_rendered`; `outputs.rs` for several
+//! devices), whether a device callback ([`runner::run`]) or the offline render driver
+//! ([`offline::OfflineShow`], tests) advances it. Both call the same
 //! [`Control::handle`] for each inbox message and [`Control::tick`] on every wake.
 
 mod checks;
@@ -35,6 +36,7 @@ mod netout;
 mod network;
 mod observe;
 pub mod offline;
+mod outputs;
 mod patches;
 pub mod plan;
 mod preshow;
@@ -93,13 +95,14 @@ pub use wake::{stall_floor, wake_frames};
 use crate::persist::AppDirs;
 use checks::PlanChecks;
 use device_events::playable_device;
-use devices::Device;
+use devices::{Device, OutputKey};
 use docs::{DocFile, Docs};
 use inbox::{Outbound, reply};
 use media::{MediaCatalog, ProbePool};
 use model::DocModel;
 use netout::NetOut;
 use observe::Observe;
+use outputs::{Output, Outputs};
 use patches::Patches;
 use transport::Scope;
 use voice_ids::VoiceIds;
@@ -147,8 +150,8 @@ const _: () = assert!(crate::persist::MAX_WRITERS > 2 * MAX_DOCS);
 /// An open doc (workspace) in this engine run: the protocol's (ids never reused).
 pub use openlab_core::protocol::DocId;
 
-/// How the control loop reaches the audio side, besides the mixer controller. The clock is the
-/// mixer's either way; this carries what only a device has.
+/// How the control loop reaches one output's audio side, besides its mixer controller: what
+/// only a device has.
 pub enum Backend {
     /// A device stream on the device thread: list, loss and reopen ([`devices`]).
     Device(Box<Device>),
@@ -157,7 +160,7 @@ pub enum Backend {
 }
 
 impl Backend {
-    fn alloc_violations(&self) -> u64 {
+    pub(super) fn alloc_violations(&self) -> u64 {
         match self {
             Self::Device(d) => d.alloc_violations(),
             Self::Offline => 0,
@@ -169,11 +172,6 @@ impl Backend {
             Self::Device(d) => Some(d),
             Self::Offline => None,
         }
-    }
-
-    /// The device is down (an outage): sample time stands still.
-    fn is_down(&self) -> bool {
-        self.device().is_some_and(Device::is_down)
     }
 }
 
@@ -199,6 +197,11 @@ pub struct ControlConfig {
     pub devices: Vec<DeviceInfo>,
     /// Output patch matrices the mixer was built with.
     pub mixer_patches: usize,
+    /// The mixer every further output device is built with (at the primary's rate and
+    /// output count): a patch mapped to a listed device other than the primary opens that
+    /// device, asked for its buffer size from `machine`. `None`: the engine plays on the
+    /// primary device only.
+    pub output_mixer: Option<openlab_audio::MixerConfig>,
     pub streamer: StreamerConfig,
     /// Memory all preloaded media may take together (AUD-05).
     pub preload_budget: u64,
@@ -274,6 +277,7 @@ impl ControlConfig {
             machine_writable: true,
             devices: Vec::new(),
             mixer_patches: 1,
+            output_mixer: None,
             streamer: StreamerConfig::new(sample_rate),
             preload_budget: openlab_audio::DEFAULT_PRELOAD_BUDGET,
             app_dirs: None,
@@ -376,13 +380,19 @@ struct MeterRound {
 /// device, the disk streamer, the voice-id and patch-slot allocators, the machine settings,
 /// the document worker and the save writer, the outbound channel, the show log and status.
 struct Engine {
-    mixer: MixerController,
+    /// The output devices, each with its mixer, and the master clock.
+    outputs: Outputs,
     streamer: DiskStreamer,
     /// Mixer voice ids: engine-wide, never reused (shared by every workspace).
     voice_ids: VoiceIds,
     patches: Patches,
-    /// What patches resolve against: the device the mixer plays on (none during an outage).
-    playable: Vec<DeviceInfo>,
+    /// What patches resolve against: the devices that play, each with its output (a device is
+    /// left out while it is away).
+    playable: Vec<(DeviceInfo, OutputKey)>,
+    /// A patch mapping may name a device that is not open yet ([`Control::open_outputs`]).
+    outputs_dirty: bool,
+    /// Devices the engine could not open as outputs, already warned about.
+    output_warned: std::collections::HashSet<String>,
     /// Saves the machine settings when the engine changes them (default patch mappings).
     settings_writer: Option<crate::persist::SettingsWriter>,
     /// Patches and devices the default mapping already warned about, per doc.
@@ -397,7 +407,6 @@ struct Engine {
     out: Outbound,
     /// The document worker (one read at a time, engine-wide) and the save writer.
     docs: Docs,
-    backend: Backend,
     config: ControlConfig,
     rate: NonZeroU32,
     /// Frames per device block: the lookahead and the `now` offset. It follows the open
@@ -548,7 +557,8 @@ struct Seen {
     faults: u64,
     faulted_voices: u64,
     faulted_stages: u64,
-    disabled_units: openlab_audio::DisabledUnits,
+    /// Each output's mixer's disabled units at the last health check.
+    disabled_units: std::collections::BTreeMap<OutputKey, openlab_audio::DisabledUnits>,
     alloc_violations: u64,
     outbound_dropped: u64,
     feedback_overflow: u64,
@@ -608,7 +618,7 @@ impl Control {
                 cx.feed(input, now);
             }
         }
-        control.eng.mixer.pump();
+        control.eng.outputs.pump();
         Ok(control)
     }
 
@@ -655,10 +665,22 @@ impl Control {
         }
         let cue_outputs = mixer.cue_outputs();
         let patches = Patches::new(config.mixer_patches, cue_outputs);
-        let playable = match backend.device() {
-            Some(d) => vec![playable_device(d)],
-            None => config.devices.clone(),
+        let name = match backend.device() {
+            Some(d) => d.info().name.clone(),
+            None => config
+                .devices
+                .first()
+                .map(|d| d.name.clone())
+                .unwrap_or_default(),
         };
+        let outputs = Outputs::new(
+            Output {
+                name,
+                mixer,
+                backend,
+            },
+            rate.get(),
+        );
         // Not essential: without the thread default mappings stay in memory (warned below).
         let (settings_writer, writer_error) = match &config.app_dirs {
             Some(dirs) => match crate::persist::SettingsWriter::spawn(dirs.clone()) {
@@ -678,17 +700,18 @@ impl Control {
             engine: CueEngine::new(engine_config),
         };
         let mut eng = Engine {
-            mixer,
+            outputs,
             streamer,
             voice_ids: VoiceIds::new(),
             patches,
-            playable,
+            playable: Vec::new(),
+            outputs_dirty: true,
+            output_warned: std::collections::HashSet::new(),
             settings_writer,
             mapping_warned: std::collections::HashSet::new(),
             unwritable_warned: false,
             out: Outbound::new(outbound),
             docs,
-            backend,
             config,
             rate,
             block,
@@ -746,15 +769,15 @@ impl Control {
             None,
             None,
         );
-        let cap = eng.mixer.voice_meter_capacity();
-        eng.meter_ids = vec![VoiceId(0); cap];
-        eng.meter_peaks = vec![0.0; cap * cue_outputs.max(1)];
+        eng.refresh_playable();
+        eng.size_meters();
+        eng.check_buffer(0);
         let mut control = Self {
             eng,
             docs: Vec::new(),
             none,
         };
-        control.eng.mixer.pump();
+        control.eng.outputs.pump();
         Ok(control)
     }
 
@@ -796,10 +819,72 @@ impl Control {
 impl Engine {
     /// The scheduling time: the earliest sample a command can still hit.
     fn now(&self) -> SampleTime {
-        self.mixer
-            .samples_rendered()
+        self.outputs
+            .rendered()
             .saturating_add(self.block)
             .max(self.now_floor)
+    }
+
+    /// The master clock: samples of show time rendered ([`Outputs::rendered`]).
+    fn rendered(&self) -> SampleTime {
+        self.outputs.rendered()
+    }
+
+    /// The devices patches resolve against, from the outputs that play. The offline driver
+    /// renders every configured device's patches into its one mixer.
+    fn refresh_playable(&mut self) {
+        let mut playable = Vec::new();
+        for (key, o) in self.outputs.iter() {
+            match &o.backend {
+                Backend::Device(d) if !d.is_down() && !d.is_parked() => {
+                    playable.push((playable_device(d), key));
+                }
+                Backend::Device(_) => {}
+                Backend::Offline => {
+                    playable.extend(self.config.devices.iter().map(|d| (d.clone(), key)));
+                }
+            }
+        }
+        self.playable = playable;
+    }
+
+    /// Voice-meter buffers for every output's mixer.
+    fn size_meters(&mut self) {
+        let cap: usize = self
+            .outputs
+            .iter()
+            .map(|(_, o)| o.mixer.voice_meter_capacity())
+            .sum();
+        self.meter_ids = vec![VoiceId(0); cap];
+        self.meter_peaks = vec![0.0; cap * self.cue_outputs.max(1)];
+        self.out_peaks = vec![0.0; self.cue_outputs * self.outputs.len()];
+    }
+
+    /// Reads every mixer's voice meters into `meter_ids`/`meter_peaks`, one after another.
+    /// Returns the voices listed.
+    fn read_voice_meters(&mut self) -> usize {
+        let outs = self.cue_outputs.max(1);
+        let mut n = 0;
+        for o in self.outputs.iter_mut() {
+            let (Some(ids), Some(peaks)) = (
+                self.meter_ids.get_mut(n..),
+                self.meter_peaks.get_mut(n.saturating_mul(outs)..),
+            ) else {
+                break;
+            };
+            n += o.mixer.read_voice_meters_into(ids, peaks);
+        }
+        n
+    }
+
+    /// Reads every mixer's output meters into `out_peaks`, output `k`'s at `k * cue_outputs`.
+    fn read_output_meters(&mut self) {
+        let n = self.cue_outputs;
+        for (k, o) in self.outputs.iter_mut().enumerate() {
+            if let Some(out) = self.out_peaks.get_mut(k * n..(k + 1) * n) {
+                o.mixer.read_output_meters_into(out);
+            }
+        }
     }
 
     /// Says on `config.awake` whether the computer must stay awake, when that changes. Never
@@ -838,23 +923,58 @@ impl Engine {
     /// when it is back (sample time stands still meanwhile, and `now` is one block past it):
     /// a stopped voice must not play one more block after the outage.
     fn stop_floor(&self) -> Option<SampleTime> {
-        self.backend
-            .is_down()
-            .then(|| self.mixer.samples_rendered())
+        let primary = self.outputs.primary();
+        (!primary.is_up()).then(|| {
+            self.outputs
+                .master_date(0, primary.mixer.samples_rendered())
+        })
     }
 
-    /// Sends commands as batches the mixer applies whole.
+    /// Sends commands, each to the mixer of the device its voice plays on, as batches each
+    /// mixer applies whole.
     fn send_commands(&mut self, commands: Vec<(SampleTime, CommandKind)>) {
         for commands in stops_apart(commands) {
-            let mut commands = ramps_together(commands);
-            while !commands.is_empty() {
-                let rest = commands.split_off(commands.len().min(COMMAND_CAPACITY));
-                if self.mixer.send_batch(commands).is_err() {
-                    // Cannot happen: the batch is at most the queue's size.
-                    self.log(LogLevel::Error, "mixer batch refused".to_owned());
-                }
-                commands = rest;
+            let commands = ramps_together(commands);
+            let patches = &self.patches;
+            let routed = self
+                .outputs
+                .route(commands, |slot| patches.slot_output(slot));
+            for (key, batch) in routed {
+                self.send_to(key, batch);
             }
+        }
+    }
+
+    /// Sends patch-slot commands dated `at`, each to the output it names.
+    fn send_on(&mut self, at: SampleTime, commands: Vec<(OutputKey, CommandKind)>) {
+        let mut by_output: Vec<(OutputKey, Vec<(SampleTime, CommandKind)>)> = Vec::new();
+        for (key, kind) in commands {
+            match by_output.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, batch)) => batch.push((at, kind)),
+                None => by_output.push((key, vec![(at, kind)])),
+            }
+        }
+        for (key, batch) in by_output {
+            let batch = self.outputs.dated_on(key, batch);
+            self.send_to(key, batch);
+        }
+    }
+
+    /// Sends commands already dated in output `key`'s samples, as batches its mixer applies
+    /// whole.
+    fn send_to(&mut self, key: OutputKey, mut commands: Vec<(SampleTime, CommandKind)>) {
+        let Some(output) = self.outputs.get_mut(key) else {
+            return;
+        };
+        let mut refused = false;
+        while !commands.is_empty() {
+            let rest = commands.split_off(commands.len().min(COMMAND_CAPACITY));
+            // Cannot fail: the batch is at most the queue's size.
+            refused |= output.mixer.send_batch(commands).is_err();
+            commands = rest;
+        }
+        if refused {
+            self.log(LogLevel::Error, "mixer batch refused".to_owned());
         }
     }
 }
@@ -1122,7 +1242,7 @@ impl Control {
             cx.feed(Input::Panic, now);
             cx.doc.voices.clear_primes();
         });
-        self.eng.mixer.pump();
+        self.eng.outputs.pump();
         self.eng.keep_awake(false);
         let wait = self.eng.config.shutdown_wait;
         self.final_recovery_writes(wait)
@@ -1185,6 +1305,7 @@ fn request_name(r: &Request) -> &'static str {
         Request::Relink { .. } => "relink",
         Request::ListDevices => "list_devices",
         Request::SetOutputDevice { .. } => "set_output_device",
+        Request::SetBufferSize { .. } => "set_buffer_size",
         Request::PreshowCheck => "preshow_check",
         Request::ListPatchMappings => "list_patch_mappings",
         Request::SetShowMode { .. } => "set_show_mode",

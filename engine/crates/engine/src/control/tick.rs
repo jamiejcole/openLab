@@ -7,6 +7,7 @@ use openlab_audio::{Event, VoiceId};
 use openlab_core::protocol::LogLevel;
 use openlab_core::{Input, SampleTime, seconds_to_samples};
 
+use super::devices::OutputKey;
 use super::voices::Effects;
 use super::watch::WatchEvent;
 use super::{Control, DocCx, DocId, PROBE_HOLD_LIMIT, STREAM_START_LIMIT, media};
@@ -18,10 +19,12 @@ impl Control {
     /// reports, saves); then the engine's probe watchdog, slot hand-outs, document worker,
     /// settings, health and status, and `pump`. With no doc open only the engine's steps run.
     pub fn tick(&mut self) {
-        let rendered = self.eng.mixer.samples_rendered();
+        self.eng.outputs.follow_clock();
+        let rendered = self.eng.rendered();
         self.eng.last_tick_stalled = rendered == self.eng.last_tick_rendered;
         self.eng.last_tick_rendered = rendered;
         self.poll_device();
+        self.open_outputs();
         self.route_mixer_events();
         self.watch_tick();
         self.begin_meter_round();
@@ -48,24 +51,27 @@ impl Control {
         self.health();
         let paths = self.docs.iter().map(|d| d.show_path.as_deref());
         self.eng.observe_tick(paths);
-        self.eng.mixer.pump();
+        self.eng.outputs.pump();
     }
 
-    /// The mixer's events, drained once and handed to the doc that owns each voice. An event of
-    /// a voice no open doc owns (a closed doc's) is dropped; `PendingFull` means nothing to any
-    /// doc; a stage fault is the engine's ([`Self::stage_faulted`]).
+    /// Every mixer's events, drained once, dated in master time and handed to the doc that owns
+    /// each voice. An event of a voice no open doc owns (a closed doc's) is dropped;
+    /// `PendingFull` means nothing to any doc; a stage fault is the engine's
+    /// ([`Self::stage_faulted`]).
     fn route_mixer_events(&mut self) {
-        while let Some(e) = self.eng.mixer.poll_event() {
-            self.route_mixer_event(e);
+        for key in 0..self.eng.outputs.len() {
+            for e in self.eng.outputs.poll_events(key) {
+                self.route_mixer_event(key, e);
+            }
         }
     }
 
-    pub(super) fn route_mixer_event(&mut self, e: Event) {
+    pub(super) fn route_mixer_event(&mut self, key: OutputKey, e: Event) {
         if let Event::StageFaulted {
             stage, disabled, ..
         } = e
         {
-            self.stage_faulted(stage, disabled);
+            self.stage_faulted(key, stage, disabled);
             return;
         }
         let Some(voice) = event_voice(&e) else {
@@ -228,7 +234,15 @@ impl Control {
     /// send again what its clients missed.
     fn health(&mut self) {
         let eng = &mut self.eng;
-        let dropped = eng.mixer.dropped_events();
+        let sum = |f: fn(&openlab_audio::MixerController) -> u64| -> u64 {
+            eng.outputs.iter().map(|(_, o)| f(&o.mixer)).sum()
+        };
+        let (dropped, faults, faulted, stages) = (
+            sum(openlab_audio::MixerController::dropped_events),
+            sum(openlab_audio::MixerController::faults),
+            sum(openlab_audio::MixerController::faulted_voices),
+            sum(openlab_audio::MixerController::faulted_stages),
+        );
         if dropped > eng.seen.dropped_events {
             eng.seen.dropped_events = dropped;
             eng.log(
@@ -236,7 +250,6 @@ impl Control {
                 format!("{dropped} mixer event(s) lost; voice ends are reconciled from meters"),
             );
         }
-        let faults = eng.mixer.faults();
         if faults > eng.seen.faults {
             eng.seen.faults = faults;
             eng.log(
@@ -244,7 +257,6 @@ impl Control {
                 format!("audio engine fault: {faults} block(s) replaced with silence"),
             );
         }
-        let faulted = eng.mixer.faulted_voices();
         if faulted > eng.seen.faulted_voices {
             eng.seen.faulted_voices = faulted;
             eng.log(
@@ -254,14 +266,28 @@ impl Control {
         }
         // Reports counted at the previous check have been drained by now (the mixer counts a
         // fault just before it queues the report). Each report is logged as it is handled.
-        let counted_before =
-            std::mem::replace(&mut eng.seen.faulted_stages, eng.mixer.faulted_stages());
-        let disabled_now = eng.mixer.disabled_units();
-        let disabled_before = std::mem::replace(&mut eng.seen.disabled_units, disabled_now);
+        let counted_before = std::mem::replace(&mut eng.seen.faulted_stages, stages);
+        let disabled: Vec<(OutputKey, openlab_audio::DisabledUnits)> = eng
+            .outputs
+            .iter()
+            .map(|(k, o)| (k, o.mixer.disabled_units()))
+            .collect();
         self.lost_stage_reports(counted_before);
-        self.lost_disabled_reports(disabled_before, disabled_now);
+        for (key, disabled_now) in disabled {
+            let before = self
+                .eng
+                .seen
+                .disabled_units
+                .insert(key, disabled_now)
+                .unwrap_or_default();
+            self.lost_disabled_reports(key, before, disabled_now);
+        }
         let eng = &mut self.eng;
-        let allocs = eng.backend.alloc_violations();
+        let allocs: u64 = eng
+            .outputs
+            .iter()
+            .map(|(_, o)| o.backend.alloc_violations())
+            .sum();
         if allocs > eng.seen.alloc_violations {
             eng.seen.alloc_violations = allocs;
             eng.log(

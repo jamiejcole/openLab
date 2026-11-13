@@ -43,10 +43,10 @@ impl DocCx<'_> {
             };
             self.feed(input, now);
         }
-        // During an outage a panic fade could only play once the device is back, so it stops
+        // While no device plays a panic fade could only play once one is back, so it stops
         // everything at once: a second Panic within the fade is a hard stop (unless this one
         // already was).
-        if panic && self.eng.backend.is_down() && self.doc.model.engine().panic_end().is_some() {
+        if panic && self.eng.outputs.is_frozen() && self.doc.model.engine().panic_end().is_some() {
             self.feed(Input::Panic, now);
         }
         if let Some(scope) = scope {
@@ -114,7 +114,7 @@ impl Control {
             let now = cx.now();
             cx.transport(TransportAction::Panic, now);
         });
-        self.eng.mixer.pump();
+        self.eng.outputs.pump();
     }
 
     /// App-scope hotkey (QLab 5 fires a hotkey in every open workspace, in
@@ -128,7 +128,7 @@ impl Control {
                 cx.transport(TransportAction::Start { cue }, now);
             }
         });
-        self.eng.mixer.pump();
+        self.eng.outputs.pump();
     }
 
     /// App-scope hotkey release: the release (`trigger_released`) of every cue of every doc
@@ -140,7 +140,7 @@ impl Control {
                 cx.transport(TransportAction::TriggerReleased { cue }, now);
             }
         });
-        self.eng.mixer.pump();
+        self.eng.outputs.pump();
     }
 }
 

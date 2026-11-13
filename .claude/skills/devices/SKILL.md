@@ -8,12 +8,13 @@ description: "Load when changing or reviewing audio devices: listing, negotiatio
 Two layers. **Mechanism** is in `openlab-audio`: `negotiate.rs` (pure), `output.rs` (pure: `OutputHost`, `DeviceMonitor`, `ErrorReporter`), `device.rs` (the only file that uses cpal, behind cargo feature `device`, on by default). 
 - The fuzz crate builds `openlab-audio` with `default-features = false`, so it needs no ALSA headers.
 
-**Policy** is in the engine: `control/devices.rs` (`devices::Device`, the supervisor), plus the device threads. The engine plays on one device (up to 64 outputs), shared by every open doc.
+**Policy** is in the engine: `control/devices.rs` (`devices::Device`, the supervisor), plus the device threads; `control/outputs.rs` is the table of open devices (AUD-02).
+- The engine plays on several devices at once, each patch on the device its machine mapping names, shared by every open doc. Output 0, the **primary**, is the device opened at start; another device opens when a patch is mapped to it (see "Several devices").
 
 ## Must not break
 
-- **A lost device stops every cue on it at once and nothing resumes by itself.** A 3 s and a 20 s outage behave the same. Only the operator's GO restarts the show.
-- **Nothing scheduled before a loss may fire after it**: pre-wait, post-wait, auto-continue and auto-follow of every active run are cancelled, not only those of audio cues.
+- **A lost device stops every cue on it at once and nothing resumes by itself.** A 3 s and a 20 s outage behave the same. Only the operator's GO restarts the show. The other devices play on.
+- **When the last device that plays is lost, nothing scheduled before the loss may fire after it**: pre-wait, post-wait, auto-continue and auto-follow of every active run are cancelled, not only those of audio cues. While another device plays, waits run on.
 - **A stall is a loss only in the second stage** (or through the intermittent window rule). A one-stage 500 ms loss turns a recoverable dropout into a stopped show with every cue broken. A false positive costs the whole show; a late true positive costs seconds of an already silent show.
 - **Only silence the supervisor actually watched counts.** A frozen process, a starved control thread or a sleeping Mac is never a stall.
 - **The control thread never calls the device layer** and a GO never waits for a device (list, open, close run on device threads).
@@ -28,7 +29,7 @@ Two layers. **Mechanism** is in `openlab-audio`: `negotiate.rs` (pure), `output.
 - **Channels:** the exact count if offered; else the smallest larger count (extra device channels silent); else the largest smaller count. With fewer channels, mixer outputs `0..mapped` reach the device and the rest are not heard: `outputs_dropped` is reported so the engine warns.
 - At most 64 mixer outputs are used; a device with more channels opens at its own count and channels above 64 stay silent.
 - **Format** at that channel count: f32, f64, i32, i16, u16. Others (i24, u8, DSD) are skipped; none usable gives `NoConfigs`.
-- **Buffer:** the requested size if in range, else the nearest end. A host that cannot report a range gets the requested size, and if it refuses, the host default.
+- **Buffer:** the requested size if in range, else the nearest end. The engine asks each device for its size from machine settings (`set_buffer_size`, 16 to 1024 frames, default 512; AUD-21) and logs a `warn` when the stream runs at another (`Engine::check_buffer`). A host that cannot report a range gets the requested size, and if it refuses, the host default.
 - `open_output(mixer, &OpenRequest)` negotiates, builds and starts the stream. Failure is an `OpenError` with a `DeviceError` kind (NotFound, Unavailable, Busy, PermissionDenied, UnsupportedConfig, `Negotiate(..)`, Backend); `OpenError::take_mixer()` returns the mixer. A default device whose id the host cannot report fails with Backend rather than storing an empty id.
 
 ## The stream never follows the system default
@@ -73,7 +74,7 @@ Two layers. **Mechanism** is in `openlab-audio`: `negotiate.rs` (pure), `output.
 - The cpal closure owns the `OutputHost`, which owns the mixer and scratch. Dropping the host pushes both into a one-slot `rtrb` queue; no allocation, free or block (tested under `assert_no_alloc`). The push cannot fail; if it ever did the mixer would be leaked and counted in `leaked_mixers`.
 - `OutputStream::close()` drops the stream, then takes the mixer from the slot with voices, queues, clock and counters intact. Dropping `OutputStream` without `close` frees the mixer on the dropping thread, never the audio thread.
 - **`MixerPending` is expected on macOS device loss, not an error.** cpal's CoreAudio disconnect thread holds the stream briefly while delivering `DeviceNotAvailable`, so the AudioUnit (and the handoff) drops on that thread a moment later. The engine polls `MixerPending::try_take` every tick until the mixer arrives.
-- **While no stream runs, `samples_rendered` (the master clock) is frozen** and every sample-time deadline waits with it. It is kept: the engine plays on one device, so no other time base exists. After loss nothing scheduled is left to wait on it; it only matters for what the operator starts during the outage (a memo with a wait stalls until the device returns).
+- **While no device plays, the master clock is frozen** and every sample-time deadline waits with it. After the last device's loss nothing scheduled is left to wait on it; it only matters for what the operator starts during the outage (a memo with a wait stalls until a device returns). While the primary is away and another device plays, it runs on the wall clock (see "Several devices").
 - Reopen backoff `reopen_delay_ms(attempt)`: 250, 500, 1000, 2000, then 4000 ms. The engine owns the clock, attempts and user warning.
 
 ## Engine device policy (`control/devices.rs`)
@@ -81,7 +82,8 @@ Two layers. **Mechanism** is in `openlab-audio`: `negotiate.rs` (pure), `output.
 **Threads.** `openlab-device` owns the device layer (`DeviceLayer`: `CpalDevices`, the virtual device in test-support builds, or a stand-in in tests) and the open stream, because a cpal stream may not leave the thread that opened it and CoreAudio can block in open and close. It runs `Open { mixer }` and `Close` in order. `openlab-device-list` reads the list, so a hung open or close cannot stop hot-plug being seen. Both answer through `Inbox::Device`.
 - A panic in the layer is caught on its thread and answered as a failure; a panic during open or close loses the mixer (`device_unrecoverable`). At most one list read and one open or close in flight. At loop end the device thread drops the stream and mixer on its own side.
 - The first open (`devices::start`) is waited for at most `FIRST_OPEN_TIMEOUT`; then the engine stops with "no answer from the device".
-- `host::run` opens the device chosen by `set_output_device` (machine settings `output_device`; `host::choose_device`), else the default, by concrete id. A chosen device that is not listed falls back to the default with a `warn`. A new choice applies at next start.
+- `host::run` opens the primary: the device chosen by `set_output_device` (machine settings `output_device`; `host::choose_device`), else the default, by concrete id. A chosen device that is not listed falls back to the default with a `warn`. A new choice applies at next start.
+- Only the primary's `Device` has a list thread; its reads are handed to every other device's supervisor, which follow them (loss by leaving the list, return by coming back). Device-thread answers are tagged with their output (`Inbox::Device(key, ..)`).
 
 **Supervision** (`devices::Device`, every tick, wall clock injected as `WallClock`):
 - **List** every `DEVICE_POLL`; the last answer serves `list_devices`. A change re-resolves the patches.
@@ -114,24 +116,45 @@ Rules (each one fixes a false stop):
 
 ## Device-loss policy (show safety)
 
-Decided from measuring QLab 5; there is no grace period and no exact-sample resume. On `DeviceEvent::Lost`, at once, whatever the outage length:
+Decided from measuring QLab 5; there is no grace period and no exact-sample resume. On `DeviceEvent::Lost` of one device, at once, whatever the outage length (`control/device_events.rs`):
 - Patches on the device are reported `device_missing` (`Availability`): loaded cues on them unload, a start is refused as broken, idle cues show broken.
-- Every active **audio** run ends with `ActionFailed { device_lost }`: pre-waiting, playing (voice started or waiting for its probe), paused, fading, stopping and post-waiting alike, with or without a voice. Hard stop with no fade; the cue is `broken` with reason `device_lost`; voice and stream are released; its pre-wait, auto-continue and auto-follow are cancelled (core `action_failed`). A group follows its children's failures.
-- Every voice the mixer holds is stopped too (paused ones, fading tails, orphans), dated on the first sample the mixer renders after the outage (`Voices::stop_date`), so nothing sounds when the device returns.
+- Every active **audio** run with a voice in that device's mixer, or whose patch is mapped to that device, ends with `ActionFailed { device_lost }`: pre-waiting, playing (voice started or waiting for its probe), paused, fading, stopping and post-waiting alike, with or without a voice.
+  Hard stop with no fade; the cue is `broken` with reason `device_lost`; voice and stream are released; its pre-wait, auto-continue and auto-follow are cancelled (core `action_failed`). A group follows its children's failures.
+- Every voice that device's mixer holds is stopped too (paused ones, fading tails, orphans), dated on the first sample the mixer renders after the outage (`Voices::stop_date` on the primary; another device's commands are dated so while it is away), so nothing sounds when it returns.
 - An `error` log counts the stopped cues; a `device_lost` runtime notice and workspace warning go out.
-- The loop then feeds `Input::DeviceLost`, which hard-stops every other active run (memo, Wait, control, Fade, group, and runs already broken but holding a pending continue): every pre-wait, post-wait, auto-continue and auto-follow set before the loss is cancelled. Loaded and settled broken cues keep their state. QLab-confirmed for waits too: an interface unplugged during a pre-wait or post-wait starts nothing after it is plugged back, and the countdowns do not keep running.
+- **Last device:** when no device plays any more (the only device, or the last of several), every active audio run fails as above and the loop then feeds `Input::DeviceLost`, which hard-stops every other active run (memo, Wait, control, Fade, group, and runs already broken but holding a pending continue): every pre-wait, post-wait, auto-continue and auto-follow set before the loss is cancelled. Loaded and settled broken cues keep their state.
+  QLab-confirmed for waits with one interface: unplugged during a pre-wait or post-wait it starts nothing after it is plugged back, and the countdowns do not keep running.
+- **Another device still plays:** only that device's cues stop; every other run, wait and cue carries on (user decision, skill `qlab-behaviour` Q255).
 - **Shown state:** broken (`device_lost`) while the device is away (also any cue routed to it), idle once it is back. QLab shows a pause mark that only Resume All clears; openLab has none, so Resume All does nothing to the cue and GO plays it from its start (progress was reset).
-- **GO during an outage**, and any start on the device, is refused as broken (`cue_broken`); it is not queued for the return. Cues with no output on the device run as usual on the frozen clock.
-- **Stop/pause in an outage** find nothing on the device; the ones that reach an orphan voice are dated on the first sample after return, never before the voice's own start. **Panic in an outage** is a hard stop (a second Panic when a panic fade was already under way, since a fade could only play after the outage).
+- **GO during an outage**, and any start on the device, is refused as broken (`cue_broken`); it is not queued for the return. Cues with no output on the device run as usual (on the frozen clock when no device plays).
+- **Stop/pause in an outage** find nothing on the device; the ones that reach an orphan voice are dated on the first sample after return, never before the voice's own start. **Panic while no device plays** is a hard stop (a second Panic when a panic fade was already under way, since a fade could only play after the outage).
 - **Back:** the stream reopens, patches report `mapped`, cues broken by `device_lost` and idle cues routed to it become playable, and the `device_lost` warning goes (see skill `cue-engine`, broken cues).
 - A stop sent to a voice while the mixer is silent must be dated on the cut sample, or the voice plays one more block. A flapping device just stops the cues on it each time; no voices or streams leak.
+
+## Several devices (AUD-02)
+
+- **Opening.** After a mapping or list change, `Control::open_outputs` opens each listed device a mapping names that is not open yet: a mixer like the primary's (`ControlConfig::output_mixer`; `None` turns this off, as for the offline driver) and a `Device` started from the primary's (`Device::start_another`, the layer's `another()`) on its own thread, without waiting.
+  Until its first open answers it is down and its patches are `device_missing`; a failed open retries with the reopen backoff. At most `MAX_OUTPUTS`.
+- Every device runs at the primary's rate and output count. Channels a device has beyond the primary's output count cannot be used yet: a patch mapped to them resolves `channels_missing` (available: the usable count) and its `outputs_dropped` warning says openLab uses only the first outputs, not that the device lacks them. One that cannot do the rate is not opened (one `warn` per device); its patches stay `device_missing`.
+- **Closing.** A device no patch of any open doc maps to any more is parked (`Device::park`) once no voice plays on it (a device that is away is parked at once: its voices were stopped at the loss, and their records are settled as ended, so none is kept and nothing of them sounds if it returns).
+  A parked device's stream closes, and it is not watched, reopened or reported lost, so unplugging it raises nothing. A patch mapped to it again unparks it: it opens again at once (with the reopen backoff if that fails, without a `device_lost` warning meanwhile).
+- **Routing.** Slot numbers are shared by every mixer; a slot's gains go to the mixer of its patch's device (`Patches::slot_output`). A voice plays in the mixer of its start's slot (`Outputs::route`); every later command of it goes there. A voice never moves between mixers: a cue whose patch moves to another device plays on where it started.
+- **Clock.** The primary's sample counter is the master clock while it plays. Another device's commands, and the primary's while it is away, are dated `local_rendered + (at - master_rendered)` from the counters read when they are sent, never before what that device has rendered and never before an earlier command of the same voice; its events come back through the inverse. Starts on two devices land within one buffer of each other and then drift (as QLab).
+- **Primary away, another device playing:** the master clock runs on the primary's wall clock from the last sample it rendered; when it returns its counter is offset to go on from there. With no device playing it stands still. It never goes back (`Outputs::follow_clock`).
+- **Buffer size change** (`Device::set_buffer`): a device that plays closes and opens again at once at the new size with its mixer as it was (voices and its counter carry on after the gap; `DeviceEvent::Reconfigured`, not an outage). The other devices are untouched.
+  During the gap it does not play (`Device::is_playing`): its patches stay mapped, its commands are dated on its first sample back, and while it is the primary the master clock runs on the wall clock if another device plays (stands still if none).
+  Cost, accepted: in that case the primary's voices wait out the gap while the clock runs on, so their cues' planned ends, and the auto-follows on them, come early by the length of the gap (milliseconds for a normal change).
+  A reopen that fails, a close or reopen the device thread does not finish within `DEVICE_JOB_TIMEOUT` (with `device_unrecoverable`), or a mixer lost in it, is a loss (`DeviceEvent::Lost`): only its cues stop; as the sole or last device, as any sole-device loss.
+- **Lookahead** is the largest buffer of the devices that play, so every deadline is committed before the callback that renders it on each.
+- Mixer stage faults are each device's: its mixer's disabled units are its own (a rebuild clears only them), and with several devices their logs and warnings name the device.
+- Engine load, xruns and underruns are summed or the worst over every device; `status.device` and `list_devices` describe the primary.
 
 ## Default patch mapping
 
 QLab 5 maps a new workspace's audio patch to the current output device automatically; openLab does the same, per patch, in the engine's `sync_patches` (start, doc opened, AddPatch, device back):
-- Any patch with **no mapping entry** in this machine's `settings.json` (keyed by workspace id and patch id) gets its N outputs mapped to the playable device's outputs 1..N. An existing entry is never overwritten, including an explicit empty entry (`{"device": "", "channels": []}`, how a cleared mapping is stored so the default does not re-apply).
+- Any patch with **no mapping entry** in this machine's `settings.json` (keyed by workspace id and patch id) gets its N outputs mapped to the primary device's outputs 1..N. An existing entry is never overwritten, including an explicit empty entry (`{"device": "", "channels": []}`, how a cleared mapping is stored so the default does not re-apply).
 - **Too-small device: no partial mapping.** A partial one would silence and break cues and block later self-healing. The patch stays `Unmapped` with one `warn` per patch and device (`device X has M outputs, patch 'P' needs N: left unmapped`); a bigger or different device is tried at the next sync.
-- No playable device (none, or an outage): nothing is written; the next sync with a device maps. Offline: the first configured device.
+- Primary not playing (none, or an outage): nothing is written; the next sync with it maps. Offline: the first configured device.
 - The settings write goes to the settings writer thread, never the control thread; a failed write is a `warn`. An `info` line says `mapped patch 'Main Outputs' to <device> outputs 1-2`.
 - No per-output delay exists (QLab 5 has none); a patch output's level, mute and polarity are its matrix gains.
 - Setting or clearing a mapping by request (`SetPatchMapping`) is skill `engine-control`.
@@ -139,7 +162,7 @@ QLab 5 maps a new workspace's audio patch to the current output device automatic
 ## Tests
 
 - Device-layer tests use no hardware (`tests/device.rs`, unit tests in the three modules): negotiation including 64 and 128 channels and an empty list, host-driven output equal to the offline driver sample for sample in every format, handoff and loss with a 4-channel reopen, errors counted once, no allocation on any callback path or the handoff drop.
-- Engine policy tests (`tests/control/devices.rs`) use a stand-in layer whose stream holds the mixer in an `OutputHost` rendered block by block, on the real device thread, with a test-driven wall clock. The driver waits for the device thread's answers on the inbox, never sleeps.
+- Engine policy tests (`tests/control/devices.rs`) use a stand-in layer whose streams hold their mixers in `OutputHost`s rendered block by block, every open device in step, on the real device threads, with a test-driven wall clock. The driver waits for the device threads' answers on the inbox, never sleeps; `DeviceShow::play` moves the wall clock with the audio (the master clock while the primary is away).
 - A real unplug cannot be automated here; check it by hand. `#[ignore]`d `hardware_smoke_default_output` plays 0.5 s of silence on the default device: `cargo test -p openlab-audio --test device -- --ignored`. On a Linux VM with no sound card, `ALSA_CONFIG_PATH` pointing at a file with `pcm.!default { type null }` runs it on ALSA's null device.
 - The app's tests run on the virtual device: read `references/virtual-device.md`.
 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Per-machine settings (WS-06, WS-07): what belongs to this computer and never travels with a
-//! show file. Today that is the mapping of each workspace's logical patches to physical audio
-//! devices, and the backup count. Text in, text out; the engine reads and writes
+//! Per-machine settings (WS-06, WS-07, AUD-21): what belongs to this computer and never travels
+//! with a show file: the mapping of each workspace's logical patches to physical audio devices,
+//! each device's buffer size, and the backup count. Text in, text out; the engine reads and writes
 //! `<app-support>/openLab/settings.json`.
 
 use std::collections::BTreeMap;
@@ -21,6 +21,14 @@ pub const MAX_SETTINGS_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_DEVICE_CHANNEL: u32 = 1023;
 const MAX_DEVICE_NAME_BYTES: usize = 512;
 const MAX_WORKSPACES: usize = 10_000;
+/// The smallest buffer size, in frames, a device may be asked for (as QLab 5).
+pub const MIN_BUFFER_FRAMES: u32 = 16;
+/// The largest buffer size, in frames.
+pub const MAX_BUFFER_FRAMES: u32 = 1024;
+/// The buffer size of a device with none set.
+pub const DEFAULT_BUFFER_FRAMES: u32 = 512;
+/// Devices with a buffer size kept; more in a file are dropped.
+const MAX_BUFFER_ENTRIES: usize = 256;
 
 /// Where one patch plays on this machine.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +71,10 @@ pub struct MachineSettings {
     /// (`set_output_device`). None: the system default device.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_device: Option<String>,
+    /// Frames per callback asked of each output device, by name ([`MIN_BUFFER_FRAMES`] to
+    /// [`MAX_BUFFER_FRAMES`]); a device not here is asked for [`DEFAULT_BUFFER_FRAMES`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub buffer_frames: BTreeMap<String, u32>,
     /// Keyed by workspace id (lower-case hyphenated UUID).
     #[serde(default)]
     pub workspaces: BTreeMap<String, WorkspaceMachineSettings>,
@@ -82,6 +94,7 @@ impl Default for MachineSettings {
             settings_version: SETTINGS_VERSION,
             backup_keep: DEFAULT_BACKUP_KEEP,
             output_device: None,
+            buffer_frames: BTreeMap::new(),
             workspaces: BTreeMap::new(),
             extra: BTreeMap::new(),
         }
@@ -128,6 +141,29 @@ pub fn load_settings(text: &str) -> LoadedSettings {
         object.remove("output_device");
         warnings.push("output device is not a name; using the system default".to_owned());
     }
+    // Likewise a buffer size that is not a frame count drops only itself.
+    if let Some(sizes) = value
+        .as_object_mut()
+        .and_then(|o| o.get_mut("buffer_frames"))
+    {
+        match sizes.as_object_mut() {
+            Some(sizes) => sizes.retain(|device, frames| {
+                let ok = frames.as_u64().is_some_and(|f| u32::try_from(f).is_ok());
+                if !ok {
+                    warnings.push(format!(
+                        "buffer size of \"{device}\" is not a frame count; using {DEFAULT_BUFFER_FRAMES}"
+                    ));
+                }
+                ok
+            }),
+            None => {
+                *sizes = serde_json::Value::Object(serde_json::Map::new());
+                warnings.push(format!(
+                    "buffer sizes are not a list of devices; using {DEFAULT_BUFFER_FRAMES} frames"
+                ));
+            }
+        }
+    }
     let mut settings: MachineSettings = match serde_json::from_value(value) {
         Ok(settings) => settings,
         Err(error) => return unreadable(error),
@@ -160,6 +196,23 @@ fn sanitise(settings: &mut MachineSettings, warnings: &mut Vec<String>) {
     {
         warnings.push("output device name is invalid; using the system default".into());
         settings.output_device = None;
+    }
+    let sizes = std::mem::take(&mut settings.buffer_frames);
+    for (device, frames) in sizes {
+        if settings.buffer_frames.len() >= MAX_BUFFER_ENTRIES {
+            warnings.push(format!(
+                "buffer sizes for more than {MAX_BUFFER_ENTRIES} devices; the extra ones were dropped"
+            ));
+            break;
+        }
+        match buffer_problem(&device, frames) {
+            Some(reason) => warnings.push(format!(
+                "buffer size of \"{device}\": {reason}; using {DEFAULT_BUFFER_FRAMES}"
+            )),
+            None => {
+                settings.buffer_frames.insert(device, frames);
+            }
+        }
     }
     if settings.workspaces.len() > MAX_WORKSPACES {
         warnings.push(format!(
@@ -194,6 +247,19 @@ fn sanitise(settings: &mut MachineSettings, warnings: &mut Vec<String>) {
             .or_insert(WorkspaceMachineSettings { patches });
     }
     settings.workspaces = workspaces;
+}
+
+/// Why `frames` cannot be device `device`'s buffer size.
+fn buffer_problem(device: &str, frames: u32) -> Option<String> {
+    if device.is_empty() || device.len() > MAX_DEVICE_NAME_BYTES {
+        return Some("invalid device name".into());
+    }
+    if !(MIN_BUFFER_FRAMES..=MAX_BUFFER_FRAMES).contains(&frames) {
+        return Some(format!(
+            "{frames} frames is outside {MIN_BUFFER_FRAMES} to {MAX_BUFFER_FRAMES}"
+        ));
+    }
+    None
 }
 
 fn mapping_problem(patch: &str, mapping: &PatchMapping) -> Option<String> {
@@ -266,6 +332,32 @@ impl MachineSettings {
             .or_default()
             .patches
             .insert(patch.to_string(), mapping);
+        Ok(())
+    }
+
+    /// The buffer size, in frames, device `device` is asked for.
+    pub fn buffer_frames_for(&self, device: &str) -> u32 {
+        self.buffer_frames
+            .get(device)
+            .copied()
+            .unwrap_or(DEFAULT_BUFFER_FRAMES)
+    }
+
+    /// Sets device `device`'s buffer size. Refuses a size outside [`MIN_BUFFER_FRAMES`] to
+    /// [`MAX_BUFFER_FRAMES`], an invalid name, or a new device beyond the entries kept, and
+    /// changes nothing.
+    pub fn set_buffer_frames(&mut self, device: &str, frames: u32) -> Result<(), String> {
+        if let Some(reason) = buffer_problem(device, frames) {
+            return Err(reason);
+        }
+        if !self.buffer_frames.contains_key(device)
+            && self.buffer_frames.len() >= MAX_BUFFER_ENTRIES
+        {
+            return Err(format!(
+                "buffer sizes are kept for at most {MAX_BUFFER_ENTRIES} devices"
+            ));
+        }
+        self.buffer_frames.insert(device.to_owned(), frames);
         Ok(())
     }
 
@@ -348,6 +440,53 @@ pub fn resolve_patch(
 mod tests {
     use super::*;
     use crate::model::{CueListId, PatchOutput, Workspace};
+
+    /// AUD-21: a device's buffer size is 16 to 1024 frames, 512 when none is set; anything else
+    /// is refused and changes nothing.
+    #[test]
+    fn a_buffer_size_outside_16_to_1024_is_refused_and_512_is_the_default() {
+        let mut s = MachineSettings::default();
+        assert_eq!(s.buffer_frames_for("Scarlett"), DEFAULT_BUFFER_FRAMES);
+        assert_eq!(DEFAULT_BUFFER_FRAMES, 512);
+        for bad in [0, 15, 1025, u32::MAX] {
+            assert!(s.set_buffer_frames("Scarlett", bad).is_err(), "{bad}");
+        }
+        assert!(s.set_buffer_frames("", 256).is_err());
+        assert!(s.buffer_frames.is_empty());
+        for good in [16, 128, 1024] {
+            assert_eq!(s.set_buffer_frames("Scarlett", good), Ok(()));
+            assert_eq!(s.buffer_frames_for("Scarlett"), good);
+        }
+        assert_eq!(s.buffer_frames_for("Other"), 512);
+        // Kept for a bounded number of devices; an existing one can still change.
+        for k in 1..MAX_BUFFER_ENTRIES {
+            s.set_buffer_frames(&format!("d{k}"), 64).unwrap();
+        }
+        assert!(s.set_buffer_frames("one more", 64).is_err());
+        assert_eq!(s.set_buffer_frames("Scarlett", 256), Ok(()));
+    }
+
+    /// A settings file's buffer sizes are checked as `set_buffer_frames` checks them: a bad one
+    /// drops only itself, with a warning, and round-trips otherwise.
+    #[test]
+    fn a_bad_buffer_size_in_the_file_is_dropped_with_a_warning() {
+        let loaded = load_settings(
+            r#"{"settings_version":1,"buffer_frames":{"A":128,"B":4096,"C":-1,"D":"x","":64}}"#,
+        );
+        assert_eq!(
+            loaded.settings.buffer_frames,
+            BTreeMap::from([("A".to_owned(), 128)])
+        );
+        assert_eq!(loaded.warnings.len(), 4, "{:?}", loaded.warnings);
+        let text = save_settings(&loaded.settings).unwrap();
+        assert_eq!(load_settings(&text).settings, loaded.settings);
+        let wrong = load_settings(r#"{"settings_version":1,"buffer_frames":[1,2]}"#);
+        assert!(wrong.settings.buffer_frames.is_empty());
+        assert_eq!(wrong.warnings.len(), 1);
+        // Nothing set: nothing written.
+        let empty = save_settings(&MachineSettings::default()).unwrap();
+        assert!(!empty.contains("buffer_frames"));
+    }
 
     fn ws(n: u128) -> WorkspaceId {
         WorkspaceId(Uuid::from_u128(n))
