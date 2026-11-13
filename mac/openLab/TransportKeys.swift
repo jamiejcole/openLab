@@ -71,70 +71,111 @@ struct KeyChord: Hashable, Sendable {
 enum KeyBindError: Error, Equatable {
     /// Esc is panic and cannot move (QLab: fixed safety key); the Up and Down arrows are never allowed.
     case reserved
-    case duplicate(of: TransportCommand)
+    case duplicate(of: WorkspaceKey)
     case cueHotkey
     /// A menu command (Save, Quit, ...) already owns the chord.
     case menuKey
     /// The key has no show-file name (Delete, media keys, ...).
     case unsupported
-    /// N, Q and T edit the highlighted cue's number, name and target (QLab refuses a key that has a function).
+    /// A cue hotkey on one of the workspace's cue-editing keys (QLab refuses a key that has a function).
     case editKey
 }
 
-/// The transport keys of one workspace, read from its `settings.hotkeys` (QLab keeps them per
-/// workspace). How each model field maps:
+extension WorkspaceKey {
+    /// The menu command a transport or selected-cue key performs; nil for a cue-editing key.
+    var command: TransportCommand? {
+        switch self {
+        case .go: return .go
+        case .stopAll: return .stopAll
+        case .pauseAll: return .pauseAll
+        case .resumeAll: return .resumeAll
+        case .loadSelected: return .loadSelected
+        case .pauseResumeSelected: return .pauseResumeSelected
+        case .startSelected: return .startSelected
+        case .stopSelected: return .stopSelected
+        case .resetSelected: return .resetSelected
+        case .previewSelected: return .previewSelected
+        case .panicSelected: return .panicSelected
+        default: return nil
+        }
+    }
+
+    /// What a cue-editing key does to the selected cues; nil for a transport key.
+    var editKey: TransportKeys.EditKey? {
+        switch self {
+        case .editNumber: return .cell("number")
+        case .editName: return .cell("name")
+        case .editNotes: return .notes
+        case .editTarget: return .cell("target")
+        case .editPreWait: return .cell("preWait")
+        case .editDuration: return .cell("duration")
+        case .editPostWait: return .cell("postWait")
+        case .cycleContinue: return .cycleContinue
+        case .toggleFlag: return .toggleFlag
+        default: return nil
+        }
+    }
+
+    /// A new workspace's key, QLab 5's defaults (manual pp. 69-70): Stop All, Start, Stop and Reset
+    /// Selected have none.
+    var defaultChord: KeyChord? {
+        let keys: [WorkspaceKey: String] = [
+            .go: " ", .pauseAll: "[", .resumeAll: "]", .loadSelected: "l", .pauseResumeSelected: "p",
+            .previewSelected: "v", .panicSelected: "s", .editNumber: "n", .editName: "q", .editNotes: "o",
+            .editTarget: "t", .editPreWait: "e", .editDuration: "d", .editPostWait: "w", .cycleContinue: "c",
+            .toggleFlag: "f",
+        ]
+        return keys[self].map { KeyChord($0) }
+    }
+
+    var titleKey: String { command?.titleKey ?? "keymap.action.\(rawValue)" }
+
+    /// The key-map page's columns: the workspace actions, then the cue-editing actions.
+    static let workspaceActions = allCases.filter { $0.command != nil }
+    static let editingActions = allCases.filter { $0.editKey != nil }
+}
+
+/// The key map of one workspace, read from its `settings.hotkeys` (QLab keeps it per workspace).
+/// How each model field maps:
 /// - `go`, `pause_all`, `resume_all` and the selected-cue keys `load_selected`, `pause_resume_selected`,
 ///   `start_selected`, `stop_selected`, `reset_selected`, `preview_selected`, `panic_selected`: bound as
-///   given, the engine's own map. Absent: the default (Space, `[`, `]`, `l`, `p`, none, none, none, `v`,
-///   `s`); `null`: no key.
+///   given, the engine's own map. Absent: the default (`WorkspaceKey.defaultChord`); `null`: no key.
+/// - The cue-editing keys `edit_number` ... `toggle_flag` (TRG-07) the same way: each edits the cues
+///   selected in the front window's list (`editKey(for:)`), N, Q, O, T, E, D, W, C and F by default.
 /// - `stop_all`: Esc is the fixed app-wide panic, so it binds nothing; any other key binds Stop All.
 /// - There are no Next / Previous Cue keys (format v6): QLab's key map has none and takes no Up or
 ///   Down arrow; the arrows and the fixed Select Next / Select Previous items move the selection.
-/// - Panic All (Esc) is the only fixed key; Preview Selected and Panic Selected are remappable like the rest.
+/// - Panic All (Esc) is the only fixed key.
 /// - Reset All has no key (QLab has none); it is the sidebar button and the Transport menu item.
 ///
 /// Conflict precedence: (1) Esc is always panic, even while typing, and cannot be bound; (2) a
-/// chord equal to another transport binding or a cue hotkey is refused (`validate`); in a loaded
-/// show the first transport field wins and the later one is dropped with a warning, and a cue
-/// hotkey on a transport chord is the one that yields (`AppController.keys(for:)`: transport keys
+/// chord equal to another key of the map or a cue hotkey is refused (`validate`); in a loaded
+/// show the first field wins and the later one is dropped with a warning, and a cue
+/// hotkey on a key of the map is the one that yields (`AppController.keys(for:)`: transport keys
 /// must keep working in a live show);
 /// (3) while a text field is edited, chords that type characters (no Cmd/Ctrl) do not fire.
 struct TransportKeys: Equatable {
-    private(set) var chords: [TransportCommand: KeyChord] = [:]
+    /// Every bound key of the map.
+    private(set) var bound: [WorkspaceKey: KeyChord] = [:]
     private(set) var warnings: [String] = []
 
     /// What a cue-editing key does to the selected cue.
     enum EditKey: Equatable {
         /// Opens that cue-list column's cell for typing.
         case cell(String)
+        /// Shows the inspector's notes for typing.
+        case notes
         /// Steps the continue mode: none, auto-continue, auto-follow, none.
         case cycleContinue
         case toggleFlag
     }
 
-    /// QLab 5's cue-editing keys, by default (manual pp. 69-70): number, name, target, pre-wait, duration
-    /// and post-wait open their cell; C steps the continue mode; F flags. Not in the key map; a cue
-    /// hotkey cannot take them (`HotkeyRules`).
-    static let editKeys: [KeyChord: EditKey] = [
-        KeyChord("n"): .cell("number"), KeyChord("q"): .cell("name"), KeyChord("t"): .cell("target"),
-        KeyChord("e"): .cell("preWait"), KeyChord("d"): .cell("duration"), KeyChord("w"): .cell("postWait"),
-        KeyChord("c"): .cycleContinue, KeyChord("f"): .toggleFlag,
-    ]
-
-    private static let fields: [(String, TransportCommand, KeyChord?)] = [
-        ("go", .go, KeyChord(" ")), ("stop_all", .stopAll, nil), ("pause_all", .pauseAll, KeyChord("[")),
-        ("resume_all", .resumeAll, KeyChord("]")), ("load_selected", .loadSelected, KeyChord("l")),
-        ("pause_resume_selected", .pauseResumeSelected, KeyChord("p")), ("start_selected", .startSelected, nil),
-        ("stop_selected", .stopSelected, nil), ("reset_selected", .resetSelected, nil),
-        ("preview_selected", .previewSelected, KeyChord("v")), ("panic_selected", .panicSelected, KeyChord("s")),
-    ]
-
     /// `settings` is the workspace's `settings` object (nil or without `hotkeys`: all defaults).
     init(settings: JSONValue?) {
         let hotkeys = settings?["hotkeys"]
-        for (field, command, fallback) in Self.fields {
-            var chord = fallback
-            if let value = hotkeys?[field] {
+        for key in WorkspaceKey.allCases {
+            var chord = key.defaultChord
+            if let value = hotkeys?[key.rawValue] {
                 if value == .null {
                     chord = nil
                 } else {
@@ -142,37 +183,49 @@ struct TransportKeys: Equatable {
                     if chord == nil {
                         warnings.append(
                             String(
-                                format: loc("hotkeys.warn.unusable"), loc(command.titleKey),
+                                format: loc("hotkeys.warn.unusable"), loc(key.titleKey),
                                 loc("hotkeys.reason.unsupported")))
                     }
                 }
             }
             guard let chord else { continue }
             if chord.key == KeyChord.escape { continue }  // stop_all = Esc: the app-wide panic
-            if let error = Self.validate(chord, for: command, in: chords) {
+            if let error = Self.validate(chord, for: key, in: bound) {
                 warnings.append(
-                    String(format: loc("hotkeys.warn.unusable"), loc(command.titleKey), Self.describe(error)))
+                    String(format: loc("hotkeys.warn.unusable"), loc(key.titleKey), Self.describe(error)))
                 continue
             }
-            chords[command] = chord
+            bound[key] = chord
         }
     }
 
-    func chord(for command: TransportCommand) -> KeyChord? { chords[command] }
-    func command(for chord: KeyChord) -> TransportCommand? { chords.first { $0.value == chord }?.key }
+    /// The bound transport and selected-cue keys, by the command each performs.
+    var chords: [TransportCommand: KeyChord] {
+        var out: [TransportCommand: KeyChord] = [:]
+        for (key, chord) in bound { if let command = key.command { out[command] = chord } }
+        return out
+    }
 
-    /// Why `chord` cannot be bound to `command` next to `existing`; nil if it can. Pure, for the
-    /// loader above and the key-map editor. Up and Down are refused with any modifiers
-    /// (QLab 5), as are Esc and the empty key.
+    func chord(for command: TransportCommand) -> KeyChord? { chords[command] }
+    func command(for chord: KeyChord) -> TransportCommand? { action(for: chord)?.command }
+    func action(for chord: KeyChord) -> WorkspaceKey? { bound.first { $0.value == chord }?.key }
+    func editKey(for chord: KeyChord) -> EditKey? { action(for: chord)?.editKey }
+
+    /// Why `chord` cannot be bound to `key` next to `existing`; nil if it can. Pure, for the
+    /// loader above and the key-map page. Up and Down are refused with any modifiers
+    /// (QLab 5), as are Esc and the empty key; a menu command's key only where `menuChords` is given
+    /// (the key-map page), and a key with no show-file name.
     static func validate(
-        _ chord: KeyChord, for command: TransportCommand, in existing: [TransportCommand: KeyChord],
-        isCueHotkey: (KeyChord) -> Bool = { _ in false }
+        _ chord: KeyChord, for key: WorkspaceKey, in existing: [WorkspaceKey: KeyChord],
+        isCueHotkey: (KeyChord) -> Bool = { _ in false }, menuChords: Set<KeyChord> = []
     ) -> KeyBindError? {
-        guard command != .panic, chord.key != KeyChord.escape, !chord.key.isEmpty else { return .reserved }
+        guard chord.key != KeyChord.escape, !chord.key.isEmpty else { return .reserved }
         if isArrow(chord) { return .reserved }
-        if let other = existing.first(where: { $0.value == chord && $0.key != command })?.key {
+        if chord.hotkeyJSON == nil { return .unsupported }
+        if let other = existing.first(where: { $0.value == chord && $0.key != key })?.key {
             return .duplicate(of: other)
         }
+        if menuChords.contains(chord) { return .menuKey }
         return isCueHotkey(chord) ? .cueHotkey : nil
     }
 

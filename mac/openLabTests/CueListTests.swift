@@ -1913,6 +1913,191 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(goes(), 0)
     }
 
+    // MARK: The cue-editing keys as a key map (TRG-07)
+
+    private func notes(_ id: ModelID) -> String? { store.model?.cue(id)?.raw["notes"]?.stringValue }
+
+    /// The notes key (O): the inspector comes up on its Basics tab with the caret in the selected cue's
+    /// notes, whatever tab it showed and whether it was shown at all; what is typed is the cue's notes.
+    func testOKeyOpensTheSelectedCuesNotesForTyping() async throws {
+        try await editWorkspace()
+        wc.inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
+        try press("o", code: 31)
+        XCTAssertEqual(wc.inspector.tabView.selectedTabViewItem?.identifier as? String, "basics")
+        XCTAssertTrue(wc.window?.firstResponder === wc.inspector.notesView, "the notes take the caret")
+        try type("hi")
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
+        await assertEventually("the notes were saved to cue 2") { self.notes(self.cues[1]) == "hi" }
+        XCTAssertEqual(goes(), 0)
+
+        wc.setVisible(.inspector, false)
+        try await focusList(on: cues[0])
+        try press("o", code: 31)
+        XCTAssertTrue(wc.isVisible(.inspector), "a hidden inspector is shown")
+        XCTAssertTrue(wc.window?.firstResponder === wc.inspector.notesView)
+        XCTAssertEqual(wc.inspector.notesView.string, "", "cue 1's notes, not cue 2's")
+    }
+
+    /// Double-clicking a Number, Name or Target cell opens it in place; Return keeps what was typed,
+    /// Esc leaves the cue as it was. The presses go through the table's own mouse handling.
+    func testDoubleClickOnNumberNameOrTargetEditsInPlaceEnterCommitsEscLeavesItUnchanged() async throws {
+        try await editWorkspace()
+        for (id, column, typed, shown) in [
+            (cues[1], "number", "2.5", "2.5"), (cues[0], "name", "entrance", "entrance"), (fade, "target", "2.5", "2.5"),
+        ] {
+            let before = cell(id, column)
+            try doubleClick(id, column)
+            await assertEventually("\(column) opens") { self.wc.cueList.editingCell?.column == column }
+            XCTAssertEqual(wc.cueList.editingCell?.id, id)
+            try type("99")
+            try press("\u{1B}", code: 53)
+            assertNotEditing()
+            XCTAssertEqual(cell(id, column), before, "Esc leaves \(column) unchanged")
+
+            try doubleClick(id, column)
+            await assertEventually("\(column) opens again") { self.wc.cueList.editingCell?.column == column }
+            try type(typed)
+            try pressReturn()
+            await assertEventually("Return keeps \(column)") { self.cell(id, column) == shown }
+        }
+        XCTAssertEqual(store.model?.cue(cues[1])?.number, "2.5")
+        XCTAssertEqual(store.model?.cue(fade)?.raw["kind"]?["target"]?.stringValue, cues[1].raw)
+        XCTAssertEqual(goes(), 0, "Return fired no GO")
+    }
+
+    /// What the table's double action does for a double-click on `id`'s `column` cell. The table's own
+    /// mouse tracking needs the window to be key, which a test run cannot count on; the real presses
+    /// are in `CueListUITests` (double-click Number, Name and Target, then Return).
+    private func doubleClick(_ id: ModelID, _ column: String) throws {
+        let ov = wc.cueList.outlineView
+        let row = ov.row(forItem: try XCTUnwrap(wc.cueList.node(id)))
+        let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
+        XCTAssertTrue(row >= 0 && col >= 0, "\(column) of the row is shown")
+        wc.cueList.doubleClick(row: row, column: col)
+    }
+
+    /// D on an Audio cue, whose duration is its file's: no field opens, nothing is sent, and the key is
+    /// taken (it never reaches the window, which would beep).
+    func testDOnACueWhoseDurationCannotBeEditedDoesNothingAndDoesNotBeep() async throws {
+        try await editWorkspace()
+        let beeps = Counter()
+        app.beep = { beeps.count += 1 }
+        let sent = wire.commands.count
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertNil(app.handleKeyDown(try key("d", code: 2, windowNumber: window.windowNumber)), "taken")
+        await sync()
+        XCTAssertNil(wc.cueList.editingCell)
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "the keys stay with the list")
+        XCTAssertEqual(wire.commands.count, sent, "nothing was sent")
+        XCTAssertEqual(beeps.count, 0)
+        try await assertAllOn(cues[1])
+    }
+
+    /// Several cues selected: C and F give every one of them the value the first one moves to, in one
+    /// undo step. The keys that open a field (N, Q, O, T, E, D, W) open none: there is one field and
+    /// several cues (assumed, recorded in the QLab behaviour notes).
+    func testSeveralCuesSelectedAnEditingKeyEditsTheValueOnAllOfThem() async throws {
+        try await editWorkspace()
+        func mode(_ id: ModelID) -> String? { store.model?.cue(id)?.raw["continue_mode"]?.stringValue }
+        func flagged(_ id: ModelID) -> Bool { store.model?.cue(id)?.raw["flagged"] == .bool(true) }
+        let all = cues + [fade]
+        wc.cueList.selectAsUser(all)
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
+        try press("c", code: 8)
+        await assertEventually("every cue auto-continues") { all.allSatisfy { mode($0) == "auto_continue" } }
+        try press("f", code: 3)
+        await assertEventually("every cue is flagged") { all.allSatisfy(flagged) }
+        for id in all {
+            XCTAssertEqual(wc.cueList.flagMarker(try XCTUnwrap(wc.cueList.node(id)), expanded: true), .solid)
+        }
+        await wc.editor.undo()
+        await assertEventually("one undo unflags them all") { all.allSatisfy { !flagged($0) } }
+        XCTAssertTrue(all.allSatisfy { mode($0) == "auto_continue" }, "and leaves the continue step")
+        for (chars, code) in [("n", UInt16(45)), ("q", 12), ("o", 31), ("t", 17), ("e", 14), ("d", 2), ("w", 13)] {
+            try press(chars, code: code)
+            XCTAssertNil(wc.cueList.editingCell, chars)
+            XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, chars)
+        }
+        XCTAssertEqual(wc.cueList.selectedIDs().count, 3, "the selection stays")
+    }
+
+    /// Show Mode: none of the editing keys edits anything or opens a field, and none goes on to beep.
+    func testInShowModeTheEditingKeysDoNothing() async throws {
+        try await editWorkspace()
+        wc.setShowMode(true)
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
+        let before = store.model?.cue(cues[1])?.raw
+        let sent = wire.commands.count
+        for (chars, code) in [
+            ("n", UInt16(45)), ("q", 12), ("o", 31), ("t", 17), ("e", 14), ("d", 2), ("w", 13), ("c", 8), ("f", 3),
+        ] {
+            XCTAssertNil(app.handleKeyDown(try key(chars, code: code, windowNumber: window.windowNumber)), chars)
+            XCTAssertNil(wc.cueList.editingCell, chars)
+            XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, chars)
+        }
+        await sync()
+        XCTAssertEqual(wire.commands.count, sent, "nothing was sent")
+        XCTAssertEqual(store.model?.cue(cues[1])?.raw, before)
+        XCTAssertFalse(wc.isVisible(.inspector), "O does not bring the inspector into Show Mode")
+        XCTAssertEqual(goes(), 0)
+    }
+
+    /// A cue plays; its flag, continue mode and name are changed by their keys meanwhile: each edit
+    /// lands, the cue keeps running, and nothing stops it.
+    func testWhileACuePlaysAnEditingKeyStillEditsAndPlaybackIsNotInterrupted() async throws {
+        try await editWorkspace()
+        try await focusList(on: cues[0])
+        try await space()
+        await assertEventually("cue 1 plays") { self.running(self.cues[0]) }
+        try await focusList(on: cues[0])
+        try press("f", code: 3)
+        await assertEventually { self.store.model?.cue(self.cues[0])?.raw["flagged"] == .bool(true) }
+        try press("c", code: 8)
+        await assertEventually {
+            self.store.model?.cue(self.cues[0])?.raw["continue_mode"]?.stringValue == "auto_continue"
+        }
+        try press("q", code: 12)
+        try assertEditing(cues[0], "name", text: "intro")
+        try type("live")
+        try pressReturn()
+        await assertEventually("the row shows the new name") { self.cell(self.cues[0], "name") == "live" }
+        try await play(0.1)
+        XCTAssertTrue(running(cues[0]), "still playing")
+        XCTAssertEqual(store.cueStates[cues[0]]?.state, .running)
+        let stops = wire.sent.filter {
+            if case .transport(_, let a) = $0 { return "\(a)".lowercased().contains("stop") } else { return false }
+        }
+        XCTAssertTrue(stops.isEmpty, "nothing was stopped: \(stops)")
+    }
+
+    /// The edit-duration key moved to K on the settings' Keys page: K opens the duration at once and D
+    /// no longer does; the saved show file holds K.
+    func testARemappedEditingKeyWorksAtOnceTheOldOneNoLongerAndTheMapIsSavedWithTheShow() async throws {
+        try await editWorkspace()
+        let sc = wc.settingsWindow
+        let field = try XCTUnwrap(sc.keyFields[.editDuration])
+        XCTAssertEqual(field.stringValue, "D")
+        field.keyDown(with: try key("k", code: 40))
+        await assertEventually("the field shows K") { field.stringValue == "K" }
+        await assertEventually { self.app.frontKeys.editKey(for: KeyChord("k")) == .cell("duration") }
+        try await focusList(on: fade)
+        try press("k", code: 40)
+        XCTAssertEqual(wc.cueList.editingCell?.column, "duration", "K edits the duration")
+        wc.cueList.cancelCellEdit()
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
+        try press("d", code: 2)
+        XCTAssertNil(wc.cueList.editingCell, "D no longer does")
+
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).openlab")
+        addTeardownBlock { try? FileManager.default.removeItem(at: path) }
+        guard case .success = await store.saveAs(path: path.path) else { return XCTFail("save") }
+        let saved = JSONValue.parse(try String(contentsOf: path, encoding: .utf8))
+        let keys = saved?["workspace"]?["settings"]?["hotkeys"]
+        XCTAssertEqual(keys?["edit_duration"]?["key"]?.stringValue, "k")
+        XCTAssertEqual(keys?["edit_name"]?["key"]?.stringValue, "q", "the other keys are kept")
+    }
+
     func testReturnCommitsANumberTypedInPlace() async throws {
         try await editWorkspace()
         try press("n", code: 45)
@@ -2190,13 +2375,24 @@ final class PlayheadFlowTests: XCTestCase {
         }
     }
 
-    /// A cue whose hotkey is N is started by it, and the key opens no editor.
-    func testACueHotkeyOnNStartsTheCueAndOpensNoEditor() async throws {
+    /// A cue whose hotkey is N (a hand-edited show) while N is still the edit-number key: N edits, as
+    /// every key of the map wins over a cue hotkey, and the cue does not start. Once the workspace
+    /// gives the edit-number key up, N starts the cue and opens no editor.
+    func testACueHotkeyOnNFiresOnlyOnceTheEditNumberKeyHasMoved() async throws {
         try await editWorkspace()
         let hotkey = try XCTUnwrap(KeyChord("n").hotkeyJSON)
         guard case .success = await store.send(command: .setProperty(cues[0], .triggers(hotkey: hotkey, osc: nil)))
         else { return XCTFail("hotkey") }
         await assertEventually { self.store.model?.cueHotkeys.isEmpty == false }
+        try press("n", code: 45)
+        XCTAssertEqual(wc.cueList.editingCell?.column, "number", "N is the workspace's edit-number key")
+        try press("\u{1B}", code: 53)
+        try await play(0.1)
+        XCTAssertFalse(running(cues[0]), "the cue's hotkey yields to the key map")
+
+        try await store.setHotkeys(#"{"edit_number":null}"#)
+        await assertEventually { self.app.frontKeys.editKey(for: KeyChord("n")) == nil }
+        try await focusList(on: cues[1])
         try press("n", code: 45)
         XCTAssertNil(wc.cueList.editingCell)
         await assertEventually("the hotkey's cue runs") { self.running(self.cues[0]) }

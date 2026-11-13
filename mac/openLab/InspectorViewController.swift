@@ -605,6 +605,18 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         refusalOutlivesFollow = isFollowHeld?() == true
     }
 
+    /// The notes key: the Basics tab comes to the front and the shown cue's notes take the caret, at
+    /// the end of what is there. Nothing for another cue than the one shown, or while locked.
+    @discardableResult
+    func beginNotes(of id: ModelID) -> Bool {
+        guard !isLocked, selection == [id], cue != nil, let window = view.window else { return false }
+        tabView.selectTabViewItem(withIdentifier: "basics")
+        guard window.makeFirstResponder(notesView) else { return false }
+        notesView.setSelectedRange(NSRange(location: (notesView.string as NSString).length, length: 0))
+        notesView.scrollRangeToVisible(notesView.selectedRange())
+        return true
+    }
+
     func setSelection(_ ids: [ModelID], byFollow: Bool = false) {
         // The list re-announces an unchanged selection after model changes; that must not wipe
         // what the user is typing or the message they are reading.

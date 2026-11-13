@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+import Foundation
+
+/// Why a key typed into the key map was not taken, for the field it was typed into.
+struct KeyRefusal: Equatable {
+    let key: WorkspaceKey
+    let text: String
+}
+
+/// The key map of the workspace settings (TRG-01, TRG-07): the workspace actions and the
+/// cue-editing actions, each with its key or none. Every change is one engine command
+/// (`SetWorkspaceSetting { hotkey }`), so one undo step, saved with the show. A key is checked
+/// here first, so the reason can be shown beside the field; the engine checks it again.
+extension WorkspaceSettingsModel {
+    /// The keys as the engine has them (the app's reading of `settings.hotkeys`).
+    var keyMap: TransportKeys { TransportKeys(settings: store.model?.settings) }
+
+    /// Puts `chord` on `key`. False, with `keyRefusal` naming why, when the chord is reserved, has
+    /// no show-file name, is another action's key, a menu command's or a cue's hotkey; nothing is
+    /// sent then. The chord `key` already has sends nothing.
+    @discardableResult
+    func assignKey(_ key: WorkspaceKey, _ chord: KeyChord, menuChords: Set<KeyChord>) async -> Bool {
+        let map = keyMap
+        if map.bound[key] == chord {
+            keyRefusal = nil
+            return true
+        }
+        let cueHotkeys = store.model?.cueHotkeys ?? []
+        if let error = TransportKeys.validate(
+            chord, for: key, in: map.bound, isCueHotkey: { c in cueHotkeys.contains { $0.chord == c } },
+            menuChords: menuChords)
+        {
+            keyRefusal = KeyRefusal(key: key, text: refusalText(error, chord: chord))
+            return false
+        }
+        guard let hotkey = chord.hotkeyJSON else { return false }
+        return await sendKey(key, hotkey)
+    }
+
+    /// Takes `key`'s key away (always allowed).
+    @discardableResult
+    func clearKey(_ key: WorkspaceKey) async -> Bool {
+        guard keyMap.bound[key] != nil || store.model?.hotkey(key) != nil else {
+            keyRefusal = nil
+            return true
+        }
+        return await sendKey(key, nil)
+    }
+
+    private func sendKey(_ key: WorkspaceKey, _ hotkey: JSONValue?) async -> Bool {
+        switch await store.send(command: .setWorkspaceKey(key, hotkey)) {
+        case .success:
+            keyRefusal = nil
+            return true
+        case .failure(let e):
+            keyRefusal = KeyRefusal(key: key, text: e.detailText)
+            return false
+        }
+    }
+
+    /// The reason in words: which action or cue already has the key.
+    func refusalText(_ error: KeyBindError, chord: KeyChord) -> String {
+        switch error {
+        case .reserved: return loc("settings.keys.refused.reserved")
+        case .unsupported: return loc("settings.keys.refused.unsupported")
+        case .duplicate(let other): return String(format: loc("settings.keys.refused.action"), loc(other.titleKey))
+        case .menuKey: return loc("settings.keys.refused.menu")
+        case .cueHotkey, .editKey:
+            let id = store.model?.cueHotkeys.first { $0.chord == chord }?.cue
+            let name = id.flatMap { id in
+                store.model.flatMap { m in m.cue(id).map { WarningRows.cueTitle($0, name: m.listName($0)) } }
+            }
+            return name.map { String(format: loc("settings.keys.refused.cue"), $0) }
+                ?? loc("settings.keys.refused.anyCue")
+        }
+    }
+}

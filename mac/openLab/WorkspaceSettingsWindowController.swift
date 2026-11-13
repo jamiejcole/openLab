@@ -68,6 +68,13 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var shownNetwork: [NetworkPatchRow]?
     var networkCommits: Task<Void, Never>?
 
+    // Key map (`+Keys`): one recorder, clear button and reason line per action.
+    var keyFields: [WorkspaceKey: HotkeyRecorder] = [:]
+    var keyClearButtons: [WorkspaceKey: NSButton] = [:]
+    var keyReasons: [WorkspaceKey: NSTextField] = [:]
+    /// The menu bar's keys, which the key map does not take (a seam for tests).
+    var menuChords: @MainActor () -> Set<KeyChord> = HotkeyRules.currentMenuChords
+
     let messageLabel = NSTextField(wrappingLabelWithString: "")
     let doneButton = DoneButton(title: loc("settings.done"), target: nil, action: nil)
 
@@ -132,11 +139,13 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// A refusal line is about the tab it came from.
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         model.message = nil
+        model.keyRefusal = nil
         render()
     }
 
     func windowWillClose(_ notification: Notification) {
         model.message = nil
+        model.keyRefusal = nil
         messageLabel.stringValue = ""
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
@@ -236,7 +245,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         audio.spacing = 8
 
         for (label, view, id) in [
-            (loc("settings.tab.general"), general, "general"), (loc("settings.tab.audio"), audio, "audio"),
+            (loc("settings.tab.general"), general, "general"), (loc("settings.tab.keys"), buildKeysTab(), "keys"),
+            (loc("settings.tab.audio"), audio, "audio"),
             (loc("settings.tab.osc"), buildOscTab(), "osc"),
             (loc("settings.tab.network"), buildNetworkTab(), "network"),
         ] {
@@ -317,6 +327,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         renderCount += 1
         renderOsc(state.osc, forced: forced)
         renderNetwork(state.network, forced: forced)
+        renderKeys(state.keys, refusal: state.keyRefusal)
         renderGeneral()
         renderDevice()
         renderPatch()

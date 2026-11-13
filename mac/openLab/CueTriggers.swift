@@ -59,17 +59,16 @@ extension WorkspaceModel {
 /// Which chords a cue's hotkey may take. Pure: the inspector and the loader share it.
 enum HotkeyRules {
     /// Why `chord` cannot be `cue`'s hotkey; nil if it can. Esc and Up/Down with any
-    /// modifiers are refused as in QLab 5 (left/right are fine); a transport key, a
-    /// menu command's key and another cue's hotkey are refused so one key press never does two
+    /// modifiers are refused as in QLab 5 (left/right are fine); a key of the workspace map (a
+    /// cue-editing key included), a menu command's key and another cue's hotkey are refused so one key press never does two
     /// things (QLab refuses keys already assigned in Workspace Settings).
     static func validate(
         _ chord: KeyChord, for cue: ModelID, in model: WorkspaceModel, keys: TransportKeys, menuChords: Set<KeyChord>
     ) -> KeyBindError? {
         if chord.key == KeyChord.escape || TransportKeys.isArrow(chord) { return .reserved }
         if chord.hotkeyJSON == nil { return .unsupported }
-        if TransportKeys.editKeys[chord] != nil { return .editKey }
-        if let command = keys.command(for: chord) {
-            return .duplicate(of: command)
+        if let action = keys.action(for: chord) {
+            return action.editKey != nil ? .editKey : .duplicate(of: action)
         }
         if menuChords.contains(chord) { return .menuKey }
         if model.cueHotkeys.contains(where: { $0.chord == chord && $0.cue != cue }) { return .cueHotkey }
@@ -122,15 +121,18 @@ final class HotkeyRecorder: NSTextField {
     /// Recording ended, as the field editor's end of editing says for a text field.
     static let didEndRecording = Notification.Name("HotkeyRecorder.didEndRecording")
     var onRecord: ((NSEvent) -> Void)?
+    /// What the empty field says, idle and while waiting for the key.
+    var idlePlaceholder = loc("inspector.hotkey.click")
+    var recordingPlaceholder = loc("inspector.hotkey.recording")
 
     override var acceptsFirstResponder: Bool { isEnabled }
     override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self) }
     override func becomeFirstResponder() -> Bool {
-        placeholderString = loc("inspector.hotkey.recording")
+        placeholderString = recordingPlaceholder
         return super.becomeFirstResponder()
     }
     override func resignFirstResponder() -> Bool {
-        placeholderString = loc("inspector.hotkey.click")
+        placeholderString = idlePlaceholder
         NotificationCenter.default.post(name: Self.didEndRecording, object: self)
         return super.resignFirstResponder()
     }
