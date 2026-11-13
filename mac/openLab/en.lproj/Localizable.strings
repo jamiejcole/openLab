@@ -345,7 +345,7 @@
 "settings.keys.panicAll" = "Panic all (fixed)";
 "settings.keys.stopAll" = "Hard stop all (fixed)";
 "settings.keys.refused.reserved" = "Esc and the up and down arrows cannot be used.";
-"settings.keys.refused.unsupported" = "Delete and keys past F12 cannot be stored in a show file.";
+"settings.keys.refused.unsupported" = "openLab has no name for that key, so it cannot be used here.";
 "settings.keys.refused.action" = "Already the key of %@.";
 "settings.keys.refused.cue" = "Already the hotkey of cue “%@”.";
 "settings.keys.refused.anyCue" = "Already a cue's hotkey.";

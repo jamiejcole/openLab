@@ -273,6 +273,9 @@ final class KeyMapPageTests: XCTestCase {
                 await assertEventually("a reason for \(chars) beside \(action)") {
                     self.reason(action) != nil && self.reason(action) != before
                 }
+                if chars == "\u{7F}" {
+                    XCTAssertEqual(reason(action), loc("settings.keys.refused.unsupported"), "Delete has no name")
+                }
                 try assertThePageFits("\(action.rawValue) \(chars)")
             }
         }
