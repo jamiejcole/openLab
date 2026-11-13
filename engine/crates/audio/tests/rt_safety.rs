@@ -487,9 +487,6 @@ fn a_full_command_burst_applies_in_one_block_without_allocating() {
     assert_eq!(ctl.pending_full_blocks(), 0);
 }
 
-/// Meters (AUD-19) on 64 voices × 2 cue outputs and 64 device outputs: publishing them in every
-/// block, voice ends, slot reuse, pause and re-keying resume, xrun notes, and reading them into
-/// caller buffers all run without allocating.
 /// The widest mixer (128 cue outputs, 64 device outputs) allocates nothing on any of its wide
 /// paths: starts at every width (a slot reused by a narrower voice), a ramp set of every gain
 /// of a 64-channel voice ([`MAX_RAMP_SET`]), a narrow voice widened by a ramp, patch routing in
@@ -604,6 +601,9 @@ fn no_allocation_on_the_128_cue_output_paths() {
     assert_eq!(ctl.leaked_returns(), 0);
 }
 
+/// Meters (AUD-19) on 64 voices × 2 cue outputs and 64 device outputs: publishing them in every
+/// block, voice ends, slot reuse, pause and re-keying resume, xrun notes, and reading them into
+/// caller buffers all run without allocating.
 #[test]
 fn no_allocation_with_meters_active_on_64_voices() {
     let cfg = MixerConfig {
