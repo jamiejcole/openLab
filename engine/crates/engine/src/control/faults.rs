@@ -21,11 +21,12 @@ use super::{Control, DocCx, notice};
 /// The engine's view of the mixer's stage faults.
 #[derive(Default)]
 pub(super) struct StageFaults {
-    /// Units the mixer disabled, for the warnings. Cleared by a rebuild.
-    disabled: Disabled,
-    /// When each stage's fault was last logged and told: a unit that keeps faulting (further
-    /// apart than the mixer's window, or a rebuild after rebuild) is told about once a second.
-    told: BTreeMap<FaultStage, SampleTime>,
+    /// Units each output's mixer disabled, for the warnings. Cleared by that mixer's rebuild.
+    disabled: BTreeMap<OutputKey, Disabled>,
+    /// When each stage's fault was last logged and told, per output: a unit that keeps
+    /// faulting (further apart than the mixer's window, or a rebuild after rebuild) is told
+    /// about once a second.
+    told: BTreeMap<(OutputKey, FaultStage), SampleTime>,
 }
 
 #[derive(Default)]
@@ -36,34 +37,47 @@ struct Disabled {
 }
 
 impl StageFaults {
-    /// The warnings in force for the units disabled.
-    pub(super) fn warnings(&self, list: &mut Vec<WireWarning>) {
-        self.disabled.warnings(list);
+    /// The warnings in force for the units disabled, each naming its device (`device`: the
+    /// prefix that names output `key`'s device, empty with one device).
+    pub(super) fn warnings(
+        &self,
+        list: &mut Vec<WireWarning>,
+        device: impl Fn(OutputKey) -> String,
+    ) {
+        for (&key, d) in &self.disabled {
+            d.warnings(list, &device(key));
+        }
     }
 
     /// Whether a fault of `stage` at `now` is to be logged and told (none was in the second
     /// before it, at `rate`); a unit disabled is always told (it happens once).
-    fn tell(&mut self, stage: FaultStage, disabled: bool, now: SampleTime, rate: u32) -> bool {
+    fn tell(
+        &mut self,
+        key: (OutputKey, FaultStage),
+        disabled: bool,
+        now: SampleTime,
+        rate: u32,
+    ) -> bool {
         let quiet = self
             .told
-            .get(&stage)
+            .get(&key)
             .is_some_and(|&t| now < t.saturating_add(u64::from(rate)));
         if quiet && !disabled {
             return false;
         }
-        self.told.insert(stage, now);
+        self.told.insert(key, now);
         true
     }
 }
 
 impl Disabled {
     /// The warnings in force for the units disabled.
-    pub(super) fn warnings(&self, list: &mut Vec<WireWarning>) {
+    fn warnings(&self, list: &mut Vec<WireWarning>, device: &str) {
         for o in &self.outputs {
             list.push(notice(
                 "audio_fault",
                 format!(
-                    "device output {} kept failing in the audio engine and is silent: restart \
+                    "{device}device output {} kept failing in the audio engine and is silent: restart \
                      openLab to use it again",
                     u32::from(*o) + 1
                 ),
@@ -73,18 +87,20 @@ impl Disabled {
         if self.master {
             list.push(notice(
                 "audio_fault",
-                "the audio engine's master stage kept failing and is bypassed; levels are \
-                 unaffected"
-                    .to_owned(),
+                format!(
+                    "{device}the audio engine's master stage kept failing and is bypassed; \
+                     levels are unaffected"
+                ),
                 None,
             ));
         }
         if self.meters {
             list.push(notice(
                 "audio_fault",
-                "the level meters kept failing in the audio engine and have stopped: restart \
-                 openLab to see them again"
-                    .to_owned(),
+                format!(
+                    "{device}the level meters kept failing in the audio engine and have \
+                     stopped: restart openLab to see them again"
+                ),
                 None,
             ));
         }
@@ -103,7 +119,8 @@ impl Control {
         let tell = self
             .eng
             .stage_faults
-            .tell(stage, disabled, now, self.eng.rate.get());
+            .tell((out, stage), disabled, now, self.eng.rate.get());
+        let device = self.eng.device_prefix(out);
         if tell {
             let what = match stage {
                 FaultStage::Patch(slot) => format!("mixer patch slot {slot}"),
@@ -128,12 +145,12 @@ impl Control {
                 .sum();
             self.eng.log(
                 LogLevel::Error,
-                format!("audio engine fault: {how} ({count} mixer stage fault(s) so far)"),
+                format!("{device}audio engine fault: {how} ({count} mixer stage fault(s) so far)"),
             );
         }
         let mut commands = Vec::new();
         let mut told = None;
-        let faults = &mut self.eng.stage_faults.disabled;
+        let faults = self.eng.stage_faults.disabled.entry(out).or_default();
         match stage {
             FaultStage::Patch(slot) => self.patch_faulted(out, slot, disabled, tell),
             FaultStage::Output(o) if disabled => {
@@ -142,7 +159,7 @@ impl Control {
             // Nothing to send: the output has no setting of its own.
             FaultStage::Output(o) => {
                 told = Some(format!(
-                    "device output {} failed in the audio engine: it may have dropped out \
+                    "{device}device output {} failed in the audio engine: it may have dropped out \
                      briefly",
                     u32::from(o) + 1
                 ));
@@ -150,11 +167,10 @@ impl Control {
             FaultStage::Master if disabled => faults.master = true,
             FaultStage::Master => {
                 commands.push(CommandKind::SetMaster { gain: 1.0 });
-                told = Some(
-                    "the audio engine's master stage failed and was reset: sound may have \
-                     dropped out briefly"
-                        .to_owned(),
-                );
+                told = Some(format!(
+                    "{device}the audio engine's master stage failed and was reset: sound may \
+                     have dropped out briefly"
+                ));
             }
             FaultStage::Meters => faults.meters |= disabled,
             FaultStage::Mixer => {
@@ -166,11 +182,10 @@ impl Control {
                     .into_iter()
                     .map(|(_, c)| c)
                     .collect();
-                told = Some(
-                    "the audio engine kept failing and its routing was rebuilt: sound may have \
-                     dropped out briefly"
-                        .to_owned(),
-                );
+                told = Some(format!(
+                    "{device}the audio engine kept failing and its routing was rebuilt: sound \
+                     may have dropped out briefly"
+                ));
             }
         }
         self.eng
@@ -238,7 +253,7 @@ impl Control {
         let unknown: Vec<FaultStage> = before
             .stages()
             .filter(|stage| still.contains(stage))
-            .filter(|&stage| !self.knows_disabled(stage))
+            .filter(|&stage| !self.knows_disabled(out, stage))
             .collect();
         for stage in unknown {
             self.eng.log(
@@ -249,13 +264,13 @@ impl Control {
         }
     }
 
-    fn knows_disabled(&self, stage: FaultStage) -> bool {
-        let d = &self.eng.stage_faults.disabled;
+    fn knows_disabled(&self, out: OutputKey, stage: FaultStage) -> bool {
+        let d = self.eng.stage_faults.disabled.get(&out);
         match stage {
             FaultStage::Patch(slot) => self.eng.patches.is_quarantined(slot),
-            FaultStage::Output(o) => d.outputs.contains(&o),
-            FaultStage::Master => d.master,
-            FaultStage::Meters => d.meters,
+            FaultStage::Output(o) => d.is_some_and(|d| d.outputs.contains(&o)),
+            FaultStage::Master => d.is_some_and(|d| d.master),
+            FaultStage::Meters => d.is_some_and(|d| d.meters),
             FaultStage::Mixer => true,
         }
     }
@@ -567,5 +582,56 @@ mod tests {
         // Counted again at the next check: nothing more is lost.
         s.control_mut().lost_stage_reports(2);
         assert!(s.take_outbound().is_empty());
+    }
+
+    /// Each device's mixer has its own disabled units: a second device's mixer rebuilt clears
+    /// only its own, and with several devices each warning names its device.
+    #[test]
+    fn a_rebuild_clears_only_its_own_devices_disabled_units_and_warnings_name_the_device() {
+        let (mut s, _) = patched_show();
+        let config = openlab_audio::MixerConfig {
+            sample_rate: 8000,
+            output_channels: 2,
+            max_block_frames: 64,
+            max_voices: 8,
+            max_voice_channels: 2,
+            patches: 2,
+            lookahead_ms: 500,
+        };
+        let (ctl, _mixer) = openlab_audio::Mixer::new(config).unwrap();
+        let eng = &mut s.control_mut().eng;
+        eng.outputs.add(crate::control::outputs::Output {
+            name: "Two".into(),
+            mixer: ctl,
+            backend: crate::control::Backend::Offline,
+        });
+        let warnings = |s: &crate::control::offline::OfflineShow| {
+            let eng = &s.control().eng;
+            let mut list = Vec::new();
+            eng.stage_faults
+                .warnings(&mut list, |key| eng.device_prefix(key));
+            list.into_iter()
+                .map(|w| match w {
+                    WireWarning::Notice { message, .. } => message,
+                    other => panic!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        s.control_mut()
+            .stage_faulted(0, FaultStage::Output(1), true);
+        s.control_mut().stage_faulted(1, FaultStage::Meters, true);
+        let before = warnings(&s);
+        assert_eq!(before.len(), 2, "{before:?}");
+        assert!(
+            before[0].starts_with("audio device \"Dev\": device output 2"),
+            "{before:?}"
+        );
+        assert!(
+            before[1].starts_with("audio device \"Two\": the level meters"),
+            "{before:?}"
+        );
+        // The second device's mixer is rebuilt: its meters warning goes, the primary's stays.
+        s.control_mut().stage_faulted(1, FaultStage::Mixer, false);
+        assert_eq!(warnings(&s), vec![before[0].clone()]);
     }
 }

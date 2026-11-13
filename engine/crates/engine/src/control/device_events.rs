@@ -560,7 +560,9 @@ impl DocCx<'_> {
     /// more device channels than the device has (`outputs_dropped`), patches with no free mixer
     /// slot (`mixer_patches_exhausted`).
     pub(super) fn device_warnings(&self, list: &mut Vec<WireWarning>) {
-        self.eng.stage_faults.warnings(list);
+        let eng = &*self.eng;
+        eng.stage_faults
+            .warnings(list, |key| eng.device_prefix(key));
         for (_, output) in self.eng.outputs.iter() {
             let Backend::Device(d) = &output.backend else {
                 continue;
@@ -671,6 +673,15 @@ impl DocCx<'_> {
 }
 
 impl Engine {
+    /// What starts a message about output `key`'s device: its name while several devices are
+    /// open, nothing with one (whose messages need not say which).
+    pub(super) fn device_prefix(&self, key: OutputKey) -> String {
+        match self.outputs.get(key) {
+            Some(o) if self.outputs.len() > 1 => format!("audio device \"{}\": ", o.name),
+            _ => String::new(),
+        }
+    }
+
     /// Output `key`'s stream runs at another buffer size than it asked for (the device could
     /// not do it and negotiation took the nearest it could): a `warn` log says so.
     pub(super) fn check_buffer(&mut self, key: OutputKey) {

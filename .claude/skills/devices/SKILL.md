@@ -144,6 +144,7 @@ Decided from measuring QLab 5; there is no grace period and no exact-sample resu
   During the gap it does not play (`Device::is_playing`): its patches stay mapped, its commands are dated on its first sample back, and while it is the primary the master clock runs on the wall clock if another device plays (stands still if none).
   A reopen that fails, a close or reopen the device thread does not finish within `DEVICE_JOB_TIMEOUT` (with `device_unrecoverable`), or a mixer lost in it, is a loss (`DeviceEvent::Lost`): only its cues stop; as the sole or last device, as any sole-device loss.
 - **Lookahead** is the largest buffer of the devices that play, so every deadline is committed before the callback that renders it on each.
+- Mixer stage faults are each device's: its mixer's disabled units are its own (a rebuild clears only them), and with several devices their logs and warnings name the device.
 - Engine load, xruns and underruns are summed or the worst over every device; `status.device` and `list_devices` describe the primary.
 
 ## Default patch mapping
