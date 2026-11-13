@@ -29,7 +29,8 @@ use crate::command_model::{
     apply_model, no_change,
 };
 use crate::cue::{
-    ContinueMode, Cue, CueColor, CueKind, GroupMode, MediaRef, OscArg, SecondTrigger, Triggers,
+    ContinueMode, Cue, CueColor, CueKind, FadeAndStopOthers, GroupMode, MediaRef, OscArg,
+    SecondTrigger, Triggers,
 };
 use crate::model::{
     CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace,
@@ -106,6 +107,10 @@ pub enum CueProperty {
     SecondTriggerOnRelease {
         value: bool,
     },
+    /// Its "fade and stop others" settings. The duration is finite, 0 to `MAX_TIME`.
+    FadeAndStopOthers {
+        value: FadeAndStopOthers,
+    },
     /// Only for kinds that have a target.
     Target {
         value: Option<CueId>,
@@ -167,6 +172,10 @@ pub struct NumberAssignment {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one command per edit, never on the audio path; boxing the cue would only move it"
+)]
 pub enum Command {
     /// Adds one cue, with its children if it is a Group. With `auto_number`, its number is
     /// replaced by [`next_auto_number`] (ED-08).

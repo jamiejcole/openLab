@@ -200,6 +200,7 @@ A destination for Network cues. A new workspace starts with one, "Network 1" (`1
 | `triggers` | object | `hotkey`: `null` or `{"key", "modifiers"}`; `hotkey_enabled` (bool, optional, absent: `true`): whether the hotkey starts the cue; off keeps the key. A cue has no OSC address of its own (OSC starts it by number or id); an `osc` key from an older file is ignored. |
 | `second_trigger` | `"nothing"` \| `"panic"` \| `"stop"` \| `"hard_stop"` \| `"hard_stop_and_restart"` \| `"devamp"` \| `"play_next"` \| `"play_previous"` | What a trigger does while the cue is already active; semantics in skill `cue-engine`. `play_next`/`play_previous` are for Playlist groups only. |
 | `second_trigger_on_release` | bool | Releasing the hotkey or MIDI key that triggers the cue counts as a second trigger. |
+| `fade_and_stop_others` | object | Optional (absent: off, `peers`, 1 s). `{"enabled": bool, "scope": "peers" \| "list" \| "all", "duration": seconds}`: when the cue's action starts, the other active cues of its level (each with what is inside it), of its list, or of the workspace fade out over `duration` and stop. Kept while off. A bad `duration` is put in range with `InvalidTime`. Semantics: skill `cue-engine`. |
 | `kind` | object | What the cue does: `{"type": …, …}`, §5.3. |
 
 `triggers.hotkey.key` is a lower-case key name (`"a"`, `"space"`, `"f5"`).

@@ -663,6 +663,7 @@ mod tests {
             },
             second_trigger: SecondTrigger::Nothing,
             second_trigger_on_release: false,
+            fade_and_stop_others: openlab_core::FadeAndStopOthers::default(),
             kind: CueKind::Memo,
         }
     }

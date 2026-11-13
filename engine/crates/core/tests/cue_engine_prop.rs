@@ -407,6 +407,14 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
         // shape: a third of the cues pass over when disarmed, a fifth auto-load.
         c.skip_if_disarmed = s.target % 3 == 0;
         c.auto_load = s.second % 5 == 1;
+        if s.target % 7 == 2 {
+            c.fade_and_stop_others = FadeAndStopOthers {
+                enabled: true,
+                scope: [OthersScope::Peers, OthersScope::List, OthersScope::All]
+                    [usize::from(s.pre % 3)],
+                duration: f64::from(s.post) * 0.25,
+            };
+        }
         c.second_trigger = second_trigger(s.second);
         c.second_trigger_on_release = s.release;
         if pair.is_some() {

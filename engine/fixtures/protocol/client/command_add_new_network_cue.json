@@ -42,6 +42,11 @@
           },
           "second_trigger": "nothing",
           "second_trigger_on_release": false,
+          "fade_and_stop_others": {
+            "enabled": false,
+            "scope": "peers",
+            "duration": 1.0
+          },
           "kind": {
             "type": "network",
             "destination": "00000000-0000-0000-0000-000000000005",

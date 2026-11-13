@@ -602,6 +602,16 @@ fn fixtures() -> Vec<(String, Sample)> {
             CueProperty::SkipIfDisarmed { value: true },
         ),
         (
+            "fade_and_stop_others",
+            CueProperty::FadeAndStopOthers {
+                value: FadeAndStopOthers {
+                    enabled: true,
+                    scope: OthersScope::List,
+                    duration: 2.0,
+                },
+            },
+        ),
+        (
             "triggers",
             CueProperty::Triggers {
                 value: Triggers {

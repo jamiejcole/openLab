@@ -1165,13 +1165,26 @@ fn second_trigger() -> impl Strategy<Value = SecondTrigger> {
     ]
 }
 
+fn fade_and_stop() -> impl Strategy<Value = FadeAndStopOthers> {
+    let scope = proptest::sample::select(vec![
+        OthersScope::Peers,
+        OthersScope::List,
+        OthersScope::All,
+    ]);
+    (any::<bool>(), scope, time()).prop_map(|(enabled, scope, duration)| FadeAndStopOthers {
+        enabled,
+        scope,
+        duration,
+    })
+}
+
 fn with_common(kind: impl Strategy<Value = CueKind>) -> impl Strategy<Value = Cue> {
     (
         (option::of(Just(String::new())), text(), text()),
         (color(), color(), any::<bool>(), any::<bool>()),
         (any::<bool>(), any::<bool>()),
         (time(), time(), continue_mode(), triggers()),
-        (second_trigger(), any::<bool>()),
+        (second_trigger(), any::<bool>(), fade_and_stop()),
         kind,
     )
         .prop_map(
@@ -1180,7 +1193,7 @@ fn with_common(kind: impl Strategy<Value = CueKind>) -> impl Strategy<Value = Cu
                 (color, second_color, flagged, armed),
                 (auto_load, skip_if_disarmed),
                 (pre_wait, post_wait, continue_mode, triggers),
-                (second_trigger, second_trigger_on_release),
+                (second_trigger, second_trigger_on_release, fade_and_stop_others),
                 kind,
             )| {
                 Cue {
@@ -1199,6 +1212,7 @@ fn with_common(kind: impl Strategy<Value = CueKind>) -> impl Strategy<Value = Cu
                     triggers,
                     second_trigger,
                     second_trigger_on_release,
+                    fade_and_stop_others,
                     ..cue(0, kind)
                 }
             },

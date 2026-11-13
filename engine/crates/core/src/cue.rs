@@ -110,7 +110,46 @@ pub struct Cue {
     pub second_trigger: SecondTrigger,
     /// Releasing the hotkey or MIDI key that triggers the cue counts as a second trigger.
     pub second_trigger_on_release: bool,
+    /// When its action starts, the other cues in a scope fade out and stop. Absent in a file: off.
+    #[serde(default)]
+    pub fade_and_stop_others: FadeAndStopOthers,
     pub kind: CueKind,
+}
+
+/// "Fade and stop others" (QLab 5 Triggers tab, manual pp. 129-130): when the cue's action
+/// starts, every other active cue in `scope` fades out over `duration` seconds and stops. Kept
+/// with its settings while off.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FadeAndStopOthers {
+    pub enabled: bool,
+    pub scope: OthersScope,
+    /// Seconds, 0 to [`MAX_TIME`]; 0 stops them at once.
+    pub duration: f64,
+}
+
+impl Default for FadeAndStopOthers {
+    /// Off, peers, one second (QLab's defaults).
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            scope: OthersScope::Peers,
+            duration: 1.0,
+        }
+    }
+}
+
+/// Which other cues "fade and stop others" reaches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OthersScope {
+    /// The cues at the same level: the other cues of its group, or of its list at the top level,
+    /// each with everything inside it.
+    #[default]
+    Peers,
+    /// Every other cue of its cue list.
+    List,
+    /// Every other cue of the workspace.
+    All,
 }
 
 fn no_color() -> CueColor {

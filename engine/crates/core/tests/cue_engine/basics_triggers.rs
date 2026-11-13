@@ -414,3 +414,233 @@ fn a_skipped_cue_is_never_played() {
     let out = rig.go(0);
     assert_eq!(played(&out), vec![(id(1), true)]);
 }
+
+// ----- fade and stop others -----
+
+fn fading_others(mut c: Cue, scope: OthersScope, seconds: f64) -> Cue {
+    c.fade_and_stop_others = FadeAndStopOthers {
+        enabled: true,
+        scope,
+        duration: seconds,
+    };
+    c
+}
+
+/// The fade a cue's voice was stopped with, by cue.
+fn stop_fades(actions: &[Action]) -> Vec<(CueId, SampleTime, Option<StopFade>)> {
+    let mut out = voice_stops(actions);
+    out.sort_by_key(|(c, ..)| *c);
+    out
+}
+
+fn linear(frames: SampleTime) -> Option<StopFade> {
+    Some(StopFade {
+        frames,
+        curve: FadeCurve::Linear,
+    })
+}
+
+#[test]
+fn fade_and_stop_others_peers_fades_the_cues_at_its_level_and_cues_in_other_groups_play_on() {
+    // 3 sits in group 1 beside 2; group 4 holds 5; 6 is at the top level.
+    let mut rig = Rig::new(vec![
+        grp(
+            1,
+            GroupMode::Timeline,
+            vec![sound(2), fading_others(sound(3), OthersScope::Peers, 2.0)],
+        ),
+        grp(4, GroupMode::Timeline, vec![sound(5)]),
+        sound(6),
+    ]);
+    rig.start(0, 2);
+    rig.start(0, 4);
+    rig.start(0, 6);
+    let out = rig.start(100, 3);
+    assert_eq!(stop_fades(&out), vec![(id(2), 100, linear(2000))]);
+    assert_eq!(rig.state(2), CueState::Stopping);
+    assert_eq!(rig.state(5), CueState::Running, "inside another group");
+    assert_eq!(rig.state(6), CueState::Running, "not at its level");
+    assert_eq!(rig.state(3), CueState::Running);
+    // The fade ends the cue on its last sample.
+    rig.tick(2100);
+    assert_eq!(rig.state(2), CueState::Idle);
+}
+
+#[test]
+fn fade_and_stop_others_list_and_all_widen_it_as_named() {
+    let make = |scope| {
+        let mut rig = Rig::new(vec![
+            grp(1, GroupMode::Timeline, vec![sound(2)]),
+            fading_others(sound(3), scope, 1.0),
+            sound(4),
+        ]);
+        rig.ws.cue_lists.push(CueList {
+            id: list_id(2),
+            name: "Second".into(),
+            cues: vec![sound(7)],
+        });
+        rig.tick(0);
+        for n in [1, 4, 7] {
+            rig.start(0, n);
+        }
+        rig
+    };
+    // Peers at the top level: the other top-level cues, a group with everything in it.
+    let mut rig = make(OthersScope::Peers);
+    let out = rig.start(10, 3);
+    assert_eq!(
+        stop_fades(&out),
+        vec![(id(2), 10, linear(1000)), (id(4), 10, linear(1000))]
+    );
+    assert_eq!(
+        rig.state(1),
+        CueState::Stopping,
+        "the group waits for its child"
+    );
+    assert_eq!(rig.state(7), CueState::Running);
+    // List: the same here (every cue of the list is under a top-level cue).
+    let mut rig = make(OthersScope::List);
+    let out = rig.start(10, 3);
+    assert_eq!(stop_fades(&out).len(), 2);
+    assert_eq!(rig.state(7), CueState::Running, "another list");
+    // All: the other list too.
+    let mut rig = make(OthersScope::All);
+    let out = rig.start(10, 3);
+    assert_eq!(
+        stop_fades(&out),
+        vec![
+            (id(2), 10, linear(1000)),
+            (id(4), 10, linear(1000)),
+            (id(7), 10, linear(1000))
+        ]
+    );
+}
+
+#[test]
+fn fade_and_stop_others_list_spares_the_groups_around_the_cue_and_reaches_other_groups() {
+    let mut rig = Rig::new(vec![
+        grp(
+            1,
+            GroupMode::StartFirstAndGoToNext,
+            vec![sound(2), fading_others(sound(3), OthersScope::List, 1.0)],
+        ),
+        grp(4, GroupMode::Timeline, vec![sound(5)]),
+    ]);
+    // Group 1 runs with 2 playing; 3 is started on its own after it.
+    rig.start(0, 1);
+    rig.start(0, 4);
+    let out = rig.start(20, 3);
+    assert_eq!(
+        stop_fades(&out),
+        vec![(id(2), 20, linear(1000)), (id(5), 20, linear(1000))]
+    );
+    assert_eq!(
+        rig.state(1),
+        CueState::Running,
+        "its own group is not stopped"
+    );
+    assert_eq!(rig.state(3), CueState::Running);
+    assert_eq!(rig.state(4), CueState::Stopping);
+}
+
+#[test]
+fn fade_and_stop_others_stops_paused_pre_waiting_and_post_waiting_cues_and_leaves_loaded_ones() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        timed(memo(2), 5.0, 0.0, DNC),
+        timed(wait(3, 0.1), 0.0, 5.0, AC),
+        sound(4),
+        fading_others(memo(5), OthersScope::Peers, 1.0),
+        memo(6),
+    ]);
+    rig.start(0, 1);
+    rig.pause(10, 1);
+    rig.start(10, 2);
+    rig.start(10, 3);
+    rig.tick(200);
+    assert_eq!(rig.state(3), CueState::PostWaiting);
+    rig.at(
+        200,
+        Input::Load {
+            cue: id(4),
+            time: 0.0,
+        },
+    );
+    let out = rig.start(300, 5);
+    for n in [1, 2, 3] {
+        assert_eq!(rig.state(n), CueState::Idle, "cue {n} stopped at once");
+    }
+    assert_eq!(rig.state(4), CueState::Loaded);
+    assert_eq!(
+        rig.state(6),
+        CueState::Idle,
+        "3's auto-continue was cancelled"
+    );
+    assert!(
+        stop_fades(&out).iter().all(|(_, _, f)| f.is_none()),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn fade_and_stop_others_leaves_a_cue_already_fading_out_to_its_own_fade() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        fading_others(memo(2), OthersScope::Peers, 2.0),
+    ]);
+    rig.start(0, 1);
+    rig.at(
+        10,
+        Input::Stop {
+            cue: id(1),
+            fade_out: Some(FadeSpec {
+                duration: 0.5,
+                curve: FadeCurve::Linear,
+            }),
+        },
+    );
+    let out = rig.start(20, 2);
+    assert!(voice_stops(&out).is_empty(), "{out:?}");
+    rig.tick(510);
+    assert_eq!(rig.state(1), CueState::Idle);
+}
+
+#[test]
+fn fade_and_stop_others_waits_for_the_pre_wait_and_does_nothing_when_disarmed_or_zero_time() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        timed(
+            fading_others(memo(2), OthersScope::Peers, 1.0),
+            0.5,
+            0.0,
+            DNC,
+        ),
+    ]);
+    rig.start(0, 1);
+    let out = rig.start(0, 2);
+    assert!(voice_stops(&out).is_empty(), "not during the pre-wait");
+    let out = rig.tick(500);
+    assert_eq!(stop_fades(&out), vec![(id(1), 500, linear(1000))]);
+    // Disarmed: its action is skipped, and with it the fade.
+    let mut two = fading_others(memo(2), OthersScope::Peers, 1.0);
+    two.armed = false;
+    let mut rig = Rig::new(vec![sound(1), two]);
+    rig.start(0, 1);
+    assert!(voice_stops(&rig.start(10, 2)).is_empty());
+    assert_eq!(rig.state(1), CueState::Running);
+    // Off: nothing, though its settings are kept.
+    let mut off = fading_others(memo(2), OthersScope::All, 1.0);
+    off.fade_and_stop_others.enabled = false;
+    let mut rig = Rig::new(vec![sound(1), off]);
+    rig.start(0, 1);
+    assert!(voice_stops(&rig.start(10, 2)).is_empty());
+    // A time of 0 stops them at once.
+    let mut rig = Rig::new(vec![
+        sound(1),
+        fading_others(memo(2), OthersScope::Peers, 0.0),
+    ]);
+    rig.start(0, 1);
+    let out = rig.start(10, 2);
+    assert_eq!(stop_fades(&out), vec![(id(1), 10, None)]);
+    assert_eq!(rig.state(1), CueState::Idle);
+}

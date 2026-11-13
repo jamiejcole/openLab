@@ -258,6 +258,11 @@ impl CueEngine {
         run.follow = !failed && continue_mode == ContinueMode::AutoFollow;
         self.settle(cue, at, cx);
         self.report(cue, before, at, cx);
+        // On its action start (after the pre-wait), as the duck does (QLab 5, manual p. 130); a
+        // disarmed or broken cue acts on nothing.
+        if !skipped && model.fade_and_stop_others.enabled {
+            self.as_of(at, cx, |e, cx| e.fade_and_stop_others(cue, cx));
+        }
         // The cue is in its action while it acts, so a trigger cycle back to it is ignored.
         match act {
             Act::Group => self.start_children(cue, at, cx),

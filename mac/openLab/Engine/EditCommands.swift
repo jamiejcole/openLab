@@ -23,6 +23,9 @@ enum CueProperty: Hashable, Sendable {
     case triggers(hotkey: JSONValue?, enabled: Bool)
     case secondTrigger(String)
     case secondTriggerOnRelease(Bool)
+    /// "Fade and stop others": on, `scope` (`peers`, `list`, `all`) and the fade time in seconds
+    /// (0 to 24 h). Kept while off.
+    case fadeAndStopOthers(enabled: Bool, scope: String, duration: Double)
     /// The whole kind (a different audio file, say); never to or from a Group.
     case kind(JSONValue)
     /// Named fields of the cue's kind alone (`levels`, `curve`, `slices`, ...): the engine merges them
@@ -65,6 +68,10 @@ enum CueProperty: Hashable, Sendable {
             return p("triggers", .object(["hotkey": hotkey ?? .null, "hotkey_enabled": .bool(enabled)]))
         case .secondTrigger(let v): return p("second_trigger", .string(v))
         case .secondTriggerOnRelease(let v): return p("second_trigger_on_release", .bool(v))
+        case .fadeAndStopOthers(let enabled, let scope, let duration):
+            return p(
+                "fade_and_stop_others",
+                .object(["enabled": .bool(enabled), "scope": .string(scope), "duration": .double(duration)]))
         case .kind(let v): return p("kind", v)
         case .kindFields(let v): return p("kind_fields", .object(v))
         case .media(let v): return p("media", v.map { .string($0) } ?? .null)

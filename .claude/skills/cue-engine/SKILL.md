@@ -76,5 +76,5 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 - `references/groups-playhead.md`: group action, modes, playlist, halted playlist, random, child started on its own, group operations, GO, double-GO, playhead, stepping. Read for group, GO or playhead work.
 - `references/kinds.md`: control cues, GoTo, Arm/Disarm, Devamp, Wait/Memo, Network cue semantics, `display_name`. Read when touching a cue kind's action.
 - `references/fade-levels.md`: Fade cues and live level edits on playing cues, volume limits, edit takeover. Read for Fade or level code.
-- `references/panic-transport.md`: Panic, Stop All, a cue's own panic, Reset All, Pause/Resume All, previews. Read for any stop-everything or preview change.
+- `references/panic-transport.md`: Panic, Stop All, a cue's own panic, Reset All, Pause/Resume All, fade and stop others, played (second colour), previews. Read for any stop-everything, stop-others or preview change.
 - `references/broken-and-edits.md`: static problems, availability inputs, incremental cache contract, model-edit following, running groups under edits. Read for broken-cue or edit work.

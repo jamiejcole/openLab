@@ -17,6 +17,7 @@ mod group;
 mod level;
 mod live_levels;
 mod operations;
+mod others;
 mod playhead;
 mod preview;
 mod rng;

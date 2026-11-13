@@ -57,6 +57,9 @@ impl CueProperty {
             Self::SecondTriggerOnRelease { .. } => Self::SecondTriggerOnRelease {
                 value: cue.second_trigger_on_release,
             },
+            Self::FadeAndStopOthers { .. } => Self::FadeAndStopOthers {
+                value: cue.fade_and_stop_others,
+            },
             Self::Target { .. } => {
                 if !cue.kind.has_target() {
                     return None;
@@ -133,6 +136,7 @@ impl CueProperty {
             Self::Triggers { value } => cue.triggers.clone_from(value),
             Self::SecondTrigger { value } => cue.second_trigger = *value,
             Self::SecondTriggerOnRelease { value } => cue.second_trigger_on_release = *value,
+            Self::FadeAndStopOthers { value } => cue.fade_and_stop_others = *value,
             Self::Target { value } => return cue.kind.set_target(*value),
             Self::GroupMode { value } => match &mut cue.kind {
                 CueKind::Group { mode, .. } => *mode = *value,
@@ -217,6 +221,7 @@ fn blank_cue(id: CueId) -> Cue {
         },
         second_trigger: SecondTrigger::Nothing,
         second_trigger_on_release: false,
+        fade_and_stop_others: crate::cue::FadeAndStopOthers::default(),
         kind: CueKind::Memo,
     }
 }
@@ -304,6 +309,7 @@ pub(super) fn set_property(
                 | CueProperty::PreWait { .. }
                 | CueProperty::PostWait { .. }
                 | CueProperty::Triggers { .. }
+                | CueProperty::FadeAndStopOthers { .. }
         )
     {
         property.write(&mut probe);

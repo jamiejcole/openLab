@@ -235,6 +235,11 @@
               },
               "second_trigger": "nothing",
               "second_trigger_on_release": false,
+              "fade_and_stop_others": {
+                "enabled": false,
+                "scope": "peers",
+                "duration": 1.0
+              },
               "kind": {
                 "type": "audio",
                 "media": "media/a.wav",
@@ -289,6 +294,11 @@
               },
               "second_trigger": "nothing",
               "second_trigger_on_release": false,
+              "fade_and_stop_others": {
+                "enabled": false,
+                "scope": "peers",
+                "duration": 1.0
+              },
               "kind": {
                 "type": "fade",
                 "target": "00000000-0000-0000-0000-00000000000a",

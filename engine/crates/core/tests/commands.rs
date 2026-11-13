@@ -896,6 +896,13 @@ fn every_common_property_can_be_set_and_undone() {
         CueProperty::Flagged { value: true },
         CueProperty::Armed { value: false },
         CueProperty::AutoLoad { value: true },
+        CueProperty::FadeAndStopOthers {
+            value: FadeAndStopOthers {
+                enabled: true,
+                scope: OthersScope::All,
+                duration: 3.0,
+            },
+        },
         CueProperty::SkipIfDisarmed { value: true },
         CueProperty::PreWait { value: 1.5 },
         CueProperty::PostWait { value: 2.5 },
@@ -2279,4 +2286,63 @@ fn a_kind_replacement_between_duration_edits_of_one_cue_undoes_to_the_start() {
     }
     history.undo(&mut ws).unwrap();
     assert_eq!(ws, before);
+}
+
+/// "Fade and stop others" holds a time like a pre-wait: every path that sets it keeps it finite,
+/// 0 to 24 h. A command and a paste refuse a bad one; a file has it put in range with a warning.
+#[test]
+fn a_bad_fade_and_stop_others_time_is_refused_by_a_command_and_a_paste_and_repaired_on_load() {
+    let field = "fade_and_stop_others.duration";
+    let with = |duration: f64| FadeAndStopOthers {
+        enabled: true,
+        scope: OthersScope::List,
+        duration,
+    };
+    let mut ws = workspace(vec![memo(1)]);
+    for bad in [f64::NAN, f64::INFINITY, -0.5, MAX_TIME + 1.0] {
+        let error = refused(
+            &mut ws,
+            set(1, CueProperty::FadeAndStopOthers { value: with(bad) }),
+        );
+        let CommandError::InvalidCue(issues) = error else {
+            panic!("{bad}: {error:?}")
+        };
+        assert_eq!(
+            issues.iter().map(|i| i.kind.clone()).collect::<Vec<_>>(),
+            vec![IssueKind::InvalidTime { field }],
+            "{bad}"
+        );
+        let mut pasted = memo(2);
+        pasted.fade_and_stop_others = with(bad);
+        assert!(matches!(
+            refused(
+                &mut ws,
+                Command::Paste {
+                    at: pos(None, 1),
+                    cues: vec![pasted],
+                }
+            ),
+            CommandError::InvalidCue(_)
+        ));
+    }
+    round_trip(
+        &mut ws,
+        set(1, CueProperty::FadeAndStopOthers { value: with(2.5) }),
+    );
+    // A show file: the time is put in range (NaN to 0) and the cue named.
+    let mut bad = memo(1);
+    bad.fade_and_stop_others = with(-3.0);
+    let loaded = load_show(&show_text(&workspace(vec![bad]))).unwrap();
+    assert_eq!(
+        loaded.workspace.cue_lists[0].cues[0]
+            .fade_and_stop_others
+            .duration,
+        0.0
+    );
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.cue_id == Some(cue_id(1)) && w.kind == IssueKind::InvalidTime { field })
+    );
 }
