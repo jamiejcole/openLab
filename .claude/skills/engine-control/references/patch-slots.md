@@ -23,6 +23,10 @@ Before each patch resolution (`sync_patches`: start, doc opened, edits like AddP
 - No playable device (outage, none listed): nothing is written; patches stay `Unmapped` until a sync with a device.
 - A patch the operator cleared has an explicit empty entry, so it counts as having an entry.
 
+## Fitting a mapping to its patch (`fit_mappings_to_patches`)
+- On this doc's opening and after each of its edits, undo and redo (`sync_workspace`, not a device sync, so two open docs of one workspace id never refit each other), an entry whose channel count differs from its patch's outputs is fitted: kept outputs keep their channels, a new output `n` goes to channel `n` mod the usable outputs (the device's, at most the primary's count; a device not listed: round the channels the entry already reaches), removed ones drop.
+- Written like the default mapping, `info` log. A cleared entry is left alone. So a cue-output count edit is one request and never leaves the patch `output_count_mismatch` (skill `qlab-behaviour` Q281).
+
 ## `Request::SetPatchMapping { patch, mapping? }` (`Control::set_patch_mapping`)
 Wire shape and errors: `docs/protocol.md`.
 - Validated first against `list_devices` (device exists; one channel per patch output; each below the device's output count) and the doc's patches; a refusal (`not_found`, `bad_request`) changes and writes nothing.

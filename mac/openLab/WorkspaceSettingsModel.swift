@@ -117,9 +117,9 @@ final class WorkspaceSettingsModel: ObservableObject {
         return await sendPatch(.setPatchOutputName(id, output: output, name: name))
     }
 
-    /// Gives the patch `count` cue outputs (1 to 128), then puts its routing on this machine at the
-    /// same length: the outputs it keeps keep their device outputs, a new one goes to the device output
-    /// of its own number (counted round the device's outputs when it has fewer).
+    /// Gives the patch `count` cue outputs (1 to 128). One request: the engine fits this
+    /// machine's routing to the new count in the same step (and on its undo and redo), so the
+    /// patch never stops playing for it.
     @discardableResult
     func setOutputCount(_ id: ModelID, _ count: Int) async -> Bool {
         guard (1...LevelSet.maxCueOutputs).contains(count) else {
@@ -128,14 +128,7 @@ final class WorkspaceSettingsModel: ObservableObject {
         }
         guard let row = patches.first(where: { $0.id == id }) else { return false }
         guard row.outputCount != count else { return true }
-        guard await sendPatch(.setPatchOutputCount(id, count)) else { return false }
-        guard let mapping = row.mapping, !mapping.device.isEmpty, let fresh = patches.first(where: { $0.id == id })
-        else { return true }
-        let usable = max(1, usableChannels(of: mapping.device))
-        let channels = (0..<count).map { i in
-            mapping.channels.indices.contains(i) ? mapping.channels[i] : UInt32(i % usable)
-        }
-        return await sendMapping(fresh, PatchMapping(device: mapping.device, channels: channels))
+        return await sendPatch(.setPatchOutputCount(id, count))
     }
 
     private func sendPatch(_ command: Command) async -> Bool {
@@ -234,7 +227,10 @@ final class WorkspaceSettingsModel: ObservableObject {
     func setMapping(_ row: PatchRow, device: String?, channels: [UInt32]? = nil) async {
         // The popup fires its action when the same device is picked again; that must not reset
         // the routing the show was built with to the first outputs.
-        if channels == nil, device == row.mapping?.device { return }
+        // A routing of another length than the patch (it cannot play) is sent again, though.
+        if channels == nil, device == row.mapping?.device, row.mapping?.channels.count == row.outputCount {
+            return
+        }
         var mapping: PatchMapping?
         if let device {
             let usable = usableChannels(of: device)

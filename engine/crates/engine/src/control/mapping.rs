@@ -275,6 +275,89 @@ impl DocCx<'_> {
     }
 }
 
+impl DocCx<'_> {
+    /// Keeps this machine's mapping of each patch as long as the patch: after a cue-output count
+    /// edit, its undo or redo (or a show whose count differs from the stored mapping), outputs the
+    /// patch keeps keep their device channels, a new one goes to the channel of its own number
+    /// counted round the outputs openLab can use on that device, and removed ones drop. So one
+    /// edit never leaves the patch `output_count_mismatch` (its cues broken). An explicitly
+    /// cleared entry stays cleared.
+    pub(super) fn fit_mappings_to_patches(&mut self) {
+        let ws = self.doc.model.ws();
+        let mut fitted: Vec<(PatchId, String, PatchMapping)> = Vec::new();
+        let mut devices = None;
+        for patch in &ws.patches {
+            let Some(old) = self.eng.config.machine.patch_entry(ws.id, patch.id) else {
+                continue;
+            };
+            let wanted = patch.outputs.len();
+            if old.device.is_empty() || old.channels.len() == wanted {
+                continue;
+            }
+            // Listed only when an entry needs it: the list is built on each call.
+            let list = devices.get_or_insert_with(|| self.eng.device_list());
+            let usable = list
+                .iter()
+                .find(|d| d.name == old.device)
+                .map(|d| usize::try_from(d.output_channels).unwrap_or(usize::MAX))
+                .map(|have| have.min(self.eng.device_outputs.max(1)))
+                // Not connected now: round the outputs the mapping already reaches.
+                .unwrap_or_else(|| {
+                    old.channels
+                        .iter()
+                        .max()
+                        .map_or(1, |&c| usize::try_from(c).unwrap_or(0).saturating_add(1))
+                })
+                .max(1);
+            let channels: Vec<u32> = (0..wanted)
+                .map(|i| {
+                    old.channels
+                        .get(i)
+                        .copied()
+                        .unwrap_or_else(|| u32::try_from(i % usable).unwrap_or(0))
+                })
+                .collect();
+            fitted.push((
+                patch.id,
+                patch.name.clone(),
+                PatchMapping {
+                    device: old.device.clone(),
+                    channels,
+                },
+            ));
+        }
+        if fitted.is_empty() {
+            return;
+        }
+        let ws_id = ws.id;
+        let mut notes = Vec::new();
+        for (patch, name, mapping) in fitted {
+            let text = format!(
+                "patch '{name}' now has {} cue outputs: mapped to {} {}",
+                mapping.channels.len(),
+                mapping.device,
+                channels_text(&mapping.channels)
+            );
+            match self
+                .eng
+                .config
+                .machine
+                .set_patch_mapping(ws_id, patch, mapping)
+            {
+                Ok(()) => notes.push((LogLevel::Info, text)),
+                Err(why) => notes.push((
+                    LogLevel::Warn,
+                    format!("patch '{name}' could not be mapped to its new size: {why}"),
+                )),
+            }
+        }
+        for (level, message) in notes {
+            self.log(level, message);
+        }
+        self.eng.save_machine();
+    }
+}
+
 impl Engine {
     /// `set_output_device`: the device the engine opens at its next start. Validated against the
     /// list, stored like a mapping; the stream in use is not touched (the engine plays on one

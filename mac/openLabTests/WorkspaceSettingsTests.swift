@@ -353,6 +353,45 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(wc.inspector.audioLevels.faders.count, 5, "the main fader and four outputs")
     }
 
+    /// The count changed in the editor, then undone (Edit > Undo): the patch keeps playing on this
+    /// machine; its row shows no warning and the next cue on it starts and is heard.
+    func testACountChangeThenUndoLeavesThePatchPlaying() async throws {
+        let shipped = MeterView.defaultWindowIsCovered
+        MeterView.defaultWindowIsCovered = { _, _ in false }
+        addTeardownBlock { @MainActor in MeterView.defaultWindowIsCovered = shipped }
+        let (rig, sc) = try await open(edit: sounding())
+        let editor = try await edit(in: sc)
+        editor.tabs.selectTabViewItem(withIdentifier: "routing")
+        editor.meter.updateLive()
+        try type("3", into: editor.countField)
+        await editor.editing?.value
+        await assertEventually { editor.outputFields.count == 3 }
+        let commandsSent = commands(rig).filter { $0["type"]?.stringValue == "set_patch_property" }.count
+        XCTAssertEqual(commandsSent, 1, "one request")
+        guard case .success = await rig.store.undo() else { return XCTFail("undo") }
+        await assertEventually { editor.outputFields.count == 2 }
+        await assertEventually("the row shows no warning") { sc.patchProblemLabels.first?.stringValue == "" }
+        let mapped = try await mapping(rig)
+        XCTAssertEqual(mapped, PatchMapping(device: device, channels: [0, 1]))
+        guard case .success = await rig.store.transport(.start(cue: intro)) else { return XCTFail("start") }
+        let heard = try await peak(rig, channel: 0)
+        XCTAssertGreaterThan(heard, 0.05, "the cue on the patch plays")
+        XCTAssertEqual(rig.store.cueStates[intro]?.state, .running)
+    }
+
+    /// The patch's own device picked again resends the routing when it does not match the patch's
+    /// count (it cannot play); one that matches sends nothing.
+    func testPickingTheSameDeviceAgainMendsARoutingOfAnotherLength() async throws {
+        let (_, sc) = try await open()
+        let row = try XCTUnwrap(sc.model.patches.first)
+        let stale = PatchRow(
+            id: row.id, name: row.name, outputCount: row.outputCount,
+            mapping: PatchMapping(device: device, channels: [0]), resolution: nil)
+        await sc.model.setMapping(stale, device: device)
+        XCTAssertNil(sc.model.message)
+        XCTAssertEqual(sc.model.patches.first?.mapping, PatchMapping(device: device, channels: [0, 1]))
+    }
+
     /// Typed counts outside 1 to 128 are refused before anything is sent; the count stays.
     func testACueOutputCountOutsideOneTo128IsRefused() async throws {
         let (rig, sc) = try await open()
