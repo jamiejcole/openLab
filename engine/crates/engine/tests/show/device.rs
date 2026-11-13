@@ -578,10 +578,14 @@ impl DeviceShow {
         }
     }
 
-    /// Moves the wall clock by `d` in `steps` steps, settling the device after each.
+    /// Moves the wall clock by `d` in `steps` steps, settling the devices after each: the jobs
+    /// on the device threads and a list read on the list thread (whose answer may start a
+    /// reopen, which is settled too).
     pub fn wait_wall(&mut self, d: Duration, steps: u32) {
         for _ in 0..steps {
             self.advance(d / steps);
+            self.settle_devices();
+            self.wait_list();
             self.settle_devices();
         }
     }
