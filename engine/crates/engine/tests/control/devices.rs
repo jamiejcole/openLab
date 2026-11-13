@@ -2407,3 +2407,139 @@ fn changing_patch_bs_device_leaves_patch_as_cue_playing_and_moves_bs_next_cue() 
     assert!(ch[first..].iter().all(|&v| v == 0.25), "cue 1 dropped out");
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
 }
+
+/// Sends a buffer size change for `device`, which must be accepted, with the gate closed, and
+/// waits until the device thread is held in the reopen.
+fn change_buffer_and_hang(s: &mut DeviceShow, device: &str, frames: u32) {
+    let asked = s.fake.opens_asked();
+    s.fake.close_gate();
+    assert_eq!(set_buffer(s, device, frames), Ok(()));
+    crate::show::spin::spin_until("the reopen to start", || {
+        s.tick();
+        s.fake.opens_asked() > asked
+    });
+}
+
+/// The primary hangs in a buffer size change while another device plays: during the gap the
+/// master clock runs on the wall clock, and once the device thread is past its watchdog the
+/// change is a loss: the primary's cue stops (broken, `device_lost`) instead of showing Running
+/// for ever, and the pre-wait on the healthy device runs out and its cue plays.
+#[test]
+fn a_primary_hung_in_a_buffer_size_change_is_lost_and_the_show_runs_on() {
+    // Longer than the whole test, so it is still running when the change is given up on.
+    let a = wav(&dc(400_000, 0.25));
+    let late = wav(&dc(200, 0.75));
+    let mut c3 = audio_b(3, &late, 1);
+    c3.pre_wait = secs(20_000);
+    let mut s = two_device_show(vec![audio(1, &a, 0), c3]);
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    start(&mut s, 3);
+    s.run(BLOCK);
+    s.take_outbound();
+    let dev2_before = s.device_channel(DEV2, 1).len();
+    change_buffer_and_hang(&mut s, DEV_NAME, 128);
+    // Past the job watchdog (the reopen is stuck behind the gate); the primary renders until
+    // the close takes effect, so the clock is read after that.
+    for _ in 0..400 {
+        s.play(BLOCK);
+    }
+    for _ in 0..24 {
+        s.advance(Duration::from_millis(500));
+        s.tick();
+    }
+    let at = s.control().rendered();
+    for _ in 0..800 {
+        s.play(BLOCK);
+    }
+    let msgs = s.take_outbound();
+    let after = (
+        s.control().rendered(),
+        s.control().engine().state(id(1)),
+        s.control().engine().broken_reason(id(1)),
+        s.control().engine().state(id(3)),
+    );
+    let heard3 = heard(&s.device_channel(DEV2, 1)[dev2_before..]);
+    s.fake.open_gate();
+    assert!(
+        after.0 > at + 40_000,
+        "the master clock ran on: {at} -> {}",
+        after.0
+    );
+    assert_eq!(after.1, CueState::Broken);
+    assert_eq!(after.2, Some(openlab_core::BrokenReason::DeviceLost));
+    assert_ne!(
+        after.3,
+        CueState::PreWaiting,
+        "the pre-wait on device 2 never ended"
+    );
+    assert_eq!(heard3, vec![0.75]);
+    assert!(s.control().output_up(DEV2_NAME));
+    assert!(
+        workspace_warnings(&msgs)
+            .unwrap()
+            .contains(&"device_unrecoverable".to_owned())
+    );
+}
+
+/// The second device hangs in a buffer size change: its cue stops as for a loss, the primary
+/// and its cues play on.
+#[test]
+fn a_second_device_hung_in_a_buffer_size_change_is_lost_alone() {
+    let a = wav(&dc(40_000, 0.25));
+    let b = wav(&dc(40_000, 0.5));
+    let mut s = two_device_show(vec![audio(1, &a, 0), audio_b(2, &b, 0)]);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(BLOCK * 4);
+    s.take_outbound();
+    change_buffer_and_hang(&mut s, DEV2_NAME, 128);
+    for _ in 0..12 {
+        s.advance(Duration::from_secs(1));
+        s.step();
+    }
+    let msgs = s.take_outbound();
+    let states = (
+        s.control().engine().state(id(1)),
+        s.control().engine().broken_reason(id(2)),
+    );
+    s.fake.open_gate();
+    assert!(
+        broken_device_lost(&msgs, 2),
+        "{:?}",
+        logs(&msgs, LogLevel::Error)
+    );
+    assert_eq!(states.0, CueState::Running);
+    assert_eq!(states.1, Some(openlab_core::BrokenReason::DeviceLost));
+    assert!(!s.control().device_down());
+}
+
+/// The only device hangs in a buffer size change: as a sole-device loss, its cues stop and
+/// every wait scheduled before it is cancelled.
+#[test]
+fn the_sole_device_hung_in_a_buffer_size_change_is_lost_like_any_sole_device() {
+    let a = wav(&dc(40_000, 0.25));
+    let mut memo = cue(3, CueKind::Memo);
+    memo.pre_wait = secs(40_000);
+    let mut s = device_show(workspace(vec![audio(1, &a, 0), memo]));
+    start(&mut s, 1);
+    start(&mut s, 3);
+    s.run(BLOCK * 4);
+    s.take_outbound();
+    change_buffer_and_hang(&mut s, DEV_NAME, 128);
+    for _ in 0..12 {
+        s.advance(Duration::from_secs(1));
+        s.tick();
+    }
+    let msgs = s.take_outbound();
+    let states = (
+        s.control().engine().broken_reason(id(1)),
+        s.control().engine().state(id(3)),
+        s.control().device_down(),
+    );
+    s.fake.open_gate();
+    assert!(broken_device_lost(&msgs, 1));
+    assert_eq!(states.0, Some(openlab_core::BrokenReason::DeviceLost));
+    assert_ne!(states.1, CueState::PreWaiting, "the wait was not cancelled");
+    assert!(states.2, "the device counts as away");
+}

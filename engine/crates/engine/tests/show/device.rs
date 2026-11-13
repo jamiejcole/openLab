@@ -71,6 +71,8 @@ struct State {
     hold_on_close: bool,
     held: Option<OutputHost>,
     opens: u32,
+    /// Opens asked for, counted before the gate holds them.
+    asked: u32,
     /// Frames per callback of the streams opened from now on.
     block: u32,
     /// Frames per callback reported by streams opened on these devices from now on.
@@ -223,6 +225,11 @@ impl Fake {
         self.state.lock().unwrap().opens
     }
 
+    /// Opens the device threads have started, held at the gate or not.
+    pub fn opens_asked(&self) -> u32 {
+        self.state.lock().unwrap().asked
+    }
+
     /// The frames per callback each open of device `id` asked for, in order.
     pub fn requested(&self, id: &str) -> Vec<Option<u32>> {
         let s = self.state.lock().unwrap();
@@ -295,6 +302,7 @@ impl DeviceLayer for FakeLayer {
         mixer: Mixer,
         request: &OpenRequest,
     ) -> Result<Box<dyn OpenStream>, OpenFailure> {
+        self.0.state.lock().unwrap().asked += 1;
         {
             let mut open = self.0.gate.lock().unwrap();
             while !*open {

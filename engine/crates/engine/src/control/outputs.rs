@@ -39,7 +39,7 @@ impl Output {
     /// The device plays (always, for the offline driver).
     pub fn is_up(&self) -> bool {
         match &self.backend {
-            Backend::Device(d) => !d.is_down(),
+            Backend::Device(d) => d.is_playing(),
             Backend::Offline => true,
         }
     }

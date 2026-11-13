@@ -352,7 +352,10 @@ impl Control {
         if let Some(key) = self.eng.outputs.by_name(device)
             && let Some(Backend::Device(d)) = self.eng.outputs.get_mut(key).map(|o| &mut o.backend)
         {
-            d.set_buffer(frames);
+            let events = d.set_buffer(frames);
+            // It does not play until it is back: the master clock follows.
+            self.eng.outputs.follow_clock();
+            self.device_events(key, events);
         }
         Ok(())
     }

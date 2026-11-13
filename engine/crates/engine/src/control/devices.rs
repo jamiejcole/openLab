@@ -836,26 +836,54 @@ impl Device {
         self.request.buffer_frames
     }
 
+    /// The stream plays: not away, not opening, not closed for a buffer size change.
+    pub fn is_playing(&self) -> bool {
+        self.outage.is_none() && !self.reconfiguring
+    }
+
     /// Asks for `frames` per callback from now on (AUD-21). A stream that plays is closed and
     /// opened again at once at that size, its mixer as it was: voices and its clock carry on
-    /// after the gap, which is not an outage. A device that is away or opening takes the size
-    /// at its next open. If the reopen fails, that is a loss ([`DeviceEvent::Lost`]).
-    pub fn set_buffer(&mut self, frames: u32) {
+    /// after the gap, which is not an outage (the device does not play meanwhile:
+    /// [`Self::is_playing`]). A device that is away or opening takes the size at its next
+    /// open. A reopen that fails, or a close or reopen the device thread does not finish within
+    /// [`DEVICE_JOB_TIMEOUT`], is a loss ([`DeviceEvent::Lost`]). Returns what changed.
+    pub fn set_buffer(&mut self, frames: u32) -> Vec<DeviceEvent> {
+        let mut events = Vec::new();
         self.request.buffer_frames = Some(frames);
         if self.outage.is_some() || !matches!(self.stream, Stream::Up) {
-            return;
+            return events;
         }
         let now = (self.wall)();
         self.alloc_base = self
             .alloc_base
             .saturating_add(self.info.monitor.alloc_violations());
         self.stall.warned = false;
-        self.stream = if self.send(Job::Close, JobKind::Close, now) {
-            self.reconfiguring = true;
-            Stream::Closing
+        self.reconfiguring = true;
+        if self.send(Job::Close, JobKind::Close, now) {
+            self.stream = Stream::Closing;
         } else {
-            Stream::Gone
-        };
+            self.stream = Stream::Gone;
+            let why = "the device thread is gone".to_owned();
+            self.fail_reconfigure(now, why.clone(), &mut events);
+            self.stuck = Some(why.clone());
+            events.push(DeviceEvent::Unrecoverable { why });
+        }
+        events
+    }
+
+    /// A buffer size change that did not bring the stream back: an outage, reported as a loss
+    /// so the cues on the device stop.
+    fn fail_reconfigure(&mut self, now: Instant, why: String, events: &mut Vec<DeviceEvent>) {
+        if !std::mem::take(&mut self.reconfiguring) {
+            return;
+        }
+        self.missing_reads = 0;
+        self.outage = Some(Outage {
+            next_try: now + backoff(self.attempts),
+        });
+        events.push(DeviceEvent::Lost {
+            why: format!("it did not come back from a buffer size change: {why}"),
+        });
     }
 
     /// Why sound cannot come back without a restart, if it cannot.
@@ -970,16 +998,8 @@ impl Device {
                     }
                     Err(failure) => {
                         self.take_back(failure.mixer, now, &mut events);
-                        if std::mem::take(&mut self.reconfiguring) {
-                            // It did not come back at the new size: an outage like a loss.
-                            self.outage = Some(Outage { next_try: now });
-                            events.push(DeviceEvent::Lost {
-                                why: format!(
-                                    "it could not be opened again at the new buffer size ({})",
-                                    failure.error
-                                ),
-                            });
-                        }
+                        // It did not come back at the new size: an outage like a loss.
+                        self.fail_reconfigure(now, failure.error.to_string(), &mut events);
                         if let Some(o) = &mut self.outage {
                             let retry_in = backoff(self.attempts);
                             o.next_try = now + retry_in;
@@ -1203,6 +1223,7 @@ impl Device {
             MixerBack::Pending(p) => Stream::Pending(p, now),
             MixerBack::Lost => {
                 let why = "the audio engine was lost with the device".to_owned();
+                self.fail_reconfigure(now, why.clone(), events);
                 self.stuck = Some(why.clone());
                 events.push(DeviceEvent::Unrecoverable { why });
                 Stream::Gone
@@ -1238,6 +1259,8 @@ impl Device {
         };
         match (&self.stuck, why) {
             (None, Some(why)) => {
+                // A buffer size change stuck in the device thread: its cues stop, as for a loss.
+                self.fail_reconfigure(now, why.clone(), events);
                 self.stuck = Some(why.clone());
                 events.push(DeviceEvent::Unrecoverable { why });
             }
