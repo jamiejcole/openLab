@@ -1250,8 +1250,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// The cue and column being typed in.
     private(set) var editingCell: (id: ModelID, column: String)?
     /// A cell typed in and committed (Return, Tab or clicking away): the window controller sends it
-    /// through `CueEditor`, which checks it as the inspector does.
-    var onEditCell: ((ModelID, String, String) -> Void)?
+    /// through `CueEditor`, which checks it as the inspector does, and returns once the engine has
+    /// answered (the model already holds the change then: `model_changed` comes before the reply).
+    var onEditCell: ((ModelID, String, String) async -> Void)?
+    /// Counts committed edits, so only the latest one's answer takes the field off the cell.
+    private var settling = 0
     /// The cue being edited was deleted: the edit is dropped, and the operator told.
     var onEditedCueGone: (() -> Void)?
 
@@ -1308,7 +1311,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             field != .postWait || node.cue.raw["continue_mode"]?.stringValue != "auto_follow",
             let model = store.model
         else { return false }
-        if let pending = takeCellEdit() { onEditCell?(pending.id, pending.column, pending.text) }
+        if let pending = takeCellEdit() { send(pending) }
+        settling += 1  // a field still shown for an earlier commit is this edit's now
+        cellEditor.isEditable = true
         editingCell = (id, column)
         cellEditor.stringValue = InspectorEdit.display(field, cue: node.cue, model: model)
         // An unnamed cue's editor starts empty, with the name it follows as a hint.
@@ -1327,12 +1332,38 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     /// Ends the in-place edit and returns what was typed, to be sent (nil when none was open).
-    func takeCellEdit() -> (id: ModelID, column: String, text: String)? {
+    /// `keepShown`: the field gives up the caret but stays over its cell with the typed text.
+    func takeCellEdit(keepShown: Bool = false) -> (id: ModelID, column: String, text: String)? {
         guard let cell = editingCell else { return nil }
         editingCell = nil
         let text = cellEditor.stringValue
-        closeCellEditor()
+        if keepShown {
+            cellEditor.isEditable = false
+            if cellEditor.currentEditor() != nil { view.window?.makeFirstResponder(outlineView) }
+        } else {
+            closeCellEditor()
+        }
         return (cell.id, cell.column, text)
+    }
+
+    private func send(_ edit: (id: ModelID, column: String, text: String)) {
+        guard let onEditCell else { return }
+        Task { await onEditCell(edit.id, edit.column, edit.text) }
+    }
+
+    /// A committed edit: the field stays over the cell, showing what was typed, until the engine has
+    /// answered. Taken away at once it would uncover the old value for the moment before the change
+    /// comes back, which reads as a flash of the old name.
+    private func commitCellEdit() {
+        guard let edit = takeCellEdit(keepShown: true) else { return }
+        settling += 1
+        let mine = settling
+        guard let onEditCell else { return closeCellEditor() }
+        Task { [weak self] in
+            await onEditCell(edit.id, edit.column, edit.text)
+            guard let self, self.settling == mine, self.editingCell == nil else { return }
+            self.closeCellEditor()
+        }
     }
 
     /// Ends the in-place edit without sending anything (Esc, Show Mode, the cue gone).
@@ -1412,8 +1443,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
-        guard obj.object as? NSTextField === cellEditor, let edit = takeCellEdit() else { return }
-        onEditCell?(edit.id, edit.column, edit.text)
+        guard obj.object as? NSTextField === cellEditor else { return }
+        commitCellEdit()
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {

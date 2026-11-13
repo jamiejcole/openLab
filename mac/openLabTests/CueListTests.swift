@@ -1830,10 +1830,15 @@ final class PlayheadFlowTests: XCTestCase {
             editor.selectedRange(), NSRange(location: 0, length: (text as NSString).length), "selected", line: line)
     }
 
-    private func assertNotEditing(line: UInt = #line) {
+    /// `committed`: the field stays over its cell, not typed in, until the engine has answered.
+    private func assertNotEditing(committed: Bool = false, line: UInt = #line) {
         XCTAssertNil(wc.cueList.editingCell, line: line)
         XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, "the keys are the list's again", line: line)
-        XCTAssertNil(wc.cueList.cellEditor.superview, line: line)
+        if !committed { XCTAssertNil(wc.cueList.cellEditor.superview, line: line) }
+    }
+
+    private func assertTheFieldLeaves() async {
+        await assertEventually("the field has left its cell") { self.wc.cueList.cellEditor.superview == nil }
     }
 
     func testNKeyEditsTheNumberWithItsTextSelected() async throws {
@@ -1858,10 +1863,11 @@ final class PlayheadFlowTests: XCTestCase {
         try type("2.5")
         XCTAssertEqual(wc.cueList.cellEditor.stringValue, "2.5", "typed into the cell")
         try pressReturn()
-        assertNotEditing()
+        assertNotEditing(committed: true)
         await assertEventually("the cell and the inspector show 2.5") {
             self.cell(self.cues[1], "number") == "2.5" && self.wc.inspector.numberField.stringValue == "2.5"
         }
+        await assertTheFieldLeaves()
         try await assertAllOn(cues[1])
         XCTAssertEqual(goes(), 0, "Return does not fire GO")
     }
@@ -1989,11 +1995,12 @@ final class PlayheadFlowTests: XCTestCase {
         try press("\u{7F}", code: 51)
         try type("2")
         try pressReturn()
-        assertNotEditing()
+        assertNotEditing(committed: true)
         await assertEventually("the Fade targets cue 2, in the cell and the inspector") {
             self.store.model?.cue(self.fade)?.raw["kind"]?["target"]?.stringValue == self.cues[1].raw
                 && self.cell(self.fade, "target") == "2" && self.wc.inspector.targetField.stringValue == "2"
         }
+        await assertTheFieldLeaves()
         XCTAssertEqual(goes(), 0)
         // A number no cue has is refused as the inspector refuses it, and the target is kept.
         let window = try XCTUnwrap(wc.window)

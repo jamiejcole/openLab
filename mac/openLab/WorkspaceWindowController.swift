@@ -192,7 +192,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             Task { await self?.editor.setTarget(of: cues, to: target) }
         }
         cueList.onEditCell = { [weak self] id, column, text in
-            Task { await self?.editor.setCell(column, of: id, text: text) }
+            _ = await self?.editor.setCell(column, of: id, text: text)
         }
         cueList.onSetContinue = { [weak self] id, mode in Task { await self?.editor.setContinue(of: id, to: mode) } }
         cueList.onEditedCueGone = { [weak self] in self?.showNotice(loc("cuelist.edit.cueGone")) }
