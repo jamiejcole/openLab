@@ -755,3 +755,275 @@ fn a_cue_skipped_during_its_panic_fade_is_not_restarted_by_a_trigger() {
     assert!(voice_stops(&out).is_empty(), "its fade goes on: {out:?}");
     assert_eq!(rig.state(1), CueState::Stopping);
 }
+
+// ----- duck or boost others -----
+
+fn ducking_others(mut c: Cue, db: f64, seconds: f64) -> Cue {
+    c.duck_others = DuckOthers {
+        enabled: true,
+        db,
+        duration: seconds,
+    };
+    c
+}
+
+/// Every duck ramp sent: (cue, at, gain, frames).
+fn ducks(actions: &[Action]) -> Vec<(CueId, SampleTime, f32, SampleTime)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::DuckVoice {
+                cue,
+                at,
+                gain,
+                frames,
+                ..
+            } => Some((*cue, *at, *gain, *frames)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn gain(db: f64) -> f32 {
+    db_to_gain(db)
+}
+
+#[test]
+fn duck_others_by_12_db_over_1_s_ducks_every_other_audio_cue_of_its_list_and_returns_when_it_ends()
+{
+    let mut rig = Rig::new(vec![
+        sound(1),
+        sound(3),
+        ducking_others(wait(2, 3.0), -12.0, 1.0),
+    ]);
+    rig.start(0, 1);
+    rig.start(0, 3);
+    let out = rig.start(100, 2);
+    assert_eq!(
+        ducks(&out),
+        vec![
+            (id(1), 100, gain(-12.0), 1000),
+            (id(3), 100, gain(-12.0), 1000)
+        ]
+    );
+    // It ends at 3.1 s: the others come back over the same second.
+    let out = rig.tick(3100);
+    assert_eq!(
+        ducks(&out),
+        vec![(id(1), 3100, 1.0, 1000), (id(3), 3100, 1.0, 1000)]
+    );
+    // Nothing more once they are back.
+    assert!(ducks(&rig.tick(5000)).is_empty());
+}
+
+#[test]
+fn a_positive_value_boosts_but_never_past_the_workspace_maximum() {
+    let mut loud = sound(1);
+    if let CueKind::Audio { levels, .. } = &mut loud.kind {
+        levels.master_db = 9.0;
+    }
+    let mut rig = Rig::new(vec![loud, sound(3), ducking_others(wait(2, 3.0), 6.0, 1.0)]);
+    rig.start(0, 1);
+    rig.start(0, 3);
+    let out = rig.start(10, 2);
+    let got = ducks(&out);
+    assert_eq!(got.len(), 2);
+    // Cue 1's master is at +9 of +12: only +3 of the +6.
+    assert!((got[0].2 - gain(3.0)).abs() < 1e-6, "{got:?}");
+    assert!((got[1].2 - gain(6.0)).abs() < 1e-6, "{got:?}");
+}
+
+#[test]
+fn with_a_pre_wait_the_duck_starts_after_the_pre_wait() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        timed(ducking_others(wait(2, 3.0), -12.0, 1.0), 0.5, 0.0, DNC),
+    ]);
+    rig.start(0, 1);
+    assert!(ducks(&rig.start(0, 2)).is_empty());
+    let out = rig.tick(500);
+    assert_eq!(ducks(&out), vec![(id(1), 500, gain(-12.0), 1000)]);
+}
+
+#[test]
+fn a_cue_started_during_the_duck_starts_ducked() {
+    let mut rig = Rig::new(vec![sound(1), ducking_others(wait(2, 3.0), -12.0, 1.0)]);
+    rig.start(0, 2);
+    let out = rig.start(200, 1);
+    assert_eq!(voice_starts(&out), vec![(id(1), 200)]);
+    assert_eq!(
+        ducks(&out),
+        vec![(id(1), 200, gain(-12.0), 0)],
+        "on its start sample"
+    );
+}
+
+#[test]
+fn two_ducks_at_once_add_in_db_and_come_off_one_by_one() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        ducking_others(wait(2, 2.0), -6.0, 0.5),
+        ducking_others(wait(3, 4.0), -10.0, 1.0),
+    ]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    let out = rig.start(100, 3);
+    // Each ducking cue does not duck itself; 2 is a Wait, so only 1 has a voice.
+    assert_eq!(ducks(&out), vec![(id(1), 100, gain(-16.0), 1000)]);
+    let out = rig.tick(2000);
+    assert_eq!(
+        ducks(&out),
+        vec![(id(1), 2000, gain(-10.0), 500)],
+        "2's own time"
+    );
+    let out = rig.tick(4100);
+    assert_eq!(ducks(&out), vec![(id(1), 4100, 1.0, 1000)]);
+}
+
+#[test]
+fn a_ducking_cue_paused_keeps_its_duck_and_stopped_or_hard_stopped_lets_it_go() {
+    let mut rig = Rig::new(vec![sound(1), ducking_others(sound(2), -12.0, 1.0)]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    assert!(
+        ducks(&rig.pause(100, 2)).is_empty(),
+        "paused, it still ducks"
+    );
+    let out = rig.stop(200, 2);
+    assert_eq!(ducks(&out), vec![(id(1), 200, 1.0, 1000)]);
+    // A stop with a fade lets go when the cue has stopped.
+    rig.start(300, 2);
+    rig.at(
+        400,
+        Input::Stop {
+            cue: id(2),
+            fade_out: Some(FadeSpec {
+                duration: 0.5,
+                curve: FadeCurve::Linear,
+            }),
+        },
+    );
+    let out = rig.tick(900);
+    assert_eq!(ducks(&out), vec![(id(1), 900, 1.0, 1000)]);
+}
+
+#[test]
+fn a_ducking_cue_that_fails_to_start_or_breaks_lets_the_duck_go() {
+    let mut rig = Rig::new(vec![sound(1), ducking_others(sound(2), -12.0, 1.0)]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    let run = rig.run(2);
+    let out = rig.at(
+        50,
+        Input::StartFailed {
+            cue: id(2),
+            run,
+            reason: BrokenReason::StreamFailed,
+        },
+    );
+    assert_eq!(ducks(&out), vec![(id(1), 50, 1.0, 1000)]);
+    rig.at(60, Input::Reset { cue: id(2) });
+    rig.start(100, 2);
+    let out = rig.failed(200, 2);
+    assert_eq!(ducks(&out), vec![(id(1), 200, 1.0, 1000)]);
+    // The output device going away fails it the same way.
+    rig.at(300, Input::Reset { cue: id(2) });
+    rig.start(400, 2);
+    let run = rig.run(2);
+    let out = rig.at(
+        500,
+        Input::ActionFailed {
+            cue: id(2),
+            run,
+            reason: BrokenReason::DeviceLost,
+        },
+    );
+    assert_eq!(ducks(&out), vec![(id(1), 500, 1.0, 1000)]);
+}
+
+#[test]
+fn panic_during_a_duck_leaves_no_ducked_level_on_the_next_run() {
+    let mut rig = Rig::panicking(vec![sound(1), ducking_others(wait(2, 5.0), -20.0, 1.0)]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    let out = rig.at(100, Input::Panic);
+    // A cue fading out in the panic is not brought back up while it goes.
+    assert!(ducks(&out).is_empty(), "{out:?}");
+    let out = rig.tick(1100);
+    assert!(ducks(&out).is_empty(), "{out:?}");
+    assert_eq!(rig.state(1), CueState::Idle);
+    let out = rig.start(1200, 1);
+    assert_eq!(voice_starts(&out), vec![(id(1), 1200)]);
+    assert!(
+        ducks(&out).is_empty(),
+        "a new voice plays at no duck: {out:?}"
+    );
+}
+
+#[test]
+fn a_level_edit_or_a_fade_during_the_duck_moves_the_cue_level_not_the_duck() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        ducking_others(wait(2, 5.0), -12.0, 1.0),
+        cue(3, fade(1)),
+    ]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    // A level edit: a ramp of its master, the duck left as it is.
+    if let CueKind::Audio { levels, .. } = &mut rig.find_mut(1).kind {
+        levels.master_db = -6.0;
+    }
+    rig.engine.model_changed();
+    let out = rig.tick(100);
+    assert!(ducks(&out).is_empty(), "{out:?}");
+    assert!(out.iter().any(|a| matches!(a,
+        Action::Ramp { cue, param: LevelParam::Master, .. } if *cue == id(1))));
+    // A Fade cue: the same.
+    let out = rig.start(200, 3);
+    assert!(ducks(&out).is_empty(), "{out:?}");
+    assert!(out.iter().any(|a| matches!(a,
+        Action::Ramp { cue, param: LevelParam::Master, .. } if *cue == id(1))));
+}
+
+#[test]
+fn a_duck_reaches_only_audio_cues_of_its_own_list_and_not_its_own_children() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        ducking_others(grp(2, GroupMode::Timeline, vec![sound(21)]), -12.0, 1.0),
+    ]);
+    rig.ws.cue_lists.push(CueList {
+        id: list_id(2),
+        name: "Second".into(),
+        cues: vec![sound(7)],
+    });
+    rig.tick(0);
+    rig.start(0, 1);
+    rig.start(0, 7);
+    let out = rig.start(10, 2);
+    assert_eq!(ducks(&out), vec![(id(1), 10, gain(-12.0), 1000)]);
+}
+
+#[test]
+fn a_disarmed_ducking_cue_ducks_nothing_and_off_keeps_its_settings() {
+    let mut two = ducking_others(wait(2, 1.0), -12.0, 1.0);
+    two.armed = false;
+    let mut rig = Rig::new(vec![sound(1), two]);
+    rig.start(0, 1);
+    assert!(ducks(&rig.start(10, 2)).is_empty());
+    let mut off = ducking_others(wait(2, 1.0), -12.0, 1.0);
+    off.duck_others.enabled = false;
+    let mut rig = Rig::new(vec![sound(1), off]);
+    rig.start(0, 1);
+    assert!(ducks(&rig.start(10, 2)).is_empty());
+}
+
+#[test]
+fn a_ducking_cue_deleted_mid_duck_lets_the_duck_go() {
+    let mut rig = Rig::new(vec![sound(1), ducking_others(wait(2, 5.0), -12.0, 1.0)]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    rig.cues_mut().remove(1);
+    rig.engine.model_changed();
+    let out = rig.tick(100);
+    assert_eq!(ducks(&out), vec![(id(1), 100, 1.0, 1000)]);
+}

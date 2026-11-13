@@ -2353,3 +2353,96 @@ fn a_bad_fade_and_stop_others_time_is_refused_by_a_command_and_a_paste_and_repai
             .any(|w| w.cue_id == Some(cue_id(1)) && w.kind == IssueKind::InvalidTime { field })
     );
 }
+
+/// "Duck or boost others": dB from -120 to +12 and a time like a pre-wait, on every path that sets
+/// them. A command and a paste refuse a bad one; a file has it put in range with a warning.
+#[test]
+fn a_bad_duck_level_or_time_is_refused_by_a_command_and_a_paste_and_repaired_on_load() {
+    let with = |db: f64, duration: f64| DuckOthers {
+        enabled: true,
+        db,
+        duration,
+    };
+    let mut ws = workspace(vec![memo(1)]);
+    for (bad, field) in [
+        (
+            with(f64::NAN, 1.0),
+            IssueKind::InvalidLevel {
+                field: "duck_others.db",
+            },
+        ),
+        (
+            with(12.5, 1.0),
+            IssueKind::InvalidLevel {
+                field: "duck_others.db",
+            },
+        ),
+        (
+            with(-130.0, 1.0),
+            IssueKind::InvalidLevel {
+                field: "duck_others.db",
+            },
+        ),
+        (
+            with(-6.0, -1.0),
+            IssueKind::InvalidTime {
+                field: "duck_others.duration",
+            },
+        ),
+        (
+            with(-6.0, f64::INFINITY),
+            IssueKind::InvalidTime {
+                field: "duck_others.duration",
+            },
+        ),
+    ] {
+        let error = refused(&mut ws, set(1, CueProperty::DuckOthers { value: bad }));
+        let CommandError::InvalidCue(issues) = error else {
+            panic!("{bad:?}: {error:?}")
+        };
+        assert_eq!(
+            issues.iter().map(|i| i.kind.clone()).collect::<Vec<_>>(),
+            vec![field],
+            "{bad:?}"
+        );
+        let mut pasted = memo(2);
+        pasted.duck_others = bad;
+        assert!(matches!(
+            refused(
+                &mut ws,
+                Command::Paste {
+                    at: pos(None, 1),
+                    cues: vec![pasted],
+                }
+            ),
+            CommandError::InvalidCue(_)
+        ));
+    }
+    round_trip(
+        &mut ws,
+        set(
+            1,
+            CueProperty::DuckOthers {
+                value: with(12.0, 0.0),
+            },
+        ),
+    );
+    round_trip(
+        &mut ws,
+        set(
+            1,
+            CueProperty::DuckOthers {
+                value: with(-120.0, 2.0),
+            },
+        ),
+    );
+    let mut bad = memo(1);
+    bad.duck_others = with(40.0, 1.0);
+    let loaded = load_show(&show_text(&workspace(vec![bad]))).unwrap();
+    assert_eq!(loaded.workspace.cue_lists[0].cues[0].duck_others.db, 12.0);
+    assert!(loaded.warnings.iter().any(|w| w.cue_id == Some(cue_id(1))
+        && w.kind
+            == IssueKind::InvalidLevel {
+                field: "duck_others.db"
+            }));
+}

@@ -790,3 +790,83 @@ fn fade_and_stop_others_fades_a_playing_peer_out_over_its_time_and_stops_it() {
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
     assert_eq!(s.control().live_voices(), 0);
 }
+
+/// "Duck others" -12 dB over 1 s, rendered: the cue playing beside it goes down to 12 dB lower
+/// along the ramp, stays there while the ducking cue runs, and comes back over the same second
+/// after it ends, never stepping; a cue started during the duck is heard ducked from its first
+/// sample.
+#[test]
+fn duck_others_minus_12_db_is_heard_reached_held_and_returned_without_a_step() {
+    let path = wav(&dc(RATE as usize * 6, LEVEL));
+    let late = wav(&dc(RATE as usize, LEVEL));
+    let mut ducker = cue(2, CueKind::Wait { duration: 2.0 });
+    ducker.duck_others = openlab_core::DuckOthers {
+        enabled: true,
+        db: -12.0,
+        duration: 1.0,
+    };
+    let mut s = show(workspace(vec![
+        audio(1, &path, 0),
+        ducker,
+        audio(3, &late, 1),
+    ]));
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    let at = start(&mut s, 2) as usize;
+    s.run(u64::from(RATE) * 3 / 2);
+    let second = start(&mut s, 3) as usize;
+    s.run(u64::from(RATE) * 4);
+    let out = s.channel(0);
+    let ducked = LEVEL * db_to_gain(-12.0);
+    let near = |x: &[f32], i: usize, want: f32| {
+        assert!(
+            (x[i] - want).abs() < 2e-3,
+            "sample {i}: {} not {want}",
+            x[i]
+        );
+    };
+    let rate = RATE as usize;
+    near(&out, at - 1, LEVEL);
+    near(&out, at + rate / 2, (LEVEL + ducked) / 2.0);
+    near(&out, at + rate + 10, ducked);
+    // The Wait ends at 2 s: back over 1 s.
+    near(&out, at + 2 * rate + rate / 2, (LEVEL + ducked) / 2.0);
+    near(&out, at + 3 * rate + 10, LEVEL);
+    let jump = out[at - 10..at + 4 * rate]
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0f32, f32::max);
+    assert!(jump < 1e-3, "a step of {jump}");
+    let late_out = s.channel(1);
+    near(&late_out, second, ducked);
+    near(&late_out, second + 100, ducked);
+}
+
+/// Panic during a duck: everything fades out, and the next run plays at its own level.
+#[test]
+fn panic_during_a_duck_leaves_no_ducked_level_on_the_next_run() {
+    let path = wav(&dc(RATE as usize * 8, LEVEL));
+    let mut ducker = cue(2, CueKind::Wait { duration: 5.0 });
+    ducker.duck_others = openlab_core::DuckOthers {
+        enabled: true,
+        db: -20.0,
+        duration: 0.5,
+    };
+    let mut ws = workspace(vec![audio(1, &path, 0), ducker]);
+    ws.settings.panic_duration = 0.5;
+    let mut s = show(ws);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(u64::from(RATE));
+    s.transport(TransportAction::Panic);
+    s.run(u64::from(RATE));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    let again = start(&mut s, 1) as usize;
+    s.run(u64::from(RATE) / 2);
+    let out = s.channel(0);
+    assert!(
+        (out[again + 10] - LEVEL).abs() < 1e-3,
+        "{}",
+        out[again + 10]
+    );
+}
