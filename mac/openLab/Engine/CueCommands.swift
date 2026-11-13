@@ -85,7 +85,12 @@ enum NewCueKind: String, CaseIterable, Sendable {
             "armed": .bool(true), "auto_load": .bool(false), "skip_if_disarmed": .bool(false), "pre_wait": .double(0),
             "post_wait": .double(0), "continue_mode": .string("do_not_continue"),
             "triggers": .object(["hotkey": .null, "hotkey_enabled": .bool(true)]), "second_trigger": .string("nothing"),
-            "second_trigger_on_release": .bool(false), "kind": kind,
+            "second_trigger_on_release": .bool(false),
+            // Core's defaults for a new cue (`FadeAndStopOthers::default`): off, peers, 1 s.
+            "fade_and_stop_others": .object([
+                "enabled": .bool(false), "scope": .string("peers"), "duration": .double(1),
+            ]),
+            "kind": kind,
         ])
     }
 }
