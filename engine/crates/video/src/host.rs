@@ -518,6 +518,34 @@ mod tests {
         assert!(out.is_empty(), "{out:?}");
     }
 
+    /// Stages on one display are drawn in one window, bottom first by their stack rank.
+    #[test]
+    fn stages_sharing_a_display_are_presented_bottom_first() {
+        let mut h = host(&["D1"]);
+        let mut out = Vec::new();
+        h.handle(
+            ToStage::Hello {
+                version: LINK_VERSION,
+            },
+            &mut out,
+        );
+        let mut top = stage(1, Some("D1"), true);
+        top.stack = 9;
+        let bottom = stage(2, Some("D1"), true);
+        h.handle(
+            ToStage::Stages {
+                stages: vec![top, bottom],
+            },
+            &mut out,
+        );
+        assert_eq!(h.platform.shown["D1"], [id(2), id(1)]);
+        h.handle(ToStage::Stages { stages: vec![] }, &mut out);
+        assert!(
+            h.platform.shown.is_empty(),
+            "the window goes with its last stage"
+        );
+    }
+
     /// A display unplugged takes its stage down and reports it; plugged back, the stage
     /// returns.
     #[test]

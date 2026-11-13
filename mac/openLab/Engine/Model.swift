@@ -177,10 +177,13 @@ struct WorkspaceModel: Sendable, Decodable {
     var settings: JSONValue
     var patches: [ModelObject]
     var networkPatches: [ModelObject]
+    /// VID-01: the video stages (`{id, name, width, height, keep_black, layer}`); absent from a
+    /// workspace with none.
+    var stages: [ModelObject] = []
     var cueLists: [CueList]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, settings, patches
+        case id, name, settings, patches, stages
         case networkPatches = "network_patches"
         case cueLists = "cue_lists"
     }
@@ -213,6 +216,19 @@ struct WorkspaceModel: Sendable, Decodable {
         }
         for l in cueLists { if let hit = find(l.cues) { return hit } }
         return nil
+    }
+}
+
+extension WorkspaceModel {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(ModelID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        settings = try c.decode(JSONValue.self, forKey: .settings)
+        patches = try c.decode([ModelObject].self, forKey: .patches)
+        networkPatches = try c.decode([ModelObject].self, forKey: .networkPatches)
+        stages = try c.decodeIfPresent([ModelObject].self, forKey: .stages) ?? []
+        cueLists = try c.decode([CueList].self, forKey: .cueLists)
     }
 }
 
@@ -251,6 +267,7 @@ enum Upsert: Sendable, Decodable {
     case cueList(id: ModelID, name: String, index: Int)
     case patch(index: Int, patch: ModelObject)
     case networkPatch(index: Int, patch: ModelObject)
+    case stage(index: Int, stage: ModelObject)
     case settings(name: String, settings: JSONValue)
     /// A kind this client does not know: the model is now unreliable, so the caller resyncs.
     case unknown(String)
@@ -273,6 +290,9 @@ enum Upsert: Sendable, Decodable {
         case "network_patch":
             self = .networkPatch(
                 index: try c.decode(Int.self, forKey: "index"), patch: try c.decode(ModelObject.self, forKey: "patch"))
+        case "stage":
+            self = .stage(
+                index: try c.decode(Int.self, forKey: "index"), stage: try c.decode(ModelObject.self, forKey: "stage"))
         case "settings":
             self = .settings(
                 name: try c.decode(String.self, forKey: "name"),
@@ -288,6 +308,7 @@ enum Delete: Sendable, Decodable {
     case cueList(ModelID)
     case patch(ModelID)
     case networkPatch(ModelID)
+    case stage(ModelID)
     case unknown(String)
 
     init(from decoder: Decoder) throws {
@@ -298,6 +319,7 @@ enum Delete: Sendable, Decodable {
         case "cue_list": self = .cueList(id)
         case "patch": self = .patch(id)
         case "network_patch": self = .networkPatch(id)
+        case "stage": self = .stage(id)
         case let other: self = .unknown(other)
         }
     }

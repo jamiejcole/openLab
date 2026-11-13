@@ -1330,7 +1330,9 @@ fn stage(n: u128, width: u32, height: u32) -> Stage {
 #[test]
 fn stages_load_within_their_limits() {
     let mut ws = workspace(vec![]);
-    ws.stages = vec![stage(1, 1920, 1080), stage(2, 0, 99_999)];
+    let mut high = stage(3, 8, 8);
+    high.layer = MAX_STAGE_LAYER + 5;
+    ws.stages = vec![stage(1, 1920, 1080), stage(2, 0, 99_999), high];
     let loaded = load_show(&show_text(&ws)).unwrap();
     assert_eq!(loaded.workspace.stages[0], stage(1, 1920, 1080));
     let second = &loaded.workspace.stages[1];
@@ -1340,6 +1342,15 @@ fn stages_load_within_their_limits() {
         None,
         IssueKind::StageSize {
             stage: StageId(uuid::Uuid::from_u128(2))
+        }
+    )));
+
+    assert_eq!(loaded.workspace.stages[2].layer, MAX_STAGE_LAYER);
+    assert!(loaded.warnings.contains(&issue(
+        Severity::Warning,
+        None,
+        IssueKind::StageLayer {
+            stage: StageId(uuid::Uuid::from_u128(3))
         }
     )));
 

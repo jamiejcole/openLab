@@ -20,7 +20,8 @@ Built so far: stages, their per-machine display, the stage host with black outpu
 
 ## Stages (`openlab-core` `video.rs`, `model.rs`)
 - `Workspace.stages: Vec<Stage>`: `id` (`StageId`), `name`, `width`/`height` in pixels (1 to `MAX_STAGE_PIXELS` 16384, p. 208), `keep_black` (QLab's "keep rendering between cues", p. 227; default off, so a stage on the operator's display never covers it between cues). At most `MAX_STAGES` (64). File format §4.7.
-- Load: a size outside the range is clamped (`StageSize` warning), stages past 64 are dropped (`TooManyStages`), two with one id refuse the file (`DuplicateStageId`), odd names warn (`stages.name`).
+- `layer` 0-1000 (default 1): of stages on the same display, a higher layer is drawn on top; on one layer the name sorting first is on top (p. 227; `stack_order`). Edits: `AddStage`, `RemoveStage`, `MoveStage`, `SetStageProperty` (skill `edit-commands`).
+- Load: a size outside the range is clamped (`StageSize` warning), a layer above 1000 too (`StageLayer`), stages past 64 are dropped (`TooManyStages`), two with one id refuse the file (`DuplicateStageId`), odd names warn (`stages.name`).
 - Which display shows a stage is per machine: `settings.json` `workspaces.<id>.stages.<stage id>` = `StageMapping { display, name, width, height }` (the display's id plus what it was when chosen). `MachineSettings::stage_mapping` / `set_stage_mapping` (refuses empty or over-long text, control characters, sizes out of range). A damaged entry in the file drops only itself with a warning.
 
 ## The link (`openlab-core` `stage_link.rs`; contract `docs/protocol.md` "Stage host link")
@@ -31,6 +32,7 @@ Built so far: stages, their per-machine display, the stage host with black outpu
 
 ## The stage host (`engine/crates/video`, binary `openlab-stage`)
 - `host.rs` is the same on every platform: `Host<P: Platform>` keeps the stages, the displays and each stage's state. A stage is shown only with its display connected and (while black) keep-black on; otherwise hidden with the reason. `serve` reads lines with `read_line` (never holds more than one line's limit; an over-long line is skipped and reported) and ends at end of input or a failed write.
+- The stages shown on one display are drawn in one window (per display, not per stage), bottom first by `stack`; a stage keeping black is a black quad over what is below it. Test support `probe_display` reads a display's composite.
 - After a `stages` message the host reports every stage's state (so the engine knows each was dealt with); after a display change only the states that changed.
 - macOS (`platform/mac`): an accessory app (no Dock icon or menu bar) whose windows come up with `orderFrontRegardless`, borderless, never key, ignoring the mouse, at screen-saver level over the display's whole frame (covering its menu bar and Dock), on every Space, out of Mission Control and window cycling. Never system full-screen.
 - AppKit and Metal live on the main thread; a reader thread decodes lines and queues them on the main queue. At the end of input (or a failed write) the process ends with `_exit` from whichever thread sees it: no exit handlers or stdio flush, so a hung main thread cannot keep it alive.
