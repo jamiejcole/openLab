@@ -29,7 +29,10 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     let store: WorkspaceStore
     let view: NSStackView
     let addButton = NSButton(title: loc("settings.video.add"), target: nil, action: nil)
-    let grid = NSGridView()
+    /// The table, built afresh on each draw: an `NSGridView` cannot remove a row holding merged
+    /// cells (a warning line), so rows are never removed from it.
+    private(set) var grid = NSGridView()
+    let holder = TopLeftView()
     let emptyLabel = NSTextField(labelWithString: loc("settings.video.none"))
     let noVideoLabel = NSTextField(wrappingLabelWithString: loc("settings.video.noVideo"))
     let messageLabel = NSTextField(wrappingLabelWithString: "")
@@ -88,19 +91,6 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         messageLabel.textColor = .systemRed
         messageLabel.setAX(Self.id + "-message")
 
-        let headers = ["name", "size", "display", "black", "layer", "remove"].map { key -> NSView in
-            let label = NSTextField(labelWithString: loc("settings.video.col.\(key)"))
-            label.font = .systemFont(ofSize: 12, weight: .semibold)
-            return label
-        }
-        grid.addRow(with: headers)
-        grid.rowSpacing = 6
-        grid.columnSpacing = 6
-        // Sized so the whole table fits the settings window at its least width.
-        for (c, width) in Self.columns.enumerated() { grid.column(at: c).width = width }
-        grid.yPlacement = .center
-        grid.column(at: 3).xPlacement = .center
-        grid.column(at: 5).xPlacement = .center
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
@@ -108,16 +98,10 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.borderType = .bezelBorder
-        let holder = TopLeftView()
-        grid.translatesAutoresizingMaskIntoConstraints = false
         holder.translatesAutoresizingMaskIntoConstraints = false
-        holder.addSubview(grid)
         scroll.documentView = holder
+        install(Self.makeGrid())
         NSLayoutConstraint.activate([
-            grid.topAnchor.constraint(equalTo: holder.topAnchor, constant: 6),
-            grid.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 6),
-            grid.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -6),
-            grid.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -6),
             holder.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             holder.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             holder.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor),
@@ -135,6 +119,38 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         // The table takes the page's width (a narrow window scrolls it rather than clipping a column).
         scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
         view.setAX(Self.id)
+    }
+
+    /// An empty table: the header row and the column sizes.
+    private static func makeGrid() -> NSGridView {
+        let headers = ["name", "size", "display", "black", "layer", "remove"].map { key -> NSView in
+            let label = NSTextField(labelWithString: loc("settings.video.col.\(key)"))
+            label.font = .systemFont(ofSize: 12, weight: .semibold)
+            return label
+        }
+        let grid = NSGridView(views: [headers])
+        grid.rowSpacing = 6
+        grid.columnSpacing = 6
+        // Sized so the whole table fits the settings window at its least width.
+        for (c, width) in columns.enumerated() { grid.column(at: c).width = width }
+        grid.yPlacement = .center
+        grid.column(at: 3).xPlacement = .center
+        grid.column(at: 5).xPlacement = .center
+        return grid
+    }
+
+    /// Puts `new` in the old table's place (the old one goes with every view it holds).
+    private func install(_ new: NSGridView) {
+        grid.removeFromSuperview()
+        grid = new
+        new.translatesAutoresizingMaskIntoConstraints = false
+        holder.addSubview(new)
+        NSLayoutConstraint.activate([
+            new.topAnchor.constraint(equalTo: holder.topAnchor, constant: 6),
+            new.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 6),
+            new.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -6),
+            new.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -6),
+        ])
     }
 
     // MARK: Drawing
@@ -181,11 +197,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         if (nameFields + layerFields).contains(where: { $0.currentEditor() != nil }) { return }
         shown = rows
         displays = list
-        while grid.numberOfRows > 1 {
-            let last = grid.row(at: grid.numberOfRows - 1)
-            for c in 0..<last.numberOfCells { last.cell(at: c).contentView?.removeFromSuperview() }
-            grid.removeRow(at: grid.numberOfRows - 1)
-        }
+        let grid = Self.makeGrid()
         nameFields = []
         layerFields = []
         displayPopups = []
@@ -242,6 +254,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
                 r.mergeCells(in: NSRange(location: 0, length: 6))
             }
         }
+        install(grid)
         grid.layoutSubtreeIfNeeded()
     }
 

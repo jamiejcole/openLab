@@ -156,6 +156,51 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertFalse(WarningRows.make(store: rig.store).contains { $0.id == "v:\(self.stageA)" })
     }
 
+    /// The table redrawn through every row shape (plain, with a warning line, added, removed,
+    /// reordered), twice over: no AppKit exception (a grid row with a merged warning cell cannot
+    /// be removed), and the table holds exactly the controls of the rows shown.
+    func testTheTableRedrawsThroughEveryRowShapeWithoutLeftovers() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080), (stageB, "Angelica", 1920, 1080)])
+        let pane = sc.videoPane
+        func check(_ why: String) {
+            let rows = pane.shown ?? []
+            let warned = rows.filter { $0.warning != nil }.count
+            XCTAssertEqual(pane.holder.subviews, [pane.grid], "\(why): one table")
+            XCTAssertEqual(pane.grid.numberOfRows, 1 + rows.count + warned, why)
+            let controls: [NSView] =
+                pane.nameFields + pane.layerFields + pane.displayPopups + pane.blackBoxes + pane.removeButtons
+            XCTAssertEqual(pane.grid.subviews.count, 6 + controls.count + warned, why)
+            XCTAssertTrue(controls.allSatisfy { $0.superview === pane.grid }, why)
+            XCTAssertEqual(pane.nameFields.map(\.stringValue), rows.map(\.name), why)
+        }
+        for round in 1...2 {
+            await settled(sc) { pane.shown?.count == 2 && pane.warningLabels.allSatisfy { !$0.stringValue.isEmpty } }
+            check("round \(round): two stages, each with a warning")
+            let popup = pane.displayPopups[0]
+            popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
+            _ = popup.sendAction(popup.action, to: popup.target)
+            await settled(sc) { pane.shown?.first?.warning == nil }
+            check("round \(round): a warning line gone")
+            pane.addButton.performClick(nil)
+            await settled(sc) { pane.shown?.count == 3 }
+            check("round \(round): a stage added")
+            _ = await rig.store.send(
+                command: Command(
+                    .object(["type": .string("move_stage"), "id": .string(stageA), "index": .int(2)])))
+            await settled(sc) { pane.shown?.last?.id.raw == self.stageA }
+            check("round \(round): reordered")
+            pane.removeButtons[1].performClick(nil)
+            await settled(sc) { pane.shown?.count == 2 }
+            check("round \(round): a stage removed")
+            // Back to the start: the stage removed and the added one undone, the display unchosen.
+            _ = await rig.store.undo()
+            _ = await rig.store.undo()
+            _ = await rig.store.undo()
+            _ = await rig.store.setStageMapping(ModelID(stageA), display: nil)
+            await sc.videoPane.refresh()
+        }
+    }
+
     /// Flow 8: two stages on the same display: the layer typed for each orders them (the engine
     /// draws the higher on top); a layer outside 0 to 1000 is refused with a line and sends nothing.
     func testTheLayerFieldOrdersStagesOnOneDisplayAndRefusesOutOfRangeValues() async throws {

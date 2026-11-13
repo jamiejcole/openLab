@@ -453,7 +453,7 @@ extension ClientMessage {
                 case .advance, .loseDevice: return false
                 case .restoreDevice, .stageTestCard: return true
                 // Answered when the stage host has drawn and read back the stage.
-                case .stageProbe: return false
+                case .stageProbe, .displayProbe: return false
             #endif
             }
         }
