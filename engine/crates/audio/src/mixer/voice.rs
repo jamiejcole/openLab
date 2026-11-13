@@ -3,7 +3,7 @@
 //! One playing voice: its play plan (slices, loops, devamps), fades, pause and resume, patch
 //! moves, and reading its source into the mixer's scratch buffers.
 
-use crate::gain::{Curve, CurveRamp, Fade, Param, ramp_value, sanitize_gain};
+use crate::gain::{Curve, CurveRamp, DbParam, Fade, MAX_GAIN, Param, ramp_value, sanitize_gain};
 use crate::meter::{Meters, next_epoch};
 use crate::plan::{Plays, Slice, StreamLink};
 
@@ -236,6 +236,10 @@ pub(super) struct Voice {
     env_in: CurveRamp,
     env_out: CurveRamp,
     pub(super) master: Param,
+    /// See [`GainTarget::Duck`].
+    pub(super) duck: DbParam,
+    /// See [`GainTarget::DuckCap`].
+    pub(super) duck_cap: Param,
     pub(super) stop: Param,
     pub(super) stop_end: Option<SampleTime>,
     /// One per cue output of the mixer; the first `width` are the voice's.
@@ -313,6 +317,8 @@ impl Voice {
             env_in: CurveRamp::new(0.0, 1.0, 0, Curve::Linear),
             env_out: CurveRamp::new(1.0, 0.0, 0, Curve::Linear),
             master: Param::new(1.0),
+            duck: DbParam::new(1.0),
+            duck_cap: Param::new(MAX_GAIN),
             stop: Param::new(1.0),
             stop_end: None,
             cue_out: vec![Param::new(0.0); outputs],
@@ -425,6 +431,8 @@ impl Voice {
         self.fade_in = s.fade_in;
         self.fade_out = s.fade_out;
         self.master.set(sanitize_gain(s.gain));
+        self.duck.set(1.0);
+        self.duck_cap.set(MAX_GAIN);
         self.stop.set(1.0);
         self.stop_end = None;
         // The start routes its first `width` cue outputs; the rest start silent (gain 0, no
@@ -465,12 +473,39 @@ impl Voice {
         self.enter(0);
     }
 
+    /// Moves the gain `target` names to `gain` over `frames` with `curve`, as a `Ramp` does: the
+    /// duck evenly in dB (it has no curve), every other gain on its curve.
+    pub(super) fn ramp_gain(
+        &mut self,
+        target: GainTarget,
+        gain: f32,
+        frames: u64,
+        curve: Curve,
+        shapes: &mut crate::gain::Shapes,
+    ) {
+        if target == GainTarget::Duck {
+            self.duck.ramp_to(gain, frames);
+        } else if target == GainTarget::DuckCap
+            && !self.duck_cap.is_ramping()
+            && self.duck_cap.current() == MAX_GAIN
+        {
+            // The first cap a voice gets: no boost can be under way before it (the duck comes
+            // with it), so it holds from its first sample.
+            self.duck_cap.set(gain);
+        } else if let Some(p) = self.param_mut(target) {
+            p.ramp_to_in(gain, frames, curve, shapes);
+        }
+    }
+
     /// The gain `target` names, if the voice has it. Naming a cue output beyond the ones it
     /// uses widens it to that output (the caller publishes the new width to the meters).
     pub(super) fn param_mut(&mut self, target: GainTarget) -> Option<&mut Param> {
         let outs = self.cue_out.len();
         let o = match target {
             GainTarget::Master => return Some(&mut self.master),
+            GainTarget::DuckCap => return Some(&mut self.duck_cap),
+            // Not a `Param`: `ramp_gain` moves it.
+            GainTarget::Duck => return None,
             GainTarget::CueOutput(o) => usize::from(o),
             GainTarget::Crosspoint { input, output } => {
                 if usize::from(input) >= self.channels {
@@ -487,7 +522,7 @@ impl Voice {
         match target {
             GainTarget::CueOutput(_) => self.cue_out.get_mut(o),
             GainTarget::Crosspoint { input, .. } => self.xp.get_mut(usize::from(input) * outs + o),
-            GainTarget::Master => None,
+            GainTarget::Master | GainTarget::Duck | GainTarget::DuckCap => None,
         }
     }
 

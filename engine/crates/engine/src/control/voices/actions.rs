@@ -42,6 +42,30 @@ impl Voices {
                 };
                 self.command(run, at, cmd, fx);
             }
+            Action::DuckVoice {
+                run,
+                at,
+                gain,
+                frames,
+                cap,
+                ..
+            } => {
+                // The cap first, so the boost is bounded from the ramp's first sample; it moves over
+                // the same time (a new maximum over the edit ramp, so no step).
+                let cap = Queued::Ramp {
+                    target: GainTarget::DuckCap,
+                    gain: cap,
+                    fade: Fade::new(frames, Curve::Linear),
+                };
+                self.command(run, at, cap, fx);
+                // The stage moves evenly in dB; a curve is not read.
+                let cmd = Queued::Ramp {
+                    target: GainTarget::Duck,
+                    gain,
+                    fade: Fade::new(frames, Curve::Linear),
+                };
+                self.command(run, at, cmd, fx);
+            }
             Action::DevampVoice { run, at, stop, .. } => {
                 if let Some(r) = self.by_run.get(&run).and_then(|id| self.recs.get_mut(id)) {
                     r.devamp_stop = stop;

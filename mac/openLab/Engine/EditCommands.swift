@@ -26,6 +26,9 @@ enum CueProperty: Hashable, Sendable {
     /// "Fade and stop others": on, `scope` (`peers`, `list`, `all`) and the fade time in seconds
     /// (0 to 24 h). Kept while off.
     case fadeAndStopOthers(enabled: Bool, scope: String, duration: Double)
+    /// "Duck or boost others": on, the change in dB (-120 to +12; negative ducks) and the ramp time
+    /// in seconds. Kept while off.
+    case duckOthers(enabled: Bool, db: Double, duration: Double)
     /// The whole kind (a different audio file, say); never to or from a Group.
     case kind(JSONValue)
     /// Named fields of the cue's kind alone (`levels`, `curve`, `slices`, ...): the engine merges them
@@ -72,6 +75,9 @@ enum CueProperty: Hashable, Sendable {
             return p(
                 "fade_and_stop_others",
                 .object(["enabled": .bool(enabled), "scope": .string(scope), "duration": .double(duration)]))
+        case .duckOthers(let enabled, let db, let duration):
+            return p(
+                "duck_others", .object(["enabled": .bool(enabled), "db": .double(db), "duration": .double(duration)]))
         case .kind(let v): return p("kind", v)
         case .kindFields(let v): return p("kind_fields", .object(v))
         case .media(let v): return p("media", v.map { .string($0) } ?? .null)
