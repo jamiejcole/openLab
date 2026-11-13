@@ -2,7 +2,7 @@
 
 import Foundation
 
-/// The inspector's text fields: the Basics tab's, the Triggers tab's OSC address and the Load Time
+/// The inspector's text fields: the Basics tab's and the Load Time
 /// tab's time, and the Network cue's message.
 enum InspectorField: Hashable, CaseIterable {
     case number, name, notes, preWait, postWait, target, duration, loadTime, message

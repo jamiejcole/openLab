@@ -293,6 +293,34 @@ final class TriggersTabTests: XCTestCase {
         XCTAssertEqual(triggers()?["hotkey"], KeyChord("l").hotkeyJSON, "the engine stored it")
     }
 
+    /// The first edit is refused by the engine (the cue it names exists only in the store, as when
+    /// the store is behind); the cue is then added for real with its hotkey trigger off, and the
+    /// next edit must start from the engine's cue: neither the refused key nor the store's stale
+    /// "on" is sent again.
+    func testRefusedTriggersAreNotSentAgainWithTheNextEdit() async throws {
+        let id: ModelID = "00000000-0000-0000-0000-0000000000ee"
+        var cue = try XCTUnwrap(NewCueKind.memo.cueJSON(id: id, patch: nil))
+        cue.set("name", .string("Late"))
+        let upsert = try CueListHarness.upsertJSON(cue, index: 0)
+        let frame =
+            #"{"type":"model_changed","revision":\#(rig.store.revision + 1),"upserts":[\#(upsert)],"deletes":[]}"#
+        XCTAssertEqual(rig.store.receive(try ServerMessage.decode(frame)), .applied)
+        vc.setSelection([id])
+        XCTAssertTrue(vc.record(KeyChord("b")))
+        await assertEventually { self.vc.messageLabel.stringValue.contains("does not exist") }
+        // Now the engine has the cue, its hotkey trigger off.
+        var real = cue
+        real.set("triggers", .object(["hotkey": .null, "hotkey_enabled": .bool(false)]))
+        let added = await rig.store.send(
+            command: .addCue(real, list: TestSnapshots.mainList, parent: nil, index: 0))
+        guard case .success = added else { return XCTFail("\(added)") }
+        await assertEventually { self.triggers(id)?["hotkey_enabled"] == .bool(false) }
+        XCTAssertTrue(vc.record(KeyChord("a")))
+        rig.client.requestSnapshot()  // the engine's own copy, not the one the store was given
+        await assertEventually { self.triggers(id)?["hotkey"] == KeyChord("a").hotkeyJSON }
+        XCTAssertEqual(triggers(id)?["hotkey_enabled"], .bool(false), "the store's stale switch was not sent")
+    }
+
     func testSecondTriggerAndOnReleaseSend() async {
         vc.record(KeyChord("a"))
         await assertEventually { vc.onReleaseCheck.isEnabled }
