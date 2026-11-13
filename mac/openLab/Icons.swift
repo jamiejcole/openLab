@@ -3,9 +3,11 @@
 import AppKit
 import os
 
-/// The one table of every SF Symbol the app shows. A concept (a cue kind, a state, a transport
-/// button) names its symbol, the macOS version that symbol first shipped in and a fallback for an
-/// older system. The deployment target is macOS 12, which carries SF Symbols 3.
+/// The one table of every icon the app shows. A cue kind or Group mode names openLab's own drawing
+/// (`drawing`, an SVG in the asset catalog, so another platform can use the same files). Every other
+/// concept (a state, a transport button) names an SF Symbol, the macOS version that symbol first
+/// shipped in and a fallback for an older system. The deployment target is macOS 12, which carries
+/// SF Symbols 3.
 ///
 /// `minMacOS` was read from the system's own `name_availability.plist` (CoreGlyphs): 2019 symbols
 /// are macOS 10.15 (written 10), 2020 are 11, 2021 are 12. Every row is at or below 12, so none
@@ -51,28 +53,40 @@ enum Icon: CaseIterable {
         Entry(symbol: symbol, minMacOS: minMacOS, fallback: fallback)
     }
 
-    /// Every row above macOS 10 has a fallback.
-    var entry: Entry {
+    /// The asset-catalog name of openLab's own drawing for a cue kind or Group mode; nil for a
+    /// concept shown as an SF Symbol.
+    var drawing: String? {
         switch self {
-        case .kindAudio: return Self.row("speaker.wave.2", 11, fallback: "speaker.2")
-        case .kindGroup: return Self.row("folder")
-        case .kindMemo: return Self.row("note.text", 11, fallback: "doc.text")
-        case .kindWait: return Self.row("timer")
-        case .kindFade: return Self.row("slider.horizontal.3")
-        case .kindStart: return Self.row("play.fill")
-        case .kindStop: return Self.row("stop.fill")
-        case .kindPause: return Self.row("pause.fill")
-        case .kindLoad: return Self.row("arrow.down.circle")
-        case .kindReset: return Self.row("arrow.counterclockwise")
-        case .kindDevamp: return Self.row("arrow.uturn.forward", 11, fallback: "arrow.uturn.right")
-        case .kindGoTo: return Self.row("arrow.right.to.line")
-        case .kindArm: return Self.row("record.circle", 11, fallback: "largecircle.fill.circle")
-        case .kindDisarm: return Self.row("slash.circle")
-        case .kindNetwork: return Self.row("network", 11, fallback: "globe")
-        case .kindGroupPlaylist: return Self.row("list.bullet")
-        case .kindGroupEnter: return Self.row("arrow.right.circle")
-        case .kindGroupNext: return Self.row("forward.end")
-        case .kindGroupRandom: return Self.row("shuffle")
+        case .kindAudio: return "kind-audio"
+        case .kindGroup: return "kind-group"
+        case .kindMemo: return "kind-memo"
+        case .kindWait: return "kind-wait"
+        case .kindFade: return "kind-fade"
+        case .kindStart: return "kind-start"
+        case .kindStop: return "kind-stop"
+        case .kindPause: return "kind-pause"
+        case .kindLoad: return "kind-load"
+        case .kindReset: return "kind-reset"
+        case .kindDevamp: return "kind-devamp"
+        case .kindGoTo: return "kind-go-to"
+        case .kindArm: return "kind-arm"
+        case .kindDisarm: return "kind-disarm"
+        case .kindNetwork: return "kind-network"
+        case .kindGroupPlaylist: return "kind-group-playlist"
+        case .kindGroupEnter: return "kind-group-enter"
+        case .kindGroupNext: return "kind-group-next"
+        case .kindGroupRandom: return "kind-group-random"
+        default: return nil
+        }
+    }
+
+    /// The symbol row; nil for a concept with its own drawing. Every row above macOS 10 has a fallback.
+    var entry: Entry? {
+        switch self {
+        case .kindAudio, .kindGroup, .kindMemo, .kindWait, .kindFade, .kindStart, .kindStop, .kindPause, .kindLoad,
+            .kindReset, .kindDevamp, .kindGoTo, .kindArm, .kindDisarm, .kindNetwork, .kindGroupPlaylist,
+            .kindGroupEnter, .kindGroupNext, .kindGroupRandom:
+            return nil
         case .stateLoaded: return Self.row("arrow.down.circle.fill")
         case .statePreWaiting: return Self.row("hourglass")
         case .stateRunning: return Self.row("play.fill")
@@ -142,23 +156,28 @@ enum Icon: CaseIterable {
         return image
     }
 
-    /// The symbol name the table gives this concept.
-    var symbol: String { entry.symbol }
+    /// The symbol name the table gives this concept; nil for one with its own drawing.
+    var symbol: String? { entry?.symbol }
 
     /// The name to ask the system for: the fallback when this system is older than the row's minimum.
-    var nameForThisSystem: String {
-        let e = entry
+    private func nameForThisSystem(_ e: Entry) -> String {
         let atLeast = ProcessInfo.processInfo.isOperatingSystemAtLeast(
             OperatingSystemVersion(majorVersion: e.minMacOS, minorVersion: 0, patchVersion: 0))
         return atLeast ? e.symbol : (e.fallback ?? e.symbol)
     }
 
-    /// The icon as an image, never nil. A symbol the system does not know is logged once and replaced
-    /// by the fallback symbol; if that is also missing the image is `label` drawn as text
-    /// (`compact`: its first letter, for a slot only 16 points wide).
+    /// The icon as an image, never nil. A symbol the system does not know (or a drawing missing from
+    /// the bundle) is logged once and replaced by the fallback symbol; if that is also missing the
+    /// image is `label` drawn as text (`compact`: its first letter, for a slot only 16 points wide).
     func image(_ label: String, compact: Bool = false) -> NSImage {
         if self == .transportPanic || self == .activeCuePanic { return Self.fadeOut(label) }
-        let first = nameForThisSystem
+        guard let entry else {
+            let name = drawing ?? ""
+            if let image = IconLookup.shared.drawing(name, description: label) { return image }
+            IconLookup.shared.reportMissing(name, concept: self)
+            return IconLookup.textImage(label, compact: compact)
+        }
+        let first = nameForThisSystem(entry)
         if let image = IconLookup.shared.image(first, description: label) { return image }
         IconLookup.shared.reportMissing(first, concept: self)
         if let fb = entry.fallback, fb != first, let image = IconLookup.shared.image(fb, description: label) {
@@ -167,20 +186,21 @@ enum Icon: CaseIterable {
         return IconLookup.textImage(label, compact: compact)
     }
 
-    /// True when a symbol (not the text stand-in) shows for this icon on this system.
+    /// True when a symbol or drawing (not the text stand-in) shows for this icon on this system.
     var resolvesToSymbol: Bool {
-        if IconLookup.shared.image(nameForThisSystem, description: nil) != nil { return true }
+        guard let entry else { return IconLookup.shared.drawing(drawing ?? "", description: nil) != nil }
+        if IconLookup.shared.image(nameForThisSystem(entry), description: nil) != nil { return true }
         if let fb = entry.fallback { return IconLookup.shared.image(fb, description: nil) != nil }
         return false
     }
 }
 
-/// The system lookup behind `Icon`, with a seam so a test can make a name vanish (a symbol the
-/// running macOS lacks) and see the text stand-in. Each missing name is logged once.
+/// The lookup behind `Icon`, with a seam so a test can make a name vanish (a symbol the running
+/// macOS lacks, a drawing missing from the bundle) and see the text stand-in. Each missing name is logged once.
 final class IconLookup: @unchecked Sendable {
     static let shared = IconLookup()
     private static let systemHas: @Sendable (String) -> Bool = {
-        NSImage(systemSymbolName: $0, accessibilityDescription: nil) != nil
+        NSImage(systemSymbolName: $0, accessibilityDescription: nil) != nil || NSImage(named: $0) != nil
     }
 
     private let lock = NSLock()
@@ -195,13 +215,25 @@ final class IconLookup: @unchecked Sendable {
         return exists ? NSImage(systemSymbolName: name, accessibilityDescription: description) : nil
     }
 
+    /// One of openLab's own drawings from the asset catalog, as a template so it takes the control's
+    /// tint. A copy: `NSImage(named:)` hands out one shared object, and each use carries its own label.
+    func drawing(_ name: String, description: String?) -> NSImage? {
+        lock.lock()
+        let exists = has(name)
+        lock.unlock()
+        guard exists, let image = NSImage(named: name)?.copy() as? NSImage else { return nil }
+        image.isTemplate = true
+        image.accessibilityDescription = description
+        return image
+    }
+
     func reportMissing(_ name: String, concept: Icon) {
         lock.lock()
         let first = reported.insert(name).inserted
         lock.unlock()
         if first {
             log.error(
-                "SF Symbol \(name, privacy: .public) is missing for \(String(describing: concept), privacy: .public)")
+                "Icon \(name, privacy: .public) is missing for \(String(describing: concept), privacy: .public)")
         }
     }
 

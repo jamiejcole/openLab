@@ -164,6 +164,15 @@ final class CueEditingTests: XCTestCase {
             await assertEventually("\(kind) selected") { h.vc.selectedIDs() == [new] }
             XCTAssertEqual(h.vc.node(new)?.cue.kindType, kind.wireType, "\(kind)")
             XCTAssertNotNil(h.cell("number", new), "\(kind) has a row")
+            // Its type column shows openLab's own drawing for the kind (not a text stand-in), on
+            // the 16-point grid and read out as the kind's name.
+            let icon = try XCTUnwrap(h.cell("type", new)).images[0]
+            let style = try XCTUnwrap(CueKindStyle.typeStyle(kind: h.vc.node(new)?.cue.raw["kind"]), "\(kind)")
+            XCTAssertNotNil(style.icon.drawing, "\(kind)")
+            XCTAssertTrue(style.icon.resolvesToSymbol, "\(kind)")
+            XCTAssertFalse(icon.isHidden, "\(kind)")
+            XCTAssertEqual(icon.image?.size, NSSize(width: 16, height: 16), "\(kind)")
+            XCTAssertEqual(icon.accessibilityLabel(), style.label, "\(kind)")
         }
         XCTAssertTrue(log.notices.isEmpty, "\(log.notices)")
     }

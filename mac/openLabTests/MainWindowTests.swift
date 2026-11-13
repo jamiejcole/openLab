@@ -269,7 +269,15 @@ final class MainWindowTests: XCTestCase {
 
     func testEveryIconAndFallbackResolves() {
         for icon in Icon.allCases {
-            let e = icon.entry
+            guard let e = icon.entry else {
+                // One of openLab's own drawings: in the bundle, a template, on the 16-point grid.
+                let image = icon.image("label")
+                XCTAssertTrue(icon.resolvesToSymbol, "\(icon)")
+                XCTAssertTrue(image.isTemplate, "\(icon)")
+                XCTAssertEqual(image.size, NSSize(width: 16, height: 16), "\(icon)")
+                XCTAssertEqual(image.accessibilityDescription, "label", "\(icon)")
+                continue
+            }
             XCTAssertNotNil(NSImage(systemSymbolName: e.symbol, accessibilityDescription: nil), "\(icon) \(e.symbol)")
             XCTAssertTrue(icon.resolvesToSymbol, "\(icon)")
             if let fb = e.fallback {
@@ -300,7 +308,9 @@ final class MainWindowTests: XCTestCase {
         _ = Icon.settings.image("Settings")
         XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape"])
         _ = Icon.kindAudio.image("Audio")
-        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape", "speaker.wave.2"])
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape", "kind-audio"])
+        XCTAssertEqual(Icon.kindAudio.image("Audio").accessibilityDescription, "Audio")
+        XCTAssertFalse(Icon.kindAudio.resolvesToSymbol)
         XCTAssertFalse(Icon.settings.resolvesToSymbol)
     }
 
