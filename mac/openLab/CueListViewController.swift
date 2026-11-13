@@ -288,6 +288,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// The cues the row menu was opened on: what its commands act on, wherever the selection has
     /// moved by the time one is chosen (the engine's updates apply while a menu is open).
     var rowMenuCues: [ModelID]?
+    /// The row menu's Paste Cue Properties: the sheet for these cues.
+    var onPasteProperties: (([ModelID]) -> Void)?
 
     /// `outlineView` is a parameter so tests can count the calls made on it.
     init(store: WorkspaceStore, outlineView: NSOutlineView = CueOutlineView()) {

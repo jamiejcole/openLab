@@ -8,7 +8,7 @@ import AppKit
 /// are the list's own. Show Mode locks the editing items exactly as the Edit menu does.
 enum CueRowMenu {
     enum Item: CaseIterable {
-        case preview, load, panic, movePlayhead, revealTarget, cut, copy, paste, delete
+        case preview, load, panic, movePlayhead, revealTarget, cut, copy, paste, pasteProperties, delete
 
         var titleKey: String {
             switch self {
@@ -20,6 +20,7 @@ enum CueRowMenu {
             case .cut: return "menu.edit.cut"
             case .copy: return "menu.edit.copy"
             case .paste: return "menu.edit.paste"
+            case .pasteProperties: return "menu.edit.pasteProperties"
             case .delete: return "menu.edit.delete"
             }
         }
@@ -33,6 +34,8 @@ enum CueRowMenu {
         var clickedHasMedia: Bool
         var anyActive: Bool
         var canPaste: Bool
+        /// The pasteboard holds a cue whose properties can be pasted.
+        var canPasteProperties: Bool
         var showMode: Bool
     }
 
@@ -46,6 +49,7 @@ enum CueRowMenu {
         case .movePlayhead: return !c.clickedIsPlayhead
         case .revealTarget: return c.clickedHasMedia
         case .paste: return c.canPaste && !locked(item, c)
+        case .pasteProperties: return c.canPasteProperties && c.selectedCount > 0 && !locked(item, c)
         }
     }
 
@@ -55,6 +59,7 @@ enum CueRowMenu {
         case .cut: return .cut
         case .copy: return .copy
         case .paste: return .paste
+        case .pasteProperties: return .pasteProperties
         case .delete: return .delete
         default: return nil
         }
@@ -100,7 +105,8 @@ extension CueListViewController: NSMenuDelegate {
             clickedIsPlayhead: isPlayheadRow(node.id),
             clickedHasMedia: revealURL(node) != nil,
             anyActive: store.cueStates.values.contains { $0.state.isActive } || !store.previewing.isEmpty,
-            canPaste: pasteboard.data(forType: CueEditor.pasteType) != nil, showMode: store.showMode)
+            canPaste: pasteboard.data(forType: CueEditor.pasteType) != nil,
+            canPasteProperties: editor?.clipboardCue != nil, showMode: store.showMode)
         func entry(_ item: CueRowMenu.Item, _ action: Selector, command: String? = nil) -> NSMenuItem {
             let e = NSMenuItem(title: loc(item.titleKey), action: action, keyEquivalent: "")
             e.target = self
@@ -121,6 +127,7 @@ extension CueListViewController: NSMenuDelegate {
             entry(.cut, #selector(rowCut(_:))),
             entry(.copy, #selector(rowCopy(_:))),
             entry(.paste, #selector(rowPaste(_:))),
+            entry(.pasteProperties, #selector(rowPasteProperties(_:))),
             entry(.delete, #selector(rowDelete(_:))),
         ]
         items.compactMap { $0 }.forEach(menu.addItem)
@@ -208,6 +215,7 @@ extension CueListViewController: NSMenuDelegate {
     @objc func rowCut(_ sender: Any?) { Task { [rowMenuCues] in await editor?.cutSelection(of: rowMenuCues) } }
     @objc func rowCopy(_ sender: Any?) { Task { [rowMenuCues] in await editor?.copySelection(of: rowMenuCues) } }
     @objc func rowPaste(_ sender: Any?) { Task { [rowMenuCues] in await editor?.paste(after: rowMenuCues) } }
+    @objc func rowPasteProperties(_ sender: Any?) { onPasteProperties?(rowMenuCues ?? selectedIDs()) }
     @objc func rowDelete(_ sender: Any?) { Task { [rowMenuCues] in await editor?.deleteSelection(of: rowMenuCues) } }
 
     @objc func rowMovePlayhead(_ sender: NSMenuItem) {

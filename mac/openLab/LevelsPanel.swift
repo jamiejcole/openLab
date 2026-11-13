@@ -85,6 +85,14 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         }
     }
     private(set) var levels: LevelSet?
+    /// Levels that differ between the cues shown (several selected): their boxes and field show no value.
+    var mixed: Set<LevelSet.Slot> = [] {
+        didSet {
+            guard mixed != oldValue else { return }
+            matrix.mixed = mixed
+            refreshStrip()
+        }
+    }
     private(set) var selection: LevelSet.Slot = .master
     /// The gesture a drag in progress belongs to; model updates wait until it ends.
     private(set) var gesture: Int?
@@ -324,7 +332,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         cellLabel.stringValue = Self.name(of: slot)
         let active = levels.isActive(slot)
         let db = levels.db(slot)
-        if !isDirty { levelField.stringValue = db.map(LevelText.format) ?? "" }
+        if !isDirty { levelField.stringValue = mixed.contains(slot) ? "" : db.map(LevelText.format) ?? "" }
         let free = !isLocked
         // A fader runs from the minimum limit and stops at 0 dB (QLab manual p. 181), or at the
         // maximum if that is lower; a level above it shows pinned there.

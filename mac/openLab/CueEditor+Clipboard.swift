@@ -179,6 +179,28 @@ extension CueEditor {
         if !pasted.isEmpty { cueList?.selectAsUser(Array(pasted)) }
     }
 
+    // MARK: Paste Cue Properties
+
+    /// The cue Paste Cue Properties copies from: the first cue on the pasteboard (QLab 5, manual
+    /// p. 154); nil when the pasteboard holds no cue copied in openLab.
+    var clipboardCue: Cue? {
+        guard let text = pasteboard.string(forType: Self.pasteType), let first = Self.decodeClipboard(text)?.first
+        else { return nil }
+        return try? Cue(json: first)
+    }
+
+    /// Sets the `ticked` properties of `source` on `cues` (those still in the show) as one undo step.
+    /// A cue that cannot take a property is left as it is. Playing cues take the new values at once,
+    /// as any edit of them does (a level is heard changing).
+    func pasteProperties(_ ticked: Set<PasteProperty>, from source: Cue, onto cues: [ModelID]) async {
+        guard await begin(), let model = store.model else { return }
+        let targets = cues.compactMap { model.cue($0) }
+        guard let command = Command.transaction(PasteProperty.commands(ticked, from: source, to: targets)) else {
+            return
+        }
+        _ = report(await store.send(command: command))
+    }
+
     // MARK: Delete numbers
 
     /// Clears the number of every selected cue (QLab: Tools > Delete Numbers of Selected Cues, Cmd-D).

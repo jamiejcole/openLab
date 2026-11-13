@@ -42,13 +42,13 @@ extension InspectorViewController {
     }
 
     @objc func outputPatchChosen() {
-        guard !isLocked, let cue = cueForEdit, cue.kindType == "audio" else { return }
         let i = outputPatchPopup.indexOfSelectedItem
         guard outputPatchIDs.indices.contains(i) else { return }
         let id = outputPatchIDs[i]
-        guard id.raw != (cue.raw["kind"]?["patch"]?.stringValue ?? "") else { return }
-        messageLabel.stringValue = ""
-        // A refusal (the engine's own check of the patch) shows the cue's patch again.
-        send(.setProperty(cue.id, .kindFields(["patch": .string(id.raw)])), cue: cue.id, key: "patch", revert: [])
+        // A refusal (the engine's own check of the patch) shows the cues' patches again.
+        sendEach(key: "patch") { cue in
+            guard cue.kindType == "audio", id.raw != (cue.raw["kind"]?["patch"]?.stringValue ?? "") else { return nil }
+            return .setProperty(cue.id, .kindFields(["patch": .string(id.raw)]))
+        }
     }
 }

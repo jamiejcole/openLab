@@ -1341,7 +1341,7 @@ extension CueListTests {
         XCTAssertTrue(edit.items.allSatisfy { !$0.isEnabled })
         let context = CueRowMenu.Context(
             selectedCount: 1, anyPreviewable: true, clickedIsPlayhead: false, clickedHasMedia: true,
-            anyActive: true, canPaste: true, showMode: true)
+            anyActive: true, canPaste: true, canPasteProperties: true, showMode: true)
         for item in CueRowMenu.Item.allCases {
             XCTAssertEqual(
                 CueRowMenu.isEnabled(item, context), CueRowMenu.lockedEdit(item) == nil, "\(item)")

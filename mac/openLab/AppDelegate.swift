@@ -183,6 +183,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if let text = anyText { return text.paste(sender) }
         onSelection { editor, cues in await editor.paste(after: cues) }
     }
+    /// Edit > Paste Cue Properties (ED-06): the sheet for the selected cues.
+    @MainActor @objc func pasteCueProperties(_ sender: Any?) {
+        guard let front = appController.frontController else { return }
+        front.promptPasteProperties(onto: front.cueList.selectedIDs())
+    }
     /// Edit > Find (ED-09); Show Mode greys all three (`validateMenuItem`).
     @MainActor @objc func showFind(_ sender: Any?) { appController.frontController?.toggleFind() }
     @MainActor @objc func findNextCue(_ sender: Any?) { appController.frontController?.findNext(forward: true) }
@@ -306,6 +311,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(selectNextCue(_:))?, #selector(selectPreviousCue(_:))?:
             // Not while a text field is edited: Cmd-Up / Down move its insertion point.
             return appController.frontController != nil && !appController.isTextEditing()
+        case #selector(pasteCueProperties(_:))?:
+            // A cue copied and cues to paste onto; not while text is typed (the key is the text's then).
+            return textEditor == nil && (appController.frontController?.canPasteProperties ?? false)
         case #selector(deleteNumbers(_:))?, #selector(deleteCues(_:))?:
             return textEditor == nil && canEditFront
         case #selector(undoEdit(_:))?: return textEditor != nil || (undoEditor?.canUndo ?? false)

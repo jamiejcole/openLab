@@ -61,13 +61,15 @@ extension InspectorViewController {
     }
 
     @objc func networkPatchChosen() {
-        guard !isLocked, let cue = cueForEdit, cue.kindType == "network" else { return }
         let i = networkPatchPopup.indexOfSelectedItem
         guard networkPatchIDs.indices.contains(i) else { return }
         let id = networkPatchIDs[i] ?? .unpatched
-        guard id.raw != (cue.raw["kind"]?["destination"]?.stringValue ?? "") else { return }
-        messageLabel.stringValue = ""
-        send(.setProperty(cue.id, .destination(id)), cue: cue.id, key: "destination", revert: [])
+        sendEach(key: "destination") { cue in
+            guard cue.kindType == "network", id.raw != (cue.raw["kind"]?["destination"]?.stringValue ?? "") else {
+                return nil
+            }
+            return .setProperty(cue.id, .destination(id))
+        }
     }
 
     /// Sends the message now (the engine's send-now, `preview` on a Network cue). Text typed and not

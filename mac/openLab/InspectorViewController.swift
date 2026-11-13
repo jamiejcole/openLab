@@ -67,6 +67,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// A levels or fade edit sends only its changed `kind_fields`, but is built from the kind as the
     /// previous unanswered edit left it, so those fields start from what was sent (as `pendingTriggers`).
     var pendingKinds: [ModelID: JSONValue] = [:]
+    /// Several Audio cues shown: the levels the Levels tab last showed or sent, which an edit is
+    /// measured from (only what it changed goes to each cue).
+    var batchLevels: LevelSet?
     static let groupModes = [
         "timeline", "playlist", "start_first_and_enter", "start_first_and_go_to_next", "start_random",
     ]
@@ -153,7 +156,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// The selected cue as edits should see it: the model's, with unanswered triggers applied.
     var cueForEdit: Cue? { cue.map(withPendingEdits) }
 
-    private func withPendingEdits(_ cue: Cue) -> Cue {
+    func withPendingEdits(_ cue: Cue) -> Cue {
         var c = cue
         if let t = pendingTriggers[c.id] { c.raw.set("triggers", t) }
         if let k = pendingKinds[c.id] { c.raw.set("kind", k) }
@@ -533,7 +536,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     /// Shows the Mode tab for a Group cue and hides it otherwise; the controls follow the model.
-    private func renderMode(_ cue: Cue) {
+    func renderMode(_ cue: Cue) {
         let mode = cue.kindType == "group" ? cue.raw["kind"]?["mode"] : nil
         guard let mode else { return }
         let type = mode["type"]?.stringValue ?? "timeline"
@@ -655,17 +658,21 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// Puts the model's values in the controls. A field being edited keeps its text unless `force`.
     func render(force: Set<InspectorField> = []) {
         _ = view
+        if isBatch, let model = store.model, case let cues = batchCues, !cues.isEmpty {
+            return renderBatch(cues, model: model, force: force)
+        }
         guard let cue, let model = store.model else {
             tabView.isHidden = true
             messageLabel.isHidden = true
             emptyLabel.isHidden = false
-            emptyLabel.stringValue = loc(selection.count > 1 ? "inspector.multiple" : "inspector.empty")
+            emptyLabel.stringValue = loc("inspector.empty")
             updatePreviewButton()  // nothing to preview
             return
         }
         tabView.isHidden = false
         messageLabel.isHidden = false
         emptyLabel.isHidden = true
+        endBatchControls()
         for f in InspectorField.allCases where force.contains(f) || !isEditing(f) {
             let text = InspectorEdit.display(f, cue: cue, model: model, media: store.mediaDurations[cue.id])
             if f == .notes {
@@ -745,7 +752,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         ]
     }
 
-    private func applyLock() {
+    func applyLock() {
         _ = view
         // Callers commit first (`WorkspaceWindowController.requestShowMode`); text still dirty here
         // is dropped and the model's text put back, never left on screen as if saved.
@@ -772,7 +779,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         dirty.remove(f)
         let typedFor = f == .notes ? notesTypedFor : nil
         if f == .notes { notesTypedFor = nil }
-        guard !isLocked, let cue = cueForEdit, let model = store.model else {
+        guard !isLocked, isBatch || cueForEdit != nil, let model = store.model else {
             // The cue went while its notes were typed: the text is offered, not dropped.
             if wasDirty, !isLocked, let typedFor {
                 let text = notesView.string
@@ -781,6 +788,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             return true
         }
         let text = f == .notes ? notesView.string : (field(f)?.stringValue ?? "")
+        if isBatch { return commitBatch(f, text: text, typed: wasDirty) }
+        guard let cue = cueForEdit else { return true }
         switch InspectorEdit.command(f, text: text, cue: cue, model: model, typed: wasDirty) {
         case .failure(let r):
             show(rejection: r)
@@ -828,11 +837,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         render(force: [f])
     }
 
+    /// `kinds`: the kind each cue of a several-cue edit will have once it lands, which their next
+    /// kind edits start from until the engine answers (one cue's comes from `command` itself).
     func send(
-        _ command: Command, cue: ModelID, key: String, revert: Set<InspectorField>, coalesce: String? = nil
+        _ command: Command, cue: ModelID, key: String, revert: Set<InspectorField>, coalesce: String? = nil,
+        kinds: [ModelID: JSONValue] = [:]
     ) {
         guard !isLocked else { return }
-        let seqKey = "\(cue)/\(key)"
+        // The selection the edit was made for: a several-cue edit's refusal shows their values again
+        // only while the same cues are shown.
+        let shown = selection
+        let seqKey = "\(shown.count > 1 ? "batch" : cue.raw)/\(key)"
         let n = (editSeq[seqKey] ?? 0) + 1
         editSeq[seqKey] = n
         nextTask += 1
@@ -842,6 +857,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         if let sentTriggers { pendingTriggers[cue] = sentTriggers }
         let sentKind = property.flatMap { pendingKind(cue, after: $0) }
         if let sentKind { pendingKinds[cue] = sentKind }
+        for (id, kind) in kinds { pendingKinds[id] = kind }
         inFlight[taskID] = Task { [weak self] in
             guard let self else { return }
             // Cleared on success and on refusal alike. On success the model already holds the change:
@@ -852,6 +868,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 inFlight[taskID] = nil
                 if let sentTriggers, pendingTriggers[cue] == sentTriggers { pendingTriggers[cue] = nil }
                 if let sentKind, pendingKinds[cue] == sentKind { pendingKinds[cue] = nil }
+                for (id, kind) in kinds where pendingKinds[id] == kind { pendingKinds[id] = nil }
             }
             let outcome = await store.send(command: command, coalesce: coalesce)
             // Answered: the model holds the edit (or refused it), so the unanswered copy must not hide it
@@ -861,12 +878,18 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 // The panels were last drawn with the overlay; show the model's kind now it is gone.
                 if selection == [cue] { render() }
             }
+            if !kinds.isEmpty, kinds.contains(where: { pendingKinds[$0.key] == $0.value }) {
+                for (id, kind) in kinds where pendingKinds[id] == kind { pendingKinds[id] = nil }
+                if selection == shown { render() }
+            }
             if case .failure(let error) = outcome {
                 if key == "\(InspectorField.notes)", let text = property?["value"]?.stringValue {
                     // The notice carries the text (Copy Text); the field shows what the cue holds, and
                     // Close and Save go on.
                     onNotesNotSaved?(cue, text, error)
-                    guard selection == [cue], editSeq[seqKey] == n else { return }
+                    guard selection == [cue] || (shown.count > 1 && selection == shown), editSeq[seqKey] == n else {
+                        return
+                    }
                     render(force: revert.subtracting(dirty))
                     return
                 }
@@ -877,7 +900,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                     showRefusal(loc("inspector.failed"))
                 }
                 // A newer edit of the same thing is in flight or being typed: it decides what shows.
-                guard selection == [cue], editSeq[seqKey] == n else { return }
+                guard selection == [cue] || (shown.count > 1 && selection == shown), editSeq[seqKey] == n else {
+                    return
+                }
                 render(force: revert.subtracting(dirty))
             }
         }
@@ -958,51 +983,58 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     @objc private func popupChanged(_ sender: NSPopUpButton) {
-        guard !isLocked, let cue else { return }
+        guard !isLocked else { return }
         let i = sender.indexOfSelectedItem
         if sender === colourPopup, Self.colours.indices.contains(i) {
-            send(.setProperty(cue.id, .color(Self.colours[i])), cue: cue.id, key: "colour", revert: [])
+            sendEach(key: "colour") { .setProperty($0.id, .color(Self.colours[i])) }
         } else if sender === secondTriggerPopup, Self.secondTriggers.indices.contains(i) {
-            send(
-                .setProperty(cue.id, .secondTrigger(Self.secondTriggers[i])), cue: cue.id, key: "second", revert: [])
+            sendEach(key: "second") { .setProperty($0.id, .secondTrigger(Self.secondTriggers[i])) }
         } else if sender === groupModePopup, Self.groupModes.indices.contains(i) {
-            // Choosing the type the cue already has changes nothing, and must not clear the
+            // Choosing the type a cue already has changes nothing, and must not clear the
             // playlist's loop and shuffle. A new type starts from what the model holds (a type
             // that has no loop or shuffle holds none).
-            let mode = cue.raw["kind"]?["mode"]
             let type = Self.groupModes[i]
-            guard type != (mode?["type"]?.stringValue ?? "timeline") else { return }
-            let playlist = type == "playlist"
-            sendGroupMode(
-                cue, type: type, loop: playlist && mode?["loop"] == .bool(true),
-                shuffle: playlist && mode?["shuffle"] == .bool(true))
+            sendEach(key: "groupMode") { cue in
+                let mode = cue.raw["kind"]?["mode"]
+                guard cue.kindType == "group", type != (mode?["type"]?.stringValue ?? "timeline") else { return nil }
+                let playlist = type == "playlist"
+                return .setProperty(
+                    cue.id,
+                    .groupMode(
+                        type: type, loop: playlist && mode?["loop"] == .bool(true),
+                        shuffle: playlist && mode?["shuffle"] == .bool(true)))
+            }
         } else if sender === continuePopup, Self.continueModes.indices.contains(i) {
-            send(.setProperty(cue.id, .continueMode(Self.continueModes[i])), cue: cue.id, key: "continue", revert: [])
+            sendEach(key: "continue") { .setProperty($0.id, .continueMode(Self.continueModes[i])) }
         }
-    }
-
-    private func sendGroupMode(_ cue: Cue, type: String, loop: Bool, shuffle: Bool) {
-        send(
-            .setProperty(cue.id, .groupMode(type: type, loop: loop, shuffle: shuffle)), cue: cue.id, key: "groupMode",
-            revert: [])
     }
 
     @objc private func checkChanged(_ sender: NSButton) {
-        guard !isLocked, let cue else { return }
-        let on = sender.state == .on
+        guard !isLocked else { return }
+        // A click on a mixed box sets the value on every cue; the box takes two states from then on.
+        let on = sender.state != .off
+        sender.allowsMixedState = false
+        sender.state = on ? .on : .off
         if sender === groupLoopCheck || sender === groupShuffleCheck {
-            sendGroupMode(
-                cue, type: "playlist", loop: sender === groupLoopCheck ? on : groupLoopCheck.state == .on,
-                shuffle: sender === groupShuffleCheck ? on : groupShuffleCheck.state == .on)
+            let loop = sender === groupLoopCheck
+            // The other box as shown (a click on it may not be answered yet); a mixed one is each cue's own.
+            let other = loop ? groupShuffleCheck : groupLoopCheck
+            let shown: Bool? = other.state == .mixed ? nil : other.state == .on
+            sendEach(key: "groupMode") { cue in
+                let mode = cue.raw["kind"]?["mode"]
+                guard cue.kindType == "group" else { return nil }
+                let own = shown ?? (mode?[loop ? "shuffle" : "loop"] == .bool(true))
+                return .setProperty(
+                    cue.id, .groupMode(type: "playlist", loop: loop ? on : own, shuffle: loop ? own : on))
+            }
             return
         }
         if sender === onReleaseCheck {
-            send(.setProperty(cue.id, .secondTriggerOnRelease(on)), cue: cue.id, key: "release", revert: [])
+            sendEach(key: "release") { .setProperty($0.id, .secondTriggerOnRelease(on)) }
             return
         }
-        send(
-            .setProperty(cue.id, sender === flaggedCheck ? .flagged(on) : .armed(on)), cue: cue.id,
-            key: sender === flaggedCheck ? "flagged" : "armed", revert: [])
+        let flagged = sender === flaggedCheck
+        sendEach(key: flagged ? "flagged" : "armed") { .setProperty($0.id, flagged ? .flagged(on) : .armed(on)) }
     }
 }
 

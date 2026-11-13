@@ -26,6 +26,10 @@ final class LevelMatrixView: NSView {
     var levels: LevelSet? {
         didSet { needsDisplay = true }
     }
+    /// Levels that differ between the cues shown (several selected): drawn as mixed, not as a value.
+    var mixed: Set<LevelSet.Slot> = [] {
+        didSet { if mixed != oldValue { needsDisplay = true } }
+    }
     private(set) var inputs = 0
     private(set) var outputCount = 0
     var selection: LevelSet.Slot = .master {
@@ -169,7 +173,7 @@ final class LevelMatrixView: NSView {
             path.stroke()
         }
         guard active, let db else { return }
-        let text = (muted ? "M " : "") + LevelText.format(db)
+        let text = mixed.contains(slot) ? loc("inspector.mixed.level") : (muted ? "M " : "") + LevelText.format(db)
         centred(
             text, in: r,
             attributes: [
