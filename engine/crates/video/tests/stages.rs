@@ -460,10 +460,17 @@ fn a_stage_host_slow_to_start_is_not_killed_as_hung() {
     c.stage_host = Some(host);
     c.push_log = true;
     let mut s = show_with(ws, c);
-    assert!(s.wait_for(|c| c.stage_host_pid().is_some()), "no stage host");
+    assert!(
+        s.wait_for(|c| c.stage_host_pid().is_some()),
+        "no stage host"
+    );
     let first = s.control().stage_host_pid().unwrap();
     assert!(s.wait_for(|c| !c.displays().is_empty()), "no hello");
-    assert_eq!(s.control().stage_host_pid(), Some(first), "the slow stage host was replaced");
+    assert_eq!(
+        s.control().stage_host_pid(),
+        Some(first),
+        "the slow stage host was replaced"
+    );
     assert!(!logged(&mut s, "did not answer hello"));
 }
 
@@ -736,7 +743,10 @@ cat > /dev/null"#
     clock.advance(1_000);
     s.tick();
     let said = dropped(&s.take_outbound());
-    assert!(said.is_some_and(|n| n >= 1000 - lines), "dropped lines said: {said:?}");
+    assert!(
+        said.is_some_and(|n| n >= 1000 - lines),
+        "dropped lines said: {said:?}"
+    );
     assert_eq!(
         s.control().stage_states_known(),
         1,
