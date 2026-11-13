@@ -32,7 +32,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     /// The table, built afresh on each draw: an `NSGridView` cannot remove a row holding merged
     /// cells (a warning line), so rows are never removed from it.
     private(set) var grid = NSGridView()
-    let holder = TopLeftView()
+    let holder: NSView = TopLeftView()
     let emptyLabel = NSTextField(labelWithString: loc("settings.video.none"))
     let noVideoLabel = NSTextField(wrappingLabelWithString: loc("settings.video.noVideo"))
     let messageLabel = NSTextField(wrappingLabelWithString: "")

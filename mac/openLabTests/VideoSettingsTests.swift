@@ -169,7 +169,8 @@ final class VideoSettingsTests: XCTestCase {
             XCTAssertEqual(pane.grid.numberOfRows, 1 + rows.count + warned, why)
             let controls: [NSView] =
                 pane.nameFields + pane.layerFields + pane.displayPopups + pane.blackBoxes + pane.removeButtons
-            XCTAssertEqual(pane.grid.subviews.count, 6 + controls.count + warned, why)
+            // Six headers; per row its controls and its pixel-size label; the warning lines.
+            XCTAssertEqual(pane.grid.subviews.count, 6 + controls.count + rows.count + warned, why)
             XCTAssertTrue(controls.allSatisfy { $0.superview === pane.grid }, why)
             XCTAssertEqual(pane.nameFields.map(\.stringValue), rows.map(\.name), why)
         }
