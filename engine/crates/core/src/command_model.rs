@@ -724,6 +724,7 @@ fn add_patch(
     // Load keeps an odd name, so an undo may put one back.
     if !restoring {
         check_name(&patch.name)?;
+        check_output_names(&patch.outputs)?;
     }
     let limits = ws.settings.limits();
     let mut patch = patch.clone();
@@ -778,13 +779,18 @@ fn set_patch_property(
     {
         check_name(value)?;
     }
-    // Same rule as a patch name: an over-long or control-character name is refused; an undo
-    // may put back what a loaded file had.
-    if let PatchProperty::OutputName { output, value } = property
-        && !restoring
-        && patch.outputs.get(*output).is_some_and(|o| o.name != *value)
-    {
-        check_name(value)?;
+    // Same rule as a patch name on every path that sets an output's name: an over-long or
+    // control-character name is refused; an undo may put back what a loaded file had.
+    if !restoring {
+        match property {
+            PatchProperty::OutputName { output, value }
+                if patch.outputs.get(*output).is_some_and(|o| o.name != *value) =>
+            {
+                check_name(value)?;
+            }
+            PatchProperty::Outputs { value } => check_output_names(value)?,
+            _ => {}
+        }
     }
     let mut candidate = patch.clone();
     property.write(&mut candidate)?;
@@ -922,6 +928,11 @@ fn set_network_patch_property(
 }
 
 /// Refuses a new name that load would warn about (length, control characters).
+/// Every output's name checked as a patch name is.
+fn check_output_names(outputs: &[PatchOutput]) -> Result<(), CommandError> {
+    outputs.iter().try_for_each(|o| check_name(&o.name))
+}
+
 fn check_name(name: &str) -> Result<(), CommandError> {
     name_problem(name).map_or(Ok(()), |why| Err(CommandError::InvalidValue(why)))
 }
