@@ -23,7 +23,6 @@ All dependencies must be GPLv3-compatible (`cargo deny` enforces licences). Ever
 | tempfile (dev) | temp dirs in persistence tests | MIT/Apache-2.0 |
 | proptest (dev) | property tests | MIT/Apache-2.0 |
 | objc2, objc2-foundation, objc2-core-foundation, dispatch2 | Objective-C runtime, Foundation, CoreFoundation and the main queue for the stage host (`crates/video`, macOS only); already in the tree through cpal | MIT / Zlib OR Apache-2.0 OR MIT |
-| libc | `_exit` for the stage host ending at once from any thread when the engine is gone (`crates/video`, macOS only); already in the tree through cpal and tokio | MIT/Apache-2.0 |
 | objc2-app-kit | stage host output windows, screens, accessory activation policy (`crates/video`, macOS only) | Zlib OR Apache-2.0 OR MIT |
 | objc2-core-graphics | display list, display UUIDs and pixel sizes, display reconfiguration callback (`crates/video`, macOS only) | Zlib OR Apache-2.0 OR MIT |
 | objc2-metal | stage drawing (`crates/video`, macOS only) | Zlib OR Apache-2.0 OR MIT |
@@ -37,6 +36,7 @@ Calls std lacks are declared next to their one use, each with a `// SAFETY:` com
 - `getrusage` / `GetProcessTimes` (`diag::cpu`)
 - `pthread_sigmask` / `sigwait` (`platform::signals`)
 - ColorSync `CGDisplayCreateUUIDFromDisplayID` (`openlab-video`, `platform::mac::displays`)
+- `_exit` (`openlab-video`, `platform::mac::end_now`)
 - IOKit `IOPMAssertionCreateWithName` / `IOPMAssertionRelease` and CoreFoundation `CFStringCreateWithBytes` / `CFRelease` (`platform::power`; macOS frameworks linked by name)
 
 ## No `tracing`

@@ -30,7 +30,6 @@ openlab-core = { version = "0.0.1", path = "../core" }
 [target.'cfg(target_os = "macos")'.dependencies]
 # The system frameworks' bindings, default features off: only the headers used are built.
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std"] }
-libc = "0.2"
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-quartz-core", "NSApplication", "NSColor", "NSGraphics", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFString", "CFUUID"] }

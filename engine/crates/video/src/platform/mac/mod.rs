@@ -275,9 +275,13 @@ pub fn window_report() -> Option<WindowReport> {
 /// Ends the process at once, from any thread: no exit handlers and no stdio flush, so a hung
 /// main thread holding a lock cannot keep the stage host alive after the engine is gone.
 fn end_now() -> ! {
-    // SAFETY: `_exit` takes a status and never returns; nothing is left to clean up that the
-    // kernel does not (windows go with the process).
-    unsafe { libc::_exit(0) }
+    unsafe extern "C" {
+        fn _exit(status: std::ffi::c_int) -> !;
+    }
+    // SAFETY: `_exit` is the C library's, declared with its C signature; it takes a status and
+    // never returns, and nothing is left to clean up that the kernel does not (windows go with
+    // the process). Covered by the test of the stage host ending when its input closes.
+    unsafe { _exit(0) }
 }
 
 /// The AppKit screen of CoreGraphics display `cg`.
