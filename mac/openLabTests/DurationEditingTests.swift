@@ -384,7 +384,7 @@ final class CueListDurationTests: XCTestCase {
         let editor = CueEditor(store: h.store, cueList: h.vc)
         let log = CueEditingTests.SendLog(h.rig)
         editor.notify = { log.notices.append($0) }
-        h.vc.onEditCell = { id, column, text in Task { await editor.setCell(column, of: id, text: text) } }
+        h.vc.onEditCell = { id, column, text in _ = await editor.setCell(column, of: id, text: text) }
         return (h, editor, log, window)
     }
 
@@ -415,6 +415,46 @@ final class CueListDurationTests: XCTestCase {
         XCTAssertEqual(h.vc.cellEditor.accessibilityIdentifier(), AX.cueTargetEditor)
         h.vc.cancelCellEdit()
         XCTAssertEqual(log.sent, 0, "cancelled: nothing sent")
+    }
+
+    /// A value typed in the list and committed: the row never shows the old value again. The field
+    /// stays over the cell with the typed text until the engine has answered, and when it goes the
+    /// cell already holds the new value.
+    func testACommittedCellNeverShowsTheOldValueAgain() async throws {
+        let (h, _, _, window) = try await harness()
+        defer { window.orderOut(nil) }
+        func shown(_ column: String, _ id: ModelID) -> String? {
+            let row = h.spy.row(forItem: h.vc.node(id))
+            let index = h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
+            return (h.spy.view(atColumn: index, row: row, makeIfNecessary: true) as? CueCell)?.label.stringValue
+        }
+        for (column, id, old, typed, new) in [
+            ("name", H.intro, "Intro", "Overture", "Overture"), ("number", H.intro, "1", "7", "7"),
+            ("duration", DurationEditingTests.wait, "00:02.00", "4", "00:04.00"),
+        ] {
+            XCTAssertEqual(shown(column, id), old, column)
+            XCTAssertTrue(h.vc.beginCellEdit(id, column: column), column)
+            h.vc.cellEditor.stringValue = typed
+            endEditing(h.vc)
+            // Until the cell holds the new value the field covers it, still reading what was typed.
+            let left = await eventually {
+                if h.vc.cellEditor.superview == nil { return true }
+                XCTAssertEqual(h.vc.cellEditor.stringValue, typed, column)
+                return false
+            }
+            XCTAssertTrue(left, "the field leaves the \(column) cell once the engine has answered")
+            XCTAssertEqual(shown(column, id), new, "the \(column) cell was already redrawn when the field left")
+            XCTAssertNil(h.vc.editingCell)
+        }
+        // A second edit begun at once takes the field over; the first edit's answer does not close it.
+        XCTAssertTrue(h.vc.beginCellEdit(H.intro, column: "name"))
+        h.vc.cellEditor.stringValue = "Prelude"
+        endEditing(h.vc)
+        XCTAssertTrue(h.vc.beginCellEdit(H.intro, column: "number"))
+        let renamed = await eventually { shown("name", H.intro) == "Prelude" }
+        XCTAssertTrue(renamed)
+        XCTAssertTrue(h.vc.cellEditor.superview === h.vc.outlineView, "the open number field stays")
+        h.vc.cancelCellEdit()
     }
 
     func testOnlyWaitAndFadeCellsOpen() async throws {
@@ -487,13 +527,13 @@ final class CueListDurationTests: XCTestCase {
         h.vc.cellEditor.stringValue = "1:15"
         endEditing(h.vc)
         XCTAssertNil(h.vc.editingCell?.id)
-        XCTAssertNil(h.vc.cellEditor.superview)
         await assertEventually("the engine stored it") {
             h.store.model?.cue(DurationEditingTests.wait)?.raw["kind"]?["duration"]?.doubleValue == 75
         }
         await assertEventually("the cell shows the stored duration") {
             h.cell("duration", DurationEditingTests.wait)?.label.stringValue == "01:15.00"
         }
+        await assertEventually("the field has left the cell") { h.vc.cellEditor.superview == nil }
         XCTAssertTrue(log.notices.isEmpty)
     }
 
