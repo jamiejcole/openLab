@@ -1,130 +1,58 @@
 {
-  "about": "Every cue kind's own drawing: in the cue toolbar and in the type column of a new workspace with one cue of each kind.",
-  "show": "new",
+  "about": "Every cue kind's own drawing in the cue toolbar and the type column, a Group in each mode, each mode group selected so the inspector's icon and a highlighted row show, then the least window. Dark.",
+  "show": "cue-kind-icons/cue-kind-icons.openlab",
   "window": {
     "width": 1200,
-    "height": 800
+    "height": 1150
   },
   "steps": [
-    {
-      "shot": "empty-toolbar"
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.0242,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.0608,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.0975,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.1342,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.1708,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.1992,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.2275,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.2558,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.2842,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.3125,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.3408,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.3692,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.3975,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.4258,
-        0.5
-      ]
-    },
-    {
-      "click": "cue-toolbar",
-      "at": [
-        0.4542,
-        0.5
-      ]
-    },
     {
       "shot": "every-kind"
     },
     {
+      "select": "14"
+    },
+    {
+      "shot": "playlist-group-selected"
+    },
+    {
+      "select": "15"
+    },
+    {
+      "shot": "random-group-selected"
+    },
+    {
+      "select": "16"
+    },
+    {
+      "shot": "enter-group-selected"
+    },
+    {
+      "select": "17"
+    },
+    {
+      "shot": "next-group-selected"
+    },
+    {
+      "select": "4"
+    },
+    {
+      "shot": "timeline-group-selected"
+    },
+    {
+      "select": "3"
+    },
+    {
+      "shot": "fade-selected"
+    },
+    {
       "resize": [
-        760,
-        560
+        1024,
+        700
       ]
     },
     {
-      "shot": "every-kind-narrow"
+      "shot": "least-window"
     }
   ]
 }
