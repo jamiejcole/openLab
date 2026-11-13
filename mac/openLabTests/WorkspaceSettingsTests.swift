@@ -489,6 +489,30 @@ final class WorkspaceSettingsTests: XCTestCase {
         }
     }
 
+    /// A connected device the engine cannot use (wrong rate, a failed first open): the row and the
+    /// editor say why in the engine's words, never "not connected"; one whose first open is still
+    /// under way says so.
+    func testAConnectedDeviceThatCannotBeUsedIsWarnedWithItsReason() async throws {
+        let (_, sc) = try await open()
+        let row = try XCTUnwrap(sc.model.patches.first)
+        func resolution(_ json: String) throws -> WireVariant {
+            try JSONDecoder().decode(WireVariant.self, from: Data(json.utf8))
+        }
+        let unusable = PatchRow(
+            id: row.id, name: row.name, outputCount: 2, mapping: row.mapping,
+            resolution: try resolution(
+                #"{"type":"device_missing","device":"openLab Virtual Output","reason":"it cannot play at 48000 Hz"}"#))
+        XCTAssertEqual(
+            sc.model.problem(of: unusable), .deviceUnusable(device: device, reason: "it cannot play at 48000 Hz"))
+        XCTAssertEqual(
+            sc.model.problemText(try XCTUnwrap(sc.model.problem(of: unusable))),
+            String(format: loc("settings.audio.problem.deviceUnusable"), device, "it cannot play at 48000 Hz"))
+        let opening = PatchRow(
+            id: row.id, name: row.name, outputCount: 2, mapping: row.mapping,
+            resolution: try resolution(#"{"type":"device_missing","device":"openLab Virtual Output"}"#))
+        XCTAssertEqual(sc.model.problem(of: opening), .deviceOpening(device), "listed, no reason: opening")
+    }
+
     /// A patch set to no device in the table is warned about in its row and the status window.
     func testAPatchSetToNoDeviceIsWarnedInItsRowAndTheStatusWindow() async throws {
         let (rig, sc) = try await open()

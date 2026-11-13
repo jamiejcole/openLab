@@ -40,7 +40,8 @@
           },
           "resolution": {
             "type": "device_missing",
-            "device": "MOTU 828"
+            "device": "MOTU 828",
+            "reason": "it cannot play at 44100 Hz, the rate of the clock device"
           }
         }
       ]

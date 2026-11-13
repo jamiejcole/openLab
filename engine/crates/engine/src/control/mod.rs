@@ -393,6 +393,10 @@ struct Engine {
     outputs_dirty: bool,
     /// Devices the engine could not open as outputs, already warned about.
     output_warned: std::collections::HashSet<String>,
+    /// Listed devices a patch maps to that do not play, and why (cannot run at the show's
+    /// rate, a first open that failed, too many open): the patch warning and its resolution
+    /// say so. Cleared when the device opens or is tried again.
+    unusable: std::collections::HashMap<String, String>,
     /// Saves the machine settings when the engine changes them (default patch mappings).
     settings_writer: Option<crate::persist::SettingsWriter>,
     /// Patches and devices the default mapping already warned about, per doc.
@@ -710,6 +714,7 @@ impl Control {
             playable: Vec::new(),
             outputs_dirty: true,
             output_warned: std::collections::HashSet::new(),
+            unusable: std::collections::HashMap::new(),
             settings_writer,
             mapping_warned: std::collections::HashSet::new(),
             unwritable_warned: false,

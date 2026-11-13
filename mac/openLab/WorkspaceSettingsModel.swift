@@ -8,6 +8,10 @@ import Foundation
 enum PatchProblem: Equatable {
     case unmapped
     case deviceMissing(String)
+    /// The device is connected but openLab cannot use it, and why (in the engine's words).
+    case deviceUnusable(device: String, reason: String)
+    /// The device is connected and its first open is under way.
+    case deviceOpening(String)
     /// The patch routes to output `needed` (1-based) of a device of which openLab can use `available`.
     case channelsMissing(device: String, needed: Int, available: Int)
     case outputCountMismatch
@@ -178,7 +182,11 @@ final class WorkspaceSettingsModel: ObservableObject {
             let device = r.json["device"]?.stringValue ?? row.mapping?.device ?? ""
             switch r.type {
             case "unmapped": return .unmapped
-            case "device_missing": return .deviceMissing(device)
+            case "device_missing":
+                if let reason = r.json["reason"]?.stringValue, !reason.isEmpty {
+                    return .deviceUnusable(device: device, reason: reason)
+                }
+                return devices.contains { $0.name == device } ? .deviceOpening(device) : .deviceMissing(device)
             case "channels_missing":
                 return .channelsMissing(
                     device: device, needed: Int(r.json["needed"]?.doubleValue ?? 0),

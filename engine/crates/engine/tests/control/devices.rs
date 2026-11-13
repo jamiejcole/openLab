@@ -1910,6 +1910,69 @@ fn a_patch_whose_device_is_unplugged_is_warned_about_until_it_is_back() {
     );
 }
 
+/// A listed device that cannot play at the clock device's rate: the patch mapped to it is
+/// warned about with that reason (not as "not connected"), and its resolution says why.
+#[test]
+fn a_patch_on_a_listed_device_that_cannot_play_the_rate_says_why() {
+    let mut other = listed(DEV2, DEV2_NAME, 2);
+    for c in &mut other.configs {
+        c.min_rate = RATE * 2;
+        c.max_rate = RATE * 2;
+    }
+    let mut s = two_patch_show(vec![], DEV2_NAME, vec![listed(DEV, DEV_NAME, 2), other]);
+    s.settle_devices();
+    s.tick();
+    let texts = notice_texts(&s.take_outbound()).unwrap();
+    let unusable: Vec<&String> = texts
+        .iter()
+        .filter(|(code, _)| code == "patch_device_unusable")
+        .map(|(_, m)| m)
+        .collect();
+    assert_eq!(unusable.len(), 1, "{texts:?}");
+    assert!(
+        unusable[0].contains("\"B\"") && unusable[0].contains("Hz"),
+        "{}",
+        unusable[0]
+    );
+    assert!(!texts.iter().any(|(code, _)| code == "patch_device_missing"));
+    let reason = resolutions(&mut s).into_iter().find_map(|r| match r {
+        Some(WireResolution::DeviceMissing { reason, .. }) => reason,
+        _ => None,
+    });
+    assert!(reason.is_some_and(|r| r.contains("Hz")));
+}
+
+/// A listed device whose first open fails (another program holds it): the patch is warned
+/// about with the reason; once it opens, the warning goes.
+#[test]
+fn a_patch_on_a_listed_device_whose_first_open_fails_says_why() {
+    let mut s = two_patch_show(vec![], DEV2_NAME, vec![listed(DEV, DEV_NAME, 2)]);
+    s.settle_devices();
+    s.take_outbound();
+    s.fake.refuse_opens(Some(DEV2));
+    s.fake.plug(listed(DEV2, DEV2_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.tick();
+    let texts = notice_texts(&s.take_outbound()).unwrap();
+    assert!(
+        texts.iter().any(|(code, m)| code == "patch_device_unusable"
+            && m.contains("\"B\"")
+            && m.contains("in use by another program")),
+        "{texts:?}"
+    );
+    s.fake.refuse_opens(None);
+    s.wait_wall(Duration::from_secs(5), 10);
+    s.wait_output(DEV2_NAME);
+    s.tick();
+    let after = notice_texts(&s.take_outbound()).expect("the list is sent again");
+    assert!(
+        !after
+            .iter()
+            .any(|(code, _)| code.starts_with("patch_device")),
+        "{after:?}"
+    );
+}
+
 /// A patch the operator set to no device carries its own warning (QLab 5 manual p. 191).
 #[test]
 fn a_patch_set_to_no_device_is_warned_about() {
@@ -2983,7 +3046,8 @@ fn status_list_devices_and_patch_mappings_describe_every_device() {
         vec![
             mapped(DEV_NAME),
             Some(WireResolution::DeviceMissing {
-                device: DEV2_NAME.into()
+                device: DEV2_NAME.into(),
+                reason: None,
             })
         ]
     );
@@ -3135,7 +3199,8 @@ fn a_closed_device_whose_reopen_keeps_failing_stays_opening() {
     assert_eq!(
         resolutions(&mut s)[1],
         Some(WireResolution::DeviceMissing {
-            device: DEV2_NAME.into()
+            device: DEV2_NAME.into(),
+            reason: None,
         })
     );
     let msgs = s.take_outbound();

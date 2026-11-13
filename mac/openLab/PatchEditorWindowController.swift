@@ -570,6 +570,9 @@ extension WorkspaceSettingsModel {
         switch problem {
         case .unmapped: return loc("settings.audio.problem.unmapped")
         case .deviceMissing(let name): return String(format: loc("settings.audio.problem.deviceMissing"), name)
+        case .deviceUnusable(let name, let reason):
+            return String(format: loc("settings.audio.problem.deviceUnusable"), name, reason)
+        case .deviceOpening(let name): return String(format: loc("settings.audio.problem.deviceOpening"), name)
         case .channelsMissing(let device, let needed, let available):
             return String(format: loc("settings.audio.problem.channelsMissing"), device, available, needed)
         case .outputCountMismatch: return loc("settings.audio.problem.outputCount")
