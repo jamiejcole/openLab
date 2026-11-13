@@ -168,6 +168,22 @@ windowserver_stalled() {
   ' "$f"
 }
 
+# What the machine's display and power state is, for the job's log: it is not known what stalls the
+# GPU driver on a hosted Mac, and each stall so far has left no record of whether the display had gone
+# to sleep, a screen saver had started or the machine had sat without input. Printed before the tests
+# and again when a run goes silent, so the two can be compared. Never fails the run.
+machine_state() {
+  {
+    echo "run-mac-tests: machine state ($1):"
+    echo "  uptime: $(uptime 2>/dev/null)"
+    echo "  seconds since last input: $(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }')"
+    echo "  screen saver starts after: $(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null || echo unset) s"
+    pmset -g 2>/dev/null | grep -E 'displaysleep|^ sleep|powernap|hibernatemode' | sed 's/^/  pmset:/'
+    pmset -g assertions 2>/dev/null | grep -E 'PreventUserIdleDisplaySleep|PreventUserIdleSystemSleep|UserIsActive' | head -6 | sed 's/^/  assertion:/'
+    pmset -g log 2>/dev/null | grep -E 'Display is turned|Entering Sleep|Wake from|DarkWake' | tail -6 | sed 's/^/  power log: /'
+  } >&2 || true
+}
+
 # Ends a failed run: HUNG_RC when a test of it hung, else the given code.
 hung=
 give_up() {
@@ -175,10 +191,19 @@ give_up() {
   exit "$1"
 }
 
+# On a hosted runner nobody touches the machine, so its display may sleep or a screen saver may start
+# part-way through the tests. Whether that is what stalls the driver is not known: holding the display
+# awake for the length of the run rules it in or out (the state printed below says if it took).
+if [ -n "${CI:-}" ] && command -v caffeinate >/dev/null 2>&1; then
+  caffeinate -dimsu -w $$ &
+fi
+machine_state "before the tests"
+
 bundles >"$work/before"
 run_watched first "${base[@]}" "$@" test
 rc=$?
 [ "$rc" = 0 ] && exit 0
+machine_state "after a failed run"
 if [ -e "$work/silenced" ]; then
   if windowserver_stalled; then
     echo "::warning title=WindowServer wedged on the runner::the run went silent and a sample shows the window server stuck in the GPU driver (above); re-run the job"
