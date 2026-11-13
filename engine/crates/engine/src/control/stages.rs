@@ -167,6 +167,9 @@ impl Control {
                 }
             }
             StageEvent::Displays(displays) => {
+                if displays == self.eng.stages.displays {
+                    return;
+                }
                 let names: Vec<String> = displays
                     .iter()
                     .map(|d| format!("{} ({}x{})", d.name, d.width, d.height))

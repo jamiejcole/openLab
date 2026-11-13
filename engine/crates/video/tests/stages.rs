@@ -497,6 +497,31 @@ fn a_stage_host_sending_garbage_is_stopped_and_sound_plays_on() {
     assert!(s.control().stage_host_pid().is_none());
 }
 
+/// A stage host that sends a burst of `log` messages has only a few a second put in the show
+/// log, so it cannot flood the log or the clients.
+#[test]
+fn a_stage_host_logging_in_a_burst_is_rate_limited() {
+    let script = r#"printf '{"type":"hello","version":1,"pid":1,"video":true}\n'; i=0; while [ $i -lt 500 ]; do printf '{"type":"log","level":"warn","message":"burst"}\n'; i=$((i+1)); done; cat > /dev/null"#;
+    let mut host = host_config(&["-c", script]);
+    host.program = PathBuf::from("/bin/sh");
+    let ws = with_stages(vec![], vec![stage(1)]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(host);
+    let mut s = show_with(ws, c);
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some()));
+    let mut seen = 0;
+    for _ in 0..200 {
+        s.tick();
+        seen += s
+            .take_outbound()
+            .iter()
+            .filter(|m| matches!(m, ServerMessage::Log { message, .. } if message == "stage host: burst"))
+            .count();
+        s.wait_step();
+    }
+    assert!((1..=40).contains(&seen), "{seen} burst lines logged");
+}
+
 /// A stage host that never answers `hello` is killed and does not hold the engine.
 #[test]
 fn a_silent_stage_host_is_killed_after_the_answer_time() {

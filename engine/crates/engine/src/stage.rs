@@ -145,6 +145,8 @@ const READ_QUEUE: usize = 256;
 const MAX_LINES_PER_SECOND: u32 = 2_000;
 /// Bad lines reported per stage host; later ones are only counted.
 const MAX_BAD_LINES_LOGGED: u32 = 20;
+/// `log` messages from a stage host put in the show log per second; later ones are dropped.
+const MAX_LOGS_PER_SECOND: u32 = 20;
 /// Lines of a stage host's stderr put in the log; later ones are dropped.
 const MAX_STDERR_LINES: u32 = 50;
 /// How long a quitting stage host gets before it is killed.
@@ -166,6 +168,7 @@ struct Running {
     next_ping: Instant,
     window: Instant,
     lines: u32,
+    logs: u32,
     bad: u32,
 }
 
@@ -284,6 +287,7 @@ impl Supervisor {
                     next_ping: now + self.config.ping_every,
                     window: now,
                     lines: 0,
+                    logs: 0,
                     bad: 0,
                 });
                 self.write(&ToStage::Hello {
@@ -311,6 +315,7 @@ impl Supervisor {
         if now.duration_since(r.window) >= Duration::from_secs(1) {
             r.window = now;
             r.lines = 0;
+            r.logs = 0;
         }
         r.lines += 1;
         if r.lines > MAX_LINES_PER_SECOND {
@@ -357,10 +362,14 @@ impl Supervisor {
             }
             FromStage::Displays { displays } => StageEvent::Displays(displays),
             FromStage::StageStatus { stage, state } => StageEvent::Status { stage, state },
-            FromStage::Log { level, message } => StageEvent::Log {
-                level,
-                message: format!("stage host: {message}"),
-            },
+            FromStage::Log { .. } if r.logs >= MAX_LOGS_PER_SECOND => return,
+            FromStage::Log { level, message } => {
+                r.logs += 1;
+                StageEvent::Log {
+                    level,
+                    message: format!("stage host: {message}"),
+                }
+            }
             #[cfg(feature = "test-support")]
             FromStage::Probed {
                 stage,
