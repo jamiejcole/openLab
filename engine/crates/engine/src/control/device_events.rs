@@ -5,7 +5,7 @@
 
 use openlab_audio::{CommandKind, VoiceId};
 use openlab_core::protocol::{
-    DeviceEntry, ErrorBody, ErrorCode, LogLevel, OutputState, RuntimeChange, WireWarning,
+    DeviceEntry, ErrorBody, ErrorCode, LogLevel, RuntimeChange, WireWarning,
 };
 use openlab_core::{
     BrokenReason, CueId, CueKind, CueState, DeviceInfo, Input, MAX_BUFFER_FRAMES,
@@ -734,8 +734,8 @@ impl Engine {
                     output_channels: u32::from(l.max_channels()),
                     is_default: l.is_default,
                     buffer_frames: self.config.machine.buffer_frames_for(&l.name),
-                    state: self.output_state(&l.name),
-                    primary: self.is_primary(&l.name),
+                    state: self.output_on(Some(&l.id), &l.name).map(|(_, o)| o.state()),
+                    primary: self.output_on(Some(&l.id), &l.name).map(|(k, _)| k) == Some(0),
                 })
                 .collect(),
             None => self
@@ -747,22 +747,24 @@ impl Engine {
                     output_channels: d.output_channels,
                     is_default: false,
                     buffer_frames: self.config.machine.buffer_frames_for(&d.name),
-                    state: self.output_state(&d.name),
-                    primary: self.is_primary(&d.name),
+                    state: self.output_on(None, &d.name).map(|(_, o)| o.state()),
+                    primary: self.output_on(None, &d.name).map(|(k, _)| k) == Some(0),
                 })
                 .collect(),
         }
     }
 
-    /// The state of the engine's output on device `name`, if it has one open.
-    fn output_state(&self, name: &str) -> Option<OutputState> {
-        let key = self.outputs.by_name(name)?;
-        Some(self.outputs.get(key)?.state())
-    }
-
-    /// Device `name` is the primary device.
-    fn is_primary(&self, name: &str) -> bool {
-        self.outputs.by_name(name) == Some(0)
+    /// The engine's output on the listed device with host id `id` (by `name` for the offline
+    /// driver, whose devices have no id), if it has one. By id: two interfaces of one model
+    /// share a name.
+    fn output_on(&self, id: Option<&str>, name: &str) -> Option<(OutputKey, &Output)> {
+        self.outputs
+            .iter()
+            .find(|(_, o)| match (o.backend.device(), id) {
+                (Some(d), Some(id)) => d.info().device_id == id,
+                (None, None) => o.name == name,
+                _ => false,
+            })
     }
 }
 

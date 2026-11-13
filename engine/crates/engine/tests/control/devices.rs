@@ -2994,3 +2994,21 @@ fn an_opening_or_reconfiguring_device_is_reported_as_such() {
         .unwrap();
     assert_eq!(dev2.block_frames, Some(128));
 }
+
+/// Two interfaces of one model share a name: `list_devices` gives the engine's output state and
+/// the primary mark only to the one it has open, matched by the host's id.
+#[test]
+fn two_devices_with_one_name_are_told_apart_in_list_devices() {
+    let ws = workspace(vec![]);
+    let c = device_config(&ws);
+    let mut s = DeviceShow::new(
+        ws,
+        vec![listed(DEV, DEV_NAME, 2), listed("fake:9", DEV_NAME, 2)],
+        c,
+    );
+    s.settle_devices();
+    assert_eq!(
+        list_devices(&mut s),
+        vec![primary(OutputState::Up), entry(DEV_NAME, 2)]
+    );
+}
