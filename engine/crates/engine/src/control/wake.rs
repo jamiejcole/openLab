@@ -15,7 +15,7 @@ impl Doc {
         let frames = wake_frames(
             self.model.engine().next_deadline(),
             self.deferred.iter().map(|(at, _)| *at),
-            eng.mixer.samples_rendered(),
+            eng.rendered(),
             eng.block,
         );
         let secs = frames as f64 / f64::from(eng.rate.get());
@@ -27,8 +27,8 @@ impl Control {
     /// How long the loop may wait for the inbox before it must tick again: the shortest wait
     /// any doc asks for ([`Doc::wait`]), at most [`MAX_WAIT`].
     pub fn wait_hint(&self) -> Duration {
-        // Nothing becomes due by waiting while sample time stands still.
-        if self.eng.backend.is_down() {
+        // Nothing becomes due by waiting while sample time stands still (no device plays).
+        if self.eng.outputs.is_frozen() {
             return MAX_WAIT;
         }
         let wait = self

@@ -119,6 +119,7 @@ Request shapes: `docs/protocol.md`. `new`, `open` and `open_recovery` open anoth
   "settings_version": 1,
   "backup_keep": 20,
   "output_device": "Scarlett 2i2",
+  "buffer_frames": { "Scarlett 18i20": 256 },
   "workspaces": {
     "<workspace-id>": {
       "patches": { "<patch-id>": { "device": "Scarlett 18i20", "channels": [4, 5] } }
@@ -127,9 +128,10 @@ Request shapes: `docs/protocol.md`. `new`, `open` and `open_recovery` open anoth
 }
 ```
 - `channels[i]` is the device channel (0-based) for logical output `i` of the patch.
+- `buffer_frames` (AUD-21): frames per callback asked of each device by name, 16 to 1024; a device not listed gets 512. A bad entry is dropped with a warning (`load_settings`), as `set_buffer_frames` refuses it.
 - `load_settings` never fails: unreadable content gives defaults and a warning; invalid entries are dropped with a warning; `backup_keep` is clamped. Workspace and patch ids are normalised to lower-case hyphenated form. Unknown keys are ignored but kept on rewrite (`MachineSettings::extra`).
 - A file that produced warnings is first copied to `settings.json.corrupt` (`.corrupt.1`, ... a few at most) before anything overwrites it.
-- **Auto-map.** A patch with no entry on this machine (new workspace, show from another Mac, patch added later) is mapped to the first N outputs of the device the mixer plays on, when it has at least N, and the file is rewritten atomically off the control thread. Existing entries are never overwritten. The operator's `set_patch_mapping` also rewrites the file. Default-mapping rules: skill `engine-control`.
+- **Auto-map.** A patch with no entry on this machine (new workspace, show from another Mac, patch added later) is mapped to the first N outputs of the primary device, when it has at least N, and the file is rewritten atomically off the control thread. Existing entries are never overwritten. The operator's `set_patch_mapping` also rewrites the file. Default-mapping rules: skill `engine-control`.
 - An entry `{"device": "", "channels": []}` means the operator cleared the mapping. It is kept, so the patch stays unmapped and is not auto-mapped.
 - **An external edit of `settings.json` while the engine runs is overwritten at the next rewrite** (it writes the in-memory copy).
 - If the file could not be read at start (an I/O error, not "missing"), or it produced warnings and its `.corrupt` copy could not be made, the engine keeps default mappings in memory only, warns once and never writes the file (`ControlConfig::machine_writable`). If the settings thread cannot start or has stopped, mappings stay in memory with a warning.

@@ -443,7 +443,8 @@ extension ClientMessage {
             // itself after its timeout.
             case .new, .open, .openRecovery, .scanRecovery, .discardRecovery, .save, .saveAs, .relink, .waveform:
                 return false
-            case .listDevices, .setOutputDevice, .listPatchMappings, .preshowCheck, .logTail, .setOutputOverrides,
+            case .listDevices, .setOutputDevice, .setBufferSize, .listPatchMappings, .preshowCheck, .logTail,
+                .setOutputOverrides,
                 .setShowMode, .setPatchMapping,
                 .snapshot:
                 return true

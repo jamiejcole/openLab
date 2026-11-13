@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use openlab_core::protocol::{
-    ClientMessage, DeviceEntry, LogLevel, Outcome, Request, ResultData, RuntimeChange,
+    ClientMessage, DeviceEntry, ErrorCode, LogLevel, Outcome, Request, ResultData, RuntimeChange,
     ServerMessage, TransportAction, WireBrokenReason, WireCueState, WireProblem, WireWarning,
 };
 use openlab_core::{
@@ -91,6 +91,7 @@ fn entry(name: &str, output_channels: u32) -> DeviceEntry {
         name: name.into(),
         output_channels,
         is_default: false,
+        buffer_frames: openlab_core::DEFAULT_BUFFER_FRAMES,
     }
 }
 
@@ -1763,4 +1764,981 @@ fn a_workspace_created_during_an_outage_is_mapped_when_the_device_is_back() {
             .iter()
             .any(|l| l.contains("mapped patch 'Main Outputs' to Fake 1 outputs 1\u{2013}2"))
     );
+}
+
+// AUD-02: a device per output patch, several devices at once.
+
+const DEV2: &str = "fake:2";
+const DEV2_NAME: &str = "Fake 2";
+
+fn patch_b() -> openlab_core::PatchId {
+    openlab_core::PatchId(uuid::Uuid::from_u128(902))
+}
+
+/// Audio cue `n` on patch B.
+fn audio_b(n: u128, path: &std::path::Path, out: u32) -> openlab_core::Cue {
+    let mut c = audio(n, path, out);
+    if let CueKind::Audio { patch, .. } = &mut c.kind {
+        *patch = patch_b();
+    }
+    c
+}
+
+/// `cues` with a second patch, B, mapped to device `b`: patch A (`patch_id`) plays on
+/// "Fake 1", the primary.
+fn two_patch_show(
+    cues: Vec<openlab_core::Cue>,
+    b: &str,
+    devices: Vec<devices::ListedDevice>,
+) -> DeviceShow {
+    let mut ws = workspace(cues);
+    let mut patch = ws.patches[0].clone();
+    patch.id = patch_b();
+    patch.name = "B".into();
+    ws.patches.push(patch);
+    let mut c = device_config(&ws);
+    c.mixer_patches = 4;
+    c.machine
+        .set_patch_mapping(
+            ws.id,
+            patch_b(),
+            PatchMapping {
+                device: b.into(),
+                channels: vec![0, 1],
+            },
+        )
+        .unwrap();
+    DeviceShow::new(ws, devices, c)
+}
+
+/// Patch A on "Fake 1", patch B on "Fake 2", both open and playing.
+fn two_device_show(cues: Vec<openlab_core::Cue>) -> DeviceShow {
+    let mut s = two_patch_show(
+        cues,
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+    );
+    s.wait_output(DEV2_NAME);
+    s.take_outbound();
+    s
+}
+
+/// The values heard on `samples`, without silence.
+fn heard(samples: &[f32]) -> Vec<f32> {
+    let mut v: Vec<f32> = samples.iter().copied().filter(|&x| x != 0.0).collect();
+    v.dedup();
+    v
+}
+
+/// Unplugs device `id`, reported lost, and lets the loop see it.
+fn unplug(s: &mut DeviceShow, id: &str) {
+    s.fake.unplug(id, true);
+    s.settle_devices();
+}
+
+/// Checklist: two patches on two devices, one Audio cue on each, GO both: each device carries
+/// only its own patch's cue.
+#[test]
+fn two_patches_on_two_devices_each_play_only_their_own_cue() {
+    let a = wav(&dc(2000, 0.25));
+    let b = wav(&dc(2000, 0.5));
+    let mut s = two_device_show(vec![audio(1, &a, 0), audio_b(2, &b, 0)]);
+    assert_eq!(
+        s.control().outputs(),
+        vec![(DEV_NAME.to_owned(), true), (DEV2_NAME.to_owned(), true)]
+    );
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(1000);
+    // Each patch's meters come from its own device's mixer.
+    let peak = |msgs: &[ServerMessage], patch| {
+        msgs.iter()
+            .filter_map(|m| match m {
+                ServerMessage::Meters { outputs, .. } => outputs
+                    .iter()
+                    .find(|o| o.patch == patch)
+                    .map(|o| o.peaks[0]),
+                _ => None,
+            })
+            .fold(0.0f32, f32::max)
+    };
+    let msgs = s.take_outbound();
+    assert!((peak(&msgs, patch_id()) - 0.25).abs() < 1e-3, "{msgs:?}");
+    assert!((peak(&msgs, patch_b()) - 0.5).abs() < 1e-3, "{msgs:?}");
+    s.run(2000);
+    assert_eq!(heard(&s.device_channel(DEV, 0)), vec![0.25]);
+    assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
+    assert_eq!(heard(&s.device_channel(DEV, 1)), Vec::<f32>::new());
+    assert_eq!(heard(&s.device_channel(DEV2, 1)), Vec::<f32>::new());
+    // Both played their whole file, and both cues ended.
+    let played = |id| {
+        s.device_channel(id, 0)
+            .iter()
+            .filter(|&&x| x != 0.0)
+            .count()
+    };
+    assert_eq!((played(DEV), played(DEV2)), (2000, 2000));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+/// A start on the second device lands on the sample the master date translates to there:
+/// `local = local_rendered + (at - master_rendered)`, from the counters when it was sent.
+#[test]
+fn a_start_on_the_second_device_lands_on_the_translated_sample() {
+    let b = wav(&dc(500, 0.5));
+    // The second device comes later than the first: their counters differ.
+    let mut s = two_patch_show(
+        vec![audio_b(2, &b, 0)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2)],
+    );
+    s.run(BLOCK * 7);
+    s.fake.plug(listed(DEV2, DEV2_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 1);
+    s.wait_output(DEV2_NAME);
+    s.run(BLOCK * 3);
+    let master = s.control().rendered();
+    let local = s
+        .control()
+        .output_mixer(DEV2_NAME)
+        .unwrap()
+        .samples_rendered();
+    assert!(master > local, "the second device opened after the first");
+    let at = start(&mut s, 2);
+    s.run(1000);
+    let expected = (local + (at - master)) as usize;
+    assert_eq!(first_nonzero(&s.device_channel(DEV2, 0)), Some(expected));
+    // The primary heard nothing.
+    assert_eq!(first_nonzero(&s.device_channel(DEV, 0)), None);
+}
+
+/// A device that cannot play at the primary's rate is not opened (once warned): the patches
+/// mapped to it are `device_missing` and their cues broken; the other patches play.
+#[test]
+fn a_device_that_cannot_play_at_the_primary_rate_is_not_opened() {
+    let a = wav(&dc(200, 0.25));
+    let b = wav(&dc(200, 0.5));
+    let mut other = listed(DEV2, DEV2_NAME, 2);
+    for c in &mut other.configs {
+        c.min_rate = RATE * 2;
+        c.max_rate = RATE * 2;
+    }
+    let mut s = two_patch_show(
+        vec![audio(1, &a, 0), audio_b(2, &b, 0)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), other],
+    );
+    s.settle_devices();
+    let msgs = s.take_outbound();
+    assert_eq!(s.control().outputs(), vec![(DEV_NAME.to_owned(), true)]);
+    let warned: Vec<String> = logs(&msgs, LogLevel::Warn)
+        .into_iter()
+        .filter(|m| m.contains("cannot play at"))
+        .collect();
+    assert_eq!(warned.len(), 1, "{warned:?}");
+    assert_eq!(s.control().engine().state(id(2)), CueState::Broken);
+    // Warned once, however often it is looked at again.
+    s.wait_wall(Duration::from_secs(1), 2);
+    assert!(
+        !logs(&s.take_outbound(), LogLevel::Warn)
+            .iter()
+            .any(|m| m.contains("cannot play at"))
+    );
+    start(&mut s, 1);
+    s.run(400);
+    assert_eq!(heard(&s.channel(0)), vec![0.25]);
+}
+
+/// Checklist: a patch whose device is absent on this machine: the show loads, the patch is
+/// `device_missing`, its cues are broken with that reason, and cues on other patches play.
+#[test]
+fn a_patch_mapped_to_an_absent_device_is_missing_and_the_other_patches_play() {
+    let a = wav(&dc(200, 0.25));
+    let b = wav(&dc(200, 0.5));
+    let mut s = two_patch_show(
+        vec![audio(1, &a, 0), audio_b(2, &b, 0)],
+        "Not Here",
+        vec![listed(DEV, DEV_NAME, 2)],
+    );
+    s.settle_devices();
+    assert_eq!(s.control().engine().state(id(2)), CueState::Broken);
+    let problems = s.control().engine().broken_cues();
+    let p2 = &problems.iter().find(|(c, _)| *c == id(2)).unwrap().1;
+    assert!(
+        p2.iter()
+            .any(|p| matches!(p, openlab_core::CueProblem::DeviceUnavailable { .. })),
+        "{p2:?}"
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    // The patch itself carries the warning (the pre-show check lists it with its reason).
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::PreshowCheck,
+    });
+    let report = replies
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::Result {
+                outcome:
+                    Outcome::Ok(openlab_core::protocol::OkBody {
+                        data: Some(ResultData::PreshowCheck(report)),
+                        ..
+                    }),
+                ..
+            } => Some((**report).clone()),
+            _ => None,
+        })
+        .unwrap();
+    let listed: Vec<_> = report.patches.iter().map(|p| p.patch).collect();
+    assert_eq!(listed, vec![patch_b()], "{report:?}");
+    assert!(
+        matches!(
+            report.patches[0].resolution,
+            Some(openlab_core::protocol::WireResolution::DeviceMissing { .. })
+        ),
+        "{report:?}"
+    );
+    assert!(!report.ok);
+    start(&mut s, 1);
+    s.run(400);
+    assert_eq!(heard(&s.channel(0)), vec![0.25]);
+    // It is never opened: nothing to open.
+    assert_eq!(s.control().outputs(), vec![(DEV_NAME.to_owned(), true)]);
+}
+
+/// Checklist: two devices open, one unplugged mid-playback: only that patch's cues stop and a
+/// warning is raised; a pre-wait and a cue on the other device carry on; on replug the patch
+/// plays again; the other device never drops out.
+#[test]
+fn losing_the_second_device_stops_only_its_cues() {
+    let a = wav(&dc(20_000, 0.25));
+    let b = wav(&dc(20_000, 0.5));
+    let late = wav(&dc(200, 0.75));
+    let mut c3 = audio(3, &late, 1);
+    c3.pre_wait = secs(1000);
+    let mut s = two_device_show(vec![audio(1, &a, 0), audio_b(2, &b, 0), c3]);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(BLOCK * 4);
+    let at3 = start(&mut s, 3);
+    s.run(BLOCK);
+    s.take_outbound();
+    unplug(&mut s, DEV2);
+    let msgs = s.take_outbound();
+    assert!(!s.control().output_up(DEV2_NAME));
+    assert!(!s.control().device_down());
+    assert!(broken_device_lost(&msgs, 2));
+    assert!(!broken_device_lost(&msgs, 1));
+    assert!(!broken_device_lost(&msgs, 3));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert_eq!(s.control().engine().state(id(3)), CueState::PreWaiting);
+    assert_eq!(notices(&msgs), vec!["device_lost".to_owned()]);
+    assert!(
+        logs(&msgs, LogLevel::Error)
+            .iter()
+            .any(|m| m.contains(DEV2_NAME) && m.contains("1 cue(s)")),
+        "{:?}",
+        logs(&msgs, LogLevel::Error)
+    );
+    // The pre-wait runs out on the primary and its cue plays on time.
+    s.run(1500);
+    assert_eq!(
+        first_nonzero(&s.channel(1)),
+        Some(at3 as usize + 1000),
+        "cue 3 started after its pre-wait"
+    );
+    // The primary's cue never dropped out.
+    let ch0 = s.channel(0);
+    let first = first_nonzero(&ch0).unwrap();
+    assert!(ch0.len() > first + 1500);
+    assert!(ch0[first..].iter().all(|&v| v == 0.25));
+    // Plugged back in: it reopens and its patch plays again.
+    s.fake.plug(listed(DEV2, DEV2_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.wait_output(DEV2_NAME);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    // Its patch's gains come back over the de-zipper.
+    s.run(400);
+    let before = s.device_channel(DEV2, 0).len();
+    start(&mut s, 2);
+    s.run(600);
+    assert_eq!(heard(&s.device_channel(DEV2, 0)[before..]), vec![0.5]);
+}
+
+/// The primary device lost while another plays: its cues stop, the other device's cues and the
+/// waits carry on, with the master clock running on the wall clock; when it returns the clock
+/// hands back to it. The clock never goes back.
+#[test]
+fn losing_the_primary_with_a_second_device_up_keeps_the_rest_of_the_show_running() {
+    let a = wav(&dc(40_000, 0.25));
+    let b = wav(&dc(40_000, 0.5));
+    let late = wav(&dc(200, 0.75));
+    let mut c3 = audio_b(3, &late, 1);
+    c3.pre_wait = secs(1000);
+    let mut s = two_device_show(vec![audio(1, &a, 0), audio_b(2, &b, 0), c3]);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(BLOCK * 4);
+    start(&mut s, 3);
+    s.run(BLOCK);
+    s.take_outbound();
+    let mut clock = vec![s.control().rendered()];
+    unplug(&mut s, DEV);
+    let msgs = s.take_outbound();
+    assert!(s.control().device_down());
+    assert!(s.control().clock_on_wall());
+    assert!(broken_device_lost(&msgs, 1));
+    assert!(!broken_device_lost(&msgs, 2));
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    assert_eq!(s.control().engine().state(id(3)), CueState::PreWaiting);
+    // Time goes on: the pre-wait runs out and cue 3 plays on the second device.
+    let before = s.device_channel(DEV2, 1).len();
+    for _ in 0..30 {
+        s.play(BLOCK);
+        clock.push(s.control().rendered());
+    }
+    assert!(
+        clock.last() > clock.first(),
+        "the clock ran on while the primary was away"
+    );
+    assert_eq!(
+        heard(&s.device_channel(DEV2, 1)[before..]),
+        vec![0.75],
+        "cue 3 played after its pre-wait"
+    );
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    // Cue 2 never dropped out on the second device.
+    let ch = s.device_channel(DEV2, 0);
+    let first = first_nonzero(&ch).unwrap();
+    assert!(ch[first..].iter().all(|&v| v == 0.5));
+    // The primary returns: the clock is its counter again, and goes on from where it was.
+    s.fake.plug(listed(DEV, DEV_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    clock.push(s.control().rendered());
+    assert!(!s.control().device_down());
+    assert!(!s.control().clock_on_wall());
+    for _ in 0..5 {
+        s.run(BLOCK);
+        clock.push(s.control().rendered());
+    }
+    assert!(
+        clock.windows(2).all(|w| w[0] <= w[1]),
+        "the clock went back: {clock:?}"
+    );
+    // Cue 1 plays again from GO.
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    let before = s.channel(0).len();
+    start(&mut s, 1);
+    s.run(600);
+    assert_eq!(heard(&s.channel(0)[before..]), vec![0.25]);
+}
+
+/// Both devices lost, one after the other: the second loss is of the last device that played,
+/// so, as with one device, every wait scheduled before it is cancelled.
+#[test]
+fn losing_the_last_device_that_plays_cancels_every_wait() {
+    let a = wav(&dc(200, 0.25));
+    let mut memo = cue(3, CueKind::Memo);
+    memo.pre_wait = secs(4000);
+    let mut s = two_device_show(vec![audio(1, &a, 0), memo]);
+    start(&mut s, 3);
+    s.run(BLOCK);
+    unplug(&mut s, DEV2);
+    assert_eq!(s.control().engine().state(id(3)), CueState::PreWaiting);
+    unplug(&mut s, DEV);
+    assert_ne!(s.control().engine().state(id(3)), CueState::PreWaiting);
+    assert!(!s.control().engine().has_active_cues());
+}
+
+/// A command for the primary sent while it is away and the master clock runs on the wall
+/// clock (here a new patch's slot taking its gains) applies on the first blocks after the
+/// primary returns, not as long after its return as it was sent into the outage.
+#[test]
+fn a_primary_command_sent_during_its_outage_applies_as_soon_as_it_returns() {
+    let b = wav(&dc(40_000, 0.5));
+    let mut s = two_device_show(vec![audio_b(2, &b, 0)]);
+    start(&mut s, 2);
+    s.run(BLOCK * 2);
+    unplug(&mut s, DEV);
+    assert!(s.control().clock_on_wall());
+    // A long outage: the master clock runs on far past the primary's counter (and past the
+    // mixer's lookahead).
+    for _ in 0..200 {
+        s.play(BLOCK);
+    }
+    let mut patch = s.control().workspace().patches[0].clone();
+    patch.id = openlab_core::PatchId(uuid::Uuid::from_u128(903));
+    patch.name = "C".into();
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Command {
+        id: rid,
+        command: Box::new(openlab_core::Command::AddPatch { index: 2, patch }),
+        coalesce: None,
+    });
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+    s.fake.plug(listed(DEV, DEV_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    assert!(!s.control().device_down());
+    s.run(BLOCK * 3);
+    assert_eq!(
+        s.control().mixer().held(),
+        0,
+        "a command for the primary is still waiting after its return"
+    );
+}
+
+// AUD-21: the buffer size is set per device (16 to 1024 frames, 512 by default).
+
+fn set_buffer(s: &mut DeviceShow, device: &str, frames: u32) -> Result<(), ErrorCode> {
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id,
+        request: Request::SetBufferSize {
+            device: device.into(),
+            frames,
+        },
+    });
+    match replies.iter().find_map(|m| match m {
+        ServerMessage::Result { outcome, .. } => Some(outcome.clone()),
+        _ => None,
+    }) {
+        Some(Outcome::Ok(_)) => Ok(()),
+        Some(Outcome::Error(e)) => Err(e.code),
+        None => panic!("{replies:?}"),
+    }
+}
+
+/// Checklist: a device's buffer size is changed: that device reopens at that size, the cue on
+/// it carries on, and the other device is untouched.
+#[test]
+fn changing_a_devices_buffer_size_reopens_only_that_device() {
+    let a = wav(&dc(20_000, 0.25));
+    let b = wav(&dc(20_000, 0.5));
+    let mut s = two_device_show(vec![audio(1, &a, 0), audio_b(2, &b, 0)]);
+    assert_eq!(s.fake.requested(DEV2), vec![Some(512)], "the default size");
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(BLOCK * 4);
+    s.take_outbound();
+    let primary_opens = s.fake.requested(DEV).len();
+    s.fake.set_device_block(DEV2, 128);
+    assert_eq!(set_buffer(&mut s, DEV2_NAME, 128), Ok(()));
+    s.settle_devices();
+    assert_eq!(s.fake.requested(DEV2).last(), Some(&Some(128)));
+    assert_eq!(
+        s.fake.requested(DEV).len(),
+        primary_opens,
+        "the primary was not reopened"
+    );
+    let msgs = s.take_outbound();
+    assert!(
+        logs(&msgs, LogLevel::Info)
+            .iter()
+            .any(|m| m.contains("reopened with 128-frame buffers")),
+        "{:?}",
+        logs(&msgs, LogLevel::Info)
+    );
+    assert!(logs(&msgs, LogLevel::Warn).is_empty(), "{msgs:?}");
+    assert!(!broken_device_lost(&msgs, 2));
+    // The lookahead follows the larger buffer.
+    assert_eq!(s.control().block_frames(), 128);
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    // Neither device dropped its cue: each still plays it, at its level.
+    assert_eq!(heard(&s.device_channel(DEV, 0)), vec![0.25]);
+    assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
+    let ch = s.device_channel(DEV2, 0);
+    let first = first_nonzero(&ch).unwrap();
+    assert!(ch[first..].iter().all(|&v| v == 0.5), "a gap in cue 2");
+    // Kept on this machine and listed.
+    assert_eq!(s.control().machine().buffer_frames_for(DEV2_NAME), 128);
+    let listed = list_devices(&mut s);
+    assert_eq!(
+        listed.iter().map(|d| d.buffer_frames).collect::<Vec<_>>(),
+        vec![512, 128]
+    );
+}
+
+/// A size the device cannot do: it plays at the nearest size it can, with a warning.
+#[test]
+fn a_buffer_size_the_device_refuses_falls_back_with_a_warning() {
+    let mut s = two_device_show(vec![]);
+    s.fake.set_device_block(DEV2, 256);
+    assert_eq!(set_buffer(&mut s, DEV2_NAME, 128), Ok(()));
+    s.settle_devices();
+    let warned = logs(&s.take_outbound(), LogLevel::Warn);
+    assert_eq!(
+        warned,
+        vec![format!(
+            "audio device \"{DEV2_NAME}\" cannot use 128-frame buffers; it plays with 256"
+        )]
+    );
+    assert!(s.control().output_up(DEV2_NAME));
+}
+
+/// Every path that sets a buffer size checks it: out of 16 to 1024 frames or for a device that
+/// is not listed, the request is refused and nothing changes or reopens.
+#[test]
+fn a_buffer_size_outside_16_to_1024_or_for_an_unknown_device_is_refused() {
+    let mut s = two_device_show(vec![]);
+    let opens = s.fake.opens();
+    for frames in [0, 15, 1025, u32::MAX] {
+        assert_eq!(
+            set_buffer(&mut s, DEV2_NAME, frames),
+            Err(ErrorCode::BadRequest),
+            "{frames}"
+        );
+    }
+    assert_eq!(set_buffer(&mut s, "Gone", 256), Err(ErrorCode::NotFound));
+    s.settle_devices();
+    assert_eq!(s.fake.opens(), opens);
+    assert!(s.control().machine().buffer_frames.is_empty());
+    // The ends of the range are accepted.
+    assert_eq!(set_buffer(&mut s, DEV2_NAME, 16), Ok(()));
+    assert_eq!(set_buffer(&mut s, DEV2_NAME, 1024), Ok(()));
+}
+
+/// A device opens at the buffer size set for it on this machine.
+#[test]
+fn a_device_opens_at_the_buffer_size_set_for_it() {
+    let mut ws = workspace(vec![]);
+    let mut patch = ws.patches[0].clone();
+    patch.id = patch_b();
+    ws.patches.push(patch);
+    let mut c = device_config(&ws);
+    c.machine
+        .set_patch_mapping(
+            ws.id,
+            patch_b(),
+            PatchMapping {
+                device: DEV2_NAME.into(),
+                channels: vec![0, 1],
+            },
+        )
+        .unwrap();
+    c.machine.set_buffer_frames(DEV2_NAME, 256).unwrap();
+    let mut s = DeviceShow::new(
+        ws,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        c,
+    );
+    s.wait_output(DEV2_NAME);
+    assert_eq!(s.fake.requested(DEV2), vec![Some(256)]);
+}
+
+/// A device that cannot be opened again at its new size is lost: its cues stop, the other
+/// device plays on.
+#[test]
+fn a_device_that_cannot_reopen_at_its_new_size_is_lost() {
+    let a = wav(&dc(20_000, 0.25));
+    let b = wav(&dc(20_000, 0.5));
+    let mut s = two_device_show(vec![audio(1, &a, 0), audio_b(2, &b, 0)]);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(BLOCK * 4);
+    s.take_outbound();
+    // Gone from the host before the list says so: the reopen finds no device.
+    s.fake.unplug(DEV2, false);
+    assert_eq!(set_buffer(&mut s, DEV2_NAME, 128), Ok(()));
+    s.settle_devices();
+    let msgs = s.take_outbound();
+    assert!(!s.control().output_up(DEV2_NAME));
+    assert!(broken_device_lost(&msgs, 2));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert!(!s.control().device_down());
+}
+
+/// Checklist: a cue is playing on patch A; patch B's device is changed: A's cue plays on
+/// without a dropout, and the next cue started on B plays on the new device.
+#[test]
+fn changing_patch_bs_device_leaves_patch_as_cue_playing_and_moves_bs_next_cue() {
+    let a = wav(&dc(20_000, 0.25));
+    let b = wav(&dc(500, 0.5));
+    let mut s = two_patch_show(
+        vec![audio(1, &a, 0), audio_b(2, &b, 0)],
+        DEV_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+    );
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::SetPatchMapping {
+            patch: patch_b(),
+            mapping: Some(PatchMapping {
+                device: DEV2_NAME.into(),
+                channels: vec![0, 1],
+            }),
+        },
+    });
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+    s.wait_output(DEV2_NAME);
+    s.run(BLOCK * 2);
+    start(&mut s, 2);
+    s.run(1000);
+    // Cue 2 on the new device only; cue 1 on the first, never interrupted.
+    assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
+    let ch = s.device_channel(DEV, 0);
+    let first = first_nonzero(&ch).unwrap();
+    assert!(ch.len() > first + 1000);
+    assert!(ch[first..].iter().all(|&v| v == 0.25), "cue 1 dropped out");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+}
+
+/// Sends a buffer size change for `device`, which must be accepted, with the gate closed, and
+/// waits until the device thread is held in the reopen.
+fn change_buffer_and_hang(s: &mut DeviceShow, device: &str, frames: u32) {
+    let asked = s.fake.opens_asked();
+    s.fake.close_gate();
+    assert_eq!(set_buffer(s, device, frames), Ok(()));
+    crate::show::spin::spin_until("the reopen to start", || {
+        s.tick();
+        s.fake.opens_asked() > asked
+    });
+}
+
+/// The primary hangs in a buffer size change while another device plays: during the gap the
+/// master clock runs on the wall clock, and once the device thread is past its watchdog the
+/// change is a loss: the primary's cue stops (broken, `device_lost`) instead of showing Running
+/// for ever, and the pre-wait on the healthy device runs out and its cue plays.
+#[test]
+fn a_primary_hung_in_a_buffer_size_change_is_lost_and_the_show_runs_on() {
+    // Longer than the whole test, so it is still running when the change is given up on.
+    let a = wav(&dc(400_000, 0.25));
+    let late = wav(&dc(200, 0.75));
+    let mut c3 = audio_b(3, &late, 1);
+    c3.pre_wait = secs(20_000);
+    let mut s = two_device_show(vec![audio(1, &a, 0), c3]);
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    start(&mut s, 3);
+    s.run(BLOCK);
+    s.take_outbound();
+    let dev2_before = s.device_channel(DEV2, 1).len();
+    change_buffer_and_hang(&mut s, DEV_NAME, 128);
+    // Past the job watchdog (the reopen is stuck behind the gate); the primary renders until
+    // the close takes effect, so the clock is read after that.
+    for _ in 0..400 {
+        s.play(BLOCK);
+    }
+    for _ in 0..24 {
+        s.advance(Duration::from_millis(500));
+        s.tick();
+    }
+    let at = s.control().rendered();
+    for _ in 0..800 {
+        s.play(BLOCK);
+    }
+    let msgs = s.take_outbound();
+    let after = (
+        s.control().rendered(),
+        s.control().engine().state(id(1)),
+        s.control().engine().broken_reason(id(1)),
+        s.control().engine().state(id(3)),
+    );
+    let heard3 = heard(&s.device_channel(DEV2, 1)[dev2_before..]);
+    s.fake.open_gate();
+    assert!(
+        after.0 > at + 40_000,
+        "the master clock ran on: {at} -> {}",
+        after.0
+    );
+    assert_eq!(after.1, CueState::Broken);
+    assert_eq!(after.2, Some(openlab_core::BrokenReason::DeviceLost));
+    assert_ne!(
+        after.3,
+        CueState::PreWaiting,
+        "the pre-wait on device 2 never ended"
+    );
+    assert_eq!(heard3, vec![0.75]);
+    assert!(s.control().output_up(DEV2_NAME));
+    assert!(
+        workspace_warnings(&msgs)
+            .unwrap()
+            .contains(&"device_unrecoverable".to_owned())
+    );
+}
+
+/// The second device hangs in a buffer size change: its cue stops as for a loss, the primary
+/// and its cues play on.
+#[test]
+fn a_second_device_hung_in_a_buffer_size_change_is_lost_alone() {
+    let a = wav(&dc(40_000, 0.25));
+    let b = wav(&dc(40_000, 0.5));
+    let mut s = two_device_show(vec![audio(1, &a, 0), audio_b(2, &b, 0)]);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(BLOCK * 4);
+    s.take_outbound();
+    change_buffer_and_hang(&mut s, DEV2_NAME, 128);
+    for _ in 0..12 {
+        s.advance(Duration::from_secs(1));
+        s.step();
+    }
+    let msgs = s.take_outbound();
+    let states = (
+        s.control().engine().state(id(1)),
+        s.control().engine().broken_reason(id(2)),
+    );
+    s.fake.open_gate();
+    assert!(
+        broken_device_lost(&msgs, 2),
+        "{:?}",
+        logs(&msgs, LogLevel::Error)
+    );
+    assert_eq!(states.0, CueState::Running);
+    assert_eq!(states.1, Some(openlab_core::BrokenReason::DeviceLost));
+    assert!(!s.control().device_down());
+}
+
+/// The only device hangs in a buffer size change: as a sole-device loss, its cues stop and
+/// every wait scheduled before it is cancelled.
+#[test]
+fn the_sole_device_hung_in_a_buffer_size_change_is_lost_like_any_sole_device() {
+    let a = wav(&dc(40_000, 0.25));
+    let mut memo = cue(3, CueKind::Memo);
+    memo.pre_wait = secs(40_000);
+    let mut s = device_show(workspace(vec![audio(1, &a, 0), memo]));
+    start(&mut s, 1);
+    start(&mut s, 3);
+    s.run(BLOCK * 4);
+    s.take_outbound();
+    change_buffer_and_hang(&mut s, DEV_NAME, 128);
+    for _ in 0..12 {
+        s.advance(Duration::from_secs(1));
+        s.tick();
+    }
+    let msgs = s.take_outbound();
+    let states = (
+        s.control().engine().broken_reason(id(1)),
+        s.control().engine().state(id(3)),
+        s.control().device_down(),
+    );
+    s.fake.open_gate();
+    assert!(broken_device_lost(&msgs, 1));
+    assert_eq!(states.0, Some(openlab_core::BrokenReason::DeviceLost));
+    assert_ne!(states.1, CueState::PreWaiting, "the wait was not cancelled");
+    assert!(states.2, "the device counts as away");
+}
+
+fn map_b(s: &mut DeviceShow, device: &str) {
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::SetPatchMapping {
+            patch: patch_b(),
+            mapping: Some(PatchMapping {
+                device: device.into(),
+                channels: vec![0, 1],
+            }),
+        },
+    });
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+}
+
+/// A device no patch maps to any more closes once the cue still playing on it ends; unplugged
+/// then, it raises no warning, no error and no reopen attempts.
+#[test]
+fn a_device_no_patch_uses_closes_and_its_unplugging_raises_nothing() {
+    let b = wav(&dc(800, 0.5));
+    let mut s = two_device_show(vec![audio_b(2, &b, 0)]);
+    start(&mut s, 2);
+    s.run(BLOCK * 2);
+    map_b(&mut s, DEV_NAME);
+    s.run(BLOCK * 2);
+    // The cue on it plays to its end there first.
+    assert!(s.control().output_up(DEV2_NAME));
+    s.run(1200);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    s.settle_devices();
+    assert!(
+        !s.control().output_up(DEV2_NAME),
+        "the unused device stayed open"
+    );
+    // A playing cue does not move to its patch's new device: it played on to its end where it
+    // started, and the primary heard none of it.
+    assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
+    assert_eq!(
+        s.device_channel(DEV2, 0)
+            .iter()
+            .filter(|&&x| x != 0.0)
+            .count(),
+        800
+    );
+    assert!(heard(&s.channel(0)).is_empty());
+    s.take_outbound();
+    s.fake.unplug(DEV2, true);
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.wait_wall(Duration::from_secs(4), 4);
+    let msgs = s.take_outbound();
+    assert!(logs(&msgs, LogLevel::Error).is_empty(), "{msgs:?}");
+    assert!(logs(&msgs, LogLevel::Warn).is_empty(), "{msgs:?}");
+    assert!(
+        !workspace_warnings(&msgs)
+            .unwrap_or_default()
+            .contains(&"device_lost".to_owned())
+    );
+    // Patch B now plays on the primary.
+    let before = s.channel(0).len();
+    start(&mut s, 2);
+    s.run(1000);
+    assert_eq!(heard(&s.channel(0)[before..]), vec![0.5]);
+}
+
+/// A closed device a patch maps to again opens again, and the patch plays there.
+#[test]
+fn a_closed_device_opens_again_when_a_patch_maps_to_it() {
+    let b = wav(&dc(300, 0.5));
+    let mut s = two_device_show(vec![audio_b(2, &b, 0)]);
+    map_b(&mut s, DEV_NAME);
+    s.settle_devices();
+    assert!(!s.control().output_up(DEV2_NAME));
+    // The stand-in reports the size the device was asked for.
+    s.fake
+        .set_device_block(DEV2, openlab_core::DEFAULT_BUFFER_FRAMES);
+    map_b(&mut s, DEV2_NAME);
+    s.wait_output(DEV2_NAME);
+    s.run(BLOCK * 4);
+    let before = s.device_channel(DEV2, 0).len();
+    start(&mut s, 2);
+    s.run(600);
+    assert_eq!(heard(&s.device_channel(DEV2, 0)[before..]), vec![0.5]);
+    let msgs = s.take_outbound();
+    assert!(
+        logs(&msgs, LogLevel::Warn).is_empty(),
+        "{:?}",
+        logs(&msgs, LogLevel::Warn)
+    );
+}
+
+/// A patch mapped to channels a second device has but openLab cannot use yet (above the
+/// primary's output count) is warned about truthfully: not as a device with too few channels.
+#[test]
+fn channels_above_the_primarys_output_count_are_warned_about_truthfully() {
+    let mut ws = workspace(vec![]);
+    let mut patch = ws.patches[0].clone();
+    patch.id = patch_b();
+    patch.name = "B".into();
+    ws.patches.push(patch);
+    let mut c = device_config(&ws);
+    c.machine
+        .set_patch_mapping(
+            ws.id,
+            patch_b(),
+            PatchMapping {
+                device: DEV2_NAME.into(),
+                channels: vec![4, 5],
+            },
+        )
+        .unwrap();
+    let mut s = DeviceShow::new(
+        ws,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 8)],
+        c,
+    );
+    s.wait_output(DEV2_NAME);
+    s.tick();
+    let warnings: Vec<String> = s
+        .take_outbound()
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::Warnings { warnings } => Some(warnings.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap()
+        .into_iter()
+        .filter_map(|w| match w {
+            WireWarning::Notice { code, message, .. } if code == "outputs_dropped" => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        warnings,
+        vec![format!(
+            "patch \"B\" maps channel 6 of \"{DEV2_NAME}\", but openLab uses only its first 2 \
+             outputs (as many as the primary device has): its cues cannot play"
+        )]
+    );
+}
+
+/// A device lost while its cue played, then left by its patch: it is closed at once (its dead
+/// voice does not hold it open), no voice record is kept, no reopen attempts follow, and when it
+/// comes back and a patch maps to it again nothing of the old cue is heard.
+#[test]
+fn a_lost_device_its_patch_moved_away_from_is_closed_and_forgets_its_voices() {
+    let b = wav(&dc(40_000, 0.5));
+    let mut s = two_device_show(vec![audio_b(2, &b, 0)]);
+    start(&mut s, 2);
+    s.run(BLOCK * 4);
+    unplug(&mut s, DEV2);
+    assert!(broken_device_lost(&s.take_outbound(), 2));
+    map_b(&mut s, DEV_NAME);
+    s.run(BLOCK * 4);
+    let msgs = s.take_outbound();
+    assert!(
+        logs(&msgs, LogLevel::Info)
+            .iter()
+            .any(|m| m.contains(&format!("\"{DEV2_NAME}\" closed: no patch plays on it"))),
+        "{:?}",
+        logs(&msgs, LogLevel::Info)
+    );
+    assert_eq!(s.control().live_voices(), 0);
+    s.wait_wall(Duration::from_secs(30), 30);
+    s.run(BLOCK * 4);
+    let msgs = s.take_outbound();
+    assert!(
+        logs(&msgs, LogLevel::Warn).is_empty(),
+        "{:?}",
+        logs(&msgs, LogLevel::Warn)
+    );
+    assert!(logs(&msgs, LogLevel::Error).is_empty());
+    assert!(
+        !workspace_warnings(&msgs)
+            .unwrap_or_default()
+            .contains(&"device_lost".to_owned())
+    );
+    assert_eq!(s.control().live_voices(), 0);
+    // Back, and a patch maps to it again: the old cue's voice does not sound.
+    s.fake.plug(listed(DEV2, DEV2_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    let before = s.device_channel(DEV2, 0).len();
+    map_b(&mut s, DEV2_NAME);
+    s.wait_output(DEV2_NAME);
+    s.run(2000);
+    assert!(s.device_channel(DEV2, 0).len() > before + 1000);
+    assert!(heard(&s.device_channel(DEV2, 0)[before..]).is_empty());
+    assert_eq!(s.control().live_voices(), 0);
 }

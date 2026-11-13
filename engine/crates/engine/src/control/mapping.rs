@@ -6,9 +6,7 @@
 //! operator's mapping is never touched.
 
 use openlab_core::protocol::{DeviceEntry, ErrorBody, ErrorCode, LogLevel, RequestId};
-use openlab_core::{
-    CueId, CueKind, CueState, DeviceInfo, Input, PatchId, PatchMapping, SampleTime,
-};
+use openlab_core::{CueId, CueKind, CueState, Input, PatchId, PatchMapping, SampleTime};
 
 use super::inbox::reply;
 use super::{Control, DocCx, DocId, Engine, Flow, ReplyTx, failed, ok};
@@ -60,11 +58,11 @@ impl Control {
 }
 
 /// Why `mapping` cannot be used for a patch with `outputs` outputs on the listed `devices`.
+/// Any listed device will do: one that is not open yet opens for it.
 fn mapping_refusal(
     mapping: &PatchMapping,
     outputs: usize,
     devices: &[DeviceEntry],
-    playable: &[DeviceInfo],
 ) -> Option<ErrorBody> {
     let Some(device) = devices.iter().find(|d| d.name == mapping.device) else {
         return Some(ErrorBody::new(
@@ -72,21 +70,6 @@ fn mapping_refusal(
             format!("no output device named \"{}\"", mapping.device),
         ));
     };
-    // The engine plays on one device: a patch mapped to another listed one would be silent
-    // (`device_missing`) with nothing to say why. With no device playing (an outage) nothing
-    // can be compared; the mapping waits for the device to come back.
-    if let Some(playing) = playable.first()
-        && !playable.iter().any(|p| p.name == mapping.device)
-    {
-        return Some(ErrorBody::new(
-            ErrorCode::BadRequest,
-            format!(
-                "the engine plays on \"{}\", not \"{}\": a patch can only be mapped to the \
-                 device in use",
-                playing.name, mapping.device
-            ),
-        ));
-    }
     if mapping.channels.len() != outputs {
         return Some(ErrorBody::new(
             ErrorCode::BadRequest,
@@ -155,9 +138,7 @@ impl DocCx<'_> {
         self.eng.require_saveable()?;
         let message = match mapping {
             Some(mapping) => {
-                if let Some(refusal) =
-                    mapping_refusal(&mapping, outputs, devices, &self.eng.playable)
-                {
+                if let Some(refusal) = mapping_refusal(&mapping, outputs, devices) {
                     return Err(refusal);
                 }
                 let text = format!(
@@ -193,12 +174,18 @@ impl DocCx<'_> {
 
 impl DocCx<'_> {
     /// Maps each patch of the open workspace that has no mapping entry on this machine to the
-    /// first outputs of the playable device. Nothing happens while no device is playable (an
-    /// outage, or none): the patch stays unmapped and the next sync with a device maps it. A
-    /// device with fewer outputs than the patch needs leaves it unmapped (one warning per
-    /// patch and device); a different device is tried again.
+    /// first outputs of the primary device. Nothing happens while it does not play (an outage,
+    /// or none): the patch stays unmapped and the next sync with it maps it. A device with
+    /// fewer outputs than the patch needs leaves it unmapped (one warning per patch and
+    /// device); a different device is tried again.
     pub(super) fn map_unmapped_patches(&mut self) {
-        let Some(device) = self.eng.playable.first().cloned() else {
+        let Some(device) = self
+            .eng
+            .playable
+            .iter()
+            .find(|(_, key)| *key == 0)
+            .map(|(d, _)| d.clone())
+        else {
             return;
         };
         // This doc's warnings for patches that are gone (or of a workspace it no longer has)
@@ -321,7 +308,7 @@ impl Engine {
     /// Refuses an operator's change to the machine settings that could not be kept: they would
     /// work until the app quits and then be gone, and the reply would have said all was well.
     /// With no settings folder configured (tests, the offline driver) there is nothing to keep.
-    fn require_saveable(&self) -> Result<(), ErrorBody> {
+    pub(super) fn require_saveable(&self) -> Result<(), ErrorBody> {
         if self.config.app_dirs.is_none() {
             return Ok(());
         }
@@ -340,7 +327,7 @@ impl Engine {
 
     /// Hands the machine settings to the writer, unless they are defaults standing in for a file
     /// that could not be read (the operator's mappings would be lost) or there is no writer.
-    fn save_machine(&mut self) {
+    pub(super) fn save_machine(&mut self) {
         if !self.config.machine_writable {
             if !std::mem::replace(&mut self.unwritable_warned, true) {
                 self.log(

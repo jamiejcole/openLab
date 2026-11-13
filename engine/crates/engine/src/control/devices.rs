@@ -72,6 +72,10 @@ pub const FIRST_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// An output device as the host lists it.
 pub type ListedDevice = openlab_audio::DeviceInfo;
 
+/// Which open output device a device-thread answer is about: its place in the engine's table of
+/// outputs (0 is the primary device, opened at start; the place is never reused in a run).
+pub type OutputKey = usize;
+
 /// The wall clock of the device policy (backoff, list polling, watchdog). Tests inject
 /// their own.
 pub type WallClock = Arc<dyn Fn() -> Instant + Send + Sync>;
@@ -102,6 +106,8 @@ pub trait DeviceLayer: Send {
     ) -> Result<Box<dyn OpenStream>, OpenFailure>;
     /// What reads the device list, on its own thread.
     fn lister(&self) -> Box<dyn DeviceLister>;
+    /// A layer for another device's thread (each open device has a thread of its own).
+    fn another(&self) -> Box<dyn DeviceLayer>;
 }
 
 /// Reads the device list (may block).
@@ -206,6 +212,10 @@ impl DeviceLayer for CpalDevices {
     }
 
     fn lister(&self) -> Box<dyn DeviceLister> {
+        Box::new(CpalDevices)
+    }
+
+    fn another(&self) -> Box<dyn DeviceLayer> {
         Box::new(CpalDevices)
     }
 }
@@ -330,6 +340,7 @@ pub fn start_with_timeout(
     let (first_tx, first) = crossbeam_channel::bounded(1);
     let first_request = request.clone();
     let mut lister = layer.lister();
+    let spare = layer.another();
     let list_inbox = inbox.clone();
     thread::Builder::new()
         .name("openlab-device".into())
@@ -351,7 +362,7 @@ pub fn start_with_timeout(
                 // Given up on: the stream (and the mixer) go here.
                 return;
             }
-            worker(layer, &jobs, &inbox, Some(stream));
+            worker(layer, &jobs, &inbox, Some(stream), 0);
         })
         .map_err(StartError::Thread)?;
     let info = match first.recv_timeout(timeout) {
@@ -372,7 +383,7 @@ pub fn start_with_timeout(
                 let listed = catch_unwind(AssertUnwindSafe(|| lister.list()))
                     .unwrap_or_else(|_| Err(panicked("list")));
                 if list_inbox
-                    .send(Inbox::Device(DeviceAnswer::Listed(listed)))
+                    .send(Inbox::Device(0, DeviceAnswer::Listed(listed)))
                     .is_err()
                 {
                     break;
@@ -388,8 +399,13 @@ pub fn start_with_timeout(
         ..request
     };
     Ok(Device {
+        key: 0,
         jobs: jobs_tx,
-        lists: lists_tx,
+        lists: Some(lists_tx),
+        opened: true,
+        reconfiguring: false,
+        parked: false,
+        resuming: false,
         wall,
         in_flight: VecDeque::new(),
         listing: None,
@@ -408,7 +424,75 @@ pub fn start_with_timeout(
         up_since: now,
         stuck: None,
         alloc_base: 0,
+        spare: Some(spare),
     })
+}
+
+/// Starts another output device without waiting: its thread opens `request`'s device for `mixer`
+/// and answers through the inbox tagged `key`. Until then the device is down (an outage that ends
+/// with the first open), and a failed open is retried with the reopen backoff like a lost device.
+/// It reads no list of its own: the list reader's reads are handed to it ([`Device::answer`]).
+fn spawn(
+    layer: Box<dyn DeviceLayer>,
+    mixer: Mixer,
+    request: OpenRequest,
+    from: &Device,
+    inbox: Sender<Inbox>,
+    key: OutputKey,
+) -> Result<Device, StartError> {
+    let (listed, wall, sleep_clock) = (from.listed.clone(), from.wall(), from.sleep_clock());
+    let (jobs_tx, jobs) = crossbeam_channel::unbounded();
+    let name = request
+        .device_id
+        .as_deref()
+        .and_then(|id| listed.iter().find(|d| d.id == id))
+        .map(|d| d.name.clone())
+        .unwrap_or_default();
+    let device_id = request.device_id.clone().unwrap_or_default();
+    thread::Builder::new()
+        .name("openlab-device".into())
+        .spawn(move || worker(layer, &jobs, &inbox, None, key))
+        .map_err(StartError::Thread)?;
+    let now = wall();
+    let info = StreamInfo {
+        device_id,
+        name,
+        channels: 0,
+        outputs_dropped: false,
+        block_frames: request.buffer_frames,
+        sample_rate: 0,
+        monitor: DeviceMonitor::idle(),
+    };
+    let mut device = Device {
+        key,
+        jobs: jobs_tx,
+        lists: None,
+        opened: false,
+        reconfiguring: false,
+        parked: false,
+        resuming: false,
+        wall,
+        in_flight: VecDeque::new(),
+        listing: None,
+        list_stuck: false,
+        listed,
+        next_list: now,
+        missing_reads: 0,
+        callbacks_at_list: 0,
+        stall: Stall::new(&info, now, sleep_clock()),
+        sleep_clock,
+        request,
+        stream: Stream::Down(Box::new(mixer)),
+        info,
+        outage: Some(Outage { next_try: now }),
+        attempts: 0,
+        up_since: now,
+        stuck: None,
+        alloc_base: 0,
+        spare: None,
+    };
+    device.reopen();
+    Ok(device)
 }
 
 fn panicked(what: &str) -> DeviceError {
@@ -426,6 +510,7 @@ fn worker(
     jobs: &Receiver<Job>,
     inbox: &Sender<Inbox>,
     mut stream: Option<Box<dyn OpenStream>>,
+    key: OutputKey,
 ) {
     while let Ok(job) = jobs.recv() {
         let answer = match job {
@@ -450,7 +535,7 @@ fn worker(
                 None => MixerBack::Lost,
             }),
         };
-        if inbox.send(Inbox::Device(answer)).is_err() {
+        if inbox.send(Inbox::Device(key, answer)).is_err() {
             break;
         }
     }
@@ -617,6 +702,11 @@ struct Outage {
 pub enum DeviceEvent {
     /// The stream stopped playing on its device: an outage starts.
     Lost { why: String },
+    /// A device started without waiting ([`spawn`]) opened for the first time.
+    Opened,
+    /// The stream was closed and opened again at another buffer size ([`Device::set_buffer`]),
+    /// its mixer as it was.
+    Reconfigured,
     /// The device plays again (the stream was reopened).
     Restored,
     /// The stream has not called back for `ms` ms (first stage of the stall watchdog): a
@@ -648,8 +738,21 @@ pub enum DeviceEvent {
 
 /// The control thread's side of the device (the `Backend::Device` of the loop).
 pub struct Device {
+    /// Its place in the engine's outputs (tags its thread's answers).
+    key: OutputKey,
     jobs: Sender<Job>,
-    lists: Sender<()>,
+    /// The list thread, for the device that reads the list (the primary); the others are handed
+    /// its reads.
+    lists: Option<Sender<()>>,
+    /// The stream has been up at least once.
+    opened: bool,
+    /// The stream was closed to be opened again at once at another buffer size.
+    reconfiguring: bool,
+    /// Closed because nothing plays on it any more ([`Device::park`]): not watched, not
+    /// reopened, not reported lost.
+    parked: bool,
+    /// Opened again after being parked: not reported as away while that open runs.
+    resuming: bool,
     wall: WallClock,
     /// Open and close jobs sent whose answer has not come back, oldest first.
     in_flight: VecDeque<(Instant, JobKind)>,
@@ -676,6 +779,8 @@ pub struct Device {
     stuck: Option<String>,
     /// Allocation violations counted by streams closed since.
     alloc_base: u64,
+    /// A layer other devices' threads are made from (the primary keeps one).
+    spare: Option<Box<dyn DeviceLayer>>,
 }
 
 impl Device {
@@ -692,6 +797,157 @@ impl Device {
     /// The stream is not playing on its device (an outage).
     pub fn is_down(&self) -> bool {
         self.outage.is_some()
+    }
+
+    /// Its place in the engine's outputs.
+    pub fn key(&self) -> OutputKey {
+        self.key
+    }
+
+    /// The wall clock its policy runs on (the engine's clock while the primary device is away).
+    pub fn wall(&self) -> WallClock {
+        Arc::clone(&self.wall)
+    }
+
+    /// The clock that counts sleep.
+    pub fn sleep_clock(&self) -> SleepClock {
+        Arc::clone(&self.sleep_clock)
+    }
+
+    /// Starts another output device from this one ([`start`]ed, so it has a layer to spare),
+    /// on the same clocks and list, without waiting: its thread opens `request`'s device for
+    /// `mixer` and answers tagged `key`. Until then it is down; a failed open is retried with
+    /// the reopen backoff like a lost device. `None`: this device has no layer to spare.
+    pub fn start_another(
+        &self,
+        mixer: Mixer,
+        request: OpenRequest,
+        inbox: Sender<Inbox>,
+        key: OutputKey,
+    ) -> Option<Result<Device, StartError>> {
+        let layer = self.spare.as_ref()?.another();
+        Some(spawn(layer, mixer, request, self, inbox, key))
+    }
+
+    /// The device as the list names it, with the mixer outputs that reach it.
+    pub fn listed_info(&self) -> Option<&ListedDevice> {
+        self.listed.iter().find(|d| d.id == self.info.device_id)
+    }
+
+    /// The stream has been up at least once (a device started with [`spawn`] has not, until its
+    /// first open answers).
+    pub fn has_opened(&self) -> bool {
+        self.opened
+    }
+
+    /// The frames per callback the device is asked for.
+    pub fn requested_buffer(&self) -> Option<u32> {
+        self.request.buffer_frames
+    }
+
+    /// The stream plays: not away, not opening, not closed for a buffer size change, not
+    /// parked.
+    pub fn is_playing(&self) -> bool {
+        self.outage.is_none() && !self.reconfiguring && !self.parked
+    }
+
+    /// Closed because nothing plays on it ([`Self::park`]).
+    pub fn is_parked(&self) -> bool {
+        self.parked
+    }
+
+    /// Opening again after being parked.
+    pub fn is_resuming(&self) -> bool {
+        self.resuming
+    }
+
+    /// Nothing plays on this device any more: its stream closes (the mixer comes back as it
+    /// was) and it is neither watched, reopened nor reported lost until [`Self::unpark`]. An
+    /// outage it was in ends. Only for a device other than the list reader's.
+    pub fn park(&mut self) {
+        if self.parked {
+            return;
+        }
+        self.parked = true;
+        self.resuming = false;
+        self.reconfiguring = false;
+        self.outage = None;
+        self.stall.warned = false;
+        if matches!(self.stream, Stream::Up) {
+            self.close_parked();
+        }
+    }
+
+    fn close_parked(&mut self) {
+        let now = (self.wall)();
+        self.alloc_base = self
+            .alloc_base
+            .saturating_add(self.info.monitor.alloc_violations());
+        self.stream = if self.send(Job::Close, JobKind::Close, now) {
+            Stream::Closing
+        } else {
+            Stream::Gone
+        };
+    }
+
+    /// A patch plays on this parked device again: it opens again at once (and as a device
+    /// coming back, with the reopen backoff, if that fails).
+    pub fn unpark(&mut self) {
+        if !std::mem::take(&mut self.parked) {
+            return;
+        }
+        if !matches!(self.stream, Stream::Up) {
+            self.resuming = true;
+            self.attempts = 0;
+            self.outage = Some(Outage {
+                next_try: (self.wall)(),
+            });
+        }
+    }
+
+    /// Asks for `frames` per callback from now on (AUD-21). A stream that plays is closed and
+    /// opened again at once at that size, its mixer as it was: voices and its clock carry on
+    /// after the gap, which is not an outage (the device does not play meanwhile:
+    /// [`Self::is_playing`]). A device that is away or opening takes the size at its next
+    /// open. A reopen that fails, or a close or reopen the device thread does not finish within
+    /// [`DEVICE_JOB_TIMEOUT`], is a loss ([`DeviceEvent::Lost`]). Returns what changed.
+    pub fn set_buffer(&mut self, frames: u32) -> Vec<DeviceEvent> {
+        let mut events = Vec::new();
+        self.request.buffer_frames = Some(frames);
+        if self.outage.is_some() || !matches!(self.stream, Stream::Up) {
+            return events;
+        }
+        let now = (self.wall)();
+        self.alloc_base = self
+            .alloc_base
+            .saturating_add(self.info.monitor.alloc_violations());
+        self.stall.warned = false;
+        self.reconfiguring = true;
+        if self.send(Job::Close, JobKind::Close, now) {
+            self.stream = Stream::Closing;
+        } else {
+            self.stream = Stream::Gone;
+            let why = "the device thread is gone".to_owned();
+            self.fail_reconfigure(now, why.clone(), &mut events);
+            self.stuck = Some(why.clone());
+            events.push(DeviceEvent::Unrecoverable { why });
+        }
+        events
+    }
+
+    /// A buffer size change that did not bring the stream back: an outage, reported as a loss
+    /// so the cues on the device stop.
+    fn fail_reconfigure(&mut self, now: Instant, why: String, events: &mut Vec<DeviceEvent>) {
+        if !std::mem::take(&mut self.reconfiguring) {
+            return;
+        }
+        self.missing_reads = 0;
+        self.outage = Some(Outage {
+            next_try: now + backoff(self.attempts),
+        });
+        events.push(DeviceEvent::Lost {
+            why: format!("it did not come back from a buffer size change: {why}"),
+        });
     }
 
     /// Why sound cannot come back without a restart, if it cannot.
@@ -747,6 +1003,9 @@ impl Device {
         {
             self.stream = Stream::Down(Box::new(m));
         }
+        if self.reconfiguring && matches!(self.stream, Stream::Down(_)) {
+            self.reopen();
+        }
         if let Some(o) = &self.outage
             && now >= o.next_try
             && matches!(self.stream, Stream::Down(_))
@@ -754,9 +1013,12 @@ impl Device {
             self.reopen();
         }
         self.watchdog(now, &mut events);
-        if self.listing.is_none() && now >= self.next_list {
+        if self.listing.is_none()
+            && now >= self.next_list
+            && let Some(lists) = &self.lists
+        {
             self.next_list = now + DEVICE_POLL;
-            if self.lists.send(()).is_ok() {
+            if lists.send(()).is_ok() {
                 self.listing = Some(now);
             }
         }
@@ -781,18 +1043,34 @@ impl Device {
             DeviceAnswer::Opened(result) => {
                 self.answered(JobKind::Open);
                 match result {
+                    Ok(info) if self.parked => {
+                        // Parked while it opened: closed again at once.
+                        self.info = info;
+                        self.stream = Stream::Up;
+                        self.close_parked();
+                    }
                     Ok(info) => {
                         self.outage = None;
+                        self.resuming = false;
                         self.callbacks_at_list = info.monitor.callbacks();
                         self.missing_reads = 0;
                         self.info = info;
                         self.arm_stall(now);
                         self.stream = Stream::Up;
                         self.up_since = now;
-                        events.push(DeviceEvent::Restored);
+                        let first = !std::mem::replace(&mut self.opened, true);
+                        events.push(if std::mem::take(&mut self.reconfiguring) {
+                            DeviceEvent::Reconfigured
+                        } else if first {
+                            DeviceEvent::Opened
+                        } else {
+                            DeviceEvent::Restored
+                        });
                     }
                     Err(failure) => {
                         self.take_back(failure.mixer, now, &mut events);
+                        // It did not come back at the new size: an outage like a loss.
+                        self.fail_reconfigure(now, failure.error.to_string(), &mut events);
                         if let Some(o) = &mut self.outage {
                             let retry_in = backoff(self.attempts);
                             o.next_try = now + retry_in;
@@ -808,6 +1086,9 @@ impl Device {
             DeviceAnswer::Closed(back) => {
                 self.answered(JobKind::Close);
                 self.take_back(back, now, &mut events);
+                if self.reconfiguring && matches!(self.stream, Stream::Down(_)) {
+                    self.reopen();
+                }
             }
         }
         self.watchdog(now, &mut events);
@@ -1013,6 +1294,7 @@ impl Device {
             MixerBack::Pending(p) => Stream::Pending(p, now),
             MixerBack::Lost => {
                 let why = "the audio engine was lost with the device".to_owned();
+                self.fail_reconfigure(now, why.clone(), events);
                 self.stuck = Some(why.clone());
                 events.push(DeviceEvent::Unrecoverable { why });
                 Stream::Gone
@@ -1048,6 +1330,8 @@ impl Device {
         };
         match (&self.stuck, why) {
             (None, Some(why)) => {
+                // A buffer size change stuck in the device thread: its cues stop, as for a loss.
+                self.fail_reconfigure(now, why.clone(), events);
                 self.stuck = Some(why.clone());
                 events.push(DeviceEvent::Unrecoverable { why });
             }

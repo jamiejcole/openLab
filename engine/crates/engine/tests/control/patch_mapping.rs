@@ -399,10 +399,10 @@ fn set_on_device(
     }
 }
 
-/// A device the host lists but the mixer does not play on would leave the patch silent
-/// (`device_missing`) with no word why: the request is refused and the mapping stays.
+/// AUD-02: a patch can be mapped to any listed device; one the engine does not play on yet
+/// opens for it (on its own thread), and the patch plays there once it does.
 #[test]
-fn a_mapping_to_a_listed_device_the_mixer_is_not_playing_on_is_refused() {
+fn a_mapping_to_another_listed_device_opens_that_device() {
     let ws = workspace(vec![]);
     let mut c = ControlConfig::new(RATE, BLOCK);
     c.seed = 7;
@@ -413,15 +413,16 @@ fn a_mapping_to_a_listed_device_the_mixer_is_not_playing_on_is_refused() {
     let mut s = DeviceShow::new(ws.clone(), vec![listed("fake:1", "Fake 1", 2)], c);
     s.fake.plug(listed("fake:2", "Fake 2", 8));
     s.wait_wall(std::time::Duration::from_secs(1), 1);
-    let refusal = set_on_device(&mut s, mapping("Fake 2", &[0, 1])).unwrap_err();
-    assert_eq!(refusal.code, ErrorCode::BadRequest);
-    assert!(refusal.message.contains("Fake 1"), "{}", refusal.message);
+    assert_eq!(set_on_device(&mut s, mapping("Fake 2", &[2, 3])), Ok(()));
     assert_eq!(
         s.control().machine().patch_mapping(ws.id, patch_id()),
-        Some(&mapping("Fake 1", &[0, 1]))
+        Some(&mapping("Fake 2", &[2, 3]))
     );
-    // The device in use is accepted.
-    assert_eq!(set_on_device(&mut s, mapping("Fake 1", &[1, 0])), Ok(()));
+    s.wait_output("Fake 2");
+    assert!(s.control().output_up("Fake 1") && s.control().output_up("Fake 2"));
+    // A device that is not listed is still refused.
+    let refusal = set_on_device(&mut s, mapping("Gone", &[0, 1])).unwrap_err();
+    assert_eq!(refusal.code, ErrorCode::NotFound);
 }
 
 /// With settings that cannot be kept (the file was damaged at start, so the engine leaves it

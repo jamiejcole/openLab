@@ -341,14 +341,25 @@ pub enum Request {
         folder: String,
     },
     ListDevices,
-    /// Chooses the output device the engine opens at its **next start** (the engine plays on one
-    /// device and does not switch while running; the app restarts it). `device` must be a name
+    /// Chooses the primary output device the engine opens at its **next start** (its clock is the
+    /// show's; the engine does not switch it while running; the app restarts it). `device` must be a name
     /// `list_devices` gives; null or absent goes back to the system default. Kept in the
     /// machine settings, not a show file. Answers `ok` with no data, `not_found` (no such
     /// device) or `io` (the settings cannot be kept); nothing changes on a refusal. App-scope.
     SetOutputDevice {
         #[serde(default)]
         device: Option<String>,
+    },
+    /// Sets the buffer size, in frames per callback, of output device `device` on this machine
+    /// (AUD-21): 16 to 1024 (the default is 512). `device` must be a name `list_devices` gives.
+    /// Kept in the machine settings. A device the engine plays on reopens at once at that size
+    /// (a size it cannot do falls back to the nearest it can, with a `warn` log); the other
+    /// devices are untouched. Answers `ok` with no data, `bad_request` (size out of range),
+    /// `not_found` (no such device) or `io` (the settings cannot be kept); nothing changes on a
+    /// refusal. App-scope.
+    SetBufferSize {
+        device: String,
+        frames: u32,
     },
     /// Switches output overrides (PB-10) for the whole engine, every open workspace: not saved
     /// in any show file and gone when the engine restarts, as QLab's Overrides are. The

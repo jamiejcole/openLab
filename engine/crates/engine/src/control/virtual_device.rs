@@ -302,6 +302,10 @@ impl DeviceLayer for VirtualLayer {
         Box::new(VirtualLayer(Arc::clone(&self.0)))
     }
 
+    fn another(&self) -> Box<dyn DeviceLayer> {
+        Box::new(VirtualLayer(Arc::clone(&self.0)))
+    }
+
     fn open(
         &mut self,
         mixer: Mixer,
@@ -596,7 +600,7 @@ impl Control {
         while left > 0 {
             let n = left.min(self.eng.block.max(1));
             if vd.shared.rendering.load(Ordering::Acquire) {
-                let end = self.eng.mixer.samples_rendered().saturating_add(n);
+                let end = self.eng.rendered().saturating_add(n);
                 if self.wait_streams(end, SETTLE_TIMEOUT) > 0 {
                     return Err(Stop::Failed(format!(
                         "a disk stream did not deliver within {} s",
@@ -637,7 +641,7 @@ impl Control {
             return Some(msg);
         }
         match msg {
-            Inbox::Probe(..) | Inbox::Device(_) | Inbox::Net(..) | Inbox::Watch(_) => {
+            Inbox::Probe(..) | Inbox::Device(..) | Inbox::Net(..) | Inbox::Watch(_) => {
                 crate::lock(&vd.shared.held).push_back(msg);
                 None
             }
@@ -900,9 +904,10 @@ mod tests {
         let is_default = |r: &Rig| r.control.eng.device_list().first().map(|d| d.is_default);
         let mut relisted = r.vd.listed();
         relisted[0].is_default = false;
-        let flow = r
-            .control
-            .handle(Inbox::Device(devices::DeviceAnswer::Listed(Ok(relisted))));
+        let flow = r.control.handle(Inbox::Device(
+            0,
+            devices::DeviceAnswer::Listed(Ok(relisted)),
+        ));
         assert_eq!(flow, Flow::Continue);
         assert_eq!(crate::lock(&r.vd.shared.held).len(), 1);
         assert_eq!(is_default(&r), Some(true), "not taken in yet");

@@ -1,0 +1,9 @@
+{
+  "type": "request",
+  "id": 61,
+  "request": {
+    "type": "set_buffer_size",
+    "device": "Scarlett 2i2",
+    "frames": 256
+  }
+}
