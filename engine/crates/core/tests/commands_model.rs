@@ -1122,7 +1122,10 @@ fn an_output_name_is_checked_as_a_patch_name_is() {
     };
     let named = round_trip(&ws, name(0, "Left\nfill"));
     assert_eq!(named.patches[0].outputs[0].name, "Left\nfill");
-    assert_eq!(named.patches[0].outputs[1].name, "", "the other output keeps its number");
+    assert_eq!(
+        named.patches[0].outputs[1].name, "",
+        "the other output keeps its number"
+    );
     for bad in ["x".repeat(1025), "tab\there".to_owned()] {
         assert!(
             matches!(refused(&ws, name(0, &bad)), CommandError::InvalidValue(_)),

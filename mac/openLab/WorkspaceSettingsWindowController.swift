@@ -22,7 +22,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let maxLimitField = NSTextField()
     let minLimitField = NSTextField()
     let patchAddButton = NSButton(title: loc("settings.audio.newPatch"), target: nil, action: nil)
-    let patchGrid = NSGridView()
+    /// The table (made again for each drawing) and the view it sits in, in a scroll view.
+    var patchGrid = NSGridView()
+    let patchGridHolder = FlippedView()
     /// One per patch row, in table order; rebuilt whenever the table is drawn.
     var patchNameFields: [NSTextField] = []
     var patchDevicePopups: [NSPopUpButton] = []
@@ -80,6 +82,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     private var menuOpen = false
     /// A read of the engine's patch resolutions under way (a device came or went).
     private var rereading: Task<Void, Never>?
+    private var rereadAgain = false
 
     init(store: WorkspaceStore) {
         model = WorkspaceSettingsModel(store: store)
@@ -95,6 +98,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // Published before they change: the sinks use the delivered value and render after it.
         subs.append(store.$status.sink { [weak self] _ in self?.renderSoon() })
         subs.append(store.$model.sink { [weak self] _ in self?.renderSoon() })
+        // The table is drawn from what the model last read from the engine, whoever asked for it.
+        subs.append(model.$patches.sink { [weak self] _ in self?.renderSoon() })
+        subs.append(model.$devices.sink { [weak self] _ in self?.renderSoon() })
         // A device lost, back or opened changes where patches resolve; the engine's patch warnings
         // and device states say so, and the table reads the resolutions again.
         subs.append(store.$warnings.removeDuplicates().sink { [weak self] _ in self?.rereadSoon() })
@@ -158,6 +164,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     @discardableResult
     func present() -> Task<Void, Never> {
         showWindow(nil)
+        // No caret in a field: the next Space (GO, in an operator's hands) would replace its text.
+        window?.makeFirstResponder(nil)
         return Task {
             await model.refresh()
             render()
@@ -171,9 +179,17 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// Reads devices and resolutions again once (only while the window shows: closed, it reads
     /// them when presented).
     private func rereadSoon() {
-        guard window?.isVisible == true, rereading == nil else { return }
+        guard window?.isVisible == true else { return }
+        // One read at a time; a change during it is read again after it.
+        guard rereading == nil else {
+            rereadAgain = true
+            return
+        }
         rereading = Task {
-            await model.refresh()
+            repeat {
+                rereadAgain = false
+                await model.refresh()
+            } while rereadAgain
             rereading = nil
             render()
         }

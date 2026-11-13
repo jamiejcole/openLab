@@ -21,34 +21,15 @@ extension WorkspaceSettingsWindowController {
         top.orientation = .horizontal
         top.spacing = 12
 
-        let headers = [
-            loc("settings.audio.patchName"), loc("settings.audio.patchDevice"), "", "",
-        ].map { text -> NSView in
-            let label = NSTextField(labelWithString: text)
-            label.font = .systemFont(ofSize: 12, weight: .semibold)
-            return label
-        }
-        patchGrid.addRow(with: headers)
-        patchGrid.rowSpacing = 6
-        patchGrid.columnSpacing = 8
-        patchGrid.column(at: 0).width = Self.patchNameWidth
-        patchGrid.column(at: 2).xPlacement = .center
-        patchGrid.column(at: 3).xPlacement = .center
-
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.borderType = .bezelBorder
-        let holder = FlippedView()
-        patchGrid.translatesAutoresizingMaskIntoConstraints = false
+        let holder = patchGridHolder
         holder.translatesAutoresizingMaskIntoConstraints = false
-        holder.addSubview(patchGrid)
         scroll.documentView = holder
+        placeNewPatchGrid()
         NSLayoutConstraint.activate([
-            patchGrid.topAnchor.constraint(equalTo: holder.topAnchor, constant: 8),
-            patchGrid.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 8),
-            patchGrid.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -8),
-            patchGrid.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -8),
             holder.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             holder.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             // The table is as wide as the pane: the device column takes what the others leave.
@@ -63,7 +44,7 @@ extension WorkspaceSettingsWindowController {
         for field in [maxLimitField, minLimitField] {
             field.alignment = .right
             field.delegate = self
-            field.widthAnchor.constraint(equalToConstant: 56).isActive = true
+            field.widthAnchor.constraint(equalToConstant: 48).isActive = true
         }
         func limitRow(_ title: String, _ field: NSTextField) -> NSStackView {
             let row = NSStackView(views: [
@@ -75,8 +56,8 @@ extension WorkspaceSettingsWindowController {
         let limitsTitle = NSTextField(labelWithString: loc("settings.audio.limits"))
         limitsTitle.font = .systemFont(ofSize: 13, weight: .semibold)
         let limits = NSStackView(views: [
-            limitsTitle, limitRow(loc("settings.audio.limitMax"), maxLimitField),
-            limitRow(loc("settings.audio.limitMin"), minLimitField),
+            limitsTitle, limitRow(loc("settings.audio.limitMaxShort"), maxLimitField),
+            limitRow(loc("settings.audio.limitMinShort"), minLimitField),
         ])
         limits.orientation = .vertical
         limits.alignment = .trailing
@@ -104,7 +85,38 @@ extension WorkspaceSettingsWindowController {
         return stack
     }
 
-    static let patchNameWidth: CGFloat = 140
+    static let patchNameWidth: CGFloat = 120
+
+    /// A new, empty table with its column titles in place of the old one. The table is made again
+    /// for each drawing: a row whose cells are merged (the problem lines) cannot be removed from a
+    /// grid view.
+    private func placeNewPatchGrid() {
+        patchGrid.removeFromSuperview()
+        let grid = NSGridView()
+        let headers = [
+            loc("settings.audio.patchName"), loc("settings.audio.patchDevice"), "", "",
+        ].map { text -> NSView in
+            let label = NSTextField(labelWithString: text)
+            label.font = .systemFont(ofSize: 12, weight: .semibold)
+            return label
+        }
+        grid.addRow(with: headers)
+        grid.rowSpacing = 6
+        grid.columnSpacing = 8
+        grid.column(at: 0).width = Self.patchNameWidth
+        grid.column(at: 2).xPlacement = .center
+        grid.column(at: 3).xPlacement = .center
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        let holder = patchGridHolder
+        holder.addSubview(grid)
+        NSLayoutConstraint.activate([
+            grid.topAnchor.constraint(equalTo: holder.topAnchor, constant: 8),
+            grid.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 8),
+            grid.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -8),
+            grid.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -8),
+        ])
+        patchGrid = grid
+    }
 
     /// Draws the table. One that is as drawn is left alone, and so is one whose name is being
     /// typed in: a rebuild would take the caret away (the next render catches up).
@@ -114,16 +126,12 @@ extension WorkspaceSettingsWindowController {
         let state = PatchTableState(patches: model.patches, devices: model.devices, loaded: model.loaded)
         if !forced, shownPatchTable == state { return }
         if patchNameFields.contains(where: { $0.currentEditor() != nil }) {
-            lastDrawn = nil
+            // Drawn once the typing ends; nothing to catch up when the table is as drawn.
+            if shownPatchTable != state { lastDrawn = nil }
             return
         }
         shownPatchTable = state
-        // Row 0 holds the column titles.
-        while patchGrid.numberOfRows > 1 {
-            let last = patchGrid.row(at: patchGrid.numberOfRows - 1)
-            for c in 0..<last.numberOfCells { last.cell(at: c).contentView?.removeFromSuperview() }
-            patchGrid.removeRow(at: patchGrid.numberOfRows - 1)
-        }
+        placeNewPatchGrid()
         patchNameFields = []
         patchDevicePopups = []
         patchEditButtons = []
@@ -151,10 +159,11 @@ extension WorkspaceSettingsWindowController {
             // A long device name is cut: it never widens the window.
             popup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             popup.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
+            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
             popup.setAX("\(AX.settingsPatch)-device-\(n)", label: "\(shownName), \(loc("settings.audio.patchDevice"))")
 
-            let edit = NSButton(title: loc("settings.audio.edit"), target: self, action: #selector(editPatchClicked(_:)))
+            let edit = NSButton(
+                title: loc("settings.audio.edit"), target: self, action: #selector(editPatchClicked(_:)))
             edit.bezelStyle = .rounded
             edit.tag = i
             edit.setAX("\(AX.settingsPatch)-edit-\(n)", label: "\(loc("settings.audio.edit")) \(shownName)")

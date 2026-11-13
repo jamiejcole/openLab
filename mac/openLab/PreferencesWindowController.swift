@@ -192,7 +192,8 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
                 popup.lastItem?.tag = d.bufferFrames
             }
             popup.selectItem(withTag: d.bufferFrames)
-            popup.setAX("\(AX.preferencesBufferPopup)-\(i + 1)", label: String(format: loc("prefs.audio.buffer"), d.name))
+            popup.setAX(
+                "\(AX.preferencesBufferPopup)-\(i + 1)", label: String(format: loc("prefs.audio.buffer"), d.name))
             popup.target = self
             popup.action = #selector(bufferChosen(_:))
             popup.tag = i

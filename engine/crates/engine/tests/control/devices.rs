@@ -1913,17 +1913,12 @@ fn a_patch_whose_device_is_unplugged_is_warned_about_until_it_is_back() {
 /// A patch the operator set to no device carries its own warning (QLab 5 manual p. 191).
 #[test]
 fn a_patch_set_to_no_device_is_warned_about() {
-    let mut s = two_patch_show_with(
-        vec![],
-        DEV_NAME,
-        vec![listed(DEV, DEV_NAME, 2)],
-        |c| {
-            let ws = workspace(vec![]);
-            c.machine
-                .set_patch_mapping(ws.id, patch_b(), PatchMapping::none())
-                .unwrap();
-        },
-    );
+    let mut s = two_patch_show_with(vec![], DEV_NAME, vec![listed(DEV, DEV_NAME, 2)], |c| {
+        let ws = workspace(vec![]);
+        c.machine
+            .set_patch_mapping(ws.id, patch_b(), PatchMapping::none())
+            .unwrap();
+    });
     let texts = notice_texts(&s.take_outbound()).unwrap();
     assert_eq!(
         texts

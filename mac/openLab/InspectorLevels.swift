@@ -93,7 +93,8 @@ extension InspectorViewController {
         audioLevels.matrix.outputNames = Self.outputNames(of: cue, model: model)
         if audio, let set {
             audioLevels.show(
-                set, inputs: Self.inputRows(of: cue, durations: store.mediaDurations), outputs: set.outputs.count)
+                set, inputs: Self.inputRows(of: cue, durations: store.mediaDurations),
+                outputs: Self.shownOutputs(of: cue, set, model: model))
         }
         if fade {
             fadeLevels.matrix.outputNames = Self.outputNames(of: cue, model: model)
@@ -102,9 +103,21 @@ extension InspectorViewController {
         }
     }
 
+    /// The cue outputs an Audio cue's Levels tab shows: as many as its patch has now (QLab 5 manual
+    /// p. 189), a level the cue has not set being silent, as the engine plays it; the cue's own when
+    /// its patch is gone.
+    static func shownOutputs(of cue: Cue, _ set: LevelSet, model: WorkspaceModel) -> Int {
+        let id = cue.raw["kind"]?["patch"]?.stringValue
+        guard let outputs = model.patches.first(where: { $0.id.raw == id })?.raw["outputs"]?.arrayValue else {
+            return set.outputs.count
+        }
+        return outputs.count
+    }
+
     /// The names of the cue outputs of the patch an Audio cue plays through, or a Fade's target's.
     static func outputNames(of cue: Cue, model: WorkspaceModel) -> [String] {
-        let audio = cue.kindType == "fade" ? cue.raw["kind"]?["target"]?.stringValue.flatMap { model.cue(ModelID($0)) } : cue
+        let audio =
+            cue.kindType == "fade" ? cue.raw["kind"]?["target"]?.stringValue.flatMap { model.cue(ModelID($0)) } : cue
         guard let id = audio?.raw["kind"]?["patch"]?.stringValue,
             let outputs = model.patches.first(where: { $0.id.raw == id })?.raw["outputs"]?.arrayValue
         else { return [] }
@@ -142,7 +155,9 @@ extension InspectorViewController {
         let kind = cue.raw["kind"] ?? .null
         if cue.kindType == "audio", let set = LevelSet(kind: kind) {
             let rows = Self.inputRows(of: cue, durations: store.mediaDurations)
-            if rows != audioLevels.matrix.inputs { audioLevels.show(set, inputs: rows, outputs: set.outputs.count) }
+            if rows != audioLevels.matrix.inputs, let model = store.model {
+                audioLevels.show(set, inputs: rows, outputs: Self.shownOutputs(of: cue, set, model: model))
+            }
         } else if cue.kindType == "fade", let model = store.model {
             showFadeLevels(kind: kind, model: model, onlyIfRowsChange: true)
         }

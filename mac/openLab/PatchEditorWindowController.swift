@@ -70,7 +70,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     }
     private var drawn: Drawn?
 
-    static let minSize = NSSize(width: 520, height: 420)
+    static let minSize = NSSize(width: 520, height: 460)
 
     init(model: WorkspaceSettingsModel, patch: ModelID) {
         self.model = model
@@ -320,7 +320,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             loaded: model.loaded)
         if let drawn, drawn == state, typedField == nil, !dragging { return }
         guard !dragging else { return }
-        let rebuild = drawn?.levels.count != state.levels.count
+        let rebuild = outputFields.count != state.levels.count || outputNameFields.count != state.levels.count
         drawn = state
         let shownName = state.name.isEmpty ? loc("settings.audio.untitledPatch") : state.name
         window?.title = String(format: loc("patchEditor.title"), shownName)
@@ -365,7 +365,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         meter.source = .output(patchID)
 
         var notes: [String] = []
-        if row?.mapping == nil { notes.append(loc("patchEditor.noDevice")) } else {
+        if row?.mapping == nil {
+            notes.append(loc("patchEditor.noDevice"))
+        } else {
             notes.append(loc("patchEditor.routeHelp"))
         }
         if channels > state.usable, row?.mapping != nil {
@@ -387,7 +389,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     /// A field shows `text` unless it is being typed in.
     private func set(_ field: NSTextField, _ text: String, enabled: Bool) {
         field.isEnabled = enabled
-        if field !== typedField, field.currentEditor() == nil { field.stringValue = text }
+        if field !== typedField { field.stringValue = text }
     }
 
     private func rebuildRows(count: Int) {
@@ -408,7 +410,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             name.lineBreakMode = .byTruncatingTail
             name.cell?.usesSingleLineMode = true
             name.widthAnchor.constraint(equalToConstant: 180).isActive = true
-            name.setAX("\(AX.patchEditorOutputName)-\(i + 1)", label: String(format: loc("patchEditor.cueOutput"), i + 1))
+            name.setAX(
+                "\(AX.patchEditorOutputName)-\(i + 1)", label: String(format: loc("patchEditor.cueOutput"), i + 1))
             let line = NSStackView(views: [label, name])
             line.spacing = 8
             namesStack.addArrangedSubview(line)

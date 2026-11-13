@@ -746,7 +746,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         [
             numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField, oscField,
             hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck,
-            devampModePopup, networkPatchPopup, outputPatchPopup, editPatchButton, networkMessageField, networkSendButton,
+            devampModePopup, networkPatchPopup, outputPatchPopup, editPatchButton, networkMessageField,
+            networkSendButton,
             secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck,
         ]

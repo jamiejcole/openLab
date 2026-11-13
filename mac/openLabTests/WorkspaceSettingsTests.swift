@@ -68,6 +68,8 @@ final class WorkspaceSettingsTests: XCTestCase {
     private func edit(row n: Int = 1, in sc: WorkspaceSettingsWindowController) async throws
         -> PatchEditorWindowController
     {
+        await assertEventually("row \(n) is drawn") { sc.patchEditButtons.count >= n }
+        guard sc.patchEditButtons.count >= n else { throw TestEngineError.notConnected }
         sc.patchEditButtons[n - 1].performClick(nil)
         let editor = try XCTUnwrap(sc.patchEditor, "Edit opened the patch editor")
         await editor.editing?.value
@@ -143,7 +145,8 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertNil(before)
 
         try pick(device, in: sc.patchDevicePopups[0])
-        await assertEventually { sc.patchDevicePopups.first?.titleOfSelectedItem == self.device }
+        await assertEventually { sc.patchProblemLabels.first?.stringValue == "" }
+        XCTAssertEqual(sc.patchDevicePopups.first?.titleOfSelectedItem, device)
         let after = try await mapping(rig)
         XCTAssertEqual(after, PatchMapping(device: device, channels: [0, 1]))
         await assertEventually { sc.patchProblemLabels.first?.stringValue == "" }
@@ -301,6 +304,7 @@ final class WorkspaceSettingsTests: XCTestCase {
     func testARenamedCueOutputIsDrawnUnderItsFaderOnTheLevelsTab() async throws {
         let (rig, sc) = try await open()
         let editor = try await edit(in: sc)
+        editor.tabs.selectTabViewItem(withIdentifier: "cueOutputs")
         try type("Sub", into: editor.outputNameFields[1])
         await assertEventually { sc.model.outputNames(of: self.patch) == ["", "Sub"] }
         await assertEventually { editor.matrix.rowLabels == ["1", "2  Sub"] }
@@ -330,8 +334,10 @@ final class WorkspaceSettingsTests: XCTestCase {
         let editor = try await edit(in: sc)
         try type("1", into: editor.countField)
         await assertEventually { editor.outputFields.count == 1 }
+        await editor.editing?.value
         try type("4", into: editor.countField)
-        await assertEventually { editor.outputFields.count == 4 }
+        await editor.editing?.value
+        await assertEventually("4 outputs (\(editor.messageLabel.stringValue))") { editor.outputFields.count == 4 }
         XCTAssertEqual(editor.outputNameFields.count, 4)
         XCTAssertEqual(editor.matrix.rowLabels.count, 4)
         // The routing on this machine follows: the kept output where it was, new ones on outputs 2, 1, 2.
@@ -355,7 +361,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         for bad in ["0", "129", "abc", "-3"] {
             try type(bad, into: editor.countField)
             await editor.editing?.value
-            await assertEventually { editor.countField.stringValue == "2" }
+            await assertEventually("\(bad): \(editor.countField.stringValue)") { editor.countField.stringValue == "2" }
             XCTAssertEqual(editor.messageLabel.stringValue, loc("patchEditor.countRange"), bad)
         }
         XCTAssertEqual(commands(rig).count, sent, "nothing out of range is sent")
@@ -423,8 +429,10 @@ final class WorkspaceSettingsTests: XCTestCase {
         let warning = String(format: loc("settings.audio.problem.deviceMissing"), device)
         await assertEventually { sc.patchProblemLabels.first?.stringValue == warning }
         XCTAssertFalse(try XCTUnwrap(sc.patchGrid.cell(for: sc.patchProblemLabels[0])?.row).isHidden)
-        XCTAssertEqual(
-            sc.patchDevicePopups.first?.titleOfSelectedItem, String(format: loc("settings.audio.notConnected"), device))
+        await assertEventually("the device is shown as not connected once the list has lost it") {
+            sc.patchDevicePopups.first?.titleOfSelectedItem
+                == String(format: loc("settings.audio.notConnected"), self.device)
+        }
         await assertEventually { editor.problemLabel.stringValue == warning }
         XCTAssertFalse(editor.problemLabel.isHidden)
         // The status window's warnings list names the patch and the device.
@@ -437,7 +445,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         try await rig.advance(2)
         await assertEventually { sc.patchProblemLabels.first?.stringValue == "" }
         await assertEventually { editor.problemLabel.stringValue == "" }
-        XCTAssertFalse(WarningRows.make(store: rig.store).contains { $0.title.contains(device) })
+        await assertEventually {
+            !WarningRows.make(store: rig.store).contains { $0.title.contains("\"Main\"") }
+        }
     }
 
     /// A patch set to no device in the table is warned about in its row and the status window.
@@ -508,7 +518,8 @@ final class WorkspaceSettingsTests: XCTestCase {
     func testTheTableAndTheEditorAtTheirSmallestSizesClipNothing() async throws {
         let (rig, sc) = try await open()
         await sc.model.addPatch()
-        await sc.model.renamePatch(try XCTUnwrap(sc.model.patches.last?.id), to: String(repeating: "Long name ", count: 20))
+        await sc.model.renamePatch(
+            try XCTUnwrap(sc.model.patches.last?.id), to: String(repeating: "Long name ", count: 20))
         try await loseDevice(rig)
         await sc.model.refresh()
         sc.lastDrawn = nil
@@ -516,7 +527,10 @@ final class WorkspaceSettingsTests: XCTestCase {
         let window = try XCTUnwrap(sc.window)
         window.setContentSize(window.contentMinSize)
         window.contentView?.layoutSubtreeIfNeeded()
-        XCTAssertEqual(window.frame.size, window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size, "the long name did not widen it")
+        XCTAssertEqual(
+            window.frame.size,
+            window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size,
+            "the long name did not widen it")
         assertNothingClippedOrOverlapping(in: sc.tabs.selectedTabViewItem?.view, "the Audio page")
 
         let editor = try await edit(row: 2, in: sc)
@@ -552,7 +566,8 @@ final class WorkspaceSettingsTests: XCTestCase {
                 let visible = v.convert(v.visibleRect, to: nil)
                 XCTAssertTrue(
                     visible.insetBy(dx: -0.5, dy: -0.5).contains(frame),
-                    "\(what): \(Swift.type(of: c)) \(c.accessibilityIdentifier()) \(frame) is cut by \(Swift.type(of: v)) \(visible)")
+                    "\(what): \(Swift.type(of: c)) \(c.accessibilityIdentifier()) \(frame) is cut by \(Swift.type(of: v)) \(visible)"
+                )
                 view = v.superview
             }
         }
@@ -762,6 +777,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         let (rig, sc, editor) = try await playing(sounding())
         try type("-6", into: editor.mainField)
         try type("-3", into: editor.outputFields[1])
+        editor.tabs.selectTabViewItem(withIdentifier: "cueOutputs")
         try type("Left", into: editor.outputNameFields[0])
         await assertEventually { self.patchLevels(rig).outputs == [0, -3] && self.patchLevels(rig).main == -6 }
         await assertEventually { sc.model.outputNames(of: self.patch) == ["Left", ""] }

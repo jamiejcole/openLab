@@ -459,6 +459,8 @@
 "settings.audio.limits" = "Volume limits";
 "settings.audio.limitMax" = "Maximum";
 "settings.audio.limitMin" = "Minimum";
+"settings.audio.limitMaxShort" = "Max";
+"settings.audio.limitMinShort" = "Min";
 "settings.audio.limitOutOfRange" = "The maximum is from -30 to 12 dB and the minimum from -180 to -40 dB.";
 "settings.db" = "dB";
 "patchEditor.title" = "Editing %@";

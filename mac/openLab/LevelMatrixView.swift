@@ -212,7 +212,9 @@ final class LevelMatrixView: NSView {
         a[.paragraphStyle] = style
         let s = NSAttributedString(string: text, attributes: a)
         let h = s.size().height
-        s.draw(with: NSRect(x: r.minX, y: r.midY - h / 2, width: r.width, height: h), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        s.draw(
+            with: NSRect(x: r.minX, y: r.midY - h / 2, width: r.width, height: h),
+            options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
     }
 
     private func centred(_ text: String, in r: NSRect, attributes: [NSAttributedString.Key: Any]) {

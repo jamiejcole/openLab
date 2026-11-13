@@ -1,0 +1,26 @@
+{
+  "about": "The Audio page of the workspace settings as a patch table (dark), a second patch added and named, then the patch editor of the first: its cue outputs, routing matrix and device outputs tabs, with a cue output renamed; then a cue's Levels tab showing that name.",
+  "show": "Demo",
+  "appearance": "dark",
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "audio"},
+    {"shot": "table"},
+    {"click": "settings-patch-add"},
+    {"type": "settings-patch-name-2", "text": "Foldback"},
+    {"shot": "table-two-patches"},
+    {"click": "settings-patch-edit-1"},
+    {"focus": "patch-editor"},
+    {"tab": "cueOutputs"},
+    {"type": "patch-editor-output-name-1", "text": "Left"},
+    {"shot": "editor-cue-outputs"},
+    {"tab": "routing"},
+    {"shot": "editor-routing"},
+    {"tab": "deviceOutputs"},
+    {"shot": "editor-device-outputs"},
+    {"focus": "workspace"},
+    {"select": "1"},
+    {"tab": "levels"},
+    {"shot": "levels-tab-names"}
+  ]
+}

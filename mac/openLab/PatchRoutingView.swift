@@ -53,7 +53,9 @@ final class PatchRoutingView: NSView {
     // MARK: Geometry
 
     func levelRect(row: Int) -> NSRect {
-        NSRect(x: Self.labelW + 2, y: Self.headerH + CGFloat(row) * Self.rowH + 1, width: Self.levelW - 6, height: Self.rowH - 2)
+        NSRect(
+            x: Self.labelW + 2, y: Self.headerH + CGFloat(row) * Self.rowH + 1, width: Self.levelW - 6,
+            height: Self.rowH - 2)
     }
 
     /// Where the meter goes: one bar per row, for the first `rows` rows.
@@ -91,11 +93,16 @@ final class PatchRoutingView: NSView {
         let firstCol = max(0, Int((dirty.minX - Self.crossX) / Self.cellW))
         let lastCol = min(deviceOutputs - 1, Int((dirty.maxX - Self.crossX) / Self.cellW))
         if dirty.minY < Self.headerH {
-            draw(loc("patchEditor.cueOutputs"), in: NSRect(x: 4, y: 0, width: Self.labelW - 8, height: Self.headerH), small)
-            centred(loc("patchEditor.level"), in: NSRect(x: Self.labelW, y: 0, width: Self.levelW, height: Self.headerH), small)
+            draw(
+                loc("patchEditor.cueOutputs"), in: NSRect(x: 4, y: 0, width: Self.labelW - 8, height: Self.headerH),
+                small)
+            centred(
+                loc("patchEditor.level"), in: NSRect(x: Self.labelW, y: 0, width: Self.levelW, height: Self.headerH),
+                small)
             if firstCol <= lastCol {
                 for c in firstCol...lastCol {
-                    let r = NSRect(x: Self.crossX + CGFloat(c) * Self.cellW, y: 0, width: Self.cellW, height: Self.headerH)
+                    let r = NSRect(
+                        x: Self.crossX + CGFloat(c) * Self.cellW, y: 0, width: Self.cellW, height: Self.headerH)
                     centred("\(c + 1)", in: r, small)
                 }
             }
@@ -147,7 +154,9 @@ final class PatchRoutingView: NSView {
     private func draw(_ text: String, in r: NSRect, _ attributes: [NSAttributedString.Key: Any]) {
         let s = NSAttributedString(string: text, attributes: attributes)
         let h = s.size().height
-        s.draw(with: NSRect(x: r.minX, y: r.midY - h / 2, width: r.width, height: h), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        s.draw(
+            with: NSRect(x: r.minX, y: r.midY - h / 2, width: r.width, height: h),
+            options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
     }
 
     private func centred(_ text: String, in r: NSRect, _ attributes: [NSAttributedString.Key: Any]) {
@@ -170,6 +179,7 @@ final class PatchRoutingView: NSView {
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .group }
     override func accessibilityValue() -> Any? {
-        routes.enumerated().map { "\($0.offset + 1)→\($0.element.map { String($0 + 1) } ?? "-")" }.joined(separator: ", ")
+        routes.enumerated().map { "\($0.offset + 1)→\($0.element.map { String($0 + 1) } ?? "-")" }.joined(
+            separator: ", ")
     }
 }

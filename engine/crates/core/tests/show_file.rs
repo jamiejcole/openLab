@@ -1636,7 +1636,10 @@ fn v7_fixture_migrates_to_edit_mode() {
     assert_eq!(loaded.workspace, example_unnamed());
     let migrated = migrate(serde_json::from_str(V7_EXAMPLE).unwrap(), 7).unwrap();
     assert_eq!(migrated["format_version"], FORMAT_VERSION);
-    assert_eq!(save_show(&loaded.workspace).unwrap(), save_show(&example_unnamed()).unwrap());
+    assert_eq!(
+        save_show(&loaded.workspace).unwrap(),
+        save_show(&example_unnamed()).unwrap()
+    );
 }
 
 /// A v7 reader ignored unknown keys, so a `show_mode` in a v7 file was never the user's: it is
