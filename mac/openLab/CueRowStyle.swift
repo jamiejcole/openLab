@@ -45,6 +45,17 @@ struct CueStateStyle: Equatable {
     }
 }
 
+/// What a row draws over its colour: a disarmed cue a slanted stripe, and a disarmed cue that is
+/// skipped (QLab 5, manual p. 128) upright wavy lines of its own.
+enum RowPattern: Equatable {
+    case disarmed, skipped
+
+    static func of(_ cue: Cue) -> RowPattern? {
+        guard cue.raw["armed"] == .bool(false) else { return nil }
+        return cue.isSkipped ? .skipped : .disarmed
+    }
+}
+
 /// The playhead's pointer: white on a dark list and near-black on a light one, never the green of
 /// a running cue.
 enum PlayheadStyle {
@@ -86,14 +97,60 @@ enum CueKindStyle {
         return kinds[type].map { ($0.icon, loc($0.labelKey)) }
     }
 
-    /// A cue colour only tints its row, as in QLab; it is not a state, so it has no shape.
-    static let colours: [String: (labelKey: String, tint: NSColor)] = [
-        "red": ("cue.colour.red", .systemRed),
-        "orange": ("cue.colour.orange", .systemOrange),
-        "green": ("cue.colour.green", .systemGreen),
-        "blue": ("cue.colour.blue", .systemBlue),
-        "purple": ("cue.colour.purple", .systemPurple),
+    /// The cue colours in the order the colour menus list them (QLab 5, manual p. 127: eight basic
+    /// and twelve extended), under the show file's names.
+    static let basicColours = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "magenta"]
+    static let extendedColours = [
+        "dark_red", "apricot", "olive", "dark_green", "light_blue", "navy", "indigo", "lilac", "plum", "raspberry",
+        "pink", "grey",
     ]
+
+    /// A cue colour only tints its row, as in QLab; it is not a state, so it has no shape. A colour
+    /// this app does not know is drawn as none.
+    static let colours: [String: (labelKey: String, tint: NSColor)] = {
+        func rgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor {
+            NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
+        }
+        let tints: [String: NSColor] = [
+            "red": .systemRed, "orange": .systemOrange, "yellow": .systemYellow, "green": .systemGreen,
+            "cyan": rgb(0.20, 0.78, 0.86), "blue": .systemBlue, "purple": .systemPurple,
+            "magenta": rgb(0.88, 0.20, 0.82),
+            "dark_red": rgb(0.62, 0.10, 0.12), "apricot": rgb(0.98, 0.69, 0.47), "olive": rgb(0.55, 0.56, 0.12),
+            "dark_green": rgb(0.10, 0.45, 0.18), "light_blue": rgb(0.55, 0.78, 1.0), "navy": rgb(0.20, 0.27, 0.66),
+            "indigo": rgb(0.36, 0.20, 0.72), "lilac": rgb(0.78, 0.64, 0.92), "plum": rgb(0.56, 0.26, 0.50),
+            "raspberry": rgb(0.86, 0.12, 0.40), "pink": rgb(1.0, 0.60, 0.76), "grey": rgb(0.56, 0.56, 0.58),
+        ]
+        var out: [String: (labelKey: String, tint: NSColor)] = [:]
+        for key in basicColours + extendedColours { out[key] = ("cue.colour.\(key)", tints[key] ?? .gray) }
+        return out
+    }()
+
+    /// The colour a cue's row shows: its second colour once it has been started since its last
+    /// reset (QLab 5, manual p. 127), else its colour.
+    static func shownColour(of cue: Cue, played: Bool) -> String {
+        let second = cue.raw["second_color"]?.stringValue ?? "none"
+        if played, colours[second] != nil { return second }
+        return cue.raw["color"]?.stringValue ?? "none"
+    }
+
+    /// A round swatch of `key`'s tint for the colour menus; an empty ring for none (or a colour this
+    /// app does not know). Drawn when shown, so its ring follows the menu's appearance.
+    static func swatch(_ key: String, size: CGFloat = 12) -> NSImage {
+        let tint = colours[key]?.tint
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            let circle = NSBezierPath(ovalIn: rect.insetBy(dx: 0.75, dy: 0.75))
+            circle.lineWidth = 1
+            if let tint {
+                tint.setFill()
+                circle.fill()
+            }
+            NSColor.secondaryLabelColor.setStroke()
+            circle.stroke()
+            return true
+        }
+        image.accessibilityDescription = loc(colours[key]?.labelKey ?? "cue.colour.none")
+        return image
+    }
 
     static let continueModes: [String: (icon: Icon, labelKey: String)] = [
         "auto_continue": (.continueAuto, "cue.continue.autoContinue"),
