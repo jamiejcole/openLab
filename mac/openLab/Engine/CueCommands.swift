@@ -90,6 +90,8 @@ enum NewCueKind: String, CaseIterable, Sendable {
             "fade_and_stop_others": .object([
                 "enabled": .bool(false), "scope": .string("peers"), "duration": .double(1),
             ]),
+            // `DuckOthers::default`: off, -12 dB, 1 s.
+            "duck_others": .object(["enabled": .bool(false), "db": .double(-12), "duration": .double(1)]),
             "kind": kind,
         ])
     }

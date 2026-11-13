@@ -85,6 +85,7 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 | `PauseVoice` | native mixer pause (position and ring kept) |
 | `ResumeVoice { run, paused, at }` | mixer resume re-keys the voice to a fresh id for the fresh run |
 | `Ramp` | mixer `Ramp`, or one `RampSet` for a run of ramps of one voice with the same date and fade; no gangs (Fade and level-edit values are already per output). Fade cues and level edits on a playing cue are carried out alike |
+| `DuckVoice` | mixer `Ramp { target: Duck }`, linear over its frames (0: the de-zipper, or at once on the start sample) |
 | `DevampVoice { stop }` | mixer `Devamp`. A pending devamp is re-sent for the fresh run after a resume; a native pause keeps the first and answers `DevampScheduled` tagged with the fresh run, not `DevampIgnored` |
 | `PreviewStart` / `PreviewStop` | as start (offset 0, never a primed stream) / stop, on the cue's own patch (no audition output exists) |
 | `SetArmed` | applied to the model through its guard (engine told) before the engine's next call, then `model_changed` with each changed cue; not an undo step; honoured for the rest of that call |

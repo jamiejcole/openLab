@@ -89,10 +89,11 @@ impl CueEngine {
     /// After a state change of `cue` on `at`: a duck it was doing that has ended (its action
     /// ended, it stopped, broke or was removed) is undone over its own time from `at`.
     pub(super) fn end_duck_if_over(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
-        if self.ducks.contains_key(&cue) && !self.ducking(cue) {
-            if let Some(d) = self.ducks.remove(&cue) {
-                self.apply_ducks(at, d.frames, cx);
-            }
+        if self.ducks.contains_key(&cue)
+            && !self.ducking(cue)
+            && let Some(d) = self.ducks.remove(&cue)
+        {
+            self.apply_ducks(at, d.frames, cx);
         }
     }
 

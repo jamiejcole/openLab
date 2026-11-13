@@ -47,3 +47,11 @@ An edit of an Audio cue's levels (master, output levels and mutes, crosspoints a
 - One above the new maximum goes to the maximum over 10 ms and, if on its way lower, carries on from there to arrive where and when it was going.
 - A paused Fade's resume and a re-timed Fade's end are limited too.
 - None of this is the operator taking a level over: the Fade keeps its level, stop-target-when-done and auto-follow, and the sweep does not jump the voice to the cue's new level. Raising a limit (undo included) puts back the cue's own levels as an edit and leaves what a Fade holds.
+
+## Duck or boost others
+- A cue with `duck_others.enabled` ducks from its action start (after its pre-wait) while it is in its action and not broken (paused or fading out to a stop it still ducks): `others.rs`, `ducks` by ducking cue.
+- It reaches every audio voice of its cue list (any depth) but its own and those inside it. Ducks add in dB. The gain goes to the voice's own `Duck` stage (`Action::DuckVoice`), so the cue's levels, a level edit and a Fade cue move `Master` relative to it, and a new voice starts at 1.0.
+- Ramps: when a duck starts or ends, every playing voice whose total changed ramps linearly over that duck's time from that sample; a voice started while a duck is on gets it on its start sample (frames 0, heard from its first sample). A voice fading out to a stop or in a panic is not ramped again, so a duck coming off never brings up a sound that is going away; after a Panic the next run plays at no duck.
+- End: the first state report after which the cue is no longer ducking (action ended, stopped, broke, device lost, removed) undoes it on that report's sample; `sync_ducks` at the end of every call catches a duck whose cue went without a report, dated `now`.
+- Boost cap: a positive total is cut to `max_db` minus the loudest the voice's master is at or moving to (its given level, a Fade's ends), never below 0 dB, so the master fader plus boost stays within the workspace maximum; `sync_ducks` re-applies it within the edit ramp when an edit or a Fade raises the master. At or below -120 dB the duck is silence.
+- A lost mixer event cannot leave a duck on: the run ends through the lost-event reconciliation (a failure or end), which is a state report. Cost: nothing while no duck is in force and every voice is back at 1.0 (`duck_live`).

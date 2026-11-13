@@ -1453,6 +1453,7 @@ impl Run {
                 | Action::StopVoice { run, at, .. }
                 | Action::PauseVoice { run, at, .. }
                 | Action::Ramp { run, at, .. }
+                | Action::DuckVoice { run, at, .. }
                 | Action::DevampVoice { run, at, .. }
                 | Action::PreviewStart { run, at, .. }
                 | Action::PreviewStop { run, at, .. } => Some((*run, *run, *at)),

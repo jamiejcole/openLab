@@ -1027,3 +1027,19 @@ fn a_ducking_cue_deleted_mid_duck_lets_the_duck_go() {
     let out = rig.tick(100);
     assert_eq!(ducks(&out), vec![(id(1), 100, 1.0, 1000)]);
 }
+
+#[test]
+fn a_boost_comes_down_when_an_edit_raises_the_master_so_the_maximum_holds() {
+    let mut rig = Rig::new(vec![sound(1), ducking_others(wait(2, 5.0), 6.0, 1.0)]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    if let CueKind::Audio { levels, .. } = &mut rig.find_mut(1).kind {
+        levels.master_db = 9.0;
+    }
+    rig.engine.model_changed();
+    let out = rig.tick(100);
+    let got = ducks(&out);
+    assert_eq!(got.len(), 1, "{out:?}");
+    assert!((got[0].2 - gain(3.0)).abs() < 1e-6, "{got:?}");
+    assert_eq!(got[0].3, 10, "within the edit ramp");
+}
