@@ -907,7 +907,6 @@ version = "0.0.1"
 dependencies = [
  "crossbeam-channel",
  "dispatch2",
- "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",

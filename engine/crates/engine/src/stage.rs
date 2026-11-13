@@ -5,8 +5,8 @@
 //! reaches sound: the stage host is a child process, everything it sends is validated
 //! (`stage_link`), and its pipes are read and written by threads of their own.
 //!
-//! - **Health.** The stage host must answer `hello` and every `ping` within
-//!   [`StageHostConfig::answer_within`]; one that does not, that stops reading its input, or
+//! - **Health.** The stage host must answer `hello` within [`StageHostConfig::hello_within`]
+//!   and every `ping` within [`StageHostConfig::answer_within`]; one that does not, that stops reading its input, or
 //!   that floods its output is killed.
 //! - **Relaunch.** A stage host that exits or is killed is started again at once and given the
 //!   last stage set, so picture comes back by itself. More than
@@ -65,7 +65,10 @@ pub struct StageHostConfig {
     pub args: Vec<String>,
     /// How often a running stage host is pinged.
     pub ping_every: Duration,
-    /// How long `hello` and each `ping` may wait for their answer.
+    /// How long `hello` may wait for its answer: longer than a ping's, since a cold start
+    /// (loading the process and its GPU device from a slow disk, on a busy machine) is not a hang.
+    pub hello_within: Duration,
+    /// How long each `ping` may wait for its answer.
     pub answer_within: Duration,
     /// Starts allowed within `restart_window` before the supervisor pauses.
     pub max_restarts: usize,
@@ -81,6 +84,7 @@ impl StageHostConfig {
             program,
             args: Vec::new(),
             ping_every: Duration::from_secs(1),
+            hello_within: Duration::from_secs(20),
             answer_within: Duration::from_secs(5),
             max_restarts: 5,
             restart_window: Duration::from_secs(60),
@@ -294,7 +298,7 @@ impl Supervisor {
 
     fn next_deadline(&self, now: Instant) -> Option<Instant> {
         match &self.running {
-            Some(r) if !r.hello => Some(r.started + self.config.answer_within),
+            Some(r) if !r.hello => Some(r.started + self.config.hello_within),
             Some(r) => Some(match r.ping {
                 Some((_, sent)) => sent + self.config.answer_within,
                 None => r.next_ping,
@@ -460,7 +464,7 @@ impl Supervisor {
             return;
         };
         if !r.hello {
-            if now.duration_since(r.started) > self.config.answer_within {
+            if now.duration_since(r.started) > self.config.hello_within {
                 self.stop("it did not answer hello".into());
             }
             return;

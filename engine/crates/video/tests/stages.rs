@@ -424,7 +424,8 @@ fn a_stage_display_unplugged_mid_cue_warns_and_comes_back() {
     assert_eq!(s.stalls(), 0);
 }
 
-/// A stage host that stops answering is killed after `answer_within` and replaced.
+/// A stage host that stops answering pings is killed after `answer_within` and replaced. Only
+/// the ping deadline is short: a replacement slow to start (a loaded machine) is not killed.
 #[test]
 fn a_hung_stage_host_is_killed_and_replaced() {
     let mut host = virtual_host();
@@ -442,6 +443,35 @@ fn a_hung_stage_host_is_killed_and_replaced() {
             display: "V1".into()
         })
     );
+}
+
+/// A stage host slow to start (here half a second before it runs, longer than a ping's answer
+/// time) is not killed as hung: `hello` has a deadline of its own.
+#[test]
+fn a_stage_host_slow_to_start_is_not_killed_as_hung() {
+    let script = format!("sleep 0.5; exec '{STAGE_HOST}' --virtual-displays V1:64x36");
+    let mut host = host_config(&["-c", &script]);
+    host.program = PathBuf::from("/bin/sh");
+    host.answer_within = Duration::from_millis(100);
+    host.max_restarts = 1;
+    host.retry_after = Duration::from_secs(3600);
+    let ws = with_stages(vec![], vec![stage(1)]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(host);
+    c.push_log = true;
+    let mut s = show_with(ws, c);
+    assert!(
+        s.wait_for(|c| c.stage_host_pid().is_some()),
+        "no stage host"
+    );
+    let first = s.control().stage_host_pid().unwrap();
+    assert!(s.wait_for(|c| !c.displays().is_empty()), "no hello");
+    assert_eq!(
+        s.control().stage_host_pid(),
+        Some(first),
+        "the slow stage host was replaced"
+    );
+    assert!(!logged(&mut s, "did not answer hello"));
 }
 
 /// The stage host ends with the engine: on shutdown it is asked to quit, and if the engine
@@ -774,12 +804,68 @@ fn the_windowed_stage_host_exits_when_its_input_closes() {
     assert!(line.contains(r#""type":"hello""#), "{line}");
     let pid = child.id();
     drop(stdin);
-    // Its output ends when it exits (a hang guard: the read returns at its end).
-    let mut rest = String::new();
-    let _ = std::io::Read::read_to_string(&mut out, &mut rest);
-    let status = child.wait().unwrap();
+    // A counted wait (each check runs `kill -0`): one that does not exit fails, never hangs.
+    let status = (0..20_000).find_map(|_| {
+        let done = child.try_wait().unwrap();
+        if done.is_none() {
+            let _ = alive(pid);
+        }
+        done
+    });
+    let Some(status) = status else {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the stage host did not exit when its input closed");
+    };
     assert!(status.success(), "{status:?}");
     assert!(!alive(pid));
+}
+
+/// Kills and reaps a child process when dropped, so a failed test leaves nothing running.
+struct Reaped(std::process::Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The test-support engine binary `cargo test --workspace` builds beside the stage host,
+/// refused when missing or older than the engine's sources (another crate's binary is not
+/// rebuilt for this crate's tests).
+fn test_engine() -> PathBuf {
+    let engine = std::path::Path::new(STAGE_HOST).with_file_name("openlab-engine");
+    let built = std::fs::metadata(&engine)
+        .and_then(|m| m.modified())
+        .unwrap_or_else(|_| {
+            panic!(
+                "{} is missing: run `cargo build -p openlab-engine --features test-support`",
+                engine.display()
+            )
+        });
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut newest = None;
+    let mut dirs: Vec<PathBuf> = ["core", "audio", "engine"]
+        .iter()
+        .map(|c| crates.join(c).join("src"))
+        .collect();
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if let Ok(t) = entry.metadata().and_then(|m| m.modified()) {
+                newest = newest.max(Some(t));
+            }
+        }
+    }
+    assert!(
+        newest.is_none_or(|t| t <= built),
+        "{} is older than the engine's sources: run `cargo build -p openlab-engine --features test-support`",
+        engine.display()
+    );
+    engine
 }
 
 /// An engine killed outright (SIGKILL: no shutdown, no `quit`) takes its stage host with it:
@@ -787,14 +873,9 @@ fn the_windowed_stage_host_exits_when_its_input_closes() {
 #[test]
 fn a_killed_engine_leaves_no_stage_host_behind() {
     use std::process::{Command, Stdio};
-    let engine = std::path::Path::new(STAGE_HOST).with_file_name("openlab-engine");
-    assert!(
-        engine.is_file(),
-        "{} is missing: build the workspace (`cargo test --workspace` builds it)",
-        engine.display()
-    );
+    let engine = test_engine();
     let dir = tempfile::tempdir().unwrap();
-    let mut child = Command::new(&engine)
+    let child = Command::new(&engine)
         .args([
             "--virtual-device",
             "stepped",
@@ -808,17 +889,24 @@ fn a_killed_engine_leaves_no_stage_host_behind() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let engine_pid = child.id();
-    // Its stage host appears as its child (bounded by a count of checks, no clock).
+    let mut child = Reaped(child);
+    let engine_pid = child.0.id();
+    // Its stage host appears as its child (bounded by a count of checks, no clock); an engine
+    // that ends first (one built without test support refuses `--virtual-displays`) fails.
     let stage = (0..20_000)
-        .find_map(|_| child_named(engine_pid, "openlab-stage"))
+        .find_map(|_| {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                panic!("the engine ended at start ({status}): is it a test-support build?");
+            }
+            child_named(engine_pid, "openlab-stage")
+        })
         .expect("the engine started no stage host");
     let killed = Command::new("kill")
         .args(["-9", &engine_pid.to_string()])
         .status()
         .unwrap();
     assert!(killed.success());
-    let _ = child.wait();
+    let _ = child.0.wait();
     assert!(
         gone_within(stage, 20_000),
         "stage host {stage} outlived its engine"
@@ -865,15 +953,33 @@ cat > /dev/null"#
     let mut c: ControlConfig = config(&ws);
     c.stage_host = Some(host);
     // One second of report budget for the whole burst, whatever the machine's speed.
-    c.clock = openlab_engine::control::ManualClock::new(1_000).clock();
+    let clock = openlab_engine::control::ManualClock::new(1_000);
+    c.clock = clock.clock();
     let mut s = show_with(ws, c);
     assert!(s.wait_for(|c| c.displays().iter().any(|d| d.id == "END")));
-    let lines = s
-        .take_outbound()
+    let out = s.take_outbound();
+    let lines = out
         .iter()
         .filter(|m| matches!(m, ServerMessage::Log { message, .. } if message.starts_with("stage 'Stage 1'")))
         .count();
     assert!((1..=20).contains(&lines), "{lines} report lines");
+    let dropped = |out: &[ServerMessage]| {
+        out.iter().find_map(|m| match m {
+            ServerMessage::Log { message, .. } => message
+                .strip_suffix(" more video output reports were not logged")
+                .and_then(|n| n.parse::<usize>().ok()),
+            _ => None,
+        })
+    };
+    assert_eq!(dropped(&out), None, "said before the second is over");
+    // Quiet after the burst: the dropped lines are still said once the second is over.
+    clock.advance(1_000);
+    s.tick();
+    let said = dropped(&s.take_outbound());
+    assert!(
+        said.is_some_and(|n| n >= 1000 - lines),
+        "dropped lines said: {said:?}"
+    );
     assert_eq!(
         s.control().stage_states_known(),
         1,
@@ -1026,7 +1132,7 @@ cat > /dev/null"#
 fn a_silent_stage_host_is_killed_after_the_answer_time() {
     let mut host = host_config(&["-c", "cat > /dev/null"]);
     host.program = PathBuf::from("/bin/sh");
-    host.answer_within = Duration::from_millis(200);
+    host.hello_within = Duration::from_millis(200);
     host.max_restarts = 1;
     host.retry_after = Duration::from_secs(3600);
     let ws = with_stages(vec![], vec![stage(1)]);
