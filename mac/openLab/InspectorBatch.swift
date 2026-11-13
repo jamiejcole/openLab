@@ -73,6 +73,8 @@ extension InspectorViewController {
         networkMessageField.isEnabled = kind == "network"
         // A field that is off shows no Mixed hint, so it does not read as one to type in.
         for f in InspectorField.allCases { if field(f)?.isEnabled == false { field(f)?.placeholderString = nil } }
+        // An empty field that is off draws like one that is on (AppKit dims only its text): it is dimmed whole.
+        for f in batchDimmed { f.alphaValue = f.isEnabled ? 1 : Self.offAlpha }
         syncTabs(Self.batchTabs(forKinds: kinds))
         showChoice(colourPopup, Self.colours, cues.map { $0.raw["color"]?.stringValue ?? "none" })
         showChoice(continuePopup, Self.continueModes, modes)
@@ -210,6 +212,12 @@ extension InspectorViewController {
 
     /// What one cue shows: tick boxes take two states again, and the controls only one cue can set
     /// come back. Called before the single-cue render sets each control from the cue.
+    /// The text fields several selected cues can turn off, and how faint they are then.
+    var batchDimmed: [NSTextField] {
+        [numberField, durationField, targetField, oscField, hotkeyField, loadTimeField, networkMessageField]
+    }
+    static let offAlpha: CGFloat = 0.45
+
     func endBatchControls() {
         for c in [
             flaggedCheck, armedCheck, onReleaseCheck, groupLoopCheck, groupShuffleCheck, devampStartNextCheck,
@@ -218,6 +226,7 @@ extension InspectorViewController {
             c.allowsMixedState = false
         }
         for c in singleCueControls + [numberField, loadTimeField, networkMessageField] { c.isEnabled = !isLocked }
+        for f in batchDimmed { f.alphaValue = 1 }
         audioLevels.mixed = []
         audioLevels.gangsMixed = false
         audioLevels.editsSeveral = false

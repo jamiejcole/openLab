@@ -17,8 +17,8 @@ final class PastePropertiesSheet: NSObject {
     /// One line: a long cue name is cut, never wrapped over the list.
     let titleLabel = NSTextField(labelWithString: "")
     let listScroll = NSScrollView()
-    let applyButton = NSButton(title: loc("paste.apply"), target: nil, action: nil)
-    let cancelButton = NSButton(title: loc("edit.cancel"), target: nil, action: nil)
+    let applyButton = PasteSheetButton(title: loc("paste.apply"), target: nil, action: nil)
+    let cancelButton = PasteSheetButton(title: loc("edit.cancel"), target: nil, action: nil)
     private(set) var categoryChecks: [PasteProperty.Category: NSButton] = [:]
     private(set) var propertyChecks: [PasteProperty: NSButton] = [:]
     private let offered: [(category: PasteProperty.Category, properties: [PasteProperty])]
@@ -41,7 +41,7 @@ final class PastePropertiesSheet: NSObject {
         self.offered = offered
         window = PasteSheetWindow(
             contentRect: NSRect(x: 0, y: 0, width: 460, height: 440), styleMask: [.titled], backing: .buffered,
-            defer: true)
+            defer: false)
         super.init()
         window.isReleasedWhenClosed = false
         window.setAccessibilityIdentifier("paste-properties-sheet")
@@ -63,7 +63,7 @@ final class PastePropertiesSheet: NSObject {
         list.spacing = 2
         list.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
         for (category, properties) in offered {
-            let head = NSButton(
+            let head = PasteSheetButton(
                 checkboxWithTitle: loc(category.titleKey), target: self, action: #selector(categoryClicked))
             head.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
             head.setAX("paste-category-\(category.rawValue)")
@@ -71,7 +71,7 @@ final class PastePropertiesSheet: NSObject {
             if let last = list.arrangedSubviews.last { list.setCustomSpacing(10, after: last) }
             add(head, indent: 0, to: list)
             for property in properties {
-                let box = NSButton(
+                let box = PasteSheetButton(
                     checkboxWithTitle: loc(property.titleKey), target: self, action: #selector(propertyClicked))
                 box.setAX("paste-property-\(property.rawValue)")
                 box.state = ticked.contains(property) ? .on : .off
@@ -136,7 +136,6 @@ final class PastePropertiesSheet: NSObject {
         window.contentView = content
         // The sheet takes the keys itself (no box needs the focus).
         window.initialFirstResponder = nil
-        for row in rows { row.box.refusesFirstResponder = true }
     }
 
     private func add(_ box: NSButton, indent: CGFloat, to list: NSStackView) {
@@ -295,6 +294,12 @@ final class PasteSheetRow: NSView {
         NSColor.selectedContentBackgroundColor.withAlphaComponent(0.45).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill()
     }
+}
+
+/// A box or button of the sheet: the first click on it acts, whether or not the sheet is the key
+/// window yet (it is a sheet over the window the operator was using).
+final class PasteSheetButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 private final class FlippedView: NSView {

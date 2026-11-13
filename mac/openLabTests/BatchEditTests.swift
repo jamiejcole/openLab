@@ -259,6 +259,10 @@ extension PlayheadFlowTests {
         XCTAssertEqual(inspector.armedCheck.state, .on)
         XCTAssertFalse(inspector.numberField.isEnabled, "a number names one cue")
         XCTAssertFalse(inspector.hotkeyField.isEnabled)
+        for off in [inspector.numberField, inspector.oscField, inspector.hotkeyField] as [NSTextField] {
+            XCTAssertEqual(off.alphaValue, InspectorViewController.offAlpha, "an empty field that is off is dimmed")
+        }
+        XCTAssertEqual(inspector.nameField.alphaValue, 1)
         XCTAssertFalse(inspector.previewButton.isEnabled)
         inspector.tabView.selectTabViewItem(withIdentifier: "levels")
         let levels = inspector.audioLevels
@@ -274,6 +278,7 @@ extension PlayheadFlowTests {
         await selectAll([cues[1]])
         XCTAssertEqual(inspector.preWaitField.stringValue, CueTime.format(1.5))
         XCTAssertTrue(inspector.numberField.isEnabled)
+        XCTAssertEqual(inspector.numberField.alphaValue, 1)
         XCTAssertEqual(levels.matrix.mixed, [])
         XCTAssertFalse(inspector.flaggedCheck.allowsMixedState)
     }
@@ -531,6 +536,62 @@ extension PlayheadFlowTests {
         XCTAssertEqual(s.listScroll.scrollerStyle, .legacy)
         XCTAssertFalse(try XCTUnwrap(s.listScroll.verticalScroller).isHidden, "the scroller shows")
         s.cancel()
+    }
+
+    /// A press and release of the left button at the middle of `view`, as the control takes a real
+    /// click: the press to its `mouseDown`, the release queued for its tracking. A test app is not
+    /// active, so its windows take no first click through `sendEvent` (a box in the inspector does
+    /// not either); a control in a window that is not key leaves the press to its cell, which tracks it.
+    private func click(_ view: NSView) throws {
+        let window = try XCTUnwrap(view.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let p = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+        let frame = try XCTUnwrap(window.contentView?.superview)
+        let hit = window.contentView?.hitTest(frame.convert(p, from: nil))
+        XCTAssertTrue(
+            hit === view || hit?.isDescendant(of: view) == true, "the click lands on \(String(describing: hit))")
+        func mouse(_ type: NSEvent.EventType) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: type, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        let down = try mouse(.leftMouseDown)
+        NSApp.postEvent(try mouse(.leftMouseUp), atStart: false)
+        view.mouseDown(with: down)
+        let left = NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .default, dequeue: true)
+        if let left, let control = view as? NSControl, let cell = control.cell {
+            NSApp.postEvent(left, atStart: false)
+            _ = cell.trackMouse(with: down, in: control.bounds, of: control, untilMouseUp: true)
+            _ = NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .default, dequeue: true)
+        }
+    }
+
+    /// Clicks in the sheet: a property box ticks it, a
+    /// category box ticks its category, Cancel closes it with nothing changed, Paste applies.
+    func testClicksInTheSheetTickBoxesCancelAndPaste() async throws {
+        try await pasteWorkspace()
+        await send(.setProperty(cues[0], .color("red")))
+        await sync()
+        _ = await wc.editor.copySelection(of: [cues[0]])
+        await selectAll([cues[1]])
+        let sent = wire.commands.count
+        try await chooseFromEditMenu()
+        var s = try XCTUnwrap(sheet)
+        try click(try XCTUnwrap(s.propertyChecks[.name]))
+        XCTAssertEqual(s.ticked, [.name], "a click on a box ticks it")
+        try click(try XCTUnwrap(s.categoryChecks[.triggers]))
+        XCTAssertEqual(s.ticked, [.name, .secondTrigger, .secondTriggerOnRelease], "a category box ticks its category")
+        try click(s.cancelButton)
+        await assertEventually("Cancel closed it") { self.wc.window?.attachedSheet == nil }
+        await sync()
+        XCTAssertEqual(wire.commands.count, sent, "nothing was sent")
+        try await chooseFromEditMenu()
+        s = try XCTUnwrap(sheet)
+        try click(try XCTUnwrap(s.propertyChecks[.colour]))
+        try click(s.applyButton)
+        await assertEventually("Paste applied") { self.raw(self.cues[1], "color")?.stringValue == "red" }
+        XCTAssertNil(wc.window?.attachedSheet)
     }
 
     /// QLab 5, manual p. 123: an edit made with the mouse in the list sets that cue alone.
