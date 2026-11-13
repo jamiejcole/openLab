@@ -594,6 +594,27 @@ final class InspectorLevelsTests: XCTestCase {
         await assertEventually("undo restores the levels exactly") { self.modelKind(Self.fade)?["levels"] == before }
     }
 
+    /// "Set defaults" on a cue of 100 outputs is taken by the engine: every output at 0 dB, file
+    /// channel n to output n for the 64 channels a file can have.
+    func testSetDefaultsOnACueOf100OutputsChangesItsLevels() async throws {
+        try await reopenWithLevels(ofCue: 0) { levels in
+            levels.set(
+                "outputs", .array(Array(repeating: .object(["db": .double(-6), "mute": .bool(false)]), count: 100)))
+            levels.set("crosspoints", .array([]))
+        }
+        showCue(Self.intro)
+        let p = vc.audioLevels
+        fire(p.defaultButton)
+        await assertEventually("the engine takes the edit") {
+            self.modelKind(Self.intro)?["levels"]?["crosspoints"]?.arrayValue?.count == 64
+        }
+        let levels = modelKind(Self.intro)?["levels"]
+        XCTAssertEqual(levels?["outputs"]?.arrayValue?.count, 100)
+        XCTAssertEqual(levels?["outputs"]?.arrayValue?[99]["db"], .double(0))
+        XCTAssertEqual(crosspoint(levels, 63, 63)?["db"], .double(0))
+        XCTAssertNil(crosspoint(levels, 64, 64))
+    }
+
     /// A cue with all 128 cue outputs selected: the Levels tab shows its first 64 (a fader and a
     /// column each), and nothing of the board, its faders or the matrix lies outside the tab.
     func testA128OutputCueShowsItsFirst64OutputsInsideTheLevelsTab() async throws {

@@ -237,17 +237,38 @@ final class LevelSetTests: XCTestCase {
         XCTAssertTrue(s.crosspoints.isEmpty)
     }
 
+    /// Cue outputs go to 128 (a patch's most) and file channels to 64: nothing beyond either is
+    /// made by an edit, and an entry read beyond them is not trusted as a level (it is only written
+    /// back as it came).
     func testChannelLimitsHold() {
         var s = audio()
-        s.set(.output(64), db: 0)
+        s.set(.output(128), db: 0)
         s.set(.cross(input: 64, output: 0), db: 0)
-        s.set(.cross(input: 0, output: 64), db: 0)
-        XCTAssertEqual(s.outputs.count, 4)
-        XCTAssertTrue(s.crosspoints.isEmpty)
+        s.set(.cross(input: 0, output: 128), db: 0)
+        XCTAssertEqual(s.outputs.count, 4, "nothing made beyond output 128")
+        XCTAssertTrue(s.crosspoints.isEmpty, "nothing made beyond channel 64 or output 128")
+        s.set(.output(127), db: 0)
+        s.set(.cross(input: 63, output: 127), db: 0)
+        XCTAssertEqual(s.outputs.count, 128, "output 128 is held")
+        XCTAssertEqual(Array(s.crosspoints.keys), [.init(input: 63, output: 127)], "channel 64 to output 128 is held")
         var raw = TestSnapshots.audioKind("a.wav")
-        raw["levels"]?.set(
-            "crosspoints",
-            .array([.object(["input": .int(70), "output": .int(0), "db": .double(0), "mute": .bool(false)])]))
-        XCTAssertEqual(LevelSet(kind: raw)?.crosspoints.count, 0, "a damaged entry is ignored, not trusted")
+        let damaged = JSONValue.object(["input": .int(70), "output": .int(0), "db": .double(0), "mute": .bool(false)])
+        raw["levels"]?.set("crosspoints", .array([damaged]))
+        let read = LevelSet(kind: raw)
+        XCTAssertEqual(read?.crosspoints.count, 0, "a damaged entry is ignored, not trusted")
+        XCTAssertEqual(read?.unread, [damaged], "but kept to be written back")
+    }
+
+    /// "Set defaults" on a cue of 100 outputs routes file channel n to output n only for the
+    /// channels a file can have (64): a route from channel 65 or more is one the engine refuses,
+    /// and with it the whole edit.
+    func testSetDefaultsRoutesOnlyTheChannelsAFileCanHave() {
+        var s = audio()
+        s.set(.output(99), db: -6)
+        XCTAssertEqual(s.outputs.count, 100)
+        s.setDefaults()
+        XCTAssertEqual(s.crosspoints.count, 64)
+        XCTAssertTrue(s.crosspoints.keys.allSatisfy { $0.input == $0.output && $0.input < 64 })
+        XCTAssertTrue(s.outputs.allSatisfy { $0.db == 0 })
     }
 }
