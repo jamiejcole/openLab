@@ -229,6 +229,11 @@ impl Outputs {
         self.voices.values().any(|&(o, _)| o == key)
     }
 
+    /// Forgets every voice of output `key` (its records were settled as ended).
+    pub fn forget_output(&mut self, key: OutputKey) {
+        self.voices.retain(|_, &mut (o, _)| o != key);
+    }
+
     /// Forgets voices `keep` says are gone.
     pub fn retain_voices(&mut self, mut keep: impl FnMut(VoiceId) -> bool) {
         self.voices.retain(|&v, _| keep(v));

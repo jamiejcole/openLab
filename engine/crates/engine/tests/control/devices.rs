@@ -2693,3 +2693,52 @@ fn channels_above_the_primarys_output_count_are_warned_about_truthfully() {
         )]
     );
 }
+
+/// A device lost while its cue played, then left by its patch: it is closed at once (its dead
+/// voice does not hold it open), no voice record is kept, no reopen attempts follow, and when it
+/// comes back and a patch maps to it again nothing of the old cue is heard.
+#[test]
+fn a_lost_device_its_patch_moved_away_from_is_closed_and_forgets_its_voices() {
+    let b = wav(&dc(40_000, 0.5));
+    let mut s = two_device_show(vec![audio_b(2, &b, 0)]);
+    start(&mut s, 2);
+    s.run(BLOCK * 4);
+    unplug(&mut s, DEV2);
+    assert!(broken_device_lost(&s.take_outbound(), 2));
+    map_b(&mut s, DEV_NAME);
+    s.run(BLOCK * 4);
+    let msgs = s.take_outbound();
+    assert!(
+        logs(&msgs, LogLevel::Info)
+            .iter()
+            .any(|m| m.contains(&format!("\"{DEV2_NAME}\" closed: no patch plays on it"))),
+        "{:?}",
+        logs(&msgs, LogLevel::Info)
+    );
+    assert_eq!(s.control().live_voices(), 0);
+    s.wait_wall(Duration::from_secs(30), 30);
+    s.run(BLOCK * 4);
+    let msgs = s.take_outbound();
+    assert!(
+        logs(&msgs, LogLevel::Warn).is_empty(),
+        "{:?}",
+        logs(&msgs, LogLevel::Warn)
+    );
+    assert!(logs(&msgs, LogLevel::Error).is_empty());
+    assert!(
+        !workspace_warnings(&msgs)
+            .unwrap_or_default()
+            .contains(&"device_lost".to_owned())
+    );
+    assert_eq!(s.control().live_voices(), 0);
+    // Back, and a patch maps to it again: the old cue's voice does not sound.
+    s.fake.plug(listed(DEV2, DEV2_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    let before = s.device_channel(DEV2, 0).len();
+    map_b(&mut s, DEV2_NAME);
+    s.wait_output(DEV2_NAME);
+    s.run(2000);
+    assert!(s.device_channel(DEV2, 0).len() > before + 1000);
+    assert!(heard(&s.device_channel(DEV2, 0)[before..]).is_empty());
+    assert_eq!(s.control().live_voices(), 0);
+}

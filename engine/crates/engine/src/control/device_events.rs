@@ -14,6 +14,7 @@ use openlab_core::{
 
 use super::devices::{Device, DeviceAnswer, DeviceEvent, OutputKey};
 use super::outputs::Output;
+use super::voices::Effects;
 use super::{Backend, Control, DocCx, Engine, notice};
 
 impl Control {
@@ -363,11 +364,14 @@ impl Control {
 
     /// An open device no patch of any open doc maps to any more is parked (closed: not
     /// watched, not reported lost) once no voice plays on it; one a patch maps to again
-    /// opens again. A device still holding a voice is looked at again next tick.
+    /// opens again. A device still holding a voice is looked at again next tick. A device that
+    /// is away has no voice that can still sound (they were stopped when it was lost and their
+    /// stops wait in its mixer): it is parked at once and those voices are settled as ended.
     fn park_outputs(&mut self, wanted: &[String]) {
         let mut changed = false;
+        let mut settle = Vec::new();
         for key in 1..self.eng.outputs.len() {
-            let busy = self.eng.outputs.has_voices(key);
+            let has_voices = self.eng.outputs.has_voices(key);
             let Some(o) = self.eng.outputs.get_mut(key) else {
                 continue;
             };
@@ -379,11 +383,15 @@ impl Control {
                 d.unpark();
                 changed = true;
             } else if !want && !d.is_parked() {
-                if busy {
+                let away = d.is_down();
+                if has_voices && !away {
                     self.eng.outputs_dirty = true;
                 } else {
                     d.park();
                     changed = true;
+                    if has_voices {
+                        settle.push(key);
+                    }
                     let name = o.name.clone();
                     self.eng.log_device(
                         LogLevel::Info,
@@ -391,6 +399,19 @@ impl Control {
                     );
                 }
             }
+        }
+        for key in settle {
+            self.each_doc(|cx| {
+                let at = cx.eng.rendered();
+                let voices = cx.eng.outputs.on_output(key, cx.doc.voices.playing_ids());
+                let mut fx = Effects::default();
+                for voice in voices {
+                    cx.doc.voices.lost(voice, at, &mut fx);
+                }
+                let now = cx.now();
+                cx.follow(fx, now);
+            });
+            self.eng.outputs.forget_output(key);
         }
         if changed {
             self.eng.outputs.follow_clock();
