@@ -49,6 +49,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:]
     /// Pre-wait and post-wait countdowns in progress (`progress.waits`), by cue.
     @Published private(set) var waits: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
+    /// The displays and where each stage is (VID-01), replaced by each `video_outputs` push or
+    /// list answer; views observe it as a published property.
+    @Published private(set) var videoOutputs = VideoOutputs()
     /// Workspace-level notices in force (replaced by each `warnings` message).
     @Published private(set) var warnings: [WireWarning] = []
     /// Notices the app raises itself for this workspace (a key-map key that took a menu command's
@@ -373,6 +376,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             logSeq = Swift.max(logSeq, seq)
         case .meters(let outputs, let cues):
             meters.ingest(outputs: outputs, cues: cues)
+        case .videoOutputs(let v):
+            videoOutputs = v
         case .result, .error, .appWelcome, .workspaces, .unknown:
             // These belong to the client or session.
             break

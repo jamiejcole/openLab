@@ -26,6 +26,10 @@ enum ProbeTarget {
     Display(String),
 }
 
+/// The least time between two `video_outputs` pushes to clients, so a stage host reporting
+/// in a burst cannot flood them.
+const PUSH_EVERY_MS: i64 = 100;
+
 /// Log lines from the stage host's reports put in the show log per second.
 const MAX_REPORT_LINES_PER_SECOND: u32 = 20;
 
@@ -43,6 +47,10 @@ pub(super) struct Stages {
     states: HashMap<StageId, StageState>,
     /// The stage set last handed to the supervisor.
     sent: Option<Vec<StageOutput>>,
+    /// Something a `video_outputs` push carries changed since the last one went out.
+    push_due: bool,
+    /// When the last `video_outputs` went out (control clock, ms).
+    last_push_ms: Option<i64>,
     /// The no-video warning went out.
     no_video_warned: bool,
     /// Log lines from the stage host's reports in the current second: (second, lines,
@@ -190,10 +198,56 @@ impl Control {
             outputs.iter().find(|o| o.id == *id) == sent.iter().find(|o| o.id == *id)
         });
         self.eng.stages.sent = Some(outputs);
+        self.eng.stages.push_due = true;
+    }
+
+    /// Sends each open workspace's connections a `video_outputs` when something it carries
+    /// changed, at most once per [`PUSH_EVERY_MS`]. Called every tick.
+    pub(super) fn push_video_outputs(&mut self) {
+        if !self.eng.stages.push_due {
+            return;
+        }
+        let now = self.eng.config.clock.now_ms();
+        if self
+            .eng
+            .stages
+            .last_push_ms
+            .is_some_and(|last| now >= last && now - last < PUSH_EVERY_MS)
+        {
+            return;
+        }
+        let mut all_sent = true;
+        for doc in &self.docs {
+            let message = ServerMessage::VideoOutputs {
+                displays: self.eng.stages.displays.clone(),
+                video: self.eng.stages.video,
+                stages: self.stage_entries(doc),
+            };
+            all_sent &= self.eng.out.send_state(Some(doc.id), message);
+        }
+        if all_sent {
+            self.eng.stages.push_due = false;
+            self.eng.stages.last_push_ms = Some(now);
+        }
+    }
+
+    /// Each of `doc`'s stages: its display on this machine and where the stage host says it is.
+    fn stage_entries(&self, doc: &super::Doc) -> Vec<StageMappingEntry> {
+        let ws = doc.model.ws();
+        ws.stages
+            .iter()
+            .map(|s| StageMappingEntry {
+                stage: s.id,
+                mapping: self.eng.config.machine.stage_mapping(ws.id, s.id).cloned(),
+                state: self.eng.stages.states.get(&s.id).cloned(),
+            })
+            .collect()
     }
 
     /// What the stage host supervisor reported.
     pub(super) fn stage_event(&mut self, event: StageEvent) {
+        let reported = !matches!(event, StageEvent::Log { .. });
+        self.eng.stages.push_due |= reported;
         match event {
             StageEvent::Started { pid, video } => {
                 let s = &mut self.eng.stages;
@@ -400,16 +454,7 @@ impl Control {
                 ),
             );
         };
-        let ws = d.model.ws();
-        let stages = ws
-            .stages
-            .iter()
-            .map(|s| StageMappingEntry {
-                stage: s.id,
-                mapping: self.eng.config.machine.stage_mapping(ws.id, s.id).cloned(),
-                state: self.eng.stages.states.get(&s.id).cloned(),
-            })
-            .collect();
+        let stages = self.stage_entries(d);
         reply(
             to,
             ServerMessage::Result {

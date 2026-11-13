@@ -52,6 +52,7 @@ Built so far: stages, their per-machine display, the stage host with black outpu
 - An engine on the virtual device (`--virtual-device`) runs a stage host only with `--virtual-displays ID:WxH,...` (test-support builds), passed on to it: test engines never open windows on the machine's displays, and their scripts stay deterministic.
 - Where the stage host is: `Contents/Helpers/openLab Stage.app/Contents/MacOS/openlab-stage` beside the engine's `Contents/MacOS`, else `openlab-stage` beside the engine (development). Missing: video output off, one `info` log line at start (a build or development engine without it is not a show fault). Tests set `ControlConfig::stage_host`.
 - A new workspace gets one stage per listed display (QLab 5 manual p. 226): "Stage 1", "Stage 2"... in display order, sized as the display, keep-black off, each shown on its display on this machine (`Engine::add_display_stages`, from `fresh_workspace`).
+- Push: `push_video_outputs` (every tick) sends each workspace's connections `video_outputs { displays, video?, stages }` when a report, a stage set or a display choice changed, as a state message, at most once per `PUSH_EVERY_MS` (100 ms) by the control clock. The app keeps it in `WorkspaceStore.videoOutputs`.
 - Requests (`docs/protocol.md`): `list_displays` (app-scope), `list_stage_mappings`, `set_stage_mapping { stage, display? }` (the display must be listed now; stored in `settings.json`, refused `io` when settings cannot be saved).
 
 ## Tests

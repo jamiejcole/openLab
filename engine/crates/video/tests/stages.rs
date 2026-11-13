@@ -921,6 +921,106 @@ fn a_crash_after_a_long_healthy_run_is_relaunched_at_once() {
     assert!(killed.success());
     assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != first)));
 }
+
+/// The latest `video_outputs` push among `messages`: its displays and its stages' states.
+fn last_push(messages: &[ServerMessage]) -> Option<(Vec<String>, Vec<Option<StageState>>)> {
+    messages.iter().rev().find_map(|m| match m {
+        ServerMessage::VideoOutputs {
+            displays, stages, ..
+        } => Some((
+            displays.iter().map(|d| d.id.clone()).collect(),
+            stages.iter().map(|e| e.state.clone()).collect(),
+        )),
+        _ => None,
+    })
+}
+
+/// #642: the app need not poll: a display unplugged and back, and a stage's display chosen,
+/// each reach the workspace's connections as a `video_outputs` push.
+#[test]
+fn display_and_stage_changes_are_pushed_to_the_workspace() {
+    let ws = with_stages(vec![], vec![stage(1)]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(virtual_host());
+    let clock = openlab_engine::control::ManualClock::new(10_000);
+    c.clock = clock.clock();
+    let mut s = show_with(ws, c);
+    s.settle_stages();
+    clock.advance(200);
+    s.tick();
+    let first = last_push(&s.take_outbound()).expect("a push once the stage host reported");
+    assert_eq!(first.0, ["V1", "V2"]);
+    assert_eq!(first.1, [Some(StageState::NoDisplay)]);
+    // Its display chosen: pushed (after the least gap between pushes).
+    assert!(matches!(
+        request(
+            &mut s,
+            Request::SetStageMapping {
+                stage: stage_id(1),
+                display: Some("V1".into())
+            }
+        ),
+        Outcome::Ok(_)
+    ));
+    s.settle_stages();
+    clock.advance(200);
+    s.tick();
+    let shown = last_push(&s.take_outbound()).expect("pushed after the choice");
+    assert_eq!(
+        shown.1,
+        [Some(StageState::Shown {
+            display: "V1".into()
+        })]
+    );
+    // V1 unplugged: pushed with the stage missing its display.
+    s.control_mut()
+        .set_virtual_displays(vec![virtual_display("V2", 1280, 720)]);
+    let missing = StageState::DisplayMissing {
+        display: "V1".into(),
+    };
+    assert!(s.wait_for(|c| c.stage_state(stage_id(1)) == Some(&missing)));
+    clock.advance(200);
+    s.tick();
+    let gone = last_push(&s.take_outbound()).expect("pushed after the unplug");
+    assert_eq!(gone.0, ["V2"]);
+    assert_eq!(gone.1, [Some(missing)]);
+    // Nothing new: nothing pushed.
+    clock.advance(200);
+    s.tick();
+    assert_eq!(last_push(&s.take_outbound()), None);
+}
+
+/// A stage host reporting in a burst reaches clients as at most one push per least gap.
+#[test]
+fn a_reporting_burst_is_pushed_at_most_once_per_gap() {
+    let known = stage_id(1).to_string();
+    let script = format!(
+        r#"printf '{{"type":"hello","version":1,"pid":1,"video":true}}\n'
+i=0
+while [ $i -lt 1000 ]; do
+  if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
+  printf '{{"type":"stage_status","stage":"{known}","state":{{"state":"%s"}}}}\n' $s
+  i=$((i+1))
+done
+printf '{{"type":"displays","displays":[{{"id":"END","name":"End","width":8,"height":8}}]}}\n'
+cat > /dev/null"#
+    );
+    let mut host = host_config(&["-c", &script]);
+    host.program = PathBuf::from("/bin/sh");
+    let ws = with_stages(vec![], vec![stage(1)]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(host);
+    c.clock = openlab_engine::control::ManualClock::new(1_000).clock();
+    let mut s = show_with(ws, c);
+    assert!(s.wait_for(|c| c.displays().iter().any(|d| d.id == "END")));
+    let pushes = s
+        .take_outbound()
+        .iter()
+        .filter(|m| matches!(m, ServerMessage::VideoOutputs { .. }))
+        .count();
+    assert!(pushes <= 1, "{pushes} pushes in one gap");
+}
+
 /// A stage host that never answers `hello` is killed and does not hold the engine.
 #[test]
 fn a_silent_stage_host_is_killed_after_the_answer_time() {

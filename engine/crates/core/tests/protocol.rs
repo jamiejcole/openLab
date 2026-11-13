@@ -851,6 +851,25 @@ fn fixtures() -> Vec<(String, Sample)> {
     );
     add("closed", server(ServerMessage::Closed { doc: DocId(3) }));
     add(
+        "video_outputs",
+        server(ServerMessage::VideoOutputs {
+            displays: vec![openlab_core::stage_link::Display {
+                id: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
+                name: "Projector".into(),
+                width: 1920,
+                height: 1080,
+            }],
+            video: Some(true),
+            stages: vec![StageMappingEntry {
+                stage: StageId(uuid::Uuid::from_u128(0x80)),
+                mapping: None,
+                state: Some(openlab_core::stage_link::StageState::DisplayMissing {
+                    display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
+                }),
+            }],
+        }),
+    );
+    add(
         "result_ok_opened",
         server(ServerMessage::Result {
             id: rid(41),
