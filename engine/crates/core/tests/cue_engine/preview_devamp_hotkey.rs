@@ -505,18 +505,18 @@ fn play_previous_on_the_first_child_stops_the_playlist_and_goes_back_from_a_late
 
 #[test]
 fn hotkey_press_resumes_a_paused_cue_and_release_stops_it() {
-    let mut c = keyed(with(sound(1), SecondTrigger::Stop), "q");
+    let mut c = keyed(with(sound(1), SecondTrigger::Stop), "k");
     c.second_trigger_on_release = true;
     let mut rig = Rig::panicking(vec![c]);
     // Press starts, release stops (the sampler use of "on release").
-    rig.press(0, "q");
+    rig.press(0, "k");
     assert_eq!(rig.state(1), CueState::Running);
     rig.release(100, 1);
     assert_eq!(rig.state(1), CueState::Idle);
     // Start, pause, press: it resumes; release: it stops.
-    rig.press(200, "q");
+    rig.press(200, "k");
     rig.pause(300, 1);
-    let out = rig.press(400, "q");
+    let out = rig.press(400, "k");
     assert_eq!(resumed(&out), vec![id(1)]);
     assert_eq!(rig.state(1), CueState::Running);
     let run = rig.run(1);
@@ -791,7 +791,7 @@ fn a_panicked_preview_is_forgotten_after_the_fade_or_its_end() {
 
 #[test]
 fn a_cue_hotkey_used_by_the_workspace_warns_and_never_starts_the_cue() {
-    let mut rig = Rig::panicking(vec![keyed(sound(1), "space"), keyed(sound(2), "w")]);
+    let mut rig = Rig::panicking(vec![keyed(sound(1), "space"), keyed(sound(2), "k")]);
     let issues = validate(&rig.ws);
     assert_eq!(
         issues
@@ -814,7 +814,7 @@ fn a_cue_hotkey_used_by_the_workspace_warns_and_never_starts_the_cue() {
     assert!(rig.ws.cues_with_hotkey(&hotkey("space")).is_empty());
     assert!(rig.press(0, "space").is_empty());
     assert_eq!(rig.state(1), CueState::Idle);
-    assert_eq!(rig.ws.cues_with_hotkey(&hotkey("w")), vec![id(2)]);
+    assert_eq!(rig.ws.cues_with_hotkey(&hotkey("k")), vec![id(2)]);
     // With other modifiers it is a different key; with GO moved off Space, Space is the cue's.
     let shift_space = Hotkey {
         modifiers: Modifiers {
@@ -827,8 +827,11 @@ fn a_cue_hotkey_used_by_the_workspace_warns_and_never_starts_the_cue() {
     rig.ws.settings.hotkeys.go = Some(hotkey("enter"));
     assert!(validate(&rig.ws).is_empty());
     assert_eq!(rig.ws.cues_with_hotkey(&hotkey("space")), vec![id(1)]);
-    // Every workspace key counts, the selected-cue keys included.
+    // Every workspace key counts, the selected-cue and cue-editing keys included.
     for (key, action) in [
+        ("n", "edit_number"),
+        ("d", "edit_duration"),
+        ("f", "toggle_flag"),
         ("[", "pause_all"),
         ("]", "resume_all"),
         ("l", "load_selected"),

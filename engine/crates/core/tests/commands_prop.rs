@@ -480,7 +480,16 @@ fn setting_value(p: &Pick) -> WorkspaceSetting {
         TransportKey::ResetSelected,
         TransportKey::PreviewSelected,
         TransportKey::PanicSelected,
-    ][p.c as usize % 11];
+        TransportKey::EditNumber,
+        TransportKey::EditName,
+        TransportKey::EditNotes,
+        TransportKey::EditTarget,
+        TransportKey::EditPreWait,
+        TransportKey::EditDuration,
+        TransportKey::EditPostWait,
+        TransportKey::CycleContinue,
+        TransportKey::ToggleFlag,
+    ][p.c as usize % 20];
     match p.b % 8 {
         0 => WorkspaceSetting::MinGoInterval {
             value: time(p.c) / 10.0,

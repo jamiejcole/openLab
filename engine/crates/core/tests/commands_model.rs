@@ -264,6 +264,49 @@ fn preview_and_panic_selected_remap_and_free_their_default_chords() {
     assert_eq!(after.settings.hotkeys, swapped);
 }
 
+/// The cue-editing keys are keys of the same map (TRG-07): each can be moved and cleared, and a
+/// key another action has is refused in both directions.
+#[test]
+fn the_cue_editing_keys_are_set_cleared_and_refused_like_the_other_keys() {
+    let ws = workspace(vec![]);
+    for (key, default, action) in [
+        (TransportKey::EditNumber, "n", "edit_number"),
+        (TransportKey::EditName, "q", "edit_name"),
+        (TransportKey::EditNotes, "o", "edit_notes"),
+        (TransportKey::EditTarget, "t", "edit_target"),
+        (TransportKey::EditPreWait, "e", "edit_pre_wait"),
+        (TransportKey::EditDuration, "d", "edit_duration"),
+        (TransportKey::EditPostWait, "w", "edit_post_wait"),
+        (TransportKey::CycleContinue, "c", "cycle_continue"),
+        (TransportKey::ToggleFlag, "f", "toggle_flag"),
+    ] {
+        let keys = &ws.settings.hotkeys;
+        assert_eq!(keys.action_of(&plain(default)), Some(action));
+        let moved = round_trip(&ws, set_key(key, Some(plain("f9"))));
+        assert_eq!(moved.settings.hotkeys.action_of(&plain("f9")), Some(action));
+        assert_eq!(moved.settings.hotkeys.action_of(&plain(default)), None);
+        let cleared = round_trip(&ws, set_key(key, None));
+        assert_eq!(cleared.settings.hotkeys.action_of(&plain(default)), None);
+        let (field, reason, _) = refusal(&ws, set_key(key, Some(plain("space"))));
+        assert_eq!(field, format!("settings.hotkeys.{action}"));
+        assert_eq!(
+            reason,
+            HotkeyClash::Workspace {
+                other: "settings.hotkeys.go"
+            }
+        );
+    }
+    let (_, reason, _) = refusal(&ws, set_key(TransportKey::Go, Some(plain("d"))));
+    assert_eq!(
+        reason,
+        HotkeyClash::Workspace {
+            other: "settings.hotkeys.edit_duration"
+        }
+    );
+    let (_, reason, _) = refusal(&ws, set_key(TransportKey::EditNotes, Some(plain("up"))));
+    assert_eq!(reason, HotkeyClash::Reserved);
+}
+
 #[test]
 fn esc_and_up_down_with_any_modifiers_are_refused_as_workspace_keys() {
     let ws = workspace(vec![]);

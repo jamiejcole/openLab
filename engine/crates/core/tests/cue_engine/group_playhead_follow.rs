@@ -368,7 +368,7 @@ fn go_on_a_broken_auto_follow_cue_starts_the_next_cue_and_moves_past_it() {
 #[test]
 fn two_cues_with_the_same_hotkey_both_start_with_no_warning() {
     let w = Hotkey {
-        key: "w".into(),
+        key: "k".into(),
         modifiers: Modifiers::default(),
     };
     let keyed = |c: Cue| Cue {

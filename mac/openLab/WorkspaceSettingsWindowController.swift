@@ -68,6 +68,11 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var shownNetwork: [NetworkPatchRow]?
     var networkCommits: Task<Void, Never>?
 
+    // Key map (`+Keys`): one recorder, clear button and reason line per action.
+    var keyFields: [WorkspaceKey: HotkeyRecorder] = [:]
+    var keyClearButtons: [WorkspaceKey: NSButton] = [:]
+    var keyReasons: [WorkspaceKey: NSTextField] = [:]
+
     let messageLabel = NSTextField(wrappingLabelWithString: "")
     let doneButton = DoneButton(title: loc("settings.done"), target: nil, action: nil)
 
@@ -132,11 +137,13 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// A refusal line is about the tab it came from.
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         model.message = nil
+        model.keyRefusal = nil
         render()
     }
 
     func windowWillClose(_ notification: Notification) {
         model.message = nil
+        model.keyRefusal = nil
         messageLabel.stringValue = ""
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
@@ -236,7 +243,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         audio.spacing = 8
 
         for (label, view, id) in [
-            (loc("settings.tab.general"), general, "general"), (loc("settings.tab.audio"), audio, "audio"),
+            (loc("settings.tab.general"), general, "general"), (loc("settings.tab.keys"), buildKeysTab(), "keys"),
+            (loc("settings.tab.audio"), audio, "audio"),
             (loc("settings.tab.osc"), buildOscTab(), "osc"),
             (loc("settings.tab.network"), buildNetworkTab(), "network"),
         ] {
@@ -248,6 +256,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             // The OSC table takes the pane's height.
             if id == "osc" || id == "network" {
                 view.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -16).isActive = true
+            }
+            // The key map's two columns share the pane's width, so a long action name wraps in its own.
+            if id == "keys" {
+                view.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -16).isActive = true
             }
             NSLayoutConstraint.activate([
                 view.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 16),
@@ -283,6 +295,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         tabs.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         bottom.setContentHuggingPriority(.required, for: .vertical)
         root.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        // Every tab fills the window's width, whatever its page would choose for itself (the Keys
+        // page's wrapping labels would otherwise size the tab view to them).
+        tabs.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -24).isActive = true
         return root
     }
 
@@ -317,6 +332,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         renderCount += 1
         renderOsc(state.osc, forced: forced)
         renderNetwork(state.network, forced: forced)
+        renderKeys(state.keys, refusal: state.keyRefusal)
         renderGeneral()
         renderDevice()
         renderPatch()

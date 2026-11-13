@@ -1,0 +1,15 @@
+{
+  "about": "The settings window widened to 1000x800: the General and Keys tabs both fill it, the Keys page's columns from the left, with a refusal beside a field in the Cue editing column.",
+  "show": "Demo",
+  "steps": [
+    {"focus": "settings"},
+    {"resize": [1000, 800]},
+    {"tab": "general"},
+    {"shot": "general-large"},
+    {"tab": "keys"},
+    {"shot": "keys-large"},
+    {"click": "settings-keys-edit_post_wait"},
+    {"key": "up"},
+    {"shot": "keys-large-reason"}
+  ]
+}

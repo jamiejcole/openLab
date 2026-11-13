@@ -265,8 +265,8 @@ impl WorkspaceSettings {
     }
 }
 
-/// Remappable workspace keys (TRG-01): the transport keys and the selected-cue keys of QLab 5's
-/// keyboard map (Workspace Settings, Controls, Keyboard). `None` = no key. Esc is not among them:
+/// Remappable workspace keys (TRG-01, TRG-07): the transport keys, the selected-cue keys and the
+/// cue-editing keys of QLab 5's keyboard map (Workspace Settings, Controls, Keyboard). `None` = no key. Esc is not among them:
 /// Panic All is the fixed panic key, as in QLab. Neither is a Next / Previous Cue key (format v6
 /// dropped them): QLab's key map has none and takes no Up or Down arrow, which move the
 /// selection (and with it the playhead).
@@ -288,11 +288,31 @@ pub struct TransportHotkeys {
     pub preview_selected: Option<Hotkey>,
     /// Panic the selected cue (QLab: Panic Selected, `S`). Panic All (Esc) stays outside the map.
     pub panic_selected: Option<Hotkey>,
+    /// The cue-editing keys (TRG-07): each acts on the cues selected in the app's cue list and
+    /// does nothing in the engine, which only keeps the key from a cue's hotkey. Edit the
+    /// selected cue's number (QLab: `N`).
+    pub edit_number: Option<Hotkey>,
+    /// Edit its name (`Q`).
+    pub edit_name: Option<Hotkey>,
+    /// Edit its notes (`O`).
+    pub edit_notes: Option<Hotkey>,
+    /// Edit its target (`T`).
+    pub edit_target: Option<Hotkey>,
+    /// Edit its pre-wait (`E`).
+    pub edit_pre_wait: Option<Hotkey>,
+    /// Edit its duration (`D`).
+    pub edit_duration: Option<Hotkey>,
+    /// Edit its post-wait (`W`).
+    pub edit_post_wait: Option<Hotkey>,
+    /// Step its continue mode (`C`).
+    pub cycle_continue: Option<Hotkey>,
+    /// Flag or unflag it (`F`).
+    pub toggle_flag: Option<Hotkey>,
 }
 
 impl TransportHotkeys {
     /// Every key with its field name (`"go"`, `"stop_all"`, ...), in declaration order.
-    pub fn slots(&self) -> [(&'static str, &Option<Hotkey>); 11] {
+    pub fn slots(&self) -> [(&'static str, &Option<Hotkey>); 20] {
         [
             ("go", &self.go),
             ("stop_all", &self.stop_all),
@@ -305,6 +325,15 @@ impl TransportHotkeys {
             ("reset_selected", &self.reset_selected),
             ("preview_selected", &self.preview_selected),
             ("panic_selected", &self.panic_selected),
+            ("edit_number", &self.edit_number),
+            ("edit_name", &self.edit_name),
+            ("edit_notes", &self.edit_notes),
+            ("edit_target", &self.edit_target),
+            ("edit_pre_wait", &self.edit_pre_wait),
+            ("edit_duration", &self.edit_duration),
+            ("edit_post_wait", &self.edit_post_wait),
+            ("cycle_continue", &self.cycle_continue),
+            ("toggle_flag", &self.toggle_flag),
         ]
     }
 
@@ -332,6 +361,15 @@ pub(crate) fn hotkey_field(name: &str) -> &'static str {
         "reset_selected" => "settings.hotkeys.reset_selected",
         "preview_selected" => "settings.hotkeys.preview_selected",
         "panic_selected" => "settings.hotkeys.panic_selected",
+        "edit_number" => "settings.hotkeys.edit_number",
+        "edit_name" => "settings.hotkeys.edit_name",
+        "edit_notes" => "settings.hotkeys.edit_notes",
+        "edit_target" => "settings.hotkeys.edit_target",
+        "edit_pre_wait" => "settings.hotkeys.edit_pre_wait",
+        "edit_duration" => "settings.hotkeys.edit_duration",
+        "edit_post_wait" => "settings.hotkeys.edit_post_wait",
+        "cycle_continue" => "settings.hotkeys.cycle_continue",
+        "toggle_flag" => "settings.hotkeys.toggle_flag",
         _ => "settings.hotkeys",
     }
 }
@@ -343,7 +381,7 @@ pub fn is_reserved_key(hotkey: &Hotkey) -> bool {
 }
 
 impl Default for TransportHotkeys {
-    /// A new workspace's keys (format v5), QLab 5's defaults; Stop All has no key (Esc is panic).
+    /// A new workspace's keys, QLab 5's defaults; Stop All has no key (Esc is panic).
     fn default() -> Self {
         let key = |key: &str| {
             Some(Hotkey {
@@ -363,6 +401,15 @@ impl Default for TransportHotkeys {
             reset_selected: None,
             preview_selected: key("v"),
             panic_selected: key("s"),
+            edit_number: key("n"),
+            edit_name: key("q"),
+            edit_notes: key("o"),
+            edit_target: key("t"),
+            edit_pre_wait: key("e"),
+            edit_duration: key("d"),
+            edit_post_wait: key("w"),
+            cycle_continue: key("c"),
+            toggle_flag: key("f"),
         }
     }
 }

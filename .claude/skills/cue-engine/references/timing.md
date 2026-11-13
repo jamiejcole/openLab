@@ -106,7 +106,7 @@ Each cue has `second_trigger` and `second_trigger_on_release` (names: `docs/file
 
 ### Hotkeys (core side)
 - `Workspace::cues_with_hotkey(&hotkey)` returns every cue with that key and modifiers in workspace order; cues may share a key and all start, no warning.
-- A cue hotkey equal to a workspace key (transport or selected-cue key, `TransportHotkeys::action_of`) never starts the cue: the workspace action wins and `cues_with_hotkey` returns nothing. Validation warns `HotkeyUsedByWorkspace`; editing a cue to such a key is allowed.
+- A cue hotkey equal to any key of the workspace map (transport, selected-cue or cue-editing, `TransportHotkeys::action_of`) never starts the cue: the workspace action wins and `cues_with_hotkey` returns nothing. Validation warns `HotkeyUsedByWorkspace`; editing a cue to such a key is allowed.
 - A press on a paused cue resumes it; the release follows the on-release option. Dispatch: skill `engine-control`.
 
 ## Feedback

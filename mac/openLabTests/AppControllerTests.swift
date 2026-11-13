@@ -1334,6 +1334,29 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(tabTitles(doc).filter { $0 == text }.count, 1, "once")
     }
 
+    /// Cmd-S typed into the Keys page's Edit name field is taken, as QLab takes a shortcut that means
+    /// something else (manual p. 102): no reason beside the field, the engine holds it, and the Warnings
+    /// tab says Save lost its key in this workspace.
+    func testTheKeysPageTakesAMenuCommandsKeyAndTheWarningsTabSaysTheMenuLostIt() async throws {
+        _ = realMenuBar()
+        keyDoc = "1"
+        let wc = try XCTUnwrap(app.windows["1"])
+        let sc = wc.settingsWindow
+        let field = try XCTUnwrap(sc.keyFields[.editName])
+        field.keyDown(with: try keyEvent("s", [.command]))
+        let cmdS = KeyChord("s", [.command])
+        await assertEventually("the engine holds Cmd-S") {
+            wc.store.model?.hotkey(.editName).flatMap(KeyChord.init(hotkey:)) == cmdS
+        }
+        await assertEventually { field.stringValue == cmdS.display }
+        XCTAssertTrue(sc.keyReasons[.editName]?.isHidden ?? false, "no reason: the key is taken")
+        let text = lostText("keymap.action.edit_name", cmdS)
+        await assertEventually("the Warnings tab says so") {
+            _ = self.app.frontKeys
+            return self.tabTitles("1").filter { $0 == text }.count == 1
+        }
+    }
+
     /// A peer changes the key map to a menu chord and back: the warning follows each change, once.
     func testAPeerKeyMapChangeToAMenuChordWarnsInTheTabAndClearsWhenItMovesOn() async throws {
         _ = realMenuBar()

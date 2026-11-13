@@ -23,12 +23,12 @@ extension AppController {
         // Keys from the show's settings win over cue hotkeys (a cue hotkey on one does not fire), V and S included.
         // A menu command's key (Cmd-J, Shift-Cmd-Down, ...) is taken before a cue hotkey is looked
         // at (`fireCueHotkeys`), so a cue on one never fires either: warn for it the same way.
-        let transportShadowed = cueChords.intersection(keys.chords.values)
+        let transportShadowed = cueChords.intersection(keys.bound.values)
         let menuShadowed = cueChords.intersection(menu).subtracting(transportShadowed)
         let shadowed = transportShadowed.union(menuShadowed)
         // A key-map chord a menu command also owns still binds (the key monitor takes it first, as
         // QLab does): the menu command has lost its key in this workspace, and the operator is told.
-        let lost = keys.chords.filter { menu.contains($0.value) }
+        let lost = keys.bound.filter { menu.contains($0.value) }
         if let cached, same, cached.shadowed == shadowed, cached.lost == lost { return cached.keys }
         keyCache[id] = (hotkeys, shadowed, lost, keys)
         if !same {
@@ -39,7 +39,7 @@ extension AppController {
             _ = store.receive(.log(.warn, String(format: loc(key), chord.display)))
         }
         if cached?.lost != lost {
-            func text(_ entry: (key: TransportCommand, value: KeyChord)) -> String {
+            func text(_ entry: (key: WorkspaceKey, value: KeyChord)) -> String {
                 String(format: loc("hotkeys.warn.menuLost"), loc(entry.key.titleKey), entry.value.display)
             }
             store.setAppNotices(lost.sorted { $0.key.rawValue < $1.key.rawValue }.map(text))

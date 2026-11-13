@@ -1,0 +1,21 @@
+{
+  "about": "The Keys page of the workspace settings: workspace actions and cue-editing actions in two columns; a key typed into Edit notes is taken, the clear button takes it away, and Space typed into Edit name is refused with the reason beside the field.",
+  "show": "Demo",
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "keys"},
+    {"shot": "defaults"},
+    {"click": "settings-keys-edit_notes"},
+    {"shot": "waiting-for-a-key"},
+    {"key": "g"},
+    {"shot": "notes-on-g"},
+    {"click": "settings-keys-clear-edit_notes"},
+    {"shot": "notes-cleared"},
+    {"click": "settings-keys-edit_name"},
+    {"key": "space"},
+    {"shot": "space-refused"},
+    {"click": "settings-keys-pause_all"},
+    {"key": "f"},
+    {"shot": "f-refused-in-workspace-column"}
+  ]
+}

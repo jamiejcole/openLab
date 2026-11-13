@@ -1258,9 +1258,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// The cue being edited was deleted: the edit is dropped, and the operator told.
     var onEditedCueGone: (() -> Void)?
 
-    @objc private func doubleClicked() {
-        let row = outlineView.clickedRow
-        let column = outlineView.clickedColumn
+    @objc private func doubleClicked() { doubleClick(row: outlineView.clickedRow, column: outlineView.clickedColumn) }
+
+    /// A double-click on the cell at `row`, `column` (the table's clicked row and column).
+    func doubleClick(row: Int, column: Int) {
         guard row >= 0, outlineView.tableColumns.indices.contains(column),
             let node = outlineView.item(atRow: row) as? CueNode
         else { return }
@@ -1272,7 +1273,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         Task { @MainActor [weak self] in self?.beginCellEdit(id, column: name) }
     }
 
-    /// The edit-number, edit-name and edit-target keys (N, Q, T): the selected cue's cell opens for typing,
+    /// The cell-editing keys (number, name, target, pre-wait, duration, post-wait: N, Q, T, E, D, W by
+    /// default): the selected cue's cell opens for typing,
     /// or for T on a file cue the file chooser opens (after the key is consumed, not inside it). Only
     /// with the list itself focused and exactly one cue highlighted. With the list focused the key is
     /// always taken (it does nothing in Show Mode, with several cues or on a cue with nothing to edit);
@@ -1298,6 +1300,21 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return true
     }
 
+    /// The notes key (O): the window shows the inspector on its Basics tab with the caret in the
+    /// selected cue's notes (`onEditNotes`). Taken or not as `beginEditFromKey`; it does nothing in
+    /// Show Mode (the inspector is hidden there) and with several cues selected.
+    @discardableResult
+    func beginNotesFromKey() -> Bool {
+        guard !isTextEditing, view.window?.firstResponder === outlineView else { return false }
+        let selected = selectedIDs()
+        guard !isEditLocked, selected.count == 1, let id = selected.first, nodes[id] != nil else { return true }
+        onEditNotes?(id)
+        return true
+    }
+
+    /// Shows the inspector's notes of a cue for typing (the notes key).
+    var onEditNotes: ((ModelID) -> Void)?
+
     /// The continue-mode and flag keys (C, F): every selected cue takes the value the first one moves
     /// to, as one undo step (QLab sets a batch-edited property to the same value on all, manual
     /// p. 123). Taken or not as `beginEditFromKey`.
@@ -1308,7 +1325,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard !isEditLocked, let first = selected.first.flatMap({ node($0) })?.cue else { return true }
         let property: CueProperty
         switch key {
-        case .cell: return true
+        case .cell, .notes: return true
         case .cycleContinue:
             let modes = ["do_not_continue", "auto_continue", "auto_follow"]
             let now = modes.firstIndex(of: first.raw["continue_mode"]?.stringValue ?? "") ?? 0
