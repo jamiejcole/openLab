@@ -1,0 +1,12 @@
+{
+  "about": "A copied cue with a long name, least window: the sheet's title stays one line, the name cut in the middle, the list keeping its height.",
+  "show": "Demo",
+  "window": {"width": 800, "height": 500},
+  "steps": [
+    {"select": "1"},
+    {"type": "inspector-name", "text": "A very long cue name that goes on and on about the storm in the second half of the first act and then some more words"},
+    {"select": ["2.1", "2.2"]},
+    {"paste_properties": "1"},
+    {"shot": "sheet"}
+  ]
+}

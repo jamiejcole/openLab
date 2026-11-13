@@ -252,7 +252,8 @@ final class AppController {
     private func cueHotkeysBlocked() -> Bool {
         if isModalUp() { return true }
         guard let key = keyWindow() else { return false }
-        return key.attachedSheet != nil || key.sheetParent != nil || key === launcher.window || key is NSPanel
+        return key.attachedSheet != nil || key.sheetParent != nil || key is PasteSheetWindow
+            || key === launcher.window || key is NSPanel
     }
 
     /// The cue hotkeys of `store` that fire: a chord equal to one of its keys of the map belongs to

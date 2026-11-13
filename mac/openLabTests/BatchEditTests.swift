@@ -268,6 +268,8 @@ extension PlayheadFlowTests {
         levels.select(.output(0))
         XCTAssertEqual(levels.levelField.stringValue, "0.0")
         XCTAssertNil(levels.meter.source, "no one cue's meter")
+        XCTAssertTrue(try XCTUnwrap(levels.faders.first).isMixed, "the main fader shows no position")
+        XCTAssertFalse(levels.faders[1].isMixed, "output 1 is the same on both")
         // One cue again: everything is that cue's.
         await selectAll([cues[1]])
         XCTAssertEqual(inspector.preWaitField.stringValue, CueTime.format(1.5))
@@ -427,6 +429,108 @@ extension PlayheadFlowTests {
             XCTAssertEqual(goes(), 0)
             await send(.setProperty(fade, .color("none")))
         }
+    }
+
+    /// A level action whose result the first cue already has still reaches the other cues: a mixed
+    /// main level typed as the first cue's value, Set All Silent with the first cue silent, Set
+    /// Default Levels with the first cue at its defaults.
+    func testALevelActionTheFirstCueAlreadyHasStillReachesTheOtherSelectedCues() async throws {
+        try await pasteWorkspace()
+        try await setLevels(cues[1]) { $0.master = -10 }
+        await sync()
+        await selectAll([cues[0], cues[1]])
+        try typeLevel(.master, "0")
+        await assertEventually("cue 2 takes 0") { self.master(self.cues[1]) == 0 }
+        let levels = inspector.audioLevels
+        try await setLevels(cues[0]) { $0.silenceAll() }
+        try await setLevels(cues[1]) { $0.master = -10 }
+        await assertEventually { levels.matrix.mixed.contains(.master) }
+        levels.silentButton.performClick(nil)
+        await assertEventually("Set All Silent silences cue 2") { self.master(self.cues[1]) == LevelText.silence }
+        try await setLevels(cues[0]) { $0.setDefaults() }
+        try await setLevels(cues[1]) { $0.master = -10 }
+        await assertEventually { levels.matrix.mixed.contains(.master) }
+        levels.defaultButton.performClick(nil)
+        await assertEventually("Set Default Levels reaches cue 2") { self.master(self.cues[1]) == 0 }
+    }
+
+    /// QLab 5, manual p. 154: the arrow keys move through the list and Space ticks or clears the row,
+    /// whatever the system's keyboard setting (no box needs the focus). Return applies.
+    func testTheSheetIsDrivenByTheArrowKeysSpaceAndReturn() async throws {
+        try await pasteWorkspace()
+        await send(.setProperty(cues[0], .color("red")))
+        await sync()
+        _ = await wc.editor.copySelection(of: [cues[0]])
+        await selectAll([cues[1]])
+        try await chooseFromEditMenu()
+        let sheet = try XCTUnwrap(self.sheet)
+        let down = String(UnicodeScalar(UInt16(NSDownArrowFunctionKey)).map(Character.init) ?? " ")
+        let up = String(UnicodeScalar(UInt16(NSUpArrowFunctionKey)).map(Character.init) ?? " ")
+        XCTAssertEqual(sheet.highlighted, 0)
+        XCTAssertTrue(sheet.rows[0].isHighlighted, "the first row is highlighted")
+        try pressInSheet(down, code: 125)
+        XCTAssertEqual(sheet.highlighted, 1)
+        XCTAssertTrue(sheet.rows[1].isHighlighted)
+        XCTAssertFalse(sheet.rows[0].isHighlighted)
+        try pressInSheet(" ", code: 49)
+        XCTAssertEqual(sheet.ticked, [.name], "Space ticks the highlighted property")
+        try pressInSheet(up, code: 126)
+        try pressInSheet(" ", code: 49)
+        XCTAssertEqual(sheet.ticked, Set(PasteProperty.Category.basics.properties.filter { $0 != .duration }))
+        try pressInSheet(" ", code: 49)
+        XCTAssertTrue(sheet.ticked.isEmpty, "Space on a full category clears it")
+        for _ in 0..<6 { try pressInSheet(down, code: 125) }
+        XCTAssertEqual(sheet.rows[sheet.highlighted].box, sheet.propertyChecks[.colour])
+        try pressInSheet(" ", code: 49)
+        try pressInSheet("\r", code: 36)
+        await assertEventually("Return applied") { self.raw(self.cues[1], "color")?.stringValue == "red" }
+        XCTAssertNil(wc.window?.attachedSheet)
+        XCTAssertEqual(goes(), 0, "Space and Return fired no GO")
+    }
+
+    /// A copied cue with a very long name: the sheet's title is one line and the list keeps its height,
+    /// at the least window size.
+    func testALongCopiedNameKeepsTheSheetsTitleToOneLine() async throws {
+        try await pasteWorkspace()
+        wc.window?.setContentSize(NSSize(width: 800, height: 500))
+        _ = await wc.editor.copySelection(of: [cues[0]])
+        await selectAll([cues[1]])
+        try await chooseFromEditMenu()
+        let short = try XCTUnwrap(sheet)
+        short.window.contentView?.layoutSubtreeIfNeeded()
+        let listHeight = short.listScroll.frame.height
+        let lineHeight = short.titleLabel.frame.height
+        short.cancel()
+        await send(.setProperty(cues[0], .name(String(repeating: "\u{00E9}", count: 512))))  // 1024 bytes
+        await sync()
+        _ = await wc.editor.copySelection(of: [cues[0]])
+        try await chooseFromEditMenu()
+        let long = try XCTUnwrap(sheet)
+        long.window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(long.titleLabel.frame.height, lineHeight, accuracy: 0.5, "one line")
+        XCTAssertEqual(long.listScroll.frame.height, listHeight, accuracy: 0.5, "the list keeps its height")
+        XCTAssertLessThanOrEqual(long.titleLabel.frame.maxX, try XCTUnwrap(long.window.contentView).bounds.maxX)
+        XCTAssertLessThan(long.titleLabel.stringValue.count, 120, "the name is cut")
+        long.cancel()
+    }
+
+    /// A Fade copied onto a Fade and an Audio cue lists more rows than the sheet holds: the list scrolls,
+    /// its scroller shown.
+    func testAListLongerThanTheSheetShowsItsScroller() async throws {
+        try await pasteWorkspace()
+        _ = await wc.editor.copySelection(of: [fade])
+        let more = await wc.editor.add(.fade, after: [fade])
+        let second = try XCTUnwrap(more)
+        await selectAll([cues[1], second])
+        try await chooseFromEditMenu()
+        let s = try XCTUnwrap(sheet)
+        s.window.contentView?.layoutSubtreeIfNeeded()
+        s.listScroll.tile()
+        let content = try XCTUnwrap(s.listScroll.documentView).frame.height
+        XCTAssertGreaterThan(content, s.listScroll.contentView.bounds.height, "more rows than the sheet holds")
+        XCTAssertEqual(s.listScroll.scrollerStyle, .legacy)
+        XCTAssertFalse(try XCTUnwrap(s.listScroll.verticalScroller).isHidden, "the scroller shows")
+        s.cancel()
     }
 
     /// QLab 5, manual p. 123: an edit made with the mouse in the list sets that cue alone.

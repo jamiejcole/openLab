@@ -6,18 +6,28 @@ import AppKit
 /// the copied cue's properties by category, each with a tick box, and a box per category that ticks
 /// or clears all of it. Apply (Return or Enter) hands back the ticked properties; Cancel (Esc) hands
 /// back nil and nothing changes. It opens with the boxes as they were when it was last applied.
+/// The keys are the sheet's own, whatever the system's keyboard setting: Up and Down move a
+/// highlighted row, Space ticks or clears it (a category row: the whole category).
 @MainActor
 final class PastePropertiesSheet: NSObject {
     /// Where the ticked properties are kept between uses (per Mac, as QLab keeps its last set).
     static let defaultsKey = "PastePropertiesTicked"
 
     let window: NSWindow
-    let titleLabel = NSTextField(wrappingLabelWithString: "")
+    /// One line: a long cue name is cut, never wrapped over the list.
+    let titleLabel = NSTextField(labelWithString: "")
+    let listScroll = NSScrollView()
     let applyButton = NSButton(title: loc("paste.apply"), target: nil, action: nil)
     let cancelButton = NSButton(title: loc("edit.cancel"), target: nil, action: nil)
     private(set) var categoryChecks: [PasteProperty.Category: NSButton] = [:]
     private(set) var propertyChecks: [PasteProperty: NSButton] = [:]
     private let offered: [(category: PasteProperty.Category, properties: [PasteProperty])]
+    /// Every row in list order: a category's box, then its properties'.
+    private(set) var rows: [PasteSheetRow] = []
+    /// The row Up, Down and Space act on.
+    private(set) var highlighted = 0 {
+        didSet { showHighlight() }
+    }
     /// Called once: the ticked properties on Apply, nil on Cancel.
     var onDone: ((Set<PasteProperty>?) -> Void)?
 
@@ -35,8 +45,7 @@ final class PastePropertiesSheet: NSObject {
         super.init()
         window.isReleasedWhenClosed = false
         window.setAccessibilityIdentifier("paste-properties-sheet")
-        (window as? PasteSheetWindow)?.onEnter = { [weak self] in self?.apply() }
-        (window as? PasteSheetWindow)?.onCancel = { [weak self] in self?.cancel() }
+        (window as? PasteSheetWindow)?.onKey = { [weak self] key in self?.handle(key) ?? false }
         build(title: title, ticked: ticked)
     }
 
@@ -44,6 +53,10 @@ final class PastePropertiesSheet: NSObject {
         titleLabel.stringValue = title
         titleLabel.setAX("paste-properties-title")
         titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        titleLabel.lineBreakMode = .byTruncatingMiddle
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        titleLabel.toolTip = title
         let list = NSStackView()
         list.orientation = .vertical
         list.alignment = .leading
@@ -56,24 +69,26 @@ final class PastePropertiesSheet: NSObject {
             head.setAX("paste-category-\(category.rawValue)")
             categoryChecks[category] = head
             if let last = list.arrangedSubviews.last { list.setCustomSpacing(10, after: last) }
-            list.addArrangedSubview(head)
+            add(head, indent: 0, to: list)
             for property in properties {
                 let box = NSButton(
                     checkboxWithTitle: loc(property.titleKey), target: self, action: #selector(propertyClicked))
                 box.setAX("paste-property-\(property.rawValue)")
                 box.state = ticked.contains(property) ? .on : .off
                 propertyChecks[property] = box
-                let row = NSStackView(views: [box])
-                row.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
-                list.addArrangedSubview(row)
+                add(box, indent: 20, to: list)
             }
         }
         refreshCategories()
+        showHighlight()
         let flipped = FlippedView()
         flipped.addSubview(list)
         list.translatesAutoresizingMaskIntoConstraints = false
-        let scroll = NSScrollView()
+        let scroll = listScroll
         scroll.hasVerticalScroller = true
+        // A list longer than the sheet shows its scroller whatever the system's scroll bar setting.
+        scroll.scrollerStyle = .legacy
+        scroll.autohidesScrollers = true
         scroll.borderType = .bezelBorder
         scroll.drawsBackground = false
         scroll.documentView = flipped
@@ -119,7 +134,45 @@ final class PastePropertiesSheet: NSObject {
             content.heightAnchor.constraint(equalToConstant: 440),
         ])
         window.contentView = content
-        window.initialFirstResponder = propertyChecks[offered.first?.properties.first ?? .name]
+        // The sheet takes the keys itself (no box needs the focus).
+        window.initialFirstResponder = nil
+        for row in rows { row.box.refusesFirstResponder = true }
+    }
+
+    private func add(_ box: NSButton, indent: CGFloat, to list: NSStackView) {
+        let row = PasteSheetRow(box: box, indent: indent)
+        rows.append(row)
+        list.addArrangedSubview(row)
+        row.widthAnchor.constraint(equalTo: list.widthAnchor, constant: -16).isActive = true
+    }
+
+    private func showHighlight() {
+        for (i, row) in rows.enumerated() { row.isHighlighted = i == highlighted }
+        if rows.indices.contains(highlighted) { rows[highlighted].scrollToVisible(rows[highlighted].bounds) }
+    }
+
+    /// The sheet's keys; true when the key was one of them.
+    func handle(_ key: PasteSheetWindow.Key) -> Bool {
+        switch key {
+        case .up: highlighted = max(0, highlighted - 1)
+        case .down: highlighted = min(rows.count - 1, highlighted + 1)
+        case .toggle:
+            guard rows.indices.contains(highlighted) else { return true }
+            toggle(rows[highlighted].box)
+        case .apply: apply()
+        case .cancel: cancel()
+        }
+        return true
+    }
+
+    /// What a click on `box` does, from the keyboard.
+    private func toggle(_ box: NSButton) {
+        if categoryChecks.values.contains(where: { $0 === box }) {
+            categoryClicked(box)
+        } else {
+            box.state = box.state == .on ? .off : .on
+            refreshCategories()
+        }
     }
 
     /// A category's box is on when all of its properties are ticked, mixed when some are.
@@ -134,13 +187,22 @@ final class PastePropertiesSheet: NSObject {
 
     /// A category's box ticks all of its properties, or clears them when all were ticked.
     @objc private func categoryClicked(_ sender: NSButton) {
+        highlight(sender)
         guard let (_, properties) = offered.first(where: { categoryChecks[$0.category] === sender }) else { return }
         let all = properties.allSatisfy { propertyChecks[$0]?.state == .on }
         for p in properties { propertyChecks[p]?.state = all ? .off : .on }
         refreshCategories()
     }
 
-    @objc private func propertyClicked(_ sender: NSButton) { refreshCategories() }
+    @objc private func propertyClicked(_ sender: NSButton) {
+        highlight(sender)
+        refreshCategories()
+    }
+
+    /// A click on a row's box highlights that row, so the keys go on from there.
+    private func highlight(_ box: NSButton) {
+        if let i = rows.firstIndex(where: { $0.box === box }) { highlighted = i }
+    }
 
     @objc func apply() { finish(ticked) }
 
@@ -170,20 +232,69 @@ final class PastePropertiesSheet: NSObject {
     }
 }
 
-/// Return and Esc are the buttons' keys; Enter (the keypad's) applies too, as in QLab.
-final class PasteSheetWindow: NSPanel {
-    var onEnter: (() -> Void)?
-    var onCancel: (() -> Void)?
+/// The sheet's window. Its keys go to the sheet before any control (a tick box may hold the focus
+/// when the system lets buttons take it): Up, Down, Space, Return and the keypad's Enter, Esc.
+final class PasteSheetWindow: NSWindow {
+    enum Key { case up, down, toggle, apply, cancel }
+    var onKey: ((Key) -> Bool)?
 
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 76 {
-            onEnter?()
-        } else {
-            super.keyDown(with: event)
+    static func key(_ event: NSEvent) -> Key? {
+        let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard mods.isEmpty else { return nil }
+        switch event.keyCode {
+        case 126: return .up
+        case 125: return .down
+        case 49: return .toggle
+        case 36, 76: return .apply
+        case 53: return .cancel
+        default: return nil
         }
     }
 
-    override func cancelOperation(_ sender: Any?) { onCancel?() }
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, let key = Self.key(event), onKey?(key) == true { return }
+        super.sendEvent(event)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.type == .keyDown, let key = Self.key(event), onKey?(key) == true { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func cancelOperation(_ sender: Any?) { _ = onKey?(.cancel) }
+}
+
+/// One row of the sheet: a tick box, indented under its category, drawn highlighted when the keys
+/// act on it.
+final class PasteSheetRow: NSView {
+    let box: NSButton
+    var isHighlighted = false {
+        didSet { if isHighlighted != oldValue { needsDisplay = true } }
+    }
+
+    init(box: NSButton, indent: CGFloat) {
+        self.box = box
+        super.init(frame: .zero)
+        box.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(box)
+        NSLayoutConstraint.activate([
+            box.leadingAnchor.constraint(equalTo: leadingAnchor, constant: indent + 4),
+            box.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            box.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+            box.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSBezierPath.clip(bounds)
+        guard isHighlighted else { return }
+        // The selection colour at a strength the box and its title stay readable on, light or dark.
+        NSColor.selectedContentBackgroundColor.withAlphaComponent(0.45).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill()
+    }
 }
 
 private final class FlippedView: NSView {

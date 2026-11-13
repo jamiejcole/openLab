@@ -11,6 +11,13 @@ extension WorkspaceWindowController {
             && editor.clipboardCue != nil
     }
 
+    /// A cue's label for the sheet's one-line title: at most 60 characters, cut in the middle.
+    static func shortened(_ label: String, to most: Int = 60) -> String {
+        guard label.count > most else { return label }
+        let half = (most - 1) / 2
+        return String(label.prefix(half)) + "\u{2026}" + String(label.suffix(most - 1 - half))
+    }
+
     /// Opens the sheet for `cues` (the selection when it was chosen: the playhead may move it while
     /// the sheet is up, and the paste is for what the operator chose).
     func promptPasteProperties(onto cues: [ModelID]) {
@@ -22,7 +29,7 @@ extension WorkspaceWindowController {
         guard !targets.isEmpty, !offered.isEmpty else { return NSSound.beep() }
         let name = [source.number, source.displayName].compactMap { $0 }.filter { !$0.isEmpty }
             .joined(separator: " \u{00B7} ")
-        let label = name.isEmpty ? CueKindStyle.kindLabel(source.kindType) : name
+        let label = Self.shortened(name.isEmpty ? CueKindStyle.kindLabel(source.kindType) : name)
         let title =
             targets.count == 1
             ? String(format: loc("paste.title.one"), label) : String(format: loc("paste.title"), label, targets.count)

@@ -182,7 +182,8 @@ final class LevelMatrixView: NSView {
             text, in: r,
             attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
-                .foregroundColor: muted ? NSColor.tertiaryLabelColor : NSColor.labelColor,
+                .foregroundColor: mixed.contains(slot)
+                    ? NSColor.secondaryLabelColor : muted ? NSColor.tertiaryLabelColor : NSColor.labelColor,
             ])
     }
 

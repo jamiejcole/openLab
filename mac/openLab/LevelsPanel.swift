@@ -7,10 +7,34 @@ final class LevelFader: NSSlider {
     var onGestureBegin: (() -> Void)?
     var onGestureEnd: (() -> Void)?
 
+    override class var cellClass: AnyClass? {
+        get { LevelFaderCell.self }
+        set {}
+    }
+
+    /// The level differs between the cues shown: no knob is drawn (no position is theirs); a press on
+    /// the track still sets it on all of them.
+    var isMixed: Bool {
+        get { (cell as? LevelFaderCell)?.isMixed ?? false }
+        set {
+            guard newValue != isMixed else { return }
+            (cell as? LevelFaderCell)?.isMixed = newValue
+            needsDisplay = true
+        }
+    }
+
     override func mouseDown(with event: NSEvent) {
         onGestureBegin?()
         super.mouseDown(with: event)  // tracks until the button is released
         onGestureEnd?()
+    }
+}
+
+final class LevelFaderCell: NSSliderCell {
+    var isMixed = false
+
+    override func drawKnob(_ knobRect: NSRect) {
+        if !isMixed { super.drawKnob(knobRect) }
     }
 }
 
@@ -103,6 +127,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     }
     /// What the last edit did, for applying it to several cues each on its own levels.
     private(set) var lastEdit: LevelSet.Edit?
+    /// Several cues are shown: an action is reported even when the shown (first) cue already has its
+    /// result, since another cue may not.
+    var editsSeveral = false
     private(set) var selection: LevelSet.Slot = .master
     /// The gesture a drag in progress belongs to; model updates wait until it ends.
     private(set) var gesture: Int?
@@ -350,6 +377,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
             f.minValue = limits.min
             f.maxValue = min(limits.max, 0)
             f.doubleValue = min(max(levels.db(Self.slot(ofFader: n)) ?? limits.min, limits.min), f.maxValue)
+            f.isMixed = mixed.contains(Self.slot(ofFader: n))
             f.isEnabled = free
         }
         activeCheck.state = active ? .on : .off
@@ -412,7 +440,7 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     private func edit(gesture: Int? = nil, as action: LevelSet.Edit?, _ change: (inout LevelSet) -> Void) {
         guard !isLocked, var new = levels else { return }
         change(&new)
-        guard new != levels else { return }
+        guard new != levels || (editsSeveral && action != nil) else { return }
         lastEdit = action
         levels = new
         matrix.levels = new

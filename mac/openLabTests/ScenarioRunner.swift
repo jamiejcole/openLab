@@ -218,8 +218,8 @@ final class ScenarioRunner {
         case "tab": return .tab(try string("tab"))
         case "focus":
             let which = try string("focus")
-            guard ["workspace", "settings"].contains(which) else {
-                throw Failure("\"focus\" must be \"workspace\" or \"settings\"")
+            guard ["workspace", "settings", "sheet"].contains(which) else {
+                throw Failure("\"focus\" must be \"workspace\", \"settings\" or \"sheet\"")
             }
             return .focus(which)
         default:
@@ -275,7 +275,11 @@ final class ScenarioRunner {
     private var app: AppController!
     /// The settings window while a step has focused it (the steps then act on it).
     private var focused: NSWindow?
-    private var window: NSWindow { focused ?? wc.window! }
+    private var window: NSWindow {
+        // The sheet, once it has closed, gives the steps back to the workspace window.
+        if let f = focused, f is PasteSheetWindow, wc.pasteSheet?.window !== f { return wc.window! }
+        return focused ?? wc.window!
+    }
 
     init(scenario: Scenario, out: URL) {
         self.scenario = scenario
@@ -431,6 +435,10 @@ final class ScenarioRunner {
             for node in nodes { note("select \(what): cue \(node.cue.number ?? "-") \"\(node.cue.displayName)\"") }
         case .pasteProperties(let from, let tick):
             let node = try cue(from)
+            if let open = wc.pasteSheet {
+                open.cancel()
+                note("  the open sheet was cancelled first")
+            }
             guard await wc.editor.copySelection(of: [node.id]) else { throw Failure("cue \(from) was not copied") }
             wc.promptPasteProperties(onto: wc.cueList.selectedIDs())
             guard let sheet = wc.pasteSheet else { throw Failure("the sheet did not open") }
@@ -526,12 +534,15 @@ final class ScenarioRunner {
                 await sc.model.refresh()
                 sc.render()
                 focused = w
+            } else if which == "sheet" {
+                guard let sheet = wc.pasteSheet?.window else { throw Failure("no sheet is up") }
+                focused = sheet
             } else {
                 focused = nil
             }
             note("focus \(which)")
         case .tab(let id):
-            let tabs = focused != nil ? wc.settingsWindow.tabs : wc.inspector.tabView
+            let tabs = focused != nil && !(focused is PasteSheetWindow) ? wc.settingsWindow.tabs : wc.inspector.tabView
             let ids = tabs.tabViewItems.compactMap { $0.identifier as? String }
             guard ids.contains(id) else {
                 throw Failure("no tab \"\(id)\" for this selection; tabs: \(ids.joined(separator: ", "))")
@@ -734,17 +745,19 @@ final class ScenarioRunner {
 
     /// The whole window (title bar included) at 2x, drawn offscreen.
     private func shot(to url: URL) throws {
-        guard let frame = window.contentView?.superview else { throw Failure("the window has no frame view") }
+        // A focused sheet is shot over its workspace window, as it shows on screen.
+        let shown = window is PasteSheetWindow ? wc.window! : window
+        guard let frame = shown.contentView?.superview else { throw Failure("the window has no frame view") }
         frame.layoutSubtreeIfNeeded()
-        var rep = try renderView(frame, scale: 2, background: window.backgroundColor)
-        if focused == nil, let sheet = wc.pasteSheet?.window { rep = try overlay(sheet, on: rep) }
+        var rep = try renderView(frame, scale: 2, background: shown.backgroundColor)
+        if shown === wc.window, let sheet = wc.pasteSheet?.window { rep = try overlay(sheet, on: rep) }
         guard let png = rep.representation(using: .png, properties: [:]) else { throw Failure("PNG encoding failed") }
         try png.write(to: url)
     }
 
     /// `sheet` drawn where AppKit puts a sheet: centred, under the window's title bar.
     private func overlay(_ sheet: NSWindow, on rep: NSBitmapImageRep) throws -> NSBitmapImageRep {
-        sheet.appearance = window.appearance
+        sheet.appearance = wc.window?.appearance
         guard let frame = sheet.contentView else { throw Failure("the sheet has no content") }
         frame.layoutSubtreeIfNeeded()
         // Off screen the sheet's colours resolve in the drawing appearance: the window's, as on screen.
@@ -753,7 +766,8 @@ final class ScenarioRunner {
         defer { NSAppearance.current = drawing }
         let top = try renderView(frame, scale: 2, background: .windowBackgroundColor)
         guard let context = NSGraphicsContext(bitmapImageRep: rep) else { throw Failure("no context") }
-        let titleBar = (window.frame.height - window.contentLayoutRect.height) * 2
+        let base = try XCTUnwrap(wc.window)
+        let titleBar = (base.frame.height - base.contentLayoutRect.height) * 2
         let x = (CGFloat(rep.pixelsWide) - CGFloat(top.pixelsWide)) / 2
         let y = CGFloat(rep.pixelsHigh) - titleBar - CGFloat(top.pixelsHigh)
         NSGraphicsContext.saveGraphicsState()

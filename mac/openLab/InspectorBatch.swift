@@ -71,6 +71,8 @@ extension InspectorViewController {
         postWaitField.isEnabled = modes.contains { $0 != "auto_follow" }
         loadTimeField.isEnabled = kind == "load"
         networkMessageField.isEnabled = kind == "network"
+        // A field that is off shows no Mixed hint, so it does not read as one to type in.
+        for f in InspectorField.allCases { if field(f)?.isEnabled == false { field(f)?.placeholderString = nil } }
         syncTabs(Self.batchTabs(forKinds: kinds))
         showChoice(colourPopup, Self.colours, cues.map { $0.raw["color"]?.stringValue ?? "none" })
         showChoice(continuePopup, Self.continueModes, modes)
@@ -169,6 +171,7 @@ extension InspectorViewController {
         let outputs = sets.map(\.outputs.count).max() ?? 0
         audioLevels.show(base, inputs: inputs, outputs: outputs)
         audioLevels.gangsMixed = Set(sets.map(\.gangs)).count > 1
+        audioLevels.editsSeveral = true
         audioLevels.mixed = LevelSet.mixedSlots(sets, inputs: inputs, outputs: outputs)
     }
 
@@ -217,6 +220,7 @@ extension InspectorViewController {
         for c in singleCueControls + [numberField, loadTimeField, networkMessageField] { c.isEnabled = !isLocked }
         audioLevels.mixed = []
         audioLevels.gangsMixed = false
+        audioLevels.editsSeveral = false
         for (f, text) in [
             (InspectorField.osc, "inspector.osc.placeholder"), (.message, "inspector.network.messageHint"),
         ] {
