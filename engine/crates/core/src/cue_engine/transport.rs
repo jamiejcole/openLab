@@ -56,18 +56,20 @@ impl CueEngine {
         if self.slots.is_empty() {
             return;
         }
-        for tree in Self::trees(cx) {
-            for cue in tree.into_iter().rev() {
-                if !self.slots.contains_key(&cue) {
-                    continue;
-                }
-                if hard {
-                    self.stop_one(cue, None, cx);
-                } else {
-                    self.panic_one(cue, end, cx);
+        self.with_ducks_held(cx, |e, cx| {
+            for tree in Self::trees(cx) {
+                for cue in tree.into_iter().rev() {
+                    if !e.slots.contains_key(&cue) {
+                        continue;
+                    }
+                    if hard {
+                        e.stop_one(cue, None, cx);
+                    } else {
+                        e.panic_one(cue, end, cx);
+                    }
                 }
             }
-        }
+        });
     }
 
     /// Stop All: everything stops at once, children before their groups (as in Stop), and so do
@@ -76,13 +78,15 @@ impl CueEngine {
         // Also the voices of previews still fading out in a panic.
         self.panic_previews(None, cx);
         self.panic = None;
-        for tree in Self::trees(cx) {
-            for cue in tree.into_iter().rev() {
-                if self.slots.contains_key(&cue) {
-                    self.stop_one(cue, None, cx);
+        self.with_ducks_held(cx, |e, cx| {
+            for tree in Self::trees(cx) {
+                for cue in tree.into_iter().rev() {
+                    if e.slots.contains_key(&cue) {
+                        e.stop_one(cue, None, cx);
+                    }
                 }
             }
-        }
+        });
     }
 
     /// Reset All (QLab's sidebar reset, manual pp. 97-98): a hard stop of everything (as Stop
@@ -118,13 +122,15 @@ impl CueEngine {
     /// nothing scheduled before the loss starts by itself after the device returns. Loaded cues
     /// and settled broken cues stay as they are.
     pub(super) fn device_lost(&mut self, cx: &mut Ctx) {
-        for tree in Self::trees(cx) {
-            for cue in tree.into_iter().rev() {
-                if matches!(self.slots.get(&cue), Some(Slot::Active(_))) {
-                    self.stop_one(cue, None, cx);
+        self.with_ducks_held(cx, |e, cx| {
+            for tree in Self::trees(cx) {
+                for cue in tree.into_iter().rev() {
+                    if matches!(e.slots.get(&cue), Some(Slot::Active(_))) {
+                        e.stop_one(cue, None, cx);
+                    }
                 }
             }
-        }
+        });
     }
 
     /// One cue's part of a panic ending on `end`: a playing voice fades out to `end` (one already
@@ -133,6 +139,7 @@ impl CueEngine {
     fn panic_one(&mut self, cue: CueId, end: SampleTime, cx: &mut Ctx) {
         let before = self.state(cue);
         let now = cx.now;
+        let rate = self.config.sample_rate().get();
         self.release_moved_runs(cue, cx.ws);
         let busy_children = self.any_busy_child(cue);
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
@@ -170,6 +177,7 @@ impl CueEngine {
                     }),
                 });
                 run.stop_end = Some(end);
+                super::others::hold_duck(cue, run, at, rate, cx);
                 run.post_wait = None;
                 run.follow = false;
                 // Its Devamp cue's next cue must not start during the panic.
@@ -227,12 +235,14 @@ impl CueEngine {
             return self.stop_tree(cue, None, cx);
         }
         let end = cx.now.saturating_add(frames);
-        for id in self.inside(cue, cx).into_iter().rev() {
-            if self.slots.contains_key(&id) {
-                self.panic_one(id, end, cx);
+        self.with_ducks_held(cx, |e, cx| {
+            for id in e.inside(cue, cx).into_iter().rev() {
+                if e.slots.contains_key(&id) {
+                    e.panic_one(id, end, cx);
+                }
             }
-        }
-        self.panic_one(cue, end, cx);
+            e.panic_one(cue, end, cx);
+        });
     }
 
     /// Pause All: pauses every active cue, groups before their children (as Pause does), and

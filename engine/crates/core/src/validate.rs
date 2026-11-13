@@ -852,6 +852,17 @@ impl Checker {
                 "fade_and_stop_others.duration",
                 &mut cue.fade_and_stop_others.duration,
             );
+            self.time(id, "duck_others.duration", &mut cue.duck_others.duration);
+            // A change in dB, not a level: the volume limits do not apply to it (the engine keeps
+            // what it plays within them).
+            if clamp(&mut cue.duck_others.db, SILENCE_DB, MAX_DB) {
+                self.warn(
+                    id,
+                    IssueKind::InvalidLevel {
+                        field: "duck_others.db",
+                    },
+                );
+            }
             self.kind_values(id, &mut cue.kind);
             if let CueKind::Group { children, .. } = &mut cue.kind {
                 self.cues(children, depth + 1);

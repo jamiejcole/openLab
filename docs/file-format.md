@@ -215,6 +215,7 @@ At most 64 stages; a file with more keeps the first 64 with a warning (`TooManyS
 | `second_trigger` | `"nothing"` \| `"panic"` \| `"stop"` \| `"hard_stop"` \| `"hard_stop_and_restart"` \| `"devamp"` \| `"play_next"` \| `"play_previous"` | What a trigger does while the cue is already active; semantics in skill `cue-engine`. `play_next`/`play_previous` are for Playlist groups only. |
 | `second_trigger_on_release` | bool | Releasing the hotkey or MIDI key that triggers the cue counts as a second trigger. |
 | `fade_and_stop_others` | object | Optional (absent: off, `peers`, 1 s). `{"enabled": bool, "scope": "peers" \| "list" \| "all", "duration": seconds}`: when the cue's action starts, the other active cues of its level (each with what is inside it), of its list, or of the workspace fade out over `duration` and stop. Kept while off. A bad `duration` is put in range with `InvalidTime`. Semantics: skill `cue-engine`. |
+| `duck_others` | object | Optional (absent: off, -12 dB, 1 s). `{"enabled": bool, "db": -120 to +12, "duration": seconds}`: while the cue's action runs (after its pre-wait), every other audio cue of its cue list plays `db` lower (negative) or higher (positive), reached over `duration` and undone over it when the action ends. Kept while off. A `db` outside the range is put in it with `InvalidLevel`, a bad `duration` with `InvalidTime`. Semantics: skill `cue-engine`. |
 | `kind` | object | What the cue does: `{"type": …, …}`, §5.3. |
 
 `triggers.hotkey.key` is a lower-case key name (`"a"`, `"space"`, `"f5"`).

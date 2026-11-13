@@ -626,6 +626,16 @@ fn fixtures() -> Vec<(String, Sample)> {
             CueProperty::SkipIfDisarmed { value: true },
         ),
         (
+            "duck_others",
+            CueProperty::DuckOthers {
+                value: DuckOthers {
+                    enabled: true,
+                    db: -18.0,
+                    duration: 1.5,
+                },
+            },
+        ),
+        (
             "fade_and_stop_others",
             CueProperty::FadeAndStopOthers {
                 value: FadeAndStopOthers {
