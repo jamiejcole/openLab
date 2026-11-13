@@ -35,6 +35,8 @@ final class WorkspaceSettingsModel: ObservableObject {
     @Published private(set) var patches: [PatchRow] = []
     /// The last refusal or failure, in words; cleared by the next success.
     @Published var message: String?
+    /// The last key typed into the key map that was not taken, and why; cleared by the next success.
+    @Published var keyRefusal: KeyRefusal?
     /// The device list could not be read (engine gone): nothing here can be changed.
     @Published private(set) var loaded = false
 
@@ -145,13 +147,16 @@ final class WorkspaceSettingsModel: ObservableObject {
         var limits: VolumeLimits
         var osc: OscAccessTable
         var network: [NetworkPatchRow]
+        var keys: [WorkspaceKey: KeyChord]
+        var keyRefusal: KeyRefusal?
     }
 
     var displayState: DisplayState {
         DisplayState(
             devices: devices, chosen: chosenDevice, patches: patches, playingName: playing?.name,
             playingState: playing?.state.raw, loaded: loaded, message: message, panic: panicDuration,
-            goInterval: minGoInterval, limits: limits, osc: osc, network: networkPatches)
+            goInterval: minGoInterval, limits: limits, osc: osc, network: networkPatches, keys: keyMap.bound,
+            keyRefusal: keyRefusal)
     }
 
     /// The playing device is lost, failed or absent: patches on it are silent until it is back.

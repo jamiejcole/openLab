@@ -181,6 +181,87 @@
               "alt": false,
               "command": false
             }
+          },
+          "edit_number": {
+            "key": "n",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "edit_name": {
+            "key": "q",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "edit_notes": {
+            "key": "o",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "edit_target": {
+            "key": "t",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "edit_pre_wait": {
+            "key": "e",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "edit_duration": {
+            "key": "d",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "edit_post_wait": {
+            "key": "w",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "cycle_continue": {
+            "key": "c",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
+          },
+          "toggle_flag": {
+            "key": "f",
+            "modifiers": {
+              "shift": false,
+              "control": false,
+              "alt": false,
+              "command": false
+            }
           }
         },
         "auto_number_start": 1.0,

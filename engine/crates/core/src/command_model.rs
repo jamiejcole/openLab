@@ -40,7 +40,8 @@ pub(crate) fn no_change() -> Inverse {
 // ---------------------------------------------------------------------------------------------
 // Settings
 
-/// A key of [`TransportHotkeys`]: a transport key or a selected-cue key (TRG-01).
+/// A key of [`TransportHotkeys`]: a transport key, a selected-cue key (TRG-01) or a cue-editing
+/// key (TRG-07).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportKey {
@@ -55,6 +56,15 @@ pub enum TransportKey {
     ResetSelected,
     PreviewSelected,
     PanicSelected,
+    EditNumber,
+    EditName,
+    EditNotes,
+    EditTarget,
+    EditPreWait,
+    EditDuration,
+    EditPostWait,
+    CycleContinue,
+    ToggleFlag,
 }
 
 /// One workspace setting. Each variant is the whole new value.
@@ -130,6 +140,24 @@ struct StrictHotkeys {
     preview_selected: Option<Hotkey>,
     #[serde(deserialize_with = "required")]
     panic_selected: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    edit_number: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    edit_name: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    edit_notes: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    edit_target: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    edit_pre_wait: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    edit_duration: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    edit_post_wait: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    cycle_continue: Option<Hotkey>,
+    #[serde(deserialize_with = "required")]
+    toggle_flag: Option<Hotkey>,
 }
 
 /// A key that must be in the map, as a value or `null`. (Serde treats a missing `Option` field
@@ -154,6 +182,15 @@ fn strict_hotkeys<'de, D: serde::Deserializer<'de>>(
         reset_selected: w.reset_selected,
         preview_selected: w.preview_selected,
         panic_selected: w.panic_selected,
+        edit_number: w.edit_number,
+        edit_name: w.edit_name,
+        edit_notes: w.edit_notes,
+        edit_target: w.edit_target,
+        edit_pre_wait: w.edit_pre_wait,
+        edit_duration: w.edit_duration,
+        edit_post_wait: w.edit_post_wait,
+        cycle_continue: w.cycle_continue,
+        toggle_flag: w.toggle_flag,
     }))
 }
 
@@ -229,6 +266,15 @@ fn key_name(key: TransportKey) -> &'static str {
         TransportKey::ResetSelected => "reset_selected",
         TransportKey::PreviewSelected => "preview_selected",
         TransportKey::PanicSelected => "panic_selected",
+        TransportKey::EditNumber => "edit_number",
+        TransportKey::EditName => "edit_name",
+        TransportKey::EditNotes => "edit_notes",
+        TransportKey::EditTarget => "edit_target",
+        TransportKey::EditPreWait => "edit_pre_wait",
+        TransportKey::EditDuration => "edit_duration",
+        TransportKey::EditPostWait => "edit_post_wait",
+        TransportKey::CycleContinue => "cycle_continue",
+        TransportKey::ToggleFlag => "toggle_flag",
     }
 }
 
@@ -246,6 +292,15 @@ fn hotkey_slot(s: &WorkspaceSettings, key: TransportKey) -> &Option<Hotkey> {
         TransportKey::ResetSelected => &keys.reset_selected,
         TransportKey::PreviewSelected => &keys.preview_selected,
         TransportKey::PanicSelected => &keys.panic_selected,
+        TransportKey::EditNumber => &keys.edit_number,
+        TransportKey::EditName => &keys.edit_name,
+        TransportKey::EditNotes => &keys.edit_notes,
+        TransportKey::EditTarget => &keys.edit_target,
+        TransportKey::EditPreWait => &keys.edit_pre_wait,
+        TransportKey::EditDuration => &keys.edit_duration,
+        TransportKey::EditPostWait => &keys.edit_post_wait,
+        TransportKey::CycleContinue => &keys.cycle_continue,
+        TransportKey::ToggleFlag => &keys.toggle_flag,
     }
 }
 
@@ -263,6 +318,15 @@ fn hotkey_slot_mut(s: &mut WorkspaceSettings, key: TransportKey) -> &mut Option<
         TransportKey::ResetSelected => &mut keys.reset_selected,
         TransportKey::PreviewSelected => &mut keys.preview_selected,
         TransportKey::PanicSelected => &mut keys.panic_selected,
+        TransportKey::EditNumber => &mut keys.edit_number,
+        TransportKey::EditName => &mut keys.edit_name,
+        TransportKey::EditNotes => &mut keys.edit_notes,
+        TransportKey::EditTarget => &mut keys.edit_target,
+        TransportKey::EditPreWait => &mut keys.edit_pre_wait,
+        TransportKey::EditDuration => &mut keys.edit_duration,
+        TransportKey::EditPostWait => &mut keys.edit_post_wait,
+        TransportKey::CycleContinue => &mut keys.cycle_continue,
+        TransportKey::ToggleFlag => &mut keys.toggle_flag,
     }
 }
 

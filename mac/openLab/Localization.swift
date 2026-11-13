@@ -131,6 +131,8 @@ enum AX {
     static let settingsPatchProblem = "settings-patch-problem"
     static let settingsChannelPopup = "settings-channel-popup"
     static let settingsMessage = "settings-message"
+    /// The Keys tab: `-<key>` (the field, by its show-file name), `-clear-<key>`, `-reason-<key>`, `-escape-N`.
+    static let settingsKeys = "settings-keys"
     /// Prefix of the OSC tab's controls: `-add`, `-none-view`, `-code-N`, `-view-N`, `-delete-N`.
     static let settingsOsc = "settings-osc"
     static let settingsNetwork = "settings-network"

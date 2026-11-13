@@ -573,22 +573,22 @@ final class CueHotkeyFiringTests: XCTestCase {
 
     private func chordJSON(_ key: String) throws -> String { try (KeyChord(key).hotkeyJSON ?? .null).text() }
 
-    /// Preview Selected remapped (issue flow): with the key moved to W, W previews the selected cue and V
+    /// Preview Selected remapped (issue flow): with the key moved to Y, Y previews the selected cue and V
     /// is free, so a cue whose hotkey is V starts from it, in the app and in the engine.
     func testPreviewSelectedFollowsItsRemappedKeyAndFreesV() async throws {
         keyDoc = demoDoc
-        try await first.setHotkeys(#"{"preview_selected":\#(try chordJSON("w"))}"#)
+        try await first.setHotkeys(#"{"preview_selected":\#(try chordJSON("y"))}"#)
         let wc = try XCTUnwrap(app.windows[demoDoc])
         wc.inspector.setSelection([doorSlam])
         XCTAssertTrue(wc.inspector.record(KeyChord("v")), "the freed chord is accepted as a cue hotkey")
         await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == KeyChord("v") } == true }
         wc.cueList.select([intro])
-        XCTAssertEqual(app.frontKeys.chord(for: .previewSelected), KeyChord("w"))
+        XCTAssertEqual(app.frontKeys.chord(for: .previewSelected), KeyChord("y"))
         XCTAssertNil(app.frontKeys.command(for: KeyChord("v")), "V is free")
-        XCTAssertNil(app.handleKeyDown(try event("w", code: 13)), "the key is taken")
+        XCTAssertNil(app.handleKeyDown(try event("y", code: 16)), "the key is taken")
         try await run()
         await assertEventually("the selected cue previews") { self.first.previewing.contains(self.intro) }
-        XCTAssertNil(app.handleKeyDown(try event("w", code: 13)))
+        XCTAssertNil(app.handleKeyDown(try event("y", code: 16)))
         try await run()
         // A second press leaves it playing (QLab check V3); the preview is stopped by hand.
         XCTAssertTrue(first.previewing.contains(intro), "a second press does not stop it")
@@ -600,7 +600,7 @@ final class CueHotkeyFiringTests: XCTestCase {
         try await run()
         await assertEventually("the cue hotkey starts its cue") { self.playing(self.first, self.doorSlam) }
         XCTAssertFalse(first.previewing.contains(intro))
-        let warned = first.logEntries.contains { $0.level == .warn && $0.message.contains("transport key") }
+        let warned = first.logEntries.contains { $0.level == .warn && $0.message.contains("key map") }
         XCTAssertFalse(warned, "no shadowing warning for a free key")
     }
 
@@ -633,11 +633,11 @@ final class CueHotkeyFiringTests: XCTestCase {
     /// A remapped selected-cue key typed in a text field is text, not a command.
     func testARemappedPreviewKeyTypedInATextFieldPreviewsNothing() async throws {
         keyDoc = demoDoc
-        try await first.setHotkeys(#"{"preview_selected":\#(try chordJSON("w"))}"#)
+        try await first.setHotkeys(#"{"preview_selected":\#(try chordJSON("y"))}"#)
         let wc = try XCTUnwrap(app.windows[demoDoc])
         wc.cueList.select([intro])
         app.isTextEditing = { true }
-        let e = try event("w", code: 13)
+        let e = try event("y", code: 16)
         XCTAssertTrue(app.handleKeyDown(e) === e, "left to the field")
         try await run()
         XCTAssertFalse(first.previewing.contains(intro))
@@ -660,9 +660,9 @@ final class CueHotkeyFiringTests: XCTestCase {
             await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == KeyChord(key) } == true }
             await assertEventually {
                 _ = self.app.frontKeys
-                return self.first.logEntries.filter { $0.message.contains("transport key") }.count == n + 1
+                return self.first.logEntries.filter { $0.message.contains("key map") }.count == n + 1
             }
-            XCTAssertEqual(first.logEntries.filter { $0.message.contains("transport key") }.count, n + 1, "once each")
+            XCTAssertEqual(first.logEntries.filter { $0.message.contains("key map") }.count, n + 1, "once each")
         }
         wc.cueList.select([intro])
         XCTAssertNil(app.handleKeyDown(try event("v", code: 9)))
@@ -705,7 +705,7 @@ final class CueHotkeyFiringTests: XCTestCase {
         await assertEventually { self.first.model?.cueHotkeys.contains { $0.chord == KeyChord(" ") } == true }
         XCTAssertEqual(app.frontKeys.chord(for: .go), KeyChord(" "), "GO keeps its key")
         await assertEventually {
-            self.first.logEntries.contains { $0.level == .warn && $0.message.contains("transport key") }
+            self.first.logEntries.contains { $0.level == .warn && $0.message.contains("key map") }
         }
         XCTAssertEqual(first.logEntries.filter { $0.level == .warn }.count, 1)
         _ = app.frontKeys

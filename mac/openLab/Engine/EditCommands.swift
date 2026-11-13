@@ -76,7 +76,8 @@ enum CueProperty: Hashable, Sendable {
     }
 }
 
-/// A key of the workspace key map (`settings.hotkeys`): core's `TransportKey`.
+/// A key of the workspace key map (`settings.hotkeys`): core's `TransportKey`. The transport and
+/// selected-cue keys come first, then the cue-editing keys, in the engine's field order.
 enum WorkspaceKey: String, CaseIterable, Hashable, Sendable {
     case go
     case stopAll = "stop_all"
@@ -89,6 +90,15 @@ enum WorkspaceKey: String, CaseIterable, Hashable, Sendable {
     case resetSelected = "reset_selected"
     case previewSelected = "preview_selected"
     case panicSelected = "panic_selected"
+    case editNumber = "edit_number"
+    case editName = "edit_name"
+    case editNotes = "edit_notes"
+    case editTarget = "edit_target"
+    case editPreWait = "edit_pre_wait"
+    case editDuration = "edit_duration"
+    case editPostWait = "edit_post_wait"
+    case cycleContinue = "cycle_continue"
+    case toggleFlag = "toggle_flag"
 }
 
 extension Command {

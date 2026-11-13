@@ -68,14 +68,14 @@ final class TransportKeysTests: XCTestCase {
     func testEverySelectedCueKeyComesFromTheModel() throws {
         let keys = TransportKeys(
             settings: try settings(
-                #"{"load_selected":\#(hk("k")),"pause_resume_selected":null,"start_selected":\#(hk("j")),"stop_selected":\#(hk("i", ["shift"])),"reset_selected":\#(hk("u")),"preview_selected":\#(hk("w")),"panic_selected":null}"#
+                #"{"load_selected":\#(hk("k")),"pause_resume_selected":null,"start_selected":\#(hk("j")),"stop_selected":\#(hk("i", ["shift"])),"reset_selected":\#(hk("u")),"preview_selected":\#(hk("y")),"panic_selected":null}"#
             ))
         XCTAssertEqual(keys.chord(for: .loadSelected), KeyChord("k"))
         XCTAssertNil(keys.chord(for: .pauseResumeSelected))
         XCTAssertEqual(keys.chord(for: .startSelected), KeyChord("j"))
         XCTAssertEqual(keys.chord(for: .stopSelected), KeyChord("i", [.shift]))
         XCTAssertEqual(keys.chord(for: .resetSelected), KeyChord("u"))
-        XCTAssertEqual(keys.chord(for: .previewSelected), KeyChord("w"), "remapped")
+        XCTAssertEqual(keys.chord(for: .previewSelected), KeyChord("y"), "remapped")
         XCTAssertNil(keys.chord(for: .panicSelected), "cleared")
         XCTAssertNil(keys.command(for: KeyChord("v")), "the old default is not kept")
         XCTAssertNil(keys.command(for: KeyChord("l")), "the old default is not kept")
@@ -104,11 +104,17 @@ final class TransportKeysTests: XCTestCase {
     }
 
     func testValidateIsPure() {
-        let existing: [TransportCommand: KeyChord] = [.go: KeyChord(" ")]
+        let existing: [WorkspaceKey: KeyChord] = [.go: KeyChord(" "), .editDuration: KeyChord("d")]
         XCTAssertEqual(TransportKeys.validate(KeyChord(" "), for: .pauseAll, in: existing), .duplicate(of: .go))
         XCTAssertNil(TransportKeys.validate(KeyChord(" "), for: .go, in: existing), "its own key")
+        // The two columns are one map: a cue-editing key and a workspace key never share a chord.
+        XCTAssertEqual(TransportKeys.validate(KeyChord(" "), for: .editName, in: existing), .duplicate(of: .go))
+        XCTAssertEqual(
+            TransportKeys.validate(KeyChord("d"), for: .go, in: existing), .duplicate(of: .editDuration))
+        XCTAssertNil(
+            TransportKeys.validate(KeyChord("s", .command), for: .go, in: [:]), "a menu command's key is allowed")
+        XCTAssertEqual(TransportKeys.validate(KeyChord("\u{7F}"), for: .go, in: [:]), .unsupported)
         XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.escape), for: .go, in: [:]), .reserved)
-        XCTAssertEqual(TransportKeys.validate(KeyChord("q"), for: .panic, in: [:]), .reserved)
         XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.down), for: .go, in: [:]), .reserved)
         // Up and Down are refused with any modifiers: there are no arrow keys in the key map.
         for mods: NSEvent.ModifierFlags in [.command, .shift, .option, .control, [.command, .shift]] {

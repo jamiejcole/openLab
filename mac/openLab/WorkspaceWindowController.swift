@@ -196,6 +196,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
         cueList.onSetContinue = { [weak self] id, mode in Task { await self?.editor.setContinue(of: id, to: mode) } }
         cueList.onEditedCueGone = { [weak self] in self?.showNotice(loc("cuelist.edit.cueGone")) }
+        cueList.onEditNotes = { [weak self] id in
+            guard let self, !isShowMode else { return }
+            setVisible(.inspector, true)
+            inspector.beginNotes(of: id)
+        }
         cueList.onFileDrop = { [weak self] drop, skipped in
             Task {
                 switch drop {

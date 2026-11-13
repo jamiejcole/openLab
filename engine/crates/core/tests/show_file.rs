@@ -1260,7 +1260,7 @@ fn any_access() -> impl Strategy<Value = OscAccess> {
 }
 
 fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
-    let hotkeys = vec(option::of(hotkey()), 11).prop_map(|keys| {
+    let hotkeys = vec(option::of(hotkey()), 20).prop_map(|keys| {
         let [
             go,
             stop_all,
@@ -1273,7 +1273,16 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
             reset_selected,
             preview_selected,
             panic_selected,
-        ] = <[Option<Hotkey>; 11]>::try_from(keys).unwrap();
+            edit_number,
+            edit_name,
+            edit_notes,
+            edit_target,
+            edit_pre_wait,
+            edit_duration,
+            edit_post_wait,
+            cycle_continue,
+            toggle_flag,
+        ] = <[Option<Hotkey>; 20]>::try_from(keys).unwrap();
         TransportHotkeys {
             go,
             stop_all,
@@ -1286,6 +1295,15 @@ fn any_settings() -> impl Strategy<Value = WorkspaceSettings> {
             reset_selected,
             preview_selected,
             panic_selected,
+            edit_number,
+            edit_name,
+            edit_notes,
+            edit_target,
+            edit_pre_wait,
+            edit_duration,
+            edit_post_wait,
+            cycle_continue,
+            toggle_flag,
         }
     });
     (
@@ -1485,8 +1503,8 @@ fn migrate_keys_to_v5(ws: &mut Workspace) {
     keys.start_selected = None;
     keys.stop_selected = None;
     keys.reset_selected = None;
-    // The v8 -> v9 step: Preview Selected V and Panic Selected S unless a cue hotkey or another
-    // key of the map is that chord.
+    // The v8 -> v9 step: Preview Selected V, Panic Selected S and the cue-editing keys unless a cue
+    // hotkey or another key of the map is that chord.
     taken.extend(
         [
             &keys.go,
@@ -1502,6 +1520,15 @@ fn migrate_keys_to_v5(ws: &mut Workspace) {
     );
     keys.preview_selected = Some(plain("v")).filter(|k| !taken.contains(k));
     keys.panic_selected = Some(plain("s")).filter(|k| !taken.contains(k));
+    keys.edit_number = Some(plain("n")).filter(|k| !taken.contains(k));
+    keys.edit_name = Some(plain("q")).filter(|k| !taken.contains(k));
+    keys.edit_notes = Some(plain("o")).filter(|k| !taken.contains(k));
+    keys.edit_target = Some(plain("t")).filter(|k| !taken.contains(k));
+    keys.edit_pre_wait = Some(plain("e")).filter(|k| !taken.contains(k));
+    keys.edit_duration = Some(plain("d")).filter(|k| !taken.contains(k));
+    keys.edit_post_wait = Some(plain("w")).filter(|k| !taken.contains(k));
+    keys.cycle_continue = Some(plain("c")).filter(|k| !taken.contains(k));
+    keys.toggle_flag = Some(plain("f")).filter(|k| !taken.contains(k));
 }
 
 /// What a v3 file's `osc_passcode` becomes: none or empty is No Passcode with all rights
@@ -1722,6 +1749,38 @@ fn older_shows_keep_v_and_s_unless_a_cue_or_a_key_already_uses_the_chord() {
     let keys = &load_show(V8_EXAMPLE).unwrap().workspace.settings.hotkeys;
     assert_eq!(keys.preview_selected.as_ref().unwrap().key, "v");
     assert_eq!(keys.panic_selected.as_ref().unwrap().key, "s");
+}
+
+/// The cue-editing keys were fixed app keys too, and a cue hotkey on one fired: an older show
+/// keeps that cue hotkey (the editing key is none) and gets QLab's default everywhere else.
+#[test]
+fn older_shows_get_the_cue_editing_keys_unless_a_cue_or_a_key_already_uses_the_chord() {
+    let plain = |key: &str| Hotkey {
+        key: key.into(),
+        modifiers: Modifiers::default(),
+    };
+    let mut doc: serde_json::Value = serde_json::from_str(V8_EXAMPLE).unwrap();
+    doc["workspace"]["settings"]["hotkeys"]["resume_all"]["key"] = "d".into();
+    let cue = &mut doc["workspace"]["cue_lists"][0]["cues"][0]["triggers"]["hotkey"];
+    *cue = serde_json::to_value(plain("n")).unwrap();
+    let loaded = load_show(&doc.to_string()).unwrap();
+    let keys = &loaded.workspace.settings.hotkeys;
+    assert_eq!((&keys.edit_number, &keys.edit_duration), (&None, &None));
+    for (name, key) in keys.slots() {
+        let default = match name {
+            "edit_name" => "q",
+            "edit_notes" => "o",
+            "edit_target" => "t",
+            "edit_pre_wait" => "e",
+            "edit_post_wait" => "w",
+            "cycle_continue" => "c",
+            "toggle_flag" => "f",
+            _ => continue,
+        };
+        assert_eq!(key.as_ref(), Some(&plain(default)), "{name}");
+    }
+    // The cue still starts from N: no workspace key took it.
+    assert_eq!(loaded.workspace.cues_with_hotkey(&plain("n")).len(), 1);
 }
 
 /// A v8 master of 0 dB was no master at all: nothing to warn about.

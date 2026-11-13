@@ -91,7 +91,7 @@ final class AppController {
     var keyCache:
         [ObjectIdentifier: (
             hotkeys: JSONValue?, shadowed: Set<KeyChord>,
-            lost: [TransportCommand: KeyChord], keys: TransportKeys
+            lost: [WorkspaceKey: KeyChord], keys: TransportKeys
         )] =
             [:]
     /// A hotkey recorder has the focus: the key goes to it, not to cues or transport (Esc still panics).
@@ -187,25 +187,26 @@ final class AppController {
             return event
         }
         guard !isRecordingKey(), let chord = KeyChord(event: event) else { return event }
-        if let command = frontKeys.command(for: chord), canPerform(command) {
+        let keys = frontKeys
+        if let command = keys.command(for: chord), canPerform(command) {
             let isRepeat = event.isARepeat
             performNow(command, isRepeat: isRepeat)
             return nil
         }
-        if fireCueHotkeys(chord, event: event) { return nil }
-        return beginCellEdit(for: chord, event: event) ? nil : event
+        if beginCellEdit(keys.editKey(for: chord), event: event) { return nil }
+        return fireCueHotkeys(chord, event: event) ? nil : event
     }
 
-    /// QLab 5's edit-number (N), edit-name (Q) and edit-target (T) keys (`TransportKeys.editKeys`). They come after the
-    /// cue hotkeys: a cue whose hotkey is one of them (a loaded show's) fires, and the key opens no editor.
-    /// The key opens the selected cue's cell in the front workspace's list when the list has the
-    /// focus: a field being typed in, Show Mode (the list is locked) and a held key take nothing.
-    private func beginCellEdit(for chord: KeyChord, event: NSEvent) -> Bool {
-        guard !event.isARepeat, !isTextEditing(), let key = TransportKeys.editKeys[chord],
-            let list = frontController?.cueList
-        else { return false }
+    /// The front workspace's cue-editing keys (its key map: N, Q, O, T, E, D, W, C and F by default),
+    /// before the cue hotkeys as every key of the map is: a cue hotkey on one never fires in that
+    /// workspace. The key acts on the selected cues in the front workspace's list when the list has
+    /// the focus: a field being typed in and a held key take nothing; Show Mode takes the key and
+    /// does nothing (the list is locked).
+    private func beginCellEdit(_ key: TransportKeys.EditKey?, event: NSEvent) -> Bool {
+        guard let key, !event.isARepeat, !isTextEditing(), let list = frontController?.cueList else { return false }
         switch key {
         case .cell(let column): return list.beginEditFromKey(column)
+        case .notes: return list.beginNotesFromKey()
         case .cycleContinue, .toggleFlag: return list.performEditKey(key)
         }
     }
@@ -253,10 +254,10 @@ final class AppController {
         return key.attachedSheet != nil || key === launcher.window || key is NSPanel
     }
 
-    /// The cue hotkeys of `store` that fire: a chord equal to one of its transport keys belongs to
-    /// the transport key (logged once in `keys(for:)`).
+    /// The cue hotkeys of `store` that fire: a chord equal to one of its keys of the map belongs to
+    /// that key (logged once in `keys(for:)`).
     private func cueHotkeys(for store: WorkspaceStore) -> [(cue: ModelID, chord: KeyChord)] {
-        let taken = Set(keys(for: store).chords.values)
+        let taken = Set(keys(for: store).bound.values)
         return (store.model?.cueHotkeys ?? []).filter { !taken.contains($0.chord) }
     }
 
