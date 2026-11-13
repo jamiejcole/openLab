@@ -329,6 +329,9 @@ impl Engine {
             .iter()
             .map(|(key, o)| {
                 let (channels, block_frames, latency_ms) = match o.backend.device() {
+                    // Nothing is known of a stream that has never opened: its info holds only
+                    // what was asked for.
+                    Some(d) if !d.has_opened() => (0, None, None),
                     Some(d) => {
                         let info = d.info();
                         (

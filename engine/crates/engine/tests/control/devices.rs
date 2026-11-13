@@ -2995,6 +2995,83 @@ fn an_opening_or_reconfiguring_device_is_reported_as_such() {
     assert_eq!(dev2.block_frames, Some(128));
 }
 
+/// A device a patch is mapped to for the first time is opening until its first open answers:
+/// in `status.outputs` (with no channels or buffer size yet, nothing being known of it) and in
+/// `list_devices`.
+#[test]
+fn a_device_whose_first_open_is_pending_is_reported_as_opening() {
+    let mut s = two_patch_show(
+        vec![],
+        DEV_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+    );
+    s.settle_devices();
+    assert_eq!(s.control().outputs().len(), 1, "nothing maps to device 2");
+    s.fake.close_gate();
+    map_b(&mut s, DEV2_NAME);
+    s.control_mut().tick();
+    let outputs = s.control().output_statuses();
+    let dev2 = outputs.iter().find(|o| o.name == DEV2_NAME).unwrap();
+    assert_eq!(
+        (dev2.state, dev2.primary, dev2.channels, dev2.block_frames),
+        (OutputState::Opening, false, 0, None)
+    );
+    assert_eq!(dev2.latency_ms, None);
+    assert_eq!(
+        listed_states(&mut s),
+        vec![
+            (DEV_NAME.to_owned(), Some(OutputState::Up), true),
+            (DEV2_NAME.to_owned(), Some(OutputState::Opening), false),
+        ]
+    );
+    s.fake.open_gate();
+    s.wait_output(DEV2_NAME);
+    let outputs = s.control().output_statuses();
+    let dev2 = outputs.iter().find(|o| o.name == DEV2_NAME).unwrap();
+    assert_eq!(
+        (dev2.state, dev2.channels, dev2.block_frames),
+        (OutputState::Up, 2, Some(s.fake.block()))
+    );
+}
+
+/// A closed device mapped to again whose reopen keeps failing (it left the system while the
+/// open was under way) stays opening, retried with the backoff, never lost: nothing played on
+/// it, so there is no outage to report. Its patch says why it cannot play.
+#[test]
+fn a_closed_device_whose_reopen_keeps_failing_stays_opening() {
+    let mut s = two_device_show(vec![]);
+    map_b(&mut s, DEV_NAME);
+    s.settle_devices();
+    s.fake.close_gate();
+    map_b(&mut s, DEV2_NAME);
+    s.control_mut().tick();
+    s.fake.unplug(DEV2, false);
+    s.fake.open_gate();
+    s.take_outbound();
+    s.wait_wall(Duration::from_secs(10), 20);
+    let opens = s.fake.opens();
+    assert!(opens >= 3, "retried: {opens} opens");
+    let state = s
+        .control()
+        .output_statuses()
+        .into_iter()
+        .find(|o| o.name == DEV2_NAME)
+        .map(|o| o.state);
+    assert_eq!(state, Some(OutputState::Opening));
+    assert_eq!(
+        resolutions(&mut s)[1],
+        Some(WireResolution::DeviceMissing {
+            device: DEV2_NAME.into()
+        })
+    );
+    let msgs = s.take_outbound();
+    assert!(
+        !workspace_warnings(&msgs)
+            .unwrap_or_default()
+            .contains(&"device_lost".to_owned())
+    );
+}
+
 /// Two interfaces of one model share a name: `list_devices` gives the engine's output state and
 /// the primary mark only to the one it has open, matched by the host's id.
 #[test]
