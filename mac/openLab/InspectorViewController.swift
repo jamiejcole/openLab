@@ -410,13 +410,14 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         }
         let colours = NSStackView(views: [colourPopup, secondColourCheck, secondColourPopup])
         colours.spacing = 4
-        let right = column([previewButton, row(loc("inspector.colour"), colours)], width: 140)
+        let right = column([previewButton, row(loc("inspector.colour"), colours)], width: 160)
         let boxes = NSStackView(views: [flaggedCheck, autoLoadCheck, armedCheck, skipCheck])
         boxes.orientation = .vertical
         boxes.alignment = .leading
         boxes.spacing = 4
         right.addArrangedSubview(boxes)
         right.setCustomSpacing(6, after: right.arrangedSubviews[1])
+        right.addArrangedSubview(Self.columnFiller())
         let columns = NSStackView(views: [left, centre, right])
         columns.orientation = .horizontal
         columns.alignment = .top
@@ -528,6 +529,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 row(loc("inspector.hotkey"), hotkeyRow), onReleaseCheck,
             ], nil)
         let right = othersColumn(row: row)
+        left.addArrangedSubview(Self.columnFiller())
+        right.addArrangedSubview(Self.columnFiller())
         let columns = NSStackView(views: [left, right])
         columns.alignment = .top
         columns.spacing = 28
@@ -536,6 +539,15 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         item.label = loc("inspector.tab.triggers")
         item.view = columns
         return item
+    }
+
+    /// The last view of a tab's column: it takes the height the column is stretched to, so the
+    /// controls above stay together at the top (else the last one was pushed to the bottom).
+    static func columnFiller() -> NSView {
+        let filler = NSView()
+        filler.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        filler.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        return filler
     }
 
     /// The Mode tab of a Group cue (CT-22): how starting the group starts its children. Loop and
