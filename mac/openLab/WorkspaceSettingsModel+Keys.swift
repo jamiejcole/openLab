@@ -17,10 +17,11 @@ extension WorkspaceSettingsModel {
     var keyMap: TransportKeys { TransportKeys(settings: store.model?.settings) }
 
     /// Puts `chord` on `key`. False, with `keyRefusal` naming why, when the chord is reserved, has
-    /// no show-file name, is another action's key, a menu command's or a cue's hotkey; nothing is
-    /// sent then. The chord `key` already has sends nothing.
+    /// no show-file name, or is another action's key or a cue's hotkey; nothing is sent then. A menu
+    /// command's key is taken (QLab allows it, manual p. 102): the menu command loses its key in this
+    /// workspace and the Warnings tab says so. The chord `key` already has sends nothing.
     @discardableResult
-    func assignKey(_ key: WorkspaceKey, _ chord: KeyChord, menuChords: Set<KeyChord>) async -> Bool {
+    func assignKey(_ key: WorkspaceKey, _ chord: KeyChord) async -> Bool {
         let map = keyMap
         if map.bound[key] == chord {
             keyRefusal = nil
@@ -28,8 +29,7 @@ extension WorkspaceSettingsModel {
         }
         let cueHotkeys = store.model?.cueHotkeys ?? []
         if let error = TransportKeys.validate(
-            chord, for: key, in: map.bound, isCueHotkey: { c in cueHotkeys.contains { $0.chord == c } },
-            menuChords: menuChords)
+            chord, for: key, in: map.bound, isCueHotkey: { c in cueHotkeys.contains { $0.chord == c } })
         {
             keyRefusal = KeyRefusal(key: key, text: refusalText(error, chord: chord))
             return false
@@ -63,9 +63,9 @@ extension WorkspaceSettingsModel {
     func refusalText(_ error: KeyBindError, chord: KeyChord) -> String {
         switch error {
         case .reserved: return loc("settings.keys.refused.reserved")
-        case .unsupported: return loc("settings.keys.refused.unsupported")
+        // The key map takes a menu command's key: `validate` never gives `.menuKey` for it.
+        case .unsupported, .menuKey: return loc("settings.keys.refused.unsupported")
         case .duplicate(let other): return String(format: loc("settings.keys.refused.action"), loc(other.titleKey))
-        case .menuKey: return loc("settings.keys.refused.menu")
         case .cueHotkey, .editKey:
             let id = store.model?.cueHotkeys.first { $0.chord == chord }?.cue
             let name = id.flatMap { id in

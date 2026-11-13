@@ -111,9 +111,8 @@ final class TransportKeysTests: XCTestCase {
         XCTAssertEqual(TransportKeys.validate(KeyChord(" "), for: .editName, in: existing), .duplicate(of: .go))
         XCTAssertEqual(
             TransportKeys.validate(KeyChord("d"), for: .go, in: existing), .duplicate(of: .editDuration))
-        XCTAssertEqual(
-            TransportKeys.validate(KeyChord("s", .command), for: .go, in: [:], menuChords: [KeyChord("s", .command)]),
-            .menuKey)
+        XCTAssertNil(
+            TransportKeys.validate(KeyChord("s", .command), for: .go, in: [:]), "a menu command's key is allowed")
         XCTAssertEqual(TransportKeys.validate(KeyChord("\u{7F}"), for: .go, in: [:]), .unsupported)
         XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.escape), for: .go, in: [:]), .reserved)
         XCTAssertEqual(TransportKeys.validate(KeyChord(KeyChord.down), for: .go, in: [:]), .reserved)

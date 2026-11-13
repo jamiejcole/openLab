@@ -1,5 +1,5 @@
 {
-  "about": "The Keys page at the settings window's least size, light, with a long refusal (a cue's hotkey) beside a field in each column.",
+  "about": "The Keys page at the settings window's least size, light, with Up refused beside a field, and Cmd-S taken by Stop Selected (a menu command's key is allowed, as in QLab).",
   "show": "Demo",
   "appearance": "light",
   "steps": [
@@ -12,6 +12,6 @@
     {"shot": "reserved-refused"},
     {"click": "settings-keys-stop_selected"},
     {"key": "s", "modifiers": ["command"]},
-    {"shot": "menu-key-refused"}
+    {"shot": "menu-key-taken"}
   ]
 }

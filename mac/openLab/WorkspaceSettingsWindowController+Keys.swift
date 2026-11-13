@@ -126,9 +126,8 @@ extension WorkspaceSettingsWindowController {
             render()
             return
         }
-        let menu = menuChords()
         Task {
-            await model.assignKey(key, chord, menuChords: menu)
+            await model.assignKey(key, chord)
             lastDrawn = nil
             render()
         }

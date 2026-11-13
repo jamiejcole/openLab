@@ -213,11 +213,12 @@ struct TransportKeys: Equatable {
 
     /// Why `chord` cannot be bound to `key` next to `existing`; nil if it can. Pure, for the
     /// loader above and the key-map page. Up and Down are refused with any modifiers
-    /// (QLab 5), as are Esc and the empty key; a menu command's key only where `menuChords` is given
-    /// (the key-map page), and a key with no show-file name.
+    /// (QLab 5), as are Esc, the empty key and a key with no show-file name. A menu command's key is
+    /// allowed: QLab does not stop a shortcut that means something else (manual p. 102); the menu
+    /// command then loses its key and the workspace is told (`AppController.keys(for:)`).
     static func validate(
         _ chord: KeyChord, for key: WorkspaceKey, in existing: [WorkspaceKey: KeyChord],
-        isCueHotkey: (KeyChord) -> Bool = { _ in false }, menuChords: Set<KeyChord> = []
+        isCueHotkey: (KeyChord) -> Bool = { _ in false }
     ) -> KeyBindError? {
         guard chord.key != KeyChord.escape, !chord.key.isEmpty else { return .reserved }
         if isArrow(chord) { return .reserved }
@@ -225,7 +226,6 @@ struct TransportKeys: Equatable {
         if let other = existing.first(where: { $0.value == chord && $0.key != key })?.key {
             return .duplicate(of: other)
         }
-        if menuChords.contains(chord) { return .menuKey }
         return isCueHotkey(chord) ? .cueHotkey : nil
     }
 

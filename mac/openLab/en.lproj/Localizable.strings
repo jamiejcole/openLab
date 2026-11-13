@@ -347,7 +347,6 @@
 "settings.keys.refused.reserved" = "Esc and the up and down arrows cannot be used.";
 "settings.keys.refused.unsupported" = "That key cannot be used.";
 "settings.keys.refused.action" = "Already the key of %@.";
-"settings.keys.refused.menu" = "A menu command uses that key.";
 "settings.keys.refused.cue" = "Already the hotkey of cue %@.";
 "settings.keys.refused.anyCue" = "Already a cue's hotkey.";
 "keymap.action.edit_number" = "Edit number";

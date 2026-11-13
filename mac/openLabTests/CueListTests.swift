@@ -1939,7 +1939,8 @@ final class PlayheadFlowTests: XCTestCase {
     }
 
     /// Double-clicking a Number, Name or Target cell opens it in place; Return keeps what was typed,
-    /// Esc leaves the cue as it was. The presses go through the table's own mouse handling.
+    /// Esc leaves the cue as it was. The double-click is the table's double action for that cell
+    /// (`doubleClick(row:column:)`), not mouse presses; the keys go through the app's key handling.
     func testDoubleClickOnNumberNameOrTargetEditsInPlaceEnterCommitsEscLeavesItUnchanged() async throws {
         try await editWorkspace()
         for (id, column, typed, shown) in [

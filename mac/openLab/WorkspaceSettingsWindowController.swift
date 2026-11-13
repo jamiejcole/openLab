@@ -72,8 +72,6 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     var keyFields: [WorkspaceKey: HotkeyRecorder] = [:]
     var keyClearButtons: [WorkspaceKey: NSButton] = [:]
     var keyReasons: [WorkspaceKey: NSTextField] = [:]
-    /// The menu bar's keys, which the key map does not take (a seam for tests).
-    var menuChords: @MainActor () -> Set<KeyChord> = HotkeyRules.currentMenuChords
 
     let messageLabel = NSTextField(wrappingLabelWithString: "")
     let doneButton = DoneButton(title: loc("settings.done"), target: nil, action: nil)

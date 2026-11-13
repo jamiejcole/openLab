@@ -76,7 +76,6 @@ final class KeyMapPageTests: XCTestCase {
     override func setUp() async throws {
         rig = try await Rig.open("Demo")
         sc = WorkspaceSettingsWindowController(store: rig.store)
-        sc.menuChords = { [KeyChord("s", .command), KeyChord("z", .command)] }
         await sc.present().value
         sc.tabs.selectTabViewItem(withIdentifier: "keys")
     }
@@ -153,7 +152,7 @@ final class KeyMapPageTests: XCTestCase {
         await assertEventually { self.stored(.loadSelected) == "j" }
     }
 
-    /// A key that another action, a cue's hotkey, a menu command or Esc has is not taken: the reason
+    /// A key that another action or a cue's hotkey has, or Esc or Up, is not taken: the reason
     /// is beside that field, the field keeps its key and nothing reaches the engine.
     func testAKeyUsedByAnotherActionOrACueHotkeyIsRefusedWithTheReasonBesideTheField() async throws {
         let cue = try XCTUnwrap(rig.store.model?.cueLists.first?.cues.first)
@@ -173,7 +172,6 @@ final class KeyMapPageTests: XCTestCase {
             ("x", 7, [], String(format: loc("settings.keys.refused.cue"), title)),
             (" ", 49, [], String(format: loc("settings.keys.refused.action"), loc("menu.transport.go"))),
             ("d", 2, [], String(format: loc("settings.keys.refused.action"), loc("keymap.action.edit_duration"))),
-            ("s", 1, .command, loc("settings.keys.refused.menu")),
             (KeyChord.up, 126, [], loc("settings.keys.refused.reserved")),
         ]
         for (chars, code, flags, text) in cases {

@@ -1215,7 +1215,7 @@ fn the_output_override_needs_no_open_doc() {
 #[test]
 fn an_idle_second_doc_takes_no_primes_from_a_busy_show() {
     let key = Hotkey {
-        key: "f".into(),
+        key: "k".into(),
         modifiers: Modifiers::default(),
     };
     let f = wav(&dc(400, 0.25));
