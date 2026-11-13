@@ -89,6 +89,7 @@ extension InspectorViewController {
         showTicks(autoLoadCheck, cues.map { $0.raw["auto_load"] == .bool(true) })
         showTicks(skipCheck, cues.map { $0.raw["skip_if_disarmed"] == .bool(true) })
         hotkeyEnableCheck.state = .off
+        hotkeyField.textColor = .controlTextColor
         renderBatchOthers(cues)
         showChoice(continuePopup, Self.continueModes, modes)
         showChoice(

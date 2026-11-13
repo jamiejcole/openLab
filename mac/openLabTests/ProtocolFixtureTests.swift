@@ -347,10 +347,20 @@ final class ProtocolFixtureTests: XCTestCase {
         let cases: [(CueProperty, String)] = [
             (.duckOthers(enabled: true, db: -18, duration: 1.5), "command_set_cue_duck_others"),
             (.fadeAndStopOthers(enabled: true, scope: "list", duration: 2), "command_set_cue_fade_and_stop_others"),
+            (.secondColor("light_blue"), "command_set_cue_second_color"),
+            (.autoLoad(true), "command_set_cue_auto_load"),
+            (.skipIfDisarmed(true), "command_set_cue_skip_if_disarmed"),
+            (
+                .triggers(hotkey: KeyChord("j", []).hotkeyJSON, enabled: false),
+                "command_set_cue_triggers"
+            ),
         ]
         for (property, name) in cases {
             let encoded = normalised(JSONValue.parse(try Command.setProperty(cue, property).json.text()))
             XCTAssertEqual(encoded, normalised(try Fixtures.json("client", name)["command"]), name)
         }
+        XCTAssertEqual(
+            normalised(JSONValue.parse(try Command.setNewCuesAutoLoad(true).json.text())),
+            normalised(try Fixtures.json("client", "command_set_workspace_setting_new_cues_auto_load")["command"]))
     }
 }

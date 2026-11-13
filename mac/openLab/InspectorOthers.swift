@@ -112,9 +112,12 @@ extension InspectorViewController {
             return s
         }
         let heading = small(loc("inspector.others.heading"))
-        let fadeRow = line([fadeOthersCheck, fadeOthersScopePopup, small(loc("inspector.others.over")), fadeOthersTimeField])
+        let fadeRow = line([
+            fadeOthersCheck, fadeOthersScopePopup, small(loc("inspector.others.over")), fadeOthersTimeField,
+        ])
         let duckBy = line([
-            small(loc("inspector.duckOthers.by")), duckDbField, small(loc("inspector.duckOthers.dbOver")), duckTimeField,
+            small(loc("inspector.duckOthers.by")), duckDbField, small(loc("inspector.duckOthers.dbOver")),
+            duckTimeField,
         ])
         duckBy.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
         let column = NSStackView(views: [
