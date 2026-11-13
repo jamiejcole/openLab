@@ -32,7 +32,7 @@ final class InspectorLevelsTests: XCTestCase {
     private static let engineFree = [
         "testLevelsTabIsForAudioCuesAndFadeTabForFadeCues", "testMatrixShowsTheCueRouting", "testMatrixHitTesting",
         "testFadeTabShowsTheFadeSettings", "testSixtyFourOutputMatrixStaysResponsive",
-        "testADragDoesNotEditARowTheMatrixNoLongerHas",
+        "testADragDoesNotEditARowTheMatrixNoLongerHas", "testLongOutputNamesAreCutInTheMiddleAndStayApart",
     ]
 
     override func setUp() async throws {
@@ -507,6 +507,23 @@ final class InspectorLevelsTests: XCTestCase {
         let points = lastKind?["levels"]?["crosspoints"]?.arrayValue ?? []
         XCTAssertEqual(points.first?["input"], .double(4), "the hidden route is kept")
         XCTAssertEqual(points.first?["db"], .double(-3))
+    }
+
+    /// Long names that differ only at the end stay apart under the faders: cut in the middle, each
+    /// within its column.
+    func testLongOutputNamesAreCutInTheMiddleAndStayApart() {
+        let m = LevelMatrixView()
+        m.outputNames = ["Surround L", "Surround R", "C"]
+        let a = m.columnLabel(0)
+        let b = m.columnLabel(1)
+        XCTAssertNotEqual(a, b)
+        XCTAssertTrue(a.hasSuffix("L") && b.hasSuffix("R"), "\(a) \(b)")
+        for label in [a, b] {
+            let width = (label as NSString).size(withAttributes: [.font: LevelMatrixView.labelFont]).width
+            XCTAssertLessThanOrEqual(width, LevelMatrixView.cellW - 4, label)
+        }
+        XCTAssertEqual(m.columnLabel(2), "C")
+        XCTAssertEqual(m.columnLabel(3), "4", "no name: the number")
     }
 
     // MARK: Cue outputs above 64 (a patch has up to 128)

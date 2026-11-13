@@ -118,7 +118,7 @@ final class LevelMatrixView: NSView {
     override func draw(_ dirty: NSRect) {
         NSBezierPath.clip(bounds)
         guard let levels else { return }
-        let small = NSFont.systemFont(ofSize: 10)
+        let small = Self.labelFont
         let label: [NSAttributedString.Key: Any] = [.font: small, .foregroundColor: NSColor.secondaryLabelColor]
         // Only the cells in `dirty`: a scroll or a one-cell change redraws a handful, not the grid.
         let firstCol = max(0, Int((dirty.minX - Self.headW) / Self.cellW))
@@ -138,15 +138,11 @@ final class LevelMatrixView: NSView {
                 guard dirty.intersects(namesRow) else { continue }
                 let r = NSRect(
                     x: Self.headW + CGFloat(o) * Self.cellW, y: Self.cellH, width: Self.cellW, height: Self.headerH)
-                let name = outputNames.indices.contains(o) ? outputNames[o] : ""
-                // A name of two lines (QLab allows a second line) is shown as one.
-                var text = name.isEmpty ? "\(o + 1)" : name.replacingOccurrences(of: "\n", with: " ")
                 if !hidesGangs, let g = levels.gang(of: o) {
                     gangColour(g).setFill()
                     r.insetBy(dx: 1, dy: 1).fill()
-                    text += " " + LevelSet.gangLetter(g)
                 }
-                fitted(text, in: r.insetBy(dx: 2, dy: 0), attributes: label)
+                centred(columnLabel(o), in: r, attributes: label)
             }
         }
         guard inputs > 0 else { return }
@@ -203,18 +199,31 @@ final class LevelMatrixView: NSView {
         return palette[g % palette.count].withAlphaComponent(0.35)
     }
 
-    /// Centred, and cut with an ellipsis when it is wider than `r`: a long name stays in its column.
-    private func fitted(_ text: String, in r: NSRect, attributes: [NSAttributedString.Key: Any]) {
-        let style = NSMutableParagraphStyle()
-        style.alignment = .center
-        style.lineBreakMode = .byTruncatingTail
-        var a = attributes
-        a[.paragraphStyle] = style
-        let s = NSAttributedString(string: text, attributes: a)
-        let h = s.size().height
-        s.draw(
-            with: NSRect(x: r.minX, y: r.midY - h / 2, width: r.width, height: h),
-            options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+    static let labelFont = NSFont.systemFont(ofSize: 10)
+
+    /// The text drawn under cue output `o`'s box: its name from the patch (a two-line name on one
+    /// line) or its number, with its gang letter; cut in the middle to the column's width, so
+    /// names that differ only at the end ("Surround L", "Surround R") still read apart.
+    func columnLabel(_ o: Int) -> String {
+        let name = outputNames.indices.contains(o) ? outputNames[o] : ""
+        var text = name.isEmpty ? "\(o + 1)" : name.replacingOccurrences(of: "\n", with: " ")
+        if !hidesGangs, let g = levels?.gang(of: o) { text += " " + LevelSet.gangLetter(g) }
+        return Self.middleCut(text, width: Self.cellW - 4, font: Self.labelFont)
+    }
+
+    /// `text`, or its start and end with an ellipsis between, as wide as `width` at most.
+    static func middleCut(_ text: String, width: CGFloat, font: NSFont) -> String {
+        func w(_ s: String) -> CGFloat { (s as NSString).size(withAttributes: [.font: font]).width }
+        guard w(text) > width else { return text }
+        let chars = Array(text)
+        var keep = chars.count - 1
+        while keep > 0 {
+            let head = keep - keep / 2
+            let candidate = String(chars.prefix(head)) + "…" + String(chars.suffix(keep - head))
+            if w(candidate) <= width { return candidate }
+            keep -= 1
+        }
+        return "…"
     }
 
     private func centred(_ text: String, in r: NSRect, attributes: [NSAttributedString.Key: Any]) {

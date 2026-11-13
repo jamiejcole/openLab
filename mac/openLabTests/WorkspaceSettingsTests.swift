@@ -313,13 +313,13 @@ final class WorkspaceSettingsTests: XCTestCase {
         wc.inspector.setSelection([intro])
         wc.inspector.tabView.selectTabViewItem(withIdentifier: "levels")
         await settle()
-        XCTAssertEqual(wc.inspector.audioLevels.matrix.outputNames, ["", "Sub"])
-        // The name row is what is drawn under the faders: the accessibility text of the boxes says so too.
-        XCTAssertEqual(wc.inspector.audioLevels.matrix.outputCount, 2)
+        let matrix = wc.inspector.audioLevels.matrix
+        XCTAssertEqual(matrix.outputCount, 2)
+        XCTAssertEqual([matrix.columnLabel(0), matrix.columnLabel(1)], ["1", "Sub"], "what is drawn under the faders")
 
         // Undone, the number is back.
         guard case .success = await rig.store.undo() else { return XCTFail("undo") }
-        await assertEventually { wc.inspector.audioLevels.matrix.outputNames == ["", ""] }
+        await assertEventually { wc.inspector.audioLevels.matrix.columnLabel(1) == "2" }
         // An over-long name is refused with the engine's reason; the old one stays.
         try type(String(repeating: "x", count: 1025), into: editor.outputNameFields[0])
         await assertEventually { !editor.messageLabel.stringValue.isEmpty }
