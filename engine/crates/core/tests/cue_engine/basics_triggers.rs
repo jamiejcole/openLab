@@ -226,16 +226,110 @@ fn a_skipped_cue_as_an_auto_follow_target_passes_the_follow_on() {
 }
 
 #[test]
-fn go_with_the_playhead_on_a_skipped_cue_starts_nothing_and_moves_on() {
-    let mut rig = Rig::new(vec![memo(1), skipped(memo(2)), skipped(memo(3)), memo(4)]);
+fn go_with_the_playhead_on_a_skipped_cue_starts_the_next_cue_that_is_there() {
+    let mut rig = Rig::new(vec![
+        memo(1),
+        skipped(memo(2)),
+        skipped(memo(3)),
+        timed(memo(4), 0.0, 0.0, AC),
+        memo(5),
+        memo(6),
+    ]);
     rig.set_playhead(0, 2);
     let out = rig.go(0);
-    assert!(started(&out).is_empty(), "{out:?}");
-    assert_eq!(rig.playhead(), Some(id(4)));
-    // A trigger of its own (a Start cue, a hotkey) starts nothing either.
+    assert_eq!(
+        started(&out),
+        vec![id(4), id(5)],
+        "4 and the cue it continues into"
+    );
+    assert_eq!(rig.playhead(), Some(id(6)));
+    // A trigger of its own (a Start cue, a hotkey) starts nothing.
     let out = rig.start(10, 2);
     assert!(out.is_empty(), "{out:?}");
     assert_eq!(rig.state(2), CueState::Idle);
+}
+
+#[test]
+fn a_show_whose_first_cue_is_skipped_plays_its_next_cue_on_the_first_go_and_after_reset_all() {
+    let mut rig = Rig::new(vec![skipped(memo(1)), wait(2, 1.0), memo(3)]);
+    assert_eq!(rig.playhead(), Some(id(1)), "the playhead may rest on it");
+    let out = rig.go(0);
+    assert_eq!(started(&out), vec![id(2)]);
+    assert_eq!(rig.playhead(), Some(id(3)));
+    rig.at(10, Input::ResetAll);
+    assert_eq!(rig.playhead(), Some(id(1)));
+    let out = rig.go(20);
+    assert_eq!(started(&out), vec![id(2)]);
+    assert_eq!(rig.playhead(), Some(id(3)));
+}
+
+#[test]
+fn a_cue_disarmed_while_standing_by_does_not_make_the_go_dead() {
+    let mut rig = Rig::new(vec![memo(1), wait(2, 1.0), wait(3, 1.0), memo(4)]);
+    rig.set_playhead(0, 2);
+    let two = rig.find_mut(2);
+    two.armed = false;
+    two.skip_if_disarmed = true;
+    rig.engine.model_changed();
+    let out = rig.go(10);
+    assert_eq!(started(&out), vec![id(3)]);
+    assert_eq!(rig.playhead(), Some(id(4)));
+}
+
+#[test]
+fn go_on_a_skipped_cue_followed_only_by_skipped_cues_does_what_go_past_the_end_does() {
+    let mut rig = Rig::new(vec![memo(1), skipped(memo(2)), skipped(memo(3))]);
+    rig.set_playhead(0, 2);
+    let out = rig.go(0);
+    assert!(started(&out).is_empty());
+    assert!(out.contains(&Action::GoIgnored {
+        list: list(),
+        reason: GoIgnoredReason::NoCue
+    }));
+}
+
+#[test]
+fn go_on_a_skipped_child_starts_the_next_child_that_is_there_in_every_group_mode() {
+    for mode in [
+        GroupMode::Timeline,
+        GroupMode::StartFirstAndEnter,
+        GroupMode::StartFirstAndGoToNext,
+        GroupMode::Playlist {
+            loop_: false,
+            shuffle: false,
+        },
+        GroupMode::StartRandom,
+    ] {
+        let mut rig = Rig::new(vec![
+            grp(1, mode, vec![memo(11), skipped(memo(12)), wait(13, 1.0)]),
+            memo(2),
+        ]);
+        rig.set_playhead(0, 12);
+        let out = rig.go(0);
+        assert_eq!(started(&out)[0], id(13), "{mode:?}: {out:?}");
+        // Past the last child that is there, the GO leaves the group.
+        let mut rig = Rig::new(vec![
+            grp(1, mode, vec![memo(11), skipped(memo(12))]),
+            wait(2, 1.0),
+        ]);
+        rig.set_playhead(0, 12);
+        let out = rig.go(0);
+        assert_eq!(started(&out), vec![id(2)], "{mode:?}");
+    }
+}
+
+#[test]
+fn go_on_a_skipped_cue_keeps_the_pre_wait_of_the_next_cue_that_is_there() {
+    let mut rig = Rig::new(vec![
+        skipped(memo(1)),
+        timed(wait(2, 1.0), 0.5, 0.0, DNC),
+        memo(3),
+    ]);
+    let out = rig.go(0);
+    assert_eq!(changes(&out, 2), vec![(CueState::PreWaiting, 0)]);
+    assert_eq!(rig.playhead(), Some(id(3)));
+    let out = rig.tick(500);
+    assert_eq!(changes(&out, 2), vec![(CueState::Running, 500)]);
 }
 
 #[test]
@@ -643,4 +737,21 @@ fn fade_and_stop_others_waits_for_the_pre_wait_and_does_nothing_when_disarmed_or
     let out = rig.start(10, 2);
     assert_eq!(stop_fades(&out), vec![(id(1), 10, None)]);
     assert_eq!(rig.state(1), CueState::Idle);
+}
+
+/// A cue fading out in a panic is not active for the second-trigger rule (a trigger restarts
+/// it); disarmed with skip during that fade, a trigger must not give it a new run either.
+#[test]
+fn a_cue_skipped_during_its_panic_fade_is_not_restarted_by_a_trigger() {
+    let mut rig = Rig::panicking(vec![timed(sound(1), 0.0, 0.0, AC), memo(2)]);
+    rig.go(0);
+    rig.at(10, Input::PanicCue { cue: id(1) });
+    let one = rig.find_mut(1);
+    one.armed = false;
+    one.skip_if_disarmed = true;
+    rig.engine.model_changed();
+    let out = rig.start(20, 1);
+    assert!(starts(&out).is_empty(), "{out:?}");
+    assert!(voice_stops(&out).is_empty(), "its fade goes on: {out:?}");
+    assert_eq!(rig.state(1), CueState::Stopping);
 }

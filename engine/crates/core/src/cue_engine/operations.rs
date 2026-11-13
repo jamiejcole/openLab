@@ -72,8 +72,11 @@ impl CueEngine {
         }
         // A skipped cue (disarmed, "skip if disarmed") is not there (QLab 5, manual p. 128): a
         // trigger starts nothing and no continue of its own fires. One still running from before
-        // it was disarmed took its second trigger above.
-        if self.is_skipped(model) && !matches!(self.slots.get(&cue), Some(Slot::Active(_))) {
+        // it was disarmed took its second trigger above; one fading out in a panic is let go on
+        // fading, not restarted.
+        if self.is_skipped(model)
+            && !matches!(self.slots.get(&cue), Some(Slot::Active(r)) if !r.panicked)
+        {
             return;
         }
         if !self.budget_left(cx) {

@@ -7,7 +7,7 @@ import AppKit
 /// for cues of different kinds, and some of the kind's own tabs when all are of one kind. A value that
 /// is not the same on every cue is drawn as mixed (an empty field, a dash, a mixed tick box); an edit
 /// sets that one value on every selected cue, the rest of each cue kept, as one undo step. A cue's
-/// number, hotkey and OSC address name one cue, so they are not edited here.
+/// number and hotkey name one cue, so they are not edited here.
 extension InspectorViewController {
     /// The kind tabs that hold fields set on several cues at once. Time & Loops (each cue's own file)
     /// and a Fade's curve and levels (each fades its own target) are edited one cue at a time.

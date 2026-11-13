@@ -1491,6 +1491,11 @@ impl Run {
             && !actions
                 .iter()
                 .any(|a| matches!(a, Action::GoIgnored { .. }))
+            // A GO from a skipped cue acts on the next cue that is there (maybe outside the
+            // group): this rule is about a GO on the playhead cue itself.
+            && !ph_before
+                .and_then(|p| self.ws.find_cue(p))
+                .is_some_and(|c| c.skipped(c.armed))
         {
             let cues = &self.ws.cue_lists[0].cues;
             let old = ph_before

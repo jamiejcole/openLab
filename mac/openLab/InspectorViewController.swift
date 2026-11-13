@@ -445,7 +445,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         render()
     }
 
-    /// The Triggers tab: hotkey (recorder, Clear), second trigger and on-release, OSC address.
+    /// The Triggers tab: hotkey (recorder, Clear), second trigger and on-release.
     private func triggersTab(
         row: (String, NSView) -> NSView, column: ([NSView], CGFloat?) -> NSStackView
     ) -> NSTabViewItem {

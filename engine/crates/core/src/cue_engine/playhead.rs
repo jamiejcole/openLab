@@ -334,6 +334,30 @@ pub(super) fn after_go(
     })
 }
 
+/// The position a GO acts on when the playhead stands at `path`: that cue, or, if it is skipped
+/// (disarmed with "skip if disarmed": as though it does not exist, QLab 5 manual p. 128), the next
+/// cue that is there: further along its level, else after the group around it, and so on
+/// outwards. `None` when nothing is left (a GO then does what it does past the end of the list).
+/// The playhead can rest on a skipped cue (navigation, a cue disarmed while standing by, the
+/// first cue on open), but a GO is never dead because of one.
+pub(super) fn first_present(
+    mut path: Vec<(&[Cue], usize)>,
+    armed: impl Fn(&Cue) -> bool,
+) -> Option<Vec<(&[Cue], usize)>> {
+    let &(level, index) = path.last()?;
+    if !level.get(index)?.skipped(armed(level.get(index)?)) {
+        return Some(path);
+    }
+    loop {
+        let &(level, index) = path.last()?;
+        if let Some(next) = next_present(level, Some(index), &armed) {
+            path.last_mut()?.1 = next;
+            return Some(path);
+        }
+        path.pop();
+    }
+}
+
 /// The first cue of `level` after index `after` (from the start for `None`) that is there: a
 /// skipped cue (disarmed, as `armed` says, with "skip if disarmed") is passed over as if absent
 /// (QLab 5, manual p. 128).

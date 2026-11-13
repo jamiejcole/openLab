@@ -182,6 +182,10 @@ impl CueEngine {
         let Some(path) = path else {
             return Err(GoIgnoredReason::NoCue);
         };
+        // A skipped cue is not there: the GO acts on the next cue that is.
+        let Some(path) = playhead::first_present(path, |c| self.is_armed(c)) else {
+            return Err(GoIgnoredReason::NoCue);
+        };
         let Some(cue) = path.last().and_then(|&(level, index)| level.get(index)) else {
             return Err(GoIgnoredReason::NoCue);
         };
