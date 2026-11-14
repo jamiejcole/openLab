@@ -21,8 +21,8 @@ pub const MAX_FRAME_RATE: f64 = 1000.0;
 /// Longest probe line, newline excluded.
 pub const MAX_PROBE_LINE_BYTES: usize = 4096;
 
-/// The moving-picture codecs a Video cue plays (VID-03; the 2014 Mac mini target is H.264,
-/// ProRes Proxy and HAP).
+/// The moving-picture codecs a Video cue plays (VID-03). HAP is not among them yet: no decoder
+/// for it is built, so a HAP movie is reported unsupported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VideoCodec {
@@ -31,8 +31,6 @@ pub enum VideoCodec {
     /// Every ProRes 422 and 4444 flavour.
     #[serde(rename = "prores")]
     ProRes,
-    /// HAP, HAP Alpha and HAP Q; decoded by openLab itself, not the platform.
-    Hap,
 }
 
 /// The still image formats a Video cue shows (VID-03).

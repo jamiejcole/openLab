@@ -5,8 +5,9 @@
 //! Stills go through ImageIO, which decodes the first image (a damaged file fails here, not on
 //! stage). Movies go through AVFoundation: the first video track's codec (its four-character
 //! code), pixel size and nominal frame rate, and the asset's length. A movie in a codec the
-//! platform decodes has its first frame decoded too, for the same reason. HAP is decoded by
-//! openLab itself, so for HAP only the container is read here.
+//! platform decodes has its first frame decoded too, for the same reason. HAP is not played
+//! yet (the platform has no decoder for it and openLab's own is not built): it is reported
+//! unsupported with that reason.
 //!
 //! The process does nothing else and exits after its one line: a decoder that crashes or hangs
 //! on a hostile file takes only this process with it, and the engine kills one that does not
@@ -92,11 +93,16 @@ fn codec_of(code: u32) -> Option<VideoCodec> {
         b"avc1" | b"avc3" => Some(VideoCodec::H264),
         b"hvc1" | b"hev1" => Some(VideoCodec::Hevc),
         b"apco" | b"apcs" | b"apcn" | b"apch" | b"ap4h" | b"ap4x" => Some(VideoCodec::ProRes),
-        b"Hap1" | b"Hap5" | b"HapY" | b"HapM" | b"HapA" | b"Hap7" | b"HapH" => {
-            Some(VideoCodec::Hap)
-        }
         _ => None,
     }
+}
+
+/// Whether the four-character code is one of HAP's.
+fn is_hap(code: u32) -> bool {
+    matches!(
+        &code.to_be_bytes(),
+        b"Hap1" | b"Hap5" | b"HapY" | b"HapM" | b"HapA" | b"Hap7" | b"HapH"
+    )
 }
 
 fn fourcc_text(code: u32) -> String {
@@ -129,9 +135,12 @@ fn movie(path: &str) -> ProbeReport {
     let description: *const CMFormatDescription = Retained::as_ptr(&first).cast();
     // SAFETY: the object is a CMFormatDescription kept alive by `first`.
     let code = unsafe { (*description).media_sub_type() };
+    if is_hap(code) {
+        return unsupported("HAP movies are not played yet; use H.264, HEVC or ProRes".into());
+    }
     let Some(codec) = codec_of(code) else {
         return unsupported(format!(
-            "its video codec ({}) is not supported; use H.264, HEVC, ProRes or HAP",
+            "its video codec ({}) is not supported; use H.264, HEVC or ProRes",
             fourcc_text(code)
         ));
     };
@@ -158,7 +167,7 @@ fn movie(path: &str) -> ProbeReport {
     if !(seconds.is_finite() && seconds > 0.0 && seconds <= openlab_core::MAX_TIME) {
         return unsupported("its length cannot be read".into());
     }
-    if codec != VideoCodec::Hap && !first_frame_decodes(&asset) {
+    if !first_frame_decodes(&asset) {
         return unsupported("its first frame cannot be decoded".into());
     }
     ProbeReport::Video {

@@ -1,6 +1,6 @@
 {"type":"video","codec":"h264","width":1920,"height":1080,"fps":25.0,"duration":12.5}
 {"type":"video","codec":"prores","width":288,"height":160,"fps":29.97,"duration":2.0}
-{"type":"video","codec":"hap","width":3840,"height":2160,"fps":60.0,"duration":3600.0}
+{"type":"video","codec":"hevc","width":3840,"height":2160,"fps":60.0,"duration":3600.0}
 {"type":"still","format":"png","width":288,"height":160}
 {"type":"still","format":"tiff","width":16384,"height":1}
 {"type":"missing"}
