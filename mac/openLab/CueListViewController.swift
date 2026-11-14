@@ -1698,7 +1698,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 cell.label.textColor = .secondaryLabelColor
                 break
             }
-            let seconds = cue.raw[column == "preWait" ? "pre_wait" : "post_wait"]?.doubleValue ?? 0
+            let seconds = column == "preWait" ? cue.raw["pre_wait"]?.doubleValue ?? 0 : cue.postWait
             text(CueTime.running(seconds))
             if seconds == 0 { cell.label.textColor = .secondaryLabelColor }  // zero is dimmed, as in QLab
         case "duration":

@@ -28,8 +28,6 @@ enum InspectorEdit {
         case noEditableDuration
         /// Only Load cues have a load time.
         case noLoadTime
-        /// QLab loads to that long before the end; openLab has no end time for every target yet.
-        case negativeLoadTime
         /// Only Network cues have a message.
         case noMessage
         /// The typed arguments cannot be read: an open quote, or an argument type the engine cannot send.
@@ -49,7 +47,6 @@ enum InspectorEdit {
             case .decimalComma: return "inspector.invalid.decimalComma"
             case .noEditableDuration: return "inspector.invalid.noDuration"
             case .noLoadTime: return "inspector.invalid.noLoadTime"
-            case .negativeLoadTime: return "inspector.invalid.negativeLoadTime"
             case .noMessage: return "inspector.invalid.noMessage"
             case .invalidMessage: return "inspector.invalid.networkMessage"
             case .invalidLevel: return "inspector.invalid.level"
@@ -77,7 +74,7 @@ enum InspectorEdit {
         case .name: return cue.displayName
         case .notes: return cue.raw["notes"]?.stringValue ?? ""
         case .preWait: return CueTime.format(cue.raw["pre_wait"]?.doubleValue ?? 0)
-        case .postWait: return CueTime.format(cue.raw["post_wait"]?.doubleValue ?? 0)
+        case .postWait: return CueTime.format(cue.postWait)
         case .duration:
             // An Audio cue's length is read-only: what its file gives, as the cue list shows it.
             if cue.kindType == "audio" { return media?.shownDuration.map(CueTime.format) ?? "" }
@@ -85,7 +82,9 @@ enum InspectorEdit {
             return CueTime.format(cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
         case .loadTime:
             guard cue.kindType == "load" else { return "" }
-            return CueTime.format(cue.raw["kind"]?["load_to_time"]?.doubleValue ?? 0)
+            let time = cue.raw["kind"]?["load_to_time"]?.doubleValue ?? 0
+            // Negative: that long before the target's end (QLab 5).
+            return time < 0 ? "-" + CueTime.format(-time) : CueTime.format(time)
         case .message:
             guard cue.kindType == "network" else { return "" }
             let kind = cue.raw["kind"]
@@ -130,18 +129,20 @@ enum InspectorEdit {
             case .failure(let r): return .failure(r)
             case .success(let v): seconds = v
             }
-            if seconds == (cue.raw[field == .preWait ? "pre_wait" : "post_wait"]?.doubleValue ?? 0) {
+            if seconds == (field == .preWait ? cue.raw["pre_wait"]?.doubleValue ?? 0 : cue.postWait) {
                 return .success(nil)
             }
             return .success(.setProperty(cue.id, field == .preWait ? .preWait(seconds) : .postWait(seconds)))
         case .duration: return durationCommand(text: text, cue: cue)
         case .loadTime:
             guard cue.kindType == "load" else { return .failure(.noLoadTime) }
+            // A leading minus counts back from the target's end (QLab 5, manual pp. 680-681).
             let t = text.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix("-"), case .success = time(String(t.dropFirst())) { return .failure(.negativeLoadTime) }
-            switch time(text) {
+            let back = t.hasPrefix("-")
+            switch time(back ? String(t.dropFirst()) : text) {
             case .failure(let r): return .failure(r)
-            case .success(let seconds):
+            case .success(let magnitude):
+                let seconds = back ? -magnitude : magnitude
                 if seconds == (cue.raw["kind"]?["load_to_time"]?.doubleValue ?? 0) { return .success(nil) }
                 return .success(.setProperty(cue.id, .loadToTime(seconds)))
             }

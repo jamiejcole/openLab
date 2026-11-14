@@ -127,11 +127,15 @@ final class DurationEditingTests: XCTestCase {
         let made = try InspectorEdit.command(.loadTime, text: "1:30", cue: load, model: model).get()
         XCTAssertEqual(wire(made), property(Self.load, "load_to_time", "90"))
         XCTAssertNil(try InspectorEdit.command(.loadTime, text: "1.5", cue: load, model: model).get())
-        XCTAssertEqual(
-            InspectorEdit.command(.loadTime, text: "-10", cue: load, model: model), .failure(.negativeLoadTime))
-        XCTAssertEqual(
-            InspectorEdit.command(.loadTime, text: " -0:10", cue: load, model: model), .failure(.negativeLoadTime))
-        XCTAssertEqual(InspectorEdit.command(.loadTime, text: "-x", cue: load, model: model), .failure(.invalidTime))
+        // A leading minus counts back from the target's end (QLab 5).
+        for text in ["-10", " -0:10"] {
+            let back = try InspectorEdit.command(.loadTime, text: text, cue: load, model: model).get()
+            XCTAssertEqual(wire(back), property(Self.load, "load_to_time", "-10"), text)
+        }
+        for text in ["-x", "--5", "-"] {
+            XCTAssertEqual(
+                InspectorEdit.command(.loadTime, text: text, cue: load, model: model), .failure(.invalidTime), text)
+        }
         XCTAssertEqual(InspectorEdit.command(.loadTime, text: "2,5", cue: load, model: model), .failure(.decimalComma))
         let wait = try XCTUnwrap(model.cue(Self.wait))
         XCTAssertEqual(InspectorEdit.command(.loadTime, text: "1", cue: wait, model: model), .failure(.noLoadTime))
@@ -144,7 +148,7 @@ final class DurationEditingTests: XCTestCase {
     func testEveryRejectionHasAMessage() {
         let all: [InspectorEdit.Rejection] = [
             .invalidTime, .decimalComma, .duplicateNumber, .unknownTarget, .selfTarget, .notApplicable,
-            .noEditableDuration, .noLoadTime, .negativeLoadTime,
+            .noEditableDuration, .noLoadTime,
         ]
         for r in all { XCTAssertNotEqual(loc(r.messageKey), r.messageKey, "\(r) has no string") }
     }
@@ -274,14 +278,38 @@ final class InspectorDurationTests: XCTestCase {
         XCTAssertEqual(vc.loadTimeField.stringValue, "00:01.50")
         edit(.loadTime, "1:30")
         await assertEventually { self.kind(DurationEditingTests.load)?["load_to_time"]?.doubleValue == 90 }
-        log.reset()
-        edit(.loadTime, "-10")
-        XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.negativeLoadTime"))
-        XCTAssertEqual(vc.loadTimeField.stringValue, "01:30.00")
-        await settle()
-        XCTAssertEqual(log.sent, 0, "the negative time was not sent")
         vc.setSelection([DurationEditingTests.wait])
         XCTAssertFalse(tabs().contains("loadTime"))
+    }
+
+    /// Flow: a Load cue with a negative load time loads its target that long before its end. The
+    /// operator types the time with a minus; the engine stores it and the field shows it so.
+    func testALoadCueWithANegativeLoadTimeLoadsItsTargetBeforeItsEnd() async {
+        vc.setSelection([DurationEditingTests.load])
+        edit(.loadTime, "-10")
+        await assertEventually("the engine's echo") {
+            self.kind(DurationEditingTests.load)?["load_to_time"]?.doubleValue == -10
+        }
+        XCTAssertEqual(vc.loadTimeField.stringValue, "-00:10.00")
+        XCTAssertEqual(vc.messageLabel.stringValue, "")
+        guard case .success = await rig.store.goFrom(list: TestSnapshots.mainList, cue: DurationEditingTests.load)
+        else { return XCTFail("go") }
+        await assertEventually("the target is loaded") { self.rig.store.cueStates[CueListHarness.intro]?.state == .loaded }
+    }
+
+    /// Flow: a Wait cue's post-wait follows its duration (QLab 5, manual p. 688). The post-wait
+    /// field shows the duration, and typing a post-wait sets the duration.
+    func testAWaitCuesPostWaitFollowsItsDuration() async {
+        vc.setSelection([DurationEditingTests.wait])
+        XCTAssertEqual(vc.postWaitField.stringValue, "00:02.00")
+        edit(.postWait, "5")
+        await assertEventually("the engine's echo") {
+            self.kind(DurationEditingTests.wait)?["duration"]?.doubleValue == 5
+        }
+        XCTAssertEqual(vc.durationField.stringValue, "00:05.00")
+        XCTAssertEqual(vc.postWaitField.stringValue, "00:05.00")
+        edit(.duration, "1.5")
+        await assertEventually("the post-wait follows") { self.vc.postWaitField.stringValue == "00:01.50" }
     }
 
     func testRefusedDurationRevertsAndWarns() async throws {

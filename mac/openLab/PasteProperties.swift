@@ -95,7 +95,7 @@ enum PasteProperty: String, CaseIterable {
         case .name: return set(.name(source.name))
         case .notes: return set(.notes(raw["notes"]?.stringValue ?? ""))
         case .preWait: return set(.preWait(raw["pre_wait"]?.doubleValue ?? 0))
-        case .postWait: return set(.postWait(raw["post_wait"]?.doubleValue ?? 0))
+        case .postWait: return set(.postWait(source.postWait))
         case .duration: return set(.duration(kind["duration"]?.doubleValue ?? 0))
         case .continueMode: return set(.continueMode(raw["continue_mode"]?.stringValue ?? "do_not_continue"))
         case .colour: return set(.color(raw["color"]?.stringValue ?? "none"))

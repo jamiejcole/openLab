@@ -364,7 +364,6 @@
 "inspector.invalid.notApplicable" = "This cue has no target.";
 "inspector.invalid.noDuration" = "This cue's duration cannot be edited: only Wait and Fade cues have one to set.";
 "inspector.invalid.noLoadTime" = "Only a Load cue has a load time.";
-"inspector.invalid.negativeLoadTime" = "Loading to a time before the end is not supported yet: enter a time from the start.";
 "inspector.invalid.noMessage" = "Only a Network cue has a message.";
 "inspector.invalid.networkMessage" = "The arguments cannot be read: put text with spaces in double quotes, and use \\T or \\F for true or false.";
 "inspector.invalid.level" = "Enter a level in dB, from -inf to +12.";
