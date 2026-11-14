@@ -2185,11 +2185,19 @@ final class PlayheadFlowTests: XCTestCase {
         try press("d", code: 2)
         XCTAssertTrue(wc.isVisible(.inspector))
         XCTAssertTrue(typingIn(wc.inspector.durationField), "a fade's duration is typed in the inspector")
+        let fadesBefore = [fade, second].map { cell($0, "duration") }
         try type("4")
         try pressReturn()
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "Return gives the list the keys")
         await assertEventually("both fades show 4 s") {
             [self.fade, second].allSatisfy { self.cell($0, "duration") == "00:04.00" }
         }
+        await wc.editor.undo()
+        await assertEventually("one undo gives each fade its own duration") {
+            [self.fade, second].map { self.cell($0, "duration") } == fadesBefore
+        }
+        XCTAssertEqual(beeps.count, 0)
+        XCTAssertEqual(goes(), 0, "Return fired no GO")
     }
 
     /// O with three cues of different notes: the inspector's notes on the Basics tab take the caret;
@@ -2203,7 +2211,12 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(wc.inspector.tabView.selectedTabViewItem?.identifier as? String, "basics")
         XCTAssertTrue(wc.window?.firstResponder === wc.inspector.notesView, "the notes take the caret")
         XCTAssertNil(wc.cueList.editingCell)
+        XCTAssertEqual(wc.inspector.notesView.string, "", "the notes differ: none is shown as the text")
+        XCTAssertEqual(wc.inspector.notesView.placeholder, loc("inspector.mixed"))
+        XCTAssertTrue(wc.inspector.notesView.showsPlaceholder, "Mixed is drawn")
         try type("cue")
+        XCTAssertFalse(wc.inspector.notesView.showsPlaceholder, "typing hides the hint")
+        XCTAssertEqual(wc.inspector.notesView.string, "cue", "the hint is never part of the text")
         try pressReturn()
         XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, "Return gives the list the keys")
         await assertEventually("all three hold the typed notes") { three.allSatisfy { self.notes($0) == "cue" } }
@@ -2212,6 +2225,9 @@ final class PlayheadFlowTests: XCTestCase {
             three.map { self.notes($0) ?? "" } == ["one", "two", ""]
         }
         XCTAssertEqual(goes(), 0)
+        wc.cueList.selectAsUser([three[2]])
+        await assertEventually("one cue shown") { self.wc.inspector.selection == [three[2]] }
+        XCTAssertNil(wc.inspector.notesView.placeholder, "one cue's empty notes show no hint")
     }
 
     /// Show Mode: none of the editing keys edits anything or opens a field, and none goes on to beep.
@@ -2233,6 +2249,21 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(wire.commands.count, sent, "nothing was sent")
         XCTAssertEqual(store.model?.cue(cues[1])?.raw, before)
         XCTAssertFalse(wc.isVisible(.inspector), "O does not bring the inspector into Show Mode")
+
+        // Three cues selected: the keys that act on several cues do nothing either.
+        let all = cues + [fade]
+        wc.cueList.selectAsUser(all)
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
+        let raws = all.map { store.model?.cue($0)?.raw }
+        let sentBefore = wire.commands.count
+        for (chars, code) in [("e", UInt16(14)), ("d", 2), ("w", 13), ("o", 31), ("c", 8), ("f", 3)] {
+            XCTAssertNil(app.handleKeyDown(try key(chars, code: code, windowNumber: window.windowNumber)), chars)
+            XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "\(chars): the list keeps the keys")
+            XCTAssertFalse(wc.isVisible(.inspector), "\(chars): the inspector stays hidden")
+        }
+        await sync()
+        XCTAssertEqual(wire.commands.count, sentBefore, "nothing was sent for the three cues")
+        XCTAssertEqual(all.map { store.model?.cue($0)?.raw }, raws)
         XCTAssertEqual(goes(), 0)
     }
 
