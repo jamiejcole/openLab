@@ -245,10 +245,12 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     var typing: Bool { (nameFields + layerFields).contains { $0.currentEditor() != nil } }
 
     /// Ends the typing in a name or layer field, which commits it (before what the operator
-    /// clicked next).
-    private func endTyping() {
-        guard typing else { return }
+    /// clicked next). True when typing ended: that edit's reason, if refused, must stand.
+    @discardableResult
+    private func endTyping() -> Bool {
+        guard typing else { return false }
         view.window?.makeFirstResponder(nil)
+        return true
     }
 
     /// Draws the page: always what the workspace and the engine hold now, while a name or layer
@@ -423,12 +425,14 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     /// Runs `edit` for `stage` after the edits before it, shows its refusal (or clears the last
     /// one, unless a newer edit has said something since), and redraws from the engine.
-    /// A refused edit of a typed `field` (`.layer` or `.name`) puts its value back.
+    /// A refused edit of a typed `field` (`.layer` or `.name`) puts its value back. `after` is
+    /// true for a click that ended typing: the typed edit's reason (shown now, or on its way from
+    /// the engine) is not cleared or outrun by the click's edit.
     private func commit(
-        _ stage: ModelID?, field: TypedField? = nil,
+        _ stage: ModelID?, field: TypedField? = nil, after typed: Bool = false,
         _ edit: @escaping @MainActor () async -> Result<OkBody, EngineError>
     ) {
-        tell("")
+        if !typed { tell("") }
         let mine = attempt
         let previous = commits
         commits = Task { [weak self] in
@@ -467,26 +471,26 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     var pending: Task<Void, Never>? { commits }
 
     @objc private func addClicked() {
-        endTyping()
+        let typed = endTyping()
         let count = store.model?.stages.count ?? 0
         let id = ModelID(UUID().uuidString.lowercased())
         let name = String(format: loc("settings.video.newName"), count + 1)
-        commit(nil) { [store] in
+        commit(nil, after: typed) { [store] in
             await store.send(command: .addStage(id: id, name: name, width: 1920, height: 1080, index: count))
         }
     }
 
     @objc private func removeClicked(_ sender: NSButton) {
-        endTyping()
+        let typed = endTyping()
         guard let row = row(sender.tag) else { return }
-        commit(row.id) { [store] in await store.send(command: .removeStage(row.id)) }
+        commit(row.id, after: typed) { [store] in await store.send(command: .removeStage(row.id)) }
     }
 
     @objc private func blackClicked(_ sender: NSButton) {
         let on = sender.state == .on
-        endTyping()
+        let typed = endTyping()
         guard let row = row(sender.tag) else { return }
-        commit(row.id) { [store] in
+        commit(row.id, after: typed) { [store] in
             await store.send(
                 command: .setStage(row.id, .object(["type": .string("keep_black"), "value": .bool(on)])))
         }
@@ -494,10 +498,10 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     @objc private func displayChosen(_ sender: NSPopUpButton) {
         let display = sender.selectedItem?.representedObject as? String
-        endTyping()
+        let typed = endTyping()
         guard let row = row(sender.tag) else { return }
         guard display != row.display else { return }
-        commit(row.id) { [store] in await store.setStageMapping(row.id, display: display) }
+        commit(row.id, after: typed) { [store] in await store.setStageMapping(row.id, display: display) }
     }
 
     func controlTextDidEndEditing(_ notification: Notification) {

@@ -217,12 +217,15 @@ final class VideoSettingsTests: XCTestCase {
         let pane = sc.videoPane
         await settled(sc) { pane.warningLabels.first?.stringValue == loc("settings.video.warn.noDisplay") }
         try startTyping("Cyclo", in: pane.nameFields[0], sc)
+        let caret = NSRange(location: 2, length: 2)
+        pane.nameFields[0].currentEditor()?.selectedRange = caret
         guard case .success = await rig.store.setStageMapping(ModelID(stageA), display: "V1") else {
             return XCTFail("mapping")
         }
         await caughtUp(rig, sc, "drawn while the name is typed") { pane.warningLabels.first?.stringValue == "" }
         let field = pane.nameFields[0]
         XCTAssertEqual(field.currentEditor()?.string, "Cyclo", "still typing, as typed")
+        XCTAssertEqual(field.currentEditor()?.selectedRange, caret, "the selection where it was")
         XCTAssertEqual(rig.store.model?.stages.first?.raw["name"]?.stringValue, "Cyc", "nothing committed")
         XCTAssertTrue(try XCTUnwrap(sc.window).makeFirstResponder(nil))
         await caughtUp(rig, sc, "the name is committed") { pane.shown?.first?.name == "Cyclo" }
@@ -271,6 +274,34 @@ final class VideoSettingsTests: XCTestCase {
         await caughtUp(rig, sc, "the other client's add is drawn") { pane.nameFields.count == 3 }
         XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Cyc 3", "Stage 2", "Elsewhere"])
         XCTAssertEqual(pane.messageLabel.stringValue, "")
+    }
+
+    /// A layer typed out of range and then left by clicking the keep-black box: the box's edit is
+    /// made, and the layer's reason stays shown (the box's edit does not clear it).
+    func testABadLayerLeftByClickingTheBoxKeepsItsReason() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.layerFields.count == 1 }
+        try startTyping("1500", in: pane.layerFields[0], sc)
+        pane.blackBoxes[0].performClick(nil)
+        await caughtUp(rig, sc, "the box's edit is made") { pane.shown?.first?.keepBlack == true }
+        XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.badLayer"))
+        XCTAssertEqual(pane.layerFields[0].stringValue, "1")
+    }
+
+    /// A name the engine refuses, left by clicking the keep-black box: the box's edit is made,
+    /// and the engine's reason for the name is shown when it comes (the click does not outrun it).
+    func testANameTheEngineRefusesLeftByClickingTheBoxShowsWhy() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.nameFields.count == 1 }
+        try startTyping(String(repeating: "n", count: 1025), in: pane.nameFields[0], sc)
+        pane.blackBoxes[0].performClick(nil)
+        await caughtUp(rig, sc, "the box's edit is made") { pane.shown?.first?.keepBlack == true }
+        XCTAssertFalse(pane.messageLabel.stringValue.isEmpty, "the engine's reason for the name")
+        XCTAssertNotEqual(pane.messageLabel.stringValue, loc("settings.video.badName"))
+        XCTAssertEqual(pane.nameFields[0].stringValue, "Mary")
+        XCTAssertEqual(rig.store.model?.stages.first?.raw["name"]?.stringValue, "Mary")
     }
 
     /// A remove of a stage already gone says so in words, never with the stage's internal id.
