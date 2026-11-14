@@ -182,6 +182,21 @@ fn auto_load_happens_when_a_go_moves_the_playhead_onto_the_cue_and_at_no_other_t
     assert_eq!(rig.state(2), CueState::Loaded);
 }
 
+#[test]
+fn a_go_on_a_skipped_cue_auto_loads_the_cue_the_playhead_moves_onto() {
+    let mut rig = Rig::new(vec![
+        memo(1),
+        skipped(memo(2)),
+        auto_loading(sound(3)),
+        sound(4),
+    ]);
+    rig.set_playhead(0, 2);
+    let out = rig.go(0);
+    assert_eq!(rig.playhead(), Some(id(3)));
+    assert!(started(&out).is_empty(), "the GO only moves the playhead");
+    assert_eq!(loads(&out), vec![id(3)]);
+}
+
 // ----- skip if disarmed -----
 
 #[test]
