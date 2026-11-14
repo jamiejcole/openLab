@@ -457,6 +457,8 @@ fn a_stage_host_slow_to_start_is_not_killed_as_hung() {
     let hand = HandClock::new();
     let mut host = host_config(&["-c", &script]);
     host.program = PathBuf::from("/bin/sh");
+    // A ping's answer time the 6 s below goes past, so only hello's own limit spares it.
+    host.answer_within = Duration::from_secs(5);
     host.max_restarts = 1;
     host.retry_after = Duration::from_secs(3600);
     hand.drive(&mut host);
