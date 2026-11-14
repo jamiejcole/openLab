@@ -180,7 +180,7 @@ impl DocCx<'_> {
             media: Some(media),
             stage: Some(stage),
             duration,
-        }) = self.doc.model.ws().find_cue(cue).map(|c| &c.kind)
+        }) = self.cue(cue).map(|c| &c.kind)
         else {
             return Err("the cue has no file or stage");
         };
@@ -228,10 +228,19 @@ impl DocCx<'_> {
         };
         // A run whose picture is up stays one even if its cue was edited into another kind.
         self.picture_of_cue(cue).is_some()
-            || matches!(
-                self.doc.model.ws().find_cue(cue).map(|c| &c.kind),
-                Some(CueKind::Video { .. })
-            )
+            || matches!(self.cue(cue).map(|c| &c.kind), Some(CueKind::Video { .. }))
+    }
+
+    /// `cue` in the workspace, found through the media catalog's cue index (not a walk of
+    /// every cue: this runs for every voice action).
+    fn cue(&self, cue: CueId) -> Option<&openlab_core::Cue> {
+        let ws = self.doc.model.ws();
+        let index = self.doc.media.index();
+        if index.contains(cue) {
+            index.locate(ws, cue)
+        } else {
+            None
+        }
     }
 
     fn picture_of_cue(&self, cue: CueId) -> Option<u64> {
