@@ -3635,6 +3635,7 @@ fn classified() -> Vec<(OscMessage, OscRight)> {
         // View: reads, and writing notes.
         (msg("/cue/1/name", vec![]), View),
         (msg("/cue/1/preWait", vec![]), View),
+        (msg("/cue/1/duration", vec![]), View),
         (msg("/cue/selected/name", vec![]), View),
         (msg("/cue/*/name", vec![]), View),
         (msg(&format!("{cue}/name"), vec![]), View),
@@ -3650,6 +3651,7 @@ fn classified() -> Vec<(OscMessage, OscRight)> {
         (msg("/cue/1/number", vec![s("9")]), Edit),
         (msg("/cue/1/preWait", vec![OscType::Float(2.0)]), Edit),
         (msg("/cue/1/postWait", vec![OscType::Float(2.0)]), Edit),
+        (msg("/cue/1/duration", vec![OscType::Float(2.0)]), Edit),
         (msg("/cue/1/armed", vec![OscType::Int(0)]), Edit),
         (msg("/cue/1/flagged", vec![OscType::Int(1)]), Edit),
         (msg("/cue/*/name", vec![s("All")]), Edit),
@@ -3678,6 +3680,8 @@ fn classified() -> Vec<(OscMessage, OscRight)> {
         (msg("/cue/1/reset", vec![]), Control),
         (msg("/cue/1/preview", vec![]), Control),
         (msg("/cue/*/start", vec![]), Control),
+        (msg("/cue/selected/start", vec![]), Control),
+        (msg("/cue/active/stop", vec![]), Control),
         (msg(&format!("{cue}/start"), vec![]), Control),
         // Nothing answers to this; it is classed with transport.
         (msg("/no/such/thing", vec![]), Control),
