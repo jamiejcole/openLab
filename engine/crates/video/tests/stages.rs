@@ -552,6 +552,239 @@ fn a_stage_host_logging_in_a_burst_is_rate_limited() {
     assert!((1..=40).contains(&seen), "{seen} burst lines logged");
 }
 
+fn command(s: &mut OfflineShow, command: openlab_core::Command) -> Outcome {
+    let id = s.request_id();
+    s.send(ClientMessage::Command {
+        id,
+        command: Box::new(command),
+        coalesce: None,
+    })
+    .into_iter()
+    .find_map(|m| match m {
+        ServerMessage::Result { id: got, outcome } if got == id => Some(outcome),
+        _ => None,
+    })
+    .unwrap_or_else(|| panic!("no answer to command {id:?}"))
+}
+
+fn undo(s: &mut OfflineShow) {
+    let id = s.request_id();
+    assert!(
+        s.send(ClientMessage::Undo { id }).iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "undo refused"
+    );
+}
+
+fn stage_names(s: &OfflineShow) -> Vec<String> {
+    s.control()
+        .workspace()
+        .stages
+        .iter()
+        .map(|st| st.name.clone())
+        .collect()
+}
+
+/// What display `display` shows: the test card frame on top, if any.
+fn display_frame(s: &mut OfflineShow, display: &str) -> Option<u16> {
+    let id = s.request_id();
+    let replies = s.send_until(
+        ClientMessage::Request {
+            id,
+            request: Request::DisplayProbe {
+                display: display.into(),
+                points: vec![[0.5, 0.5]],
+            },
+        },
+        |c| c.stages_settled(),
+    );
+    match replies.into_iter().find_map(|m| match m {
+        ServerMessage::Result { id: got, outcome } if got == id => Some(outcome),
+        _ => None,
+    }) {
+        Some(Outcome::Ok(body)) => match body.data {
+            Some(ResultData::StageProbe { frame, .. }) => frame,
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+}
+
+fn test_card(s: &mut OfflineShow, n: u128, frame: u16) {
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id,
+        request: Request::StageTestCard {
+            stage: stage_id(n),
+            frame,
+        },
+    });
+    assert!(matches!(
+        &replies[..],
+        [ServerMessage::Result {
+            outcome: Outcome::Ok(_),
+            ..
+        }]
+    ));
+}
+
+/// #642 flow 3: New stage adds a stage with a chosen display or none; rename in place; remove;
+/// each one undo step. The stage host follows each step.
+#[test]
+fn new_rename_and_remove_a_stage_are_one_undo_step_each() {
+    let mut s = stage_show(
+        with_stages(vec![], vec![stage(1)]),
+        virtual_host(),
+        Some("V1"),
+    );
+    // New stage, no display.
+    let new = openlab_core::Stage::new(stage_id(2), "Stage 2", 1280, 720);
+    assert!(matches!(
+        command(
+            &mut s,
+            openlab_core::Command::AddStage {
+                index: 1,
+                stage: new
+            }
+        ),
+        Outcome::Ok(_)
+    ));
+    s.settle_stages();
+    assert_eq!(stage_names(&s), ["Stage 1", "Stage 2"]);
+    assert_eq!(state(&mut s, 2), Some(StageState::NoDisplay));
+    // Its display chosen, then renamed in place.
+    assert!(matches!(
+        request(
+            &mut s,
+            Request::SetStageMapping {
+                stage: stage_id(2),
+                display: Some("V2".into())
+            }
+        ),
+        Outcome::Ok(_)
+    ));
+    assert!(matches!(
+        command(
+            &mut s,
+            openlab_core::Command::SetStageProperty {
+                id: stage_id(2),
+                property: openlab_core::StageProperty::Name {
+                    value: "Cyc".into()
+                }
+            }
+        ),
+        Outcome::Ok(_)
+    ));
+    s.settle_stages();
+    assert_eq!(stage_names(&s), ["Stage 1", "Cyc"]);
+    assert_eq!(
+        state(&mut s, 2),
+        Some(StageState::Hidden),
+        "keep-black off: hidden while nothing plays, on V2"
+    );
+    // Removed: gone from the stage host too.
+    assert!(matches!(
+        command(
+            &mut s,
+            openlab_core::Command::RemoveStage { id: stage_id(2) }
+        ),
+        Outcome::Ok(_)
+    ));
+    s.settle_stages();
+    assert_eq!(stage_names(&s), ["Stage 1"]);
+    assert_eq!(s.control().stage_state(stage_id(2)), None);
+    // Each step is one undo step, back to the start.
+    undo(&mut s);
+    s.settle_stages();
+    assert_eq!(stage_names(&s), ["Stage 1", "Cyc"]);
+    assert_eq!(
+        state(&mut s, 2),
+        Some(StageState::Hidden),
+        "back on its display"
+    );
+    undo(&mut s);
+    assert_eq!(stage_names(&s), ["Stage 1", "Stage 2"]);
+    undo(&mut s);
+    s.settle_stages();
+    assert_eq!(stage_names(&s), ["Stage 1"]);
+    // A size outside the limits is refused and changes nothing.
+    let mut bad = openlab_core::Stage::new(stage_id(3), "Big", 1, 1);
+    bad.width = 0;
+    match command(
+        &mut s,
+        openlab_core::Command::AddStage {
+            index: 0,
+            stage: bad,
+        },
+    ) {
+        Outcome::Error(e) => assert_eq!(e.code, ErrorCode::CommandRefused),
+        o => panic!("{o:?}"),
+    }
+    assert_eq!(stage_names(&s), ["Stage 1"]);
+    assert_eq!(s.stalls(), 0);
+}
+
+/// #642 flow 8: two stages on the same display: the one on the higher layer is drawn on top;
+/// on one layer, the one whose name sorts first (QLab 5 manual p. 227).
+#[test]
+fn two_stages_on_one_display_stack_by_layer() {
+    let mut low = stage(1);
+    low.name = "Mary".into();
+    let mut high = stage(2);
+    high.name = "Angelica".into();
+    high.layer = 100;
+    let ws = with_stages(vec![], vec![low, high]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(virtual_host());
+    for n in [1, 2] {
+        c.machine
+            .set_stage_mapping(ws.id, stage_id(n), Some(mapping("V1")))
+            .unwrap();
+    }
+    let mut s = show_with(ws, c);
+    s.settle_stages();
+    test_card(&mut s, 1, 111);
+    test_card(&mut s, 2, 222);
+    s.settle_stages();
+    assert_eq!(display_frame(&mut s, "V1"), Some(222), "layer 100 on top");
+    // Mary's layer raised above Angelica's: Mary on top.
+    assert!(matches!(
+        command(
+            &mut s,
+            openlab_core::Command::SetStageProperty {
+                id: stage_id(1),
+                property: openlab_core::StageProperty::Layer { value: 200 }
+            }
+        ),
+        Outcome::Ok(_)
+    ));
+    s.settle_stages();
+    assert_eq!(display_frame(&mut s, "V1"), Some(111), "layer 200 on top");
+    // The same layer: Angelica sorts before Mary and is on top.
+    assert!(matches!(
+        command(
+            &mut s,
+            openlab_core::Command::SetStageProperty {
+                id: stage_id(2),
+                property: openlab_core::StageProperty::Layer { value: 200 }
+            }
+        ),
+        Outcome::Ok(_)
+    ));
+    s.settle_stages();
+    assert_eq!(
+        display_frame(&mut s, "V1"),
+        Some(222),
+        "same layer: name order"
+    );
+    assert_eq!(s.stalls(), 0);
+}
+
 /// The shipped (windowed) stage host ends when the engine's pipe closes: it answers `hello`,
 /// then exits as soon as its input ends. It is given no stage, so it opens no window.
 #[test]
@@ -794,6 +1027,141 @@ fn a_crash_after_a_long_healthy_run_is_relaunched_at_once() {
     assert!(killed.success());
     assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != first)));
 }
+
+/// The latest `video_outputs` push among `messages`: its displays and its stages' states.
+fn last_push(messages: &[ServerMessage]) -> Option<(Vec<String>, Vec<Option<StageState>>)> {
+    messages.iter().rev().find_map(|m| match m {
+        ServerMessage::VideoOutputs {
+            displays, stages, ..
+        } => Some((
+            displays.iter().map(|d| d.id.clone()).collect(),
+            stages.iter().map(|e| e.state.clone()).collect(),
+        )),
+        _ => None,
+    })
+}
+
+/// A connection that binds after the last push still learns where the stages are: every
+/// snapshot of the doc (the one taken on bind too) is followed by its `video_outputs`, even with
+/// nothing changed and within the least gap between pushes. It goes out as a broadcast, never as
+/// a reply: a connection writes broadcasts ahead of replies, so a reply could land after a newer
+/// push and leave the client with the older state.
+#[test]
+fn a_snapshot_is_followed_by_the_video_outputs() {
+    let ws = with_stages(vec![], vec![stage(1)]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(virtual_host());
+    let clock = openlab_engine::control::ManualClock::new(10_000);
+    c.clock = clock.clock();
+    let mut s = show_with(ws, c);
+    s.settle_stages();
+    clock.advance(200);
+    s.tick();
+    assert!(last_push(&s.take_outbound()).is_some(), "the first push");
+    // Nothing changes and the clock stands still: only the snapshot asks for a push.
+    let id = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id,
+        request: Request::Snapshot,
+    });
+    assert!(
+        !replies
+            .iter()
+            .any(|m| matches!(m, ServerMessage::VideoOutputs { .. })),
+        "not a reply: {replies:?}"
+    );
+    s.tick();
+    let (displays, states) = last_push(&s.take_outbound()).expect("pushed after the snapshot");
+    assert_eq!(displays, ["V1", "V2"]);
+    assert_eq!(states, [Some(StageState::NoDisplay)]);
+}
+
+/// #642: the app need not poll: a display unplugged and back, and a stage's display chosen,
+/// each reach the workspace's connections as a `video_outputs` push.
+#[test]
+fn display_and_stage_changes_are_pushed_to_the_workspace() {
+    let ws = with_stages(vec![], vec![stage(1)]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(virtual_host());
+    let clock = openlab_engine::control::ManualClock::new(10_000);
+    c.clock = clock.clock();
+    let mut s = show_with(ws, c);
+    s.settle_stages();
+    clock.advance(200);
+    s.tick();
+    let first = last_push(&s.take_outbound()).expect("a push once the stage host reported");
+    assert_eq!(first.0, ["V1", "V2"]);
+    assert_eq!(first.1, [Some(StageState::NoDisplay)]);
+    // Its display chosen: pushed (after the least gap between pushes).
+    assert!(matches!(
+        request(
+            &mut s,
+            Request::SetStageMapping {
+                stage: stage_id(1),
+                display: Some("V1".into())
+            }
+        ),
+        Outcome::Ok(_)
+    ));
+    s.settle_stages();
+    clock.advance(200);
+    s.tick();
+    let shown = last_push(&s.take_outbound()).expect("pushed after the choice");
+    assert_eq!(
+        shown.1,
+        [Some(StageState::Shown {
+            display: "V1".into()
+        })]
+    );
+    // V1 unplugged: pushed with the stage missing its display.
+    s.control_mut()
+        .set_virtual_displays(vec![virtual_display("V2", 1280, 720)]);
+    let missing = StageState::DisplayMissing {
+        display: "V1".into(),
+    };
+    assert!(s.wait_for(|c| c.stage_state(stage_id(1)) == Some(&missing)));
+    clock.advance(200);
+    s.tick();
+    let gone = last_push(&s.take_outbound()).expect("pushed after the unplug");
+    assert_eq!(gone.0, ["V2"]);
+    assert_eq!(gone.1, [Some(missing)]);
+    // Nothing new: nothing pushed.
+    clock.advance(200);
+    s.tick();
+    assert_eq!(last_push(&s.take_outbound()), None);
+}
+
+/// A stage host reporting in a burst reaches clients as at most one push per least gap.
+#[test]
+fn a_reporting_burst_is_pushed_at_most_once_per_gap() {
+    let known = stage_id(1).to_string();
+    let script = format!(
+        r#"printf '{{"type":"hello","version":1,"pid":1,"video":true}}\n'
+i=0
+while [ $i -lt 1000 ]; do
+  if [ $((i % 2)) -eq 0 ]; then s=no_display; else s=hidden; fi
+  printf '{{"type":"stage_status","stage":"{known}","state":{{"state":"%s"}}}}\n' $s
+  i=$((i+1))
+done
+printf '{{"type":"displays","displays":[{{"id":"END","name":"End","width":8,"height":8}}]}}\n'
+cat > /dev/null"#
+    );
+    let mut host = host_config(&["-c", &script]);
+    host.program = PathBuf::from("/bin/sh");
+    let ws = with_stages(vec![], vec![stage(1)]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(host);
+    c.clock = openlab_engine::control::ManualClock::new(1_000).clock();
+    let mut s = show_with(ws, c);
+    assert!(s.wait_for(|c| c.displays().iter().any(|d| d.id == "END")));
+    let pushes = s
+        .take_outbound()
+        .iter()
+        .filter(|m| matches!(m, ServerMessage::VideoOutputs { .. }))
+        .count();
+    assert!(pushes <= 1, "{pushes} pushes in one gap");
+}
+
 /// A stage host that never answers `hello` is killed and does not hold the engine.
 #[test]
 fn a_silent_stage_host_is_killed_after_the_answer_time() {

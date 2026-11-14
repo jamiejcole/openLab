@@ -34,6 +34,7 @@ pub const SERVER_TYPES: &[&str] = &[
     "warnings",
     "workspaces",
     "closed",
+    "video_outputs",
     "result",
     "error",
 ];
@@ -116,6 +117,16 @@ pub enum ServerMessage {
     /// connection next; a client must not reconnect to it.
     Closed {
         doc: DocId,
+    },
+    /// To the connections bound to a workspace: the displays and where each of its stages is,
+    /// whenever that changes (a display plugged or unplugged, a stage's display chosen, a stage
+    /// shown, hidden or failing, the stage host started or stopped). Replaces the previous one;
+    /// at most about ten a second. The same data as `list_displays` and `list_stage_mappings`.
+    VideoOutputs {
+        displays: Vec<crate::stage_link::Display>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        video: Option<bool>,
+        stages: Vec<StageMappingEntry>,
     },
     /// Answer to a `command`, `transport`, `undo`, `redo`, `request`, `close`, `panic` or
     /// `hotkey`.
@@ -709,6 +720,11 @@ pub enum Upsert {
         index: u64,
         patch: NetworkPatch,
     },
+    /// A video stage (VID-01).
+    Stage {
+        index: u64,
+        stage: crate::video::Stage,
+    },
     /// The workspace's name and settings.
     Settings {
         name: String,
@@ -724,6 +740,7 @@ pub enum Delete {
     CueList { id: CueListId },
     Patch { id: PatchId },
     NetworkPatch { id: NetworkPatchId },
+    Stage { id: crate::StageId },
 }
 
 /// Everything about the open workspace and the running show.
@@ -886,6 +903,7 @@ impl ServerMessage {
             Self::Warnings { .. } => "warnings",
             Self::Workspaces { .. } => "workspaces",
             Self::Closed { .. } => "closed",
+            Self::VideoOutputs { .. } => "video_outputs",
             Self::Result { .. } => "result",
             Self::Error { .. } => "error",
         }

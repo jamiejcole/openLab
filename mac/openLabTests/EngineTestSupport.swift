@@ -215,8 +215,10 @@ final class TestEngine {
         return engine
     }
 
-    /// A new engine of its own (a test that ends or kills it must not share it).
-    static func start() async throws -> TestEngine {
+    /// A new engine of its own (a test that ends or kills it must not share it). `displays`
+    /// (`ID:WxH,...`) gives it a stage host on virtual displays, drawn offscreen; `settings` is
+    /// this machine's `settings.json` as it finds it at start.
+    static func start(displays: String? = nil, settings: Data? = nil) async throws -> TestEngine {
         // `make test-mac-unit` (every app PR) runs the engine-free tests only (scripts/paths.sh).
         if ProcessInfo.processInfo.environment["OPENLAB_ENGINE_TESTS"] == "skip" {
             throw XCTSkip("real-engine tests are off in this run (make test-mac-unit)")
@@ -225,11 +227,17 @@ final class TestEngine {
             "openlab-unit-\(UUID().uuidString)", isDirectory: true)
         let support = folder.appendingPathComponent("support", isDirectory: true)
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        if let settings {
+            let dir = support.appendingPathComponent("openLab", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try settings.write(to: dir.appendingPathComponent("settings.json"))
+        }
         let executable = try XCTUnwrap(
             Bundle.main.url(forAuxiliaryExecutable: SystemEngineProcesses.engineName), "the app bundles the engine")
         let process = Process()
         process.executableURL = executable
-        process.arguments = TestEngineOptions(clock: .stepped, appSupport: support).engineArguments
+        process.arguments =
+            TestEngineOptions(clock: .stepped, appSupport: support, displays: displays).engineArguments
         let stdin = Pipe()
         process.standardInput = stdin
         process.standardOutput = FileHandle.nullDevice

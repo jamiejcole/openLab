@@ -25,6 +25,7 @@ final class ProtocolFixtureTests: XCTestCase {
         case .appWelcome: return "welcome"
         case .workspaces: return "workspaces"
         case .closed: return "closed"
+        case .videoOutputs: return "video_outputs"
         case .unknown(_): return "?"
         }
     }

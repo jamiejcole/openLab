@@ -44,6 +44,7 @@ impl Control {
         self.publish_workspaces();
         self.sync_stages();
         self.eng.flush_report_lines();
+        self.push_video_outputs();
         let awake = self
             .docs
             .iter()

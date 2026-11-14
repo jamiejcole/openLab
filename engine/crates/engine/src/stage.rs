@@ -121,10 +121,18 @@ pub enum StageEvent {
     /// Test support: a probe's answer.
     #[cfg(feature = "test-support")]
     Probed {
-        stage: StageId,
+        target: Probed,
         frame: Option<u16>,
         colours: Vec<[u8; 4]>,
     },
+}
+
+/// Test support: what a probe read.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Probed {
+    Stage(StageId),
+    Display(String),
 }
 
 pub type EventSink = Arc<dyn Fn(StageEvent) + Send + Sync>;
@@ -433,7 +441,17 @@ impl Supervisor {
                 frame,
                 colours,
             } => StageEvent::Probed {
-                stage,
+                target: Probed::Stage(stage),
+                frame,
+                colours,
+            },
+            #[cfg(feature = "test-support")]
+            FromStage::DisplayProbed {
+                display,
+                frame,
+                colours,
+            } => StageEvent::Probed {
+                target: Probed::Display(display),
                 frame,
                 colours,
             },

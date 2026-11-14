@@ -88,6 +88,9 @@ struct WarningRow: Hashable {
 }
 
 enum WarningRows {
+    /// The most of a stage's name a warning row shows before its reason.
+    static let stageNameLength = 24
+
     /// Broken cues in list order first, then workspace warnings, then runtime warnings (oldest
     /// first). Groups that are only flagged for a broken child are not listed: the child is.
     @MainActor
@@ -127,7 +130,31 @@ enum WarningRows {
         for text in store.appNotices {
             rows.append(WarningRow(id: "k:\(text)", cue: nil, title: text, detail: "", canRelink: false))
         }
+        // A stage that cannot be seen on this computer (VID-01): no display chosen, its display
+        // unplugged, or failing.
+        for entry in store.videoOutputs.stages {
+            guard let state = entry.state, let why = Self.stageReason(state) else { continue }
+            // A stage gone from the workspace since the engine's last word has no row. The title is
+            // the stage's name (a long one shortened); the detail a reason short enough for one line.
+            guard let full = model?.stages.first(where: { $0.id == entry.stage })?.raw["name"]?.stringValue
+            else { continue }
+            let name = full.count > Self.stageNameLength ? full.prefix(Self.stageNameLength - 1) + "…" : full
+            rows.append(
+                WarningRow(
+                    id: "v:\(entry.stage.raw)", cue: nil, title: String(format: loc("warnings.stage"), String(name)),
+                    detail: why, canRelink: false))
+        }
         return rows
+    }
+
+    /// Why a stage cannot be seen, in a few words for the Warnings list; nil for one that is fine.
+    static func stageReason(_ state: StageState) -> String? {
+        switch state.state {
+        case "no_display": return loc("warnings.stage.noDisplay")
+        case "display_missing": return loc("warnings.stage.missing")
+        case "failed": return loc("warnings.stage.failed")
+        default: return nil
+        }
     }
 
     /// Names an id in problem and warning text: a cue's number and name, a patch or list name.

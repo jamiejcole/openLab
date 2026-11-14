@@ -1,0 +1,21 @@
+{
+  "type": "video_outputs",
+  "displays": [
+    {
+      "id": "37D8832A-2D66-02CA-B9F7-8F30A301B230",
+      "name": "Projector",
+      "width": 1920,
+      "height": 1080
+    }
+  ],
+  "video": true,
+  "stages": [
+    {
+      "stage": "00000000-0000-0000-0000-000000000080",
+      "state": {
+        "state": "display_missing",
+        "display": "37D8832A-2D66-02CA-B9F7-8F30A301B230"
+      }
+    }
+  ]
+}

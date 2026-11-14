@@ -10,18 +10,16 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
 #[cfg(feature = "test-support")]
-use objc2_metal::{
-    MTLBlitCommandEncoder, MTLBuffer, MTLOrigin, MTLResourceOptions, MTLSize, MTLStorageMode,
-    MTLTextureDescriptor, MTLTextureUsage,
-};
+use objc2_metal::{MTLBlitCommandEncoder, MTLBuffer, MTLResourceOptions, MTLStorageMode};
 use objc2_metal::{
     MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
-    MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary, MTLLoadAction, MTLPixelFormat,
-    MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLStoreAction, MTLTexture,
+    MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat,
+    MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
+    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLSize, MTLStoreAction, MTLTexture,
+    MTLTextureDescriptor, MTLTextureUsage,
 };
 
-use crate::host::Picture;
+use crate::host::{Layer, Picture};
 
 /// One quad covering `rect` (x0, y0, x1, y1 in normalised device coordinates), sampling its
 /// texture with nearest-neighbour filtering.
@@ -47,13 +45,19 @@ fragment float4 quad_fragment(V in [[stage_in]], texture2d<float> tex [[texture(
 #[cfg(feature = "test-support")]
 const MAX_PROBE_SIDE: u32 = 1024;
 
+/// Test cards kept, by frame number.
+#[cfg(feature = "test-support")]
+const MAX_CARDS: usize = 8;
+
 pub struct Gpu {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
-    /// The test card last drawn, by frame number.
+    /// One black pixel: a stage keeping black is a black quad over what is below it.
+    black: Retained<ProtocolObject<dyn MTLTexture>>,
+    /// Test cards drawn lately, by frame number.
     #[cfg(feature = "test-support")]
-    card: Option<(u16, Retained<ProtocolObject<dyn MTLTexture>>)>,
+    cards: Vec<(u16, Retained<ProtocolObject<dyn MTLTexture>>)>,
 }
 
 impl Gpu {
@@ -82,12 +86,14 @@ impl Gpu {
         let pipeline = device
             .newRenderPipelineStateWithDescriptor_error(&desc)
             .map_err(|e| format!("could not build the stage pipeline: {e}"))?;
+        let black = texture(&device, 1, 1, &mut [0, 0, 0, 255])?;
         Ok(Self {
             device,
             queue,
             pipeline,
+            black,
             #[cfg(feature = "test-support")]
-            card: None,
+            cards: Vec::new(),
         })
     }
 
@@ -95,14 +101,24 @@ impl Gpu {
         &self.device
     }
 
-    /// Encodes the stage drawing `picture` into `target`, the stage filling `rect` of it.
+    /// Encodes a clear to black and then `layers` (bottom first) into `target`, each stage
+    /// fitted to the target, shape kept.
     pub fn draw(
         &mut self,
         target: &ProtocolObject<dyn MTLTexture>,
-        rect: [f32; 4],
-        picture: Picture,
+        layers: &[Layer],
     ) -> Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>, String> {
-        let texture = self.texture_for(picture)?;
+        let size = (
+            u32::try_from(target.width()).unwrap_or(u32::MAX),
+            u32::try_from(target.height()).unwrap_or(u32::MAX),
+        );
+        let mut quads = Vec::with_capacity(layers.len());
+        for layer in layers {
+            quads.push((
+                fit((layer.width, layer.height), size),
+                self.texture_for(layer.picture)?,
+            ));
+        }
         let cb = self
             .queue
             .commandBuffer()
@@ -122,16 +138,15 @@ impl Gpu {
         let enc = cb
             .renderCommandEncoderWithDescriptor(&pass)
             .ok_or("could not create a Metal render encoder")?;
-        if let Some(texture) = texture {
-            enc.setRenderPipelineState(&self.pipeline);
-            let quad = rect;
-            let bytes = NonNull::from(&quad).cast::<c_void>();
-            // SAFETY: `quad` is 16 bytes of plain floats matching the shader's `Quad`, alive
+        enc.setRenderPipelineState(&self.pipeline);
+        for (rect, texture) in &quads {
+            let bytes = NonNull::from(rect).cast::<c_void>();
+            // SAFETY: `rect` is 16 bytes of plain floats matching the shader's `Quad`, alive
             // for the call (Metal copies inline bytes); texture index 0 is the shader's `tex`;
             // a strip of 4 vertices is the shader's quad.
             unsafe {
                 enc.setVertexBytes_length_atIndex(bytes, size_of::<[f32; 4]>(), 0);
-                enc.setFragmentTexture_atIndex(Some(&texture), 0);
+                enc.setFragmentTexture_atIndex(Some(texture), 0);
                 enc.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::TriangleStrip, 0, 4);
             }
         }
@@ -139,81 +154,49 @@ impl Gpu {
         Ok(cb)
     }
 
-    /// The texture `picture` is drawn from; `None` for black (nothing to draw over the clear).
+    /// The texture `picture` is drawn from.
     fn texture_for(
         &mut self,
         picture: Picture,
-    ) -> Result<Option<Retained<ProtocolObject<dyn MTLTexture>>>, String> {
+    ) -> Result<Retained<ProtocolObject<dyn MTLTexture>>, String> {
         match picture {
-            Picture::Black => Ok(None),
+            Picture::Black => Ok(self.black.clone()),
             #[cfg(feature = "test-support")]
             Picture::TestCard(frame) => {
-                if let Some((f, t)) = &self.card
-                    && *f == frame
-                {
-                    return Ok(Some(t.clone()));
+                if let Some((_, t)) = self.cards.iter().find(|(f, _)| *f == frame) {
+                    return Ok(t.clone());
                 }
-                let t = self.card_texture(frame)?;
-                self.card = Some((frame, t.clone()));
-                Ok(Some(t))
+                let mut px = crate::card::pixels(frame);
+                // The card is RGBA; the texture is BGRA (the drawable's format).
+                for p in px.as_chunks_mut::<4>().0 {
+                    p.swap(0, 2);
+                }
+                let t = texture(
+                    &self.device,
+                    crate::card::WIDTH,
+                    crate::card::HEIGHT,
+                    &mut px,
+                )?;
+                if self.cards.len() >= MAX_CARDS {
+                    self.cards.remove(0);
+                }
+                self.cards.push((frame, t.clone()));
+                Ok(t)
             }
         }
     }
 
-    #[cfg(feature = "test-support")]
-    fn card_texture(&self, frame: u16) -> Result<Retained<ProtocolObject<dyn MTLTexture>>, String> {
-        use crate::card;
-        // The card is RGBA; the texture is BGRA (the drawable's format): swap red and blue.
-        let mut px = card::pixels(frame);
-        for p in px.as_chunks_mut::<4>().0 {
-            p.swap(0, 2);
-        }
-        // SAFETY: a plain 2D descriptor of the card's size.
-        let desc = unsafe {
-            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                MTLPixelFormat::BGRA8Unorm,
-                card::WIDTH,
-                card::HEIGHT,
-                false,
-            )
-        };
-        desc.setUsage(MTLTextureUsage::ShaderRead);
-        let texture = self
-            .device
-            .newTextureWithDescriptor(&desc)
-            .ok_or("could not create the test card texture")?;
-        let region = objc2_metal::MTLRegion {
-            origin: MTLOrigin { x: 0, y: 0, z: 0 },
-            size: MTLSize {
-                width: card::WIDTH,
-                height: card::HEIGHT,
-                depth: 1,
-            },
-        };
-        let bytes = NonNull::new(px.as_mut_ptr().cast::<c_void>()).ok_or("no card pixels")?;
-        // SAFETY: `px` holds exactly WIDTH x HEIGHT BGRA pixels, rows of WIDTH*4 bytes, the
-        // texture's size and format; Metal copies them before returning.
-        unsafe {
-            texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
-                region,
-                0,
-                bytes,
-                card::WIDTH * 4,
-            );
-        }
-        Ok(texture)
-    }
-
-    /// Draws `stage_size` with `picture` offscreen and reads the colour (RGBA) at `points`
-    /// (fractions of the stage from the top left). Waits for the GPU: tests only.
+    /// Draws `layers` offscreen on a target of `size` (scaled down to at most
+    /// [`MAX_PROBE_SIDE`] a side) and reads the colour (RGBA) at `points` (fractions of the
+    /// target from the top left). Waits for the GPU: tests only.
     #[cfg(feature = "test-support")]
     pub fn probe(
         &mut self,
-        stage_size: (u32, u32),
-        picture: Picture,
+        size: (u32, u32),
+        layers: &[Layer],
         points: &[[f32; 2]],
     ) -> Result<Vec<[u8; 4]>, String> {
-        let (w, h) = probe_size(stage_size);
+        let (w, h) = probe_size(size);
         // SAFETY: a plain 2D descriptor within Metal's size limits (probe_size caps it).
         let desc = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
@@ -234,7 +217,7 @@ impl Gpu {
             .device
             .newBufferWithLength_options(bytes, MTLResourceOptions::StorageModeShared)
             .ok_or("could not create the probe buffer")?;
-        let cb = self.draw(&target, [-1.0, -1.0, 1.0, 1.0], picture)?;
+        let cb = self.draw(&target, layers)?;
         let blit = cb
             .blitCommandEncoder()
             .ok_or("could not create a Metal blit encoder")?;
@@ -290,6 +273,45 @@ fn probe_size((w, h): (u32, u32)) -> (usize, usize) {
     )
 }
 
+/// A shader-readable BGRA texture of `width` x `height` holding `px` (rows of `width * 4`
+/// bytes).
+fn texture(
+    device: &ProtocolObject<dyn MTLDevice>,
+    width: usize,
+    height: usize,
+    px: &mut [u8],
+) -> Result<Retained<ProtocolObject<dyn MTLTexture>>, String> {
+    if px.len() != width * height * 4 {
+        return Err("texture pixels of the wrong size".into());
+    }
+    // SAFETY: a plain 2D descriptor of a small size.
+    let desc = unsafe {
+        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            MTLPixelFormat::BGRA8Unorm,
+            width,
+            height,
+            false,
+        )
+    };
+    desc.setUsage(MTLTextureUsage::ShaderRead);
+    let texture = device
+        .newTextureWithDescriptor(&desc)
+        .ok_or("could not create a texture")?;
+    let region = MTLRegion {
+        origin: MTLOrigin { x: 0, y: 0, z: 0 },
+        size: MTLSize {
+            width,
+            height,
+            depth: 1,
+        },
+    };
+    let bytes = NonNull::new(px.as_mut_ptr().cast::<c_void>()).ok_or("no pixels")?;
+    // SAFETY: `px` holds exactly width x height BGRA pixels in rows of width*4 bytes (checked
+    // above), the texture's size and format; Metal copies them before returning.
+    unsafe { texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, bytes, width * 4) };
+    Ok(texture)
+}
+
 /// Where a stage of `stage` pixels sits in a display of `display` pixels: as large as fits,
 /// its shape kept, centred (black bars elsewhere), in normalised device coordinates.
 pub fn fit((sw, sh): (u32, u32), (dw, dh): (u32, u32)) -> [f32; 4] {
@@ -314,6 +336,30 @@ mod tests {
         assert_eq!(fit((0, 0), (0, 0)), [-1.0, -1.0, 1.0, 1.0]);
     }
 
+    /// Stacked on one target the top stage covers the one below it where it lies; a black
+    /// stage on top covers everything below with black.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn the_gpu_stacks_stages_bottom_first() {
+        use crate::card;
+        let mut gpu = Gpu::new().unwrap();
+        let layer = |n: u128, picture| Layer {
+            stage: openlab_core::StageId(uuid::Uuid::from_u128(n)),
+            width: 1920,
+            height: 1080,
+            picture,
+        };
+        let points = card::barcode_points();
+        let read = |gpu: &mut Gpu, layers: &[Layer]| {
+            card::read_frame(&gpu.probe((1920, 1080), layers, &points).unwrap())
+        };
+        let a = layer(1, Picture::TestCard(1));
+        let b = layer(2, Picture::TestCard(2));
+        assert_eq!(read(&mut gpu, &[a, b]), Some(2));
+        assert_eq!(read(&mut gpu, &[b, a]), Some(1));
+        assert_eq!(read(&mut gpu, &[a, layer(3, Picture::Black)]), None);
+    }
+
     #[cfg(feature = "test-support")]
     #[test]
     fn probes_draw_at_most_the_largest_side_in_the_stage_shape() {
@@ -330,12 +376,20 @@ mod tests {
         use crate::card;
         let mut gpu = Gpu::new().unwrap();
         let quads = card::quadrant_points();
-        let black = gpu.probe((1920, 1080), Picture::Black, &quads).unwrap();
+        let layer = |picture| Layer {
+            stage: openlab_core::StageId(uuid::Uuid::nil()),
+            width: 1280,
+            height: 720,
+            picture,
+        };
+        let black = gpu
+            .probe((1920, 1080), &[layer(Picture::Black)], &quads)
+            .unwrap();
         assert_eq!(black, vec![[0, 0, 0, 255]; 4]);
         let mut points = card::barcode_points().to_vec();
         points.extend_from_slice(&quads);
         let read = gpu
-            .probe((1280, 720), Picture::TestCard(4242), &points)
+            .probe((1280, 720), &[layer(Picture::TestCard(4242))], &points)
             .unwrap();
         assert_eq!(card::read_frame(&read[..card::CELLS]), Some(4242));
         assert_eq!(

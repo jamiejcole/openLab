@@ -1481,6 +1481,205 @@ fn bad_network_patch_edits_are_refused_or_ignored() {
     assert!(!history.execute(&mut work, same).unwrap());
 }
 
+// ---- Stages ----
+
+fn stage_n(n: u128) -> Stage {
+    Stage::new(
+        StageId(uuid::Uuid::from_u128(0x5000 + n)),
+        format!("Stage {n}"),
+        1920,
+        1080,
+    )
+}
+
+fn stage_prop(n: u128, property: StageProperty) -> Command {
+    Command::SetStageProperty {
+        id: stage_n(n).id,
+        property,
+    }
+}
+
+/// VID-01: stages are added, removed, moved and edited (name, size, keep-black, layer), each
+/// one exact undo step; the edit names the stage in its model change.
+#[test]
+fn stages_can_be_added_removed_moved_and_edited() {
+    let mut ws = workspace(vec![]);
+    ws.stages.push(stage_n(1));
+    let added = round_trip(
+        &ws,
+        Command::AddStage {
+            index: 1,
+            stage: stage_n(2),
+        },
+    );
+    assert_eq!(added.stages[1], stage_n(2));
+    let removed = round_trip(&ws, Command::RemoveStage { id: stage_n(1).id });
+    assert!(removed.stages.is_empty());
+    let mut two = ws.clone();
+    two.stages.push(stage_n(2));
+    let moved = round_trip(
+        &two,
+        Command::MoveStage {
+            id: stage_n(1).id,
+            index: 1,
+        },
+    );
+    assert_eq!(moved.stages[1].id, stage_n(1).id);
+    for property in [
+        StageProperty::Name {
+            value: "Cyc".into(),
+        },
+        StageProperty::Size {
+            width: 3840,
+            height: 2160,
+        },
+        StageProperty::KeepBlack { value: true },
+        StageProperty::Layer { value: 1000 },
+    ] {
+        round_trip(&ws, stage_prop(1, property));
+    }
+    // What a client is told: the stage upserted at its place, or deleted.
+    let fp = Command::AddStage {
+        index: 1,
+        stage: stage_n(2),
+    }
+    .footprint();
+    assert!(fp.is_model_wide());
+    let (upserts, deletes) = model_changes(&added, &fp);
+    assert_eq!(
+        upserts,
+        vec![Upsert::Stage {
+            index: 1,
+            stage: stage_n(2)
+        }]
+    );
+    assert!(deletes.is_empty());
+    let fp = Command::RemoveStage { id: stage_n(1).id }.footprint();
+    assert_eq!(
+        model_changes(&removed, &fp).1,
+        vec![Delete::Stage { id: stage_n(1).id }]
+    );
+    // A client applying the changes ends with the same stages.
+    let mut client = ws.clone();
+    let (u, d) = model_changes(
+        &added,
+        &Command::AddStage {
+            index: 1,
+            stage: stage_n(2),
+        }
+        .footprint(),
+    );
+    client.apply_changes(&u, &d).unwrap();
+    assert_eq!(client.stages, added.stages);
+}
+
+/// Limits hold on every path that makes or changes a stage: an add, an edit, and load (the
+/// load path is `validation.rs`). A refusal changes nothing.
+#[test]
+fn bad_stage_edits_are_refused_and_the_same_value_is_no_edit() {
+    let mut ws = workspace(vec![]);
+    ws.stages.push(stage_n(1));
+    assert!(matches!(
+        refused(
+            &ws,
+            Command::AddStage {
+                index: 0,
+                stage: stage_n(1)
+            }
+        ),
+        CommandError::DuplicateStageId(_)
+    ));
+    assert!(matches!(
+        refused(
+            &ws,
+            Command::AddStage {
+                index: 3,
+                stage: stage_n(2)
+            }
+        ),
+        CommandError::IndexOutOfRange { .. }
+    ));
+    let mut bad = stage_n(2);
+    bad.width = 0;
+    let mut high = stage_n(2);
+    high.layer = MAX_STAGE_LAYER + 1;
+    let mut odd = stage_n(2);
+    odd.name = "a\u{7}b".into();
+    for stage in [bad, high, odd] {
+        assert!(matches!(
+            refused(&ws, Command::AddStage { index: 0, stage }),
+            CommandError::InvalidValue(_)
+        ));
+    }
+    let mut full = workspace(vec![]);
+    full.stages = (0..MAX_STAGES as u128).map(stage_n).collect();
+    assert!(matches!(
+        refused(
+            &full,
+            Command::AddStage {
+                index: 0,
+                stage: stage_n(999)
+            }
+        ),
+        CommandError::InvalidValue(_)
+    ));
+    for property in [
+        StageProperty::Size {
+            width: 0,
+            height: 1080,
+        },
+        StageProperty::Size {
+            width: 1920,
+            height: MAX_STAGE_PIXELS + 1,
+        },
+        StageProperty::Layer {
+            value: MAX_STAGE_LAYER + 1,
+        },
+        StageProperty::Name {
+            value: "x".repeat(1025),
+        },
+    ] {
+        assert!(matches!(
+            refused(&ws, stage_prop(1, property)),
+            CommandError::InvalidValue(_)
+        ));
+    }
+    assert!(matches!(
+        refused(&ws, stage_prop(9, StageProperty::KeepBlack { value: true })),
+        CommandError::StageNotFound(_)
+    ));
+    assert!(matches!(
+        refused(&ws, Command::RemoveStage { id: stage_n(9).id }),
+        CommandError::StageNotFound(_)
+    ));
+    let mut work = ws.clone();
+    let mut history = History::new();
+    let same = stage_prop(1, StageProperty::Layer { value: 1 });
+    assert!(!history.execute(&mut work, same).unwrap());
+}
+
+/// Typing a stage's name sends each keystroke with one coalesce key: one undo step.
+#[test]
+fn renaming_a_stage_while_typing_is_one_undo_step() {
+    let mut ws = workspace(vec![]);
+    ws.stages.push(stage_n(1));
+    let before = ws.clone();
+    let mut history = History::new();
+    for name in ["C", "Cy", "Cyc"] {
+        history
+            .execute_coalescing(
+                &mut ws,
+                stage_prop(1, StageProperty::Name { value: name.into() }),
+                Some("stage-name"),
+            )
+            .unwrap();
+    }
+    assert_eq!(ws.stages[0].name, "Cyc");
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(ws, before);
+    assert!(!history.can_undo());
+}
+
 // ---- Cue lists ----
 
 #[test]

@@ -1,12 +1,20 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Checks a built openLab.app: app and engine are universal (arm64 + x86_64), every slice targets macOS 12.0,
-# the bundle's signature is valid, the app cannot start the test engine, and the engine has no virtual audio device.
+# Checks a built openLab.app: app, engine and stage host are universal (arm64 + x86_64), every slice targets
+# macOS 12.0, the bundle's and the stage host helper's signatures are valid, the app cannot start the test
+# engine, the engine has no virtual audio device and links no GUI framework, and neither engine nor stage
+# host takes test-only displays.
 set -euo pipefail
 
 app="${1:-build/Build/Products/Release/openLab.app}"
 
-for bin in "$app/Contents/MacOS/openLab" "$app/Contents/MacOS/openlab-engine"; do
+helper="$app/Contents/Helpers/openLab Stage.app"
+stage="$helper/Contents/MacOS/openlab-stage"
+if [ ! -x "$stage" ]; then
+    echo "error: $stage is missing (the engine looks for the stage host there)" >&2
+    exit 1
+fi
+for bin in "$app/Contents/MacOS/openLab" "$app/Contents/MacOS/openlab-engine" "$stage"; do
     for arch in arm64 x86_64; do
         # This lipo accepts one arch per -verify_arch.
         lipo "$bin" -verify_arch "$arch" || { echo "error: $bin has no $arch slice" >&2; exit 1; }
@@ -20,7 +28,8 @@ done
 # The app's test-engine launch (`-OpenLabEngine test`) and its test-only requests (`advance`,
 # `lose_device`, `restore_device`) are Debug only (`#if DEBUG`, mac/openLab/Engine/EngineLaunch.swift
 # and ClientProtocol.swift).
-for marker in "-OpenLabEngine" "-OpenLabVirtualDevice" "--virtual-device" "lose_device" "restore_device"; do
+for marker in "-OpenLabEngine" "-OpenLabVirtualDevice" "-OpenLabVirtualDisplays" "--virtual-device" \
+    "--virtual-displays" "lose_device" "restore_device" "stage_probe"; do
     if grep -q -a -- "$marker" "$app/Contents/MacOS/openLab"; then
         echo "error: $app contains test-engine support ('$marker')" >&2
         exit 1
@@ -65,5 +74,36 @@ if [ "$icon" != "AppIcon" ] || [ ! -f "$app/Contents/Resources/AppIcon.icns" ]; 
     echo "error: $app has no app icon" >&2
     exit 1
 fi
+# The stage host's helper app: no Dock icon or menu bar, its own bundle id, signed on its own.
+ui_element=$(/usr/libexec/PlistBuddy -c "Print :LSUIElement" "$helper/Contents/Info.plist" 2>/dev/null || true)
+helper_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$helper/Contents/Info.plist" 2>/dev/null || true)
+if [ "$ui_element" != "true" ] || [ "$helper_id" != "dev.openlab.openLab.stage" ]; then
+    echo "error: $helper is not an LSUIElement helper with bundle id dev.openlab.openLab.stage" >&2
+    exit 1
+fi
+codesign --verify --strict "$helper"
+# The engine stays free of GUI frameworks: windows are the stage host's.
+if otool -L "$engine" | grep -E -q '/(AppKit|Metal|QuartzCore)\.framework/'; then
+    echo "error: $engine links AppKit, Metal or QuartzCore" >&2
+    exit 1
+fi
+# Test-only virtual displays: a release engine and stage host refuse the option (exit 2) without starting.
+for bin in "$engine" "$stage"; do
+    set +e
+    if [ "$bin" = "$engine" ]; then
+        support=$(mktemp -d)
+        "$bin" --virtual-displays V1:8x8 --app-support "$support" --watch-stdin </dev/null >/dev/null 2>&1
+        code=$?
+        rm -rf "$support"
+    else
+        "$bin" --virtual-displays V1:8x8 </dev/null >/dev/null 2>&1
+        code=$?
+    fi
+    set -e
+    if [ "$code" != 2 ]; then
+        echo "error: $bin did not refuse --virtual-displays (exit $code, expected 2)" >&2
+        exit 1
+    fi
+done
 codesign --verify --deep --strict "$app"
 echo "verify-bundle: $app ok"

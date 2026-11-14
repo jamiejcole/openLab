@@ -54,6 +54,12 @@ targets:
         basedOnDependencyAnalysis: false
         outputFiles:
           - $(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/openlab-engine
+      # The stage host (video output windows) in its own helper app, signed inside-out here.
+      - name: Build openlab-stage
+        script: '"$SRCROOT/scripts/build-stage-host.sh"'
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/openLab Stage.app/Contents/MacOS/openlab-stage
     scheme:
       testTargets:
         - openLabTests
