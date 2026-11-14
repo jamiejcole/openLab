@@ -1,0 +1,9 @@
+{
+  "type": "request",
+  "id": 65,
+  "request": {
+    "type": "stage_test_card",
+    "stage": "00000000-0000-0000-0000-000000000080",
+    "frame": 4321
+  }
+}

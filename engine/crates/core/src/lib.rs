@@ -25,8 +25,10 @@ mod recovery;
 mod relink;
 mod settings;
 mod show_file;
+pub mod stage_link;
 mod tree;
 mod validate;
+mod video;
 
 pub use backup::*;
 pub use changes::*;
@@ -50,6 +52,7 @@ pub use settings::*;
 pub use show_file::*;
 pub use tree::descendants;
 pub use validate::*;
+pub use video::*;
 
 /// Crate version, as set in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

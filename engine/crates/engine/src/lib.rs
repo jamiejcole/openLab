@@ -10,6 +10,7 @@ pub mod net;
 pub mod osc;
 pub mod persist;
 pub mod platform;
+pub mod stage;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 

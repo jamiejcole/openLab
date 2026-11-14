@@ -65,6 +65,8 @@ pub enum Inbox {
     /// An input from a client or OSC peer is about to arrive: sent by the network layer just
     /// before it, so the show log shows what triggered a GO and from where (DX-02).
     Trigger { source: String, detail: String },
+    /// The stage host supervisor's report (video output).
+    Stage(crate::stage::StageEvent),
     /// Stop the control loop.
     Shutdown,
 }
