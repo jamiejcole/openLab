@@ -199,7 +199,7 @@ extension CueListViewController: NSMenuDelegate {
     }
 
     func revealURL(_ node: CueNode) -> URL? {
-        guard node.cue.kindType == "audio" else { return nil }
+        guard node.cue.takesFile else { return nil }
         return CueRowMenu.mediaURL(node.cue.raw["kind"]?["media"]?.stringValue, showPath: store.document?.path)
     }
 

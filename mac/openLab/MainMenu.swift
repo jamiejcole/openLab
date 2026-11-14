@@ -165,17 +165,18 @@ enum MainMenu {
         return delete
     }
 
-    /// The Cues menu's kinds in QLab's order: media (Group, Audio), Fade, the control cues, then
+    /// The Cues menu's kinds in QLab's order: media (Group, Audio, Video), Fade, the control cues, then
     /// Wait and Memo. Kinds QLab has but openLab lacks are absent; Target has no model cue.
     static let cueMenuGroups: [[NewCueKind]] = [
-        [.group, .audio], [.fade], [.network, .start, .stop, .pause, .load, .reset, .devamp, .goto, .arm, .disarm],
+        [.group, .audio, .video], [.fade], [.network, .start, .stop, .pause, .load, .reset, .devamp, .goto, .arm, .disarm],
         [.wait, .memo],
     ]
 
-    /// New cues of each kind (QLab keys: Cmd-0 Group, Cmd-1 Audio, Cmd-8 Network, Cmd-7 Fade; the other types have none).
+    /// New cues of each kind (QLab keys: Cmd-0 Group, Cmd-1 Audio, Cmd-3 Video, Cmd-7 Fade, Cmd-8 Network; the
+    /// other types have none).
     /// `representedObject` carries the kind.
     private static func cuesMenu() -> NSMenu {
-        let keys: [NewCueKind: String] = [.group: "0", .audio: "1", .fade: "7", .network: "8"]
+        let keys: [NewCueKind: String] = [.group: "0", .audio: "1", .video: "3", .fade: "7", .network: "8"]
         var items: [NSMenuItem] = []
         for (n, group) in cueMenuGroups.enumerated() {
             if n > 0 { items.append(.separator()) }

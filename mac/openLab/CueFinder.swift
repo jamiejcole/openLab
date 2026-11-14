@@ -44,9 +44,9 @@ enum CueFinder {
         return [kind["address"]?.stringValue ?? ""] + args
     }
 
-    /// The last `/` component of an Audio cue's file (as the cue list shows it), else empty.
+    /// The last `/` component of an Audio or Video cue's file (as the cue list shows it), else empty.
     private static func fileName(of cue: Cue) -> String {
-        guard cue.kindType == "audio", let media = cue.raw["kind"]?["media"]?.stringValue else { return "" }
+        guard cue.takesFile, let media = cue.raw["kind"]?["media"]?.stringValue else { return "" }
         return media.split(separator: "/", omittingEmptySubsequences: true).last.map(String.init) ?? ""
     }
 

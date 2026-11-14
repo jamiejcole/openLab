@@ -48,6 +48,8 @@ struct Cue: Hashable, Sendable, Decodable {
     var number: String? { raw["number"]?.stringValue }
     var name: String { raw["name"]?.stringValue ?? "" }
     var kindType: String { raw["kind"]?["type"]?.stringValue ?? "" }
+    /// An Audio or Video cue: its target is a file (`media`), not a cue.
+    var takesFile: Bool { kindType == "audio" || kindType == "video" }
 
     /// The name to show (core's `display_name`): the user's name if set, else an Audio or Video
     /// cue's file name with its extension (last `/` component, as stored), else empty. Editing

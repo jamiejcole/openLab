@@ -58,9 +58,11 @@
 "edit.error.noPatch" = "This workspace has no audio patch, so an Audio cue cannot be added.";
 "edit.error.deleteBusy" = "A cue that is running, paused, fading or previewing cannot be deleted. Stop it first.";
 "edit.error.renumberValues" = "Enter a first number of 0 or more and an increment above 0.";
-"edit.drop.skipped.one" = "1 dropped file was not audio and was left out.";
-"edit.drop.skipped" = "%d dropped files were not audio and were left out.";
-"edit.error.dropNotAudio" = "Only audio files can be dropped here. Folders and other files were not added.";
+"edit.drop.skipped.one" = "1 dropped file was not a sound, movie or image and was left out.";
+"edit.drop.skipped" = "%d dropped files were not sounds, movies or images and were left out.";
+"edit.error.dropNotMedia" = "Only audio, video and image files can be dropped here. Folders and other files were not added.";
+"edit.error.notAPicture" = "A Video cue plays a movie or a still image, not a sound file.";
+"edit.error.notASound" = "An Audio cue plays a sound file, not a movie or an image.";
 "edit.error.replaceBusy" = "The audio file of a cue that is running, paused or fading cannot be replaced. Stop it first.";
 "edit.error.refused" = "The engine refused the edit: %@";
 "edit.error.notConnected" = "The edit was not made: the engine is not connected.";
@@ -175,6 +177,7 @@
 "cue.type.arm" = "Arm";
 "cue.type.disarm" = "Disarm";
 "cue.type.network" = "Network";
+"cue.type.video" = "Video";
 
 "cuelist.label" = "Cue list";
 "cuelist.col.type" = "Cue type";
@@ -738,6 +741,23 @@
 "inspector.tab.io" = "I/O";
 "inspector.io.patch" = "Output patch";
 "inspector.io.editPatch" = "Edit…";
+"inspector.io.file" = "File";
+"inspector.io.choose" = "Choose…";
+"inspector.io.format" = "Video format";
+"inspector.io.formatUnknown" = "Not read";
+"inspector.io.stage" = "Stage";
+"inspector.io.stageNone" = "None";
+"inspector.io.stageSize" = "Stage size";
+"inspector.io.pixels" = "%d × %d";
+"inspector.io.videoFormat" = "%@, %@, %@ fps";
+"inspector.io.stillFormat" = "%@ image, %@";
+"inspector.io.codec.h264" = "H.264";
+"inspector.io.codec.hevc" = "HEVC";
+"inspector.io.codec.prores" = "ProRes";
+"inspector.io.still.png" = "PNG";
+"inspector.io.still.jpeg" = "JPEG";
+"inspector.io.still.tiff" = "TIFF";
+"inspector.io.noVideoSound" = "Sound in video files is not played yet; the output patch is for Audio cues.";
 "levels.editPatch" = "Edit Patch";
 "inspector.network.patch" = "Patch";
 "inspector.network.message" = "Message";

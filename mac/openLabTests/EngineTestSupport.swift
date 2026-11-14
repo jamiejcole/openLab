@@ -1057,3 +1057,40 @@ final class UDPListener {
         return parts.joined(separator: " ")
     }
 }
+
+/// A test movie or still made by the bundled stage host (test-support builds: `--make-test-media`):
+/// every frame is the test card for its own number (288 x 160), so a stage probe reads which frame
+/// is shown. `codec` is `h264`, `hevc` or `prores` (a movie of `frames` at `fps`) or `png`, `jpeg`,
+/// `tiff` (a still). Nothing is checked in; a codec this Mac cannot encode fails the test.
+func makeTestMedia(_ url: URL, codec: String, frames: Int = 0, fps: Int = 25) throws {
+    let host = Bundle.main.bundleURL.appendingPathComponent(
+        "Contents/Helpers/openLab Stage.app/Contents/MacOS/openlab-stage")
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? FileManager.default.removeItem(at: url)
+    let process = Process()
+    process.executableURL = host
+    process.arguments = ["--make-test-media", codec, url.path] + (frames > 0 ? [String(frames), String(fps)] : [])
+    let errors = Pipe()
+    process.standardError = errors
+    process.standardOutput = FileHandle.nullDevice
+    try process.run()
+    let said = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw TestEngineError.refused("--make-test-media \(codec) \(url.lastPathComponent): \(said)")
+    }
+}
+
+/// A media file at `url` of `seconds`, its kind by its extension: a WAV tone, a movie at 25 fps
+/// (`.mov` H.264, `.mp4` HEVC) or a still (`.png`, `.jpg`, `.tiff`; `seconds` unused).
+func writeTestMedia(_ url: URL, seconds: Double) throws {
+    let frames = max(1, Int((seconds * 25).rounded()))
+    switch url.pathExtension.lowercased() {
+    case "mov": try makeTestMedia(url, codec: "h264", frames: frames)
+    case "mp4": try makeTestMedia(url, codec: "hevc", frames: frames)
+    case "png": try makeTestMedia(url, codec: "png")
+    case "jpg", "jpeg": try makeTestMedia(url, codec: "jpeg")
+    case "tif", "tiff": try makeTestMedia(url, codec: "tiff")
+    default: try writeWAV(url, seconds: seconds)
+    }
+}

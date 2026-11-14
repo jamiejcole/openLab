@@ -63,7 +63,7 @@ enum CueKindStyle {
         "load": (.kindLoad, "cue.type.load"), "reset": (.kindReset, "cue.type.reset"),
         "devamp": (.kindDevamp, "cue.type.devamp"), "go_to": (.kindGoTo, "cue.type.goto"),
         "arm": (.kindArm, "cue.type.arm"), "disarm": (.kindDisarm, "cue.type.disarm"),
-        "network": (.kindNetwork, "cue.type.network"),
+        "network": (.kindNetwork, "cue.type.network"), "video": (.kindVideo, "cue.type.video"),
     ]
 
     static func kindLabel(_ type: String) -> String { kinds[type].map { loc($0.labelKey) } ?? type }

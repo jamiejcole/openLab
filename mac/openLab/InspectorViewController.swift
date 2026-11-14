@@ -82,6 +82,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let editPatchButton = NSButton(title: loc("inspector.io.editPatch"), target: nil, action: nil)
     /// Opens the patch editor of a patch (set by the window controller).
     var onEditPatch: ((ModelID) -> Void)?
+    /// A Video cue's rows of the I/O tab.
+    let videoIO = VideoIOControls()
     var outputPatchIDs: [ModelID] = []
     var outputPatchNames: [String] = []
     let networkMessageField = NSTextField()
@@ -429,7 +431,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             case .runtime(let cues, _):
                 MainActor.assumeIsolated {
                     self?.updatePreviewButton()
-                    if let self, let cue = self.cue, cues.contains(cue.id), cue.kindType == "audio" { self.render() }
+                    if let self, let cue = self.cue, cues.contains(cue.id), cue.takesFile { self.render() }
                     // The file's length may have come (or changed): the waveform follows.
                     if let self, let cue = self.cueForEdit, cues.contains(cue.id) { self.renderTimeLoops(cue) }
                     // A probe also tells the matrix how many channels the file has.
@@ -686,8 +688,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let style = CueKindStyle.typeStyle(kind: cue.raw["kind"])
         kindIcon.image = style.map { $0.icon.image($0.label, compact: true) }
         renderTarget(cue, model: model)
-        // Only Wait and Fade cues have a duration to type; others take theirs from content or have none.
-        durationField.isEnabled = InspectorEdit.durationKinds.contains(kind)
+        // Only Wait and Fade cues, and stills, have a duration to type; others take theirs from content
+        // or have none.
+        durationField.isEnabled = InspectorEdit.editsDuration(cue, media: store.mediaDurations[cue.id])
         syncTabs(forKind: kind)
         let colour = cue.raw["color"]?.stringValue ?? "none"
         colourPopup.selectItem(at: Self.colours.firstIndex(of: colour) ?? 0)
@@ -726,8 +729,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     /// The Choose button, and a double-click on a file cue's Target field (QLab 5, manual pp. 120, 126).
-    @objc private func chooseClicked() {
-        guard !isLocked, let cue, cue.kindType == "audio" else { return }
+    @objc func chooseClicked() {
+        guard !isLocked, let cue, cue.takesFile else { return }
         onChooseFile?(cue.id)
     }
 
@@ -743,7 +746,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField,
             hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck,
             devampModePopup, networkPatchPopup, outputPatchPopup, editPatchButton, networkMessageField,
-            networkSendButton,
+            networkSendButton, videoIO.stagePopup, videoIO.chooseButton,
             secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck,
         ]
@@ -759,6 +762,11 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             view.window?.makeFirstResponder(nil)
         }
         for c in lockedControls { c.isEnabled = !isLocked }
+        // A Video cue's audio patch stays off whatever the mode: it plays no sound yet (#645).
+        if cue?.kindType == "video" {
+            outputPatchPopup.isEnabled = false
+            editPatchButton.isEnabled = false
+        }
         notesView.isEditable = !isLocked
         audioLevels.isLocked = isLocked
         fadeLevels.isLocked = isLocked
@@ -787,7 +795,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let text = f == .notes ? notesView.string : (field(f)?.stringValue ?? "")
         if isBatch { return commitBatch(f, text: text, typed: wasDirty) }
         guard let cue = cueForEdit else { return true }
-        switch InspectorEdit.command(f, text: text, cue: cue, model: model, typed: wasDirty) {
+        switch InspectorEdit.command(
+            f, text: text, cue: cue, model: model, typed: wasDirty, media: store.mediaDurations[cue.id])
+        {
         case .failure(let r):
             show(rejection: r)
             render(force: [f])

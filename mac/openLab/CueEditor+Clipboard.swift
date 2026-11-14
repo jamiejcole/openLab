@@ -8,18 +8,28 @@ extension CueEditor {
     static let pasteType = NSPasteboard.PasteboardType("dev.openlab.cue-data")
     /// What the engine's decoder reads (WAV, AIFF, FLAC, MP3, AAC, OGG).
     static let audioExtensions: Set<String> = ["wav", "aif", "aiff", "flac", "mp3", "aac", "m4a", "ogg"]
+    /// What a Video cue plays: movies (QuickTime and MPEG-4 containers) and stills (PNG, JPEG, TIFF).
+    /// The engine's probe says which codecs inside them it can show.
+    static let videoExtensions: Set<String> = ["mov", "mp4", "m4v", "png", "jpg", "jpeg", "tif", "tiff"]
 
     // MARK: Pure rules
 
-    /// The dropped files when every one is a plain audio file; nil when any is a folder or other kind.
-    static func audioFiles(_ urls: [URL]) -> [URL]? {
-        guard !urls.isEmpty else { return nil }
-        for url in urls {
-            var isDir: ObjCBool = false
-            guard url.isFileURL, audioExtensions.contains(url.pathExtension.lowercased()),
-                !(FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue)
-            else { return nil }
-        }
+    /// The kind of cue a file makes: Audio for a sound file, Video for a movie or still; nil for a
+    /// folder (even `Stems.wav`), a non-file URL or any other file.
+    static func cueKind(forFile url: URL) -> NewCueKind? {
+        var isDir: ObjCBool = false
+        guard url.isFileURL,
+            !(FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue)
+        else { return nil }
+        let ext = url.pathExtension.lowercased()
+        if audioExtensions.contains(ext) { return .audio }
+        if videoExtensions.contains(ext) { return .video }
+        return nil
+    }
+
+    /// The dropped files when every one makes a cue; nil when any is a folder or other kind.
+    static func mediaFiles(_ urls: [URL]) -> [URL]? {
+        guard !urls.isEmpty, urls.allSatisfy({ cueKind(forFile: $0) != nil }) else { return nil }
         return urls
     }
 
@@ -37,15 +47,9 @@ extension CueEditor {
         return cue
     }
 
-    /// The plain files of a mixed drop that carry an audio extension; folders (even `Stems.wav`)
-    /// and other files are skipped.
-    static func audioExtensionFiles(_ urls: [URL]) -> [URL] {
-        urls.filter {
-            var isDir: ObjCBool = false
-            return $0.isFileURL && audioExtensions.contains($0.pathExtension.lowercased())
-                && !(FileManager.default.fileExists(atPath: $0.path, isDirectory: &isDir) && isDir.boolValue)
-        }
-    }
+    /// The plain files of a mixed drop that make a cue (`cueKind(forFile:)`); folders and other
+    /// files are skipped.
+    static func mediaExtensionFiles(_ urls: [URL]) -> [URL] { urls.filter { cueKind(forFile: $0) != nil } }
 
     /// The private pasteboard payload; bump `version` when its shape changes.
     static let clipboardVersion = 1
@@ -75,7 +79,8 @@ extension CueEditor {
 
     // MARK: Finder drops
 
-    /// One audio cue per file, in drop order, at child `index` of `parent`; one undo step.
+    /// One cue per file, in drop order, at child `index` of `parent`; one undo step. A sound file
+    /// makes an Audio cue, a movie or still a Video cue on the workspace's first stage.
     @discardableResult
     func addFiles(_ urls: [URL], parent: ModelID?, index: Int, skipped: Int = 0) async -> [ModelID] {
         // The inspector commit below can take a while and the list can change meanwhile: remember the cue
@@ -85,15 +90,17 @@ extension CueEditor {
         let siblings = children(of: parent)
         if let parent, cueList?.node(parent) == nil { return [] }
         let index = anchor.flatMap { a in siblings.firstIndex { $0.id == a } } ?? siblings.count
-        guard let files = Self.audioFiles(urls) else {
-            notify(loc("edit.error.dropNotAudio"))
+        guard let files = Self.mediaFiles(urls) else {
+            notify(loc("edit.error.dropNotMedia"))
             return []
         }
         var ids: [ModelID] = []
         var commands: [Command] = []
         for (n, url) in files.enumerated() {
             let id = ModelID(UUID().uuidString.lowercased())
-            guard var cue = NewCueKind.audio.cueJSON(id: id, patch: store.model?.patches.first),
+            guard let made = Self.cueKind(forFile: url),
+                var cue = made.cueJSON(
+                    id: id, patch: store.model?.patches.first, stage: store.model?.stages.first?.id),
                 var kind = cue["kind"]
             else {
                 notify(loc("edit.error.noPatch"))
@@ -120,14 +127,18 @@ extension CueEditor {
         parent.flatMap { cueList?.node($0) }?.children ?? cueList?.roots ?? []
     }
 
-    /// A file dropped on an audio cue replaces its file; a running cue is left alone.
+    /// A file dropped on (or chosen for) an Audio or Video cue replaces its file; a running cue is
+    /// left alone, and a file of the other kind is refused (a sound cannot be a Video cue's picture).
     func replaceFile(of id: ModelID, with url: URL) async {
         guard await begin() else { return }
-        guard let files = Self.audioFiles([url]) else { return notify(loc("edit.error.dropNotAudio")) }
-        guard let node = cueList?.node(id), node.cue.kindType == "audio" else { return }
+        guard let made = Self.cueKind(forFile: url) else { return notify(loc("edit.error.dropNotMedia")) }
+        guard let node = cueList?.node(id), node.cue.takesFile else { return }
+        guard made.wireType == node.cue.kindType else {
+            return notify(loc(made == .audio ? "edit.error.notAPicture" : "edit.error.notASound"))
+        }
         if isBusy(node) { return notify(loc("edit.error.replaceBusy")) }
         // The file alone: the cue's other settings are the engine's, not this copy of them.
-        _ = report(await store.send(command: .setProperty(id, .media(Self.mediaPath(files[0])))))
+        _ = report(await store.send(command: .setProperty(id, .media(Self.mediaPath(url)))))
     }
 
     // MARK: Copy, cut, paste
