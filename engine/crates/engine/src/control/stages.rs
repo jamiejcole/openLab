@@ -69,15 +69,6 @@ pub(super) struct Stages {
     probes: Vec<(ProbeTarget, RequestId, ReplyTx)>,
 }
 
-impl Stages {
-    /// Has `video_outputs` pushed at the next tick, whatever the gap since the last push: after
-    /// a snapshot (a connection binding), whose client must have it.
-    pub(super) fn push_now(&mut self) {
-        self.push_due = true;
-        self.last_push_ms = None;
-    }
-}
-
 impl Engine {
     /// Starts the stage host supervisor if the engine has one configured and it is not running.
     pub(super) fn start_stage_host(&mut self) {
@@ -274,6 +265,21 @@ impl Control {
         if all_sent {
             self.eng.stages.push_due = false;
             self.eng.stages.last_push_ms = Some(now);
+        }
+    }
+
+    /// Sends `doc`'s connections its `video_outputs` now, whatever the gap since the last push:
+    /// after a snapshot of it (a connection binding), whose client must have it. The pushes'
+    /// spacing and what is due for other docs are left as they are. If the outbound channel is
+    /// full, the push is made at the next tick instead.
+    pub(super) fn push_doc_video_outputs(&mut self, doc: DocId) {
+        let Some(d) = self.docs.iter().find(|d| d.id == doc) else {
+            return;
+        };
+        let message = self.video_outputs(d);
+        if !self.eng.out.send_state(Some(doc), message) {
+            self.eng.stages.push_due = true;
+            self.eng.stages.last_push_ms = None;
         }
     }
 

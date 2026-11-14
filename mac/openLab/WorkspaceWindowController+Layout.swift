@@ -78,6 +78,11 @@ extension WorkspaceWindowController {
     func stopSavingLayout() {
         layoutObservers.forEach(NotificationCenter.default.removeObserver)
         layoutObservers = []
+        // A split view whose panes were laid out queues a save of its own arrangement for the next
+        // run-loop pass (a delayed perform, whether or not it has an autosave name), and that timer
+        // holds the split and so the window's views until it fires: on a slow or busy machine, well
+        // after the window closed. Nothing here uses AppKit's own split autosave.
+        for split in [verticalSplit, horizontalSplit] { NSObject.cancelPreviousPerformRequests(withTarget: split) }
     }
 
     /// A divider moved. A drag sets the preferred size of the area beside it (the soft size
