@@ -141,6 +141,25 @@ impl Control {
                     self.stage_test_request(doc, id, stage, Some(points), 0, to);
                     Flow::Continue
                 }
+                // A snapshot (the one a connection gets when it binds, too) is followed by the
+                // doc's video outputs, which are the engine's and not in the snapshot.
+                ClientMessage::Request {
+                    id,
+                    request: Request::Snapshot,
+                } if self.cx_of(doc).is_some() => {
+                    let message = ClientMessage::Request {
+                        id,
+                        request: Request::Snapshot,
+                    };
+                    let flow = match self.cx_of(doc) {
+                        Some(mut cx) => cx.client(message, to),
+                        None => no_doc(message, to),
+                    };
+                    if let Some(d) = self.docs.iter().find(|d| d.id == doc) {
+                        reply(to, self.video_outputs(d));
+                    }
+                    flow
+                }
                 message => match self.cx_of(doc) {
                     Some(mut cx) => cx.client(message, to),
                     None => no_doc(message, to),

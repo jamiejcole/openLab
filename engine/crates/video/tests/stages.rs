@@ -1041,6 +1041,33 @@ fn last_push(messages: &[ServerMessage]) -> Option<(Vec<String>, Vec<Option<Stag
     })
 }
 
+/// A connection that binds after the last push still learns where the stages are: every
+/// snapshot of the doc (the one taken on bind too) is followed by its `video_outputs`, after
+/// the snapshot's `result`, even with nothing changed since the last push.
+#[test]
+fn a_snapshot_is_followed_by_the_video_outputs() {
+    let mut s = stage_show(with_stages(vec![], vec![stage(1)]), virtual_host(), None);
+    s.tick();
+    let _ = s.take_outbound();
+    let id = s.request_id();
+    let replies = s.send_until(
+        ClientMessage::Request {
+            id,
+            request: Request::Snapshot,
+        },
+        |c| c.stages_settled(),
+    );
+    let at = |f: &dyn Fn(&ServerMessage) -> bool| replies.iter().position(f);
+    let snapshot = at(&|m| matches!(m, ServerMessage::Snapshot { .. })).expect("snapshot");
+    let result =
+        at(&|m| matches!(m, ServerMessage::Result { id: got, .. } if *got == id)).expect("result");
+    let outputs = at(&|m| matches!(m, ServerMessage::VideoOutputs { .. })).expect("video_outputs");
+    assert!(snapshot < result && result < outputs, "{replies:?}");
+    let (displays, states) = last_push(&replies).unwrap();
+    assert_eq!(displays, ["V1", "V2"]);
+    assert_eq!(states, [Some(StageState::NoDisplay)]);
+}
+
 /// #642: the app need not poll: a display unplugged and back, and a stage's display chosen,
 /// each reach the workspace's connections as a `video_outputs` push.
 #[test]
