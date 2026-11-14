@@ -1323,3 +1323,32 @@ fn clients_are_told_a_video_cues_progress_playing_paused_resumed_and_loaded_to_t
     assert!(near(shown_for, 0.5), "{shown_for}");
     assert_eq!((end, position), (None, None));
 }
+
+/// A decoder slower than the frame limit allows for a whole catch-up, but making progress
+/// frame by frame, keeps its picture up (the limit times a decoder that stopped, not one that
+/// is slow): the picture shows the frames it gets to and its cue runs on. One that stops
+/// decoding still fails alone (`a_picture_whose_decode_hangs_fails_alone`).
+#[test]
+fn a_slow_decoder_that_keeps_decoding_keeps_its_picture_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
+    let slow = faulty(dir.path(), &good, "openlab-test-slow-decode");
+    let ws = workspace(vec![video_cue(1, Some(&slow))]);
+    // 400 ms a frame may take; a catch-up of a third of a second (8 frames at 60 ms each) takes
+    // longer than that in all.
+    let mut s = video_show_args(ws, &SHORT_LIMITS);
+    let at = start(&mut s, 1);
+    s.take_outbound();
+    for step in 1..=4 {
+        let played = f64::from(step) * 0.33;
+        run_to(&mut s, at + samples(played));
+        let now = shown(&mut s).expect("the slow picture is drawn");
+        assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
+        assert_eq!(state(&s, 1), CueState::Running);
+    }
+    assert!(
+        !notices(&mut s).iter().any(|c| c == "video_decode_failed"),
+        "the slow picture was failed"
+    );
+    assert_eq!(s.control().pictures_live(), 1);
+}

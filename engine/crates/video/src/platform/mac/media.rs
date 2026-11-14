@@ -61,8 +61,9 @@ use openlab_core::video_probe::{MAX_PICTURE_PIXELS, picture_size_plays};
 use super::gpu::{Texture, empty_texture, replace};
 
 /// How far past the frame held a position may be before reading starts again there instead of
-/// reading every frame in between (a jump, not playback).
-const SKIP_AHEAD: f64 = 2.0;
+/// reading every frame in between (a jump, or a decoder that fell behind: it skips to where the
+/// clock is rather than showing every late frame).
+const SKIP_AHEAD: f64 = 0.5;
 
 /// A step back of up to this many frames holds the frame shown instead of reading again from
 /// the keyframe before it: the clock the picture follows is corrected backwards by a few
@@ -282,8 +283,10 @@ impl Picture {
             }
             if !self.still && mail.opened.is_some() {
                 let asked = self.asked.0;
-                let deadline = mail.waiting_since.unwrap_or_else(Instant::now) + limits.frame;
+                // The limit runs from the decode thread's last frame: a slow one that keeps
+                // decoding is waited for.
                 while mail.failed.is_none() && mail.answered < asked {
+                    let deadline = mail.waiting_since.unwrap_or_else(Instant::now) + limits.frame;
                     let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                         break;
                     };
@@ -403,7 +406,19 @@ fn decode(shared: &Shared, file: &str, still: bool, offset: f64) {
         Ok(m) => m,
         Err(why) => return shared.fail(why),
     };
-    let first = match movie.frame_at(offset) {
+    // Each frame read is progress: the frame limit times a decoder that stopped, not a
+    // catch-up of many frames.
+    let progress = || {
+        let mut mail = shared.lock();
+        if mail.waiting_since.is_some() {
+            mail.waiting_since = Some(Instant::now());
+        }
+    };
+    #[cfg(feature = "test-support")]
+    {
+        movie.slow = file.contains(fault::SLOW_DECODE);
+    }
+    let first = match movie.frame_at(offset, &progress) {
         Ok(frame) => frame,
         Err(why) => return shared.fail(why),
     };
@@ -439,7 +454,7 @@ fn decode(shared: &Shared, file: &str, still: bool, offset: f64) {
         fault::hang_if(shared, file, fault::HANG_DECODE);
         #[cfg(feature = "test-support")]
         fault::crash_if(file, fault::CRASH_DECODE);
-        match movie.frame_at(position) {
+        match movie.frame_at(position, &progress) {
             Ok(frame) => {
                 let mut mail = shared.lock();
                 if frame.is_some() {
@@ -529,6 +544,9 @@ struct Movie {
     /// Times reading started again (tests).
     #[cfg(test)]
     restarts: u32,
+    /// Test support: each frame takes `fault::SLOW_FRAME` to read.
+    #[cfg(feature = "test-support")]
+    slow: bool,
 }
 
 impl Movie {
@@ -571,6 +589,8 @@ impl Movie {
             frame: 1.0 / f64::from(fps),
             #[cfg(test)]
             restarts: 0,
+            #[cfg(feature = "test-support")]
+            slow: false,
         })
     }
 
@@ -615,6 +635,10 @@ impl Movie {
 
     /// Reads the next frame; `None` at the end of the movie.
     fn read(&mut self) -> Result<Option<Frame>, String> {
+        #[cfg(feature = "test-support")]
+        if self.slow {
+            std::thread::sleep(fault::SLOW_FRAME);
+        }
         let Some((reader, output)) = &self.reader else {
             return Ok(None);
         };
@@ -666,7 +690,7 @@ impl Movie {
     /// The frame at `position` seconds: the last whose time is at or before it (the first
     /// frame before the first frame's time); `None` when the frame handed out last is still the
     /// one (a step back of up to [`BACK_HOLD_FRAMES`] included).
-    fn frame_at(&mut self, position: f64) -> Result<Option<Frame>, String> {
+    fn frame_at(&mut self, position: f64, progress: &dyn Fn()) -> Result<Option<Frame>, String> {
         let back = self
             .shown
             .is_some_and(|t| position < t - BACK_HOLD_FRAMES * self.frame);
@@ -680,7 +704,11 @@ impl Movie {
             let frame = match self.next.take() {
                 Some(f) => Some(f),
                 None if self.ended => None,
-                None => self.read()?,
+                None => {
+                    let read = self.read()?;
+                    progress();
+                    read
+                }
             };
             let Some(frame) = frame else {
                 self.ended = true;
@@ -740,6 +768,10 @@ pub mod fault {
     pub const CRASH_OPEN: &str = "openlab-test-crash-open";
     /// Crashes at the first frame asked for after the open.
     pub const CRASH_DECODE: &str = "openlab-test-crash-decode";
+    /// Reads every frame slowly (`SLOW_FRAME` each): a decoder slower than real time that
+    /// keeps going.
+    pub const SLOW_DECODE: &str = "openlab-test-slow-decode";
+    pub const SLOW_FRAME: std::time::Duration = std::time::Duration::from_millis(60);
 
     pub(super) fn hang_if(shared: &Shared, file: &str, fault: &str) {
         if !file.contains(fault) {
@@ -787,7 +819,8 @@ mod tests {
     }
 
     /// A clock stepped back by a few milliseconds across a frame boundary holds the frame shown
-    /// and does not read again; a step back of more than a frame does read again, from there.
+    /// and does not read again; a step back of more than a frame, or one ahead of `SKIP_AHEAD`
+    /// or more, reads again from there.
     #[test]
     fn a_small_step_back_holds_the_frame_and_a_jump_back_reads_again() {
         let dir = tempfile::tempdir().unwrap();
@@ -798,17 +831,26 @@ mod tests {
         let mut m = Movie::open(&file).unwrap();
         // The reviewer's sequence at 48 kHz: sample 1970 (41.0 ms, frame 1), then 1826 (38.0
         // ms, 3 ms back across the boundary).
-        let f = m.frame_at(1970.0 / 48_000.0).unwrap().unwrap();
+        let f = m.frame_at(1970.0 / 48_000.0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 1);
         let restarts = m.restarts;
-        assert!(m.frame_at(1826.0 / 48_000.0).unwrap().is_none(), "held");
+        assert!(
+            m.frame_at(1826.0 / 48_000.0, &|| {}).unwrap().is_none(),
+            "held"
+        );
         assert_eq!(m.restarts, restarts, "the reader was not started again");
         // Forward again: the next frame, still without a restart.
-        let f = m.frame_at(3890.0 / 48_000.0).unwrap().unwrap();
+        let f = m.frame_at(3890.0 / 48_000.0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 2);
         assert_eq!(m.restarts, restarts);
+        // Half a second or more ahead (a jump, or a decoder that fell behind) is not read frame
+        // by frame: reading starts again there.
+        let f = m.frame_at(0.6, &|| {}).unwrap().unwrap();
+        assert_eq!(number(&f), 15);
+        assert_eq!(m.restarts, restarts + 1);
+        let restarts = m.restarts;
         // A real jump back (load to time) reads again from there.
-        let f = m.frame_at(0.0).unwrap().unwrap();
+        let f = m.frame_at(0.0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 0);
         assert_eq!(m.restarts, restarts + 1);
     }
