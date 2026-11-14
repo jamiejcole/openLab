@@ -1277,17 +1277,25 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// The cell-editing keys (number, name, target, pre-wait, duration, post-wait: N, Q, T, E, D, W by
     /// default): the selected cue's cell opens for typing,
-    /// or for T on a file cue the file chooser opens (after the key is consumed, not inside it). Only
-    /// with the list itself focused and exactly one cue highlighted. With the list focused the key is
-    /// always taken (it does nothing in Show Mode, with several cues or on a cue with nothing to edit);
-    /// false (not taken) only while text is being typed or the focus is elsewhere (the key is a letter then).
+    /// or for T on a file cue the file chooser opens (after the key is consumed, not inside it). With
+    /// several cues highlighted the pre-wait, duration and post-wait keys put the caret in the
+    /// inspector's one field for them all (`onEditSeveral`), as QLab 5 does; the number, name and
+    /// target keys open nothing. Only with the list itself focused. With the list focused the key is
+    /// always taken (it does nothing in Show Mode or on a cue with nothing to edit); false (not taken)
+    /// only while text is being typed or the focus is elsewhere (the key is a letter then).
     @discardableResult
     func beginEditFromKey(_ column: String) -> Bool {
         guard !isTextEditing, view.window?.firstResponder === outlineView else { return false }
         // From here the key is an edit key of the list: taken even when it does nothing (Show Mode, several
         // cues, a cue with nothing to edit), so it never goes on as a letter to the list.
         let selected = selectedIDs()
-        guard selected.count == 1, let id = selected.first else { return true }
+        if selected.count > 1 {
+            if !isEditLocked, let field = Self.editableColumns[column], Self.severalCueFields.contains(field) {
+                onEditSeveral?(field, selected)
+            }
+            return true
+        }
+        guard let id = selected.first else { return true }
         // A file cue's target is chosen in the file chooser, a cue target's typed as a cue number.
         if column == "target", store.model?.cue(id)?.kindType == "audio" {
             guard !isEditLocked, onChooseFile != nil else { return true }
@@ -1303,19 +1311,25 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     /// The notes key (O): the window shows the inspector on its Basics tab with the caret in the
-    /// selected cue's notes (`onEditNotes`). Taken or not as `beginEditFromKey`; it does nothing in
-    /// Show Mode (the inspector is hidden there) and with several cues selected.
+    /// selected cues' notes (`onEditNotes`; several cues share the one notes field). Taken or not as
+    /// `beginEditFromKey`; it does nothing in Show Mode (the inspector is hidden there).
     @discardableResult
     func beginNotesFromKey() -> Bool {
         guard !isTextEditing, view.window?.firstResponder === outlineView else { return false }
         let selected = selectedIDs()
-        guard !isEditLocked, selected.count == 1, let id = selected.first, nodes[id] != nil else { return true }
-        onEditNotes?(id)
+        guard !isEditLocked, !selected.isEmpty, selected.allSatisfy({ nodes[$0] != nil }) else { return true }
+        onEditNotes?(selected)
         return true
     }
 
-    /// Shows the inspector's notes of a cue for typing (the notes key).
-    var onEditNotes: ((ModelID) -> Void)?
+    /// Shows the inspector's notes of the selected cues for typing (the notes key).
+    var onEditNotes: (([ModelID]) -> Void)?
+
+    /// The fields an editing key opens in the inspector when several cues are selected: the list has a
+    /// cell per cue, the inspector one field whose typed value goes to every selected cue.
+    static let severalCueFields: Set<InspectorField> = [.preWait, .duration, .postWait]
+    /// Puts the caret in the inspector's field for the selected cues (an editing key, several cues).
+    var onEditSeveral: ((InspectorField, [ModelID]) -> Void)?
 
     /// The continue-mode and flag keys (C, F): every selected cue takes the value the first one moves
     /// to, as one undo step (QLab sets a batch-edited property to the same value on all, manual

@@ -604,15 +604,39 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         refusalOutlivesFollow = isFollowHeld?() == true
     }
 
-    /// The notes key: the Basics tab comes to the front and the shown cue's notes take the caret, at
-    /// the end of what is there. Nothing for another cue than the one shown, or while locked.
+    /// The notes key: the Basics tab comes to the front and the shown cues' notes take the caret, at
+    /// the end of what is there. Nothing for other cues than the ones shown, or while locked.
     @discardableResult
-    func beginNotes(of id: ModelID) -> Bool {
-        guard !isLocked, selection == [id], cue != nil, let window = view.window else { return false }
+    func beginNotes(of ids: [ModelID]) -> Bool {
+        guard !isLocked, shows(ids), let window = view.window else { return false }
         tabView.selectTabViewItem(withIdentifier: "basics")
         guard window.makeFirstResponder(notesView) else { return false }
         notesView.setSelectedRange(NSRange(location: (notesView.string as NSString).length, length: 0))
         notesView.scrollRangeToVisible(notesView.selectedRange())
+        return true
+    }
+
+    /// The inspector shows exactly these cues, and they exist.
+    private func shows(_ ids: [ModelID]) -> Bool {
+        !ids.isEmpty && Set(selection) == Set(ids) && (isBatch ? !batchCues.isEmpty : cue != nil)
+    }
+
+    /// `f`'s field of the shown cues can be typed in: not locked, and the field is on for these cues
+    /// (an Audio cue's duration, or a post-wait every cue of which auto-follows, is off).
+    func takesTyping(_ f: InspectorField, for ids: [ModelID]) -> Bool {
+        guard !isLocked, shows(ids), let tf = field(f) else { return false }
+        return tf.isEnabled && tf.isEditable
+    }
+
+    /// An editing key with several cues selected (pre-wait, duration, post-wait): the Basics tab comes
+    /// to the front and `f`'s field takes the caret, its text selected. What is typed goes to every
+    /// shown cue when committed, one undo step; Return gives the keys back to the list.
+    @discardableResult
+    func beginField(_ f: InspectorField, of ids: [ModelID]) -> Bool {
+        guard takesTyping(f, for: ids), let tf = field(f), let window = view.window else { return false }
+        tabView.selectTabViewItem(withIdentifier: "basics")
+        guard window.makeFirstResponder(tf) else { return false }
+        tf.currentEditor()?.selectAll(nil)
         return true
     }
 
