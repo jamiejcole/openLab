@@ -69,6 +69,7 @@ impl Control {
             }
             Inbox::Log { level, message } => self.eng.log(level, message),
             Inbox::Trigger { source, detail } => self.eng.observe_trigger(source, detail),
+            Inbox::Stage(event) => self.stage_event(event),
             Inbox::Shutdown => return Flow::Shutdown,
         }
         Flow::Continue
@@ -108,6 +109,37 @@ impl Control {
                     request: Request::SetPatchMapping { patch, mapping },
                 } if self.cx_of(doc).is_some() => {
                     self.set_patch_mapping(doc, id, patch, mapping, to)
+                }
+                // Stages' displays are the machine's and the stage host the engine's.
+                ClientMessage::Request {
+                    id,
+                    request: Request::ListStageMappings,
+                } => {
+                    self.list_stage_mappings(doc, id, to);
+                    Flow::Continue
+                }
+                ClientMessage::Request {
+                    id,
+                    request: Request::SetStageMapping { stage, display },
+                } => {
+                    self.set_stage_mapping(doc, id, stage, display, to);
+                    Flow::Continue
+                }
+                #[cfg(feature = "test-support")]
+                ClientMessage::Request {
+                    id,
+                    request: Request::StageTestCard { stage, frame },
+                } => {
+                    self.stage_test_request(doc, id, stage, None, frame, to);
+                    Flow::Continue
+                }
+                #[cfg(feature = "test-support")]
+                ClientMessage::Request {
+                    id,
+                    request: Request::StageProbe { stage, points },
+                } => {
+                    self.stage_test_request(doc, id, stage, Some(points), 0, to);
+                    Flow::Continue
                 }
                 message => match self.cx_of(doc) {
                     Some(mut cx) => cx.client(message, to),
@@ -188,6 +220,7 @@ impl Control {
                     path_hash,
                     modified_ms,
                 } => self.discard_recovery(workspace_id, path_hash, modified_ms, id, to),
+                Request::ListDisplays => self.list_displays(id, to),
                 Request::ListDevices => reply(
                     to,
                     ServerMessage::Result {

@@ -47,6 +47,10 @@ id_type!(
     /// Stable network patch id.
     NetworkPatchId
 );
+id_type!(
+    /// Stable video stage id.
+    StageId
+);
 
 /// A complete show document (WS-01).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -56,6 +60,9 @@ pub struct Workspace {
     pub settings: WorkspaceSettings,
     pub patches: Vec<OutputPatch>,
     pub network_patches: Vec<NetworkPatch>,
+    /// Video stages (VID-01). Absent from a file that has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<crate::video::Stage>,
     /// The workspace was in Show Mode when saved (SM-01): it reopens in Show Mode. Only the saved
     /// copy carries it: the engine keeps the live mode beside the model (not undoable, and a
     /// change does not mark the workspace unsaved) and writes it into each copy it saves, and
@@ -129,6 +136,7 @@ impl Workspace {
                 port: 53000,
                 protocol: NetworkProtocol::Udp,
             }],
+            stages: Vec::new(),
             show_mode: false,
             cue_lists: vec![CueList {
                 id: list,

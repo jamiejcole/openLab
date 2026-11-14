@@ -1,0 +1,9 @@
+{"type":"hello","version":1,"pid":4242,"video":true}
+{"type":"displays","displays":[{"id":"1E6E43B0-0000-4000-8000-000000000001","name":"Projector","width":3840,"height":2160}]}
+{"type":"stage_status","stage":"00000000-0000-0000-0000-000000000001","state":{"state":"shown","display":"D1"}}
+{"type":"stage_status","stage":"00000000-0000-0000-0000-000000000001","state":{"state":"display_missing","display":"D1"}}
+{"type":"stage_status","stage":"00000000-0000-0000-0000-000000000001","state":{"state":"failed","reason":"no GPU"}}
+{"type":"stage_status","stage":"00000000-0000-0000-0000-000000000001","state":{"state":"no_display"}}
+{"type":"pong","seq":7}
+{"type":"log","level":"warn","message":"display changed\nagain"}
+{"type":"probed","stage":"00000000-0000-0000-0000-000000000001","frame":42,"colours":[[255,0,0,255]]}

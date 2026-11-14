@@ -1984,13 +1984,15 @@ impl Engine {
             );
             clock_seed()
         });
-        new_workspace(
+        let mut ws = new_workspace(
             WorkspaceId(random_id()),
             CueListId(random_id()),
             PatchId(random_id()),
             openlab_core::NetworkPatchId(random_id()),
             seed,
-        )
+        );
+        self.add_display_stages(&mut ws);
+        ws
     }
 }
 

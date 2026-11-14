@@ -12,8 +12,8 @@ mod common;
 
 use common::*;
 use openlab_audio::{
-    CallbackTime, Curve, Fade, HostError, Mixer, MixerConfig, MixerController, OfflineRenderer,
-    OutputHost, OutputSample, SCRATCH_FRAMES, StreamErrors,
+    CallbackTime, ClockAnchor, Curve, Fade, HostError, Mixer, MixerConfig, MixerController,
+    OfflineRenderer, OutputHost, OutputSample, SCRATCH_FRAMES, StreamErrors,
 };
 
 const FRAMES: usize = 6000;
@@ -297,6 +297,71 @@ fn a_playback_time_before_the_callback_gives_no_latency() {
     assert_eq!(link.monitor().device_latency_seconds(), None);
 }
 
+/// The clock anchor (video follows it): each timed callback publishes the mixer sample its
+/// buffer starts on and the host time that sample reaches the output.
+#[test]
+fn each_timed_callback_publishes_where_the_sample_clock_stands() {
+    let (_ctl, mixer) = scenario(2);
+    let (mut host, link) = OutputHost::new(mixer, 2);
+    let m = link.monitor();
+    let mut buf = vec![0.0f32; 480 * 2];
+    assert_eq!(m.clock_anchor(), None);
+    host.render(&mut buf, None);
+    assert_eq!(m.clock_anchor(), None, "no timestamps, no anchor");
+    host.render(&mut buf, at(100));
+    // One untimed callback of 480 frames came first.
+    let want = ClockAnchor {
+        sample: 480,
+        host_ns: 10_000_000 + 5_000_000,
+    };
+    assert_eq!(m.clock_anchor(), Some(want));
+    // An unknown output time leaves the last good anchor.
+    host.render(
+        &mut buf,
+        Some(CallbackTime {
+            callback_ns: 20_000_000,
+            playback_ns: u64::MAX,
+        }),
+    );
+    assert_eq!(m.clock_anchor(), Some(want));
+    host.render(&mut buf, at(300));
+    assert_eq!(
+        m.clock_anchor(),
+        Some(ClockAnchor {
+            sample: 1440,
+            host_ns: 35_000_000
+        })
+    );
+}
+
+/// A reader racing the audio thread never sees a sample from one callback with the time of
+/// another (a torn anchor would put a video frame up to a callback off).
+#[test]
+fn a_racing_reader_never_sees_a_torn_anchor() {
+    let (_ctl, mixer) = scenario(2);
+    let (mut host, link) = OutputHost::new(mixer, 2);
+    let m = link.monitor();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop = std::sync::Arc::clone(&done);
+    let reader = std::thread::spawn(move || {
+        let mut seen = 0u64;
+        while !stop.load(std::sync::atomic::Ordering::Acquire) {
+            if let Some(a) = m.clock_anchor() {
+                // at(k) puts sample 64*k on host time k*0.1 ms + 5 ms.
+                assert_eq!(a.host_ns, a.sample / 64 * 100_000 + 5_000_000, "{a:?}");
+                seen += 1;
+            }
+        }
+        seen
+    });
+    let mut buf = vec![0.0f32; 64 * 2];
+    for k in 0..200_000u64 {
+        host.render(&mut buf, at(k));
+    }
+    done.store(true, std::sync::atomic::Ordering::Release);
+    assert!(reader.join().unwrap() > 0);
+}
+
 #[test]
 fn no_allocation_on_any_callback_path() {
     let (_ctl, mixer) = scenario(4);
@@ -324,6 +389,10 @@ fn no_allocation_on_any_callback_path() {
     assert_eq!(m.alloc_violations(), 0);
     assert_eq!(m.callback_faults(), 0);
     assert_eq!(m.leaked_mixers(), 0);
+    assert!(
+        m.clock_anchor().is_some(),
+        "the anchor was published on that path"
+    );
     // The callbacks were timed. An allocation in the timing itself is caught by the
     // unit test `an_allocation_in_the_timing_is_counted_in_debug`.
     let load = m.take_engine_load().expect("the callbacks were timed");

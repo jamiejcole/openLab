@@ -168,6 +168,23 @@ windowserver_stalled() {
   ' "$f"
 }
 
+# What the machine's display and power state is, for the job's log: it is not known what stalls the
+# GPU driver on a hosted Mac, and each stall so far has left no record of whether the display had gone
+# to sleep, a screen saver had started or the machine had sat without input. Printed before the tests
+# and again after a failed run, so the two can be compared. Never fails the run.
+machine_state() {
+  {
+    echo "run-mac-tests: machine state ($1):"
+    echo "  uptime: $(uptime 2>/dev/null)"
+    echo "  seconds since last input: $(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }')"
+    echo "  screen saver starts after: $(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null || echo unset) s"
+    echo "  screen saver running: $(pgrep -x ScreenSaverEngine >/dev/null 2>&1 && echo yes || echo no)"
+    pmset -g 2>/dev/null | grep -E 'displaysleep|^ sleep|powernap|hibernatemode' | sed 's/^/  pmset:/'
+    pmset -g assertions 2>/dev/null | grep -E 'PreventUserIdleDisplaySleep|PreventUserIdleSystemSleep|UserIsActive' | head -6 | sed 's/^/  assertion:/'
+    pmset -g log 2>/dev/null | grep -E 'Display is turned|Entering Sleep|Wake from|DarkWake' | tail -6 | sed 's/^/  power log: /'
+  } >&2 || true
+}
+
 # Ends a failed run: HUNG_RC when a test of it hung, else the given code.
 hung=
 give_up() {
@@ -175,10 +192,29 @@ give_up() {
   exit "$1"
 }
 
+# On a hosted runner nobody touches the machine, so its display may sleep or a screen saver may start
+# part-way through the tests. Whether that is what stalls the driver is not known: holding the display
+# awake for the length of the run rules it in or out. The state is printed first, so it shows the
+# machine as the build left it; the report after a failed run names the hold if it took.
+machine_state "before the tests"
+if [ -n "${CI:-}" ] && command -v caffeinate >/dev/null 2>&1; then
+  caffeinate -dimsu -w $$ &
+  # The first hosted runner to print its state already had display sleep off and held, and no screen
+  # saver delay set, so the system default applies (it starts after some minutes without input, and the
+  # runner has none from boot). A screen saver drawing through the same driver is the next candidate:
+  # switch it off for the machine, which GitHub throws away after the job.
+  # Only on GitHub's own hosted machines: the setting outlives the run, so it must never be written on
+  # a developer's Mac or a kept runner, whatever else sets CI.
+  if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
+    defaults -currentHost write com.apple.screensaver idleTime -int 0 2>/dev/null || true
+  fi
+fi
+
 bundles >"$work/before"
 run_watched first "${base[@]}" "$@" test
 rc=$?
 [ "$rc" = 0 ] && exit 0
+machine_state "after a failed run"
 if [ -e "$work/silenced" ]; then
   if windowserver_stalled; then
     echo "::warning title=WindowServer wedged on the runner::the run went silent and a sample shows the window server stuck in the GPU driver (above); re-run the job"

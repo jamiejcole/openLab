@@ -53,8 +53,8 @@ pub use negotiate::{
 };
 pub use offline::OfflineRenderer;
 pub use output::{
-    CallbackTime, DeviceMonitor, ErrorReporter, HostError, HostLink, OutputHost, OutputSample,
-    SCRATCH_FRAMES, StreamErrors,
+    CallbackTime, ClockAnchor, DeviceMonitor, ErrorReporter, HostError, HostLink, OutputHost,
+    OutputSample, SCRATCH_FRAMES, StreamErrors,
 };
 pub use plan::{
     MAX_SLICES, MIN_LOOP_MS, PlanError, Plays, Slice, StreamLink, check_loop_lengths,
