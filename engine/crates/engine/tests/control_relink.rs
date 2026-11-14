@@ -516,6 +516,7 @@ fn a_relinked_cue_gets_its_new_files_lengths() {
         trimmed: Some(0.5),
         duration: Some(0.5),
         channels: Some(1),
+        picture: None,
     };
     assert_eq!(told, vec![expected.clone()]);
     assert_eq!(r.s.control().snapshot().media_durations, vec![expected]);

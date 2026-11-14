@@ -480,6 +480,11 @@ pub struct CueMediaDuration {
     /// routing matrix (AUD-06). Absent with the lengths: not probed, missing or unplayable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channels: Option<u16>,
+    /// A Video cue's file as its probe read it: a video's codec, pixel size, frame rate and
+    /// length, or a still's format and pixel size (`video_probe::ProbeReport`, only `video` or
+    /// `still`). Absent for an Audio cue, and with the lengths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<crate::video_probe::ProbeReport>,
 }
 
 impl RuntimeChange {

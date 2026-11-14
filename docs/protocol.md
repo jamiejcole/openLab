@@ -174,8 +174,9 @@ A `LogEntry`: `time_ms` (wall-clock ms, UTC), `show_time?`, `level`, `kind`, `me
 
 ### Media durations
 
-What an audio cue's file gives it to play, for the Duration column (CL-02): derived from the probe plus trims and slices, never saved. Seconds, rounded down to the millisecond.
+What an Audio or Video cue's file gives it to play, for the Duration column (CL-02): derived from the probe plus trims and slices, never saved. Seconds, rounded down to the millisecond.
 - `file`: whole file. `trimmed`: start trim to end trim, every slice once. `duration`: the cue's action (`trimmed` with every slice's play count); absent when a slice loops until devamped (QLab 5 excludes pre-wait: manual pp. 94-95 and 124). `channels`: 1 to 64 (AUD-06).
+- A Video cue's: `file` is a video's length (absent for a still), `duration` its action (a video's length, a still's typed `duration`; absent for a still shown until stopped), and `picture` its file's format as the probe read it (`{"type":"video","codec","width","height","fps","duration"}` or `{"type":"still","format","width","height"}`, the shapes of the probe line in section 5). No `trimmed` or `channels`.
 - A field is absent when unknown: all while the file is unprobed, missing or unplayable; `trimmed` and `duration` when trims and slices cannot play (`slices_unplayable`).
 - A change with only `cue` means "not known now": the client drops what it held, so a missing file, relink or removed cue never leaves a stale length.
 - They ride the runtime channel, not `cue` upserts: a probe answer is not an edit and would move the revision and unsaved state. A change is sent when the probe answered again, the file went missing, trims, slices, counts or file were edited (after that edit's `model_changed`), or the cue was removed; one `runtime` message per tick.

@@ -115,6 +115,7 @@ fn snapshot() -> Snapshot {
             trimmed: Some(60.0),
             duration: Some(120.0),
             channels: Some(2),
+            picture: None,
         }],
     }
 }
@@ -1092,6 +1093,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                     trimmed: Some(60.25),
                     duration: None,
                     channels: Some(6),
+                    picture: None,
                 }),
                 RuntimeChange::MediaDuration(CueMediaDuration {
                     cue: cue_id(11),
@@ -1099,6 +1101,42 @@ fn fixtures() -> Vec<(String, Sample)> {
                     trimmed: None,
                     duration: None,
                     channels: None,
+                    picture: None,
+                }),
+            ],
+        }),
+    );
+    // A Video cue's lengths and format: a video's, and a still's with its typed duration.
+    add(
+        "runtime_media_duration_video",
+        server(ServerMessage::Runtime {
+            seq: 45,
+            changes: vec![
+                RuntimeChange::MediaDuration(CueMediaDuration {
+                    cue: cue_id(15),
+                    file: Some(12.5),
+                    trimmed: None,
+                    duration: Some(12.5),
+                    channels: None,
+                    picture: Some(openlab_core::video_probe::ProbeReport::Video {
+                        codec: openlab_core::video_probe::VideoCodec::ProRes,
+                        width: 1920,
+                        height: 1080,
+                        fps: 25.0,
+                        duration: 12.5,
+                    }),
+                }),
+                RuntimeChange::MediaDuration(CueMediaDuration {
+                    cue: cue_id(16),
+                    file: None,
+                    trimmed: None,
+                    duration: Some(5.0),
+                    channels: None,
+                    picture: Some(openlab_core::video_probe::ProbeReport::Still {
+                        format: openlab_core::video_probe::StillFormat::Png,
+                        width: 3840,
+                        height: 2160,
+                    }),
                 }),
             ],
         }),

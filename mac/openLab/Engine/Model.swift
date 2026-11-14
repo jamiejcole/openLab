@@ -155,6 +155,8 @@ struct CueMediaDuration: Hashable, Sendable, Decodable {
     let duration: Double?
     /// How many channels the probed file has, as the engine sent it (nil: not known).
     let channels: Int?
+    /// A Video cue's file as its probe read it (nil for an Audio cue, or not known).
+    var picture: PictureFormat? = nil
 
     /// The length the Duration column and field show: the cue's own `duration`, or for a cue that loops
     /// until devamped (none sent) one pass through its slices, so it never reads as an unprobed file.
@@ -165,6 +167,19 @@ struct CueMediaDuration: Hashable, Sendable, Decodable {
     var fileChannels: Int? {
         channels.flatMap { (1...LevelSet.maxInputs).contains($0) ? $0 : nil }
     }
+}
+
+/// A Video cue's file as the engine's probe read it: a video (`type` "video": codec `h264`, `hevc`
+/// or `prores`, frame rate and length) or a still (`type` "still": format `png`, `jpeg` or
+/// `tiff`), each with its pixel size.
+struct PictureFormat: Hashable, Sendable, Decodable {
+    let type: String
+    let codec: String?
+    let format: String?
+    let width: Int
+    let height: Int
+    let fps: Double?
+    let duration: Double?
 }
 
 struct CueList: Hashable, Sendable, Decodable {

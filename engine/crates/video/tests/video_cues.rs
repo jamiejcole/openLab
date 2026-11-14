@@ -599,3 +599,67 @@ fn a_stage_host_killed_mid_play_shows_the_picture_again_when_relaunched() {
     let now = shown(&mut s).expect("the picture is back");
     assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played} s");
 }
+
+/// What the app is told of a Video cue's file: a video's length and format (codec, pixel size,
+/// frame rate), a still's format and size with its typed duration (none: until stopped), and
+/// nothing for a file that does not play.
+#[test]
+fn clients_are_told_a_video_cues_length_and_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = make(dir.path(), "clip.mov", "prores", Some((50, 25)));
+    let png = make(dir.path(), "card.png", "png", None);
+    let gone = dir.path().join("gone.mov");
+    let mut s = video_show(vec![
+        video_cue(1, Some(&movie)),
+        still_cue(2, &png, Some(5.0)),
+        still_cue(3, &png, None),
+        video_cue(4, Some(&gone)),
+    ]);
+    let told = s.control().snapshot().media_durations;
+    let of = |n: u128| told.iter().find(|m| m.cue == id(n)).cloned();
+    let video = of(1).expect("the movie's lengths");
+    assert_eq!((video.file, video.duration), (Some(2.0), Some(2.0)));
+    assert!(matches!(
+        video.picture,
+        Some(ProbeReport::Video {
+            codec: VideoCodec::ProRes,
+            width: 288,
+            height: 160,
+            ..
+        })
+    ));
+    let still = of(2).expect("the still's");
+    assert_eq!((still.file, still.duration), (None, Some(5.0)));
+    assert!(matches!(
+        still.picture,
+        Some(ProbeReport::Still {
+            format: StillFormat::Png,
+            ..
+        })
+    ));
+    let until_stopped = of(3).expect("the untimed still's");
+    assert_eq!(until_stopped.duration, None);
+    assert!(until_stopped.picture.is_some());
+    assert!(of(4).is_none_or(|m| m.picture.is_none() && m.duration.is_none()));
+    // A duration typed on the still is told at once.
+    s.take_outbound();
+    let request = s.request_id();
+    let kind = still_cue(3, &png, Some(2.5)).kind;
+    s.send(ClientMessage::Command {
+        id: request,
+        command: Box::new(openlab_core::Command::SetCueProperty {
+            id: id(3),
+            property: openlab_core::CueProperty::Kind { value: kind },
+        }),
+        coalesce: None,
+    });
+    s.run(BLOCK);
+    let changed = s.control().snapshot().media_durations;
+    assert_eq!(
+        changed
+            .iter()
+            .find(|m| m.cue == id(3))
+            .and_then(|m| m.duration),
+        Some(2.5)
+    );
+}
