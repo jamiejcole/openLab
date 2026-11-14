@@ -158,7 +158,7 @@ pub enum CueProperty {
         value: Vec<OscArg>,
     },
     /// Only for Wait and Fade cues: how long the action lasts, in seconds (CUE-02, CT-20, CT-10).
-    /// Finite, from 0 to `MAX_TIME`. A running cue keeps the end it had when its action started.
+    /// Finite, from 0 to `MAX_TIME`. A running Wait or Fade takes the new duration from its start.
     Duration {
         value: f64,
     },

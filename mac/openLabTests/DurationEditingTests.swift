@@ -294,7 +294,9 @@ final class InspectorDurationTests: XCTestCase {
         XCTAssertEqual(vc.messageLabel.stringValue, "")
         guard case .success = await rig.store.goFrom(list: TestSnapshots.mainList, cue: DurationEditingTests.load)
         else { return XCTFail("go") }
-        await assertEventually("the target is loaded") { self.rig.store.cueStates[CueListHarness.intro]?.state == .loaded }
+        await assertEventually("the target is loaded") {
+            self.rig.store.cueStates[CueListHarness.intro]?.state == .loaded
+        }
     }
 
     /// Flow: a Wait cue's post-wait follows its duration (QLab 5, manual p. 688). The post-wait
