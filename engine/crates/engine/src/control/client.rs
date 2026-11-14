@@ -143,17 +143,21 @@ impl Control {
                 }
                 // A snapshot (the one a connection gets when it binds, too) is followed by the
                 // doc's video outputs, which are the engine's and not in the snapshot. They go
-                // out as a broadcast at the next tick, never as a reply: a connection writes
-                // broadcasts ahead of replies, so a reply could land after a newer push.
+                // out as a broadcast, never as a reply: a connection writes broadcasts ahead of
+                // replies, so a reply could land after a newer push. And at once, not at the
+                // next tick: a message taken in the same wake (the client's first GO) would
+                // otherwise put its broadcasts first, and where the push lands would depend on
+                // how quickly the client spoke.
                 ClientMessage::Request {
                     request: Request::Snapshot,
                     ..
                 } if self.cx_of(doc).is_some() => {
-                    self.eng.stages.push_now();
-                    match self.cx_of(doc) {
+                    let flow = match self.cx_of(doc) {
                         Some(mut cx) => cx.client(message, to),
                         None => no_doc(message, to),
-                    }
+                    };
+                    self.push_doc_video_outputs(doc);
+                    flow
                 }
                 message => match self.cx_of(doc) {
                     Some(mut cx) => cx.client(message, to),

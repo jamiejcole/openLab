@@ -128,6 +128,36 @@ fn an_added_cue_is_probed_and_plays() {
     assert_eq!(s.control().engine().unsignalled_model_changes(), 0);
 }
 
+/// #676: a snapshot's `video_outputs` goes out with the snapshot, before anything handled after
+/// it in the same wake. A client's first GO taken in before the loop ticks must not put its
+/// broadcasts ahead of the push, or the order a client sees depends on how quickly it spoke.
+#[test]
+fn a_snapshot_pushes_its_video_outputs_before_a_go_taken_in_the_same_wake() {
+    let path = wav(&dc(4000, 0.5));
+    let mut s = show(workspace(vec![audio(1, &path, 0)]));
+    s.settle_media();
+    s.tick();
+    s.take_outbound();
+    let id1 = s.request_id();
+    s.send(ClientMessage::Request {
+        id: id1,
+        request: Request::Snapshot,
+    });
+    go(&mut s);
+    s.tick();
+    let out = s.take_outbound();
+    let pushes: Vec<usize> = (out.iter().enumerate())
+        .filter(|(_, m)| matches!(m, ServerMessage::VideoOutputs { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(pushes, [0], "one push, first: {out:?}");
+    assert!(
+        out.iter()
+            .any(|m| matches!(m, ServerMessage::Runtime { .. })),
+        "the GO's runtime: {out:?}"
+    );
+}
+
 #[test]
 fn a_refused_command_changes_nothing() {
     let mut s = show(workspace(vec![]));
