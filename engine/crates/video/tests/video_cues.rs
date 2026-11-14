@@ -201,7 +201,16 @@ fn video_show_of(ws: Workspace) -> OfflineShow {
 }
 
 /// As [`video_show_of`], the stage host given `extra` arguments too.
-fn video_show_args(mut ws: Workspace, extra: &[&str]) -> OfflineShow {
+fn video_show_args(ws: Workspace, extra: &[&str]) -> OfflineShow {
+    video_show_host(ws, extra, |_| {})
+}
+
+/// As [`video_show_args`], the stage host's supervision changed by `tweak`.
+fn video_show_host(
+    mut ws: Workspace,
+    extra: &[&str],
+    tweak: impl FnOnce(&mut StageHostConfig),
+) -> OfflineShow {
     let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
     stage.keep_black = true;
     ws.stages = vec![stage];
@@ -209,6 +218,7 @@ fn video_show_args(mut ws: Workspace, extra: &[&str]) -> OfflineShow {
     let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
     host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
     host.args.extend(extra.iter().map(|a| (*a).to_owned()));
+    tweak(&mut host);
     c.stage_host = Some(host);
     let mut s = show_with(ws, c);
     s.settle_stages();
@@ -1058,37 +1068,124 @@ fn probe_through_crashes(s: &mut OfflineShow, pids: &mut Vec<u32>) {
     }
 }
 
-/// A file that crashes the stage host while it opens (its first frame decoded) is not sent to
-/// the next stage host: its cue breaks after that one crash, and the other cue's picture comes
-/// back on the next stage host and plays on.
+/// Plays on through stage host crashes, drawing the stage every quarter second (so pictures
+/// are decoded), until cue `n` is broken; the stage host pids seen are in `pids`.
+fn play_until_broken(s: &mut OfflineShow, n: u128, pids: &mut Vec<u32>) -> bool {
+    for _ in 0..120 {
+        if state(s, n) == CueState::Broken {
+            return true;
+        }
+        probe_through_crashes(s, pids);
+        s.run(samples(0.25));
+        s.wait_for(|c| c.stages_settled());
+    }
+    state(s, n) == CueState::Broken
+}
+
+/// After a run of crashes: the stage host stays up for `seconds` more of playing, drawing
+/// every quarter second.
+fn stays_up(s: &mut OfflineShow, seconds: f64) {
+    let pid = s.control().stage_host_pid();
+    let until = s.now() + samples(seconds);
+    while s.now() < until {
+        shown(s);
+        s.run(samples(0.25));
+    }
+    assert_eq!(
+        s.control().stage_host_pid(),
+        pid,
+        "the stage host crashed again"
+    );
+}
+
+/// A file that crashes the stage host as it opens (its first frame decoded) while a good movie
+/// plays is isolated: the two are held back and tried one at a time, so only the bad file's cue
+/// breaks, and the good movie comes back in step and plays on.
 #[test]
-fn a_picture_that_crashes_the_stage_host_as_it_opens_is_not_sent_again() {
+fn a_picture_that_crashes_the_stage_host_as_it_opens_breaks_only_its_cue() {
     let dir = tempfile::tempdir().unwrap();
-    let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
+    let good = make(dir.path(), "good.mov", "h264", Some((500, 25)));
     let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
     let mut s = video_show_of(ws);
-    let pid = s.control().stage_host_pid().unwrap();
+    let mut pids = vec![s.control().stage_host_pid().unwrap()];
     let at = start(&mut s, 1);
     run_to(&mut s, at + samples(0.2));
     shown(&mut s).expect("cue 1 shown");
     start(&mut s, 2);
-    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
-    s.settle_stages();
-    assert!(wait_broken(&mut s, 2));
-    let next = s.control().stage_host_pid().unwrap();
-    run_to(&mut s, at + samples(2.0));
+    assert!(play_until_broken(&mut s, 2, &mut pids), "{pids:?}");
+    stays_up(&mut s, 6.0);
     let played = (s.now() - at) as f64 / f64::from(RATE);
-    let now = shown(&mut s).expect("the other picture is back");
+    let now = shown(&mut s).expect("the good picture is back");
     assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
-    assert_eq!(s.control().stage_host_pid(), Some(next), "no second crash");
     assert_eq!(state(&s, 1), CueState::Running);
 }
 
-/// A file that crashes the stage host later, decoding a frame after its open, is sent again
-/// once; a second crash while it is up within a minute of that fails what was up then (the
-/// culprit cannot be told from the others), so video output carries on: the next stage host
-/// stays up and the next GO plays.
+/// A movie that crashes the stage host decoding a frame after its open, while a good movie
+/// plays: both are suspects, so after a second crash they are tried one at a time, and only
+/// the crashing one's cue breaks.
+#[test]
+fn of_two_movies_playing_only_the_one_crashing_the_stage_host_breaks() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = make(dir.path(), "good.mov", "h264", Some((500, 25)));
+    let bomb = faulty(dir.path(), &good, "openlab-test-crash-decode");
+    let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
+    let mut s = video_show_of(ws);
+    let mut pids = vec![s.control().stage_host_pid().unwrap()];
+    // The bomb first, so the good movie is drawn on top and its frame read.
+    start(&mut s, 2);
+    let at = start(&mut s, 1);
+    s.wait_for(|c| c.pictures_opened() == 2);
+    assert!(play_until_broken(&mut s, 2, &mut pids), "{pids:?}");
+    stays_up(&mut s, 6.0);
+    let played = (s.now() - at) as f64 / f64::from(RATE);
+    let now = shown(&mut s).expect("the good picture is back");
+    assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
+    assert_eq!(state(&s, 1), CueState::Running);
+}
+
+/// A stage host killed from outside, or by the supervisor for not answering, has not crashed:
+/// however often it happens, every picture (a movie and a still) comes back on the next one.
+#[test]
+fn pictures_come_back_after_stage_hosts_killed_again_and_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = make(dir.path(), "clip.mov", "h264", Some((500, 25)));
+    let png = make(dir.path(), "card.png", "png", None);
+    let ws = workspace(vec![still_cue(1, &png, None), video_cue(2, Some(&movie))]);
+    let mut s = video_show_host(ws, &[], |host| {
+        host.ping_every = Duration::from_millis(50);
+        host.answer_within = Duration::from_millis(300);
+    });
+    start(&mut s, 1);
+    let at = start(&mut s, 2);
+    s.run(BLOCK);
+    for round in 0..4 {
+        let pid = s.control().stage_host_pid().unwrap();
+        if round % 2 == 0 {
+            let killed = Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status()
+                .unwrap();
+            assert!(killed.success());
+        } else {
+            s.control_mut().hang_stage_host();
+        }
+        assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
+        s.settle_stages();
+        s.run(samples(0.5));
+        assert_eq!(state(&s, 1), CueState::Running, "round {round}");
+        assert_eq!(state(&s, 2), CueState::Running, "round {round}");
+        let played = (s.now() - at) as f64 / f64::from(RATE);
+        let now = shown(&mut s).expect("the movie is back");
+        assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
+    }
+    assert_eq!(s.control().pictures_live(), 2);
+}
+
+/// A movie that crashes the stage host decoding a frame after its open, playing alone, is
+/// sent again once; at a second crash it is the only picture that was decoding both times, so
+/// its cue breaks; video output carries on: the next stage host stays up and the next GO
+/// plays.
 #[test]
 fn a_picture_that_crashes_the_stage_host_twice_is_not_sent_a_third_time() {
     let dir = tempfile::tempdir().unwrap();

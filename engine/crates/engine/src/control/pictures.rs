@@ -62,13 +62,21 @@ struct Live {
     /// Its action's length in seconds (a video's, a still's typed duration), if it has one.
     length: Option<f64>,
     still: bool,
-    /// When it was last sent again to a stage host that started after one stopped.
-    resent: Option<SampleTime>,
+    /// How many stage host crashes it was decoding at (or still opening) within
+    /// `SUSPECT_WINDOW_S`, and when the first of them was.
+    suspected: u32,
+    suspected_at: Option<SampleTime>,
+    /// Kept off the stage host until it is tried alone (`try_held_back_pictures`).
+    held_back: bool,
+    /// Sent again alone from the hold-back on this sample: a crash before
+    /// `PROBATION_S` has passed is its doing.
+    trial: Option<SampleTime>,
 }
 
-/// A picture sent again after a stage host stopped, up when the next one stops within this
-/// long, is not sent a third time: it may be what stops them.
-const RESEND_WINDOW_S: f64 = 60.0;
+/// Crashes this far apart count as one run of crashes for the pictures decoding at them.
+const SUSPECT_WINDOW_S: f64 = 60.0;
+/// How long a picture tried alone after a hold-back must stay up without a crash to be cleared.
+const PROBATION_S: f64 = 5.0;
 
 /// A run whose picture waits for its file's probe: nothing is on the stage host yet.
 struct Held {
@@ -176,10 +184,8 @@ impl Engine {
         if self.pictures.live.is_empty() {
             return;
         }
-        let now = self.now();
         for l in self.pictures.live.values_mut() {
             l.opened = false;
-            l.resent = Some(now);
         }
         self.pictures.clock_sent = None;
         self.picture_clock(true);
@@ -187,6 +193,7 @@ impl Engine {
             .pictures
             .live
             .values()
+            .filter(|l| !l.held_back)
             .flat_map(|l| {
                 let now = l.now.as_ref().filter(|n| Some(*n) != l.first.as_ref());
                 std::iter::once(l.load.clone())
@@ -206,30 +213,119 @@ impl Engine {
         }
     }
 
-    /// The stage host stopped (it crashed, hung or was killed). A picture it was still opening,
-    /// or one it was sent again after the last stop not long ago, may be what stopped it (a
-    /// hostile file crashing the decoder): it is not sent to the next stage host, which would
-    /// stop the same way, and its cue breaks. The others come back when the next one starts.
-    pub(super) fn pictures_host_stopped(&mut self) {
+    /// The stage host stopped. Only a crash of its own (`crashed`: not a kill by the
+    /// supervisor or from outside) can have been caused by a picture's file, and only by one
+    /// it was opening or decoding then: one not yet open, or a movie playing (a still once open,
+    /// and a movie paused or not yet played, have no decoder running). Those are suspects.
+    /// - One tried alone after a hold-back (`trial`) when the crash came is the culprit: its
+    ///   cue breaks.
+    /// - A suspect at a second crash within `SUSPECT_WINDOW_S`, if it is the only one, is the
+    ///   culprit too. If several are, they are held back (kept off the stage host, their cues
+    ///   running unseen) and tried again one at a time, the earliest suspected last
+    ///   (`try_held_back_pictures`), so the bad file ends up alone and only its cue breaks.
+    /// - Everything else is sent to the next stage host.
+    pub(super) fn pictures_host_stopped(&mut self, crashed: bool) {
+        for l in self.pictures.live.values_mut() {
+            l.trial = l.trial.filter(|_| crashed);
+        }
+        if !crashed {
+            return;
+        }
         let now = self.now();
-        let window = seconds_to_samples(RESEND_WINDOW_S, self.rate);
-        let suspects: Vec<(u64, &'static str)> = self
+        let window = seconds_to_samples(SUSPECT_WINDOW_S, self.rate);
+        let probation = seconds_to_samples(PROBATION_S, self.rate);
+        let on_trial: Vec<u64> = self
             .pictures
             .live
             .iter()
-            .filter(|(_, l)| l.ends.is_none())
-            .filter_map(|(id, l)| {
-                if !l.opened {
-                    Some((*id, "the video output stopped while it opened the file"))
-                } else if l.resent.is_some_and(|t| now.saturating_sub(t) < window) {
-                    Some((*id, "the video output stopped twice while it was shown"))
-                } else {
-                    None
-                }
-            })
+            .filter(|(_, l)| l.trial.is_some_and(|t| now.saturating_sub(t) < probation))
+            .map(|(id, _)| *id)
             .collect();
-        for (picture, reason) in suspects {
-            self.picture_failed(picture, reason.to_owned());
+        if !on_trial.is_empty() {
+            for picture in on_trial {
+                self.picture_failed(
+                    picture,
+                    "the video output crashed while it played this file".to_owned(),
+                );
+            }
+            return;
+        }
+        let mut repeat = Vec::new();
+        for (id, l) in &mut self.pictures.live {
+            l.trial = None;
+            let decoding = !l.opened || (!l.still && matches!(l.motion, Some((Some(_), _))));
+            if !decoding || l.held_back {
+                continue;
+            }
+            if l.suspected_at
+                .is_none_or(|t| now.saturating_sub(t) >= window)
+            {
+                l.suspected = 0;
+                l.suspected_at = Some(now);
+            }
+            l.suspected += 1;
+            if l.suspected >= 2 {
+                repeat.push(*id);
+            }
+        }
+        match repeat.as_slice() {
+            [] => {}
+            [culprit] => self.picture_failed(
+                *culprit,
+                "the video output crashed twice while it played this file".to_owned(),
+            ),
+            several => {
+                for id in several {
+                    if let Some(l) = self.pictures.live.get_mut(id) {
+                        l.held_back = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Each tick: a picture held back after crashes is sent again alone once the stage host
+    /// is up and no other is on trial, the latest suspected first; one whose trial passed
+    /// without a crash is cleared.
+    pub(super) fn try_held_back_pictures(&mut self, now: SampleTime) {
+        let probation = seconds_to_samples(PROBATION_S, self.rate);
+        let mut trying = false;
+        for l in self.pictures.live.values_mut() {
+            match l.trial {
+                Some(t) if now.saturating_sub(t) >= probation => {
+                    l.trial = None;
+                    l.suspected = 0;
+                    l.suspected_at = None;
+                }
+                Some(_) => trying = true,
+                None => {}
+            }
+        }
+        if trying || !self.stages.up {
+            return;
+        }
+        let next = self
+            .pictures
+            .live
+            .iter()
+            .filter(|(_, l)| l.held_back)
+            .max_by_key(|(id, l)| (l.suspected_at, **id))
+            .map(|(id, _)| *id);
+        let Some(id) = next else { return };
+        let Some(l) = self.pictures.live.get_mut(&id) else {
+            return;
+        };
+        l.held_back = false;
+        l.trial = Some(now);
+        l.opened = false;
+        let now_msg = l.now.as_ref().filter(|n| Some(*n) != l.first.as_ref());
+        let messages: Vec<ToStage> = std::iter::once(l.load.clone())
+            .chain(l.first.clone())
+            .chain(now_msg.cloned())
+            .collect();
+        self.picture_clock(true);
+        for m in messages {
+            self.picture(m);
         }
     }
 
@@ -665,7 +761,10 @@ impl DocCx<'_> {
                 now: None,
                 ends: None,
                 opened: false,
-                resent: None,
+                suspected: 0,
+                suspected_at: None,
+                held_back: false,
+                trial: None,
                 motion: None,
                 length,
                 still,

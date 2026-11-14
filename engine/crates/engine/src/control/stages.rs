@@ -41,7 +41,7 @@ type DocStages = (DocId, Vec<openlab_core::Stage>);
 pub(super) struct Stages {
     host: Option<StageHost>,
     /// The stage host has answered `hello` and not stopped since.
-    up: bool,
+    pub(super) up: bool,
     /// Its process id, from that `hello`.
     pid: Option<u32>,
     /// What its `hello` said; `None` before the first.
@@ -369,12 +369,16 @@ impl Control {
                 }
                 self.eng.stages.states.insert(stage, state);
             }
-            StageEvent::Stopped { reason, restarting } => {
+            StageEvent::Stopped {
+                reason,
+                restarting,
+                crashed,
+            } => {
                 let s = &mut self.eng.stages;
                 s.up = false;
                 s.pid = None;
                 s.states.clear();
-                self.eng.pictures_host_stopped();
+                self.eng.pictures_host_stopped(crashed);
                 if restarting {
                     self.eng.log(
                         LogLevel::Warn,

@@ -21,7 +21,7 @@
 use std::collections::VecDeque;
 use std::io::{BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -112,6 +112,9 @@ pub enum StageEvent {
     Stopped {
         reason: String,
         restarting: bool,
+        /// It ended by itself in a crash (a fault signal, or a failing exit status), not
+        /// killed by the supervisor or from outside: something it was doing may have caused it.
+        crashed: bool,
     },
     /// For the show log.
     Log {
@@ -420,7 +423,7 @@ impl Supervisor {
             return self.stop("it sent more than it may".into());
         }
         let message = match line {
-            FromChild::End => return self.stop("it exited".into()),
+            FromChild::End => return self.ended(),
             FromChild::Bad(why) => {
                 r.bad += 1;
                 if r.bad <= MAX_BAD_LINES_LOGGED {
@@ -540,7 +543,29 @@ impl Supervisor {
         self.stopped(reason);
     }
 
+    /// The stage host's output ended: it exited by itself (or closed its output, and is then
+    /// killed). How it exited says whether it crashed.
+    fn ended(&mut self) {
+        let Some(r) = self.running.take() else {
+            return self.stopped("it exited".into());
+        };
+        let mut child = r.child;
+        let status = exit_status(&mut child);
+        reap(child, status.is_none());
+        match status {
+            Some(status) if crashed(status) => {
+                self.stopped_how(format!("it crashed ({status})"), true);
+            }
+            Some(status) => self.stopped(format!("it exited ({status})")),
+            None => self.stopped("it closed its output".into()),
+        }
+    }
+
     fn stopped(&mut self, reason: String) {
+        self.stopped_how(reason, false);
+    }
+
+    fn stopped_how(&mut self, reason: String, crashed: bool) {
         // Starts long ago (a crash loop at load-in, then an hour's healthy run) do not count
         // against a crash now: it is relaunched at once.
         let now = self.config.clock.now();
@@ -549,7 +574,11 @@ impl Supervisor {
         if !restarting && !self.incompatible {
             self.paused_until = Some(now + self.config.retry_after);
         }
-        (self.events)(StageEvent::Stopped { reason, restarting });
+        (self.events)(StageEvent::Stopped {
+            reason,
+            restarting,
+            crashed,
+        });
     }
 
     /// Asks the stage host to quit, then kills what is left.
@@ -561,6 +590,46 @@ impl Supervisor {
             reap(r.child, false);
         }
     }
+}
+
+/// How long the supervisor waits, once a stage host's output has closed, for it to have
+/// exited: a process exiting closes its output as it goes.
+const EXIT_WAIT: Duration = Duration::from_millis(200);
+
+/// `child`'s exit status, if it exits within [`EXIT_WAIT`].
+fn exit_status(child: &mut Child) -> Option<ExitStatus> {
+    let deadline = Instant::now() + EXIT_WAIT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(None) | Err(_) => return None,
+        }
+    }
+}
+
+/// Whether a stage host that exited with `status` crashed: a fault signal (a bad memory
+/// access, an abort, an illegal instruction, an arithmetic or trap fault) or a failing exit
+/// status (a panic). A kill from outside (SIGKILL, SIGTERM: an operator, the system freeing
+/// memory) is not a crash of its own.
+fn crashed(status: ExitStatus) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            // SIGILL, SIGTRAP, SIGABRT, SIGFPE, SIGSEGV, then SIGBUS and SIGSYS, whose numbers
+            // differ between macOS and Linux.
+            let bus_sys: [i32; 2] = if cfg!(target_os = "linux") {
+                [7, 31]
+            } else {
+                [10, 12]
+            };
+            return [4, 5, 6, 8, 11].contains(&signal) || bus_sys.contains(&signal);
+        }
+    }
+    status.code().is_some_and(|c| c != 0)
 }
 
 /// Waits for `child` on a thread of its own (a process stuck in the kernel must not hold the
@@ -687,5 +756,25 @@ fn forward_stderr(stderr: impl std::io::Read, events: &EventSink) {
             }
             Ok(Line::Read) => {}
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    /// A fault signal or a failing exit is a crash; a kill from outside or a clean exit is not.
+    #[test]
+    fn only_a_fault_or_a_failing_exit_is_a_crash() {
+        // Raw wait statuses: a signal in the low bits, an exit code in the next byte.
+        for signal in [4, 5, 6, 8, 11] {
+            assert!(crashed(ExitStatus::from_raw(signal)), "signal {signal}");
+        }
+        assert!(crashed(ExitStatus::from_raw(101 << 8)), "a panic's exit");
+        for signal in [9, 15, 2] {
+            assert!(!crashed(ExitStatus::from_raw(signal)), "signal {signal}");
+        }
+        assert!(!crashed(ExitStatus::from_raw(0)));
     }
 }

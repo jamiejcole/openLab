@@ -45,6 +45,7 @@ impl Control {
         self.sync_stages();
         let now = self.eng.now();
         self.eng.prune_pictures(now);
+        self.eng.try_held_back_pictures(now);
         self.eng.picture_clock(false);
         self.eng.flush_report_lines();
         self.push_video_outputs();
