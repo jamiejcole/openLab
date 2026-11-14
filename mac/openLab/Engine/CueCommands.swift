@@ -18,8 +18,8 @@ enum NewCueKind: String, CaseIterable, Sendable {
     /// flow through crosspoint (1,1)). Core's crosspoints are sparse, so a cue sent with none plays
     /// silent. A mono file plays on output 1 alone; inputs beyond the file's channels are ignored by
     /// the mixer. The engine plays this exact message in its tests (client/command_add_new_audio_cue).
-    /// A Video cue starts on `stage` (the workspace's first stage, QLab 5 p. 211's default stage),
-    /// with no file and no duration; with no stage it is sent with none and shows broken.
+    /// A Video cue starts on `stage` (the caller gives the workspace's first stage: QLab 5 p. 212
+    /// names no default), with no file and no duration; with no stage it has none and shows broken.
     func kindJSON(patch: ModelObject?, networkPatch: ModelObject? = nil, stage: ModelID? = nil) -> JSONValue? {
         let fade = JSONValue.object(["duration": .double(0), "curve": .string("linear")])
         var fields: [String: JSONValue] = ["type": .string(wireType)]
