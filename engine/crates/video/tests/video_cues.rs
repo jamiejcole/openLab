@@ -1169,41 +1169,97 @@ fn of_two_movies_playing_only_the_one_crashing_the_stage_host_breaks() {
     assert_eq!(state(&s, 1), CueState::Running);
 }
 
+/// The stage host supervisor's clock, moved by hand: its pings, answer times and restart
+/// counts see only the time the test gives them.
+struct HandClock(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl HandClock {
+    /// The clock, and its setting for a stage host config.
+    fn new() -> (Self, openlab_engine::stage::StageClock) {
+        let base = std::time::Instant::now();
+        let ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let reading = std::sync::Arc::clone(&ms);
+        let clock = openlab_engine::stage::StageClock::from_fn(move || {
+            base + Duration::from_millis(reading.load(std::sync::atomic::Ordering::SeqCst))
+        });
+        (Self(ms), clock)
+    }
+
+    /// Moves it on by `seconds`, and wakes the supervisor (a routine clock of the engine's).
+    fn advance(&self, s: &mut OfflineShow, seconds: u64) {
+        self.0
+            .fetch_add(seconds * 1000, std::sync::atomic::Ordering::SeqCst);
+        s.run(samples(0.02));
+    }
+}
+
 /// A stage host killed from outside, or by the supervisor for not answering, has not crashed:
-/// however often it happens, every picture (a movie and a still) comes back on the next one.
+/// each time, every picture (a movie and a still) comes back on the next one. At the restart
+/// limit (5 starts within a minute of the supervisor's clock) video output pauses, the cues
+/// running on, and after the retry time it starts again with the pictures shown.
 #[test]
-fn pictures_come_back_after_stage_hosts_killed_again_and_again() {
+fn pictures_come_back_after_kills_and_after_the_pause_at_the_restart_limit() {
     let dir = tempfile::tempdir().unwrap();
-    let movie = make(dir.path(), "clip.mov", "h264", Some((500, 25)));
+    let movie = make(dir.path(), "clip.mov", "h264", Some((1500, 25)));
     let png = make(dir.path(), "card.png", "png", None);
     let ws = workspace(vec![still_cue(1, &png, None), video_cue(2, Some(&movie))]);
+    let (hand, clock) = HandClock::new();
     let mut s = video_show_host(ws, &[], |host| {
-        host.ping_every = Duration::from_millis(50);
-        host.answer_within = Duration::from_millis(300);
+        host.clock = clock;
+        host.max_restarts = 5;
+        host.restart_window = Duration::from_secs(60);
+        host.retry_after = Duration::from_secs(30);
     });
     start(&mut s, 1);
     let at = start(&mut s, 2);
     s.run(BLOCK);
-    for round in 0..4 {
-        let pid = s.control().stage_host_pid().unwrap();
-        if round % 2 == 0 {
-            let killed = Command::new("kill")
-                .args(["-9", &pid.to_string()])
-                .status()
-                .unwrap();
-            assert!(killed.success());
-        } else {
-            s.control_mut().hang_stage_host();
-        }
-        assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
+    let back = |s: &mut OfflineShow, round: &str| {
         s.settle_stages();
         s.run(samples(0.5));
-        assert_eq!(state(&s, 1), CueState::Running, "round {round}");
-        assert_eq!(state(&s, 2), CueState::Running, "round {round}");
+        assert_eq!(state(s, 1), CueState::Running, "{round}");
+        assert_eq!(state(s, 2), CueState::Running, "{round}");
         let played = (s.now() - at) as f64 / f64::from(RATE);
-        let now = shown(&mut s).expect("the movie is back");
-        assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
+        let now = shown(s).expect("the movie is back");
+        assert!(
+            now.abs_diff(frame_at(played)) <= 1,
+            "{round}: {now} at {played}"
+        );
+    };
+    let kill = |s: &mut OfflineShow| {
+        let pid = s.control().stage_host_pid().unwrap();
+        let killed = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        pid
+    };
+    // Four stops: two kills from outside, two hangs the supervisor kills.
+    for round in 0..4 {
+        let pid = if round % 2 == 0 {
+            kill(&mut s)
+        } else {
+            let pid = s.control().stage_host_pid().unwrap();
+            s.control_mut().hang_stage_host();
+            // The next ping goes out, and is not answered in time.
+            hand.advance(&mut s, 1);
+            hand.advance(&mut s, 6);
+            pid
+        };
+        assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
+        back(&mut s, &format!("round {round}"));
     }
+    // A fifth stop within the minute: video output pauses; the cues run on.
+    let pid = kill(&mut s);
+    assert!(s.wait_for(|c| c.stage_host_pid().is_none_or(|p| p != pid)));
+    s.run(samples(0.5));
+    assert_eq!(s.control().stage_host_pid(), None, "paused, not restarted");
+    assert_eq!(state(&s, 2), CueState::Running);
+    assert_eq!(s.control().pictures_live(), 2);
+    // After the retry time it starts again, with the pictures.
+    hand.advance(&mut s, 31);
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some()));
+    back(&mut s, "after the pause");
     assert_eq!(s.control().pictures_live(), 2);
 }
 
