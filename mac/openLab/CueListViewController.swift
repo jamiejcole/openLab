@@ -1698,7 +1698,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             // with the action in every continue mode, not only when the engine times a post-wait.
             if column == "postWait", cue.kindType == "wait", let p = store.progress[cue.id], let left = p.remaining {
                 text(CueTime.running(timeShown[column] == .full ? p.elapsed : left))
-                if cue.raw["continue_mode"]?.stringValue == "auto_follow" { cell.label.textColor = .secondaryLabelColor }
+                if cue.raw["continue_mode"]?.stringValue == "auto_follow" {
+                    cell.label.textColor = .secondaryLabelColor
+                }
                 break
             }
             // An auto-follow cue goes on when it ends: its post-wait reads its duration (QLab 5).
