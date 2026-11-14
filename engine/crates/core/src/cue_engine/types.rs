@@ -189,9 +189,18 @@ pub enum Input {
     /// top, as `ActionLength` would give it at a start with no offset), `None` when it is not
     /// known (not probed, no playable plan) or the cue loops forever. Sent for every Audio cue
     /// whose length changed (edit, probe answer, a newly opened workspace), and `None` for a cue
-    /// that went away. Only a playlist that halts on a broken child uses it, to time its
-    /// auto-follow (QLab check Q2); the core cannot plan audio.
+    /// that went away. The core cannot plan audio, so it uses these for a playlist that halts on
+    /// a broken child (timing its auto-follow, QLab check Q2), for a playlist's or random
+    /// group's nominal span at a load to time, and for a Load cue's negative time (counted back
+    /// from the target's end).
     CueLengths {
+        lengths: Vec<(CueId, Option<SampleTime>)>,
+    },
+    /// From the binary: one pass of each Audio cue's trimmed range in samples (every slice
+    /// once), `None` when not known or for a cue that went away. A Load cue's negative time
+    /// counts back from it when the cue loops forever (no `CueLengths` entry), as QLab 5 counts
+    /// back from one pass. Sent like `CueLengths`.
+    CuePassLengths {
         lengths: Vec<(CueId, Option<SampleTime>)>,
     },
     /// From the binary: Audio cues whose trims, slice markers and play counts cannot be played

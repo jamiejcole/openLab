@@ -27,6 +27,26 @@ fn wait(n: u128, seconds: f64) -> openlab_core::Cue {
     cue(n, CueKind::Wait { duration: seconds })
 }
 
+/// A silent cue that acts for `seconds` with a post-wait of its own: a Fade cue on an idle empty
+/// group (it runs its duration and changes nothing). A Wait cue's post-wait is its duration.
+fn fade_on_idle(n: u128, target: u128, seconds: f64) -> openlab_core::Cue {
+    cue(
+        n,
+        CueKind::Fade {
+            target: Some(id(target)),
+            duration: seconds,
+            curve: openlab_core::FadeCurve::Linear,
+            levels: openlab_core::FadeLevels {
+                master_db: Some(-6.0),
+                output_db: vec![],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: false,
+            mode: Default::default(),
+        },
+    )
+}
+
 type Report = (Vec<ProgressItem>, Vec<WaitProgress>);
 
 fn reports(msgs: &[ServerMessage]) -> Vec<Report> {
@@ -42,11 +62,18 @@ fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-9
 }
 
-/// Pre-wait 1 s, Wait 2 s, post-wait 3 s (auto-continue to a memo).
+/// Pre-wait 1 s, a 2 s silent action, post-wait 3 s (auto-continue to a memo).
 fn timed_show() -> OfflineShow {
     show(workspace(vec![
-        timed(wait(1, 2.0), 1.0, 3.0),
+        timed(fade_on_idle(1, 3, 2.0), 1.0, 3.0),
         cue(2, CueKind::Memo),
+        cue(
+            3,
+            CueKind::Group {
+                mode: openlab_core::GroupMode::Timeline,
+                children: vec![],
+            },
+        ),
     ]))
 }
 

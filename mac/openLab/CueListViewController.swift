@@ -824,7 +824,11 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         case .runtime(let cues, let heads):
             refresh(cues, playheads: heads)
             if !heads.isEmpty { playheadChanged() }
-        case .progress(let ids): refresh(ids, columns: ["duration"])
+        case .progress(let ids):
+            // A Wait cue's post-wait counts with its action.
+            let waits = ids.filter { nodes[$0]?.cue.kindType == "wait" }
+            refresh(ids.subtracting(waits), columns: ["duration"])
+            if !waits.isEmpty { refresh(waits, columns: ["duration", "postWait"]) }
         case .waits(let ids): refresh(ids, columns: ["preWait", "postWait"])
         case .notices: break
         }
@@ -1690,6 +1694,15 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 text(CueTime.running(timeShown[column] == .full ? wait.elapsed : wait.remaining))
                 break
             }
+            // A Wait cue's post-wait is its duration (QLab 5, manual p. 688): running, it counts
+            // with the action in every continue mode, not only when the engine times a post-wait.
+            if column == "postWait", cue.kindType == "wait", let p = store.progress[cue.id], let left = p.remaining {
+                text(CueTime.running(timeShown[column] == .full ? p.elapsed : left))
+                if cue.raw["continue_mode"]?.stringValue == "auto_follow" {
+                    cell.label.textColor = .secondaryLabelColor
+                }
+                break
+            }
             // An auto-follow cue goes on when it ends: its post-wait reads its duration (QLab 5).
             if column == "postWait", cue.raw["continue_mode"]?.stringValue == "auto_follow",
                 let length = restingDuration(node)
@@ -1698,7 +1711,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 cell.label.textColor = .secondaryLabelColor
                 break
             }
-            let seconds = cue.raw[column == "preWait" ? "pre_wait" : "post_wait"]?.doubleValue ?? 0
+            let seconds = column == "preWait" ? cue.raw["pre_wait"]?.doubleValue ?? 0 : cue.postWait
             text(CueTime.running(seconds))
             if seconds == 0 { cell.label.textColor = .secondaryLabelColor }  // zero is dimmed, as in QLab
         case "duration":

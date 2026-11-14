@@ -2102,6 +2102,33 @@ fn load_time(value: f64) -> CueProperty {
     CueProperty::LoadToTime { value }
 }
 
+/// A Wait cue's post-wait is its duration (QLab 5, manual p. 688): setting it sets the
+/// duration, on its own or in a batch with other kinds, and undo puts the duration back.
+#[test]
+fn a_wait_cues_post_wait_sets_its_duration() {
+    let mut ws = timed_cues();
+    let post = |value| CueProperty::PostWait { value };
+    round_trip(&mut ws, set(1, post(4.0)));
+    assert_eq!(kind_of(&ws, 1), CueKind::Wait { duration: 4.0 });
+    assert_eq!(ws.find_cue(cue_id(1)).unwrap().post_wait, 0.0);
+    // The duration it already has is no edit.
+    let inverse = ws.apply(set(1, post(4.0))).unwrap();
+    assert_eq!(inverse, Command::Transaction { commands: vec![] });
+    round_trip(
+        &mut ws,
+        Command::BatchSet {
+            ids: vec![cue_id(1), cue_id(5)],
+            property: post(1.5),
+        },
+    );
+    assert_eq!(kind_of(&ws, 1), CueKind::Wait { duration: 1.5 });
+    assert_eq!(ws.find_cue(cue_id(5)).unwrap().post_wait, 1.5);
+    // Out of range is refused like any post-wait.
+    refused(&mut ws, set(1, post(-1.0)));
+    assert_eq!(kind_of(&ws, 1), CueKind::Wait { duration: 1.5 });
+    assert_clean(&ws);
+}
+
 #[test]
 fn a_wait_or_fade_duration_is_set_alone_and_undone() {
     let mut ws = timed_cues();
@@ -2143,6 +2170,11 @@ fn durations_and_load_times_at_the_limits_are_accepted() {
         ws.apply(set(3, load_time(value))).unwrap();
         assert_clean(&ws);
     }
+    // A load time counts back from the target's end when negative (CT-14).
+    for value in [-0.001, -MAX_TIME] {
+        ws.apply(set(3, load_time(value))).unwrap();
+        assert_clean(&ws);
+    }
 }
 
 #[test]
@@ -2155,6 +2187,7 @@ fn bad_durations_and_load_times_are_refused() {
         -0.001,
         -1.0,
         MAX_TIME + 0.001,
+        -MAX_TIME - 0.001,
         1e300,
         f64::MAX,
     ] {
@@ -2163,6 +2196,10 @@ fn bad_durations_and_load_times_are_refused() {
             (2, duration(bad), "duration"),
             (3, load_time(bad), "load_to_time"),
         ] {
+            // A negative load time within the limit is valid (counted back from the end).
+            if n == 3 && (-MAX_TIME..0.0).contains(&bad) {
+                continue;
+            }
             let error = refused(&mut ws, set(n, property));
             let CommandError::InvalidCue(issues) = error else {
                 panic!("{bad}: {error:?}")

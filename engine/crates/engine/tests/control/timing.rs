@@ -562,6 +562,55 @@ fn load_to_time_starts_part_way_in() {
     assert_eq!(last_nonzero(&ch0), Some(at + 2999));
 }
 
+/// Flow: a Load cue with a negative time loads its Audio target that long before its end, from
+/// the plan's real length (QLab 5.6.5 measured). A target with a pre-wait is loaded inside its
+/// action, so its start plays at once with no pre-wait; a target that loops forever counts
+/// back from one pass (QLab 5.6.5 measured).
+#[test]
+fn a_load_cue_with_a_negative_time_plays_an_audio_target_from_before_its_end() {
+    let path = wav(&ramp(4000));
+    for (pre_wait, play_count) in [(0.0, 1), (secs(1000), 1), (0.0, 0)] {
+        let case = format!("pre-wait {pre_wait}, play count {play_count}");
+        let mut target = audio(2, &path, 0);
+        target.pre_wait = pre_wait;
+        if let CueKind::Audio {
+            last_slice_play_count,
+            ..
+        } = &mut target.kind
+        {
+            *last_slice_play_count = play_count;
+        }
+        let load = cue(
+            1,
+            CueKind::Load {
+                target: Some(id(2)),
+                load_to_time: -secs(1000),
+            },
+        );
+        let mut s = show(workspace(vec![load, target]));
+        start(&mut s, 1);
+        s.run(BLOCK * 2);
+        assert_eq!(
+            s.control().engine().state(id(2)),
+            openlab_core::CueState::Loaded,
+            "{case}"
+        );
+        let at = start(&mut s, 2) as usize;
+        s.run(3000);
+        let ch0 = s.channel(0);
+        let ramp = ramp(4000);
+        // The last second of the ramp, at once: not from the top, no pre-wait.
+        assert_eq!(first_nonzero(&ch0), Some(at), "{case}");
+        assert_eq!(ch0[at..at + 1000], ramp[3000..], "{case}");
+        if play_count == 0 {
+            // Looping forever: the next pass follows from the top.
+            assert_eq!(ch0[at + 1000..at + 2000], ramp[..1000], "{case}");
+        } else {
+            assert_eq!(last_nonzero(&ch0), Some(at + 999), "{case}");
+        }
+    }
+}
+
 /// A load past the end of an audio cue's length loads it to its end (QLab 5). Starting it
 /// plays nothing and ends on its start sample, so its auto-follow successor starts on that
 /// sample too, with no `late_start` warning.

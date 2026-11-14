@@ -62,7 +62,11 @@ fn a_wait_cue_shows_its_action_and_a_group_its_elapsed_time() {
 
 #[test]
 fn a_post_wait_counts_from_the_action_start_alongside_the_action() {
-    let mut rig = Rig::panicking(vec![timed(wait(1, 2.0), 0.0, 5.0, AC), memo(2)]);
+    let mut rig = Rig::panicking(vec![
+        timed(timer(1, 9, 2.0), 0.0, 5.0, AC),
+        memo(2),
+        sound(9),
+    ]);
     rig.start(0, 1);
     assert_eq!(
         rig.timers(1000),
@@ -89,8 +93,9 @@ fn an_audio_cue_shows_only_its_waits_its_action_comes_from_the_voice() {
 fn paused_timers_freeze_and_resume_where_they_stood() {
     let mut rig = Rig::panicking(vec![
         timed(memo(1), 2.0, 0.0, AC),
-        timed(wait(2, 3.0), 0.0, 4.0, AC),
+        timed(timer(2, 9, 3.0), 0.0, 4.0, AC),
         memo(3),
+        sound(9),
     ]);
     rig.start(0, 1);
     rig.start(0, 2);
@@ -195,9 +200,10 @@ fn nothing_counts_when_idle_or_loaded() {
 #[test]
 fn a_load_to_time_counts_from_where_it_was_loaded() {
     let mut rig = Rig::panicking(vec![
-        timed(wait(1, 5.0), 2.0, 6.0, AC),
+        timed(timer(1, 9, 5.0), 2.0, 6.0, AC),
         timed(wait(2, 5.0), 2.0, 0.0, AF),
         memo(3),
+        sound(9),
     ]);
     // Half a second into the pre-wait.
     rig.at(
@@ -325,4 +331,18 @@ fn a_halted_playlists_follow_wait_counts_its_whole_rest_down() {
     assert_eq!(rig.timers(5000), [(1, Timer::PostWait, 1000, Some(2000))]);
     assert_eq!(rig.read(6500), [(1, Timer::PostWait, 2500, Some(500))]);
     assert_eq!(rig.timers(7000), []);
+}
+
+/// A Wait cue's post-wait countdown is its duration, whatever post-wait it stores.
+#[test]
+fn a_wait_cues_post_wait_timer_is_its_duration() {
+    let mut rig = Rig::panicking(vec![timed(wait(1, 2.0), 0.0, 7.0, AC), memo(2)]);
+    rig.start(0, 1);
+    assert_eq!(
+        rig.timers(500),
+        [
+            (1, Timer::Action, 500, Some(1500)),
+            (1, Timer::PostWait, 500, Some(1500)),
+        ]
+    );
 }

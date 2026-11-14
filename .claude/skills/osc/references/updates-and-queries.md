@@ -42,7 +42,7 @@ An OSC message to the sender at `/reply` + the address sent (prefix included) wi
 |---|---|
 | `/version` | the engine's version string (QLab answers its own) |
 | `/workspaces` | `[{"version","displayName","udpReplyPort","uniqueID","port"}]`, one per open doc in open order (not front order), `[]` with none; ports are the bound ones. One reply, no `workspace_id`. A peer that may not view anywhere gets at most 1400 bytes; a longer list gets `error` |
-| `/cue/selected/{prop}`, `/cue/playhead/{prop}` | property of the cue at the active list's playhead; `error` when none |
+| `/cue/selected/{prop}`, `/cue/playhead/{prop}` | property of the cue at the active list's playhead; `error` when none (writes and actions go through too) |
 | `/cue/active/{prop}` | one reply per running cue; one `error` when none |
 | `/runningCues` | array of cue objects: running (waiting, playing, fading, stopping; not paused, loaded or broken); `[]` when none |
 | `/runningOrPausedCues` | running plus paused |

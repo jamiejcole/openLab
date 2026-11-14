@@ -28,10 +28,11 @@ pub use codec::{
 };
 pub use dedupe::{DUPLICATE_WINDOW, Dedupe, MAX_PEERS as MAX_DEDUPE_PEERS};
 pub use dispatch::{
-    Address, CueField, CueRef, DocShow, MAX_ADDRESS_BYTES, MAX_ADDRESS_PARTS, MAX_MATCHES,
-    MAX_REPLY_JSON_BYTES, MAX_UDP_DATAGRAM_BYTES, Named, OscInput, OscShow, Parsed, PlayheadTarget,
-    Query, Reply, Resolved, STATUS_DENIED, STATUS_ERROR, STATUS_OK, Scope, ServerInfo, Target,
-    Verb, find_doc, parse_address, reply_message, required_right, resolve, upper,
+    Address, CUE_VERBS, CueField, CueRef, DocShow, MAX_ADDRESS_BYTES, MAX_ADDRESS_PARTS,
+    MAX_MATCHES, MAX_REPLY_JSON_BYTES, MAX_UDP_DATAGRAM_BYTES, Named, OscInput, OscShow, Parsed,
+    PlayheadTarget, Query, Reply, Resolved, SHAPES, STATUS_DENIED, STATUS_ERROR, STATUS_OK, Scope,
+    ServerInfo, Target, Verb, WORDS, find_doc, parse_address, reply_message, required_right,
+    resolve, upper,
 };
 pub use pattern::{
     BudgetSpent, CuePattern, MATCH_BUDGET, MAX_ALTERNATIVES, MAX_MATCH_CHARS, PatternError,

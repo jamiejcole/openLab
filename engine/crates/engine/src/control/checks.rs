@@ -14,7 +14,8 @@
 //!
 //! What changed is taken with [`PlanChecks::take_changes`]: the cues whose slices became
 //! unplayable or playable again, which the cue engine is told (`Input::SliceProblems`); each
-//! cue's nominal length, which it is told too (`Input::CueLengths`); and its media lengths,
+//! cue's nominal length and one pass of it, which it is told too (`Input::CueLengths`,
+//! `Input::CuePassLengths`); and its media lengths,
 //! which clients are told (`media_duration`). Only cues whose plan was rebuilt or
 //! dropped are looked at for them, so a probe answer costs the cues on that file.
 
@@ -100,6 +101,8 @@ pub struct PlanChecks {
     walks: u64,
     /// The lengths the cue engine was last told (`take_changes`).
     told: BTreeMap<CueId, SampleTime>,
+    /// The one-pass lengths the cue engine was last told (`take_changes`).
+    told_passes: BTreeMap<CueId, SampleTime>,
     /// The media lengths clients were last told (`take_changes`), for the snapshot.
     sent: BTreeMap<CueId, CueMediaDuration>,
     /// The slice problems the cue engine was last told (`take_changes`).
@@ -316,6 +319,14 @@ impl PlanChecks {
                 };
                 out.lengths.push((id, now));
             }
+            let pass = entry.and_then(|e| e.trimmed);
+            if self.told_passes.get(&id).copied() != pass {
+                match pass {
+                    Some(l) => self.told_passes.insert(id, l),
+                    None => self.told_passes.remove(&id),
+                };
+                out.passes.push((id, pass));
+            }
             let media = entry.map(|e| {
                 let info = &e.probe.probed.info;
                 CueMediaDuration {
@@ -376,6 +387,9 @@ impl PlanChecks {
 pub struct CheckChanges {
     pub slices: Vec<(CueId, Option<String>)>,
     pub lengths: Vec<(CueId, Option<SampleTime>)>,
+    /// One pass of the trimmed range for the cue engine (`Input::CuePassLengths`), told like
+    /// `lengths`.
+    pub passes: Vec<(CueId, Option<SampleTime>)>,
     pub media: Vec<CueMediaDuration>,
 }
 

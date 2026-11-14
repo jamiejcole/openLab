@@ -287,7 +287,8 @@ fn invalid_times_are_clamped() {
             4,
             CueKind::Load {
                 target: Some(cue_id(1)),
-                load_to_time: -0.5,
+                // Negative is valid (before the target's end); more than a day back is not.
+                load_to_time: -MAX_TIME - 1.0,
             },
         ),
         cue(
@@ -319,6 +320,30 @@ fn invalid_times_are_clamped() {
         ws.find_cue(cue_id(3)).unwrap().kind,
         CueKind::Wait { duration: MAX_TIME }
     );
+    assert_eq!(
+        ws.find_cue(cue_id(4)).unwrap().kind,
+        CueKind::Load {
+            target: Some(cue_id(1)),
+            load_to_time: -MAX_TIME
+        }
+    );
+}
+
+#[test]
+fn a_negative_load_time_within_a_day_loads_without_warning() {
+    let load = |time| {
+        cue(
+            2,
+            CueKind::Load {
+                target: Some(cue_id(1)),
+                load_to_time: time,
+            },
+        )
+    };
+    for time in [-0.5, -MAX_TIME] {
+        let mut ws = workspace(vec![cue(1, CueKind::Memo), load(time)]);
+        assert_eq!(repair(&mut ws), vec![], "{time}");
+    }
 }
 
 #[test]

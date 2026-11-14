@@ -6,8 +6,9 @@
 
 # A CI, Makefile or gate-script change re-runs everything.
 PATHS_ALL_RE='^(\.github/workflows/|Makefile$|scripts/(paths|rust-checks|soak-rt-ci|run-mac-tests)\.sh$|scripts/(ui-smoke|core-flows)\.txt$)'
-# The Rust workspace (Cargo files, toolchain pin and deny.toml all live under engine/).
-PATHS_ENGINE_RE='^engine/'
+# The Rust workspace (Cargo files, toolchain pin and deny.toml all live under engine/), and the OSC
+# reference, which an engine test holds to the addresses the engine answers.
+PATHS_ENGINE_RE='^(engine/|docs/osc\.md$)'
 # The macOS app job. On a pull request it runs for app changes and for what the app reads from the
 # engine: the protocol and show file (Swift Codable types, fixtures), the engine's command line and
 # engine.json (host/), the bundled stage host (crates/video), and the bundled build. On main every

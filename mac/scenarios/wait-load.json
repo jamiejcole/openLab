@@ -1,0 +1,77 @@
+{
+  "about": "#639: a Wait cue's Post-Wait column and inspector field show its duration (one cue, several cues, after typing a post-wait, while running); a Load cue at a negative time shows the minus in its Load Time tab, also at the least window size.",
+  "show": "wait-load/wait-load.openlab",
+  "window": {
+    "width": 1200,
+    "height": 800
+  },
+  "steps": [
+    {
+      "select": "1"
+    },
+    {
+      "shot": "wait-post-wait-is-duration"
+    },
+    {
+      "select": [
+        "1",
+        "3"
+      ]
+    },
+    {
+      "shot": "two-waits-selected"
+    },
+    {
+      "select": "3"
+    },
+    {
+      "type": "inspector-post-wait",
+      "text": "6"
+    },
+    {
+      "advance": 0.2
+    },
+    {
+      "shot": "post-wait-typed-sets-duration"
+    },
+    {
+      "select": "4"
+    },
+    {
+      "tab": "loadTime"
+    },
+    {
+      "shot": "load-negative-time"
+    },
+    {
+      "resize": [
+        800,
+        500
+      ]
+    },
+    {
+      "shot": "load-negative-time-least-window"
+    },
+    {
+      "resize": [
+        1200,
+        800
+      ]
+    },
+    {
+      "select": "1"
+    },
+    {
+      "key": " "
+    },
+    {
+      "advance": 1.0
+    },
+    {
+      "select": "1"
+    },
+    {
+      "shot": "wait-running-post-wait-counts"
+    }
+  ]
+}
