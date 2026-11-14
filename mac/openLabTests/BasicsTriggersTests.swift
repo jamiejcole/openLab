@@ -8,10 +8,8 @@ import XCTest
 /// patterns, the walk past skipped cues, the duck level's text, the trigger switch and Paste Properties.
 @MainActor
 final class BasicsTriggersRuleTests: XCTestCase {
-    private func memo(_ id: String, _ extra: [String: JSONValue] = [:], children: [JSONValue]? = nil) -> JSONValue {
-        var raw = TestSnapshots.cueJSON(
-            id: id, number: nil, name: id,
-            kind: children.map { TestSnapshots.groupKind($0) } ?? .object(["type": .string("memo")]))
+    private func memo(_ id: String, _ extra: [String: JSONValue] = [:]) -> JSONValue {
+        var raw = TestSnapshots.cueJSON(id: id, number: nil, name: id, kind: .object(["type": .string("memo")]))
         for (k, v) in extra { raw.set(k, v) }
         return raw
     }
@@ -45,20 +43,6 @@ final class BasicsTriggersRuleTests: XCTestCase {
         XCTAssertNil(RowPattern.of(try Cue(json: memo("b", ["skip_if_disarmed": .bool(true)]))), "armed: no effect")
         XCTAssertEqual(RowPattern.of(try Cue(json: memo("c", ["armed": .bool(false)]))), .disarmed)
         XCTAssertEqual(RowPattern.of(try Cue(json: memo("d", Self.skipped))), .skipped)
-    }
-
-    /// The same walk as the engine's: along the level, then out of the group, never into a skipped one.
-    func testTheCueStandingByPastASkippedCueIsTheNextOneThereOutwardsThroughGroups() throws {
-        let m = try model([
-            memo("a"),
-            memo("g", children: [memo("g1"), memo("g2", Self.skipped), memo("g3", Self.skipped)]),
-            memo("b", Self.skipped), memo("c"), memo("z", Self.skipped),
-        ])
-        XCTAssertEqual(m.firstPresent(from: "a")?.id, "a", "a cue that is there is itself")
-        XCTAssertEqual(m.firstPresent(from: "g2")?.id, "c", "out of the group, past the skipped b")
-        XCTAssertEqual(m.firstPresent(from: "b")?.id, "c")
-        XCTAssertNil(m.firstPresent(from: "z"), "nothing left: nothing stands by")
-        XCTAssertNil(m.firstPresent(from: "gone"))
     }
 
     func testTheDuckLevelReadsSignedNumbersAndInfAndHoldsTheRange() {
@@ -700,9 +684,10 @@ extension PlayheadFlowTests {
         }
     }
 
-    /// The playhead on a skipped cue: its row keeps the playhead mark, the masthead names the next cue
-    /// there, and GO starts that one.
-    func testThePlayheadRestsOnASkippedCueTheMastheadShowsTheNextCueThereAndGoStartsIt() async throws {
+    /// The playhead put on a skipped cue (QLab 5.6.5, measured): its row keeps the playhead mark and
+    /// the masthead names it; GO starts nothing and moves the playhead to the next cue that is
+    /// there; the next GO starts that one.
+    func testThePlayheadRestsOnASkippedCueGoStartsNothingAndMovesThePlayheadToTheNextCue() async throws {
         let cues = try await tones(3, seconds: 5)
         await select([cues[1]])
         tick(inspector.armedCheck, false)
@@ -711,14 +696,19 @@ extension PlayheadFlowTests {
         click(cues[1])
         await assertEventually("the playhead is on the skipped cue") { self.store.playheads[self.list] == cues[1] }
         XCTAssertEqual(mark(cues[1], 0), loc("cue.playhead"), "the mark stays where the engine has it")
-        let next = try XCTUnwrap(store.model?.cue(cues[2]))
-        XCTAssertEqual(
-            wc.masthead.standbyField.stringValue,
-            [next.number, store.model?.listName(next)].compactMap { $0 }.joined(separator: " \u{00B7} "),
-            "the masthead names the cue GO starts")
+        func standby(_ id: ModelID) throws -> String {
+            let cue = try XCTUnwrap(store.model?.cue(id))
+            return [cue.number, store.model?.listName(cue)].compactMap { $0 }.joined(separator: " \u{00B7} ")
+        }
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standby(cues[1]), "the cue the playhead is on")
         try await go()
-        await assertEventually("GO started the next cue there") { self.state(cues[2]) == loc("cue.state.running") }
+        await assertEventually("the playhead moved on") { self.store.playheads[self.list] == cues[2] }
+        try await play(0.2)
         XCTAssertNil(state(cues[1]))
+        XCTAssertNil(state(cues[2]), "that GO started nothing")
+        XCTAssertEqual(wc.masthead.standbyField.stringValue, try standby(cues[2]))
+        try await go()
+        await assertEventually("the next GO starts it") { self.state(cues[2]) == loc("cue.state.running") }
     }
 
     /// Several cues: a box sets each one, and a scope or time changes only that part of each cue's

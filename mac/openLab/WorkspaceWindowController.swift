@@ -570,11 +570,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The footer's cue count follows the model (adds, deletes, a new snapshot).
-    /// The cue a GO starts, with its notes: the shown list's playhead cue, or past it when that cue
-    /// is skipped (the list still marks the playhead where the engine has it).
+    /// The shown list's playhead cue, with its notes; a skipped one too (a GO there moves the
+    /// playhead on and starts nothing).
     func syncMasthead() {
         let id = cueList.listID.flatMap { store.playheads[$0] }
-        let cue = id.flatMap { store.model?.firstPresent(from: $0) }
+        let cue = id.flatMap { store.model?.cue($0) }
         masthead.show(standby: cue, name: cue.flatMap { store.model?.listName($0) })
     }
 
