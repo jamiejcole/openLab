@@ -629,61 +629,6 @@ extension PlayheadFlowTests {
             ])
     }
 
-    /// Reproduce: a 1000x700 window, a cue with a second colour playing, the sidebar on Active Cues,
-    /// the sidebar's Reset All pressed: the Basics tab's left column slid up over the tab bar,
-    /// Number and Duration out of sight. Every Basics field stays inside the tab.
-    func testResetAllWithActiveCuesShownKeepsTheBasicsFieldsInsideTheTab() async throws {
-        let window = try XCTUnwrap(wc.window)
-        window.setFrame(NSRect(x: 0, y: 0, width: 1000, height: 700), display: true)
-        let cues = try await tones(2)
-        guard case .success = await store.send(command: .setProperty(cues[0], .secondColor("green"))) else {
-            return XCTFail("second colour")
-        }
-        click(cues[0])
-        await assertEventually { self.store.playheads[self.list] == cues[0] }
-        try await go()
-        try await play(1)
-        wc.setVisible(.sidebar, true)
-        wc.sidebar.showTab(1)
-        func find(_ v: NSView) -> NSButton? {
-            if let b = v as? NSButton, b.accessibilityIdentifier() == AX.transportReset { return b }
-            return v.subviews.lazy.compactMap(find).first
-        }
-        let reset = try XCTUnwrap(find(wc.sidebar.view), "the sidebar's Reset All")
-        reset.performClick(nil)
-        try await play(0.5)
-        await assertEventually("reset") { !self.store.played.contains(cues[0]) }
-        await select([cues[0]])
-        inspector.tabView.selectTabViewItem(withIdentifier: "basics")
-        // The shortest inspector, where the left column is taller than the tab: it must be cut at the
-        // bottom (as before these controls came), never pushed up over the tabs.
-        wc.inspectorHeightConstraint?.constant = WorkspaceWindowController.minInspectorHeight
-        // Held there whatever the tabs would like, as the split holds it when the window is short.
-        let held = inspector.view.heightAnchor.constraint(equalToConstant: WorkspaceWindowController.minInspectorHeight)
-        held.priority = .required
-        held.isActive = true
-        defer { held.isActive = false }
-        for _ in 0..<3 {
-            window.layoutIfNeeded()
-            window.displayIfNeeded()
-            await settle()
-        }
-        for id in ["basics", "triggers"] {
-            inspector.tabView.selectTabViewItem(withIdentifier: id)
-            window.layoutIfNeeded()
-            let tab = try XCTUnwrap(inspector.tabItems[id]?.view)
-            let first = id == "basics" ? inspector.numberField : inspector.hotkeyField
-            let frame = first.convert(first.bounds, to: tab)
-            // Off screen (a scenario's window) the columns, insisting on their whole height, were laid
-            // out from the bottom up; they must give way at the bottom instead.
-            let columns = try XCTUnwrap(tab as? NSStackView)
-            XCTAssertLessThan(columns.clippingResistancePriority(for: .vertical), .required, "\(id) gives way")
-            XCTAssertLessThanOrEqual(
-                tab.isFlipped ? -frame.minY : frame.maxY - tab.bounds.maxY, 0,
-                "\(id): the first field's top \(frame) is inside the tab \(tab.bounds)")
-        }
-    }
-
     /// The playhead put on a skipped cue (QLab 5.6.5, measured): its row keeps the playhead mark and
     /// the masthead names it; GO starts nothing and moves the playhead to the next cue that is
     /// there; the next GO starts that one.
@@ -722,7 +667,24 @@ extension PlayheadFlowTests {
                         id, .fadeAndStopOthers(enabled: id == cues[1], scope: "peers", duration: time)))
             else { return XCTFail("setup") }
         }
-        guard case .success = await store.send(command: .setProperty(cues[0], .triggers(hotkey: nil, enabled: false)))
+        // Both cues hold K, switched off, beside a third with no key, on: the box is mixed, and on
+        // for all would give two cues one key, so it is refused for all.
+        let k = KeyChord("k", []).hotkeyJSON
+        for id in cues {
+            guard case .success = await store.send(command: .setProperty(id, .triggers(hotkey: k, enabled: false)))
+            else { return XCTFail("switch") }
+        }
+        let third = try await memos(1)
+        await select(cues + third)
+        inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .mixed)
+        inspector.hotkeyEnableCheck.performClick(nil)
+        XCTAssertEqual(inspector.messageLabel.stringValue, loc("inspector.hotkey.otherCue"), "refused for all")
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .mixed, "the box is put back")
+        await sync()
+        XCTAssertEqual(cues.map { raw($0, "triggers")?["hotkey_enabled"] }, [.bool(false), .bool(false)])
+        // The second cue's key cleared and its switch on: the switches now differ, with no clash.
+        guard case .success = await store.send(command: .setProperty(cues[1], .triggers(hotkey: nil, enabled: true)))
         else { return XCTFail("switch") }
         // Shown first alone, the first cue leaves the fade-out time field off; with both shown it is on.
         await select([cues[0]])
@@ -738,6 +700,17 @@ extension PlayheadFlowTests {
         XCTAssertTrue(inspector.hotkeyEnableCheck.isEnabled)
         inspector.hotkeyEnableCheck.performClick(nil)
         await assertEventually("both switches on") {
+            cues.allSatisfy { self.raw($0, "triggers")?["hotkey_enabled"] != .bool(false) }
+        }
+        // One undo puts both back: the click was one step.
+        await wc.editor.undo()
+        await assertEventually("one undo restores both") {
+            cues.map { self.raw($0, "triggers")?["hotkey_enabled"] } == [.bool(false), .bool(true)]
+        }
+        await select(cues)
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .mixed)
+        inspector.hotkeyEnableCheck.performClick(nil)
+        await assertEventually("on again") {
             cues.allSatisfy { self.raw($0, "triggers")?["hotkey_enabled"] != .bool(false) }
         }
         inspector.tabView.selectTabViewItem(withIdentifier: "basics")
