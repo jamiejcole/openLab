@@ -1345,7 +1345,7 @@ mod tests {
             patch: openlab_core::PatchId(Uuid::from_u128(901)),
             start_time: 0.0,
             end_time: None,
-            fade_in: no_fade.clone(),
+            fade_in: no_fade,
             fade_out: no_fade,
             slices: vec![],
             last_slice_play_count: 1,
