@@ -18,14 +18,18 @@ Rule 1, rule 2, the chain bound and the paused hold are in SKILL.md; not repeate
 
 ## States (CUE-04)
 Reported state derives in order: broken > paused > stopping > fading > pre-waiting > running > post-waiting.
-- `idle` (no runtime), `loaded` (ready, optionally to a time), `pre-waiting` (a start always reports this first, even for zero pre-wait), `running` (post-wait may also count), `paused` (everything frozen), `post-waiting` (action complete, post-wait pending), `stopping` (fading out before stop).
+- `idle` (no runtime), `loaded` (ready, optionally to a time), `pre-waiting` (a start always reports this first, even for zero pre-wait), `running` (post-wait may also count), `paused` (everything frozen; also a cue its lost device stopped, which owns nothing: Broken state below), `post-waiting` (action complete, post-wait pending), `stopping` (fading out before stop).
 - `fading`: an audio cue in its action whose levels a running, unpaused Fade with a non-zero ramp is moving.
 - Post-wait is a timer owned by the cue, not a phase: `running` while it elapses, `post-waiting` only after the action completed.
 - A started cue is a run: `{pre-wait deadline, action progress, post-wait deadline, paused-at, fade-out end}`. Each voice segment has a `RunId`, unique for the engine's lifetime (the binary uses it as the mixer `VoiceId`). Loading or starting creates it; starting a loaded cue keeps it. Every resume gives a fresh id (`ResumeVoice { run: fresh, paused: previous }`), so feedback still on its way for the paused segment is stale. `run_of(cue)` is `None` for a cue owning no voice.
 
 ### Broken state
 - Run-time break (feedback; `voice_rejected`, `stream_failed`, `device_lost`): owns no voice, cannot start until reset; its pending auto-continue still fires on schedule, except after `device_lost`, which cancels it.
-- `device_lost` ends the run for good (pre-wait, auto-continue, auto-follow cancelled) and clears once the cue's patch is reported `mapped` again (`PatchStatus`, or when the run settles with the patch mapped; a patch never reported does not count).
+- `device_lost` ends the run for good (pre-wait, auto-continue, auto-follow cancelled). What it shows (QLab 5, skill `qlab-behaviour` C-X1, Q391-Q396):
+  - In its action and not on its way out (playing, fading, waiting for its probe), or counting its pre-wait or post-wait: `Slot::Lost`, reported `paused` (wire reason `device_lost`, `state_reason`, `is_lost`). It owns no run, voice or deadline; `timers` shows the timer that was counting frozen where the loss left it.
+  - A playing one keeps the mark after the device returns; Resume / Resume All clear it (to idle, or broken while the device is away; nothing plays), a start or load with the device back clears it and starts from the top, one while the device is away is refused `CueBroken` and the mark stays; Stop, Panic, Reset, Stop All, Reset All and fade-and-stop-others clear it.
+  - A waiting one (pre-wait, post-wait) also clears by itself when its patch is reported `mapped` again (in `refresh`, reported once the problems are current, so it never flashes broken).
+  - Paused by the operator, being stopped or panicked, or a `StartFailed` (never played): `broken`, clearing once the cue's patch is reported `mapped` again (`PatchStatus`, or when the run settles with the patch mapped; a patch never reported does not count).
 - A run that broke with a pending continue keeps showing `broken` until it fires, even if the device is back: clearing early would show a voiceless run as running.
 - `Input::DeviceLost` (sent when the last device that plays is lost, after the binary failed the audio runs) hard-stops every other active run, so nothing scheduled before the loss fires after it. The loss of one of several devices fails only the runs on it.
 - Static problems: `broken-and-edits.md`.
