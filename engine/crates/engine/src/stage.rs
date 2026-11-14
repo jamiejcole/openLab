@@ -76,6 +76,10 @@ pub struct StageHostConfig {
     /// The pause after too many starts.
     pub retry_after: Duration,
     pub clock: StageClock,
+    /// Test support: counts the pings sent, so a test on a hand-moved `clock` knows one went
+    /// out before it moves the clock past its answer time.
+    #[cfg(feature = "test-support")]
+    pub pings_sent: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl StageHostConfig {
@@ -90,6 +94,8 @@ impl StageHostConfig {
             restart_window: Duration::from_secs(60),
             retry_after: Duration::from_secs(30),
             clock: StageClock::system(),
+            #[cfg(feature = "test-support")]
+            pings_sent: None,
         }
     }
 }
@@ -164,6 +170,9 @@ enum Order {
     Clock(ToStage),
     #[cfg(feature = "test-support")]
     Send(ToStage),
+    /// Test support: nothing; the supervisor looks at its (hand-moved) clock again.
+    #[cfg(feature = "test-support")]
+    Wake,
     Quit,
 }
 
@@ -198,6 +207,12 @@ impl StageHost {
     #[cfg(feature = "test-support")]
     pub fn send(&self, message: ToStage) {
         let _ = self.commands.send(Order::Send(message));
+    }
+
+    /// Test support: has the supervisor look at its clock again (a test moved it by hand).
+    #[cfg(feature = "test-support")]
+    pub fn wake(&self) {
+        let _ = self.commands.send(Order::Wake);
     }
 }
 
@@ -295,6 +310,8 @@ impl Supervisor {
                     }
                     #[cfg(feature = "test-support")]
                     Ok(Order::Send(message)) => self.write(&message),
+                    #[cfg(feature = "test-support")]
+                    Ok(Order::Wake) => {}
                     // Only once it has its stages: the engine sends every picture again when
                     // a stage host starts.
                     Ok(Order::Picture(message)) => {
@@ -530,6 +547,10 @@ impl Supervisor {
                 r.next_ping = now + self.config.ping_every;
                 let seq = self.seq;
                 self.write(&ToStage::Ping { seq });
+                #[cfg(feature = "test-support")]
+                if let Some(count) = &self.config.pings_sent {
+                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
             }
             None => {}
         }

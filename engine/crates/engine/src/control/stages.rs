@@ -714,6 +714,15 @@ impl Control {
         }
     }
 
+    /// Test support: the stage host supervisor looks at its clock again (a test moved it by
+    /// hand).
+    #[cfg(feature = "test-support")]
+    pub fn wake_stage_supervisor(&self) {
+        if let Some(host) = &self.eng.stages.host {
+            host.wake();
+        }
+    }
+
     /// Test support: a stage host on virtual displays now has `displays`, as if displays were
     /// plugged in or unplugged.
     #[cfg(feature = "test-support")]

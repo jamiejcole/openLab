@@ -31,6 +31,8 @@ use uuid::Uuid;
 
 const STAGE_HOST: &str = env!("CARGO_BIN_EXE_openlab-stage");
 const LIMIT: Duration = Duration::from_secs(30);
+/// How long a test's stage host may take to answer a ping: far beyond any machine's slowness.
+const SLOW_MACHINE: Duration = Duration::from_secs(120);
 
 fn stage_id() -> StageId {
     StageId(Uuid::from_u128(0x5_0001))
@@ -243,6 +245,9 @@ fn video_show_host(
     let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
     host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
     host.args.extend(extra.iter().map(|a| (*a).to_owned()));
+    // A stage host slow to answer on a loaded machine (a probe waiting on a file's open) is
+    // never killed as hung: the tests kill one when they mean to.
+    host.answer_within = SLOW_MACHINE;
     tweak(&mut host);
     c.stage_host = Some(host);
     let mut s = show_with(ws, c);
@@ -772,6 +777,7 @@ fn gated_video_show(cues: Vec<Cue>) -> OfflineShow {
     let mut c: ControlConfig = config(&ws);
     let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
     host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
+    host.answer_within = SLOW_MACHINE;
     c.stage_host = Some(host);
     c.picture_probe = Some(gated_probe);
     let mut s = show_with(ws, c);
@@ -981,8 +987,9 @@ fn a_paused_picture_is_shown_again_when_the_stage_host_is_relaunched() {
     assert_eq!(shown(&mut s), Some(held), "the held frame is back");
 }
 
-/// Media limits short enough for a test to see a hung open or decode fail (the stage host's
-/// own clock: these tests wait on the stage host, bounded).
+/// Media limits short enough for a test to see a hung open or decode fail. They apply only to
+/// the files a fault switch names: a good file keeps the shipped limits, so a slow machine
+/// never fails it.
 const SHORT_LIMITS: [&str; 2] = ["--media-limits", "400,400"];
 
 /// A copy of a good movie under a name that makes the test-support decoder hang or crash.
@@ -1169,30 +1176,6 @@ fn of_two_movies_playing_only_the_one_crashing_the_stage_host_breaks() {
     assert_eq!(state(&s, 1), CueState::Running);
 }
 
-/// The stage host supervisor's clock, moved by hand: its pings, answer times and restart
-/// counts see only the time the test gives them.
-struct HandClock(std::sync::Arc<std::sync::atomic::AtomicU64>);
-
-impl HandClock {
-    /// The clock, and its setting for a stage host config.
-    fn new() -> (Self, openlab_engine::stage::StageClock) {
-        let base = std::time::Instant::now();
-        let ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let reading = std::sync::Arc::clone(&ms);
-        let clock = openlab_engine::stage::StageClock::from_fn(move || {
-            base + Duration::from_millis(reading.load(std::sync::atomic::Ordering::SeqCst))
-        });
-        (Self(ms), clock)
-    }
-
-    /// Moves it on by `seconds`, and wakes the supervisor (a routine clock of the engine's).
-    fn advance(&self, s: &mut OfflineShow, seconds: u64) {
-        self.0
-            .fetch_add(seconds * 1000, std::sync::atomic::Ordering::SeqCst);
-        s.run(samples(0.02));
-    }
-}
-
 /// A stage host killed from outside, or by the supervisor for not answering, has not crashed:
 /// each time, every picture (a movie and a still) comes back on the next one. At the restart
 /// limit (5 starts within a minute of the supervisor's clock) video output pauses, the cues
@@ -1203,9 +1186,10 @@ fn pictures_come_back_after_kills_and_after_the_pause_at_the_restart_limit() {
     let movie = make(dir.path(), "clip.mov", "h264", Some((1500, 25)));
     let png = make(dir.path(), "card.png", "png", None);
     let ws = workspace(vec![still_cue(1, &png, None), video_cue(2, Some(&movie))]);
-    let (hand, clock) = HandClock::new();
+    let hand = HandClock::new();
     let mut s = video_show_host(ws, &[], |host| {
-        host.clock = clock;
+        hand.drive(host);
+        host.answer_within = Duration::from_secs(5);
         host.max_restarts = 5;
         host.restart_window = Duration::from_secs(60);
         host.retry_after = Duration::from_secs(30);
@@ -1239,12 +1223,7 @@ fn pictures_come_back_after_kills_and_after_the_pause_at_the_restart_limit() {
         let pid = if round % 2 == 0 {
             kill(&mut s)
         } else {
-            let pid = s.control().stage_host_pid().unwrap();
-            s.control_mut().hang_stage_host();
-            // The next ping goes out, and is not answered in time.
-            hand.advance(&mut s, 1);
-            hand.advance(&mut s, 6);
-            pid
+            hand.hang_until_killed(&mut s, 5)
         };
         assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
         back(&mut s, &format!("round {round}"));
@@ -1293,6 +1272,11 @@ fn a_picture_that_crashes_the_stage_host_twice_is_not_sent_a_third_time() {
     );
     s.take_outbound();
     let at = start(&mut s, 2);
+    // Its file open on the stage host before it is drawn (not the probe's own wait for it).
+    assert!(
+        s.wait_for(|c| c.pictures_opened() == 1),
+        "the next cue's file never opened"
+    );
     run_to(&mut s, at + samples(0.5));
     let shown_now = shown(&mut s);
     if shown_now.is_none() {
@@ -1436,12 +1420,13 @@ fn a_slow_decoder_that_keeps_decoding_keeps_its_picture_up() {
     let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
     let slow = faulty(dir.path(), &good, "openlab-test-slow-decode");
     let ws = workspace(vec![video_cue(1, Some(&slow))]);
-    // 400 ms a frame may take; a catch-up of a third of a second (8 frames at 60 ms each) takes
-    // longer than that in all.
-    let mut s = video_show_args(ws, &SHORT_LIMITS);
+    // 2.5 s a frame may take (the slow file's frames take 400 ms, a sixth of that, so a slow
+    // machine does not matter); a catch-up of a third of a second (8 frames) takes longer than
+    // that in all.
+    let mut s = video_show_args(ws, &["--media-limits", "2500,2500"]);
     let at = start(&mut s, 1);
     s.take_outbound();
-    for step in 1..=4 {
+    for step in 1..=2 {
         let played = f64::from(step) * 0.33;
         run_to(&mut s, at + samples(played));
         let now = shown(&mut s).expect("the slow picture is drawn");

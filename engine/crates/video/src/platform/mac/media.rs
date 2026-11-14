@@ -180,6 +180,8 @@ pub struct Picture {
     front: Option<usize>,
     /// The number of the last position posted, and the position.
     asked: (u64, Option<f64>),
+    /// How long its open and frames may take.
+    limits: Limits,
 }
 
 /// Ends the count of a decode thread when it ends, however it ends.
@@ -195,7 +197,7 @@ impl Picture {
     /// Starts opening `file` on a decode thread of its own; returns at once. A movie's open
     /// includes decoding its frame at `offset` seconds, so a file that cannot be decoded (or
     /// crashes the decoder) does so before the picture is said to be open.
-    pub fn open(file: &str, still: bool, offset: f64) -> Result<Self, String> {
+    pub fn open(file: &str, still: bool, offset: f64, limits: Limits) -> Result<Self, String> {
         if DECODERS.fetch_add(1, Ordering::AcqRel) >= MAX_DECODERS {
             DECODERS.fetch_sub(1, Ordering::AcqRel);
             return Err("too many pictures are still being read".into());
@@ -222,12 +224,14 @@ impl Picture {
             slots: [None, None],
             front: None,
             asked: (0, None),
+            limits,
         })
     }
 
     /// Whether the file opened (said once), or the picture failed: its open or decode failed,
     /// or took longer than `limits`.
-    pub fn poll(&mut self, limits: Limits) -> Option<Polled> {
+    pub fn poll(&mut self) -> Option<Polled> {
+        let limits = self.limits;
         let mail = self.shared.lock();
         if let Some(why) = &mail.failed {
             return Some(Polled::Failed(why.clone()));
@@ -264,7 +268,7 @@ impl Picture {
         &mut self,
         device: &ProtocolObject<dyn MTLDevice>,
         position: f64,
-        wait: Option<Limits>,
+        wait: bool,
     ) -> Result<Option<Drawable>, String> {
         let mut mail = self.shared.lock();
         if !self.still && self.asked.1 != Some(position) {
@@ -273,7 +277,8 @@ impl Picture {
             mail.waiting_since.get_or_insert_with(Instant::now);
             self.shared.wake.notify_all();
         }
-        if let Some(limits) = wait {
+        if wait {
+            let limits = self.limits;
             let deadline = self.started + limits.open;
             while mail.failed.is_none() && mail.opened.is_none() {
                 let Some(left) = deadline.checked_duration_since(Instant::now()) else {
@@ -771,7 +776,12 @@ pub mod fault {
     /// Reads every frame slowly (`SLOW_FRAME` each): a decoder slower than real time that
     /// keeps going.
     pub const SLOW_DECODE: &str = "openlab-test-slow-decode";
-    pub const SLOW_FRAME: std::time::Duration = std::time::Duration::from_millis(60);
+    pub const SLOW_FRAME: std::time::Duration = std::time::Duration::from_millis(400);
+
+    /// Whether `file`'s name asks for a fault.
+    pub fn named(file: &str) -> bool {
+        file.contains("openlab-test-")
+    }
 
     pub(super) fn hang_if(shared: &Shared, file: &str, fault: &str) {
         if !file.contains(fault) {
@@ -801,15 +811,15 @@ mod tests {
     /// main thread is never held.
     #[test]
     fn an_open_that_fails_is_reported_when_polled() {
-        let mut p = Picture::open("/nonexistent/openlab/clip.mov", false, 0.0).unwrap();
         let limits = Limits {
             open: Duration::from_secs(30),
             frame: Duration::from_secs(30),
         };
+        let mut p = Picture::open("/nonexistent/openlab/clip.mov", false, 0.0, limits).unwrap();
         let device = objc2_metal::MTLCreateSystemDefaultDevice().unwrap();
-        let got = p.frame(&device, 0.0, Some(limits));
+        let got = p.frame(&device, 0.0, true);
         assert_eq!(got.err().as_deref(), Some("the file is not there"));
-        assert!(matches!(p.poll(limits), Some(Polled::Failed(_))));
+        assert!(matches!(p.poll(), Some(Polled::Failed(_))));
         assert_eq!(p.asked(), Some(0.0));
     }
 
