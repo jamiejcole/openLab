@@ -17,6 +17,8 @@
     {"shot": "triggers-list"},
     {"select": "27"},
     {"shot": "triggers-all"},
+    {"select": "23"},
+    {"shot": "triggers-no-key-box-usable"},
     {"select": "24"},
     {"type": "inspector-duck-others-db", "text": "+3", "enter": false},
     {"shot": "duck-typed-positive-before-commit"},
