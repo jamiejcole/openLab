@@ -533,6 +533,7 @@
 "broken.voice_rejected" = "The audio engine refused to play it.";
 "broken.stream_failed" = "Its audio stream failed while it was playing.";
 "broken.device_lost" = "The audio device was lost while it was playing.";
+"broken.decode_failed" = "Its picture could not be decoded while it was playing.";
 
 "problem.unknown" = "Unrecognised problem: {type}";
 "problem.no_target" = "No target is set.";
@@ -555,6 +556,8 @@
 "problem.network_host_invalid" = "Network patch {patch} cannot be used: {reason}.";
 "problem.network_message_invalid" = "The OSC message cannot be sent: {reason}.";
 "problem.slices_unplayable" = "Its slices and loops cannot be played with this file: {reason}.";
+"problem.no_stage" = "No stage is chosen.";
+"problem.stage_missing" = "Its stage does not exist.";
 "problem.started_broken" = "It was started while broken and has been fixed since; it runs normally next time.";
 
 "warning.unknown" = "Unrecognised warning: {type}";
@@ -580,6 +583,7 @@
 "warning.preview_failed" = "Preview of {cue} failed.";
 "warning.preview_failed.device_lost" = "Preview of {cue} failed: the audio device was lost.";
 "warning.preview_failed.stream_failed" = "Preview of {cue} failed: its audio stream failed.";
+"warning.preview_failed.decode_failed" = "Preview of {cue} failed: its picture could not be decoded.";
 "warning.preview_failed.voice_rejected" = "Preview of {cue} failed: the audio engine refused to play it.";
 "warning.devamp_ignored" = "{cue} ignored a Devamp that did not apply to it.";
 "warning.go_ignored" = "GO on {list} was ignored.";

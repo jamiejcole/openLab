@@ -213,6 +213,7 @@ fn replaced_by_kind(property: &CueProperty) -> bool {
         CueProperty::Target { .. }
             | CueProperty::GroupMode { .. }
             | CueProperty::Media { .. }
+            | CueProperty::Stage { .. }
             | CueProperty::Destination { .. }
             | CueProperty::Address { .. }
             | CueProperty::Args { .. }

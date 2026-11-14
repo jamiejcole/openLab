@@ -7,7 +7,7 @@ use std::num::NonZeroU32;
 use std::fmt;
 
 use crate::cue::{FadeCurve, FadeSpec, MediaRef, OscArg};
-use crate::model::{CueId, CueListId, NetworkPatchId, PatchId};
+use crate::model::{CueId, CueListId, NetworkPatchId, PatchId, StageId};
 use crate::settings::PatchResolution;
 
 use super::level::LevelParam;
@@ -316,8 +316,14 @@ pub enum CueProblem {
     },
     /// A Fade cue that sets no level to fade (QLab: "No parameters set to fade").
     NothingToFade,
-    /// An Audio cue with no media file.
+    /// An Audio or Video cue with no media file.
     NoMedia,
+    /// A Video cue whose stage is "none" (QLab 5 manual p. 209: a Video cue must have a stage).
+    NoStage,
+    /// A Video cue's stage is not in the workspace.
+    StageMissing {
+        stage: StageId,
+    },
     MediaMissing {
         media: MediaRef,
     },
@@ -369,6 +375,8 @@ impl fmt::Display for CueProblem {
             }
             Self::NothingToFade => write!(f, "no levels set to fade"),
             Self::NoMedia => write!(f, "no media file"),
+            Self::NoStage => write!(f, "no stage"),
+            Self::StageMissing { stage } => write!(f, "stage {} does not exist", stage.0),
             Self::MediaMissing { media } => write!(f, "media file {} not found", media.as_str()),
             Self::MediaUnsupported { media, reason } => {
                 write!(
@@ -455,6 +463,9 @@ pub enum BrokenReason {
     StreamFailed,
     /// The output device went away.
     DeviceLost,
+    /// A Video cue's picture could not be decoded or drawn (a file damaged past its probe, a
+    /// decoder that gave up): only that cue stops.
+    DecodeFailed,
 }
 
 /// A fade-out applied by a stop.

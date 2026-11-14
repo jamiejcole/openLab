@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::media_path::file_name;
-use crate::model::{CueId, NetworkPatchId, PatchId};
+use crate::model::{CueId, NetworkPatchId, PatchId, StageId};
 
 /// Levels at or below this are silence (−∞). The file writes this value for silence.
 pub const SILENCE_DB: f64 = -120.0;
@@ -218,6 +218,9 @@ pub fn display_name(cue: &Cue) -> Cow<'_, str> {
         // Split on `/` only: a backslash is a legal macOS file-name character, and Windows
         // separators were converted when the `MediaRef` was made.
         CueKind::Audio {
+            media: Some(media), ..
+        }
+        | CueKind::Video {
             media: Some(media), ..
         } => Cow::Borrowed(file_name(media.as_str())),
         _ => Cow::Borrowed(""),
@@ -649,6 +652,33 @@ pub enum CueKind {
         address: String,
         args: Vec<OscArg>,
     },
+    /// Plays a video file or shows a still image on a stage (CT-03, VID-03; QLab 5 manual
+    /// p. 209). A video's length comes from the file; a still shows until it is stopped, or for
+    /// `duration` seconds when one is set.
+    Video {
+        /// `None` until a file is assigned.
+        media: Option<MediaRef>,
+        /// The stage it is drawn on; `None` is "none", and the cue is broken.
+        stage: Option<StageId>,
+        /// How long a still image shows, seconds (0 to [`MAX_TIME`]); `None` = until stopped.
+        /// Not used by a video file, whose length is its own.
+        duration: Option<f64>,
+    },
+}
+
+impl CueKind {
+    /// The media file of an Audio or Video cue, if it has one.
+    pub fn media(&self) -> Option<&MediaRef> {
+        match self {
+            Self::Audio { media, .. } | Self::Video { media, .. } => media.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Whether the kind plays a media file (Audio and Video cues), set or not.
+    pub fn has_media(&self) -> bool {
+        matches!(self, Self::Audio { .. } | Self::Video { .. })
+    }
 }
 
 impl CueKind {
@@ -673,7 +703,8 @@ impl CueKind {
             | Self::Group { .. }
             | Self::Wait { .. }
             | Self::Memo
-            | Self::Network { .. } => false,
+            | Self::Network { .. }
+            | Self::Video { .. } => false,
         }
     }
 
@@ -686,6 +717,7 @@ impl CueKind {
                 | Self::Wait { .. }
                 | Self::Memo
                 | Self::Network { .. }
+                | Self::Video { .. }
         )
     }
 
@@ -706,7 +738,8 @@ impl CueKind {
             | Self::Group { .. }
             | Self::Wait { .. }
             | Self::Memo
-            | Self::Network { .. } => None,
+            | Self::Network { .. }
+            | Self::Video { .. } => None,
         }
     }
 }

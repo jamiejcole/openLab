@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use openlab_core::{
-    MediaRef, MissingMedia, PathStyle, RelinkPlan, Workspace, audio_media, file_name,
+    MediaRef, MissingMedia, PathStyle, RelinkPlan, Workspace, media_of_cues, file_name,
     file_name_key, plan_relinks, portable_ref, resolve,
 };
 
@@ -130,7 +130,7 @@ pub fn media_path(media: &MediaRef, show_dir: Option<&Path>) -> Option<PathBuf> 
 /// Audio cues whose file does not exist on disk. A path that cannot be examined counts as
 /// missing.
 pub fn missing_media(workspace: &Workspace, show_dir: Option<&Path>) -> Vec<MissingMedia> {
-    audio_media(workspace)
+    media_of_cues(workspace)
         .into_iter()
         .filter(|(_, media)| !media_path(media, show_dir).is_some_and(|p| p.exists()))
         .map(|(cue, media)| MissingMedia { cue, media })

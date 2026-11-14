@@ -13,7 +13,7 @@ use crate::cue_engine::{
     Action, BrokenReason, CueEngine, CueProblem, CueState, EngineWarning, GoIgnoredReason,
     PreviewIgnoredReason, SampleTime,
 };
-use crate::model::{CueId, CueListId, NetworkPatchId, PatchId};
+use crate::model::{CueId, CueListId, NetworkPatchId, PatchId, StageId};
 use crate::settings::PatchResolution;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +53,7 @@ pub enum WireBrokenReason {
     VoiceRejected,
     StreamFailed,
     DeviceLost,
+    DecodeFailed,
 }
 
 impl From<BrokenReason> for WireBrokenReason {
@@ -61,6 +62,7 @@ impl From<BrokenReason> for WireBrokenReason {
             BrokenReason::VoiceRejected => Self::VoiceRejected,
             BrokenReason::StreamFailed => Self::StreamFailed,
             BrokenReason::DeviceLost => Self::DeviceLost,
+            BrokenReason::DecodeFailed => Self::DecodeFailed,
         }
     }
 }
@@ -175,6 +177,12 @@ pub enum WireProblem {
         reason: String,
     },
     StartedBroken,
+    /// A Video cue whose stage is "none".
+    NoStage,
+    /// A Video cue's stage is not in the workspace.
+    StageMissing {
+        stage: StageId,
+    },
 }
 
 impl From<&CueProblem> for WireProblem {
@@ -212,6 +220,8 @@ impl From<&CueProblem> for WireProblem {
                 reason: reason.clone(),
             },
             CueProblem::StartedBroken => Self::StartedBroken,
+            CueProblem::NoStage => Self::NoStage,
+            CueProblem::StageMissing { stage } => Self::StageMissing { stage: *stage },
         }
     }
 }

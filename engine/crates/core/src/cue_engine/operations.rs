@@ -384,7 +384,7 @@ impl CueEngine {
         }
         let run = self.new_run();
         let offset = cx.secs(time, &self.config);
-        let voice = self.is_armed(model) && matches!(model.kind, CueKind::Audio { .. });
+        let voice = self.is_armed(model) && model.kind.has_media();
         // The split between pre-wait and action is fixed here, for the stream and the start.
         let pre_wait = cx.secs(model.pre_wait, &self.config);
         let (pre_wait_left, action_offset) = if offset < pre_wait {

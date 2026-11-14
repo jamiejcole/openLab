@@ -35,14 +35,16 @@ enum CueProperty: Hashable, Sendable {
     /// into the kind it has now, so another client's edit to the rest of the kind is kept. Not `type`,
     /// `children` or `media`.
     case kindFields([String: JSONValue])
-    /// An audio cue's file alone (an absolute path; the engine stores it relative to the show folder
-    /// when inside it); nil clears it. Levels, routing, fades and slices stay.
+    /// An audio or video cue's file alone (an absolute path; the engine stores it relative to the
+    /// show folder when inside it); nil clears it. Levels, routing, fades, slices and the stage stay.
     case media(String?)
     /// Network cues only: the network patch id, the OSC address pattern, and the arguments, each
     /// `{type: int|float|string|bool, value}` (core's `OscArg`).
     case destination(ModelID)
     case address(String)
     case args([JSONValue])
+    /// Video cues only: the stage the picture is drawn on; nil is "none" (the cue is broken).
+    case stage(ModelID?)
     /// Group cues only: core's `GroupMode` (`type`: timeline, start_first_and_enter,
     /// start_first_and_go_to_next, playlist, start_random; `loop`/`shuffle` for a playlist only).
     case groupMode(type: String, loop: Bool, shuffle: Bool)
@@ -84,6 +86,7 @@ enum CueProperty: Hashable, Sendable {
         case .destination(let v): return p("destination", .string(v.raw))
         case .address(let v): return p("address", .string(v))
         case .args(let v): return p("args", .array(v))
+        case .stage(let v): return p("stage", v.map { .string($0.raw) } ?? .null)
         case .groupMode(let type, let loop, let shuffle):
             var mode: [String: JSONValue] = ["type": .string(type)]
             if type == "playlist" {

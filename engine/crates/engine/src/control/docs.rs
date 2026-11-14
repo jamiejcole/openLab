@@ -38,7 +38,7 @@ use openlab_core::protocol::{
 };
 use openlab_core::{
     Action, CueEngine, CueListId, EngineConfig, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES,
-    MediaRef, PatchId, PathStyle, RecoveryDecision, Relink, Workspace, WorkspaceId, audio_media,
+    MediaRef, PatchId, PathStyle, RecoveryDecision, Relink, Workspace, WorkspaceId, media_of_cues,
     autosave_due, decide_recovery, is_absolute, load_show, portable_ref, recovery_show_path,
     relink_command,
 };
@@ -1082,7 +1082,7 @@ fn relink_scan(
         ticket,
         found: Box::new(RelinkFound {
             plan: found.plan,
-            before: audio_media(workspace),
+            before: media_of_cues(workspace),
             truncated: found.truncated,
             skipped: found.skipped,
         }),
@@ -1222,7 +1222,7 @@ fn rebase(ws: &Workspace, old_dir: Option<&Path>, new_dir: &Path) -> (Vec<Relink
         return (Vec::new(), false);
     };
     let mut respelled = false;
-    let relinks = audio_media(ws)
+    let relinks = media_of_cues(ws)
         .into_iter()
         .filter_map(|(cue, media)| {
             if is_absolute(media.as_str()) {
@@ -1294,7 +1294,7 @@ impl DocCx<'_> {
             truncated,
             skipped,
         } = found;
-        let current = audio_media(self.doc.model.ws());
+        let current = media_of_cues(self.doc.model.ws());
         let relinks: Vec<Relink> = plan
             .matches
             .into_iter()

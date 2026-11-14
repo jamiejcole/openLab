@@ -267,6 +267,69 @@ fn missing_patches_warn() {
     );
 }
 
+/// A Video cue on a stage the workspace lacks loads with a warning and shows broken; one on
+/// "none" (null) loads quietly and shows broken (a cue engine problem, not a file problem).
+#[test]
+fn a_video_cues_missing_stage_warns_and_none_is_quiet() {
+    let on = |n: u128, stage: Option<StageId>| {
+        cue(
+            n,
+            CueKind::Video {
+                media: Some(MediaRef::new("v.mov")),
+                stage,
+                duration: None,
+            },
+        )
+    };
+    let mut ws = workspace(vec![
+        on(1, Some(stage_id(9))),
+        on(2, None),
+        on(3, Some(stage_id(1))),
+    ]);
+    ws.stages = vec![Stage::new(stage_id(1), "Stage 1", 1920, 1080)];
+    assert_eq!(
+        validate(&ws),
+        vec![warning(1, IssueKind::StageMissing { stage: stage_id(9) })]
+    );
+    let loaded = load_show(&show_text(&ws)).unwrap();
+    assert_eq!(loaded.workspace, ws);
+}
+
+/// A still's duration is a time like any other: out of range is clamped with a warning, and no
+/// duration (until stopped) is kept.
+#[test]
+fn a_video_cues_still_duration_is_clamped_like_any_time() {
+    let still = |n: u128, duration: Option<f64>| {
+        cue(
+            n,
+            CueKind::Video {
+                media: Some(MediaRef::new("still.png")),
+                stage: None,
+                duration,
+            },
+        )
+    };
+    let mut ws = workspace(vec![
+        still(1, Some(-1.0)),
+        still(2, Some(1e9)),
+        still(3, None),
+        still(4, Some(5.0)),
+    ]);
+    let time = |field| IssueKind::InvalidTime { field };
+    assert_eq!(
+        repair(&mut ws),
+        vec![warning(1, time("duration")), warning(2, time("duration"))]
+    );
+    let duration = |n| match ws.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Video { duration, .. } => duration,
+        ref other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        [duration(1), duration(2), duration(3), duration(4)],
+        [Some(0.0), Some(MAX_TIME), None, Some(5.0)]
+    );
+}
+
 #[test]
 fn invalid_times_are_clamped() {
     let mut memo = cue(1, CueKind::Memo);

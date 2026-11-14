@@ -66,6 +66,7 @@ cue, and the cue shows as broken where it cannot run.
 | An empty `number` (`""`) | Treated as `null`, no warning |
 | A target that does not exist, targets the cue itself, or is the wrong kind of cue | Warning; the target is kept and the cue shows as broken |
 | An Audio cue's `patch` or a Network cue's `destination` does not exist | Warning; the cue shows as broken |
+| A Video cue's `stage` does not exist | Warning (`StageMissing`); kept, and the cue shows as broken. A `stage` of `null` ("none") loads quietly and the cue shows as broken |
 | A time below its minimum or above its maximum (24 h unless stated) | Warning; clamped |
 | A level above `+12` | Warning; set to `+12` |
 | A level below `-120` | Set to `-120` silently (same meaning) |
@@ -201,7 +202,7 @@ At most 64 stages; a file with more keeps the first 64 with a warning (`TooManyS
 |---|---|---|
 | `id` | UUID | Stable id. Targets, OSC and scripts refer to cues by id, never by number. |
 | `number` | string or `null` | Free text, unique within the workspace when set. |
-| `name` | string | The name the user typed. Empty means "named after the file": the UI shows `display_name` (the Audio cue's file name with its extension).  Assigning or following a file never writes `name`. |
+| `name` | string | The name the user typed. Empty means "named after the file": the UI shows `display_name` (the Audio or Video cue's file name with its extension).  Assigning or following a file never writes `name`. |
 | `notes` | string | Operator notes. |
 | `color` | colour | The row's highlight. A colour is `"none"`, one of the eight basic `"red"`, `"orange"`, `"yellow"`, `"green"`, `"cyan"`, `"blue"`, `"purple"`, `"magenta"`, or one of the twelve more `"dark_red"`, `"apricot"`, `"olive"`, `"dark_green"`, `"light_blue"`, `"navy"`, `"indigo"`, `"lilac"`, `"plum"`, `"raspberry"`, `"pink"`, `"grey"`. |
 | `second_color` | colour | Optional (absent: `"none"`). The colour the row shows once the cue has been started, until Reset All, a reset of the cue (or of a group around it) or the show is opened again; `"none"` = no second colour. Whether it has been started is not saved. |
@@ -287,6 +288,15 @@ Option on macOS).
 **`wait`** — `duration` (seconds). Does nothing for that long.
 
 **`memo`** — no fields. Does nothing; holds notes for the operator.
+
+**`video`** — plays a video file or shows a still image on a stage (CT-03, VID-03; QLab 5
+manual p. 209). A video's length is not stored; it comes from the file.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `media` | path or `null` | §4.3. A video file or a still image. `null` until a file is assigned. |
+| `stage` | stage id or `null` | The stage (§4.7) the cue is drawn on. `null` is "none": the cue shows as broken and does not play. |
+| `duration` | seconds or `null` | How long a still image shows; `null` = until the cue is stopped. Not used by a video file. Out of range: clamped with `InvalidTime`. |
 
 **`network`** — sends one OSC message.
 

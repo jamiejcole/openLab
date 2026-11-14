@@ -90,6 +90,19 @@ pub fn audio() -> CueKind {
     }
 }
 
+pub fn stage_id(n: u128) -> StageId {
+    StageId(Uuid::from_u128(n))
+}
+
+/// Video cue on stage 1 (which a test adds to the workspace: [`workspace`] has no stage).
+pub fn video() -> CueKind {
+    CueKind::Video {
+        media: Some(MediaRef::new("media/v.mov")),
+        stage: Some(stage_id(1)),
+        duration: None,
+    }
+}
+
 pub fn fade(target: u128) -> CueKind {
     CueKind::Fade {
         target: Some(cue_id(target)),

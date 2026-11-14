@@ -79,7 +79,8 @@ impl CueEngine {
             | CueKind::Group { .. }
             | CueKind::Wait { .. }
             | CueKind::Memo
-            | CueKind::Network { .. } => {}
+            | CueKind::Network { .. }
+            | CueKind::Video { .. } => {}
         }
     }
 
