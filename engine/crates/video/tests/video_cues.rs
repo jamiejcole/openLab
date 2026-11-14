@@ -107,14 +107,20 @@ fn unsupported(r: Result<ProbeReport, MediaError>) -> String {
 }
 
 /// A file that is not a movie or still openLab plays gives a reason, never a crash or a hang:
-/// noise, an empty file, a movie cut short, a still cut short (PNG, JPEG, TIFF), a still too
-/// large to hold, a still format it does not play, a missing file.
+/// noise, an empty file, a movie cut inside its index, a still cut short (PNG, JPEG, TIFF), a
+/// still too large to hold, a still format it does not play, a missing file.
 #[test]
 fn damaged_or_unsupported_files_give_a_reason() {
     let dir = tempfile::tempdir().unwrap();
     let movie = std::fs::read(make(dir.path(), "good.mov", "h264", Some((25, 25)))).unwrap();
+    // Cut just inside its index (`moov`): no track can be read, on every decoder. (A cut further
+    // in may leave the index whole and the first frames playable: see the next test.)
+    let index = movie
+        .windows(4)
+        .position(|w| w == b"moov")
+        .expect("the test movie has an index");
     let cut = dir.path().join("cut.mov");
-    std::fs::write(&cut, movie.get(..movie.len() / 2).unwrap()).unwrap();
+    std::fs::write(&cut, movie.get(..index + 16).unwrap()).unwrap();
     let empty = dir.path().join("empty.mov");
     std::fs::write(&empty, b"").unwrap();
     let noise = dir.path().join("noise.mp4");
@@ -146,6 +152,25 @@ fn damaged_or_unsupported_files_give_a_reason() {
         probe(&dir.path().join("gone.mov")),
         Err(MediaError::NotFound(_))
     ));
+}
+
+/// A movie cut short in its picture data gives an answer within the limit, never a crash or a
+/// hang: where its index (`moov`) survives the cut its first frames still decode, so it may
+/// play (its frames then run out on stage: `a_decode_failure_mid_play_breaks_only_that_cue_with_a_notice`);
+/// otherwise it is unsupported. Which depends on the encoder's output (Apple silicon and Intel
+/// Macs encode the test movie to different sizes).
+#[test]
+fn a_movie_cut_short_gives_an_answer_within_the_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = std::fs::read(make(dir.path(), "good.mov", "h264", Some((25, 25)))).unwrap();
+    for keep in [2, 3, 4] {
+        let cut = dir.path().join(format!("cut{keep}.mov"));
+        std::fs::write(&cut, movie.get(..movie.len() * (keep - 1) / keep).unwrap()).unwrap();
+        match probe(&cut) {
+            Ok(ProbeReport::Video { .. }) | Err(MediaError::Unsupported(_)) => {}
+            other => panic!("cut to {}/{keep}: {other:?}", keep - 1),
+        }
+    }
 }
 
 /// Mutated movies (a seeded walk over every part of a good file) each give an answer within
