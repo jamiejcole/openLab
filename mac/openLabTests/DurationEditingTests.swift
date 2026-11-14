@@ -285,18 +285,25 @@ final class InspectorDurationTests: XCTestCase {
     /// Flow: a Load cue with a negative load time loads its target that long before its end. The
     /// operator types the time with a minus; the engine stores it and the field shows it so.
     func testALoadCueWithANegativeLoadTimeLoadsItsTargetBeforeItsEnd() async {
-        vc.setSelection([DurationEditingTests.load])
-        edit(.loadTime, "-10")
-        await assertEventually("the engine's echo") {
-            self.kind(DurationEditingTests.load)?["load_to_time"]?.doubleValue == -10
-        }
-        XCTAssertEqual(vc.loadTimeField.stringValue, "-00:10.00")
+        let (load, wait) = (DurationEditingTests.load, DurationEditingTests.wait)
+        // The Load cue aims at the 2 s Wait cue, made 10 s long: a known end.
+        guard case .success = await rig.store.setProperty(load, .target(wait)),
+            case .success = await rig.store.setProperty(wait, .duration(10))
+        else { return XCTFail("set up") }
+        vc.setSelection([load])
+        edit(.loadTime, "-2")
+        await assertEventually("the engine's echo") { self.kind(load)?["load_to_time"]?.doubleValue == -2 }
+        XCTAssertEqual(vc.loadTimeField.stringValue, "-00:02.00")
         XCTAssertEqual(vc.messageLabel.stringValue, "")
-        guard case .success = await rig.store.goFrom(list: TestSnapshots.mainList, cue: DurationEditingTests.load)
+        guard case .success = await rig.store.goFrom(list: TestSnapshots.mainList, cue: load)
         else { return XCTFail("go") }
-        await assertEventually("the target is loaded") {
-            self.rig.store.cueStates[CueListHarness.intro]?.state == .loaded
-        }
+        await assertEventually("the target is loaded") { self.rig.store.cueStates[wait]?.state == .loaded }
+        guard case .success = await rig.store.transport(.start(cue: wait)) else { return XCTFail("start") }
+        // Loaded 8 s in: the row counts from 8 s with 2 s left, not from the top.
+        await assertEventually("the row's progress") { self.rig.store.progress[wait] != nil }
+        let shown = rig.store.progress[wait]
+        XCTAssertGreaterThanOrEqual(shown?.elapsed ?? 0, 7.9, "\(String(describing: shown))")
+        XCTAssertLessThanOrEqual(shown?.remaining ?? 99, 2.1, "\(String(describing: shown))")
     }
 
     /// Flow: a Wait cue's post-wait follows its duration (QLab 5, manual p. 688). The post-wait
