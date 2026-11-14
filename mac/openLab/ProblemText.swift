@@ -121,10 +121,20 @@ enum WarningRows {
             for w in list {
                 let key = prefix + ((try? w.json.text()) ?? w.type)
                 seen[key, default: 0] += 1
+                let id = w.json["cue"]?.stringValue.map { ModelID($0) }
+                let text = ProblemText.warning(w, label: label)
+                // A warning about a cue reads as a broken cue's row: the cue as the title, what
+                // happened on the line under it, so a long cue name never cuts the reason off.
+                if let id, let cue = model?.cue(id) {
+                    rows.append(
+                        WarningRow(
+                            id: "\(key)#\(seen[key] ?? 0)", cue: id,
+                            title: cueTitle(cue, name: model?.listName(cue) ?? CueKindStyle.kindLabel(cue.kindType)),
+                            detail: text, canRelink: false))
+                    continue
+                }
                 rows.append(
-                    WarningRow(
-                        id: "\(key)#\(seen[key] ?? 0)", cue: w.json["cue"]?.stringValue.map { ModelID($0) },
-                        title: ProblemText.warning(w, label: label), detail: "", canRelink: false))
+                    WarningRow(id: "\(key)#\(seen[key] ?? 0)", cue: id, title: text, detail: "", canRelink: false))
             }
         }
         for text in store.appNotices {
