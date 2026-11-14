@@ -1,0 +1,714 @@
+{
+ "format_version": 7,
+ "workspace": {
+  "id": "00000000-0000-0000-0000-00000000b633",
+  "name": "Basics and Triggers",
+  "settings": {
+   "min_go_interval": 0.0,
+   "panic_duration": 0.5,
+   "autosave_interval": 30.0,
+   "osc_access": {
+    "no_passcode": {
+     "view": true,
+     "edit": true,
+     "control": true
+    },
+    "passcodes": []
+   },
+   "master_db": 0.0,
+   "hotkeys": {
+    "go": {
+     "key": "space",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "stop_all": null,
+    "pause_all": {
+     "key": "[",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "resume_all": {
+     "key": "]",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "load_selected": {
+     "key": "l",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "pause_resume_selected": {
+     "key": "p",
+     "modifiers": {
+      "shift": false,
+      "control": false,
+      "alt": false,
+      "command": false
+     }
+    },
+    "start_selected": null,
+    "stop_selected": null,
+    "reset_selected": null
+   },
+   "auto_number_start": 1.0,
+   "auto_number_increment": 1.0
+  },
+  "patches": [
+   {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "name": "Main",
+    "master_db": 0.0,
+    "outputs": [
+     {
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     },
+     {
+      "level_db": 0.0,
+      "mute": false,
+      "polarity_inverted": false
+     }
+    ]
+   }
+  ],
+  "network_patches": [
+   {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "name": "Desk",
+    "host": "127.0.0.1",
+    "port": 53000,
+    "protocol": "udp"
+   }
+  ],
+  "cue_lists": [
+   {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "name": "Main",
+    "cues": [
+     {
+      "id": "00000000-0000-0000-0000-000000001001",
+      "number": "1",
+      "name": "Red",
+      "notes": "",
+      "color": "red",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      },
+      "second_color": "light_blue"
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001002",
+      "number": "2",
+      "name": "Orange",
+      "notes": "",
+      "color": "orange",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001003",
+      "number": "3",
+      "name": "Yellow",
+      "notes": "",
+      "color": "yellow",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001004",
+      "number": "4",
+      "name": "Green",
+      "notes": "",
+      "color": "green",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001005",
+      "number": "5",
+      "name": "Cyan",
+      "notes": "",
+      "color": "cyan",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001006",
+      "number": "6",
+      "name": "Blue",
+      "notes": "",
+      "color": "blue",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001007",
+      "number": "7",
+      "name": "Purple",
+      "notes": "",
+      "color": "purple",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001008",
+      "number": "8",
+      "name": "Magenta",
+      "notes": "",
+      "color": "magenta",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001009",
+      "number": "9",
+      "name": "Dark red",
+      "notes": "",
+      "color": "dark_red",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001010",
+      "number": "10",
+      "name": "Apricot",
+      "notes": "",
+      "color": "apricot",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001011",
+      "number": "11",
+      "name": "Olive",
+      "notes": "",
+      "color": "olive",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001012",
+      "number": "12",
+      "name": "Dark green",
+      "notes": "",
+      "color": "dark_green",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001013",
+      "number": "13",
+      "name": "Light blue",
+      "notes": "",
+      "color": "light_blue",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001014",
+      "number": "14",
+      "name": "Navy",
+      "notes": "",
+      "color": "navy",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001015",
+      "number": "15",
+      "name": "Indigo",
+      "notes": "",
+      "color": "indigo",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001016",
+      "number": "16",
+      "name": "Lilac",
+      "notes": "",
+      "color": "lilac",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001017",
+      "number": "17",
+      "name": "Plum",
+      "notes": "",
+      "color": "plum",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001018",
+      "number": "18",
+      "name": "Raspberry",
+      "notes": "",
+      "color": "raspberry",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001019",
+      "number": "19",
+      "name": "Pink",
+      "notes": "",
+      "color": "pink",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001020",
+      "number": "20",
+      "name": "Grey",
+      "notes": "",
+      "color": "grey",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001021",
+      "number": "21",
+      "name": "Disarmed",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": false,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001022",
+      "number": "22",
+      "name": "Disarmed and skipped",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": false,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      },
+      "skip_if_disarmed": true
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001023",
+      "number": "23",
+      "name": "Armed, skip box ticked",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      },
+      "skip_if_disarmed": true,
+      "auto_load": true
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001024",
+      "number": "24",
+      "name": "Fades its peers, ducks -12",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": {
+        "key": "k",
+        "modifiers": {
+         "shift": false,
+         "control": false,
+         "alt": false,
+         "command": false
+        }
+       },
+       "hotkey_enabled": false
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      },
+      "fade_and_stop_others": {
+       "enabled": true,
+       "scope": "peers",
+       "duration": 2.0
+      },
+      "duck_others": {
+       "enabled": true,
+       "db": -12.0,
+       "duration": 1.0
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001025",
+      "number": "25",
+      "name": "Boosts +6",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      },
+      "duck_others": {
+       "enabled": true,
+       "db": 6.0,
+       "duration": 0.5
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001026",
+      "number": "26",
+      "name": "Fades its list",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      },
+      "fade_and_stop_others": {
+       "enabled": true,
+       "scope": "list",
+       "duration": 3.0
+      }
+     },
+     {
+      "id": "00000000-0000-0000-0000-000000001027",
+      "number": "27",
+      "name": "Fades every list",
+      "notes": "",
+      "color": "none",
+      "flagged": false,
+      "armed": true,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+       "hotkey": null,
+       "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "kind": {
+       "type": "memo"
+      },
+      "fade_and_stop_others": {
+       "enabled": true,
+       "scope": "all",
+       "duration": 1.5
+      }
+     }
+    ]
+   }
+  ]
+ }
+}

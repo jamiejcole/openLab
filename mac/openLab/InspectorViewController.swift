@@ -8,7 +8,11 @@ import Combine
 /// puts the model's value back. A field being edited is never overwritten by a model change.
 @MainActor
 final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTextViewDelegate, NSTabViewDelegate {
-    static let colours = ["none", "red", "orange", "green", "blue", "purple"]
+    static let colours = ["none"] + CueKindStyle.basicColours + CueKindStyle.extendedColours
+    /// The colour menus' items in order: none, the basic colours, the extended ones; nil is a separator.
+    static let colourItems: [String?] =
+        ["none", nil] + CueKindStyle.basicColours.map { Optional($0) } + [nil]
+        + CueKindStyle.extendedColours.map { Optional($0) }
     static let continueModes = ["do_not_continue", "auto_continue", "auto_follow"]
 
     let store: WorkspaceStore
@@ -91,9 +95,26 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let kindIcon = NSImageView()
     let notesView = NotesTextView()
     let colourPopup = NSPopUpButton()
+    /// The second colour (shown once the cue has been started): the box unlocks the menu beside it.
+    let secondColourCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    let secondColourPopup = NSPopUpButton()
+    /// The second colour's box was ticked for the shown cues and no colour has been picked yet.
+    var secondColourUnlocked = false
     let continuePopup = NSPopUpButton()
     let flaggedCheck = NSButton(checkboxWithTitle: loc("inspector.flagged"), target: nil, action: nil)
+    let autoLoadCheck = NSButton(checkboxWithTitle: loc("inspector.autoLoad"), target: nil, action: nil)
     let armedCheck = NSButton(checkboxWithTitle: loc("inspector.armed"), target: nil, action: nil)
+    let skipCheck = NSButton(checkboxWithTitle: loc("inspector.skipIfDisarmed"), target: nil, action: nil)
+    /// The Triggers tab's switch of the hotkey trigger: off keeps the key and starts nothing.
+    let hotkeyEnableCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    /// What the cue does to other cues as its action starts (the Triggers tab's right side).
+    let fadeOthersCheck = NSButton(checkboxWithTitle: loc("inspector.fadeOthers"), target: nil, action: nil)
+    let fadeOthersScopePopup = NSPopUpButton()
+    let fadeOthersTimeField = NSTextField()
+    let duckCheck = NSButton(checkboxWithTitle: loc("inspector.duckOthers"), target: nil, action: nil)
+    let duckDbField = NSTextField()
+    let duckTimeField = NSTextField()
+    static let fadeOthersScopes = ["peers", "list", "all"]
     let messageLabel = NSTextField(labelWithString: "")
     /// Preview / Stop Preview of the selected audio cue or group. The Time & Loops tab should host it.
     let previewButton = NSButton(title: loc("inspector.preview"), target: nil, action: nil)
@@ -148,16 +169,18 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         return store.model?.cue(id)
     }
 
-    /// `triggers` is replaced whole, so an edit made before the engine answered the previous one
-    /// (OSC typed, then a key recorded) must start from what was sent, not from the stale model.
-    private var pendingTriggers: [ModelID: JSONValue] = [:]
+    /// `triggers`, `fade_and_stop_others` and `duck_others` are each replaced whole, so an edit made
+    /// before the engine answered the previous one (the box ticked, then the time typed) must start
+    /// from what was sent, not from the stale model. Per cue, by property.
+    private var pendingWholes: [ModelID: [String: JSONValue]] = [:]
+    static let wholeProperties: Set<String> = ["triggers", "fade_and_stop_others", "duck_others"]
 
-    /// The selected cue as edits should see it: the model's, with unanswered triggers applied.
+    /// The selected cue as edits should see it: the model's, with unanswered whole properties applied.
     var cueForEdit: Cue? { cue.map(withPendingEdits) }
 
     func withPendingEdits(_ cue: Cue) -> Cue {
         var c = cue
-        if let t = pendingTriggers[c.id] { c.raw.set("triggers", t) }
+        for (key, value) in pendingWholes[c.id] ?? [:] { c.raw.set(key, value) }
         if let k = pendingKinds[c.id] { c.raw.set("kind", k) }
         return c
     }
@@ -199,6 +222,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         case .duration: return durationField
         case .loadTime: return loadTimeField
         case .message: return networkMessageField
+        case .fadeOthersTime: return fadeOthersTimeField
+        case .duckDb: return duckDbField
+        case .duckTime: return duckTimeField
         case .notes: return nil
         }
     }
@@ -215,7 +241,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             (numberField, AX.inspectorNumber), (nameField, AX.inspectorName), (preWaitField, AX.inspectorPreWait),
             (postWaitField, AX.inspectorPostWait), (targetField, AX.inspectorTarget),
             (durationField, AX.inspectorDuration), (loadTimeField, AX.inspectorLoadTime),
-            (networkMessageField, "inspector-network-message"),
+            (networkMessageField, "inspector-network-message"), (fadeOthersTimeField, "inspector-fade-others-time"),
+            (duckDbField, "inspector-duck-others-db"), (duckTimeField, "inspector-duck-others-time"),
         ] {
             f.setAX(id)
             f.delegate = self
@@ -251,11 +278,24 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         messageLabel.textColor = .systemRed
         messageLabel.lineBreakMode = .byTruncatingTail
         messageLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        for p in [colourPopup, continuePopup] {
+        secondColourPopup.setAX("inspector-second-colour")
+        secondColourCheck.setAX("inspector-second-colour-on", label: loc("inspector.secondColour"))
+        secondColourCheck.toolTip = loc("inspector.secondColour")
+        // A lock (our own drawing) that opens: off is closed (no second colour), on is open.
+        secondColourCheck.setButtonType(.toggle)
+        secondColourCheck.isBordered = false
+        secondColourCheck.title = ""
+        secondColourCheck.imagePosition = .imageOnly
+        secondColourCheck.image = Icon.colourLocked.image(loc("inspector.secondColour"), compact: true)
+        secondColourCheck.alternateImage = Icon.colourUnlocked.image(loc("inspector.secondColour"), compact: true)
+        secondColourCheck.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        autoLoadCheck.setAX("inspector-auto-load")
+        skipCheck.setAX("inspector-skip-if-disarmed")
+        for p in [colourPopup, secondColourPopup, continuePopup] {
             p.target = self
             p.action = #selector(popupChanged(_:))
         }
-        for c in [flaggedCheck, armedCheck] {
+        for c in [flaggedCheck, armedCheck, autoLoadCheck, skipCheck, secondColourCheck] {
             c.target = self
             c.action = #selector(checkChanged(_:))
         }
@@ -373,12 +413,34 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         nameRow.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         targetRow.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         scroll.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
-        let right = column(
-            [previewButton, row(loc("inspector.colour"), colourPopup), flaggedCheck, armedCheck], width: 103)
+        // The colour, then the second colour behind its box (QLab's lock), as swatches; the boxes under it
+        // in QLab's order (manual pp. 127-128).
+        // The column keeps the width it had (103 pt), so the inspector's least width does not grow: small
+        // controls, the two menus as swatches only.
+        for p in [colourPopup, secondColourPopup] {
+            p.imagePosition = .imageOnly
+            p.controlSize = .small
+            p.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        }
+        for c in [flaggedCheck, autoLoadCheck, armedCheck, skipCheck] {
+            c.controlSize = .small
+            c.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        }
+        let colours = NSStackView(views: [colourPopup, secondColourCheck, secondColourPopup])
+        colours.spacing = 3
+        let right = column([previewButton, row(loc("inspector.colour"), colours)], width: 103)
+        let boxes = NSStackView(views: [flaggedCheck, autoLoadCheck, armedCheck, skipCheck])
+        boxes.orientation = .vertical
+        boxes.alignment = .leading
+        boxes.spacing = 4
+        right.addArrangedSubview(boxes)
+        right.setCustomSpacing(6, after: right.arrangedSubviews[1])
+        right.addArrangedSubview(Self.columnFiller())
         let columns = NSStackView(views: [left, centre, right])
         columns.orientation = .horizontal
         columns.alignment = .top
         columns.distribution = .fill
+        Self.clipsAtTheBottom(columns)
         centre.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         columns.spacing = 10
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
@@ -474,22 +536,45 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         onReleaseCheck.setAX(AX.inspectorOnRelease)
         onReleaseCheck.target = self
         onReleaseCheck.action = #selector(checkChanged(_:))
-        hotkeyField.widthAnchor.constraint(equalToConstant: 200).isActive = true
-        let hotkeyRow = NSStackView(views: [hotkeyField, hotkeyClear])
+        hotkeyEnableCheck.setAX("inspector-hotkey-enabled", label: loc("inspector.hotkey.enabled"))
+        hotkeyEnableCheck.toolTip = loc("inspector.hotkey.enabled")
+        hotkeyEnableCheck.target = self
+        hotkeyEnableCheck.action = #selector(hotkeyEnableChanged)
+        hotkeyField.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        let hotkeyRow = NSStackView(views: [hotkeyEnableCheck, hotkeyField, hotkeyClear])
         hotkeyRow.spacing = 6
         let left = column(
             [
                 row(loc("inspector.hotkey"), hotkeyRow), onReleaseCheck,
             ], nil)
-        let right = column([row(loc("inspector.secondTrigger"), secondTriggerPopup)], 200)
+        let right = othersColumn(row: row)
+        left.addArrangedSubview(Self.columnFiller())
+        right.addArrangedSubview(Self.columnFiller())
         let columns = NSStackView(views: [left, right])
         columns.alignment = .top
-        columns.spacing = 40
+        columns.spacing = 28
+        Self.clipsAtTheBottom(columns)
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         let item = NSTabViewItem(identifier: "triggers")
         item.label = loc("inspector.tab.triggers")
         item.view = columns
         return item
+    }
+
+    /// A tab's columns in a short inspector: they keep their tops and are cut at the bottom. Left to
+    /// insist on their whole height, a column taller than the tab was laid out from the bottom up
+    /// instead, its first fields pushed up over the tabs.
+    static func clipsAtTheBottom(_ columns: NSStackView) {
+        columns.setClippingResistancePriority(.defaultLow, for: .vertical)
+    }
+
+    /// The last view of a tab's column: it takes the height the column is stretched to, so the
+    /// controls above stay together at the top (else the last one was pushed to the bottom).
+    static func columnFiller() -> NSView {
+        let filler = NSView()
+        filler.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        filler.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        return filler
     }
 
     /// The Mode tab of a Group cue (CT-22): how starting the group starts its children. Loop and
@@ -557,8 +642,41 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             return false
         }
         messageLabel.stringValue = ""
+        // The trigger's switch is its own box, shown with or without a key: a recorded key keeps the
+        // switch that box shows (the unanswered edit's, if one is in flight).
         send(InspectorEdit.setTriggers(cue, hotkey: .some(chord.hotkeyJSON)), cue: cue.id, key: "hotkey", revert: [])
         return true
+    }
+
+    /// The hotkey trigger's box: off keeps the key and it starts nothing (QLab 5, manual p. 128). On
+    /// again is refused for every cue shown, the box put back, when a key it would wake belongs to
+    /// something else or to two of them. A mixed box sets it on for every cue.
+    @objc func hotkeyEnableChanged() {
+        let cues = editCues
+        guard !isLocked, !cues.isEmpty, let model = store.model else { return render() }
+        let on = hotkeyEnableCheck.state != .off
+        hotkeyEnableCheck.allowsMixedState = false
+        hotkeyEnableCheck.state = on ? .on : .off
+        if on {
+            let keys = transportKeys?() ?? TransportKeys(settings: model.settings)
+            var waking: [KeyChord] = []
+            for cue in cues {
+                guard let hk = cue.raw["triggers"]?["hotkey"], let chord = KeyChord(hotkey: hk) else { continue }
+                let error =
+                    HotkeyRules.validate(chord, for: cue.id, in: model, keys: keys, menuChords: menuChords())
+                    ?? (waking.contains(chord) ? .cueHotkey : nil)
+                if let error {
+                    showRefusal(loc(HotkeyRules.messageKey(error)))
+                    return render()
+                }
+                waking.append(chord)
+            }
+        }
+        sendEach(key: "hotkey") { cue in
+            let now = cue.raw["triggers"]?["hotkey_enabled"] != .bool(false)
+            return now == on ? nil : InspectorEdit.setTriggers(cue, enabled: on)
+        }
+        render()
     }
 
     @objc func clearHotkey() {
@@ -570,14 +688,18 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     private func fillPopups() {
-        for key in Self.colours {
-            let style = CueKindStyle.colours[key]
-            let item = NSMenuItem(title: loc(style?.labelKey ?? "cue.colour.none"), action: nil, keyEquivalent: "")
-            if let style {
-                let base = Icon.colourSwatch.image(loc(style.labelKey), compact: true)
-                item.image = base.withSymbolConfiguration(.init(paletteColors: [style.tint])) ?? base
+        for popup in [colourPopup, secondColourPopup] {
+            for key in Self.colourItems {
+                guard let key else {
+                    popup.menu?.addItem(.separator())
+                    continue
+                }
+                let title = loc(CueKindStyle.colours[key]?.labelKey ?? "cue.colour.none")
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                item.image = CueKindStyle.swatch(key)
+                item.representedObject = key
+                popup.menu?.addItem(item)
             }
-            colourPopup.menu?.addItem(item)
         }
         for key in Self.continueModes {
             continuePopup.menu?.addItem(
@@ -655,6 +777,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             window.makeFirstResponder(nil)
         }
         selection = ids
+        secondColourUnlocked = false
         if !(byFollow && refusalOutlivesFollow) { messageLabel.stringValue = "" }
         refusalOutlivesFollow = false
         dirty = []
@@ -713,19 +836,33 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // Only Wait and Fade cues have a duration to type; others take theirs from content or have none.
         durationField.isEnabled = InspectorEdit.durationKinds.contains(kind)
         syncTabs(forKind: kind)
-        let colour = cue.raw["color"]?.stringValue ?? "none"
-        colourPopup.selectItem(at: Self.colours.firstIndex(of: colour) ?? 0)
+        showChoice(colourPopup, Self.colourItems, [cue.raw["color"]?.stringValue ?? "none"])
+        let second = cue.raw["second_color"]?.stringValue ?? "none"
+        showChoice(secondColourPopup, Self.colourItems, [second])
+        let unlocked = second != "none" || secondColourUnlocked
+        secondColourCheck.state = unlocked ? .on : .off
+        secondColourPopup.isEnabled = unlocked && !isLocked
+        autoLoadCheck.state = cue.raw["auto_load"] == .bool(true) ? .on : .off
+        skipCheck.state = cue.raw["skip_if_disarmed"] == .bool(true) ? .on : .off
         let mode = cue.raw["continue_mode"]?.stringValue ?? "do_not_continue"
         continuePopup.selectItem(at: Self.continueModes.firstIndex(of: mode) ?? 0)
         // Auto-follow takes its post-wait from the action's end (core: not used), so it is not editable.
         postWaitField.isEnabled = mode != "auto_follow"
-        let hotkey = cue.raw["triggers"]?["hotkey"].flatMap { $0 == .null ? nil : $0 }
+        let shownTriggers = (cueForEdit ?? cue).raw["triggers"]
+        let hotkey = shownTriggers?["hotkey"].flatMap { $0 == .null ? nil : $0 }
         hotkeyField.stringValue = hotkey.map { KeyChord(hotkey: $0)?.display ?? ($0["key"]?.stringValue ?? "") } ?? ""
         hotkeyClear.isEnabled = hotkey != nil
         onReleaseCheck.isEnabled = hotkey != nil
+        // The box shows the stored switch and can be ticked before a key is typed (QLab 5, manual p. 128);
+        // a key switched off stays shown, faint.
+        let hotkeyOn = shownTriggers?["hotkey_enabled"] != .bool(false)
+        hotkeyEnableCheck.state = hotkeyOn ? .on : .off
+        hotkeyEnableCheck.isEnabled = !isLocked
+        hotkeyField.textColor = hotkeyOn ? .controlTextColor : .disabledControlTextColor
+        renderOthers(cueForEdit ?? cue)
         onReleaseCheck.state = cue.raw["second_trigger_on_release"] == .bool(true) ? .on : .off
-        let second = cue.raw["second_trigger"]?.stringValue ?? "nothing"
-        secondTriggerPopup.selectItem(at: Self.secondTriggers.firstIndex(of: second) ?? 0)
+        let secondTrigger = cue.raw["second_trigger"]?.stringValue ?? "nothing"
+        secondTriggerPopup.selectItem(at: Self.secondTriggers.firstIndex(of: secondTrigger) ?? 0)
         flaggedCheck.state = cue.raw["flagged"] == .bool(true) ? .on : .off
         armedCheck.state = cue.raw["armed"] == .bool(false) ? .off : .on
         renderMode(cue)
@@ -769,7 +906,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             devampModePopup, networkPatchPopup, outputPatchPopup, editPatchButton, networkMessageField,
             networkSendButton,
             secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
-            continuePopup, flaggedCheck, armedCheck,
+            continuePopup, flaggedCheck, armedCheck, secondColourCheck, secondColourPopup, autoLoadCheck, skipCheck,
+            hotkeyEnableCheck, fadeOthersCheck, fadeOthersScopePopup, fadeOthersTimeField, duckCheck, duckDbField,
+            duckTimeField,
         ]
     }
 
@@ -822,7 +961,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             messageLabel.stringValue = ""
             send(command, cue: cue.id, key: "\(f)", revert: [f])
             // Show what will be stored (`90` becomes `01:30.00`) until the model answers.
-            if [.preWait, .postWait, .duration, .loadTime].contains(f), let s = CueTime.parse(text) {
+            if InspectorField.times.contains(f), let s = CueTime.parse(text) {
                 field(f)?.stringValue = CueTime.format(s)
             }
         }
@@ -874,8 +1013,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         nextTask += 1
         let taskID = nextTask
         let property = command.json["property"]
-        let sentTriggers = property?["type"]?.stringValue == "triggers" ? property?["value"] : nil
-        if let sentTriggers { pendingTriggers[cue] = sentTriggers }
+        let sentWholes = Self.wholes(in: command.json)
+        for w in sentWholes { pendingWholes[w.cue, default: [:]][w.key] = w.value }
         let sentKind = property.flatMap { pendingKind(cue, after: $0) }
         if let sentKind { pendingKinds[cue] = sentKind }
         for (id, kind) in kinds { pendingKinds[id] = kind }
@@ -887,7 +1026,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             // changed, so a refused field must not be sent again with the next edit.
             defer {
                 inFlight[taskID] = nil
-                if let sentTriggers, pendingTriggers[cue] == sentTriggers { pendingTriggers[cue] = nil }
+                for w in sentWholes where pendingWholes[w.cue]?[w.key] == w.value {
+                    pendingWholes[w.cue]?[w.key] = nil
+                    if pendingWholes[w.cue]?.isEmpty == true { pendingWholes[w.cue] = nil }
+                }
                 if let sentKind, pendingKinds[cue] == sentKind { pendingKinds[cue] = nil }
                 for (id, kind) in kinds where pendingKinds[id] == kind { pendingKinds[id] = nil }
             }
@@ -927,6 +1069,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 render(force: revert.subtracting(dirty))
             }
         }
+    }
+
+    /// The whole properties (`wholeProperties`) `command` sets, a transaction's included: cue, key, value.
+    static func wholes(in command: JSONValue) -> [(cue: ModelID, key: String, value: JSONValue)] {
+        if command["type"]?.stringValue == "transaction" {
+            return (command["commands"]?.arrayValue ?? []).flatMap { wholes(in: $0) }
+        }
+        guard let id = command["id"]?.stringValue, let type = command["property"]?["type"]?.stringValue,
+            wholeProperties.contains(type), let value = command["property"]?["value"]
+        else { return [] }
+        return [(ModelID(id), type, value)]
     }
 
     /// An edit sent outside the inspector (the cue list's Duration column) that changes the cue's kind:
@@ -984,6 +1137,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
 
     func controlTextDidChange(_ obj: Notification) {
         if let f = inspectorField(of: obj.object) { dirty.insert(f) }
+        // Duck or boost follows the number as it is typed, before it is committed.
+        if obj.object as? NSTextField === duckDbField { relabelDuck(duckDbField.stringValue) }
     }
 
     func textDidChange(_ notification: Notification) {
@@ -1006,8 +1161,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     @objc private func popupChanged(_ sender: NSPopUpButton) {
         guard !isLocked else { return }
         let i = sender.indexOfSelectedItem
-        if sender === colourPopup, Self.colours.indices.contains(i) {
-            sendEach(key: "colour") { .setProperty($0.id, .color(Self.colours[i])) }
+        if sender === colourPopup, let colour = sender.selectedItem?.representedObject as? String {
+            sendEach(key: "colour") { .setProperty($0.id, .color(colour)) }
+        } else if sender === secondColourPopup, let colour = sender.selectedItem?.representedObject as? String {
+            sendEach(key: "secondColour") { .setProperty($0.id, .secondColor(colour)) }
         } else if sender === secondTriggerPopup, Self.secondTriggers.indices.contains(i) {
             sendEach(key: "second") { .setProperty($0.id, .secondTrigger(Self.secondTriggers[i])) }
         } else if sender === groupModePopup, Self.groupModes.indices.contains(i) {
@@ -1052,6 +1209,26 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         }
         if sender === onReleaseCheck {
             sendEach(key: "release") { .setProperty($0.id, .secondTriggerOnRelease(on)) }
+            return
+        }
+        if sender === autoLoadCheck {
+            sendEach(key: "autoLoad") { .setProperty($0.id, .autoLoad(on)) }
+            return
+        }
+        if sender === skipCheck {
+            sendEach(key: "skip") { .setProperty($0.id, .skipIfDisarmed(on)) }
+            return
+        }
+        if sender === secondColourCheck {
+            // Ticked, the second colour's menu opens for a pick; unticked, every second colour goes.
+            secondColourUnlocked = on
+            if !on {
+                sendEach(key: "secondColour") { cue in
+                    cue.raw["second_color"]?.stringValue.map { $0 != "none" } == true
+                        ? .setProperty(cue.id, .secondColor("none")) : nil
+                }
+            }
+            secondColourPopup.isEnabled = on
             return
         }
         let flagged = sender === flaggedCheck

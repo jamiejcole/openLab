@@ -26,7 +26,11 @@ final class CueNode: NSObject {
 final class CueRowView: NSTableRowView {
     var tint: NSColor? { didSet { if tint != oldValue { needsDisplay = true } } }
     var isPlayhead = false { didSet { if isPlayhead != oldValue { needsDisplay = true } } }
+    /// Disarmed or skipped: drawn over the colour, and over the highlight of a selected row.
+    var pattern: RowPattern? { didSet { if pattern != oldValue { needsDisplay = true } } }
     static let pointerWidth: CGFloat = 10
+    /// The distance between a pattern's lines.
+    static let patternPitch: CGFloat = 8
 
     override func drawBackground(in dirtyRect: NSRect) {
         super.drawBackground(in: dirtyRect)
@@ -34,12 +38,56 @@ final class CueRowView: NSTableRowView {
             tint.withAlphaComponent(0.22).setFill()
             bounds.fill()
         }
-        if !isSelected { drawPointer() }
+        if !isSelected {
+            drawPattern()
+            drawPointer()
+        }
     }
 
     override func drawSelection(in dirtyRect: NSRect) {
         super.drawSelection(in: dirtyRect)
+        drawPattern()
         drawPointer()
+    }
+
+    private func drawPattern() {
+        guard let pattern else { return }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath.clip(bounds)
+        let pitch = Self.patternPitch
+        let path = NSBezierPath()
+        switch pattern {
+        case .disarmed:
+            // Lines rising to the right, one every `pitch` along the row.
+            var x = bounds.minX - bounds.height
+            while x < bounds.maxX {
+                path.move(to: NSPoint(x: x, y: bounds.minY))
+                path.line(to: NSPoint(x: x + bounds.height, y: bounds.maxY))
+                x += pitch
+            }
+            path.lineWidth = 1.5
+        case .skipped:
+            // Upright lines that swing a little to each side, a full swing every `pitch` of height.
+            var x = bounds.minX + pitch / 2
+            while x < bounds.maxX {
+                path.move(to: NSPoint(x: x, y: bounds.minY))
+                var y = bounds.minY
+                var side: CGFloat = 1
+                while y < bounds.maxY {
+                    path.curve(
+                        to: NSPoint(x: x, y: y + pitch / 2), controlPoint1: NSPoint(x: x + 2.5 * side, y: y),
+                        controlPoint2: NSPoint(x: x + 2.5 * side, y: y + pitch / 2))
+                    y += pitch / 2
+                    side = -side
+                }
+                x += pitch
+            }
+            path.lineWidth = 1
+        }
+        let onHighlight = isSelected && isEmphasized
+        (onHighlight ? NSColor.white.withAlphaComponent(0.3) : NSColor.labelColor.withAlphaComponent(0.16)).setStroke()
+        path.stroke()
     }
 
     private func drawPointer() {
@@ -1035,7 +1083,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private func configure(_ view: CueRowView, _ node: CueNode) {
-        view.tint = node.cue.raw["color"]?.stringValue.flatMap { CueKindStyle.colours[$0]?.tint }
+        let colour = CueKindStyle.shownColour(of: node.cue, played: store.played.contains(node.id))
+        view.tint = CueKindStyle.colours[colour]?.tint
+        view.pattern = RowPattern.of(node.cue)
         view.isPlayhead = isPlayheadRow(node.id)
     }
 

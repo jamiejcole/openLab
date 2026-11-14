@@ -27,7 +27,7 @@ extension WorkspaceSettingsModel {
             keyRefusal = nil
             return true
         }
-        let cueHotkeys = store.model?.cueHotkeys ?? []
+        let cueHotkeys = store.model?.storedCueHotkeys ?? []
         if let error = TransportKeys.validate(
             chord, for: key, in: map.bound, isCueHotkey: { c in cueHotkeys.contains { $0.chord == c } })
         {
@@ -76,7 +76,7 @@ extension WorkspaceSettingsModel {
         case .unsupported, .menuKey: return loc("settings.keys.refused.unsupported")
         case .duplicate(let other): return String(format: loc("settings.keys.refused.action"), loc(other.titleKey))
         case .cueHotkey, .editKey:
-            let id = store.model?.cueHotkeys.first { $0.chord == chord }?.cue
+            let id = store.model?.storedCueHotkeys.first { $0.chord == chord }?.cue
             let name = id.flatMap { id in
                 store.model.flatMap { m in m.cue(id).map { WarningRows.cueTitle($0, name: m.listName($0)) } }
             }

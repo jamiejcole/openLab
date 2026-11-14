@@ -107,7 +107,7 @@ fn auto_load_skips_a_next_cue_that_is_broken_disarmed_or_already_loaded_or_runni
     let mut rig = Rig::new(vec![sound(1), auto_loading(sound(2))]);
     rig.start(0, 2);
     let run = rig.run(2);
-    let out = rig.start(10, 1);
+    let out = rig.go(10);
     assert_eq!(rig.state(2), CueState::Running);
     assert_eq!(rig.run(2), run);
     assert!(loads(&out).is_empty());
@@ -121,7 +121,7 @@ fn auto_load_skips_a_next_cue_that_is_broken_disarmed_or_already_loaded_or_runni
         },
     );
     let run = rig.run(2);
-    let out = rig.start(10, 1);
+    let out = rig.go(10);
     assert!(loads(&out).is_empty());
     assert_eq!(rig.run(2), run);
 }
@@ -151,17 +151,50 @@ fn auto_load_passes_over_a_skipped_cue_and_ignores_cues_at_other_levels() {
         CueState::Loaded,
         "the cue after the skipped one"
     );
-    // A group's first child is not the cue "after" anything at its level: starting the group
-    // starts it; the second child loads when the first starts (start-first modes).
-    let g = grp(
-        2,
-        GroupMode::StartFirstAndGoToNext,
-        vec![sound(21), auto_loading(sound(22))],
-    );
+    // A cue at another level is not where the GO leaves the playhead: not loaded.
+    let g = grp(2, GroupMode::Timeline, vec![auto_loading(sound(21))]);
     let mut rig = Rig::new(vec![sound(1), g]);
-    rig.start(0, 2);
-    assert_eq!(rig.state(21), CueState::Running);
-    assert_eq!(rig.state(22), CueState::Loaded);
+    rig.go(0);
+    assert_eq!(rig.state(21), CueState::Idle);
+}
+
+/// Measured in QLab 5.6.5: the auto-load cue loads as a GO moves the playhead onto it. Placing
+/// the playhead on it (or on the cue before it) by hand, or starting the cue before it without a
+/// GO, loads nothing.
+#[test]
+fn auto_load_happens_when_a_go_moves_the_playhead_onto_the_cue_and_at_no_other_time() {
+    let mut rig = Rig::new(vec![sound(1), auto_loading(sound(2)), sound(3)]);
+    rig.set_playhead(0, 2);
+    assert_eq!(rig.state(2), CueState::Idle, "placed on it by hand");
+    rig.set_playhead(0, 1);
+    assert_eq!(rig.state(2), CueState::Idle, "placed before it by hand");
+    let out = rig.start(10, 1);
+    assert_eq!(rig.state(1), CueState::Running);
+    assert_eq!(rig.state(2), CueState::Idle, "1 started without a GO");
+    assert!(loads(&out).is_empty());
+    let out = rig.go(20);
+    assert_eq!(rig.playhead(), Some(id(2)));
+    assert_eq!(
+        loads(&out),
+        vec![id(2)],
+        "the GO moved the playhead onto it"
+    );
+    assert_eq!(rig.state(2), CueState::Loaded);
+}
+
+#[test]
+fn a_go_on_a_skipped_cue_auto_loads_the_cue_the_playhead_moves_onto() {
+    let mut rig = Rig::new(vec![
+        memo(1),
+        skipped(memo(2)),
+        auto_loading(sound(3)),
+        sound(4),
+    ]);
+    rig.set_playhead(0, 2);
+    let out = rig.go(0);
+    assert_eq!(rig.playhead(), Some(id(3)));
+    assert!(started(&out).is_empty(), "the GO only moves the playhead");
+    assert_eq!(loads(&out), vec![id(3)]);
 }
 
 // ----- skip if disarmed -----
@@ -225,8 +258,10 @@ fn a_skipped_cue_as_an_auto_follow_target_passes_the_follow_on() {
     assert_eq!(starts(&out), vec![(id(1), 0), (id(4), 100)]);
 }
 
+/// Measured in QLab 5.6.5: with the playhead put by hand on a skipped cue, GO starts nothing and
+/// the playhead moves on to the next cue that is there, which that GO does not start.
 #[test]
-fn go_with_the_playhead_on_a_skipped_cue_starts_the_next_cue_that_is_there() {
+fn go_with_the_playhead_on_a_skipped_cue_starts_nothing_and_moves_the_playhead_on() {
     let mut rig = Rig::new(vec![
         memo(1),
         skipped(memo(2)),
@@ -237,10 +272,13 @@ fn go_with_the_playhead_on_a_skipped_cue_starts_the_next_cue_that_is_there() {
     ]);
     rig.set_playhead(0, 2);
     let out = rig.go(0);
+    assert!(started(&out).is_empty(), "{out:?}");
+    assert_eq!(rig.playhead(), Some(id(4)), "on the next cue that is there");
+    let out = rig.go(10);
     assert_eq!(
         started(&out),
         vec![id(4), id(5)],
-        "4 and the cue it continues into"
+        "the next GO starts 4 and the cue it continues into"
     );
     assert_eq!(rig.playhead(), Some(id(6)));
     // A trigger of its own (a Start cue, a hotkey) starts nothing.
@@ -254,13 +292,19 @@ fn a_show_whose_first_cue_is_skipped_plays_its_next_cue_on_the_first_go_and_afte
     let mut rig = Rig::new(vec![skipped(memo(1)), wait(2, 1.0), memo(3)]);
     assert_eq!(rig.playhead(), Some(id(1)), "the playhead may rest on it");
     let out = rig.go(0);
+    assert!(
+        started(&out).is_empty(),
+        "the first GO only moves the playhead on"
+    );
+    assert_eq!(rig.playhead(), Some(id(2)));
+    let out = rig.go(5);
     assert_eq!(started(&out), vec![id(2)]);
     assert_eq!(rig.playhead(), Some(id(3)));
     rig.at(10, Input::ResetAll);
     assert_eq!(rig.playhead(), Some(id(1)));
     let out = rig.go(20);
-    assert_eq!(started(&out), vec![id(2)]);
-    assert_eq!(rig.playhead(), Some(id(3)));
+    assert!(started(&out).is_empty());
+    assert_eq!(rig.playhead(), Some(id(2)));
 }
 
 #[test]
@@ -272,6 +316,13 @@ fn a_cue_disarmed_while_standing_by_does_not_make_the_go_dead() {
     two.skip_if_disarmed = true;
     rig.engine.model_changed();
     let out = rig.go(10);
+    assert!(started(&out).is_empty(), "nothing starts");
+    assert_eq!(
+        rig.playhead(),
+        Some(id(3)),
+        "the GO is not dead: the playhead moves on"
+    );
+    let out = rig.go(20);
     assert_eq!(started(&out), vec![id(3)]);
     assert_eq!(rig.playhead(), Some(id(4)));
 }
@@ -306,6 +357,9 @@ fn go_on_a_skipped_child_starts_the_next_child_that_is_there_in_every_group_mode
         ]);
         rig.set_playhead(0, 12);
         let out = rig.go(0);
+        assert!(started(&out).is_empty(), "{mode:?}: {out:?}");
+        assert_eq!(rig.playhead(), Some(id(13)), "{mode:?}");
+        let out = rig.go(5);
         assert_eq!(started(&out)[0], id(13), "{mode:?}: {out:?}");
         // Past the last child that is there, the GO leaves the group.
         let mut rig = Rig::new(vec![
@@ -314,7 +368,8 @@ fn go_on_a_skipped_child_starts_the_next_child_that_is_there_in_every_group_mode
         ]);
         rig.set_playhead(0, 12);
         let out = rig.go(0);
-        assert_eq!(started(&out), vec![id(2)], "{mode:?}");
+        assert!(started(&out).is_empty(), "{mode:?}");
+        assert_eq!(rig.playhead(), Some(id(2)), "{mode:?}");
     }
 }
 
@@ -325,6 +380,8 @@ fn go_on_a_skipped_cue_keeps_the_pre_wait_of_the_next_cue_that_is_there() {
         timed(wait(2, 1.0), 0.5, 0.0, DNC),
         memo(3),
     ]);
+    rig.go(0);
+    assert_eq!(rig.playhead(), Some(id(2)));
     let out = rig.go(0);
     assert_eq!(changes(&out, 2), vec![(CueState::PreWaiting, 0)]);
     assert_eq!(rig.playhead(), Some(id(3)));
@@ -638,7 +695,7 @@ fn fade_and_stop_others_list_spares_the_groups_around_the_cue_and_reaches_other_
 }
 
 #[test]
-fn fade_and_stop_others_stops_paused_pre_waiting_and_post_waiting_cues_and_leaves_loaded_ones() {
+fn fade_and_stop_others_stops_paused_pre_waiting_post_waiting_and_loaded_cues_at_once() {
     let mut rig = Rig::new(vec![
         sound(1),
         timed(memo(2), 5.0, 0.0, DNC),
@@ -664,7 +721,11 @@ fn fade_and_stop_others_stops_paused_pre_waiting_and_post_waiting_cues_and_leave
     for n in [1, 2, 3] {
         assert_eq!(rig.state(n), CueState::Idle, "cue {n} stopped at once");
     }
-    assert_eq!(rig.state(4), CueState::Loaded);
+    assert_eq!(
+        rig.state(4),
+        CueState::Idle,
+        "a loaded cue is unloaded (QLab 5.6.5, measured)"
+    );
     assert_eq!(
         rig.state(6),
         CueState::Idle,
