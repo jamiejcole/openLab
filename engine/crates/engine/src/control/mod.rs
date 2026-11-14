@@ -265,6 +265,10 @@ pub struct ControlConfig {
     /// The stage host the engine runs for video output (docs/protocol.md section 5); `None`: no video
     /// output (tests that do not need it).
     pub stage_host: Option<crate::stage::StageHostConfig>,
+    /// Test support: how Video cues' files are probed instead of the stage host's `--probe`
+    /// (a test wraps the real probe to hold an answer back).
+    #[cfg(feature = "test-support")]
+    pub picture_probe: Option<crate::stage_probe::PictureProbeFn>,
     /// The virtual device the backend's stream runs on (`--virtual-device`): it answers the
     /// test-only `advance`, `lose_device` and `restore_device` requests.
     #[cfg(feature = "test-support")]
@@ -311,6 +315,8 @@ impl ControlConfig {
             watch: watch::WatchConfig::default(),
             awake: None,
             stage_host: None,
+            #[cfg(feature = "test-support")]
+            picture_probe: None,
             #[cfg(feature = "test-support")]
             virtual_device: None,
         }
@@ -675,6 +681,11 @@ impl Control {
             config.stage_host.as_ref().map(|h| h.program.clone()),
             crate::stage_probe::PROBE_PROCESS_LIMIT,
         );
+        #[cfg(feature = "test-support")]
+        let picture: crate::stage_probe::PictureProbe = match config.picture_probe {
+            Some(probe) => Arc::new(probe),
+            None => picture,
+        };
         let mut pool = ProbePool::new(
             inbox.clone(),
             config.probe,

@@ -351,6 +351,7 @@ impl DocCx<'_> {
         self.doc.voices.poll_streams(now, start_limit, &mut fx);
         let hold = seconds_to_samples(PROBE_HOLD_LIMIT.as_secs_f64(), self.eng.rate);
         self.doc.voices.expire_held(now, hold, &mut fx);
+        self.expire_held_pictures(now, hold, &mut fx);
         self.follow(fx, now);
         self.reclaim_slots(now);
         self.doc.net.tick(now);

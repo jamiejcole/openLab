@@ -11,6 +11,11 @@
 //! (`ActionLength`), so the cue ends on its last frame's sample. When the cue's action is over
 //! (it ends, stops, breaks or is reset) its picture goes.
 //!
+//! A GO on a Video cue whose file's probe has not answered yet (just after the show opened, or
+//! the file was changed, relinked or came back) waits for it, as an Audio cue's does: nothing
+//! is sent to the stage host until the answer, the cue starts late (`cold_start`) when it
+//! comes, and breaks only on a probe that fails or on no answer within `PROBE_HOLD_LIMIT`.
+//!
 //! A stage host that starts (again, after a crash) is sent every picture again, so a picture
 //! comes back by itself. A picture the stage host cannot decode breaks only its own cue, with a
 //! notice. The control thread never waits on the stage host.
@@ -20,6 +25,8 @@ use std::collections::BTreeMap;
 use openlab_core::protocol::LogLevel;
 use openlab_core::stage_link::ToStage;
 use openlab_core::video_probe::ProbeReport;
+
+use super::media::Probe;
 use openlab_core::{
     Action, BrokenReason, CueId, CueKind, CueState, Input, RunId, SampleTime, StageId,
     seconds_to_samples,
@@ -45,11 +52,26 @@ struct Live {
     ends: Option<SampleTime>,
 }
 
+/// A run whose picture waits for its file's probe: nothing is on the stage host yet.
+struct Held {
+    doc: DocId,
+    cue: CueId,
+    run: RunId,
+    /// Where in its action it loads (or holds while paused).
+    offset: SampleTime,
+    /// Its start (sample, offset into the action), once it has one: a load has none.
+    start: Option<(SampleTime, SampleTime)>,
+    /// When its start began to wait: the hold limit counts from here.
+    since: Option<SampleTime>,
+    paused: bool,
+}
+
 /// Every open doc's pictures, and the clock the stage host was last told.
 #[derive(Default)]
 pub(super) struct Pictures {
     next: u64,
     live: BTreeMap<u64, Live>,
+    held: Vec<Held>,
     clock_sent: Option<SampleTime>,
     /// Pictures the stage host reported failed, for their doc's next tick.
     failed: Vec<(DocId, CueId, RunId, String)>,
@@ -62,6 +84,26 @@ impl Pictures {
             .find(|(_, l)| l.doc == doc && l.run == run)
             .map(|(id, _)| *id)
     }
+
+    fn held_mut(&mut self, doc: DocId, run: RunId) -> Option<&mut Held> {
+        self.held.iter_mut().find(|h| h.doc == doc && h.run == run)
+    }
+
+    fn take_held(&mut self, doc: DocId, run: RunId) -> Option<Held> {
+        let at = self
+            .held
+            .iter()
+            .position(|h| h.doc == doc && h.run == run)?;
+        Some(self.held.swap_remove(at))
+    }
+}
+
+/// Why a Video cue cannot be loaded now.
+enum Refused {
+    /// Its file's probe has not answered yet: the run waits for it.
+    Pending,
+    /// It cannot play: the cue breaks.
+    Failed(&'static str),
 }
 
 /// What a Video cue plays: its file's probe and its stage.
@@ -150,6 +192,7 @@ impl Engine {
             self.pictures.live.remove(&picture);
             self.picture(ToStage::Unload { picture });
         }
+        self.pictures.held.retain(|h| h.doc != doc);
     }
 
     /// Test support: the stage host is told the clock now, before it draws for a probe.
@@ -175,22 +218,29 @@ fn seconds(samples: SampleTime, rate: u32) -> f64 {
 
 impl DocCx<'_> {
     /// What `cue` plays, if it is a Video cue whose file has been probed and plays.
-    fn plays(&self, cue: CueId) -> Result<Plays, &'static str> {
+    fn plays(&self, cue: CueId) -> Result<Plays, Refused> {
         let Some(CueKind::Video {
             media: Some(media),
             stage: Some(stage),
             duration,
         }) = self.cue(cue).map(|c| &c.kind)
         else {
-            return Err("the cue has no file or stage");
+            return Err(Refused::Failed("the cue has no file or stage"));
         };
-        let Some(ready) = self.doc.media.picture(media.as_str()) else {
-            return Err("its file has not been read, or cannot be played");
+        let key = media.as_str();
+        let Some(ready) = self.doc.media.picture(key) else {
+            // Not probed yet, or being probed again after it failed (the file came back, or
+            // was changed): the answer decides.
+            return Err(match self.doc.media.get(key) {
+                None | Some(Probe::Pending) => Refused::Pending,
+                Some(_) if self.doc.media.probing(key) => Refused::Pending,
+                Some(_) => Refused::Failed("its file cannot be played"),
+            });
         };
         let path = ready
             .path
             .to_str()
-            .ok_or("its file's path is not valid Unicode")?
+            .ok_or(Refused::Failed("its file's path is not valid Unicode"))?
             .to_owned();
         Ok(match ready.report {
             ProbeReport::Video { duration: d, .. } => Plays {
@@ -206,7 +256,7 @@ impl DocCx<'_> {
                 length: *duration,
             },
             ProbeReport::Missing | ProbeReport::Unsupported { .. } => {
-                return Err("its file cannot be played");
+                return Err(Refused::Failed("its file cannot be played"));
             }
         })
     }
@@ -226,8 +276,15 @@ impl DocCx<'_> {
             | Action::DevampVoice { cue, .. } => *cue,
             _ => return false,
         };
-        // A run whose picture is up stays one even if its cue was edited into another kind.
+        // A run whose picture is up (or waits) stays one even if its cue was edited into
+        // another kind.
         self.picture_of_cue(cue).is_some()
+            || self
+                .eng
+                .pictures
+                .held
+                .iter()
+                .any(|h| h.doc == self.doc.id && h.cue == cue)
             || matches!(self.cue(cue).map(|c| &c.kind), Some(CueKind::Video { .. }))
     }
 
@@ -258,22 +315,51 @@ impl DocCx<'_> {
         let rate = self.eng.rate.get();
         let doc = self.doc.id;
         match *action {
-            Action::LoadVoice { cue, run, offset } => {
-                if let Err(why) = self.load_picture(cue, run, offset) {
-                    self.picture_refused(cue, run, why, false, fx);
-                }
-            }
+            Action::LoadVoice { cue, run, offset } => match self.load_picture(cue, run, offset) {
+                Ok(()) => {}
+                Err(Refused::Pending) => self.eng.pictures.held.push(Held {
+                    doc,
+                    cue,
+                    run,
+                    offset,
+                    start: None,
+                    since: None,
+                    paused: false,
+                }),
+                Err(Refused::Failed(why)) => self.picture_refused(cue, run, why, false, fx),
+            },
             Action::StartVoice {
                 cue,
                 run,
                 at,
                 offset,
             } => {
-                let loaded = self.eng.pictures.find(doc, run).is_some();
-                if !loaded && let Err(why) = self.load_picture(cue, run, offset) {
-                    return self.picture_refused(cue, run, why, true, fx);
+                if let Some(h) = self.eng.pictures.held_mut(doc, run) {
+                    h.start = Some((at, offset));
+                    return self.hold_start(cue, run, fx);
                 }
-                self.play_picture(cue, run, at, offset, fx);
+                let loaded = self.eng.pictures.find(doc, run).is_some();
+                if !loaded {
+                    match self.load_picture(cue, run, offset) {
+                        Ok(()) => {}
+                        Err(Refused::Pending) => {
+                            self.eng.pictures.held.push(Held {
+                                doc,
+                                cue,
+                                run,
+                                offset,
+                                start: Some((at, offset)),
+                                since: None,
+                                paused: false,
+                            });
+                            return self.hold_start(cue, run, fx);
+                        }
+                        Err(Refused::Failed(why)) => {
+                            return self.picture_refused(cue, run, why, true, fx);
+                        }
+                    }
+                }
+                self.play_picture(cue, run, at, offset, 0, fx);
             }
             Action::ResumeVoice {
                 cue,
@@ -282,17 +368,29 @@ impl DocCx<'_> {
                 at,
                 offset,
             } => {
+                if let Some(h) = self.eng.pictures.held_mut(doc, paused) {
+                    h.run = run;
+                    h.paused = false;
+                    h.start = Some((at, offset));
+                    return;
+                }
                 let Some(id) = self.eng.pictures.find(doc, paused) else {
                     return;
                 };
                 if let Some(l) = self.eng.pictures.live.get_mut(&id) {
                     l.run = run;
                 }
-                self.play_picture(cue, run, at, offset, fx);
+                self.play_picture(cue, run, at, offset, 0, fx);
             }
             Action::PauseVoice {
                 run, at, offset, ..
             } => {
+                if let Some(h) = self.eng.pictures.held_mut(doc, run) {
+                    h.paused = true;
+                    h.offset = offset;
+                    h.start = None;
+                    return;
+                }
                 if let Some(id) = self.eng.pictures.find(doc, run) {
                     let message = ToStage::Pause {
                         picture: id,
@@ -309,6 +407,7 @@ impl DocCx<'_> {
                 cue, run, at, fade, ..
             } => {
                 let frames = fade.map_or(0, |f| f.frames);
+                self.eng.pictures.take_held(doc, run);
                 if let Some(id) = self.eng.pictures.find(doc, run) {
                     self.stop_picture(id, at, frames);
                 }
@@ -318,6 +417,7 @@ impl DocCx<'_> {
                     .push((end, Input::ActionEnded { cue, run, at: end }));
             }
             Action::UnloadVoice { run, .. } => {
+                self.eng.pictures.take_held(doc, run);
                 if let Some(id) = self.eng.pictures.find(doc, run) {
                     self.eng.pictures.live.remove(&id);
                     self.eng.picture(ToStage::Unload { picture: id });
@@ -332,12 +432,109 @@ impl DocCx<'_> {
         }
     }
 
-    fn load_picture(
+    /// A start waits for its file's probe: said once, and the hold limit starts.
+    fn hold_start(&mut self, cue: CueId, run: RunId, fx: &mut Effects) {
+        let now = self.now();
+        let Some(h) = self.eng.pictures.held_mut(self.doc.id, run) else {
+            return;
+        };
+        if h.since.is_some() {
+            return;
+        }
+        h.since = Some(now);
+        fx.notices.push((
+            "probe_wait",
+            "a cue waits for its video file to be read; it starts once it is".to_owned(),
+            Some(cue),
+        ));
+    }
+
+    /// The probe of `key` answered: the runs of this doc that waited for it load, and start if
+    /// they were started (late, from their head, as a held audio start does); a file that
+    /// cannot play breaks them.
+    pub(super) fn release_pictures(&mut self, key: &str, now: SampleTime) {
+        let doc = self.doc.id;
+        let waiting: Vec<RunId> = self
+            .eng
+            .pictures
+            .held
+            .iter()
+            .filter(|h| h.doc == doc)
+            .filter(|h| {
+                matches!(
+                    self.cue(h.cue).map(|c| &c.kind),
+                    Some(CueKind::Video { media: Some(m), .. }) if m.as_str() == key
+                )
+            })
+            .map(|h| h.run)
+            .collect();
+        let mut fx = Effects::default();
+        for run in waiting {
+            let Some(h) = self.eng.pictures.take_held(doc, run) else {
+                continue;
+            };
+            match self.load_picture(h.cue, h.run, h.offset) {
+                Ok(()) => {}
+                Err(Refused::Pending) => {
+                    self.eng.pictures.held.push(h);
+                    continue;
+                }
+                Err(Refused::Failed(why)) => {
+                    self.picture_refused(h.cue, h.run, why, h.start.is_some(), &mut fx);
+                    continue;
+                }
+            }
+            if let (Some((at, offset)), false) = (h.start, h.paused) {
+                let late = now.saturating_sub(at);
+                self.play_picture(h.cue, h.run, at.max(now), offset, late, &mut fx);
+                if h.since.is_some() {
+                    fx.notices.push((
+                        "cold_start",
+                        "a cue started late: its video file had to be read first".to_owned(),
+                        Some(h.cue),
+                    ));
+                }
+            }
+        }
+        self.follow(fx, now);
+    }
+
+    /// Starts that have waited for their file's probe since before `now - limit` fail: the cue
+    /// goes broken instead of showing as running with nothing on stage.
+    pub(super) fn expire_held_pictures(
         &mut self,
-        cue: CueId,
-        run: RunId,
-        offset: SampleTime,
-    ) -> Result<(), &'static str> {
+        now: SampleTime,
+        limit: SampleTime,
+        fx: &mut Effects,
+    ) {
+        let doc = self.doc.id;
+        let expired: Vec<RunId> = self
+            .eng
+            .pictures
+            .held
+            .iter()
+            .filter(|h| h.doc == doc)
+            .filter(|h| h.since.is_some_and(|t| now >= t.saturating_add(limit)))
+            .map(|h| h.run)
+            .collect();
+        for run in expired {
+            let Some(h) = self.eng.pictures.take_held(doc, run) else {
+                continue;
+            };
+            fx.feedback.push(Input::StartFailed {
+                cue: h.cue,
+                run: h.run,
+                reason: BrokenReason::DecodeFailed,
+            });
+            fx.notices.push((
+                "probe_timeout",
+                "a cue's video file could not be read in time; the cue did not play".to_owned(),
+                Some(h.cue),
+            ));
+        }
+    }
+
+    fn load_picture(&mut self, cue: CueId, run: RunId, offset: SampleTime) -> Result<(), Refused> {
         let plays = self.plays(cue)?;
         let rate = self.eng.rate.get();
         self.eng.pictures.next += 1;
@@ -364,12 +561,16 @@ impl DocCx<'_> {
         Ok(())
     }
 
+    /// Plays the run's picture from sample `at`, `offset` into its action; `late` is how much
+    /// later than the engine dated it the start is (a start held by its probe), counted into
+    /// the action's length.
     fn play_picture(
         &mut self,
         cue: CueId,
         run: RunId,
         at: SampleTime,
         offset: SampleTime,
+        late: SampleTime,
         fx: &mut Effects,
     ) {
         let doc = self.doc.id;
@@ -393,7 +594,7 @@ impl DocCx<'_> {
             ..
         }) = self.plays(cue)
         {
-            let frames = seconds_to_samples(length, self.eng.rate);
+            let frames = seconds_to_samples(length, self.eng.rate).saturating_add(late);
             fx.feedback.push(Input::ActionLength { cue, run, frames });
         }
     }

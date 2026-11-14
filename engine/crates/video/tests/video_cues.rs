@@ -677,3 +677,218 @@ fn clients_are_told_a_video_cues_length_and_format() {
         Some(2.5)
     );
 }
+
+/// Files whose picture probe is held back until released (`gated_probe`).
+static GATED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+static GATE_OPENED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// The real probe, held while its file is in `GATED` (bounded by `LIMIT`).
+fn gated_probe(path: &Path) -> Result<ProbeReport, MediaError> {
+    let mut gated = GATED.lock().unwrap();
+    let deadline = std::time::Instant::now() + LIMIT;
+    while gated.iter().any(|p| p == path) && std::time::Instant::now() < deadline {
+        gated = GATE_OPENED
+            .wait_timeout(gated, Duration::from_millis(50))
+            .unwrap()
+            .0;
+    }
+    drop(gated);
+    probe(path)
+}
+
+fn release_probe(path: &Path) {
+    GATED.lock().unwrap().retain(|p| p != path);
+    GATE_OPENED.notify_all();
+}
+
+/// A show like `video_show_of` whose picture probes go through `gated_probe`.
+fn gated_video_show(cues: Vec<Cue>) -> OfflineShow {
+    let mut ws = workspace(cues);
+    let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
+    stage.keep_black = true;
+    ws.stages = vec![stage];
+    let mut c: ControlConfig = config(&ws);
+    let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
+    host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
+    c.stage_host = Some(host);
+    c.picture_probe = Some(gated_probe);
+    let mut s = show_with(ws, c);
+    s.settle_stages();
+    s
+}
+
+/// Sets cue `n`'s file.
+fn set_media(s: &mut OfflineShow, n: u128, file: &Path) {
+    let request = s.request_id();
+    s.send(ClientMessage::Command {
+        id: request,
+        command: Box::new(openlab_core::Command::SetCueProperty {
+            id: id(n),
+            property: openlab_core::CueProperty::Media {
+                value: Some(MediaRef::new(file.to_str().unwrap())),
+            },
+        }),
+        coalesce: None,
+    });
+}
+
+/// GO on a Video cue whose new file is still being probed waits for the probe, as an Audio
+/// cue does: it is not broken, the operator is told it waits, and the picture starts (late,
+/// from its first frame) when the file is known to play. A file whose probe then fails breaks
+/// the cue.
+#[test]
+fn go_on_a_video_cue_whose_file_is_being_probed_waits_and_then_plays() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = make(dir.path(), "a.mov", "h264", Some((50, 25)));
+    let b = make(dir.path(), "b.mov", "h264", Some((50, 25)));
+    let gif = dir.path().join("bad.gif");
+    std::fs::write(&gif, b"GIF89a\x01\x00\x01\x00\x00\x00\x00;").unwrap();
+    let mut s = gated_video_show(vec![video_cue(1, Some(&a)), video_cue(2, Some(&a))]);
+    assert_eq!(problems(&s, 1), vec![]);
+    GATED.lock().unwrap().extend([b.clone(), gif.clone()]);
+    set_media(&mut s, 1, &b);
+    set_media(&mut s, 2, &gif);
+    s.take_outbound();
+    let at = go(&mut s);
+    start(&mut s, 2);
+    s.run(samples(1.0));
+    assert_eq!(state(&s, 1), CueState::Running, "waits, not broken");
+    assert_eq!(state(&s, 2), CueState::Running);
+    assert!(notices(&mut s).iter().any(|c| c == "probe_wait"));
+    assert_eq!(
+        shown(&mut s),
+        None,
+        "nothing on stage before the file is read"
+    );
+    release_probe(&b);
+    release_probe(&gif);
+    s.settle_media();
+    let released = s.now();
+    assert_eq!(state(&s, 1), CueState::Running);
+    assert_eq!(
+        state(&s, 2),
+        CueState::Broken,
+        "a file that does not play breaks it"
+    );
+    run_to(&mut s, released + samples(0.5));
+    let played = (s.now() - released) as f64 / f64::from(RATE);
+    let now = shown(&mut s).expect("the picture plays once its file is read");
+    assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played} s");
+    // Its whole length from the late start.
+    run_to(&mut s, released + samples(1.9));
+    assert_eq!(state(&s, 1), CueState::Running);
+    run_to(&mut s, released + samples(2.1));
+    assert_eq!(state(&s, 1), CueState::Idle);
+    assert!(s.now() > at);
+}
+
+/// A start held by its file's probe fails after the hold limit (sample time) with a notice,
+/// as an Audio cue's does.
+#[test]
+fn a_video_start_held_by_its_probe_fails_after_the_hold_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = make(dir.path(), "a.mov", "h264", Some((50, 25)));
+    let b = make(dir.path(), "b.mov", "h264", Some((50, 25)));
+    let mut s = gated_video_show(vec![video_cue(1, Some(&a))]);
+    GATED.lock().unwrap().push(b.clone());
+    set_media(&mut s, 1, &b);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(4.9));
+    assert_eq!(state(&s, 1), CueState::Running);
+    s.take_outbound();
+    run_to(&mut s, at + samples(5.1));
+    assert_eq!(state(&s, 1), CueState::Broken);
+    assert!(notices(&mut s).iter().any(|c| c == "probe_timeout"));
+    release_probe(&b);
+    s.settle_media();
+    assert_eq!(
+        s.control().pictures_live(),
+        0,
+        "nothing put up after the limit"
+    );
+}
+
+/// A start waiting for its probe can be paused (the answer then loads the picture without
+/// showing it, and resume plays it) or stopped (nothing goes up when the answer comes).
+#[test]
+fn a_video_start_waiting_for_its_probe_can_be_paused_resumed_and_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = make(dir.path(), "a.mov", "h264", Some((50, 25)));
+    let b = make(dir.path(), "b.mov", "h264", Some((50, 25)));
+    let c = make(dir.path(), "c.mov", "h264", Some((50, 25)));
+    let mut s = gated_video_show(vec![video_cue(1, Some(&a)), video_cue(2, Some(&a))]);
+    GATED.lock().unwrap().extend([b.clone(), c.clone()]);
+    set_media(&mut s, 1, &b);
+    set_media(&mut s, 2, &c);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(BLOCK);
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.transport(TransportAction::Stop {
+        cue: id(2),
+        fade_out: None,
+    });
+    s.run(BLOCK);
+    assert_eq!(state(&s, 1), CueState::Paused);
+    assert_eq!(state(&s, 2), CueState::Idle);
+    release_probe(&b);
+    release_probe(&c);
+    s.settle_media();
+    s.run(samples(0.5));
+    assert_eq!(
+        s.control().pictures_live(),
+        1,
+        "only the paused cue's picture"
+    );
+    assert_eq!(shown(&mut s), None, "paused before it ever played");
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.5));
+    let now = shown(&mut s).expect("plays on resume");
+    assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+}
+
+/// Relink finds a Video cue's moved file like an Audio cue's: the cue points at it, the file
+/// is probed, the missing mark goes, and GO shows the picture.
+#[test]
+fn relink_finds_a_video_cues_moved_file_and_it_plays() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = dir.path().join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    let moved = make(&lib, "clip.mov", "h264", Some((50, 25)));
+    let gone = dir.path().join("gone").join("clip.mov");
+    let mut s = video_show(vec![video_cue(1, Some(&gone))]);
+    assert!(matches!(
+        problems(&s, 1).as_slice(),
+        [CueProblem::MediaMissing { .. }]
+    ));
+    let id_ = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: id_,
+        request: Request::Relink {
+            folder: lib.to_str().unwrap().into(),
+        },
+    });
+    let relinked = replies.iter().find_map(|m| match m {
+        ServerMessage::Result {
+            outcome: Outcome::Ok(body),
+            ..
+        } => match &body.data {
+            Some(ResultData::Relink { relinked, .. }) => Some(*relinked),
+            _ => None,
+        },
+        _ => None,
+    });
+    assert_eq!(relinked, Some(1), "{replies:?}");
+    let media = openlab_core::media_of_cues(s.control().workspace());
+    assert_eq!(
+        std::fs::canonicalize(media[0].1.as_str()).unwrap(),
+        std::fs::canonicalize(&moved).unwrap()
+    );
+    s.settle_media();
+    assert_eq!(problems(&s, 1), vec![]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    let now = shown(&mut s).expect("the relinked picture plays");
+    assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+}
