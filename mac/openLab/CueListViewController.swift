@@ -26,7 +26,11 @@ final class CueNode: NSObject {
 final class CueRowView: NSTableRowView {
     var tint: NSColor? { didSet { if tint != oldValue { needsDisplay = true } } }
     var isPlayhead = false { didSet { if isPlayhead != oldValue { needsDisplay = true } } }
+    /// Disarmed or skipped: drawn over the colour, and over the highlight of a selected row.
+    var pattern: RowPattern? { didSet { if pattern != oldValue { needsDisplay = true } } }
     static let pointerWidth: CGFloat = 10
+    /// The distance between a pattern's lines.
+    static let patternPitch: CGFloat = 8
 
     override func drawBackground(in dirtyRect: NSRect) {
         super.drawBackground(in: dirtyRect)
@@ -34,12 +38,56 @@ final class CueRowView: NSTableRowView {
             tint.withAlphaComponent(0.22).setFill()
             bounds.fill()
         }
-        if !isSelected { drawPointer() }
+        if !isSelected {
+            drawPattern()
+            drawPointer()
+        }
     }
 
     override func drawSelection(in dirtyRect: NSRect) {
         super.drawSelection(in: dirtyRect)
+        drawPattern()
         drawPointer()
+    }
+
+    private func drawPattern() {
+        guard let pattern else { return }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath.clip(bounds)
+        let pitch = Self.patternPitch
+        let path = NSBezierPath()
+        switch pattern {
+        case .disarmed:
+            // Lines rising to the right, one every `pitch` along the row.
+            var x = bounds.minX - bounds.height
+            while x < bounds.maxX {
+                path.move(to: NSPoint(x: x, y: bounds.minY))
+                path.line(to: NSPoint(x: x + bounds.height, y: bounds.maxY))
+                x += pitch
+            }
+            path.lineWidth = 1.5
+        case .skipped:
+            // Upright lines that swing a little to each side, a full swing every `pitch` of height.
+            var x = bounds.minX + pitch / 2
+            while x < bounds.maxX {
+                path.move(to: NSPoint(x: x, y: bounds.minY))
+                var y = bounds.minY
+                var side: CGFloat = 1
+                while y < bounds.maxY {
+                    path.curve(
+                        to: NSPoint(x: x, y: y + pitch / 2), controlPoint1: NSPoint(x: x + 2.5 * side, y: y),
+                        controlPoint2: NSPoint(x: x + 2.5 * side, y: y + pitch / 2))
+                    y += pitch / 2
+                    side = -side
+                }
+                x += pitch
+            }
+            path.lineWidth = 1
+        }
+        let onHighlight = isSelected && isEmphasized
+        (onHighlight ? NSColor.white.withAlphaComponent(0.3) : NSColor.labelColor.withAlphaComponent(0.16)).setStroke()
+        path.stroke()
     }
 
     private func drawPointer() {
@@ -1035,7 +1083,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private func configure(_ view: CueRowView, _ node: CueNode) {
-        view.tint = node.cue.raw["color"]?.stringValue.flatMap { CueKindStyle.colours[$0]?.tint }
+        let colour = CueKindStyle.shownColour(of: node.cue, played: store.played.contains(node.id))
+        view.tint = CueKindStyle.colours[colour]?.tint
+        view.pattern = RowPattern.of(node.cue)
         view.isPlayhead = isPlayheadRow(node.id)
     }
 
@@ -1277,17 +1327,25 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// The cell-editing keys (number, name, target, pre-wait, duration, post-wait: N, Q, T, E, D, W by
     /// default): the selected cue's cell opens for typing,
-    /// or for T on a file cue the file chooser opens (after the key is consumed, not inside it). Only
-    /// with the list itself focused and exactly one cue highlighted. With the list focused the key is
-    /// always taken (it does nothing in Show Mode, with several cues or on a cue with nothing to edit);
-    /// false (not taken) only while text is being typed or the focus is elsewhere (the key is a letter then).
+    /// or for T on a file cue the file chooser opens (after the key is consumed, not inside it). With
+    /// several cues highlighted the pre-wait, duration and post-wait keys put the caret in the
+    /// inspector's one field for them all (`onEditSeveral`), as QLab 5 does; the number, name and
+    /// target keys open nothing. Only with the list itself focused. With the list focused the key is
+    /// always taken (it does nothing in Show Mode or on a cue with nothing to edit); false (not taken)
+    /// only while text is being typed or the focus is elsewhere (the key is a letter then).
     @discardableResult
     func beginEditFromKey(_ column: String) -> Bool {
         guard !isTextEditing, view.window?.firstResponder === outlineView else { return false }
         // From here the key is an edit key of the list: taken even when it does nothing (Show Mode, several
         // cues, a cue with nothing to edit), so it never goes on as a letter to the list.
         let selected = selectedIDs()
-        guard selected.count == 1, let id = selected.first else { return true }
+        if selected.count > 1 {
+            if !isEditLocked, let field = Self.editableColumns[column], Self.severalCueFields.contains(field) {
+                onEditSeveral?(field, selected)
+            }
+            return true
+        }
+        guard let id = selected.first else { return true }
         // A file cue's target is chosen in the file chooser, a cue target's typed as a cue number.
         if column == "target", store.model?.cue(id)?.kindType == "audio" {
             guard !isEditLocked, onChooseFile != nil else { return true }
@@ -1303,19 +1361,25 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     /// The notes key (O): the window shows the inspector on its Basics tab with the caret in the
-    /// selected cue's notes (`onEditNotes`). Taken or not as `beginEditFromKey`; it does nothing in
-    /// Show Mode (the inspector is hidden there) and with several cues selected.
+    /// selected cues' notes (`onEditNotes`; several cues share the one notes field). Taken or not as
+    /// `beginEditFromKey`; it does nothing in Show Mode (the inspector is hidden there).
     @discardableResult
     func beginNotesFromKey() -> Bool {
         guard !isTextEditing, view.window?.firstResponder === outlineView else { return false }
         let selected = selectedIDs()
-        guard !isEditLocked, selected.count == 1, let id = selected.first, nodes[id] != nil else { return true }
-        onEditNotes?(id)
+        guard !isEditLocked, !selected.isEmpty, selected.allSatisfy({ nodes[$0] != nil }) else { return true }
+        onEditNotes?(selected)
         return true
     }
 
-    /// Shows the inspector's notes of a cue for typing (the notes key).
-    var onEditNotes: ((ModelID) -> Void)?
+    /// Shows the inspector's notes of the selected cues for typing (the notes key).
+    var onEditNotes: (([ModelID]) -> Void)?
+
+    /// The fields an editing key opens in the inspector when several cues are selected: the list has a
+    /// cell per cue, the inspector one field whose typed value goes to every selected cue.
+    static let severalCueFields: Set<InspectorField> = [.preWait, .duration, .postWait]
+    /// Puts the caret in the inspector's field for the selected cues (an editing key, several cues).
+    var onEditSeveral: ((InspectorField, [ModelID]) -> Void)?
 
     /// The continue-mode and flag keys (C, F): every selected cue takes the value the first one moves
     /// to, as one undo step (QLab sets a batch-edited property to the same value on all, manual

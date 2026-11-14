@@ -217,6 +217,21 @@
 "cue.colour.green" = "Green";
 "cue.colour.blue" = "Blue";
 "cue.colour.purple" = "Purple";
+"cue.colour.yellow" = "Yellow";
+"cue.colour.cyan" = "Cyan";
+"cue.colour.magenta" = "Magenta";
+"cue.colour.dark_red" = "Dark red";
+"cue.colour.apricot" = "Apricot";
+"cue.colour.olive" = "Olive";
+"cue.colour.dark_green" = "Dark green";
+"cue.colour.light_blue" = "Light blue";
+"cue.colour.navy" = "Navy";
+"cue.colour.indigo" = "Indigo";
+"cue.colour.lilac" = "Lilac";
+"cue.colour.plum" = "Plum";
+"cue.colour.raspberry" = "Raspberry";
+"cue.colour.pink" = "Pink";
+"cue.colour.grey" = "Gray";
 
 "cue.continue.autoContinue" = "Auto-continue";
 "cue.continue.autoFollow" = "Auto-follow";
@@ -247,6 +262,11 @@
 "paste.property.colour" = "Color";
 "paste.property.flagged" = "Flagged";
 "paste.property.armed" = "Armed";
+"paste.property.secondColour" = "Second color";
+"paste.property.autoLoad" = "Load ahead";
+"paste.property.skipIfDisarmed" = "Skip when disarmed";
+"paste.property.fadeAndStopOthers" = "Fade out and stop others";
+"paste.property.duckOthers" = "Duck or boost others";
 "paste.property.secondTrigger" = "When triggered again";
 "paste.property.secondTriggerOnRelease" = "Second trigger on release";
 "paste.property.outputPatch" = "Output patch";
@@ -285,6 +305,7 @@
 "inspector.hotkey.menu" = "That key belongs to a menu command.";
 "inspector.hotkey.editKey" = "That key edits the selected cues in this workspace (Workspace Settings, Keys).";
 "inspector.hotkey.unsupported" = "That key cannot be used as a hotkey.";
+"inspector.hotkey.enabled" = "Hotkey trigger on";
 "hotkeys.warn.unusable" = "%1$@ key: %2$@, so no key is bound.";
 "hotkeys.warn.menuLost" = "%1$@ key %2$@ is also a menu command's key: the key runs %1$@ here, and that menu command has no key in this workspace.";
 "hotkeys.warn.menuShadowed" = "Cue hotkey %@ is also a menu command's key, so the cue does not fire from it.";
@@ -313,6 +334,22 @@
 "inspector.continue.auto_follow" = "Auto-follow";
 "inspector.flagged" = "Flagged";
 "inspector.armed" = "Armed";
+"inspector.autoLoad" = "Load ahead";
+"inspector.skipIfDisarmed" = "Skip disarmed";
+"inspector.secondColour" = "Second color once started";
+"inspector.others.heading" = "As this cue's action starts:";
+"inspector.others.over" = "over";
+"inspector.fadeOthers" = "Fade out and stop";
+"inspector.fadeOthers.peers" = "its peers";
+"inspector.fadeOthers.list" = "its list";
+"inspector.fadeOthers.all" = "every list";
+"inspector.fadeOthers.time" = "Fade out and stop time";
+"inspector.duckOthers" = "Duck the list's other audio cues while it runs";
+"inspector.boostOthers" = "Boost the list's other audio cues while it runs";
+"inspector.duckOthers.by" = "by";
+"inspector.duckOthers.dbOver" = "dB over";
+"inspector.duckOthers.db" = "Duck or boost level";
+"inspector.duckOthers.time" = "Duck or boost time";
 "inspector.target.missing" = "(missing cue)";
 "inspector.target.notApplicable" = "(takes no target)";
 "inspector.target.choose" = "Choose…";
@@ -330,6 +367,7 @@
 "inspector.invalid.negativeLoadTime" = "Loading to a time before the end is not supported yet: enter a time from the start.";
 "inspector.invalid.noMessage" = "Only a Network cue has a message.";
 "inspector.invalid.networkMessage" = "The arguments cannot be read: put text with spaces in double quotes, and use \\T or \\F for true or false.";
+"inspector.invalid.level" = "Enter a level in dB, from -inf to +12.";
 "inspector.refused" = "The change was refused: %@";
 "inspector.failed" = "The change could not be sent.";
 
@@ -453,6 +491,7 @@
 "settings.osc.duplicate" = "That passcode is already in the table.";
 "settings.general.panic" = "Panic fade time";
 "settings.general.goInterval" = "Minimum time between GOs";
+"settings.general.autoLoad" = "New cues load ahead";
 "settings.general.outOfRange" = "Enter a number from %g to %g.";
 "settings.audio.device" = "Audio output device";
 "settings.audio.systemDefault" = "System Default";

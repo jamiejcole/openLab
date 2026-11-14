@@ -4,7 +4,7 @@
 //! start spends.
 
 use crate::cue::{CueKind, FadeSpec};
-use crate::model::CueId;
+use crate::model::{CueId, CueListId};
 
 use super::run::{Exit, GroupRun, Loaded, Phase, Run, Slot, Voice};
 use super::time::SampleTime;
@@ -152,17 +152,18 @@ impl CueEngine {
             cx.out.push(Action::PlayedChanged { cue, played: true });
         }
         self.release_panicking_parents(cue, at, cx);
-        self.auto_load_after(cue, cx);
     }
 
-    /// `cue` has started: the cue after it at its level (passing over skipped ones) is loaded
-    /// if it is set to auto-load (QLab 5, manual p. 128). Only an idle one, armed and without
-    /// problems: one already loaded, running or broken is left as it is, and a disarmed or
-    /// broken cue would play nothing, so loading it would only show a loaded mark that means
-    /// nothing. A group loads as Load does (the children its action starts first).
-    fn auto_load_after(&mut self, cue: CueId, cx: &mut Ctx) {
+    /// A GO has moved the list's playhead: the cue it now stands on is loaded if it is set to
+    /// auto-load (QLab 5, manual p. 128). Measured in QLab 5.6.5: it loads as the GO moves the
+    /// playhead onto it, not when the playhead is put there by hand, nor when the cue before it
+    /// is started without a GO. Only an idle one, armed and without problems: one already
+    /// loaded, running or broken is left as it is, and a disarmed or broken cue would play
+    /// nothing, so loading it would only show a loaded mark that means nothing. A group loads
+    /// as Load does (the children its action starts first).
+    pub(super) fn auto_load_at_playhead(&mut self, list: CueListId, cx: &mut Ctx) {
         let ws = cx.ws;
-        let Some(next) = self.next_sibling(ws, cue).and_then(|id| ws.find_cue(id)) else {
+        let Some(next) = self.playhead(list).and_then(|id| ws.find_cue(id)) else {
             return;
         };
         if !next.auto_load

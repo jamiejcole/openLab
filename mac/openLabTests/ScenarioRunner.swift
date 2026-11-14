@@ -53,6 +53,9 @@ final class ScenarioRunner {
         case focus(String)
         /// `{"shot": "name"}`: `<OUT>/<n>-<name>.png`, the whole window at 2x.
         case shot(String)
+        /// `{"inside": id, "of": id}`: the run stops unless the first control lies wholly inside the
+        /// second (a tab view: inside its content, below its tabs), as laid out now.
+        case inside(id: String, of: String)
     }
 
     struct Scenario {
@@ -74,7 +77,7 @@ final class ScenarioRunner {
 
     static let stepKinds = [
         "select", "click", "double_click", "drag", "type", "key", "scroll", "magnify", "advance", "resize", "tab",
-        "focus", "paste_properties", "shot",
+        "focus", "paste_properties", "shot", "inside",
     ]
 
     // MARK: Parsing
@@ -166,7 +169,7 @@ final class ScenarioRunner {
         let options: [String: Set<String>] = [
             "click": ["at", "modifiers"], "double_click": ["at", "modifiers"], "drag": ["from", "to", "modifiers"],
             "type": ["text", "enter"], "key": ["modifiers"], "scroll": ["dx", "dy", "precise", "modifiers", "at"],
-            "magnify": ["by", "at"], "paste_properties": ["tick"],
+            "magnify": ["by", "at"], "paste_properties": ["tick"], "inside": ["of"],
         ]
         let allowed = options[kind, default: []].union([kind])
         if let extra = o.keys.first(where: { !allowed.contains($0) }) {
@@ -234,6 +237,7 @@ final class ScenarioRunner {
             }
             return .resize(try size(a[0], a[1], "resize"))
         case "tab": return .tab(try string("tab"))
+        case "inside": return .inside(id: try string("inside"), of: try string("of"))
         case "focus":
             let which = try string("focus")
             guard ["workspace", "settings", "sheet", "patch-editor", "preferences"].contains(which) else {
@@ -625,6 +629,18 @@ final class ScenarioRunner {
             }
             tabs.selectTabViewItem(withIdentifier: id)
             note("tab \(id)")
+        case .inside(let id, let container):
+            await catchUp()
+            let view = try control(id)
+            let box = try control(container)
+            view.window?.layoutIfNeeded()
+            let frame = view.convert(view.bounds, to: box)
+            // A tab view's own tabs sit above its content: inside means inside the content.
+            let room = (box as? NSTabView)?.contentRect ?? box.bounds
+            guard room.contains(frame) else {
+                throw Failure("\"\(id)\" at \(frame) is not inside \"\(container)\" \(room)")
+            }
+            note("inside \(id) of \(container)")
         case .shot(let name):
             await catchUp()
             await wc.inspector.timeLoops.loading?.value
@@ -910,6 +926,7 @@ final class ScenarioRunner {
         case .tab(let t): return "tab \(t)"
         case .focus(let w): return "focus \(w)"
         case .shot(let s): return "shot \(s)"
+        case .inside(let id, let of): return "inside \(id) of \(of)"
         }
     }
 
@@ -1010,6 +1027,29 @@ final class ScenarioShotTests: XCTestCase {
         XCTAssertTrue(first.contains("(footer: ") && !first.hasSuffix("(footer: )"), String(first))
         XCTAssertTrue(log.hasSuffix("done: 2 shot(s) in \(out.path)\n"), log)
         if let pid = runner.enginePid { XCTAssertEqual(kill(pid, 0), -1, "the engine ended") }
+    }
+
+    /// Reproduce (the scenario window's off-screen layout): 1000x700, cue 1 (30 s) played, the
+    /// sidebar on Active Cues, its Reset All pressed. The inspector is shorter than the Basics tab's
+    /// left column, and the column slid up over the tabs, Number and Duration out of sight. It must
+    /// keep its top and be cut at the bottom.
+    func testResetAllWithActiveCuesShownKeepsTheBasicsFieldsInsideTheTab() async throws {
+        let runner = ScenarioRunner(
+            scenario: try scenario(
+                """
+                {"show": "Demo", "media": {"media/a.wav": 30}, "window": {"width": 1000, "height": 700},
+                 "steps": [{"select": "1"}, {"key": "space"}, {"advance": 1.0},
+                           {"click": "toggle-sidebar"}, {"click": "sidebar-tabs", "at": [0.5, 0.5]}, {"select": "2.1"}, {"shot": "active"},
+                           {"click": "transport-reset"}, {"advance": 0.5}, {"shot": "after-reset"},
+                           {"inside": "inspector-number", "of": "inspector-tabs"},
+                           {"inside": "inspector-pre-wait", "of": "inspector-tabs"}]}
+                """), out: out)
+        do {
+            try await runner.run()
+        } catch {
+            let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
+            XCTFail("\(error)\n\(log)")
+        }
     }
 
     func testAnUnknownIdentifierFailsListingTheIdentifiersShown() async throws {

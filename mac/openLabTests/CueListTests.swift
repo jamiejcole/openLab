@@ -1997,8 +1997,8 @@ final class PlayheadFlowTests: XCTestCase {
     }
 
     /// Several cues selected: C and F give every one of them the value the first one moves to, in one
-    /// undo step. The keys that open a field (N, Q, O, T, E, D, W) open none: there is one field and
-    /// several cues (assumed, recorded in the QLab behaviour notes).
+    /// undo step. N, Q and T open no field: a number, a name and a target belong to one cue (assumed,
+    /// recorded in the QLab behaviour notes). E, D, W and O are in the tests below.
     func testSeveralCuesSelectedAnEditingKeyEditsTheValueOnAllOfThem() async throws {
         try await editWorkspace()
         func mode(_ id: ModelID) -> String? { store.model?.cue(id)?.raw["continue_mode"]?.stringValue }
@@ -2016,12 +2016,218 @@ final class PlayheadFlowTests: XCTestCase {
         await wc.editor.undo()
         await assertEventually("one undo unflags them all") { all.allSatisfy { !flagged($0) } }
         XCTAssertTrue(all.allSatisfy { mode($0) == "auto_continue" }, "and leaves the continue step")
-        for (chars, code) in [("n", UInt16(45)), ("q", 12), ("o", 31), ("t", 17), ("e", 14), ("d", 2), ("w", 13)] {
-            try press(chars, code: code)
+        let beeps = Counter()
+        app.beep = { beeps.count += 1 }
+        let window = try XCTUnwrap(wc.window)
+        for (chars, code) in [("n", UInt16(45)), ("q", 12), ("t", 17)] {
+            XCTAssertNil(app.handleKeyDown(try key(chars, code: code, windowNumber: window.windowNumber)), chars)
             XCTAssertNil(wc.cueList.editingCell, chars)
-            XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, chars)
+            XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, chars)
         }
+        XCTAssertEqual(beeps.count, 0)
         XCTAssertEqual(wc.cueList.selectedIDs().count, 3, "the selection stays")
+    }
+
+    // MARK: Editing keys with several cues selected (QLab 5.6.5 as measured)
+
+    /// Three Audio cues, each given its own starting values, all selected with the list focused.
+    private func threeAudioCuesSelected(
+        modes: [String] = ["do_not_continue", "do_not_continue", "do_not_continue"],
+        flags: [Bool] = [false, false, false], preWaits: [Double] = [0, 0, 0], postWaits: [Double] = [0, 0, 0],
+        notes: [String] = ["", "", ""]
+    ) async throws -> [ModelID] {
+        try await editWorkspace()
+        let three = await wc.editor.addFiles(try tempFiles(["x.wav", "y.wav", "z.wav"]), parent: nil, index: 0)
+        XCTAssertEqual(three.count, 3)
+        for (i, id) in three.enumerated() {
+            for property: CueProperty in [
+                .continueMode(modes[i]), .flagged(flags[i]), .preWait(preWaits[i]), .postWait(postWaits[i]),
+                .notes(notes[i]),
+            ] {
+                guard case .success = await store.send(command: .setProperty(id, property)) else {
+                    XCTFail("setup \(property)")
+                    return three
+                }
+            }
+        }
+        await sync()
+        wc.cueList.selectAsUser(three)
+        await assertEventually("the inspector shows all three") { Set(self.wc.inspector.selection) == Set(three) }
+        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(wc.cueList.outlineView))
+        return three
+    }
+
+    /// The continue mark the list draws for `id` (nil: none).
+    private func continueMark(_ id: ModelID) -> String? {
+        let ov = wc.cueList.outlineView
+        guard let node = wc.cueList.node(id) else { return nil }
+        let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier("continue"))
+        guard let cell = ov.view(atColumn: col, row: ov.row(forItem: node), makeIfNecessary: true) as? CueCell,
+            let mark = cell.images.first, !mark.isHidden
+        else { return nil }
+        return mark.accessibilityLabel()
+    }
+
+    /// The inspector field the window is typing into.
+    private func typingIn(_ field: NSTextField) -> Bool {
+        (wc.window?.firstResponder as? NSTextView)?.delegate === field
+    }
+
+    /// C with three cues at do-not-continue, auto-continue and auto-follow: all three take the first
+    /// one's next mode (auto-continue), the next press all auto-follow; one undo puts each back.
+    func testSeveralCuesSelectedCGivesThemAllTheFirstCuesNextContinueMode() async throws {
+        let three = try await threeAudioCuesSelected(modes: ["do_not_continue", "auto_continue", "auto_follow"])
+        let cont = loc("cue.continue.autoContinue")
+        let follow = loc("cue.continue.autoFollow")
+        try press("c", code: 8)
+        await assertEventually("all auto-continue") { three.allSatisfy { self.continueMark($0) == cont } }
+        try press("c", code: 8)
+        await assertEventually("all auto-follow") { three.allSatisfy { self.continueMark($0) == follow } }
+        await wc.editor.undo()
+        await assertEventually("one undo: all auto-continue again") {
+            three.allSatisfy { self.continueMark($0) == cont }
+        }
+        await wc.editor.undo()
+        await assertEventually("the next undo: each its own mode") {
+            self.continueMark(three[0]) == nil && self.continueMark(three[1]) == cont
+                && self.continueMark(three[2]) == follow
+        }
+        XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, "the keys stay with the list")
+        XCTAssertEqual(goes(), 0)
+    }
+
+    /// F with three cues unflagged, flagged, unflagged: all three flagged (the first one's toggle),
+    /// the next press all unflagged; one undo puts the flags back as they were.
+    func testSeveralCuesSelectedFGivesThemAllTheFirstCuesToggledFlag() async throws {
+        let three = try await threeAudioCuesSelected(flags: [false, true, false])
+        /// The flag the row draws; "none" when it draws none.
+        func marker(_ id: ModelID) -> String {
+            guard let node = wc.cueList.node(id) else { return "gone" }
+            return wc.cueList.flagMarker(node, expanded: true).map { "\($0)" } ?? "none"
+        }
+        try press("f", code: 3)
+        await assertEventually("all flagged") { three.map(marker) == ["solid", "solid", "solid"] }
+        try press("f", code: 3)
+        await assertEventually("all unflagged") { three.map(marker) == ["none", "none", "none"] }
+        await wc.editor.undo()
+        await assertEventually("one undo: all flagged") { three.map(marker) == ["solid", "solid", "solid"] }
+        await wc.editor.undo()
+        await assertEventually("the next undo: only the middle one") {
+            three.map(marker) == ["none", "solid", "none"]
+        }
+        XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView)
+    }
+
+    /// E (and W) with three cues of different waits: the inspector's one wait field takes the caret,
+    /// showing Mixed; 7 typed and Return gives all three rows 7 s, the keys go back to the list, and
+    /// one undo puts each cue's own wait back.
+    func testSeveralCuesSelectedEAndWTypeOneWaitIntoTheInspectorForAllOfThem() async throws {
+        let three = try await threeAudioCuesSelected(preWaits: [0, 1, 2], postWaits: [3, 4, 5])
+        wc.setVisible(.inspector, false)
+        let beeps = Counter()
+        app.beep = { beeps.count += 1 }
+        for (chars, code, column, field, before) in [
+            ("e", UInt16(14), "preWait", wc.inspector.preWaitField, ["00:00.00", "00:01.00", "00:02.00"]),
+            ("w", 13, "postWait", wc.inspector.postWaitField, ["00:03.00", "00:04.00", "00:05.00"]),
+        ] {
+            wc.inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
+            try press(chars, code: code)
+            XCTAssertTrue(wc.isVisible(.inspector), "\(chars): the inspector is shown")
+            XCTAssertEqual(wc.inspector.tabView.selectedTabViewItem?.identifier as? String, "basics", chars)
+            XCTAssertTrue(typingIn(field), "\(chars): the inspector's one field takes the caret")
+            XCTAssertNil(wc.cueList.editingCell, "\(chars): no cell of the list opens")
+            XCTAssertEqual(field.stringValue, "", "\(chars): the values differ")
+            XCTAssertEqual(field.placeholderString, loc("inspector.mixed"), chars)
+            try type("7")
+            try pressReturn()
+            XCTAssertTrue(
+                wc.window?.firstResponder === wc.cueList.outlineView, "\(chars): Return gives the list the keys")
+            await assertEventually("\(chars): every row shows 7 s") {
+                three.allSatisfy { self.cell($0, column) == "00:07.00" }
+            }
+            await wc.editor.undo()
+            await assertEventually("\(chars): one undo gives each its own again") {
+                three.map { self.cell($0, column) } == before
+            }
+        }
+        XCTAssertEqual(beeps.count, 0)
+        XCTAssertEqual(goes(), 0, "Return fired no GO")
+        XCTAssertEqual(Set(wc.cueList.selectedIDs()), Set(three), "the selection stays")
+    }
+
+    /// D with three Audio cues selected: their duration is their files', so nothing opens, nothing is
+    /// sent, the inspector is not brought up, no beep, and the keys stay with the list. On several
+    /// Fade cues D types their one duration in the inspector, as E types a pre-wait.
+    func testSeveralCuesSelectedDOnAudioCuesDoesNothing() async throws {
+        let three = try await threeAudioCuesSelected(preWaits: [0, 1, 2])
+        wc.setVisible(.inspector, false)
+        let beeps = Counter()
+        app.beep = { beeps.count += 1 }
+        let sent = wire.commands.count
+        let window = try XCTUnwrap(wc.window)
+        XCTAssertNil(app.handleKeyDown(try key("d", code: 2, windowNumber: window.windowNumber)), "taken")
+        await sync()
+        XCTAssertNil(wc.cueList.editingCell)
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "the keys stay with the list")
+        XCTAssertFalse(wc.isVisible(.inspector), "the inspector is not brought up")
+        XCTAssertEqual(wire.commands.count, sent, "nothing was sent")
+        XCTAssertEqual(beeps.count, 0)
+        XCTAssertEqual(Set(wc.cueList.selectedIDs()), Set(three))
+
+        // Two Fade cues, whose duration is typed: D puts the caret in the inspector's duration field.
+        let added = await wc.editor.add(.fade, after: [fade])
+        let second = try XCTUnwrap(added)
+        wc.cueList.selectAsUser([fade, second])
+        await assertEventually("the inspector shows both fades") {
+            Set(self.wc.inspector.selection) == [self.fade, second]
+        }
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
+        try press("d", code: 2)
+        XCTAssertTrue(wc.isVisible(.inspector))
+        XCTAssertTrue(typingIn(wc.inspector.durationField), "a fade's duration is typed in the inspector")
+        let fadesBefore = [fade, second].map { cell($0, "duration") }
+        try type("4")
+        try pressReturn()
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "Return gives the list the keys")
+        await assertEventually("both fades show 4 s") {
+            [self.fade, second].allSatisfy { self.cell($0, "duration") == "00:04.00" }
+        }
+        await wc.editor.undo()
+        await assertEventually("one undo gives each fade its own duration") {
+            [self.fade, second].map { self.cell($0, "duration") } == fadesBefore
+        }
+        XCTAssertEqual(beeps.count, 0)
+        XCTAssertEqual(goes(), 0, "Return fired no GO")
+    }
+
+    /// O with three cues of different notes: the inspector's notes on the Basics tab take the caret;
+    /// what is typed and ended with Return becomes every cue's notes, and one undo gives each its own.
+    func testSeveralCuesSelectedOPutsTheCaretInTheInspectorNotesForAllOfThem() async throws {
+        let three = try await threeAudioCuesSelected(notes: ["one", "two", ""])
+        wc.setVisible(.inspector, false)
+        wc.inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
+        try press("o", code: 31)
+        XCTAssertTrue(wc.isVisible(.inspector), "a hidden inspector is shown")
+        XCTAssertEqual(wc.inspector.tabView.selectedTabViewItem?.identifier as? String, "basics")
+        XCTAssertTrue(wc.window?.firstResponder === wc.inspector.notesView, "the notes take the caret")
+        XCTAssertNil(wc.cueList.editingCell)
+        XCTAssertEqual(wc.inspector.notesView.string, "", "the notes differ: none is shown as the text")
+        XCTAssertEqual(wc.inspector.notesView.placeholder, loc("inspector.mixed"))
+        XCTAssertTrue(wc.inspector.notesView.showsPlaceholder, "Mixed is drawn")
+        try type("cue")
+        XCTAssertFalse(wc.inspector.notesView.showsPlaceholder, "typing hides the hint")
+        XCTAssertEqual(wc.inspector.notesView.string, "cue", "the hint is never part of the text")
+        try pressReturn()
+        XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, "Return gives the list the keys")
+        await assertEventually("all three hold the typed notes") { three.allSatisfy { self.notes($0) == "cue" } }
+        await wc.editor.undo()
+        await assertEventually("one undo gives each its own") {
+            three.map { self.notes($0) ?? "" } == ["one", "two", ""]
+        }
+        XCTAssertEqual(goes(), 0)
+        wc.cueList.selectAsUser([three[2]])
+        await assertEventually("one cue shown") { self.wc.inspector.selection == [three[2]] }
+        XCTAssertNil(wc.inspector.notesView.placeholder, "one cue's empty notes show no hint")
     }
 
     /// Show Mode: none of the editing keys edits anything or opens a field, and none goes on to beep.
@@ -2043,6 +2249,21 @@ final class PlayheadFlowTests: XCTestCase {
         XCTAssertEqual(wire.commands.count, sent, "nothing was sent")
         XCTAssertEqual(store.model?.cue(cues[1])?.raw, before)
         XCTAssertFalse(wc.isVisible(.inspector), "O does not bring the inspector into Show Mode")
+
+        // Three cues selected: the keys that act on several cues do nothing either.
+        let all = cues + [fade]
+        wc.cueList.selectAsUser(all)
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
+        let raws = all.map { store.model?.cue($0)?.raw }
+        let sentBefore = wire.commands.count
+        for (chars, code) in [("e", UInt16(14)), ("d", 2), ("w", 13), ("o", 31), ("c", 8), ("f", 3)] {
+            XCTAssertNil(app.handleKeyDown(try key(chars, code: code, windowNumber: window.windowNumber)), chars)
+            XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "\(chars): the list keeps the keys")
+            XCTAssertFalse(wc.isVisible(.inspector), "\(chars): the inspector stays hidden")
+        }
+        await sync()
+        XCTAssertEqual(wire.commands.count, sentBefore, "nothing was sent for the three cues")
+        XCTAssertEqual(all.map { store.model?.cue($0)?.raw }, raws)
         XCTAssertEqual(goes(), 0)
     }
 

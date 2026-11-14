@@ -197,10 +197,17 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         cueList.onPasteProperties = { [weak self] cues in self?.promptPasteProperties(onto: cues) }
         cueList.onSetContinue = { [weak self] id, mode in Task { await self?.editor.setContinue(of: id, to: mode) } }
         cueList.onEditedCueGone = { [weak self] in self?.showNotice(loc("cuelist.edit.cueGone")) }
-        cueList.onEditNotes = { [weak self] id in
+        cueList.onEditNotes = { [weak self] ids in
             guard let self, !isShowMode else { return }
             setVisible(.inspector, true)
-            inspector.beginNotes(of: id)
+            inspector.beginNotes(of: ids)
+        }
+        cueList.onEditSeveral = { [weak self] field, ids in
+            // A field that is off for these cues (an Audio cue's duration) takes nothing: the inspector
+            // is not brought up for it.
+            guard let self, !isShowMode, inspector.takesTyping(field, for: ids) else { return }
+            setVisible(.inspector, true)
+            inspector.beginField(field, of: ids)
         }
         cueList.onFileDrop = { [weak self] drop, skipped in
             Task {
@@ -570,7 +577,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The footer's cue count follows the model (adds, deletes, a new snapshot).
-    /// The shown list's playhead cue, with its notes.
+    /// The shown list's playhead cue, with its notes; a skipped one too (a GO there moves the
+    /// playhead on and starts nothing).
     func syncMasthead() {
         let id = cueList.listID.flatMap { store.playheads[$0] }
         let cue = id.flatMap { store.model?.cue($0) }

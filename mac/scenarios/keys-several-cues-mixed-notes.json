@@ -1,0 +1,19 @@
+{
+  "about": "Three Audio cues whose notes differ (2.1 'door', 2.2 'rain', 2.3 none) selected and O pressed: the inspector's notes are empty with a Mixed hint; the hint goes once a letter is typed.",
+  "show": "Demo",
+  "steps": [
+    {"select": "2.1"},
+    {"key": "o"},
+    {"key": "d"},
+    {"key": "return"},
+    {"select": "2.2"},
+    {"key": "o"},
+    {"key": "r"},
+    {"key": "return"},
+    {"select": ["2.1", "2.2", "2.3"]},
+    {"key": "o"},
+    {"shot": "notes-mixed"},
+    {"key": "x"},
+    {"shot": "notes-typed-over-mixed"}
+  ]
+}
