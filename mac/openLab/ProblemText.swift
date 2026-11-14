@@ -88,6 +88,9 @@ struct WarningRow: Hashable {
 }
 
 enum WarningRows {
+    /// The most of a stage's name a warning row shows before its reason.
+    static let stageNameLength = 24
+
     /// Broken cues in list order first, then workspace warnings, then runtime warnings (oldest
     /// first). Groups that are only flagged for a broken child are not listed: the child is.
     @MainActor
@@ -131,8 +134,11 @@ enum WarningRows {
         // unplugged, or failing.
         for entry in store.videoOutputs.stages {
             guard let state = entry.state, let why = VideoSettingsPane.warning(state) else { continue }
-            let name =
-                model?.stages.first { $0.id == entry.stage }?.raw["name"]?.stringValue ?? entry.stage.raw
+            // A stage gone from the workspace since the engine's last word has no row; a long name
+            // is shortened so the reason after it stays in sight.
+            guard let full = model?.stages.first(where: { $0.id == entry.stage })?.raw["name"]?.stringValue
+            else { continue }
+            let name = full.count > Self.stageNameLength ? full.prefix(Self.stageNameLength - 1) + "…" : full
             rows.append(
                 WarningRow(
                     id: "v:\(entry.stage.raw)", cue: nil, title: String(format: loc("warnings.stage"), name, why),

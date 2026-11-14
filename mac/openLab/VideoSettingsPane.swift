@@ -32,7 +32,18 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     /// The table, built afresh on each draw: an `NSGridView` cannot remove a row holding merged
     /// cells (a warning line), so rows are never removed from it.
     private(set) var grid = NSGridView()
+    /// The column titles, above the scrolling rows so they stay in sight.
+    let header = VideoSettingsPane.makeGrid(rows: false)
     let holder = TopLeftView()
+    let scroll = NSScrollView()
+    /// The display and name columns' widths: what the table's width leaves after the other
+    /// columns goes to the display choice first, then to the name.
+    private(set) var displayWidth: CGFloat = VideoSettingsPane.leastDisplayWidth
+    private(set) var nameWidth: CGFloat = VideoSettingsPane.columns[0]
+    private var popupWidths: [NSLayoutConstraint] = []
+    private var nameWidths: [NSLayoutConstraint] = []
+    /// Counts edits tried, so an older edit's answer does not overwrite a newer one's reason.
+    private var attempt = 0
     let emptyLabel = NSTextField(labelWithString: loc("settings.video.none"))
     let noVideoLabel = NSTextField(wrappingLabelWithString: loc("settings.video.noVideo"))
     let messageLabel = NSTextField(wrappingLabelWithString: "")
@@ -58,6 +69,10 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         build()
         subs.append(store.$model.sink { [weak self] _ in self?.renderSoon() })
         subs.append(store.$videoOutputs.sink { [weak self] _ in self?.renderSoon() })
+        scroll.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.publisher(for: NSView.frameDidChangeNotification, object: scroll.contentView)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.fitColumns() } }
+            .store(in: &subs)
         render()
     }
 
@@ -69,8 +84,15 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     // MARK: Building
 
-    /// Name, pixels, display, black, layer, remove.
-    static let columns: [CGFloat] = [110, 76, 140, 36, 40, 18]
+    /// Name, pixels, display, black, layer, remove: the least widths (the display and name
+    /// columns take more when there is room).
+    static let columns: [CGFloat] = [90, 70, leastDisplayWidth, 32, 30, 16]
+    static let leastDisplayWidth: CGFloat = 120
+    static let mostDisplayWidth: CGFloat = 260
+    static let mostNameWidth: CGFloat = 260
+    static let columnSpacing: CGFloat = 6
+    /// Between the table's edge and its rows.
+    static let inset: CGFloat = 6
 
     private func build() {
         addButton.setAX(Self.id + "-add", label: loc("settings.video.add"))
@@ -91,51 +113,87 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         messageLabel.textColor = .systemRed
         messageLabel.setAX(Self.id + "-message")
 
-        let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.borderType = .bezelBorder
         holder.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = holder
-        install(Self.makeGrid())
+        install(Self.makeGrid(rows: true))
         NSLayoutConstraint.activate([
             holder.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             holder.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            holder.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor),
+            holder.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
             scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 300),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 160),
         ])
         scroll.setAX(Self.id + "-table", label: loc("settings.tab.video"))
 
-        for v in [top, noVideoLabel, scroll, emptyLabel, messageLabel] as [NSView] { view.addArrangedSubview(v) }
+        // The titles sit above the table's border, lined up with its columns.
+        let titles = NSView()
+        header.translatesAutoresizingMaskIntoConstraints = false
+        titles.addSubview(header)
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: titles.topAnchor),
+            header.bottomAnchor.constraint(equalTo: titles.bottomAnchor),
+            header.leadingAnchor.constraint(equalTo: titles.leadingAnchor, constant: Self.inset + 1),
+        ])
+        for v in [top, noVideoLabel, titles, scroll, emptyLabel, messageLabel] as [NSView] {
+            view.addArrangedSubview(v)
+        }
         view.orientation = .vertical
         view.alignment = .leading
         view.distribution = .fill
         view.spacing = 10
+        view.setCustomSpacing(4, after: titles)
         scroll.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
-        // The table takes the page's width (a narrow window scrolls it rather than clipping a column).
+        // The table takes the page's width; the display column takes what the others leave.
         scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
+        titles.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
         view.setAX(Self.id)
     }
 
-    /// An empty table: the header row and the column sizes.
-    private static func makeGrid() -> NSGridView {
-        let headers = ["name", "size", "display", "black", "layer", "remove"].map { key -> NSView in
-            let label = NSTextField(labelWithString: loc("settings.video.col.\(key)"))
-            label.font = .systemFont(ofSize: 12, weight: .semibold)
-            return label
+    /// The column titles (`rows` false), or an empty table for the rows, with the column sizes.
+    private static func makeGrid(rows: Bool) -> NSGridView {
+        let grid: NSGridView
+        if rows {
+            grid = NSGridView(numberOfColumns: columns.count, rows: 0)
+        } else {
+            let titles = ["name", "size", "display", "black", "layer", "remove"].map { key -> NSView in
+                let label = NSTextField(labelWithString: loc("settings.video.col.\(key)"))
+                label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+                return label
+            }
+            grid = NSGridView(views: [titles])
         }
-        let grid = NSGridView(views: [headers])
         grid.rowSpacing = 6
-        grid.columnSpacing = 6
-        // Sized so the whole table fits the settings window at its least width.
+        grid.columnSpacing = columnSpacing
         for (c, width) in columns.enumerated() { grid.column(at: c).width = width }
         grid.yPlacement = .center
         grid.column(at: 3).xPlacement = .center
         grid.column(at: 5).xPlacement = .center
         return grid
+    }
+
+    /// Shares what the table's width leaves after the fixed columns: the display column first
+    /// (so a display's name and "not connected" read whole), then the name, in the titles and the
+    /// rows alike.
+    func fitColumns() {
+        let fixed = Self.columns.enumerated().filter { $0.offset != 0 && $0.offset != 2 }
+            .reduce(0) { $0 + $1.element }
+        let spare =
+            (scroll.contentView.bounds.width - 2 * Self.inset - fixed
+            - Self.columnSpacing * CGFloat(Self.columns.count - 1)).rounded(.down)
+        let display = min(Self.mostDisplayWidth, max(Self.leastDisplayWidth, spare - Self.columns[0]))
+        let name = min(Self.mostNameWidth, max(Self.columns[0], spare - display))
+        displayWidth = display
+        nameWidth = name
+        for g in [header, grid] {
+            g.column(at: 0).width = name
+            g.column(at: 2).width = display
+        }
+        for c in popupWidths { c.constant = display }
+        for c in nameWidths { c.constant = name }
     }
 
     /// Puts `new` in the old table's place (the old one goes with every view it holds).
@@ -145,10 +203,10 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         new.translatesAutoresizingMaskIntoConstraints = false
         holder.addSubview(new)
         NSLayoutConstraint.activate([
-            new.topAnchor.constraint(equalTo: holder.topAnchor, constant: 6),
-            new.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 6),
-            new.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -6),
-            new.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -6),
+            new.topAnchor.constraint(equalTo: holder.topAnchor, constant: Self.inset),
+            new.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: Self.inset),
+            new.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -Self.inset),
+            new.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor, constant: -Self.inset),
         ])
     }
 
@@ -183,8 +241,19 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.render() } }
     }
 
-    /// Draws the page. One that is as drawn is left alone, and so is one being typed in: a rebuild
-    /// would take the caret away (the next render catches up).
+    /// Whether a name or layer is being typed in.
+    var typing: Bool { (nameFields + layerFields).contains { $0.currentEditor() != nil } }
+
+    /// Ends the typing in a name or layer field, which commits it (before what the operator
+    /// clicked next).
+    private func endTyping() {
+        guard typing else { return }
+        view.window?.makeFirstResponder(nil)
+    }
+
+    /// Draws the page: always what the workspace and the engine hold now, while a name or layer
+    /// is typed in too. That field is drawn again with what was typed and the caret where it was
+    /// (unless its stage is gone); nothing typed is committed by the redraw.
     func render(forced: Bool = false) {
         let rows = rows()
         let list = store.videoOutputs.displays
@@ -193,10 +262,14 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         noVideoLabel.isHidden = store.videoOutputs.video != false
         emptyLabel.isHidden = !rows.isEmpty
         if !forced, shown == rows, displays == list { return }
-        if (nameFields + layerFields).contains(where: { $0.currentEditor() != nil }) { return }
+        let resume = typedIn()
+        // The old fields leave the window with the table: their end of editing is not an edit.
+        for field in nameFields + layerFields { field.delegate = nil }
         shown = rows
         displays = list
-        let grid = Self.makeGrid()
+        popupWidths = []
+        nameWidths = []
+        let grid = Self.makeGrid(rows: true)
         nameFields = []
         layerFields = []
         displayPopups = []
@@ -206,11 +279,19 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         for (i, row) in rows.enumerated() {
             let n = i + 1
             let name = NSTextField(string: row.name)
+            name.controlSize = .small
+            name.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            name.usesSingleLineMode = true
+            name.lineBreakMode = .byTruncatingTail
+            name.cell?.truncatesLastVisibleLine = true
+            name.toolTip = row.name
             name.isEditable = enabled
             name.delegate = self
             name.tag = i
             name.identifier = NSUserInterfaceItemIdentifier("name")
-            name.widthAnchor.constraint(equalToConstant: Self.columns[0]).isActive = true
+            let nameWidth = name.widthAnchor.constraint(equalToConstant: self.nameWidth)
+            nameWidth.isActive = true
+            nameWidths.append(nameWidth)
             name.setAX("\(Self.id)-name-\(n)", label: "\(row.name), \(loc("settings.video.col.name"))")
             let size = NSTextField(labelWithString: "\(row.width) × \(row.height)")
             size.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
@@ -218,11 +299,14 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             let popup = displayPopup(row, tag: i, enabled: enabled)
             popup.setAX("\(Self.id)-display-\(n)", label: "\(row.name), \(loc("settings.video.col.display"))")
             let black = NSButton(checkboxWithTitle: "", target: self, action: #selector(blackClicked(_:)))
+            black.controlSize = .small
             black.state = row.keepBlack ? .on : .off
             black.tag = i
             black.isEnabled = enabled
             black.setAX("\(Self.id)-black-\(n)", label: "\(row.name), \(loc("settings.video.black"))")
             let layer = NSTextField(string: String(row.layer))
+            layer.controlSize = .small
+            layer.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
             layer.isEditable = enabled
             layer.alignment = .right
             layer.delegate = self
@@ -254,12 +338,44 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             }
         }
         install(grid)
+        fitColumns()
         grid.layoutSubtreeIfNeeded()
+        if let resume { self.resume(resume) }
+    }
+
+    /// The field being typed in: its kind, its stage, the text so far and the selection.
+    private struct Typed {
+        var layer: Bool
+        var stage: ModelID
+        var text: String
+        var selection: NSRange
+    }
+
+    private func typedIn() -> Typed? {
+        guard let field = (nameFields + layerFields).first(where: { $0.currentEditor() != nil }),
+            let editor = field.currentEditor(), let row = row(field.tag)
+        else { return nil }
+        return Typed(
+            layer: field.identifier?.rawValue == "layer", stage: row.id, text: editor.string,
+            selection: editor.selectedRange)
+    }
+
+    /// Puts the caret back in the redrawn field of the stage that was being typed in.
+    private func resume(_ typed: Typed) {
+        guard let i = shown?.firstIndex(where: { $0.id == typed.stage }) else { return }
+        let field = (typed.layer ? layerFields : nameFields)[i]
+        guard view.window?.makeFirstResponder(field) == true, let editor = field.currentEditor() else { return }
+        editor.string = typed.text
+        let length = (typed.text as NSString).length
+        let start = min(typed.selection.location, length)
+        editor.selectedRange = NSRange(location: start, length: min(typed.selection.length, length - start))
     }
 
     /// "None", then the displays; a chosen display that is not connected stays listed, marked.
     private func displayPopup(_ row: StageRow, tag: Int, enabled: Bool) -> NSPopUpButton {
         let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        popup.controlSize = .small
+        popup.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         popup.addItem(withTitle: loc("settings.video.displayNone"))
         popup.lastItem?.representedObject = nil
         for d in displays {
@@ -283,7 +399,9 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         popup.action = #selector(displayChosen(_:))
         popup.isEnabled = enabled
         popup.toolTip = popup.titleOfSelectedItem
-        popup.widthAnchor.constraint(equalToConstant: Self.columns[2]).isActive = true
+        let width = popup.widthAnchor.constraint(equalToConstant: displayWidth)
+        width.isActive = true
+        popupWidths.append(width)
         return popup
     }
 
@@ -294,75 +412,114 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         return shown[tag]
     }
 
-    /// Runs `edit` after the edits before it, shows its refusal (or clears the last one), and
-    /// redraws from the engine.
-    private func commit(_ edit: @escaping @MainActor () async -> Result<OkBody, EngineError>) {
+    /// Shows why a value was refused, the same way for every refusal, the page's or the
+    /// engine's (empty: none).
+    private func tell(_ reason: String) {
+        attempt += 1
+        messageLabel.stringValue = reason
+    }
+
+    /// Runs `edit` for `stage` after the edits before it, shows its refusal (or clears the last
+    /// one, unless a newer edit has said something since), and redraws from the engine.
+    /// `refused` puts back what the operator typed.
+    private func commit(
+        _ stage: ModelID?, refused: (@MainActor () -> Void)? = nil,
+        _ edit: @escaping @MainActor () async -> Result<OkBody, EngineError>
+    ) {
+        tell("")
+        let mine = attempt
         let previous = commits
         commits = Task { [weak self] in
             await previous?.value
             let result = await edit()
             guard let self else { return }
-            switch result {
-            case .success: messageLabel.stringValue = ""
-            case .failure(let e): messageLabel.stringValue = e.detailText
-            }
             await refresh()
+            if case .failure(let e) = result {
+                refused?()
+                if mine == attempt { messageLabel.stringValue = reason(e, stage) }
+            }
             render(forced: true)
         }
+    }
+
+    /// Puts the stage's name or layer as the workspace has it back in its field (the one drawn
+    /// now), also while it is typed in.
+    private func putBack(_ stage: ModelID, layer: Bool) {
+        guard let i = shown?.firstIndex(where: { $0.id == stage }), let row = rows().first(where: { $0.id == stage })
+        else { return }
+        let field = (layer ? layerFields : nameFields)[i]
+        let value = layer ? String(row.layer) : row.name
+        field.stringValue = value
+        field.currentEditor()?.string = value
+    }
+
+    /// A refusal in words, never with an internal id: a stage gone since it was drawn says so.
+    private func reason(_ e: EngineError, _ stage: ModelID?) -> String {
+        if let stage, store.model?.stages.contains(where: { $0.id == stage }) != true {
+            return loc("settings.video.gone")
+        }
+        return e.detailText
     }
 
     /// The edits still on their way (tests wait for them).
     var pending: Task<Void, Never>? { commits }
 
     @objc private func addClicked() {
+        endTyping()
         let count = store.model?.stages.count ?? 0
         let id = ModelID(UUID().uuidString.lowercased())
         let name = String(format: loc("settings.video.newName"), count + 1)
-        commit { [store] in
+        commit(nil) { [store] in
             await store.send(command: .addStage(id: id, name: name, width: 1920, height: 1080, index: count))
         }
     }
 
     @objc private func removeClicked(_ sender: NSButton) {
+        endTyping()
         guard let row = row(sender.tag) else { return }
-        commit { [store] in await store.send(command: .removeStage(row.id)) }
+        commit(row.id) { [store] in await store.send(command: .removeStage(row.id)) }
     }
 
     @objc private func blackClicked(_ sender: NSButton) {
-        guard let row = row(sender.tag) else { return }
         let on = sender.state == .on
-        commit { [store] in
+        endTyping()
+        guard let row = row(sender.tag) else { return }
+        commit(row.id) { [store] in
             await store.send(
                 command: .setStage(row.id, .object(["type": .string("keep_black"), "value": .bool(on)])))
         }
     }
 
     @objc private func displayChosen(_ sender: NSPopUpButton) {
-        guard let row = row(sender.tag) else { return }
         let display = sender.selectedItem?.representedObject as? String
+        endTyping()
+        guard let row = row(sender.tag) else { return }
         guard display != row.display else { return }
-        commit { [store] in await store.setStageMapping(row.id, display: display) }
+        commit(row.id) { [store] in await store.setStageMapping(row.id, display: display) }
     }
 
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let field = notification.object as? NSTextField, let row = row(field.tag) else { return }
-        // What came while the field was typed in was not drawn (a redraw would take the caret).
-        defer { renderSoon() }
         let text = field.stringValue
         if field.identifier?.rawValue == "layer" {
             guard let layer = Int(text.trimmingCharacters(in: .whitespaces)), (0...1000).contains(layer) else {
-                messageLabel.stringValue = loc("settings.video.badLayer")
+                tell(loc("settings.video.badLayer"))
                 field.stringValue = String(row.layer)
                 return
             }
             guard layer != row.layer else { return }
-            commit { [store] in
+            commit(row.id, refused: { [weak self] in self?.putBack(row.id, layer: true) }) { [store] in
                 await store.send(
                     command: .setStage(row.id, .object(["type": .string("layer"), "value": .int(Int64(layer))])))
             }
         } else {
             guard text != row.name else { return }
-            commit { [store] in
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                tell(loc("settings.video.badName"))
+                field.stringValue = row.name
+                return
+            }
+            commit(row.id, refused: { [weak self] in self?.putBack(row.id, layer: false) }) { [store] in
                 await store.send(
                     command: .setStage(row.id, .object(["type": .string("name"), "value": .string(text)])))
             }

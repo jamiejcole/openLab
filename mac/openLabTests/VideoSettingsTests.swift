@@ -171,11 +171,12 @@ final class VideoSettingsTests: XCTestCase {
             let rows = pane.shown ?? []
             let warned = rows.filter { $0.warning != nil }.count
             XCTAssertEqual(pane.holder.subviews, [pane.grid], "\(why): one table")
-            XCTAssertEqual(pane.grid.numberOfRows, 1 + rows.count + warned, why)
+            XCTAssertEqual(pane.grid.numberOfRows, rows.count + warned, why)
             let controls: [NSView] =
                 pane.nameFields + pane.layerFields + pane.displayPopups + pane.blackBoxes + pane.removeButtons
-            // Six headers; per row its controls and its pixel-size label; the warning lines.
-            XCTAssertEqual(pane.grid.subviews.count, 6 + controls.count + rows.count + warned, why)
+            // Per row its controls and its pixel-size label; the warning lines (the titles are not
+            // in the rows' grid).
+            XCTAssertEqual(pane.grid.subviews.count, controls.count + rows.count + warned, why)
             XCTAssertTrue(controls.allSatisfy { $0.superview === pane.grid }, why)
             XCTAssertEqual(pane.nameFields.map(\.stringValue), rows.map(\.name), why)
         }
@@ -207,31 +208,168 @@ final class VideoSettingsTests: XCTestCase {
         }
     }
 
-    /// A push that comes while a stage's name is typed in is drawn once the typing ends, even
-    /// with the name unchanged (nothing is sent then, so no model change redraws the page).
-    func testWhatChangesWhileANameIsTypedIsDrawnWhenTheTypingEnds() async throws {
+    /// A push that comes while a stage's name is typed in is drawn at once, and the name being
+    /// typed stays as typed, caret and all, uncommitted; ending the typing commits it.
+    func testWhatChangesWhileANameIsTypedIsDrawnAtOnceAndTheTypingGoesOn() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
         await settled(sc) { pane.warningLabels.first?.stringValue == loc("settings.video.warn.noDisplay") }
-        let window = try XCTUnwrap(sc.window)
-        sc.tabs.selectTabViewItem(withIdentifier: "video")
-        XCTAssertTrue(window.makeFirstResponder(pane.nameFields[0]))
-        XCTAssertNotNil(pane.nameFields[0].currentEditor())
+        try startTyping("Cyclo", in: pane.nameFields[0], sc)
         guard case .success = await rig.store.setStageMapping(ModelID(stageA), display: "V1") else {
             return XCTFail("mapping")
         }
-        // The stepped engine's clock moves only when the test moves it (pushes are at most one per
-        // 100 ms of it).
-        await assertEventually("the push reached the store") {
+        await caughtUp(rig, sc, "drawn while the name is typed") { pane.warningLabels.first?.stringValue == "" }
+        let field = pane.nameFields[0]
+        XCTAssertEqual(field.currentEditor()?.string, "Cyclo", "still typing, as typed")
+        XCTAssertEqual(rig.store.model?.stages.first?.raw["name"]?.stringValue, "Cyc", "nothing committed")
+        XCTAssertTrue(try XCTUnwrap(sc.window).makeFirstResponder(nil))
+        await caughtUp(rig, sc, "the name is committed") { pane.shown?.first?.name == "Cyclo" }
+    }
+
+    /// Starts typing `text` in `field` of the shown Video page (not committed).
+    private func startTyping(_ text: String, in field: NSTextField, _ sc: WorkspaceSettingsWindowController) throws {
+        sc.tabs.selectTabViewItem(withIdentifier: "video")
+        XCTAssertTrue(try XCTUnwrap(sc.window).makeFirstResponder(field))
+        try XCTUnwrap(field.currentEditor()).string = text
+    }
+
+    /// Waits for the page's edits and the engine's answers, moving the stepped engine on (its
+    /// pushes wait for its clock), without asking the engine again: what is drawn must come by
+    /// itself.
+    private func caughtUp(
+        _ rig: Rig, _ sc: WorkspaceSettingsWindowController, _ why: String,
+        _ ok: @escaping @MainActor () -> Bool
+    ) async {
+        await assertEventually(why) {
+            await sc.videoPane.pending?.value
             try? await rig.advance(0.2)
-            return rig.store.videoOutputs.stages.first?.state?.state == "hidden"
+            return ok()
         }
-        XCTAssertEqual(
-            pane.warningLabels.first?.stringValue, loc("settings.video.warn.noDisplay"),
-            "not drawn while the name is typed")
-        XCTAssertTrue(window.makeFirstResponder(nil))
-        await assertEventually("drawn when the typing ended") { pane.warningLabels.first?.stringValue == "" }
-        XCTAssertEqual(pane.nameFields.first?.stringValue, "Cyc")
+    }
+
+    /// While a stage's name is typed in, New Stage and a remove are drawn at once: the typed name
+    /// is committed first, and the rows are the workspace's, never the ones before; a stage added
+    /// by another client while a name is typed is drawn at once too.
+    func testAddAndRemoveWhileANameIsTypedAreDrawnAtOnce() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080), (stageB, "Angelica", 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.nameFields.count == 2 }
+        try startTyping("Cyc", in: pane.nameFields[0], sc)
+        pane.removeButtons[1].performClick(nil)
+        await caughtUp(rig, sc, "the remove is drawn") { pane.nameFields.map(\.stringValue) == ["Cyc"] }
+        XCTAssertEqual(rig.store.model?.stages.map { $0.raw["name"]?.stringValue }, ["Cyc"])
+        try startTyping("Cyc 2", in: pane.nameFields[0], sc)
+        pane.addButton.performClick(nil)
+        await caughtUp(rig, sc, "the add is drawn") { pane.nameFields.count == 2 }
+        XCTAssertEqual(pane.nameFields.first?.stringValue, "Cyc 2")
+        // Another client adds a stage while a name is typed: drawn at once, the typing committed.
+        try startTyping("Cyc 3", in: pane.nameFields[0], sc)
+        _ = await rig.store.send(
+            command: .addStage(id: ModelID(stageB), name: "Elsewhere", width: 640, height: 480, index: 2))
+        await caughtUp(rig, sc, "the other client's add is drawn") { pane.nameFields.count == 3 }
+        XCTAssertEqual(pane.nameFields.map(\.stringValue), ["Cyc 3", "Stage 2", "Elsewhere"])
+        XCTAssertEqual(pane.messageLabel.stringValue, "")
+    }
+
+    /// A remove of a stage already gone says so in words, never with the stage's internal id.
+    func testRemovingAStageAlreadyGoneSaysSoWithoutAnId() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.removeButtons.count == 1 }
+        // Twice before the page is drawn again: the second finds the stage gone.
+        let remove = pane.removeButtons[0]
+        remove.performClick(nil)
+        remove.performClick(nil)
+        await caughtUp(rig, sc, "both answered") { pane.nameFields.isEmpty }
+        XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.gone"))
+        XCTAssertFalse(pane.messageLabel.stringValue.contains("0000"))
+    }
+
+    /// Every refused value says why in the same place and goes back: a layer out of range (also
+    /// right after another edit that was accepted), a layer that is not a number, an empty name,
+    /// and a name the engine refuses.
+    func testEveryRefusedValueSaysWhyAndGoesBack() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080), (stageB, "Angelica", 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.layerFields.count == 2 }
+        func type(_ text: String, into field: NSTextField) {
+            field.stringValue = text
+            pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+        }
+        // An accepted edit still on its way does not wipe the refusal typed after it.
+        type("0", into: pane.layerFields[0])
+        type("1001", into: pane.layerFields[1])
+        await caughtUp(rig, sc, "the accepted layer is drawn") { pane.shown?.first?.layer == 0 }
+        XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.badLayer"))
+        XCTAssertEqual(pane.layerFields[1].stringValue, "1")
+        type("abc", into: pane.layerFields[1])
+        XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.badLayer"))
+        XCTAssertEqual(pane.layerFields[1].stringValue, "1")
+        type("", into: pane.nameFields[1])
+        XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.badName"))
+        XCTAssertEqual(pane.nameFields[1].stringValue, "Angelica")
+        // A name over the length limit: the engine's reason, and the name as it was.
+        type(String(repeating: "n", count: 1025), into: pane.nameFields[1])
+        await caughtUp(rig, sc, "the engine's refusal is shown") {
+            !pane.messageLabel.stringValue.isEmpty && pane.messageLabel.stringValue != loc("settings.video.badName")
+        }
+        XCTAssertEqual(pane.nameFields[1].stringValue, "Angelica")
+        XCTAssertEqual(rig.store.model?.stages.last?.raw["name"]?.stringValue, "Angelica")
+    }
+
+    /// The column titles stay above the rows however far they scroll, lined up with them; the
+    /// display column takes the room there is, so a display's whole name and "not connected"
+    /// read at the window's first size, and a wide window widens the display and name columns.
+    func testTheTitlesStayAndTheDisplayColumnTakesTheRoom() async throws {
+        let (rig, sc) = try await open(
+            stages: (1...12).map { n in
+                (String(format: "00000000-0000-0000-0000-0000000a%04d", n), "Stage \(n)", 1920, 1080)
+            })
+        let pane = sc.videoPane
+        await settled(sc) { pane.nameFields.count == 12 }
+        let window = try XCTUnwrap(sc.window)
+        sc.tabs.selectTabViewItem(withIdentifier: "video")
+        XCTAssertFalse(pane.header.isDescendant(of: pane.scroll), "the titles do not scroll")
+        // Scrolled to the end: the titles are still where they were.
+        window.contentView?.layoutSubtreeIfNeeded()
+        let titlesAt = pane.header.convert(pane.header.bounds, to: nil)
+        pane.scroll.contentView.scroll(to: NSPoint(x: 0, y: pane.holder.frame.height))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(pane.header.convert(pane.header.bounds, to: nil), titlesAt)
+        // A display chosen, at the window's first size: its choice reads whole.
+        let first = try XCTUnwrap(pane.shown?.first?.id)
+        let chosen = await rig.store.setStageMapping(first, display: "V1")
+        guard case .success = chosen else { return XCTFail("\(chosen)") }
+        await caughtUp(rig, sc, "the choice is drawn \(rig.store.videoOutputs)") {
+            pane.shown?.first?.display == "V1"
+        }
+        window.contentView?.layoutSubtreeIfNeeded()
+        for popup in pane.displayPopups {
+            XCTAssertLessThanOrEqual(
+                popup.intrinsicContentSize.width, popup.frame.width, popup.titleOfSelectedItem ?? "")
+        }
+        for c in 0..<6 { XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)") }
+        let least = pane.displayWidth
+        window.setContentSize(NSSize(width: 1400, height: 1000))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(pane.displayWidth, least)
+        XCTAssertEqual(pane.displayWidth, VideoSettingsPane.mostDisplayWidth)
+        XCTAssertGreaterThan(pane.nameWidth, VideoSettingsPane.columns[0])
+        for c in 0..<6 { XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)") }
+    }
+
+    /// A long stage name is cut with an ellipsis in its field and in the Warnings list, where the
+    /// reason after it stays whole.
+    func testALongStageNameIsShortenedAndTheReasonStays() async throws {
+        let long = "A very long stage name for the upstage cyclorama projector left half"
+        let (rig, sc) = try await open(stages: [(stageA, long, 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.nameFields.count == 1 && pane.shown?.first?.warning != nil }
+        XCTAssertEqual(pane.nameFields[0].lineBreakMode, .byTruncatingTail)
+        let row = try XCTUnwrap(WarningRows.make(store: rig.store).first { $0.id == "v:\(stageA)" })
+        XCTAssertTrue(row.title.hasSuffix(loc("settings.video.warn.noDisplay")), row.title)
+        XCTAssertTrue(row.title.contains("…"), row.title)
+        XCTAssertFalse(row.title.contains(long), row.title)
     }
 
     /// Flow 7 without the settings window: a show whose stage has no display on this Mac is
