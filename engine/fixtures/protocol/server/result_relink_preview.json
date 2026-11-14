@@ -1,0 +1,21 @@
+{
+  "type": "result",
+  "id": 46,
+  "ok": {
+    "data": {
+      "type": "relink",
+      "relinked": 0,
+      "ambiguous": [],
+      "unmatched": [],
+      "truncated": false,
+      "skipped": 0,
+      "matches": [
+        {
+          "cue": "00000000-0000-0000-0000-00000000000c",
+          "file": "media/rain.wav"
+        }
+      ],
+      "capped": true
+    }
+  }
+}

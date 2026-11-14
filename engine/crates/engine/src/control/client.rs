@@ -98,9 +98,9 @@ impl Control {
                 // The folder walk is the document worker's, not the doc's.
                 ClientMessage::Request {
                     id,
-                    request: Request::Relink { folder },
+                    request: Request::Relink { folder, preview },
                 } if self.cx_of(doc).is_some() => {
-                    self.relink(doc, id, folder, to);
+                    self.relink(doc, id, folder, preview, to);
                     Flow::Continue
                 }
                 // The mapping is the machine's: every doc resolves its patches again.

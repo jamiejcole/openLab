@@ -2718,7 +2718,7 @@ final class AppControllerTests: XCTestCase {
 
     private func relinkRequests() -> [String] {
         engine.sent.compactMap {
-            if case .request(_, .relink(let folder)) = $0 { return folder }
+            if case .request(_, .relink(let folder, _)) = $0 { return folder }
             return nil
         }
     }

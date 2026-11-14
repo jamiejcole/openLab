@@ -432,6 +432,27 @@ struct AmbiguousMatch: Hashable, Sendable, Decodable {
     let candidates: [String]
 }
 
+/// A `relink` preview's single match: `file` in show-file form (relative to the show's folder when
+/// inside it).
+struct RelinkMatch: Hashable, Sendable, Decodable {
+    let cue: ModelID
+    let file: String
+}
+
+/// The answer to `relink`: what was applied (none for a preview), what was found, and how the
+/// walk ended.
+struct RelinkResult: Hashable, Sendable {
+    let relinked: Int
+    let ambiguous: [AmbiguousMatch]
+    let unmatched: [ModelID]
+    /// A scan limit ended the walk early.
+    let truncated: Bool
+    let skipped: Int
+    let matches: [RelinkMatch]
+    /// The lists stopped at the engine's byte cap; the cues left out are found by the next search.
+    let capped: Bool
+}
+
 struct RecoveryEntryInfo: Hashable, Sendable, Decodable {
     let workspaceId: ModelID
     let pathHash: String?
@@ -533,8 +554,7 @@ enum ResultData: Sendable, Equatable, Decodable {
     /// playing now is the status message's `device`.
     case devices([DeviceEntry], selected: String?)
     case patchMappings([PatchMappingEntry])
-    case relink(
-        relinked: Int, ambiguous: [AmbiguousMatch], unmatched: [ModelID], truncated: Bool, skipped: Int)
+    case relink(RelinkResult)
     case recoveryOffer(path: String, workspaceName: String, modifiedMs: Int64)
     case recoveryEntries([RecoveryEntryInfo])
     /// `seq`: the number of the newest record when it was answered (0: none, or an older engine).
@@ -565,11 +585,14 @@ enum ResultData: Sendable, Equatable, Decodable {
         case "patch_mappings": self = .patchMappings(try c.decode([PatchMappingEntry].self, forKey: "patches"))
         case "relink":
             self = .relink(
-                relinked: try c.decode(Int.self, forKey: "relinked"),
-                ambiguous: try c.decode([AmbiguousMatch].self, forKey: "ambiguous"),
-                unmatched: try c.decode([ModelID].self, forKey: "unmatched"),
-                truncated: try c.decode(Bool.self, forKey: "truncated"),
-                skipped: try c.decode(Int.self, forKey: "skipped"))
+                RelinkResult(
+                    relinked: try c.decode(Int.self, forKey: "relinked"),
+                    ambiguous: try c.decode([AmbiguousMatch].self, forKey: "ambiguous"),
+                    unmatched: try c.decode([ModelID].self, forKey: "unmatched"),
+                    truncated: try c.decode(Bool.self, forKey: "truncated"),
+                    skipped: try c.decode(Int.self, forKey: "skipped"),
+                    matches: try c.decodeIfPresent([RelinkMatch].self, forKey: "matches") ?? [],
+                    capped: try c.decodeIfPresent(Bool.self, forKey: "capped") ?? false))
         case "recovery_offer":
             self = .recoveryOffer(
                 path: try c.decode(String.self, forKey: "path"),

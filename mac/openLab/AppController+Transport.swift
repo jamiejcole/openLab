@@ -266,10 +266,11 @@ extension AppController {
         guard let folder = pickFolderURL() else { return }
         switch await store.relink(folder: folder.path) {
         case .success(let ok):
-            guard case .relink(let relinked, let ambiguous, let unmatched, _, _)? = ok.data else {
+            guard case .relink(let r)? = ok.data else {
                 report(.encoding("relink result has no relink data"), on: store)
                 return
             }
+            let (relinked, ambiguous, unmatched) = (r.relinked, r.ambiguous, r.unmatched)
             let message = Self.relinkSummary(relinked: relinked, ambiguous: ambiguous.count, unmatched: unmatched.count)
             // Not modal: a relink is done while the show goes on. The summary is in the footer and
             // the log, with one log record for every cue that still needs attention.

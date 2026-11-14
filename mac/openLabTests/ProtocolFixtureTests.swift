@@ -257,14 +257,25 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertEqual(e.code, .commandRefused)
 
         guard case .result(_, .ok(let ok)) = try ServerMessage.decode(try Fixtures.text("server", "result_relink")),
-            case .relink(let n, let amb, let un, let truncated, let skipped)? = ok.data
+            case .relink(let r)? = ok.data
         else { return XCTFail("relink") }
         XCTAssertEqual(ok.revision, 9)
-        XCTAssertEqual(n, 3)
-        XCTAssertEqual(amb.count, 1)
-        XCTAssertEqual(un.count, 1)
-        XCTAssertTrue(truncated)
-        XCTAssertEqual(skipped, 2)
+        XCTAssertEqual(r.relinked, 3)
+        XCTAssertEqual(r.ambiguous.count, 1)
+        XCTAssertEqual(r.unmatched.count, 1)
+        XCTAssertTrue(r.truncated)
+        XCTAssertEqual(r.skipped, 2)
+        XCTAssertEqual(r.matches, [])
+        XCTAssertFalse(r.capped)
+
+        guard
+            case .result(_, .ok(let preview)) = try ServerMessage.decode(
+                try Fixtures.text("server", "result_relink_preview")),
+            case .relink(let p)? = preview.data
+        else { return XCTFail("relink preview") }
+        XCTAssertNil(preview.revision)
+        XCTAssertEqual(p.matches.map(\.file), ["media/rain.wav"])
+        XCTAssertTrue(p.capped)
     }
 
     /// SM-07: the engine's Show Mode reaches the app from its own fixture; absent reads as false.
