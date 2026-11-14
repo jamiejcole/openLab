@@ -215,6 +215,7 @@ fn odd_workspace() -> Workspace {
     ws.name = "w".repeat(1025);
     ws.cue_lists[0].name = "cr\rhere".into();
     ws.patches[0].name = "\u{1F3AD}".repeat(1025);
+    ws.patches[0].outputs[1].name = "bell\u{7}".into();
     ws.network_patches[0].name = "nul\0".into();
     ws.network_patches[0].host = "h".repeat(300);
     ws
@@ -244,7 +245,8 @@ fn a_show_with_odd_names_loads_with_one_warning_per_field_and_saves_back_unchang
             "name",
             "network_patches.host",
             "network_patches.name",
-            "patches.name"
+            "patches.name",
+            "patches.outputs.name"
         ]
     );
     let again = load_show(&save_show(&loaded.workspace).unwrap()).unwrap();

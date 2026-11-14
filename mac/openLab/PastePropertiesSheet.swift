@@ -301,7 +301,3 @@ final class PasteSheetRow: NSView {
 final class PasteSheetButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
-
-private final class FlippedView: NSView {
-    override var isFlipped: Bool { true }
-}

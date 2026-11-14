@@ -499,11 +499,9 @@ impl DocCx<'_> {
                                 .machine
                                 .patch_mapping(workspace, p.id)
                                 .cloned(),
-                            resolution: self
-                                .eng
-                                .patches
-                                .resolution(self.doc.id, p.id)
-                                .map(WireResolution::from),
+                            resolution: self.eng.patches.resolution(self.doc.id, p.id).map(|r| {
+                                WireResolution::with_reason(r, self.eng.unusable_reason(r))
+                            }),
                         })
                         .collect();
                     reply(

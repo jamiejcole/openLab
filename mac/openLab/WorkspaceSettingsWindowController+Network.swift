@@ -34,7 +34,7 @@ extension WorkspaceSettingsWindowController {
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.borderType = .bezelBorder
-        let holder = TopLeftView()
+        let holder = FlippedView()
         networkGrid.translatesAutoresizingMaskIntoConstraints = false
         holder.translatesAutoresizingMaskIntoConstraints = false
         holder.addSubview(networkGrid)

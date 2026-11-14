@@ -111,6 +111,7 @@ pub fn out(db: f64) -> CueOutput {
 
 pub fn patch_output() -> PatchOutput {
     PatchOutput {
+        name: String::new(),
         level_db: 0.0,
         mute: false,
         polarity_inverted: false,

@@ -1313,6 +1313,10 @@ fn fixtures() -> Vec<(String, Sample)> {
                             }),
                             resolution: Some(WireResolution::DeviceMissing {
                                 device: "MOTU 828".into(),
+                                reason: Some(
+                                    "it cannot play at 44100 Hz, the rate of the clock device"
+                                        .into(),
+                                ),
                             }),
                         },
                     ],
@@ -2960,6 +2964,7 @@ fn resolution_table() -> Vec<(PatchResolution, WireResolution)> {
             },
             WireResolution::DeviceMissing {
                 device: "Scarlett 2i2".into(),
+                reason: None,
             },
         ),
         (
@@ -3239,6 +3244,7 @@ fn preshow_report_sample() -> PreshowReport {
                 mapped: true,
                 resolution: Some(WireResolution::DeviceMissing {
                     device: "Scarlett 2i2".into(),
+                    reason: None,
                 }),
                 cues: vec![cue_id(10)],
             },
@@ -3636,6 +3642,10 @@ fn property_commands() -> Vec<(String, Command)> {
         PatchProperty::OutputPolarity {
             output: 0,
             value: true,
+        },
+        PatchProperty::OutputName {
+            output: 1,
+            value: "Sub".into(),
         },
         PatchProperty::ChannelCount { value: 6 },
         PatchProperty::Outputs {

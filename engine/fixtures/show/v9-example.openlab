@@ -184,6 +184,7 @@
             "polarity_inverted": false
           },
           {
+            "name": "Sub",
             "level_db": -1.5,
             "mute": false,
             "polarity_inverted": true

@@ -150,10 +150,12 @@ final class VideoSettingsTests: XCTestCase {
         let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
         let pane = sc.videoPane
         await settled(sc) { pane.warningLabels.first?.stringValue == loc("settings.video.warn.noDisplay") }
-        let warnings = WarningRows.make(store: rig.store).map(\.title)
+        let warnings = WarningRows.make(store: rig.store)
         XCTAssertTrue(
-            warnings.contains(String(format: loc("warnings.stage"), "Cyc", loc("settings.video.warn.noDisplay"))),
-            "\(warnings)")
+            warnings.contains {
+                $0.title == String(format: loc("warnings.stage"), "Cyc")
+                    && $0.detail == loc("settings.video.warn.noDisplay")
+            }, "\(warnings)")
         let popup = pane.displayPopups[0]
         popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
         _ = popup.sendAction(popup.action, to: popup.target)
@@ -358,8 +360,8 @@ final class VideoSettingsTests: XCTestCase {
         for c in 0..<6 { XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)") }
     }
 
-    /// A long stage name is cut with an ellipsis in its field and in the Warnings list, where the
-    /// reason after it stays whole.
+    /// A long stage name is cut with an ellipsis in its field and in the Warnings list, whose
+    /// reason is a line of its own that wraps.
     func testALongStageNameIsShortenedAndTheReasonStays() async throws {
         let long = "A very long stage name for the upstage cyclorama projector left half"
         let (rig, sc) = try await open(stages: [(stageA, long, 1920, 1080)])
@@ -367,7 +369,7 @@ final class VideoSettingsTests: XCTestCase {
         await settled(sc) { pane.nameFields.count == 1 && pane.shown?.first?.warning != nil }
         XCTAssertEqual(pane.nameFields[0].lineBreakMode, .byTruncatingTail)
         let row = try XCTUnwrap(WarningRows.make(store: rig.store).first { $0.id == "v:\(stageA)" })
-        XCTAssertTrue(row.title.hasSuffix(loc("settings.video.warn.noDisplay")), row.title)
+        XCTAssertEqual(row.detail, loc("settings.video.warn.noDisplay"), "the reason whole, on its own wrapping line")
         XCTAssertTrue(row.title.contains("…"), row.title)
         XCTAssertFalse(row.title.contains(long), row.title)
     }
@@ -377,7 +379,7 @@ final class VideoSettingsTests: XCTestCase {
     /// footer's count), from what the engine sends on connecting; and again on a new engine (an
     /// engine relaunched under the app: a fresh connection and store).
     func testAStageWithoutADisplayWarnsInTheMainWindowWithoutTheSettingsWindow() async throws {
-        let warning = String(format: loc("warnings.stage"), "Cyc", loc("settings.video.warn.noDisplay"))
+        let warning = String(format: loc("warnings.stage"), "Cyc")
         var engines = [engine!]
         for round in 1...2 {
             let rig = try await openShow(stages: [(stageA, "Cyc", 1920, 1080)], on: engines[round - 1])
@@ -386,7 +388,9 @@ final class VideoSettingsTests: XCTestCase {
             await assertEventually("round \(round): the stage's warning is listed") {
                 // The stepped engine's clock moves only when the test moves it.
                 try? await rig.advance(0.2)
-                return WarningRows.make(store: rig.store).contains { $0.title == warning }
+                return WarningRows.make(store: rig.store).contains {
+                    $0.title == warning && $0.detail == loc("settings.video.warn.noDisplay")
+                }
             }
             let rows = WarningRows.make(store: rig.store).count
             XCTAssertEqual(wc.footer.warningsButton.title, "\(rows)", "round \(round)")

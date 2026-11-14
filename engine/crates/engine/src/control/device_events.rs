@@ -68,14 +68,18 @@ impl Control {
             match event {
                 DeviceEvent::Lost { why } => self.device_lost(key, &name, &why),
                 DeviceEvent::Restored => {
+                    // It plays: no reason it could not be used holds any more.
+                    self.eng.unusable.remove(&name);
                     self.device_restored(&name, "is back");
                     self.eng.check_buffer(key);
                 }
                 DeviceEvent::Opened => {
+                    self.eng.unusable.remove(&name);
                     self.device_restored(&name, "opened");
                     self.eng.check_buffer(key);
                 }
                 DeviceEvent::Reconfigured => {
+                    self.eng.unusable.remove(&name);
                     self.follow_block();
                     let frames = self.eng.outputs.get(key).and_then(Output::block);
                     self.eng.log_device(
@@ -93,6 +97,14 @@ impl Control {
                 // them only through a loss or a reopen; resolving again is cheap. A device a
                 // patch maps to may have come.
                 DeviceEvent::ListChanged => {
+                    // A device that left the list is missing, whatever kept it from playing
+                    // before: it is reported as not connected.
+                    if !self.eng.unusable.is_empty() {
+                        let listed = self.eng.device_list();
+                        self.eng
+                            .unusable
+                            .retain(|n, _| listed.iter().any(|d| &d.name == n));
+                    }
                     self.eng.outputs_dirty = true;
                     self.each_doc(|cx| {
                         let now = cx.now();
@@ -105,14 +117,30 @@ impl Control {
                     attempt,
                     error,
                     retry_in,
-                } => self.eng.log_device(
-                    LogLevel::Warn,
-                    format!(
-                        "audio device \"{name}\": reopen attempt {attempt} failed ({error}); \
+                } => {
+                    // A listed device that never played: its patches say why it cannot be used.
+                    // One the list lacks is not connected, which says enough.
+                    let never = self
+                        .eng
+                        .outputs
+                        .get(key)
+                        .and_then(|o| o.backend.device())
+                        .is_some_and(|d| !d.has_opened());
+                    if never && self.eng.device_list().iter().any(|d| d.name == name) {
+                        self.eng
+                            .unusable
+                            .insert(name.clone(), format!("it could not be opened ({error})"));
+                        self.each_doc(|cx| cx.doc.warnings_dirty = true);
+                    }
+                    self.eng.log_device(
+                        LogLevel::Warn,
+                        format!(
+                            "audio device \"{name}\": reopen attempt {attempt} failed ({error}); \
                          next in {:.2} s",
-                        retry_in.as_secs_f64()
-                    ),
-                ),
+                            retry_in.as_secs_f64()
+                        ),
+                    );
+                }
                 DeviceEvent::Warn(message) => self.eng.log_device(LogLevel::Warn, message),
                 DeviceEvent::Stalled { ms, log } => {
                     if let Some(earlier) = log {
@@ -246,6 +274,8 @@ impl Control {
                 // Not here: its patches are `device_missing`; a list change tries again.
                 continue;
             };
+            // Tried again: a reason from an earlier try no longer holds unless it is found again.
+            self.eng.unusable.remove(&name);
             let rate = mixer_config.sample_rate;
             if !device
                 .configs
@@ -259,6 +289,10 @@ impl Control {
                          primary device: the patches mapped to it cannot play"
                     ),
                 );
+                self.eng.unusable.insert(
+                    name.clone(),
+                    format!("it cannot play at {rate} Hz, the rate of the clock device"),
+                );
                 continue;
             }
             if self.eng.outputs.len() >= super::outputs::MAX_OUTPUTS {
@@ -267,6 +301,13 @@ impl Control {
                     format!(
                         "audio device \"{name}\" was not opened: {} devices are open, the most \
                          openLab plays on at once",
+                        super::outputs::MAX_OUTPUTS
+                    ),
+                );
+                self.eng.unusable.insert(
+                    name.clone(),
+                    format!(
+                        "{} devices are open, the most openLab plays on at once",
                         super::outputs::MAX_OUTPUTS
                     ),
                 );
@@ -279,6 +320,7 @@ impl Control {
                         &name,
                         format!("audio device \"{name}\" was not opened: {e}"),
                     );
+                    self.eng.unusable.insert(name.clone(), e.to_string());
                     continue;
                 }
             };
@@ -313,10 +355,13 @@ impl Control {
                         );
                     }
                 }
-                Err(e) => self.output_warning(
-                    &name,
-                    format!("audio device \"{name}\" was not opened: {e}"),
-                ),
+                Err(e) => {
+                    self.output_warning(
+                        &name,
+                        format!("audio device \"{name}\" was not opened: {e}"),
+                    );
+                    self.eng.unusable.insert(name.clone(), e.to_string());
+                }
             }
         }
     }
@@ -640,7 +685,58 @@ impl DocCx<'_> {
                 ));
             }
         }
+        let ws_id = self.doc.model.ws().id;
         for patch in &self.doc.model.ws().patches {
+            match self.eng.patches.resolution(self.doc.id, patch.id) {
+                // A listed device that cannot be used: the patch says why. One still opening
+                // (no reason yet) resolves the same way for a moment, and is not a problem.
+                Some(PatchResolution::DeviceMissing { device })
+                    if self.eng.unusable.contains_key(device) =>
+                {
+                    let why = self.eng.unusable.get(device).cloned().unwrap_or_default();
+                    list.push(notice(
+                        "patch_device_unusable",
+                        format!(
+                            "patch \"{}\": audio device \"{device}\" cannot be used: {why}: its \
+                             cues cannot play",
+                            patch.name
+                        ),
+                        None,
+                    ));
+                }
+                Some(PatchResolution::DeviceMissing { device })
+                    if !self.eng.device_list().iter().any(|d| &d.name == device) =>
+                {
+                    list.push(notice(
+                        "patch_device_missing",
+                        format!(
+                            "patch \"{}\": audio device \"{device}\" is not connected: its cues \
+                             cannot play",
+                            patch.name
+                        ),
+                        None,
+                    ));
+                }
+                // The operator chose no device for it (a patch never mapped gets the default).
+                Some(PatchResolution::Unmapped)
+                    if self
+                        .eng
+                        .config
+                        .machine
+                        .patch_entry(ws_id, patch.id)
+                        .is_some_and(|m| m.device.is_empty()) =>
+                {
+                    list.push(notice(
+                        "patch_no_device",
+                        format!(
+                            "patch \"{}\" has no audio device: its cues cannot play",
+                            patch.name
+                        ),
+                        None,
+                    ));
+                }
+                _ => {}
+            }
             if let Some(PatchResolution::ChannelsMissing {
                 device,
                 needed,
@@ -694,6 +790,14 @@ impl DocCx<'_> {
 }
 
 impl Engine {
+    /// Why the device of a `device_missing` resolution, though listed, does not play.
+    pub(super) fn unusable_reason(&self, resolution: &PatchResolution) -> Option<&String> {
+        match resolution {
+            PatchResolution::DeviceMissing { device } => self.unusable.get(device),
+            _ => None,
+        }
+    }
+
     /// What starts a message about output `key`'s device: its name while several devices are
     /// open, nothing with one (whose messages need not say which).
     pub(super) fn device_prefix(&self, key: OutputKey) -> String {

@@ -34,7 +34,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
     private(set) var grid = NSGridView()
     /// The column titles, above the scrolling rows so they stay in sight.
     let header = VideoSettingsPane.makeGrid(rows: false)
-    let holder = TopLeftView()
+    let holder = FlippedView()
     let scroll = NSScrollView()
     /// The display and name columns' widths: what the table's width leaves after the other
     /// columns goes to the display choice first, then to the name.

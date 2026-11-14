@@ -40,7 +40,7 @@ fn wide_spare(main: &OutputPatch) -> OutputPatch {
         name: "Spare".into(),
         ..main.clone()
     };
-    spare.outputs = vec![main.outputs[0]; 4];
+    spare.outputs = vec![main.outputs[0].clone(); 4];
     spare
 }
 

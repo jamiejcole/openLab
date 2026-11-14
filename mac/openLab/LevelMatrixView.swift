@@ -34,6 +34,11 @@ final class LevelMatrixView: NSView {
     var mixed: Set<LevelSet.Slot> = [] {
         didSet { if mixed != oldValue { needsDisplay = true } }
     }
+    /// The names of the cue outputs (from the cue's patch), drawn under their boxes; an empty or
+    /// missing one shows the output's number (QLab 5 manual p. 189).
+    var outputNames: [String] = [] {
+        didSet { if outputNames != oldValue { needsDisplay = true } }
+    }
     /// The cues shown are ganged differently: no gang letter or colour is drawn.
     var hidesGangs = false {
         didSet { if hidesGangs != oldValue { needsDisplay = true } }
@@ -113,7 +118,7 @@ final class LevelMatrixView: NSView {
     override func draw(_ dirty: NSRect) {
         NSBezierPath.clip(bounds)
         guard let levels else { return }
-        let small = NSFont.systemFont(ofSize: 10)
+        let small = Self.labelFont
         let label: [NSAttributedString.Key: Any] = [.font: small, .foregroundColor: NSColor.secondaryLabelColor]
         // Only the cells in `dirty`: a scroll or a one-cell change redraws a handful, not the grid.
         let firstCol = max(0, Int((dirty.minX - Self.headW) / Self.cellW))
@@ -133,13 +138,11 @@ final class LevelMatrixView: NSView {
                 guard dirty.intersects(namesRow) else { continue }
                 let r = NSRect(
                     x: Self.headW + CGFloat(o) * Self.cellW, y: Self.cellH, width: Self.cellW, height: Self.headerH)
-                var text = "\(o + 1)"
                 if !hidesGangs, let g = levels.gang(of: o) {
                     gangColour(g).setFill()
                     r.insetBy(dx: 1, dy: 1).fill()
-                    text += " " + LevelSet.gangLetter(g)
                 }
-                centred(text, in: r, attributes: label)
+                centred(columnLabel(o), in: r, attributes: label)
             }
         }
         guard inputs > 0 else { return }
@@ -194,6 +197,33 @@ final class LevelMatrixView: NSView {
     private func gangColour(_ g: Int) -> NSColor {
         let palette: [NSColor] = [.systemTeal, .systemPink, .systemIndigo, .systemOrange, .systemGreen, .systemPurple]
         return palette[g % palette.count].withAlphaComponent(0.35)
+    }
+
+    static let labelFont = NSFont.systemFont(ofSize: 10)
+
+    /// The text drawn under cue output `o`'s box: its name from the patch (a two-line name on one
+    /// line) or its number, with its gang letter; cut in the middle to the column's width, so
+    /// names that differ only at the end ("Surround L", "Surround R") still read apart.
+    func columnLabel(_ o: Int) -> String {
+        let name = outputNames.indices.contains(o) ? outputNames[o] : ""
+        var text = name.isEmpty ? "\(o + 1)" : name.replacingOccurrences(of: "\n", with: " ")
+        if !hidesGangs, let g = levels?.gang(of: o) { text += " " + LevelSet.gangLetter(g) }
+        return Self.middleCut(text, width: Self.cellW - 4, font: Self.labelFont)
+    }
+
+    /// `text`, or its start and end with an ellipsis between, as wide as `width` at most.
+    static func middleCut(_ text: String, width: CGFloat, font: NSFont) -> String {
+        func w(_ s: String) -> CGFloat { (s as NSString).size(withAttributes: [.font: font]).width }
+        guard w(text) > width else { return text }
+        let chars = Array(text)
+        var keep = chars.count - 1
+        while keep > 0 {
+            let head = keep - keep / 2
+            let candidate = String(chars.prefix(head)) + "…" + String(chars.suffix(keep - head))
+            if w(candidate) <= width { return candidate }
+            keep -= 1
+        }
+        return "…"
     }
 
     private func centred(_ text: String, in r: NSRect, attributes: [NSAttributedString.Key: Any]) {

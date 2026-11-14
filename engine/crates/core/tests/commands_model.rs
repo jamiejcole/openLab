@@ -1099,9 +1099,84 @@ fn patch_properties_can_be_edited_and_undone() {
             output: 0,
             value: true,
         },
+        PatchProperty::OutputName {
+            output: 1,
+            value: "Sub".into(),
+        },
     ] {
         round_trip(&ws, patch_prop(1, property));
     }
+}
+
+#[test]
+fn an_output_name_is_checked_as_a_patch_name_is() {
+    let ws = workspace(vec![]);
+    let name = |output, value: &str| {
+        patch_prop(
+            1,
+            PatchProperty::OutputName {
+                output,
+                value: value.into(),
+            },
+        )
+    };
+    let named = round_trip(&ws, name(0, "Left\nfill"));
+    assert_eq!(named.patches[0].outputs[0].name, "Left\nfill");
+    assert_eq!(
+        named.patches[0].outputs[1].name, "",
+        "the other output keeps its number"
+    );
+    for bad in ["x".repeat(1025), "tab\there".to_owned()] {
+        assert!(
+            matches!(refused(&ws, name(0, &bad)), CommandError::InvalidValue(_)),
+            "{bad:?}"
+        );
+    }
+    assert!(matches!(
+        refused(&ws, name(2, "C")),
+        CommandError::PatchOutputOutOfRange { output: 2, .. }
+    ));
+}
+
+/// The name limit holds on every path that sets output names: a new patch and the whole
+/// outputs list are refused with an over-long or control-character name; an undo may put
+/// back what a loaded file had.
+#[test]
+fn output_names_are_checked_on_add_patch_and_the_outputs_property() {
+    let ws = workspace(vec![]);
+    for bad in ["x".repeat(1025), "bell\u{7}".to_owned()] {
+        let mut outputs = ws.patches[0].outputs.clone();
+        outputs[1].name.clone_from(&bad);
+        assert!(
+            matches!(
+                refused(
+                    &ws,
+                    patch_prop(
+                        1,
+                        PatchProperty::Outputs {
+                            value: outputs.clone()
+                        }
+                    )
+                ),
+                CommandError::InvalidValue(_)
+            ),
+            "outputs {bad:?}"
+        );
+        let mut patch = ws.patches[0].clone();
+        patch.id = PatchId(uuid::Uuid::from_u128(99));
+        patch.outputs = outputs;
+        assert!(
+            matches!(
+                refused(&ws, Command::AddPatch { index: 1, patch }),
+                CommandError::InvalidValue(_)
+            ),
+            "add patch {bad:?}"
+        );
+    }
+    let mut named = ws.patches[0].outputs.clone();
+    named[0].name = "Left".into();
+    let after = round_trip(&ws, patch_prop(1, PatchProperty::Outputs { value: named }));
+    assert_eq!(after.patches[0].outputs[0].name, "Left");
 }
 
 #[test]

@@ -134,15 +134,15 @@ enum WarningRows {
         // unplugged, or failing.
         for entry in store.videoOutputs.stages {
             guard let state = entry.state, let why = VideoSettingsPane.warning(state) else { continue }
-            // A stage gone from the workspace since the engine's last word has no row; a long name
-            // is shortened so the reason after it stays in sight.
+            // A stage gone from the workspace since the engine's last word has no row. The title is
+            // the stage's name (a long one shortened); the reason is the detail, which wraps.
             guard let full = model?.stages.first(where: { $0.id == entry.stage })?.raw["name"]?.stringValue
             else { continue }
             let name = full.count > Self.stageNameLength ? full.prefix(Self.stageNameLength - 1) + "…" : full
             rows.append(
                 WarningRow(
-                    id: "v:\(entry.stage.raw)", cue: nil, title: String(format: loc("warnings.stage"), name, why),
-                    detail: "", canRelink: false))
+                    id: "v:\(entry.stage.raw)", cue: nil, title: String(format: loc("warnings.stage"), String(name)),
+                    detail: why, canRelink: false))
         }
         return rows
     }

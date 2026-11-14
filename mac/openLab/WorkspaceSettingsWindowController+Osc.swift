@@ -66,7 +66,7 @@ extension WorkspaceSettingsWindowController {
         scroll.drawsBackground = false
         scroll.borderType = .bezelBorder
         // Flipped, so a table shorter than the box starts at its top.
-        let holder = TopLeftView()
+        let holder = FlippedView()
         oscGrid.translatesAutoresizingMaskIntoConstraints = false
         holder.translatesAutoresizingMaskIntoConstraints = false
         holder.addSubview(oscGrid)

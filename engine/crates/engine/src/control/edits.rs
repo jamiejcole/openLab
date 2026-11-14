@@ -82,6 +82,10 @@ impl DocCx<'_> {
     /// reports every patch resolution (a newly opened workspace), else only changes.
     pub(super) fn sync_workspace(&mut self, all: bool) -> Vec<Input> {
         self.doc.primes_dirty = true;
+        // Only on this doc's own opening and edits (undo and redo included): a device event
+        // syncing every doc must not refit a mapping another doc of the same workspace id has
+        // just fitted to its own count.
+        self.fit_mappings_to_patches();
         let inputs = self.sync_patches(all);
         let now = self.now();
         self.doc.net.sync(&self.doc.model.ws().network_patches, now);
