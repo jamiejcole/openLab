@@ -55,6 +55,8 @@ extension InspectorViewController {
             let text = shown.count == 1 ? shown.first ?? "" : ""
             if f == .notes {
                 if notesView.string != text { notesView.string = text }
+                // Notes that differ show as an empty view with a Mixed hint, as a text field does.
+                notesView.placeholder = shown.count > 1 ? loc("inspector.mixed") : nil
             } else if let tf = field(f) {
                 if tf.stringValue != text { tf.stringValue = text }
                 // A number belongs to one cue: its field is off and empty, not mixed.
@@ -248,6 +250,7 @@ extension InspectorViewController {
         audioLevels.gangsMixed = false
         audioLevels.editsSeveral = false
         field(.message)?.placeholderString = loc("inspector.network.messageHint")
+        notesView.placeholder = nil
         for f in [InspectorField.number, .preWait, .postWait, .duration, .loadTime] {
             field(f)?.placeholderString = nil
         }

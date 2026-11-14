@@ -726,15 +726,39 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         refusalOutlivesFollow = isFollowHeld?() == true
     }
 
-    /// The notes key: the Basics tab comes to the front and the shown cue's notes take the caret, at
-    /// the end of what is there. Nothing for another cue than the one shown, or while locked.
+    /// The notes key: the Basics tab comes to the front and the shown cues' notes take the caret, at
+    /// the end of what is there. Nothing for other cues than the ones shown, or while locked.
     @discardableResult
-    func beginNotes(of id: ModelID) -> Bool {
-        guard !isLocked, selection == [id], cue != nil, let window = view.window else { return false }
+    func beginNotes(of ids: [ModelID]) -> Bool {
+        guard !isLocked, shows(ids), let window = view.window else { return false }
         tabView.selectTabViewItem(withIdentifier: "basics")
         guard window.makeFirstResponder(notesView) else { return false }
         notesView.setSelectedRange(NSRange(location: (notesView.string as NSString).length, length: 0))
         notesView.scrollRangeToVisible(notesView.selectedRange())
+        return true
+    }
+
+    /// The inspector shows exactly these cues, and they exist.
+    private func shows(_ ids: [ModelID]) -> Bool {
+        !ids.isEmpty && Set(selection) == Set(ids) && (isBatch ? !batchCues.isEmpty : cue != nil)
+    }
+
+    /// `f`'s field of the shown cues can be typed in: not locked, and the field is on for these cues
+    /// (an Audio cue's duration, or a post-wait every cue of which auto-follows, is off).
+    func takesTyping(_ f: InspectorField, for ids: [ModelID]) -> Bool {
+        guard !isLocked, shows(ids), let tf = field(f) else { return false }
+        return tf.isEnabled && tf.isEditable
+    }
+
+    /// An editing key with several cues selected (pre-wait, duration, post-wait): the Basics tab comes
+    /// to the front and `f`'s field takes the caret, its text selected. What is typed goes to every
+    /// shown cue when committed, one undo step; Return gives the keys back to the list.
+    @discardableResult
+    func beginField(_ f: InspectorField, of ids: [ModelID]) -> Bool {
+        guard takesTyping(f, for: ids), let tf = field(f), let window = view.window else { return false }
+        tabView.selectTabViewItem(withIdentifier: "basics")
+        guard window.makeFirstResponder(tf) else { return false }
+        tf.currentEditor()?.selectAll(nil)
         return true
     }
 
@@ -1243,6 +1267,34 @@ extension NSTextView {
 /// A cue's notes, wherever they are shown: only Shift-Return types a new line (the user's answer, in
 /// QLab 5). AppKit gives it no selector of its own, so it is taken here from the key.
 final class NotesTextView: NSTextView {
+    /// A hint drawn in the empty view (Mixed: the selected cues' notes differ). Never part of the text.
+    var placeholder: String? {
+        didSet { if placeholder != oldValue { needsDisplay = true } }
+    }
+
+    /// The hint is drawn: the view is empty and has one.
+    var showsPlaceholder: Bool { string.isEmpty && placeholder != nil }
+
+    override func didChangeText() {
+        super.didChangeText()
+        // The first character typed hides the hint, deleting the last brings it back.
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard showsPlaceholder, let placeholder else { return }
+        NSBezierPath.clip(bounds)
+        let origin = textContainerOrigin
+        let inset = textContainer?.lineFragmentPadding ?? 0
+        (placeholder as NSString).draw(
+            at: NSPoint(x: origin.x + inset, y: origin.y),
+            withAttributes: [
+                .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
+                .foregroundColor: NSColor.placeholderTextColor,
+            ])
+    }
+
     override func keyDown(with event: NSEvent) {
         let isReturn = event.keyCode == 36 || event.keyCode == 76
         // Only the modifiers: Caps Lock and the keypad's flag say nothing about what was meant.
