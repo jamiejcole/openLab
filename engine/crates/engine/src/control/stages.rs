@@ -374,6 +374,7 @@ impl Control {
                 s.up = false;
                 s.pid = None;
                 s.states.clear();
+                self.eng.pictures_host_stopped();
                 if restarting {
                     self.eng.log(
                         LogLevel::Warn,
@@ -396,6 +397,7 @@ impl Control {
                     );
                 }
             }
+            StageEvent::PictureOpened { picture } => self.eng.picture_opened(picture),
             StageEvent::PictureFailed { picture, reason } => {
                 self.eng.picture_failed(picture, reason);
             }

@@ -142,6 +142,11 @@ pub enum FromStage {
         level: LinkLevel,
         message: String,
     },
+    /// A picture's file is open and it can be drawn (its `load` is done). The engine does not
+    /// send a load again to a stage host that started after one died with it still opening.
+    PictureOpened {
+        picture: u64,
+    },
     /// A picture could not be opened, decoded or drawn: it is gone from its stage.
     PictureFailed {
         picture: u64,
@@ -488,6 +493,11 @@ mod tests {
                 },
             },
             FromStage::Pong { seq: 7 },
+            FromStage::PictureOpened { picture: 3 },
+            FromStage::PictureFailed {
+                picture: 3,
+                reason: "the file is damaged".into(),
+            },
             FromStage::Log {
                 level: LinkLevel::Warn,
                 message: "display changed".into(),

@@ -16,6 +16,17 @@ use crate::stage_link::{LinkError, MAX_TEXT_BYTES};
 
 /// Widest and tallest picture a Video cue plays, in pixels (the stage limit).
 pub const MAX_VIDEO_PIXELS: u32 = crate::video::MAX_STAGE_PIXELS;
+/// Most pixels in one picture (a still, or one frame of a video): a quarter of the largest
+/// stage (16384 x 16384), so 8192 x 8192 or a 16384 x 4096 panorama, 256 MiB as BGRA. A larger
+/// picture is refused before anything is allocated for it: the stage host holds a few frames of
+/// each picture, and a full-size one would need a gigabyte each.
+pub const MAX_PICTURE_PIXELS: u64 = (MAX_VIDEO_PIXELS as u64) * (MAX_VIDEO_PIXELS as u64) / 4;
+
+/// Whether a picture of `width` x `height` is within the limits a Video cue plays.
+pub fn picture_size_plays(width: u32, height: u32) -> bool {
+    let side = |n: u32| (1..=MAX_VIDEO_PIXELS).contains(&n);
+    side(width) && side(height) && u64::from(width) * u64::from(height) <= MAX_PICTURE_PIXELS
+}
 /// Fastest frame rate a video may have, frames per second.
 pub const MAX_FRAME_RATE: f64 = 1000.0;
 /// Longest probe line, newline excluded.
@@ -81,7 +92,6 @@ pub fn decode_probe_report(line: &str) -> Result<ProbeReport, LinkError> {
     }
     let report: ProbeReport =
         serde_json::from_str(line).map_err(|e| LinkError::Unreadable(e.to_string()))?;
-    let side = |n: u32| (1..=MAX_VIDEO_PIXELS).contains(&n);
     let ok = match &report {
         ProbeReport::Video {
             width,
@@ -90,8 +100,7 @@ pub fn decode_probe_report(line: &str) -> Result<ProbeReport, LinkError> {
             duration,
             ..
         } => {
-            side(*width)
-                && side(*height)
+            picture_size_plays(*width, *height)
                 && fps.is_finite()
                 && *fps > 0.0
                 && *fps <= MAX_FRAME_RATE
@@ -99,7 +108,7 @@ pub fn decode_probe_report(line: &str) -> Result<ProbeReport, LinkError> {
                 && *duration > 0.0
                 && *duration <= MAX_TIME
         }
-        ProbeReport::Still { width, height, .. } => side(*width) && side(*height),
+        ProbeReport::Still { width, height, .. } => picture_size_plays(*width, *height),
         ProbeReport::Missing => true,
         ProbeReport::Unsupported { reason } => {
             !reason.is_empty()
@@ -143,6 +152,9 @@ mod tests {
             r#"{"type":"video","codec":"vp9","width":8,"height":8,"fps":25.0,"duration":1.0}"#,
             r#"{"type":"still","format":"gif","width":8,"height":8}"#,
             r#"{"type":"still","format":"png","width":8,"height":-1}"#,
+            // Both sides in range, too many pixels in all.
+            r#"{"type":"still","format":"png","width":16384,"height":4097}"#,
+            r#"{"type":"video","codec":"h264","width":16384,"height":16384,"fps":25.0,"duration":1.0}"#,
             r#"{"type":"unsupported","reason":""}"#,
             r#"{"type":"unsupported","reason":"a\nb"}"#,
             r#"{"type":"nothing"}"#,
@@ -156,5 +168,7 @@ mod tests {
         );
         assert!(decode_probe_report(&long).is_err());
         assert!(decode_probe_report(&" ".repeat(MAX_PROBE_LINE_BYTES + 1)).is_err());
+        let panorama = r#"{"type":"still","format":"png","width":16384,"height":4096}"#;
+        assert!(decode_probe_report(panorama).is_ok());
     }
 }

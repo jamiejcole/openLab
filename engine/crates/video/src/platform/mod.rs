@@ -46,11 +46,10 @@ pub fn run(args: Vec<String>) -> ExitCode {
             return ExitCode::from(USAGE_EXIT);
         }
         let mut host = crate::host::Host::new(none::NoVideo);
-        let stdin = std::io::stdin();
         crate::host::serve(
-            &mut stdin.lock(),
+            std::io::BufReader::new(std::io::stdin()),
             &mut std::io::stdout().lock(),
-            |m, out| host.handle(m, out),
+            |m, out| host.step(m, out),
         );
         ExitCode::SUCCESS
     }

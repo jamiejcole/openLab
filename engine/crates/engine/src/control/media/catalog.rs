@@ -937,6 +937,12 @@ impl MediaCatalog {
         self.entries.get(key).map(|e| &e.probe)
     }
 
+    /// Whether a probe of `key` has been asked for and not answered yet (a re-probe keeps the
+    /// last answer meanwhile).
+    pub fn probing(&self, key: &str) -> bool {
+        self.entries.get(key).is_some_and(|e| e.asking)
+    }
+
     /// The probe of a Video cue's file `key`, if it plays.
     pub fn picture(&self, key: &str) -> Option<&Arc<PictureReady>> {
         match &self.entries.get(key)?.probe {

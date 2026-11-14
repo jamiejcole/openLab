@@ -25,6 +25,9 @@ pub const PROBE_PROCESS_LIMIT: Duration = Duration::from_secs(20);
 /// What a picture probe found: a video or a still image the stage host can play.
 pub type PictureProbe = Arc<dyn Fn(&Path) -> Result<ProbeReport, MediaError> + Send + Sync>;
 
+/// A picture probe as a plain function (test support injects one).
+pub type PictureProbeFn = fn(&Path) -> Result<ProbeReport, MediaError>;
+
 /// Probes with `program` (the stage host), or, with none, reports that this engine has no video.
 pub fn picture_probe(program: Option<PathBuf>, limit: Duration) -> PictureProbe {
     Arc::new(move |file: &Path| match &program {

@@ -2,8 +2,11 @@
 
 //! macOS: the first look at a video file or still image (`openlab-stage --probe <file>`).
 //!
-//! Stills go through ImageIO, which decodes the first image (a damaged file fails here, not on
-//! stage). Movies go through AVFoundation: the first video track's codec (its four-character
+//! Stills go through ImageIO, which decodes every pixel of the first image (a damaged file
+//! fails here, not on stage): a PNG or TIFF that cannot be decoded whole gives no pixels, and a
+//! JPEG must end its last scan with the end-of-image marker (ImageIO fills a cut-short JPEG
+//! with grey instead of failing). A picture over `MAX_PICTURE_PIXELS` is refused before it is
+//! decoded. Movies go through AVFoundation: the first video track's codec (its four-character
 //! code), pixel size and nominal frame rate, and the asset's length. A movie in a codec the
 //! platform decodes has its first frame decoded too, for the same reason. HAP is not played
 //! yet (the platform has no decoder for it and openLab's own is not built): it is reported
@@ -18,11 +21,13 @@ use std::path::Path;
 use objc2::rc::Retained;
 use objc2_av_foundation::{AVAssetImageGenerator, AVMediaTypeVideo, AVURLAsset};
 use objc2_core_foundation::{CFRetained, CFURL};
-use objc2_core_graphics::CGImage;
+use objc2_core_graphics::{CGDataProvider, CGImage};
 use objc2_core_media::{CMFormatDescription, CMTime};
 use objc2_foundation::{NSString, NSURL};
 use objc2_image_io::CGImageSource;
-use openlab_core::video_probe::{MAX_VIDEO_PIXELS, ProbeReport, StillFormat, VideoCodec};
+use openlab_core::video_probe::{
+    MAX_PICTURE_PIXELS, MAX_VIDEO_PIXELS, ProbeReport, StillFormat, VideoCodec, picture_size_plays,
+};
 
 /// What the file at `path` is.
 pub fn probe(path: &Path) -> ProbeReport {
@@ -72,19 +77,66 @@ fn still(path: &str) -> Option<ProbeReport> {
     // SAFETY: `source` is a valid image source; index 0 is checked by ImageIO.
     let image: Option<CFRetained<CGImage>> = unsafe { source.image_at_index(0, None) };
     let Some(image) = image else {
-        return Some(unsupported("the image cannot be decoded".into()));
+        return Some(unsupported(
+            "the image is damaged or cannot be decoded".into(),
+        ));
     };
     let (w, h) = (CGImage::width(Some(&image)), CGImage::height(Some(&image)));
-    Some(match (side(w as f64), side(h as f64)) {
-        (Some(width), Some(height)) => ProbeReport::Still {
-            format,
-            width,
-            height,
-        },
-        _ => unsupported(format!(
-            "the image is {w} x {h} pixels; at most {MAX_VIDEO_PIXELS} a side plays"
-        )),
+    let (Ok(width), Ok(height)) = (u32::try_from(w), u32::try_from(h)) else {
+        return Some(too_big(w, h));
+    };
+    if !picture_size_plays(width, height) {
+        return Some(too_big(w, h));
+    }
+    if !decodes_whole(&image) {
+        return Some(unsupported(
+            "the image is damaged: it cannot be decoded whole".into(),
+        ));
+    }
+    if format == StillFormat::Jpeg && !jpeg_ends(Path::new(path)) {
+        return Some(unsupported(
+            "the image is damaged: the JPEG is cut short".into(),
+        ));
+    }
+    Some(ProbeReport::Still {
+        format,
+        width,
+        height,
     })
+}
+
+fn too_big(w: usize, h: usize) -> ProbeReport {
+    unsupported(format!(
+        "the image is {w} x {h} pixels; at most {MAX_VIDEO_PIXELS} a side and \
+         {MAX_PICTURE_PIXELS} pixels in all play"
+    ))
+}
+
+/// Whether every pixel of `image` decodes: ImageIO decodes lazily, and copying the image's
+/// data decodes all of it (nothing comes back for a PNG or TIFF damaged past its header).
+fn decodes_whole(image: &CGImage) -> bool {
+    let provider = CGImage::data_provider(Some(image));
+    let Some(data) = CGDataProvider::data(provider.as_deref()) else {
+        return false;
+    };
+    let need = CGImage::bytes_per_row(Some(image)).saturating_mul(CGImage::height(Some(image)));
+    usize::try_from(data.length()).is_ok_and(|n| n >= need)
+}
+
+/// Whether the JPEG at `path` has an end-of-image marker after its last start-of-scan: a file
+/// cut short in its picture data has none. Inside scan data a 0xFF byte is always followed by
+/// 0x00 or a restart marker, so the two markers cannot be mistaken for picture data.
+fn jpeg_ends(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let last_scan = bytes.windows(2).rposition(|w| w == [0xFF, 0xDA]);
+    let Some(scan) = last_scan else {
+        return false;
+    };
+    bytes
+        .get(scan..)
+        .is_some_and(|rest| rest.windows(2).any(|w| w == [0xFF, 0xD9]))
 }
 
 /// The codec a movie track's four-character code names, if openLab plays it.
@@ -154,12 +206,19 @@ fn movie(path: &str) -> ProbeReport {
     };
     // SAFETY: CMTimeGetSeconds takes any CMTime (an invalid one gives NaN).
     let seconds = unsafe { length.seconds() };
-    let (Some(width), Some(height)) = (side(size.width), side(size.height)) else {
+    let sides = (side(size.width), side(size.height));
+    let (Some(width), Some(height)) = sides else {
         return unsupported(format!(
             "the picture is {} x {} pixels; at least 1 and at most {MAX_VIDEO_PIXELS} a side plays",
             size.width, size.height
         ));
     };
+    if !picture_size_plays(width, height) {
+        return unsupported(format!(
+            "the picture is {width} x {height} pixels; at most {MAX_PICTURE_PIXELS} pixels in all \
+             play"
+        ));
+    }
     let fps = f64::from(fps);
     if !(fps.is_finite() && fps > 0.0 && fps <= openlab_core::video_probe::MAX_FRAME_RATE) {
         return unsupported("its frame rate cannot be read".into());

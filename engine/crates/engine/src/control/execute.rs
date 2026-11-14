@@ -72,6 +72,7 @@ impl DocCx<'_> {
             };
             self.doc.voices.media_ready(&key, &mut env, &mut fx);
             self.follow(fx, now);
+            self.release_pictures(&key, now);
         }
     }
 

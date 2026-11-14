@@ -8,3 +8,5 @@
 {"type":"log","level":"warn","message":"display changed\nagain"}
 {"type":"probed","stage":"00000000-0000-0000-0000-000000000001","frame":42,"colours":[[255,0,0,255]]}
 {"type":"display_probed","display":"V1","frame":7,"colours":[[0,0,0,255]]}
+{"type":"picture_opened","picture":3}
+{"type":"picture_failed","picture":3,"reason":"the movie could not be read"}

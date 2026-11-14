@@ -116,6 +116,11 @@ impl Gpu {
         &self.device
     }
 
+    /// The device, held apart from `self` (drawing borrows `self`).
+    pub fn device_owned(&self) -> Retained<ProtocolObject<dyn MTLDevice>> {
+        self.device.clone()
+    }
+
     /// Encodes a clear to black and then `layers` (bottom first) into `target`, each stage
     /// fitted to the target, shape kept, and on each stage its cues' pictures (earliest started
     /// first), each fitted to the stage at its opacity.
@@ -326,15 +331,28 @@ pub fn replace(
     Ok(())
 }
 
-/// A shader-readable BGRA texture of `width` x `height` holding `px` (rows of `width * 4`
-/// bytes).
-pub fn new_texture(
+/// A shader-readable BGRA texture of `width` x `height`, its pixels not yet written.
+pub fn empty_texture(
     device: &ProtocolObject<dyn MTLDevice>,
     width: usize,
     height: usize,
-    px: &mut [u8],
 ) -> Result<Texture, String> {
-    texture(device, width, height, px)
+    if width == 0 || height == 0 {
+        return Err("a texture of no size".into());
+    }
+    // SAFETY: a plain 2D descriptor; the sizes were checked against the picture limits.
+    let desc = unsafe {
+        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            MTLPixelFormat::BGRA8Unorm,
+            width,
+            height,
+            false,
+        )
+    };
+    desc.setUsage(MTLTextureUsage::ShaderRead);
+    device
+        .newTextureWithDescriptor(&desc)
+        .ok_or_else(|| "could not create a texture".into())
 }
 
 fn texture(

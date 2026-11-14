@@ -107,7 +107,8 @@ fn unsupported(r: Result<ProbeReport, MediaError>) -> String {
 }
 
 /// A file that is not a movie or still openLab plays gives a reason, never a crash or a hang:
-/// noise, an empty file, a movie cut short, a still format it does not play, a missing file.
+/// noise, an empty file, a movie cut short, a still cut short (PNG, JPEG, TIFF), a still too
+/// large to hold, a still format it does not play, a missing file.
 #[test]
 fn damaged_or_unsupported_files_give_a_reason() {
     let dir = tempfile::tempdir().unwrap();
@@ -128,6 +129,19 @@ fn damaged_or_unsupported_files_give_a_reason() {
         let why = unsupported(probe(file));
         assert!(!why.is_empty(), "{}", file.display());
     }
+    // Stills cut short: ImageIO reads their headers, so only decoding every pixel (and, for a
+    // JPEG, finding its end) tells them from whole ones.
+    for (kind, keep) in [("png", 3), ("jpeg", 2), ("tiff", 2)] {
+        let whole = std::fs::read(make(dir.path(), &format!("whole.{kind}"), kind, None)).unwrap();
+        let file = dir.path().join(format!("cut.{kind}"));
+        std::fs::write(&file, whole.get(..whole.len() / keep).unwrap()).unwrap();
+        let why = unsupported(probe(&file));
+        assert!(why.contains("damaged"), "{kind}: {why}");
+    }
+    // A still with more pixels than a picture may have is refused before it is decoded.
+    let huge = make(dir.path(), "huge.png", "huge-png", None);
+    let why = unsupported(probe(&huge));
+    assert!(why.contains("16384 x 8192"), "{why}");
     assert!(matches!(
         probe(&dir.path().join("gone.mov")),
         Err(MediaError::NotFound(_))
@@ -182,13 +196,19 @@ fn video_show(cues: Vec<Cue>) -> OfflineShow {
 
 /// An offline show of `ws` with stage 1 (1920 x 1080, keeping black) and the real stage host
 /// on a virtual display.
-fn video_show_of(mut ws: Workspace) -> OfflineShow {
+fn video_show_of(ws: Workspace) -> OfflineShow {
+    video_show_args(ws, &[])
+}
+
+/// As [`video_show_of`], the stage host given `extra` arguments too.
+fn video_show_args(mut ws: Workspace, extra: &[&str]) -> OfflineShow {
     let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
     stage.keep_black = true;
     ws.stages = vec![stage];
     let mut c: ControlConfig = config(&ws);
     let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
     host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
+    host.args.extend(extra.iter().map(|a| (*a).to_owned()));
     c.stage_host = Some(host);
     let mut s = show_with(ws, c);
     s.settle_stages();
@@ -513,6 +533,23 @@ fn panic_fades_the_picture_over_the_panic_time() {
     assert_eq!(probe_at(&mut s, &red).1, vec![[0, 0, 0, 255]]);
 }
 
+/// The notices the doc's clients were sent since the last call, as (code, text).
+fn notice_texts(s: &mut OfflineShow) -> Vec<(String, String)> {
+    s.take_outbound()
+        .into_iter()
+        .flat_map(|m| match m {
+            ServerMessage::Runtime { changes, .. } => changes,
+            _ => Vec::new(),
+        })
+        .filter_map(|c| match c {
+            openlab_core::protocol::RuntimeChange::Warning {
+                warning: openlab_core::protocol::WireWarning::Notice { code, message, .. },
+            } => Some((code, message)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The notices the doc's clients were sent since the last call, by code.
 fn notices(s: &mut OfflineShow) -> Vec<String> {
     s.take_outbound()
@@ -662,4 +699,515 @@ fn clients_are_told_a_video_cues_length_and_format() {
             .and_then(|m| m.duration),
         Some(2.5)
     );
+}
+
+/// Files whose picture probe is held back until released (`gated_probe`).
+static GATED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+static GATE_OPENED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// The real probe, held while its file is in `GATED` (bounded by `LIMIT`).
+fn gated_probe(path: &Path) -> Result<ProbeReport, MediaError> {
+    let mut gated = GATED.lock().unwrap();
+    // A hang guard: at most `LIMIT` in waits of 50 ms.
+    let mut rounds = LIMIT.as_millis() / 50;
+    while gated.iter().any(|p| p == path) && rounds > 0 {
+        rounds -= 1;
+        gated = GATE_OPENED
+            .wait_timeout(gated, Duration::from_millis(50))
+            .unwrap()
+            .0;
+    }
+    drop(gated);
+    probe(path)
+}
+
+fn release_probe(path: &Path) {
+    GATED.lock().unwrap().retain(|p| p != path);
+    GATE_OPENED.notify_all();
+}
+
+/// A show like `video_show_of` whose picture probes go through `gated_probe`.
+fn gated_video_show(cues: Vec<Cue>) -> OfflineShow {
+    let mut ws = workspace(cues);
+    let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
+    stage.keep_black = true;
+    ws.stages = vec![stage];
+    let mut c: ControlConfig = config(&ws);
+    let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
+    host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
+    c.stage_host = Some(host);
+    c.picture_probe = Some(gated_probe);
+    let mut s = show_with(ws, c);
+    s.settle_stages();
+    s
+}
+
+/// Sets cue `n`'s file.
+fn set_media(s: &mut OfflineShow, n: u128, file: &Path) {
+    let request = s.request_id();
+    s.send(ClientMessage::Command {
+        id: request,
+        command: Box::new(openlab_core::Command::SetCueProperty {
+            id: id(n),
+            property: openlab_core::CueProperty::Media {
+                value: Some(MediaRef::new(file.to_str().unwrap())),
+            },
+        }),
+        coalesce: None,
+    });
+}
+
+/// GO on a Video cue whose new file is still being probed waits for the probe, as an Audio
+/// cue does: it is not broken, the operator is told it waits, and the picture starts (late,
+/// from its first frame) when the file is known to play. A file whose probe then fails breaks
+/// the cue.
+#[test]
+fn go_on_a_video_cue_whose_file_is_being_probed_waits_and_then_plays() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = make(dir.path(), "a.mov", "h264", Some((50, 25)));
+    let b = make(dir.path(), "b.mov", "h264", Some((50, 25)));
+    let gif = dir.path().join("bad.gif");
+    std::fs::write(&gif, b"GIF89a\x01\x00\x01\x00\x00\x00\x00;").unwrap();
+    let mut s = gated_video_show(vec![video_cue(1, Some(&a)), video_cue(2, Some(&a))]);
+    assert_eq!(problems(&s, 1), vec![]);
+    GATED.lock().unwrap().extend([b.clone(), gif.clone()]);
+    set_media(&mut s, 1, &b);
+    set_media(&mut s, 2, &gif);
+    s.take_outbound();
+    let at = go(&mut s);
+    start(&mut s, 2);
+    s.run(samples(1.0));
+    assert_eq!(state(&s, 1), CueState::Running, "waits, not broken");
+    assert_eq!(state(&s, 2), CueState::Running);
+    assert!(notices(&mut s).iter().any(|c| c == "probe_wait"));
+    assert_eq!(
+        shown(&mut s),
+        None,
+        "nothing on stage before the file is read"
+    );
+    release_probe(&b);
+    release_probe(&gif);
+    s.settle_media();
+    let released = s.now();
+    assert_eq!(state(&s, 1), CueState::Running);
+    assert_eq!(
+        state(&s, 2),
+        CueState::Broken,
+        "a file that does not play breaks it"
+    );
+    run_to(&mut s, released + samples(0.5));
+    let played = (s.now() - released) as f64 / f64::from(RATE);
+    let now = shown(&mut s).expect("the picture plays once its file is read");
+    assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played} s");
+    // Its whole length from the late start.
+    run_to(&mut s, released + samples(1.9));
+    assert_eq!(state(&s, 1), CueState::Running);
+    run_to(&mut s, released + samples(2.1));
+    assert_eq!(state(&s, 1), CueState::Idle);
+    assert!(s.now() > at);
+}
+
+/// A start held by its file's probe fails after the hold limit (sample time) with a notice,
+/// as an Audio cue's does.
+#[test]
+fn a_video_start_held_by_its_probe_fails_after_the_hold_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = make(dir.path(), "a.mov", "h264", Some((50, 25)));
+    let b = make(dir.path(), "b.mov", "h264", Some((50, 25)));
+    let mut s = gated_video_show(vec![video_cue(1, Some(&a))]);
+    GATED.lock().unwrap().push(b.clone());
+    set_media(&mut s, 1, &b);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(4.9));
+    assert_eq!(state(&s, 1), CueState::Running);
+    s.take_outbound();
+    run_to(&mut s, at + samples(5.1));
+    assert_eq!(state(&s, 1), CueState::Broken);
+    assert!(notices(&mut s).iter().any(|c| c == "probe_timeout"));
+    release_probe(&b);
+    s.settle_media();
+    assert_eq!(
+        s.control().pictures_live(),
+        0,
+        "nothing put up after the limit"
+    );
+}
+
+/// A start waiting for its probe can be paused (the answer then loads the picture without
+/// showing it, and resume plays it) or stopped (nothing goes up when the answer comes).
+#[test]
+fn a_video_start_waiting_for_its_probe_can_be_paused_resumed_and_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = make(dir.path(), "a.mov", "h264", Some((50, 25)));
+    let b = make(dir.path(), "b.mov", "h264", Some((50, 25)));
+    let c = make(dir.path(), "c.mov", "h264", Some((50, 25)));
+    let mut s = gated_video_show(vec![video_cue(1, Some(&a)), video_cue(2, Some(&a))]);
+    GATED.lock().unwrap().extend([b.clone(), c.clone()]);
+    set_media(&mut s, 1, &b);
+    set_media(&mut s, 2, &c);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(BLOCK);
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.transport(TransportAction::Stop {
+        cue: id(2),
+        fade_out: None,
+    });
+    s.run(BLOCK);
+    assert_eq!(state(&s, 1), CueState::Paused);
+    assert_eq!(state(&s, 2), CueState::Idle);
+    release_probe(&b);
+    release_probe(&c);
+    s.settle_media();
+    s.run(samples(0.5));
+    assert_eq!(
+        s.control().pictures_live(),
+        1,
+        "only the paused cue's picture"
+    );
+    assert_eq!(shown(&mut s), None, "paused before it ever played");
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.5));
+    let now = shown(&mut s).expect("plays on resume");
+    assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+}
+
+/// Relink finds a Video cue's moved file like an Audio cue's: the cue points at it, the file
+/// is probed, the missing mark goes, and GO shows the picture.
+#[test]
+fn relink_finds_a_video_cues_moved_file_and_it_plays() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = dir.path().join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    let moved = make(&lib, "clip.mov", "h264", Some((50, 25)));
+    let gone = dir.path().join("gone").join("clip.mov");
+    let mut s = video_show(vec![video_cue(1, Some(&gone))]);
+    assert!(matches!(
+        problems(&s, 1).as_slice(),
+        [CueProblem::MediaMissing { .. }]
+    ));
+    let id_ = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: id_,
+        request: Request::Relink {
+            folder: lib.to_str().unwrap().into(),
+        },
+    });
+    let relinked = replies.iter().find_map(|m| match m {
+        ServerMessage::Result {
+            outcome: Outcome::Ok(body),
+            ..
+        } => match &body.data {
+            Some(ResultData::Relink { relinked, .. }) => Some(*relinked),
+            _ => None,
+        },
+        _ => None,
+    });
+    assert_eq!(relinked, Some(1), "{replies:?}");
+    let media = openlab_core::media_of_cues(s.control().workspace());
+    assert_eq!(
+        std::fs::canonicalize(media[0].1.as_str()).unwrap(),
+        std::fs::canonicalize(&moved).unwrap()
+    );
+    s.settle_media();
+    assert_eq!(problems(&s, 1), vec![]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    let now = shown(&mut s).expect("the relinked picture plays");
+    assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+}
+
+/// A paused picture comes back, on its held frame, when the stage host is relaunched.
+#[test]
+fn a_paused_picture_is_shown_again_when_the_stage_host_is_relaunched() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = make(dir.path(), "clip.mov", "h264", Some((250, 25)));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK);
+    let held = shown(&mut s).expect("a frame while paused");
+    let pid = s.control().stage_host_pid().unwrap();
+    let killed = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
+    s.settle_stages();
+    s.run(samples(1.0));
+    assert_eq!(state(&s, 1), CueState::Paused);
+    assert_eq!(shown(&mut s), Some(held), "the held frame is back");
+}
+
+/// Media limits short enough for a test to see a hung open or decode fail (the stage host's
+/// own clock: these tests wait on the stage host, bounded).
+const SHORT_LIMITS: [&str; 2] = ["--media-limits", "400,400"];
+
+/// A copy of a good movie under a name that makes the test-support decoder hang or crash.
+fn faulty(dir: &Path, good: &Path, fault: &str) -> PathBuf {
+    let path = dir.join(format!("{fault}.mov"));
+    std::fs::copy(good, &path).unwrap();
+    path
+}
+
+/// Waits (bounded, ticking) until cue `n` is broken.
+fn wait_broken(s: &mut OfflineShow, n: u128) -> bool {
+    s.wait_for(|c| c.engine().state(id(n)) == CueState::Broken)
+}
+
+/// A picture whose file's open hangs (a stalled volume) holds up nothing else: the stage host
+/// keeps answering (it is not killed and relaunched), its keep-black stage stays black, another
+/// picture plays on it, and only the hung cue breaks, with the reason.
+#[test]
+fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
+    let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
+    let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
+    let mut s = video_show_args(ws, &SHORT_LIMITS);
+    let pid = s.control().stage_host_pid().unwrap();
+    s.take_outbound();
+    start(&mut s, 2);
+    s.run(BLOCK);
+    let (frame, colours) = probe_at(&mut s, &[[0.5, 0.5]]);
+    assert_eq!(frame, None, "nothing drawn for the hung picture");
+    assert_eq!(
+        colours,
+        vec![[0, 0, 0, 255]],
+        "the keep-black stage is black"
+    );
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.5));
+    let now = shown(&mut s).expect("the other picture plays");
+    assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+    assert!(wait_broken(&mut s, 2), "the hung cue breaks");
+    assert_eq!(
+        s.control().engine().broken_reason(id(2)),
+        Some(openlab_core::BrokenReason::DecodeFailed)
+    );
+    let texts = notice_texts(&mut s);
+    assert!(
+        texts
+            .iter()
+            .any(|(c, t)| c == "video_decode_failed" && t.contains("to open")),
+        "{texts:?}"
+    );
+    assert_eq!(state(&s, 1), CueState::Running, "the other cue plays on");
+    assert_eq!(
+        s.control().stage_host_pid(),
+        Some(pid),
+        "never killed as hung"
+    );
+}
+
+/// A picture whose frame decode hangs fails alone after the frame limit; the stage host keeps
+/// running and answering.
+#[test]
+fn a_picture_whose_decode_hangs_fails_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
+    let hung = faulty(dir.path(), &good, "openlab-test-hang-decode");
+    let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
+    let mut s = video_show_args(ws, &SHORT_LIMITS);
+    let pid = s.control().stage_host_pid().unwrap();
+    // The hung one first, so the good one is drawn over it.
+    start(&mut s, 2);
+    let at = start(&mut s, 1);
+    s.take_outbound();
+    run_to(&mut s, at + samples(0.5));
+    let now = shown(&mut s).expect("the good picture is drawn");
+    assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+    assert!(wait_broken(&mut s, 2), "the hung cue breaks");
+    let texts = notice_texts(&mut s);
+    assert!(
+        texts
+            .iter()
+            .any(|(c, t)| c == "video_decode_failed" && t.contains("to decode")),
+        "{texts:?}"
+    );
+    assert_eq!(state(&s, 1), CueState::Running);
+    assert_eq!(s.control().stage_host_pid(), Some(pid));
+}
+
+/// Draws stage 1 (a probe) and, if that stopped the stage host, waits for the next one; the
+/// stage host pids seen are kept in `pids`.
+fn probe_through_crashes(s: &mut OfflineShow, pids: &mut Vec<u32>) {
+    let id_ = s.request_id();
+    s.send_until(
+        ClientMessage::Request {
+            id: id_,
+            request: Request::StageProbe {
+                stage: stage_id(),
+                points: vec![[0.5, 0.5]],
+            },
+        },
+        |c| c.stages_settled(),
+    );
+    s.settle_stages();
+    if let Some(pid) = s.control().stage_host_pid()
+        && pids.last() != Some(&pid)
+    {
+        pids.push(pid);
+    }
+}
+
+/// A file that crashes the stage host while it opens (its first frame decoded) is not sent to
+/// the next stage host: its cue breaks after that one crash, and the other cue's picture comes
+/// back on the next stage host and plays on.
+#[test]
+fn a_picture_that_crashes_the_stage_host_as_it_opens_is_not_sent_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
+    let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
+    let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
+    let mut s = video_show_of(ws);
+    let pid = s.control().stage_host_pid().unwrap();
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.2));
+    shown(&mut s).expect("cue 1 shown");
+    start(&mut s, 2);
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
+    s.settle_stages();
+    assert!(wait_broken(&mut s, 2));
+    let next = s.control().stage_host_pid().unwrap();
+    run_to(&mut s, at + samples(2.0));
+    let played = (s.now() - at) as f64 / f64::from(RATE);
+    let now = shown(&mut s).expect("the other picture is back");
+    assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
+    assert_eq!(s.control().stage_host_pid(), Some(next), "no second crash");
+    assert_eq!(state(&s, 1), CueState::Running);
+}
+
+/// A file that crashes the stage host later, decoding a frame after its open, is sent again
+/// once; a second crash while it is up within a minute of that fails what was up then (the
+/// culprit cannot be told from the others), so video output carries on: the next stage host
+/// stays up and the next GO plays.
+#[test]
+fn a_picture_that_crashes_the_stage_host_twice_is_not_sent_a_third_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
+    let bomb = faulty(dir.path(), &good, "openlab-test-crash-decode");
+    let mut s = video_show(vec![video_cue(1, Some(&bomb)), video_cue(2, Some(&good))]);
+    let mut pids = vec![s.control().stage_host_pid().unwrap()];
+    start(&mut s, 1);
+    s.run(BLOCK);
+    for _ in 0..4 {
+        if state(&s, 1) == CueState::Broken {
+            break;
+        }
+        // Open on this stage host (its first frame decoded), so only a frame after it crashes.
+        s.wait_for(|c| c.pictures_opened() == 1);
+        probe_through_crashes(&mut s, &mut pids);
+        s.run(BLOCK);
+    }
+    assert_eq!(state(&s, 1), CueState::Broken, "{pids:?}");
+    assert_eq!(
+        pids.len(),
+        3,
+        "two crashes, then a stage host that stays: {pids:?}"
+    );
+    let at = start(&mut s, 2);
+    run_to(&mut s, at + samples(0.5));
+    let now = shown(&mut s).expect("the next cue plays");
+    assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+    assert_eq!(s.control().stage_host_pid(), pids.last().copied());
+}
+
+/// A still with more pixels than a picture may have (its file swapped after the probe passed)
+/// is refused by the stage host before it allocates the picture: only its cue breaks, with
+/// the reason.
+#[test]
+fn a_still_too_large_to_hold_is_refused_by_the_stage_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let huge = make(dir.path(), "huge.png", "huge-png", None);
+    let mut s = video_show(vec![still_cue(1, &png, None)]);
+    let pid = s.control().stage_host_pid().unwrap();
+    std::fs::rename(&huge, &png).unwrap();
+    s.take_outbound();
+    start(&mut s, 1);
+    s.run(BLOCK);
+    shown(&mut s);
+    assert!(wait_broken(&mut s, 1));
+    let texts = notice_texts(&mut s);
+    assert!(
+        texts
+            .iter()
+            .any(|(c, t)| c == "video_decode_failed" && t.contains("16384 x 8192")),
+        "{texts:?}"
+    );
+    assert_eq!(s.control().stage_host_pid(), Some(pid));
+}
+
+/// Cue `n`'s last progress item since the last call: (elapsed, remaining, position).
+fn progress_of(s: &mut OfflineShow, n: u128) -> Option<(f64, Option<f64>, Option<f64>)> {
+    s.take_outbound()
+        .into_iter()
+        .filter_map(|m| match m {
+            ServerMessage::Progress { items, .. } => items.into_iter().find(|i| i.cue == id(n)),
+            _ => None,
+        })
+        .next_back()
+        .map(|i| (i.elapsed, i.remaining, i.position))
+}
+
+fn near(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 0.05
+}
+
+/// Clients are told a running Video cue's progress, as an Audio cue's: elapsed on the engine
+/// clock from its start with the time left of its movie, held while paused, on from there when
+/// resumed, from the load-to-time point when loaded there; a still with no duration counts up
+/// with no end.
+#[test]
+fn clients_are_told_a_video_cues_progress_playing_paused_resumed_and_loaded_to_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = make(dir.path(), "clip.mov", "h264", Some((100, 25)));
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = video_show(vec![video_cue(1, Some(&movie)), still_cue(2, &png, None)]);
+    let at = start(&mut s, 1);
+    s.take_outbound();
+    run_to(&mut s, at + samples(1.0));
+    let (elapsed, remaining, position) = progress_of(&mut s, 1).expect("playing");
+    assert!(near(elapsed, 1.0), "{elapsed}");
+    assert!(near(remaining.unwrap(), 3.0), "{remaining:?}");
+    assert!(near(position.unwrap(), elapsed));
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK);
+    let paused = progress_of(&mut s, 1).expect("paused").0;
+    s.run(samples(1.0));
+    let (still_paused, _, _) = progress_of(&mut s, 1).expect("still told while paused");
+    assert!(near(still_paused, paused) && (still_paused - paused).abs() < 1e-9);
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.5));
+    let (on, left, _) = progress_of(&mut s, 1).expect("resumed");
+    assert!(near(on, paused + 0.5), "{on} after {paused}");
+    assert!(near(left.unwrap(), 4.0 - on));
+    // Load to time, then GO: counts from there.
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: None,
+    });
+    s.run(BLOCK);
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: 2.5,
+    });
+    s.run(BLOCK);
+    let at = start(&mut s, 1);
+    s.take_outbound();
+    run_to(&mut s, at + samples(0.5));
+    let (from_there, left, _) = progress_of(&mut s, 1).expect("loaded to time");
+    assert!(near(from_there, 3.0), "{from_there}");
+    assert!(near(left.unwrap(), 1.0));
+    // A still with no duration: elapsed with no end and no file position.
+    let at = start(&mut s, 2);
+    run_to(&mut s, at + samples(0.5));
+    let (shown_for, end, position) = progress_of(&mut s, 2).expect("the still");
+    assert!(near(shown_for, 0.5), "{shown_for}");
+    assert_eq!((end, position), (None, None));
 }
