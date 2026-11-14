@@ -158,6 +158,11 @@ pub trait Platform {
     }
 }
 
+/// How far past the last clock message the stage host moves the clock on by itself: three of
+/// the engine's clock periods (it tells the clock at least every 10 ms), so one late tick does
+/// not stop a picture.
+const CLOCK_HOLD: std::time::Duration = std::time::Duration::from_millis(30);
+
 /// The engine's sample clock as last told.
 #[derive(Clone, Copy, Debug)]
 struct Clock {
@@ -207,12 +212,16 @@ impl<P: Platform> Host<P> {
     }
 
     /// The engine's sample now, and its rate: the last clock told, moved on by this process's
-    /// own clock since when the platform is live.
+    /// own clock since when the platform is live, by at most `CLOCK_HOLD`. The engine tells the
+    /// clock at least every 10 ms while a picture is up; when it stops (no output device
+    /// running, so the show's clock stands still, or a stalled engine) the picture stops with
+    /// it instead of playing on and jumping back when the clock moves again.
     fn now(&self) -> (u64, u32) {
         match self.clock {
             None => (0, 1),
             Some(c) if self.platform.live() => {
-                let ran = c.told.elapsed().as_secs_f64() * f64::from(c.rate);
+                let since = c.told.elapsed().min(CLOCK_HOLD);
+                let ran = since.as_secs_f64() * f64::from(c.rate);
                 (c.sample.saturating_add(ran as u64), c.rate)
             }
             Some(c) => (c.sample, c.rate),
@@ -718,6 +727,7 @@ mod tests {
         /// Each display's layers as last presented, bottom first.
         shown: HashMap<String, Vec<StageId>>,
         fail: bool,
+        live: bool,
     }
 
     impl Platform for Fake {
@@ -746,6 +756,9 @@ mod tests {
             p: &[[f32; 2]],
         ) -> Result<Vec<[u8; 4]>, String> {
             Ok(vec![[0, 0, 0, 255]; p.len()])
+        }
+        fn live(&self) -> bool {
+            self.live
         }
         fn open_picture(&mut self, _: u64, file: &str, _: bool) -> Result<(), String> {
             if file == "bad" {
@@ -859,6 +872,33 @@ mod tests {
         assert!(!h.playing(), "gone once its fade is over");
     }
 
+    /// On real displays the clock runs on between the engine's messages, but no further than
+    /// `CLOCK_HOLD` past the last: an engine clock that stops stops the picture.
+    #[test]
+    fn the_clock_runs_on_between_messages_only_a_little() {
+        let mut h = host(&["D"]);
+        h.platform.live = true;
+        let rate = 48_000;
+        let told = |ago_ms: u64| {
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(ago_ms))
+                .unwrap()
+        };
+        h.clock = Some(Clock {
+            sample: 1000,
+            rate,
+            told: told(10),
+        });
+        let (now, _) = h.now();
+        assert!((1000 + 480..=1000 + 48 * 30).contains(&now), "{now}");
+        h.clock = Some(Clock {
+            sample: 1000,
+            rate,
+            told: told(60_000),
+        });
+        assert_eq!(h.now().0, 1000 + 48 * 30, "a minute later: held at the cap");
+    }
+
     /// Two pictures on one stage: the later-started is drawn last (on top), whatever their ids.
     #[test]
     fn the_later_started_picture_is_drawn_on_top() {
@@ -969,6 +1009,7 @@ mod tests {
             displays: displays.iter().map(|d| display(d)).collect(),
             shown: HashMap::new(),
             fail: false,
+            live: false,
         })
     }
 
