@@ -546,7 +546,10 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     for (name, value) in [
-        ("stage", Some(openlab_core::StageId(uuid::Uuid::from_u128(2)))),
+        (
+            "stage",
+            Some(openlab_core::StageId(uuid::Uuid::from_u128(2))),
+        ),
         ("stage_none", None),
     ] {
         add(

@@ -38,8 +38,8 @@ use openlab_core::protocol::{
 };
 use openlab_core::{
     Action, CueEngine, CueListId, EngineConfig, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES,
-    MediaRef, PatchId, PathStyle, RecoveryDecision, Relink, Workspace, WorkspaceId, media_of_cues,
-    autosave_due, decide_recovery, is_absolute, load_show, portable_ref, recovery_show_path,
+    MediaRef, PatchId, PathStyle, RecoveryDecision, Relink, Workspace, WorkspaceId, autosave_due,
+    decide_recovery, is_absolute, load_show, media_of_cues, portable_ref, recovery_show_path,
     relink_command,
 };
 use openlab_core::{Command, CommandError, CueId, MediaPaths, RelinkPlan};

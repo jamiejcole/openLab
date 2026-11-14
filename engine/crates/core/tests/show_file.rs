@@ -36,7 +36,8 @@ fn example_older() -> Workspace {
     let mut ws = load_show(EXAMPLE).unwrap().workspace;
     ws.stages.clear();
     for list in &mut ws.cue_lists {
-        list.cues.retain(|c| !matches!(c.kind, CueKind::Video { .. }));
+        list.cues
+            .retain(|c| !matches!(c.kind, CueKind::Video { .. }));
     }
     for output in ws.patches.iter_mut().flat_map(|p| p.outputs.iter_mut()) {
         output.name.clear();

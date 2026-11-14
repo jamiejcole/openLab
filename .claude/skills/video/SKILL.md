@@ -9,7 +9,7 @@ QLab 5 model: manual pp. 207-212 (Video cues), 225-230 (stages), 241-243 (Fade c
 
 Design decided by the user on 2026-11-13: decode and drawing live in a third process, the stage host; macOS decodes with AVFoundation/VideoToolbox (HAP in-house) and draws with Metal; video follows the audio clock; no video on Windows in v0.0.2.
 
-Built so far: stages, their per-machine display, the stage host with black output windows, its supervision by the engine, and the test card read back in tests. Video cues, decode, the clock and fades are not built.
+Built so far: stages, their per-machine display, the stage host with black output windows, its supervision by the engine, the test card read back in tests, and the Video cue's model, file format, commands and problems (`CueKind::Video { media, stage, duration }`; skills `cue-engine` (its kinds reference) and `edit-commands`). Probing video files, decode, the clock and fades are not built.
 
 ## Must not break
 - A stage with keep-black on and its display connected shows black whenever nothing plays on it, never a frozen frame (VID-12), while the stage host runs. The desktop does show: from the engine's death until a relaunched engine's stage host is up; between a stage host crash and its relaunch (about 150 ms); and for the whole pause after repeated crashes (`retry_after`). The app-side black backstop that covers these is issue #667.

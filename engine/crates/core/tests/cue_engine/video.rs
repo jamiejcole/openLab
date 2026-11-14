@@ -174,24 +174,39 @@ fn pause_resume_load_to_time_and_panic_act_on_a_video_cue_as_on_an_audio_cue() {
     );
     let actions = rig.go(10);
     assert!(
-        actions
-            .iter()
-            .any(|a| matches!(a, Action::StartVoice { at: 10, offset: 1500, .. })),
+        actions.iter().any(|a| matches!(
+            a,
+            Action::StartVoice {
+                at: 10,
+                offset: 1500,
+                ..
+            }
+        )),
         "{actions:?}"
     );
     let actions = rig.pause(510, 1);
     assert!(
-        actions
-            .iter()
-            .any(|a| matches!(a, Action::PauseVoice { at: 510, offset: 2000, .. })),
+        actions.iter().any(|a| matches!(
+            a,
+            Action::PauseVoice {
+                at: 510,
+                offset: 2000,
+                ..
+            }
+        )),
         "{actions:?}"
     );
     assert_eq!(rig.state(1), CueState::Paused);
     let actions = rig.resume(900, 1);
     assert!(
-        actions
-            .iter()
-            .any(|a| matches!(a, Action::ResumeVoice { at: 900, offset: 2000, .. })),
+        actions.iter().any(|a| matches!(
+            a,
+            Action::ResumeVoice {
+                at: 900,
+                offset: 2000,
+                ..
+            }
+        )),
         "{actions:?}"
     );
     // Panic fades the picture over the panic time, then stops it.

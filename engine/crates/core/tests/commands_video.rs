@@ -72,25 +72,13 @@ fn the_stage_is_set_undone_and_redone_and_the_same_stage_is_no_edit() {
     let mut ws = ws();
     let mut history = History::default();
     let stage = |s| set(1, CueProperty::Stage { value: s });
-    assert!(
-        history
-            .execute(&mut ws, stage(Some(stage_id(2))))
-            .unwrap()
-    );
+    assert!(history.execute(&mut ws, stage(Some(stage_id(2)))).unwrap());
     assert_eq!(kind(&ws, 1).1, Some(stage_id(2)));
-    assert!(
-        !history
-            .execute(&mut ws, stage(Some(stage_id(2))))
-            .unwrap()
-    );
+    assert!(!history.execute(&mut ws, stage(Some(stage_id(2)))).unwrap());
     // "none" is a stage choice too; a stage the workspace lacks is accepted (the cue breaks).
     assert!(history.execute(&mut ws, stage(None)).unwrap());
     assert_eq!(kind(&ws, 1).1, None);
-    assert!(
-        history
-            .execute(&mut ws, stage(Some(stage_id(9))))
-            .unwrap()
-    );
+    assert!(history.execute(&mut ws, stage(Some(stage_id(9)))).unwrap());
     assert!(history.undo(&mut ws).unwrap());
     assert!(history.undo(&mut ws).unwrap());
     assert_eq!(kind(&ws, 1).1, Some(stage_id(2)));
@@ -189,12 +177,7 @@ fn every_path_that_makes_a_video_cue_refuses_a_bad_duration() {
     )
     .unwrap();
     refused_time(ws.apply(pasted));
-    refused_time(ws.apply(set(
-        3,
-        CueProperty::Kind {
-            value: bad().kind,
-        },
-    )));
+    refused_time(ws.apply(set(3, CueProperty::Kind { value: bad().kind })));
     assert_eq!(ws, before);
 }
 
@@ -208,7 +191,10 @@ fn a_batch_sets_the_stage_on_every_video_cue_or_none() {
         },
     })
     .unwrap();
-    assert_eq!((kind(&ws, 1).1, kind(&ws, 2).1), (Some(stage_id(2)), Some(stage_id(2))));
+    assert_eq!(
+        (kind(&ws, 1).1, kind(&ws, 2).1),
+        (Some(stage_id(2)), Some(stage_id(2)))
+    );
     let before = ws.clone();
     assert!(
         ws.apply(Command::BatchSet {

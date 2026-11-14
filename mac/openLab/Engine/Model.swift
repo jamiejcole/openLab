@@ -49,12 +49,15 @@ struct Cue: Hashable, Sendable, Decodable {
     var name: String { raw["name"]?.stringValue ?? "" }
     var kindType: String { raw["kind"]?["type"]?.stringValue ?? "" }
 
-    /// The name to show (core's `display_name`): the user's name if set, else an Audio cue's
-    /// file name with its extension (last `/` component, as stored), else empty. Editing writes `name`.
+    /// The name to show (core's `display_name`): the user's name if set, else an Audio or Video
+    /// cue's file name with its extension (last `/` component, as stored), else empty. Editing
+    /// writes `name`.
     var displayName: String {
         let typed = name
         if !typed.isEmpty { return typed }
-        guard kindType == "audio", let media = raw["kind"]?["media"]?.stringValue else { return "" }
+        guard kindType == "audio" || kindType == "video", let media = raw["kind"]?["media"]?.stringValue else {
+            return ""
+        }
         // Split on scalars, as core splits on the byte: "/" followed by a combining mark is still a separator.
         var scalars = Substring(media).unicodeScalars
         while scalars.last == "/" { scalars = scalars.dropLast() }

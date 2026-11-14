@@ -432,7 +432,11 @@ impl CueEngine {
             .map(|p| p.id)
             .eq(model.patch_ids.iter().copied())
             && ws.network_patches == model.network_patches
-            && ws.stages.iter().map(|s| s.id).eq(model.stage_ids.iter().copied());
+            && ws
+                .stages
+                .iter()
+                .map(|s| s.id)
+                .eq(model.stage_ids.iter().copied());
         if !same_patches {
             return false;
         }
@@ -884,7 +888,10 @@ fn combine(cue: CueId, f: &Facts, p: &Problems) -> Vec<CueProblem> {
 }
 
 /// What the binary's report on a cue's media file makes of it: no file, missing or unplayable.
-fn media_problem(file: Option<&MediaRef>, media: &BTreeMap<String, MediaStatus>) -> Option<CueProblem> {
+fn media_problem(
+    file: Option<&MediaRef>,
+    media: &BTreeMap<String, MediaStatus>,
+) -> Option<CueProblem> {
     let Some(file) = file else {
         return Some(CueProblem::NoMedia);
     };

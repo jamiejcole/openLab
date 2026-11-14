@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use openlab_core::{
-    MediaRef, MissingMedia, PathStyle, RelinkPlan, Workspace, media_of_cues, file_name,
-    file_name_key, plan_relinks, portable_ref, resolve,
+    MediaRef, MissingMedia, PathStyle, RelinkPlan, Workspace, file_name, file_name_key,
+    media_of_cues, plan_relinks, portable_ref, resolve,
 };
 
 /// Bounds on a folder scan, so a huge or deeply nested drive cannot hang the engine.
