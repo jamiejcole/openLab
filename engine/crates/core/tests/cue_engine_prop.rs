@@ -1418,10 +1418,14 @@ impl Run {
                     // A moved cue's run that ends, or a group that ends or is stopped (it lets
                     // go of the cues moved out of it), no longer ties the two together.
                     let ended = matches!(state, CueState::Idle | CueState::Loaded);
-                    // (A group's new run lets go of them too.)
+                    // (A group's new run lets go of them too.) A cue moved deeper into the
+                    // group's own tree is still inside it, so the group keeps waiting on it.
                     let stopping = matches!(state, CueState::Stopping | CueState::PreWaiting);
+                    let cues = &self.ws.cue_lists[0].cues;
                     self.moved_out_of.retain(|(m, g)| {
-                        !(ended && m == cue) && !((ended || stopping) && g == cue)
+                        !(ended && m == cue)
+                            && !(g == cue
+                                && (ended || (stopping && !groups_around(cues, *m).contains(g))))
                     });
                     self.seen.insert(*cue);
                     if !matches!(state, CueState::Idle | CueState::Broken | CueState::Loaded) {
@@ -3224,4 +3228,66 @@ fn the_generator_reaches_what_the_rules_are_about() {
         missing.is_empty(),
         "never (or hardly) reached: {missing:?} in {seen:?}"
     );
+}
+
+/// Found on CI: a sound in a Start First and Enter group is started on its own, then dragged into
+/// a nested group inside that same group. A GO then runs the outer group: its first child, a
+/// memo, ends at once, and the group keeps running on the sound, which started in it and is still
+/// inside it, two levels down under a nested group that is idle. The group's new run lets go only
+/// of runs moved out of its tree.
+#[test]
+fn a_group_waits_on_a_run_moved_deeper_into_its_own_tree() {
+    let spec = |kind: u8, level: u8| Spec {
+        kind,
+        pre: 0,
+        post: 0,
+        mode: 0,
+        armed: false,
+        dup: false,
+        level,
+        group_mode: 0,
+        target: 0,
+        flag: false,
+        second: 0,
+        release: false,
+    };
+    let step = |op: u8, a: u8, b: u8| Step { dt: 0, op, a, b };
+    let case = Case {
+        specs: vec![
+            spec(5, 0),
+            Spec {
+                armed: true,
+                group_mode: 1,
+                ..spec(4, 0)
+            },
+            Spec {
+                target: 13,
+                ..spec(0, 1)
+            },
+            spec(22, 1),
+            spec(0, 1),
+            spec(0, 1),
+            spec(27, 1),
+            spec(0, 0),
+            spec(0, 0),
+            spec(22, 0),
+            Spec {
+                target: 3,
+                ..spec(27, 0)
+            },
+        ],
+        steps: vec![
+            step(2, 38, 0),
+            step(2, 0, 0),
+            step(2, 4, 0),
+            step(30, 104, 46),
+            step(1, 0, 0),
+        ],
+        lookahead: 0,
+        min_go: 0,
+        panic: 0,
+    };
+    if let Err(e) = invariants(&case) {
+        panic!("{e}");
+    }
 }
