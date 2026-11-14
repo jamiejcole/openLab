@@ -2143,6 +2143,11 @@ fn durations_and_load_times_at_the_limits_are_accepted() {
         ws.apply(set(3, load_time(value))).unwrap();
         assert_clean(&ws);
     }
+    // A load time counts back from the target's end when negative (CT-14).
+    for value in [-0.001, -MAX_TIME] {
+        ws.apply(set(3, load_time(value))).unwrap();
+        assert_clean(&ws);
+    }
 }
 
 #[test]
@@ -2155,6 +2160,7 @@ fn bad_durations_and_load_times_are_refused() {
         -0.001,
         -1.0,
         MAX_TIME + 0.001,
+        -MAX_TIME - 0.001,
         1e300,
         f64::MAX,
     ] {
@@ -2163,6 +2169,10 @@ fn bad_durations_and_load_times_are_refused() {
             (2, duration(bad), "duration"),
             (3, load_time(bad), "load_to_time"),
         ] {
+            // A negative load time within the limit is valid (counted back from the end).
+            if n == 3 && (-MAX_TIME..0.0).contains(&bad) {
+                continue;
+            }
             let error = refused(&mut ws, set(n, property));
             let CommandError::InvalidCue(issues) = error else {
                 panic!("{bad}: {error:?}")

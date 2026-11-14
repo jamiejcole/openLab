@@ -455,6 +455,65 @@ fn load_cue_uses_its_time_as_edited_up_to_its_action_start() {
     );
 }
 
+/// Flow: a Load cue with a negative load time loads its target to that long before its end,
+/// pre-wait included (QLab 5.6.5 measured: target pre-wait 1 s, 4 s long, load -2 s → 1 s into
+/// the action); further back than the start loads it at the start.
+#[test]
+fn a_load_cue_with_a_negative_load_time_loads_its_target_before_its_end() {
+    let mut rig = Rig::new(vec![
+        load_cue(1, 3, -2.0),
+        load_cue(2, 4, -2.0),
+        timed(sound(3), 1.0, 0.0, DNC),
+        timed(wait(4, 4.0), 1.0, 0.0, DNC),
+    ]);
+    let lengths = [(id(3), Some(4000))].into_iter().collect();
+    rig.at(0, Input::CueLengths { lengths });
+    let go = rig.go(0);
+    // 1 s pre-wait + 4 s audio, 2 s back from the end: 1 s into the action.
+    assert!(
+        go.iter().any(|a| matches!(
+            a,
+            Action::LoadVoice { cue, offset: 2000, .. } if *cue == id(3)
+        )),
+        "{go:?}"
+    );
+    let go = rig.go(10);
+    assert_eq!(rig.state(4), CueState::Loaded);
+    // The Wait cue loaded 3 s into its timeline ends 2 s after it starts.
+    rig.start(100, 4);
+    assert_eq!(changes(&rig.tick(2099), 4), vec![], "{go:?}");
+    assert!(!changes(&rig.tick(2100), 4).is_empty());
+}
+
+#[test]
+fn a_negative_load_time_longer_than_the_target_or_with_no_known_end_loads_at_the_start() {
+    let mut rig = Rig::new(vec![
+        load_cue(1, 3, -10.0),
+        load_cue(2, 4, -1.0),
+        timed(sound(3), 1.0, 0.0, DNC),
+        sound(4),
+    ]);
+    let lengths = [(id(3), Some(4000))].into_iter().collect();
+    rig.at(0, Input::CueLengths { lengths });
+    let go = rig.go(0);
+    assert!(
+        go.iter().any(|a| matches!(
+            a,
+            Action::LoadVoice { cue, offset: 0, .. } if *cue == id(3)
+        )),
+        "{go:?}"
+    );
+    // Cue 4's length was never reported: loaded at its start.
+    let go = rig.go(10);
+    assert!(
+        go.iter().any(|a| matches!(
+            a,
+            Action::LoadVoice { cue, offset: 0, .. } if *cue == id(4)
+        )),
+        "{go:?}"
+    );
+}
+
 #[test]
 fn load_cue_on_an_active_or_broken_target_warns() {
     let mut rig = Rig::new(vec![load_cue(1, 3, 0.0), memo(2), sound(3)]);

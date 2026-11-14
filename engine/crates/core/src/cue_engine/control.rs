@@ -51,7 +51,7 @@ impl CueEngine {
             }
             CueKind::Pause { .. } => self.as_of(at, cx, |e, cx| e.pause_tree(target, cx)),
             CueKind::Load { load_to_time, .. } => {
-                let time = *load_to_time;
+                let time = self.load_time(target, *load_to_time, cx);
                 self.as_of(at, cx, |e, cx| e.load_tree(target, time, cx));
             }
             CueKind::Reset { .. } => self.as_of(at, cx, |e, cx| e.reset_tree(target, cx)),
@@ -81,6 +81,27 @@ impl CueEngine {
             | CueKind::Memo
             | CueKind::Network { .. } => {}
         }
+    }
+
+    /// The time a Load cue loads `target` to. A negative time counts back from the target's
+    /// end (pre-wait and action, as a playlist would time it) as in QLab 5 (manual pp. 680-681;
+    /// measured in 5.6.5): further back than the start, or with no known end (audio not probed
+    /// yet, an endless loop or group), it loads to the start.
+    fn load_time(&self, target: CueId, time: f64, cx: &Ctx) -> f64 {
+        if time >= 0.0 {
+            return time;
+        }
+        let span = cx
+            .ws
+            .find_cue(target)
+            .and_then(|t| self.nominal_span(t, 0, cx));
+        let Some(span) = span else { return 0.0 };
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a span is at most a day of samples, far below 2^52"
+        )]
+        let span = span as f64 / f64::from(self.config.sample_rate().get());
+        (span + time).max(0.0)
     }
 
     /// Carries out an operation as if it came on sample `at` (never earlier than `now`): a

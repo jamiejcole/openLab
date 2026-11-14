@@ -161,8 +161,9 @@ pub enum CueProperty {
     Duration {
         value: f64,
     },
-    /// Only for Load cues: the time it loads its target to, in seconds (CT-14). Finite, from 0 to
-    /// `MAX_TIME`; read when the Load cue's action starts.
+    /// Only for Load cues: the time it loads its target to, in seconds (CT-14). Finite, from
+    /// `-MAX_TIME` to `MAX_TIME` (negative: that long before the target's end); read when the
+    /// Load cue's action starts.
     LoadToTime {
         value: f64,
     },

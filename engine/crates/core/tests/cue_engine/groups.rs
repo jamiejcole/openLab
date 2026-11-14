@@ -217,7 +217,7 @@ fn start_first_and_enter_moves_the_playhead_into_the_group() {
         1,
         ENTER,
         vec![
-            timed(wait(10, 1.0), 0.0, 0.0, AC),
+            timed(memo(10), 0.0, 0.0, AC),
             wait(11, 1.0),
             memo(12),
             memo(13),

@@ -227,6 +227,17 @@ pub fn wait(n: u128, seconds: f64) -> Cue {
     cue(n, CueKind::Wait { duration: seconds })
 }
 
+/// A silent cue whose action lasts `seconds` with a post-wait of its own: a Fade cue on
+/// `target`, a cue that is not running (it runs its duration, changes nothing and warns
+/// `target_not_running`). A Wait cue cannot serve: its post-wait is its duration.
+pub fn timer(n: u128, target: u128, seconds: f64) -> Cue {
+    let mut c = cue(n, fade(target));
+    if let CueKind::Fade { duration, .. } = &mut c.kind {
+        *duration = seconds;
+    }
+    c
+}
+
 pub fn sound(n: u128) -> Cue {
     cue(n, audio())
 }

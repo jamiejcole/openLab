@@ -12,13 +12,13 @@ A control cue is a cue like any other. At its action start `A` (after its own pr
 | Start | Start operation on the target dated `A`: idle/loaded starts; paused resumes (whatever its option); other active: its second-trigger option; broken: `CueBroken`; disarmed target skipped as on GO |
 | Stop | Stop with the cue's `fade_out` (duration 0 = hard) |
 | Pause | Pause (a paused or idle target is left) |
-| Load | Load to `load_to_time` (active target: `LoadIgnored`; broken: `CueBroken`) |
+| Load | Load to `load_to_time` (active target: `LoadIgnored`; broken: `CueBroken`). Negative: that long before the target's end, its nominal span (pre-wait + action, as a playlist times it, audio from `CueLengths`); further back than the start or no known end (unprobed audio, endless loop or group): the start (QLab 5 pp. 680-681, measured 5.6.5, Q351-Q352) |
 | Reset | Reset (clears broken) of the target and its descendants, which also become unplayed (first colour again, `panic-transport.md` "Played"). Does not undo Arm/Disarm |
 | Devamp, GoTo, Arm, Disarm | below |
-| Wait | nothing; action lasts its `duration` |
+| Wait | nothing; action lasts its `duration`. Its post-wait is its duration whatever `post_wait` stores (`Cue::effective_post_wait`; QLab 5 p. 688, measured 5.6.5, Q350) |
 | Memo | nothing; action completes at once |
 
-A running Wait takes an edited duration (`broken-and-edits.md`).
+A running Wait takes an edited duration (`broken-and-edits.md`); its pending auto-continue moves to the new end.
 
 ## GoTo
 - Moves the playhead of the target's cue list (any list, not only its own) to the target, at any depth.

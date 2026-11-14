@@ -277,7 +277,7 @@ Option on macOS).
 | `start` | `target` | Starts the target. |
 | `stop` | `target`, `fade_out` (fade spec) | Stops the target, fading it out first when `fade_out.duration` > 0. |
 | `pause` | `target` | Pauses the target. |
-| `load` | `target`, `load_to_time` (seconds) | Loads the target, cued to `load_to_time`. |
+| `load` | `target`, `load_to_time` (seconds, -86400 to 86400) | Loads the target, cued to `load_to_time`. A negative time counts back from the target's end (pre-wait and action); further back than its start, or with no known end, it loads to the start. |
 | `reset` | `target` | Returns the target to its saved state. |
 | `devamp` | `target`, `start_next_cue` (bool), `stop_target_when_slice_ends` (bool), `devamp_mode` (`"current_slice"` \| `"looping_cue"`) | Leaves the target's loop at the end of the pass; semantics in skill `cue-engine`. Target must be an Audio cue or a Playlist group. |
 | `go_to` | `target`, `then_go` (bool) | Moves the playhead to the target; `then_go` also fires GO. |

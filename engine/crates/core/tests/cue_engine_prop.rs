@@ -2767,6 +2767,8 @@ proptest! {
         let timed = matches!(kind, CueKind::Wait { .. } | CueKind::Fade { .. });
         let length = pre + if timed { action } else { 0.0 };
         let time = length + f64::from(extra) * 0.5;
+        // A Wait cue's post-wait is its duration.
+        let post = if matches!(kind, CueKind::Wait { .. }) { action } else { post };
         let mut c = cue(1, kind);
         c.pre_wait = pre;
         c.post_wait = post;

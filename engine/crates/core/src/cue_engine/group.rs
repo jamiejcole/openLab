@@ -675,7 +675,7 @@ impl CueEngine {
     /// nominal timing; `None` if that is unknown or endless. A cue a start would pass over at
     /// once (broken at run time) takes nothing; a disarmed one or one with static problems
     /// takes its pre-wait only. `depth` bounds the walk into nested groups.
-    fn nominal_span(&self, cue: &Cue, depth: usize, cx: &Ctx) -> Option<SampleTime> {
+    pub(super) fn nominal_span(&self, cue: &Cue, depth: usize, cx: &Ctx) -> Option<SampleTime> {
         if matches!(self.slots.get(&cue.id), Some(Slot::Broken(_))) || self.is_skipped(cue) {
             return Some(0);
         }
