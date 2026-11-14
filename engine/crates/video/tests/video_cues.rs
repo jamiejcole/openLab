@@ -212,6 +212,8 @@ fn video_show_args(mut ws: Workspace, extra: &[&str]) -> OfflineShow {
     c.stage_host = Some(host);
     let mut s = show_with(ws, c);
     s.settle_stages();
+    // The files' probes are answered too: the tests read what they found.
+    s.settle_media();
     s
 }
 
@@ -739,6 +741,8 @@ fn gated_video_show(cues: Vec<Cue>) -> OfflineShow {
     c.picture_probe = Some(gated_probe);
     let mut s = show_with(ws, c);
     s.settle_stages();
+    // The files' probes are answered too: the tests read what they found.
+    s.settle_media();
     s
 }
 
@@ -1158,6 +1162,19 @@ fn near(a: f64, b: f64) -> bool {
     (a - b).abs() <= 0.05
 }
 
+/// Runs to `until` and returns cue `n`'s last progress item, read from the last tenth of a
+/// second only (progress is dropped for a client that does not keep up).
+fn progress_at(
+    s: &mut OfflineShow,
+    n: u128,
+    until: u64,
+) -> Option<(f64, Option<f64>, Option<f64>)> {
+    run_to(s, until.saturating_sub(samples(0.1)));
+    s.take_outbound();
+    run_to(s, until);
+    progress_of(s, n)
+}
+
 /// Clients are told a running Video cue's progress, as an Audio cue's: elapsed on the engine
 /// clock from its start with the time left of its movie, held while paused, on from there when
 /// resumed, from the load-to-time point when loaded there; a still with no duration counts up
@@ -1169,22 +1186,23 @@ fn clients_are_told_a_video_cues_progress_playing_paused_resumed_and_loaded_to_t
     let png = make(dir.path(), "card.png", "png", None);
     let mut s = video_show(vec![video_cue(1, Some(&movie)), still_cue(2, &png, None)]);
     let at = start(&mut s, 1);
-    s.take_outbound();
-    run_to(&mut s, at + samples(1.0));
-    let (elapsed, remaining, position) = progress_of(&mut s, 1).expect("playing");
+    let (elapsed, remaining, position) =
+        progress_at(&mut s, 1, at + samples(1.0)).expect("playing");
     assert!(near(elapsed, 1.0), "{elapsed}");
     assert!(near(remaining.unwrap(), 3.0), "{remaining:?}");
     assert!(near(position.unwrap(), elapsed));
     s.transport(TransportAction::Pause { cue: id(1) });
-    s.run(BLOCK);
-    let paused = progress_of(&mut s, 1).expect("paused").0;
-    s.run(samples(1.0));
-    let (still_paused, _, _) = progress_of(&mut s, 1).expect("still told while paused");
-    assert!(near(still_paused, paused) && (still_paused - paused).abs() < 1e-9);
+    let now = s.now();
+    let paused = progress_at(&mut s, 1, now + BLOCK).expect("paused").0;
+    let (still_paused, _, _) =
+        progress_at(&mut s, 1, now + samples(1.0)).expect("still told while paused");
+    assert!(
+        (still_paused - paused).abs() < 1e-9,
+        "{still_paused} {paused}"
+    );
     s.transport(TransportAction::Resume { cue: id(1) });
     let resumed = s.now();
-    run_to(&mut s, resumed + samples(0.5));
-    let (on, left, _) = progress_of(&mut s, 1).expect("resumed");
+    let (on, left, _) = progress_at(&mut s, 1, resumed + samples(0.5)).expect("resumed");
     assert!(near(on, paused + 0.5), "{on} after {paused}");
     assert!(near(left.unwrap(), 4.0 - on));
     // Load to time, then GO: counts from there.
@@ -1199,15 +1217,12 @@ fn clients_are_told_a_video_cues_progress_playing_paused_resumed_and_loaded_to_t
     });
     s.run(BLOCK);
     let at = start(&mut s, 1);
-    s.take_outbound();
-    run_to(&mut s, at + samples(0.5));
-    let (from_there, left, _) = progress_of(&mut s, 1).expect("loaded to time");
+    let (from_there, left, _) = progress_at(&mut s, 1, at + samples(0.5)).expect("loaded to time");
     assert!(near(from_there, 3.0), "{from_there}");
     assert!(near(left.unwrap(), 1.0));
     // A still with no duration: elapsed with no end and no file position.
     let at = start(&mut s, 2);
-    run_to(&mut s, at + samples(0.5));
-    let (shown_for, end, position) = progress_of(&mut s, 2).expect("the still");
+    let (shown_for, end, position) = progress_at(&mut s, 2, at + samples(0.5)).expect("the still");
     assert!(near(shown_for, 0.5), "{shown_for}");
     assert_eq!((end, position), (None, None));
 }

@@ -158,10 +158,17 @@ impl Engine {
             return;
         }
         self.pictures.clock_sent = Some(now);
-        self.picture(ToStage::Clock {
+        let clock = ToStage::Clock {
             sample: now,
             rate: self.rate.get(),
-        });
+        };
+        match self.stages_host() {
+            // Before a play or a probe the clock must arrive; between them, only the newest
+            // matters.
+            Some(host) if force => host.picture(clock),
+            Some(host) => host.routine_clock(clock),
+            None => {}
+        }
     }
 
     /// A stage host started: it is sent the clock and every picture again.
