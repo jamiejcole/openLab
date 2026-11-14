@@ -24,7 +24,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     let patchAddButton = NSButton(title: loc("settings.audio.newPatch"), target: nil, action: nil)
     /// The table (made again for each drawing) and the view it sits in, in a scroll view.
     var patchGrid = NSGridView()
-    let patchGridHolder = FlippedView()
+    let patchGridHolder = WidthWatchingView()
     /// One per patch row, in table order; rebuilt whenever the table is drawn.
     var patchNameFields: [NSTextField] = []
     var patchDevicePopups: [NSPopUpButton] = []
@@ -75,6 +75,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     private var subs: [AnyCancellable] = []
     // Menu-tracking observers: held only while the window is open, removed when it closes.
     private var observers: [NSObjectProtocol] = []
+    private var fitQueued = false
     /// How many times the controls were rebuilt (tests: an unchanged status rebuilds nothing).
     private(set) var renderCount = 0
     var lastDrawn: WorkspaceSettingsModel.DisplayState?
@@ -113,6 +114,18 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         window.contentMinSize = NSSize(width: 520, height: 552)
         window.delegate = self
         tabs.delegate = self
+        // The table takes its width only once its tab is laid out, after the lines were wrapped:
+        // they are wrapped again then (on the next turn, not inside the layout pass).
+        patchGridHolder.onWidthChange = { [weak self] in
+            guard let self, !self.fitQueued else { return }
+            self.fitQueued = true
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.fitQueued = false
+                    self?.fitProblemLines()
+                }
+            }
+        }
         render()
     }
 
@@ -152,13 +165,27 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     }
 
     /// A problem line under a patch wraps at the table's width, which follows the window's.
-    func windowDidResize(_ notification: Notification) {
+    func windowDidResize(_ notification: Notification) { fitProblemLines() }
+
+    /// Each problem line wraps at the width its cell gives it as laid out now, and its row is as
+    /// tall as the text there: the grid sizes a merged row from a guess that left a blank band
+    /// under a two-line warning.
+    func fitProblemLines() {
         window?.contentView?.layoutSubtreeIfNeeded()
-        let across = patchGridHolder.bounds.width - 16
-        guard across > 100 else { return }
-        for label in patchProblemLabels where label.preferredMaxLayoutWidth != across {
-            label.preferredMaxLayoutWidth = across
+        var changed = false
+        for label in patchProblemLabels where label.frame.width > 100 {
+            let width = label.frame.width
+            let needs = ceil(
+                label.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 10_000)).height ?? 0)
+            guard let row = patchGrid.cell(for: label)?.row else { continue }
+            if abs(label.preferredMaxLayoutWidth - width) > 0.5 || row.height != needs {
+                label.preferredMaxLayoutWidth = width
+                label.invalidateIntrinsicContentSize()
+                row.height = needs
+                changed = true
+            }
         }
+        if changed { window?.contentView?.layoutSubtreeIfNeeded() }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -266,7 +293,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // refusal never moves the page above it.
         messageLabel.maximumNumberOfLines = 2
         messageLabel.font = .systemFont(ofSize: 11)
-        messageLabel.lineBreakMode = .byTruncatingTail
+        messageLabel.lineBreakMode = .byWordWrapping
+        messageLabel.cell?.wraps = true
         messageLabel.cell?.truncatesLastVisibleLine = true
         let bottom = NSStackView(views: [messageLabel, doneButton])
         bottom.heightAnchor.constraint(equalToConstant: 32).isActive = true
@@ -409,5 +437,19 @@ final class DoneButton: NSButton {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if window?.firstResponder is NSText { return false }
         return super.performKeyEquivalent(with: event)
+    }
+}
+
+/// A flipped view that says when its width changes (the patch table's holder: its problem lines
+/// wrap at that width).
+@MainActor
+final class WidthWatchingView: NSView {
+    var onWidthChange: (() -> Void)?
+    override var isFlipped: Bool { true }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let before = frame.width
+        super.setFrameSize(newSize)
+        if frame.width != before { onWidthChange?() }
     }
 }

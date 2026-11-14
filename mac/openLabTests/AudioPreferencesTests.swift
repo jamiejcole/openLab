@@ -159,5 +159,10 @@ final class AudioPreferencesTests: XCTestCase {
         for control in [prefs.clockPopup] + prefs.bufferPopups as [NSView] {
             XCTAssertTrue(inside.contains(control.convert(control.bounds, to: nil)), "\(control)")
         }
+        // The device list fills the tab's width and the height left below the headings.
+        let list = try XCTUnwrap(prefs.deviceGrid.enclosingScrollView)
+        let frame = list.convert(list.bounds, to: nil)
+        XCTAssertEqual(frame.width, inside.width - 32, accuracy: 1)
+        XCTAssertLessThan(frame.minY - inside.minY, 60, "the list reaches near the tab's bottom")
     }
 }

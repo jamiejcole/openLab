@@ -32,6 +32,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     let mainFader = LevelFader(value: 0, minValue: LevelText.floorDb, maxValue: 0, target: nil, action: nil)
     let mainField = NSTextField()
     let matrix = PatchRoutingView()
+    /// The matrix's header row and left columns, kept in view while it scrolls.
+    let matrixHeader = PatchRoutingPane(.header)
+    let matrixRows = PatchRoutingPane(.rows)
     let meter = MeterView()
     /// What the routing tab cannot show or do here: openLab's limits on this device and this patch.
     let routingNote = NSTextField(wrappingLabelWithString: "")
@@ -276,7 +279,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         matrix.onRoute = { [weak self] row, column in self?.route(row, to: column) }
         meter.bank = store.meters
         meter.setAX(AX.patchEditorMeter)
-        matrix.addSubview(meter)
+        matrixRows.addSubview(meter)
+        matrixHeader.matrix = matrix
+        matrixRows.matrix = matrix
+        matrix.onChange = { [weak self] in self?.placePanes() }
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
@@ -284,6 +290,15 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         scroll.drawsBackground = false
         scroll.borderType = .bezelBorder
         scroll.documentView = matrix
+        // The left columns float over the boxes when scrolled sideways, the header over the rows
+        // when scrolled up and down (laid out in the matrix's coordinates).
+        scroll.addFloatingSubview(matrixRows, for: .horizontal)
+        scroll.addFloatingSubview(matrixHeader, for: .vertical)
+        // The floating panes are as tall or wide as the matrix: the scroll view shows only its part.
+        scroll.clipsToBounds = true
+        // No inset at the top: the header row sits on the visible top edge, nothing peeks above it.
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsetsZero
         scroll.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         scroll.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .vertical)
 
@@ -377,7 +392,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         matrix.isEnabled = state.loaded && row?.mapping != nil
         fitMatrixWidth()
         let metered = min(state.levels.count, MeterBank.maxChannels)
-        meter.frame = matrix.meterRect(rows: metered)
+        meter.frame = matrix.meterRect(rows: metered).offsetBy(dx: 0, dy: -PatchRoutingView.headerH)
         meter.fixedRows = metered
         meter.source = .output(patchID)
 
@@ -401,6 +416,20 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             : channels > state.usable ? String(format: loc("patchEditor.usable"), state.usable, channels) : ""
         deviceOutputsNote.isHidden = deviceOutputsNote.stringValue.isEmpty
         renderDeviceOutputs(channels: max(channels, maxRoute), state: state)
+    }
+
+    /// The floating panes take the matrix's header row and its left columns.
+    private func placePanes() {
+        // The header reaches a little above the matrix's top, so no row peeks out over it at the
+        // scroll view's edge; its drawing keeps the matrix's coordinates.
+        let pad: CGFloat = 4
+        matrixHeader.frame = NSRect(x: 0, y: -pad, width: matrix.frame.width, height: PatchRoutingView.headerH + pad)
+        matrixHeader.setBoundsOrigin(NSPoint(x: 0, y: -pad))
+        matrixRows.frame = NSRect(
+            x: 0, y: PatchRoutingView.headerH, width: PatchRoutingView.crossX,
+            height: matrix.frame.height - PatchRoutingView.headerH)
+        matrixHeader.needsDisplay = true
+        matrixRows.needsDisplay = true
     }
 
     /// The matrix is at least as wide as its scroll view (followed on each layout of the window).
@@ -439,7 +468,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             namesStack.addArrangedSubview(line)
             outputNameFields.append(name)
 
-            let level = NSTextField(frame: matrix.levelRect(row: i))
+            let level = NSTextField(frame: matrix.levelRect(row: i).offsetBy(dx: 0, dy: -PatchRoutingView.headerH))
             level.alignment = .right
             level.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
             level.controlSize = .small
@@ -448,7 +477,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             level.setAX(
                 "\(AX.patchEditorOutputField)-\(i + 1)",
                 label: "\(String(format: loc("patchEditor.cueOutput"), i + 1)), \(loc("patchEditor.level"))")
-            matrix.addSubview(level)
+            matrixRows.addSubview(level)
             outputFields.append(level)
         }
         mainField.tag = 0

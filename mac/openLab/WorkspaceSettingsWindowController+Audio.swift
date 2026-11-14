@@ -227,6 +227,7 @@ extension WorkspaceSettingsWindowController {
             patchProblemLabels.append(problem)
         }
         patchGrid.layoutSubtreeIfNeeded()
+        fitProblemLines()
     }
 
     /// After a button or pop-up of the table: a name still being typed is committed first (its

@@ -27,7 +27,12 @@ final class PatchRoutingView: NSView {
     }
     /// The device outputs a cue output can be sent to (the first `usable`).
     var usable = 0 {
-        didSet { if usable != oldValue { needsDisplay = true } }
+        didSet {
+            if usable != oldValue {
+                needsDisplay = true
+                onChange?()
+            }
+        }
     }
     /// The device output (0-based) each cue output plays on; nil: none known (no device).
     var routes: [Int?] = [] {
@@ -38,6 +43,8 @@ final class PatchRoutingView: NSView {
     }
     /// A box was clicked: send cue output `row` to device output `column` (both 0-based).
     var onRoute: ((_ row: Int, _ column: Int) -> Void)?
+    /// The matrix's size or contents changed: the panes that float over it follow.
+    var onChange: (() -> Void)?
 
     override var isFlipped: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -53,6 +60,7 @@ final class PatchRoutingView: NSView {
                 width: max(minWidth, Self.crossX + CGFloat(deviceOutputs) * Self.cellW + 8),
                 height: Self.headerH + CGFloat(rowLabels.count) * Self.rowH + 4))
         needsDisplay = true
+        onChange?()
     }
 
     // MARK: Geometry
@@ -88,30 +96,8 @@ final class PatchRoutingView: NSView {
 
     override func draw(_ dirty: NSRect) {
         NSBezierPath.clip(bounds)
-        let small: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor,
-        ]
-        let label: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.labelColor,
-            .paragraphStyle: Self.truncating,
-        ]
         let firstCol = max(0, Int((dirty.minX - Self.crossX) / Self.cellW))
         let lastCol = min(deviceOutputs - 1, Int((dirty.maxX - Self.crossX) / Self.cellW))
-        if dirty.minY < Self.headerH {
-            draw(
-                loc("patchEditor.cueOutputs"), in: NSRect(x: 4, y: 0, width: Self.labelW - 8, height: Self.headerH),
-                small)
-            centred(
-                loc("patchEditor.level"), in: NSRect(x: Self.labelW, y: 0, width: Self.levelW, height: Self.headerH),
-                small)
-            if firstCol <= lastCol {
-                for c in firstCol...lastCol {
-                    let r = NSRect(
-                        x: Self.crossX + CGFloat(c) * Self.cellW, y: 0, width: Self.cellW, height: Self.headerH)
-                    centred("\(c + 1)", in: r, small)
-                }
-            }
-        }
         let firstRow = max(0, Int((dirty.minY - Self.headerH) / Self.rowH))
         let lastRow = min(rowLabels.count - 1, Int((dirty.maxY - Self.headerH) / Self.rowH))
         guard firstRow <= lastRow else { return }
@@ -120,9 +106,6 @@ final class PatchRoutingView: NSView {
             if row % 2 == 1 {
                 NSColor.labelColor.withAlphaComponent(0.04).setFill()
                 NSRect(x: 0, y: y, width: bounds.width, height: Self.rowH).fill()
-            }
-            if dirty.minX < Self.labelW {
-                draw(rowLabels[row], in: NSRect(x: 4, y: y, width: Self.labelW - 8, height: Self.rowH), label)
             }
             guard firstCol <= lastCol else { continue }
             for c in firstCol...lastCol { box(row: row, column: c) }
@@ -148,6 +131,43 @@ final class PatchRoutingView: NSView {
         let dot = NSBezierPath(ovalIn: NSRect(x: r.midX - 3, y: r.midY - 3, width: 6, height: 6))
         NSColor.white.setFill()
         dot.fill()
+    }
+
+    // MARK: The floating panes
+
+    /// The header row: what each column is (fixed above the rows as they scroll).
+    func drawHeader(in pane: NSRect) {
+        let small: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        draw(loc("patchEditor.cueOutputs"), in: NSRect(x: 4, y: 0, width: Self.labelW - 8, height: Self.headerH), small)
+        centred(
+            loc("patchEditor.level"), in: NSRect(x: Self.labelW, y: 0, width: Self.levelW, height: Self.headerH), small)
+        for c in 0..<deviceOutputs {
+            let r = NSRect(x: Self.crossX + CGFloat(c) * Self.cellW, y: 0, width: Self.cellW, height: Self.headerH)
+            guard r.intersects(pane) else { continue }
+            centred("\(c + 1)", in: r, small)
+        }
+    }
+
+    /// The left columns' labels and stripes (fixed beside the boxes as they scroll sideways),
+    /// in the pane's own coordinates (row 0 at the top).
+    func drawRowLabels(in dirty: NSRect, width: CGFloat) {
+        let label: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: Self.truncating,
+        ]
+        let firstRow = max(0, Int(dirty.minY / Self.rowH))
+        let lastRow = min(rowLabels.count - 1, Int(dirty.maxY / Self.rowH))
+        guard firstRow <= lastRow else { return }
+        for row in firstRow...lastRow {
+            let y = CGFloat(row) * Self.rowH
+            if row % 2 == 1 {
+                NSColor.labelColor.withAlphaComponent(0.04).setFill()
+                NSRect(x: 0, y: y, width: width, height: Self.rowH).fill()
+            }
+            draw(rowLabels[row], in: NSRect(x: 4, y: y, width: Self.labelW - 8, height: Self.rowH), label)
+        }
     }
 
     private static let truncating: NSParagraphStyle = {
@@ -186,5 +206,36 @@ final class PatchRoutingView: NSView {
     override func accessibilityValue() -> Any? {
         routes.enumerated().map { "\($0.offset + 1)→\($0.element.map { String($0 + 1) } ?? "-")" }.joined(
             separator: ", ")
+    }
+}
+
+/// A part of the routing matrix that stays in view as the matrix scrolls: the header row (above the
+/// rows, as they scroll up and down) or the left columns with the cue outputs' labels, level boxes
+/// and meter (beside the boxes, as they scroll sideways). Opaque, so what scrolls under it is hidden.
+@MainActor
+final class PatchRoutingPane: NSView {
+    enum Part { case header, rows }
+    let part: Part
+    weak var matrix: PatchRoutingView?
+
+    init(_ part: Part) {
+        self.part = part
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { true }
+
+    override func draw(_ dirty: NSRect) {
+        NSBezierPath.clip(bounds)
+        NSColor.windowBackgroundColor.setFill()
+        dirty.fill()
+        switch part {
+        case .header: matrix?.drawHeader(in: dirty)
+        case .rows: matrix?.drawRowLabels(in: dirty, width: bounds.width)
+        }
     }
 }

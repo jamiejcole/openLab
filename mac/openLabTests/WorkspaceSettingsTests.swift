@@ -421,7 +421,24 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertTrue(editor.routingNote.stringValue.contains(loc("patchEditor.metersShown")))
         // Each level box is inside the matrix, on its own row.
         let last = try XCTUnwrap(editor.outputFields.last)
-        XCTAssertTrue(editor.matrix.bounds.contains(last.frame))
+        XCTAssertTrue(editor.matrixRows.bounds.contains(last.frame))
+
+        // Scrolled to the last row, the header still says what each column is, and the last row's
+        // label pane is in view beside its boxes.
+        let window = try XCTUnwrap(editor.window)
+        editor.tabs.selectTabViewItem(withIdentifier: "routing")
+        window.contentView?.layoutSubtreeIfNeeded()
+        let scroll = try XCTUnwrap(editor.matrix.enclosingScrollView)
+        editor.matrix.scroll(NSPoint(x: 0, y: editor.matrix.frame.height))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let visible = scroll.convert(scroll.contentView.frame, to: nil)
+        let header = editor.matrixHeader.convert(editor.matrixHeader.bounds, to: nil)
+        // The header covers the top edge of what shows, and its labels are inside it.
+        XCTAssertGreaterThanOrEqual(header.maxY, visible.maxY - 0.5, "header \(header) covers the top of \(visible)")
+        XCTAssertGreaterThanOrEqual(header.minY, visible.minY, "header \(header) inside \(visible)")
+        XCTAssertLessThanOrEqual(header.minY, visible.maxY - PatchRoutingView.headerH + 0.5, "the labels show")
+        XCTAssertTrue(visible.intersects(last.convert(last.bounds, to: nil)), "the last row is in view")
         let mapped = try await mapping(rig)
         XCTAssertEqual(mapped?.channels.count, 128)
     }
@@ -459,6 +476,32 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertNil(wc.editPatch(patch))
     }
 
+    /// A warning already there when the window opens is drawn before the table has its width: once
+    /// laid out, its row is as tall as its text, with no blank band under it.
+    func testAWarningThereWhenTheWindowOpensLeavesNoBlankBandUnderIt() async throws {
+        let rig = try await Rig.open("Demo", on: engine)
+        try await loseDevice(rig)
+        let sc = WorkspaceSettingsWindowController(store: rig.store)
+        await sc.present().value
+        sc.tabs.selectTabViewItem(withIdentifier: "audio")
+        let warning = String(format: loc("settings.audio.problem.deviceMissing"), device)
+        await assertEventually { sc.patchProblemLabels.first?.stringValue == warning }
+        XCTAssertEqual(sc.model.patches.count, 1, "the warning's row is the table's last")
+        let line = sc.patchProblemLabels[0]
+        await assertEventually("the row ends where its text does") {
+            sc.window?.contentView?.layoutSubtreeIfNeeded()
+            let needs =
+                line.cell?.cellSize(
+                    forBounds: NSRect(x: 0, y: 0, width: line.frame.width, height: 10_000)
+                ).height ?? 0
+            let below =
+                line.convert(line.bounds, to: nil).minY
+                - sc.patchGrid.convert(sc.patchGrid.bounds, to: nil).minY
+            return abs(line.frame.height - needs) < 2 && abs(below) < 2
+        }
+        sc.close()
+    }
+
     /// Checklist: a patch whose device is missing → its row and the editor show the warning; the
     /// status window lists it.
     func testAPatchWhoseDeviceIsMissingIsWarnedInItsRowTheEditorAndTheStatusWindow() async throws {
@@ -468,6 +511,17 @@ final class WorkspaceSettingsTests: XCTestCase {
         let warning = String(format: loc("settings.audio.problem.deviceMissing"), device)
         await assertEventually { sc.patchProblemLabels.first?.stringValue == warning }
         XCTAssertFalse(try XCTUnwrap(sc.patchGrid.cell(for: sc.patchProblemLabels[0])?.row).isHidden)
+        // The line is as tall as its text at the table's width: no blank band under it.
+        sc.window?.contentView?.layoutSubtreeIfNeeded()
+        let line = sc.patchProblemLabels[0]
+        let needs = try XCTUnwrap(line.cell).cellSize(
+            forBounds: NSRect(x: 0, y: 0, width: line.frame.width, height: 10_000)
+        ).height
+        XCTAssertEqual(line.frame.height, needs, accuracy: 2, "no blank band under the warning")
+        XCTAssertEqual(sc.model.patches.count, 1, "the warning's row is the table's last")
+        let lineInWindow = line.convert(line.bounds, to: nil)
+        let gridInWindow = sc.patchGrid.convert(sc.patchGrid.bounds, to: nil)
+        XCTAssertEqual(lineInWindow.minY, gridInWindow.minY, accuracy: 2, "the row ends where its text does")
         await assertEventually("the device is shown as not connected once the list has lost it") {
             sc.patchDevicePopups.first?.titleOfSelectedItem
                 == String(format: loc("settings.audio.notConnected"), self.device)
@@ -532,12 +586,30 @@ final class WorkspaceSettingsTests: XCTestCase {
         let sent = commands(rig).count
         sc.patchRemoveButtons[1].performClick(nil)
         let expected = String(
-            format: loc("settings.audio.patchInUse"), String(format: loc("settings.audio.newPatchName"), 2), "1  Intro")
+            format: loc("settings.audio.patchInUse"), String(format: loc("settings.audio.newPatchName"), 2), "1 Intro")
         await assertEventually { sc.messageLabel.stringValue == expected }
         XCTAssertEqual(commands(rig).count, sent, "nothing sent")
         XCTAssertEqual(rig.store.model?.patches.count, 2)
         sc.window?.contentView?.layoutSubtreeIfNeeded()
         XCTAssertEqual(table.convert(table.bounds, to: nil), before, "the table keeps its place and size")
+
+        // Long patch and cue names: cut in the middle, and the whole sentence is drawn.
+        let long = String(repeating: "Front of house main pair ", count: 4)
+        await sc.model.renamePatch(second, to: long)
+        guard case .success = await rig.store.send(command: .setProperty(intro, .name(long))) else {
+            return XCTFail("rename cue")
+        }
+        await settle()
+        sc.patchRemoveButtons[1].performClick(nil)
+        await assertEventually { sc.messageLabel.stringValue.contains(WorkspaceSettingsModel.middleCut(long)) }
+        sc.window?.contentView?.layoutSubtreeIfNeeded()
+        let cell = try XCTUnwrap(sc.messageLabel.cell)
+        let needs = cell.cellSize(
+            forBounds: NSRect(x: 0, y: 0, width: sc.messageLabel.frame.width, height: 10_000)
+        ).height
+        XCTAssertLessThanOrEqual(needs, sc.messageLabel.frame.height + 1, "the sentence is not cut")
+        XCTAssertTrue(sc.messageLabel.stringValue.hasSuffix(String(loc("settings.audio.patchInUse").suffix(20))))
+        XCTAssertEqual(table.convert(table.bounds, to: nil), before, "the table still keeps its place")
     }
 
     /// A patch set to no device in the table is warned about in its row and the status window.

@@ -120,7 +120,18 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
             v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
         }
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
-        return stack
+        // The page fills the tab: the device list takes the width and the height left.
+        let page = NSView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        page.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: page.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: page.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: page.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: page.bottomAnchor),
+        ])
+        stack.distribution = .fill
+        return page
     }
 
     /// Shows the stored choices (the window is reused between openings) and reads the devices.

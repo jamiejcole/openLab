@@ -117,13 +117,23 @@ final class WorkspaceSettingsModel: ObservableObject {
         // naming the cue the operator has to move.
         if let model = store.model, let cue = Self.firstCue(in: model.cueLists.flatMap(\.cues), on: id) {
             let name = model.patches.first { $0.id == id }?.raw["name"]?.stringValue ?? ""
+            let title = [cue.number, model.listName(cue)].compactMap { $0 }.filter { !$0.isEmpty }
+                .joined(separator: " ")
+            // Long names are cut in the middle, so the whole sentence fits the message line.
             message = String(
                 format: loc("settings.audio.patchInUse"),
-                name.isEmpty ? loc("settings.audio.untitledPatch") : name,
-                WarningRows.cueTitle(cue, name: model.listName(cue)))
+                Self.middleCut(name.isEmpty ? loc("settings.audio.untitledPatch") : name),
+                Self.middleCut(title))
             return false
         }
         return await sendPatch(Command(.object(["type": .string("remove_patch"), "id": .string(id.raw)])))
+    }
+
+    /// `text`, or its start and end with an ellipsis between when it is longer than `limit`.
+    static func middleCut(_ text: String, limit: Int = 32) -> String {
+        guard text.count > limit, limit > 2 else { return text }
+        let head = (limit - 1) / 2
+        return String(text.prefix(head)) + "\u{2026}" + String(text.suffix(limit - 1 - head))
     }
 
     /// The first Audio cue, in list order, that plays through `patch`.
