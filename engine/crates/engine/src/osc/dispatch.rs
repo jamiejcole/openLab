@@ -44,11 +44,10 @@ pub trait OscShow {
     fn cue_exists(&self, id: CueId) -> bool;
     /// The value `/cue/{n}/{field}` reports; `None` when the cue has no such field.
     fn cue_property(&self, id: CueId, field: CueField) -> Option<Value>;
-    /// The field a write of `field` on `id` sets: `field` itself, the one the cue keeps it in (a
-    /// Wait cue's post-wait is its duration), or `None` when the cue's kind has no such field to
-    /// write (a duration on an Audio cue, a load time on anything but a Load cue).
-    fn write_target(&self, _id: CueId, field: CueField) -> Option<CueField> {
-        Some(field)
+    /// Whether `id`'s kind has `field` to write (a duration only on Wait and Fade cues, a load
+    /// time only on Load cues).
+    fn writable(&self, _id: CueId, _field: CueField) -> bool {
+        true
     }
     /// The cue list that holds `cue` directly, not inside a group: a playhead only rests on such
     /// a cue.
@@ -905,10 +904,7 @@ fn cue_verb(show: &dyn OscShow, cue: CueId, verb: Verb, args: &[OscType], out: &
                 }
                 return;
             }
-            match show
-                .write_target(cue, field)
-                .and_then(|field| set_field(cue, field, args))
-            {
+            match set_field(cue, field, args).filter(|_| show.writable(cue, field)) {
                 Some(command) => out.inputs.push(OscInput::Command(Box::new(command))),
                 None => bad(out),
             }

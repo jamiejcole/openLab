@@ -77,7 +77,7 @@ A message that succeeds gets **no reply** (actions, writes, `/updates`). A failu
 | `/cue/{number}/reset`, `/preview` | none | `transport reset` / `preview` |
 | `/cue/{number}/name`, `/notes` | one string | `command set_cue_property` |
 | `/cue/{number}/number` | string, int or float; empty string clears | `command set_cue_numbers` |
-| `/cue/{number}/preWait`, `/postWait` | one number, 0 to 86400 (a day) | `command set_cue_property`. A Wait cue's post-wait is its duration: read as the duration, written as `duration` (Q350) |
+| `/cue/{number}/preWait`, `/postWait` | one number, 0 to 86400 (a day) | `command set_cue_property`. A Wait cue's post-wait is its duration: read as the duration, and core writes the duration (Q350) |
 | `/cue/{number}/duration` | one number, 0 to 86400 | `command set_cue_property` `duration`, Wait and Fade cues only (`error` for others). Read: a Wait or Fade cue's duration, 0 for an instant cue, `error` for Audio and Group (this copy has no media lengths) |
 | `/cue/{number}/loadTime` | one number, -86400 to 86400 | `command set_cue_property` `load_to_time`, Load cues only (`error` for others); negative counts back from the target's end. openLab's own address: QLab 5 has none (Q354) |
 | `/cue/{number}/armed`, `/flagged` | int 0/1 or OSC boolean | `command set_cue_property` |

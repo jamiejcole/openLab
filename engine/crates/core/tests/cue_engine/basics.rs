@@ -190,7 +190,11 @@ fn auto_continue_without_post_wait_triggers_at_action_start() {
 
 #[test]
 fn post_wait_longer_than_the_action_reports_post_waiting() {
-    let mut rig = Rig::new(vec![timed(timer(1, 9, 1.0), 0.0, 3.0, AC), memo(2), sound(9)]);
+    let mut rig = Rig::new(vec![
+        timed(timer(1, 9, 1.0), 0.0, 3.0, AC),
+        memo(2),
+        sound(9),
+    ]);
     rig.go(0);
     assert_eq!(
         changes(&rig.tick(1000), 1),
@@ -962,7 +966,11 @@ fn load_to_time_inside_the_pre_wait() {
 
 #[test]
 fn load_to_time_shortens_known_durations_and_post_waits() {
-    let mut rig = Rig::new(vec![timed(timer(1, 9, 3.0), 1.0, 2.0, AC), memo(2), sound(9)]);
+    let mut rig = Rig::new(vec![
+        timed(timer(1, 9, 3.0), 1.0, 2.0, AC),
+        memo(2),
+        sound(9),
+    ]);
     rig.at(
         0,
         Input::Load {
@@ -1015,7 +1023,11 @@ fn load_past_the_end_sits_loaded_at_the_end() {
 fn started_after_a_load_past_the_end_the_action_is_over_and_the_post_wait_counts_from_the_time() {
     // Pre-wait 1 s, a 3 s wait, a 5 s post-wait. Loaded to 4.5 s (3.5 s into the action, past
     // its 3 s): the action ends at once and the post-wait has 5 - 3.5 = 1.5 s left.
-    let mut rig = Rig::new(vec![timed(timer(1, 9, 3.0), 1.0, 5.0, AC), memo(2), sound(9)]);
+    let mut rig = Rig::new(vec![
+        timed(timer(1, 9, 3.0), 1.0, 5.0, AC),
+        memo(2),
+        sound(9),
+    ]);
     rig.at(
         0,
         Input::Load {
@@ -1031,7 +1043,11 @@ fn started_after_a_load_past_the_end_the_action_is_over_and_the_post_wait_counts
     assert_eq!(rig.engine.next_deadline(), Some(11_500));
     assert!(!changes(&rig.tick(11_500), 2).is_empty());
     // Loaded to 100 s: no post-wait left either, so the next cue starts at the GO.
-    let mut rig = Rig::new(vec![timed(timer(1, 9, 3.0), 1.0, 5.0, AC), memo(2), sound(9)]);
+    let mut rig = Rig::new(vec![
+        timed(timer(1, 9, 3.0), 1.0, 5.0, AC),
+        memo(2),
+        sound(9),
+    ]);
     rig.at(
         0,
         Input::Load {
@@ -1329,7 +1345,11 @@ fn deleting_a_loaded_cue_unloads_it() {
 
 #[test]
 fn edited_waits_apply_to_timers_not_yet_started() {
-    let mut rig = Rig::new(vec![timed(timer(1, 9, 1.0), 1.0, 3.0, AC), memo(2), sound(9)]);
+    let mut rig = Rig::new(vec![
+        timed(timer(1, 9, 1.0), 1.0, 3.0, AC),
+        memo(2),
+        sound(9),
+    ]);
     rig.go(0);
     // The pre-wait is already counting; the post-wait starts with the action and takes the edit.
     rig.cues_mut()[0].pre_wait = 5.0;
@@ -1337,7 +1357,11 @@ fn edited_waits_apply_to_timers_not_yet_started() {
     rig.tick(1000);
     assert_eq!(rig.engine.next_deadline(), Some(1500));
     // Once the post-wait is counting, edits leave it alone.
-    let mut rig = Rig::new(vec![timed(timer(1, 9, 1.0), 0.0, 3.0, AC), memo(2), sound(9)]);
+    let mut rig = Rig::new(vec![
+        timed(timer(1, 9, 1.0), 0.0, 3.0, AC),
+        memo(2),
+        sound(9),
+    ]);
     rig.go(0);
     rig.cues_mut()[0].post_wait = 0.5;
     rig.tick(500);
@@ -1391,7 +1415,11 @@ fn a_wait_cues_post_wait_follows_its_duration() {
         rig.go(0);
         rig.tick(1000);
         assert!(running_at(&rig.tick(2999), 2).is_none(), "stored {stored}");
-        assert_eq!(running_at(&rig.tick(3000), 2), Some(3000), "stored {stored}");
+        assert_eq!(
+            running_at(&rig.tick(3000), 2),
+            Some(3000),
+            "stored {stored}"
+        );
     }
 }
 

@@ -91,6 +91,7 @@ pub enum CueProperty {
     PreWait {
         value: f64,
     },
+    /// A Wait cue's post-wait is its duration: on a Wait cue this sets the duration.
     PostWait {
         value: f64,
     },

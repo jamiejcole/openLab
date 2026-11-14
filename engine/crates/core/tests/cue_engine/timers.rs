@@ -62,7 +62,11 @@ fn a_wait_cue_shows_its_action_and_a_group_its_elapsed_time() {
 
 #[test]
 fn a_post_wait_counts_from_the_action_start_alongside_the_action() {
-    let mut rig = Rig::panicking(vec![timed(timer(1, 9, 2.0), 0.0, 5.0, AC), memo(2), sound(9)]);
+    let mut rig = Rig::panicking(vec![
+        timed(timer(1, 9, 2.0), 0.0, 5.0, AC),
+        memo(2),
+        sound(9),
+    ]);
     rig.start(0, 1);
     assert_eq!(
         rig.timers(1000),

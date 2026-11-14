@@ -15,7 +15,7 @@ A control cue is a cue like any other. At its action start `A` (after its own pr
 | Load | Load to `load_to_time` (active target: `LoadIgnored`; broken: `CueBroken`). Negative: that long before the target's end, its nominal span (pre-wait + action, as a playlist times it, audio from `CueLengths`); further back than the start or no known end (unprobed audio, endless loop or group): the start (QLab 5 pp. 680-681, measured 5.6.5, Q351-Q352) |
 | Reset | Reset (clears broken) of the target and its descendants, which also become unplayed (first colour again, `panic-transport.md` "Played"). Does not undo Arm/Disarm |
 | Devamp, GoTo, Arm, Disarm | below |
-| Wait | nothing; action lasts its `duration`. Its post-wait is its duration whatever `post_wait` stores (`Cue::effective_post_wait`; QLab 5 p. 688, measured 5.6.5, Q350) |
+| Wait | nothing; action lasts its `duration`. Its post-wait is its duration whatever `post_wait` stores (`Cue::effective_post_wait`; a `PostWait` command on it sets the duration; QLab 5 p. 688, measured 5.6.5, Q350) |
 | Memo | nothing; action completes at once |
 
 A running Wait takes an edited duration (`broken-and-edits.md`); its pending auto-continue moves to the new end.
