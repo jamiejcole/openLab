@@ -71,12 +71,29 @@ extension InspectorViewController {
         postWaitField.isEnabled = modes.contains { $0 != "auto_follow" }
         loadTimeField.isEnabled = kind == "load"
         networkMessageField.isEnabled = kind == "network"
+        // The others' fields are switched on or off by their boxes before the hints below are judged.
+        renderBatchOthers(cues)
         // A field that is off shows no Mixed hint, so it does not read as one to type in.
         for f in InspectorField.allCases { if field(f)?.isEnabled == false { field(f)?.placeholderString = nil } }
         // An empty field that is off draws like one that is on (AppKit dims only its text): it is dimmed whole.
         for f in batchDimmed { f.alphaValue = f.isEnabled ? 1 : Self.offAlpha }
         syncTabs(Self.batchTabs(forKinds: kinds))
-        showChoice(colourPopup, Self.colours, cues.map { $0.raw["color"]?.stringValue ?? "none" })
+        showChoice(colourPopup, Self.colourItems, cues.map { $0.raw["color"]?.stringValue ?? "none" })
+        let seconds = cues.map { $0.raw["second_color"]?.stringValue ?? "none" }
+        showChoice(secondColourPopup, Self.colourItems, seconds)
+        if secondColourUnlocked {
+            secondColourCheck.allowsMixedState = false
+            secondColourCheck.state = .on
+        } else {
+            showTicks(secondColourCheck, seconds.map { $0 != "none" })
+        }
+        secondColourPopup.isEnabled = secondColourCheck.state != .off && !isLocked
+        showTicks(autoLoadCheck, cues.map { $0.raw["auto_load"] == .bool(true) })
+        showTicks(skipCheck, cues.map { $0.raw["skip_if_disarmed"] == .bool(true) })
+        // Each cue's own switch: mixed when they differ (the box sets it on every cue).
+        showTicks(hotkeyEnableCheck, cues.map { $0.raw["triggers"]?["hotkey_enabled"] != .bool(false) })
+        hotkeyEnableCheck.isEnabled = !isLocked
+        hotkeyField.textColor = .controlTextColor
         showChoice(continuePopup, Self.continueModes, modes)
         showChoice(
             secondTriggerPopup, Self.secondTriggers, cues.map { $0.raw["second_trigger"]?.stringValue ?? "nothing" })
@@ -221,7 +238,7 @@ extension InspectorViewController {
     func endBatchControls() {
         for c in [
             flaggedCheck, armedCheck, onReleaseCheck, groupLoopCheck, groupShuffleCheck, devampStartNextCheck,
-            devampStopCheck,
+            devampStopCheck, autoLoadCheck, skipCheck, secondColourCheck, fadeOthersCheck, duckCheck, hotkeyEnableCheck,
         ] {
             c.allowsMixedState = false
         }
@@ -298,7 +315,7 @@ extension InspectorViewController {
         messageLabel.stringValue = ""
         // Notes sent to several cues and not saved are offered back as one cue's are.
         send(command, cue: first.id, key: "\(f)", revert: [f], notes: f == .notes ? text : nil)
-        if [.preWait, .postWait, .duration, .loadTime].contains(f), let s = CueTime.parse(text) {
+        if InspectorField.times.contains(f), let s = CueTime.parse(text) {
             field(f)?.stringValue = CueTime.format(s)
             field(f)?.placeholderString = nil
         }

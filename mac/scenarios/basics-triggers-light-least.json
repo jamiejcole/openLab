@@ -1,0 +1,18 @@
+{
+  "about": "Basics and Triggers (#633), light, then the least window (800x500): the colour rows, the disarmed and skipped rows (one of them selected), the Basics tab and the Triggers tab with fade out and stop others and duck on.",
+  "show": "basics-triggers/basics-triggers.openlab",
+  "appearance": "light",
+  "window": {"width": 1200, "height": 1100},
+  "steps": [
+    {"select": "22"},
+    {"shot": "rows-and-basics-light"},
+    {"select": "24"},
+    {"tab": "triggers"},
+    {"shot": "triggers-light"},
+    {"resize": [800, 500]},
+    {"shot": "triggers-least"},
+    {"tab": "basics"},
+    {"select": "21"},
+    {"shot": "basics-least"}
+  ]
+}

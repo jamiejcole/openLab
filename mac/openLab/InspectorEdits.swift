@@ -2,10 +2,14 @@
 
 import Foundation
 
-/// The inspector's text fields: the Basics tab's and the Load Time
-/// tab's time, and the Network cue's message.
+/// The inspector's text fields: the Basics tab's, the Triggers tab's times and level for other
+/// cues, the Load Time tab's time, and the Network cue's message.
 enum InspectorField: Hashable, CaseIterable {
     case number, name, notes, preWait, postWait, target, duration, loadTime, message
+    case fadeOthersTime, duckDb, duckTime
+
+    /// The fields that hold a time, shown as stored (`90` becomes `01:30.00`) once committed.
+    static let times: Set<InspectorField> = [.preWait, .postWait, .duration, .loadTime, .fadeOthersTime, .duckTime]
 }
 
 /// Turns what the user typed into a model command, or rejects it locally so nothing is sent.
@@ -30,6 +34,8 @@ enum InspectorEdit {
         case noMessage
         /// The typed arguments cannot be read: an open quote, or an argument type the engine cannot send.
         case invalidMessage
+        /// Not a number of dB (from -inf to +12).
+        case invalidLevel
 
         /// The `Localizable.strings` key of the message shown for it.
         var messageKey: String {
@@ -46,6 +52,7 @@ enum InspectorEdit {
             case .negativeLoadTime: return "inspector.invalid.negativeLoadTime"
             case .noMessage: return "inspector.invalid.noMessage"
             case .invalidMessage: return "inspector.invalid.networkMessage"
+            case .invalidLevel: return "inspector.invalid.level"
             }
         }
     }
@@ -90,6 +97,9 @@ enum InspectorEdit {
             guard let target = model.cue(ModelID(id)) else { return "" }
             // The number only; the name shows beside the field (QLab 5, manual p. 127).
             return target.number ?? ""
+        case .fadeOthersTime: return CueTime.format(fadeOthers(cue).duration)
+        case .duckDb: return OthersLevel.format(duckOthers(cue).db)
+        case .duckTime: return CueTime.format(duckOthers(cue).duration)
         }
     }
 
@@ -136,6 +146,7 @@ enum InspectorEdit {
                 return .success(.setProperty(cue.id, .loadToTime(seconds)))
             }
         case .message: return messageCommand(text: text, cue: cue)
+        case .fadeOthersTime, .duckDb, .duckTime: return othersCommand(field, text: text, cue: cue)
         case .target:
             guard targetKinds.contains(cue.kindType) else { return .failure(.notApplicable) }
             let n = text.trimmingCharacters(in: .whitespacesAndNewlines)

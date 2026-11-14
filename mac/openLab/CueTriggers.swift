@@ -40,12 +40,21 @@ extension KeyChord {
 }
 
 extension WorkspaceModel {
-    /// Every cue with a hotkey trigger, with its chord (keys the app cannot match are left out).
-    var cueHotkeys: [(cue: ModelID, chord: KeyChord)] {
+    /// Every cue with a hotkey trigger that is on, with its chord (keys the app cannot match are left
+    /// out). A trigger switched off keeps its key but takes no key press and clashes with no cue.
+    var cueHotkeys: [(cue: ModelID, chord: KeyChord)] { hotkeys(includingOff: false) }
+
+    /// Every cue's hotkey, switched off or not: the workspace key map may not take one (the engine
+    /// refuses a cue's key there whether its trigger is on or off).
+    var storedCueHotkeys: [(cue: ModelID, chord: KeyChord)] { hotkeys(includingOff: true) }
+
+    private func hotkeys(includingOff: Bool) -> [(cue: ModelID, chord: KeyChord)] {
         var out: [(ModelID, KeyChord)] = []
         func walk(_ cues: [Cue]) {
             for c in cues {
-                if let hk = c.raw["triggers"]?["hotkey"], hk != .null, let chord = KeyChord(hotkey: hk) {
+                if let triggers = c.raw["triggers"], includingOff || triggers["hotkey_enabled"] != .bool(false),
+                    let hk = triggers["hotkey"], hk != .null, let chord = KeyChord(hotkey: hk)
+                {
                     out.append((c.id, chord))
                 }
                 walk(c.children)

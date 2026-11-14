@@ -570,7 +570,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The footer's cue count follows the model (adds, deletes, a new snapshot).
-    /// The shown list's playhead cue, with its notes.
+    /// The shown list's playhead cue, with its notes; a skipped one too (a GO there moves the
+    /// playhead on and starts nothing).
     func syncMasthead() {
         let id = cueList.listID.flatMap { store.playheads[$0] }
         let cue = id.flatMap { store.model?.cue($0) }

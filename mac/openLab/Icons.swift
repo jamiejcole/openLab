@@ -3,7 +3,7 @@
 import AppKit
 import os
 
-/// The one table of every icon the app shows. A cue kind or Group mode names openLab's own drawing
+/// The one table of every icon the app shows. A cue kind, Group mode or the colour lock names openLab's own drawing
 /// (`drawing`, an SVG in the asset catalog, so another platform can use the same files). Every other
 /// concept (a state, a transport button) names an SF Symbol, the macOS version that symbol first
 /// shipped in and a fallback for an older system. The deployment target is macOS 12, which carries
@@ -23,8 +23,8 @@ enum Icon: CaseIterable {
     // Cue states (UI-04: each non-idle state has its own shape).
     case stateLoaded, statePreWaiting, stateRunning, statePaused, statePostWaiting, stateFading
     case stateStopping, stateBroken
-    // Swatch beside a colour name in the Inspector pop-up.
-    case colourSwatch
+    // The second colour's lock in the Inspector (locked: no second colour; open: one to pick).
+    case colourLocked, colourUnlocked
     // Continue modes.
     case continueAuto, continueFollow
     // Transport strip and the Active Cues rows.
@@ -53,7 +53,7 @@ enum Icon: CaseIterable {
         Entry(symbol: symbol, minMacOS: minMacOS, fallback: fallback)
     }
 
-    /// The asset-catalog name of openLab's own drawing for a cue kind or Group mode; nil for a
+    /// The asset-catalog name of openLab's own drawing for a cue kind, Group mode or the colour lock; nil for a
     /// concept shown as an SF Symbol.
     var drawing: String? {
         switch self {
@@ -76,6 +76,8 @@ enum Icon: CaseIterable {
         case .kindGroupEnter: return "kind-group-enter"
         case .kindGroupNext: return "kind-group-next"
         case .kindGroupRandom: return "kind-group-random"
+        case .colourLocked: return "colour-locked"
+        case .colourUnlocked: return "colour-unlocked"
         default: return nil
         }
     }
@@ -85,7 +87,7 @@ enum Icon: CaseIterable {
         switch self {
         case .kindAudio, .kindGroup, .kindMemo, .kindWait, .kindFade, .kindStart, .kindStop, .kindPause, .kindLoad,
             .kindReset, .kindDevamp, .kindGoTo, .kindArm, .kindDisarm, .kindNetwork, .kindGroupPlaylist,
-            .kindGroupEnter, .kindGroupNext, .kindGroupRandom:
+            .kindGroupEnter, .kindGroupNext, .kindGroupRandom, .colourLocked, .colourUnlocked:
             return nil
         case .stateLoaded: return Self.row("arrow.down.circle.fill")
         case .statePreWaiting: return Self.row("hourglass")
@@ -95,7 +97,6 @@ enum Icon: CaseIterable {
         case .stateFading: return Self.row("waveform")
         case .stateStopping: return Self.row("stop.fill")
         case .stateBroken: return Self.row("exclamationmark.triangle.fill")
-        case .colourSwatch: return Self.row("circle.fill")
         case .continueAuto: return Self.row("arrow.down")
         case .continueFollow: return Self.row("arrow.turn.down.right")
         case .transportReset: return Self.row("backward.end")

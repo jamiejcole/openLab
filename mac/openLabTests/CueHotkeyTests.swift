@@ -198,7 +198,9 @@ final class TriggersTabTests: XCTestCase {
         let controls: [NSControl] = [
             vc.numberField, vc.nameField, vc.preWaitField, vc.postWaitField, vc.hotkeyField,
             vc.hotkeyClear, vc.secondTriggerPopup, vc.onReleaseCheck, vc.colourPopup, vc.continuePopup,
-            vc.flaggedCheck, vc.armedCheck,
+            vc.flaggedCheck, vc.armedCheck, vc.secondColourCheck, vc.secondColourPopup, vc.autoLoadCheck,
+            vc.skipCheck, vc.hotkeyEnableCheck, vc.fadeOthersCheck, vc.fadeOthersScopePopup,
+            vc.fadeOthersTimeField, vc.duckCheck, vc.duckDbField, vc.duckTimeField,
         ]
         XCTAssertTrue(controls.allSatisfy { !$0.isEnabled })
         XCTAssertFalse(vc.notesView.isEditable)
@@ -208,7 +210,7 @@ final class TriggersTabTests: XCTestCase {
         vc.clearHotkey()
         vc.nameField.stringValue = "Changed"
         vc.commit(.name)
-        vc.colourPopup.selectItem(at: 2)
+        vc.colourPopup.selectItem(at: InspectorViewController.colourItems.firstIndex(of: "red") ?? -1)
         _ = vc.colourPopup.target?.perform(vc.colourPopup.action, with: vc.colourPopup)
         vc.flaggedCheck.state = .on
         _ = vc.flaggedCheck.target?.perform(vc.flaggedCheck.action, with: vc.flaggedCheck)

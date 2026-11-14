@@ -32,9 +32,9 @@
 - Kept: Arm/Disarm changes and level edits (model edits, saved with the show), double-GO's timer.
 
 ## Fade and stop others
-- On a cue's action start (after its pre-wait; `others.rs`), if `fade_and_stop_others.enabled` and the cue is not skipped for being disarmed or broken: every active run in scope other than the cue, the groups around it and the cues inside it is stopped with the Stop operation and a fade of `duration` (curve `PANIC_CURVE`), deepest first.
+- On a cue's action start (after its pre-wait; `others.rs`), if `fade_and_stop_others.enabled` and the cue is not skipped for being disarmed or broken: every loaded or active cue in scope other than the cue, the groups around it and the cues inside it is stopped with the Stop operation and a fade of `duration` (curve `PANIC_CURVE`), deepest first.
 - Scope: `peers` = the cue's siblings (same group, or the top level of its list) and everything inside them; `list` = its list; `all` = every list.
-- What Stop with a fade does applies: a playing voice fades and stops on its last sample; paused, pre-waiting, post-waiting and voiceless runs stop at once (continues cancelled); a group in its action waits for its fading children (`stopping`). Loaded cues stay loaded. A run already fading out (stop with a fade, a panic) keeps its own fade. Duration 0 stops at once.
+- What Stop with a fade does applies: a playing voice fades and stops on its last sample; paused, pre-waiting, post-waiting and voiceless runs stop at once (continues cancelled); a group in its action waits for its fading children (`stopping`). A loaded cue in scope is unloaded at once (measured in QLab 5.6.5, Q297). A run already fading out (stop with a fade, a panic) keeps its own fade. Duration 0 stops at once.
 
 ## Played (second colour)
 - The first `start` that makes a run of a cue since it was last reset marks it played: `PlayedChanged { cue, played: true }`, `played()` lists them. A played cue's row shows its `second_color` (QLab 5, manual p. 127). A skipped cue never plays; a disarmed one that is triggered does.

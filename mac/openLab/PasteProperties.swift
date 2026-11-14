@@ -7,8 +7,9 @@ import Foundation
 /// cue has it and at least one selected cue can take it; it is set on the cues that can and left
 /// alone on the others. Pure: the editor supplies the cues.
 enum PasteProperty: String, CaseIterable {
-    case name, notes, preWait, postWait, duration, continueMode, colour, flagged, armed
-    case secondTrigger, secondTriggerOnRelease
+    case name, notes, preWait, postWait, duration, continueMode, colour, secondColour, flagged, autoLoad, armed
+    case skipIfDisarmed
+    case fadeAndStopOthers, duckOthers, secondTrigger, secondTriggerOnRelease
     case outputPatch
     case levels
     case fadeCurve, fadeMode, fadeStopTarget
@@ -26,8 +27,10 @@ enum PasteProperty: String, CaseIterable {
 
     var category: Category {
         switch self {
-        case .name, .notes, .preWait, .postWait, .duration, .continueMode, .colour, .flagged, .armed: return .basics
-        case .secondTrigger, .secondTriggerOnRelease: return .triggers
+        case .name, .notes, .preWait, .postWait, .duration, .continueMode, .colour, .secondColour, .flagged,
+            .autoLoad, .armed, .skipIfDisarmed:
+            return .basics
+        case .fadeAndStopOthers, .duckOthers, .secondTrigger, .secondTriggerOnRelease: return .triggers
         case .outputPatch: return .io
         case .levels: return .levels
         case .fadeCurve, .fadeMode, .fadeStopTarget: return .fade
@@ -96,8 +99,17 @@ enum PasteProperty: String, CaseIterable {
         case .duration: return set(.duration(kind["duration"]?.doubleValue ?? 0))
         case .continueMode: return set(.continueMode(raw["continue_mode"]?.stringValue ?? "do_not_continue"))
         case .colour: return set(.color(raw["color"]?.stringValue ?? "none"))
+        case .secondColour: return set(.secondColor(raw["second_color"]?.stringValue ?? "none"))
         case .flagged: return set(.flagged(raw["flagged"] == .bool(true)))
+        case .autoLoad: return set(.autoLoad(raw["auto_load"] == .bool(true)))
         case .armed: return set(.armed(raw["armed"] != .bool(false)))
+        case .skipIfDisarmed: return set(.skipIfDisarmed(raw["skip_if_disarmed"] == .bool(true)))
+        case .fadeAndStopOthers:
+            let f = InspectorEdit.fadeOthers(source)
+            return set(.fadeAndStopOthers(enabled: f.enabled, scope: f.scope, duration: f.duration))
+        case .duckOthers:
+            let d = InspectorEdit.duckOthers(source)
+            return set(.duckOthers(enabled: d.enabled, db: d.db, duration: d.duration))
         case .secondTrigger: return set(.secondTrigger(raw["second_trigger"]?.stringValue ?? "nothing"))
         case .secondTriggerOnRelease:
             return set(.secondTriggerOnRelease(raw["second_trigger_on_release"] == .bool(true)))
