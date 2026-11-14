@@ -411,6 +411,10 @@ fn decode(shared: &Shared, file: &str, still: bool, offset: f64) {
         let mut mail = shared.lock();
         mail.opened = Some(movie.size);
         mail.frame = first;
+        // A position asked while the file opened is timed from now: the open had its own limit.
+        if mail.waiting_since.is_some() {
+            mail.waiting_since = Some(Instant::now());
+        }
         shared.wake.notify_all();
     }
     loop {
