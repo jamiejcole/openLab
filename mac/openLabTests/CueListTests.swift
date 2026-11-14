@@ -5291,3 +5291,142 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(later.upperBound, first.upperBound, accuracy: 0.02, "stays where it stopped")
     }
 }
+
+/// AUD-07, UI-01: the output device lost while a cue plays (QLab 5, measured): the playing cue's row
+/// shows the paused mark with its time standing still, an idle cue routed to the device shows
+/// broken, nothing resumes when the device returns, Resume All only clears the mark and GO plays the
+/// cue from its start. The demo show on an engine of the test's own (its virtual device stands for
+/// the interface), read from the list's own cells.
+@MainActor
+final class DeviceLossRowTests: XCTestCase {
+    typealias H = CueListHarness
+    var engine: TestEngine!
+
+    override func setUp() async throws {
+        engine = try await TestEngine.start()
+    }
+
+    override func tearDown() async throws { engine?.stop() }
+
+    /// The demo show's list, groups open, with Intro playing for 0.4 s.
+    private func playing() async throws -> H {
+        let h = try await H(rig: try await Rig.open("Demo", on: engine), collapsed: false)
+        guard case .success = await h.store.transport(.start(cue: H.intro)) else {
+            XCTFail("start")
+            return h
+        }
+        try await h.rig.advance(0.4)
+        await assertEventually { h.store.cueStates[H.intro]?.state == .running }
+        return h
+    }
+
+    private func lose(_ h: H) async throws {
+        guard case .success = await engine.request(.loseDevice) else { return XCTFail("lose_device") }
+        try await h.rig.advance(0.5)
+    }
+
+    private func restore(_ h: H) async throws {
+        guard case .success = await engine.request(.restoreDevice) else { return XCTFail("restore_device") }
+        // The next device-list read finds it and the stream reopens.
+        try await h.rig.advance(2)
+    }
+
+    private func mark(_ h: H, _ id: ModelID) throws -> NSImageView {
+        try XCTUnwrap(h.cell("status", id)).images[1]
+    }
+
+    private func time(_ h: H, _ id: ModelID) -> String? { h.cell("duration", id)?.label.stringValue }
+
+    func testACuePlayingWhenItsDeviceIsDisconnectedShowsThePausedMarkWithItsTimeStandingStill() async throws {
+        let h = try await playing()
+        try await lose(h)
+        await assertEventually { h.store.cueStates[H.intro]?.state == .paused }
+        XCTAssertEqual(h.store.cueStates[H.intro]?.reason, .deviceLost)
+        let icon = try mark(h, H.intro)
+        XCTAssertFalse(icon.isHidden)
+        XCTAssertEqual(icon.accessibilityLabel(), loc("cue.state.paused"))
+        XCTAssertEqual(icon.toolTip, "\(loc("cue.state.paused")): \(loc("paused.device_lost"))")
+        // Its time stands where the loss stopped it, also once device time runs on again.
+        let shown = try XCTUnwrap(time(h, H.intro))
+        let elapsed = try XCTUnwrap(h.store.progress[H.intro]?.elapsed)
+        XCTAssertEqual(elapsed, 0.4, accuracy: 0.05)
+        try await restore(h)
+        try await h.rig.advance(1)
+        XCTAssertEqual(time(h, H.intro), shown)
+        XCTAssertEqual(try XCTUnwrap(h.store.progress[H.intro]?.elapsed), elapsed, accuracy: 0.001)
+        // The Warnings list says the device was lost: the notice and the cue's own row.
+        XCTAssertTrue(h.store.warnings.contains { $0.json["code"]?.stringValue == "device_lost" })
+        let row = try XCTUnwrap(WarningRows.make(store: h.store).first { $0.cue == H.intro })
+        XCTAssertEqual(row.detail, loc("paused.device_lost"))
+    }
+
+    func testACueRoutedToThatDeviceThatWasNotPlayingShowsBrokenWithTheDeviceReason() async throws {
+        let h = try await playing()
+        guard case .success = await h.store.transport(.load(cue: H.rain, at: 0)) else { return XCTFail("load") }
+        try await h.rig.advance(0.1)
+        await assertEventually { h.store.cueStates[H.rain]?.state == .loaded }
+        try await lose(h)
+        for id in [H.door, H.rain] {
+            await assertEventually { h.store.problems[id] != nil }
+            let icon = try mark(h, id)
+            XCTAssertEqual(icon.accessibilityLabel(), loc("cue.state.broken"), "\(id)")
+            let tip = try XCTUnwrap(icon.toolTip, "\(id)")
+            XCTAssertTrue(tip.hasPrefix(loc("cue.state.broken")), tip)
+        }
+    }
+
+    func testReconnectingLeavesThePausedCueSilentAndClearsTheIdleCuesBreak() async throws {
+        let h = try await playing()
+        try await lose(h)
+        await assertEventually { h.store.cueStates[H.intro]?.state == .paused }
+        await assertEventually { h.store.problems[H.door] != nil }
+        try await restore(h)
+        let before = h.store.progress[H.intro]?.elapsed
+        try await h.rig.advance(1)
+        // Still paused and not playing: its time does not move.
+        XCTAssertEqual(h.store.cueStates[H.intro]?.state, .paused)
+        XCTAssertEqual(h.store.progress[H.intro]?.elapsed, before)
+        XCTAssertEqual(try mark(h, H.intro).accessibilityLabel(), loc("cue.state.paused"))
+        await assertEventually { h.store.problems[H.door] == nil }
+        XCTAssertNil(h.store.cueStates[H.door])
+        XCTAssertTrue(try mark(h, H.door).isHidden, "idle: no mark")
+    }
+
+    func testResumeAllAfterTheLossClearsThePausedMarkAndTheCueIsIdle() async throws {
+        let h = try await playing()
+        try await lose(h)
+        try await restore(h)
+        await assertEventually { h.store.cueStates[H.intro]?.state == .paused }
+        guard case .success = await h.store.transport(.resumeAll) else { return XCTFail("resume_all") }
+        try await h.rig.advance(0.5)
+        await assertEventually { h.store.cueStates[H.intro] == nil }
+        XCTAssertNil(h.store.progress[H.intro], "it does not play on")
+        XCTAssertTrue(try mark(h, H.intro).isHidden, "idle: no mark")
+        XCTAssertEqual(time(h, H.intro), "00:01.00", "the duration again")
+    }
+
+    func testGoOnThatCueOnceTheDeviceIsBackPlaysItFromItsStart() async throws {
+        let h = try await playing()
+        try await lose(h)
+        try await restore(h)
+        await assertEventually { h.store.cueStates[H.intro]?.state == .paused }
+        guard case .success = await h.store.transport(.start(cue: H.intro)) else { return XCTFail("start") }
+        try await h.rig.advance(0.1)
+        await assertEventually { h.store.cueStates[H.intro]?.state == .running }
+        XCTAssertEqual(try mark(h, H.intro).accessibilityLabel(), loc("cue.state.running"))
+        let elapsed = try XCTUnwrap(h.store.progress[H.intro]?.elapsed)
+        XCTAssertLessThan(elapsed, 0.2, "from its start, not from where the loss stopped it")
+    }
+
+    func testInShowModeTheSameMarksShowAndNoAlert() async throws {
+        let h = try await playing()
+        let wc = WorkspaceWindowController(store: h.store)
+        guard case .success = await h.store.setShowMode(true).value else { return XCTFail("show mode") }
+        try await lose(h)
+        await assertEventually { h.store.cueStates[H.intro]?.state == .paused }
+        XCTAssertEqual(try mark(h, H.intro).accessibilityLabel(), loc("cue.state.paused"))
+        await assertEventually { h.store.problems[H.door] != nil }
+        XCTAssertEqual(try mark(h, H.door).accessibilityLabel(), loc("cue.state.broken"))
+        XCTAssertNil(wc.window?.attachedSheet, "no alert")
+    }
+}
