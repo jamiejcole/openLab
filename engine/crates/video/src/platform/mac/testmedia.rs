@@ -102,6 +102,9 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
             Some(&settings),
         );
         let adaptor = AVAssetWriterInputPixelBufferAdaptor::assetWriterInputPixelBufferAdaptorWithAssetWriterInput_sourcePixelBufferAttributes(&input, None);
+        // The container's index first, as a file made for streaming has it: a test can then
+        // damage the frames that follow and leave the file readable.
+        writer.setShouldOptimizeForNetworkUse(true);
         writer.addInput(&input);
         if !writer.startWriting() {
             return Err(writer_error(&writer));

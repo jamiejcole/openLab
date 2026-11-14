@@ -331,6 +331,18 @@ impl<P: Platform> Host<P> {
         self.apply(out);
     }
 
+    /// Reports the pictures the platform could not decode or draw since it was last asked, and
+    /// drops them.
+    fn report_failures(&mut self, out: &mut Vec<FromStage>) {
+        for (picture, reason) in self.platform.take_picture_failures() {
+            self.drop_picture(picture);
+            out.push(FromStage::PictureFailed {
+                picture,
+                reason: short(reason),
+            });
+        }
+    }
+
     fn drop_picture(&mut self, picture: u64) {
         if self.pics.remove(&picture).is_some() {
             self.platform.close_picture(picture);
@@ -416,10 +428,14 @@ impl<P: Platform> Host<P> {
                 }
             }
             #[cfg(feature = "test-support")]
-            ToStage::Probe { stage, points } => out.push(self.probe_stage(stage, &points)),
+            ToStage::Probe { stage, points } => {
+                out.push(self.probe_stage(stage, &points));
+                self.report_failures(out);
+            }
             #[cfg(feature = "test-support")]
             ToStage::ProbeDisplay { display, points } => {
                 out.push(self.probe_display(display, &points));
+                self.report_failures(out);
             }
             #[cfg(feature = "test-support")]
             ToStage::Hang => return Flow::Hang,
@@ -518,13 +534,7 @@ impl<P: Platform> Host<P> {
             self.presented.remove(&id);
             self.platform.close(&id);
         }
-        for (picture, reason) in self.platform.take_picture_failures() {
-            self.drop_picture(picture);
-            out.push(FromStage::PictureFailed {
-                picture,
-                reason: short(reason),
-            });
-        }
+        self.report_failures(out);
         self.states
             .retain(|id, _| states.iter().any(|(s, _)| s == id));
         for (stage, state) in states {

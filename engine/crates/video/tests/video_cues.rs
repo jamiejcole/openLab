@@ -512,3 +512,90 @@ fn panic_fades_the_picture_over_the_panic_time() {
     assert_eq!(state(&s, 1), CueState::Idle);
     assert_eq!(probe_at(&mut s, &red).1, vec![[0, 0, 0, 255]]);
 }
+
+/// The notices the doc's clients were sent since the last call, by code.
+fn notices(s: &mut OfflineShow) -> Vec<String> {
+    s.take_outbound()
+        .into_iter()
+        .flat_map(|m| match m {
+            ServerMessage::Runtime { changes, .. } => changes,
+            _ => Vec::new(),
+        })
+        .filter_map(|c| match c {
+            openlab_core::protocol::RuntimeChange::Warning {
+                warning: openlab_core::protocol::WireWarning::Notice { code, .. },
+            } => Some(code),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A picture that cannot be decoded mid-show (a movie whose first frames are good, so it
+/// probes as playable, cut short further in) stops only its own cue, broken with
+/// `decode_failed` and a notice; another cue on the stage plays on.
+#[test]
+fn a_decode_failure_mid_play_breaks_only_that_cue_with_a_notice() {
+    let dir = tempfile::tempdir().unwrap();
+    // ProRes: every frame is whole in itself, so a cut removes the frames after it.
+    let doomed = make(dir.path(), "doomed.mov", "prores", Some((250, 25)));
+    let fine = make(dir.path(), "fine.mov", "h264", Some((250, 25)));
+    // Cut short at a fifth: the index (at the start in the test movies) still promises
+    // every frame, so the file probes as playable, but the frames past there are not in it.
+    let mut bytes = std::fs::read(&doomed).unwrap();
+    bytes.truncate(bytes.len() / 5);
+    std::fs::write(&doomed, &bytes).unwrap();
+    let mut s = video_show(vec![video_cue(1, Some(&fine)), video_cue(2, Some(&doomed))]);
+    let problems_2 = problems(&s, 2);
+    if !problems_2.is_empty() {
+        panic!("the damaged movie must still probe as playable: {problems_2:?}");
+    }
+    let first = start(&mut s, 1);
+    s.run(BLOCK);
+    start(&mut s, 2);
+    s.take_outbound();
+    let mut broke = false;
+    for step in 1..=20 {
+        run_to(&mut s, first + samples(0.5 * f64::from(step)));
+        shown(&mut s);
+        s.run(BLOCK);
+        if state(&s, 2) == CueState::Broken {
+            broke = true;
+            break;
+        }
+    }
+    assert!(broke, "cue 2 never broke");
+    assert_eq!(
+        s.control().engine().broken_reason(id(2)),
+        Some(openlab_core::BrokenReason::DecodeFailed)
+    );
+    assert!(notices(&mut s).iter().any(|c| c == "video_decode_failed"));
+    assert_eq!(state(&s, 1), CueState::Running, "the other cue plays on");
+    let at = (s.now() - first) as f64 / f64::from(RATE);
+    let now = shown(&mut s).expect("cue 1 still shown");
+    assert!(now.abs_diff(frame_at(at)) <= 1, "{now} at {at} s");
+}
+
+/// The stage host killed mid-play: the engine keeps running, the cue keeps its state, and a
+/// relaunched stage host shows the picture again where the clock has got to.
+#[test]
+fn a_stage_host_killed_mid_play_shows_the_picture_again_when_relaunched() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = make(dir.path(), "clip.mov", "h264", Some((250, 25)));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    assert!(shown(&mut s).is_some());
+    let pid = s.control().stage_host_pid().unwrap();
+    let killed = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
+    s.settle_stages();
+    assert_eq!(state(&s, 1), CueState::Running);
+    run_to(&mut s, at + samples(2.0));
+    let played = (s.now() - at) as f64 / f64::from(RATE);
+    let now = shown(&mut s).expect("the picture is back");
+    assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played} s");
+}

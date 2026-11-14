@@ -134,6 +134,9 @@ pub struct Movie {
     next: Option<(f64, Vec<u8>, usize)>,
     /// The reader has no frame after `next`.
     ended: bool,
+    /// The movie's length and one frame's time, in seconds, as its file says.
+    length: f64,
+    frame: f64,
 }
 
 impl Movie {
@@ -163,6 +166,11 @@ impl Movie {
             return Err("the picture size cannot be read".into());
         }
         let size = (w as u32, h as u32);
+        // SAFETY: plain properties of a loaded asset and track.
+        let (length, fps) = unsafe { (asset.duration().seconds(), track.nominalFrameRate()) };
+        if !(length.is_finite() && length > 0.0 && fps.is_finite() && fps > 0.0) {
+            return Err("the movie's length or frame rate cannot be read".into());
+        }
         let mut black = vec![0u8; size.0 as usize * size.1 as usize * 4];
         let texture = new_texture(device, size.0 as usize, size.1 as usize, &mut black)?;
         Ok(Self {
@@ -174,6 +182,8 @@ impl Movie {
             shown: None,
             next: None,
             ended: false,
+            length,
+            frame: 1.0 / f64::from(fps),
         })
     }
 
@@ -289,6 +299,14 @@ impl Movie {
         if let Some((time, mut bytes, stride)) = best {
             replace(&self.texture, self.size, &mut bytes, stride)?;
             self.shown = Some(time);
+        }
+        // The frames ran out well before the movie's end: its file is damaged or was cut short
+        // under it. Holding the last frame would freeze the picture; the cue breaks instead.
+        let short = self.ended
+            && position < self.length - 2.0 * self.frame
+            && self.shown.is_none_or(|t| position > t + 2.0 * self.frame);
+        if short {
+            return Err("the movie stops before its end (the file may be damaged)".into());
         }
         Ok((&self.texture, self.size))
     }
