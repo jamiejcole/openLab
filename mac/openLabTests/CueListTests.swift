@@ -1048,6 +1048,31 @@ final class CueListTests: XCTestCase {
         XCTAssertNil(h.cell("duration", H.intro)?.progress.progress, "and no bar")
     }
 
+    /// A Wait cue's post-wait is its duration (QLab 5, manual p. 688): while it runs the Post-Wait
+    /// cell counts with the action in every continue mode, auto-follow included (no post-wait
+    /// timer comes from the engine then).
+    func testARunningWaitCuesPostWaitCountsWithItsActionInEveryContinueMode() async throws {
+        let wait = DurationEditingTests.wait
+        for mode in ["auto_follow", "auto_continue", "do_not_continue"] {
+            var s = try DurationEditingTests.snapshot()
+            var lists = s["workspace"]?["cue_lists"]?.arrayValue ?? []
+            var cues = lists[0]["cues"]?.arrayValue ?? []
+            for i in cues.indices where cues[i]["id"]?.stringValue == wait.raw {
+                cues[i].set("continue_mode", .string(mode))
+            }
+            lists[0].set("cues", .array(cues))
+            s["workspace"]?.set("cue_lists", .array(lists))
+            let h = try await H(snapshot: s)
+            XCTAssertEqual(h.cell("postWait", wait)?.label.stringValue, "00:02.00", mode)
+            try h.runtime(#"{"type":"cue_state","cue":"\#(wait)","state":"running"}"#)
+            try h.receive(#"{"type":"progress","items":[{"cue":"\#(wait)","elapsed":0.5,"remaining":1.5}]}"#)
+            XCTAssertEqual(h.cell("duration", wait)?.label.stringValue, "00:00.50", mode)
+            XCTAssertEqual(h.cell("postWait", wait)?.label.stringValue, "00:00.50", mode)
+            try h.runtime(#"{"type":"cue_state","cue":"\#(wait)","state":"idle"}"#)
+            XCTAssertEqual(h.cell("postWait", wait)?.label.stringValue, "00:02.00", mode)
+        }
+    }
+
     /// A pre-wait or post-wait in progress counts in its own column, touching only those cells; it
     /// ends with the run.
     func testWaitsCountInTheirColumns() async throws {
