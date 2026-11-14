@@ -1042,28 +1042,36 @@ fn last_push(messages: &[ServerMessage]) -> Option<(Vec<String>, Vec<Option<Stag
 }
 
 /// A connection that binds after the last push still learns where the stages are: every
-/// snapshot of the doc (the one taken on bind too) is followed by its `video_outputs`, after
-/// the snapshot's `result`, even with nothing changed since the last push.
+/// snapshot of the doc (the one taken on bind too) is followed by its `video_outputs`, even with
+/// nothing changed and within the least gap between pushes. It goes out as a broadcast, never as
+/// a reply: a connection writes broadcasts ahead of replies, so a reply could land after a newer
+/// push and leave the client with the older state.
 #[test]
 fn a_snapshot_is_followed_by_the_video_outputs() {
-    let mut s = stage_show(with_stages(vec![], vec![stage(1)]), virtual_host(), None);
+    let ws = with_stages(vec![], vec![stage(1)]);
+    let mut c: ControlConfig = config(&ws);
+    c.stage_host = Some(virtual_host());
+    let clock = openlab_engine::control::ManualClock::new(10_000);
+    c.clock = clock.clock();
+    let mut s = show_with(ws, c);
+    s.settle_stages();
+    clock.advance(200);
     s.tick();
-    let _ = s.take_outbound();
+    assert!(last_push(&s.take_outbound()).is_some(), "the first push");
+    // Nothing changes and the clock stands still: only the snapshot asks for a push.
     let id = s.request_id();
-    let replies = s.send_until(
-        ClientMessage::Request {
-            id,
-            request: Request::Snapshot,
-        },
-        |c| c.stages_settled(),
+    let replies = s.send(ClientMessage::Request {
+        id,
+        request: Request::Snapshot,
+    });
+    assert!(
+        !replies
+            .iter()
+            .any(|m| matches!(m, ServerMessage::VideoOutputs { .. })),
+        "not a reply: {replies:?}"
     );
-    let at = |f: &dyn Fn(&ServerMessage) -> bool| replies.iter().position(f);
-    let snapshot = at(&|m| matches!(m, ServerMessage::Snapshot { .. })).expect("snapshot");
-    let result =
-        at(&|m| matches!(m, ServerMessage::Result { id: got, .. } if *got == id)).expect("result");
-    let outputs = at(&|m| matches!(m, ServerMessage::VideoOutputs { .. })).expect("video_outputs");
-    assert!(snapshot < result && result < outputs, "{replies:?}");
-    let (displays, states) = last_push(&replies).unwrap();
+    s.tick();
+    let (displays, states) = last_push(&s.take_outbound()).expect("pushed after the snapshot");
     assert_eq!(displays, ["V1", "V2"]);
     assert_eq!(states, [Some(StageState::NoDisplay)]);
 }

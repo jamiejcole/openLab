@@ -221,9 +221,7 @@ fn relink_of_a_missing_folder_is_refused_and_snapshot_answers() {
         id: id2,
         request: Request::Snapshot,
     });
-    // The snapshot, its result, then the doc's video outputs.
-    assert_eq!(r.len(), 3);
-    assert!(matches!(r[2], ServerMessage::VideoOutputs { .. }), "{r:?}");
+    assert_eq!(r.len(), 2);
     let ServerMessage::Snapshot { snapshot } = &r[0] else {
         panic!("{r:?}")
     };

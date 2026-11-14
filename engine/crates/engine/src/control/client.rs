@@ -142,23 +142,18 @@ impl Control {
                     Flow::Continue
                 }
                 // A snapshot (the one a connection gets when it binds, too) is followed by the
-                // doc's video outputs, which are the engine's and not in the snapshot.
+                // doc's video outputs, which are the engine's and not in the snapshot. They go
+                // out as a broadcast at the next tick, never as a reply: a connection writes
+                // broadcasts ahead of replies, so a reply could land after a newer push.
                 ClientMessage::Request {
-                    id,
                     request: Request::Snapshot,
+                    ..
                 } if self.cx_of(doc).is_some() => {
-                    let message = ClientMessage::Request {
-                        id,
-                        request: Request::Snapshot,
-                    };
-                    let flow = match self.cx_of(doc) {
+                    self.eng.stages.push_now();
+                    match self.cx_of(doc) {
                         Some(mut cx) => cx.client(message, to),
                         None => no_doc(message, to),
-                    };
-                    if let Some(d) = self.docs.iter().find(|d| d.id == doc) {
-                        reply(to, self.video_outputs(d));
                     }
-                    flow
                 }
                 message => match self.cx_of(doc) {
                     Some(mut cx) => cx.client(message, to),

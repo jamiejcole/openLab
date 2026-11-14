@@ -69,6 +69,15 @@ pub(super) struct Stages {
     probes: Vec<(ProbeTarget, RequestId, ReplyTx)>,
 }
 
+impl Stages {
+    /// Has `video_outputs` pushed at the next tick, whatever the gap since the last push: after
+    /// a snapshot (a connection binding), whose client must have it.
+    pub(super) fn push_now(&mut self) {
+        self.push_due = true;
+        self.last_push_ms = None;
+    }
+}
+
 impl Engine {
     /// Starts the stage host supervisor if the engine has one configured and it is not running.
     pub(super) fn start_stage_host(&mut self) {
@@ -268,10 +277,8 @@ impl Control {
         }
     }
 
-    /// `doc`'s `video_outputs`: this machine's displays and where each of its stages is. Pushed on
-    /// a change, and sent ahead of every snapshot of the doc (so on bind): a connection that bound
-    /// after the last push still has it.
-    pub(super) fn video_outputs(&self, doc: &super::Doc) -> ServerMessage {
+    /// `doc`'s `video_outputs`: this machine's displays and where each of its stages is.
+    fn video_outputs(&self, doc: &super::Doc) -> ServerMessage {
         ServerMessage::VideoOutputs {
             displays: self.eng.stages.displays.clone(),
             video: self.eng.stages.video,

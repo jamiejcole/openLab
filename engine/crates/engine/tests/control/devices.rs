@@ -245,8 +245,7 @@ fn a_slow_device_open_does_not_hold_up_the_inbox() {
         id: rid,
         request: Request::Snapshot,
     });
-    // The snapshot, its result and the doc's video outputs.
-    assert_eq!(replies.len(), 3);
+    assert_eq!(replies.len(), 2);
     assert_eq!(list_devices(&mut s), vec![primary(OutputState::Lost)]);
     let at = go(&mut s);
     let replies = s.transport(TransportAction::Panic);
