@@ -187,9 +187,9 @@ A stage is a named raster Video cues are drawn on (VID-01; QLab 5 manual pp. 207
 |---|---|---|
 | `id` | UUID | Two stages with one id refuse the file. |
 | `name` | string | |
-| `width`, `height` | integer 1–16384 | Pixel size. A size outside the range is clamped with a warning (`StageSize`). |
+| `width`, `height` | integer 1–16384 | Pixel size. 0 or a size above 16384 (up to 4294967295) is clamped with a warning (`StageSize`); a negative, fractional or larger number, or null, is a wrong type and refuses the file (§3). |
 | `keep_black` | boolean, optional | `true`: the stage's display shows black while no cue plays on it (QLab's "keep rendering between cues", p. 227). `false` (the default when absent, as in QLab): its window is hidden then and the desktop shows, so a stage on the operator's own display never covers it between cues. |
-| `layer` | integer 0–1000, optional | Stacking order among stages on the same display (QLab 5 manual p. 227): a higher layer is drawn on top; on the same layer the stage whose name sorts first is on top. Default 1. A value above 1000 is clamped with a warning (`StageLayer`). |
+| `layer` | integer 0–1000, optional | Stacking order among stages on the same display (QLab 5 manual p. 227): a higher layer is drawn on top; on the same layer the stage whose name sorts first is on top. Default 1. A value from 1001 to 65535 is clamped to 1000 with a warning (`StageLayer`); a negative, fractional or larger number, or null, is a wrong type and refuses the file (§3). |
 
 At most 64 stages; a file with more keeps the first 64 with a warning (`TooManyStages`).
 

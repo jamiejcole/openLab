@@ -21,7 +21,7 @@ Built so far: stages, their per-machine display, the stage host with black outpu
 ## Stages (`openlab-core` `video.rs`, `model.rs`)
 - `Workspace.stages: Vec<Stage>`: `id` (`StageId`), `name`, `width`/`height` in pixels (1 to `MAX_STAGE_PIXELS` 16384, p. 208), `keep_black` (QLab's "keep rendering between cues", p. 227; default off, so a stage on the operator's display never covers it between cues). At most `MAX_STAGES` (64). File format §4.7.
 - `layer` 0-1000 (default 1): of stages on the same display, a higher layer is drawn on top; on one layer the name sorting first is on top (p. 227; `stack_order`). Edits: `AddStage`, `RemoveStage`, `MoveStage`, `SetStageProperty` (skill `edit-commands`).
-- Load: a size outside the range is clamped (`StageSize` warning), a layer above 1000 too (`StageLayer`), stages past 64 are dropped (`TooManyStages`), two with one id refuse the file (`DuplicateStageId`), odd names warn (`stages.name`).
+- Load: a size of 0 or above 16384 is clamped (`StageSize` warning), a layer from 1001 to 65535 too (`StageLayer`); a negative, fractional or out-of-type number refuses the file as a wrong type; stages past 64 are dropped (`TooManyStages`), two with one id refuse the file (`DuplicateStageId`), odd names warn (`stages.name`).
 - Which display shows a stage is per machine: `settings.json` `workspaces.<id>.stages.<stage id>` = `StageMapping { display, name, width, height }` (the display's id plus what it was when chosen). `MachineSettings::stage_mapping` / `set_stage_mapping` (refuses empty or over-long text, control characters, sizes out of range). A damaged entry in the file drops only itself with a warning.
 
 ## The link (`openlab-core` `stage_link.rs`; contract `docs/protocol.md` "Stage host link")
