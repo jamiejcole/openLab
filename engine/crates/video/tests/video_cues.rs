@@ -177,8 +177,15 @@ fn video_cue(n: u128, media: Option<&Path>) -> Cue {
 }
 
 fn video_show(cues: Vec<Cue>) -> OfflineShow {
-    let mut ws: Workspace = workspace(cues);
-    ws.stages = vec![Stage::new(stage_id(), "Stage 1", 1920, 1080)];
+    video_show_of(workspace(cues))
+}
+
+/// An offline show of `ws` with stage 1 (1920 x 1080, keeping black) and the real stage host
+/// on a virtual display.
+fn video_show_of(mut ws: Workspace) -> OfflineShow {
+    let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
+    stage.keep_black = true;
+    ws.stages = vec![stage];
     let mut c: ControlConfig = config(&ws);
     let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
     host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
@@ -449,4 +456,59 @@ fn load_to_time_starts_the_picture_there() {
     let at = start(&mut s, 1);
     run_to(&mut s, at + samples(0.02));
     assert_eq!(shown(&mut s), Some(0));
+}
+
+/// Two Video cues on one stage are both drawn, the later-started on top: stopping the top one
+/// shows the one below, still playing.
+#[test]
+fn two_cues_on_one_stage_are_drawn_with_the_later_started_on_top() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = make(dir.path(), "a.mov", "h264", Some((100, 25)));
+    let b = make(dir.path(), "b.mov", "prores", Some((100, 25)));
+    let mut s = video_show(vec![video_cue(1, Some(&a)), video_cue(2, Some(&b))]);
+    let first = start(&mut s, 1);
+    run_to(&mut s, first + samples(1.0));
+    let second = start(&mut s, 2);
+    run_to(&mut s, second + samples(0.22));
+    let top = (s.now() - second) as f64 / f64::from(RATE);
+    let shown_now = shown(&mut s).expect("a frame");
+    assert!(
+        shown_now.abs_diff(frame_at(top)) <= 1,
+        "{shown_now}: cue 2's frame at {top} s is on top"
+    );
+    s.transport(TransportAction::Stop {
+        cue: id(2),
+        fade_out: None,
+    });
+    s.run(BLOCK);
+    let below = (s.now() - first) as f64 / f64::from(RATE);
+    let shown_now = shown(&mut s).expect("cue 1 still plays");
+    assert!(
+        shown_now.abs_diff(frame_at(below)) <= 1,
+        "{shown_now}: cue 1's frame at {below} s"
+    );
+    assert_eq!(state(&s, 1), CueState::Running);
+}
+
+/// Panic fades the picture out over the panic time and then stops the cue: halfway, the
+/// card's red is about half as bright over the black stage; after it, nothing is shown.
+#[test]
+fn panic_fades_the_picture_over_the_panic_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut ws: Workspace = workspace(vec![still_cue(1, &png, None)]);
+    ws.settings.panic_duration = 1.0;
+    let mut s = video_show_of(ws);
+    go(&mut s);
+    s.run(samples(0.2));
+    let red = [[0.25, 0.3]];
+    assert_eq!(probe_at(&mut s, &red).1, vec![[255, 0, 0, 255]]);
+    s.transport(TransportAction::Panic);
+    let at = s.now();
+    run_to(&mut s, at + samples(0.5));
+    let half = probe_at(&mut s, &red).1[0];
+    assert!((100..=160).contains(&half[0]) && half[1] < 10, "{half:?}");
+    run_to(&mut s, at + samples(1.1));
+    assert_eq!(state(&s, 1), CueState::Idle);
+    assert_eq!(probe_at(&mut s, &red).1, vec![[0, 0, 0, 255]]);
 }
