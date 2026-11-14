@@ -133,9 +133,9 @@ enum WarningRows {
         // A stage that cannot be seen on this computer (VID-01): no display chosen, its display
         // unplugged, or failing.
         for entry in store.videoOutputs.stages {
-            guard let state = entry.state, let why = VideoSettingsPane.warning(state) else { continue }
+            guard let state = entry.state, let why = Self.stageReason(state) else { continue }
             // A stage gone from the workspace since the engine's last word has no row. The title is
-            // the stage's name (a long one shortened); the reason is the detail, which wraps.
+            // the stage's name (a long one shortened); the detail a reason short enough for one line.
             guard let full = model?.stages.first(where: { $0.id == entry.stage })?.raw["name"]?.stringValue
             else { continue }
             let name = full.count > Self.stageNameLength ? full.prefix(Self.stageNameLength - 1) + "…" : full
@@ -145,6 +145,16 @@ enum WarningRows {
                     detail: why, canRelink: false))
         }
         return rows
+    }
+
+    /// Why a stage cannot be seen, in a few words for the Warnings list; nil for one that is fine.
+    static func stageReason(_ state: StageState) -> String? {
+        switch state.state {
+        case "no_display": return loc("warnings.stage.noDisplay")
+        case "display_missing": return loc("warnings.stage.missing")
+        case "failed": return loc("warnings.stage.failed")
+        default: return nil
+        }
     }
 
     /// Names an id in problem and warning text: a cue's number and name, a patch or list name.

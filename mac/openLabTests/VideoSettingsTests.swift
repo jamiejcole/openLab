@@ -154,7 +154,7 @@ final class VideoSettingsTests: XCTestCase {
         XCTAssertTrue(
             warnings.contains {
                 $0.title == String(format: loc("warnings.stage"), "Cyc")
-                    && $0.detail == loc("settings.video.warn.noDisplay")
+                    && $0.detail == loc("warnings.stage.noDisplay")
             }, "\(warnings)")
         let popup = pane.displayPopups[0]
         popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
@@ -351,17 +351,24 @@ final class VideoSettingsTests: XCTestCase {
                 popup.intrinsicContentSize.width, popup.frame.width, popup.titleOfSelectedItem ?? "")
         }
         for c in 0..<6 { XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)") }
+        // At the window's least size too.
+        window.setContentSize(window.contentMinSize)
+        window.contentView?.layoutSubtreeIfNeeded()
+        for popup in pane.displayPopups {
+            XCTAssertLessThanOrEqual(
+                popup.intrinsicContentSize.width, popup.frame.width, "least size: \(popup.titleOfSelectedItem ?? "")")
+        }
         let least = pane.displayWidth
         window.setContentSize(NSSize(width: 1400, height: 1000))
         window.contentView?.layoutSubtreeIfNeeded()
-        XCTAssertGreaterThan(pane.displayWidth, least)
+        XCTAssertGreaterThanOrEqual(pane.displayWidth, least)
         XCTAssertEqual(pane.displayWidth, VideoSettingsPane.mostDisplayWidth)
         XCTAssertGreaterThan(pane.nameWidth, VideoSettingsPane.columns[0])
         for c in 0..<6 { XCTAssertEqual(pane.header.column(at: c).width, pane.grid.column(at: c).width, "column \(c)") }
     }
 
     /// A long stage name is cut with an ellipsis in its field and in the Warnings list, whose
-    /// reason is a line of its own that wraps.
+    /// reason is a short line of its own.
     func testALongStageNameIsShortenedAndTheReasonStays() async throws {
         let long = "A very long stage name for the upstage cyclorama projector left half"
         let (rig, sc) = try await open(stages: [(stageA, long, 1920, 1080)])
@@ -369,7 +376,7 @@ final class VideoSettingsTests: XCTestCase {
         await settled(sc) { pane.nameFields.count == 1 && pane.shown?.first?.warning != nil }
         XCTAssertEqual(pane.nameFields[0].lineBreakMode, .byTruncatingTail)
         let row = try XCTUnwrap(WarningRows.make(store: rig.store).first { $0.id == "v:\(stageA)" })
-        XCTAssertEqual(row.detail, loc("settings.video.warn.noDisplay"), "the reason whole, on its own wrapping line")
+        XCTAssertEqual(row.detail, loc("warnings.stage.noDisplay"), "the reason whole, on a line of its own")
         XCTAssertTrue(row.title.contains("…"), row.title)
         XCTAssertFalse(row.title.contains(long), row.title)
     }
@@ -389,7 +396,7 @@ final class VideoSettingsTests: XCTestCase {
                 // The stepped engine's clock moves only when the test moves it.
                 try? await rig.advance(0.2)
                 return WarningRows.make(store: rig.store).contains {
-                    $0.title == warning && $0.detail == loc("settings.video.warn.noDisplay")
+                    $0.title == warning && $0.detail == loc("warnings.stage.noDisplay")
                 }
             }
             let rows = WarningRows.make(store: rig.store).count

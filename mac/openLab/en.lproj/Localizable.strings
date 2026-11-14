@@ -426,6 +426,9 @@
 "settings.video.warn.missing" = "Its display is not connected: the stage is not shown until it is.";
 "settings.video.warn.failed" = "Cannot be shown: %@";
 "warnings.stage" = "Stage “%@”";
+"warnings.stage.noDisplay" = "No display on this computer";
+"warnings.stage.missing" = "Its display is not connected";
+"warnings.stage.failed" = "Cannot be shown";
 "settings.network.add" = "New destination";
 "settings.network.note" = "Each destination is a device or program that Network cues send to.";
 "settings.network.col.name" = "Name";
