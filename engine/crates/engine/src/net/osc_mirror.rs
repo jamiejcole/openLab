@@ -480,6 +480,26 @@ impl MirrorShow<'_> {
     }
 }
 
+/// What `/cue/{n}/duration` reports: a Wait or Fade cue's duration, 0 for a cue whose action is
+/// instant; `None` (an error reply) for Audio and Group cues, whose length this copy does not know.
+fn action_length(kind: &CueKind) -> Option<f64> {
+    match kind {
+        CueKind::Wait { duration } | CueKind::Fade { duration, .. } => Some(*duration),
+        CueKind::Audio { .. } | CueKind::Group { .. } => None,
+        CueKind::Memo
+        | CueKind::Start { .. }
+        | CueKind::Stop { .. }
+        | CueKind::Pause { .. }
+        | CueKind::Load { .. }
+        | CueKind::Reset { .. }
+        | CueKind::Devamp { .. }
+        | CueKind::GoTo { .. }
+        | CueKind::Arm { .. }
+        | CueKind::Disarm { .. }
+        | CueKind::Network { .. } => Some(0.0),
+    }
+}
+
 /// The cue's type as the cue objects name it. The names for kinds other than Audio, Group and
 /// Cue List are ours (QLab's were not measured).
 fn kind_name(kind: &CueKind) -> &'static str {
@@ -539,7 +559,12 @@ impl OscShow for MirrorShow<'_> {
             CueField::Number => json!(cue.number.as_deref().unwrap_or("")),
             CueField::Notes => json!(cue.notes),
             CueField::PreWait => json!(cue.pre_wait),
-            CueField::PostWait => json!(cue.post_wait),
+            CueField::PostWait => json!(cue.effective_post_wait()),
+            CueField::Duration => json!(action_length(&cue.kind)?),
+            CueField::LoadTime => match &cue.kind {
+                CueKind::Load { load_to_time, .. } => json!(load_to_time),
+                _ => return None,
+            },
             CueField::Armed => json!(cue.armed),
             CueField::Flagged => json!(cue.flagged),
             CueField::UniqueId => json!(upper(cue.id)),
@@ -548,6 +573,18 @@ impl OscShow for MirrorShow<'_> {
             CueField::IsPaused => json!(state == Some(WireCueState::Paused)),
             CueField::IsBroken => json!(state == Some(WireCueState::Broken)),
         })
+    }
+
+    fn write_target(&self, id: CueId, field: CueField) -> Option<CueField> {
+        let kind = &self.0.workspace.find_cue(id)?.kind;
+        match (field, kind) {
+            (CueField::Duration, CueKind::Wait { .. } | CueKind::Fade { .. })
+            | (CueField::LoadTime, CueKind::Load { .. }) => Some(field),
+            (CueField::Duration | CueField::LoadTime, _) => None,
+            // A Wait cue's post-wait is its duration (QLab 5).
+            (CueField::PostWait, CueKind::Wait { .. }) => Some(CueField::Duration),
+            _ => Some(field),
+        }
     }
 
     fn top_level_list(&self, cue: CueId) -> Option<CueListId> {
@@ -1246,5 +1283,44 @@ mod tests {
         new.playheads.insert(second, Some(cue_id(20)));
         new.inherit_active(&old);
         assert_eq!(MirrorShow(&new).active_list(), Some(second));
+    }
+
+    /// Duration is read for every cue but Audio and Group and written only for Wait and Fade
+    /// cues; the load time only on a Load cue; a Wait cue's post-wait is its duration.
+    #[test]
+    fn durations_and_load_times_are_read_and_written_by_kind() {
+        let mut m = mirror(4);
+        let cues = &mut m.workspace.cue_lists[0].cues;
+        cues[0].kind = CueKind::Wait { duration: 2.5 };
+        cues[0].post_wait = 9.0;
+        cues[1].kind = CueKind::Load {
+            target: Some(cue_id(1)),
+            load_to_time: -3.0,
+        };
+        cues[1].post_wait = 1.5;
+        cues[2].kind = CueKind::Group {
+            mode: GroupMode::Timeline,
+            children: vec![],
+        };
+        let show = MirrorShow(&m);
+        let read = |n, field| show.cue_property(cue_id(n), field);
+        assert_eq!(read(1, CueField::Duration), Some(json!(2.5)));
+        assert_eq!(read(1, CueField::PostWait), Some(json!(2.5)));
+        assert_eq!(read(1, CueField::LoadTime), None);
+        assert_eq!(read(2, CueField::Duration), Some(json!(0.0)));
+        assert_eq!(read(2, CueField::PostWait), Some(json!(1.5)));
+        assert_eq!(read(2, CueField::LoadTime), Some(json!(-3.0)));
+        assert_eq!(read(3, CueField::Duration), None);
+        assert_eq!(read(4, CueField::Duration), Some(json!(0.0)));
+        let write = |n, field| show.write_target(cue_id(n), field);
+        assert_eq!(write(1, CueField::Duration), Some(CueField::Duration));
+        assert_eq!(write(1, CueField::PostWait), Some(CueField::Duration));
+        assert_eq!(write(1, CueField::LoadTime), None);
+        assert_eq!(write(2, CueField::Duration), None);
+        assert_eq!(write(2, CueField::PostWait), Some(CueField::PostWait));
+        assert_eq!(write(2, CueField::LoadTime), Some(CueField::LoadTime));
+        assert_eq!(write(3, CueField::Duration), None);
+        assert_eq!(write(4, CueField::Name), Some(CueField::Name));
+        assert_eq!(write(99, CueField::Name), None);
     }
 }

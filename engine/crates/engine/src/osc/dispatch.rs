@@ -9,7 +9,8 @@ use std::ops::ControlFlow;
 
 use openlab_core::protocol::{ClientMessage, DocId, RequestId, TransportAction};
 use openlab_core::{
-    Command, CueId, CueListId, CueProperty, NumberAssignment, OscAccess, OscRight, WorkspaceId,
+    Command, CueId, CueListId, CueProperty, MAX_TIME, NumberAssignment, OscAccess, OscRight,
+    WorkspaceId,
 };
 use rosc::{OscMessage, OscType};
 use serde_json::{Map, Value, json};
@@ -43,6 +44,12 @@ pub trait OscShow {
     fn cue_exists(&self, id: CueId) -> bool;
     /// The value `/cue/{n}/{field}` reports; `None` when the cue has no such field.
     fn cue_property(&self, id: CueId, field: CueField) -> Option<Value>;
+    /// The field a write of `field` on `id` sets: `field` itself, the one the cue keeps it in (a
+    /// Wait cue's post-wait is its duration), or `None` when the cue's kind has no such field to
+    /// write (a duration on an Audio cue, a load time on anything but a Load cue).
+    fn write_target(&self, _id: CueId, field: CueField) -> Option<CueField> {
+        Some(field)
+    }
     /// The cue list that holds `cue` directly, not inside a group: a playhead only rests on such
     /// a cue.
     fn top_level_list(&self, _cue: CueId) -> Option<CueListId> {
@@ -124,6 +131,10 @@ pub enum CueField {
     Notes,
     PreWait,
     PostWait,
+    /// A Wait or Fade cue's duration (written), any other cue's action length where known (read).
+    Duration,
+    /// A Load cue's load time (openLab's own address: QLab 5 has none).
+    LoadTime,
     Armed,
     Flagged,
     UniqueId,
@@ -217,6 +228,8 @@ impl CueField {
             Self::Notes => "notes",
             Self::PreWait => "preWait",
             Self::PostWait => "postWait",
+            Self::Duration => "duration",
+            Self::LoadTime => "loadTime",
             Self::Armed => "armed",
             Self::Flagged => "flagged",
             Self::UniqueId => "uniqueID",
@@ -406,6 +419,8 @@ fn verb_of(part: &str) -> Option<Verb> {
         "notes" => Verb::Field(CueField::Notes),
         "preWait" => Verb::Field(CueField::PreWait),
         "postWait" => Verb::Field(CueField::PostWait),
+        "duration" => Verb::Field(CueField::Duration),
+        "loadTime" => Verb::Field(CueField::LoadTime),
         "armed" => Verb::Field(CueField::Armed),
         "flagged" => Verb::Field(CueField::Flagged),
         "uniqueID" => Verb::Field(CueField::UniqueId),
@@ -422,8 +437,8 @@ fn verb_of(part: &str) -> Option<Verb> {
 /// `None` for `/connect`, `/version`, `/workspaces` and `/updates`, which every peer may send.
 ///
 /// - View: every read, `/udpReplyPort`, and writing a cue's `notes`.
-/// - Edit: writing any other cue property (name, number, pre-wait, post-wait, armed, flagged),
-///   and `/select`.
+/// - Edit: writing any other cue property (name, number, pre-wait, post-wait, duration, load
+///   time, armed, flagged), and `/select`.
 /// - Control: transport (`/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, `/reset`, the cue
 ///   verbs `start` ... `preview`, `/playhead`), and an address nothing answers to (a peer
 ///   without Control is told `denied` for it, as for any transport).
@@ -890,7 +905,10 @@ fn cue_verb(show: &dyn OscShow, cue: CueId, verb: Verb, args: &[OscType], out: &
                 }
                 return;
             }
-            match set_field(cue, field, args) {
+            match show
+                .write_target(cue, field)
+                .and_then(|field| set_field(cue, field, args))
+            {
                 Some(command) => out.inputs.push(OscInput::Command(Box::new(command))),
                 None => bad(out),
             }
@@ -924,11 +942,19 @@ fn set_field(cue: CueId, field: CueField, args: &[OscType]) -> Option<Command> {
                 }],
             }
         }
+        // Out of range is answered here: the engine would refuse it without a word to the peer.
         CueField::PreWait => set(CueProperty::PreWait {
-            value: number_arg(arg).filter(|v| *v >= 0.0)?,
+            value: time_arg(arg)?,
         }),
         CueField::PostWait => set(CueProperty::PostWait {
-            value: number_arg(arg).filter(|v| *v >= 0.0)?,
+            value: time_arg(arg)?,
+        }),
+        CueField::Duration => set(CueProperty::Duration {
+            value: time_arg(arg)?,
+        }),
+        // Negative: that long before the target's end.
+        CueField::LoadTime => set(CueProperty::LoadToTime {
+            value: number_arg(arg).filter(|v| (-MAX_TIME..=MAX_TIME).contains(v))?,
         }),
         CueField::Armed => set(CueProperty::Armed {
             value: flag_arg(arg)?,
@@ -963,6 +989,11 @@ fn number_arg(arg: &OscType) -> Option<f64> {
         _ => return None,
     };
     value.is_finite().then_some(value)
+}
+
+/// A time in seconds a cue can hold: 0 to a day.
+fn time_arg(arg: &OscType) -> Option<f64> {
+    number_arg(arg).filter(|v| (0.0..=MAX_TIME).contains(v))
 }
 
 /// 0/1 as an integer, or an OSC boolean.

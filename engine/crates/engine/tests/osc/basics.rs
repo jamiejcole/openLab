@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use openlab_core::protocol::{ClientMessage, RequestId, TransportAction};
 use openlab_core::{
-    Command, CueId, CueListId, CueProperty, NumberAssignment, OscAccess, OscPasscode, OscRight,
-    OscRights, WorkspaceId,
+    Command, CueId, CueListId, CueProperty, MAX_TIME, NumberAssignment, OscAccess, OscPasscode,
+    OscRight, OscRights, WorkspaceId,
 };
 use openlab_engine::osc::{
     CueField, CuePattern, DecodeError, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MATCH_BUDGET,
@@ -145,6 +145,8 @@ impl OscShow for Show {
             CueField::Notes => "notes",
             CueField::PreWait => "preWait",
             CueField::PostWait => "postWait",
+            CueField::Duration => "duration",
+            CueField::LoadTime => "loadTime",
             CueField::Armed => "armed",
             CueField::Flagged => "flagged",
             CueField::UniqueId => "uniqueID",
@@ -441,6 +443,26 @@ fn cue_properties_are_set_with_commands() {
             set(CueProperty::PostWait { value: 0.25 }),
         ),
         (
+            "duration",
+            OscType::Float(2.5),
+            set(CueProperty::Duration { value: 2.5 }),
+        ),
+        (
+            "duration",
+            OscType::Double(MAX_TIME),
+            set(CueProperty::Duration { value: MAX_TIME }),
+        ),
+        (
+            "loadTime",
+            OscType::Int(-10),
+            set(CueProperty::LoadToTime { value: -10.0 }),
+        ),
+        (
+            "loadTime",
+            OscType::Double(-MAX_TIME),
+            set(CueProperty::LoadToTime { value: -MAX_TIME }),
+        ),
+        (
             "armed",
             OscType::Int(0),
             set(CueProperty::Armed { value: false }),
@@ -499,6 +521,16 @@ fn bad_property_arguments_get_an_error_reply_and_no_input() {
         ("/cue/1/name", vec![OscType::Int(3)]),
         ("/cue/1/name", vec![s("a"), s("b")]),
         ("/cue/1/preWait", vec![OscType::Float(-1.0)]),
+        ("/cue/1/preWait", vec![OscType::Double(MAX_TIME + 0.5)]),
+        ("/cue/1/postWait", vec![OscType::Double(MAX_TIME + 0.5)]),
+        ("/cue/1/duration", vec![OscType::Float(-0.5)]),
+        ("/cue/1/duration", vec![OscType::Double(MAX_TIME + 0.5)]),
+        ("/cue/1/duration", vec![OscType::Double(f64::NAN)]),
+        ("/cue/1/duration", vec![s("3")]),
+        ("/cue/1/duration", vec![OscType::Int(1), OscType::Int(2)]),
+        ("/cue/1/loadTime", vec![OscType::Double(MAX_TIME + 0.5)]),
+        ("/cue/1/loadTime", vec![OscType::Double(-MAX_TIME - 0.5)]),
+        ("/cue/1/loadTime", vec![OscType::Double(f64::NEG_INFINITY)]),
         ("/cue/1/preWait", vec![OscType::Float(f32::NAN)]),
         ("/cue/1/preWait", vec![OscType::Double(f64::INFINITY)]),
         ("/cue/1/armed", vec![OscType::Int(2)]),
@@ -513,7 +545,7 @@ fn bad_property_arguments_get_an_error_reply_and_no_input() {
         assert_eq!(out.replies.len(), 1, "{addr} {args:?}");
         assert_eq!(reply_json(&out.replies[0])["status"], "error");
     }
-    assert_eq!(osc.stats().rejected, 10);
+    assert_eq!(osc.stats().rejected, 20);
 }
 
 #[test]

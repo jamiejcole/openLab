@@ -77,7 +77,9 @@ A message that succeeds gets **no reply** (actions, writes, `/updates`). A failu
 | `/cue/{number}/reset`, `/preview` | none | `transport reset` / `preview` |
 | `/cue/{number}/name`, `/notes` | one string | `command set_cue_property` |
 | `/cue/{number}/number` | string, int or float; empty string clears | `command set_cue_numbers` |
-| `/cue/{number}/preWait`, `/postWait` | one number, finite, >= 0 | `command set_cue_property` |
+| `/cue/{number}/preWait`, `/postWait` | one number, 0 to 86400 (a day) | `command set_cue_property`. A Wait cue's post-wait is its duration: read as the duration, written as `duration` (Q350) |
+| `/cue/{number}/duration` | one number, 0 to 86400 | `command set_cue_property` `duration`, Wait and Fade cues only (`error` for others). Read: a Wait or Fade cue's duration, 0 for an instant cue, `error` for Audio and Group (this copy has no media lengths) |
+| `/cue/{number}/loadTime` | one number, -86400 to 86400 | `command set_cue_property` `load_to_time`, Load cues only (`error` for others); negative counts back from the target's end. openLab's own address: QLab 5 has none (Q354) |
 | `/cue/{number}/armed`, `/flagged` | int 0/1 or OSC boolean | `command set_cue_property` |
 | `/cue/{number}/{property}` | none | reply with current value. Also readable, read-only: `uniqueID`, `isLoaded`, `isRunning`, `isPaused`, `isBroken` (a write is `error`) |
 | `/cue_id/{ID}/...` | as `/cue/{number}/...` | cue found by id (UUID, upper case) |
@@ -85,7 +87,9 @@ A message that succeeds gets **no reply** (actions, writes, `/updates`). A failu
 | `/cue/active/{property}` | as the property | every running cue. Reads only |
 | any other address | none | `error` (`unknown_address`). A cue has no OSC address of its own (QLab 5 starts a cue by number or id); an `osc` key in an older show's triggers is ignored |
 
-Not implemented: level and time properties beyond pre-wait and post-wait, `/new`, `/save`, other QLab application and workspace queries.
+Not implemented: level properties, time properties beyond pre-wait, post-wait, duration and load time, `/new`, `/save`, other QLab application and workspace queries.
+
+A value out of range (or a field the cue's kind has not) is answered `error` by OSC itself, since the engine refuses a command without a word to the peer. The address table is `verb_of` in `osc/dispatch.rs`; every address it and `parse_rest` answer is in `docs/osc.md` (`scripts/check-repo.sh` fails otherwise).
 
 ### Patterns
 The cue-number part of `/cue/{number}/{verb}` is a pattern when it has `*`, `?`, `[...]` or `{a,b}`: `*` any run (also none), `?` one char, `[abc]`/`[a-c]` one of, `[!a-c]` none of, `{a,b}` one alternative (not nested). It is matched against every cue number in every list and inside groups, in workspace order (list, then cues, a group before its children), and acts on or answers for **every match**.
@@ -114,7 +118,7 @@ Every message except `/connect`, `/version`, `/workspaces` and `/updates` needs 
 | Right | Allows |
 |---|---|
 | View | every read (`/cue/{n}/{prop}` without argument, `selected|playhead|active`, `/cueLists`, `/runningCues`, `/runningOrPausedCues`, `/selectedCues`, `/playheadID`), writing `notes`, `/udpReplyPort`. A peer without View has the strict reply budget and the 4 KiB frame limit |
-| Edit | writing `name`, `number`, `preWait`, `postWait`, `armed`, `flagged`; `/select/...`. (A read-only property write is refused as `error` once allowed) |
+| Edit | writing `name`, `number`, `preWait`, `postWait`, `duration`, `loadTime`, `armed`, `flagged`; `/select/...`. (A read-only property write is refused as `error` once allowed) |
 | Control | `/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, `/reset`, `/playhead/...`, cue verbs (start, stop, hardStop, panic, pause, resume, load, reset, preview; by number, id or pattern), and any address nothing answers to |
 
 - An address nothing answers to is classed with transport and needs Control: a peer without it gets `denied`, any other peer `error`.
@@ -142,6 +146,7 @@ A message with the same address and arguments as the peer's previous one, arrivi
 - A reply too large for a datagram becomes an `error` reply; QLab sends nothing.
 - `/version` is openLab's version. Cue `type` names other than Audio, Group, Cue List are ours (not measured; assumed).
 - Cue lists answer patterns only for `name`, `number`, `uniqueID`.
+- `/cue/{n}/loadTime` is ours (QLab 5 has no address for a Load cue's time). An out-of-range `duration` is refused whole; QLab sets 0 and answers `error` for a negative one, and 0 without a reply for a string (Q353).
 - No `/new`, `/save` or other application/workspace queries.
 
 ## References
