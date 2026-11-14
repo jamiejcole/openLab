@@ -456,8 +456,9 @@ fn load_cue_uses_its_time_as_edited_up_to_its_action_start() {
 }
 
 /// Flow: a Load cue with a negative load time loads its target to that long before its end,
-/// pre-wait included (QLab 5.6.5 measured: target pre-wait 1 s, 4 s long, load -2 s → 1 s into
-/// the action); further back than the start loads it at the start.
+/// the end of its pre-wait and action together (QLab 5.6.5 measured: pre-wait 1 s, 4 s long,
+/// load -2 s: 2 s into the action, -1 s: 3 s in); further back than the start
+/// loads it at the start.
 #[test]
 fn a_load_cue_with_a_negative_load_time_loads_its_target_before_its_end() {
     let mut rig = Rig::new(vec![
@@ -469,7 +470,7 @@ fn a_load_cue_with_a_negative_load_time_loads_its_target_before_its_end() {
     let lengths = [(id(3), Some(4000))].into_iter().collect();
     rig.at(0, Input::CueLengths { lengths });
     let go = rig.go(0);
-    // 1 s pre-wait + 4 s audio, 2 s back from the end: 1 s into the action.
+    // 1 s pre-wait + 4 s audio = 5 s; 2 s back from the end is 3 s: 2 s into the audio.
     assert!(
         go.iter().any(|a| matches!(
             a,
@@ -483,6 +484,37 @@ fn a_load_cue_with_a_negative_load_time_loads_its_target_before_its_end() {
     rig.start(100, 4);
     assert_eq!(changes(&rig.tick(2099), 4), vec![], "{go:?}");
     assert!(!changes(&rig.tick(2100), 4).is_empty());
+}
+
+/// QLab 5.6.5 measured with a 3 s pre-wait and a 4 s Wait (7 s in all): -2 s is 2 s into the
+/// action, -5 s is 2 s into the pre-wait, -6 s 1 s into it, -8 s the start. The pre-wait counts.
+#[test]
+fn a_negative_load_time_counts_back_through_the_targets_pre_wait() {
+    // (load time, sample the action starts after a start at 100, sample it ends)
+    for (time, action, end) in [
+        (-2.0, 100, 2100),
+        (-5.0, 1100, 5100),
+        (-6.0, 2100, 6100),
+        (-8.0, 3100, 7100),
+    ] {
+        let mut rig = Rig::new(vec![
+            load_cue(1, 2, time),
+            timed(wait(2, 4.0), 3.0, 0.0, DNC),
+        ]);
+        rig.go(0);
+        assert_eq!(rig.state(2), CueState::Loaded, "{time}");
+        rig.start(100, 2);
+        if action > 100 {
+            rig.tick(action - 1);
+            assert_eq!(rig.state(2), CueState::PreWaiting, "{time}");
+        }
+        rig.tick(action);
+        assert_eq!(rig.state(2), CueState::Running, "{time}");
+        rig.tick(end - 1);
+        assert_eq!(rig.state(2), CueState::Running, "{time}");
+        rig.tick(end);
+        assert_eq!(rig.state(2), CueState::Idle, "{time}");
+    }
 }
 
 #[test]
