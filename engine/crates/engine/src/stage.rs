@@ -155,6 +155,10 @@ enum Order {
     Stages(Vec<StageOutput>),
     /// A picture message or the clock: written as it is to the running stage host.
     Picture(ToStage),
+    /// A routine clock: dropped when the stage host's queue is half full (the next replaces
+    /// it), so a burst of them (the engine running ahead of real time, a stage host busy for a
+    /// moment) never fills the queue and gets the stage host stopped as not reading.
+    Clock(ToStage),
     #[cfg(feature = "test-support")]
     Send(ToStage),
     Quit,
@@ -180,6 +184,11 @@ impl StageHost {
     /// engine sends its pictures again when one starts).
     pub fn picture(&self, message: ToStage) {
         let _ = self.commands.send(Order::Picture(message));
+    }
+
+    /// Sends the stage host a routine clock, dropped if it is behind (see `Order::Clock`).
+    pub fn routine_clock(&self, message: ToStage) {
+        let _ = self.commands.send(Order::Clock(message));
     }
 
     /// Test support: sends `message` as it is.
@@ -287,6 +296,15 @@ impl Supervisor {
                     // a stage host starts.
                     Ok(Order::Picture(message)) => {
                         if self.running.as_ref().is_some_and(|r| r.hello) {
+                            self.write(&message);
+                        }
+                    }
+                    Ok(Order::Clock(message)) => {
+                        if self
+                            .running
+                            .as_ref()
+                            .is_some_and(|r| r.hello && r.to_child.len() < WRITE_QUEUE / 2)
+                        {
                             self.write(&message);
                         }
                     }
