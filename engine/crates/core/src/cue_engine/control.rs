@@ -86,15 +86,22 @@ impl CueEngine {
     /// The time a Load cue loads `target` to. A negative time counts back from the target's
     /// end (pre-wait and action, as a playlist would time it) as in QLab 5 (manual pp. 680-681;
     /// measured in 5.6.5): further back than the start, or with no known end (audio not probed
-    /// yet, an endless loop or group), it loads to the start.
+    /// yet, an endless group), it loads to the start. An Audio cue that loops forever ends, for
+    /// this, after one pass (QLab 5.6.5 measured).
     fn load_time(&self, target: CueId, time: f64, cx: &Ctx) -> f64 {
         if time >= 0.0 {
             return time;
         }
-        let span = cx
-            .ws
-            .find_cue(target)
-            .and_then(|t| self.nominal_span(t, 0, cx));
+        let Some(model) = cx.ws.find_cue(target) else {
+            return 0.0;
+        };
+        // An Audio cue that loops forever has no end; QLab counts back from one pass.
+        let span = self.nominal_span(model, 0, cx).or_else(|| {
+            matches!(model.kind, CueKind::Audio { .. })
+                .then(|| self.pass_lengths.get(&target).copied())
+                .flatten()
+                .map(|pass| cx.secs(model.pre_wait, &self.config).saturating_add(pass))
+        });
         let Some(span) = span else { return 0.0 };
         #[expect(
             clippy::cast_precision_loss,

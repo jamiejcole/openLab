@@ -517,6 +517,24 @@ fn a_negative_load_time_counts_back_through_the_targets_pre_wait() {
     }
 }
 
+/// An Audio cue that loops forever has no length (`CueLengths` says none); a negative time
+/// counts back from one pass of it (QLab 5.6.5 measured), pre-wait included.
+#[test]
+fn a_negative_load_time_on_a_looping_audio_cue_counts_back_from_one_pass() {
+    let mut rig = Rig::new(vec![load_cue(1, 2, -1.5), timed(sound(2), 1.0, 0.0, DNC)]);
+    let passes = [(id(2), Some(4000))].into_iter().collect();
+    rig.at(0, Input::CuePassLengths { lengths: passes });
+    let go = rig.go(0);
+    // 1 s pre-wait + one 4 s pass; 1.5 s back: 2.5 s into the audio.
+    assert!(
+        go.iter().any(|a| matches!(
+            a,
+            Action::LoadVoice { cue, offset: 2500, .. } if *cue == id(2)
+        )),
+        "{go:?}"
+    );
+}
+
 #[test]
 fn a_negative_load_time_longer_than_the_target_or_with_no_known_end_loads_at_the_start() {
     let mut rig = Rig::new(vec![

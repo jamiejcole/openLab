@@ -375,7 +375,8 @@ impl DocCx<'_> {
         }
         // The plans just checked give the cues whose slices cannot be played, which the cue
         // engine shows broken before a GO (`Input::SliceProblems`); the cues' nominal lengths,
-        // which a playlist halted by a broken child times its auto-follow by; and the media lengths clients show: only
+        // which a playlist halted by a broken child times its auto-follow by, and one pass of
+        // them, which a Load cue's negative time counts back from; and the media lengths clients show: only
         // the cues whose plan changed.
         let changes = self.doc.checks.take_changes();
         if !changes.slices.is_empty() {
@@ -401,6 +402,15 @@ impl DocCx<'_> {
             self.feed(
                 Input::CueLengths {
                     lengths: changes.lengths,
+                },
+                now,
+            );
+        }
+        if !changes.passes.is_empty() {
+            let now = self.now();
+            self.feed(
+                Input::CuePassLengths {
+                    lengths: changes.passes,
                 },
                 now,
             );

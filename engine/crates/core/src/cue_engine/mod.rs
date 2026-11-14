@@ -120,6 +120,8 @@ pub struct CueEngine {
     /// Nominal action lengths of Audio cues, from the binary (`Input::CueLengths`); a cue not
     /// here has none known.
     lengths: BTreeMap<CueId, SampleTime>,
+    /// One pass of each Audio cue's trimmed range, from the binary (`Input::CuePassLengths`).
+    pass_lengths: BTreeMap<CueId, SampleTime>,
     /// How many such passes have run (a cost measure, see `model_syncs`).
     model_syncs: u64,
     /// Walks of the whole workspace made to follow edits (a cost measure, see
@@ -193,6 +195,7 @@ impl CueEngine {
             last_now: 0,
             limits: LevelLimits::default(),
             lengths: BTreeMap::new(),
+            pass_lengths: BTreeMap::new(),
             model_syncs: 0,
             whole_show_passes: 0,
             spent: (0, 0),
@@ -592,6 +595,14 @@ impl CueEngine {
                     match length {
                         Some(frames) => self.lengths.insert(cue, frames),
                         None => self.lengths.remove(&cue),
+                    };
+                }
+            }
+            Input::CuePassLengths { lengths } => {
+                for (cue, length) in lengths {
+                    match length {
+                        Some(frames) => self.pass_lengths.insert(cue, frames),
+                        None => self.pass_lengths.remove(&cue),
                     };
                 }
             }

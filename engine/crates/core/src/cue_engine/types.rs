@@ -196,6 +196,13 @@ pub enum Input {
     CueLengths {
         lengths: Vec<(CueId, Option<SampleTime>)>,
     },
+    /// From the binary: one pass of each Audio cue's trimmed range in samples (every slice
+    /// once), `None` when not known or for a cue that went away. A Load cue's negative time
+    /// counts back from it when the cue loops forever (no `CueLengths` entry), as QLab 5 counts
+    /// back from one pass. Sent like `CueLengths`.
+    CuePassLengths {
+        lengths: Vec<(CueId, Option<SampleTime>)>,
+    },
     /// From the binary: Audio cues whose trims, slice markers and play counts cannot be played
     /// with their probed file (`Some(why)`, e.g. a looping slice too short) or can again
     /// (`None`), each sent when it changes (an edit, a probe answer, a cue gone). The core cannot
