@@ -208,7 +208,7 @@ extension CueEditor {
         let targets = cues.compactMap { model.cue($0) }
         guard
             let command = Command.transaction(
-                PasteProperty.commands(ticked, from: source, to: targets, media: store.mediaDurations))
+                PasteProperty.commands(ticked, from: source, to: targets, media: store.mediaDurations, model: model))
         else {
             return
         }

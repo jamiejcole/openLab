@@ -32,6 +32,28 @@ final class VideoCuePropertyTests: XCTestCase {
                 type: type, codec: nil, format: nil, width: 10, height: 10, fps: nil, duration: nil))
     }
 
+    /// An Audio cue copied with a patch the targets' workspace lacks (another workspace's, or one
+    /// removed since): the output patch is not offered and not sent; one it has is.
+    func testPastePropertiesLeavesOutAPatchTheWorkspaceLacks() throws {
+        let snap = try Fixtures.json("server", "welcome")["snapshot"]
+        let model = try JSONDecoder().decode(
+            WorkspaceModel.self, from: Data(try XCTUnwrap(snap?["workspace"]).text().utf8))
+        let known = try XCTUnwrap(model.patches.first?.id)
+        func audio(_ id: String, patch: String) throws -> Cue {
+            var kind = TestSnapshots.audioKind("a.wav")
+            kind.set("patch", .string(patch))
+            return try Cue(json: TestSnapshots.cueJSON(id: id, number: nil, name: "", kind: kind))
+        }
+        let target = try audio("t", patch: known.raw)
+        let foreign = try audio("s", patch: "00000000-0000-0000-0000-0000000000ee")
+        XCTAssertNil(PasteProperty.offered(from: foreign, to: [target], model: model).first { $0.category == .io })
+        XCTAssertTrue(PasteProperty.commands([.outputPatch], from: foreign, to: [target], model: model).isEmpty)
+        let own = try audio("o", patch: known.raw)
+        XCTAssertEqual(
+            PasteProperty.offered(from: own, to: [target], model: model).first { $0.category == .io }?.properties,
+            [.outputPatch])
+    }
+
     func testPastePropertiesOffersTheStageAndAStillsDurationButNotAMoviesDuration() throws {
         let still: ModelID = "s"
         let other: ModelID = "t"

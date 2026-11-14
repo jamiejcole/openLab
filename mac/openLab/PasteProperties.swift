@@ -65,23 +65,38 @@ enum PasteProperty: String, CaseIterable {
         }
     }
 
-    /// Whether `cue` can take this property from `source`: by their kinds, and a duration only from
-    /// and to a cue whose duration is typed (a still, not a movie: `media` holds what the probes read).
-    func applies(from source: Cue, to cue: Cue, media: [ModelID: CueMediaDuration]) -> Bool {
+    /// Whether `cue` can take this property from `source`: by their kinds; a duration only from and
+    /// to a cue whose duration is typed (a still, not a movie: `media` holds what the probes read); a
+    /// stage or output patch only when `model`, the targets' workspace, has it (a cue copied from
+    /// another workspace, or whose stage or patch went since, would be left broken). A stage of none
+    /// is always pasteable.
+    func applies(
+        from source: Cue, to cue: Cue, media: [ModelID: CueMediaDuration], model: WorkspaceModel? = nil
+    ) -> Bool {
         guard applies(from: source.kindType, to: cue.kindType) else { return false }
-        guard self == .duration else { return true }
-        return InspectorEdit.editsDuration(source, media: media[source.id])
-            && InspectorEdit.editsDuration(cue, media: media[cue.id])
+        let kind = source.raw["kind"]
+        switch self {
+        case .duration:
+            return InspectorEdit.editsDuration(source, media: media[source.id])
+                && InspectorEdit.editsDuration(cue, media: media[cue.id])
+        case .stage:
+            guard let model, let stage = kind?["stage"]?.stringValue else { return true }
+            return model.stages.contains { $0.id.raw == stage }
+        case .outputPatch:
+            guard let model, let patch = kind?["patch"]?.stringValue else { return true }
+            return model.patches.contains { $0.id.raw == patch }
+        default: return true
+        }
     }
 
     /// The categories the sheet lists for `source` pasted onto `cues`, each with the properties at
     /// least one of the cues can take, in the sheet's order. Categories with none are left out.
     static func offered(
-        from source: Cue, to cues: [Cue], media: [ModelID: CueMediaDuration] = [:]
+        from source: Cue, to cues: [Cue], media: [ModelID: CueMediaDuration] = [:], model: WorkspaceModel? = nil
     ) -> [(category: Category, properties: [PasteProperty])] {
         Category.allCases.compactMap { category in
             let properties = category.properties.filter { p in
-                cues.contains { p.applies(from: source, to: $0, media: media) }
+                cues.contains { p.applies(from: source, to: $0, media: media, model: model) }
             }
             return properties.isEmpty ? nil : (category, properties)
         }
@@ -92,17 +107,20 @@ enum PasteProperty: String, CaseIterable {
     /// take a property is left out of it; one that has it already is sent it anyway (the engine
     /// counts that as no change).
     static func commands(
-        _ ticked: Set<PasteProperty>, from source: Cue, to cues: [Cue], media: [ModelID: CueMediaDuration] = [:]
+        _ ticked: Set<PasteProperty>, from source: Cue, to cues: [Cue], media: [ModelID: CueMediaDuration] = [:],
+        model: WorkspaceModel? = nil
     ) -> [Command] {
         cues.flatMap { cue in
-            allCases.filter(ticked.contains).flatMap { $0.commands(from: source, to: cue, media: media) }
+            allCases.filter(ticked.contains).flatMap { $0.commands(from: source, to: cue, media: media, model: model) }
         }
     }
 
     /// The commands that set this property of `source` on `cue`; none when `cue` cannot take it or
     /// `source` has nothing to give.
-    func commands(from source: Cue, to cue: Cue, media: [ModelID: CueMediaDuration] = [:]) -> [Command] {
-        guard applies(from: source, to: cue, media: media) else { return [] }
+    func commands(
+        from source: Cue, to cue: Cue, media: [ModelID: CueMediaDuration] = [:], model: WorkspaceModel? = nil
+    ) -> [Command] {
+        guard applies(from: source, to: cue, media: media, model: model) else { return [] }
         let raw = source.raw
         let kind = raw["kind"] ?? .null
         let id = cue.id

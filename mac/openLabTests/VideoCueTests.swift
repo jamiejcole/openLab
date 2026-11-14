@@ -720,6 +720,39 @@ final class VideoCueTests: XCTestCase {
         XCTAssertEqual(cell(Self.timedStill, "duration"), "")
     }
 
+    /// A cue copied while on a stage that is then removed: Paste Properties does not offer that
+    /// stage (pasting it would leave the targets broken), the other properties still go, and the
+    /// targets keep their own stage, not broken.
+    func testPastePropertiesLeavesOutAStageTheWorkspaceNoLongerHas() async throws {
+        try await openVideoShow()
+        wc.presentSheet = { _ in }
+        wc.pasteDefaults = UserDefaults(suiteName: "openlab-test-\(UUID().uuidString)") ?? .standard
+        wc.editor.pasteboard = NSPasteboard.withUniqueName()
+        let copied = await wc.editor.copySelection(of: [Self.long])  // on the side screen
+        XCTAssertTrue(copied)
+        guard case .success = await store.send(command: .removeStage(Self.side)) else { return XCTFail("remove") }
+        await soon { self.store.model?.stages.count == 1 }
+        wc.cueList.selectAsUser([Self.still, Self.movie])
+        wc.promptPasteProperties(onto: [Self.still, Self.movie])
+        let sheet = try XCTUnwrap(wc.pasteSheet, "the sheet is up: other properties can still go")
+        XCTAssertNil(sheet.propertyChecks[.stage], "a stage this workspace lacks is not offered")
+        let name = try XCTUnwrap(sheet.propertyChecks[.preWait])
+        if name.state != .on { name.performClick(nil) }
+        sheet.applyButton.performClick(nil)
+        try await play(0)
+        for id in [Self.still, Self.movie] {
+            XCTAssertEqual(store.model?.cue(id)?.raw["kind"]?["stage"]?.stringValue, Self.stage.raw, "\(id)")
+            XCTAssertNil(status(id), "\(id) is not broken")
+        }
+        // And straight through the editor, as a remembered tick would send it: nothing for the stage.
+        let source = try XCTUnwrap(wc.editor.clipboardCue)
+        XCTAssertTrue(
+            PasteProperty.commands(
+                [.stage], from: source, to: [try XCTUnwrap(store.model?.cue(Self.still))],
+                media: store.mediaDurations, model: store.model
+            ).isEmpty)
+    }
+
     // MARK: Flow 6: tabs and icon
 
     /// A Video cue's inspector has Basics, Triggers and I/O; several selected keep I/O, the stage
