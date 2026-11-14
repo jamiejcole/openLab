@@ -281,6 +281,14 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         secondColourPopup.setAX("inspector-second-colour")
         secondColourCheck.setAX("inspector-second-colour-on", label: loc("inspector.secondColour"))
         secondColourCheck.toolTip = loc("inspector.secondColour")
+        // A lock (our own drawing) that opens: off is closed (no second colour), on is open.
+        secondColourCheck.setButtonType(.toggle)
+        secondColourCheck.isBordered = false
+        secondColourCheck.title = ""
+        secondColourCheck.imagePosition = .imageOnly
+        secondColourCheck.image = Icon.colourLocked.image(loc("inspector.secondColour"), compact: true)
+        secondColourCheck.alternateImage = Icon.colourUnlocked.image(loc("inspector.secondColour"), compact: true)
+        secondColourCheck.widthAnchor.constraint(equalToConstant: 16).isActive = true
         autoLoadCheck.setAX("inspector-auto-load")
         skipCheck.setAX("inspector-skip-if-disarmed")
         for p in [colourPopup, secondColourPopup, continuePopup] {
@@ -414,7 +422,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             p.controlSize = .small
             p.widthAnchor.constraint(equalToConstant: 40).isActive = true
         }
-        for c in [secondColourCheck, flaggedCheck, autoLoadCheck, armedCheck, skipCheck] {
+        for c in [flaggedCheck, autoLoadCheck, armedCheck, skipCheck] {
             c.controlSize = .small
             c.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         }
@@ -432,6 +440,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         columns.orientation = .horizontal
         columns.alignment = .top
         columns.distribution = .fill
+        Self.clipsAtTheBottom(columns)
         centre.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         columns.spacing = 10
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
@@ -544,11 +553,19 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let columns = NSStackView(views: [left, right])
         columns.alignment = .top
         columns.spacing = 28
+        Self.clipsAtTheBottom(columns)
         columns.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         let item = NSTabViewItem(identifier: "triggers")
         item.label = loc("inspector.tab.triggers")
         item.view = columns
         return item
+    }
+
+    /// A tab's columns in a short inspector: they keep their tops and are cut at the bottom. Left to
+    /// insist on their whole height, a column taller than the tab was laid out from the bottom up
+    /// instead, its first fields pushed up over the tabs.
+    static func clipsAtTheBottom(_ columns: NSStackView) {
+        columns.setClippingResistancePriority(.defaultLow, for: .vertical)
     }
 
     /// The last view of a tab's column: it takes the height the column is stretched to, so the
@@ -632,21 +649,33 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     }
 
     /// The hotkey trigger's box: off keeps the key and it starts nothing (QLab 5, manual p. 128). On
-    /// again is refused, the box put back, when the key now belongs to something else.
+    /// again is refused for every cue shown, the box put back, when a key it would wake belongs to
+    /// something else or to two of them. A mixed box sets it on for every cue.
     @objc func hotkeyEnableChanged() {
-        guard !isLocked, let cue = cueForEdit, let model = store.model else { return render() }
-        let on = hotkeyEnableCheck.state == .on
-        if on, let hk = cue.raw["triggers"]?["hotkey"], let chord = KeyChord(hotkey: hk),
-            let error = HotkeyRules.validate(
-                chord, for: cue.id, in: model, keys: transportKeys?() ?? TransportKeys(settings: model.settings),
-                menuChords: menuChords())
-        {
-            showRefusal(loc(HotkeyRules.messageKey(error)))
-            hotkeyEnableCheck.state = .off
-            return
+        let cues = editCues
+        guard !isLocked, !cues.isEmpty, let model = store.model else { return render() }
+        let on = hotkeyEnableCheck.state != .off
+        hotkeyEnableCheck.allowsMixedState = false
+        hotkeyEnableCheck.state = on ? .on : .off
+        if on {
+            let keys = transportKeys?() ?? TransportKeys(settings: model.settings)
+            var waking: [KeyChord] = []
+            for cue in cues {
+                guard let hk = cue.raw["triggers"]?["hotkey"], let chord = KeyChord(hotkey: hk) else { continue }
+                let error =
+                    HotkeyRules.validate(chord, for: cue.id, in: model, keys: keys, menuChords: menuChords())
+                    ?? (waking.contains(chord) ? .cueHotkey : nil)
+                if let error {
+                    showRefusal(loc(HotkeyRules.messageKey(error)))
+                    return render()
+                }
+                waking.append(chord)
+            }
         }
-        messageLabel.stringValue = ""
-        send(InspectorEdit.setTriggers(cue, enabled: on), cue: cue.id, key: "hotkey", revert: [])
+        sendEach(key: "hotkey") { cue in
+            let now = cue.raw["triggers"]?["hotkey_enabled"] != .bool(false)
+            return now == on ? nil : InspectorEdit.setTriggers(cue, enabled: on)
+        }
         render()
     }
 

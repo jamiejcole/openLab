@@ -38,7 +38,7 @@ extension InspectorViewController {
 
     /// The controls only one cue at a time can set: off while several are selected.
     var singleCueControls: [NSControl] {
-        [numberField, hotkeyField, hotkeyClear, hotkeyEnableCheck, networkSendButton, chooseButton, clearTargetButton]
+        [numberField, hotkeyField, hotkeyClear, networkSendButton, chooseButton, clearTargetButton]
     }
 
     // MARK: Showing several cues
@@ -71,6 +71,8 @@ extension InspectorViewController {
         postWaitField.isEnabled = modes.contains { $0 != "auto_follow" }
         loadTimeField.isEnabled = kind == "load"
         networkMessageField.isEnabled = kind == "network"
+        // The others' fields are switched on or off by their boxes before the hints below are judged.
+        renderBatchOthers(cues)
         // A field that is off shows no Mixed hint, so it does not read as one to type in.
         for f in InspectorField.allCases { if field(f)?.isEnabled == false { field(f)?.placeholderString = nil } }
         // An empty field that is off draws like one that is on (AppKit dims only its text): it is dimmed whole.
@@ -88,9 +90,10 @@ extension InspectorViewController {
         secondColourPopup.isEnabled = secondColourCheck.state != .off && !isLocked
         showTicks(autoLoadCheck, cues.map { $0.raw["auto_load"] == .bool(true) })
         showTicks(skipCheck, cues.map { $0.raw["skip_if_disarmed"] == .bool(true) })
-        hotkeyEnableCheck.state = .off
+        // Each cue's own switch: mixed when they differ (the box sets it on every cue).
+        showTicks(hotkeyEnableCheck, cues.map { $0.raw["triggers"]?["hotkey_enabled"] != .bool(false) })
+        hotkeyEnableCheck.isEnabled = !isLocked
         hotkeyField.textColor = .controlTextColor
-        renderBatchOthers(cues)
         showChoice(continuePopup, Self.continueModes, modes)
         showChoice(
             secondTriggerPopup, Self.secondTriggers, cues.map { $0.raw["second_trigger"]?.stringValue ?? "nothing" })
@@ -235,7 +238,7 @@ extension InspectorViewController {
     func endBatchControls() {
         for c in [
             flaggedCheck, armedCheck, onReleaseCheck, groupLoopCheck, groupShuffleCheck, devampStartNextCheck,
-            devampStopCheck, autoLoadCheck, skipCheck, secondColourCheck, fadeOthersCheck, duckCheck,
+            devampStopCheck, autoLoadCheck, skipCheck, secondColourCheck, fadeOthersCheck, duckCheck, hotkeyEnableCheck,
         ] {
             c.allowsMixedState = false
         }

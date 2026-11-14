@@ -388,6 +388,11 @@ extension PlayheadFlowTests {
         await select([cue])
         try pick(inspector.colourPopup, "red")
         XCTAssertFalse(inspector.secondColourPopup.isEnabled, "locked: no second colour")
+        let lock = inspector.secondColourCheck
+        XCTAssertEqual(IconLookup.drawingName(of: lock.image), "colour-locked", "drawn as a closed lock")
+        XCTAssertEqual(IconLookup.drawingName(of: lock.alternateImage), "colour-unlocked", "open once ticked")
+        XCTAssertEqual(lock.title, "")
+        XCTAssertEqual(lock.accessibilityLabel(), loc("inspector.secondColour"))
         tick(inspector.secondColourCheck, true)
         XCTAssertTrue(inspector.secondColourPopup.isEnabled, "unlocked")
         try pick(inspector.secondColourPopup, "green")
@@ -640,6 +645,61 @@ extension PlayheadFlowTests {
             ])
     }
 
+    /// Reproduce: a 1000x700 window, a cue with a second colour playing, the sidebar on Active Cues,
+    /// the sidebar's Reset All pressed: the Basics tab's left column slid up over the tab bar,
+    /// Number and Duration out of sight. Every Basics field stays inside the tab.
+    func testResetAllWithActiveCuesShownKeepsTheBasicsFieldsInsideTheTab() async throws {
+        let window = try XCTUnwrap(wc.window)
+        window.setFrame(NSRect(x: 0, y: 0, width: 1000, height: 700), display: true)
+        let cues = try await tones(2)
+        guard case .success = await store.send(command: .setProperty(cues[0], .secondColor("green"))) else {
+            return XCTFail("second colour")
+        }
+        click(cues[0])
+        await assertEventually { self.store.playheads[self.list] == cues[0] }
+        try await go()
+        try await play(1)
+        wc.setVisible(.sidebar, true)
+        wc.sidebar.showTab(1)
+        func find(_ v: NSView) -> NSButton? {
+            if let b = v as? NSButton, b.accessibilityIdentifier() == AX.transportReset { return b }
+            return v.subviews.lazy.compactMap(find).first
+        }
+        let reset = try XCTUnwrap(find(wc.sidebar.view), "the sidebar's Reset All")
+        reset.performClick(nil)
+        try await play(0.5)
+        await assertEventually("reset") { !self.store.played.contains(cues[0]) }
+        await select([cues[0]])
+        inspector.tabView.selectTabViewItem(withIdentifier: "basics")
+        // The shortest inspector, where the left column is taller than the tab: it must be cut at the
+        // bottom (as before these controls came), never pushed up over the tabs.
+        wc.inspectorHeightConstraint?.constant = WorkspaceWindowController.minInspectorHeight
+        // Held there whatever the tabs would like, as the split holds it when the window is short.
+        let held = inspector.view.heightAnchor.constraint(equalToConstant: WorkspaceWindowController.minInspectorHeight)
+        held.priority = .required
+        held.isActive = true
+        defer { held.isActive = false }
+        for _ in 0..<3 {
+            window.layoutIfNeeded()
+            window.displayIfNeeded()
+            await settle()
+        }
+        for id in ["basics", "triggers"] {
+            inspector.tabView.selectTabViewItem(withIdentifier: id)
+            window.layoutIfNeeded()
+            let tab = try XCTUnwrap(inspector.tabItems[id]?.view)
+            let first = id == "basics" ? inspector.numberField : inspector.hotkeyField
+            let frame = first.convert(first.bounds, to: tab)
+            // Off screen (a scenario's window) the columns, insisting on their whole height, were laid
+            // out from the bottom up; they must give way at the bottom instead.
+            let columns = try XCTUnwrap(tab as? NSStackView)
+            XCTAssertLessThan(columns.clippingResistancePriority(for: .vertical), .required, "\(id) gives way")
+            XCTAssertLessThanOrEqual(
+                tab.isFlipped ? -frame.minY : frame.maxY - tab.bounds.maxY, 0,
+                "\(id): the first field's top \(frame) is inside the tab \(tab.bounds)")
+        }
+    }
+
     /// The playhead on a skipped cue: its row keeps the playhead mark, the masthead names the next cue
     /// there, and GO starts that one.
     func testThePlayheadRestsOnASkippedCueTheMastheadShowsTheNextCueThereAndGoStartsIt() async throws {
@@ -672,9 +732,25 @@ extension PlayheadFlowTests {
                         id, .fadeAndStopOthers(enabled: id == cues[1], scope: "peers", duration: time)))
             else { return XCTFail("setup") }
         }
+        guard case .success = await store.send(command: .setProperty(cues[0], .triggers(hotkey: nil, enabled: false)))
+        else { return XCTFail("switch") }
+        // Shown first alone, the first cue leaves the fade-out time field off; with both shown it is on.
+        await select([cues[0]])
+        inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
+        XCTAssertFalse(inspector.fadeOthersTimeField.isEnabled)
         await select(cues)
         XCTAssertEqual(inspector.fadeOthersCheck.state, .mixed)
-        XCTAssertEqual(inspector.fadeOthersTimeField.placeholderString, loc("inspector.mixed"))
+        XCTAssertTrue(inspector.fadeOthersTimeField.isEnabled)
+        XCTAssertEqual(
+            inspector.fadeOthersTimeField.placeholderString, loc("inspector.mixed"), "the hint on a field that is on")
+        // The hotkey switches differ: mixed, and a click turns every cue's on.
+        XCTAssertEqual(inspector.hotkeyEnableCheck.state, .mixed)
+        XCTAssertTrue(inspector.hotkeyEnableCheck.isEnabled)
+        inspector.hotkeyEnableCheck.performClick(nil)
+        await assertEventually("both switches on") {
+            cues.allSatisfy { self.raw($0, "triggers")?["hotkey_enabled"] != .bool(false) }
+        }
+        inspector.tabView.selectTabViewItem(withIdentifier: "basics")
         XCTAssertEqual(inspector.autoLoadCheck.state, .off)
         tick(inspector.autoLoadCheck, true)
         tick(inspector.skipCheck, true)
@@ -689,6 +765,5 @@ extension PlayheadFlowTests {
         let after = cues.compactMap { store.model?.cue($0) }.map(InspectorEdit.fadeOthers)
         XCTAssertEqual(after.map(\.duration), [1, 4], "each keeps its own time")
         XCTAssertEqual(after.map(\.enabled), [false, true], "and its own box")
-        XCTAssertFalse(inspector.hotkeyEnableCheck.isEnabled, "a hotkey names one cue")
     }
 }
