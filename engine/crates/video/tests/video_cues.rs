@@ -1141,3 +1141,73 @@ fn a_still_too_large_to_hold_is_refused_by_the_stage_host() {
     );
     assert_eq!(s.control().stage_host_pid(), Some(pid));
 }
+
+/// Cue `n`'s last progress item since the last call: (elapsed, remaining, position).
+fn progress_of(s: &mut OfflineShow, n: u128) -> Option<(f64, Option<f64>, Option<f64>)> {
+    s.take_outbound()
+        .into_iter()
+        .filter_map(|m| match m {
+            ServerMessage::Progress { items, .. } => items.into_iter().find(|i| i.cue == id(n)),
+            _ => None,
+        })
+        .next_back()
+        .map(|i| (i.elapsed, i.remaining, i.position))
+}
+
+fn near(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 0.05
+}
+
+/// Clients are told a running Video cue's progress, as an Audio cue's: elapsed on the engine
+/// clock from its start with the time left of its movie, held while paused, on from there when
+/// resumed, from the load-to-time point when loaded there; a still with no duration counts up
+/// with no end.
+#[test]
+fn clients_are_told_a_video_cues_progress_playing_paused_resumed_and_loaded_to_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = make(dir.path(), "clip.mov", "h264", Some((100, 25)));
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = video_show(vec![video_cue(1, Some(&movie)), still_cue(2, &png, None)]);
+    let at = start(&mut s, 1);
+    s.take_outbound();
+    run_to(&mut s, at + samples(1.0));
+    let (elapsed, remaining, position) = progress_of(&mut s, 1).expect("playing");
+    assert!(near(elapsed, 1.0), "{elapsed}");
+    assert!(near(remaining.unwrap(), 3.0), "{remaining:?}");
+    assert!(near(position.unwrap(), elapsed));
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK);
+    let paused = progress_of(&mut s, 1).expect("paused").0;
+    s.run(samples(1.0));
+    let (still_paused, _, _) = progress_of(&mut s, 1).expect("still told while paused");
+    assert!(near(still_paused, paused) && (still_paused - paused).abs() < 1e-9);
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.5));
+    let (on, left, _) = progress_of(&mut s, 1).expect("resumed");
+    assert!(near(on, paused + 0.5), "{on} after {paused}");
+    assert!(near(left.unwrap(), 4.0 - on));
+    // Load to time, then GO: counts from there.
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: None,
+    });
+    s.run(BLOCK);
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: 2.5,
+    });
+    s.run(BLOCK);
+    let at = start(&mut s, 1);
+    s.take_outbound();
+    run_to(&mut s, at + samples(0.5));
+    let (from_there, left, _) = progress_of(&mut s, 1).expect("loaded to time");
+    assert!(near(from_there, 3.0), "{from_there}");
+    assert!(near(left.unwrap(), 1.0));
+    // A still with no duration: elapsed with no end and no file position.
+    let at = start(&mut s, 2);
+    run_to(&mut s, at + samples(0.5));
+    let (shown_for, end, position) = progress_of(&mut s, 2).expect("the still");
+    assert!(near(shown_for, 0.5), "{shown_for}");
+    assert_eq!((end, position), (None, None));
+}

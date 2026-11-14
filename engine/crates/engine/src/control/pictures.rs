@@ -56,6 +56,12 @@ struct Live {
     ends: Option<SampleTime>,
     /// The stage host said its file is open (since the load was last sent).
     opened: bool,
+    /// Where it is, for progress: playing from sample `.0` (`Some`), or held (`None`), at `.1`
+    /// seconds into its action then; `None` until it first plays.
+    motion: Option<(Option<SampleTime>, f64)>,
+    /// Its action's length in seconds (a video's, a still's typed duration), if it has one.
+    length: Option<f64>,
+    still: bool,
     /// When it was last sent again to a stage host that started after one stopped.
     resent: Option<SampleTime>,
 }
@@ -267,6 +273,37 @@ impl Engine {
         self.pictures.live.len()
     }
 
+    /// Progress of this doc's Video cues whose picture has played: (cue, elapsed seconds into
+    /// the action, remaining seconds if it has an end, seconds into a video's file). Elapsed
+    /// follows the engine clock from the picture's play (its load-to-time offset included)
+    /// and holds while paused; a still with no duration has no end, as any cue without one.
+    pub(super) fn picture_progress(
+        &self,
+        doc: DocId,
+        rendered: SampleTime,
+    ) -> Vec<(CueId, f64, Option<f64>, Option<f64>)> {
+        let rate = self.rate.get();
+        self.pictures
+            .live
+            .values()
+            .filter(|l| l.doc == doc)
+            .filter_map(|l| {
+                let (from, offset) = l.motion?;
+                let elapsed = match from {
+                    Some(at) => offset + seconds(rendered.saturating_sub(at), rate),
+                    None => offset,
+                };
+                let elapsed = match l.length {
+                    Some(length) => elapsed.min(length),
+                    None => elapsed,
+                };
+                let remaining = l.length.map(|length| (length - elapsed).max(0.0));
+                let position = (!l.still).then_some(elapsed);
+                Some((l.cue, elapsed, remaining, position))
+            })
+            .collect()
+    }
+
     /// Pictures up whose file the stage host has open (tests).
     pub(super) fn pictures_opened(&self) -> usize {
         self.pictures.live.values().filter(|l| l.opened).count()
@@ -460,6 +497,8 @@ impl DocCx<'_> {
                     };
                     if let Some(l) = self.eng.pictures.live.get_mut(&id) {
                         l.now = Some(message.clone());
+                        // Held at the frame it pauses on.
+                        l.motion = Some((None, seconds(offset, rate)));
                     }
                     self.eng.picture(message);
                 }
@@ -607,6 +646,7 @@ impl DocCx<'_> {
             still: plays.still,
             offset: seconds(offset, rate).min(openlab_core::MAX_TIME),
         };
+        let (length, still) = (plays.length, plays.still);
         self.eng.pictures.live.insert(
             id,
             Live {
@@ -619,6 +659,9 @@ impl DocCx<'_> {
                 ends: None,
                 opened: false,
                 resent: None,
+                motion: None,
+                length,
+                still,
             },
         );
         self.eng.picture(load);
@@ -649,6 +692,7 @@ impl DocCx<'_> {
         };
         if let Some(l) = self.eng.pictures.live.get_mut(&id) {
             l.now = Some(message.clone());
+            l.motion = Some((Some(at), seconds(offset, rate)));
             if l.first.is_none() {
                 l.first = Some(message.clone());
             }
