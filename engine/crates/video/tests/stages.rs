@@ -1070,7 +1070,7 @@ fn a_snapshot_is_followed_by_the_video_outputs() {
             .any(|m| matches!(m, ServerMessage::VideoOutputs { .. })),
         "not a reply: {replies:?}"
     );
-    s.tick();
+    // Pushed with the snapshot, before any tick.
     let (displays, states) = last_push(&s.take_outbound()).expect("pushed after the snapshot");
     assert_eq!(displays, ["V1", "V2"]);
     assert_eq!(states, [Some(StageState::NoDisplay)]);
