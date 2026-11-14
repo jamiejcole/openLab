@@ -1291,9 +1291,30 @@ fn a_picture_that_crashes_the_stage_host_twice_is_not_sent_a_third_time() {
         3,
         "two crashes, then a stage host that stays: {pids:?}"
     );
+    s.take_outbound();
     let at = start(&mut s, 2);
     run_to(&mut s, at + samples(0.5));
-    let now = shown(&mut s).expect("the next cue plays");
+    let shown_now = shown(&mut s);
+    if shown_now.is_none() {
+        // Say what the engine saw, so a failure on a CI runner can be read from its log.
+        let logs: Vec<String> = s
+            .take_outbound()
+            .iter()
+            .filter_map(|m| match m {
+                ServerMessage::Log { message, .. } => Some(message.clone()),
+                ServerMessage::LogEntry { entry, .. } => Some(entry.message.clone()),
+                _ => None,
+            })
+            .collect();
+        panic!(
+            "the next cue shows nothing: stage hosts {pids:?}, pictures up {}, opened {}, \
+             cue 2 {:?}, log {logs:?}",
+            s.control().pictures_live(),
+            s.control().pictures_opened(),
+            state(&s, 2)
+        );
+    }
+    let now = shown_now.expect("the next cue plays");
     assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
     assert_eq!(s.control().stage_host_pid(), pids.last().copied());
 }
