@@ -404,8 +404,13 @@ impl<P: Platform> Host<P> {
                     .filter(|(_, p)| !stages.iter().any(|s| s.id == p.stage))
                     .map(|(id, _)| *id)
                     .collect();
-                for id in gone {
-                    self.drop_picture(id);
+                // Its cue cannot be seen any more: it breaks, as a decode failure does.
+                for picture in gone {
+                    self.drop_picture(picture);
+                    out.push(FromStage::PictureFailed {
+                        picture,
+                        reason: "its stage was removed".into(),
+                    });
                 }
                 self.stages = stages;
                 // Every stage's state is reported after a new set, changed or not, so the
@@ -742,6 +747,197 @@ mod tests {
         ) -> Result<Vec<[u8; 4]>, String> {
             Ok(vec![[0, 0, 0, 255]; p.len()])
         }
+        fn open_picture(&mut self, _: u64, file: &str, _: bool) -> Result<(), String> {
+            if file == "bad" {
+                Err("cannot open\nthis".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// What stage `n` draws for its cues, by picture: position and opacity.
+    fn cues(host: &mut Host<Fake>, n: u8) -> Vec<(u64, f64, f32)> {
+        let now = host.now();
+        host.cues_on(id(n), now)
+            .into_iter()
+            .map(|c| (c.picture, c.position, c.opacity))
+            .collect()
+    }
+
+    fn send(host: &mut Host<Fake>, m: ToStage) -> Vec<FromStage> {
+        let mut out = Vec::new();
+        host.handle(m, &mut out);
+        out
+    }
+
+    fn clock(host: &mut Host<Fake>, sample: u64) {
+        send(host, ToStage::Clock { sample, rate: 1000 });
+    }
+
+    fn load(host: &mut Host<Fake>, picture: u64, n: u8) -> Vec<FromStage> {
+        send(
+            host,
+            ToStage::Load {
+                picture,
+                stage: id(n),
+                file: "clip.mov".into(),
+                still: false,
+                offset: 0.0,
+            },
+        )
+    }
+
+    /// A picture is drawn from its play's sample, its position following the clock; a pause
+    /// holds it (after its own sample); a stop fades it out and it goes.
+    #[test]
+    fn a_picture_follows_the_clock_holds_when_paused_and_fades_out_when_stopped() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 1000);
+        load(&mut h, 7, 1);
+        assert_eq!(cues(&mut h, 1), vec![], "loaded is not drawn");
+        send(
+            &mut h,
+            ToStage::Play {
+                picture: 7,
+                at: 1500,
+                offset: 2.0,
+            },
+        );
+        assert_eq!(cues(&mut h, 1), vec![], "not before its sample");
+        clock(&mut h, 2000);
+        assert_eq!(cues(&mut h, 1), vec![(7, 2.5, 1.0)]);
+        send(
+            &mut h,
+            ToStage::Pause {
+                picture: 7,
+                at: 2500,
+                offset: 3.0,
+            },
+        );
+        clock(&mut h, 2400);
+        assert_eq!(
+            cues(&mut h, 1),
+            vec![(7, 2.9, 1.0)],
+            "plays on until the pause's sample"
+        );
+        clock(&mut h, 4000);
+        assert_eq!(cues(&mut h, 1), vec![(7, 3.0, 1.0)]);
+        send(
+            &mut h,
+            ToStage::Play {
+                picture: 7,
+                at: 4000,
+                offset: 3.0,
+            },
+        );
+        send(
+            &mut h,
+            ToStage::Stop {
+                picture: 7,
+                at: 4000,
+                fade: 1000,
+            },
+        );
+        clock(&mut h, 4500);
+        assert_eq!(cues(&mut h, 1), vec![(7, 3.5, 0.5)]);
+        clock(&mut h, 5000);
+        send(
+            &mut h,
+            ToStage::Clock {
+                sample: 5000,
+                rate: 1000,
+            },
+        );
+        h.redraw(&mut Vec::new());
+        assert!(!h.playing(), "gone once its fade is over");
+    }
+
+    /// Two pictures on one stage: the later-started is drawn last (on top), whatever their ids.
+    #[test]
+    fn the_later_started_picture_is_drawn_on_top() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 9, 1);
+        load(&mut h, 3, 1);
+        send(
+            &mut h,
+            ToStage::Play {
+                picture: 9,
+                at: 0,
+                offset: 0.0,
+            },
+        );
+        send(
+            &mut h,
+            ToStage::Play {
+                picture: 3,
+                at: 100,
+                offset: 0.0,
+            },
+        );
+        clock(&mut h, 200);
+        let order: Vec<u64> = cues(&mut h, 1).iter().map(|c| c.0).collect();
+        assert_eq!(order, vec![9, 3]);
+    }
+
+    /// A picture whose file cannot be opened, whose stage is not there, or whose stage is
+    /// removed while it plays is reported failed, with a one-line reason.
+    #[test]
+    fn a_picture_that_cannot_be_shown_is_reported_failed() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        let failed = |out: &[FromStage]| -> Vec<(u64, String)> {
+            out.iter()
+                .filter_map(|m| match m {
+                    FromStage::PictureFailed { picture, reason } => {
+                        Some((*picture, reason.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let out = send(
+            &mut h,
+            ToStage::Load {
+                picture: 1,
+                stage: id(1),
+                file: "bad".into(),
+                still: true,
+                offset: 0.0,
+            },
+        );
+        assert_eq!(failed(&out), vec![(1, "cannot open this".to_owned())]);
+        assert_eq!(failed(&load(&mut h, 2, 9)).len(), 1, "no such stage");
+        load(&mut h, 3, 1);
+        send(
+            &mut h,
+            ToStage::Play {
+                picture: 3,
+                at: 0,
+                offset: 0.0,
+            },
+        );
+        let out = send(&mut h, ToStage::Stages { stages: vec![] });
+        assert_eq!(failed(&out), vec![(3, "its stage was removed".to_owned())]);
+        assert!(!h.playing());
     }
 
     fn id(n: u8) -> StageId {
