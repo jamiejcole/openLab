@@ -1234,14 +1234,21 @@ fn routine_clocks_never_get_a_busy_stage_host_stopped() {
             rate: 48_000,
         });
     }
+    // The first stop reported within `wait`, other events skipped.
     let stopped = |rx: &crossbeam_channel::Receiver<StageEvent>, wait: Duration| {
-        rx.recv_timeout(wait).ok().and_then(|e| match e {
-            StageEvent::Stopped { reason, .. } => Some(reason),
-            _ => None,
-        })
+        let deadline = std::time::Instant::now() + wait;
+        while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok(StageEvent::Stopped { reason, .. }) => return Some(reason),
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+        None
     };
     assert_eq!(stopped(&rx, Duration::from_millis(500)), None);
-    for _ in 0..200 {
+    // Far more than any pipe buffer and the write queue hold.
+    for _ in 0..20_000 {
         host.picture(ToStage::Unload { picture: 1 });
     }
     let reason = stopped(&rx, Duration::from_secs(10)).expect("stopped as not reading");
