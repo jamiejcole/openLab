@@ -115,6 +115,7 @@ fn snapshot() -> Snapshot {
             trimmed: Some(60.0),
             duration: Some(120.0),
             channels: Some(2),
+            picture: None,
         }],
     }
 }
@@ -514,6 +515,65 @@ fn fixtures() -> Vec<(String, Sample)> {
                         auto_number: true,
                     },
                 ],
+            }),
+            coalesce: None,
+        }),
+    );
+    // A new Video cue on the workspace's first stage, with a still image's duration typed; its
+    // stage set to another and to "none"; a still's duration alone (null: until stopped).
+    let mut video = cue(
+        15,
+        CueKind::Video {
+            media: Some(MediaRef::new("/Volumes/Show/Backdrop.mov")),
+            stage: Some(openlab_core::StageId(uuid::Uuid::from_u128(1))),
+            duration: None,
+        },
+    );
+    video.number = None;
+    add(
+        "command_add_new_video_cue",
+        client(ClientMessage::Command {
+            id: rid(4),
+            command: Box::new(Command::AddCue {
+                at: Position {
+                    list: list(),
+                    parent: None,
+                    index: 0,
+                },
+                cue: video,
+                auto_number: true,
+            }),
+            coalesce: None,
+        }),
+    );
+    for (name, value) in [
+        (
+            "stage",
+            Some(openlab_core::StageId(uuid::Uuid::from_u128(2))),
+        ),
+        ("stage_none", None),
+    ] {
+        add(
+            &format!("command_set_cue_{name}"),
+            client(ClientMessage::Command {
+                id: rid(3),
+                command: Box::new(Command::SetCueProperty {
+                    id: cue_id(15),
+                    property: CueProperty::Stage { value },
+                }),
+                coalesce: None,
+            }),
+        );
+    }
+    let mut still = serde_json::Map::new();
+    still.insert("duration".into(), serde_json::json!(5.0));
+    add(
+        "command_set_video_still_duration",
+        client(ClientMessage::Command {
+            id: rid(3),
+            command: Box::new(Command::SetCueProperty {
+                id: cue_id(15),
+                property: CueProperty::KindFields { value: still },
             }),
             coalesce: None,
         }),
@@ -1033,6 +1093,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                     trimmed: Some(60.25),
                     duration: None,
                     channels: Some(6),
+                    picture: None,
                 }),
                 RuntimeChange::MediaDuration(CueMediaDuration {
                     cue: cue_id(11),
@@ -1040,6 +1101,42 @@ fn fixtures() -> Vec<(String, Sample)> {
                     trimmed: None,
                     duration: None,
                     channels: None,
+                    picture: None,
+                }),
+            ],
+        }),
+    );
+    // A Video cue's lengths and format: a video's, and a still's with its typed duration.
+    add(
+        "runtime_media_duration_video",
+        server(ServerMessage::Runtime {
+            seq: 45,
+            changes: vec![
+                RuntimeChange::MediaDuration(CueMediaDuration {
+                    cue: cue_id(15),
+                    file: Some(12.5),
+                    trimmed: None,
+                    duration: Some(12.5),
+                    channels: None,
+                    picture: Some(openlab_core::video_probe::ProbeReport::Video {
+                        codec: openlab_core::video_probe::VideoCodec::ProRes,
+                        width: 1920,
+                        height: 1080,
+                        fps: 25.0,
+                        duration: 12.5,
+                    }),
+                }),
+                RuntimeChange::MediaDuration(CueMediaDuration {
+                    cue: cue_id(16),
+                    file: None,
+                    trimmed: None,
+                    duration: Some(5.0),
+                    channels: None,
+                    picture: Some(openlab_core::video_probe::ProbeReport::Still {
+                        format: openlab_core::video_probe::StillFormat::Png,
+                        width: 3840,
+                        height: 2160,
+                    }),
                 }),
             ],
         }),
@@ -2685,7 +2782,7 @@ fn wire_warning_idx(w: &WireWarning) -> usize {
     }
 }
 
-const ENGINE_PROBLEM_COUNT: usize = 15;
+const ENGINE_PROBLEM_COUNT: usize = 17;
 fn engine_problem_idx(p: &CueProblem) -> usize {
     match p {
         CueProblem::NoTarget => 0,
@@ -2703,6 +2800,8 @@ fn engine_problem_idx(p: &CueProblem) -> usize {
         CueProblem::StartedBroken => 12,
         CueProblem::NothingToFade => 13,
         CueProblem::SlicesUnplayable { .. } => 14,
+        CueProblem::NoStage => 15,
+        CueProblem::StageMissing { .. } => 16,
     }
 }
 
@@ -2723,6 +2822,8 @@ fn wire_problem_idx(p: &WireProblem) -> usize {
         WireProblem::StartedBroken => 12,
         WireProblem::NothingToFade => 13,
         WireProblem::SlicesUnplayable { .. } => 14,
+        WireProblem::NoStage => 15,
+        WireProblem::StageMissing { .. } => 16,
     }
 }
 
@@ -2762,12 +2863,13 @@ fn engine_state_idx(s: CueState) -> usize {
     }
 }
 
-const REASON_COUNT: usize = 3;
+const REASON_COUNT: usize = 4;
 fn engine_reason_idx(r: BrokenReason) -> usize {
     match r {
         BrokenReason::VoiceRejected => 0,
         BrokenReason::StreamFailed => 1,
         BrokenReason::DeviceLost => 2,
+        BrokenReason::DecodeFailed => 3,
     }
 }
 
@@ -3074,6 +3176,15 @@ fn problem_table() -> Vec<(CueProblem, WireProblem)> {
             },
         ),
         (CueProblem::StartedBroken, WireProblem::StartedBroken),
+        (CueProblem::NoStage, WireProblem::NoStage),
+        (
+            CueProblem::StageMissing {
+                stage: openlab_core::StageId(uuid::Uuid::from_u128(7)),
+            },
+            WireProblem::StageMissing {
+                stage: openlab_core::StageId(uuid::Uuid::from_u128(7)),
+            },
+        ),
     ]
 }
 
@@ -3096,6 +3207,7 @@ fn reason_table() -> Vec<(BrokenReason, WireBrokenReason)> {
         (BrokenReason::VoiceRejected, WireBrokenReason::VoiceRejected),
         (BrokenReason::StreamFailed, WireBrokenReason::StreamFailed),
         (BrokenReason::DeviceLost, WireBrokenReason::DeviceLost),
+        (BrokenReason::DecodeFailed, WireBrokenReason::DecodeFailed),
     ]
 }
 

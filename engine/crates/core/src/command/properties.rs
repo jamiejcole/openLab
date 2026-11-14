@@ -79,9 +79,13 @@ impl CueProperty {
                 value: cue.kind.clone(),
             },
             Self::Media { .. } => match &cue.kind {
-                CueKind::Audio { media, .. } => Self::Media {
+                CueKind::Audio { media, .. } | CueKind::Video { media, .. } => Self::Media {
                     value: media.clone(),
                 },
+                _ => return None,
+            },
+            Self::Stage { .. } => match &cue.kind {
+                CueKind::Video { stage, .. } => Self::Stage { value: *stage },
                 _ => return None,
             },
             Self::Destination { .. } => match &cue.kind {
@@ -150,7 +154,13 @@ impl CueProperty {
             // Resolved to a `Kind` by `set_property` before anything is written.
             Self::KindFields { .. } => return false,
             Self::Media { value } => match &mut cue.kind {
-                CueKind::Audio { media, .. } => media.clone_from(value),
+                CueKind::Audio { media, .. } | CueKind::Video { media, .. } => {
+                    media.clone_from(value);
+                }
+                _ => return false,
+            },
+            Self::Stage { value } => match &mut cue.kind {
+                CueKind::Video { stage, .. } => *stage = *value,
                 _ => return false,
             },
             Self::Destination { value } => match &mut cue.kind {

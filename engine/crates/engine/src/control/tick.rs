@@ -43,6 +43,10 @@ impl Control {
         self.eng.resend_closed();
         self.publish_workspaces();
         self.sync_stages();
+        let now = self.eng.now();
+        self.eng.prune_pictures(now);
+        self.eng.try_held_back_pictures(now);
+        self.eng.picture_clock(false);
         self.eng.flush_report_lines();
         self.push_video_outputs();
         let awake = self
@@ -335,6 +339,7 @@ impl DocCx<'_> {
     /// This doc's part of a wake ([`Control::tick`]).
     fn tick(&mut self) {
         let now = self.now();
+        self.picture_failures(now);
         self.flush_media(now);
         let mut fx = Effects::default();
         // The mixer's events of this doc's voices, routed here by the engine this wake.
@@ -347,6 +352,7 @@ impl DocCx<'_> {
         self.doc.voices.poll_streams(now, start_limit, &mut fx);
         let hold = seconds_to_samples(PROBE_HOLD_LIMIT.as_secs_f64(), self.eng.rate);
         self.doc.voices.expire_held(now, hold, &mut fx);
+        self.expire_held_pictures(now, hold, &mut fx);
         self.follow(fx, now);
         self.reclaim_slots(now);
         self.doc.net.tick(now);

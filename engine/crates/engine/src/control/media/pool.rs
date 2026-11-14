@@ -14,6 +14,7 @@ use super::super::DocId;
 use super::super::inbox::{Inbox, ProbeAnswer};
 use super::gate::*;
 use super::{Job, MAX_ABANDONED_WORKERS, PROBE_WORKERS, ProbeClock, ProbeFn};
+use crate::stage_probe::PictureProbe;
 
 /// The job a worker is on.
 pub(super) struct Busy {
@@ -45,6 +46,8 @@ pub struct ProbePool {
     low_rx: Receiver<Job>,
     inbox: Sender<Inbox>,
     probe: ProbeFn,
+    /// How Video cues' files are probed (a throwaway stage host process).
+    picture: PictureProbe,
     gate: Arc<Mutex<Gate>>,
     workers: Vec<Arc<WorkerState>>,
     abandoned: usize,
@@ -117,6 +120,7 @@ impl ProbePool {
     pub fn new(
         inbox: Sender<Inbox>,
         probe: ProbeFn,
+        picture: PictureProbe,
         timeout: Duration,
         clock: ProbeClock,
     ) -> std::io::Result<Self> {
@@ -129,6 +133,7 @@ impl ProbePool {
             low_rx,
             inbox,
             probe,
+            picture,
             gate: Arc::default(),
             workers: Vec::new(),
             abandoned: 0,
@@ -179,11 +184,12 @@ impl ProbePool {
             busy: Mutex::new(None),
             abandoned: AtomicBool::new(false),
         });
-        let (high, low, inbox, probe) = (
+        let (high, low, inbox, probe, picture) = (
             self.high_rx.clone(),
             self.low_rx.clone(),
             self.inbox.clone(),
             self.probe,
+            Arc::clone(&self.picture),
         );
         let st = Arc::clone(&state);
         let clock = self.clock.clone();
@@ -194,7 +200,9 @@ impl ProbePool {
         // is done.
         thread::Builder::new()
             .name(format!("openlab-probe-{n}"))
-            .spawn(move || worker(&high, &low, &inbox, probe, &st, &clock, &gate))?;
+            .spawn(move || {
+                worker(&high, &low, &inbox, (probe, &picture), &st, &clock, &gate);
+            })?;
         self.workers.push(state);
         Ok(())
     }
@@ -329,7 +337,7 @@ pub(super) fn worker(
     high: &Receiver<Job>,
     low: &Receiver<Job>,
     inbox: &Sender<Inbox>,
-    probe: ProbeFn,
+    (probe, picture): (ProbeFn, &PictureProbe),
     state: &WorkerState,
     clock: &ProbeClock,
     gate: &Mutex<Gate>,
@@ -369,6 +377,24 @@ pub(super) fn worker(
             reported: false,
         });
         let (answer, answered) = match job {
+            Job::Probe {
+                key,
+                ticket,
+                path,
+                picture: true,
+                ..
+            } => {
+                let result = picture(&path).map(|p| (path, p));
+                let answered = result.as_ref().err().is_none_or(volume_answered);
+                (
+                    ProbeAnswer::Pictured {
+                        result,
+                        key,
+                        ticket,
+                    },
+                    answered,
+                )
+            }
             Job::Probe {
                 key, ticket, path, ..
             } => {

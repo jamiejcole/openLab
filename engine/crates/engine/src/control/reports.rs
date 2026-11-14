@@ -140,9 +140,21 @@ impl DocCx<'_> {
                     position: at.map(|f| self.seconds(f)),
                 })
                 .collect();
+            // Video cues: their picture is the stage host's, not a mixer voice.
+            let audio = items.len();
+            let doc = self.doc.id;
+            items.extend(self.eng.picture_progress(doc, rendered).into_iter().map(
+                |(cue, elapsed, remaining, position)| ProgressItem {
+                    cue,
+                    elapsed,
+                    remaining,
+                    position,
+                },
+            ));
             // Cues without a voice: their actions join the voices' (an audio cue's action is
             // never among them), their pre-waits and post-waits go in `waits`.
             let mut waits: Vec<WaitProgress> = Vec::new();
+            let pictured = items.len() > audio;
             let voiced = items.len();
             for t in self.doc.model.engine().timers(rendered) {
                 let elapsed = self.seconds(t.elapsed);
@@ -166,7 +178,7 @@ impl DocCx<'_> {
                     remaining: self.seconds(t.remaining.unwrap_or(0)),
                 });
             }
-            if items.len() > voiced {
+            if items.len() > voiced || pictured {
                 items.sort_by_key(|i| i.cue);
             }
             if !items.is_empty() || !waits.is_empty() {

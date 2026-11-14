@@ -15,21 +15,41 @@ mod none;
 /// The exit status of a bad command line.
 const USAGE_EXIT: u8 = 2;
 
-/// Runs the stage host with `args` until the engine says `quit` or its input ends.
+/// Prints a probe's one line and ends the probe process (`--probe <file>`).
+fn print_probe(report: &openlab_core::video_probe::ProbeReport) -> ExitCode {
+    use std::io::Write;
+    let Ok(line) = report.to_line() else {
+        return ExitCode::FAILURE;
+    };
+    let mut out = std::io::stdout().lock();
+    match writeln!(out, "{line}").and_then(|()| out.flush()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
+/// Runs the stage host with `args` until the engine says `quit` or its input ends; with
+/// `--probe <file>`, says what the file is and exits.
 pub fn run(args: Vec<String>) -> ExitCode {
     #[cfg(target_os = "macos")]
     return mac::run(args);
     #[cfg(not(target_os = "macos"))]
     {
+        if let [flag, _] = args.as_slice()
+            && flag == "--probe"
+        {
+            return print_probe(&openlab_core::video_probe::ProbeReport::Unsupported {
+                reason: "this computer's openLab has no video".into(),
+            });
+        }
         if !args.is_empty() {
             return ExitCode::from(USAGE_EXIT);
         }
         let mut host = crate::host::Host::new(none::NoVideo);
-        let stdin = std::io::stdin();
         crate::host::serve(
-            &mut stdin.lock(),
+            std::io::BufReader::new(std::io::stdin()),
             &mut std::io::stdout().lock(),
-            |m, out| host.handle(m, out),
+            |m, out| host.step(m, out),
         );
         ExitCode::SUCCESS
     }

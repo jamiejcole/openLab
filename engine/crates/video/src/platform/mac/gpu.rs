@@ -9,24 +9,31 @@ use std::ptr::NonNull;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
-#[cfg(feature = "test-support")]
-use objc2_metal::{MTLBlitCommandEncoder, MTLBuffer, MTLResourceOptions, MTLStorageMode};
 use objc2_metal::{
-    MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
+    MTLBlendFactor, MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
     MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat,
     MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
     MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLSize, MTLStoreAction, MTLTexture,
     MTLTextureDescriptor, MTLTextureUsage,
 };
+#[cfg(feature = "test-support")]
+use objc2_metal::{MTLBlitCommandEncoder, MTLBuffer, MTLResourceOptions, MTLStorageMode};
 
-use crate::host::{Layer, Picture};
+use crate::host::{CuePicture, Layer, Picture};
+
+/// A texture the stage drawing samples.
+pub type Texture = Retained<ProtocolObject<dyn MTLTexture>>;
+
+/// Where a cue's picture comes from when a stage is drawn: its texture and pixel size at the
+/// picture's position, or `None` (not drawn; the source has noted why).
+pub type Pictures<'a> = dyn FnMut(&CuePicture) -> Option<(Texture, (u32, u32))> + 'a;
 
 /// One quad covering `rect` (x0, y0, x1, y1 in normalised device coordinates), sampling its
-/// texture with nearest-neighbour filtering.
+/// texture with nearest-neighbour filtering, at opacity `tint.a` over what is below.
 const SHADER: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
-struct Quad { float4 rect; };
+struct Quad { float4 rect; float4 tint; };
 struct V { float4 pos [[position]]; float2 uv; };
 vertex V quad_vertex(uint vid [[vertex_id]], constant Quad& q [[buffer(0)]]) {
     float2 corner = float2(vid & 1, vid >> 1);
@@ -35,9 +42,11 @@ vertex V quad_vertex(uint vid [[vertex_id]], constant Quad& q [[buffer(0)]]) {
     o.uv = float2(corner.x, 1 - corner.y);
     return o;
 }
-fragment float4 quad_fragment(V in [[stage_in]], texture2d<float> tex [[texture(0)]]) {
+fragment float4 quad_fragment(V in [[stage_in]], texture2d<float> tex [[texture(0)]],
+                              constant Quad& q [[buffer(0)]]) {
     constexpr sampler s(filter::nearest, address::clamp_to_edge);
-    return tex.sample(s, in.uv);
+    float4 c = tex.sample(s, in.uv);
+    return float4(c.rgb, q.tint.a);
 }
 "#;
 
@@ -83,6 +92,12 @@ impl Gpu {
         // SAFETY: colour attachment 0 always exists on a pipeline descriptor.
         let attachment = unsafe { desc.colorAttachments().objectAtIndexedSubscript(0) };
         attachment.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+        // A fading picture is mixed over what is below it by its opacity.
+        attachment.setBlendingEnabled(true);
+        attachment.setSourceRGBBlendFactor(MTLBlendFactor::SourceAlpha);
+        attachment.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+        attachment.setSourceAlphaBlendFactor(MTLBlendFactor::One);
+        attachment.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
         let pipeline = device
             .newRenderPipelineStateWithDescriptor_error(&desc)
             .map_err(|e| format!("could not build the stage pipeline: {e}"))?;
@@ -101,12 +116,19 @@ impl Gpu {
         &self.device
     }
 
+    /// The device, held apart from `self` (drawing borrows `self`).
+    pub fn device_owned(&self) -> Retained<ProtocolObject<dyn MTLDevice>> {
+        self.device.clone()
+    }
+
     /// Encodes a clear to black and then `layers` (bottom first) into `target`, each stage
-    /// fitted to the target, shape kept.
+    /// fitted to the target, shape kept, and on each stage its cues' pictures (earliest started
+    /// first), each fitted to the stage at its opacity.
     pub fn draw(
         &mut self,
         target: &ProtocolObject<dyn MTLTexture>,
         layers: &[Layer],
+        pictures: &mut Pictures<'_>,
     ) -> Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>, String> {
         let size = (
             u32::try_from(target.width()).unwrap_or(u32::MAX),
@@ -114,10 +136,18 @@ impl Gpu {
         );
         let mut quads = Vec::with_capacity(layers.len());
         for layer in layers {
-            quads.push((
-                fit((layer.width, layer.height), size),
-                self.texture_for(layer.picture)?,
-            ));
+            let stage = fit((layer.width, layer.height), size);
+            quads.push(([stage, [1.0; 4]], self.texture_for(layer.picture)?));
+            for cue in &layer.cues {
+                let Some((texture, picture)) = pictures(cue) else {
+                    continue;
+                };
+                let inner = within(stage, fit(picture, (layer.width, layer.height)));
+                quads.push((
+                    [inner, [1.0, 1.0, 1.0, cue.opacity.clamp(0.0, 1.0)]],
+                    texture,
+                ));
+            }
         }
         let cb = self
             .queue
@@ -141,11 +171,12 @@ impl Gpu {
         enc.setRenderPipelineState(&self.pipeline);
         for (rect, texture) in &quads {
             let bytes = NonNull::from(rect).cast::<c_void>();
-            // SAFETY: `rect` is 16 bytes of plain floats matching the shader's `Quad`, alive
+            // SAFETY: `rect` is 32 bytes of plain floats matching the shader's `Quad`, alive
             // for the call (Metal copies inline bytes); texture index 0 is the shader's `tex`;
             // a strip of 4 vertices is the shader's quad.
             unsafe {
-                enc.setVertexBytes_length_atIndex(bytes, size_of::<[f32; 4]>(), 0);
+                enc.setVertexBytes_length_atIndex(bytes, size_of::<[[f32; 4]; 2]>(), 0);
+                enc.setFragmentBytes_length_atIndex(bytes, size_of::<[[f32; 4]; 2]>(), 0);
                 enc.setFragmentTexture_atIndex(Some(texture), 0);
                 enc.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::TriangleStrip, 0, 4);
             }
@@ -195,6 +226,7 @@ impl Gpu {
         size: (u32, u32),
         layers: &[Layer],
         points: &[[f32; 2]],
+        pictures: &mut Pictures<'_>,
     ) -> Result<Vec<[u8; 4]>, String> {
         let (w, h) = probe_size(size);
         // SAFETY: a plain 2D descriptor within Metal's size limits (probe_size caps it).
@@ -217,7 +249,7 @@ impl Gpu {
             .device
             .newBufferWithLength_options(bytes, MTLResourceOptions::StorageModeShared)
             .ok_or("could not create the probe buffer")?;
-        let cb = self.draw(&target, layers)?;
+        let cb = self.draw(&target, layers, pictures)?;
         let blit = cb
             .blitCommandEncoder()
             .ok_or("could not create a Metal blit encoder")?;
@@ -273,8 +305,56 @@ fn probe_size((w, h): (u32, u32)) -> (usize, usize) {
     )
 }
 
-/// A shader-readable BGRA texture of `width` x `height` holding `px` (rows of `width * 4`
-/// bytes).
+/// Replaces `texture`'s pixels (of `size`) with `px`, rows of `stride` bytes.
+pub fn replace(
+    texture: &Texture,
+    size: (u32, u32),
+    px: &mut [u8],
+    stride: usize,
+) -> Result<(), String> {
+    let (w, h) = (size.0 as usize, size.1 as usize);
+    if texture.width() != w || texture.height() != h || stride < w * 4 || px.len() < stride * h {
+        return Err("a frame of the wrong size".into());
+    }
+    let region = MTLRegion {
+        origin: MTLOrigin { x: 0, y: 0, z: 0 },
+        size: MTLSize {
+            width: w,
+            height: h,
+            depth: 1,
+        },
+    };
+    let bytes = NonNull::new(px.as_mut_ptr().cast::<c_void>()).ok_or("no pixels")?;
+    // SAFETY: `px` holds at least h rows of `stride` bytes, each starting with w BGRA pixels
+    // (checked above), the texture's size and format; Metal copies them before returning.
+    unsafe { texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, bytes, stride) };
+    Ok(())
+}
+
+/// A shader-readable BGRA texture of `width` x `height`, its pixels not yet written.
+pub fn empty_texture(
+    device: &ProtocolObject<dyn MTLDevice>,
+    width: usize,
+    height: usize,
+) -> Result<Texture, String> {
+    if width == 0 || height == 0 {
+        return Err("a texture of no size".into());
+    }
+    // SAFETY: a plain 2D descriptor; the sizes were checked against the picture limits.
+    let desc = unsafe {
+        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            MTLPixelFormat::BGRA8Unorm,
+            width,
+            height,
+            false,
+        )
+    };
+    desc.setUsage(MTLTextureUsage::ShaderRead);
+    device
+        .newTextureWithDescriptor(&desc)
+        .ok_or_else(|| "could not create a texture".into())
+}
+
 fn texture(
     device: &ProtocolObject<dyn MTLDevice>,
     width: usize,
@@ -310,6 +390,19 @@ fn texture(
     // above), the texture's size and format; Metal copies them before returning.
     unsafe { texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, bytes, width * 4) };
     Ok(texture)
+}
+
+/// `inner` (normalised to -1..1 within a rect) placed in `outer` (normalised device
+/// coordinates).
+fn within(outer: [f32; 4], inner: [f32; 4]) -> [f32; 4] {
+    let (cx, cy) = ((outer[0] + outer[2]) / 2.0, (outer[1] + outer[3]) / 2.0);
+    let (hw, hh) = ((outer[2] - outer[0]) / 2.0, (outer[3] - outer[1]) / 2.0);
+    [
+        cx + inner[0] * hw,
+        cy + inner[1] * hh,
+        cx + inner[2] * hw,
+        cy + inner[3] * hh,
+    ]
 }
 
 /// Where a stage of `stage` pixels sits in a display of `display` pixels: as large as fits,
@@ -348,15 +441,19 @@ mod tests {
             width: 1920,
             height: 1080,
             picture,
+            cues: Vec::new(),
         };
         let points = card::barcode_points();
         let read = |gpu: &mut Gpu, layers: &[Layer]| {
-            card::read_frame(&gpu.probe((1920, 1080), layers, &points).unwrap())
+            card::read_frame(
+                &gpu.probe((1920, 1080), layers, &points, &mut |_| None)
+                    .unwrap(),
+            )
         };
         let a = layer(1, Picture::TestCard(1));
         let b = layer(2, Picture::TestCard(2));
-        assert_eq!(read(&mut gpu, &[a, b]), Some(2));
-        assert_eq!(read(&mut gpu, &[b, a]), Some(1));
+        assert_eq!(read(&mut gpu, &[a.clone(), b.clone()]), Some(2));
+        assert_eq!(read(&mut gpu, &[b, a.clone()]), Some(1));
         assert_eq!(read(&mut gpu, &[a, layer(3, Picture::Black)]), None);
     }
 
@@ -381,15 +478,23 @@ mod tests {
             width: 1280,
             height: 720,
             picture,
+            cues: Vec::new(),
         };
         let black = gpu
-            .probe((1920, 1080), &[layer(Picture::Black)], &quads)
+            .probe((1920, 1080), &[layer(Picture::Black)], &quads, &mut |_| {
+                None
+            })
             .unwrap();
         assert_eq!(black, vec![[0, 0, 0, 255]; 4]);
         let mut points = card::barcode_points().to_vec();
         points.extend_from_slice(&quads);
         let read = gpu
-            .probe((1280, 720), &[layer(Picture::TestCard(4242))], &points)
+            .probe(
+                (1280, 720),
+                &[layer(Picture::TestCard(4242))],
+                &points,
+                &mut |_| None,
+            )
             .unwrap();
         assert_eq!(card::read_frame(&read[..card::CELLS]), Some(4242));
         assert_eq!(

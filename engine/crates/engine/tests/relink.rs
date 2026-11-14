@@ -8,13 +8,13 @@ mod common;
 use std::path::Path;
 
 use common::*;
-use openlab_core::{History, MediaRef, Relink, audio_media, relink_command};
+use openlab_core::{History, MediaRef, Relink, media_of_cues, relink_command};
 use openlab_engine::persist::{
     ScanLimits, find_in_folder, media_path, missing_media, scan_folder, scan_folder_with,
 };
 
 fn media_strings(ws: &openlab_core::Workspace) -> Vec<String> {
-    audio_media(ws)
+    media_of_cues(ws)
         .into_iter()
         .map(|(_, m)| m.as_str().to_owned())
         .collect()
@@ -193,7 +193,7 @@ fn non_utf8_names_are_skipped_not_fatal() {
 fn find_in_folder_with_nothing_missing_does_not_walk_the_folder() {
     let env = env();
     let mut ws = example();
-    let count = audio_media(&ws).len();
+    let count = media_of_cues(&ws).len();
     let names: Vec<String> = (0..count).map(|n| format!("media/here{n}.wav")).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     set_media(&mut ws, &names);
@@ -238,7 +238,7 @@ fn find_in_folder_proposes_relinks_and_undo_restores() {
     let folder = env.show_dir().join("library");
     let found = find_in_folder(&ws, Some(&env.show_dir()), &folder, ScanLimits::default());
     assert!(!found.truncated);
-    let cues: Vec<_> = audio_media(&ws).into_iter().map(|(id, _)| id).collect();
+    let cues: Vec<_> = media_of_cues(&ws).into_iter().map(|(id, _)| id).collect();
     assert_eq!(
         found.plan.matches,
         vec![Relink {
@@ -310,7 +310,7 @@ fn existing_media_is_left_out_of_the_plan() {
     let lib = env.root.path().join("lib");
     touch(&lib.join("a.wav"));
     let found = find_in_folder(&ws, Some(&env.show_dir()), &lib, ScanLimits::default());
-    let cue = audio_media(&ws)[0].0;
+    let cue = media_of_cues(&ws)[0].0;
     assert!(found.plan.matches.iter().all(|m| m.cue != cue));
     assert!(found.plan.ambiguous.iter().all(|m| m.cue != cue));
     assert!(!found.plan.unmatched.contains(&cue));

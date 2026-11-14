@@ -143,7 +143,7 @@ fn portable(path: &Path) -> String {
 
 /// The cue's media, in portable spelling.
 fn media(s: &OfflineShow, n: u128) -> String {
-    openlab_core::audio_media(s.control().workspace())
+    openlab_core::media_of_cues(s.control().workspace())
         .into_iter()
         .find(|(c, _)| *c == id(n))
         .map(|(_, m)| openlab_core::to_portable(m.as_str(), openlab_core::PathStyle::host()))
@@ -516,6 +516,7 @@ fn a_relinked_cue_gets_its_new_files_lengths() {
         trimmed: Some(0.5),
         duration: Some(0.5),
         channels: Some(1),
+        picture: None,
     };
     assert_eq!(told, vec![expected.clone()]);
     assert_eq!(r.s.control().snapshot().media_durations, vec![expected]);
@@ -550,7 +551,7 @@ fn save_works_while_a_relink_walk_is_pending_and_saves_the_model_as_it_is() {
     let saved = openlab_core::load_show(&fs::read_to_string(r._env.show_path()).unwrap())
         .unwrap()
         .workspace;
-    let saved_media = openlab_core::audio_media(&saved);
+    let saved_media = openlab_core::media_of_cues(&saved);
     assert_eq!(
         openlab_core::to_portable(saved_media[0].1.as_str(), openlab_core::PathStyle::host()),
         gone_ref

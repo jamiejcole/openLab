@@ -129,7 +129,7 @@ struct Case {
 
 fn spec() -> impl Strategy<Value = Spec> {
     (
-        (0u8..31, 0u8..3, 0u8..3, 0u8..3, any::<bool>()),
+        (0u8..33, 0u8..3, 0u8..3, 0u8..3, any::<bool>()),
         (
             prop::bool::weighted(0.04),
             0u8..4,
@@ -290,6 +290,8 @@ fn build(specs: &[Spec]) -> Vec<Cue> {
                 duration: f64::from(s.post) * 0.7,
             },
             2 | 3 | 14..=17 | 19..=21 => audio(),
+            // A picture: a voice to the cue engine, played by the stage host.
+            32 => video(),
             // Static problems of its own (no media file), for the auto-follow rule below.
             31 => {
                 let mut k = audio();
@@ -1221,6 +1223,7 @@ fn preview_action(a: &Action) -> bool {
 impl Run {
     fn new(case: &Case, previews: bool) -> Self {
         let mut ws = workspace(build(&case.specs));
+        ws.stages = vec![Stage::new(stage_id(1), "Stage 1", 1920, 1080)];
         ws.settings.min_go_interval = f64::from(case.min_go) * 0.3;
         ws.settings.panic_duration = [0.0, 0.01, 0.4][usize::from(case.panic)];
         let ids = all_ids(&ws);
@@ -2534,9 +2537,9 @@ impl Run {
         };
         match (self.engine.state(id), &c.kind) {
             (CueState::Paused, _) => true,
-            (CueState::Running, CueKind::Audio { .. }) => {
-                // Its voice has no end of its own (a loop), or the mixer would be due to
-                // report it.
+            (CueState::Running, CueKind::Audio { .. } | CueKind::Video { .. }) => {
+                // Its voice has no end of its own (a loop, a still with no duration), or the
+                // mixer would be due to report it.
                 self.engine
                     .run_of(id)
                     .is_some_and(|r| self.sim.voices.get(&r).is_some_and(|v| v.playing))

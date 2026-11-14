@@ -27,8 +27,10 @@ final class DisplayNameTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(all.count, 6)
         for c in all {
             let label = c["label"]?.stringValue ?? "?"
-            var kind: [String: JSONValue] = ["type": .string(c["audio"] == .bool(true) ? "audio" : "memo")]
-            if c["audio"] == .bool(true), let media = c["media"]?.stringValue {
+            let video = c["video"] == .bool(true)
+            let type = video ? "video" : c["audio"] == .bool(true) ? "audio" : "memo"
+            var kind: [String: JSONValue] = ["type": .string(type)]
+            if type != "memo", let media = c["media"]?.stringValue {
                 kind["media"] = .string(stored(media))
             }
             let cue = try Cue(

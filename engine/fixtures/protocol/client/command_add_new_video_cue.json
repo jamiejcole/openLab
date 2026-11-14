@@ -1,0 +1,50 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "add_cue",
+    "at": {
+      "list": "00000000-0000-0000-0000-000000000001",
+      "parent": null,
+      "index": 0
+    },
+    "cue": {
+      "id": "00000000-0000-0000-0000-00000000000f",
+      "number": null,
+      "name": "",
+      "notes": "",
+      "color": "none",
+      "second_color": "none",
+      "flagged": false,
+      "armed": true,
+      "auto_load": false,
+      "skip_if_disarmed": false,
+      "pre_wait": 0.0,
+      "post_wait": 0.0,
+      "continue_mode": "do_not_continue",
+      "triggers": {
+        "hotkey": null,
+        "hotkey_enabled": true
+      },
+      "second_trigger": "nothing",
+      "second_trigger_on_release": false,
+      "fade_and_stop_others": {
+        "enabled": false,
+        "scope": "peers",
+        "duration": 1.0
+      },
+      "duck_others": {
+        "enabled": false,
+        "db": -12.0,
+        "duration": 1.0
+      },
+      "kind": {
+        "type": "video",
+        "media": "/Volumes/Show/Backdrop.mov",
+        "stage": "00000000-0000-0000-0000-000000000001",
+        "duration": null
+      }
+    },
+    "auto_number": true
+  }
+}

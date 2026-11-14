@@ -917,6 +917,80 @@
               "type": "disarm",
               "target": "00000000-0000-0000-0000-000000000004"
             }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000001d",
+            "number": "20",
+            "name": "",
+            "notes": "",
+            "color": "purple",
+            "second_color": "none",
+            "flagged": true,
+            "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "hotkey_enabled": true
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
+            "kind": {
+              "type": "video",
+              "media": "Media/Backdrop.mov",
+              "stage": "00000000-0000-0000-0000-000000000001",
+              "duration": null
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000001e",
+            "number": "21",
+            "name": "",
+            "notes": "",
+            "color": "purple",
+            "second_color": "none",
+            "flagged": true,
+            "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "hotkey_enabled": true
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
+            "kind": {
+              "type": "video",
+              "media": "Media/Title.png",
+              "stage": "00000000-0000-0000-0000-000000000001",
+              "duration": 5.0
+            }
           }
         ]
       },

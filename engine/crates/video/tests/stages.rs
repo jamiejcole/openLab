@@ -1200,3 +1200,57 @@ fn alive(pid: u32) -> bool {
 fn gone_within(pid: u32, tries: usize) -> bool {
     (0..tries).any(|_| !alive(pid))
 }
+
+/// Routine clocks never get a stage host stopped as not reading: the engine can send them far
+/// faster than real time (an offline run, a stage host busy for a moment), and those that do
+/// not fit are dropped. Other lines that do not fit still stop it.
+#[test]
+fn routine_clocks_never_get_a_busy_stage_host_stopped() {
+    use openlab_core::stage_link::ToStage;
+    use openlab_engine::stage::{StageEvent, StageHost};
+    // Answers hello, then never reads again.
+    let script =
+        r#"read line; echo '{"type":"hello","version":1,"pid":1,"video":true}'; exec sleep 600"#;
+    let mut config = host_config(&["-c", script]);
+    config.program = PathBuf::from("/bin/sh");
+    config.answer_within = Duration::from_secs(3600);
+    config.max_restarts = 1;
+    config.retry_after = Duration::from_secs(3600);
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let host = StageHost::start(
+        config,
+        std::sync::Arc::new(move |e| {
+            let _ = tx.send(e);
+        }),
+    )
+    .unwrap();
+    let started = (0..100)
+        .filter_map(|_| rx.recv_timeout(Duration::from_millis(100)).ok())
+        .any(|e| matches!(e, StageEvent::Started { .. }));
+    assert!(started, "no hello");
+    for sample in 0..5000u64 {
+        host.routine_clock(ToStage::Clock {
+            sample: sample * 480,
+            rate: 48_000,
+        });
+    }
+    // The first stop reported within `wait`, other events skipped.
+    let stopped = |rx: &crossbeam_channel::Receiver<StageEvent>, wait: Duration| {
+        let deadline = std::time::Instant::now() + wait;
+        while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok(StageEvent::Stopped { reason, .. }) => return Some(reason),
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+        None
+    };
+    assert_eq!(stopped(&rx, Duration::from_millis(500)), None);
+    // Far more than any pipe buffer and the write queue hold.
+    for _ in 0..20_000 {
+        host.picture(ToStage::Unload { picture: 1 });
+    }
+    let reason = stopped(&rx, Duration::from_secs(10)).expect("stopped as not reading");
+    assert!(reason.contains("stopped reading"), "{reason}");
+}

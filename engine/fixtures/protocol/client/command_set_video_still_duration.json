@@ -1,0 +1,14 @@
+{
+  "type": "command",
+  "id": 3,
+  "command": {
+    "type": "set_cue_property",
+    "id": "00000000-0000-0000-0000-00000000000f",
+    "property": {
+      "type": "kind_fields",
+      "value": {
+        "duration": 5.0
+      }
+    }
+  }
+}

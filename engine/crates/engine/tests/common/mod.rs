@@ -26,7 +26,7 @@ pub fn example() -> Workspace {
 
 /// Points every audio cue (in cue-list order) at the matching path in `paths`.
 pub fn set_media(ws: &mut Workspace, paths: &[&str]) {
-    let cues: Vec<_> = openlab_core::audio_media(ws)
+    let cues: Vec<_> = openlab_core::media_of_cues(ws)
         .into_iter()
         .map(|(id, _)| id)
         .collect();

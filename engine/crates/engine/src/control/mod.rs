@@ -38,6 +38,7 @@ mod observe;
 pub mod offline;
 mod outputs;
 mod patches;
+mod pictures;
 pub mod plan;
 mod preshow;
 mod prime;
@@ -264,6 +265,10 @@ pub struct ControlConfig {
     /// The stage host the engine runs for video output (docs/protocol.md section 5); `None`: no video
     /// output (tests that do not need it).
     pub stage_host: Option<crate::stage::StageHostConfig>,
+    /// Test support: how Video cues' files are probed instead of the stage host's `--probe`
+    /// (a test wraps the real probe to hold an answer back).
+    #[cfg(feature = "test-support")]
+    pub picture_probe: Option<crate::stage_probe::PictureProbeFn>,
     /// The virtual device the backend's stream runs on (`--virtual-device`): it answers the
     /// test-only `advance`, `lose_device` and `restore_device` requests.
     #[cfg(feature = "test-support")]
@@ -310,6 +315,8 @@ impl ControlConfig {
             watch: watch::WatchConfig::default(),
             awake: None,
             stage_host: None,
+            #[cfg(feature = "test-support")]
+            picture_probe: None,
             #[cfg(feature = "test-support")]
             virtual_device: None,
         }
@@ -462,6 +469,8 @@ struct Engine {
     inbox: Sender<Inbox>,
     /// The stage host and what it last said (video output).
     stages: stages::Stages,
+    /// Video cues' pictures on the stage host.
+    pictures: pictures::Pictures,
     /// The next doc's id; never reused.
     next_doc: u64,
     /// Docs open (log lines name their doc while there are several).
@@ -668,9 +677,19 @@ impl Control {
             config.waveform_timeout,
             config.probe_clock.clone(),
         );
+        let picture = crate::stage_probe::picture_probe(
+            config.stage_host.as_ref().map(|h| h.program.clone()),
+            crate::stage_probe::PROBE_PROCESS_LIMIT,
+        );
+        #[cfg(feature = "test-support")]
+        let picture: crate::stage_probe::PictureProbe = match config.picture_probe {
+            Some(probe) => Arc::new(probe),
+            None => picture,
+        };
         let mut pool = ProbePool::new(
             inbox.clone(),
             config.probe,
+            picture,
             config.probe_timeout,
             config.probe_clock.clone(),
         )?;
@@ -753,6 +772,7 @@ impl Control {
             lookups: LookupThreads::default(),
             inbox,
             stages: stages::Stages::default(),
+            pictures: pictures::Pictures::default(),
             next_doc: 0,
             open_docs: 0,
             primes: std::collections::BTreeMap::new(),

@@ -180,7 +180,7 @@ fn number(n: u32) -> Option<String> {
 /// Any kind but a Group.
 fn kind(ws: &Workspace, p: &Pick) -> CueKind {
     let ids = all_ids(ws);
-    match p.a % 7 {
+    match p.a % 8 {
         0 => CueKind::Memo,
         1 => CueKind::Wait {
             duration: time(p.b),
@@ -226,6 +226,13 @@ fn kind(ws: &Workspace, p: &Pick) -> CueKind {
         5 => CueKind::Arm {
             target: choose(&ids, p.b),
         },
+        // Files shared with the Audio cues, stages that exist and that do not, and valid and
+        // hostile still durations.
+        7 => CueKind::Video {
+            media: (!p.c.is_multiple_of(11)).then(|| MediaRef::new(MEDIA[(p.b / 3) as usize % 4])),
+            stage: (!p.d.is_multiple_of(5)).then(|| stage_id(1 + u128::from(p.d % 4))),
+            duration: (!p.b.is_multiple_of(3)).then(|| time(p.c)),
+        },
         _ => CueKind::Network {
             destination: net_id(1),
             address: "/x".into(),
@@ -255,7 +262,7 @@ fn make_cue(ws: &Workspace, g: &mut Gen, p: &Pick) -> Cue {
 }
 
 fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
-    match variant % 19 {
+    match variant % 20 {
         0 => CueProperty::Name {
             value: format!("name {}", p.b),
         },
@@ -346,6 +353,9 @@ fn property(ws: &Workspace, variant: u8, p: &Pick) -> CueProperty {
         // Valid and hostile times; refused on a cue that has no such field.
         17 => CueProperty::Duration { value: time(p.b) },
         18 => CueProperty::LoadToTime { value: time(p.b) },
+        19 => CueProperty::Stage {
+            value: (!p.b.is_multiple_of(5)).then(|| stage_id(1 + u128::from(p.b % 4))),
+        },
         _ => CueProperty::Kind { value: kind(ws, p) },
     }
 }
@@ -1028,6 +1038,8 @@ fn check_invariants(ws: &Workspace) -> Result<(), TestCaseError> {
                     // `even_if_used`, or the cue was added after): the broken-cue state.
                     | IssueKind::PatchMissing { .. }
                     | IssueKind::NetworkPatchMissing { .. }
+                    // Likewise a Video cue's stage (removed, or never there).
+                    | IssueKind::StageMissing { .. }
                     // A transport key name is kept as given, like load does (it only warns).
                     | IssueKind::InvalidHotkey { .. }
                     // A loaded odd name or host is kept (hostile_base); commands refuse new ones.

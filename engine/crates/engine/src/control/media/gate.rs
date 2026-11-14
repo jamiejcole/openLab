@@ -361,6 +361,7 @@ pub(super) mod tests {
             key: key.to_owned(),
             ticket,
             path: PathBuf::from(key),
+            picture: false,
         }
     }
 
@@ -524,6 +525,7 @@ pub(super) mod tests {
             key: key.to_owned(),
             ticket,
             path: PathBuf::from(key),
+            picture: false,
         }
     }
 

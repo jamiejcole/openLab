@@ -41,7 +41,7 @@ type DocStages = (DocId, Vec<openlab_core::Stage>);
 pub(super) struct Stages {
     host: Option<StageHost>,
     /// The stage host has answered `hello` and not stopped since.
-    up: bool,
+    pub(super) up: bool,
     /// Its process id, from that `hello`.
     pid: Option<u32>,
     /// What its `hello` said; `None` before the first.
@@ -153,6 +153,11 @@ impl Engine {
                 format!("{dropped} more video output reports were not logged"),
             );
         }
+    }
+
+    /// The stage host supervisor, if video output runs.
+    pub(super) fn stages_host(&self) -> Option<&StageHost> {
+        self.stages.host.as_ref()
     }
 
     /// The stage host has been told about every stage and has said where each one is.
@@ -327,6 +332,8 @@ impl Control {
                             .to_owned(),
                     );
                 }
+                // A new stage host (after a crash too) shows the pictures that are up.
+                self.eng.resend_pictures();
             }
             StageEvent::Displays(displays) => {
                 if displays == self.eng.stages.displays {
@@ -362,11 +369,16 @@ impl Control {
                 }
                 self.eng.stages.states.insert(stage, state);
             }
-            StageEvent::Stopped { reason, restarting } => {
+            StageEvent::Stopped {
+                reason,
+                restarting,
+                crashed,
+            } => {
                 let s = &mut self.eng.stages;
                 s.up = false;
                 s.pid = None;
                 s.states.clear();
+                self.eng.pictures_host_stopped(crashed);
                 if restarting {
                     self.eng.log(
                         LogLevel::Warn,
@@ -388,6 +400,10 @@ impl Control {
                         ),
                     );
                 }
+            }
+            StageEvent::PictureOpened { picture } => self.eng.picture_opened(picture),
+            StageEvent::PictureFailed { picture, reason } => {
+                self.eng.picture_failed(picture, reason);
             }
             StageEvent::Log { level, message } => {
                 let level = match level {
@@ -634,16 +650,22 @@ impl Control {
                     ErrorBody::new(ErrorCode::Unsupported, "video output is not running"),
                 ),
             ),
-            (true, Some(host)) => match probe {
+            (true, Some(_)) => match probe {
                 Some(points) => {
-                    host.send(ToStage::Probe { stage, points });
+                    // Drawn at the engine's clock now.
+                    self.eng.picture_clock_now();
+                    if let Some(host) = self.eng.stages_host() {
+                        host.send(ToStage::Probe { stage, points });
+                    }
                     self.eng
                         .stages
                         .probes
                         .push((ProbeTarget::Stage(stage), id, to.clone()));
                 }
                 None => {
-                    host.send(ToStage::TestCard { stage, frame });
+                    if let Some(host) = self.eng.stages_host() {
+                        host.send(ToStage::TestCard { stage, frame });
+                    }
                     reply(to, ok(id, None));
                 }
             },
@@ -668,11 +690,14 @@ impl Control {
                     ErrorBody::new(ErrorCode::Unsupported, "video output is not running"),
                 ),
             ),
-            Some(host) => {
-                host.send(ToStage::ProbeDisplay {
-                    display: display.clone(),
-                    points,
-                });
+            Some(_) => {
+                self.eng.picture_clock_now();
+                if let Some(host) = self.eng.stages_host() {
+                    host.send(ToStage::ProbeDisplay {
+                        display: display.clone(),
+                        points,
+                    });
+                }
                 self.eng
                     .stages
                     .probes

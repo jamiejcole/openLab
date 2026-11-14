@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::changes::Footprint;
 use crate::cue::{Cue, CueKind, MediaRef};
 use crate::cue_index::{CueContainer, CueIndex, IndexChange, IndexDelta};
-use crate::model::{CueId, NetworkPatch, NetworkPatchId, PatchId, Workspace};
+use crate::model::{CueId, NetworkPatch, NetworkPatchId, PatchId, StageId, Workspace};
 use crate::network::{HostKind, check_endpoint, check_message};
 use crate::settings::PatchResolution;
 use crate::validate::can_target;
@@ -48,6 +48,8 @@ struct Facts {
     audio: Option<AudioFacts>,
     /// Network cues: what is wrong with the destination and the message.
     network: Option<NetworkFacts>,
+    /// Video cues: the media reference and stage, and whether the stage exists.
+    video: Option<VideoFacts>,
     /// Fade cues: the fade sets no level, so there is nothing to fade (QLab F4).
     nothing_to_fade: bool,
 }
@@ -57,6 +59,13 @@ struct NetworkFacts {
     /// Problems the model alone shows: a missing patch, an address that cannot be used, a
     /// malformed message. Whether anyone is at the destination is never a problem (QLab 5).
     fixed: Vec<CueProblem>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct VideoFacts {
+    media: Option<MediaRef>,
+    stage: Option<StageId>,
+    stage_exists: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -124,6 +133,8 @@ struct ModelFacts {
     patch_ids: Vec<PatchId>,
     /// The network patches `facts` were computed against (any change rebuilds everything).
     network_patches: Vec<NetworkPatch>,
+    /// The stage ids `facts` were computed against (a change rebuilds everything).
+    stage_ids: Vec<StageId>,
 }
 
 /// What the model changed since the problems were last brought up to date.
@@ -348,6 +359,7 @@ impl CueEngine {
                     |t| ws.find_cue(t).map(|t| &t.kind),
                     |p| ws.patches.iter().any(|x| x.id == p),
                     |n| ws.network_patches.iter().find(|x| x.id == n),
+                    |s| ws.stages.iter().any(|x| x.id == s),
                 )
             })
             .map(|f| combine(cue, &f, &self.problems))
@@ -419,7 +431,12 @@ impl CueEngine {
             .iter()
             .map(|p| p.id)
             .eq(model.patch_ids.iter().copied())
-            && ws.network_patches == model.network_patches;
+            && ws.network_patches == model.network_patches
+            && ws
+                .stages
+                .iter()
+                .map(|s| s.id)
+                .eq(model.stage_ids.iter().copied());
         if !same_patches {
             return false;
         }
@@ -450,6 +467,7 @@ impl CueEngine {
                 |t| model.tree.locate(ws, t).map(|t| &t.kind),
                 |p| ws.patches.iter().any(|x| x.id == p),
                 |n| ws.network_patches.iter().find(|x| x.id == n),
+                |s| ws.stages.iter().any(|x| x.id == s),
             );
             computed.push((*id, facts, own_target(cue)));
         }
@@ -635,6 +653,7 @@ impl CueEngine {
             ("by_target", fresh.by_target == m.by_target),
             ("target_of", fresh.target_of == m.target_of),
             ("patch_ids", fresh.patch_ids == m.patch_ids),
+            ("stage_ids", fresh.stage_ids == m.stage_ids),
             (
                 "network_patches",
                 fresh.network_patches == m.network_patches,
@@ -855,7 +874,37 @@ fn combine(cue: CueId, f: &Facts, p: &Problems) -> Vec<CueProblem> {
     if let Some(n) = &f.network {
         found.extend(n.fixed.iter().cloned());
     }
+    if let Some(v) = &f.video {
+        if let Some(problem) = media_problem(v.media.as_ref(), media) {
+            found.push(problem);
+        }
+        match v.stage {
+            None => found.push(CueProblem::NoStage),
+            Some(stage) if !v.stage_exists => found.push(CueProblem::StageMissing { stage }),
+            Some(_) => {}
+        }
+    }
     found
+}
+
+/// What the binary's report on a cue's media file makes of it: no file, missing or unplayable.
+fn media_problem(
+    file: Option<&MediaRef>,
+    media: &BTreeMap<String, MediaStatus>,
+) -> Option<CueProblem> {
+    let Some(file) = file else {
+        return Some(CueProblem::NoMedia);
+    };
+    match media.get(file.as_str()) {
+        Some(MediaStatus::Missing) => Some(CueProblem::MediaMissing {
+            media: file.clone(),
+        }),
+        Some(MediaStatus::Unsupported { reason }) => Some(CueProblem::MediaUnsupported {
+            media: file.clone(),
+            reason: reason.clone(),
+        }),
+        Some(MediaStatus::Available | MediaStatus::Unknown) | None => None,
+    }
 }
 
 /// The model's part of every cue's problems, from scratch (the reference the incremental
@@ -867,10 +916,12 @@ fn model_facts(ws: &Workspace) -> ModelFacts {
     let patches: HashSet<PatchId> = ws.patches.iter().map(|p| p.id).collect();
     let network: HashMap<NetworkPatchId, &NetworkPatch> =
         ws.network_patches.iter().map(|p| (p.id, p)).collect();
+    let stages: HashSet<StageId> = ws.stages.iter().map(|s| s.id).collect();
     let mut out = ModelFacts {
         tree,
         patch_ids: ws.patches.iter().map(|p| p.id).collect(),
         network_patches: ws.network_patches.clone(),
+        stage_ids: ws.stages.iter().map(|s| s.id).collect(),
         ..ModelFacts::default()
     };
     for cue in order {
@@ -879,6 +930,7 @@ fn model_facts(ws: &Workspace) -> ModelFacts {
             |t| by_id.get(&t).map(|c| &c.kind),
             |p| patches.contains(&p),
             |n| network.get(&n).copied(),
+            |s| stages.contains(&s),
         );
         out.set(cue.id, facts, own_target(cue));
     }
@@ -900,6 +952,16 @@ impl ModelFacts {
             }
             self.by_patch.entry(audio.patch).or_default().insert(id);
         }
+        if let Some(file) = facts
+            .as_ref()
+            .and_then(|f| f.video.as_ref())
+            .and_then(|v| v.media.as_ref())
+        {
+            self.by_media
+                .entry(file.as_str().to_owned())
+                .or_default()
+                .insert(id);
+        }
         if let Some(facts) = facts {
             self.facts.insert(id, facts);
         }
@@ -914,6 +976,17 @@ impl ModelFacts {
     /// matters).
     fn forget(&mut self, id: CueId) {
         let removed = self.facts.remove(&id);
+        if let Some(file) = removed
+            .as_ref()
+            .and_then(|f| f.video.as_ref())
+            .and_then(|v| v.media.as_ref())
+            && let Some(on) = self.by_media.get_mut(file.as_str())
+        {
+            on.remove(&id);
+            if on.is_empty() {
+                self.by_media.remove(file.as_str());
+            }
+        }
         if let Some(audio) = removed.and_then(|f| f.audio) {
             if let Some(file) = &audio.media
                 && let Some(on) = self.by_media.get_mut(file.as_str())
@@ -957,6 +1030,7 @@ fn facts_of<'w>(
     kind_of: impl Fn(CueId) -> Option<&'w CueKind>,
     patch_exists: impl Fn(PatchId) -> bool,
     network_patch: impl Fn(NetworkPatchId) -> Option<&'w NetworkPatch>,
+    stage_exists: impl Fn(StageId) -> bool,
 ) -> Option<Facts> {
     let target = if cue.kind.has_target() {
         match cue.kind.target() {
@@ -1009,14 +1083,24 @@ fn facts_of<'w>(
         }
         _ => None,
     };
+    let video = match &cue.kind {
+        CueKind::Video { media, stage, .. } => Some(VideoFacts {
+            media: media.clone(),
+            stage: *stage,
+            stage_exists: stage.is_some_and(&stage_exists),
+        }),
+        _ => None,
+    };
     let nothing_to_fade = matches!(&cue.kind, CueKind::Fade { levels, .. }
         if levels.master_db.is_none()
             && levels.output_db.iter().all(Option::is_none)
             && levels.crosspoints.is_empty());
-    (target.is_some() || audio.is_some() || network.is_some() || nothing_to_fade).then_some(Facts {
-        target,
-        audio,
-        network,
-        nothing_to_fade,
-    })
+    (target.is_some() || audio.is_some() || network.is_some() || video.is_some() || nothing_to_fade)
+        .then_some(Facts {
+            target,
+            audio,
+            network,
+            video,
+            nothing_to_fade,
+        })
 }

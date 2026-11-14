@@ -54,6 +54,13 @@ A running Wait takes an edited duration (`broken-and-edits.md`).
 - Send now: `Input::Preview { cue }` on a Network cue emits one `SendOsc { at: now }` and nothing else: no preview state (`is_previewing` false, no `PreviewChanged`), no cue state, playhead or continue; never `already_previewing`. With problems: `CueBroken`, nothing sent. Disarmed: `PreviewIgnored { reason: disarmed }`. Output disabled drops it.
 - Sending rules, limits, workers, host look-ups and "never break for an unresolved host": skill `osc`.
 
+## Video cue (core side)
+- Its picture is a voice: GO, load, load to time, pause, resume, stop, panic and the second-trigger options emit the same voice actions as for an Audio cue (`LoadVoice`, `StartVoice`, `PauseVoice`, `ResumeVoice`, `StopVoice` with the panic fade). The binary plays a Video cue's voice on the stage host, not the mixer; level actions for it (`Ramp`, `DuckVoice`) have nothing to act on until it has sound.
+- Its length comes from the binary as for audio (`ActionLength`, `CueLengths`): a video file's length, a still's typed `duration`, none for a still without one (it runs until stopped).
+- Problems: `no_media`, `media_missing`, `media_unsupported` from the media status of its file (shared with Audio cues on the same file), `no_stage` when its stage is none, `stage_missing` when the stage is not in the workspace (a change to the stage ids rebuilds every cue's problems).
+- A picture that fails mid-show is `ActionFailed { decode_failed }`: only that cue breaks.
+- Fade and Devamp cues cannot target it (`TargetWrongKind`); preview is `NotAudio`.
+
 ## Display name
-`Cue::display_name`: the stored `name` if non-empty; else for an Audio cue with media, the file name with its extension (last `/`-separated component of the stored `MediaRef`, as stored: no case or Unicode-form change; a backslash is a file-name character); else empty.
+`Cue::display_name`: the stored `name` if non-empty; else for an Audio or Video cue with media, the file name with its extension (last `/`-separated component of the stored `MediaRef`, as stored: no case or Unicode-form change; a backslash is a file-name character); else empty.
 Assigning or relinking a file never writes `name`, so a named cue keeps its name and an unnamed one follows the file. OSC `/cue/{n}/name` returns the stored name. Shared fixture `engine/fixtures/display_name.json` is used by the Rust and Swift tests.

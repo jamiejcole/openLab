@@ -149,7 +149,8 @@ impl CueEngine {
         let skipped = !self.is_armed(model) || broken;
         let act = match &model.kind {
             _ if skipped => Act::Silent(0),
-            CueKind::Audio { .. } => Act::Voice,
+            // A Video cue's picture is a voice too: the binary plays it on the stage host.
+            CueKind::Audio { .. } | CueKind::Video { .. } => Act::Voice,
             CueKind::Wait { duration } => Act::Silent(cx.secs(*duration, &self.config)),
             CueKind::Memo => Act::Silent(0),
             CueKind::Group { .. } => Act::Group,

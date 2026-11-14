@@ -138,11 +138,16 @@ pub enum CueProperty {
     KindFields {
         value: serde_json::Map<String, serde_json::Value>,
     },
-    /// Only for Audio cues: the file alone, so a replaced file leaves levels, routing, fades and
-    /// slices as they are. `None` clears it. The engine stores a path inside the show folder
+    /// Only for Audio and Video cues: the file alone, so a replaced file leaves levels, routing,
+    /// fades, slices and the stage as they are. `None` clears it. The engine stores a path inside the show folder
     /// relative to it ([`Command::prepare`]).
     Media {
         value: Option<MediaRef>,
+    },
+    /// Only for Video cues: the stage it is drawn on; `None` is "none". A stage that is not in
+    /// the workspace is accepted, as a missing patch is: the cue shows broken (`stage_missing`).
+    Stage {
+        value: Option<StageId>,
     },
     /// Only for Network cues. A new value must name an existing network patch.
     Destination {

@@ -13,7 +13,7 @@ use crate::cue_engine::{
     Action, BrokenReason, CueEngine, CueProblem, CueState, EngineWarning, GoIgnoredReason,
     PreviewIgnoredReason, SampleTime,
 };
-use crate::model::{CueId, CueListId, NetworkPatchId, PatchId};
+use crate::model::{CueId, CueListId, NetworkPatchId, PatchId, StageId};
 use crate::settings::PatchResolution;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +53,7 @@ pub enum WireBrokenReason {
     VoiceRejected,
     StreamFailed,
     DeviceLost,
+    DecodeFailed,
 }
 
 impl From<BrokenReason> for WireBrokenReason {
@@ -61,6 +62,7 @@ impl From<BrokenReason> for WireBrokenReason {
             BrokenReason::VoiceRejected => Self::VoiceRejected,
             BrokenReason::StreamFailed => Self::StreamFailed,
             BrokenReason::DeviceLost => Self::DeviceLost,
+            BrokenReason::DecodeFailed => Self::DecodeFailed,
         }
     }
 }
@@ -175,6 +177,12 @@ pub enum WireProblem {
         reason: String,
     },
     StartedBroken,
+    /// A Video cue whose stage is "none".
+    NoStage,
+    /// A Video cue's stage is not in the workspace.
+    StageMissing {
+        stage: StageId,
+    },
 }
 
 impl From<&CueProblem> for WireProblem {
@@ -212,6 +220,8 @@ impl From<&CueProblem> for WireProblem {
                 reason: reason.clone(),
             },
             CueProblem::StartedBroken => Self::StartedBroken,
+            CueProblem::NoStage => Self::NoStage,
+            CueProblem::StageMissing { stage } => Self::StageMissing { stage: *stage },
         }
     }
 }
@@ -470,6 +480,11 @@ pub struct CueMediaDuration {
     /// routing matrix (AUD-06). Absent with the lengths: not probed, missing or unplayable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channels: Option<u16>,
+    /// A Video cue's file as its probe read it: a video's codec, pixel size, frame rate and
+    /// length, or a still's format and pixel size (`video_probe::ProbeReport`, only `video` or
+    /// `still`). Absent for an Audio cue, and with the lengths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<crate::video_probe::ProbeReport>,
 }
 
 impl RuntimeChange {

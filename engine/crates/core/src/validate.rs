@@ -150,6 +150,8 @@ pub enum IssueKind {
     PatchMissing { patch: PatchId },
     /// The Network cue's destination does not exist.
     NetworkPatchMissing { patch: NetworkPatchId },
+    /// The Video cue's stage does not exist.
+    StageMissing { stage: StageId },
     /// A time was NaN, negative or above its maximum (24 h unless documented); it was clamped.
     InvalidTime { field: &'static str },
     /// A level was NaN or above [`MAX_DB`]; it was clamped (NaN becomes silence).
@@ -287,6 +289,7 @@ impl fmt::Display for ValidationIssue {
             IssueKind::NetworkPatchMissing { patch } => {
                 write!(f, "network patch {} does not exist", patch.0)
             }
+            IssueKind::StageMissing { stage } => write!(f, "stage {} does not exist", stage.0),
             IssueKind::InvalidTime { field } => write!(f, "{field} out of range; clamped"),
             IssueKind::InvalidLevel { field } => write!(f, "invalid {field}; clamped"),
             IssueKind::InvalidValue { field } => write!(f, "invalid {field}; corrected"),
@@ -935,6 +938,11 @@ impl Checker {
             }
             CueKind::Load { load_to_time, .. } => self.time(id, "load_to_time", load_to_time),
             CueKind::Wait { duration } => self.time(id, "duration", duration),
+            CueKind::Video { duration, .. } => {
+                if let Some(d) = duration {
+                    self.time(id, "duration", d);
+                }
+            }
             CueKind::Network { address, args, .. } => {
                 self.too_large(id, "address", address.len(), MAX_NETWORK_ADDRESS_BYTES);
                 self.too_large(id, "args", args.len(), MAX_NETWORK_ARGS);
@@ -1211,6 +1219,7 @@ impl Checker {
         let patches: HashSet<PatchId> = workspace.patches.iter().map(|p| p.id).collect();
         let network_patches: HashSet<NetworkPatchId> =
             workspace.network_patches.iter().map(|p| p.id).collect();
+        let stages: HashSet<StageId> = workspace.stages.iter().map(|s| s.id).collect();
 
         for list in &workspace.cue_lists {
             visit(&list.cues, &mut |cue| {
@@ -1243,6 +1252,11 @@ impl Checker {
                 match &cue.kind {
                     CueKind::Audio { patch, .. } if !patches.contains(patch) => {
                         self.warn(id, IssueKind::PatchMissing { patch: *patch });
+                    }
+                    CueKind::Video {
+                        stage: Some(stage), ..
+                    } if !stages.contains(stage) => {
+                        self.warn(id, IssueKind::StageMissing { stage: *stage });
                     }
                     CueKind::Network { destination, .. }
                         if !network_patches.contains(destination) =>

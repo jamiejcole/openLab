@@ -169,14 +169,14 @@ fn settle(cat: &mut MediaCatalog, rx: &Receiver<Inbox>) {
         while !owed.is_empty() {
             let a = wait_for(rx, &what);
             owed.remove(match &a {
-                ProbeAnswer::Probed { ticket, .. } | ProbeAnswer::Preloaded { ticket, .. } => {
-                    ticket
-                }
+                ProbeAnswer::Probed { ticket, .. }
+                | ProbeAnswer::Preloaded { ticket, .. }
+                | ProbeAnswer::Pictured { ticket, .. } => ticket,
             });
             round.push(a);
         }
         round.sort_by_key(|a| match a {
-            ProbeAnswer::Probed { key, .. } => (key.clone(), 0),
+            ProbeAnswer::Probed { key, .. } | ProbeAnswer::Pictured { key, .. } => (key.clone(), 0),
             ProbeAnswer::Preloaded { key, .. } => (key.clone(), 1),
         });
         for a in round {
@@ -628,7 +628,7 @@ fn set_media(cue: &mut Cue, file: &str, want_preload: bool) {
 fn template() -> (Workspace, Cue) {
     let text = include_str!("../../../../../../fixtures/show/v1-example.openlab");
     let mut ws = load_show(text).unwrap().workspace;
-    let id = openlab_core::audio_media(&ws)[0].0;
+    let id = openlab_core::media_of_cues(&ws)[0].0;
     let template = ws.find_cue(id).unwrap().clone();
     for list in &mut ws.cue_lists {
         list.cues.clear();

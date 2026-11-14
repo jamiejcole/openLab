@@ -499,6 +499,7 @@ fn kind_name(kind: &CueKind) -> &'static str {
         CueKind::Wait { .. } => "Wait",
         CueKind::Memo => "Memo",
         CueKind::Network { .. } => "Network",
+        CueKind::Video { .. } => "Video",
     }
 }
 

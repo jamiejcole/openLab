@@ -46,6 +46,8 @@ enum WireBrokenReason: String, Hashable, Sendable, Codable, CaseIterable {
     case voiceRejected = "voice_rejected"
     case streamFailed = "stream_failed"
     case deviceLost = "device_lost"
+    /// A Video cue's picture could not be decoded or drawn.
+    case decodeFailed = "decode_failed"
 }
 
 enum RuntimeChange: Sendable, Decodable {

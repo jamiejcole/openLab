@@ -10,11 +10,17 @@
 //! never used: it would need activation and a Space of its own.
 //!
 //! AppKit and the drawing live on the main thread, with the [`Host`]. A reader thread decodes
-//! the engine's lines and hands each to the main queue. When the engine's pipe closes the
-//! process exits, so it never outlives the engine.
+//! the engine's lines and hands each to the main queue. Every picture's file is opened and
+//! decoded on a thread of its own (`media`): the main thread only uploads finished frames and
+//! draws, so it always answers the engine. When the engine's pipe closes the process exits, so
+//! it never outlives the engine.
 
 mod displays;
 mod gpu;
+mod media;
+mod probe;
+#[cfg(feature = "test-support")]
+mod testmedia;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -33,23 +39,45 @@ use objc2_core_graphics::{
     CGDirectDisplayID, CGDisplayChangeSummaryFlags, CGDisplayRegisterReconfigurationCallback,
 };
 use objc2_foundation::{NSNumber, NSRect, NSString};
-use objc2_metal::{MTLCommandBuffer, MTLDrawable, MTLPixelFormat};
+use objc2_metal::{MTLCommandBuffer, MTLDevice, MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use openlab_core::stage_link::{Display, FromStage, LinkLevel, ToStage};
 
 use self::displays::Found;
 use self::gpu::Gpu;
-use crate::host::{Flow, Host, Layer, Platform, write_all};
+use crate::host::{Flow, Host, Layer, PictureEvent, Platform, write_all};
 use openlab_core::stage_link::{Line, read_line};
 
 pub fn run(args: Vec<String>) -> ExitCode {
     match args.as_slice() {
         [] => windowed(),
+        [flag, path] if flag == "--probe" => {
+            super::print_probe(&probe::probe(std::path::Path::new(path)))
+        }
+        #[cfg(feature = "test-support")]
+        [flag, rest @ ..] if flag == "--make-test-media" => match testmedia::make(rest) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(why) => {
+                // Test support: the test that ran it shows this when the file is not made.
+                use std::io::Write;
+                let _ = writeln!(std::io::stderr().lock(), "{why}");
+                ExitCode::FAILURE
+            }
+        },
         #[cfg(feature = "test-support")]
         [flag, list] if flag == "--virtual-displays" => match virtual_displays(list) {
-            Some(displays) => offscreen(displays),
+            Some(displays) => offscreen(displays, media::LIMITS),
             None => ExitCode::from(super::USAGE_EXIT),
         },
+        #[cfg(feature = "test-support")]
+        [flag, list, limits_flag, limits]
+            if flag == "--virtual-displays" && limits_flag == "--media-limits" =>
+        {
+            match (virtual_displays(list), media_limits(limits)) {
+                (Some(displays), Some(limits)) => offscreen(displays, limits),
+                _ => ExitCode::from(super::USAGE_EXIT),
+            }
+        }
         _ => ExitCode::from(super::USAGE_EXIT),
     }
 }
@@ -58,6 +86,12 @@ pub fn run(args: Vec<String>) -> ExitCode {
 pub struct Mac {
     gpu: Result<Gpu, String>,
     windows: Option<Windows>,
+    /// Video cues' pictures, by the engine's id.
+    media: HashMap<u64, media::Picture>,
+    /// Pictures that failed while drawn, not yet reported.
+    failed: Vec<(u64, String)>,
+    /// How long a picture's open and frames may take.
+    limits: media::Limits,
     /// The displays last read, with their CoreGraphics ids.
     found: Vec<Found>,
     /// Test support: displays that stand in for real ones, drawn offscreen only.
@@ -123,7 +157,20 @@ impl Platform for Mac {
             .layer
             .nextDrawable()
             .ok_or("no drawable for the display's window")?;
-        let cb = gpu.draw(&drawable.texture(), layers)?;
+        let device = gpu.device_owned();
+        let (media, failed) = (&mut self.media, &mut self.failed);
+        let mut drawn = Vec::new();
+        let cb = gpu.draw(&drawable.texture(), layers, &mut |c| {
+            drawn.push(c.picture);
+            // Shown at the next refresh: the frame due then.
+            let ahead = media::FRAME_AHEAD;
+            frame_of(&device, media, failed, c, ahead, None)
+        })?;
+        for picture in drawn {
+            if let Some(p) = self.media.get_mut(&picture) {
+                p.drawn_with(&cb);
+            }
+        }
         let d: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(&*drawable);
         cb.presentDrawable(d);
         cb.commit();
@@ -155,7 +202,80 @@ impl Platform for Mac {
         points: &[[f32; 2]],
     ) -> Result<Vec<[u8; 4]>, String> {
         let gpu = self.gpu.as_mut().map_err(|e| e.clone())?;
-        gpu.probe(size, layers, points)
+        let device = gpu.device_owned();
+        let (media, failed, limits) = (&mut self.media, &mut self.failed, self.limits);
+        // Offscreen, a probe shows the frame at the clock exactly: it waits (within the
+        // limits) for each picture's decode thread. Never on real displays.
+        gpu.probe(size, layers, points, &mut |c| {
+            frame_of(&device, media, failed, c, 0.0, Some(limits))
+        })
+    }
+
+    fn open_picture(
+        &mut self,
+        picture: u64,
+        file: &str,
+        still: bool,
+        offset: f64,
+    ) -> Result<(), String> {
+        self.gpu.as_ref().map_err(|e| e.clone())?;
+        let source = media::Picture::open(file, still, offset)?;
+        self.media.insert(picture, source);
+        Ok(())
+    }
+
+    fn close_picture(&mut self, picture: u64) {
+        self.media.remove(&picture);
+    }
+
+    fn take_picture_events(&mut self) -> Vec<PictureEvent> {
+        let mut events: Vec<PictureEvent> = std::mem::take(&mut self.failed)
+            .into_iter()
+            .map(|(p, why)| PictureEvent::Failed(p, why))
+            .collect();
+        let limits = self.limits;
+        let mut gone = Vec::new();
+        for (id, picture) in &mut self.media {
+            match picture.poll(limits) {
+                Some(media::Polled::Opened) => events.push(PictureEvent::Opened(*id)),
+                Some(media::Polled::Failed(why)) => {
+                    gone.push(*id);
+                    events.push(PictureEvent::Failed(*id, why));
+                }
+                None => {}
+            }
+        }
+        // Let go: its decode thread ends (or, stuck, is left to end by itself).
+        for id in gone {
+            self.media.remove(&id);
+        }
+        events
+    }
+
+    fn live(&self) -> bool {
+        self.windows.is_some()
+    }
+}
+
+/// A cue picture's texture at its position (plus `ahead` seconds), from `media`, if a frame is
+/// ready; a failure is noted in `failed` (the host reports it and drops the picture) and
+/// nothing is drawn for it. With `wait`, waits for the frame (offscreen probes).
+fn frame_of(
+    device: &ProtocolObject<dyn MTLDevice>,
+    media: &mut HashMap<u64, media::Picture>,
+    failed: &mut Vec<(u64, String)>,
+    cue: &crate::host::CuePicture,
+    ahead: f64,
+    wait: Option<media::Limits>,
+) -> Option<(gpu::Texture, (u32, u32))> {
+    let source = media.get_mut(&cue.picture)?;
+    match source.frame(device, cue.position + ahead, wait) {
+        Ok(frame) => frame,
+        Err(why) => {
+            media.remove(&cue.picture);
+            failed.push((cue.picture, why));
+            None
+        }
     }
 }
 
@@ -291,6 +411,9 @@ fn windowed() -> ExitCode {
             mtm,
             open: HashMap::new(),
         }),
+        media: HashMap::new(),
+        failed: Vec::new(),
+        limits: media::LIMITS,
         found: Vec::new(),
         #[cfg(feature = "test-support")]
         virtual_displays: None,
@@ -303,6 +426,13 @@ fn windowed() -> ExitCode {
     if std::thread::Builder::new()
         .name("openlab-stage-reader".into())
         .spawn(read_engine)
+        .is_err()
+    {
+        return ExitCode::FAILURE;
+    }
+    if std::thread::Builder::new()
+        .name("openlab-stage-frames".into())
+        .spawn(frames)
         .is_err()
     {
         return ExitCode::FAILURE;
@@ -333,6 +463,37 @@ fn read_engine() {
                 level: LinkLevel::Warn,
                 message: warning,
             }]),
+        }
+    }
+}
+
+/// How often playing pictures are drawn again.
+const FRAME_EVERY: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// One redraw queued on the main thread at a time.
+static REDRAW_QUEUED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The frame loop: asks the main thread to report what became of pictures' files and to draw
+/// playing pictures again, about 60 times a second, never queueing a draw behind one not yet
+/// done (a slow draw skips frames).
+fn frames() {
+    use std::sync::atomic::Ordering;
+    loop {
+        std::thread::sleep(FRAME_EVERY);
+        if !REDRAW_QUEUED.swap(true, Ordering::AcqRel) {
+            DispatchQueue::main().exec_async(|| {
+                REDRAW_QUEUED.store(false, Ordering::Release);
+                let mut out = Vec::new();
+                HOST.with(|h| {
+                    if let Some(host) = h.borrow_mut().as_mut() {
+                        host.poll(&mut out);
+                        if host.playing() {
+                            host.redraw(&mut out);
+                        }
+                    }
+                });
+                send(out);
+            });
         }
     }
 }
@@ -404,24 +565,34 @@ fn virtual_displays(list: &str) -> Option<Vec<Display>> {
         .collect()
 }
 
+/// Test support: `OPEN_MS,FRAME_MS`, the limits on a picture's open and frames.
+#[cfg(feature = "test-support")]
+fn media_limits(text: &str) -> Option<media::Limits> {
+    let (open, frame) = text.split_once(',')?;
+    Some(media::Limits {
+        open: std::time::Duration::from_millis(open.parse().ok()?),
+        frame: std::time::Duration::from_millis(frame.parse().ok()?),
+    })
+}
+
 /// Test support: the host on the main thread with no windows, its stages drawn offscreen for
 /// probes. A `hang` stops answering but still ends with the engine's pipe.
 #[cfg(feature = "test-support")]
-fn offscreen(displays: Vec<Display>) -> ExitCode {
+fn offscreen(displays: Vec<Display>, limits: media::Limits) -> ExitCode {
     let mut host = Host::new(Mac {
         gpu: Gpu::new(),
         windows: None,
+        media: HashMap::new(),
+        failed: Vec::new(),
+        limits,
         found: Vec::new(),
         virtual_displays: Some(displays),
     });
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
-    let flow = crate::host::serve(&mut input, &mut std::io::stdout().lock(), |m, out| {
-        host.handle(m, out)
-    });
-    if flow == Flow::Hang {
-        let _ = std::io::copy(&mut input, &mut std::io::sink());
-    }
+    crate::host::serve(
+        std::io::BufReader::new(std::io::stdin()),
+        &mut std::io::stdout().lock(),
+        |m, out| host.step(m, out),
+    );
     ExitCode::SUCCESS
 }
 
