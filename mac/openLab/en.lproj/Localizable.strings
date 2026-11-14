@@ -329,7 +329,7 @@
 "inspector.flagged" = "Flagged";
 "inspector.armed" = "Armed";
 "inspector.autoLoad" = "Load ahead";
-"inspector.skipIfDisarmed" = "Skip when disarmed";
+"inspector.skipIfDisarmed" = "Skip disarmed";
 "inspector.secondColour" = "Second color once started";
 "inspector.others.heading" = "As this cue's action starts:";
 "inspector.others.over" = "over";

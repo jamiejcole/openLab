@@ -404,13 +404,20 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         scroll.widthAnchor.constraint(equalTo: centre.widthAnchor).isActive = true
         // The colour, then the second colour behind its box (QLab's lock), as swatches; the boxes under it
         // in QLab's order (manual pp. 127-128).
+        // The column keeps the width it had (103 pt), so the inspector's least width does not grow: small
+        // controls, the two menus as swatches only.
         for p in [colourPopup, secondColourPopup] {
             p.imagePosition = .imageOnly
-            p.widthAnchor.constraint(equalToConstant: 48).isActive = true
+            p.controlSize = .small
+            p.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        }
+        for c in [secondColourCheck, flaggedCheck, autoLoadCheck, armedCheck, skipCheck] {
+            c.controlSize = .small
+            c.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         }
         let colours = NSStackView(views: [colourPopup, secondColourCheck, secondColourPopup])
-        colours.spacing = 4
-        let right = column([previewButton, row(loc("inspector.colour"), colours)], width: 160)
+        colours.spacing = 3
+        let right = column([previewButton, row(loc("inspector.colour"), colours)], width: 103)
         let boxes = NSStackView(views: [flaggedCheck, autoLoadCheck, armedCheck, skipCheck])
         boxes.orientation = .vertical
         boxes.alignment = .leading
@@ -615,10 +622,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             return false
         }
         messageLabel.stringValue = ""
-        // A key recorded is a key to use: a switched-off trigger comes on with it.
-        send(
-            InspectorEdit.setTriggers(cue, hotkey: .some(chord.hotkeyJSON), enabled: true), cue: cue.id, key: "hotkey",
-            revert: [])
+        // The trigger's switch is its own box: a key recorded while it is off stays off, as the box says.
+        send(InspectorEdit.setTriggers(cue, hotkey: .some(chord.hotkeyJSON)), cue: cue.id, key: "hotkey", revert: [])
         return true
     }
 
