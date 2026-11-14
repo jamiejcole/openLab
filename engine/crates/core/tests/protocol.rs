@@ -3443,6 +3443,15 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
         };
         add(&name, runtime(vec![change]));
     }
+    // A cue its lost device left paused (the only reason a paused state carries).
+    add(
+        "runtime_state_paused_device_lost",
+        runtime(vec![RuntimeChange::CueState {
+            cue: c,
+            state: WireCueState::Paused,
+            reason: Some(WireBrokenReason::DeviceLost),
+        }]),
+    );
     for code in all_error_codes() {
         add(
             &format!("error_{}", tag(&code)),
@@ -3966,33 +3975,66 @@ fn every_problem_resolution_state_and_reason_maps_to_its_wire_form() {
 fn a_broken_state_change_carries_the_engines_reason() {
     let c = cue_id(1);
     let ws = workspace(vec![cue(1, audio())]);
-    let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
-    let mut last = None;
-    handle_as_binary(&mut engine, &ws, &mut last, Input::Start { cue: c }, 0);
-    let run = engine.run_of(c).unwrap();
-    let actions = handle_as_binary(
-        &mut engine,
-        &ws,
-        &mut last,
-        Input::ActionFailed {
-            cue: c,
-            run,
-            reason: BrokenReason::DeviceLost,
-        },
-        10,
-    );
-    let changes: Vec<_> = actions
-        .iter()
-        .filter_map(|a| RuntimeChange::from_action(a, &engine))
-        .collect();
-    assert!(
-        changes.contains(&RuntimeChange::CueState {
-            cue: c,
-            state: WireCueState::Broken,
-            reason: Some(WireBrokenReason::DeviceLost),
-        }),
-        "{changes:?}"
-    );
+    // A playing cue its lost device stopped shows paused, with the device as its reason.
+    for (reason, state, wire) in [
+        (
+            BrokenReason::StreamFailed,
+            WireCueState::Broken,
+            WireBrokenReason::StreamFailed,
+        ),
+        (
+            BrokenReason::DeviceLost,
+            WireCueState::Paused,
+            WireBrokenReason::DeviceLost,
+        ),
+    ] {
+        let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
+        let mut last = None;
+        handle_as_binary(&mut engine, &ws, &mut last, Input::Start { cue: c }, 0);
+        let run = engine.run_of(c).unwrap();
+        let actions = handle_as_binary(
+            &mut engine,
+            &ws,
+            &mut last,
+            Input::ActionFailed {
+                cue: c,
+                run,
+                reason,
+            },
+            10,
+        );
+        let changes: Vec<_> = actions
+            .iter()
+            .filter_map(|a| RuntimeChange::from_action(a, &engine))
+            .collect();
+        assert!(
+            changes.contains(&RuntimeChange::CueState {
+                cue: c,
+                state,
+                reason: Some(wire),
+            }),
+            "{changes:?}"
+        );
+        // An ordinary pause carries no reason.
+        if state == WireCueState::Paused {
+            handle_as_binary(&mut engine, &ws, &mut last, Input::Resume { cue: c }, 20);
+            handle_as_binary(&mut engine, &ws, &mut last, Input::Start { cue: c }, 30);
+            let actions =
+                handle_as_binary(&mut engine, &ws, &mut last, Input::Pause { cue: c }, 40);
+            let changes: Vec<_> = actions
+                .iter()
+                .filter_map(|a| RuntimeChange::from_action(a, &engine))
+                .collect();
+            assert!(
+                changes.contains(&RuntimeChange::CueState {
+                    cue: c,
+                    state: WireCueState::Paused,
+                    reason: None,
+                }),
+                "{changes:?}"
+            );
+        }
+    }
     // A cue broken only by static problems has no run-time reason.
     let ws = workspace(vec![cue(1, fade(99))]);
     let mut engine = CueEngine::new(EngineConfig::new(1000, 0, 1).unwrap());
