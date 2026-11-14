@@ -987,12 +987,11 @@ fn a_paused_picture_is_shown_again_when_the_stage_host_is_relaunched() {
     assert_eq!(shown(&mut s), Some(held), "the held frame is back");
 }
 
-/// A short limit on the open only (the file whose open hangs), and on frames only (the file
-/// whose decode hangs): each hung file fails quickly, and nothing else it does (its open, on a
-/// loaded machine) is held to a short limit. They apply only to the files a fault switch names:
-/// a good file keeps the shipped limits, so a slow machine never fails it.
-const SHORT_OPEN: [&str; 2] = ["--media-limits", "400,10000"];
-const SHORT_FRAME: [&str; 2] = ["--media-limits", "10000,400"];
+/// The stage host's media limits measured on a clock the test moves (`advance_stage_media_clock`,
+/// and each slow-decode frame), never on real time: a picture fails only when the test moves
+/// that clock past a limit, however slow the machine. The limits given apply to the files a
+/// fault switch names; a good file keeps the shipped ones.
+const HAND_LIMITS: [&str; 3] = ["--media-limits", "400,400", "--media-clock-by-hand"];
 
 /// A copy of a good movie under a name that makes the test-support decoder hang or crash.
 fn faulty(dir: &Path, good: &Path, fault: &str) -> PathBuf {
@@ -1015,7 +1014,7 @@ fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
     let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
     let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
-    let mut s = video_show_args(ws, &SHORT_OPEN);
+    let mut s = video_show_args(ws, &HAND_LIMITS);
     let pid = s.control().stage_host_pid().unwrap();
     s.take_outbound();
     start(&mut s, 2);
@@ -1031,6 +1030,13 @@ fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
     run_to(&mut s, at + samples(0.5));
     let now = shown(&mut s).expect("the other picture plays");
     assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+    assert_eq!(
+        state(&s, 2),
+        CueState::Running,
+        "not failed before its limit"
+    );
+    // Past the open's limit.
+    s.control().advance_stage_media_clock(500);
     assert!(wait_broken(&mut s, 2), "the hung cue breaks");
     assert_eq!(
         s.control().engine().broken_reason(id(2)),
@@ -1059,15 +1065,25 @@ fn a_picture_whose_decode_hangs_fails_alone() {
     let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
     let hung = faulty(dir.path(), &good, "openlab-test-hang-decode");
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
-    let mut s = video_show_args(ws, &SHORT_FRAME);
+    let mut s = video_show_args(ws, &HAND_LIMITS);
     let pid = s.control().stage_host_pid().unwrap();
     // The hung one first, so the good one is drawn over it.
     start(&mut s, 2);
     let at = start(&mut s, 1);
+    // Both open (the hung one hangs only at the frames after its open).
+    assert!(s.wait_for(|c| c.pictures_opened() == 2));
     s.take_outbound();
     run_to(&mut s, at + samples(0.5));
+    // Drawing asks the hung decoder for a frame.
     let now = shown(&mut s).expect("the good picture is drawn");
     assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+    assert_eq!(
+        state(&s, 2),
+        CueState::Running,
+        "not failed before its limit"
+    );
+    // Past the frame limit with no frame read.
+    s.control().advance_stage_media_clock(500);
     assert!(wait_broken(&mut s, 2), "the hung cue breaks");
     let texts = notice_texts(&mut s);
     assert!(
@@ -1422,13 +1438,15 @@ fn a_slow_decoder_that_keeps_decoding_keeps_its_picture_up() {
     let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
     let slow = faulty(dir.path(), &good, "openlab-test-slow-decode");
     let ws = workspace(vec![video_cue(1, Some(&slow))]);
-    // 2.5 s a frame may take (the slow file's frames take 400 ms, a sixth of that, so a slow
-    // machine does not matter); a catch-up of a third of a second (8 frames) takes longer than
-    // that in all.
-    let mut s = video_show_args(ws, &["--media-limits", "2500,2500"]);
+    // Each slow frame moves the media clock on 400 ms, a catch-up of a third of a second
+    // (8 frames) 3.2 s, past the 2.5 s limit in all; no frame takes longer than 400 ms.
+    let mut s = video_show_args(
+        ws,
+        &["--media-limits", "2500,2500", "--media-clock-by-hand"],
+    );
     let at = start(&mut s, 1);
     s.take_outbound();
-    for step in 1..=2 {
+    for step in 1..=4 {
         let played = f64::from(step) * 0.33;
         run_to(&mut s, at + samples(played));
         let now = shown(&mut s).expect("the slow picture is drawn");

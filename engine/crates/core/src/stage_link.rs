@@ -95,6 +95,11 @@ pub enum ToStage {
     /// plugged in or unplugged.
     #[cfg(feature = "test-support")]
     SetDisplays { displays: Vec<Display> },
+    /// Test support: moves the stage host's media clock on by `ms` (one started with
+    /// `--media-clock-by-hand`; at most a day at a time), for the limits on pictures' opens
+    /// and frames.
+    #[cfg(feature = "test-support")]
+    AdvanceMediaClock { ms: u64 },
 }
 
 /// One stage as the stage host draws it.
@@ -342,6 +347,10 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
         }
         #[cfg(feature = "test-support")]
         ToStage::SetDisplays { displays } => check_displays(displays),
+        #[cfg(feature = "test-support")]
+        ToStage::AdvanceMediaClock { ms } if *ms > 86_400_000 => {
+            Err(LinkError::Invalid("media clock step out of range"))
+        }
         #[cfg(feature = "test-support")]
         ToStage::ProbeDisplay { display, points } => {
             if !text_ok(display) {
@@ -630,5 +639,18 @@ mod tests {
         })
         .unwrap();
         assert!(decode_from_stage(line.as_bytes()).is_err());
+    }
+
+    /// Test support: a media clock step reads back; one over a day is refused.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_media_clock_step_is_bounded() {
+        let step = ToStage::AdvanceMediaClock { ms: 500 };
+        assert_eq!(
+            decode_to_stage(encode(&step).unwrap().as_bytes()).unwrap(),
+            step
+        );
+        let far = ToStage::AdvanceMediaClock { ms: 86_400_001 };
+        assert!(decode_to_stage(encode(&far).unwrap().as_bytes()).is_err());
     }
 }

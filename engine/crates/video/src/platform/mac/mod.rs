@@ -70,9 +70,14 @@ pub fn run(args: Vec<String>) -> ExitCode {
             None => ExitCode::from(super::USAGE_EXIT),
         },
         #[cfg(feature = "test-support")]
-        [flag, list, limits_flag, limits]
-            if flag == "--virtual-displays" && limits_flag == "--media-limits" =>
+        [flag, list, limits_flag, limits, rest @ ..]
+            if flag == "--virtual-displays"
+                && limits_flag == "--media-limits"
+                && (rest.is_empty() || rest == ["--media-clock-by-hand"]) =>
         {
+            if !rest.is_empty() {
+                media::fault::use_hand_clock();
+            }
             match (virtual_displays(list), media_limits(limits)) {
                 (Some(displays), Some(limits)) => offscreen(displays, limits),
                 _ => ExitCode::from(super::USAGE_EXIT),
@@ -183,6 +188,11 @@ impl Platform for Mac {
         if let Some(w) = self.windows.as_mut().and_then(|w| w.open.remove(display)) {
             w.window.close();
         }
+    }
+
+    #[cfg(feature = "test-support")]
+    fn advance_media_clock(&mut self, ms: u64) {
+        media::fault::advance(ms);
     }
 
     #[cfg(feature = "test-support")]

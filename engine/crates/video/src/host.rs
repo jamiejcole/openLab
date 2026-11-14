@@ -136,6 +136,9 @@ pub trait Platform {
         layers: &[Layer],
         points: &[[f32; 2]],
     ) -> Result<Vec<[u8; 4]>, String>;
+    /// Test support: moves the media clock on (`--media-clock-by-hand`).
+    #[cfg(feature = "test-support")]
+    fn advance_media_clock(&mut self, _ms: u64) {}
     /// Test support: replaces virtual displays; `false` where the displays are real.
     #[cfg(feature = "test-support")]
     fn set_virtual_displays(&mut self, _displays: Vec<Display>) -> bool {
@@ -499,6 +502,11 @@ impl<P: Platform> Host<P> {
             }
             #[cfg(feature = "test-support")]
             ToStage::Hang => return Flow::Hang,
+            #[cfg(feature = "test-support")]
+            ToStage::AdvanceMediaClock { ms } => {
+                self.platform.advance_media_clock(ms);
+                self.report_failures(out);
+            }
             #[cfg(feature = "test-support")]
             ToStage::SetDisplays { displays } => {
                 if self.platform.set_virtual_displays(displays) {
