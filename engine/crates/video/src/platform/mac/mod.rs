@@ -15,6 +15,9 @@
 
 mod displays;
 mod gpu;
+mod probe;
+#[cfg(feature = "test-support")]
+mod testmedia;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -45,6 +48,19 @@ use openlab_core::stage_link::{Line, read_line};
 pub fn run(args: Vec<String>) -> ExitCode {
     match args.as_slice() {
         [] => windowed(),
+        [flag, path] if flag == "--probe" => {
+            super::print_probe(&probe::probe(std::path::Path::new(path)))
+        }
+        #[cfg(feature = "test-support")]
+        [flag, rest @ ..] if flag == "--make-test-media" => match testmedia::make(rest) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(why) => {
+                // Test support: the test that ran it shows this when the file is not made.
+                use std::io::Write;
+                let _ = writeln!(std::io::stderr().lock(), "{why}");
+                ExitCode::FAILURE
+            }
+        },
         #[cfg(feature = "test-support")]
         [flag, list] if flag == "--virtual-displays" => match virtual_displays(list) {
             Some(displays) => offscreen(displays),

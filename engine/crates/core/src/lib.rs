@@ -29,6 +29,7 @@ pub mod stage_link;
 mod tree;
 mod validate;
 mod video;
+pub mod video_probe;
 
 pub use backup::*;
 pub use changes::*;

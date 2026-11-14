@@ -668,9 +668,14 @@ impl Control {
             config.waveform_timeout,
             config.probe_clock.clone(),
         );
+        let picture = crate::stage_probe::picture_probe(
+            config.stage_host.as_ref().map(|h| h.program.clone()),
+            crate::stage_probe::PROBE_PROCESS_LIMIT,
+        );
         let mut pool = ProbePool::new(
             inbox.clone(),
             config.probe,
+            picture,
             config.probe_timeout,
             config.probe_clock.clone(),
         )?;

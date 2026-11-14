@@ -169,14 +169,14 @@ fn settle(cat: &mut MediaCatalog, rx: &Receiver<Inbox>) {
         while !owed.is_empty() {
             let a = wait_for(rx, &what);
             owed.remove(match &a {
-                ProbeAnswer::Probed { ticket, .. } | ProbeAnswer::Preloaded { ticket, .. } => {
-                    ticket
-                }
+                ProbeAnswer::Probed { ticket, .. }
+                | ProbeAnswer::Preloaded { ticket, .. }
+                | ProbeAnswer::Pictured { ticket, .. } => ticket,
             });
             round.push(a);
         }
         round.sort_by_key(|a| match a {
-            ProbeAnswer::Probed { key, .. } => (key.clone(), 0),
+            ProbeAnswer::Probed { key, .. } | ProbeAnswer::Pictured { key, .. } => (key.clone(), 0),
             ProbeAnswer::Preloaded { key, .. } => (key.clone(), 1),
         });
         for a in round {

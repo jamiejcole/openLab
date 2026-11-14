@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use openlab_audio::{Media, MediaError, Preloaded, Probed};
+use openlab_core::video_probe::ProbeReport;
 use openlab_core::{
     Cue, CueId, CueIndex, CueKind, Footprint, IndexChange, MediaRef, MediaStatus, Workspace,
 };
@@ -37,6 +38,16 @@ pub enum Probe {
     Ready(Arc<Ready>),
     /// Missing or unplayable.
     Failed,
+    /// A Video cue's file, which the stage host plays: a video or a still image.
+    Picture(Arc<PictureReady>),
+}
+
+/// A probed video file or still image.
+#[derive(Debug)]
+pub struct PictureReady {
+    pub path: PathBuf,
+    /// Always a video or a still.
+    pub report: ProbeReport,
 }
 
 #[derive(Debug)]
@@ -62,6 +73,9 @@ pub(super) struct Entry {
     /// How many cues use the file, and how many of them ask for it to be preloaded.
     users: usize,
     preloaders: usize,
+    /// Probed as a picture (a Video cue's file), not as audio. Fixed when the file is first
+    /// used; a file asked for by both kinds is probed as the first that asked.
+    picture: bool,
     /// The file is to be preloaded (a cue asks, or its probe advises it): as of the last answer
     /// or change, so a change of mind is told from a steady state.
     wants_preload: bool,
@@ -102,6 +116,8 @@ struct IndexedFile {
     /// How many cues use the file, and how many of them ask for it to be preloaded.
     users: usize,
     preloaders: usize,
+    /// A Video cue uses it.
+    picture: bool,
 }
 
 /// Reads every cue of `ws` once: the cue index and each audio cue's file, resolved against
@@ -113,13 +129,14 @@ pub fn index_workspace(ws: &Workspace, show_dir: Option<&Path>) -> Indexed {
     let mut visited = 0;
     let index = CueIndex::build_visiting(ws, |cue| {
         visited += 1;
-        if let Some((key, preload)) = media_use(cue) {
+        if let Some((key, preload, picture)) = media_use(cue) {
             if seen.insert(key.to_owned()) {
                 order.push(IndexedFile {
                     key: key.to_owned(),
                     path: media_path(&MediaRef::new(key.to_owned()), show_dir),
                     users: 0,
                     preloaders: 0,
+                    picture,
                 });
             }
             uses.insert(
@@ -127,6 +144,7 @@ pub fn index_workspace(ws: &Workspace, show_dir: Option<&Path>) -> Indexed {
                 Use {
                     key: key.to_owned(),
                     preload,
+                    picture,
                 },
             );
         }
@@ -225,6 +243,8 @@ pub enum KeyChange {
 pub(super) struct Use {
     key: String,
     preload: bool,
+    /// A Video cue's file.
+    picture: bool,
 }
 
 impl MediaCatalog {
@@ -265,7 +285,8 @@ impl MediaCatalog {
         timeout: Duration,
         clock: ProbeClock,
     ) -> std::io::Result<Self> {
-        let pool = ProbePool::new(inbox, probe, timeout, clock)?;
+        let picture = crate::stage_probe::picture_probe(None, Duration::from_secs(1));
+        let pool = ProbePool::new(inbox, probe, picture, timeout, clock)?;
         let mut catalog = Self::new(pool.handle(DocId(0)), show_dir, preload_budget);
         catalog.own_pool = Some(pool);
         Ok(catalog)
@@ -381,7 +402,7 @@ impl MediaCatalog {
             } else {
                 media_path(&MediaRef::new(file.key.clone()), self.show_dir.as_deref())
             };
-            let entry = self.request_at(file.key, path);
+            let entry = self.request_at(file.key, path, file.picture);
             entry.users = file.users;
             entry.preloaders = file.preloaders;
         }
@@ -449,16 +470,22 @@ impl MediaCatalog {
                 return self.sync(ws);
             };
             let new = media_use(cue);
-            if new == self.uses.get(id).map(|u| (u.key.as_str(), u.preload)) {
+            if new
+                == self
+                    .uses
+                    .get(id)
+                    .map(|u| (u.key.as_str(), u.preload, u.picture))
+            {
                 continue;
             }
             if let Some(old) = self.uses.remove(id) {
                 self.drop_use(old, &mut changed);
             }
-            if let Some((key, preload)) = new {
+            if let Some((key, preload, picture)) = new {
                 let new = Use {
                     key: key.to_owned(),
                     preload,
+                    picture,
                 };
                 match self.entries.get_mut(key) {
                     Some(e) => {
@@ -486,7 +513,7 @@ impl MediaCatalog {
         first_uses.sort_by_cached_key(|(id, _)| self.index.path(*id));
         for (id, new) in first_uses {
             if !self.entries.contains_key(new.key.as_str()) {
-                self.request(new.key.clone());
+                self.request_as(new.key.clone(), new.picture);
             }
             if let Some(e) = self.entries.get_mut(new.key.as_str()) {
                 e.users += 1;
@@ -620,6 +647,7 @@ impl MediaCatalog {
                     key: key.to_owned(),
                     ticket: e.ticket,
                     path,
+                    picture: e.picture,
                 });
             }
         }
@@ -639,16 +667,25 @@ impl MediaCatalog {
             }
             Some(_) => {}
         }
-        self.request(key.to_owned());
+        let picture = self.entries.get(key).is_some_and(|e| e.picture);
+        self.request_as(key.to_owned(), picture);
     }
 
+    #[cfg(test)]
     fn request(&mut self, key: String) {
-        let path = media_path(&MediaRef::new(key.clone()), self.show_dir.as_deref());
-        self.request_at(key, path);
+        self.request_as(key, false);
     }
 
-    /// [`Self::request`] of `key`, already resolved to `path`; its entry.
-    fn request_at(&mut self, key: String, path: Option<PathBuf>) -> &mut Entry {
+    /// [`Self::request`] of a file probed as a picture (`picture`) or as audio.
+    fn request_as(&mut self, key: String, picture: bool) {
+        let path = media_path(&MediaRef::new(key.clone()), self.show_dir.as_deref());
+        self.request_at(key, path, picture);
+    }
+
+    /// [`Self::request`] of `key`, already resolved to `path`; its entry. `picture`: a Video
+    /// cue's file (an existing entry keeps its own kind).
+    fn request_at(&mut self, key: String, path: Option<PathBuf>, picture: bool) -> &mut Entry {
+        let picture = self.entries.get(&key).map_or(picture, |e| e.picture);
         self.next_ticket += 1;
         let ticket = self.next_ticket;
         let asked = match &path {
@@ -660,6 +697,7 @@ impl MediaCatalog {
                     key: key.clone(),
                     ticket,
                     path: path.clone(),
+                    picture,
                 })
                 .is_ok(),
             // A relative reference in a workspace with no show folder has no file to be: its
@@ -705,6 +743,7 @@ impl MediaCatalog {
                     stuck_jobs: 0,
                     users: 0,
                     preloaders: 0,
+                    picture,
                     wants_preload: false,
                     preload_ticket: 0,
                     preloaded: None,
@@ -791,6 +830,35 @@ impl MediaCatalog {
                 }
                 Some((MediaRef::new(key), status))
             }
+            ProbeAnswer::Pictured {
+                key,
+                ticket,
+                result,
+            } => {
+                let entry = self
+                    .entries
+                    .get_mut(&key)
+                    .filter(|e| e.ticket == ticket && e.asking)?;
+                entry.asking = false;
+                entry.stuck_jobs = 0;
+                let (probe, status) = match result {
+                    Ok((path, report)) => (
+                        Probe::Picture(Arc::new(PictureReady { path, report })),
+                        MediaStatus::Available,
+                    ),
+                    Err(e) => {
+                        self.key_changes.push(KeyChange::ProbeFailed {
+                            key: key.clone(),
+                            id: entry.watch,
+                            missing: matches!(e, MediaError::NotFound(_)),
+                        });
+                        (Probe::Failed, status_of(&e))
+                    }
+                };
+                entry.probe = probe;
+                self.plan_changes.keys.insert(key.clone());
+                Some((MediaRef::new(key), status))
+            }
             ProbeAnswer::Preloaded {
                 key,
                 ticket,
@@ -843,10 +911,15 @@ impl MediaCatalog {
     /// afresh, even if a probe is under way (it may have read what was there before). The last
     /// answer stands until then. `false` for an event of an earlier watch.
     pub fn recheck(&mut self, key: &str, id: u64) -> bool {
-        if !self.entries.get(key).is_some_and(|e| e.watch == id) {
+        let Some(picture) = self
+            .entries
+            .get(key)
+            .filter(|e| e.watch == id)
+            .map(|e| e.picture)
+        else {
             return false;
-        }
-        self.request(key.to_owned());
+        };
+        self.request_as(key.to_owned(), picture);
         true
     }
 
@@ -864,11 +937,19 @@ impl MediaCatalog {
         self.entries.get(key).map(|e| &e.probe)
     }
 
+    /// The probe of a Video cue's file `key`, if it plays.
+    pub fn picture(&self, key: &str) -> Option<&Arc<PictureReady>> {
+        match &self.entries.get(key)?.probe {
+            Probe::Picture(p) => Some(p),
+            Probe::Pending | Probe::Failed | Probe::Ready(_) => None,
+        }
+    }
+
     /// The probe of `key`, if it is playable (what a plan is built from; no path is cloned).
     pub fn ready(&self, key: &str) -> Option<&Arc<Ready>> {
         match &self.entries.get(key)?.probe {
             Probe::Ready(ready) => Some(ready),
-            Probe::Pending | Probe::Failed => None,
+            Probe::Pending | Probe::Failed | Probe::Picture(_) => None,
         }
     }
 
@@ -984,14 +1065,16 @@ pub(super) fn give_back(reserved: &mut u64, used: &AtomicU64, bytes: u64) {
     used.fetch_sub(bytes, Ordering::SeqCst);
 }
 
-/// The file an audio cue plays and whether it asks for it to be preloaded.
-pub(super) fn media_use(cue: &Cue) -> Option<(&str, bool)> {
+/// The file a cue plays, whether it asks for it to be preloaded, and whether it is a picture
+/// (a Video cue's file, which the stage host plays and is never preloaded here).
+pub(super) fn media_use(cue: &Cue) -> Option<(&str, bool, bool)> {
     match &cue.kind {
         CueKind::Audio {
             media: Some(m),
             preload,
             ..
-        } => Some((m.as_str(), *preload)),
+        } => Some((m.as_str(), *preload, false)),
+        CueKind::Video { media: Some(m), .. } => Some((m.as_str(), false, true)),
         _ => None,
     }
 }

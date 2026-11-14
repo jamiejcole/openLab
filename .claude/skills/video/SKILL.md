@@ -9,7 +9,7 @@ QLab 5 model: manual pp. 207-212 (Video cues), 225-230 (stages), 241-243 (Fade c
 
 Design decided by the user on 2026-11-13: decode and drawing live in a third process, the stage host; macOS decodes with AVFoundation/VideoToolbox (HAP in-house) and draws with Metal; video follows the audio clock; no video on Windows in v0.0.2.
 
-Built so far: stages, their per-machine display, the stage host with black output windows, its supervision by the engine, the test card read back in tests, and the Video cue's model, file format, commands and problems (`CueKind::Video { media, stage, duration }`; skills `cue-engine` (its kinds reference) and `edit-commands`). Probing video files, decode, the clock and fades are not built.
+Built so far: stages, their per-machine display, the stage host with black output windows, its supervision by the engine, the test card read back in tests, and the Video cue's model, file format, commands and problems (`CueKind::Video { media, stage, duration }`; skills `cue-engine` (its kinds reference) and `edit-commands`). Probing Video cues' files is built (below); decode and drawing of cues, the clock and fades are not.
 
 ## Must not break
 - A stage with keep-black on and its display connected shows black whenever nothing plays on it, never a frozen frame (VID-12), while the stage host runs. The desktop does show: from the engine's death until a relaunched engine's stage host is up; between a stage host crash and its relaunch (about 150 ms); and for the whole pause after repeated crashes (`retry_after`). The app-side black backstop that covers these is issue #667.
@@ -39,6 +39,18 @@ Built so far: stages, their per-machine display, the stage host with black outpu
 - Displays: CoreGraphics' active list, named by ColorSync's display UUID (stable across restarts and reconnection), pixel size from the display mode, name from AppKit's screen (else "Built-in Display" / "Display N"). A reconfiguration callback re-reads them and moves every stage, and reads them once more `SECOND_DISPLAY_READ` (500 ms) later, in case AppKit's screen list had not caught up (a re-plugged display would otherwise stay missing until the next display event).
 - Drawing (`gpu.rs`): Metal clears the stage to black and draws each picture as a quad (nearest-neighbour sampling). A stage of another shape than its display is fitted, shape kept, black bars elsewhere (assumed; see skill `qlab-behaviour`).
 - Other platforms (`platform/none.rs`): `video: false`, no displays, every stage `failed` with the reason.
+
+## Probing Video cues' files (`openlab-engine` `stage_probe.rs`; stage host `platform/mac/probe.rs`; core `video_probe.rs`)
+- The engine never opens a video file or still: a probe worker (never the control thread) runs `openlab-stage --probe <file>` as a throwaway process, kills it after `PROBE_PROCESS_LIMIT` (20 s), and validates its one line (`decode_probe_report`). A decoder that crashes or hangs on a hostile file takes only that process; the stage host drawing the show never opens an unprobed file. No stage host configured: every picture probe is `unsupported` ("no video output").
+- Why not in the drawing stage host: a crash there would black out every stage mid-show; why not in the engine: the engine links no decoder.
+- macOS probe, stills: ImageIO (PNG, JPEG, TIFF); the first image is decoded, so a damaged file fails here.
+- macOS probe, movies: AVFoundation reads the first video track's four-character code (`avc1`/`avc3` H.264, `hvc1`/`hev1` HEVC, `apco`..`ap4x` ProRes, `Hap1`/`Hap5`/`HapY`/`HapM`/`HapA`/`Hap7`/`HapH` HAP), natural size, nominal frame rate and the asset's length, and decodes the first frame. Not for HAP (decoded by openLab itself): only its container is read.
+- Anything else is `unsupported` with a reason naming the codec or format.
+- The media catalog tracks a Video cue's file like an Audio cue's (`media_use` gives its kind; `Entry::picture`; `Probe::Picture`; `ProbeAnswer::Pictured`), so missing-file marks, the media watch, the stalled-volume gate and relink all apply unchanged. A file used by an Audio and a Video cue is probed as the kind that asked first (the other cue cannot play it; audio from video files is issue #645).
+- Tests: `tests/video_cues.rs` makes media with the test-support `--make-test-media` (AVFoundation encoders, ImageIO; frames are the test card for their own number).
+  - It probes every codec and still format, damaged and seeded-mutated files (bounded by the probe limit), and Video cues on the real engine (probe problems, the media watch).
+  - The probe line is fuzzed with the link (`fuzz/src/stage_link_input.rs`, seeds `fuzz/stage-link-seeds/probe_reports.jsonl`).
+  - HAP files cannot be made here (no encoder): HAP probing is untested.
 
 ## The engine side (`openlab-engine` `stage.rs`, `control/stages.rs`)
 - `stage::StageHost` is the supervisor: thread `openlab-stage-link` spawns the stage host (own process group, stdin/stdout/stderr piped), with a writer thread (bounded queue of `WRITE_QUEUE` lines; full means the child stopped reading: killed), a reader thread (`read_line` + `decode_from_stage`; bad lines become warnings, at most `MAX_BAD_LINES_LOGGED` per child) and a stderr thread (first `MAX_STDERR_LINES` lines to the log).

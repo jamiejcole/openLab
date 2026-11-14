@@ -14,7 +14,9 @@ use super::{DocCx, FEEDBACK_LIMIT, ProbeAnswer};
 impl DocCx<'_> {
     pub(super) fn probe_answer(&mut self, answer: ProbeAnswer) {
         let key = match &answer {
-            ProbeAnswer::Probed { key, .. } => Some(key.clone()),
+            ProbeAnswer::Probed { key, .. } | ProbeAnswer::Pictured { key, .. } => {
+                Some(key.clone())
+            }
             ProbeAnswer::Preloaded { .. } => None,
         };
         if let ProbeAnswer::Preloaded { key, .. } = &answer {

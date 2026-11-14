@@ -5,6 +5,7 @@
 
 use openlab_audio::MixerController;
 use openlab_core::protocol::{DocumentState, OutputStatus, Snapshot, WireWarning};
+use openlab_core::video_probe::ProbeReport;
 use openlab_core::{CueEngine, CueId, MachineSettings, SampleTime, Workspace};
 
 use super::devices::Device;
@@ -269,6 +270,13 @@ impl Control {
     /// `MediaCatalog::cues_read`).
     pub fn media_cues_read(&self) -> u64 {
         self.first().map_or(0, |d| d.media.cues_read())
+    }
+
+    /// What the probe found of a Video cue's file `key` in the first doc, once it plays: a
+    /// video's codec, size, rate and length, or a still's format and size.
+    pub fn picture_probe(&self, key: &str) -> Option<(std::path::PathBuf, ProbeReport)> {
+        let p = self.first()?.media.picture(key)?;
+        Some((p.path.clone(), p.report.clone()))
     }
 
     /// Memory taken from the first doc's preload budget.
