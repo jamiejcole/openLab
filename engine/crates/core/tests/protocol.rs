@@ -288,6 +288,30 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 frames: 256,
             },
         ),
+        ("list_displays", Request::ListDisplays),
+        ("list_stage_mappings", Request::ListStageMappings),
+        (
+            "set_stage_mapping",
+            Request::SetStageMapping {
+                stage: StageId(uuid::Uuid::from_u128(0x80)),
+                display: Some("37D8832A-2D66-02CA-B9F7-8F30A301B230".into()),
+            },
+        ),
+        // Test support only (stage host test card and probe).
+        (
+            "stage_test_card",
+            Request::StageTestCard {
+                stage: StageId(uuid::Uuid::from_u128(0x80)),
+                frame: 4321,
+            },
+        ),
+        (
+            "stage_probe",
+            Request::StageProbe {
+                stage: StageId(uuid::Uuid::from_u128(0x80)),
+                points: vec![[0.25, 0.3], [0.75, 0.8]],
+            },
+        ),
     ]
 }
 
@@ -1268,6 +1292,72 @@ fn fixtures() -> Vec<(String, Sample)> {
         }),
     );
     add(
+        "result_displays",
+        server(ServerMessage::Result {
+            id: rid(61),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::Displays {
+                    displays: vec![openlab_core::stage_link::Display {
+                        id: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
+                        name: "Projector".into(),
+                        width: 3840,
+                        height: 2160,
+                    }],
+                    video: Some(true),
+                }),
+            }),
+        }),
+    );
+    add(
+        "result_stage_mappings",
+        server(ServerMessage::Result {
+            id: rid(62),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::StageMappings {
+                    stages: vec![
+                        StageMappingEntry {
+                            stage: StageId(uuid::Uuid::from_u128(0x80)),
+                            mapping: Some(StageMapping {
+                                display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
+                                name: "Projector".into(),
+                                width: 3840,
+                                height: 2160,
+                            }),
+                            state: Some(openlab_core::stage_link::StageState::Shown {
+                                display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(),
+                            }),
+                        },
+                        StageMappingEntry {
+                            stage: StageId(uuid::Uuid::from_u128(0x81)),
+                            mapping: None,
+                            state: Some(openlab_core::stage_link::StageState::NoDisplay),
+                        },
+                        StageMappingEntry {
+                            stage: StageId(uuid::Uuid::from_u128(0x82)),
+                            mapping: None,
+                            state: None,
+                        },
+                    ],
+                }),
+            }),
+        }),
+    );
+    add(
+        "result_stage_probe",
+        server(ServerMessage::Result {
+            id: rid(63),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::StageProbe {
+                    frame: Some(4321),
+                    colours: vec![[255, 0, 0, 255], [255, 255, 0, 255]],
+                }),
+            }),
+        }),
+    );
+    add(
         "result_preshow_check",
         server(ServerMessage::Result {
             id: rid(49),
@@ -1730,7 +1820,7 @@ fn every_message_type_and_variant_has_a_fixture() {
         }
     }
     assert_eq!(all_actions().len(), 24);
-    assert_eq!(all_requests().len(), 22);
+    assert_eq!(all_requests().len(), 27);
 }
 
 #[test]
@@ -3984,6 +4074,14 @@ fn arb_request() -> impl Strategy<Value = Request> {
         any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
         Just(Request::PreshowCheck),
         Just(Request::ListPatchMappings),
+        Just(Request::ListDisplays),
+        Just(Request::ListStageMappings),
+        (any::<u128>(), proptest::option::of("[!-~]{1,40}")).prop_map(|(stage, display)| {
+            Request::SetStageMapping {
+                stage: StageId(uuid::Uuid::from_u128(stage)),
+                display,
+            }
+        }),
         proptest::option::of("[ -~]{1,20}").prop_map(|device| Request::SetOutputDevice { device }),
         ("[ -~]{1,20}", any::<u32>())
             .prop_map(|(device, frames)| Request::SetBufferSize { device, frames }),

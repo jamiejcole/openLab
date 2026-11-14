@@ -1312,3 +1312,59 @@ fn a_hostile_file_table_loads_with_warnings() {
         Err(LoadError::Model(_))
     ));
 }
+
+fn stage(n: u128, width: u32, height: u32) -> Stage {
+    let mut s = Stage::new(
+        StageId(uuid::Uuid::from_u128(n)),
+        format!("Stage {n}"),
+        1,
+        1,
+    );
+    s.width = width;
+    s.height = height;
+    s
+}
+
+/// VID-01: a file's stages load as written; sizes outside the limits are clamped with a
+/// warning, extra stages are dropped with one, and two stages with one id refuse the file.
+#[test]
+fn stages_load_within_their_limits() {
+    let mut ws = workspace(vec![]);
+    ws.stages = vec![stage(1, 1920, 1080), stage(2, 0, 99_999)];
+    let loaded = load_show(&show_text(&ws)).unwrap();
+    assert_eq!(loaded.workspace.stages[0], stage(1, 1920, 1080));
+    let second = &loaded.workspace.stages[1];
+    assert_eq!((second.width, second.height), (1, MAX_STAGE_PIXELS));
+    assert!(loaded.warnings.contains(&issue(
+        Severity::Warning,
+        None,
+        IssueKind::StageSize {
+            stage: StageId(uuid::Uuid::from_u128(2))
+        }
+    )));
+
+    let mut many = workspace(vec![]);
+    many.stages = (0..MAX_STAGES as u128 + 3)
+        .map(|n| stage(n + 1, 8, 8))
+        .collect();
+    let loaded = load_show(&show_text(&many)).unwrap();
+    assert_eq!(loaded.workspace.stages.len(), MAX_STAGES);
+    assert!(
+        loaded
+            .warnings
+            .contains(&issue(Severity::Warning, None, IssueKind::TooManyStages))
+    );
+
+    let mut twice = workspace(vec![]);
+    twice.stages = vec![stage(1, 8, 8), stage(1, 8, 8)];
+    assert_eq!(
+        refused(&twice),
+        vec![issue(
+            Severity::Error,
+            None,
+            IssueKind::DuplicateStageId {
+                id: StageId(uuid::Uuid::from_u128(1))
+            }
+        )]
+    );
+}

@@ -68,6 +68,8 @@ Two layers. **Mechanism** is in `openlab-audio`: `negotiate.rs` (pure), `output.
 - **Xruns:** `xruns()` is monotonic. Voice underruns are not xruns (`underrun_frames`). A callback starting more than 1.5 x the previous buffer's duration after the previous one counts one xrun (mixer `xruns` and `gap_xruns()`); 1.5x absorbs scheduling jitter and a missed buffer always exceeds it.
 - A gap right after a host-reported xrun is not counted again (a report arriving only after the next callback can still double count). A clock stepping back re-baselines without counting; callbacks without timestamps are not checked.
 - **Latency:** `OutputStream::latency()`: `buffer_frames` (host buffer, else last callback size, else the requested size) and `device_seconds` (playback minus callback time from the last callback's timestamps, when usable; CoreAudio includes device latency and safety offset).
+- **Clock anchor** (`output.rs`, video follows it): the callback, when its `CallbackTime` has a known playback time and the host holds the mixer, writes `ClockAnchor { sample, host_ns }` (the mixer sample its buffer starts on, the host time that sample reaches the output). The writer is the audio thread only: a sequence lock of three atomics (odd sequence while writing, then sample and time, then even), so no allocation, lock or syscall.
+- `DeviceMonitor::clock_anchor()` reads it from any thread with at most `ANCHOR_READ_TRIES` (16) tries and never spins longer. `None` before the first timed callback, and when every try met a write in progress (ask again next tick). An unknown playback time (`u64::MAX`) leaves the last anchor in place.
 
 ## Mixer handoff
 

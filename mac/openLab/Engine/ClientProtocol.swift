@@ -166,6 +166,13 @@ enum Request: Hashable, Sendable, Codable {
     /// AUD-14: an Audio cue's file peaks over file seconds `start..<end` in `buckets` parts (1 to 8192).
     case waveform(cue: ModelID, start: Double, end: Double, buckets: UInt32)
     case snapshot
+    /// VID-01: the displays this machine can show stages on, as the stage host lists them.
+    case listDisplays
+    /// VID-01: where each of the workspace's stages is shown on this machine, and where it is now.
+    case listStageMappings
+    /// VID-01: shows the workspace's stage on a display (`listDisplays` id) on this machine; nil
+    /// leaves it on none. Kept in the engine's machine settings, not the show file.
+    case setStageMapping(stage: ModelID, display: String?)
     #if DEBUG
         /// Test support only: an engine built with test-support on its virtual device
         /// (docs/protocol.md "Test support"). `advance` moves a stepped engine's device time by
@@ -173,6 +180,10 @@ enum Request: Hashable, Sendable, Codable {
         case advance(frames: UInt64)
         case loseDevice
         case restoreDevice
+        /// Test support only: the stage host draws its test card for `frame` on `stage`, and
+        /// `stageProbe` reads the stage's colours at points (fractions of the stage).
+        case stageTestCard(stage: ModelID, frame: UInt16)
+        case stageProbe(stage: ModelID, points: [[Double]])
     #endif
 
     /// Replies with a `snapshot` (the `workspaces` list on the app connection), so the engine
@@ -225,10 +236,18 @@ enum Request: Hashable, Sendable, Codable {
         case .snapshot: return ("snapshot", [])
         case .waveform(let cue, let start, let end, let buckets):
             return ("waveform", [("cue", cue), ("start", start), ("end", end), ("buckets", buckets)])
+        case .listDisplays: return ("list_displays", [])
+        case .listStageMappings: return ("list_stage_mappings", [])
+        case .setStageMapping(let stage, let display):
+            f.append(("stage", stage))
+            opt(&f, "display", display)
+            return ("set_stage_mapping", f)
         #if DEBUG
             case .advance(let frames): return ("advance", [("frames", frames)])
             case .loseDevice: return ("lose_device", [])
             case .restoreDevice: return ("restore_device", [])
+            case .stageTestCard(let stage, let frame): return ("stage_test_card", [("stage", stage), ("frame", frame)])
+            case .stageProbe(let stage, let points): return ("stage_probe", [("stage", stage), ("points", points)])
         #endif
         }
     }
@@ -279,10 +298,24 @@ enum Request: Hashable, Sendable, Codable {
             self = .waveform(
                 cue: try c.decode(ModelID.self, forKey: "cue"), start: try c.decode(Double.self, forKey: "start"),
                 end: try c.decode(Double.self, forKey: "end"), buckets: try c.decode(UInt32.self, forKey: "buckets"))
+        case "list_displays": self = .listDisplays
+        case "list_stage_mappings": self = .listStageMappings
+        case "set_stage_mapping":
+            self = .setStageMapping(
+                stage: try c.decode(ModelID.self, forKey: "stage"),
+                display: try c.decodeIfPresent(String.self, forKey: "display"))
         #if DEBUG
             case "advance": self = .advance(frames: try c.decode(UInt64.self, forKey: "frames"))
             case "lose_device": self = .loseDevice
             case "restore_device": self = .restoreDevice
+            case "stage_test_card":
+                self = .stageTestCard(
+                    stage: try c.decode(ModelID.self, forKey: "stage"),
+                    frame: try c.decode(UInt16.self, forKey: "frame"))
+            case "stage_probe":
+                self = .stageProbe(
+                    stage: try c.decode(ModelID.self, forKey: "stage"),
+                    points: try c.decode([[Double]].self, forKey: "points"))
         #endif
         case let other:
             throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "request \(other)"))

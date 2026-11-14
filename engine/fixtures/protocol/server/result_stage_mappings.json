@@ -1,0 +1,33 @@
+{
+  "type": "result",
+  "id": 62,
+  "ok": {
+    "data": {
+      "type": "stage_mappings",
+      "stages": [
+        {
+          "stage": "00000000-0000-0000-0000-000000000080",
+          "mapping": {
+            "display": "37D8832A-2D66-02CA-B9F7-8F30A301B230",
+            "name": "Projector",
+            "width": 3840,
+            "height": 2160
+          },
+          "state": {
+            "state": "shown",
+            "display": "37D8832A-2D66-02CA-B9F7-8F30A301B230"
+          }
+        },
+        {
+          "stage": "00000000-0000-0000-0000-000000000081",
+          "state": {
+            "state": "no_display"
+          }
+        },
+        {
+          "stage": "00000000-0000-0000-0000-000000000082"
+        }
+      ]
+    }
+  }
+}

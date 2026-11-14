@@ -5,7 +5,7 @@ description: "Load when a change crosses threads, processes or crates, or touche
 
 # openLab architecture
 
-Two programs on one machine: `openlab-engine` (headless Rust: audio, timing, model, undo, OSC) and the macOS app (Swift/AppKit thin client). They talk over a local WebSocket (wire: `docs/protocol.md`).
+Three programs on one machine: `openlab-engine` (headless Rust: audio, timing, model, undo, OSC), `openlab-stage` (the stage host: video output windows, spawned and supervised by the engine; skill `video`) and the macOS app (Swift/AppKit thin client). The app and engine talk over a local WebSocket (wire: `docs/protocol.md`); the engine and stage host over the stage host's stdin and stdout (`docs/protocol.md`, "Stage host link").
 
 ```
 engine process
@@ -17,6 +17,7 @@ engine process
   network threads: WebSocket server (UI), OSC UDP/TCP 53000 ----------------+
         | WebSocket, JSON, 127.0.0.1, token auth
   openLab.app (Swift + AppKit): renders mirrored state, sends commands
+  stage link thread --stdin/stdout JSON lines--> openlab-stage (child): windows, Metal
 ```
 
 ## Must not break
@@ -36,16 +37,18 @@ engine process
 - `crates/audio`: device layer, decode/resample, disk streaming, real-time mixer, offline render driver.
 - `crates/engine` (binary): control thread, wiring core to audio, WebSocket server, OSC, persistence I/O, logging, lifecycle.
 - Other dirs: `fuzz/` (fuzz targets), `engine/fixtures/` (golden JSON), `mac/` (app, XcodeGen), `mac/TestShows/`.
-- Keep the crate count at three. Add a module before a crate.
+- `crates/video` (`openlab-video`): the stage host binary `openlab-stage`, the only crate that links a GUI framework or (later) a video decoder. The engine does not depend on it; core holds the link's message types (`stage_link`) and the stage model.
+- Keep the crate count at four (the fourth, `crates/video`, and the stage host process: user decision 2026-11-13). Add a module before a crate.
 - OS-specific code lives in a `platform` module per crate behind `cfg` (paths, sleep prevention, relaunch, RT priority).
 - Show-file paths are relative with forward slashes or absolute; compare them case-insensitively on Windows (NFR-31/32). The protocol is UI-agnostic, so a Windows UI does not touch the engine.
-- Video is planned: the engine will own output windows so picture survives UI crashes. Do not assume the engine is windowless forever.
+- **The engine stays windowless** (user decision 2026-11-13, replacing "the engine will own output windows"): output windows live in the stage host, a child process the engine spawns and supervises, so picture survives an app crash and a stage host crash or hang never stops sound. Skill `video`.
 
 ## Threads (who owns what)
 | Thread | Owns | May block |
 |---|---|---|
 | Audio (cpal callback) | `Mixer`, voice pool, ramps, output patches | Never. `rtrb` queues and atomics only |
 | Control (one event loop) | shared `Engine` (mixer controller, voice and patch-slot allocators, device state) and N `Doc`s (`Workspace`, `CueEngine`, undo, scheduler) | Briefly; no disk I/O |
+| Stage link (`openlab-stage-link`), its writer and readers | the stage host child: spawn, hello, ping watchdog, relaunch, quit; validates every line it reads | Yes |
 | Disk pool, disk-open pool | decoders, resamplers; opening files so a hung open never holds a worker | Yes |
 | Network (tokio) | WebSocket sessions, OSC sockets | Async; forwards to the control inbox |
 | Writer | log file, atomic saves | Yes |
@@ -58,7 +61,7 @@ engine process
 
 ## Clock and scheduling (NFR-20/21/22)
 - Show files store seconds (f64). At runtime all timing (waits, fades, loop points) is sample time at the device rate; conversion happens when scheduling.
-- The audio thread publishes `samples_rendered` after each callback.
+- The audio thread publishes `samples_rendered` after each callback, and per device a clock anchor (the sample its buffer starts on and the host time that sample reaches the output) that video follows (skill `devices`).
 - Control never "sleeps until" a cue time. It sends time-stamped commands (`StartVoice { at, .. }`); the mixer applies them at the exact sample within the block. That makes simultaneous starts sample-accurate.
 - GO: `start = now_sample + one block`. Latency is one queue hop plus at most one block.
 - The cue engine commits deadlines before `now + lookahead` (one block, end excluded). A deadline already passed starts at `now` without shifting later cues. Semantics: skill `cue-engine`.

@@ -34,6 +34,6 @@ This skill is the only store of QLab decisions. Every user answer is here: **nev
 ## Reference files (read the one for your subsystem)
 - `references/engine-cues.md`: cue, group, playlist, pause, panic, fade, devamp, preview, trigger, undo-while-playing semantics and their check-page answers (C-G, C-D, C-F, C-P, C-S, C-V). Read for any `crates/core` cue-engine or control-thread change.
 - `references/osc-workspaces.md`: OSC addressing and replies, several open workspaces, `/updates`, Network cues and patches, output override. Read for `osc` or Network-cue work.
-- `references/levels-patches.md`: level limits, global master, level boxes, patch changes and clearing, routing matrix, loop/trim floors. Read for levels, patches and Audio-cue routing.
+- `references/levels-patches.md`: level limits, global master, level boxes, patch changes and clearing, routing matrix, loop/trim floors, video stages and clock. Read for levels, patches, Audio-cue routing and video outputs.
 - `references/files-modes.md`: name limits, Show Mode saving, autosave and recovery, restore at launch, file references, missing/hung media, device unplug. Read for persistence, media and launch work.
 - `references/mac-ui.md`: keys and hotkeys, playhead/selection/typing focus policy, cue list columns, inspector and notes, Show Mode layout, window frames. Read for any `mac/` change.

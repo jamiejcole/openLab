@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::backup::{DEFAULT_BACKUP_KEEP, MAX_BACKUP_KEEP};
 use crate::cue::MAX_CUE_OUTPUTS;
-use crate::model::{OutputPatch, PatchId, WorkspaceId};
+use crate::model::{OutputPatch, PatchId, StageId, WorkspaceId};
 
 pub const SETTINGS_VERSION: u32 = 1;
 /// Larger settings files are ignored.
@@ -59,6 +59,35 @@ pub struct WorkspaceMachineSettings {
     /// Keyed by patch id (lower-case hyphenated UUID).
     #[serde(default)]
     pub patches: BTreeMap<String, PatchMapping>,
+    /// Which display each stage is shown on (VID-01), keyed by stage id. A stage with no entry
+    /// has no display on this machine.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stages: BTreeMap<String, StageMapping>,
+}
+
+/// The display one stage is shown on, on this machine. The name and pixel size are what the
+/// display was when it was chosen, so the operator can tell which display a missing one was.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StageMapping {
+    /// The display's id as the stage host lists it (on macOS its UUID).
+    pub display: String,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Why `mapping` cannot be stored.
+fn stage_mapping_problem(mapping: &StageMapping) -> Option<&'static str> {
+    let text_ok = |t: &str| {
+        !t.is_empty() && t.len() <= MAX_DEVICE_NAME_BYTES && !t.chars().any(char::is_control)
+    };
+    if !text_ok(&mapping.display) || !text_ok(&mapping.name) {
+        return Some("invalid display id or name");
+    }
+    if !crate::video::side_ok(mapping.width) || !crate::video::side_ok(mapping.height) {
+        return Some("display size out of range");
+    }
+    None
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -242,9 +271,23 @@ fn sanitise(settings: &mut MachineSettings, warnings: &mut Vec<String>) {
                 patches.entry(patch_id.to_string()).or_insert(mapping);
             }
         }
+        let mut stages = BTreeMap::new();
+        for (stage, mapping) in machine.stages {
+            let reason = match Uuid::parse_str(&stage) {
+                Err(_) => Some("not a stage id"),
+                Ok(_) => stage_mapping_problem(&mapping),
+            };
+            if let Some(reason) = reason {
+                warnings.push(format!(
+                    "workspace {workspace}, stage {stage}: {reason}; display choice dropped"
+                ));
+            } else if let Ok(stage_id) = Uuid::parse_str(&stage) {
+                stages.entry(stage_id.to_string()).or_insert(mapping);
+            }
+        }
         workspaces
             .entry(workspace_id.to_string())
-            .or_insert(WorkspaceMachineSettings { patches });
+            .or_insert(WorkspaceMachineSettings { patches, stages });
     }
     settings.workspaces = workspaces;
 }
@@ -358,6 +401,43 @@ impl MachineSettings {
             ));
         }
         self.buffer_frames.insert(device.to_owned(), frames);
+        Ok(())
+    }
+
+    /// The display `stage` is shown on, if one was chosen on this machine.
+    pub fn stage_mapping(&self, workspace: WorkspaceId, stage: StageId) -> Option<&StageMapping> {
+        self.workspaces
+            .get(&workspace.to_string())?
+            .stages
+            .get(&stage.to_string())
+    }
+
+    /// Chooses the display `stage` is shown on (`None`: none). Refuses an invalid mapping and
+    /// changes nothing.
+    pub fn set_stage_mapping(
+        &mut self,
+        workspace: WorkspaceId,
+        stage: StageId,
+        mapping: Option<StageMapping>,
+    ) -> Result<(), &'static str> {
+        let key = stage.to_string();
+        match mapping {
+            Some(mapping) => {
+                if let Some(reason) = stage_mapping_problem(&mapping) {
+                    return Err(reason);
+                }
+                self.workspaces
+                    .entry(workspace.to_string())
+                    .or_default()
+                    .stages
+                    .insert(key, mapping);
+            }
+            None => {
+                if let Some(w) = self.workspaces.get_mut(&workspace.to_string()) {
+                    w.stages.remove(&key);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -843,5 +923,75 @@ mod tests {
         let loaded = crate::load_show(&crate::save_show(&ws).unwrap()).unwrap();
         assert!(loaded.workspace.network_patches.is_empty());
         assert!(loaded.warnings.is_empty());
+    }
+
+    fn display(id: &str) -> StageMapping {
+        StageMapping {
+            display: id.into(),
+            name: "Projector".into(),
+            width: 1920,
+            height: 1080,
+        }
+    }
+
+    /// VID-01: which display a stage uses is per machine: set, read back, cleared, and an
+    /// invalid choice refused with nothing changed.
+    #[test]
+    fn a_stage_display_is_chosen_per_machine_and_checked() {
+        let mut s = MachineSettings::default();
+        let stage = StageId(Uuid::from_u128(9));
+        assert_eq!(s.stage_mapping(ws(1), stage), None);
+        s.set_stage_mapping(ws(1), stage, Some(display("D1")))
+            .unwrap();
+        assert_eq!(s.stage_mapping(ws(1), stage), Some(&display("D1")));
+        assert_eq!(s.stage_mapping(ws(2), stage), None);
+        for bad in [
+            display(""),
+            display("D\u{7}"),
+            StageMapping {
+                width: 0,
+                ..display("D2")
+            },
+            StageMapping {
+                name: String::new(),
+                ..display("D2")
+            },
+        ] {
+            assert!(s.set_stage_mapping(ws(1), stage, Some(bad)).is_err());
+        }
+        assert_eq!(s.stage_mapping(ws(1), stage), Some(&display("D1")));
+        s.set_stage_mapping(ws(1), stage, None).unwrap();
+        assert_eq!(s.stage_mapping(ws(1), stage), None);
+    }
+
+    /// A damaged display choice in the file drops only itself, with a warning.
+    #[test]
+    fn a_bad_stage_display_in_the_file_drops_only_itself() {
+        let w = Uuid::from_u128(1);
+        let text = format!(
+            r#"{{"settings_version":1,"workspaces":{{"{w}":{{"patches":{{}},"stages":{{
+                "{good}":{{"display":"D1","name":"Projector","width":1920,"height":1080}},
+                "{bad}":{{"display":"D2","name":"Projector","width":0,"height":1080}},
+                "not-an-id":{{"display":"D3","name":"P","width":1,"height":1}}}}}}}}}}"#,
+            good = Uuid::from_u128(2),
+            bad = Uuid::from_u128(3)
+        );
+        let loaded = load_settings(&text);
+        assert_eq!(loaded.warnings.len(), 2, "{:?}", loaded.warnings);
+        let s = loaded.settings;
+        assert_eq!(
+            s.stage_mapping(ws(1), StageId(Uuid::from_u128(2))),
+            Some(&display("D1"))
+        );
+        assert_eq!(s.stage_mapping(ws(1), StageId(Uuid::from_u128(3))), None);
+        // Written back with the entries kept, and a workspace with none writes no key.
+        let again = load_settings(&save_settings(&s).unwrap());
+        assert!(again.warnings.is_empty());
+        assert_eq!(again.settings, s);
+        assert!(
+            !save_settings(&MachineSettings::default())
+                .unwrap()
+                .contains("stages")
+        );
     }
 }

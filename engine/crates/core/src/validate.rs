@@ -19,14 +19,15 @@ use crate::cue::{
 };
 use crate::limits::{fade_holds_levels, group_ids};
 use crate::model::{
-    CueId, CueList, CueListId, NetworkPatchId, OutputPatch, PatchId, PatchOutput, Workspace,
-    WorkspaceSettings, hotkey_field,
+    CueId, CueList, CueListId, NetworkPatchId, OutputPatch, PatchId, PatchOutput, StageId,
+    Workspace, WorkspaceSettings, hotkey_field,
 };
 use crate::network::MAX_HOST_BYTES;
 use crate::osc_access::{
     MAX_OSC_PASSCODE_BYTES, MAX_OSC_PASSCODES, OscAccess, is_valid_new_passcode,
 };
 use crate::tree::walk_mut;
+use crate::video::{MAX_STAGE_PIXELS, MAX_STAGES, Stage};
 
 /// Longest name of a workspace, cue list, patch or network patch, in Unicode scalar values (not
 /// bytes: a name in any script gets the same room, and a UI text field counts characters).
@@ -124,6 +125,12 @@ pub enum IssueKind {
     DuplicatePatchId { id: PatchId },
     /// Error.
     DuplicateNetworkPatchId { id: NetworkPatchId },
+    /// Error.
+    DuplicateStageId { id: StageId },
+    /// The stage's size was outside 1 to [`MAX_STAGE_PIXELS`] a side; it was clamped.
+    StageSize { stage: StageId },
+    /// More than [`MAX_STAGES`] stages; the extra ones were dropped.
+    TooManyStages,
     /// Error: the cue is nested deeper than [`MAX_GROUP_DEPTH`].
     NestingTooDeep,
     /// `number` was already used by `first`; this cue's number was cleared.
@@ -240,6 +247,18 @@ impl fmt::Display for ValidationIssue {
             IssueKind::DuplicateCueId => write!(f, "duplicate cue id"),
             IssueKind::DuplicateCueListId { id } => write!(f, "duplicate cue list id {}", id.0),
             IssueKind::DuplicatePatchId { id } => write!(f, "duplicate patch id {}", id.0),
+            IssueKind::DuplicateStageId { id } => write!(f, "duplicate stage id {}", id.0),
+            IssueKind::StageSize { stage } => write!(
+                f,
+                "stage {}: size outside 1 to {MAX_STAGE_PIXELS} pixels a side; clamped",
+                stage.0
+            ),
+            IssueKind::TooManyStages => {
+                write!(
+                    f,
+                    "more than {MAX_STAGES} stages; the extra ones were dropped"
+                )
+            }
             IssueKind::DuplicateNetworkPatchId { id } => {
                 write!(f, "duplicate network patch id {}", id.0)
             }
@@ -399,6 +418,7 @@ pub fn repair(workspace: &mut Workspace) -> Vec<ValidationIssue> {
     for id in duplicates(workspace.network_patches.iter().map(|p| p.id)) {
         checker.error(None, IssueKind::DuplicateNetworkPatchId { id });
     }
+    checker.stages(&mut workspace.stages);
     checker.names(workspace);
     checker.settings(&mut workspace.settings);
     for patch in &mut workspace.patches {
@@ -745,6 +765,21 @@ impl Checker {
                     field: "settings.auto_number_increment",
                 },
             );
+        }
+    }
+
+    fn stages(&mut self, stages: &mut Vec<Stage>) {
+        if stages.len() > MAX_STAGES {
+            stages.truncate(MAX_STAGES);
+            self.warn(None, IssueKind::TooManyStages);
+        }
+        for id in duplicates(stages.iter().map(|s| s.id)) {
+            self.error(None, IssueKind::DuplicateStageId { id });
+        }
+        for stage in stages {
+            if stage.clamp_size() {
+                self.warn(None, IssueKind::StageSize { stage: stage.id });
+            }
         }
     }
 
@@ -1135,6 +1170,10 @@ impl Checker {
             (
                 "network_patches.name",
                 bad(workspace.network_patches.iter().map(|p| p.name.as_str())),
+            ),
+            (
+                "stages.name",
+                bad(workspace.stages.iter().map(|s| s.name.as_str())),
             ),
             (
                 "network_patches.host",

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/audio", "crates/engine"]
+members = ["crates/core", "crates/audio", "crates/engine", "crates/video"]
 
 [workspace.package]
 version = "0.0.1"

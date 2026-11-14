@@ -1,0 +1,8 @@
+{"type":"hello","version":1}
+{"type":"stages","stages":[{"id":"00000000-0000-0000-0000-000000000001","width":1920,"height":1080,"display":"D1","keep_black":true},{"id":"00000000-0000-0000-0000-000000000002","width":640,"height":480,"keep_black":false}]}
+{"type":"ping","seq":7}
+{"type":"test_card","stage":"00000000-0000-0000-0000-000000000001","frame":42}
+{"type":"probe","stage":"00000000-0000-0000-0000-000000000001","points":[[0.5,0.5],[0,1]]}
+{"type":"set_displays","displays":[{"id":"V2","name":"Virtual V2","width":1280,"height":720}]}
+{"type":"hang"}
+{"type":"quit"}

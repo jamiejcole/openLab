@@ -110,6 +110,7 @@ Playlist group; every other targeting cue may target any cue except itself.
 | `settings` | object | §4.2. |
 | `patches` | array of output patches | §4.4. |
 | `network_patches` | array of network patches | §4.5. |
+| `stages` | array of stages, optional | §4.7. Absent when the workspace has none. |
 | `show_mode` | boolean, optional | `true`: saved in Show Mode and opens in Show Mode. Absent or `false`: Edit Mode. Written only when `true`. It is the mode in force at the last Save, Save As or autosave; changing mode does not mark the workspace unsaved. A value that is neither boolean nor `null` is damage: opens in Edit Mode with a warning (§3), and the next save writes it right. |
 | `cue_lists` | array of cue lists | §4.6. Written last so the short sections come first. |
 
@@ -177,6 +178,19 @@ A destination for Network cues. A new workspace starts with one, "Network 1" (`1
 | `id` | UUID | |
 | `name` | string | |
 | `cues` | array of cues | Top-level cues in list order. Each list has its own playhead. |
+
+### 4.7 Stages
+
+A stage is a named raster Video cues are drawn on (VID-01; QLab 5 manual pp. 207, 225-227). Which display shows it is chosen per machine (`settings.json`, under the workspace id and stage id: the display's id, name and pixel size when it was chosen), not stored in the show file, so a show moves between machines as an audio patch does. A stage with no display on this machine still loads; it carries a warning.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | UUID | Two stages with one id refuse the file. |
+| `name` | string | |
+| `width`, `height` | integer 1–16384 | Pixel size. A size outside the range is clamped with a warning (`StageSize`). |
+| `keep_black` | boolean, optional | `true`: the stage's display shows black while no cue plays on it (QLab's "keep rendering between cues", p. 227). `false` (the default when absent, as in QLab): its window is hidden then and the desktop shows, so a stage on the operator's own display never covers it between cues. |
+
+At most 64 stages; a file with more keeps the first 64 with a warning (`TooManyStages`).
 
 ## 5. Cues
 
