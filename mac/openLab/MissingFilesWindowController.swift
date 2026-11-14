@@ -35,6 +35,8 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
     private(set) var choiceSheet: MissingFileChoiceSheet?
     /// A search or a relink is waiting for the engine.
     private(set) var isBusy = false
+    /// The folder last searched (a full path): the files found are shown from it down.
+    private(set) var searched: String?
     /// Rows still to ask about after a search, in list order.
     private var toAsk: [ModelID] = []
 
@@ -109,6 +111,7 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
         rows = []
         toAsk = []
         folderLabel.stringValue = folder.path
+        searched = folder.standardizedFileURL.path
         folderLabel.toolTip = folder.path
         summaryLabel.stringValue = loc("missingFiles.searching")
         refresh()
@@ -166,6 +169,13 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
         return parts.joined(separator: " ")
     }
 
+    /// `path` from the searched folder down (the folder is shown above the list); the full path
+    /// when it lies elsewhere.
+    func shown(_ path: String) -> String {
+        guard let searched, path.hasPrefix(searched + "/") else { return path }
+        return String(path.dropFirst(searched.count + 1))
+    }
+
     // MARK: Several files of one name
 
     /// Asks about the next cue the search found more than one file for.
@@ -192,7 +202,7 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
         let name = URL(fileURLWithPath: item.candidates.first ?? "").lastPathComponent
         let sheet = MissingFileChoiceSheet(
             question: String(format: loc("missingFiles.choice.question"), item.title, item.candidates.count, name),
-            candidates: item.candidates, selected: item.chosen)
+            candidates: item.candidates, shown: item.candidates.map(shown), selected: item.chosen)
         sheet.window.appearance = window.appearance
         choiceSheet = sheet
         sheet.onDone = { [weak self] picked in
@@ -287,14 +297,17 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
         table.rowHeight = 24
         table.dataSource = self
         table.delegate = self
+        scroll.setAX("missing-files-scroll")
         scroll.documentView = table
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .bezelBorder
 
         summaryLabel.setAX("missing-files-summary")
-        summaryLabel.maximumNumberOfLines = 3
+        // A line of its own above the buttons: the longest summary fits whole at the least width.
+        summaryLabel.maximumNumberOfLines = 0
         summaryLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        summaryLabel.setContentCompressionResistancePriority(.required, for: .vertical)
         relinkButton.setAX("missing-files-relink")
         relinkButton.bezelStyle = .rounded
         relinkButton.keyEquivalent = "\r"
@@ -312,10 +325,12 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
         let content = NSView()
         let folderRow = NSStackView(views: [chooseFolderButton, folderLabel])
         folderRow.spacing = 8
-        let buttons = NSStackView(views: [summaryLabel, closeButton, relinkButton])
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let buttons = NSStackView(views: [spacer, closeButton, relinkButton])
         buttons.spacing = 8
         buttons.alignment = .centerY
-        for v in [introLabel, folderRow, scroll, buttons] {
+        for v in [introLabel, folderRow, scroll, summaryLabel, buttons] {
             v.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(v)
         }
@@ -330,7 +345,10 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
             scroll.topAnchor.constraint(equalTo: folderRow.bottomAnchor, constant: 10),
             scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: inset),
             scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -inset),
-            buttons.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 12),
+            summaryLabel.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 10),
+            summaryLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: inset),
+            summaryLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -inset),
+            buttons.topAnchor.constraint(equalTo: summaryLabel.bottomAnchor, constant: 10),
             buttons.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: inset),
             buttons.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -inset),
             buttons.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
@@ -380,7 +398,7 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
             return cell
         default:
             let cell = reuse(MissingFileFoundCell.self, id) { MissingFileFoundCell() }
-            cell.show(item, row: row, enabled: !isBusy)
+            cell.show(item, row: row, file: item.chosen.map(shown), enabled: !isBusy)
             cell.pickButton.target = self
             cell.pickButton.action = #selector(pickClicked(_:))
             return cell
@@ -467,10 +485,10 @@ final class MissingFileFoundCell: NSTableCellView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    func show(_ row: MissingFilesWindowController.Row, row index: Int, enabled: Bool) {
+    func show(_ row: MissingFilesWindowController.Row, row index: Int, file: String?, enabled: Bool) {
         let several = row.candidates.count > 1
-        if let chosen = row.chosen {
-            label.stringValue = chosen
+        if let file {
+            label.stringValue = file
             label.textColor = .labelColor
         } else {
             label.stringValue = String(format: loc("missingFiles.found.several"), row.candidates.count)
@@ -495,11 +513,14 @@ final class MissingFileChoiceSheet: NSObject, NSTableViewDataSource, NSTableView
     let useButton = NSButton(title: loc("missingFiles.choice.use"), target: nil, action: nil)
     let skipButton = NSButton(title: loc("missingFiles.choice.skip"), target: nil, action: nil)
     let candidates: [String]
+    /// How each candidate is listed (from the searched folder down).
+    let shown: [String]
     /// Called once: the chosen path, or nil when skipped.
     var onDone: ((String?) -> Void)?
 
-    init(question: String, candidates: [String], selected: String?) {
+    init(question: String, candidates: [String], shown: [String], selected: String?) {
         self.candidates = candidates
+        self.shown = shown
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 300), styleMask: [.titled], backing: .buffered,
             defer: false)
@@ -523,6 +544,7 @@ final class MissingFileChoiceSheet: NSObject, NSTableViewDataSource, NSTableView
         table.selectRowIndexes(
             IndexSet(integer: selected.flatMap { candidates.firstIndex(of: $0) } ?? 0), byExtendingSelection: false)
         let scroll = NSScrollView()
+        scroll.setAX("missing-file-choice-scroll")
         scroll.documentView = table
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -576,8 +598,8 @@ final class MissingFileChoiceSheet: NSObject, NSTableViewDataSource, NSTableView
         let cell = tableView.makeView(withIdentifier: key, owner: self) as? MissingFileTextCell ?? MissingFileTextCell()
         cell.identifier = key
         cell.label.lineBreakMode = .byTruncatingMiddle
-        cell.label.stringValue = candidates.indices.contains(row) ? candidates[row] : ""
-        cell.label.toolTip = cell.label.stringValue
+        cell.label.stringValue = shown.indices.contains(row) ? shown[row] : ""
+        cell.label.toolTip = candidates.indices.contains(row) ? candidates[row] : nil
         return cell
     }
 

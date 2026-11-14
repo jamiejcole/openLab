@@ -2794,10 +2794,12 @@ final class AppControllerTests: XCTestCase {
         let rows = toolRows(tool)
         XCTAssertEqual(rows.map(\.cue), ["2.1  Door slam", "2.2  Rain", "2.3  Radio"])
         XCTAssertEqual(
-            rows.map(\.found),
-            ["gone-door.wav", "deep/er/gone-rain.wav", "o.wav"].map {
-                folder.appendingPathComponent($0).standardizedFileURL.path
-            })
+            rows.map(\.found), ["gone-door.wav", "deep/er/gone-rain.wav", "o.wav"],
+            "shown from the searched folder down, which the tool names above the list")
+        XCTAssertEqual(tool.folderLabel.stringValue, folder.path)
+        XCTAssertEqual(
+            (toolCell(tool, "found", 1) as? MissingFileFoundCell)?.label.toolTip,
+            folder.appendingPathComponent("deep/er/gone-rain.wav").standardizedFileURL.path, "the full path")
         XCTAssertEqual(rows.map(\.ticked), [true, true, true])
         XCTAssertEqual(
             tool.summaryLabel.stringValue,
@@ -2839,7 +2841,9 @@ final class AppControllerTests: XCTestCase {
             (0..<2).map {
                 (sheet.table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? MissingFileTextCell)?.label
                     .stringValue
-            }, [x, y])
+            }, ["x/o.wav", "y/o.wav"])
+        XCTAssertEqual(
+            (sheet.table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? MissingFileTextCell)?.label.toolTip, x)
         // Until the operator picks, the row says how many were found and is not ticked.
         XCTAssertEqual(toolRows(tool).first?.found, String(format: loc("missingFiles.found.several"), 2))
         XCTAssertEqual(toolRows(tool).first?.ticked, false)
@@ -2847,10 +2851,10 @@ final class AppControllerTests: XCTestCase {
         sheet.table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         sheet.useButton.performClick(nil)
         XCTAssertNil(tool.choiceSheet)
-        XCTAssertEqual(toolRows(tool).first?.found, y)
+        XCTAssertEqual(toolRows(tool).first?.found, "y/o.wav")
         XCTAssertEqual(toolRows(tool).first?.ticked, true)
         tool.relinkButton.performClick(nil)
-        await assertEventually { self.media(TestSnapshots.radio)?.hasSuffix("y/o.wav") == true }
+        await assertEventually { self.media(TestSnapshots.radio) == y }
         await assertEventually("Radio is no longer broken") {
             try? await self.advance()
             return self.listShowsMissing(TestSnapshots.radio).map { !$0.broken } == true
