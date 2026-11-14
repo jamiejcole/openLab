@@ -622,7 +622,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             return false
         }
         messageLabel.stringValue = ""
-        // The trigger's switch is its own box: a key recorded while it is off stays off, as the box says.
+        // The trigger's switch is its own box, shown with or without a key: a recorded key keeps the
+        // switch that box shows (the unanswered edit's, if one is in flight).
         send(InspectorEdit.setTriggers(cue, hotkey: .some(chord.hotkeyJSON)), cue: cue.id, key: "hotkey", revert: [])
         return true
     }
@@ -796,10 +797,11 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         hotkeyField.stringValue = hotkey.map { KeyChord(hotkey: $0)?.display ?? ($0["key"]?.stringValue ?? "") } ?? ""
         hotkeyClear.isEnabled = hotkey != nil
         onReleaseCheck.isEnabled = hotkey != nil
-        // A key switched off stays shown, faint; with no key there is nothing to switch.
+        // The box shows the stored switch and can be ticked before a key is typed (QLab 5, manual p. 128);
+        // a key switched off stays shown, faint.
         let hotkeyOn = shownTriggers?["hotkey_enabled"] != .bool(false)
-        hotkeyEnableCheck.state = hotkey != nil && hotkeyOn ? .on : .off
-        hotkeyEnableCheck.isEnabled = hotkey != nil && !isLocked
+        hotkeyEnableCheck.state = hotkeyOn ? .on : .off
+        hotkeyEnableCheck.isEnabled = !isLocked
         hotkeyField.textColor = hotkeyOn ? .controlTextColor : .disabledControlTextColor
         renderOthers(cueForEdit ?? cue)
         onReleaseCheck.state = cue.raw["second_trigger_on_release"] == .bool(true) ? .on : .off

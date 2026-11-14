@@ -24,7 +24,6 @@ enum Icon: CaseIterable {
     case stateLoaded, statePreWaiting, stateRunning, statePaused, statePostWaiting, stateFading
     case stateStopping, stateBroken
     // Swatch beside a colour name in the Inspector pop-up.
-    case colourSwatch
     // Continue modes.
     case continueAuto, continueFollow
     // Transport strip and the Active Cues rows.
@@ -95,7 +94,6 @@ enum Icon: CaseIterable {
         case .stateFading: return Self.row("waveform")
         case .stateStopping: return Self.row("stop.fill")
         case .stateBroken: return Self.row("exclamationmark.triangle.fill")
-        case .colourSwatch: return Self.row("circle.fill")
         case .continueAuto: return Self.row("arrow.down")
         case .continueFollow: return Self.row("arrow.turn.down.right")
         case .transportReset: return Self.row("backward.end")
