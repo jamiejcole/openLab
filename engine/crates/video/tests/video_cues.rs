@@ -987,10 +987,12 @@ fn a_paused_picture_is_shown_again_when_the_stage_host_is_relaunched() {
     assert_eq!(shown(&mut s), Some(held), "the held frame is back");
 }
 
-/// Media limits short enough for a test to see a hung open or decode fail. They apply only to
-/// the files a fault switch names: a good file keeps the shipped limits, so a slow machine
-/// never fails it.
-const SHORT_LIMITS: [&str; 2] = ["--media-limits", "400,400"];
+/// A short limit on the open only (the file whose open hangs), and on frames only (the file
+/// whose decode hangs): each hung file fails quickly, and nothing else it does (its open, on a
+/// loaded machine) is held to a short limit. They apply only to the files a fault switch names:
+/// a good file keeps the shipped limits, so a slow machine never fails it.
+const SHORT_OPEN: [&str; 2] = ["--media-limits", "400,10000"];
+const SHORT_FRAME: [&str; 2] = ["--media-limits", "10000,400"];
 
 /// A copy of a good movie under a name that makes the test-support decoder hang or crash.
 fn faulty(dir: &Path, good: &Path, fault: &str) -> PathBuf {
@@ -1013,7 +1015,7 @@ fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
     let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
     let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
-    let mut s = video_show_args(ws, &SHORT_LIMITS);
+    let mut s = video_show_args(ws, &SHORT_OPEN);
     let pid = s.control().stage_host_pid().unwrap();
     s.take_outbound();
     start(&mut s, 2);
@@ -1057,7 +1059,7 @@ fn a_picture_whose_decode_hangs_fails_alone() {
     let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
     let hung = faulty(dir.path(), &good, "openlab-test-hang-decode");
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
-    let mut s = video_show_args(ws, &SHORT_LIMITS);
+    let mut s = video_show_args(ws, &SHORT_FRAME);
     let pid = s.control().stage_host_pid().unwrap();
     // The hung one first, so the good one is drawn over it.
     start(&mut s, 2);
