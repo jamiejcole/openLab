@@ -36,7 +36,7 @@ passcode and the rights it gives:
 | Right | Lets a remote |
 |---|---|
 | View | read cue properties and the cue lists, receive updates, edit cue notes, set its reply port |
-| Edit | change cue names, numbers, waits, durations, load times, armed and flagged, and move the selection |
+| Edit | change cue names, numbers, waits, durations, armed and flagged, and move the selection |
 | Control | GO, stop, pause, panic, reset, move the playhead, and start, stop or load single cues |
 
 Edit and Control need View. The **No Passcode** row says what a remote may do before it sends a
@@ -205,7 +205,6 @@ needs View; changing needs Edit (notes: View).
 | `/cue/{number}/preWait` | seconds, 0 to 86400 | |
 | `/cue/{number}/postWait` | seconds, 0 to 86400 | a Wait cue's post-wait is its duration: reading or changing one is the other |
 | `/cue/{number}/duration` | seconds, 0 to 86400 | changes only a Wait or Fade cue's duration. Reads a Wait or Fade cue's duration, 0 for a cue that acts at once; Audio and Group cues answer `error` |
-| `/cue/{number}/loadTime` | seconds, -86400 to 86400 | a Load cue's time (openLab's own address). A negative time loads the target that long before its end |
 | `/cue/{number}/armed` | 1 or 0, or true or false | |
 | `/cue/{number}/flagged` | 1 or 0, or true or false | |
 | `/cue/{number}/uniqueID` | read only | the cue's unique id, for `/cue_id/` |
@@ -215,7 +214,8 @@ needs View; changing needs Edit (notes: View).
 | `/cue/{number}/isBroken` | read only | |
 
 A value of the wrong type, out of range, or a property the cue does not have (a duration on an
-Audio cue, a load time on anything but a Load cue) gets an `error` reply and changes nothing.
+Audio cue) gets an `error` reply and changes nothing. A Load cue's load time has no OSC address
+(as in QLab 5); set it in the app.
 Every change is one step in the workspace's undo history, as if made in the app.
 
 Examples:
@@ -223,7 +223,6 @@ Examples:
 ```
 /cue/12/duration 4.5          sets Wait cue 12 to 4.5 seconds (no reply)
 /cue/12/duration              replies {"status":"ok", ..., "data":4.5}
-/cue/20/loadTime -30          Load cue 20 now loads its target 30 seconds before its end
 /cue/12/duration -1           replies {"status":"error", ...} and leaves the cue alone
 ```
 
@@ -257,10 +256,9 @@ should ask again when it sees `__root__`.
 
 - **Only what is listed here is answered.** Levels, slices, `/new`, `/save`, most workspace
   settings and many queries of QLab 5 are not there yet.
-- `/cue/{number}/loadTime` is openLab's own: QLab 5 has no address for a Load cue's time.
-- A value out of range is refused whole with an `error`. QLab 5 sets a negative duration to 0.
-- `/cue/{number}/duration` answers `error` for Audio and Group cues; QLab 5 answers their
-  length.
+- A value out of range is refused whole with an `error` and changes nothing. QLab 5 sets a
+  negative duration to 0 (and answers `error`), and takes a string as 0 without a reply.
+- `/cue/{number}/duration` answers `error` for Audio and Group cues; QLab 5 answers a length.
 - Wrong passcodes are counted per IP address and across all workspaces, and over TCP as over
   UDP; QLab 5 counts them per connection.
 - Updates are sent once (QLab 5 sends each twice). `/updates 1` after a lapse subscribes again.

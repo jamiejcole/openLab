@@ -44,8 +44,7 @@ pub trait OscShow {
     fn cue_exists(&self, id: CueId) -> bool;
     /// The value `/cue/{n}/{field}` reports; `None` when the cue has no such field.
     fn cue_property(&self, id: CueId, field: CueField) -> Option<Value>;
-    /// Whether `id`'s kind has `field` to write (a duration only on Wait and Fade cues, a load
-    /// time only on Load cues).
+    /// Whether `id`'s kind has `field` to write (a duration only on Wait and Fade cues).
     fn writable(&self, _id: CueId, _field: CueField) -> bool {
         true
     }
@@ -132,8 +131,6 @@ pub enum CueField {
     PostWait,
     /// A Wait or Fade cue's duration (written), any other cue's action length where known (read).
     Duration,
-    /// A Load cue's load time (openLab's own address: QLab 5 has none).
-    LoadTime,
     Armed,
     Flagged,
     UniqueId,
@@ -228,7 +225,6 @@ impl CueField {
             Self::PreWait => "preWait",
             Self::PostWait => "postWait",
             Self::Duration => "duration",
-            Self::LoadTime => "loadTime",
             Self::Armed => "armed",
             Self::Flagged => "flagged",
             Self::UniqueId => "uniqueID",
@@ -438,7 +434,6 @@ pub const CUE_VERBS: &[Verb] = &[
     Verb::Field(CueField::PreWait),
     Verb::Field(CueField::PostWait),
     Verb::Field(CueField::Duration),
-    Verb::Field(CueField::LoadTime),
     Verb::Field(CueField::Armed),
     Verb::Field(CueField::Flagged),
     Verb::Field(CueField::UniqueId),
@@ -466,8 +461,8 @@ fn verb_of(part: &str) -> Option<Verb> {
 /// `None` for `/connect`, `/version`, `/workspaces` and `/updates`, which every peer may send.
 ///
 /// - View: every read, `/udpReplyPort`, and writing a cue's `notes`.
-/// - Edit: writing any other cue property (name, number, pre-wait, post-wait, duration, load
-///   time, armed, flagged), and `/select`.
+/// - Edit: writing any other cue property (name, number, pre-wait, post-wait, duration, armed,
+///   flagged), and `/select`.
 /// - Control: transport (`/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, `/reset`, the cue
 ///   verbs `start` ... `preview`, `/playhead`), and an address nothing answers to (a peer
 ///   without Control is told `denied` for it, as for any transport).
@@ -977,10 +972,6 @@ fn set_field(cue: CueId, field: CueField, args: &[OscType]) -> Option<Command> {
         }),
         CueField::Duration => set(CueProperty::Duration {
             value: time_arg(arg)?,
-        }),
-        // Negative: that long before the target's end.
-        CueField::LoadTime => set(CueProperty::LoadToTime {
-            value: number_arg(arg).filter(|v| (-MAX_TIME..=MAX_TIME).contains(v))?,
         }),
         CueField::Armed => set(CueProperty::Armed {
             value: flag_arg(arg)?,

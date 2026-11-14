@@ -561,10 +561,6 @@ impl OscShow for MirrorShow<'_> {
             CueField::PreWait => json!(cue.pre_wait),
             CueField::PostWait => json!(cue.effective_post_wait()),
             CueField::Duration => json!(action_length(&cue.kind)?),
-            CueField::LoadTime => match &cue.kind {
-                CueKind::Load { load_to_time, .. } => json!(load_to_time),
-                _ => return None,
-            },
             CueField::Armed => json!(cue.armed),
             CueField::Flagged => json!(cue.flagged),
             CueField::UniqueId => json!(upper(cue.id)),
@@ -581,7 +577,6 @@ impl OscShow for MirrorShow<'_> {
         };
         match field {
             CueField::Duration => matches!(cue.kind, CueKind::Wait { .. } | CueKind::Fade { .. }),
-            CueField::LoadTime => matches!(cue.kind, CueKind::Load { .. }),
             _ => true,
         }
     }
@@ -1285,9 +1280,9 @@ mod tests {
     }
 
     /// Duration is read for every cue but Audio and Group and written only for Wait and Fade
-    /// cues; the load time only on a Load cue; a Wait cue's post-wait reads as its duration.
+    /// cues; a Wait cue's post-wait reads as its duration.
     #[test]
-    fn durations_and_load_times_are_read_and_written_by_kind() {
+    fn durations_are_read_and_written_by_kind() {
         let mut m = mirror(4);
         let cues = &mut m.workspace.cue_lists[0].cues;
         cues[0].kind = CueKind::Wait { duration: 2.5 };
@@ -1305,18 +1300,14 @@ mod tests {
         let read = |n, field| show.cue_property(cue_id(n), field);
         assert_eq!(read(1, CueField::Duration), Some(json!(2.5)));
         assert_eq!(read(1, CueField::PostWait), Some(json!(2.5)));
-        assert_eq!(read(1, CueField::LoadTime), None);
         assert_eq!(read(2, CueField::Duration), Some(json!(0.0)));
         assert_eq!(read(2, CueField::PostWait), Some(json!(1.5)));
-        assert_eq!(read(2, CueField::LoadTime), Some(json!(-3.0)));
         assert_eq!(read(3, CueField::Duration), None);
         assert_eq!(read(4, CueField::Duration), Some(json!(0.0)));
         let write = |n, field| show.writable(cue_id(n), field);
         assert!(write(1, CueField::Duration));
         assert!(write(1, CueField::PostWait));
-        assert!(!write(1, CueField::LoadTime));
         assert!(!write(2, CueField::Duration));
-        assert!(write(2, CueField::LoadTime));
         assert!(!write(3, CueField::Duration));
         assert!(write(4, CueField::Name));
         assert!(!write(99, CueField::Name));

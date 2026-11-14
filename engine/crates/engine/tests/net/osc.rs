@@ -1494,13 +1494,13 @@ async fn go_over_the_wire_starts_the_cue_in_the_real_control_loop() {
     real.stop();
 }
 
-/// Flow: an OSC client sets and reads a Wait or Fade cue's duration and a Load cue's load time
-/// by number. Each write reaches the engine, which announces the cue to `/updates` subscribers
+/// Flow: an OSC client sets and reads a Wait or Fade cue's duration by number (a Load cue's
+/// load time has no OSC address, as in QLab 5). Each write reaches the engine, which announces the cue to `/updates` subscribers
 /// (what a remote's list redraws from) and to every client of the hub (the OSC copy the read
 /// answers from is fed like the app's); the read reply carries the new value. A value out of
 /// range, or a field the cue's kind has not, gets an error reply and changes nothing.
 #[tokio::test]
-async fn an_osc_client_sets_and_reads_a_duration_and_a_load_time_by_number() {
+async fn an_osc_client_sets_and_reads_a_duration_by_number() {
     let fade = CueKind::Fade {
         target: Some(id(1)),
         duration: 5.0,
@@ -1551,25 +1551,22 @@ async fn an_osc_client_sets_and_reads_a_duration_and_a_load_time_by_number() {
     real.recv_at(&updated(2)).await;
     assert_eq!(real.read("2", "duration").await["data"], json!(1.25));
 
-    write("3", "loadTime", OscType::Float(-2.5)).await;
-    real.recv_at(&updated(3)).await;
-    assert_eq!(real.read("3", "loadTime").await["data"], json!(-2.5));
-
     // Out of range, or not the cue's kind: an error reply, nothing changes.
     for (number, field, arg) in [
         ("1", "duration", OscType::Float(-1.0)),
         ("1", "duration", OscType::Double(86_400.5)),
-        ("3", "loadTime", OscType::Double(-86_400.5)),
         ("3", "duration", OscType::Int(4)),
         ("4", "duration", OscType::Int(4)),
-        ("1", "loadTime", OscType::Int(4)),
+        // QLab 5 has no OSC address for a Load cue's time, so neither does openLab.
+        ("3", "loadTime", OscType::Int(4)),
     ] {
         write(number, field, arg.clone()).await;
         let reply = body(&real.recv_at(&format!("/reply/cue/{number}/{field}")).await);
         assert_eq!(reply["status"], json!("error"), "{number} {field} {arg:?}");
     }
     assert_eq!(real.read("1", "duration").await["data"], json!(6.0));
-    assert_eq!(real.read("3", "loadTime").await["data"], json!(-2.5));
+    let reply = real.read("3", "loadTime").await;
+    assert_eq!(reply["status"], json!("error"));
     real.stop();
 }
 
