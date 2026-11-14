@@ -488,7 +488,5 @@ final class StatusLogTests: XCTestCase {
     func testWindowMenuOpensTheLog() {
         let window = MainMenu.make().windows
         XCTAssertTrue(window.items.contains { $0.action == #selector(AppDelegate.showLog(_:)) })
-        let file = MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == "File" }
-        XCTAssertTrue(file?.items.contains { $0.action == #selector(AppDelegate.relinkMedia(_:)) } == true)
     }
 }

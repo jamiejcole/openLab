@@ -1914,27 +1914,6 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(engine.sent.contains { isCommand($0) })
     }
 
-    func testRelinkIsRefusedInShowModeAndTheMenuItemIsOff() async throws {
-        let wc = try XCTUnwrap(app.windows["1"])
-        let store = wc.store
-        var asked = false
-        let folder = try mediaFolder([])
-        app.pickFolderURL = {
-            asked = true
-            return folder
-        }
-        wc.setShowMode(true)
-        await app.relinkMedia(on: store)
-        XCTAssertFalse(asked)
-        XCTAssertTrue(relinkRequests().isEmpty)
-        XCTAssertTrue(wc.sidebar.relinkLocked)
-        wc.setShowMode(false)
-        XCTAssertFalse(wc.sidebar.relinkLocked)
-        await app.relinkMedia(on: store)
-        XCTAssertTrue(asked, "Edit Mode relinks as before")
-        XCTAssertEqual(relinkRequests(), [folder.path])
-    }
-
     func testQuitIdleInEditModeAsksNoConfirmation() async throws {
         try await quiet("1")
         alerts.saveChoices = [.dontSave]
@@ -2698,7 +2677,7 @@ final class AppControllerTests: XCTestCase {
         return nil
     }
 
-    // MARK: Relink missing media (WS-03)
+    // MARK: Find Missing Files (WS-03)
 
     /// A folder holding a copy of a.wav at each of `files` (paths relative to it).
     private func mediaFolder(_ files: [String]) throws -> URL {
@@ -2716,96 +2695,381 @@ final class AppControllerTests: XCTestCase {
         return dir
     }
 
-    private func relinkRequests() -> [String] {
+    private func searchRequests() -> [String] {
         engine.sent.compactMap {
-            if case .request(_, .relink(let folder, _)) = $0 { return folder }
+            if case .request(_, .relink(let folder, let preview)) = $0, preview { return folder }
             return nil
         }
     }
 
-    func testRelinkSendsTheFolderRequestAndReportsTheResult() async throws {
-        let doc = try XCTUnwrap(app.windows.keys.first)
-        let store = try XCTUnwrap(app.session.stores[doc])
-        // Radio's o.wav is missing from the show; the picked folder has it.
-        let folder = try mediaFolder(["Hamlet/o.wav"])
-        app.pickFolderURL = { folder }
-        await app.relinkMedia(on: store)
-        XCTAssertEqual(relinkRequests(), [folder.path])
-        // The frame is the documented one (client fixture request_relink.json), apart from id and folder.
-        let sent = try XCTUnwrap(
-            engine.sent.first { if case .request(_, .relink) = $0 { return true } else { return false } })
-        var frame = try XCTUnwrap(JSONValue.parse(try sent.text()))
-        var golden = try Fixtures.json("client", "request_relink")
-        frame.set("id", .int(0))
-        golden.set("id", .int(0))
-        golden["request"]?.set("folder", .string(folder.path))
-        XCTAssertEqual(frame, golden)
-        XCTAssertTrue(alerts.errors.isEmpty, "a clean relink does not interrupt the show")
-        XCTAssertEqual(
-            app.windows[doc]?.footer.noticeLabel.stringValue,
-            AppController.relinkSummary(relinked: 1, ambiguous: 0, unmatched: 0))
-        XCTAssertTrue(store.logEntries.contains { $0.level == .info && $0.message == "Relinked 1 cue(s)." })
-        // The engine changed the cue: Radio plays the found file and is no longer broken.
-        await assertEventually {
-            store.model?.cue(TestSnapshots.radio)?.raw["kind"]?["media"]?.stringValue?.hasSuffix("Hamlet/o.wav") == true
-        }
-        await assertEventually { store.problems[TestSnapshots.radio]?.isEmpty ?? true }
-    }
+    private var demo: WorkspaceWindowController { app.windows["1"]! }
 
-    func testRelinkWithAmbiguousOrUnmatchedCuesIsAWarningNotSuccess() async throws {
-        let doc = try XCTUnwrap(app.windows.keys.first)
-        let store = try XCTUnwrap(app.session.stores[doc])
-        // Door slam and Rain lose their files too: the folder has Door slam's, two of Radio's, none of Rain's.
+    /// Door slam and Rain lose their files too (Radio's is missing in the test show): three cues
+    /// broken by a missing file.
+    private func breakDoorAndRain() async throws {
+        let store = demo.store
         for (cue, file) in [(TestSnapshots.door, "media/gone-door.wav"), (TestSnapshots.rain, "media/gone-rain.wav")] {
             guard case .success = await store.send(command: .setProperty(cue, .media(file))) else {
                 return XCTFail("media")
             }
         }
-        try await advance()
-        let folder = try mediaFolder(["gone-door.wav", "x/o.wav", "y/o.wav"])
+        await assertEventually("three cues are missing their file") {
+            try? await self.advance()
+            return MissingFilesWindowController.missingCues(in: store).map(\.id)
+                == [TestSnapshots.door, TestSnapshots.rain, TestSnapshots.radio]
+        }
+    }
+
+    private func toolsItem() throws -> NSMenuItem {
+        try XCTUnwrap(MainMenu.make().tools.items.first { $0.action == #selector(AppDelegate.findMissingFiles(_:)) })
+    }
+
+    /// Tools > Find Missing Files as the menu bar runs it, `folder` chosen in the folder panel; the
+    /// tool once its search has answered.
+    @discardableResult
+    private func chooseFindMissingFiles(_ folder: URL) async throws -> MissingFilesWindowController {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let item = try toolsItem()
+        XCTAssertTrue(delegate.validateMenuItem(item), "the item is on")
         app.pickFolderURL = { folder }
-        await app.relinkMedia(on: store)
-        let expected = AppController.relinkSummary(relinked: 1, ambiguous: 1, unmatched: 1)
-        XCTAssertTrue(alerts.errors.isEmpty, "not modal")
-        let messages = store.logEntries.map(\.message)
-        XCTAssertTrue(messages.contains(expected), "\(messages)")
+        let tool = demo.missingFiles
+        tool.presentSheet = { _ in }
+        let before = searchRequests().count
+        delegate.findMissingFiles(item)
+        await assertEventually("the search answered") { searchRequests().count == before + 1 && !tool.isBusy }
+        return tool
+    }
+
+    /// What the tool's table draws in `column` of `row`.
+    private func toolCell(_ tool: MissingFilesWindowController, _ column: String, _ row: Int) -> NSView? {
+        let col = tool.table.column(withIdentifier: NSUserInterfaceItemIdentifier(column))
+        return tool.table.view(atColumn: col, row: row, makeIfNecessary: true)
+    }
+
+    private func toolRows(_ tool: MissingFilesWindowController) -> [(cue: String, found: String, ticked: Bool)] {
+        (0..<tool.table.numberOfRows).map { row in
+            (
+                (toolCell(tool, "cue", row) as? MissingFileTextCell)?.label.stringValue ?? "",
+                (toolCell(tool, "found", row) as? MissingFileFoundCell)?.label.stringValue ?? "",
+                (toolCell(tool, "use", row) as? MissingFileTickCell)?.box.state == .on
+            )
+        }
+    }
+
+    /// The cue list's row for `cue`: its state icon says broken, and its Target cell draws the
+    /// missing-file glyph (else the file glyph).
+    private func listShowsMissing(_ cue: ModelID) -> (broken: Bool, missingGlyph: Bool)? {
+        let ov = demo.cueList.outlineView
+        guard let node = demo.cueList.node(cue) else { return nil }
+        let row = ov.row(forItem: node)
+        func cell(_ id: String) -> CueCell? {
+            let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier(id))
+            return row >= 0 && col >= 0 ? ov.view(atColumn: col, row: row, makeIfNecessary: true) as? CueCell : nil
+        }
+        guard let status = cell("status"), let target = cell("target") else { return nil }
+        return (
+            !status.images[1].isHidden && status.images[1].accessibilityLabel() == loc("cue.state.broken"),
+            !target.chooseButton.isHidden
+                && target.chooseButton.accessibilityLabel() == loc("cuelist.target.fileMissing")
+        )
+    }
+
+    private func media(_ cue: ModelID) -> String? { demo.store.model?.cue(cue)?.raw["kind"]?["media"]?.stringValue }
+
+    /// Flow: three cues with missing files, the Tools menu command, a folder chosen: the matches are
+    /// listed, each ticked; one is unticked; Relink: the ticked cues lose their broken mark and their
+    /// Target cell shows the file, the unticked one stays broken, and the summary counts both.
+    func testThreeMissingFilesAreListedWithTickBoxesAndRelinkFixesTheTickedCues() async throws {
+        try await breakDoorAndRain()
+        await assertEventually {
+            self.listShowsMissing(TestSnapshots.door).map { $0.broken && $0.missingGlyph } == true
+        }
+        let folder = try mediaFolder(["gone-door.wav", "deep/er/gone-rain.wav", "o.wav"])
+        let tool = try await chooseFindMissingFiles(folder)
+        XCTAssertEqual(searchRequests(), [folder.path])
+        XCTAssertTrue(tool.window?.isVisible == true, "the tool's window is up")
+        XCTAssertNil(tool.choiceSheet, "one file each: nothing to ask")
+        let rows = toolRows(tool)
+        XCTAssertEqual(rows.map(\.cue), ["2.1  Door slam", "2.2  Rain", "2.3  Radio"])
+        XCTAssertEqual(
+            rows.map(\.found),
+            ["gone-door.wav", "deep/er/gone-rain.wav", "o.wav"].map {
+                folder.appendingPathComponent($0).standardizedFileURL.path
+            })
+        XCTAssertEqual(rows.map(\.ticked), [true, true, true])
+        XCTAssertEqual(
+            tool.summaryLabel.stringValue,
+            MissingFilesWindowController.searchSummary(found: 3, missing: 3, truncated: false, capped: false))
+        XCTAssertTrue(tool.summaryLabel.stringValue.contains("3 of 3"), tool.summaryLabel.stringValue)
+        XCTAssertNil(media(TestSnapshots.door).flatMap { $0.contains("relink-") ? $0 : nil }, "nothing changed yet")
+
+        // Rain is unticked, as the operator clicks its box.
+        let rainBox = try XCTUnwrap((toolCell(tool, "use", 1) as? MissingFileTickCell)?.box)
+        rainBox.performClick(nil)
+        XCTAssertEqual(toolRows(tool).map(\.ticked), [true, false, true])
+        XCTAssertTrue(tool.relinkButton.isEnabled)
+        tool.relinkButton.performClick(nil)
+        await assertEventually("Door slam and Radio lose their broken mark and show the file") {
+            try? await self.advance()
+            return self.listShowsMissing(TestSnapshots.door).map { !$0.broken && !$0.missingGlyph } == true
+                && self.listShowsMissing(TestSnapshots.radio).map { !$0.broken && !$0.missingGlyph } == true
+        }
+        XCTAssertEqual(listShowsMissing(TestSnapshots.rain).map { $0.broken && $0.missingGlyph }, true)
+        XCTAssertEqual(media(TestSnapshots.rain), "media/gone-rain.wav", "the unticked cue is left alone")
+        XCTAssertEqual(toolRows(tool).map(\.cue), ["2.2  Rain"], "the relinked rows leave the list")
+        XCTAssertEqual(
+            tool.summaryLabel.stringValue, String(format: loc("missingFiles.summary.relinked"), 2, 1))
+        XCTAssertTrue(demo.store.logEntries.contains { $0.message == tool.summaryLabel.stringValue })
+    }
+
+    /// Flow: two files of the same name found for one cue: a sheet asks which one; the one picked is
+    /// listed ticked and Relink uses it.
+    func testTwoFilesOfTheSameNameForOneCueAskWhichOne() async throws {
+        let folder = try mediaFolder(["x/o.wav", "y/o.wav"])
+        let tool = try await chooseFindMissingFiles(folder)
+        let sheet = try XCTUnwrap(tool.choiceSheet, "a sheet asks")
+        XCTAssertTrue(sheet.questionLabel.stringValue.contains("Radio"), sheet.questionLabel.stringValue)
+        XCTAssertTrue(sheet.questionLabel.stringValue.contains("o.wav"), sheet.questionLabel.stringValue)
+        let x = folder.appendingPathComponent("x/o.wav").standardizedFileURL.path
+        let y = folder.appendingPathComponent("y/o.wav").standardizedFileURL.path
+        XCTAssertEqual(sheet.table.numberOfRows, 2)
+        XCTAssertEqual(
+            (0..<2).map {
+                (sheet.table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? MissingFileTextCell)?.label
+                    .stringValue
+            }, [x, y])
+        // Until the operator picks, the row says how many were found and is not ticked.
+        XCTAssertEqual(toolRows(tool).first?.found, String(format: loc("missingFiles.found.several"), 2))
+        XCTAssertEqual(toolRows(tool).first?.ticked, false)
+        XCTAssertFalse(tool.relinkButton.isEnabled)
+        sheet.table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        sheet.useButton.performClick(nil)
+        XCTAssertNil(tool.choiceSheet)
+        XCTAssertEqual(toolRows(tool).first?.found, y)
+        XCTAssertEqual(toolRows(tool).first?.ticked, true)
+        tool.relinkButton.performClick(nil)
+        await assertEventually { self.media(TestSnapshots.radio)?.hasSuffix("y/o.wav") == true }
+        await assertEventually("Radio is no longer broken") {
+            try? await self.advance()
+            return self.listShowsMissing(TestSnapshots.radio).map { !$0.broken } == true
+        }
+    }
+
+    /// Skip leaves the cue as it is; its row offers the choice again.
+    func testSkippingTheChoiceLeavesTheCueAndItsRowCanAskAgain() async throws {
+        let tool = try await chooseFindMissingFiles(try mediaFolder(["x/o.wav", "y/o.wav"]))
+        try XCTUnwrap(tool.choiceSheet).skipButton.performClick(nil)
+        XCTAssertNil(tool.choiceSheet)
+        XCTAssertEqual(toolRows(tool).first?.ticked, false)
+        XCTAssertFalse(tool.relinkButton.isEnabled)
+        let pick = try XCTUnwrap((toolCell(tool, "found", 0) as? MissingFileFoundCell)?.pickButton)
+        XCTAssertFalse(pick.isHidden)
+        pick.performClick(nil)
+        XCTAssertNotNil(tool.choiceSheet, "the row's button asks again")
+    }
+
+    /// Flow: no cue is missing a file: the menu item is off. A cue whose file goes missing turns it
+    /// on; Show Mode turns it off.
+    func testNoMissingFileDisablesTheMenuItem() async throws {
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        let item = try toolsItem()
+        let tools = MainMenu.make().tools.items
+        XCTAssertEqual(
+            tools.firstIndex { $0.action == #selector(AppDelegate.findMissingFiles(_:)) },
+            tools.firstIndex { $0.action == #selector(AppDelegate.revealTargetFile(_:)) }.map { $0 + 1 },
+            "after Reveal Target File, as QLab places its file search")
+        XCTAssertEqual(item.title, loc("menu.tools.findMissingFiles"))
+        XCTAssertFalse(
+            MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == "File" }!.items.contains {
+                $0.title == loc("menu.tools.findMissingFiles")
+            })
+        XCTAssertTrue(delegate.validateMenuItem(item), "Radio's file is missing")
+        guard case .success = await demo.store.send(command: .setProperty(TestSnapshots.radio, .media("media/r.wav")))
+        else { return XCTFail("media") }
+        await assertEventually("no cue is missing a file") {
+            try? await self.advance()
+            return MissingFilesWindowController.missingCues(in: self.demo.store).isEmpty
+        }
+        XCTAssertFalse(delegate.validateMenuItem(item))
+        // Chosen anyway (a stale menu), it opens nothing and asks for no folder.
+        var asked = false
+        app.pickFolderURL = {
+            asked = true
+            return nil
+        }
+        await app.findMissingFiles(on: demo.store)
+        XCTAssertFalse(asked)
+        XCTAssertNil(demo.existingMissingFiles)
+
+        guard case .success = await demo.store.send(command: .setProperty(TestSnapshots.radio, .media("media/o.wav")))
+        else { return XCTFail("media") }
+        await assertEventually {
+            try? await self.advance()
+            return delegate.validateMenuItem(item)
+        }
+        demo.setShowMode(true)
+        await assertEventually { self.demo.isShowMode }
+        XCTAssertFalse(delegate.validateMenuItem(item), "not in Show Mode")
+        await app.findMissingFiles(on: demo.store)
+        XCTAssertFalse(asked)
+    }
+
+    /// Show Mode puts the tool away, a question it was asking included, and its Relink sends nothing.
+    func testShowModeClosesTheToolAndItsQuestion() async throws {
+        let tool = try await chooseFindMissingFiles(try mediaFolder(["x/o.wav", "y/o.wav"]))
+        let sheet = try XCTUnwrap(tool.choiceSheet)
+        demo.setShowMode(true)
+        await assertEventually { self.demo.isShowMode }
+        XCTAssertNil(tool.choiceSheet)
+        XCTAssertNil(sheet.onDone)
+        XCTAssertFalse(tool.window?.isVisible == true)
+        let edits = engine.sent.filter { if case .command = $0 { return true } else { return false } }.count
+        await tool.relink()
+        await tool.chooseFolderAndSearch()
+        XCTAssertEqual(engine.sent.filter { if case .command = $0 { return true } else { return false } }.count, edits)
+        XCTAssertEqual(searchRequests().count, 1)
+    }
+
+    /// Flow: a folder too large to walk in full: the summary says the search was cut short.
+    func testAFolderTooLargeToWalkSaysTheSearchWasCutShort() async throws {
+        // Deeper than the engine walks (16 levels): the walk stops there and says so.
+        let deep = (1...18).map { "d\($0)" }.joined(separator: "/")
+        let tool = try await chooseFindMissingFiles(try mediaFolder(["\(deep)/o.wav"]))
         XCTAssertTrue(
-            messages.contains { $0.contains("Radio") && $0.contains("x/o.wav") && $0.contains("Candidates") },
-            "\(messages)")
-        XCTAssertTrue(messages.contains { $0.contains("Rain") && $0.hasPrefix("No match") }, "\(messages)")
-        XCTAssertEqual(store.logEntries.filter { $0.level == .warn }.count, 3, "summary and one per cue")
-        XCTAssertEqual(app.windows[doc]?.footer.noticeLabel.stringValue, expected)
+            tool.summaryLabel.stringValue.contains(loc("missingFiles.summary.truncated")), tool.summaryLabel.stringValue
+        )
+        XCTAssertTrue(
+            tool.summaryLabel.stringValue.contains(String(format: loc("missingFiles.summary.notFound"), 1)),
+            tool.summaryLabel.stringValue)
+        XCTAssertEqual(tool.table.numberOfRows, 0)
+        XCTAssertFalse(tool.relinkButton.isEnabled)
     }
 
-    func testCancellingTheFolderPanelSendsNothing() async throws {
-        let doc = try XCTUnwrap(app.windows.keys.first)
-        let store = try XCTUnwrap(app.session.stores[doc])
+    /// Flow: one undo step puts every relinked cue back on its old reference.
+    func testOneUndoStepRestoresTheOldReferences() async throws {
+        try await breakDoorAndRain()
+        let before = [TestSnapshots.door, TestSnapshots.rain, TestSnapshots.radio].map(media)
+        let tool = try await chooseFindMissingFiles(try mediaFolder(["gone-door.wav", "gone-rain.wav", "o.wav"]))
+        XCTAssertEqual(toolRows(tool).map(\.ticked), [true, true, true])
+        tool.relinkButton.performClick(nil)
+        await assertEventually {
+            [TestSnapshots.door, TestSnapshots.rain, TestSnapshots.radio].allSatisfy {
+                self.media($0)?.contains("relink-") == true
+            }
+        }
+        keyDoc = "1"
+        let delegate = AppDelegate()
+        delegate.appController = app
+        delegate.undoEdit(nil)
+        await assertEventually("one undo step puts all three back") {
+            [TestSnapshots.door, TestSnapshots.rain, TestSnapshots.radio].map(self.media) == before
+        }
+        await assertEventually("broken again") {
+            try? await self.advance()
+            return self.listShowsMissing(TestSnapshots.door)?.broken == true
+                && self.listShowsMissing(TestSnapshots.radio)?.broken == true
+        }
+    }
+
+    /// A cue edited to another file after the search keeps the edit: Relink leaves it alone.
+    func testACueEditedAfterTheSearchKeepsItsEdit() async throws {
+        let tool = try await chooseFindMissingFiles(try mediaFolder(["o.wav"]))
+        guard case .success = await demo.store.send(command: .setProperty(TestSnapshots.radio, .media("media/r.wav")))
+        else { return XCTFail("media") }
+        await assertEventually { self.media(TestSnapshots.radio) == "media/r.wav" }
+        let edits = engine.sent.filter { if case .command = $0 { return true } else { return false } }.count
+        await tool.relink()
+        XCTAssertEqual(media(TestSnapshots.radio), "media/r.wav")
+        XCTAssertEqual(
+            engine.sent.filter { if case .command = $0 { return true } else { return false } }.count, edits,
+            "nothing left to send")
+    }
+
+    /// A search that fails says so in the tool and changes nothing.
+    func testAFailedSearchSaysSo() async throws {
+        let tool = try await chooseFindMissingFiles(real.folder.appendingPathComponent("no-such-folder"))
+        XCTAssertTrue(
+            tool.summaryLabel.stringValue.hasPrefix(
+                String(format: loc("missingFiles.failed"), "").trimmingCharacters(
+                    in: .whitespaces)), tool.summaryLabel.stringValue)
+        XCTAssertEqual(tool.table.numberOfRows, 0)
+        XCTAssertTrue(alerts.errors.isEmpty, "not modal")
+    }
+
+    func testCancellingTheFolderPanelSearchesNothing() async throws {
+        keyDoc = "1"
         app.pickFolderURL = { nil }
-        await app.relinkMedia(on: store)
-        XCTAssertTrue(relinkRequests().isEmpty)
-        XCTAssertTrue(alerts.errors.isEmpty)
+        await app.findMissingFiles(on: demo.store)
+        XCTAssertTrue(searchRequests().isEmpty)
+        XCTAssertTrue(demo.missingFiles.window?.isVisible == true, "the tool stays up to choose a folder")
     }
 
-    func testFailedRelinkIsShownAndLoggedAsAnError() async throws {
-        let doc = try XCTUnwrap(app.windows.keys.first)
-        let store = try XCTUnwrap(app.session.stores[doc])
-        engine.garbleResults = true
-        app.pickFolderURL = { URL(fileURLWithPath: "/m") }
-        await app.relinkMedia(on: store)
-        XCTAssertEqual(alerts.errors.count, 1)
-        XCTAssertNotNil(reportedError(store))
-    }
-
-    func testRelinkButtonInTheWarningsTabRunsTheRelink() async throws {
-        let doc = try XCTUnwrap(app.windows.keys.first)
+    func testTheWarningsRowButtonOpensTheTool() async throws {
         let folder = try mediaFolder([])
         app.pickFolderURL = { folder }
-        try XCTUnwrap(app.windows[doc]).onRelink?()
-        await assertEventually { relinkRequests() == [folder.path] }
-        await assertEventually {
-            app.windows[doc]?.footer.noticeLabel.stringValue
-                == AppController.relinkSummary(relinked: 0, ambiguous: 0, unmatched: 1)
+        demo.onRelink?()
+        await assertEventually { self.searchRequests() == [folder.path] }
+        await assertEventually { !self.demo.missingFiles.isBusy }
+        XCTAssertEqual(
+            demo.missingFiles.summaryLabel.stringValue,
+            MissingFilesWindowController.searchSummary(found: 0, missing: 1, truncated: false, capped: false))
+    }
+
+    /// Flow: a cue plays while the search walks a folder: no dropout (the engine's xrun and disk
+    /// underrun counters stay at zero) and the cue plays on in time.
+    func testPlaybackHasNoDropoutWhileTheSearchRuns() async throws {
+        let store = demo.store
+        let tone = real.folder.appendingPathComponent("tone-\(UUID().uuidString).wav")
+        try writeWAV(tone, seconds: 20, rate: 48_000)
+        guard case .success = await store.send(command: .setProperty(TestSnapshots.door, .media(tone.path))) else {
+            return XCTFail("media")
         }
+        await assertEventually("probed") {
+            try? await self.advance()
+            return store.mediaDurations[TestSnapshots.door]?.file != nil
+        }
+        guard case .success = await store.transport(.start(cue: TestSnapshots.door)) else { return XCTFail("start") }
+        try await advance(0.5)
+        await assertEventually { store.cueStates[TestSnapshots.door]?.state == .running }
+        let startXruns = store.status?.xruns ?? 0
+        let startUnderrun = store.status?.disk.underrunFrames ?? 0
+        let startPosition = try XCTUnwrap(store.progress[TestSnapshots.door]?.position)
+        // A folder with many files to walk, and Radio's file deep inside it.
+        var files = (0..<1500).map { "bulk/\($0 / 100)/f\($0).txt" }
+        files.append("bulk/9/o.wav")
+        let folder = try mediaFolder([])
+        for f in files.dropLast() {
+            let url = folder.appendingPathComponent(f)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: url.path, contents: Data())
+        }
+        try FileManager.default.copyItem(at: tone, to: folder.appendingPathComponent(files.last!))
+        keyDoc = "1"
+        app.pickFolderURL = { folder }
+        let tool = demo.missingFiles
+        let search = Task { await app.findMissingFiles(on: store) }
+        // The show goes on while the walk runs: two seconds of device time, a tenth at a time.
+        for _ in 0..<20 { try await advance(0.1) }
+        await search.value
+        await assertEventually { !tool.isBusy }
+        XCTAssertEqual(toolRows(tool).map(\.cue), ["2.3  Radio"])
+        await assertEventually("a status after the search") {
+            try? await self.advance(0.1)
+            return store.status != nil
+        }
+        try await advance(1)
+        let status = try XCTUnwrap(store.status)
+        XCTAssertEqual(status.xruns, startXruns, "no dropout")
+        XCTAssertEqual(status.disk.underrunFrames, startUnderrun, "no disk underrun")
+        XCTAssertEqual(store.cueStates[TestSnapshots.door]?.state, .running)
+        let position = try XCTUnwrap(store.progress[TestSnapshots.door]?.position)
+        // 2.1 s or more of device time went by: the cue moved on with it, never held up.
+        XCTAssertGreaterThanOrEqual(position - startPosition, 2.0, "\(startPosition) -> \(position)")
     }
 
     // MARK: Crash reports (DX-04)
@@ -3366,14 +3630,13 @@ final class AppControllerTests: XCTestCase {
 
     /// An Edit Mode workspace's failure shows on its own window while another is in Show Mode: as a
     /// sheet there (which blocks nothing else), logged once, and nothing lands on the Show Mode window.
-    func testRelinkFailureOfAnEditWorkspaceIsASheetOnItAndLeavesTheShowModeWindowAlone() async throws {
+    func testSaveFailureOfAnEditWorkspaceIsASheetOnItAndLeavesTheShowModeWindowAlone() async throws {
         let second = try await addWorkspace()
-        let show = try XCTUnwrap(app.windows["1"])
-        let edit = try XCTUnwrap(app.windows[second])
+        let show = try XCTUnwrap(app.windows[second])
+        let edit = try XCTUnwrap(app.windows["1"])
         show.setShowMode(true)
         engine.garbleResults = true
-        app.pickFolderURL = { URL(fileURLWithPath: "/m") }
-        await app.relinkMedia(on: edit.store)
+        _ = await app.saveWorkspace(edit.store)
         XCTAssertTrue(alerts.errors.isEmpty, "no app-level modal")
         let sheet = try XCTUnwrap(edit.window?.attachedSheet, "a sheet on the failing workspace's window")
         edit.window?.endSheet(sheet)
