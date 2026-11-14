@@ -2140,7 +2140,8 @@ final class PlayheadFlowTests: XCTestCase {
             XCTAssertEqual(field.placeholderString, loc("inspector.mixed"), chars)
             try type("7")
             try pressReturn()
-            XCTAssertTrue(wc.window?.firstResponder === wc.cueList.outlineView, "\(chars): Return gives the list the keys")
+            XCTAssertTrue(
+                wc.window?.firstResponder === wc.cueList.outlineView, "\(chars): Return gives the list the keys")
             await assertEventually("\(chars): every row shows 7 s") {
                 three.allSatisfy { self.cell($0, column) == "00:07.00" }
             }
@@ -2177,7 +2178,9 @@ final class PlayheadFlowTests: XCTestCase {
         let added = await wc.editor.add(.fade, after: [fade])
         let second = try XCTUnwrap(added)
         wc.cueList.selectAsUser([fade, second])
-        await assertEventually("the inspector shows both fades") { Set(self.wc.inspector.selection) == [self.fade, second] }
+        await assertEventually("the inspector shows both fades") {
+            Set(self.wc.inspector.selection) == [self.fade, second]
+        }
         XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
         try press("d", code: 2)
         XCTAssertTrue(wc.isVisible(.inspector))
