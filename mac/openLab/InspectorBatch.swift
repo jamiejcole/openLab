@@ -72,7 +72,10 @@ extension InspectorViewController {
         renderBatchTarget(cues, kinds: kinds)
         for c in singleCueControls { c.isEnabled = false }
         let modes = cues.map { $0.raw["continue_mode"]?.stringValue ?? "do_not_continue" }
-        durationField.isEnabled = kinds.isSubset(of: InspectorEdit.durationKinds)
+        // Typed when every cue's is (Wait and Fade cues, stills).
+        durationField.isEnabled = cues.allSatisfy {
+            InspectorEdit.editsDuration($0, media: store.mediaDurations[$0.id])
+        }
         postWaitField.isEnabled = modes.contains { $0 != "auto_follow" }
         loadTimeField.isEnabled = kind == "load"
         networkMessageField.isEnabled = kind == "network"
@@ -332,7 +335,9 @@ extension InspectorViewController {
         }
         var commands: [Command] = []
         for cue in batchCues {
-            switch InspectorEdit.command(f, text: text, cue: cue, model: model, typed: true) {
+            switch InspectorEdit.command(
+                f, text: text, cue: cue, model: model, typed: true, media: store.mediaDurations[cue.id])
+            {
             case .failure(let r):
                 showRefusal(loc(r.messageKey))
                 render(force: [f])

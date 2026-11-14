@@ -354,6 +354,36 @@ final class VideoCueTests: XCTestCase {
         XCTAssertFalse(wc.cueList.beginCellEdit(Self.movie), "a movie's length comes from its file")
     }
 
+    /// D with two stills selected puts the caret in the inspector's one Duration field and what is
+    /// typed goes to both; with a movie among them D opens nothing (a movie's length is its file's).
+    func testDWithSeveralStillsSelectedTypesTheirDurationAndNotWithAMovie() async throws {
+        try await openVideoShow()
+        await soon {
+            [Self.still, Self.timedStill].allSatisfy { self.store.mediaDurations[$0]?.picture?.type == "still" }
+        }
+        let window = try XCTUnwrap(wc.window)
+        let inspector = wc.inspector
+        wc.cueList.selectAsUser([Self.still, Self.timedStill])
+        await soon { inspector.isBatch }
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
+        XCTAssertTrue(wc.cueList.beginEditFromKey("duration"))
+        XCTAssertTrue(inspector.durationField.currentEditor() != nil, "the Duration field has the caret")
+        try typeInto(inspector.durationField, "4")
+        await soon("both take it") {
+            [Self.still, Self.timedStill].allSatisfy {
+                self.store.model?.cue($0)?.raw["kind"]?["duration"]?.doubleValue == 4
+            }
+        }
+        XCTAssertEqual(duration(Self.still), 4)
+        XCTAssertEqual(duration(Self.timedStill), 4)
+
+        wc.cueList.selectAsUser([Self.still, Self.movie])
+        await soon { inspector.isBatch && !inspector.durationField.isEnabled }
+        XCTAssertTrue(window.makeFirstResponder(wc.cueList.outlineView))
+        XCTAssertTrue(wc.cueList.beginEditFromKey("duration"), "the key is taken")
+        XCTAssertTrue(window.firstResponder === wc.cueList.outlineView, "and opens nothing")
+    }
+
     /// Types `text` into `view` through the window's field editor, as the keyboard does: the text
     /// there is selected and replaced (emptied for ""), then Return.
     func typeInto(_ view: NSView, _ text: String) throws {
