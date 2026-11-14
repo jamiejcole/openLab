@@ -747,12 +747,12 @@ fn the_pre_show_query_lists_every_broken_cue_with_its_reasons() {
         Input::ActionFailed {
             cue: id(1),
             run,
-            reason: BrokenReason::DeviceLost,
+            reason: BrokenReason::StreamFailed,
         },
     );
     assert_eq!(
         rig.engine.broken_reason(id(1)),
-        Some(BrokenReason::DeviceLost)
+        Some(BrokenReason::StreamFailed)
     );
     assert_eq!(rig.engine.broken_cues().len(), 2);
 }
@@ -1230,55 +1230,182 @@ fn lose_device(rig: &mut Rig, now: SampleTime, n: u128) -> Vec<Action> {
     )
 }
 
+/// The frozen timer a cue shows, as `(timer, elapsed, remaining)`.
+fn frozen(rig: &Rig, n: u128, at: SampleTime) -> Vec<(Timer, SampleTime, Option<SampleTime>)> {
+    rig.engine
+        .timers(at)
+        .filter(|t| t.cue == id(n))
+        .map(|t| (t.timer, t.elapsed, t.remaining))
+        .collect()
+}
+
 #[test]
-fn a_device_lost_break_clears_when_its_patch_is_mapped_again() {
-    // The binary reports the device missing, then fails the runs that played on it.
+fn a_cue_playing_when_its_device_is_lost_shows_paused_until_cleared() {
+    // QLab 5 (measured): the cue stops, shows paused with its time standing still, stays so
+    // when the device returns, and GO then plays it from its start.
     let mut rig = Rig::new(vec![sound(1), sound_of(2, "media/a.wav", 2)]);
     rig.ws.patches.push(patch(2, 2));
     rig.tick(0);
     rig.device(0, 1, mapped());
     rig.device(0, 2, mapped());
+    rig.at(
+        0,
+        Input::CueLengths {
+            lengths: vec![(id(1), Some(1000))],
+        },
+    );
     rig.start(10, 1);
     rig.start(10, 2);
-    let missing = PatchResolution::DeviceMissing {
-        device: "Interface".into(),
-    };
-    rig.device(20, 1, missing.clone());
-    let failed = lose_device(&mut rig, 20, 1);
-    assert_eq!(changes(&failed, 1), vec![(CueState::Broken, 20)]);
+    rig.device(20, 1, missing());
+    let failed = lose_device(&mut rig, 30, 1);
+    assert_eq!(changes(&failed, 1), vec![(CueState::Paused, 30)]);
     assert_eq!(
-        rig.engine.broken_reason(id(1)),
+        rig.engine.state_reason(id(1), CueState::Paused),
         Some(BrokenReason::DeviceLost)
     );
+    assert!(rig.engine.is_lost(id(1)));
+    assert_eq!(rig.engine.broken_reason(id(1)), None);
+    assert_eq!(rig.engine.run_of(id(1)), None, "no run, no voice");
+    // Its voice is released at once.
+    assert!(
+        failed
+            .iter()
+            .any(|a| matches!(a, Action::StopVoice { cue, fade: None, .. } if *cue == id(1)))
+    );
+    // Its time stands where the loss left it.
+    assert_eq!(frozen(&rig, 1, 30), vec![(Timer::Action, 20, Some(980))]);
+    assert_eq!(frozen(&rig, 1, 5000), vec![(Timer::Action, 20, Some(980))]);
     // Another reason's break on another patch is not cleared by anything but a reset.
     let run2 = rig.engine.run_of(id(2)).unwrap();
     rig.at(
-        20,
+        30,
         Input::ActionFailed {
             cue: id(2),
             run: run2,
             reason: BrokenReason::StreamFailed,
         },
     );
-    // Still missing: a start is refused.
+    assert_eq!(rig.engine.next_deadline(), None);
+    // Still missing: a start is refused and the mark stays.
     assert_eq!(
-        warnings(&rig.start(30, 1)),
+        warnings(&rig.start(40, 1)),
         vec![EngineWarning::CueBroken { cue: id(1) }]
     );
-    let back = rig.device(40, 1, mapped());
-    assert_eq!(changes(&back, 1), vec![(CueState::Idle, 40)]);
-    assert_eq!(rig.engine.broken_reason(id(1)), None);
-    assert_eq!(voice_starts(&rig.start(50, 1)), vec![(id(1), 50)]);
-    assert!(changes(&rig.device(60, 2, mapped()), 2).is_empty());
+    assert_eq!(rig.state(1), CueState::Paused);
+    // Back: the mark stays, nothing starts by itself.
+    let back = rig.device(50, 1, mapped());
+    assert!(changes(&back, 1).is_empty(), "{back:?}");
+    assert!(voice_starts(&rig.tick(100_000)).is_empty());
+    assert_eq!(rig.state(1), CueState::Paused);
+    // GO plays it from its start.
+    let go = rig.start(100_010, 1);
+    assert_eq!(voice_starts(&go), vec![(id(1), 100_010)]);
+    assert!(
+        go.iter()
+            .any(|a| matches!(a, Action::StartVoice { cue, offset: 0, .. } if *cue == id(1)))
+    );
+    assert!(changes(&rig.device(100_020, 2, mapped()), 2).is_empty());
     assert_eq!(rig.state(2), CueState::Broken);
 }
 
 #[test]
-fn a_device_lost_run_cancels_its_auto_continue_and_pre_wait() {
-    // A lost device ends the run for good, as QLab: its pending auto-continue never
-    // fires, and neither does the pre-wait of a run that had not started its action.
+fn resume_clears_a_paused_mark_left_by_a_lost_device_to_idle() {
+    // QLab 5 (measured): Resume All only clears the mark; nothing plays on.
+    for all in [false, true] {
+        let resume = || {
+            if all {
+                Input::ResumeAll
+            } else {
+                Input::Resume { cue: id(1) }
+            }
+        };
+        let mut rig = Rig::new(vec![sound(1)]);
+        rig.device(0, 1, mapped());
+        rig.start(0, 1);
+        rig.device(10, 1, missing());
+        lose_device(&mut rig, 10, 1);
+        // While the device is away, the cleared cue shows broken.
+        let cleared = rig.at(20, resume());
+        assert_eq!(
+            changes(&cleared, 1),
+            vec![(CueState::Broken, 20)],
+            "all {all}"
+        );
+        assert!(voice_starts(&cleared).is_empty());
+        rig.device(30, 1, mapped());
+        assert_eq!(rig.state(1), CueState::Idle);
+        // With the device back, a resume clears it to idle and plays nothing.
+        rig.start(40, 1);
+        rig.device(50, 1, missing());
+        lose_device(&mut rig, 50, 1);
+        rig.device(60, 1, mapped());
+        let cleared = rig.at(70, resume());
+        assert_eq!(
+            changes(&cleared, 1),
+            vec![(CueState::Idle, 70)],
+            "all {all}"
+        );
+        assert!(voice_starts(&cleared).is_empty());
+        assert!(starts(&rig.tick(100_000)).is_empty());
+        assert!(voice_starts(&rig.tick(100_001)).is_empty());
+    }
+}
+
+#[test]
+fn stop_panic_and_reset_clear_a_paused_mark_left_by_a_lost_device() {
+    for input in [
+        Input::Stop {
+            cue: id(1),
+            fade_out: None,
+        },
+        Input::StopAll,
+        Input::Panic,
+        Input::ResetAll,
+        Input::Reset { cue: id(1) },
+        Input::PanicCue { cue: id(1) },
+    ] {
+        let mut rig = Rig::new(vec![sound(1)]);
+        rig.device(0, 1, mapped());
+        rig.start(0, 1);
+        rig.device(10, 1, missing());
+        lose_device(&mut rig, 10, 1);
+        rig.device(20, 1, mapped());
+        let cleared = rig.at(30, input.clone());
+        assert_eq!(
+            changes(&cleared, 1),
+            vec![(CueState::Idle, 30)],
+            "{input:?}"
+        );
+        assert!(voice_starts(&cleared).is_empty());
+    }
+}
+
+#[test]
+fn a_cue_paused_by_the_operator_when_its_device_is_lost_shows_broken() {
+    // QLab 5 (measured): broken, not paused; playable again once the device is back.
+    let mut rig = Rig::new(vec![sound(1)]);
+    rig.device(0, 1, mapped());
+    rig.start(0, 1);
+    rig.at(5, Input::Pause { cue: id(1) });
+    rig.device(10, 1, missing());
+    let failed = lose_device(&mut rig, 10, 1);
+    assert_eq!(changes(&failed, 1), vec![(CueState::Broken, 10)]);
+    assert_eq!(
+        rig.engine.broken_reason(id(1)),
+        Some(BrokenReason::DeviceLost)
+    );
+    let back = rig.device(40, 1, mapped());
+    assert_eq!(changes(&back, 1), vec![(CueState::Idle, 40)]);
+    assert_eq!(voice_starts(&rig.start(50, 1)), vec![(id(1), 50)]);
+}
+
+#[test]
+fn a_waiting_cue_whose_device_is_lost_shows_paused_and_clears_on_return() {
+    // QLab 5 (measured for a pre-wait; a post-wait assumed the same): paused with its countdown
+    // frozen; idle again by itself when the device returns; nothing it scheduled fires. The
+    // playing cue's auto-continue is cancelled too.
     let mut rig = Rig::new(vec![
-        timed(sound(1), 0.0, 1.0, AC),
+        timed(sound(1), 0.0, 3.0, AC),
         memo(2),
         timed(
             sound_of(3, "media/a.wav", 1),
@@ -1286,30 +1413,53 @@ fn a_device_lost_run_cancels_its_auto_continue_and_pre_wait() {
             0.0,
             ContinueMode::DoNotContinue,
         ),
+        timed(sound(4), 0.0, 2.0, AC),
+        memo(5),
     ]);
     rig.device(0, 1, mapped());
     rig.go(0);
     rig.start(0, 3);
-    assert_eq!(rig.state(3), CueState::PreWaiting);
-    rig.device(
+    rig.start(0, 4);
+    // Cue 4's action ends; its post-wait counts on.
+    let run4 = rig.engine.run_of(id(4)).unwrap();
+    rig.at(
         100,
-        1,
-        PatchResolution::DeviceMissing {
-            device: "Interface".into(),
+        Input::ActionEnded {
+            cue: id(4),
+            run: run4,
+            at: 100,
         },
     );
-    lose_device(&mut rig, 100, 1);
-    lose_device(&mut rig, 100, 3);
-    assert_eq!(rig.state(1), CueState::Broken);
-    assert_eq!(rig.state(3), CueState::Broken);
-    // Back: both settle idle at once, and nothing they scheduled fires.
-    let back = rig.device(200, 1, mapped());
-    assert_eq!(changes(&back, 1), vec![(CueState::Idle, 200)]);
-    assert_eq!(changes(&back, 3), vec![(CueState::Idle, 200)]);
+    assert_eq!(rig.state(3), CueState::PreWaiting);
+    assert_eq!(rig.state(4), CueState::PostWaiting);
+    rig.device(1000, 1, missing());
+    lose_device(&mut rig, 1000, 1);
+    lose_device(&mut rig, 1000, 3);
+    lose_device(&mut rig, 1000, 4);
+    for n in [1, 3, 4] {
+        assert_eq!(rig.state(n), CueState::Paused, "cue {n}");
+        assert_eq!(rig.engine.run_of(id(n)), None, "cue {n}");
+    }
+    assert_eq!(
+        frozen(&rig, 3, 50_000),
+        vec![(Timer::PreWait, 1000, Some(4000))]
+    );
+    assert_eq!(
+        frozen(&rig, 4, 50_000),
+        vec![(Timer::PostWait, 1000, Some(1000))]
+    );
+    assert!(starts(&rig.tick(10_000)).is_empty());
+    // Back: the waits clear by themselves, the playing cue keeps its mark.
+    let back = rig.device(20_000, 1, mapped());
+    assert_eq!(changes(&back, 3), vec![(CueState::Idle, 20_000)]);
+    assert_eq!(changes(&back, 4), vec![(CueState::Idle, 20_000)]);
+    assert!(changes(&back, 1).is_empty());
+    assert_eq!(rig.state(1), CueState::Paused);
     let later = rig.tick(100_000);
     assert!(starts(&later).is_empty(), "{later:?}");
     assert!(voice_starts(&later).is_empty());
     assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(rig.state(5), CueState::Idle);
 }
 
 #[test]
@@ -1335,12 +1485,18 @@ fn device_lost_stops_every_other_active_run_and_cancels_what_it_scheduled() {
 
 #[test]
 fn a_device_lost_break_without_any_patch_status_stays_until_reset() {
-    let mut rig = Rig::new(vec![sound(1)]);
+    let mut rig = Rig::new(vec![sound(1), sound(2)]);
     rig.start(0, 1);
+    rig.start(0, 2);
+    rig.at(5, Input::Pause { cue: id(2) });
     lose_device(&mut rig, 10, 1);
+    lose_device(&mut rig, 10, 2);
     rig.tick(10_000);
-    assert_eq!(rig.state(1), CueState::Broken);
+    assert_eq!(rig.state(1), CueState::Paused);
+    assert_eq!(rig.state(2), CueState::Broken);
     rig.at(10_010, Input::Reset { cue: id(1) });
+    rig.at(10_010, Input::Reset { cue: id(2) });
+    assert_eq!(rig.state(2), CueState::Idle);
     assert_eq!(rig.state(1), CueState::Idle);
 }
 
@@ -1405,7 +1561,7 @@ fn a_device_lost_failure_does_not_move_a_playlist_on() {
         assert!(voice_starts(&failed).is_empty(), "{case}");
         assert!(set_armed(&failed).is_empty(), "{case}");
         assert!(warnings(&failed).is_empty(), "{case}");
-        assert_eq!(rig.state(2), CueState::Broken);
+        assert_eq!(rig.state(2), CueState::Paused);
         assert_eq!(rig.state(3), CueState::Idle);
         // The group stopped (its child left as a stopped one); nothing it held is pending.
         assert!(!rig.state(1).is_active(), "{case}");
@@ -1451,7 +1607,13 @@ fn a_device_lost_failure_fires_no_continue_of_a_plain_cue() {
                 "{mode:?} {unplayed}: {actions:?}"
             );
         }
-        assert_eq!(rig.state(1), CueState::Broken);
+        // A voice that never played is broken; one that played shows paused.
+        let shown = if unplayed {
+            CueState::Broken
+        } else {
+            CueState::Paused
+        };
+        assert_eq!(rig.state(1), shown);
         assert_eq!(rig.state(2), CueState::Idle);
     }
 }

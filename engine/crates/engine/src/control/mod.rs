@@ -74,8 +74,8 @@ use openlab_core::protocol::{
     WireWarning,
 };
 use openlab_core::{
-    CommandError, CueEngine, CueId, CueKind, CueState, DeviceInfo, EngineConfig, EngineConfigError,
-    History, Input, MachineSettings, MediaStatus, SampleTime, Workspace,
+    CommandError, CueEngine, CueId, CueKind, DeviceInfo, EngineConfig, EngineConfigError, History,
+    Input, MachineSettings, MediaStatus, SampleTime, Workspace,
 };
 
 pub use docs::{
@@ -1149,10 +1149,7 @@ impl Doc {
             .map(|(cue, state)| CueStateEntry {
                 cue,
                 state: state.into(),
-                reason: match state {
-                    CueState::Broken => self.model.engine().broken_reason(cue).map(Into::into),
-                    _ => None,
-                },
+                reason: self.model.engine().state_reason(cue, state).map(Into::into),
             })
             .collect();
         let problems = self

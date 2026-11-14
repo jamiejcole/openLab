@@ -261,10 +261,12 @@ impl CueEngine {
             // A group resumed earlier in this loop has already resumed this one.
             if matches!(
                 self.slots.get(&cue),
-                Some(Slot::Active(Run {
-                    paused_at: Some(_),
-                    ..
-                }))
+                Some(
+                    Slot::Active(Run {
+                        paused_at: Some(_),
+                        ..
+                    }) | Slot::Lost(_)
+                )
             ) {
                 self.resume_tree(cue, cx.now, cx);
             }

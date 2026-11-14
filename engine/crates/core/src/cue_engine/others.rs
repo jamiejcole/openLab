@@ -333,8 +333,9 @@ impl CueEngine {
                 continue;
             }
             match slot {
-                // A loaded cue is unloaded at once (QLab 5.6.5, measured).
-                Slot::Loaded(_) => {}
+                // A loaded cue is unloaded at once (QLab 5.6.5, measured); a cue left paused by
+                // a lost device is cleared, as a paused cue is stopped.
+                Slot::Loaded(_) | Slot::Lost(_) => {}
                 Slot::Active(run) => {
                     if run.stop_end.is_some() || run.is_group_stopping() || run.panicked {
                         continue;

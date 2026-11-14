@@ -43,6 +43,9 @@ impl CueEngine {
         let Some(model) = cx.ws.find_cue(cue) else {
             return cx.warn(EngineWarning::UnknownCue { cue });
         };
+        if !self.clear_lost_to_start(cue, at, cx) {
+            return cx.warn(EngineWarning::CueBroken { cue });
+        }
         // A cue fading out in a panic is not active for the second-trigger rule: the trigger
         // ends that fade at once and starts the cue afresh.
         let panicked = matches!(self.slots.get(&cue), Some(Slot::Active(r)) if r.panicked);
@@ -53,7 +56,9 @@ impl CueEngine {
         // start), and a trigger back to an active cue starts nothing else.
         if !panicked {
             match self.slots.get(&cue) {
-                Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),
+                Some(Slot::Broken(_) | Slot::Lost(_)) => {
+                    return cx.warn(EngineWarning::CueBroken { cue });
+                }
                 // A broken run keeps the rule as it was: a paused one resumes.
                 Some(Slot::Active(run)) if run.is_broken() => {
                     if run.paused_at.is_none() {
@@ -91,7 +96,9 @@ impl CueEngine {
         }
         let before = self.state(cue);
         let (run, split, voice) = match self.slots.get(&cue) {
-            Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),
+            Some(Slot::Broken(_) | Slot::Lost(_)) => {
+                return cx.warn(EngineWarning::CueBroken { cue });
+            }
             // Also a broken one: its frozen timers (a pending auto-continue) run again.
             Some(Slot::Active(run)) if run.paused_at.is_some() => {
                 return self.resume_tree(cue, at, cx);
@@ -285,10 +292,16 @@ impl CueEngine {
         self.report(cue, before, now, cx);
     }
 
-    /// Resumes a paused cue as of sample `at`: every timer keeps the time it had left.
+    /// Resumes a paused cue as of sample `at`: every timer keeps the time it had left. A cue
+    /// left paused by a lost device has nothing to resume: its mark clears and it is idle
+    /// (QLab 5; it shows broken while its device is away).
     pub(super) fn resume_one(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) {
         let before = self.state(cue);
         let now = cx.now;
+        if matches!(self.slots.get(&cue), Some(Slot::Lost(_))) {
+            self.slots.remove(&cue);
+            return self.report(cue, before, at, cx);
+        }
         // Only a paused cue takes a fresh id (a resume of anything else changes nothing).
         if !matches!(self.slots.get(&cue), Some(Slot::Active(run)) if run.paused_at.is_some()) {
             return;
@@ -368,11 +381,16 @@ impl CueEngine {
         if self.is_skipped(model) {
             return;
         }
+        if !self.clear_lost_to_start(cue, cx.now, cx) {
+            return cx.warn(EngineWarning::CueBroken { cue });
+        }
         if matches!(self.slots.get(&cue), Some(Slot::Loaded(_)) | None) && self.refuses(cue, cx) {
             return cx.warn(EngineWarning::CueBroken { cue });
         }
         match self.slots.get(&cue) {
-            Some(Slot::Broken(_)) => return cx.warn(EngineWarning::CueBroken { cue }),
+            Some(Slot::Broken(_) | Slot::Lost(_)) => {
+                return cx.warn(EngineWarning::CueBroken { cue });
+            }
             Some(Slot::Active(run)) if run.is_broken() => {
                 return cx.warn(EngineWarning::CueBroken { cue });
             }
@@ -411,6 +429,22 @@ impl CueEngine {
             }),
         );
         self.report(cue, before, cx.now, cx);
+    }
+
+    /// Before a start or a load of `cue`: a mark left by a lost device clears once the device
+    /// is back, so the cue starts from its beginning (QLab 5). `false` while the device is
+    /// still away: the start is refused as for any cue on a missing device and the mark stays.
+    fn clear_lost_to_start(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) -> bool {
+        if !matches!(self.slots.get(&cue), Some(Slot::Lost(_))) {
+            return true;
+        }
+        if !self.device_back(cue) {
+            return false;
+        }
+        let before = self.state(cue);
+        self.slots.remove(&cue);
+        self.report(cue, before, at, cx);
+        true
     }
 
     pub(super) fn reset_one(&mut self, cue: CueId, cx: &mut Ctx) {
