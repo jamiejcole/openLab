@@ -768,7 +768,7 @@ skills() {
 
 # 15. The one-doc-per-subsystem files are gone; skills replaced them. A path to one in any file on disk
 # (tracked or not yet added; skills included) is a dead link. Only docs/protocol.md and docs/file-format.md
-# remain as contract docs. Code comments (engine/ and mac/ lines holding `//`) may cite no skill and
+# remain as contract docs (docs/osc.md is the user's OSC reference, not the old subsystem doc). Code comments (engine/ and mac/ lines holding `//`) may cite no skill and
 # no doc except docs/protocol.md, docs/file-format.md, REQUIREMENTS.md and CLAUDE.md: that also catches a
 # bare control.md or a `see "Section"` pointer into a removed doc.
 comment_citations_scan() { grep -nE '//.*(ARCHITECTURE|\.claude/skills|[Ss]kills? `[a-z]|[Ss]kill [a-z]+-[a-z]+|\(see "[A-Z]|[A-Za-z0-9_./-]+\.md)' "$@" 2>/dev/null |
@@ -788,7 +788,7 @@ dead_docs() {
   [ -z "$(comment_citations_scan "$d/e.rs")" ] || fail dead-docs-cases "allowed citations and the word skill must not be found"
   rm -rf "$d"
   hits=$(git ls-files -co --exclude-standard | sort -u | grep -v -e '^scripts/check-repo\.sh$' |
-    xargs grep -nE 'docs/(ARCHITECTURE|control|cue-engine|audio|osc|network|commands|persistence|logging)\.md|docs/handoff/|docs/todo/|ARCHITECTURE §' 2>/dev/null | head -n 20 || true)
+    xargs grep -nE 'docs/(ARCHITECTURE|control|cue-engine|audio|network|commands|persistence|logging)\.md|docs/handoff/|docs/todo/|ARCHITECTURE §' 2>/dev/null | head -n 20 || true)
   [ -z "$hits" ] || fail dead-docs "reference to a deleted doc (name the skill, or drop the citation; code comments cite only docs/protocol.md and docs/file-format.md):
 $hits"
   hits=$(comment_citations_scan $(git ls-files -co --exclude-standard 'engine/*.rs' 'mac/*.swift' | sort -u) | head -n 20)

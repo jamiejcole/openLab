@@ -342,27 +342,13 @@ fn parse_rest(rest: &[&str], prefixed: bool, path: &str) -> Address {
         };
     }
     match rest {
-        ["connect"] => Address::Connect,
-        // Application-level: not available under `/workspace/{id}`.
-        ["updates"] if !prefixed => Address::Updates,
-        ["udpReplyPort"] if !prefixed => Address::UdpReplyPort,
-        ["version"] if !prefixed => Address::Version,
-        ["workspaces"] if !prefixed => Address::Workspaces,
-        ["go"] => Address::Go,
-        ["stop"] => Address::Stop,
-        ["hardStop"] => Address::HardStop,
-        ["panic"] => Address::Panic,
-        ["pause"] => Address::PauseAll,
-        ["resume"] => Address::ResumeAll,
-        ["reset"] => Address::ResetAll,
+        [word] => match WORDS.iter().find(|(w, _)| w == word) {
+            // Application-level: not available under `/workspace/{id}`.
+            Some((_, address)) if !(prefixed && is_application(address)) => address.clone(),
+            _ => other(),
+        },
         ["playhead", target] => Address::Playhead(target_of(target)),
         ["select", target] => Address::Select(target_of(target)),
-        ["runningCues"] => Address::Query(Query::RunningCues),
-        ["runningOrPausedCues"] => Address::Query(Query::RunningOrPausedCues),
-        ["selectedCues"] => Address::Query(Query::SelectedCues),
-        ["cueLists"] => Address::Query(Query::CueLists),
-        ["playheadID"] => Address::Query(Query::PlayheadId { deprecated: false }),
-        ["playheadId"] => Address::Query(Query::PlayheadId { deprecated: true }),
         ["cue", number, verb] => match verb_of(verb) {
             Some(verb) => Address::Cue {
                 cue: match *number {
@@ -402,33 +388,77 @@ fn target_of(part: &str) -> PlayheadTarget {
     }
 }
 
+/// The addresses of one word. With [`CUE_VERBS`] and the forms `parse_rest` spells out
+/// (`/playhead/...`, `/select/...`, `/cue/...`, `/cue_id/...`), every address OSC answers;
+/// the user's OSC reference must list each (a test checks).
+pub const WORDS: &[(&str, Address)] = &[
+    ("connect", Address::Connect),
+    ("updates", Address::Updates),
+    ("udpReplyPort", Address::UdpReplyPort),
+    ("version", Address::Version),
+    ("workspaces", Address::Workspaces),
+    ("go", Address::Go),
+    ("stop", Address::Stop),
+    ("hardStop", Address::HardStop),
+    ("panic", Address::Panic),
+    ("pause", Address::PauseAll),
+    ("resume", Address::ResumeAll),
+    ("reset", Address::ResetAll),
+    ("runningCues", Address::Query(Query::RunningCues)),
+    (
+        "runningOrPausedCues",
+        Address::Query(Query::RunningOrPausedCues),
+    ),
+    ("selectedCues", Address::Query(Query::SelectedCues)),
+    ("cueLists", Address::Query(Query::CueLists)),
+    (
+        "playheadID",
+        Address::Query(Query::PlayheadId { deprecated: false }),
+    ),
+    (
+        "playheadId",
+        Address::Query(Query::PlayheadId { deprecated: true }),
+    ),
+];
+
+/// Every verb after `/cue/{number}/` (and `/cue_id/{id}/`, `/cue/selected/` ...), by its name.
+pub const CUE_VERBS: &[Verb] = &[
+    Verb::Start,
+    Verb::Stop,
+    Verb::HardStop,
+    Verb::Panic,
+    Verb::Pause,
+    Verb::Resume,
+    Verb::Load,
+    Verb::Reset,
+    Verb::Preview,
+    Verb::Field(CueField::Name),
+    Verb::Field(CueField::Number),
+    Verb::Field(CueField::Notes),
+    Verb::Field(CueField::PreWait),
+    Verb::Field(CueField::PostWait),
+    Verb::Field(CueField::Duration),
+    Verb::Field(CueField::LoadTime),
+    Verb::Field(CueField::Armed),
+    Verb::Field(CueField::Flagged),
+    Verb::Field(CueField::UniqueId),
+    Verb::Field(CueField::IsLoaded),
+    Verb::Field(CueField::IsRunning),
+    Verb::Field(CueField::IsPaused),
+    Verb::Field(CueField::IsBroken),
+];
+
+/// Application-level addresses: answered by the engine, not a workspace, so never under
+/// `/workspace/{id}`.
+fn is_application(address: &Address) -> bool {
+    matches!(
+        address,
+        Address::Updates | Address::UdpReplyPort | Address::Version | Address::Workspaces
+    )
+}
+
 fn verb_of(part: &str) -> Option<Verb> {
-    Some(match part {
-        "start" => Verb::Start,
-        "stop" => Verb::Stop,
-        "hardStop" => Verb::HardStop,
-        "panic" => Verb::Panic,
-        "pause" => Verb::Pause,
-        "resume" => Verb::Resume,
-        "load" => Verb::Load,
-        "reset" => Verb::Reset,
-        "preview" => Verb::Preview,
-        "name" => Verb::Field(CueField::Name),
-        "number" => Verb::Field(CueField::Number),
-        "notes" => Verb::Field(CueField::Notes),
-        "preWait" => Verb::Field(CueField::PreWait),
-        "postWait" => Verb::Field(CueField::PostWait),
-        "duration" => Verb::Field(CueField::Duration),
-        "loadTime" => Verb::Field(CueField::LoadTime),
-        "armed" => Verb::Field(CueField::Armed),
-        "flagged" => Verb::Field(CueField::Flagged),
-        "uniqueID" => Verb::Field(CueField::UniqueId),
-        "isLoaded" => Verb::Field(CueField::IsLoaded),
-        "isRunning" => Verb::Field(CueField::IsRunning),
-        "isPaused" => Verb::Field(CueField::IsPaused),
-        "isBroken" => Verb::Field(CueField::IsBroken),
-        _ => return None,
-    })
+    CUE_VERBS.iter().copied().find(|verb| verb.name() == part)
 }
 
 /// The right a message needs, judged on its address and argument count alone so that nothing

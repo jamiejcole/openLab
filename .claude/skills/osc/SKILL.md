@@ -89,7 +89,7 @@ A message that succeeds gets **no reply** (actions, writes, `/updates`). A failu
 
 Not implemented: level properties, time properties beyond pre-wait, post-wait, duration and load time, `/new`, `/save`, other QLab application and workspace queries.
 
-A value out of range (or a field the cue's kind has not) is answered `error` by OSC itself, since the engine refuses a command without a word to the peer. The address table is `verb_of` in `osc/dispatch.rs`; every address it and `parse_rest` answer is in `docs/osc.md` (`scripts/check-repo.sh` fails otherwise).
+A value out of range (or a field the cue's kind has not) is answered `error` by OSC itself, since the engine refuses a command without a word to the peer. The addresses are the `WORDS` and `CUE_VERBS` tables in `osc/dispatch.rs` plus the forms `parse_rest` spells out; every one must be in `docs/osc.md`, the user reference (test `every_address_osc_answers_is_in_the_user_reference` fails otherwise, its form list included; `docs/osc.md` changes run the engine job). Update that page with any address or behaviour change.
 
 ### Patterns
 The cue-number part of `/cue/{number}/{verb}` is a pattern when it has `*`, `?`, `[...]` or `{a,b}`: `*` any run (also none), `?` one char, `[abc]`/`[a-c]` one of, `[!a-c]` none of, `{a,b}` one alternative (not nested). It is matched against every cue number in every list and inside groups, in workspace order (list, then cues, a group before its children), and acts on or answers for **every match**.

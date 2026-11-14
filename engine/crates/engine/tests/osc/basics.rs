@@ -21,13 +21,13 @@ use openlab_core::{
     OscRight, OscRights, WorkspaceId,
 };
 use openlab_engine::osc::{
-    CueField, CuePattern, DecodeError, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MATCH_BUDGET,
-    MAX_ARRAY_DEPTH, MAX_BAD_PASSCODES, MAX_BUNDLE_DEPTH, MAX_FRAME_BYTES, MAX_KNOWN_IPS,
-    MAX_MATCH_CHARS, MAX_MATCHES, MAX_MESSAGES_PER_PACKET, MAX_PACKET_BYTES, MAX_PEERS,
-    MAX_REPLIES_PER_CALL, MAX_REPLY_BYTES_PER_CALL, MAX_REPLY_JSON_BYTES, MAX_UDP_DATAGRAM_BYTES,
-    Osc, OscInput, OscShow, Outcome, Peer, Reply, SINGLE_DOC, Sessions, SlipDecoder, SlipEvent,
-    Target, UDP_IDLE, decode_packet, encode_message, parse_address, reply_message, slip_encode,
-    upper,
+    Address, CUE_VERBS, CueField, CuePattern, DecodeError, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW,
+    LOCKOUT, MATCH_BUDGET, MAX_ARRAY_DEPTH, MAX_BAD_PASSCODES, MAX_BUNDLE_DEPTH, MAX_FRAME_BYTES,
+    MAX_KNOWN_IPS, MAX_MATCH_CHARS, MAX_MATCHES, MAX_MESSAGES_PER_PACKET, MAX_PACKET_BYTES,
+    MAX_PEERS, MAX_REPLIES_PER_CALL, MAX_REPLY_BYTES_PER_CALL, MAX_REPLY_JSON_BYTES,
+    MAX_UDP_DATAGRAM_BYTES, Osc, OscInput, OscShow, Outcome, Peer, Reply, SINGLE_DOC, Sessions,
+    SlipDecoder, SlipEvent, Target, UDP_IDLE, WORDS, decode_packet, encode_message, parse_address,
+    reply_message, slip_encode, upper,
 };
 use proptest::prelude::*;
 use rosc::{OscMessage, OscPacket, OscTime, OscType};
@@ -4288,4 +4288,50 @@ fn a_connected_peer_cannot_search_the_table_for_more_rights() {
     assert!(!allowed(&mut osc, &show, udp(), &msg("/go", vec![])));
     // It is still connected, with its own rights.
     assert!(osc.is_connected(udp()));
+}
+
+/// Every address OSC answers is in the user's OSC reference, spelled in full: the
+/// one-word addresses and cue verbs from the tables the parser reads, and the forms it spells
+/// out. A new address fails here until it is documented.
+#[test]
+fn every_address_osc_answers_is_in_the_user_reference() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/osc.md");
+    let doc = std::fs::read_to_string(&path).unwrap();
+    // `/go` or `/go "3"`: the address in code style, alone or with its arguments.
+    let documented = |address: &str| {
+        doc.contains(&format!("`{address}`")) || doc.contains(&format!("`{address} "))
+    };
+    let words = || WORDS.iter().map(|(word, _)| format!("/{word}"));
+    let verbs = |cue: &'static str| {
+        CUE_VERBS
+            .iter()
+            .map(move |v| format!("/cue/{cue}/{}", v.name()))
+    };
+    let forms = [
+        "/workspace/{id}/connect",
+        "/playhead/next",
+        "/playhead/previous",
+        "/playhead/{number}",
+        "/select/next",
+        "/select/previous",
+        "/select/{number}",
+        "/cue_id/{id}/...",
+        "/cue/selected/...",
+        "/cue/playhead/...",
+        "/cue/active/...",
+    ];
+    let missing: Vec<String> = words()
+        .chain(verbs("{number}"))
+        .chain(forms.iter().map(|f| (*f).to_owned()))
+        .filter(|a| !documented(a))
+        .collect();
+    assert!(missing.is_empty(), "not in docs/osc.md: {missing:?}");
+    // And each of them is answered: a parsed address, not an unknown one.
+    for address in words().chain(verbs("1")) {
+        let parsed = parse_address(&address).unwrap();
+        assert!(
+            !matches!(parsed.address, Address::Other(_) | Address::Pattern(_)),
+            "{address}"
+        );
+    }
 }
