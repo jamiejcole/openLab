@@ -132,9 +132,11 @@ final class DurationEditingTests: XCTestCase {
             let back = try InspectorEdit.command(.loadTime, text: text, cue: load, model: model).get()
             XCTAssertEqual(wire(back), property(Self.load, "load_to_time", "-10"), text)
         }
-        for text in ["-x", "--5", "-"] {
+        // A refused load time has its own message, with its real range (minus included).
+        for text in ["-x", "--5", "-", "-99999999", "25:00:00"] {
             XCTAssertEqual(
-                InspectorEdit.command(.loadTime, text: text, cue: load, model: model), .failure(.invalidTime), text)
+                InspectorEdit.command(.loadTime, text: text, cue: load, model: model), .failure(.invalidLoadTime),
+                text)
         }
         XCTAssertEqual(InspectorEdit.command(.loadTime, text: "2,5", cue: load, model: model), .failure(.decimalComma))
         let wait = try XCTUnwrap(model.cue(Self.wait))
@@ -148,7 +150,7 @@ final class DurationEditingTests: XCTestCase {
     func testEveryRejectionHasAMessage() {
         let all: [InspectorEdit.Rejection] = [
             .invalidTime, .decimalComma, .duplicateNumber, .unknownTarget, .selfTarget, .notApplicable,
-            .noEditableDuration, .noLoadTime,
+            .noEditableDuration, .noLoadTime, .invalidLoadTime,
         ]
         for r in all { XCTAssertNotEqual(loc(r.messageKey), r.messageKey, "\(r) has no string") }
     }
@@ -278,6 +280,12 @@ final class InspectorDurationTests: XCTestCase {
         XCTAssertEqual(vc.loadTimeField.stringValue, "00:01.50")
         edit(.loadTime, "1:30")
         await assertEventually { self.kind(DurationEditingTests.load)?["load_to_time"]?.doubleValue == 90 }
+        // A refused entry names the field's own range, minus included.
+        for text in ["-", "--2", "-99999999"] {
+            edit(.loadTime, text)
+            XCTAssertEqual(vc.messageLabel.stringValue, loc("inspector.invalid.loadTime"), text)
+            XCTAssertEqual(vc.loadTimeField.stringValue, "01:30.00", text)
+        }
         vc.setSelection([DurationEditingTests.wait])
         XCTAssertFalse(tabs().contains("loadTime"))
     }
@@ -304,6 +312,27 @@ final class InspectorDurationTests: XCTestCase {
         let shown = rig.store.progress[wait]
         XCTAssertGreaterThanOrEqual(shown?.elapsed ?? 0, 7.9, "\(String(describing: shown))")
         XCTAssertLessThanOrEqual(shown?.remaining ?? 99, 2.1, "\(String(describing: shown))")
+
+        // An Audio target: the Demo's Intro, which loops until devamped, counts back from one
+        // pass (QLab 5.6.5). Started, it plays from a quarter second before that pass ends, not
+        // from the top.
+        let intro = CueListHarness.intro
+        guard case .success = await rig.store.stopAll(),
+            case .success = await rig.store.setProperty(load, .target(intro))
+        else { return XCTFail("retarget") }
+        await assertEventually("the probe") { self.rig.store.mediaDurations[intro]?.trimmed != nil }
+        let pass = rig.store.mediaDurations[intro]?.trimmed ?? 0
+        edit(.loadTime, "-0.25")
+        await assertEventually("the new time") { self.kind(load)?["load_to_time"]?.doubleValue == -0.25 }
+        guard case .success = await rig.store.goFrom(list: TestSnapshots.mainList, cue: load)
+        else { return XCTFail("go again") }
+        await assertEventually("the Intro is loaded") { self.rig.store.cueStates[intro]?.state == .loaded }
+        guard case .success = await rig.store.transport(.start(cue: intro)) else { return XCTFail("start Intro") }
+        try? await rig.advance(0.1)
+        await assertEventually("the Intro's progress") { (self.rig.store.progress[intro]?.position ?? 0) > 0 }
+        // A tenth of a second after its start it is 0.15 s before the end of a pass, not near 0.1 s.
+        let at = rig.store.progress[intro]?.position ?? 0
+        XCTAssertEqual(at, pass - 0.15, accuracy: 0.06, "position \(at) of a \(pass) s pass")
     }
 
     /// Flow: a Wait cue's post-wait follows its duration (QLab 5, manual p. 688). The post-wait

@@ -356,6 +356,7 @@
 "inspector.target.noFile" = "No file yet: double-click here or use the folder button";
 "inspector.target.choosePrompt" = "Choose";
 "inspector.invalid.time" = "Enter a time as mm:ss.sss, from 0 to 24 hours.";
+"inspector.invalid.loadTime" = "Enter a time as mm:ss.sss, up to 24 hours; put a minus in front to count back from the target's end.";
 "inspector.invalid.decimalComma" = "Use a full stop for decimals, as in 1.5.";
 "inspector.invalid.duplicateNumber" = "Another cue already has that number.";
 "inspector.invalid.unknownTarget" = "No cue has that number.";

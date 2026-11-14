@@ -28,6 +28,8 @@ enum InspectorEdit {
         case noEditableDuration
         /// Only Load cues have a load time.
         case noLoadTime
+        /// Not a load time: a time up to 24 hours, with a minus to count back from the end.
+        case invalidLoadTime
         /// Only Network cues have a message.
         case noMessage
         /// The typed arguments cannot be read: an open quote, or an argument type the engine cannot send.
@@ -47,6 +49,7 @@ enum InspectorEdit {
             case .decimalComma: return "inspector.invalid.decimalComma"
             case .noEditableDuration: return "inspector.invalid.noDuration"
             case .noLoadTime: return "inspector.invalid.noLoadTime"
+            case .invalidLoadTime: return "inspector.invalid.loadTime"
             case .noMessage: return "inspector.invalid.noMessage"
             case .invalidMessage: return "inspector.invalid.networkMessage"
             case .invalidLevel: return "inspector.invalid.level"
@@ -140,7 +143,8 @@ enum InspectorEdit {
             let t = text.trimmingCharacters(in: .whitespaces)
             let back = t.hasPrefix("-")
             switch time(back ? String(t.dropFirst()) : text) {
-            case .failure(let r): return .failure(r)
+            case .failure(.decimalComma): return .failure(.decimalComma)
+            case .failure: return .failure(.invalidLoadTime)
             case .success(let magnitude):
                 let seconds = back ? -magnitude : magnitude
                 if seconds == (cue.raw["kind"]?["load_to_time"]?.doubleValue ?? 0) { return .success(nil) }
