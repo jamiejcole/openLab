@@ -30,7 +30,7 @@ pub use dedupe::{DUPLICATE_WINDOW, Dedupe, MAX_PEERS as MAX_DEDUPE_PEERS};
 pub use dispatch::{
     Address, CUE_VERBS, CueField, CueRef, DocShow, MAX_ADDRESS_BYTES, MAX_ADDRESS_PARTS,
     MAX_MATCHES, MAX_REPLY_JSON_BYTES, MAX_UDP_DATAGRAM_BYTES, Named, OscInput, OscShow, Parsed,
-    PlayheadTarget, Query, Reply, Resolved, STATUS_DENIED, STATUS_ERROR, STATUS_OK, Scope,
+    PlayheadTarget, Query, Reply, Resolved, SHAPES, STATUS_DENIED, STATUS_ERROR, STATUS_OK, Scope,
     ServerInfo, Target, Verb, WORDS, find_doc, parse_address, reply_message, required_right,
     resolve, upper,
 };

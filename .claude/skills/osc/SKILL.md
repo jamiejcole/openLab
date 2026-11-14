@@ -89,7 +89,7 @@ A message that succeeds gets **no reply** (actions, writes, `/updates`). A failu
 Not implemented: level properties, time properties beyond pre-wait, post-wait and duration (a Load cue's time has no address, as in QLab: Q354), `/new`, `/save`, other QLab application and workspace queries.
 
 - A value out of range (or a field the cue's kind has not) is answered `error` by OSC itself, since the engine refuses a command without a word to the peer.
-- The addresses are the `WORDS` and `CUE_VERBS` tables in `osc/dispatch.rs` plus the forms `parse_rest` spells out. Every one must be in `docs/osc.md`, the user reference: test `every_address_osc_answers_is_in_the_user_reference` fails otherwise (its form list included), and a change to that page runs the engine job.
+- The addresses are the `WORDS`, `CUE_VERBS` and `SHAPES` tables in `osc/dispatch.rs` (`parse_rest` answers no longer address outside `SHAPES`). Each needs its own table row (first cell the address) in `docs/osc.md`, the user reference: test `every_address_osc_answers_is_in_the_user_reference` fails otherwise, and for a shape without rows in its list; a change to that page runs the engine job.
 - Update `docs/osc.md` with any address or user-visible OSC behaviour change.
 
 ### Patterns

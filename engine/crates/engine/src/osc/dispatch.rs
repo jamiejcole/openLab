@@ -337,6 +337,13 @@ fn parse_rest(rest: &[&str], prefixed: bool, path: &str) -> Address {
             _ => Address::Pattern(path.to_owned()),
         };
     }
+    // A longer address is one of the shapes `SHAPES` names, or nothing.
+    if let [head, ..] = rest
+        && rest.len() > 1
+        && !SHAPES.contains(&(*head, rest.len()))
+    {
+        return other();
+    }
     match rest {
         [word] => match WORDS.iter().find(|(w, _)| w == word) {
             // Application-level: not available under `/workspace/{id}`.
@@ -416,6 +423,11 @@ pub const WORDS: &[(&str, Address)] = &[
         Address::Query(Query::PlayheadId { deprecated: true }),
     ),
 ];
+
+/// The addresses of more than one part, by first part and part count: `/playhead/{target}`,
+/// `/select/{target}`, `/cue/{number}/{verb}`, `/cue_id/{id}/{verb}`. `parse_rest` answers no
+/// other, so a new shape is added here, where the reference test sees it.
+pub const SHAPES: &[(&str, usize)] = &[("playhead", 2), ("select", 2), ("cue", 3), ("cue_id", 3)];
 
 /// Every verb after `/cue/{number}/` (and `/cue_id/{id}/`, `/cue/selected/` ...), by its name.
 pub const CUE_VERBS: &[Verb] = &[

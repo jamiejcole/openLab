@@ -25,9 +25,9 @@ use openlab_engine::osc::{
     LOCKOUT, MATCH_BUDGET, MAX_ARRAY_DEPTH, MAX_BAD_PASSCODES, MAX_BUNDLE_DEPTH, MAX_FRAME_BYTES,
     MAX_KNOWN_IPS, MAX_MATCH_CHARS, MAX_MATCHES, MAX_MESSAGES_PER_PACKET, MAX_PACKET_BYTES,
     MAX_PEERS, MAX_REPLIES_PER_CALL, MAX_REPLY_BYTES_PER_CALL, MAX_REPLY_JSON_BYTES,
-    MAX_UDP_DATAGRAM_BYTES, Osc, OscInput, OscShow, Outcome, Peer, Reply, SINGLE_DOC, Sessions,
-    SlipDecoder, SlipEvent, Target, UDP_IDLE, WORDS, decode_packet, encode_message, parse_address,
-    reply_message, slip_encode, upper,
+    MAX_UDP_DATAGRAM_BYTES, Osc, OscInput, OscShow, Outcome, Peer, Reply, SHAPES, SINGLE_DOC,
+    Sessions, SlipDecoder, SlipEvent, Target, UDP_IDLE, WORDS, decode_packet, encode_message,
+    parse_address, reply_message, slip_encode, upper,
 };
 use proptest::prelude::*;
 use rosc::{OscMessage, OscPacket, OscTime, OscType};
@@ -4317,48 +4317,90 @@ fn a_connected_peer_cannot_search_the_table_for_more_rights() {
     assert!(osc.is_connected(udp()));
 }
 
-/// Every address OSC answers is in the user's OSC reference, spelled in full: the
-/// one-word addresses and cue verbs from the tables the parser reads, and the forms it spells
-/// out. A new address fails here until it is documented.
+/// Every address OSC answers has its own row in the user's OSC reference (a table row whose first
+/// cell is the address): the one-word addresses and cue verbs from the tables the parser reads,
+/// and the rows for each longer shape it answers. A shape the parser gains without rows here
+/// fails too.
 #[test]
 fn every_address_osc_answers_is_in_the_user_reference() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/osc.md");
     let doc = std::fs::read_to_string(&path).unwrap();
-    // `/go` or `/go "3"`: the address in code style, alone or with its arguments.
-    let documented = |address: &str| {
-        doc.contains(&format!("`{address}`")) || doc.contains(&format!("`{address} "))
-    };
-    let words = || WORDS.iter().map(|(word, _)| format!("/{word}"));
-    let verbs = |cue: &'static str| {
+    let rows: Vec<&str> = doc
+        .lines()
+        .filter_map(|line| line.strip_prefix("| `"))
+        .filter_map(|cell| cell.split_once("` |").map(|(address, _)| address))
+        .collect();
+    // The rows each shape of more than one part needs, and an address of that shape.
+    let shape_rows: &[((&str, usize), &[&str], &str)] = &[
+        (
+            ("playhead", 2),
+            &["/playhead/next", "/playhead/previous", "/playhead/{number}"],
+            "/playhead/next",
+        ),
+        (
+            ("select", 2),
+            &["/select/next", "/select/previous", "/select/{number}"],
+            "/select/5",
+        ),
+        (
+            ("cue", 3),
+            &[
+                "/cue/{number}/...",
+                "/cue/selected/...",
+                "/cue/playhead/...",
+                "/cue/active/...",
+            ],
+            "/cue/selected/name",
+        ),
+        (
+            ("cue_id", 3),
+            &["/cue_id/{id}/..."],
+            "/cue_id/00000000-0000-0000-0000-000000000001/name",
+        ),
+    ];
+    let mut shapes: Vec<(&str, usize)> = shape_rows.iter().map(|(shape, _, _)| *shape).collect();
+    shapes.sort_unstable();
+    let mut answered = SHAPES.to_vec();
+    answered.sort_unstable();
+    assert_eq!(
+        shapes, answered,
+        "a shape the parser answers has no rows here"
+    );
+    let mut wanted: Vec<String> = WORDS.iter().map(|(word, _)| format!("/{word}")).collect();
+    wanted.extend(
         CUE_VERBS
             .iter()
-            .map(move |v| format!("/cue/{cue}/{}", v.name()))
-    };
-    let forms = [
-        "/workspace/{id}/connect",
-        "/playhead/next",
-        "/playhead/previous",
-        "/playhead/{number}",
-        "/select/next",
-        "/select/previous",
-        "/select/{number}",
-        "/cue_id/{id}/...",
-        "/cue/selected/...",
-        "/cue/playhead/...",
-        "/cue/active/...",
-    ];
-    let missing: Vec<String> = words()
-        .chain(verbs("{number}"))
-        .chain(forms.iter().map(|f| (*f).to_owned()))
-        .filter(|a| !documented(a))
+            .map(|v| format!("/cue/{{number}}/{}", v.name())),
+    );
+    wanted.push("/workspace/{id}/connect".to_owned());
+    for (_, needed, example) in shape_rows {
+        wanted.extend(needed.iter().map(|row| (*row).to_owned()));
+        let parsed = parse_address(example).unwrap();
+        assert!(
+            !matches!(parsed.address, Address::Other(_) | Address::Pattern(_)),
+            "{example}"
+        );
+    }
+    let missing: Vec<&String> = wanted
+        .iter()
+        .filter(|a| !rows.contains(&a.as_str()))
         .collect();
-    assert!(missing.is_empty(), "not in docs/osc.md: {missing:?}");
-    // And each of them is answered: a parsed address, not an unknown one.
-    for address in words().chain(verbs("1")) {
+    assert!(missing.is_empty(), "no row in docs/osc.md for: {missing:?}");
+    // Each one-word address and verb is answered: parsed, not unknown.
+    for address in WORDS
+        .iter()
+        .map(|(word, _)| format!("/{word}"))
+        .chain(CUE_VERBS.iter().map(|v| format!("/cue/1/{}", v.name())))
+    {
         let parsed = parse_address(&address).unwrap();
         assert!(
             !matches!(parsed.address, Address::Other(_) | Address::Pattern(_)),
             "{address}"
         );
+    }
+    // Longer addresses outside the shapes are not answered.
+    for address in ["/playhead/1/x", "/cue/1", "/cue_id/x", "/foo/bar"] {
+        let parsed = parse_address(address).unwrap();
+        assert!(matches!(parsed.address, Address::Other(_)), "{address}");
     }
 }
