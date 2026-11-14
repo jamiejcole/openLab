@@ -445,13 +445,15 @@ extension ClientMessage {
                 return false
             case .listDevices, .setOutputDevice, .setBufferSize, .listPatchMappings, .preshowCheck, .logTail,
                 .setOutputOverrides,
-                .setShowMode, .setPatchMapping,
+                .setShowMode, .setPatchMapping, .listDisplays, .listStageMappings, .setStageMapping,
                 .snapshot:
                 return true
             #if DEBUG
                 // A stepped engine waits for its background work (up to 30 s) before it answers these.
                 case .advance, .loseDevice: return false
-                case .restoreDevice: return true
+                case .restoreDevice, .stageTestCard: return true
+                // Answered when the stage host has drawn and read back the stage.
+                case .stageProbe: return false
             #endif
             }
         }

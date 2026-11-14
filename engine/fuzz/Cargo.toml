@@ -56,3 +56,10 @@ path = "fuzz_targets/osc_session.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "stage_link"
+path = "fuzz_targets/stage_link.rs"
+test = false
+doc = false
+bench = false

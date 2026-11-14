@@ -25,7 +25,7 @@ const USAGE: &str = "usage: openlab-engine [--version] [--open SHOW_FILE]... \
 #[cfg(feature = "test-support")]
 const USAGE: &str = "usage: openlab-engine [--version] [--open SHOW_FILE]... \
 [--app-support DIR] [--watch-stdin] [--relaunch-app BUNDLE_ID] \
-[--virtual-device stepped|realtime]";
+[--virtual-device stepped|realtime] [--virtual-displays ID:WxH,...]";
 
 /// The exit status of a usage error (the convention of `getopt` tools: 2, not 1, which is a
 /// failed run).
@@ -76,6 +76,13 @@ fn mode(args: &[String]) -> Mode {
                     None => return Mode::Usage,
                 }
             }
+            #[cfg(feature = "test-support")]
+            "--virtual-displays" => match rest.next() {
+                Some(list) if !list.is_empty() && !list.starts_with('-') => {
+                    options.virtual_displays = Some(list.clone())
+                }
+                _ => return Mode::Usage,
+            },
             _ => return Mode::Usage,
         }
     }
@@ -170,7 +177,16 @@ mod tests {
             };
             assert_eq!(o.virtual_device, Some(mode));
         }
-        for bad in [&["--virtual-device"][..], &["--virtual-device", "fast"]] {
+        let Mode::Run(o) = mode_of(&["--virtual-displays", "V1:1920x1080"]) else {
+            panic!("--virtual-displays: not run")
+        };
+        assert_eq!(o.virtual_displays.as_deref(), Some("V1:1920x1080"));
+        for bad in [
+            &["--virtual-device"][..],
+            &["--virtual-device", "fast"],
+            &["--virtual-displays"],
+            &["--virtual-displays", ""],
+        ] {
             assert!(matches!(mode_of(bad), Mode::Usage), "{bad:?}");
         }
         assert!(matches!(mode_of(&[]), Mode::Run(o) if o.virtual_device.is_none()));

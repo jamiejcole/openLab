@@ -96,6 +96,32 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertEqual(entries.map { $0.resolution?.type }, ["mapped", "unmapped", "device_missing"])
     }
 
+    /// VID-01: the display list, the stage mappings and the stage display choice decode from their
+    /// fixtures.
+    func testStageDisplayMessagesDecodeFromTheirFixtures() throws {
+        guard
+            case .request(_, .setStageMapping(let stage, let display)) = try JSONDecoder().decode(
+                ClientMessage.self, from: Data(try Fixtures.text("client", "request_set_stage_mapping").utf8))
+        else { return XCTFail("set_stage_mapping") }
+        XCTAssertEqual(stage, "00000000-0000-0000-0000-000000000080")
+        XCTAssertEqual(display, "37D8832A-2D66-02CA-B9F7-8F30A301B230")
+        guard
+            case .result(_, .ok(let shown)) = try ServerMessage.decode(try Fixtures.text("server", "result_displays")),
+            case .displays(let displays, let video)? = shown.data
+        else { return XCTFail("displays") }
+        XCTAssertEqual(displays.map(\.name), ["Projector"])
+        XCTAssertEqual(displays.map(\.width), [3840])
+        XCTAssertEqual(video, true)
+        guard
+            case .result(_, .ok(let mapped)) = try ServerMessage.decode(
+                try Fixtures.text("server", "result_stage_mappings")),
+            case .stageMappings(let entries)? = mapped.data
+        else { return XCTFail("stage_mappings") }
+        XCTAssertEqual(entries.map { $0.state?.state }, ["shown", "no_display", nil])
+        XCTAssertEqual(entries[0].mapping?.name, "Projector")
+        XCTAssertNil(entries[1].mapping)
+    }
+
     /// AUD-02: `status` describes every open output device, the primary first.
     func testStatusListsEveryOutputDevice() throws {
         guard case .status(let ok) = try ServerMessage.decode(try Fixtures.text("server", "status")) else {

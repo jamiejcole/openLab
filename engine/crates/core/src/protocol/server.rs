@@ -222,6 +222,34 @@ pub enum ResultData {
     Waveform(Box<WaveformData>),
     /// Answer to `list_patch_mappings`: every patch of the workspace, in workspace order.
     PatchMappings { patches: Vec<PatchMappingEntry> },
+    /// Answer to `list_displays`. `video` is false where this machine's openLab has no video
+    /// output, absent while the stage host has not started.
+    Displays {
+        displays: Vec<crate::stage_link::Display>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        video: Option<bool>,
+    },
+    /// Answer to `list_stage_mappings`: every stage of the workspace, in workspace order.
+    StageMappings { stages: Vec<StageMappingEntry> },
+    /// Test support: answer to `stage_probe`: the test card's frame number if the stage shows
+    /// one, and the colour (RGBA) at each point asked for.
+    #[cfg(feature = "test-support")]
+    StageProbe {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        frame: Option<u16>,
+        colours: Vec<[u8; 4]>,
+    },
+}
+
+/// One stage on this machine: the display chosen for it (absent: none), and where it is now
+/// (absent while the stage host has not said).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StageMappingEntry {
+    pub stage: crate::StageId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapping: Option<crate::settings::StageMapping>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<crate::stage_link::StageState>,
 }
 
 /// One patch's mapping on this machine; `mapping` is absent for a patch that has none (never
