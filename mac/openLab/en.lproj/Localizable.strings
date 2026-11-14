@@ -63,7 +63,7 @@
 "edit.error.dropNotMedia" = "Only audio, video and image files can be dropped here. Folders and other files were not added.";
 "edit.error.notAPicture" = "A Video cue plays a movie or a still image, not a sound file.";
 "edit.error.notASound" = "An Audio cue plays a sound file, not a movie or an image.";
-"edit.error.replaceBusy" = "The audio file of a cue that is running, paused or fading cannot be replaced. Stop it first.";
+"edit.error.replaceBusy" = "The file of a cue that is running, paused or fading cannot be replaced. Stop it first.";
 "edit.error.refused" = "The engine refused the edit: %@";
 "edit.error.notConnected" = "The edit was not made: the engine is not connected.";
 
@@ -273,6 +273,7 @@
 "paste.property.secondTrigger" = "When triggered again";
 "paste.property.secondTriggerOnRelease" = "Second trigger on release";
 "paste.property.outputPatch" = "Output patch";
+"paste.property.stage" = "Stage";
 "paste.property.levels" = "Main, output and routing levels";
 "paste.property.fadeCurve" = "Curve shape";
 "paste.property.fadeMode" = "Absolute or relative";

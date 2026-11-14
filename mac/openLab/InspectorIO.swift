@@ -42,16 +42,25 @@ final class VideoIOControls {
         audioNote.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
     }
 
+    /// A frame rate to three decimals, trailing zeros dropped: 25, 29.97, 23.976, 59.94.
+    nonisolated static func fpsText(_ fps: Double) -> String {
+        guard fps.isFinite, fps > 0 else { return "?" }
+        var text = String(format: "%.3f", fps)
+        while text.hasSuffix("0") { text.removeLast() }
+        if text.hasSuffix(".") { text.removeLast() }
+        return text
+    }
+
     /// What the format row says for a probed file: a movie's codec, pixel size and frame rate, or
     /// a still's format and pixel size.
-    static func formatText(_ p: PictureFormat) -> String {
+    nonisolated static func formatText(_ p: PictureFormat) -> String {
         let size = String(format: loc("inspector.io.pixels"), p.width, p.height)
         if p.type == "still" {
             let name = p.format.map { loc("inspector.io.still.\($0)") } ?? ""
             return String(format: loc("inspector.io.stillFormat"), name, size)
         }
         let codec = p.codec.map { loc("inspector.io.codec.\($0)") } ?? ""
-        let fps = p.fps.map { String(format: "%.3g", $0) } ?? "?"
+        let fps = p.fps.map(fpsText) ?? "?"
         return String(format: loc("inspector.io.videoFormat"), codec, size, fps)
     }
 }

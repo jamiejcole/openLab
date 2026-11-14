@@ -206,7 +206,10 @@ extension CueEditor {
     func pasteProperties(_ ticked: Set<PasteProperty>, from source: Cue, onto cues: [ModelID]) async {
         guard await begin(), let model = store.model else { return }
         let targets = cues.compactMap { model.cue($0) }
-        guard let command = Command.transaction(PasteProperty.commands(ticked, from: source, to: targets)) else {
+        guard
+            let command = Command.transaction(
+                PasteProperty.commands(ticked, from: source, to: targets, media: store.mediaDurations))
+        else {
             return
         }
         _ = report(await store.send(command: command))

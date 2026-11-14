@@ -457,6 +457,12 @@ final class VideoCueTests: XCTestCase {
         click(Self.movie)
         try await go()
         try await play(1)
+        // A running cue's file is not replaced, in words for any file cue.
+        var notices: [String] = []
+        wc.editor.notify = { notices.append($0) }
+        await wc.editor.replaceFile(of: Self.movie, with: folder.appendingPathComponent("media/still.png"))
+        XCTAssertEqual(notices, [loc("edit.error.replaceBusy")])
+        XCTAssertFalse(notices.joined().lowercased().contains("audio"), "\(notices)")
         try await perform(.pauseResumeSelected, on: Self.movie)
         await soon("paused") { self.status(Self.movie) == loc("cue.state.paused") }
         expectRowTime(Self.movie, 1, "the row holds where it paused")
@@ -646,6 +652,72 @@ final class VideoCueTests: XCTestCase {
         XCTAssertEqual(status(Self.still), loc("cue.state.running"), "never the cue itself")
         let shown = await shownFrame()
         XCTAssertEqual(shown, 0, "only the still is on the stage")
+    }
+
+    /// Paste Properties from a still on the side screen with a 2 s duration onto a still and a movie
+    /// on Stage 1: the I/O category offers the stage, Basics the duration; both go to the side
+    /// screen, the still takes 2 s, the movie keeps its file's length; one undo puts both back. A
+    /// still with no duration pasted onto one with a duration makes it "until stopped", never 0.
+    func testPastePropertiesCopiesAVideoCuesStageAndAStillsDuration() async throws {
+        try await openVideoShow()
+        await soon {
+            [Self.still, Self.timedStill].allSatisfy { self.store.mediaDurations[$0]?.picture?.type == "still" }
+        }
+        wc.presentSheet = { _ in }
+        wc.pasteDefaults = UserDefaults(suiteName: "openlab-test-\(UUID().uuidString)") ?? .standard
+        let board = NSPasteboard.withUniqueName()
+        wc.editor.pasteboard = board
+        guard case .success = await store.send(command: .setProperty(Self.timedStill, .stage(Self.side))) else {
+            return XCTFail("stage")
+        }
+        await soon { self.store.model?.cue(Self.timedStill)?.raw["kind"]?["stage"]?.stringValue == Self.side.raw }
+        let copied = await wc.editor.copySelection(of: [Self.timedStill])
+        XCTAssertTrue(copied)
+
+        func paste(onto cues: [ModelID], _ properties: [PasteProperty]) throws {
+            wc.promptPasteProperties(onto: cues)
+            let sheet = try XCTUnwrap(wc.pasteSheet, "the sheet is up")
+            for p in PasteProperty.allCases {
+                guard let box = sheet.propertyChecks[p] else { continue }
+                if (box.state == .on) != properties.contains(p) { box.performClick(nil) }
+            }
+            sheet.applyButton.performClick(nil)
+        }
+        wc.cueList.selectAsUser([Self.still, Self.movie])
+        wc.promptPasteProperties(onto: [Self.still, Self.movie])
+        let offered = try XCTUnwrap(wc.pasteSheet)
+        XCTAssertNotNil(offered.propertyChecks[.stage], "the I/O category offers the stage")
+        XCTAssertNotNil(offered.propertyChecks[.duration], "a still's duration is offered")
+        XCTAssertNil(offered.propertyChecks[.outputPatch], "no audio patch for Video cues")
+        offered.cancelButton.performClick(nil)
+        try paste(onto: [Self.still, Self.movie], [.stage, .duration])
+        await soon("both on the side screen") {
+            [Self.still, Self.movie].allSatisfy {
+                self.store.model?.cue($0)?.raw["kind"]?["stage"]?.stringValue == Self.side.raw
+            }
+        }
+        await soon("the still takes 2 s") { self.duration(Self.still) == 2 }
+        XCTAssertEqual(duration(Self.movie), 4, "the movie keeps its file's length")
+        XCTAssertEqual(store.model?.cue(Self.movie)?.raw["kind"]?["duration"], .null)
+        click(Self.still)
+        let io = wc.inspector.videoIO
+        await soon {
+            io.stagePopup.titleOfSelectedItem == "Side screen" && io.stageSizeLabel.stringValue == "1280 × 720"
+        }
+
+        await wc.editor.undo()
+        await soon("one undo puts both back") {
+            [Self.still, Self.movie].allSatisfy {
+                self.store.model?.cue($0)?.raw["kind"]?["stage"]?.stringValue == Self.stage.raw
+            } && self.cell(Self.still, "duration") == ""
+        }
+
+        // "Until stopped" pastes as itself.
+        let again = await wc.editor.copySelection(of: [Self.still])
+        XCTAssertTrue(again)
+        try paste(onto: [Self.timedStill], [.duration])
+        await soon("no duration, not 0") { self.store.model?.cue(Self.timedStill)?.raw["kind"]?["duration"] == .null }
+        XCTAssertEqual(cell(Self.timedStill, "duration"), "")
     }
 
     // MARK: Flow 6: tabs and icon
