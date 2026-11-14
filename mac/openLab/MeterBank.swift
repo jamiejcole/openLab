@@ -191,6 +191,11 @@ final class MeterView: NSView {
     var source: MeterSource? {
         didSet { if oldValue != source { invalidate() } }
     }
+    /// Draws this many bars whatever the source has sent, so each lines up with a row beside it
+    /// (the patch editor's cue outputs); nil: one bar per channel sent.
+    var fixedRows: Int? {
+        didSet { if oldValue != fixedRows { invalidate() } }
+    }
     private var attachedTo: MeterBank?
     #if DEBUG
         /// Redraws requested so far (tests count them: a view that cannot draw ignores `needsDisplay`).
@@ -265,8 +270,16 @@ final class MeterView: NSView {
         updateLive()
     }
 
+    #if DEBUG
+        /// A scenario run draws windows that are never put on screen: their meters count as shown.
+        static var countsWindowsOffScreen = false
+    #endif
+
     var isOnScreen: Bool {
         guard let w = window, !isHiddenOrHasHiddenAncestor else { return false }
+        #if DEBUG
+            if Self.countsWindowsOffScreen { return !occluded }
+        #endif
         return w.isVisible && !w.isMiniaturized && !occluded
     }
 
@@ -294,7 +307,7 @@ final class MeterView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSBezierPath.clip(bounds)
         let count = source.flatMap { bank?.channelCount($0) } ?? 0
-        let rows = max(count, 1)
+        let rows = fixedRows.map { max($0, 1) } ?? max(count, 1)
         // Every row stays inside the view: with many channels the gaps go first, then the rows
         // get thinner than a point.
         var gap: CGFloat = 1

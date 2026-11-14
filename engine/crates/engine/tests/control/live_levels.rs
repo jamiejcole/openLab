@@ -352,6 +352,7 @@ fn two_patch_show_with(
         master_db: 0.0,
         outputs: vec![
             PatchOutput {
+                name: String::new(),
                 level_db: 0.0,
                 mute: false,
                 polarity_inverted: false,
@@ -416,7 +417,7 @@ fn a_playing_cue_follows_its_patch_change_without_a_click() {
 /// must begin silent in the mixer.
 fn moved_to_four_outputs(levels_of: impl FnOnce(&mut CueLevels)) -> f32 {
     let mut s = two_patch_show_with(patch_id(), 0, vec![], |ws, c| {
-        ws.patches[1].outputs = vec![ws.patches[1].outputs[0]; 4];
+        ws.patches[1].outputs = vec![ws.patches[1].outputs[0].clone(); 4];
         if let CueKind::Audio { levels, .. } = &mut ws.cue_lists[0].cues[0].kind {
             levels_of(levels);
             levels.crosspoints.push(Crosspoint {
@@ -471,7 +472,7 @@ fn an_unlisted_cue_output_stays_silent_when_the_playing_cue_moves_to_a_patch_tha
 #[test]
 fn a_playing_cue_moved_to_a_wider_patch_is_heard_on_its_later_outputs() {
     let mut s = two_patch_show_with(patch_id(), 0, vec![], |ws, c| {
-        ws.patches[1].outputs = vec![ws.patches[1].outputs[0]; 100];
+        ws.patches[1].outputs = vec![ws.patches[1].outputs[0].clone(); 100];
         if let CueKind::Audio { levels, .. } = &mut ws.cue_lists[0].cues[0].kind {
             levels.outputs = vec![levels.outputs[0]; 100];
             levels.crosspoints.push(Crosspoint {

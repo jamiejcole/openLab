@@ -107,7 +107,8 @@ impl DocCx<'_> {
                 name: Some(patch.name.clone()),
                 device,
                 mapped: !matches!(resolution, None | Some(PatchResolution::Unmapped)),
-                resolution: resolution.map(WireResolution::from),
+                resolution: resolution
+                    .map(|r| WireResolution::with_reason(r, self.eng.unusable_reason(r))),
                 cues,
             });
         }

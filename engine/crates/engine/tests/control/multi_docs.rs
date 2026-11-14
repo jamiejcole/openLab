@@ -130,6 +130,52 @@ fn two_docs_play_side_by_side_sample_exact() {
     assert!(s.control().is_idle());
 }
 
+/// A cue-output count edit in one doc fits that doc's mapping on this machine, and its undo
+/// fits it back; another doc's patch (another workspace) keeps its mapping, and its cue plays.
+#[test]
+fn a_count_change_in_one_doc_fits_its_mapping_and_leaves_the_other_docs() {
+    let a = wav(&dc(48_000, 0.25));
+    let b = wav(&dc(48_000, 0.5));
+    let (mut s, ids) = docs_show(
+        workspace(vec![audio(1, &a, 0)]),
+        vec![ws_n(1, vec![audio(1, &b, 1)])],
+    );
+    let (da, db) = (ids[0], ids[1]);
+    let ws_a = s.control().doc(da).unwrap().workspace().id;
+    let ws_b = s.control().doc(db).unwrap().workspace().id;
+    let rid = s.request_id();
+    let replies = s.send_doc(
+        da,
+        ClientMessage::Command {
+            id: rid,
+            command: Box::new(Command::SetPatchProperty {
+                id: patch_id(),
+                property: openlab_core::PatchProperty::ChannelCount { value: 3 },
+            }),
+            coalesce: None,
+        },
+    );
+    assert_eq!(result_error(&replies), None);
+    let entry = |s: &OfflineShow, ws| s.control().machine().patch_mapping(ws, patch_id()).cloned();
+    assert_eq!(
+        entry(&s, ws_a).map(|m| m.channels),
+        Some(vec![0, 1, 0]),
+        "doc A's mapping follows its count (the offline device has two outputs)"
+    );
+    assert_eq!(entry(&s, ws_b).map(|m| m.channels), Some(vec![0, 1]));
+    let rid = s.request_id();
+    assert_eq!(
+        result_error(&s.send_doc(da, ClientMessage::Undo { id: rid })),
+        None
+    );
+    assert_eq!(entry(&s, ws_a).map(|m| m.channels), Some(vec![0, 1]));
+    start_in(&mut s, da, 1);
+    start_in(&mut s, db, 1);
+    s.run(1000);
+    assert_eq!(state(&s, da, 1), CueState::Running);
+    assert_eq!(state(&s, db, 1), CueState::Running);
+}
+
 /// Panic, Stop All and Pause All are a doc's own (QLab 5: they act on one workspace; the
 /// front window's, which is the UI's choice): the other doc plays on, sample for sample.
 #[test]

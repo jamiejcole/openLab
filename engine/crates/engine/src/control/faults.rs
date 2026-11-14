@@ -361,6 +361,7 @@ mod tests {
         let mut ws = memo_workspace(10.0);
         let patch = openlab_core::PatchId(uuid::Uuid::from_u128(5));
         let output = openlab_core::PatchOutput {
+            name: String::new(),
             level_db: 0.0,
             mute: false,
             polarity_inverted: false,

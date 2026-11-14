@@ -4,9 +4,9 @@ import AppKit
 import Combine
 
 /// The workspace settings window (UI-01, AUD-07, WS-07, PB-02, PB-03). QLab 5 has it in the
-/// File menu (Cmd-,) and behind the footer gear: a General tab (the panic fade and the time
-/// between GOs) and an Audio tab (the output device, and the patch editor that puts each output
-/// patch on device channels). It reads and writes through its `WorkspaceSettingsModel`.
+/// File menu (Cmd-,) and behind the footer gear: General (the panic fade and the time between GOs),
+/// Keys, Audio (the output patch table, `+Audio`, and the volume limits), OSC and Network. It reads
+/// and writes through its `WorkspaceSettingsModel`.
 @MainActor
 final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDelegate, NSWindowDelegate,
     NSTabViewDelegate
@@ -18,29 +18,25 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     // General
     let panicField = NSTextField()
     let goIntervalField = NSTextField()
-    // Volume limits (Audio tab)
+    // Audio: the patch table (`+Audio`) and the volume limits beside it.
     let maxLimitField = NSTextField()
     let minLimitField = NSTextField()
-    let patchEditButton = NSButton(title: loc("settings.audio.edit"), target: nil, action: nil)
     let patchAddButton = NSButton(title: loc("settings.audio.newPatch"), target: nil, action: nil)
-    let patchRemoveButton = NSButton(title: loc("settings.audio.removePatch"), target: nil, action: nil)
-    /// The shown patch's name, typed in place.
-    let patchNameField = NSTextField()
-    /// The patch editor of the patch last edited; the window lives as long as this window does.
-    private(set) var patchEditor: PatchEditorWindowController?
-
-    // Audio
-    let devicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    let deviceStatusLabel = NSTextField(wrappingLabelWithString: "")
-    let deviceNoteLabel = NSTextField(wrappingLabelWithString: "")
-    let patchPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    let patchProblemLabel = NSTextField(wrappingLabelWithString: "")
-    let patchDevicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    let channelsStack = NSStackView()
-    /// Peaks of the shown patch's outputs (AUD-19), live only while the Audio tab shows.
-    let patchMeter = MeterView()
-    /// One popup per output of the shown patch: the device channel it plays on.
-    private(set) var channelPopups: [NSPopUpButton] = []
+    /// The table (made again for each drawing) and the view it sits in, in a scroll view.
+    var patchGrid = NSGridView()
+    let patchGridHolder = WidthWatchingView()
+    /// One per patch row, in table order; rebuilt whenever the table is drawn.
+    var patchNameFields: [NSTextField] = []
+    var patchDevicePopups: [NSPopUpButton] = []
+    var patchEditButtons: [NSButton] = []
+    var patchRemoveButtons: [NSButton] = []
+    var patchProblemLabels: [NSTextField] = []
+    var shownPatchTable: PatchTableState?
+    /// The patch editor last opened; each patch's editor lives as long as this window does.
+    var patchEditor: PatchEditorWindowController?
+    var patchEditors: [ModelID: PatchEditorWindowController] = [:]
+    /// Whether an opened patch editor is put on screen (a scenario run draws it off screen).
+    var presentsEditors = true
 
     // OSC passcode table (NET-02); built and drawn in `+Osc`.
     let oscAddButton = NSButton(title: loc("settings.osc.add"), target: nil, action: nil)
@@ -79,17 +75,21 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     private var subs: [AnyCancellable] = []
     // Menu-tracking observers: held only while the window is open, removed when it closes.
     private var observers: [NSObjectProtocol] = []
+    private var fitQueued = false
     /// How many times the controls were rebuilt (tests: an unchanged status rebuilds nothing).
     private(set) var renderCount = 0
     var lastDrawn: WorkspaceSettingsModel.DisplayState?
     /// A popup's menu is open: rebuilding its items would close it under the operator's hand.
     private var menuOpen = false
-    private var shownPatch: ModelID?
+    /// A read of the engine's patch resolutions under way (a device came or went).
+    private var rereading: Task<Void, Never>?
+    private var rereadAgain = false
 
     init(store: WorkspaceStore) {
         model = WorkspaceSettingsModel(store: store)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 540),
+            // Wide enough by default for a device's whole name in the patch table.
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 540),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = loc("settings.title")
         window.identifier = NSUserInterfaceItemIdentifier(AX.settingsWindow)
@@ -100,9 +100,32 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // Published before they change: the sinks use the delivered value and render after it.
         subs.append(store.$status.sink { [weak self] _ in self?.renderSoon() })
         subs.append(store.$model.sink { [weak self] _ in self?.renderSoon() })
-        window.contentMinSize = NSSize(width: 520, height: 540)
+        // The table is drawn from what the model last read from the engine, whoever asked for it.
+        subs.append(model.$patches.sink { [weak self] _ in self?.renderSoon() })
+        subs.append(model.$devices.sink { [weak self] _ in self?.renderSoon() })
+        // A device lost, back or opened changes where patches resolve; the engine's patch warnings
+        // and device states say so, and the table reads the resolutions again.
+        subs.append(store.$warnings.removeDuplicates().sink { [weak self] _ in self?.rereadSoon() })
+        subs.append(
+            store.$status.map { $0?.outputs.map(\.state) }.removeDuplicates().sink { [weak self] _ in
+                self?.rereadSoon()
+            })
+        // Taller than the pages need by the message row's two lines, which never take the pages' room.
+        window.contentMinSize = NSSize(width: 520, height: 552)
         window.delegate = self
         tabs.delegate = self
+        // The table takes its width only once its tab is laid out, after the lines were wrapped:
+        // they are wrapped again then (on the next turn, not inside the layout pass).
+        patchGridHolder.onWidthChange = { [weak self] in
+            guard let self, !self.fitQueued else { return }
+            self.fitQueued = true
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.fitQueued = false
+                    self?.fitProblemLines()
+                }
+            }
+        }
         render()
     }
 
@@ -141,6 +164,30 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         render()
     }
 
+    /// A problem line under a patch wraps at the table's width, which follows the window's.
+    func windowDidResize(_ notification: Notification) { fitProblemLines() }
+
+    /// Each problem line wraps at the width its cell gives it as laid out now, and its row is as
+    /// tall as the text there: the grid sizes a merged row from a guess that left a blank band
+    /// under a two-line warning.
+    func fitProblemLines() {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        var changed = false
+        for label in patchProblemLabels where label.frame.width > 100 {
+            let width = label.frame.width
+            let needs = ceil(
+                label.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 10_000)).height ?? 0)
+            guard let row = patchGrid.cell(for: label)?.row else { continue }
+            if abs(label.preferredMaxLayoutWidth - width) > 0.5 || row.height != needs {
+                label.preferredMaxLayoutWidth = width
+                label.invalidateIntrinsicContentSize()
+                row.height = needs
+                changed = true
+            }
+        }
+        if changed { window?.contentView?.layoutSubtreeIfNeeded() }
+    }
+
     func windowWillClose(_ notification: Notification) {
         model.message = nil
         model.keyRefusal = nil
@@ -156,6 +203,8 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     @discardableResult
     func present() -> Task<Void, Never> {
         showWindow(nil)
+        // No caret in a field: the next Space (GO, in an operator's hands) would replace its text.
+        window?.makeFirstResponder(nil)
         return Task {
             await model.refresh()
             render()
@@ -164,6 +213,25 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
 
     private func renderSoon() {
         DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.render() } }
+    }
+
+    /// Reads devices and resolutions again once (only while the window shows: closed, it reads
+    /// them when presented).
+    private func rereadSoon() {
+        guard window?.isVisible == true else { return }
+        // One read at a time; a change during it is read again after it.
+        guard rereading == nil else {
+            rereadAgain = true
+            return
+        }
+        rereading = Task {
+            repeat {
+                rereadAgain = false
+                await model.refresh()
+            } while rereadAgain
+            rereading = nil
+            render()
+        }
     }
 
     // MARK: Building
@@ -177,17 +245,6 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             field.widthAnchor.constraint(equalToConstant: 70).isActive = true
         }
 
-        maxLimitField.setAX(AX.settingsLimitMax, label: loc("settings.audio.limitMax"))
-        minLimitField.setAX(AX.settingsLimitMin, label: loc("settings.audio.limitMin"))
-        for field in [maxLimitField, minLimitField] {
-            field.alignment = .right
-            field.delegate = self
-            field.widthAnchor.constraint(equalToConstant: 70).isActive = true
-        }
-        patchEditButton.setAX(AX.settingsPatchEdit, label: loc("settings.audio.edit"))
-        patchEditButton.target = self
-        patchEditButton.action = #selector(editPatchClicked)
-
         let general = NSStackView(views: [
             row(loc("settings.general.panic"), panicField, loc("settings.seconds")),
             row(loc("settings.general.goInterval"), goIntervalField, loc("settings.seconds")),
@@ -196,55 +253,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         general.alignment = .leading
         general.spacing = 12
 
-        devicePopup.setAX(AX.settingsDevicePopup, label: loc("settings.audio.device"))
-        devicePopup.target = self
-        devicePopup.action = #selector(deviceChosen)
-        deviceStatusLabel.setAX(AX.settingsDeviceStatus)
-        deviceNoteLabel.setAX(AX.settingsDeviceNote)
-        deviceNoteLabel.textColor = .systemOrange
-        patchPopup.setAX(AX.settingsPatchPopup, label: loc("settings.audio.patch"))
-        patchPopup.target = self
-        patchPopup.action = #selector(patchChosen)
-        patchProblemLabel.setAX(AX.settingsPatchProblem)
-        patchProblemLabel.textColor = .systemRed
-        patchDevicePopup.setAX(AX.settingsPatchDevicePopup, label: loc("settings.audio.patchDevice"))
-        patchDevicePopup.target = self
-        patchDevicePopup.action = #selector(patchDeviceChosen)
-        patchNameField.setAX("settings-patch-name", label: loc("settings.audio.patchName"))
-        patchNameField.delegate = self
-        patchNameField.widthAnchor.constraint(equalToConstant: 150).isActive = true
-        patchAddButton.setAX("settings-patch-add", label: loc("settings.audio.newPatch"))
-        patchRemoveButton.setAX("settings-patch-remove", label: loc("settings.audio.removePatch"))
-        for b in [patchAddButton, patchRemoveButton] { b.target = self }
-        patchAddButton.action = #selector(patchAddClicked)
-        patchRemoveButton.action = #selector(patchRemoveClicked)
-        let patchButtons = NSStackView(views: [patchAddButton, patchRemoveButton])
-        patchButtons.spacing = 8
-        channelsStack.orientation = .vertical
-        channelsStack.alignment = .leading
-        channelsStack.spacing = 6
-
-        let audio = NSStackView(views: [
-            heading(loc("settings.audio.device")),
-            devicePopup, deviceStatusLabel, deviceNoteLabel,
-            heading(loc("settings.audio.patches")),
-            row(nil, patchPopup, patchEditButton),
-            row(loc("settings.audio.patchName"), patchNameField, patchButtons),
-            row(loc("settings.audio.patchDevice"), patchDevicePopup, nil),
-            channelsStack, patchMeter, patchProblemLabel,
-            heading(loc("settings.audio.limits")),
-            row(loc("settings.audio.limitMax"), maxLimitField, loc("settings.db")),
-            row(loc("settings.audio.limitMin"), minLimitField, loc("settings.db")),
-        ])
-        patchMeter.bank = model.store.meters
-        patchMeter.setAX("settings-patch-meter")
-        audio.orientation = .vertical
-        audio.alignment = .leading
-        audio.spacing = 8
-
         for (label, view, id) in [
             (loc("settings.tab.general"), general, "general"), (loc("settings.tab.keys"), buildKeysTab(), "keys"),
-            (loc("settings.tab.audio"), audio, "audio"),
+            (loc("settings.tab.audio"), buildAudioTab(), "audio"),
             (loc("settings.tab.osc"), buildOscTab(), "osc"),
             (loc("settings.tab.network"), buildNetworkTab(), "network"),
         ] {
@@ -253,12 +264,12 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             let holder = NSView()
             view.translatesAutoresizingMaskIntoConstraints = false
             holder.addSubview(view)
-            // The OSC table takes the pane's height.
-            if id == "osc" || id == "network" {
+            // The tables take the pane's height.
+            if id == "osc" || id == "network" || id == "audio" {
                 view.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -16).isActive = true
             }
-            // The key map's two columns share the pane's width, so a long action name wraps in its own.
-            if id == "keys" {
+            // The key map's two columns and the patch table share the pane's width, so a long name wraps or is cut in its own.
+            if id == "keys" || id == "audio" {
                 view.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -16).isActive = true
             }
             NSLayoutConstraint.activate([
@@ -278,7 +289,15 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         doneButton.target = self
         doneButton.action = #selector(doneClicked)
 
+        // The line takes two lines at most, cut after that, in a row of fixed height: a long
+        // refusal never moves the page above it.
+        messageLabel.maximumNumberOfLines = 2
+        messageLabel.font = .systemFont(ofSize: 11)
+        messageLabel.lineBreakMode = .byWordWrapping
+        messageLabel.cell?.wraps = true
+        messageLabel.cell?.truncatesLastVisibleLine = true
         let bottom = NSStackView(views: [messageLabel, doneButton])
+        bottom.heightAnchor.constraint(equalToConstant: 32).isActive = true
         bottom.orientation = .horizontal
         // The line takes the free width, so Done stays at the right edge with or without a message.
         bottom.distribution = .fill
@@ -299,12 +318,6 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         // page's wrapping labels would otherwise size the tab view to them).
         tabs.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -24).isActive = true
         return root
-    }
-
-    private func heading(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
-        return label
     }
 
     private func row(_ title: String?, _ control: NSView, _ suffix: Any?) -> NSStackView {
@@ -334,8 +347,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         renderNetwork(state.network, forced: forced)
         renderKeys(state.keys, refusal: state.keyRefusal)
         renderGeneral()
-        renderDevice()
-        renderPatch()
+        renderPatches(forced: forced)
         messageLabel.stringValue = model.message ?? ""
     }
 
@@ -358,199 +370,28 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         seconds == seconds.rounded() ? String(Int(seconds)) : String(seconds)
     }
 
-    private func renderDevice() {
-        devicePopup.removeAllItems()
-        devicePopup.addItem(withTitle: loc("settings.audio.systemDefault"))
-        devicePopup.lastItem?.representedObject = nil
-        for d in model.devices {
-            devicePopup.addItem(withTitle: d.name)
-            devicePopup.lastItem?.representedObject = d.name
-        }
-        if let chosen = model.chosenDevice, !model.devices.contains(where: { $0.name == chosen }) {
-            devicePopup.addItem(withTitle: String(format: loc("settings.audio.notAvailable"), chosen))
-            devicePopup.lastItem?.representedObject = chosen
-        }
-        let index = devicePopup.itemArray.firstIndex { ($0.representedObject as? String) == model.chosenDevice }
-        devicePopup.selectItem(at: index ?? 0)
-        devicePopup.isEnabled = model.loaded
-
-        if let playing = model.playing {
-            let state = StatusPresentation.deviceStateText(playing.state)
-            deviceStatusLabel.stringValue = String(
-                format: loc("settings.audio.playingOn"), playing.name ?? loc("status.detail.none"), state)
-        } else {
-            deviceStatusLabel.stringValue = loc("settings.audio.noStatus")
-        }
-        var notes: [String] = []
-        if model.deviceProblem { notes.append(loc("settings.audio.deviceProblem")) }
-        if model.chosenDeviceMissing, let chosen = model.chosenDevice {
-            notes.append(String(format: loc("settings.audio.chosenMissing"), chosen))
-        } else if model.needsRestart {
-            notes.append(loc("settings.audio.restartNeeded"))
-        }
-        deviceNoteLabel.stringValue = notes.joined(separator: "\n")
-        deviceNoteLabel.isHidden = notes.isEmpty
-    }
-
-    private var shownRow: PatchRow? {
-        model.patches.first { $0.id == shownPatch } ?? model.patches.first
-    }
-
-    private func renderPatch() {
-        patchPopup.removeAllItems()
-        for p in model.patches {
-            patchPopup.addItem(withTitle: p.name.isEmpty ? loc("settings.audio.untitledPatch") : p.name)
-            patchPopup.lastItem?.representedObject = p.id.raw
-        }
-        guard let row = shownRow else {
-            patchDevicePopup.removeAllItems()
-            patchDevicePopup.isEnabled = false
-            channelPopups = []
-            for v in channelsStack.views { v.removeFromSuperview() }
-            patchMeter.source = nil
-            patchProblemLabel.stringValue = ""
-            return
-        }
-        shownPatch = row.id
-        if patchNameField.currentEditor() == nil { patchNameField.stringValue = row.name }
-        patchNameField.isEnabled = model.store.model != nil
-        patchRemoveButton.isEnabled = model.patches.count > 1
-        patchMeter.source = .output(row.id)
-        patchPopup.selectItem(at: model.patches.firstIndex { $0.id == row.id } ?? 0)
-
-        patchDevicePopup.removeAllItems()
-        patchDevicePopup.addItem(withTitle: loc("settings.audio.noDevice"))
-        patchDevicePopup.lastItem?.representedObject = nil
-        for name in model.deviceChoices(for: row) {
-            let known = model.devices.contains { $0.name == name }
-            patchDevicePopup.addItem(
-                withTitle: known ? name : String(format: loc("settings.audio.notAvailable"), name))
-            patchDevicePopup.lastItem?.representedObject = name
-        }
-        let current = patchDevicePopup.itemArray.firstIndex {
-            ($0.representedObject as? String) == row.mapping?.device
-        }
-        patchDevicePopup.selectItem(at: current ?? 0)
-        patchDevicePopup.isEnabled = model.loaded
-
-        for v in channelsStack.views { v.removeFromSuperview() }
-        channelPopups = []
-        if let mapping = row.mapping {
-            let count = model.channelCount(of: mapping.device)
-            for output in 0..<row.outputCount {
-                let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-                popup.setAX("\(AX.settingsChannelPopup)-\(output + 1)", label: channelLabel(output))
-                for c
-                    in 0..<max(count, Int(mapping.channels.indices.contains(output) ? mapping.channels[output] + 1 : 0))
-                {
-                    popup.addItem(withTitle: String(c + 1))
-                    popup.lastItem?.tag = c
-                }
-                if mapping.channels.indices.contains(output) {
-                    popup.selectItem(withTag: Int(mapping.channels[output]))
-                }
-                popup.tag = output
-                popup.target = self
-                popup.action = #selector(channelChosen(_:))
-                popup.isEnabled = model.loaded
-                channelPopups.append(popup)
-                channelsStack.addArrangedSubview(self.row(channelLabel(output), popup, nil))
-            }
-        }
-        patchProblemLabel.stringValue = model.problem(of: row).map(problemText) ?? ""
-    }
-
-    private func channelLabel(_ output: Int) -> String {
-        String(format: loc("settings.audio.output"), output + 1)
-    }
-
-    func problemText(_ problem: PatchProblem) -> String {
-        switch problem {
-        case .unmapped: return loc("settings.audio.problem.unmapped")
-        case .deviceMissing(let name): return String(format: loc("settings.audio.problem.deviceMissing"), name)
-        case .channelsMissing: return loc("settings.audio.problem.channelsMissing")
-        case .outputCountMismatch: return loc("settings.audio.problem.outputCount")
-        }
-    }
-
     // MARK: Actions
-
-    @objc private func deviceChosen() {
-        let name = devicePopup.selectedItem?.representedObject as? String
-        Task {
-            await model.chooseDevice(name)
-            render()
-        }
-    }
-
-    @objc private func patchChosen() {
-        endPatchNameTyping()
-        shownPatch = (patchPopup.selectedItem?.representedObject as? String).map { ModelID($0) }
-        lastDrawn = nil
-        render()
-    }
-
-    /// A name still being typed belongs to the patch shown now: it is committed before another is shown.
-    private func endPatchNameTyping() {
-        if patchNameField.currentEditor() != nil { window?.makeFirstResponder(nil) }
-    }
-
-    @objc private func patchAddClicked() {
-        endPatchNameTyping()
-        Task {
-            if let id = await model.addPatch() { shownPatch = id }
-            lastDrawn = nil
-            render()
-        }
-    }
-
-    @objc private func patchRemoveClicked() {
-        endPatchNameTyping()
-        guard let row = shownRow else { return }
-        Task {
-            if await model.removePatch(row.id) { shownPatch = nil }
-            lastDrawn = nil
-            render()
-        }
-    }
-
-    @objc private func patchDeviceChosen() {
-        guard let row = shownRow else { return }
-        let name = patchDevicePopup.selectedItem?.representedObject as? String
-        Task {
-            await model.setMapping(row, device: name)
-            render()
-        }
-    }
-
-    @objc private func channelChosen(_ sender: NSPopUpButton) {
-        guard let row = shownRow, let channel = sender.selectedItem?.tag else { return }
-        Task {
-            await model.setChannel(row, output: sender.tag, channel: UInt32(channel))
-            render()
-        }
-    }
-
-    @objc private func editPatchClicked() {
-        guard let row = shownRow else { return }
-        let editor =
-            patchEditor?.patchID == row.id
-            ? patchEditor : PatchEditorWindowController(store: model.store, patch: row.id)
-        patchEditor = editor
-        editor?.present()
-    }
 
     @objc private func doneClicked() { window?.close() }
 
-    /// Goes with the workspace (and takes its patch editor along, which otherwise outlives them both).
+    /// Goes with the workspace (and takes its patch editors along, which otherwise outlive them both).
     override func close() {
-        patchEditor?.close()
+        for editor in patchEditors.values { editor.close() }
         super.close()
     }
 
     /// Return in a field commits it and leaves the window open (the Done button's Return key
     /// would otherwise close the window with the typed text never sent).
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        // Esc drops what was typed (the app has already panicked, which Esc does from any window):
+        // the field shows the engine's value again and nothing is sent.
+        if selector == #selector(NSResponder.cancelOperation(_:)) {
+            control.abortEditing()
+            shownPatchTable = nil
+            lastDrawn = nil
+            render()
+            return true
+        }
         guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
         window?.makeFirstResponder(nil)
         return true
@@ -568,16 +409,11 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             oscCodeCommitted(field)
             return
         }
-        let text = field.stringValue
-        if field === patchNameField {
-            guard let row = shownRow else { return }
-            Task {
-                await model.renamePatch(row.id, to: text)
-                lastDrawn = nil
-                render()
-            }
+        if patchNameFields.contains(field) {
+            patchNameCommitted(field)
             return
         }
+        let text = field.stringValue
         Task {
             if field === panicField {
                 await model.setPanicDuration(text)
@@ -601,5 +437,19 @@ final class DoneButton: NSButton {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if window?.firstResponder is NSText { return false }
         return super.performKeyEquivalent(with: event)
+    }
+}
+
+/// A flipped view that says when its width changes (the patch table's holder: its problem lines
+/// wrap at that width).
+@MainActor
+final class WidthWatchingView: NSView {
+    var onWidthChange: (() -> Void)?
+    override var isFlipped: Bool { true }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let before = frame.width
+        super.setFrameSize(newSize)
+        if frame.width != before { onWidthChange?() }
     }
 }

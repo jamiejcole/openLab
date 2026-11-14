@@ -75,6 +75,7 @@ fn wide_show(path: &std::path::Path, crosspoints: Vec<Crosspoint>) -> OfflineSho
     let mut ws = workspace(vec![cue]);
     ws.patches[0].outputs = vec![
         PatchOutput {
+            name: String::new(),
             level_db: 0.0,
             mute: false,
             polarity_inverted: false,

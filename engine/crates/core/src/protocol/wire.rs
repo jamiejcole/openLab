@@ -76,6 +76,11 @@ pub enum WireResolution {
     Unmapped,
     DeviceMissing {
         device: String,
+        /// Why a listed device does not play the patch (it cannot run at the show's rate, its
+        /// open failed, too many devices are open); absent while it is not listed or still
+        /// opening.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     ChannelsMissing {
         device: String,
@@ -88,6 +93,17 @@ pub enum WireResolution {
     },
 }
 
+impl WireResolution {
+    /// `resolution` as sent, with the reason a listed device cannot play when there is one.
+    pub fn with_reason(resolution: &PatchResolution, reason: Option<&String>) -> Self {
+        let mut wire = Self::from(resolution);
+        if let Self::DeviceMissing { reason: r, .. } = &mut wire {
+            *r = reason.cloned();
+        }
+        wire
+    }
+}
+
 impl From<&PatchResolution> for WireResolution {
     fn from(resolution: &PatchResolution) -> Self {
         match resolution {
@@ -98,6 +114,7 @@ impl From<&PatchResolution> for WireResolution {
             PatchResolution::Unmapped => Self::Unmapped,
             PatchResolution::DeviceMissing { device } => Self::DeviceMissing {
                 device: device.clone(),
+                reason: None,
             },
             PatchResolution::ChannelsMissing {
                 device,

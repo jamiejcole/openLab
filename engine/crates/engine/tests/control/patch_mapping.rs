@@ -443,44 +443,133 @@ fn a_patchs_cue_output_count_is_set_from_1_to_128_and_cues_on_it_show_that_many_
     assert_eq!(cue_meters(&msgs, 2).last().map(Vec::len), Some(1));
 }
 
+/// A show whose patch was resized since this machine's mapping was stored opens with the
+/// mapping fitted to it (the kept output where it was, the new one on its own number): the
+/// patch plays, nothing is reported.
 #[test]
-fn a_mapping_with_the_wrong_count_is_reported_and_setting_it_right_fixes_it() {
+fn a_stored_mapping_of_another_length_is_fitted_when_the_show_opens() {
     let env = env();
     let path = wav(&dc(400, 0.5));
     let ws = workspace(vec![audio(1, &path, 0)]);
-    // This machine's file maps the two-output patch to one channel (a patch resized since).
     let mut machine = MachineSettings::default();
     machine
-        .set_patch_mapping(ws.id, patch_id(), mapping("Offline", &[0]))
+        .set_patch_mapping(ws.id, patch_id(), mapping("Offline", &[2]))
         .unwrap();
     let mut c = from_disk(&env, vec![device("Offline", 4)]);
     c.machine = machine;
     let mut s = start_show(ws.clone(), c);
-    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
-    let report = preshow(&mut s);
-    let p = report
-        .patches
-        .iter()
-        .find(|p| p.patch == patch_id())
-        .unwrap();
-    assert!(
-        matches!(
-            p.resolution,
-            Some(WireResolution::OutputCountMismatch {
-                mapped: 1,
-                outputs: 2
-            })
-        ),
-        "{:?}",
-        p.resolution
-    );
-
-    assert_eq!(
-        set(&mut s, patch_id(), Some(mapping("Offline", &[0, 1]))),
-        Ok(())
-    );
+    assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[2, 1])));
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
     assert!(preshow(&mut s).patches.is_empty());
+}
+
+fn ok_reply(replies: &[ServerMessage]) {
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+}
+
+fn undo(s: &mut OfflineShow) {
+    let id = s.request_id();
+    ok_reply(&s.send(ClientMessage::Undo { id }));
+}
+
+fn redo(s: &mut OfflineShow) {
+    let id = s.request_id();
+    ok_reply(&s.send(ClientMessage::Redo { id }));
+}
+
+/// One cue-output count edit keeps the patch mapped on this machine, and so do its undo and
+/// redo: outputs kept stay on their device channels, new ones go to the channel of their own
+/// number (round the device's outputs), removed ones drop. A cue playing meanwhile plays on,
+/// and the next GO of another cue on the patch plays (the patch is never broken).
+#[test]
+fn a_count_change_its_undo_and_redo_keep_the_patch_mapped_and_cues_playing() {
+    let env = env();
+    let path = wav(&dc(96_000, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0), audio(2, &path, 0)]);
+    let mut s = start_show(ws.clone(), from_disk(&env, vec![device("Offline", 4)]));
+    assert_eq!(
+        set(&mut s, patch_id(), Some(mapping("Offline", &[1, 0]))),
+        Ok(())
+    );
+    s.transport(TransportAction::Start { cue: id(1) });
+    s.run(500);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+
+    assert_eq!(edit(&mut s, channel_count(6)), Ok(()));
+    assert_eq!(
+        stored(&s, &ws),
+        Some(mapping("Offline", &[1, 0, 2, 3, 0, 1]))
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    undo(&mut s);
+    assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[1, 0])));
+    s.run(500);
+    assert_eq!(
+        s.control().engine().state(id(1)),
+        CueState::Running,
+        "it plays on"
+    );
+    s.transport(TransportAction::Start { cue: id(2) });
+    s.run(500);
+    assert_eq!(
+        s.control().engine().state(id(2)),
+        CueState::Running,
+        "the next GO plays after an undo"
+    );
+    redo(&mut s);
+    assert_eq!(
+        stored(&s, &ws),
+        Some(mapping("Offline", &[1, 0, 2, 3, 0, 1]))
+    );
+    assert_eq!(edit(&mut s, channel_count(1)), Ok(()));
+    assert_eq!(stored(&s, &ws), Some(mapping("Offline", &[1])));
+    s.transport(TransportAction::HardStop { cue: id(2) });
+    s.run(500);
+    s.transport(TransportAction::Start { cue: id(2) });
+    s.run(500);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    assert!(
+        preshow(&mut s).patches.is_empty(),
+        "no patch problem after count, undo, redo"
+    );
+}
+
+/// The patch's device is not connected when the count changes: the mapping still follows the
+/// count (counted round the outputs it already reaches), so the patch plays as soon as the
+/// device is back. An explicitly cleared entry stays cleared.
+#[test]
+fn a_count_change_while_the_device_is_missing_or_cleared_keeps_the_entry_consistent() {
+    let env = env();
+    let ws = workspace(vec![]);
+    let mut machine = MachineSettings::default();
+    machine
+        .set_patch_mapping(ws.id, patch_id(), mapping("Gone", &[0, 1]))
+        .unwrap();
+    let mut c = from_disk(&env, vec![device("Offline", 4)]);
+    c.machine = machine;
+    let mut s = start_show(ws.clone(), c);
+    assert_eq!(edit(&mut s, channel_count(3)), Ok(()));
+    assert_eq!(stored(&s, &ws), Some(mapping("Gone", &[0, 1, 0])));
+
+    assert_eq!(set(&mut s, patch_id(), None), Ok(()));
+    assert_eq!(edit(&mut s, channel_count(5)), Ok(()));
+    assert_eq!(stored(&s, &ws), None, "cleared stays cleared");
+    assert_eq!(
+        s.control()
+            .machine()
+            .patch_entry(ws.id, patch_id())
+            .map(|m| m.device.is_empty()),
+        Some(true)
+    );
 }
 
 #[test]

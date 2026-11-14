@@ -32,7 +32,7 @@ final class InspectorLevelsTests: XCTestCase {
     private static let engineFree = [
         "testLevelsTabIsForAudioCuesAndFadeTabForFadeCues", "testMatrixShowsTheCueRouting", "testMatrixHitTesting",
         "testFadeTabShowsTheFadeSettings", "testSixtyFourOutputMatrixStaysResponsive",
-        "testADragDoesNotEditARowTheMatrixNoLongerHas",
+        "testADragDoesNotEditARowTheMatrixNoLongerHas", "testLongOutputNamesAreCutInTheMiddleAndStayApart",
     ]
 
     override func setUp() async throws {
@@ -509,9 +509,27 @@ final class InspectorLevelsTests: XCTestCase {
         XCTAssertEqual(points.first?["db"], .double(-3))
     }
 
+    /// Long names that differ only at the end stay apart under the faders: cut in the middle, each
+    /// within its column.
+    func testLongOutputNamesAreCutInTheMiddleAndStayApart() {
+        let m = LevelMatrixView()
+        m.outputNames = ["Surround L", "Surround R", "C"]
+        let a = m.columnLabel(0)
+        let b = m.columnLabel(1)
+        XCTAssertNotEqual(a, b)
+        XCTAssertTrue(a.hasSuffix("L") && b.hasSuffix("R"), "\(a) \(b)")
+        for label in [a, b] {
+            let width = (label as NSString).size(withAttributes: [.font: LevelMatrixView.labelFont]).width
+            XCTAssertLessThanOrEqual(width, LevelMatrixView.cellW - 4, label)
+        }
+        XCTAssertEqual(m.columnLabel(2), "C")
+        XCTAssertEqual(m.columnLabel(3), "4", "no name: the number")
+    }
+
     // MARK: Cue outputs above 64 (a patch has up to 128)
 
-    /// Reopens the demo show with cue `index`'s `levels` changed by `edit`.
+    /// Reopens the demo show with cue `index`'s `levels` changed by `edit`, and its patch given as
+    /// many cue outputs as those levels name (the Levels tab shows the patch's count).
     private func reopenWithLevels(ofCue index: Int, _ edit: @escaping (inout JSONValue) -> Void) async throws {
         try await reopen { show in
             try editShow(show.appendingPathComponent("Demo.openlab")) { ws in
@@ -524,6 +542,13 @@ final class InspectorLevelsTests: XCTestCase {
                 cues[index].set("kind", kind)
                 lists[0].set("cues", .array(cues))
                 ws.set("cue_lists", .array(lists))
+                let wanted = levels["outputs"]?.arrayValue?.count ?? 0
+                if var patches = ws["patches"]?.arrayValue, let outputs = patches.first?["outputs"]?.arrayValue,
+                    let first = outputs.first, wanted > outputs.count
+                {
+                    patches[0].set("outputs", .array(Array(repeating: first, count: wanted)))
+                    ws.set("patches", .array(patches))
+                }
             }
         }
     }

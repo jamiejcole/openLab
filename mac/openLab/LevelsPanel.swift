@@ -87,6 +87,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
     let defaultButton = NSButton(title: loc("levels.setDefault"), target: nil, action: nil)
     let silentButton = NSButton(title: loc("levels.setSilent"), target: nil, action: nil)
     let fromTargetButton = NSButton(title: loc("levels.fromTarget"), target: nil, action: nil)
+    /// Opens the patch editor of the cue's patch (an Audio cue's Levels tab; QLab 5 manual p. 189).
+    let editPatchButton = NSButton(title: loc("levels.editPatch"), target: nil, action: nil)
+    var onEditPatch: (() -> Void)?
     static let sideWidth: CGFloat = 170
     /// The least height a fader has; a shorter tab scrolls.
     static let minFaderHeight: CGFloat = 70
@@ -155,6 +158,9 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         defaultButton.setAX("\(prefix)-default")
         silentButton.setAX("\(prefix)-silent")
         fromTargetButton.setAX("\(prefix)-from-target")
+        editPatchButton.setAX(AX.levelsEditPatch, label: loc("levels.editPatch"))
+        editPatchButton.target = self
+        editPatchButton.action = #selector(editPatchClicked)
         levelField.delegate = self
         gangField.delegate = self
         levelField.alignment = .center
@@ -195,7 +201,8 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
         scroll.onLayout = { [weak self] in self?.layoutBoard() }
 
-        let buttons: [NSButton] = isFade ? [fromTargetButton, silentButton] : [defaultButton, silentButton]
+        let buttons: [NSButton] =
+            isFade ? [fromTargetButton, silentButton] : [defaultButton, silentButton, editPatchButton]
         let gangRow = NSStackView(views: [gangLabel, gangField])
         gangRow.spacing = 6
         let chosen: [NSView] = isFade ? [cellLabel, activeCheck] : [cellLabel, muteCheck, gangRow, meter]
@@ -354,7 +361,11 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
         refreshStrip()
     }
 
+    @objc private func editPatchClicked() { onEditPatch?() }
+
     private func refreshStrip() {
+        // Opening the editor changes nothing; Show Mode keeps it shut like every other edit.
+        editPatchButton.isEnabled = !isLocked && levels != nil
         guard let levels else {
             for c in [levelField, muteCheck, activeCheck, gangField, defaultButton, silentButton, fromTargetButton]
                 as [NSControl]

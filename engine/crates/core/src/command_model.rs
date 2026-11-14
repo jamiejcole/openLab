@@ -608,6 +608,11 @@ pub enum PatchProperty {
         output: usize,
         value: bool,
     },
+    /// The name a cue's Levels tab shows under the output's fader; empty shows its number.
+    OutputName {
+        output: usize,
+        value: String,
+    },
     /// 1 to [`MAX_CUE_OUTPUTS`]. New outputs start at 0 dB, unmuted, polarity normal. Shrinking drops the
     /// last outputs' settings (undo brings them back); cues keep their routing to them.
     ChannelCount {
@@ -650,6 +655,10 @@ impl PatchProperty {
                 output: *output,
                 value: out(*output)?.polarity_inverted,
             },
+            Self::OutputName { output, .. } => Self::OutputName {
+                output: *output,
+                value: out(*output)?.name.clone(),
+            },
             // Shrinking loses data, so both are undone by putting every output back.
             Self::ChannelCount { .. } | Self::Outputs { .. } => Self::Outputs {
                 value: patch.outputs.clone(),
@@ -673,6 +682,7 @@ impl PatchProperty {
             Self::OutputPolarity { output, value } => {
                 out(patch, *output)?.polarity_inverted = *value;
             }
+            Self::OutputName { output, value } => out(patch, *output)?.name.clone_from(value),
             Self::ChannelCount { value } => {
                 // Bound before allocating: the count comes from the wire.
                 if !(1..=MAX_CUE_OUTPUTS as usize).contains(value) {
@@ -691,7 +701,8 @@ impl PatchProperty {
         let output = |p: &Self| match p {
             Self::OutputLevel { output, .. }
             | Self::OutputMute { output, .. }
-            | Self::OutputPolarity { output, .. } => Some(*output),
+            | Self::OutputPolarity { output, .. }
+            | Self::OutputName { output, .. } => Some(*output),
             _ => None,
         };
         std::mem::discriminant(self) == std::mem::discriminant(other)
@@ -701,6 +712,7 @@ impl PatchProperty {
 
 fn default_output() -> PatchOutput {
     PatchOutput {
+        name: String::new(),
         level_db: 0.0,
         mute: false,
         polarity_inverted: false,
@@ -720,6 +732,7 @@ fn add_patch(
     // Load keeps an odd name, so an undo may put one back.
     if !restoring {
         check_name(&patch.name)?;
+        check_output_names(&patch.outputs)?;
     }
     let limits = ws.settings.limits();
     let mut patch = patch.clone();
@@ -773,6 +786,19 @@ fn set_patch_property(
         && *value != patch.name
     {
         check_name(value)?;
+    }
+    // Same rule as a patch name on every path that sets an output's name: an over-long or
+    // control-character name is refused; an undo may put back what a loaded file had.
+    if !restoring {
+        match property {
+            PatchProperty::OutputName { output, value }
+                if patch.outputs.get(*output).is_some_and(|o| o.name != *value) =>
+            {
+                check_name(value)?;
+            }
+            PatchProperty::Outputs { value } => check_output_names(value)?,
+            _ => {}
+        }
     }
     let mut candidate = patch.clone();
     property.write(&mut candidate)?;
@@ -910,6 +936,11 @@ fn set_network_patch_property(
 }
 
 /// Refuses a new name that load would warn about (length, control characters).
+/// Every output's name checked as a patch name is.
+fn check_output_names(outputs: &[PatchOutput]) -> Result<(), CommandError> {
+    outputs.iter().try_for_each(|o| check_name(&o.name))
+}
+
 fn check_name(name: &str) -> Result<(), CommandError> {
     name_problem(name).map_or(Ok(()), |why| Err(CommandError::InvalidValue(why)))
 }
@@ -1163,7 +1194,8 @@ impl Command {
                     }
                     PatchProperty::OutputLevel { output, .. }
                     | PatchProperty::OutputMute { output, .. }
-                    | PatchProperty::OutputPolarity { output, .. } => *output,
+                    | PatchProperty::OutputPolarity { output, .. }
+                    | PatchProperty::OutputName { output, .. } => *output,
                     _ => usize::MAX,
                 };
                 (
