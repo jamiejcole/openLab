@@ -751,8 +751,7 @@ fn cue_message(
     budget: &mut u64,
 ) -> Resolved {
     let mut out = Resolved::default();
-    // Pseudo-cues answer for a property; an action on "the selected cue" is not part of the API.
-    let property = matches!(verb, Verb::Field(_));
+    // The pseudo-cues take reads, writes and actions alike (measured in QLab 5.6.5).
     let targets: Vec<Target> = match cue {
         CueRef::Id(id) => show
             .cue_exists(*id)
@@ -764,14 +763,14 @@ fn cue_message(
             .map(Target::Cue)
             .into_iter()
             .collect(),
-        CueRef::Selected | CueRef::Playhead if property => show
+        CueRef::Selected | CueRef::Playhead => show
             .active_list()
             .and_then(|list| show.playhead(list))
             .filter(|cue| show.cue_exists(*cue))
             .map(Target::Cue)
             .into_iter()
             .collect(),
-        CueRef::Active if property => {
+        CueRef::Active => {
             let running = show.running_cues(false);
             out.capped = running.len() > MAX_MATCHES;
             running
@@ -780,7 +779,6 @@ fn cue_message(
                 .map(Target::Cue)
                 .collect()
         }
-        CueRef::Selected | CueRef::Playhead | CueRef::Active => Vec::new(),
         CueRef::Pattern(pattern) => match CuePattern::compile_within(pattern, budget) {
             Ok(pattern) => matching(show, &pattern, budget, &mut out),
             Err(PatternError::Budget) => {

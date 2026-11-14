@@ -98,14 +98,18 @@ moved last. It starts as the first list.
 |---|---|
 | `/cue/{number}/...` | the cue with that number, in any list, inside groups too. Numbers are case-sensitive |
 | `/cue_id/{id}/...` | the cue with that unique id, in upper case (`/cue/{number}/uniqueID` reads it) |
-| `/cue/selected/...` | the cue at the active list's playhead (openLab's selection follows the playhead). Reads only |
+| `/cue/selected/...` | the cue at the active list's playhead (openLab's selection follows the playhead) |
 | `/cue/playhead/...` | the same |
-| `/cue/active/...` | every running cue, one reply each. Reads only |
+| `/cue/active/...` | every running cue: a read answers once per cue, a change or an action reaches each (`/cue/active/stop` stops them all) |
 
 A cue number may be a **pattern**: `*` any run of characters, `?` one character, `[abc]` or
 `[a-c]` one of these, `[!a-c]` none of these, `{1,5,9}` one of the alternatives. The message then
 acts on, or answers for, every cue whose number matches: `/cue/1*/stop` stops cues 1, 10, 1.5 and
 so on, and `/cue/*/name` returns every cue's name. At most 1024 cues are matched by one message.
+
+Every form takes reads, changes and actions alike: `/cue/selected/start` starts the cue at the
+playhead. With nothing at the playhead, or nothing running for `/cue/active/`, the answer is an
+`error`.
 
 Addresses are case-sensitive: `/GO` and `/cue/1/Name` are not answered.
 

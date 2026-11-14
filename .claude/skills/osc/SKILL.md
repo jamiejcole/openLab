@@ -82,8 +82,8 @@ A message that succeeds gets **no reply** (actions, writes, `/updates`). A failu
 | `/cue/{number}/armed`, `/flagged` | int 0/1 or OSC boolean | `command set_cue_property` |
 | `/cue/{number}/{property}` | none | reply with current value. Also readable, read-only: `uniqueID`, `isLoaded`, `isRunning`, `isPaused`, `isBroken` (a write is `error`) |
 | `/cue_id/{ID}/...` | as `/cue/{number}/...` | cue found by id (UUID, upper case) |
-| `/cue/selected/{property}`, `/cue/playhead/{property}` | as the property | cue at the active list's playhead. Reads only |
-| `/cue/active/{property}` | as the property | every running cue. Reads only |
+| `/cue/selected/{verb}`, `/cue/playhead/{verb}` | as the verb | cue at the active list's playhead: reads, writes and actions (QLab 5.6.5 measured, Q359) |
+| `/cue/active/{verb}` | as the verb | every running cue: a read answers per cue, a write or action reaches each (Q359) |
 | any other address | none | `error` (`unknown_address`). A cue has no OSC address of its own (QLab 5 starts a cue by number or id); an `osc` key in an older show's triggers is ignored |
 
 Not implemented: level properties, time properties beyond pre-wait, post-wait and duration (a Load cue's time has no address, as in QLab: Q354), `/new`, `/save`, other QLab application and workspace queries.

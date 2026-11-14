@@ -584,7 +584,7 @@ fn unknown_cues_and_missing_list_are_error_replies() {
         "/cue/zzz*/start",
         "/cue/[a-c]/start",
         "/cue/{x,y}/start",
-        // No such property on the pseudo-cues, and no action on them.
+        // Nothing running and no playhead: the pseudo-cues reach nothing.
         "/cue/active/name",
         "/cue/selected/name",
         "/cue/playhead/start",
@@ -2322,6 +2322,47 @@ fn selected_and_playhead_are_the_cue_at_the_active_lists_playhead() {
         &msg("/cue/selected/number", vec![]),
     );
     assert_eq!(reply_json(&out.replies[0])["data"], "20");
+}
+
+/// QLab 5.6.5 (measured): `/cue/selected/start` starts the playhead cue and `/cue/active/stop`
+/// stops every running cue; a write through `/cue/active/` reaches every running cue.
+#[test]
+fn actions_and_writes_go_through_selected_playhead_and_active() {
+    let mut show = Show::open();
+    let mut osc = quiet_osc();
+    show.playheads.insert(LIST, CUE_1);
+    assert_eq!(
+        one_input(&mut osc, &show, "/cue/selected/start", vec![]),
+        transport(TransportAction::Start { cue: CUE_1 })
+    );
+    assert_eq!(
+        one_input(&mut osc, &show, "/cue/playhead/hardStop", vec![]),
+        transport(TransportAction::HardStop { cue: CUE_1 })
+    );
+    show.running = vec![CUE_1, CUE_20];
+    let out = send(&mut osc, &show, udp(), T0, &msg("/cue/active/stop", vec![]));
+    assert_eq!(
+        out.inputs,
+        vec![
+            transport(TransportAction::Stop {
+                cue: CUE_1,
+                fade_out: None
+            }),
+            transport(TransportAction::Stop {
+                cue: CUE_20,
+                fade_out: None
+            }),
+        ]
+    );
+    assert!(out.replies.is_empty());
+    let out = send(
+        &mut osc,
+        &show,
+        udp(),
+        T0,
+        &msg("/cue/active/duration", vec![OscType::Float(4.0)]),
+    );
+    assert_eq!(out.inputs.len(), 2);
 }
 
 #[test]
