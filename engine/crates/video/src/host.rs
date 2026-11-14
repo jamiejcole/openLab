@@ -141,14 +141,23 @@ pub trait Platform {
     fn set_virtual_displays(&mut self, _displays: Vec<Display>) -> bool {
         false
     }
-    /// Opens a Video cue's file for `picture` (a video, or a still with `still`).
-    fn open_picture(&mut self, _picture: u64, _file: &str, _still: bool) -> Result<(), String> {
+    /// Starts opening a Video cue's file for `picture` (a video, or a still with `still`), to
+    /// be shown from `offset` seconds; the open never blocks the caller: its end is a
+    /// [`PictureEvent`]. An error here (nothing was started) fails the picture at once.
+    fn open_picture(
+        &mut self,
+        _picture: u64,
+        _file: &str,
+        _still: bool,
+        _offset: f64,
+    ) -> Result<(), String> {
         Err("this computer's openLab has no video output".into())
     }
     /// Lets the picture's file go.
     fn close_picture(&mut self, _picture: u64) {}
-    /// Pictures that could not be decoded or drawn since the last call, with why.
-    fn take_picture_failures(&mut self) -> Vec<(u64, String)> {
+    /// What happened to pictures since the last call: opened, or failed (could not be opened,
+    /// decoded or drawn, or took too long) with why.
+    fn take_picture_events(&mut self) -> Vec<PictureEvent> {
         Vec::new()
     }
     /// Whether the engine's clock runs on between its messages (windows on real displays):
@@ -162,6 +171,13 @@ pub trait Platform {
 /// the engine's clock periods (it tells the clock at least every 10 ms), so one late tick does
 /// not stop a picture.
 const CLOCK_HOLD: std::time::Duration = std::time::Duration::from_millis(30);
+
+/// What became of a picture's file on the platform.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PictureEvent {
+    Opened(u64),
+    Failed(u64, String),
+}
 
 /// The engine's sample clock as last told.
 #[derive(Clone, Copy, Debug)]
@@ -273,7 +289,7 @@ impl<P: Platform> Host<P> {
                         reason: "too many pictures at once".into(),
                     });
                 } else {
-                    match self.platform.open_picture(picture, &file, still) {
+                    match self.platform.open_picture(picture, &file, still, offset) {
                         Ok(()) => {
                             self.pics.insert(
                                 picture,
@@ -340,15 +356,40 @@ impl<P: Platform> Host<P> {
         self.apply(out);
     }
 
-    /// Reports the pictures the platform could not decode or draw since it was last asked, and
-    /// drops them.
+    /// Reports the pictures the platform opened, or could not open, decode or draw, since it
+    /// was last asked, and drops the failed ones.
     fn report_failures(&mut self, out: &mut Vec<FromStage>) {
-        for (picture, reason) in self.platform.take_picture_failures() {
-            self.drop_picture(picture);
-            out.push(FromStage::PictureFailed {
-                picture,
-                reason: short(reason),
-            });
+        for event in self.platform.take_picture_events() {
+            match event {
+                PictureEvent::Opened(picture) if self.pics.contains_key(&picture) => {
+                    out.push(FromStage::PictureOpened { picture });
+                }
+                PictureEvent::Opened(_) => {}
+                PictureEvent::Failed(picture, reason) => {
+                    self.drop_picture(picture);
+                    out.push(FromStage::PictureFailed {
+                        picture,
+                        reason: short(reason),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Between messages: reports what became of pictures' files (an open that ended, a decode
+    /// that failed or fell behind).
+    pub fn poll(&mut self, out: &mut Vec<FromStage>) {
+        self.report_failures(out);
+    }
+
+    /// One message from [`serve`], or (`None`) a poll between messages.
+    pub fn step(&mut self, message: Option<ToStage>, out: &mut Vec<FromStage>) -> Flow {
+        match message {
+            Some(message) => self.handle(message, out),
+            None => {
+                self.poll(out);
+                Flow::Continue
+            }
         }
     }
 
@@ -664,44 +705,88 @@ fn short(reason: String) -> String {
     }
 }
 
-/// Reads lines from `input` until it ends, a `quit`, or (test support) a `hang`, handling each
-/// with `handle` and writing what it returns to `output`. A line that is too long or invalid is
-/// answered with a `log` warning and skipped. Returns when the engine is gone (end of input or
-/// a failed write), so the stage host never outlives its engine.
+/// How often the loop looks at pictures between messages.
+pub const POLL_EVERY: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// What the reader thread hands the loop: a message, a warning about a line it skipped, or the
+/// end of input.
+enum Incoming {
+    Message(ToStage),
+    Skipped(String),
+    End,
+}
+
+/// Reads lines from `input` on a thread of its own and handles each with `handle` until the
+/// input ends, a `quit`, or (test support) a `hang`, writing what it returns to `output`.
+/// Between messages (every [`POLL_EVERY`]) `handle` is called with no message, so a picture's open or decode that ends
+/// or fails is reported without a message from the engine. A line that is too long or invalid
+/// is answered with a `log` warning and skipped. Returns when the engine is gone (end of input
+/// or a failed write), so the stage host never outlives its engine; after a `hang` nothing more
+/// is answered until then.
 pub fn serve(
-    input: &mut impl BufRead,
+    input: impl BufRead + Send + 'static,
     output: &mut impl Write,
-    mut handle: impl FnMut(ToStage, &mut Vec<FromStage>) -> Flow,
+    mut handle: impl FnMut(Option<ToStage>, &mut Vec<FromStage>) -> Flow,
 ) -> Flow {
-    let mut line = Vec::new();
+    // Bounded: a loop that falls behind stops the reader, and the engine sees its pipe fill.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Incoming>(1024);
+    let reader = std::thread::Builder::new()
+        .name("openlab-stage-reader".into())
+        .spawn(move || read_into(input, &tx));
+    if reader.is_err() {
+        return Flow::Quit;
+    }
     let mut answers = Vec::new();
     loop {
-        line.clear();
-        let flow = match read_line(input, &mut line) {
-            Ok(Line::End) | Err(_) => return Flow::Quit,
-            Ok(Line::TooLong(bytes)) => {
+        let flow = match rx.recv_timeout(POLL_EVERY) {
+            Ok(Incoming::Message(message)) => handle(Some(message), &mut answers),
+            Ok(Incoming::Skipped(warning)) => {
                 answers.push(FromStage::Log {
                     level: LinkLevel::Warn,
-                    message: format!("ignored a line of {bytes} bytes from the engine"),
+                    message: warning,
                 });
                 Flow::Continue
             }
-            Ok(Line::Read) => match decode_to_stage(&line) {
-                Ok(message) => handle(message, &mut answers),
-                Err(e) => {
-                    answers.push(FromStage::Log {
-                        level: LinkLevel::Warn,
-                        message: format!("ignored a message from the engine: {e}"),
-                    });
-                    Flow::Continue
-                }
-            },
+            Ok(Incoming::End) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Flow::Quit;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => handle(None, &mut answers),
         };
         if write_all(output, &mut answers).is_err() {
             return Flow::Quit;
         }
-        if flow != Flow::Continue {
-            return flow;
+        match flow {
+            Flow::Continue => {}
+            Flow::Quit => return flow,
+            #[cfg(feature = "test-support")]
+            Flow::Hang => {
+                while !matches!(rx.recv(), Ok(Incoming::End) | Err(_)) {}
+                return flow;
+            }
+        }
+    }
+}
+
+/// The reader thread: each line of `input` as a message, until it ends.
+fn read_into(mut input: impl BufRead, tx: &std::sync::mpsc::SyncSender<Incoming>) {
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let incoming = match read_line(&mut input, &mut line) {
+            Ok(Line::End) | Err(_) => {
+                let _ = tx.send(Incoming::End);
+                return;
+            }
+            Ok(Line::TooLong(bytes)) => {
+                Incoming::Skipped(format!("ignored a line of {bytes} bytes from the engine"))
+            }
+            Ok(Line::Read) => match decode_to_stage(&line) {
+                Ok(message) => Incoming::Message(message),
+                Err(e) => Incoming::Skipped(format!("ignored a message from the engine: {e}")),
+            },
+        };
+        if tx.send(incoming).is_err() {
+            return;
         }
     }
 }
@@ -728,6 +813,7 @@ mod tests {
         shown: HashMap<String, Vec<StageId>>,
         fail: bool,
         live: bool,
+        events: Vec<PictureEvent>,
     }
 
     impl Platform for Fake {
@@ -760,12 +846,22 @@ mod tests {
         fn live(&self) -> bool {
             self.live
         }
-        fn open_picture(&mut self, _: u64, file: &str, _: bool) -> Result<(), String> {
+        fn open_picture(
+            &mut self,
+            picture: u64,
+            file: &str,
+            _: bool,
+            _: f64,
+        ) -> Result<(), String> {
             if file == "bad" {
                 Err("cannot open\nthis".into())
             } else {
+                self.events.push(PictureEvent::Opened(picture));
                 Ok(())
             }
+        }
+        fn take_picture_events(&mut self) -> Vec<PictureEvent> {
+            std::mem::take(&mut self.events)
         }
     }
 
@@ -899,6 +995,38 @@ mod tests {
         assert_eq!(h.now().0, 1000 + 48 * 30, "a minute later: held at the cap");
     }
 
+    /// A picture whose file the platform opened is said to be open (once); one that failed
+    /// later is reported failed and goes; events of a picture already gone are dropped.
+    #[test]
+    fn a_pictures_open_and_failure_are_reported_from_the_platforms_events() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        let out = load(&mut h, 4, 1);
+        assert!(
+            out.contains(&FromStage::PictureOpened { picture: 4 }),
+            "{out:?}"
+        );
+        h.platform
+            .events
+            .push(PictureEvent::Failed(4, "a frame took too long".into()));
+        h.platform.events.push(PictureEvent::Opened(99));
+        let mut out = Vec::new();
+        h.poll(&mut out);
+        assert_eq!(
+            out,
+            vec![FromStage::PictureFailed {
+                picture: 4,
+                reason: "a frame took too long".into()
+            }]
+        );
+        assert!(!h.playing());
+    }
+
     /// Two pictures on one stage: the later-started is drawn last (on top), whatever their ids.
     #[test]
     fn the_later_started_picture_is_drawn_on_top() {
@@ -1010,6 +1138,7 @@ mod tests {
             shown: HashMap::new(),
             fail: false,
             live: false,
+            events: Vec::new(),
         })
     }
 
@@ -1227,8 +1356,8 @@ mod tests {
         input.extend_from_slice(b"\n{\"type\":\"ping\",\"seq\":2}");
         let mut output = Vec::new();
         let mut h = host(&[]);
-        let flow = serve(&mut input.as_slice(), &mut output, |m, out| {
-            h.handle(m, out)
+        let flow = serve(std::io::Cursor::new(input), &mut output, |m, out| {
+            h.step(m, out)
         });
         assert_eq!(flow, Flow::Quit);
         let text = String::from_utf8(output).unwrap();

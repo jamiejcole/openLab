@@ -54,7 +54,15 @@ struct Live {
     now: Option<ToStage>,
     /// It is stopping: gone from the stage host after this sample.
     ends: Option<SampleTime>,
+    /// The stage host said its file is open (since the load was last sent).
+    opened: bool,
+    /// When it was last sent again to a stage host that started after one stopped.
+    resent: Option<SampleTime>,
 }
+
+/// A picture sent again after a stage host stopped, up when the next one stops within this
+/// long, is not sent a third time: it may be what stops them.
+const RESEND_WINDOW_S: f64 = 60.0;
 
 /// A run whose picture waits for its file's probe: nothing is on the stage host yet.
 struct Held {
@@ -155,6 +163,11 @@ impl Engine {
         if self.pictures.live.is_empty() {
             return;
         }
+        let now = self.now();
+        for l in self.pictures.live.values_mut() {
+            l.opened = false;
+            l.resent = Some(now);
+        }
         self.pictures.clock_sent = None;
         self.picture_clock(true);
         let messages: Vec<ToStage> = self
@@ -170,6 +183,40 @@ impl Engine {
             .collect();
         for m in messages {
             self.picture(m);
+        }
+    }
+
+    /// The stage host has `picture`'s file open.
+    pub(super) fn picture_opened(&mut self, picture: u64) {
+        if let Some(l) = self.pictures.live.get_mut(&picture) {
+            l.opened = true;
+        }
+    }
+
+    /// The stage host stopped (it crashed, hung or was killed). A picture it was still opening,
+    /// or one it was sent again after the last stop not long ago, may be what stopped it (a
+    /// hostile file crashing the decoder): it is not sent to the next stage host, which would
+    /// stop the same way, and its cue breaks. The others come back when the next one starts.
+    pub(super) fn pictures_host_stopped(&mut self) {
+        let now = self.now();
+        let window = seconds_to_samples(RESEND_WINDOW_S, self.rate);
+        let suspects: Vec<(u64, &'static str)> = self
+            .pictures
+            .live
+            .iter()
+            .filter(|(_, l)| l.ends.is_none())
+            .filter_map(|(id, l)| {
+                if !l.opened {
+                    Some((*id, "the video output stopped while it opened the file"))
+                } else if l.resent.is_some_and(|t| now.saturating_sub(t) < window) {
+                    Some((*id, "the video output stopped twice while it was shown"))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (picture, reason) in suspects {
+            self.picture_failed(picture, reason.to_owned());
         }
     }
 
@@ -218,6 +265,11 @@ impl Engine {
     /// Pictures up, every doc's (tests).
     pub(super) fn pictures_live(&self) -> usize {
         self.pictures.live.len()
+    }
+
+    /// Pictures up whose file the stage host has open (tests).
+    pub(super) fn pictures_opened(&self) -> usize {
+        self.pictures.live.values().filter(|l| l.opened).count()
     }
 }
 
@@ -565,6 +617,8 @@ impl DocCx<'_> {
                 first: None,
                 now: None,
                 ends: None,
+                opened: false,
+                resent: None,
             },
         );
         self.eng.picture(load);

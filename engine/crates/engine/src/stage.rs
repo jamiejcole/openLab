@@ -118,6 +118,10 @@ pub enum StageEvent {
         level: LinkLevel,
         message: String,
     },
+    /// A Video cue's picture's file is open on the stage host.
+    PictureOpened {
+        picture: u64,
+    },
     /// A Video cue's picture could not be opened, decoded or drawn; it is gone from its stage.
     PictureFailed {
         picture: u64,
@@ -448,6 +452,7 @@ impl Supervisor {
                 return;
             }
             FromStage::StageStatus { stage, state } => StageEvent::Status { stage, state },
+            FromStage::PictureOpened { picture } => StageEvent::PictureOpened { picture },
             FromStage::PictureFailed { picture, reason } => {
                 StageEvent::PictureFailed { picture, reason }
             }

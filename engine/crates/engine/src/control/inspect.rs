@@ -284,6 +284,11 @@ impl Control {
         self.eng.pictures_live()
     }
 
+    /// Of those, the ones the stage host said it has open.
+    pub fn pictures_opened(&self) -> usize {
+        self.eng.pictures_opened()
+    }
+
     /// Memory taken from the first doc's preload budget.
     pub fn preload_reserved(&self) -> u64 {
         self.first().map_or(0, |d| d.media.preload_reserved())
