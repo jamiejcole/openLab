@@ -42,9 +42,9 @@ fn picks(max: usize) -> impl Strategy<Value = Vec<Pick>> {
     proptest::collection::vec(pick(), 0..max)
 }
 
-/// Operations 0-10 edit the cue tree; 11 and up edit settings, patches, cue lists and the OSC
-/// passcode table.
-const OPS: u8 = 29;
+/// Operations 0-10 edit the cue tree; 11 and up edit settings, patches, cue lists, the OSC
+/// passcode table and the stages.
+const OPS: u8 = 33;
 
 /// Names and hosts a command takes or refuses: plain, empty, at and over the limits (1024 scalars,
 /// 253 bytes; multi-byte text is counted in scalars, so 1024 emoji pass), with a newline, a NUL.
@@ -573,13 +573,19 @@ fn network_property(p: &Pick) -> NetworkPatchProperty {
     }
 }
 
-/// Settings, patches, network patches, cue lists and the OSC passcode table: operations 11 to 23
-/// and 25 to 27. Ids are drawn from a
+/// Settings, patches, network patches, cue lists, the OSC passcode table and the stages:
+/// operations 11 to 23 and 25 to 32. Ids are drawn from a
 /// small pool, so they collide with existing ones (refused) and re-use removed ones.
 fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
     let patch_ids: Vec<PatchId> = ws.patches.iter().map(|x| x.id).collect();
     let net_ids: Vec<NetworkPatchId> = ws.network_patches.iter().map(|x| x.id).collect();
     let list_ids: Vec<CueListId> = ws.cue_lists.iter().map(|x| x.id).collect();
+    let stage_ids: Vec<StageId> = ws.stages.iter().map(|x| x.id).collect();
+    let some_stage = || {
+        choose(&stage_ids, p.a)
+            .filter(|_| p.a % 9 != 8)
+            .unwrap_or(stage_id(9))
+    };
     // An existing id most of the time, a made-up one now and then.
     let some_patch = || {
         choose(&patch_ids, p.a)
@@ -683,8 +689,83 @@ fn build_model(ws: &Workspace, op: u8, p: &Pick) -> Option<Command> {
             },
             rights: osc_rights(p.d),
         },
+        // Stages: sizes and layers at and past their limits, names from the pool.
+        29 => Command::AddStage {
+            index: p.b as usize % (ws.stages.len() + 2),
+            stage: Stage {
+                id: stage_id(1 + u128::from(p.c % 4)),
+                name: if p.d.is_multiple_of(3) {
+                    name_pool(p.d / 3)
+                } else {
+                    "Stage".into()
+                },
+                width: stage_side(p.a),
+                height: stage_side(p.a / 7),
+                keep_black: p.c.is_multiple_of(2),
+                layer: stage_layer(p.d / 9),
+            },
+        },
+        30 => Command::RemoveStage { id: some_stage() },
+        31 => Command::MoveStage {
+            id: some_stage(),
+            index: p.b as usize % (ws.stages.len() + 1),
+        },
+        32 => Command::SetStageProperty {
+            id: some_stage(),
+            property: match p.c % 4 {
+                0 => StageProperty::Name {
+                    value: name_pool(p.d),
+                },
+                1 => StageProperty::Size {
+                    width: stage_side(p.d),
+                    height: stage_side(p.d / 7),
+                },
+                2 => StageProperty::KeepBlack {
+                    value: p.d.is_multiple_of(2),
+                },
+                _ => StageProperty::Layer {
+                    value: stage_layer(p.d),
+                },
+            },
+        },
         _ => return None,
     })
+}
+
+fn stage_id(n: u128) -> StageId {
+    StageId(uuid::Uuid::from_u128(n))
+}
+
+/// A stage side: in range mostly, 0 and one past the limit now and then.
+fn stage_side(n: u32) -> u32 {
+    [
+        1920,
+        1080,
+        1,
+        MAX_STAGE_PIXELS,
+        640,
+        1280,
+        0,
+        720,
+        MAX_STAGE_PIXELS + 1,
+        480,
+    ][n as usize % 10]
+}
+
+/// A stage layer: in range mostly, one past the limit now and then.
+fn stage_layer(n: u32) -> u16 {
+    [
+        1,
+        0,
+        100,
+        MAX_STAGE_LAYER,
+        5,
+        MAX_STAGE_LAYER + 1,
+        10,
+        500,
+        u16::MAX,
+        2,
+    ][n as usize % 10]
 }
 
 fn osc_passcode(n: u32) -> String {
@@ -898,6 +979,11 @@ fn base() -> Workspace {
     });
     ws.settings.auto_number_start = 1.0;
     ws.settings.auto_number_increment = 1.0;
+    // Two stages, so stage edits find one to change.
+    ws.stages = vec![
+        Stage::new(stage_id(2), "Cyc", 1920, 1080),
+        Stage::new(stage_id(3), "Floor", 1280, 720),
+    ];
     ws
 }
 
@@ -1486,6 +1572,11 @@ proptest! {
                     fp.network_patches.changed.len() + fp.network_patches.removed.len(),
                     fp.network_patches.reordered,
                     ws.network_patches.len(),
+                )
+                + part(
+                    fp.stages.changed.len() + fp.stages.removed.len(),
+                    fp.stages.reordered,
+                    ws.stages.len(),
                 );
             prop_assert!(upserts.len() <= named + extra);
             prop_assert!(deletes.len() <= named + extra);
@@ -1857,7 +1948,7 @@ fn the_generator_exercises_every_command() {
     let mut refused: HashMap<u8, usize> = HashMap::new();
     let mut dependent = 0;
     let mut readded = 0;
-    for _ in 0..120 {
+    for _ in 0..200 {
         let (mut ws, mut g) = (base(), Gen { next: 1000 });
         for _ in 0..80 {
             let p = Pick {
@@ -1919,7 +2010,8 @@ fn the_generator_exercises_every_command() {
     // And invalid input is generated, not just valid.
     // (A transaction is built from commands that apply, so it is never refused.)
     for op in [
-        0u8, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 22, 23, 25, 26, 27, 28,
+        0u8, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 22, 23, 25, 26, 27, 28, 29,
+        30, 31, 32,
     ] {
         assert!(
             refused.get(&op).copied().unwrap_or(0) >= 3,
