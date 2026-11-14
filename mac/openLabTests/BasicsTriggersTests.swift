@@ -185,7 +185,11 @@ extension PlayheadFlowTests {
         let index = parent.flatMap { store.model?.cue($0)?.children.count } ?? (wc.cueList.roots.count)
         let ids = await wc.editor.addFiles(urls, parent: parent, index: index)
         XCTAssertEqual(ids.count, count)
-        await assertEventually("probed") { ids.allSatisfy { self.store.mediaDurations[$0]?.file != nil } }
+        // The probes are reported as device time moves.
+        await assertEventually("probed") {
+            try? await self.play(0.01)
+            return ids.allSatisfy { self.store.mediaDurations[$0]?.file != nil }
+        }
         return ids
     }
 
@@ -208,7 +212,11 @@ extension PlayheadFlowTests {
     /// Types `text` in `field` through its field editor and presses Return (`enter`).
     private func typeIn(_ field: NSTextField, _ text: String, enter: Bool = true) throws {
         XCTAssertTrue(field.isEnabled)
-        XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(field))
+        XCTAssertFalse(field.isHiddenOrHasHiddenAncestor || field.window == nil, "the field is on screen")
+        // A field still being typed in keeps its editor; making it first responder again would end that.
+        if field.currentEditor() == nil { XCTAssertTrue(try XCTUnwrap(wc.window).makeFirstResponder(field)) }
+        // A click selects the field's text, which gives it the field editor (as a click on it does).
+        if field.currentEditor() == nil { field.selectText(nil) }
         let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
         editor.selectAll(nil)
         editor.insertText(text, replacementRange: editor.selectedRange())
@@ -251,14 +259,24 @@ extension PlayheadFlowTests {
 
     private func state(_ id: ModelID) -> String? { mark(id, 1) }
 
-    /// The loudest level of `id`'s first channel over three tenths of a second.
+    /// The loudest level of `id`'s first channel over three tenths of a second, read from the meter
+    /// its Levels tab draws (meters are kept only for a meter on screen). The cues and the tab shown
+    /// before are shown again after.
     private func peak(_ id: ModelID) async throws -> Float {
+        let shown = inspector.selection
+        let tab = inspector.tabView.selectedTabViewItem?.identifier as? String
+        await select([id])
+        inspector.tabView.selectTabViewItem(withIdentifier: "levels")
         store.meters.reset()
         var loudest: Float = 0
         for _ in 0..<3 {
             try await play(0.1)
             store.meters.tick(0)
             loudest = max(loudest, store.meters.level(.cue(id), channel: 0))
+        }
+        if !shown.isEmpty, shown != [id] {
+            await select(shown)
+            if let tab { inspector.tabView.selectTabViewItem(withIdentifier: tab) }
         }
         return loudest
     }
@@ -403,9 +421,16 @@ extension PlayheadFlowTests {
         guard case .success = await store.client.send({ .request(id: $0, .saveAs(path: path.path)) }) else {
             return XCTFail("save")
         }
+        // Close and open again as File > Close and Open do; the file has just been saved, so a save
+        // prompt (never a modal here) is answered Don't Save.
+        let alerts = ScriptedAlerts()
+        alerts.saveChoices = [.dontSave]
+        app.alerts = alerts
         let closed = await app.closeWorkspace(doc)
         XCTAssertTrue(closed)
+        XCTAssertNil(app.windows[doc])
         await app.openWorkspace(url: path)
+        XCTAssertEqual(alerts.errors, [])
         let reopened = try XCTUnwrap(app.windows.keys.first, "the show is open again")
         doc = reopened
         await assertEventually("the reopened list is drawn") { self.wc.cueList.node(cue) != nil }
@@ -442,22 +467,29 @@ extension PlayheadFlowTests {
         XCTAssertEqual(raw(cues[0], "triggers")?["hotkey_enabled"], .bool(false))
     }
 
-    /// A playing at the top level, B playing in a group, C with "fade and stop others" over 2 s on its
-    /// peers: GO on C fades A out and stops it, and B plays on. With "its list" B goes too.
+    /// A and C in one group, B in another, A and B playing; C with "fade and stop others" over 2 s on
+    /// its peers: GO on C fades A out and stops it, and B plays on. With "its list" B goes too.
     func testFadeAndStopOthersTickedWith2SAndPeersFadesTheOtherCuesAtItsLevelAndCuesInOtherGroupsPlayOn()
         async throws
     {
-        let top = try await tones(1)
-        let made = await wc.editor.add(.group, after: top)
-        let group = try XCTUnwrap(made)
-        await assertEventually { self.wc.cueList.node(group) != nil }
-        let inner = try await tones(1, parent: group)
-        let mine = try await tones(1)
-        let (a, b, c) = (top[0], inner[0], mine[0])
+        var groups: [ModelID] = []
+        for _ in 0..<2 {
+            // Nothing selected: a new group made with cues selected would wrap them.
+            let made = await wc.editor.add(.group, after: [])
+            groups.append(try XCTUnwrap(made))
+        }
+        await assertEventually { groups.allSatisfy { self.wc.cueList.node($0) != nil } }
+        let ac = try await tones(2, parent: groups[0])
+        let inner = try await tones(1, parent: groups[1])
+        for g in groups { wc.cueList.outlineView.expandItem(wc.cueList.node(g)) }  // their rows are drawn
+        let (a, b, c) = (ac[0], inner[0], ac[1])
         for id in [a, b] {
             guard case .success = await store.transport(.start(cue: id)) else { return XCTFail("start") }
         }
         try await play(0.3)
+        await assertEventually("A and B play") {
+            self.state(a) == loc("cue.state.running") && self.state(b) == loc("cue.state.running")
+        }
         await select([c])
         inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
         XCTAssertFalse(inspector.fadeOthersTimeField.isEnabled, "off: its time is drawn off")
@@ -479,10 +511,12 @@ extension PlayheadFlowTests {
         XCTAssertGreaterThan(halfway, 0.0001, "over the 2 s, not at once")
         try await play(1.2)
         await assertEventually("A stopped") { self.state(a) == nil }
-        XCTAssertEqual(state(b), loc("cue.state.running"), "B in the group plays on")
+        XCTAssertEqual(state(b), loc("cue.state.running"), "B in the other group plays on")
         // Its list: B goes too.
         guard case .success = await store.transport(.stop(cue: c, fadeOut: nil)) else { return XCTFail("stop") }
         try await play(0.1)
+        await select([c])  // GO moved the selection on
+        inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
         choose(inspector.fadeOthersScopePopup, at: 1)
         await assertEventually { InspectorEdit.fadeOthers(self.store.model!.cue(c)!).scope == "list" }
         guard case .success = await store.transport(.start(cue: c)) else { return XCTFail("start C") }
@@ -536,6 +570,7 @@ extension PlayheadFlowTests {
         XCTAssertEqual(inspector.duckCheck.title, loc("inspector.duckOthers"))
 
         // With a pre-wait the duck starts after it.
+        inspector.tabView.selectTabViewItem(withIdentifier: "basics")
         try typeIn(inspector.preWaitField, "1")
         await assertEventually { self.raw(d, "pre_wait")?.doubleValue == 1 }
         guard case .success = await store.transport(.start(cue: d)) else { return XCTFail("start D again") }
