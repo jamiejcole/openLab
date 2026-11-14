@@ -1422,8 +1422,7 @@ impl Run {
                     self.moved_out_of.retain(|(m, g)| {
                         !(ended && m == cue)
                             && !(g == cue
-                                && (ended
-                                    || (stopping && !groups_around(cues, *m).contains(g))))
+                                && (ended || (stopping && !groups_around(cues, *m).contains(g))))
                     });
                     self.seen.insert(*cue);
                     if !matches!(state, CueState::Idle | CueState::Broken | CueState::Loaded) {
