@@ -590,6 +590,34 @@ final class VideoCueTests: XCTestCase {
         XCTAssertNil(wc.window?.attachedSheet, "Show Mode raises no sheet")
     }
 
+    /// A Video cue's Triggers tab has the fade-and-stop-others controls, and they act: the movie
+    /// plays, the still is set to fade and stop the others over 0.5 s, and GO on the still stops
+    /// the movie (its picture gone) while the still runs on.
+    func testAVideoCuesTriggersTabFadesAndStopsTheOthers() async throws {
+        try await openVideoShow()
+        let inspector = wc.inspector
+        click(Self.still)
+        await soon { inspector.cue?.id == Self.still }
+        inspector.tabView.selectTabViewItem(withIdentifier: "triggers")
+        XCTAssertNotNil(inspector.fadeOthersCheck.superview, "on the tab")
+        XCTAssertTrue(inspector.fadeOthersCheck.isEnabled)
+        inspector.fadeOthersCheck.performClick(nil)
+        await soon { InspectorEdit.fadeOthers(self.store.model!.cue(Self.still)!).enabled }
+        try typeInto(inspector.fadeOthersTimeField, "0.5")
+        await soon { InspectorEdit.fadeOthers(self.store.model!.cue(Self.still)!).duration == 0.5 }
+        XCTAssertTrue(inspector.duckCheck.isEnabled, "duck others is offered too")
+
+        try await perform(.startSelected, on: Self.movie)
+        try await play(0.5)
+        XCTAssertEqual(status(Self.movie), loc("cue.state.running"))
+        try await perform(.startSelected, on: Self.still)
+        try await play(0.7)
+        await soon("the movie faded and stopped") { self.status(Self.movie) == nil }
+        XCTAssertEqual(status(Self.still), loc("cue.state.running"), "never the cue itself")
+        let shown = await shownFrame()
+        XCTAssertEqual(shown, 0, "only the still is on the stage")
+    }
+
     // MARK: Flow 6: tabs and icon
 
     /// A Video cue's inspector has Basics, Triggers and I/O; several selected keep I/O, the stage
