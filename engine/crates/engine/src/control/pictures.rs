@@ -46,7 +46,11 @@ struct Live {
     run: RunId,
     /// The `load` it was given, to send again to a new stage host.
     load: ToStage,
-    /// Its last `play` or `pause`, likewise.
+    /// Its first `play`, likewise: it dates when the picture is first drawn and its place in
+    /// the stacking, so a picture paused (or stopping) when the stage host starts again comes
+    /// back where it was.
+    first: Option<ToStage>,
+    /// Its last `play`, `pause` or `stop`, likewise.
     now: Option<ToStage>,
     /// It is stopping: gone from the stage host after this sample.
     ends: Option<SampleTime>,
@@ -157,7 +161,12 @@ impl Engine {
             .pictures
             .live
             .values()
-            .flat_map(|l| std::iter::once(l.load.clone()).chain(l.now.clone()))
+            .flat_map(|l| {
+                let now = l.now.as_ref().filter(|n| Some(*n) != l.first.as_ref());
+                std::iter::once(l.load.clone())
+                    .chain(l.first.clone())
+                    .chain(now.cloned())
+            })
             .collect();
         for m in messages {
             self.picture(m);
@@ -553,6 +562,7 @@ impl DocCx<'_> {
                 cue,
                 run,
                 load: load.clone(),
+                first: None,
                 now: None,
                 ends: None,
             },
@@ -585,6 +595,9 @@ impl DocCx<'_> {
         };
         if let Some(l) = self.eng.pictures.live.get_mut(&id) {
             l.now = Some(message.clone());
+            if l.first.is_none() {
+                l.first = Some(message.clone());
+            }
         }
         self.eng.picture_clock(true);
         self.eng.picture(message);

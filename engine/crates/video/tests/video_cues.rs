@@ -892,3 +892,27 @@ fn relink_finds_a_video_cues_moved_file_and_it_plays() {
     let now = shown(&mut s).expect("the relinked picture plays");
     assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
 }
+
+/// A paused picture comes back, on its held frame, when the stage host is relaunched.
+#[test]
+fn a_paused_picture_is_shown_again_when_the_stage_host_is_relaunched() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = make(dir.path(), "clip.mov", "h264", Some((250, 25)));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK);
+    let held = shown(&mut s).expect("a frame while paused");
+    let pid = s.control().stage_host_pid().unwrap();
+    let killed = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
+    s.settle_stages();
+    s.run(samples(1.0));
+    assert_eq!(state(&s, 1), CueState::Paused);
+    assert_eq!(shown(&mut s), Some(held), "the held frame is back");
+}
