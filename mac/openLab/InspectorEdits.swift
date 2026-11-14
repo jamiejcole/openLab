@@ -216,7 +216,8 @@ extension InspectorEdit {
             switch time(text) {
             case .failure(let r): return .failure(r)
             case .success(let seconds):
-                return .success(seconds == had ? nil : .setProperty(cue.id, .kindFields(["duration": .double(seconds)])))
+                return .success(
+                    seconds == had ? nil : .setProperty(cue.id, .kindFields(["duration": .double(seconds)])))
             }
         }
         switch time(text) {

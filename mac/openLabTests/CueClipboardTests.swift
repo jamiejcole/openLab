@@ -83,7 +83,8 @@ final class CueClipboardTests: XCTestCase {
         XCTAssertEqual(CueListViewController.skipped(mixed, folderPlan), 1)
         XCTAssertNil(h.vc.fileDropPlan([mixed[1]], item: nil, index: 0))
         XCTAssertEqual(
-            String(format: loc("edit.drop.skipped.one"), 1), "1 dropped file was not a sound, movie or image and was left out.")
+            String(format: loc("edit.drop.skipped.one"), 1),
+            "1 dropped file was not a sound, movie or image and was left out.")
         let ids = await editor.addFiles([files[0], files[2]], parent: nil, index: 0, skipped: 1)
         XCTAssertEqual(ids.count, 2)
         XCTAssertEqual(log.notices, [String(format: loc("edit.drop.skipped.one"), 1)])

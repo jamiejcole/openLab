@@ -31,7 +31,8 @@ final class VideoCueTests: XCTestCase {
     override func setUp() async throws {
         engine = try await TestEngine.start(displays: "V1:1920x1080")
         let url = engine.infoURL
-        let session = EngineSession(transport: WebSocketTransport(), infoProvider: { EngineConnectionInfo.load(from: url) })
+        let session = EngineSession(
+            transport: WebSocketTransport(), infoProvider: { EngineConnectionInfo.load(from: url) })
         app = AppController(session: session, scheduler: ManualScheduler())
         app.keyWindow = { [unowned self] in app.windows[doc]?.window }
         app.isTextEditing = { false }
@@ -58,7 +59,9 @@ final class VideoCueTests: XCTestCase {
         try writeTestMedia(media.appendingPathComponent("card.jpg"), seconds: 0)
         try writeTestMedia(media.appendingPathComponent(Self.longName), seconds: 2)
         try edit?(folder)
-        guard case .success(let opened) = await app.session.open(path: folder.appendingPathComponent("Video.openlab").path)
+        guard
+            case .success(let opened) = await app.session.open(
+                path: folder.appendingPathComponent("Video.openlab").path)
         else { return XCTFail("open") }
         doc = opened
         try await windowUp()
@@ -69,14 +72,16 @@ final class VideoCueTests: XCTestCase {
         }
         if !probed {
             XCTFail(
-                "the movie was never probed: \(store.problems[Self.movie] ?? []) \(String(engine.logText.suffix(3000)))")
+                "the movie was never probed: \(store.problems[Self.movie] ?? []) \(String(engine.logText.suffix(3000)))"
+            )
         }
     }
 
     /// A new untitled workspace (one stage per display, as File > New makes it).
     func openNewWorkspace() async throws {
         await assertEventually("the stage host listed its display") {
-            guard case .success(let ok) = await self.engine.request(.listDisplays), case .displays(let list, _)? = ok.data
+            guard case .success(let ok) = await self.engine.request(.listDisplays),
+                case .displays(let list, _)? = ok.data
             else { return false }
             return !list.isEmpty
         }
@@ -177,7 +182,10 @@ final class VideoCueTests: XCTestCase {
 
     /// The test card's frame number `stage` shows now (nil: no card, black).
     func shownFrame(_ stage: ModelID = VideoCueTests.stage) async -> UInt16? {
-        guard case .success(let ok) = await store.client.send({ .request(id: $0, .stageProbe(stage: stage, points: [[0.5, 0.5]])) }),
+        guard
+            case .success(let ok) = await store.client.send({
+                .request(id: $0, .stageProbe(stage: stage, points: [[0.5, 0.5]]))
+            }),
             case .stageProbe(let frame, _)? = ok.data
         else { return nil }
         return frame
@@ -227,7 +235,8 @@ final class VideoCueTests: XCTestCase {
         let type = try XCTUnwrap(cueCell(id, "type"), line: line).images[0]
         XCTAssertEqual(Icon.drawing(shownBy: type.image), .kindVideo, line: line)
         XCTAssertEqual(type.accessibilityLabel(), loc("cue.type.video"), line: line)
-        XCTAssertEqual(cell(id, "name"), loc("cue.type.video"), "an unnamed cue with no file reads as its kind", line: line)
+        XCTAssertEqual(
+            cell(id, "name"), loc("cue.type.video"), "an unnamed cue with no file reads as its kind", line: line)
         XCTAssertEqual(cell(id, "duration"), "", line: line)
         XCTAssertFalse(brokenTip(id)?.contains(loc("problem.no_stage")) ?? true, "it has a stage", line: line)
     }
@@ -237,7 +246,14 @@ final class VideoCueTests: XCTestCase {
         try await openVideoShow { folder in
             try editShow(folder.appendingPathComponent("Video.openlab")) { ws in
                 ws.set("stages", .array([]))
-                ws.set("cue_lists", .array([.object(["id": .string("00000000-0000-0000-0000-0000000000f3"), "name": .string("Main"), "cues": .array([])])]))
+                ws.set(
+                    "cue_lists",
+                    .array([
+                        .object([
+                            "id": .string("00000000-0000-0000-0000-0000000000f3"), "name": .string("Main"),
+                            "cues": .array([]),
+                        ])
+                    ]))
             }
         }
         let added = await wc.editor.add(.video)
@@ -274,7 +290,8 @@ final class VideoCueTests: XCTestCase {
 
         // A still dropped on a Video cue's row replaces its file; a sound dropped there makes a cue.
         let on = NSOutlineViewDropOnItemIndex
-        XCTAssertEqual(wc.cueList.fileDropPlan([png], item: wc.cueList.node(Self.empty), index: on), .replace(Self.empty, png))
+        XCTAssertEqual(
+            wc.cueList.fileDropPlan([png], item: wc.cueList.node(Self.empty), index: on), .replace(Self.empty, png))
         XCTAssertEqual(
             wc.cueList.fileDropPlan([wav], item: wc.cueList.node(Self.empty), index: on), .insert([wav], nil, 4))
 
@@ -422,7 +439,8 @@ final class VideoCueTests: XCTestCase {
         let io = try XCTUnwrap(inspector.tabView.tabViewItems.first { $0.identifier as? String == "io" })
         inspector.tabView.selectTabViewItem(io)
         let v = inspector.videoIO
-        XCTAssertEqual(v.fileLabel.stringValue, folder.appendingPathComponent("media/clip.mov").standardizedFileURL.path)
+        XCTAssertEqual(
+            v.fileLabel.stringValue, folder.appendingPathComponent("media/clip.mov").standardizedFileURL.path)
         await soon("the format") {
             v.formatLabel.stringValue
                 == String(format: loc("inspector.io.videoFormat"), loc("inspector.io.codec.h264"), "288 × 160", "25")
@@ -543,7 +561,8 @@ final class VideoCueTests: XCTestCase {
         click(Self.movie)
         let inspector = wc.inspector
         await soon { inspector.cue?.id == Self.movie }
-        XCTAssertEqual(inspector.tabView.tabViewItems.compactMap { $0.identifier as? String }, ["basics", "triggers", "io"])
+        XCTAssertEqual(
+            inspector.tabView.tabViewItems.compactMap { $0.identifier as? String }, ["basics", "triggers", "io"])
         XCTAssertEqual(Icon.drawing(shownBy: inspector.kindIcon.image), .kindVideo)
         for id in [Self.movie, Self.still, Self.empty, Self.long] {
             XCTAssertEqual(Icon.drawing(shownBy: cueCell(id, "type")?.images[0].image), .kindVideo, "\(id)")
@@ -552,7 +571,8 @@ final class VideoCueTests: XCTestCase {
 
         wc.cueList.selectAsUser([Self.movie, Self.still])
         await soon { inspector.isBatch }
-        XCTAssertEqual(inspector.tabView.tabViewItems.compactMap { $0.identifier as? String }, ["basics", "triggers", "io"])
+        XCTAssertEqual(
+            inspector.tabView.tabViewItems.compactMap { $0.identifier as? String }, ["basics", "triggers", "io"])
         let v = inspector.videoIO
         XCTAssertEqual(v.stagePopup.titleOfSelectedItem, "Stage 1", "the stage both share")
         XCTAssertEqual(v.fileLabel.stringValue, loc("inspector.mixed"))

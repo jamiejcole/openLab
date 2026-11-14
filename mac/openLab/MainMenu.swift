@@ -168,7 +168,8 @@ enum MainMenu {
     /// The Cues menu's kinds in QLab's order: media (Group, Audio, Video), Fade, the control cues, then
     /// Wait and Memo. Kinds QLab has but openLab lacks are absent; Target has no model cue.
     static let cueMenuGroups: [[NewCueKind]] = [
-        [.group, .audio, .video], [.fade], [.network, .start, .stop, .pause, .load, .reset, .devamp, .goto, .arm, .disarm],
+        [.group, .audio, .video], [.fade],
+        [.network, .start, .stop, .pause, .load, .reset, .devamp, .goto, .arm, .disarm],
         [.wait, .memo],
     ]
 

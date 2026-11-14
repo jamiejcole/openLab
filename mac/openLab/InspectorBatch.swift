@@ -38,7 +38,10 @@ extension InspectorViewController {
 
     /// The controls only one cue at a time can set: off while several are selected.
     var singleCueControls: [NSControl] {
-        [numberField, hotkeyField, hotkeyClear, networkSendButton, chooseButton, clearTargetButton, videoIO.chooseButton]
+        [
+            numberField, hotkeyField, hotkeyClear, networkSendButton, chooseButton, clearTargetButton,
+            videoIO.chooseButton,
+        ]
     }
 
     // MARK: Showing several cues
