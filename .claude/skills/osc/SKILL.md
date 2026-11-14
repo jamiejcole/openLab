@@ -78,7 +78,7 @@ A message that succeeds gets **no reply** (actions, writes, `/updates`). A failu
 | `/cue/{number}/name`, `/notes` | one string | `command set_cue_property` |
 | `/cue/{number}/number` | string, int or float; empty string clears | `command set_cue_numbers` |
 | `/cue/{number}/preWait`, `/postWait` | one number, 0 to 86400 (a day) | `command set_cue_property`. A Wait cue's post-wait is its duration: read as the duration, and core writes the duration (Q350) |
-| `/cue/{number}/duration` | one number, 0 to 86400 | `command set_cue_property` `duration`, Wait and Fade cues only (`error` for others). Read: a Wait or Fade cue's duration, 0 for an instant cue, `error` for Audio and Group (this copy has no media lengths) |
+| `/cue/{number}/duration` | one number, 0 to 86400 | `command set_cue_property` `duration`, Wait and Fade cues only (`error` for others). Read: a Wait or Fade cue's duration, an Audio cue's action length from the media durations the copy follows (`error` while unknown), 0 for an instant cue, `error` for a Group (Q356) |
 | `/cue/{number}/armed`, `/flagged` | int 0/1 or OSC boolean | `command set_cue_property` |
 | `/cue/{number}/{property}` | none | reply with current value. Also readable, read-only: `uniqueID`, `isLoaded`, `isRunning`, `isPaused`, `isBroken` (a write is `error`) |
 | `/cue_id/{ID}/...` | as `/cue/{number}/...` | cue found by id (UUID, upper case) |
@@ -147,7 +147,7 @@ A message with the same address and arguments as the peer's previous one, arrivi
 - A reply too large for a datagram becomes an `error` reply; QLab sends nothing.
 - `/version` is openLab's version. Cue `type` names other than Audio, Group, Cue List are ours (not measured; assumed).
 - Cue lists answer patterns only for `name`, `number`, `uniqueID`.
-- An out-of-range `duration` is refused whole; QLab sets 0 and answers `error` for a negative one, and 0 without a reply for a string (Q353). `/duration` of Audio and Group cues is `error` (Q356). A Load cue's time has no address, as in QLab (Q354).
+- An out-of-range `duration` is refused whole; QLab sets 0 and answers `error` for a negative one, and 0 without a reply for a string (Q353). `/duration` of a Group is `error` (Q356). A Load cue's time has no address, as in QLab (Q354).
 - No `/new`, `/save` or other application/workspace queries.
 
 ## References

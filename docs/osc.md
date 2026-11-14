@@ -208,7 +208,7 @@ needs View; changing needs Edit (notes: View).
 | `/cue/{number}/number` | string, int or float | an empty string clears the number; a number in use is refused |
 | `/cue/{number}/preWait` | seconds, 0 to 86400 | |
 | `/cue/{number}/postWait` | seconds, 0 to 86400 | a Wait cue's post-wait is its duration: reading or changing one is the other |
-| `/cue/{number}/duration` | seconds, 0 to 86400 | changes only a Wait or Fade cue's duration. Reads a Wait or Fade cue's duration, 0 for a cue that acts at once; Audio and Group cues answer `error` |
+| `/cue/{number}/duration` | seconds, 0 to 86400 | changes only a Wait or Fade cue's duration. Reads a Wait or Fade cue's duration, an Audio cue's length (an `error` while it is not known, or when it loops until devamped), 0 for a cue that acts at once; a Group answers `error` |
 | `/cue/{number}/armed` | 1 or 0, or true or false | |
 | `/cue/{number}/flagged` | 1 or 0, or true or false | |
 | `/cue/{number}/uniqueID` | read only | the cue's unique id, for `/cue_id/` |
@@ -262,7 +262,7 @@ should ask again when it sees `__root__`.
   settings and many queries of QLab 5 are not there yet.
 - A value out of range is refused whole with an `error` and changes nothing. QLab 5 sets a
   negative duration to 0 (and answers `error`), and takes a string as 0 without a reply.
-- `/cue/{number}/duration` answers `error` for Audio and Group cues; QLab 5 answers a length.
+- `/cue/{number}/duration` answers `error` for a Group cue; QLab 5 answers the group's length.
 - Wrong passcodes are counted per IP address and across all workspaces, and over TCP as over
   UDP; QLab 5 counts them per connection.
 - Updates are sent once (QLab 5 sends each twice). `/updates 1` after a lapse subscribes again.

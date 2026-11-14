@@ -71,6 +71,9 @@ pub struct Mirror {
     /// The list `/go` and `/playhead` act on: the one whose playhead moved last (QLab: the list
     /// on display, which selecting a cue in another list switches). `None` means the first.
     active: Option<CueListId>,
+    /// Each Audio cue's action length in seconds where the engine knows it (its media
+    /// durations): what `/cue/{n}/duration` answers for it. One entry per Audio cue at most.
+    lengths: HashMap<CueId, f64>,
 }
 
 /// Where a cue sits: its list, the groups around it (outermost first) and its place among its
@@ -96,6 +99,11 @@ impl Mirror {
             runtime_seq: snapshot.runtime_seq,
             document: snapshot.document,
             active: None,
+            lengths: snapshot
+                .media_durations
+                .iter()
+                .filter_map(|m| Some((m.cue, m.duration?)))
+                .collect(),
         }
     }
 
@@ -279,6 +287,14 @@ impl Mirror {
                     }
                     push_unique(&mut states, *cue);
                 }
+                RuntimeChange::MediaDuration(media) => match media.duration {
+                    Some(length) => {
+                        self.lengths.insert(media.cue, length);
+                    }
+                    None => {
+                        self.lengths.remove(&media.cue);
+                    }
+                },
                 // Only a move is news: the insert says what was there.
                 RuntimeChange::Playhead { list, cue }
                     if self.playheads.insert(*list, *cue) != Some(*cue) =>
@@ -480,12 +496,15 @@ impl MirrorShow<'_> {
     }
 }
 
-/// What `/cue/{n}/duration` reports: a Wait or Fade cue's duration, 0 for a cue whose action is
-/// instant; `None` (an error reply) for Audio and Group cues, whose length this copy does not know.
-fn action_length(kind: &CueKind) -> Option<f64> {
-    match kind {
+/// What `/cue/{n}/duration` reports: a Wait or Fade cue's duration, an Audio cue's action length
+/// as the engine last reported it, 0 for a cue whose action is instant; `None` (an error reply)
+/// for an Audio cue whose length is unknown (not probed, missing, looping until devamped) and for
+/// a Group, whose length this copy does not work out.
+fn action_length(cue: &Cue, lengths: &HashMap<CueId, f64>) -> Option<f64> {
+    match &cue.kind {
         CueKind::Wait { duration } | CueKind::Fade { duration, .. } => Some(*duration),
-        CueKind::Audio { .. } | CueKind::Group { .. } => None,
+        CueKind::Audio { .. } => lengths.get(&cue.id).copied(),
+        CueKind::Group { .. } => None,
         CueKind::Memo
         | CueKind::Start { .. }
         | CueKind::Stop { .. }
@@ -560,7 +579,7 @@ impl OscShow for MirrorShow<'_> {
             CueField::Notes => json!(cue.notes),
             CueField::PreWait => json!(cue.pre_wait),
             CueField::PostWait => json!(cue.effective_post_wait()),
-            CueField::Duration => json!(action_length(&cue.kind)?),
+            CueField::Duration => json!(action_length(cue, &self.0.lengths)?),
             CueField::Armed => json!(cue.armed),
             CueField::Flagged => json!(cue.flagged),
             CueField::UniqueId => json!(upper(cue.id)),
@@ -1311,5 +1330,71 @@ mod tests {
         assert!(!write(3, CueField::Duration));
         assert!(write(4, CueField::Name));
         assert!(!write(99, CueField::Name));
+    }
+
+    /// An Audio cue's duration is its action length from the media durations (snapshot, then
+    /// runtime changes), as QLab answers a file's length; unknown is an error. Never writable.
+    #[test]
+    fn an_audio_cues_duration_follows_its_media_durations() {
+        let no_fade = openlab_core::FadeSpec {
+            duration: 0.0,
+            curve: openlab_core::FadeCurve::Linear,
+        };
+        let audio = CueKind::Audio {
+            media: Some(openlab_core::MediaRef::new("a.wav")),
+            patch: openlab_core::PatchId(Uuid::from_u128(901)),
+            start_time: 0.0,
+            end_time: None,
+            fade_in: no_fade.clone(),
+            fade_out: no_fade,
+            slices: vec![],
+            last_slice_play_count: 1,
+            levels: openlab_core::CueLevels {
+                master_db: 0.0,
+                outputs: vec![],
+                crosspoints: vec![],
+                gangs: vec![],
+            },
+            preload: false,
+        };
+        let base = mirror(2);
+        let mut workspace = base.workspace.clone();
+        for c in &mut workspace.cue_lists[0].cues {
+            c.kind = audio.clone();
+        }
+        let media = |n, duration| openlab_core::protocol::CueMediaDuration {
+            cue: cue_id(n),
+            file: duration,
+            trimmed: duration,
+            duration,
+            channels: None,
+        };
+        let mut m = Mirror::from_snapshot(Snapshot {
+            revision: 0,
+            runtime_seq: 0,
+            document: base.document.clone(),
+            workspace,
+            cue_states: vec![],
+            problems: vec![],
+            group_warnings: vec![],
+            playheads: vec![],
+            previewing: vec![],
+            played: vec![],
+            warnings: vec![],
+            media_durations: vec![media(1, Some(4.25))],
+        });
+        let read = |m: &Mirror, n| MirrorShow(m).cue_property(cue_id(n), CueField::Duration);
+        assert_eq!(read(&m, 1), Some(json!(4.25)));
+        assert_eq!(read(&m, 2), None, "not probed yet");
+        assert!(!MirrorShow(&m).writable(cue_id(1), CueField::Duration));
+        m.runtime(
+            1,
+            &[
+                RuntimeChange::MediaDuration(media(2, Some(1.5))),
+                RuntimeChange::MediaDuration(media(1, None)),
+            ],
+        );
+        assert_eq!(read(&m, 1), None, "the file went missing");
+        assert_eq!(read(&m, 2), Some(json!(1.5)));
     }
 }
