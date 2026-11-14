@@ -708,8 +708,10 @@ static GATE_OPENED: std::sync::Condvar = std::sync::Condvar::new();
 /// The real probe, held while its file is in `GATED` (bounded by `LIMIT`).
 fn gated_probe(path: &Path) -> Result<ProbeReport, MediaError> {
     let mut gated = GATED.lock().unwrap();
-    let deadline = std::time::Instant::now() + LIMIT;
-    while gated.iter().any(|p| p == path) && std::time::Instant::now() < deadline {
+    // A hang guard: at most `LIMIT` in waits of 50 ms.
+    let mut rounds = LIMIT.as_millis() / 50;
+    while gated.iter().any(|p| p == path) && rounds > 0 {
+        rounds -= 1;
         gated = GATE_OPENED
             .wait_timeout(gated, Duration::from_millis(50))
             .unwrap()

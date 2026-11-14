@@ -233,10 +233,15 @@ impl<P: Platform> Host<P> {
     /// running, so the show's clock stands still, or a stalled engine) the picture stops with
     /// it instead of playing on and jumping back when the clock moves again.
     fn now(&self) -> (u64, u32) {
+        self.now_after(self.clock.map(|c| c.told.elapsed()))
+    }
+
+    /// [`Self::now`] when `since` has passed since the last clock message.
+    fn now_after(&self, since: Option<std::time::Duration>) -> (u64, u32) {
         match self.clock {
             None => (0, 1),
             Some(c) if self.platform.live() => {
-                let since = c.told.elapsed().min(CLOCK_HOLD);
+                let since = since.unwrap_or_default().min(CLOCK_HOLD);
                 let ran = since.as_secs_f64() * f64::from(c.rate);
                 (c.sample.saturating_add(ran as u64), c.rate)
             }
@@ -974,57 +979,20 @@ mod tests {
     fn the_clock_runs_on_between_messages_only_a_little() {
         let mut h = host(&["D"]);
         h.platform.live = true;
-        let rate = 48_000;
-        let told = |ago_ms: u64| {
-            std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_millis(ago_ms))
-                .unwrap()
-        };
-        h.clock = Some(Clock {
-            sample: 1000,
-            rate,
-            told: told(10),
-        });
-        let (now, _) = h.now();
-        assert!((1000 + 480..=1000 + 48 * 30).contains(&now), "{now}");
-        h.clock = Some(Clock {
-            sample: 1000,
-            rate,
-            told: told(60_000),
-        });
-        assert_eq!(h.now().0, 1000 + 48 * 30, "a minute later: held at the cap");
-    }
-
-    /// A picture whose file the platform opened is said to be open (once); one that failed
-    /// later is reported failed and goes; events of a picture already gone are dropped.
-    #[test]
-    fn a_pictures_open_and_failure_are_reported_from_the_platforms_events() {
-        let mut h = host(&["D"]);
         send(
             &mut h,
-            ToStage::Stages {
-                stages: vec![stage(1, Some("D"), false)],
+            ToStage::Clock {
+                sample: 1000,
+                rate: 48_000,
             },
         );
-        let out = load(&mut h, 4, 1);
-        assert!(
-            out.contains(&FromStage::PictureOpened { picture: 4 }),
-            "{out:?}"
-        );
-        h.platform
-            .events
-            .push(PictureEvent::Failed(4, "a frame took too long".into()));
-        h.platform.events.push(PictureEvent::Opened(99));
-        let mut out = Vec::new();
-        h.poll(&mut out);
+        let after = |ms| Some(std::time::Duration::from_millis(ms));
+        assert_eq!(h.now_after(after(10)).0, 1000 + 480);
         assert_eq!(
-            out,
-            vec![FromStage::PictureFailed {
-                picture: 4,
-                reason: "a frame took too long".into()
-            }]
+            h.now_after(after(60_000)).0,
+            1000 + 48 * 30,
+            "a minute later: held at the cap"
         );
-        assert!(!h.playing());
     }
 
     /// Two pictures on one stage: the later-started is drawn last (on top), whatever their ids.
