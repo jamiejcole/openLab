@@ -431,7 +431,7 @@ final class AppControllerTests: XCTestCase {
         XCTAssertFalse(titles.contains { $0.localizedCaseInsensitiveContains("revert") })
         XCTAssertEqual(
             MainMenu.make().bar.items[1].submenu?.items.map(
-                \.keyEquivalent), ["n", "o", "", "", "", "", "", ",", "", "w", "w", "s", "S"])
+                \.keyEquivalent), ["n", "o", "", "", "", ",", "", "w", "w", "s", "S"])
     }
 
     // MARK: Front-window routing
@@ -3001,6 +3001,21 @@ final class AppControllerTests: XCTestCase {
                 String(format: loc("missingFiles.failed"), "").trimmingCharacters(
                     in: .whitespaces)), tool.summaryLabel.stringValue)
         XCTAssertEqual(tool.table.numberOfRows, 0)
+        XCTAssertTrue(alerts.errors.isEmpty, "not modal")
+    }
+
+    /// A relink whose answer cannot be read says so in the tool and keeps the rows to try again.
+    func testARelinkThatFailsSaysSoAndKeepsTheRows() async throws {
+        let tool = try await chooseFindMissingFiles(try mediaFolder(["o.wav"]))
+        engine.garbleResults = true
+        await tool.relink()
+        engine.garbleResults = false
+        XCTAssertTrue(
+            tool.summaryLabel.stringValue.hasPrefix(
+                String(format: loc("missingFiles.failed"), "").trimmingCharacters(in: .whitespaces)),
+            tool.summaryLabel.stringValue)
+        XCTAssertEqual(toolRows(tool).map(\.cue), ["2.3  Radio"])
+        XCTAssertTrue(tool.relinkButton.isEnabled, "it can be tried again")
         XCTAssertTrue(alerts.errors.isEmpty, "not modal")
     }
 
