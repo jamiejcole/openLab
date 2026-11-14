@@ -107,7 +107,8 @@ fn unsupported(r: Result<ProbeReport, MediaError>) -> String {
 }
 
 /// A file that is not a movie or still openLab plays gives a reason, never a crash or a hang:
-/// noise, an empty file, a movie cut short, a still format it does not play, a missing file.
+/// noise, an empty file, a movie cut short, a still cut short (PNG, JPEG, TIFF), a still too
+/// large to hold, a still format it does not play, a missing file.
 #[test]
 fn damaged_or_unsupported_files_give_a_reason() {
     let dir = tempfile::tempdir().unwrap();
@@ -128,6 +129,19 @@ fn damaged_or_unsupported_files_give_a_reason() {
         let why = unsupported(probe(file));
         assert!(!why.is_empty(), "{}", file.display());
     }
+    // Stills cut short: ImageIO reads their headers, so only decoding every pixel (and, for a
+    // JPEG, finding its end) tells them from whole ones.
+    for (kind, keep) in [("png", 3), ("jpeg", 2), ("tiff", 2)] {
+        let whole = std::fs::read(make(dir.path(), &format!("whole.{kind}"), kind, None)).unwrap();
+        let file = dir.path().join(format!("cut.{kind}"));
+        std::fs::write(&file, whole.get(..whole.len() / keep).unwrap()).unwrap();
+        let why = unsupported(probe(&file));
+        assert!(why.contains("damaged"), "{kind}: {why}");
+    }
+    // A still with more pixels than a picture may have is refused before it is decoded.
+    let huge = make(dir.path(), "huge.png", "huge-png", None);
+    let why = unsupported(probe(&huge));
+    assert!(why.contains("16384 x 8192"), "{why}");
     assert!(matches!(
         probe(&dir.path().join("gone.mov")),
         Err(MediaError::NotFound(_))

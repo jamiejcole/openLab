@@ -35,7 +35,9 @@ use objc2_image_io::CGImageDestination;
 use crate::card;
 
 /// `--make-test-media <kind> <path> [frames fps]`: `kind` is `h264`, `hevc`, `prores` (with a
-/// frame count and rate) or `png`, `jpeg`, `tiff` (frame 0's card). The file must not exist.
+/// frame count and rate) or `png`, `jpeg`, `tiff` (frame 0's card), or `huge-png` (a black
+/// PNG of 16384 x 8192 pixels, one bit each: small on disk, too many pixels to play). The file
+/// must not exist.
 pub fn make(args: &[String]) -> Result<(), String> {
     match args {
         [kind, path, frames, fps] => {
@@ -176,6 +178,9 @@ fn pixel_buffer(bgra: &[u8]) -> Result<CFRetained<CVPixelBuffer>, String> {
 }
 
 fn still(kind: &str, path: &Path) -> Result<(), String> {
+    if kind == "huge-png" {
+        return huge_png(path);
+    }
     let uti = match kind {
         "png" => "public.png",
         "jpeg" => "public.jpeg",
@@ -206,6 +211,43 @@ fn still(kind: &str, path: &Path) -> Result<(), String> {
         .ok_or("no image")?;
         let destination = CGImageDestination::with_url(&url, &CFString::from_str(uti), 1, None)
             .ok_or("no image destination")?;
+        destination.add_image(&image, None);
+        if !destination.finalize() {
+            return Err("the image was not written".into());
+        }
+    }
+    Ok(())
+}
+
+/// A black one-bit grey PNG of 16384 x 8192 pixels.
+fn huge_png(path: &Path) -> Result<(), String> {
+    const W: usize = 16384;
+    const H: usize = 8192;
+    let text = path.to_str().ok_or("path is not Unicode")?;
+    let url = CFURL::from_file_path(text).ok_or("bad path")?;
+    let bits = vec![0u8; W / 8 * H];
+    let data = CFData::from_bytes(&bits);
+    let provider = CGDataProvider::with_cf_data(Some(&data)).ok_or("no data provider")?;
+    let space = CGColorSpace::new_device_gray().ok_or("no colour space")?;
+    // SAFETY: a one-bit grey image over `bits` (rows of W / 8 bytes), written to a new file.
+    unsafe {
+        let image = CGImage::new(
+            W,
+            H,
+            1,
+            1,
+            W / 8,
+            Some(&space),
+            CGBitmapInfo(CGImageAlphaInfo::None.0),
+            Some(&provider),
+            std::ptr::null(),
+            false,
+            CGColorRenderingIntent::RenderingIntentDefault,
+        )
+        .ok_or("no image")?;
+        let destination =
+            CGImageDestination::with_url(&url, &CFString::from_str("public.png"), 1, None)
+                .ok_or("no image destination")?;
         destination.add_image(&image, None);
         if !destination.finalize() {
             return Err("the image was not written".into());
