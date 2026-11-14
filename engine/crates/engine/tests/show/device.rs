@@ -88,6 +88,8 @@ struct State {
     hide_once: Option<String>,
     /// The next stream opens but does not call back (until `unstall`).
     silent_next_open: bool,
+    /// Every open of this device fails, as a device another program holds does.
+    refuse_opens: Option<String>,
 }
 
 /// The stand-in host audio system, shared by the layer (device thread) and the test.
@@ -217,6 +219,11 @@ impl Fake {
         self.state.lock().unwrap().panic_on_open = true;
     }
 
+    /// Every open of device `id` fails (busy) until `refuse_opens(None)`.
+    pub fn refuse_opens(&self, id: Option<&str>) {
+        self.state.lock().unwrap().refuse_opens = id.map(str::to_owned);
+    }
+
     pub fn hide_once(&self, id: &str) {
         self.state.lock().unwrap().hide_once = Some(id.to_owned());
     }
@@ -323,6 +330,17 @@ impl DeviceLayer for FakeLayer {
             .iter()
             .find(|d| request.device_id.as_deref().is_none_or(|id| id == d.id))
             .cloned();
+        if let Some(device) = &found
+            && s.refuse_opens.as_ref() == Some(&device.id)
+        {
+            return Err(OpenFailure {
+                error: DeviceError {
+                    kind: OpenErrorKind::Busy,
+                    message: "the device is in use by another program".into(),
+                },
+                mixer: MixerBack::Mixer(Box::new(mixer)),
+            });
+        }
         let Some(device) = found else {
             return Err(OpenFailure {
                 error: DeviceError {

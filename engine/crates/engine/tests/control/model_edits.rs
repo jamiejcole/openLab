@@ -115,6 +115,7 @@ fn patch(n: u128) -> OutputPatch {
         master_db: 0.0,
         outputs: vec![
             PatchOutput {
+                name: String::new(),
                 level_db: 0.0,
                 mute: false,
                 polarity_inverted: false,

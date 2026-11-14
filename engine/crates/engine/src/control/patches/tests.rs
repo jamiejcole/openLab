@@ -101,6 +101,7 @@ fn ws_with(outputs: Vec<PatchOutput>) -> Workspace {
 
 fn out(level_db: f64, mute: bool, polarity_inverted: bool) -> PatchOutput {
     PatchOutput {
+        name: String::new(),
         level_db,
         mute,
         polarity_inverted,

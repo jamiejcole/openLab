@@ -1,0 +1,26 @@
+{
+  "about": "The patch editor of a patch given 128 cue outputs, light: every row is in the routing matrix (it scrolls), meters line up with the first 64 rows and the note says what is shown; then the editor and the settings table at their least sizes.",
+  "show": "Demo",
+  "appearance": "light",
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "audio"},
+    {"click": "settings-patch-edit-1"},
+    {"focus": "patch-editor"},
+    {"type": "patch-editor-count", "text": "128"},
+    {"tab": "routing"},
+    {"shot": "routing-128"},
+    {"scroll": "patch-editor-matrix", "dy": -3000},
+    {"shot": "routing-128-scrolled"},
+    {"tab": "cueOutputs"},
+    {"shot": "cue-outputs-128"},
+    {"resize": [520, 460]},
+    {"tab": "routing"},
+    {"shot": "routing-least-size"},
+    {"tab": "deviceOutputs"},
+    {"shot": "device-outputs-least-size"},
+    {"focus": "settings"},
+    {"resize": [520, 552]},
+    {"shot": "table-least-size"}
+  ]
+}

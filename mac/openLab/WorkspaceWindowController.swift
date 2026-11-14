@@ -217,6 +217,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
         inspector.onChooseFile = chooseFile
         inspector.onJumpToTarget = { [weak self] id in self?.jumpToTarget(id) }
+        inspector.onEditPatch = { [weak self] id in self?.editPatch(id) }
         cueList.onChooseFile = chooseFile
         cueToolbar.onAdd = { [weak self] kind in
             let cues = self?.cueList.selectedIDs()
@@ -303,6 +304,14 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         let sc = settingsWindow
         sc.window?.title = String(format: loc("settings.title.workspace"), workspaceName)
         return sc.present()
+    }
+
+    /// Opens the patch editor of `patch` (the I/O and Levels tabs' buttons), with the settings window
+    /// itself left closed. Not in Show Mode, where the inspector's controls are locked.
+    @discardableResult
+    func editPatch(_ patch: ModelID) -> PatchEditorWindowController? {
+        guard !isShowMode else { return nil }
+        return settingsWindow.openPatchEditor(patch)
     }
 
     /// The pre-show check asks the engine: without a connection there is nothing to ask (the menu

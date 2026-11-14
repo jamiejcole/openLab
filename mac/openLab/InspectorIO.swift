@@ -10,7 +10,12 @@ extension InspectorViewController {
         outputPatchPopup.target = self
         outputPatchPopup.action = #selector(outputPatchChosen)
         outputPatchPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
-        let content = column([row(loc("inspector.io.patch"), outputPatchPopup)], nil)
+        editPatchButton.setAX(AX.inspectorEditPatch, label: loc("inspector.io.editPatch"))
+        editPatchButton.target = self
+        editPatchButton.action = #selector(editPatchClicked)
+        let line = NSStackView(views: [outputPatchPopup, editPatchButton])
+        line.spacing = 8
+        let content = column([row(loc("inspector.io.patch"), line)], nil)
         content.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         let item = NSTabViewItem(identifier: "io")
         item.label = loc("inspector.tab.io")
@@ -39,6 +44,16 @@ extension InspectorViewController {
         let current = cue.raw["kind"]?["patch"]?.stringValue
         let chosen = patches.firstIndex { $0.id.raw == current } ?? -1
         if outputPatchPopup.indexOfSelectedItem != chosen { outputPatchPopup.selectItem(at: chosen) }
+        // One cue's patch: with several cues shown, or a patch that is gone, there is none to edit.
+        editPatchButton.isEnabled = !isLocked && chosen >= 0 && !isBatch
+    }
+
+    /// The patch editor of the shown cue's patch (QLab 5 manual p. 189: the I/O tab's edit button).
+    @objc func editPatchClicked() {
+        guard let raw = cue?.raw["kind"]?["patch"]?.stringValue, case let id = ModelID(raw),
+            store.model?.patches.contains(where: { $0.id == id }) == true
+        else { return }
+        onEditPatch?(id)
     }
 
     @objc func outputPatchChosen() {

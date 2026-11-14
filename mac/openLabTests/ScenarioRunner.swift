@@ -48,7 +48,8 @@ final class ScenarioRunner {
         case tab(String)
         /// `{"focus": "settings"}`: the workspace settings window (opened without taking focus) is
         /// the one the next steps and shots use, its `tab` the settings tab (general, audio, osc);
-        /// `"workspace"` goes back to the workspace window.
+        /// `"workspace"` goes back to the workspace window. `"patch-editor"`: the patch editor last
+        /// opened (a click on a row's Edit or the inspector's patch buttons), its `tab` the editor's.
         case focus(String)
         /// `{"shot": "name"}`: `<OUT>/<n>-<name>.png`, the whole window at 2x.
         case shot(String)
@@ -218,8 +219,9 @@ final class ScenarioRunner {
         case "tab": return .tab(try string("tab"))
         case "focus":
             let which = try string("focus")
-            guard ["workspace", "settings", "sheet"].contains(which) else {
-                throw Failure("\"focus\" must be \"workspace\", \"settings\" or \"sheet\"")
+            guard ["workspace", "settings", "sheet", "patch-editor", "preferences"].contains(which) else {
+                throw Failure(
+                    "\"focus\" must be \"workspace\", \"settings\", \"patch-editor\", \"preferences\" or \"sheet\"")
             }
             return .focus(which)
         default:
@@ -309,6 +311,9 @@ final class ScenarioRunner {
     }
 
     private func finish() {
+        prefs?.window?.close()
+        MeterView.countsWindowsOffScreen = false
+        if let shippedCovered { MeterView.defaultWindowIsCovered = shippedCovered }
         wc?.window?.close()
         engine?.stop()
         try? (log.joined(separator: "\n") + "\n").write(
@@ -317,7 +322,16 @@ final class ScenarioRunner {
 
     private func note(_ line: String) { log.append(line) }
 
+    /// The application preferences, once a step focused them.
+    private var prefs: PreferencesWindowController?
+    /// What new meter views asked before the run (restored when it ends).
+    private var shippedCovered: ((NSWindow, Bool) -> Bool)?
+
     private func start() async throws {
+        // The windows are never on screen: their meters count as shown, so they move in shots.
+        MeterView.countsWindowsOffScreen = true
+        shippedCovered = MeterView.defaultWindowIsCovered
+        MeterView.defaultWindowIsCovered = { _, _ in false }
         let isNew = scenario.show == "new"
         let showPath = isNew ? nil : try showToOpen()
         let engine = try await TestEngine.start()
@@ -346,6 +360,7 @@ final class ScenarioRunner {
         wc = WorkspaceWindowController(store: rig.store)
         // The sheet is never put on screen, and copies stay off the user's pasteboard and settings.
         wc.presentSheet = { _ in }
+        wc.settingsWindow.presentsEditors = false
         let board = NSPasteboard.withUniqueName()
         wc.editor.pasteboard = board
         wc.cueList.pasteboard = board
@@ -481,14 +496,17 @@ final class ScenarioRunner {
         case .scroll(let id, let dx, let dy, let precise, let mods, let at):
             let view = try control(id)
             let e = GestureEvent()
-            e.point = try windowPoint(at, in: view)
             e.delta = (dx, dy)
             e.precise = precise
             e.flags = mods
             // A scroll view's own `scrollWheel` runs an event-tracking loop that lets queued main-actor
             // work run inside this async step, which aborts the process (out-of-order task
             // deallocation). Its clip view is moved instead, by the wheel's distance as it would be.
-            if let scroll = view as? NSScrollView {
+            // A view that does not handle the wheel itself (a scroll view's document, such as the patch
+            // editor's matrix) passes it to its scroll view: that one is moved the same way.
+            let wheel = #selector(NSResponder.scrollWheel(with:))
+            let ownWheel = Swift.type(of: view).instanceMethod(for: wheel) != NSView.instanceMethod(for: wheel)
+            if let scroll = (view as? NSScrollView) ?? (ownWheel ? nil : view.enclosingScrollView) {
                 let clip = scroll.contentView
                 let factor: CGFloat = precise ? 1 : 10
                 var origin = clip.bounds.origin
@@ -500,6 +518,7 @@ final class ScenarioRunner {
                 note("scrolled \(id) to y \(Int(origin.y.rounded()))")
                 break
             }
+            e.point = try windowPoint(at, in: view)
             let target = try hitView(at: e.point, inside: view)
             target.scrollWheel(with: e)
             note(
@@ -519,6 +538,8 @@ final class ScenarioRunner {
             while left > 1e-9 {
                 let step = min(0.1, left)
                 try await rig.advance(step)
+                // The meters' display tick, at the pace device time moves.
+                rig.store.meters.tick(step)
                 left -= step
             }
             note("advance \(seconds) s")
@@ -526,7 +547,22 @@ final class ScenarioRunner {
             window.setContentSize(size)
             note("resize \(Int(size.width))x\(Int(size.height))")
         case .focus(let which):
-            if which == "settings" {
+            if which == "preferences" {
+                // The application preferences on this run's engine, their launch choice kept
+                // apart from the user's.
+                let defaults = UserDefaults(suiteName: "openlab-scenario-prefs-\(UUID().uuidString)")
+                let p =
+                    prefs
+                    ?? PreferencesWindowController(
+                        preferences: LaunchPreferences(defaults: defaults),
+                        audio: AudioPreferencesModel(client: engine!.app))
+                prefs = p
+                let w = try XCTUnwrap(p.window)
+                w.appearance = wc.window?.appearance
+                p.reload()
+                await p.refreshing?.value
+                focused = w
+            } else if which == "settings" {
                 let sc = wc.settingsWindow
                 let w = try XCTUnwrap(sc.window)
                 w.title = String(format: loc("settings.title.workspace"), wc.workspaceName)
@@ -537,12 +573,24 @@ final class ScenarioRunner {
             } else if which == "sheet" {
                 guard let sheet = wc.pasteSheet?.window else { throw Failure("no sheet is up") }
                 focused = sheet
+            } else if which == "patch-editor" {
+                guard let editor = wc.settingsWindow.patchEditor, let w = editor.window else {
+                    throw Failure("no patch editor was opened (click a settings-patch-edit-N first)")
+                }
+                w.appearance = wc.window?.appearance
+                await editor.editing?.value
+                focused = w
             } else {
                 focused = nil
             }
             note("focus \(which)")
         case .tab(let id):
-            let tabs = focused != nil && !(focused is PasteSheetWindow) ? wc.settingsWindow.tabs : wc.inspector.tabView
+            let tabs =
+                focused != nil && focused === prefs?.window
+                ? prefs!.tabs
+                : focused === wc.settingsWindow.patchEditor?.window && focused != nil
+                    ? wc.settingsWindow.patchEditor!.tabs
+                    : focused != nil && !(focused is PasteSheetWindow) ? wc.settingsWindow.tabs : wc.inspector.tabView
             let ids = tabs.tabViewItems.compactMap { $0.identifier as? String }
             guard ids.contains(id) else {
                 throw Failure("no tab \"\(id)\" for this selection; tabs: \(ids.joined(separator: ", "))")

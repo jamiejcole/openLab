@@ -2173,21 +2173,21 @@ final class UserTestFlowTests: XCTestCase {
         defer { settings.window?.close() }
         await settings.present().value
         settings.tabs.selectTabViewItem(withIdentifier: "audio")
-        XCTAssertEqual(settings.patchPopup.numberOfItems, 1)
-        XCTAssertFalse(settings.patchRemoveButton.isEnabled, "the only patch stays")
-        // With the caret in the name field, as after renaming a patch.
-        XCTAssertTrue(try XCTUnwrap(settings.window).makeFirstResponder(settings.patchNameField))
+        XCTAssertEqual(settings.patchNameFields.count, 1)
+        XCTAssertFalse(settings.patchRemoveButtons[0].isEnabled, "the only patch stays")
+        // With the caret in a name field, as after renaming a patch.
+        XCTAssertTrue(try XCTUnwrap(settings.window).makeFirstResponder(settings.patchNameFields[0]))
         settings.patchAddButton.performClick(nil)
         await assertEventually { self.rig.store.model?.patches.count == 2 }
-        await assertEventually("the pop-up lists it (\(settings.model.message ?? "no message"))") {
-            settings.patchPopup.numberOfItems == 2
+        await assertEventually("the table lists it (\(settings.model.message ?? "no message"))") {
+            settings.patchNameFields.count == 2
         }
-        await assertEventually { settings.patchNameField.stringValue == "Patch 2" }
-        settings.patchNameField.stringValue = "Foldback"
+        await assertEventually { settings.patchNameFields[1].stringValue == "Patch 2" }
+        settings.patchNameFields[1].stringValue = "Foldback"
         settings.controlTextDidEndEditing(
-            Notification(name: NSControl.textDidEndEditingNotification, object: settings.patchNameField))
+            Notification(name: NSControl.textDidEndEditingNotification, object: settings.patchNameFields[1]))
         await assertEventually { self.rig.store.model?.patches.last?.raw["name"]?.stringValue == "Foldback" }
-        await assertEventually { settings.patchPopup.titleOfSelectedItem == "Foldback" }
+        await assertEventually { settings.patchNameFields.map(\.stringValue) == ["Main", "Foldback"] }
         let foldback = try XCTUnwrap(rig.store.model?.patches.last?.id)
 
         // The cue is sent to it from its I/O tab.
@@ -2207,7 +2207,7 @@ final class UserTestFlowTests: XCTestCase {
             self.rig.store.model?.cue(Self.intro)?.raw["kind"]?["patch"]?.stringValue == foldback.raw
         }
         // A patch a cue plays through is not removed; once the cue is back on Main it is.
-        settings.patchRemoveButton.performClick(nil)
+        settings.patchRemoveButtons[1].performClick(nil)
         await assertEventually { !settings.messageLabel.stringValue.isEmpty }
         XCTAssertEqual(rig.store.model?.patches.count, 2)
         popup.selectItem(at: 0)
@@ -2215,9 +2215,9 @@ final class UserTestFlowTests: XCTestCase {
         await assertEventually {
             self.rig.store.model?.cue(Self.intro)?.raw["kind"]?["patch"]?.stringValue != foldback.raw
         }
-        settings.patchRemoveButton.performClick(nil)
+        settings.patchRemoveButtons[1].performClick(nil)
         await assertEventually { self.rig.store.model?.patches.count == 1 }
-        await assertEventually { settings.patchPopup.numberOfItems == 1 }
+        await assertEventually { settings.patchNameFields.count == 1 }
     }
 
     func testTheToolbarFollowsQLabsOrder() {

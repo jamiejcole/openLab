@@ -132,7 +132,8 @@ final class AppController {
     /// Files just saved with Save As, by store: the save's reply may overtake the message that gives
     /// the store its new path, and a quit records the open files before that message can arrive.
     var savedAsPaths: [ObjectIdentifier: String] = [:]
-    lazy var preferencesWindow = PreferencesWindowController(preferences: launchPreferences)
+    lazy var preferencesWindow = PreferencesWindowController(
+        preferences: launchPreferences, audio: AudioPreferencesModel(client: session.appClient))
 
     init(
         session: EngineSession, supervisor: EngineSupervisor? = nil, scheduler: Scheduler = SystemScheduler(),
