@@ -225,8 +225,12 @@ final class WarningsTests: XCTestCase {
         // A warning about a cue: the cue is the title, what happened the line under it.
         let late = try XCTUnwrap(side.warningRows.last)
         XCTAssertEqual(late.title, "2.2  Rain")
-        XCTAssertTrue(late.detail.contains("120"), late.detail)
+        XCTAssertEqual(late.detail, "Started 120 ms late.")
         XCTAssertEqual(late.cue, rain)
+        XCTAssertTrue(
+            side.warningRows.contains {
+                $0.title == "2.3  Radio" && $0.detail == "Broken, so it was not started." && $0.id.hasPrefix("w")
+            }, "\(side.warningRows)")
         // The same warning twice is two rows (each occurrence stays visible).
         try runtime(#"{"type":"warning","warning":{"type":"late_start","cue":"\#(rain)","late_ms":120}}"#)
         XCTAssertEqual(side.warningRows.count, base + 3)

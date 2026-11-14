@@ -37,6 +37,15 @@ enum ProblemText {
 
     static func reason(_ r: WireBrokenReason) -> String { loc("broken.\(r.rawValue)") }
 
+    /// A warning's words under its cue's title in the Warnings list: `warning.<type>.detail`, which
+    /// leaves the cue out (the title names it), else the whole warning.
+    static func warningDetail(_ w: WireWarning, label: Label) -> String {
+        if w.type != "notice", let template = text(for: "warning.\(w.type).detail") {
+            return fill(template, w.json, label)
+        }
+        return warning(w, label: label)
+    }
+
     private static func render(
         _ family: String, _ type: String, specific: String?, fields: JSONValue, label: Label
     ) -> String {
@@ -122,7 +131,6 @@ enum WarningRows {
                 let key = prefix + ((try? w.json.text()) ?? w.type)
                 seen[key, default: 0] += 1
                 let id = w.json["cue"]?.stringValue.map { ModelID($0) }
-                let text = ProblemText.warning(w, label: label)
                 // A warning about a cue reads as a broken cue's row: the cue as the title, what
                 // happened on the line under it, so a long cue name never cuts the reason off.
                 if let id, let cue = model?.cue(id) {
@@ -130,11 +138,14 @@ enum WarningRows {
                         WarningRow(
                             id: "\(key)#\(seen[key] ?? 0)", cue: id,
                             title: cueTitle(cue, name: model?.listName(cue) ?? CueKindStyle.kindLabel(cue.kindType)),
-                            detail: text, canRelink: false))
+                            detail: ProblemText.warningDetail(w, label: label), canRelink: false))
                     continue
                 }
                 rows.append(
-                    WarningRow(id: "\(key)#\(seen[key] ?? 0)", cue: id, title: text, detail: "", canRelink: false))
+                    WarningRow(
+                        id: "\(key)#\(seen[key] ?? 0)", cue: id, title: ProblemText.warning(w, label: label),
+                        detail: "",
+                        canRelink: false))
             }
         }
         for text in store.appNotices {
