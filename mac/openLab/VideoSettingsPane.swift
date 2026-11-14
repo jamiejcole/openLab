@@ -343,6 +343,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
         if let resume { self.resume(resume) }
     }
 
+    enum TypedField { case name, layer }
+
     /// The field being typed in: its kind, its stage, the text so far and the selection.
     private struct Typed {
         var layer: Bool
@@ -421,9 +423,9 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     /// Runs `edit` for `stage` after the edits before it, shows its refusal (or clears the last
     /// one, unless a newer edit has said something since), and redraws from the engine.
-    /// `refused` puts back what the operator typed.
+    /// A refused edit of a typed `field` (`.layer` or `.name`) puts its value back.
     private func commit(
-        _ stage: ModelID?, refused: (@MainActor () -> Void)? = nil,
+        _ stage: ModelID?, field: TypedField? = nil,
         _ edit: @escaping @MainActor () async -> Result<OkBody, EngineError>
     ) {
         tell("")
@@ -435,7 +437,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
             guard let self else { return }
             await refresh()
             if case .failure(let e) = result {
-                refused?()
+                if let stage, let field { putBack(stage, layer: field == .layer) }
                 if mine == attempt { messageLabel.stringValue = reason(e, stage) }
             }
             render(forced: true)
@@ -508,7 +510,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
                 return
             }
             guard layer != row.layer else { return }
-            commit(row.id, refused: { [weak self] in self?.putBack(row.id, layer: true) }) { [store] in
+            commit(row.id, field: .layer) { [store] in
                 await store.send(
                     command: .setStage(row.id, .object(["type": .string("layer"), "value": .int(Int64(layer))])))
             }
@@ -519,7 +521,7 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
                 field.stringValue = row.name
                 return
             }
-            commit(row.id, refused: { [weak self] in self?.putBack(row.id, layer: false) }) { [store] in
+            commit(row.id, field: .name) { [store] in
                 await store.send(
                     command: .setStage(row.id, .object(["type": .string("name"), "value": .string(text)])))
             }
