@@ -18,6 +18,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     // General
     let panicField = NSTextField()
     let goIntervalField = NSTextField()
+    let autoLoadCheck = NSButton(checkboxWithTitle: loc("settings.general.autoLoad"), target: nil, action: nil)
     // Audio: the patch table (`+Audio`) and the volume limits beside it.
     let maxLimitField = NSTextField()
     let minLimitField = NSTextField()
@@ -253,6 +254,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         let general = NSStackView(views: [
             row(loc("settings.general.panic"), panicField, loc("settings.seconds")),
             row(loc("settings.general.goInterval"), goIntervalField, loc("settings.seconds")),
+            autoLoadBox(),
         ])
         general.orientation = .vertical
         general.alignment = .leading
@@ -370,6 +372,7 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
             field.stringValue = value.map(Self.format) ?? ""
             field.isEnabled = value != nil
         }
+        renderAutoLoad()
     }
 
     static func format(_ seconds: Double) -> String {

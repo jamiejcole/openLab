@@ -620,7 +620,9 @@ extension PlayheadFlowTests {
         try click(try XCTUnwrap(s.propertyChecks[.name]))
         XCTAssertEqual(s.ticked, [.name], "a click on a box ticks it")
         try click(try XCTUnwrap(s.categoryChecks[.triggers]))
-        XCTAssertEqual(s.ticked, [.name, .secondTrigger, .secondTriggerOnRelease], "a category box ticks its category")
+        XCTAssertEqual(
+            s.ticked, [.name, .fadeAndStopOthers, .duckOthers, .secondTrigger, .secondTriggerOnRelease],
+            "a category box ticks its category")
         try click(s.cancelButton)
         await assertEventually("Cancel closed it") { self.wc.window?.attachedSheet == nil }
         await sync()

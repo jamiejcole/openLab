@@ -307,8 +307,9 @@ impl CueEngine {
     /// `cue`'s action has started with "fade and stop others" on: every other cue in its scope
     /// that is active fades out over the set time and stops, children before their groups, with
     /// the Stop operation (a playing voice fades; a paused, pre-waiting or post-waiting cue, or
-    /// one without a voice, stops at once; a group waits for its children). The cue itself, the
-    /// groups around it and the cues inside it are not "others". Loaded cues stay loaded; a cue
+    /// one without a voice, stops at once; a group waits for its children); a loaded cue is
+    /// unloaded at once. Measured in QLab 5.6.5 for paused, loaded, pre-waiting and playing cues.
+    /// The cue itself, the groups around it and the cues inside it are not "others"; a cue
     /// already fading out (a stop with a fade, a panic) keeps its own fade.
     pub(super) fn fade_and_stop_others(&mut self, cue: CueId, cx: &mut Ctx) {
         let ws = cx.ws;
@@ -324,16 +325,22 @@ impl CueEngine {
         mine.insert(cue);
         mine.extend(around.iter().copied());
         let parent = around.first().copied();
-        // (depth, cue) of every active run in scope; only active runs can be stopped, so the
-        // scan costs the cues that run, not the show.
+        // (depth, cue) of every loaded or active cue in scope; only those can be stopped, so the
+        // scan costs the cues that hold a slot, not the show.
         let mut targets: Vec<(usize, CueId)> = Vec::new();
         for (id, slot) in &self.slots {
             if mine.contains(id) {
                 continue;
             }
-            let Slot::Active(run) = slot else { continue };
-            if run.stop_end.is_some() || run.is_group_stopping() || run.panicked {
-                continue;
+            match slot {
+                // A loaded cue is unloaded at once (QLab 5.6.5, measured).
+                Slot::Loaded(_) => {}
+                Slot::Active(run) => {
+                    if run.stop_end.is_some() || run.is_group_stopping() || run.panicked {
+                        continue;
+                    }
+                }
+                Slot::Broken(_) => continue,
             }
             let Some(other) = tree::find_path(ws, *id) else {
                 continue;

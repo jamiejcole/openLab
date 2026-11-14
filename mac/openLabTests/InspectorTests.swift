@@ -228,7 +228,7 @@ final class InspectorTests: XCTestCase {
         XCTAssertTrue(vc.targetField.isEnabled)
         XCTAssertEqual(vc.targetField.stringValue, "1", "the target is shown by its number")
         vc.setSelection([TestSnapshots.rain])
-        XCTAssertEqual(vc.colourPopup.indexOfSelectedItem, 4)
+        XCTAssertEqual(vc.colourPopup.selectedItem?.representedObject as? String, "blue")
         XCTAssertEqual(vc.flaggedCheck.state, .on)
         XCTAssertEqual(vc.continuePopup.indexOfSelectedItem, 2)
         XCTAssertFalse(vc.postWaitField.isEnabled, "auto-follow ignores the post-wait")
@@ -271,7 +271,7 @@ final class InspectorTests: XCTestCase {
 
     func testPopupsAndChecksSendTheirCommands() async {
         vc.setSelection([Self.intro])
-        vc.colourPopup.selectItem(at: 3)
+        vc.colourPopup.selectItem(at: InspectorViewController.colourItems.firstIndex(of: "green") ?? -1)
         _ = vc.colourPopup.target?.perform(vc.colourPopup.action, with: vc.colourPopup)
         await assertEventually { self.commands.count == 1 }
         XCTAssertEqual(commands.last, property("color", #""green""#))

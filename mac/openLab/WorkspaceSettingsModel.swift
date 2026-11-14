@@ -198,13 +198,14 @@ final class WorkspaceSettingsModel: ObservableObject {
         var network: [NetworkPatchRow]
         var keys: [WorkspaceKey: KeyChord]
         var keyRefusal: KeyRefusal?
+        var newCuesAutoLoad: Bool?
     }
 
     var displayState: DisplayState {
         DisplayState(
             devices: devices, patches: patches, loaded: loaded, message: message, panic: panicDuration,
             goInterval: minGoInterval, limits: limits, osc: osc, network: networkPatches, keys: keyMap.bound,
-            keyRefusal: keyRefusal)
+            keyRefusal: keyRefusal, newCuesAutoLoad: newCuesAutoLoad)
     }
 
     /// What keeps the patch from playing now, as the engine resolves it (or, from an engine that

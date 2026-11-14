@@ -844,7 +844,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             cell.bar.doubleValue = 0
         }
         cell.stripe.layer?.backgroundColor =
-            cue?.raw["color"]?.stringValue.flatMap { CueKindStyle.colours[$0]?.tint }?.cgColor
+            cue.flatMap { CueKindStyle.colours[CueKindStyle.shownColour(of: $0, played: store.played.contains(id))] }?
+            .tint.cgColor
     }
 
     /// `elapsed` and, when the end is known, `-remaining`.

@@ -172,7 +172,11 @@ extension CueListViewController: NSMenuDelegate {
         let colours = NSMenuItem(title: loc("inspector.colour"), action: nil, keyEquivalent: "")
         let colourMenu = NSMenu()
         colourMenu.autoenablesItems = false
-        for colour in InspectorViewController.colours {
+        for item in InspectorViewController.colourItems {
+            guard let colour = item else {
+                colourMenu.addItem(.separator())
+                continue
+            }
             add(
                 loc("cue.colour.\(colour)"), .colour(colour),
                 state { ($0.raw["color"]?.stringValue ?? "none") == colour }, to: colourMenu)

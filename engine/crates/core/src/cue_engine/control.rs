@@ -183,13 +183,24 @@ impl CueEngine {
         let Some(path) = path else {
             return Err(GoIgnoredReason::NoCue);
         };
-        // A skipped cue is not there: the GO acts on the next cue that is.
-        let Some(path) = playhead::first_present(path, |c| self.is_armed(c)) else {
-            return Err(GoIgnoredReason::NoCue);
-        };
         let Some(cue) = path.last().and_then(|&(level, index)| level.get(index)) else {
             return Err(GoIgnoredReason::NoCue);
         };
+        // A GO standing on a skipped cue starts nothing: the playhead moves on to the next cue
+        // that is there, which this GO does not start (QLab 5.6.5, measured). With none left the
+        // GO is ignored as past the end of the list.
+        if self.is_skipped(cue) {
+            let Some(next) = playhead::first_present(path, |c| self.is_armed(c)) else {
+                return Err(GoIgnoredReason::NoCue);
+            };
+            let next = next
+                .last()
+                .and_then(|&(level, index)| level.get(index))
+                .map(|c| c.id);
+            self.move_playhead_after(list, next, None, cx);
+            self.auto_load_at_playhead(list, cx);
+            return Ok(());
+        }
         if !self.budget_left(cx) {
             return Err(GoIgnoredReason::ChainLimit);
         }
@@ -203,6 +214,7 @@ impl CueEngine {
             |c| self.busy(c.id) || self.continued.contains(&c.id),
         );
         self.move_playhead_after(list, next, Some(cue.id), cx);
+        self.auto_load_at_playhead(list, cx);
         Ok(())
     }
 
