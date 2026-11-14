@@ -33,6 +33,9 @@ const PUSH_EVERY_MS: i64 = 100;
 /// Log lines from the stage host's reports put in the show log per second.
 const MAX_REPORT_LINES_PER_SECOND: u32 = 20;
 
+/// An open doc's stages, as the stage set was last made from them.
+type DocStages = (DocId, Vec<openlab_core::Stage>);
+
 /// The stage host as the control thread knows it.
 #[derive(Default)]
 pub(super) struct Stages {
@@ -47,6 +50,11 @@ pub(super) struct Stages {
     states: HashMap<StageId, StageState>,
     /// The stage set last handed to the supervisor.
     sent: Option<Vec<StageOutput>>,
+    /// What that set was made from: each open doc's stages, and [`Stages::mappings`] then. An
+    /// idle tick finds them unchanged and does no more.
+    synced: Option<(Vec<DocStages>, u64)>,
+    /// Counts changes to this machine's stage display choices.
+    mappings: u64,
     /// Something a `video_outputs` push carries changed since the last one went out.
     push_due: bool,
     /// When the last `video_outputs` went out (control clock, ms).
@@ -107,6 +115,7 @@ impl Engine {
                 .config
                 .machine
                 .set_stage_mapping(ws.id, stage.id, Some(mapping));
+            self.stages.mappings = self.stages.mappings.wrapping_add(1);
             ws.stages.push(stage);
         }
         if !displays.is_empty() {
@@ -164,6 +173,29 @@ impl Control {
     /// Hands the stage host every open workspace's stages, each with the display this machine
     /// shows it on, when that set changed. Called every tick; cheap when nothing changed.
     pub(super) fn sync_stages(&mut self) {
+        let unchanged = self
+            .eng
+            .stages
+            .synced
+            .as_ref()
+            .is_some_and(|(docs, mappings)| {
+                *mappings == self.eng.stages.mappings
+                    && docs.len() == self.docs.len()
+                    && docs
+                        .iter()
+                        .zip(&self.docs)
+                        .all(|((id, stages), d)| *id == d.id && *stages == d.model.ws().stages)
+            });
+        if unchanged {
+            return;
+        }
+        self.eng.stages.synced = Some((
+            self.docs
+                .iter()
+                .map(|d| (d.id, d.model.ws().stages.clone()))
+                .collect(),
+            self.eng.stages.mappings,
+        ));
         let mut outputs = Vec::new();
         for doc in &self.docs {
             let ws = doc.model.ws();
@@ -184,14 +216,13 @@ impl Control {
             }
         }
         // Ranked across every open workspace: two workspaces' stages may share a display.
-        let order =
-            openlab_core::stack_order(self.docs.iter().flat_map(|d| d.model.ws().stages.iter()));
+        let rank: HashMap<StageId, u32> =
+            openlab_core::stack_order(self.docs.iter().flat_map(|d| d.model.ws().stages.iter()))
+                .into_iter()
+                .zip(0u32..)
+                .collect();
         for output in &mut outputs {
-            output.stack = order
-                .iter()
-                .position(|id| *id == output.id)
-                .and_then(|p| u32::try_from(p).ok())
-                .unwrap_or(0);
+            output.stack = rank.get(&output.id).copied().unwrap_or(0);
         }
         if self.eng.stages.sent.as_ref() == Some(&outputs)
             || (self.eng.stages.sent.is_none() && outputs.is_empty())
@@ -228,16 +259,23 @@ impl Control {
         }
         let mut all_sent = true;
         for doc in &self.docs {
-            let message = ServerMessage::VideoOutputs {
-                displays: self.eng.stages.displays.clone(),
-                video: self.eng.stages.video,
-                stages: self.stage_entries(doc),
-            };
+            let message = self.video_outputs(doc);
             all_sent &= self.eng.out.send_state(Some(doc.id), message);
         }
         if all_sent {
             self.eng.stages.push_due = false;
             self.eng.stages.last_push_ms = Some(now);
+        }
+    }
+
+    /// `doc`'s `video_outputs`: this machine's displays and where each of its stages is. Pushed on
+    /// a change, and sent ahead of every snapshot of the doc (so on bind): a connection that bound
+    /// after the last push still has it.
+    pub(super) fn video_outputs(&self, doc: &super::Doc) -> ServerMessage {
+        ServerMessage::VideoOutputs {
+            displays: self.eng.stages.displays.clone(),
+            video: self.eng.stages.video,
+            stages: self.stage_entries(doc),
         }
     }
 
@@ -545,6 +583,7 @@ impl Control {
             .machine
             .set_stage_mapping(workspace, stage, mapping)
             .map_err(|why| ErrorBody::new(ErrorCode::BadRequest, why))?;
+        self.eng.stages.mappings = self.eng.stages.mappings.wrapping_add(1);
         self.eng.save_machine();
         self.eng.log(LogLevel::Info, message);
         // The stage host gets the new set at once, not at the next tick.
