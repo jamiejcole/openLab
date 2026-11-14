@@ -375,3 +375,78 @@ fn go_plays_the_movie_from_its_first_frame_in_step_and_ends_at_its_last() {
     assert_eq!(shown(&mut s), None);
     assert_eq!(s.control().pictures_live(), 0);
 }
+
+/// The frame the clock has reached `played` seconds into a 25 fps movie.
+fn frame_at(played: f64) -> u16 {
+    (played * 25.0 + 1e-9).floor() as u16
+}
+
+/// Pause holds the frame on the stage; resume plays on from it, and the cue ends when the
+/// rest of the movie has played (its end moved by the pause).
+#[test]
+fn pause_holds_the_frame_and_resume_plays_on_from_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = make(dir.path(), "clip.mov", "prores", Some((50, 25)));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.81));
+    s.transport(TransportAction::Pause { cue: id(1) });
+    let paused_at = s.now();
+    s.run(BLOCK);
+    assert_eq!(state(&s, 1), CueState::Paused);
+    let held = shown(&mut s).expect("a frame while paused");
+    let played = (paused_at - at) as f64 / f64::from(RATE);
+    assert!(
+        held.abs_diff(frame_at(played)) <= 1,
+        "{held} held at {played} s"
+    );
+    // A second later the same frame.
+    s.run(samples(1.0));
+    assert_eq!(shown(&mut s), Some(held));
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed_at = s.now();
+    run_to(&mut s, resumed_at + samples(0.5));
+    let now = shown(&mut s).expect("playing again");
+    assert!(
+        now >= held + 11 && now <= held + 14,
+        "{now} half a second after {held}"
+    );
+    // Two seconds of play in all: still running just before, idle just after.
+    let end = at + samples(2.0) + (resumed_at - paused_at);
+    run_to(&mut s, end - samples(0.1));
+    assert_eq!(state(&s, 1), CueState::Running);
+    run_to(&mut s, end + samples(0.1));
+    assert_eq!(state(&s, 1), CueState::Idle);
+    assert_eq!(shown(&mut s), None);
+}
+
+/// Load to time: GO then starts the picture there, not at its first frame; a plain load
+/// starts it from the top.
+#[test]
+fn load_to_time_starts_the_picture_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = make(dir.path(), "clip.mov", "hevc", Some((50, 25)));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: 1.0,
+    });
+    s.run(BLOCK);
+    assert_eq!(state(&s, 1), CueState::Loaded);
+    assert_eq!(shown(&mut s), None, "a loaded picture is not shown");
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(shown(&mut s), Some(25));
+    // It has a second left.
+    run_to(&mut s, at + samples(1.1));
+    assert_eq!(state(&s, 1), CueState::Idle);
+
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: 0.0,
+    });
+    s.run(BLOCK);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(shown(&mut s), Some(0));
+}
