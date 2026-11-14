@@ -214,7 +214,8 @@ extension InspectorEdit {
 
     /// A Wait or Fade cue's duration, or a still's, from typed text, for the inspector and the cue
     /// list's Duration column alike; `.success(nil)` when it is the duration the cue already has. A
-    /// still's emptied field clears its duration, so it shows until stopped again.
+    /// still's emptied field, or 0, clears its duration, so it shows until stopped again: a still
+    /// that ended the moment it started would only flash on the stage.
     static func durationCommand(
         text: String, cue: Cue, media: CueMediaDuration? = nil
     ) -> Result<Command?, Rejection> {
@@ -227,8 +228,10 @@ extension InspectorEdit {
             switch time(text) {
             case .failure(let r): return .failure(r)
             case .success(let seconds):
+                let value: JSONValue = seconds > 0 ? .double(seconds) : .null
                 return .success(
-                    seconds == had ? nil : .setProperty(cue.id, .kindFields(["duration": .double(seconds)])))
+                    value == (had.map(JSONValue.double) ?? .null)
+                        ? nil : .setProperty(cue.id, .kindFields(["duration": value])))
             }
         }
         switch time(text) {

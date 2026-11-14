@@ -168,16 +168,11 @@ final class VideoCueTests: XCTestCase {
     /// Seconds the Duration column shows for `id`.
     func duration(_ id: ModelID) -> Double? { cell(id, "duration").flatMap(CueTime.parse) }
 
-    /// The row's Duration cell counts the cue's time while it runs, as an Audio cue's does. The engine
-    /// sends no `progress` for a Video cue yet (its picture is not a mixer voice and its action no
-    /// timer), so this fails until it does: expected, and strict, so the fix shows here.
+    /// The row's Duration cell shows `seconds` of the cue's run, as an Audio cue's counts up (the
+    /// engine's `progress` for the cue).
     func expectRowTime(_ id: ModelID, _ seconds: Double, _ what: String, line: UInt = #line) {
-        let options = XCTExpectedFailure.Options()
-        options.isStrict = true
-        XCTExpectFailure("the engine sends no progress for a Video cue yet", options: options) {
-            XCTAssertEqual(duration(id) ?? -1, seconds, accuracy: 0.1, what, line: line)
-            XCTAssertNotNil(store.progress[id], "\(what): progress", line: line)
-        }
+        XCTAssertEqual(duration(id) ?? -1, seconds, accuracy: 0.1, what, line: line)
+        XCTAssertNotNil(store.progress[id], "\(what): progress", line: line)
     }
 
     /// The test card's frame number `stage` shows now (nil: no card, black).
@@ -318,20 +313,63 @@ final class VideoCueTests: XCTestCase {
     }
 
     /// A still's duration is typed in the list's Duration cell, and emptied again; a movie's is not typed.
+    /// Typed into the inspector's Duration field and the list's Duration cell, as the operator types:
+    /// a still's duration is set, emptied back to "until stopped" (the cell blank, the still running
+    /// past its old length), and 0 means "until stopped" too; a movie's Duration is not typed.
     func testAStillsDurationIsTypedAndClearedAndAMoviesIsNot() async throws {
         try await openVideoShow()
         await soon { self.store.mediaDurations[Self.still]?.picture?.type == "still" }
-        let typed = await wc.editor.setDuration(of: Self.still, text: "3")
-        XCTAssertTrue(typed)
+        click(Self.still)
+        let inspector = wc.inspector
+        await soon { inspector.cue?.id == Self.still && inspector.durationField.isEnabled }
+        try typeInto(inspector.durationField, "3")
         await soon("the typed length") { self.duration(Self.still) == 3 }
         XCTAssertEqual(store.model?.cue(Self.still)?.raw["kind"]?["duration"]?.doubleValue, 3)
-        let cleared = await wc.editor.setDuration(of: Self.still, text: "")
-        XCTAssertTrue(cleared)
-        await soon("cleared: until stopped") { self.cell(Self.still, "duration") == "" }
+        try typeInto(inspector.durationField, "")
+        await soon("emptied in the inspector: until stopped") { self.cell(Self.still, "duration") == "" }
         XCTAssertEqual(store.model?.cue(Self.still)?.raw["kind"]?["duration"], .null)
-        XCTAssertFalse(wc.cueList.beginCellEdit(Self.movie), "a movie's length comes from its file")
+        XCTAssertEqual(inspector.messageLabel.stringValue, "", "no refusal")
+
+        // The list's cell: set, then emptied.
         XCTAssertTrue(wc.cueList.beginCellEdit(Self.still))
-        wc.cueList.cancelCellEdit()
+        try typeInto(wc.cueList.cellEditor, "2")
+        await soon("typed in the list") { self.duration(Self.still) == 2 }
+        XCTAssertTrue(wc.cueList.beginCellEdit(Self.still))
+        try typeInto(wc.cueList.cellEditor, "")
+        await soon("emptied in the list") { self.cell(Self.still, "duration") == "" }
+        XCTAssertEqual(store.model?.cue(Self.still)?.raw["kind"]?["duration"], .null)
+
+        // 0 is "until stopped" too (a still ending as it starts would only flash).
+        XCTAssertTrue(wc.cueList.beginCellEdit(Self.timedStill))
+        try typeInto(wc.cueList.cellEditor, "0")
+        await soon("0 clears it") { self.store.model?.cue(Self.timedStill)?.raw["kind"]?["duration"] == .null }
+        XCTAssertEqual(cell(Self.timedStill, "duration"), "")
+
+        // Both play on past their old lengths until stopped.
+        for id in [Self.still, Self.timedStill] { try await perform(.startSelected, on: id) }
+        try await play(5)
+        XCTAssertEqual(status(Self.still), loc("cue.state.running"), "no duration: runs until stopped")
+        XCTAssertEqual(status(Self.timedStill), loc("cue.state.running"), "0: runs until stopped")
+
+        XCTAssertFalse(wc.cueList.beginCellEdit(Self.movie), "a movie's length comes from its file")
+    }
+
+    /// Types `text` into `view` through the window's field editor, as the keyboard does: the text
+    /// there is selected and replaced (emptied for ""), then Return.
+    func typeInto(_ view: NSView, _ text: String) throws {
+        let window = try XCTUnwrap(wc.window)
+        if (view as? NSControl)?.currentEditor() == nil {
+            XCTAssertTrue(window.makeFirstResponder(view), "the field takes the focus")
+        }
+        let editor = try XCTUnwrap(window.firstResponder as? NSTextView, "typing in a field")
+        editor.selectAll(nil)
+        editor.deleteBackward(nil)
+        if !text.isEmpty { editor.insertText(text, replacementRange: editor.selectedRange()) }
+        let enter = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        window.sendEvent(enter)
     }
 
     // MARK: Flow 3: GO and the transport

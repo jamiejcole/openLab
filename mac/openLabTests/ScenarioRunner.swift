@@ -825,6 +825,8 @@ final class ScenarioRunner {
         guard editing || window.makeFirstResponder(view) else { throw Failure("it does not take the keyboard focus") }
         if let field = window.firstResponder as? NSTextView {
             field.selectAll(nil)
+            // An empty text empties the field, as Delete over the selection does.
+            if text.isEmpty { field.deleteBackward(nil) }
         }
         for ch in text {
             let event = try keyEvent(String(ch), code: 0, [])
