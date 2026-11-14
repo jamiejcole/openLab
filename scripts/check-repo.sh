@@ -503,7 +503,7 @@ wedged_case() { # name, wanted exit code, wanted calls, xcodebuild's exit codes,
   printf '%s\n' $4 >"$c/rcs"
   [ -z "${OLD_BUNDLE:-}" ] || mkdir "$c/build/Logs/Test/Old.xcresult"
   # The summary is CI's real one: a fake wedge must not be reported there.
-  (cd "$c" && GITHUB_STEP_SUMMARY= TMPDIR="$c" PATH="$WEDGED/bin:$PATH" "$OLDPWD/scripts/run-mac-tests.sh" fakexb base -- ${5:-}) >"$c/out" 2>&1
+  (cd "$c" && GITHUB_STEP_SUMMARY= CI= RUNNER_ENVIRONMENT= TMPDIR="$c" PATH="$WEDGED/bin:$PATH" "$OLDPWD/scripts/run-mac-tests.sh" fakexb base -- ${5:-}) >"$c/out" 2>&1
   rc=$?
   n=$(wc -l <"$c/calls" | tr -d ' ')
   { [ "$rc" = "$2" ] && [ "$n" = "$3" ]; } || fail wedged-run "$1: want exit $2 and $3 call(s), got exit $rc and $n"

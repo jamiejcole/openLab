@@ -202,8 +202,12 @@ if [ -n "${CI:-}" ] && command -v caffeinate >/dev/null 2>&1; then
   # The first hosted runner to print its state already had display sleep off and held, and no screen
   # saver delay set, so the system default applies (it starts after some minutes without input, and the
   # runner has none from boot). A screen saver drawing through the same driver is the next candidate:
-  # switch it off for this machine, which is thrown away after the job.
-  defaults -currentHost write com.apple.screensaver idleTime -int 0 2>/dev/null || true
+  # switch it off for the machine, which GitHub throws away after the job.
+  # Only on GitHub's own hosted machines: the setting outlives the run, so it must never be written on
+  # a developer's Mac or a kept runner, whatever else sets CI.
+  if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
+    defaults -currentHost write com.apple.screensaver idleTime -int 0 2>/dev/null || true
+  fi
 fi
 
 bundles >"$work/before"
