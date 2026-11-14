@@ -198,7 +198,10 @@ extension InspectorViewController {
             v.fileLabel.toolTip = nil
         }
         let formats = Set(cues.map { store.mediaDurations[$0.id]?.picture })
-        if formats.count > 1 { v.formatLabel.stringValue = loc("inspector.mixed") }
+        if formats.count > 1 {
+            v.formatLabel.stringValue = loc("inspector.mixed")
+            v.formatLabel.textColor = .secondaryLabelColor
+        }
     }
 
     // MARK: Mixed controls

@@ -743,6 +743,7 @@
 "inspector.io.editPatch" = "Edit…";
 "inspector.io.file" = "File";
 "inspector.io.choose" = "Choose…";
+"inspector.io.noFile" = "No file";
 "inspector.io.format" = "Video format";
 "inspector.io.formatUnknown" = "Not read";
 "inspector.io.stage" = "Stage";
@@ -757,7 +758,7 @@
 "inspector.io.still.png" = "PNG";
 "inspector.io.still.jpeg" = "JPEG";
 "inspector.io.still.tiff" = "TIFF";
-"inspector.io.noVideoSound" = "Sound in video files is not played yet; the output patch is for Audio cues.";
+"inspector.io.noVideoSound" = "Sound in video files does not play yet.";
 "levels.editPatch" = "Edit Patch";
 "inspector.network.patch" = "Patch";
 "inspector.network.message" = "Message";

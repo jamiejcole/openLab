@@ -96,12 +96,20 @@ extension InspectorViewController {
         grid.columnSpacing = 8
         grid.rowAlignment = .firstBaseline
         grid.column(at: 0).xPlacement = .trailing
+        // The file row takes the tab's width, so a long path shows as much as fits.
+        grid.cell(atColumnIndex: 1, rowIndex: 0).xPlacement = .fill
         v.videoRows = [grid.row(at: 0), grid.row(at: 1), grid.row(at: 2)]
         v.noteRow = grid.row(at: 4)
-        let content = column([grid], nil)
-        content.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
-        // A long path or format gives up its middle; the grid fills the tab so it can.
-        grid.widthAnchor.constraint(lessThanOrEqualTo: content.widthAnchor, constant: -24).isActive = true
+        // The grid fills the tab's width: a long path takes the room there is, then gives up its middle.
+        let content = NSView()
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(grid)
+        NSLayoutConstraint.activate([
+            grid.topAnchor.constraint(equalTo: content.topAnchor, constant: 8),
+            grid.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            grid.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            grid.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -8),
+        ])
         let item = NSTabViewItem(identifier: "io")
         item.label = loc("inspector.tab.io")
         item.view = content
@@ -147,11 +155,12 @@ extension InspectorViewController {
         let v = videoIO
         let media = cue.raw["kind"]?["media"]?.stringValue ?? ""
         let path = CueRowMenu.mediaURL(media, showPath: store.document?.path)?.path ?? media
-        v.fileLabel.stringValue = media.isEmpty ? loc("inspector.target.noFile") : path
+        v.fileLabel.stringValue = media.isEmpty ? loc("inspector.io.noFile") : path
         v.fileLabel.textColor = media.isEmpty ? .secondaryLabelColor : .labelColor
         v.fileLabel.toolTip = media.isEmpty ? nil : path
         v.chooseButton.isEnabled = !isLocked && !isBatch
         let picture = store.mediaDurations[cue.id]?.picture
+        v.formatLabel.textColor = picture == nil ? .secondaryLabelColor : .labelColor
         v.formatLabel.stringValue =
             picture.map(VideoIOControls.formatText) ?? (media.isEmpty ? "" : loc("inspector.io.formatUnknown"))
         let stages = model.stages
