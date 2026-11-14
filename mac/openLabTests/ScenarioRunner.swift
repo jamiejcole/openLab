@@ -67,6 +67,11 @@ final class ScenarioRunner {
         var media: [(path: String, seconds: Double)] = []
         var size = CGSize(width: 1200, height: 800)
         var dark = true
+        /// `"V1:1920x1080,V2:1280x720"`: the engine's stage host on these virtual displays,
+        /// drawn offscreen (no stage host without it).
+        var displays: String?
+        /// This machine's settings (`settings.json`) as the engine finds them at start.
+        var settings: Data?
         var steps: [Step] = []
     }
 
@@ -85,7 +90,7 @@ final class ScenarioRunner {
             throw Failure("the scenario is not valid JSON: \(detail)")
         }
         guard let top = root as? [String: Any] else { throw Failure("the scenario must be a JSON object") }
-        let known: Set = ["show", "media", "window", "appearance", "steps", "about"]
+        let known: Set = ["show", "media", "window", "appearance", "displays", "settings", "steps", "about"]
         if let extra = top.keys.first(where: { !known.contains($0) }) {
             throw Failure("unknown scenario key \"\(extra)\"; known: \(known.sorted().joined(separator: ", "))")
         }
@@ -120,6 +125,18 @@ final class ScenarioRunner {
                 throw Failure("\"appearance\" must be \"dark\" or \"light\"")
             }
             s.dark = a == "dark"
+        }
+        if let displays = top["displays"] {
+            guard let d = displays as? String, !d.isEmpty else {
+                throw Failure("\"displays\" must be \"ID:WxH,...\" (virtual displays)")
+            }
+            s.displays = d
+        }
+        if let settings = top["settings"] {
+            guard JSONSerialization.isValidJSONObject(settings) else {
+                throw Failure("\"settings\" must be a settings.json object")
+            }
+            s.settings = try JSONSerialization.data(withJSONObject: settings)
         }
         guard let steps = top["steps"] as? [Any] else { throw Failure("\"steps\" must be an array of steps") }
         for (i, raw) in steps.enumerated() {
@@ -338,8 +355,19 @@ final class ScenarioRunner {
         MeterView.defaultWindowIsCovered = { _, _ in false }
         let isNew = scenario.show == "new"
         let showPath = isNew ? nil : try showToOpen()
-        let engine = try await TestEngine.start()
+        let engine = try await TestEngine.start(displays: scenario.displays, settings: scenario.settings)
         self.engine = engine
+        if scenario.displays != nil {
+            // A new workspace gets a stage per display: wait until the stage host has listed them.
+            guard
+                await eventually({
+                    guard case .success(let ok) = await engine.request(.listDisplays),
+                        case .displays(let list, _)? = ok.data
+                    else { return false }
+                    return !list.isEmpty
+                })
+            else { throw Failure("the stage host listed no displays") }
+        }
         let doc: ModelID
         do {
             if isNew {

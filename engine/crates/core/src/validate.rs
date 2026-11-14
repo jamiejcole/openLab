@@ -27,7 +27,7 @@ use crate::osc_access::{
     MAX_OSC_PASSCODE_BYTES, MAX_OSC_PASSCODES, OscAccess, is_valid_new_passcode,
 };
 use crate::tree::walk_mut;
-use crate::video::{MAX_STAGE_PIXELS, MAX_STAGES, Stage};
+use crate::video::{MAX_STAGE_LAYER, MAX_STAGE_PIXELS, MAX_STAGES, Stage};
 
 /// Longest name of a workspace, cue list, patch or network patch, in Unicode scalar values (not
 /// bytes: a name in any script gets the same room, and a UI text field counts characters).
@@ -129,6 +129,8 @@ pub enum IssueKind {
     DuplicateStageId { id: StageId },
     /// The stage's size was outside 1 to [`MAX_STAGE_PIXELS`] a side; it was clamped.
     StageSize { stage: StageId },
+    /// The stage's layer was above [`MAX_STAGE_LAYER`]; it was clamped.
+    StageLayer { stage: StageId },
     /// More than [`MAX_STAGES`] stages; the extra ones were dropped.
     TooManyStages,
     /// Error: the cue is nested deeper than [`MAX_GROUP_DEPTH`].
@@ -251,6 +253,11 @@ impl fmt::Display for ValidationIssue {
             IssueKind::StageSize { stage } => write!(
                 f,
                 "stage {}: size outside 1 to {MAX_STAGE_PIXELS} pixels a side; clamped",
+                stage.0
+            ),
+            IssueKind::StageLayer { stage } => write!(
+                f,
+                "stage {}: layer above {MAX_STAGE_LAYER}; clamped",
                 stage.0
             ),
             IssueKind::TooManyStages => {
@@ -779,6 +786,9 @@ impl Checker {
         for stage in stages {
             if stage.clamp_size() {
                 self.warn(None, IssueKind::StageSize { stage: stage.id });
+            }
+            if stage.clamp_layer() {
+                self.warn(None, IssueKind::StageLayer { stage: stage.id });
             }
         }
     }

@@ -34,7 +34,7 @@ extension WorkspaceSettingsWindowController {
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.borderType = .bezelBorder
-        let holder = NetworkTopLeftView()
+        let holder = FlippedView()
         networkGrid.translatesAutoresizingMaskIntoConstraints = false
         holder.translatesAutoresizingMaskIntoConstraints = false
         holder.addSubview(networkGrid)
@@ -183,8 +183,4 @@ extension WorkspaceSettingsWindowController {
             redrawNetwork()
         }
     }
-}
-
-private final class NetworkTopLeftView: NSView {
-    override var isFlipped: Bool { true }
 }

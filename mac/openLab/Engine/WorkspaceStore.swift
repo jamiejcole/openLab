@@ -49,6 +49,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     @Published private(set) var mediaDurations: [ModelID: CueMediaDuration] = [:]
     /// Pre-wait and post-wait countdowns in progress (`progress.waits`), by cue.
     @Published private(set) var waits: [ModelID: [WaitProgress.Kind: WaitProgress]] = [:]
+    /// The displays and where each stage is (VID-01), replaced by each `video_outputs` push or
+    /// list answer; views observe it as a published property.
+    @Published private(set) var videoOutputs = VideoOutputs()
     /// Workspace-level notices in force (replaced by each `warnings` message).
     @Published private(set) var warnings: [WireWarning] = []
     /// Notices the app raises itself for this workspace (a key-map key that took a menu command's
@@ -311,6 +314,14 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
         return receive(message)
     }
 
+    /// Takes the displays and stage states (a push or the lists' answers); stage problems are
+    /// workspace notices (the Warnings list shows them), so notice views redraw.
+    func setVideoOutputs(_ v: VideoOutputs) {
+        guard v != videoOutputs else { return }
+        videoOutputs = v
+        changes.send(.notices)
+    }
+
     /// Applies one server message. `.gap` means the caller must request a snapshot.
     @discardableResult
     func receive(_ message: ServerMessage) -> ApplyOutcome {
@@ -373,6 +384,8 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             logSeq = Swift.max(logSeq, seq)
         case .meters(let outputs, let cues):
             meters.ingest(outputs: outputs, cues: cues)
+        case .videoOutputs(let v):
+            setVideoOutputs(v)
         case .result, .error, .appWelcome, .workspaces, .unknown:
             // These belong to the client or session.
             break
@@ -412,6 +425,7 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             case .cueList(let id): m.cueLists.removeAll { $0.id == id }
             case .patch(let id): m.patches.removeAll { $0.id == id }
             case .networkPatch(let id): m.networkPatches.removeAll { $0.id == id }
+            case .stage(let id): m.stages.removeAll { $0.id == id }
             case .unknown: return .gap
             }
         }
@@ -439,6 +453,9 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
             case .networkPatch(let index, let patch):
                 m.networkPatches.removeAll { $0.id == patch.id }
                 m.networkPatches.insert(patch, at: min(index, m.networkPatches.count))
+            case .stage(let index, let stage):
+                m.stages.removeAll { $0.id == stage.id }
+                m.stages.insert(stage, at: min(index, m.stages.count))
             case .settings(let name, let settings):
                 m.name = name
                 m.settings = settings

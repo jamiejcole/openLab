@@ -1,0 +1,14 @@
+{
+  "type": "request",
+  "id": 67,
+  "request": {
+    "type": "display_probe",
+    "display": "V1",
+    "points": [
+      [
+        0.5,
+        0.5
+      ]
+    ]
+  }
+}

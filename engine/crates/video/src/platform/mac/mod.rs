@@ -35,12 +35,11 @@ use objc2_core_graphics::{
 use objc2_foundation::{NSNumber, NSRect, NSString};
 use objc2_metal::{MTLCommandBuffer, MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
-use openlab_core::StageId;
-use openlab_core::stage_link::{Display, FromStage, LinkLevel, StageOutput, ToStage};
+use openlab_core::stage_link::{Display, FromStage, LinkLevel, ToStage};
 
 use self::displays::Found;
-use self::gpu::{Gpu, fit};
-use crate::host::{Flow, Host, Picture, Platform, write_all};
+use self::gpu::Gpu;
+use crate::host::{Flow, Host, Layer, Platform, write_all};
 use openlab_core::stage_link::{Line, read_line};
 
 pub fn run(args: Vec<String>) -> ExitCode {
@@ -68,13 +67,13 @@ pub struct Mac {
 
 struct Windows {
     mtm: MainThreadMarker,
-    open: HashMap<StageId, StageWindow>,
+    /// One window per display with stages shown on it, by display id.
+    open: HashMap<String, DisplayWindow>,
 }
 
-struct StageWindow {
+struct DisplayWindow {
     window: Retained<NSWindow>,
     layer: Retained<CAMetalLayer>,
-    display: String,
 }
 
 impl Platform for Mac {
@@ -95,15 +94,10 @@ impl Platform for Mac {
         self.found.iter().map(|f| f.display.clone()).collect()
     }
 
-    fn show(
-        &mut self,
-        stage: &StageOutput,
-        display: &Display,
-        picture: Picture,
-    ) -> Result<(), String> {
+    fn present(&mut self, display: &Display, layers: &[Layer]) -> Result<(), String> {
         let gpu = self.gpu.as_mut().map_err(|e| e.clone())?;
         let Some(windows) = self.windows.as_mut() else {
-            // Offscreen: the stage is drawn only when a probe asks.
+            // Offscreen: the stages are drawn only when a probe asks.
             return Ok(());
         };
         let cg = self
@@ -114,22 +108,11 @@ impl Platform for Mac {
             .ok_or("the display is not connected")?;
         let screen = screen_of(windows.mtm, cg).ok_or("the display has no screen")?;
         let frame = screen.frame();
-        let w = match windows.open.get(&stage.id) {
-            Some(w) if w.display == display.id => w,
-            _ => {
-                let new = open_window(windows.mtm, frame, gpu)?;
-                if let Some(old) = windows.open.insert(
-                    stage.id,
-                    StageWindow {
-                        display: display.id.clone(),
-                        ..new
-                    },
-                ) {
-                    old.window.close();
-                }
-                windows.open.get(&stage.id).ok_or("window lost")?
-            }
-        };
+        if !windows.open.contains_key(&display.id) {
+            let window = open_window(windows.mtm, frame, gpu)?;
+            windows.open.insert(display.id.clone(), window);
+        }
+        let w = windows.open.get(&display.id).ok_or("window lost")?;
         w.window.setFrame_display(frame, false);
         w.layer.setDrawableSize(CGSize::new(
             f64::from(display.width),
@@ -139,17 +122,16 @@ impl Platform for Mac {
         let drawable = w
             .layer
             .nextDrawable()
-            .ok_or("no drawable for the stage's window")?;
-        let rect = fit((stage.width, stage.height), (display.width, display.height));
-        let cb = gpu.draw(&drawable.texture(), rect, picture)?;
+            .ok_or("no drawable for the display's window")?;
+        let cb = gpu.draw(&drawable.texture(), layers)?;
         let d: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(&*drawable);
         cb.presentDrawable(d);
         cb.commit();
         Ok(())
     }
 
-    fn hide(&mut self, stage: StageId) {
-        if let Some(w) = self.windows.as_mut().and_then(|w| w.open.remove(&stage)) {
+    fn close(&mut self, display: &str) {
+        if let Some(w) = self.windows.as_mut().and_then(|w| w.open.remove(display)) {
             w.window.close();
         }
     }
@@ -168,17 +150,17 @@ impl Platform for Mac {
     #[cfg(feature = "test-support")]
     fn probe(
         &mut self,
-        stage: &StageOutput,
-        picture: Picture,
+        size: (u32, u32),
+        layers: &[Layer],
         points: &[[f32; 2]],
     ) -> Result<Vec<[u8; 4]>, String> {
         let gpu = self.gpu.as_mut().map_err(|e| e.clone())?;
-        gpu.probe((stage.width, stage.height), picture, points)
+        gpu.probe(size, layers, points)
     }
 }
 
 /// A borderless, never-key window covering `frame`, with a Metal layer.
-fn open_window(mtm: MainThreadMarker, frame: NSRect, gpu: &Gpu) -> Result<StageWindow, String> {
+fn open_window(mtm: MainThreadMarker, frame: NSRect, gpu: &Gpu) -> Result<DisplayWindow, String> {
     let window = output_window(mtm, frame);
     let layer = CAMetalLayer::new();
     layer.setDevice(Some(gpu.device()));
@@ -189,11 +171,7 @@ fn open_window(mtm: MainThreadMarker, frame: NSRect, gpu: &Gpu) -> Result<StageW
         .ok_or("the window has no content view")?;
     view.setLayer(Some(&layer));
     view.setWantsLayer(true);
-    Ok(StageWindow {
-        window,
-        layer,
-        display: String::new(),
-    })
+    Ok(DisplayWindow { window, layer })
 }
 
 /// The collection behaviour of an output window: on every Space, staying put in Mission

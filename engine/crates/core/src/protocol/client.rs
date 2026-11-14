@@ -461,6 +461,13 @@ pub enum Request {
         stage: StageId,
         points: Vec<[f32; 2]>,
     },
+    /// Test support only: reads what `display` shows (every stage shown on it, stacked) at
+    /// `points`: answers `stage_probe`. App-scope.
+    #[cfg(feature = "test-support")]
+    DisplayProbe {
+        display: String,
+        points: Vec<[f32; 2]>,
+    },
 }
 
 /// Most frames one `advance` may move device time by: ten minutes at 192 kHz.
@@ -570,7 +577,7 @@ impl ClientMessage {
             }
             #[cfg(feature = "test-support")]
             Self::Request {
-                request: Request::StageProbe { points, .. },
+                request: Request::StageProbe { points, .. } | Request::DisplayProbe { points, .. },
                 ..
             } if points.is_empty()
                 || points.len() > crate::stage_link::MAX_PROBE_POINTS

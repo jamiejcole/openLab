@@ -36,7 +36,8 @@ enum EngineMode: Equatable {
             }
             return .test(
                 TestEngineOptions(
-                    clock: clock ?? .realtime, appSupport: support ?? TestEngineOptions.freshFolder(), open: open))
+                    clock: clock ?? .realtime, appSupport: support ?? TestEngineOptions.freshFolder(), open: open,
+                    displays: value(of: "-OpenLabVirtualDisplays", in: arguments)))
         #else
             return .real
         #endif
@@ -84,9 +85,13 @@ enum EngineMode: Equatable {
         var clock: Clock
         var appSupport: URL
         var open: [String] = []
+        /// Virtual displays for the engine's stage host (`ID:WxH,...`), drawn offscreen; nil: no
+        /// stage host (no video output) in this test engine.
+        var displays: String?
 
         var engineArguments: [String] {
             ["--virtual-device", clock.rawValue, "--app-support", appSupport.path, "--watch-stdin"]
+                + (displays.map { ["--virtual-displays", $0] } ?? [])
         }
 
         var openArguments: [String] { open.flatMap { ["--open", $0] } }

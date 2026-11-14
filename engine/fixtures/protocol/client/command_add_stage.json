@@ -1,0 +1,16 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "add_stage",
+    "index": 0,
+    "stage": {
+      "id": "00000000-0000-0000-0000-000000000080",
+      "name": "Stage 1",
+      "width": 1920,
+      "height": 1080,
+      "keep_black": true,
+      "layer": 10
+    }
+  }
+}

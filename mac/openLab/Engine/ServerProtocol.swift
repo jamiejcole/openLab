@@ -233,6 +233,15 @@ struct StageState: Hashable, Sendable, Decodable {
     let reason: String?
 }
 
+/// VID-01: what `video_outputs` carries (and `list_displays` with `list_stage_mappings`): the
+/// displays, whether this machine has video output (nil: the stage host has not said), and each
+/// stage's display choice and state.
+struct VideoOutputs: Hashable, Sendable {
+    var displays: [StageDisplay] = []
+    var video: Bool?
+    var stages: [StageMappingEntry] = []
+}
+
 struct StageMappingEntry: Hashable, Sendable, Decodable {
     let stage: ModelID
     let mapping: StageMapping?
@@ -688,6 +697,8 @@ enum ServerMessage: Sendable, Decodable {
     case workspaces([WorkspaceInfo])
     /// The engine closed this connection's workspace; it closes the connection next.
     case closed(doc: ModelID)
+    /// VID-01: the displays and where each of the workspace's stages is, whenever that changes.
+    case videoOutputs(VideoOutputs)
     /// A `type` this client does not know: logged and dropped by the client.
     case unknown(type: String)
 
@@ -725,6 +736,11 @@ enum ServerMessage: Sendable, Decodable {
             self = .error(code: try d("code"), message: try d("message"), protocolVersion: try d("protocol_version"))
         case "workspaces": self = .workspaces(try d("workspaces"))
         case "closed": self = .closed(doc: ModelID(doc: try d("doc")))
+        case "video_outputs":
+            self = .videoOutputs(
+                VideoOutputs(
+                    displays: try d("displays"), video: try c.decodeIfPresent(Bool.self, forKey: "video"),
+                    stages: try d("stages")))
         default: self = .unknown(type: type)
         }
     }

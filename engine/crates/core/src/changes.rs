@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 use crate::command::Command;
 use crate::cue::{Cue, CueKind};
-use crate::model::{CueId, CueList, CueListId, NetworkPatchId, PatchId, Workspace};
+use crate::model::{CueId, CueList, CueListId, NetworkPatchId, PatchId, StageId, Workspace};
 use crate::protocol::{Delete, Upsert};
 
 /// What a command did to one of the workspace's ordered collections (cue lists, patches,
@@ -50,6 +50,8 @@ pub struct Footprint {
     pub lists: Touched<CueListId>,
     pub patches: Touched<PatchId>,
     pub network_patches: Touched<NetworkPatchId>,
+    /// Stages (VID-01).
+    pub stages: Touched<StageId>,
     /// Workspace settings changed.
     pub settings: bool,
     /// New cues (the top of what was added; a group's descendants come with it).
@@ -78,6 +80,7 @@ impl Footprint {
         !(self.lists.is_empty()
             && self.patches.is_empty()
             && self.network_patches.is_empty()
+            && self.stages.is_empty()
             && !self.settings)
     }
 
@@ -155,6 +158,19 @@ impl Command {
             }
             Self::SetNetworkPatchProperty { id, .. } => {
                 fp.network_patches.changed.insert(*id);
+            }
+            Self::AddStage { stage, .. } => {
+                fp.stages.changed.insert(stage.id);
+            }
+            Self::RemoveStage { id } => {
+                fp.stages.removed.insert(*id);
+            }
+            Self::MoveStage { id, .. } => {
+                fp.stages.changed.insert(*id);
+                fp.stages.reordered = true;
+            }
+            Self::SetStageProperty { id, .. } => {
+                fp.stages.changed.insert(*id);
             }
             Self::AddCueList { id, .. } | Self::RenameCueList { id, .. } => {
                 fp.lists.changed.insert(*id);
@@ -273,6 +289,18 @@ fn model_parts(
         |p, index| Upsert::NetworkPatch {
             index,
             patch: p.clone(),
+        },
+        upserts,
+        deletes,
+    );
+    collection(
+        &workspace.stages,
+        |s| s.id,
+        &footprint.stages,
+        |id| Delete::Stage { id },
+        |s, index| Upsert::Stage {
+            index,
+            stage: s.clone(),
         },
         upserts,
         deletes,
@@ -406,6 +434,7 @@ impl Workspace {
                 Delete::CueList { id } => self.cue_lists.retain(|l| l.id != *id),
                 Delete::Patch { id } => self.patches.retain(|p| p.id != *id),
                 Delete::NetworkPatch { id } => self.network_patches.retain(|p| p.id != *id),
+                Delete::Stage { id } => self.stages.retain(|s| s.id != *id),
             }
         }
         for upsert in upserts {
@@ -456,6 +485,10 @@ impl Workspace {
                 Upsert::NetworkPatch { index, patch } => {
                     self.network_patches.retain(|p| p.id != patch.id);
                     insert_at(&mut self.network_patches, *index, patch.clone())?;
+                }
+                Upsert::Stage { index, stage } => {
+                    self.stages.retain(|s| s.id != stage.id);
+                    insert_at(&mut self.stages, *index, stage.clone())?;
                 }
                 Upsert::Settings { name, settings } => {
                     self.name.clone_from(name);

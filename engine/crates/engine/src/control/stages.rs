@@ -18,8 +18,23 @@ use super::inbox::reply;
 use super::{Control, DocId, Engine, Inbox, ReplyTx, failed, ok};
 use crate::stage::{StageEvent, StageHost};
 
+/// What a test probe reads: one stage's own picture, or what a display shows.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProbeTarget {
+    Stage(StageId),
+    Display(String),
+}
+
+/// The least time between two `video_outputs` pushes to clients, so a stage host reporting
+/// in a burst cannot flood them.
+const PUSH_EVERY_MS: i64 = 100;
+
 /// Log lines from the stage host's reports put in the show log per second.
 const MAX_REPORT_LINES_PER_SECOND: u32 = 20;
+
+/// An open doc's stages, as the stage set was last made from them.
+type DocStages = (DocId, Vec<openlab_core::Stage>);
 
 /// The stage host as the control thread knows it.
 #[derive(Default)]
@@ -35,6 +50,15 @@ pub(super) struct Stages {
     states: HashMap<StageId, StageState>,
     /// The stage set last handed to the supervisor.
     sent: Option<Vec<StageOutput>>,
+    /// What that set was made from: each open doc's stages, and [`Stages::mappings`] then. An
+    /// idle tick finds them unchanged and does no more.
+    synced: Option<(Vec<DocStages>, u64)>,
+    /// Counts changes to this machine's stage display choices.
+    mappings: u64,
+    /// Something a `video_outputs` push carries changed since the last one went out.
+    push_due: bool,
+    /// When the last `video_outputs` went out (control clock, ms).
+    last_push_ms: Option<i64>,
     /// The no-video warning went out.
     no_video_warned: bool,
     /// Log lines from the stage host's reports in the current second: (second, lines,
@@ -42,7 +66,16 @@ pub(super) struct Stages {
     report_lines: (i64, u32, u32),
     /// Test support: probes waiting for their answer, oldest first.
     #[cfg(feature = "test-support")]
-    probes: Vec<(StageId, RequestId, ReplyTx)>,
+    probes: Vec<(ProbeTarget, RequestId, ReplyTx)>,
+}
+
+impl Stages {
+    /// Has `video_outputs` pushed at the next tick, whatever the gap since the last push: after
+    /// a snapshot (a connection binding), whose client must have it.
+    pub(super) fn push_now(&mut self) {
+        self.push_due = true;
+        self.last_push_ms = None;
+    }
 }
 
 impl Engine {
@@ -91,6 +124,7 @@ impl Engine {
                 .config
                 .machine
                 .set_stage_mapping(ws.id, stage.id, Some(mapping));
+            self.stages.mappings = self.stages.mappings.wrapping_add(1);
             ws.stages.push(stage);
         }
         if !displays.is_empty() {
@@ -148,6 +182,29 @@ impl Control {
     /// Hands the stage host every open workspace's stages, each with the display this machine
     /// shows it on, when that set changed. Called every tick; cheap when nothing changed.
     pub(super) fn sync_stages(&mut self) {
+        let unchanged = self
+            .eng
+            .stages
+            .synced
+            .as_ref()
+            .is_some_and(|(docs, mappings)| {
+                *mappings == self.eng.stages.mappings
+                    && docs.len() == self.docs.len()
+                    && docs
+                        .iter()
+                        .zip(&self.docs)
+                        .all(|((id, stages), d)| *id == d.id && *stages == d.model.ws().stages)
+            });
+        if unchanged {
+            return;
+        }
+        self.eng.stages.synced = Some((
+            self.docs
+                .iter()
+                .map(|d| (d.id, d.model.ws().stages.clone()))
+                .collect(),
+            self.eng.stages.mappings,
+        ));
         let mut outputs = Vec::new();
         for doc in &self.docs {
             let ws = doc.model.ws();
@@ -163,8 +220,18 @@ impl Control {
                         .stage_mapping(ws.id, stage.id)
                         .map(|m| m.display.clone()),
                     keep_black: stage.keep_black,
+                    stack: 0,
                 });
             }
+        }
+        // Ranked across every open workspace: two workspaces' stages may share a display.
+        let rank: HashMap<StageId, u32> =
+            openlab_core::stack_order(self.docs.iter().flat_map(|d| d.model.ws().stages.iter()))
+                .into_iter()
+                .zip(0u32..)
+                .collect();
+        for output in &mut outputs {
+            output.stack = rank.get(&output.id).copied().unwrap_or(0);
         }
         if self.eng.stages.sent.as_ref() == Some(&outputs)
             || (self.eng.stages.sent.is_none() && outputs.is_empty())
@@ -181,10 +248,61 @@ impl Control {
             outputs.iter().find(|o| o.id == *id) == sent.iter().find(|o| o.id == *id)
         });
         self.eng.stages.sent = Some(outputs);
+        self.eng.stages.push_due = true;
+    }
+
+    /// Sends each open workspace's connections a `video_outputs` when something it carries
+    /// changed, at most once per [`PUSH_EVERY_MS`]. Called every tick.
+    pub(super) fn push_video_outputs(&mut self) {
+        if !self.eng.stages.push_due {
+            return;
+        }
+        let now = self.eng.config.clock.now_ms();
+        if self
+            .eng
+            .stages
+            .last_push_ms
+            .is_some_and(|last| now >= last && now - last < PUSH_EVERY_MS)
+        {
+            return;
+        }
+        let mut all_sent = true;
+        for doc in &self.docs {
+            let message = self.video_outputs(doc);
+            all_sent &= self.eng.out.send_state(Some(doc.id), message);
+        }
+        if all_sent {
+            self.eng.stages.push_due = false;
+            self.eng.stages.last_push_ms = Some(now);
+        }
+    }
+
+    /// `doc`'s `video_outputs`: this machine's displays and where each of its stages is.
+    fn video_outputs(&self, doc: &super::Doc) -> ServerMessage {
+        ServerMessage::VideoOutputs {
+            displays: self.eng.stages.displays.clone(),
+            video: self.eng.stages.video,
+            stages: self.stage_entries(doc),
+        }
+    }
+
+    /// Each of `doc`'s stages: its display on this machine and where the stage host says it is.
+    fn stage_entries(&self, doc: &super::Doc) -> Vec<StageMappingEntry> {
+        let ws = doc.model.ws();
+        ws.stages
+            .iter()
+            .map(|s| StageMappingEntry {
+                stage: s.id,
+                mapping: self.eng.config.machine.stage_mapping(ws.id, s.id).cloned(),
+                state: self.eng.stages.states.get(&s.id).cloned(),
+            })
+            .collect()
     }
 
     /// What the stage host supervisor reported.
     pub(super) fn stage_event(&mut self, event: StageEvent) {
+        let reported = !matches!(event, StageEvent::Log { .. });
+        self.eng.stages.push_due |= reported;
         match event {
             StageEvent::Started { pid, video } => {
                 let s = &mut self.eng.stages;
@@ -275,12 +393,16 @@ impl Control {
             }
             #[cfg(feature = "test-support")]
             StageEvent::Probed {
-                stage,
+                target,
                 frame,
                 colours,
             } => {
+                let target = match target {
+                    crate::stage::Probed::Stage(stage) => ProbeTarget::Stage(stage),
+                    crate::stage::Probed::Display(display) => ProbeTarget::Display(display),
+                };
                 let probes = &mut self.eng.stages.probes;
-                if let Some(i) = probes.iter().position(|(s, ..)| *s == stage) {
+                if let Some(i) = probes.iter().position(|(s, ..)| *s == target) {
                     let (_, id, to) = probes.remove(i);
                     reply(
                         &to,
@@ -387,16 +509,7 @@ impl Control {
                 ),
             );
         };
-        let ws = d.model.ws();
-        let stages = ws
-            .stages
-            .iter()
-            .map(|s| StageMappingEntry {
-                stage: s.id,
-                mapping: self.eng.config.machine.stage_mapping(ws.id, s.id).cloned(),
-                state: self.eng.stages.states.get(&s.id).cloned(),
-            })
-            .collect();
+        let stages = self.stage_entries(d);
         reply(
             to,
             ServerMessage::Result {
@@ -477,6 +590,7 @@ impl Control {
             .machine
             .set_stage_mapping(workspace, stage, mapping)
             .map_err(|why| ErrorBody::new(ErrorCode::BadRequest, why))?;
+        self.eng.stages.mappings = self.eng.stages.mappings.wrapping_add(1);
         self.eng.save_machine();
         self.eng.log(LogLevel::Info, message);
         // The stage host gets the new set at once, not at the next tick.
@@ -517,13 +631,47 @@ impl Control {
             (true, Some(host)) => match probe {
                 Some(points) => {
                     host.send(ToStage::Probe { stage, points });
-                    self.eng.stages.probes.push((stage, id, to.clone()));
+                    self.eng
+                        .stages
+                        .probes
+                        .push((ProbeTarget::Stage(stage), id, to.clone()));
                 }
                 None => {
                     host.send(ToStage::TestCard { stage, frame });
                     reply(to, ok(id, None));
                 }
             },
+        }
+    }
+
+    /// Test support: `display_probe`: reads what `display` shows (every stage on it, stacked).
+    #[cfg(feature = "test-support")]
+    pub(super) fn display_probe(
+        &mut self,
+        id: RequestId,
+        display: String,
+        points: Vec<[f32; 2]>,
+        to: &ReplyTx,
+    ) {
+        use openlab_core::stage_link::ToStage;
+        match self.eng.stages.host.as_ref().filter(|_| self.eng.stages.up) {
+            None => reply(
+                to,
+                failed(
+                    id,
+                    ErrorBody::new(ErrorCode::Unsupported, "video output is not running"),
+                ),
+            ),
+            Some(host) => {
+                host.send(ToStage::ProbeDisplay {
+                    display: display.clone(),
+                    points,
+                });
+                self.eng
+                    .stages
+                    .probes
+                    .push((ProbeTarget::Display(display), id, to.clone()));
+            }
         }
     }
 

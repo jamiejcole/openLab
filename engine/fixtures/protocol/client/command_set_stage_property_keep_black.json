@@ -1,0 +1,12 @@
+{
+  "type": "command",
+  "id": 4,
+  "command": {
+    "type": "set_stage_property",
+    "id": "00000000-0000-0000-0000-000000000080",
+    "property": {
+      "type": "keep_black",
+      "value": true
+    }
+  }
+}

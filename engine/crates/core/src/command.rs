@@ -33,12 +33,13 @@ use crate::cue::{
     OscArg, SecondTrigger, Triggers,
 };
 use crate::model::{
-    CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, Workspace,
+    CueId, CueListId, NetworkPatch, NetworkPatchId, OutputPatch, PatchId, StageId, Workspace,
 };
 use crate::network::MessageIssue;
 use crate::osc_access::OscRights;
 use crate::tree::{find_path, height, walk_mut};
 use crate::validate::{IssueKind, MAX_GROUP_DEPTH, ValidationIssue, visit};
+use crate::video::{Stage, StageProperty};
 pub use numbers::next_auto_number;
 
 use numbers::{renumber, set_numbers};
@@ -289,6 +290,25 @@ pub enum Command {
         id: NetworkPatchId,
         property: NetworkPatchProperty,
     },
+    /// Adds a stage at `index` (0 to the current count; at most `MAX_STAGES`).
+    AddStage {
+        index: usize,
+        stage: Stage,
+    },
+    /// Removes a stage. Its per-machine display choice stays in the machine settings, so an
+    /// undo brings the stage back on its display.
+    RemoveStage {
+        id: StageId,
+    },
+    /// Moves a stage to `index` among the stages (counted after taking it out).
+    MoveStage {
+        id: StageId,
+        index: usize,
+    },
+    SetStageProperty {
+        id: StageId,
+        property: StageProperty,
+    },
     /// Adds an empty cue list at `index` (0 to the current count).
     AddCueList {
         index: usize,
@@ -370,6 +390,10 @@ pub enum CommandError {
     PatchNotFound(PatchId),
     #[error("network patch {0} does not exist")]
     NetworkPatchNotFound(NetworkPatchId),
+    #[error("stage {0} does not exist")]
+    StageNotFound(StageId),
+    #[error("stage id {0} is already in use")]
+    DuplicateStageId(StageId),
     #[error("patch id {0} is already in use")]
     DuplicatePatchId(PatchId),
     #[error("network patch id {0} is already in use")]

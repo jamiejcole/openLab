@@ -184,6 +184,9 @@ enum Request: Hashable, Sendable, Codable {
         /// `stageProbe` reads the stage's colours at points (fractions of the stage).
         case stageTestCard(stage: ModelID, frame: UInt16)
         case stageProbe(stage: ModelID, points: [[Double]])
+        /// Test support only: what a virtual display shows at points (fractions of the display),
+        /// all its stages composited.
+        case displayProbe(display: String, points: [[Double]])
     #endif
 
     /// Replies with a `snapshot` (the `workspaces` list on the app connection), so the engine
@@ -248,6 +251,8 @@ enum Request: Hashable, Sendable, Codable {
             case .restoreDevice: return ("restore_device", [])
             case .stageTestCard(let stage, let frame): return ("stage_test_card", [("stage", stage), ("frame", frame)])
             case .stageProbe(let stage, let points): return ("stage_probe", [("stage", stage), ("points", points)])
+            case .displayProbe(let display, let points):
+                return ("display_probe", [("display", display), ("points", points)])
         #endif
         }
     }
@@ -315,6 +320,10 @@ enum Request: Hashable, Sendable, Codable {
             case "stage_probe":
                 self = .stageProbe(
                     stage: try c.decode(ModelID.self, forKey: "stage"),
+                    points: try c.decode([[Double]].self, forKey: "points"))
+            case "display_probe":
+                self = .displayProbe(
+                    display: try c.decode(String.self, forKey: "display"),
                     points: try c.decode([[Double]].self, forKey: "points"))
         #endif
         case let other:

@@ -141,6 +141,20 @@ impl Control {
                     self.stage_test_request(doc, id, stage, Some(points), 0, to);
                     Flow::Continue
                 }
+                // A snapshot (the one a connection gets when it binds, too) is followed by the
+                // doc's video outputs, which are the engine's and not in the snapshot. They go
+                // out as a broadcast at the next tick, never as a reply: a connection writes
+                // broadcasts ahead of replies, so a reply could land after a newer push.
+                ClientMessage::Request {
+                    request: Request::Snapshot,
+                    ..
+                } if self.cx_of(doc).is_some() => {
+                    self.eng.stages.push_now();
+                    match self.cx_of(doc) {
+                        Some(mut cx) => cx.client(message, to),
+                        None => no_doc(message, to),
+                    }
+                }
                 message => match self.cx_of(doc) {
                     Some(mut cx) => cx.client(message, to),
                     None => no_doc(message, to),
@@ -277,6 +291,10 @@ impl Control {
                 Request::LoseDevice => return Ok(self.lose_device(id, to)),
                 #[cfg(feature = "test-support")]
                 Request::RestoreDevice => return Ok(self.restore_device(id, to)),
+                #[cfg(feature = "test-support")]
+                Request::DisplayProbe { display, points } => {
+                    self.display_probe(id, display, points, to);
+                }
                 request => return Err(ClientMessage::Request { id, request }),
             },
             ClientMessage::Close {

@@ -3,7 +3,7 @@
 //! The stage host's state, the same on every platform: which stages the engine wants, which
 //! displays exist, and where each stage is. A [`Platform`] does the drawing and the windows.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, Write};
 
 use openlab_core::StageId;
@@ -22,28 +22,34 @@ pub enum Picture {
     TestCard(u16),
 }
 
+/// One stage as a display draws it: its pixel size and what it shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Layer {
+    pub stage: StageId,
+    pub width: u32,
+    pub height: u32,
+    pub picture: Picture,
+}
+
 /// The windows and the drawing of one platform.
 pub trait Platform {
     /// Whether this build shows video at all.
     fn video(&self) -> bool;
     /// The displays connected now.
     fn displays(&mut self) -> Vec<Display>;
-    /// Shows `stage` on `display` drawing `picture`, opening or moving its window as needed.
-    fn show(
-        &mut self,
-        stage: &StageOutput,
-        display: &Display,
-        picture: Picture,
-    ) -> Result<(), String>;
-    /// Takes `stage`'s window down, if it has one.
-    fn hide(&mut self, stage: StageId);
-    /// The colour (RGBA) at each point (fractions of the stage, from the top left) of `stage`
-    /// drawing `picture`, read back from the GPU.
+    /// Draws `layers` (bottom first, each stage fitted to the display) on `display`, opening
+    /// or moving its window as needed.
+    fn present(&mut self, display: &Display, layers: &[Layer]) -> Result<(), String>;
+    /// Takes the window of display `display` down, if it has one.
+    fn close(&mut self, display: &str);
+    /// Draws `layers` (bottom first, each fitted) on a target of `size` pixels and reads the
+    /// colour (RGBA) at each point (fractions of the target, from the top left) back from the
+    /// GPU.
     #[cfg(feature = "test-support")]
     fn probe(
         &mut self,
-        stage: &StageOutput,
-        picture: Picture,
+        size: (u32, u32),
+        layers: &[Layer],
         points: &[[f32; 2]],
     ) -> Result<Vec<[u8; 4]>, String>;
     /// Test support: replaces virtual displays; `false` where the displays are real.
@@ -69,6 +75,8 @@ pub struct Host<P: Platform> {
     displays: Vec<Display>,
     states: HashMap<StageId, StageState>,
     pictures: HashMap<StageId, Picture>,
+    /// Displays with a window up.
+    presented: BTreeSet<String>,
 }
 
 impl<P: Platform> Host<P> {
@@ -79,6 +87,7 @@ impl<P: Platform> Host<P> {
             displays: Vec::new(),
             states: HashMap::new(),
             pictures: HashMap::new(),
+            presented: BTreeSet::new(),
         }
     }
 
@@ -101,13 +110,8 @@ impl<P: Platform> Host<P> {
                 self.displays_changed(out);
             }
             ToStage::Stages { stages } => {
-                for old in &self.stages {
-                    if !stages.iter().any(|s| s.id == old.id) {
-                        self.platform.hide(old.id);
-                        self.states.remove(&old.id);
-                        self.pictures.remove(&old.id);
-                    }
-                }
+                self.pictures
+                    .retain(|id, _| stages.iter().any(|s| s.id == *id));
                 self.stages = stages;
                 // Every stage's state is reported after a new set, changed or not, so the
                 // engine knows each stage it sent has been dealt with.
@@ -116,8 +120,8 @@ impl<P: Platform> Host<P> {
             }
             ToStage::Ping { seq } => out.push(FromStage::Pong { seq }),
             ToStage::Quit => {
-                for stage in &self.stages {
-                    self.platform.hide(stage.id);
+                for display in std::mem::take(&mut self.presented) {
+                    self.platform.close(&display);
                 }
                 return Flow::Quit;
             }
@@ -129,7 +133,11 @@ impl<P: Platform> Host<P> {
                 }
             }
             #[cfg(feature = "test-support")]
-            ToStage::Probe { stage, points } => out.push(self.probe(stage, &points)),
+            ToStage::Probe { stage, points } => out.push(self.probe_stage(stage, &points)),
+            #[cfg(feature = "test-support")]
+            ToStage::ProbeDisplay { display, points } => {
+                out.push(self.probe_display(display, &points));
+            }
             #[cfg(feature = "test-support")]
             ToStage::Hang => return Flow::Hang,
             #[cfg(feature = "test-support")]
@@ -154,71 +162,160 @@ impl<P: Platform> Host<P> {
         self.apply(out);
     }
 
-    /// Shows, hides or redraws each stage and reports each state that changed.
+    /// Shows, hides or redraws each stage and reports each state that changed. The stages
+    /// shown on one display are drawn in one window, bottom first by their `stack`.
     fn apply(&mut self, out: &mut Vec<FromStage>) {
+        let mut states: Vec<(StageId, StageState)> = Vec::new();
+        let mut on: BTreeMap<String, Vec<(u32, Layer)>> = BTreeMap::new();
         for stage in &self.stages {
-            let picture = self
-                .pictures
-                .get(&stage.id)
-                .copied()
-                .unwrap_or(Picture::Black);
+            let picture = self.picture(stage.id);
             let state = match &stage.display {
                 _ if !self.platform.video() => StageState::Failed {
                     reason: "this computer's openLab has no video output".into(),
                 },
                 None => StageState::NoDisplay,
-                Some(id) => match self.displays.iter().find(|d| &d.id == id) {
-                    None => StageState::DisplayMissing {
+                Some(id) if !self.displays.iter().any(|d| &d.id == id) => {
+                    StageState::DisplayMissing {
                         display: id.clone(),
-                    },
-                    Some(_) if !stage.keep_black && picture == Picture::Black => StageState::Hidden,
-                    Some(display) => match self.platform.show(stage, display, picture) {
-                        Ok(()) => StageState::Shown {
-                            display: id.clone(),
-                        },
-                        Err(reason) => StageState::Failed { reason },
-                    },
-                },
+                    }
+                }
+                Some(_) if !stage.keep_black && picture == Picture::Black => StageState::Hidden,
+                Some(id) => {
+                    on.entry(id.clone())
+                        .or_default()
+                        .push((stage.stack, layer_of(stage, picture)));
+                    StageState::Shown {
+                        display: id.clone(),
+                    }
+                }
             };
-            if !matches!(state, StageState::Shown { .. }) {
-                self.platform.hide(stage.id);
+            states.push((stage.id, state));
+        }
+        for display in self.displays.clone() {
+            let Some(mut layers) = on.remove(&display.id) else {
+                if self.presented.remove(&display.id) {
+                    self.platform.close(&display.id);
+                }
+                continue;
+            };
+            layers.sort_by_key(|(stack, _)| *stack);
+            let layers: Vec<Layer> = layers.into_iter().map(|(_, l)| l).collect();
+            match self.platform.present(&display, &layers) {
+                Ok(()) => {
+                    self.presented.insert(display.id.clone());
+                }
+                Err(reason) => {
+                    for (id, state) in &mut states {
+                        if layers.iter().any(|l| l.stage == *id) {
+                            *state = StageState::Failed {
+                                reason: reason.clone(),
+                            };
+                        }
+                    }
+                    if self.presented.remove(&display.id) {
+                        self.platform.close(&display.id);
+                    }
+                }
             }
-            if self.states.get(&stage.id) != Some(&state) {
-                self.states.insert(stage.id, state.clone());
-                out.push(FromStage::StageStatus {
-                    stage: stage.id,
-                    state,
-                });
+        }
+        // Displays that went away take their windows with them.
+        let gone: Vec<String> = self
+            .presented
+            .iter()
+            .filter(|id| !self.displays.iter().any(|d| &&d.id == id))
+            .cloned()
+            .collect();
+        for id in gone {
+            self.presented.remove(&id);
+            self.platform.close(&id);
+        }
+        self.states
+            .retain(|id, _| states.iter().any(|(s, _)| s == id));
+        for (stage, state) in states {
+            if self.states.get(&stage) != Some(&state) {
+                self.states.insert(stage, state.clone());
+                out.push(FromStage::StageStatus { stage, state });
             }
         }
     }
 
+    fn picture(&self, stage: StageId) -> Picture {
+        self.pictures.get(&stage).copied().unwrap_or(Picture::Black)
+    }
+
+    /// The probe points with the test card's barcode cells first, and the answer split back.
     #[cfg(feature = "test-support")]
-    fn probe(&mut self, id: StageId, points: &[[f32; 2]]) -> FromStage {
-        let Some(stage) = self.stages.iter().find(|s| s.id == id) else {
-            return FromStage::Probed {
-                stage: id,
-                frame: None,
-                colours: Vec::new(),
-            };
-        };
-        let picture = self.pictures.get(&id).copied().unwrap_or(Picture::Black);
+    fn read(
+        &mut self,
+        size: (u32, u32),
+        layers: &[Layer],
+        points: &[[f32; 2]],
+    ) -> Result<(Option<u16>, Vec<[u8; 4]>), String> {
         let mut all: Vec<[f32; 2]> = crate::card::barcode_points().to_vec();
         all.extend_from_slice(points);
-        match self.platform.probe(stage, picture, &all) {
-            Ok(colours) => {
-                let (code, asked) = colours.split_at(colours.len().min(crate::card::CELLS));
-                FromStage::Probed {
-                    stage: id,
-                    frame: crate::card::read_frame(code),
-                    colours: asked.to_vec(),
-                }
-            }
-            Err(reason) => FromStage::Log {
-                level: LinkLevel::Error,
-                message: format!("probe failed: {reason}"),
-            },
+        let colours = self.platform.probe(size, layers, &all)?;
+        let (code, asked) = colours.split_at(colours.len().min(crate::card::CELLS));
+        Ok((crate::card::read_frame(code), asked.to_vec()))
+    }
+
+    /// One stage's own picture, at its own size.
+    #[cfg(feature = "test-support")]
+    fn probe_stage(&mut self, id: StageId, points: &[[f32; 2]]) -> FromStage {
+        let layer = self
+            .stages
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| layer_of(s, self.picture(id)));
+        let read = match layer {
+            Some(l) => self.read((l.width, l.height), &[l], points),
+            None => Err("no such stage".into()),
+        };
+        let (frame, colours) = read.unwrap_or_default();
+        FromStage::Probed {
+            stage: id,
+            frame,
+            colours,
         }
+    }
+
+    /// What display `display` shows: every stage shown on it, stacked, at its pixel size.
+    #[cfg(feature = "test-support")]
+    fn probe_display(&mut self, display: String, points: &[[f32; 2]]) -> FromStage {
+        let mut layers: Vec<(u32, Layer)> = self
+            .stages
+            .iter()
+            .filter(|s| {
+                s.display.as_deref() == Some(display.as_str())
+                    && matches!(self.states.get(&s.id), Some(StageState::Shown { .. }))
+            })
+            .map(|s| (s.stack, layer_of(s, self.picture(s.id))))
+            .collect();
+        layers.sort_by_key(|(stack, _)| *stack);
+        let layers: Vec<Layer> = layers.into_iter().map(|(_, l)| l).collect();
+        let size = self
+            .displays
+            .iter()
+            .find(|d| d.id == display)
+            .map(|d| (d.width, d.height));
+        let read = match size {
+            Some(size) => self.read(size, &layers, points),
+            None => Err("no such display".into()),
+        };
+        let (frame, colours) = read.unwrap_or_default();
+        FromStage::DisplayProbed {
+            display,
+            frame,
+            colours,
+        }
+    }
+}
+
+fn layer_of(stage: &StageOutput, picture: Picture) -> Layer {
+    Layer {
+        stage: stage.id,
+        width: stage.width,
+        height: stage.height,
+        picture,
     }
 }
 
@@ -282,7 +379,8 @@ mod tests {
     /// A platform with displays given by the test and no drawing.
     struct Fake {
         displays: Vec<Display>,
-        shown: HashMap<StageId, String>,
+        /// Each display's layers as last presented, bottom first.
+        shown: HashMap<String, Vec<StageId>>,
         fail: bool,
     }
 
@@ -293,21 +391,22 @@ mod tests {
         fn displays(&mut self) -> Vec<Display> {
             self.displays.clone()
         }
-        fn show(&mut self, s: &StageOutput, d: &Display, _: Picture) -> Result<(), String> {
+        fn present(&mut self, d: &Display, layers: &[Layer]) -> Result<(), String> {
             if self.fail {
                 return Err("no GPU".into());
             }
-            self.shown.insert(s.id, d.id.clone());
+            self.shown
+                .insert(d.id.clone(), layers.iter().map(|l| l.stage).collect());
             Ok(())
         }
-        fn hide(&mut self, stage: StageId) {
-            self.shown.remove(&stage);
+        fn close(&mut self, display: &str) {
+            self.shown.remove(display);
         }
         #[cfg(feature = "test-support")]
         fn probe(
             &mut self,
-            _: &StageOutput,
-            _: Picture,
+            _: (u32, u32),
+            _: &[Layer],
             p: &[[f32; 2]],
         ) -> Result<Vec<[u8; 4]>, String> {
             Ok(vec![[0, 0, 0, 255]; p.len()])
@@ -334,6 +433,7 @@ mod tests {
             height: 1080,
             display: display.map(Into::into),
             keep_black,
+            stack: u32::from(n),
         }
     }
 
@@ -405,17 +505,45 @@ mod tests {
                 (id(4), StageState::Hidden),
             ]
         );
-        assert_eq!(h.platform.shown.len(), 1);
+        assert_eq!(h.platform.shown["D1"], [id(1)]);
         // The same set again is reported again (the engine waits for each set's states) and
         // changes no window.
         out.clear();
         h.handle(ToStage::Stages { stages }, &mut out);
         assert_eq!(states(&out).len(), 4);
-        assert_eq!(h.platform.shown.len(), 1);
+        assert_eq!(h.platform.shown["D1"], [id(1)]);
         // A display change reports only what changed.
         out.clear();
         h.displays_changed(&mut out);
         assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// Stages on one display are drawn in one window, bottom first by their stack rank.
+    #[test]
+    fn stages_sharing_a_display_are_presented_bottom_first() {
+        let mut h = host(&["D1"]);
+        let mut out = Vec::new();
+        h.handle(
+            ToStage::Hello {
+                version: LINK_VERSION,
+            },
+            &mut out,
+        );
+        let mut top = stage(1, Some("D1"), true);
+        top.stack = 9;
+        let bottom = stage(2, Some("D1"), true);
+        h.handle(
+            ToStage::Stages {
+                stages: vec![top, bottom],
+            },
+            &mut out,
+        );
+        assert_eq!(h.platform.shown["D1"], [id(2), id(1)]);
+        h.handle(ToStage::Stages { stages: vec![] }, &mut out);
+        assert!(
+            h.platform.shown.is_empty(),
+            "the window goes with its last stage"
+        );
     }
 
     /// A display unplugged takes its stage down and reports it; plugged back, the stage
