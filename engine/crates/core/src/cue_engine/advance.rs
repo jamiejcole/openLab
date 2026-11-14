@@ -136,7 +136,7 @@ impl CueEngine {
             self.remove_slot(cue, at, Exit::Stopped, cx);
             return self.report(cue, before, at, cx);
         };
-        let post_wait = cx.secs(model.post_wait, &self.config);
+        let post_wait = cx.secs(model.effective_post_wait(), &self.config);
         // A run that broke during its pre-wait, or a cue that has static problems now, skips its
         // action but keeps its timing.
         let problems = self.refuses(cue, cx);

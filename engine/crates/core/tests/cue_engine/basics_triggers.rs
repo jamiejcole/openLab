@@ -699,10 +699,11 @@ fn fade_and_stop_others_stops_paused_pre_waiting_post_waiting_and_loaded_cues_at
     let mut rig = Rig::new(vec![
         sound(1),
         timed(memo(2), 5.0, 0.0, DNC),
-        timed(wait(3, 0.1), 0.0, 5.0, AC),
+        timed(timer(3, 9, 0.1), 0.0, 5.0, AC),
         sound(4),
         fading_others(memo(5), OthersScope::Peers, 1.0),
         memo(6),
+        sound(9),
     ]);
     rig.start(0, 1);
     rig.pause(10, 1);

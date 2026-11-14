@@ -10,6 +10,7 @@ GitHub issues and milestones.
 ## Using and contributing
 
 - [Getting started](docs/getting-started.md): a first show, the cue types, Show Mode and a show-day checklist.
+- [OSC reference](docs/osc.md): controlling openLab from remotes, desks and scripts.
 - [Contributing](CONTRIBUTING.md): how the code is laid out, the rules and the tests.
 
 ## Licence

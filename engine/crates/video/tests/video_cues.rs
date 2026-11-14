@@ -520,6 +520,31 @@ fn load_to_time_starts_the_picture_there() {
     assert_eq!(shown(&mut s), Some(0));
 }
 
+/// A Load cue with a negative time loads a Video cue that long before its movie's end (QLab 5
+/// manual pp. 680-681): GO then starts the picture there.
+#[test]
+fn a_load_cue_with_a_negative_time_counts_back_from_the_movies_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = make(dir.path(), "clip.mov", "hevc", Some((50, 25)));
+    let load = cue(
+        2,
+        CueKind::Load {
+            target: Some(id(1)),
+            load_to_time: -0.5,
+        },
+    );
+    let mut s = video_show(vec![video_cue(1, Some(&movie)), load]);
+    start(&mut s, 2);
+    s.run(BLOCK);
+    assert_eq!(state(&s, 1), CueState::Loaded);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.02));
+    // 2 s of movie, from half a second before its end: 1.52 s in now.
+    assert_eq!(shown(&mut s), Some(frame_at(1.52)));
+    run_to(&mut s, at + samples(0.6));
+    assert_eq!(state(&s, 1), CueState::Idle, "half a second left");
+}
+
 /// Two Video cues on one stage are both drawn, the later-started on top: stopping the top one
 /// shows the one below, still playing.
 #[test]

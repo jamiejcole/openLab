@@ -85,7 +85,8 @@ back.
 
 openLab listens for OSC and uses QLab 5's address space where the feature exists, so existing remotes and control
 surfaces set up for QLab can drive it. Passcodes and what each may do (view, edit, control) are set in
-**Workspace Settings > OSC**.
+**Workspace Settings > OSC**. The [OSC reference](osc.md) lists every address openLab answers, how to connect,
+and where it differs from QLab 5.
 
 ## Where things are kept
 

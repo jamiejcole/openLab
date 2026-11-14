@@ -9,7 +9,8 @@ use std::ops::ControlFlow;
 
 use openlab_core::protocol::{ClientMessage, DocId, RequestId, TransportAction};
 use openlab_core::{
-    Command, CueId, CueListId, CueProperty, NumberAssignment, OscAccess, OscRight, WorkspaceId,
+    Command, CueId, CueListId, CueProperty, MAX_TIME, NumberAssignment, OscAccess, OscRight,
+    WorkspaceId,
 };
 use rosc::{OscMessage, OscType};
 use serde_json::{Map, Value, json};
@@ -43,6 +44,10 @@ pub trait OscShow {
     fn cue_exists(&self, id: CueId) -> bool;
     /// The value `/cue/{n}/{field}` reports; `None` when the cue has no such field.
     fn cue_property(&self, id: CueId, field: CueField) -> Option<Value>;
+    /// Whether `id`'s kind has `field` to write (a duration only on Wait and Fade cues).
+    fn writable(&self, _id: CueId, _field: CueField) -> bool {
+        true
+    }
     /// The cue list that holds `cue` directly, not inside a group: a playhead only rests on such
     /// a cue.
     fn top_level_list(&self, _cue: CueId) -> Option<CueListId> {
@@ -124,6 +129,8 @@ pub enum CueField {
     Notes,
     PreWait,
     PostWait,
+    /// A Wait or Fade cue's duration (written), any other cue's action length where known (read).
+    Duration,
     Armed,
     Flagged,
     UniqueId,
@@ -217,6 +224,7 @@ impl CueField {
             Self::Notes => "notes",
             Self::PreWait => "preWait",
             Self::PostWait => "postWait",
+            Self::Duration => "duration",
             Self::Armed => "armed",
             Self::Flagged => "flagged",
             Self::UniqueId => "uniqueID",
@@ -329,28 +337,21 @@ fn parse_rest(rest: &[&str], prefixed: bool, path: &str) -> Address {
             _ => Address::Pattern(path.to_owned()),
         };
     }
+    // A longer address is one of the shapes `SHAPES` names, or nothing.
+    if let [head, ..] = rest
+        && rest.len() > 1
+        && !SHAPES.contains(&(*head, rest.len()))
+    {
+        return other();
+    }
     match rest {
-        ["connect"] => Address::Connect,
-        // Application-level: not available under `/workspace/{id}`.
-        ["updates"] if !prefixed => Address::Updates,
-        ["udpReplyPort"] if !prefixed => Address::UdpReplyPort,
-        ["version"] if !prefixed => Address::Version,
-        ["workspaces"] if !prefixed => Address::Workspaces,
-        ["go"] => Address::Go,
-        ["stop"] => Address::Stop,
-        ["hardStop"] => Address::HardStop,
-        ["panic"] => Address::Panic,
-        ["pause"] => Address::PauseAll,
-        ["resume"] => Address::ResumeAll,
-        ["reset"] => Address::ResetAll,
+        [word] => match WORDS.iter().find(|(w, _)| w == word) {
+            // Application-level: not available under `/workspace/{id}`.
+            Some((_, address)) if !(prefixed && is_application(address)) => address.clone(),
+            _ => other(),
+        },
         ["playhead", target] => Address::Playhead(target_of(target)),
         ["select", target] => Address::Select(target_of(target)),
-        ["runningCues"] => Address::Query(Query::RunningCues),
-        ["runningOrPausedCues"] => Address::Query(Query::RunningOrPausedCues),
-        ["selectedCues"] => Address::Query(Query::SelectedCues),
-        ["cueLists"] => Address::Query(Query::CueLists),
-        ["playheadID"] => Address::Query(Query::PlayheadId { deprecated: false }),
-        ["playheadId"] => Address::Query(Query::PlayheadId { deprecated: true }),
         ["cue", number, verb] => match verb_of(verb) {
             Some(verb) => Address::Cue {
                 cue: match *number {
@@ -390,31 +391,81 @@ fn target_of(part: &str) -> PlayheadTarget {
     }
 }
 
+/// The addresses of one word. With [`CUE_VERBS`] and the forms `parse_rest` spells out
+/// (`/playhead/...`, `/select/...`, `/cue/...`, `/cue_id/...`), every address OSC answers;
+/// the user's OSC reference must list each (a test checks).
+pub const WORDS: &[(&str, Address)] = &[
+    ("connect", Address::Connect),
+    ("updates", Address::Updates),
+    ("udpReplyPort", Address::UdpReplyPort),
+    ("version", Address::Version),
+    ("workspaces", Address::Workspaces),
+    ("go", Address::Go),
+    ("stop", Address::Stop),
+    ("hardStop", Address::HardStop),
+    ("panic", Address::Panic),
+    ("pause", Address::PauseAll),
+    ("resume", Address::ResumeAll),
+    ("reset", Address::ResetAll),
+    ("runningCues", Address::Query(Query::RunningCues)),
+    (
+        "runningOrPausedCues",
+        Address::Query(Query::RunningOrPausedCues),
+    ),
+    ("selectedCues", Address::Query(Query::SelectedCues)),
+    ("cueLists", Address::Query(Query::CueLists)),
+    (
+        "playheadID",
+        Address::Query(Query::PlayheadId { deprecated: false }),
+    ),
+    (
+        "playheadId",
+        Address::Query(Query::PlayheadId { deprecated: true }),
+    ),
+];
+
+/// The addresses of more than one part, by first part and part count: `/playhead/{target}`,
+/// `/select/{target}`, `/cue/{number}/{verb}`, `/cue_id/{id}/{verb}`. `parse_rest` answers no
+/// other, so a new shape is added here, where the reference test sees it.
+pub const SHAPES: &[(&str, usize)] = &[("playhead", 2), ("select", 2), ("cue", 3), ("cue_id", 3)];
+
+/// Every verb after `/cue/{number}/` (and `/cue_id/{id}/`, `/cue/selected/` ...), by its name.
+pub const CUE_VERBS: &[Verb] = &[
+    Verb::Start,
+    Verb::Stop,
+    Verb::HardStop,
+    Verb::Panic,
+    Verb::Pause,
+    Verb::Resume,
+    Verb::Load,
+    Verb::Reset,
+    Verb::Preview,
+    Verb::Field(CueField::Name),
+    Verb::Field(CueField::Number),
+    Verb::Field(CueField::Notes),
+    Verb::Field(CueField::PreWait),
+    Verb::Field(CueField::PostWait),
+    Verb::Field(CueField::Duration),
+    Verb::Field(CueField::Armed),
+    Verb::Field(CueField::Flagged),
+    Verb::Field(CueField::UniqueId),
+    Verb::Field(CueField::IsLoaded),
+    Verb::Field(CueField::IsRunning),
+    Verb::Field(CueField::IsPaused),
+    Verb::Field(CueField::IsBroken),
+];
+
+/// Application-level addresses: answered by the engine, not a workspace, so never under
+/// `/workspace/{id}`.
+fn is_application(address: &Address) -> bool {
+    matches!(
+        address,
+        Address::Updates | Address::UdpReplyPort | Address::Version | Address::Workspaces
+    )
+}
+
 fn verb_of(part: &str) -> Option<Verb> {
-    Some(match part {
-        "start" => Verb::Start,
-        "stop" => Verb::Stop,
-        "hardStop" => Verb::HardStop,
-        "panic" => Verb::Panic,
-        "pause" => Verb::Pause,
-        "resume" => Verb::Resume,
-        "load" => Verb::Load,
-        "reset" => Verb::Reset,
-        "preview" => Verb::Preview,
-        "name" => Verb::Field(CueField::Name),
-        "number" => Verb::Field(CueField::Number),
-        "notes" => Verb::Field(CueField::Notes),
-        "preWait" => Verb::Field(CueField::PreWait),
-        "postWait" => Verb::Field(CueField::PostWait),
-        "armed" => Verb::Field(CueField::Armed),
-        "flagged" => Verb::Field(CueField::Flagged),
-        "uniqueID" => Verb::Field(CueField::UniqueId),
-        "isLoaded" => Verb::Field(CueField::IsLoaded),
-        "isRunning" => Verb::Field(CueField::IsRunning),
-        "isPaused" => Verb::Field(CueField::IsPaused),
-        "isBroken" => Verb::Field(CueField::IsBroken),
-        _ => return None,
-    })
+    CUE_VERBS.iter().copied().find(|verb| verb.name() == part)
 }
 
 /// The right a message needs, judged on its address and argument count alone so that nothing
@@ -422,8 +473,8 @@ fn verb_of(part: &str) -> Option<Verb> {
 /// `None` for `/connect`, `/version`, `/workspaces` and `/updates`, which every peer may send.
 ///
 /// - View: every read, `/udpReplyPort`, and writing a cue's `notes`.
-/// - Edit: writing any other cue property (name, number, pre-wait, post-wait, armed, flagged),
-///   and `/select`.
+/// - Edit: writing any other cue property (name, number, pre-wait, post-wait, duration, armed,
+///   flagged), and `/select`.
 /// - Control: transport (`/go`, `/stop`, `/hardStop`, `/panic`, `/pause`, `/resume`, `/reset`, the cue
 ///   verbs `start` ... `preview`, `/playhead`), and an address nothing answers to (a peer
 ///   without Control is told `denied` for it, as for any transport).
@@ -712,8 +763,7 @@ fn cue_message(
     budget: &mut u64,
 ) -> Resolved {
     let mut out = Resolved::default();
-    // Pseudo-cues answer for a property; an action on "the selected cue" is not part of the API.
-    let property = matches!(verb, Verb::Field(_));
+    // The pseudo-cues take reads, writes and actions alike (measured in QLab 5.6.5).
     let targets: Vec<Target> = match cue {
         CueRef::Id(id) => show
             .cue_exists(*id)
@@ -725,14 +775,14 @@ fn cue_message(
             .map(Target::Cue)
             .into_iter()
             .collect(),
-        CueRef::Selected | CueRef::Playhead if property => show
+        CueRef::Selected | CueRef::Playhead => show
             .active_list()
             .and_then(|list| show.playhead(list))
             .filter(|cue| show.cue_exists(*cue))
             .map(Target::Cue)
             .into_iter()
             .collect(),
-        CueRef::Active if property => {
+        CueRef::Active => {
             let running = show.running_cues(false);
             out.capped = running.len() > MAX_MATCHES;
             running
@@ -741,7 +791,6 @@ fn cue_message(
                 .map(Target::Cue)
                 .collect()
         }
-        CueRef::Selected | CueRef::Playhead | CueRef::Active => Vec::new(),
         CueRef::Pattern(pattern) => match CuePattern::compile_within(pattern, budget) {
             Ok(pattern) => matching(show, &pattern, budget, &mut out),
             Err(PatternError::Budget) => {
@@ -890,7 +939,7 @@ fn cue_verb(show: &dyn OscShow, cue: CueId, verb: Verb, args: &[OscType], out: &
                 }
                 return;
             }
-            match set_field(cue, field, args) {
+            match set_field(cue, field, args).filter(|_| show.writable(cue, field)) {
                 Some(command) => out.inputs.push(OscInput::Command(Box::new(command))),
                 None => bad(out),
             }
@@ -924,11 +973,15 @@ fn set_field(cue: CueId, field: CueField, args: &[OscType]) -> Option<Command> {
                 }],
             }
         }
+        // Out of range is answered here: the engine would refuse it without a word to the peer.
         CueField::PreWait => set(CueProperty::PreWait {
-            value: number_arg(arg).filter(|v| *v >= 0.0)?,
+            value: time_arg(arg)?,
         }),
         CueField::PostWait => set(CueProperty::PostWait {
-            value: number_arg(arg).filter(|v| *v >= 0.0)?,
+            value: time_arg(arg)?,
+        }),
+        CueField::Duration => set(CueProperty::Duration {
+            value: time_arg(arg)?,
         }),
         CueField::Armed => set(CueProperty::Armed {
             value: flag_arg(arg)?,
@@ -963,6 +1016,11 @@ fn number_arg(arg: &OscType) -> Option<f64> {
         _ => return None,
     };
     value.is_finite().then_some(value)
+}
+
+/// A time in seconds a cue can hold: 0 to a day.
+fn time_arg(arg: &OscType) -> Option<f64> {
+    number_arg(arg).filter(|v| (0.0..=MAX_TIME).contains(v))
 }
 
 /// 0/1 as an integer, or an OSC boolean.
