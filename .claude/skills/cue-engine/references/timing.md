@@ -43,7 +43,7 @@ Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
 - Triggering is the Start operation. A cue is idle when its action is complete and no post-wait or fade-out is pending. Stop or Reset cancels the pending post-wait and auto-follow.
 
 ### Auto-load
-- When a cue starts (`start` makes a run: GO, continue, trigger, a group starting it), the next sibling that is there (`next_sibling`, skipped cues passed over) is loaded as `Load { time: 0 }` (`load_tree`: a group loads the children its action starts first) if it has `auto_load` (QLab 5, manual p. 128; when assumed, skill `qlab-behaviour`).
+- When a GO moves the playhead onto a cue (`go_on`, also a GO on a skipped cue that moves it on; `auto_load_at_playhead`), that cue is loaded as `Load { time: 0 }` (`load_tree`: a group loads the children its action starts first) if it has `auto_load` (QLab 5, manual p. 128). Not when the playhead is set by hand or by navigation, nor when a cue is started without a GO (measured in QLab 5.6.5, Q296).
 - Only an idle cue, armed, without static problems: one loaded (to any time), active or broken at run time is left alone, and a disarmed or broken one is not loaded (it would play nothing). No warning either way. A load is no start: no chain budget.
 
 ### Load to time
