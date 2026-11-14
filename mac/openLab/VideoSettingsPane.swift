@@ -346,6 +346,8 @@ final class VideoSettingsPane: NSObject, NSTextFieldDelegate {
 
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let field = notification.object as? NSTextField, let row = row(field.tag) else { return }
+        // What came while the field was typed in was not drawn (a redraw would take the caret).
+        defer { renderSoon() }
         let text = field.stringValue
         if field.identifier?.rawValue == "layer" {
             guard let layer = Int(text.trimmingCharacters(in: .whitespaces)), (0...1000).contains(layer) else {

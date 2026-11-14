@@ -25,7 +25,15 @@ final class VideoSettingsTests: XCTestCase {
     private func open(stages: [(String, String, Int, Int)] = []) async throws
         -> (Rig, WorkspaceSettingsWindowController)
     {
-        let rig = try await Rig.open("Demo", on: engine) { folder in
+        let rig = try await openShow(stages: stages, on: engine)
+        let sc = WorkspaceSettingsWindowController(store: rig.store)
+        await sc.present().value
+        return (rig, sc)
+    }
+
+    /// The Demo show with `stages` added, opened on `engine` (no settings window).
+    private func openShow(stages: [(String, String, Int, Int)], on engine: TestEngine) async throws -> Rig {
+        try await Rig.open("Demo", on: engine) { folder in
             guard !stages.isEmpty else { return }
             let file = folder.appendingPathComponent("Demo.openlab")
             var root = try XCTUnwrap(
@@ -37,9 +45,6 @@ final class VideoSettingsTests: XCTestCase {
             root["workspace"] = ws
             try JSONSerialization.data(withJSONObject: root).write(to: file)
         }
-        let sc = WorkspaceSettingsWindowController(store: rig.store)
-        await sc.present().value
-        return (rig, sc)
     }
 
     /// Waits until the page shows what the engine holds (the lists are read and pushes applied).
@@ -202,22 +207,108 @@ final class VideoSettingsTests: XCTestCase {
         }
     }
 
-    /// Flow 8: two stages on the same display: the layer typed for each orders them (the engine
-    /// draws the higher on top); a layer outside 0 to 1000 is refused with a line and sends nothing.
+    /// A push that comes while a stage's name is typed in is drawn once the typing ends, even
+    /// with the name unchanged (nothing is sent then, so no model change redraws the page).
+    func testWhatChangesWhileANameIsTypedIsDrawnWhenTheTypingEnds() async throws {
+        let (rig, sc) = try await open(stages: [(stageA, "Cyc", 1920, 1080)])
+        let pane = sc.videoPane
+        await settled(sc) { pane.warningLabels.first?.stringValue == loc("settings.video.warn.noDisplay") }
+        let window = try XCTUnwrap(sc.window)
+        sc.tabs.selectTabViewItem(withIdentifier: "video")
+        XCTAssertTrue(window.makeFirstResponder(pane.nameFields[0]))
+        XCTAssertNotNil(pane.nameFields[0].currentEditor())
+        guard case .success = await rig.store.setStageMapping(ModelID(stageA), display: "V1") else {
+            return XCTFail("mapping")
+        }
+        // The stepped engine's clock moves only when the test moves it (pushes are at most one per
+        // 100 ms of it).
+        await assertEventually("the push reached the store") {
+            try? await rig.advance(0.2)
+            return rig.store.videoOutputs.stages.first?.state?.state == "hidden"
+        }
+        XCTAssertEqual(
+            pane.warningLabels.first?.stringValue, loc("settings.video.warn.noDisplay"),
+            "not drawn while the name is typed")
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        await assertEventually("drawn when the typing ended") { pane.warningLabels.first?.stringValue == "" }
+        XCTAssertEqual(pane.nameFields.first?.stringValue, "Cyc")
+    }
+
+    /// Flow 7 without the settings window: a show whose stage has no display on this Mac is
+    /// opened and its main window alone shows the stage's warning (the Warnings list and the
+    /// footer's count), from what the engine sends on connecting; and again on a new engine (an
+    /// engine relaunched under the app: a fresh connection and store).
+    func testAStageWithoutADisplayWarnsInTheMainWindowWithoutTheSettingsWindow() async throws {
+        let warning = String(format: loc("warnings.stage"), "Cyc", loc("settings.video.warn.noDisplay"))
+        var engines = [engine!]
+        for round in 1...2 {
+            let rig = try await openShow(stages: [(stageA, "Cyc", 1920, 1080)], on: engines[round - 1])
+            let wc = WorkspaceWindowController(store: rig.store)
+            wc.window?.contentView?.layoutSubtreeIfNeeded()
+            await assertEventually("round \(round): the stage's warning is listed") {
+                // The stepped engine's clock moves only when the test moves it.
+                try? await rig.advance(0.2)
+                return WarningRows.make(store: rig.store).contains { $0.title == warning }
+            }
+            let rows = WarningRows.make(store: rig.store).count
+            XCTAssertEqual(wc.footer.warningsButton.title, "\(rows)", "round \(round)")
+            XCTAssertFalse(wc.footer.warningsButton.isHiddenOrHasHiddenAncestor, "round \(round)")
+            wc.close()
+            if round == 1 {
+                engine.stop()
+                engine = try await TestEngine.start(displays: Self.displays)
+                engines.append(engine)
+            }
+        }
+    }
+
+    /// Flow 8: two stages on the same display: the layer typed for each orders them, as the
+    /// display shows (each stage carries its own test card frame, read back from the display);
+    /// swapping the layers swaps the picture; a layer outside 0 to 1000 is refused with a line and
+    /// sends nothing.
     func testTheLayerFieldOrdersStagesOnOneDisplayAndRefusesOutOfRangeValues() async throws {
         let (rig, sc) = try await open(stages: [(stageA, "Mary", 1920, 1080), (stageB, "Angelica", 1920, 1080)])
         let pane = sc.videoPane
         await settled(sc) { pane.layerFields.count == 2 }
-        let field = pane.layerFields[1]
-        field.stringValue = "100"
-        pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+        for (i, stage) in [stageA, stageB].enumerated() {
+            let popup = pane.displayPopups[i]
+            popup.selectItem(withTitle: "Virtual V1 (1920 × 1080)")
+            _ = popup.sendAction(popup.action, to: popup.target)
+            await settled(sc) { pane.shown?[i].display == "V1" }
+            pane.blackBoxes[i].performClick(nil)
+            await settled(sc) { pane.shown?[i].keepBlack == true }
+            let frame: UInt16 = i == 0 ? 111 : 222
+            guard
+                case .success = await rig.client.send({
+                    .request(id: $0, .stageTestCard(stage: ModelID(stage), frame: frame))
+                })
+            else { return XCTFail("test card") }
+        }
+        func onTop() async -> UInt16? {
+            guard case .success(let ok) = await engine.request(.displayProbe(display: "V1", points: [[0.5, 0.5]])),
+                case .stageProbe(let frame, _)? = ok.data
+            else { return nil }
+            return frame
+        }
+        func type(_ layer: String, into row: Int) {
+            let field = pane.layerFields[row]
+            field.stringValue = layer
+            pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+        }
+        // Angelica raised to layer 100: Angelica's picture is on top.
+        type("100", into: 1)
         await settled(sc) { pane.shown?.last?.layer == 100 }
-        let stage = rig.store.model?.stages.last
-        XCTAssertEqual(stage?.raw["layer"]?.doubleValue, 100)
-        let bad = pane.layerFields[0]
-        bad.stringValue = "1001"
-        pane.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: bad))
+        XCTAssertEqual(rig.store.model?.stages.last?.raw["layer"]?.doubleValue, 100)
+        await assertEventually("Angelica on top") { await onTop() == 222 }
+        // The layers swapped: Mary's picture is on top.
+        type("200", into: 0)
+        await settled(sc) { pane.shown?.first?.layer == 200 }
+        await assertEventually("Mary on top") { await onTop() == 111 }
+        // Out of range: refused in the page, nothing sent, the picture as it was.
+        type("1001", into: 1)
         XCTAssertEqual(pane.messageLabel.stringValue, loc("settings.video.badLayer"))
-        XCTAssertEqual(bad.stringValue, "1")
+        XCTAssertEqual(pane.layerFields[1].stringValue, "100")
+        let onTopNow = await onTop()
+        XCTAssertEqual(onTopNow, 111)
     }
 }
