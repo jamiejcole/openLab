@@ -240,10 +240,6 @@ extension WorkspaceSettingsWindowController {
     }
 }
 
-private final class TopLeftView: NSView {
-    override var isFlipped: Bool { true }
-}
-
 extension Array {
     fileprivate subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }
