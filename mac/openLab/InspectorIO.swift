@@ -85,17 +85,21 @@ extension InspectorViewController {
             s.spacing = 8
             return s
         }
+        let labels = ["inspector.io.file", "inspector.io.format", "inspector.io.stage", "inspector.io.patch"].map(label)
         let grid = NSGridView(views: [
-            [label("inspector.io.file"), line([v.fileLabel, v.chooseButton])],
-            [label("inspector.io.format"), v.formatLabel],
-            [label("inspector.io.stage"), line([v.stagePopup, v.stageSizeLabel])],
-            [label("inspector.io.patch"), line([outputPatchPopup, editPatchButton])],
+            [labels[0], line([v.fileLabel, v.chooseButton])],
+            [labels[1], v.formatLabel],
+            [labels[2], line([v.stagePopup, v.stageSizeLabel])],
+            [labels[3], line([outputPatchPopup, editPatchButton])],
             [NSGridCell.emptyContentView, v.audioNote],
         ])
         grid.rowSpacing = 8
         grid.columnSpacing = 8
         grid.rowAlignment = .firstBaseline
         grid.column(at: 0).xPlacement = .trailing
+        // The label column is as wide as its longest label; the grid would otherwise give it the
+        // spare width.
+        grid.column(at: 0).width = labels.map { ceil($0.fittingSize.width) }.max() ?? 0
         // The file row takes the tab's width, so a long path shows as much as fits.
         grid.cell(atColumnIndex: 1, rowIndex: 0).xPlacement = .fill
         v.videoRows = [grid.row(at: 0), grid.row(at: 1), grid.row(at: 2)]
