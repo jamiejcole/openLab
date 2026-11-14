@@ -37,6 +37,8 @@ final class MainWindowTests: XCTestCase {
     /// block on a full pipe.
     /// A closed window gives up its views: every test (and every workspace an operator closes) makes
     /// one, and views that outlived their windows piled up until the test machine's window server stalled.
+    /// They go at once, with no run-loop turn: a split view's own queued layout save held them until a
+    /// later pass, which on a busy machine came after any fixed number of turns (#679).
     func testAClosedWindowsViewsAreReleased() throws {
         weak var split: NSSplitView?
         weak var list: NSView?
@@ -49,9 +51,6 @@ final class MainWindowTests: XCTestCase {
             wc.window?.close()
             XCTAssertTrue(wc.layoutObservers.isEmpty, "and no longer once the window has closed")
         }
-        retained.removeAll()
-        // AppKit holds views it has queued for layout or display until the run loop next turns.
-        for _ in 0..<5 { autoreleasepool { _ = RunLoop.main.run(mode: .default, before: Date()) } }
         XCTAssertNil(split, "the split view went with its window")
         XCTAssertNil(list, "and the cue list with it")
     }
