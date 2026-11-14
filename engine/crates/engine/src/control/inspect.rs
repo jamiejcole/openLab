@@ -279,6 +279,11 @@ impl Control {
         Some((p.path.clone(), p.report.clone()))
     }
 
+    /// Video cues' pictures up on the stage host, every doc's.
+    pub fn pictures_live(&self) -> usize {
+        self.eng.pictures_live()
+    }
+
     /// Memory taken from the first doc's preload budget.
     pub fn preload_reserved(&self) -> u64 {
         self.first().map_or(0, |d| d.media.preload_reserved())

@@ -38,6 +38,7 @@ mod observe;
 pub mod offline;
 mod outputs;
 mod patches;
+mod pictures;
 pub mod plan;
 mod preshow;
 mod prime;
@@ -462,6 +463,8 @@ struct Engine {
     inbox: Sender<Inbox>,
     /// The stage host and what it last said (video output).
     stages: stages::Stages,
+    /// Video cues' pictures on the stage host.
+    pictures: pictures::Pictures,
     /// The next doc's id; never reused.
     next_doc: u64,
     /// Docs open (log lines name their doc while there are several).
@@ -758,6 +761,7 @@ impl Control {
             lookups: LookupThreads::default(),
             inbox,
             stages: stages::Stages::default(),
+            pictures: pictures::Pictures::default(),
             next_doc: 0,
             open_docs: 0,
             primes: std::collections::BTreeMap::new(),

@@ -17,8 +17,11 @@ use std::process::Command;
 use std::time::Duration;
 
 use openlab_audio::MediaError;
+use openlab_core::protocol::{
+    ClientMessage, Outcome, Request, ResultData, ServerMessage, TransportAction,
+};
 use openlab_core::video_probe::{ProbeReport, StillFormat, VideoCodec};
-use openlab_core::{Cue, CueKind, CueProblem, MediaRef, Stage, StageId, Workspace};
+use openlab_core::{Cue, CueKind, CueProblem, CueState, MediaRef, Stage, StageId, Workspace};
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
 use openlab_engine::stage::StageHostConfig;
@@ -180,7 +183,9 @@ fn video_show(cues: Vec<Cue>) -> OfflineShow {
     let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
     host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
     c.stage_host = Some(host);
-    show_with(ws, c)
+    let mut s = show_with(ws, c);
+    s.settle_stages();
+    s
 }
 
 fn problems(s: &OfflineShow, n: u128) -> Vec<CueProblem> {
@@ -249,4 +254,124 @@ fn a_video_file_that_goes_missing_breaks_its_cue_until_it_is_back() {
     s.watch_pass();
     s.settle_media();
     assert_eq!(problems(&s, 1), vec![]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Playback: what the stage shows, read back as the test card's frame barcode.
+
+/// The frame number stage 1 shows (its barcode), or `None` when it shows no card.
+fn shown(s: &mut OfflineShow) -> Option<u16> {
+    probe_at(s, &[[0.5, 0.5]]).0
+}
+
+/// The barcode stage 1 shows, and the colours at `points`.
+fn probe_at(s: &mut OfflineShow, points: &[[f32; 2]]) -> (Option<u16>, Vec<[u8; 4]>) {
+    let id = s.request_id();
+    let request = Request::StageProbe {
+        stage: stage_id(),
+        points: points.to_vec(),
+    };
+    let replies = s.send_until(ClientMessage::Request { id, request }, |c| {
+        c.stages_settled()
+    });
+    let outcome = replies
+        .into_iter()
+        .find_map(|m| match m {
+            ServerMessage::Result { id: got, outcome } if got == id => Some(outcome),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no answer to the probe"));
+    match outcome {
+        Outcome::Ok(body) => match body.data {
+            Some(ResultData::StageProbe { frame, colours }) => (frame, colours),
+            other => panic!("{other:?}"),
+        },
+        Outcome::Error(e) => panic!("probe refused: {e:?}"),
+    }
+}
+
+fn still_cue(n: u128, file: &Path, duration: Option<f64>) -> Cue {
+    cue(
+        n,
+        CueKind::Video {
+            media: Some(MediaRef::new(file.to_str().unwrap())),
+            stage: Some(stage_id()),
+            duration,
+        },
+    )
+}
+
+/// Samples of `seconds` at the offline rate.
+fn samples(seconds: f64) -> u64 {
+    (seconds * f64::from(RATE)).round() as u64
+}
+
+fn state(s: &OfflineShow, n: u128) -> CueState {
+    s.control().engine().state(id(n))
+}
+
+/// Runs the show until sample `at` is reached.
+fn run_to(s: &mut OfflineShow, at: u64) {
+    s.run(at.saturating_sub(s.now()));
+}
+
+/// A still as target: GO shows it until the cue is stopped (QLab 5 manual p. 209).
+#[test]
+fn a_still_shows_from_go_until_the_cue_is_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = video_show(vec![still_cue(1, &png, None)]);
+    assert_eq!(shown(&mut s), None, "nothing before GO");
+    go(&mut s);
+    s.run(samples(0.5));
+    assert_eq!(shown(&mut s), Some(0));
+    // Much later it is still up: a still has no end of its own.
+    s.run(samples(5.0));
+    assert_eq!(state(&s, 1), CueState::Running);
+    assert_eq!(shown(&mut s), Some(0));
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: None,
+    });
+    s.run(BLOCK);
+    assert_eq!(state(&s, 1), CueState::Idle);
+    assert_eq!(shown(&mut s), None, "gone once stopped");
+}
+
+/// A still with a duration typed: GO shows it, and it ends after that time.
+#[test]
+fn a_still_with_a_duration_ends_after_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut s = video_show(vec![still_cue(1, &png, Some(1.0))]);
+    go(&mut s);
+    s.run(samples(0.9));
+    assert_eq!(state(&s, 1), CueState::Running);
+    assert_eq!(shown(&mut s), Some(0));
+    s.run(samples(0.2));
+    assert_eq!(state(&s, 1), CueState::Idle);
+    assert_eq!(shown(&mut s), None);
+}
+
+/// GO: the picture plays on the cue's stage from its first frame in step with the engine's
+/// clock, and the cue ends at its last frame (the file's length).
+#[test]
+fn go_plays_the_movie_from_its_first_frame_in_step_and_ends_at_its_last() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = make(dir.path(), "clip.mov", "h264", Some((50, 25)));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    let at = go(&mut s);
+    // The frame shown is the one whose time the clock has reached.
+    for want in [0u16, 1, 12, 25, 49] {
+        run_to(&mut s, at + samples(f64::from(want) / 25.0) + samples(0.01));
+        let position = (s.now() - at) as f64 / f64::from(RATE);
+        let expected = (position * 25.0).floor() as u16;
+        assert_eq!(shown(&mut s), Some(expected), "at {position} s");
+        assert!(expected >= want);
+    }
+    // Two seconds long: idle (and the stage clear) once the clock passes its end.
+    run_to(&mut s, at + samples(2.0) + BLOCK);
+    assert_eq!(state(&s, 1), CueState::Idle);
+    assert_eq!(shown(&mut s), None);
+    assert_eq!(s.control().pictures_live(), 0);
 }

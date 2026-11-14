@@ -121,6 +121,8 @@ impl DocCx<'_> {
         let mut changes = Vec::new();
         let mut armed = Vec::new();
         let mut fx = Effects::default();
+        // A Video cue's picture is a voice of the stage host's, not the mixer's.
+        let pictures: Vec<bool> = actions.iter().map(|a| self.is_picture_action(a)).collect();
         {
             let floor = self.stop_floor();
             let mut env = Env {
@@ -135,16 +137,24 @@ impl DocCx<'_> {
                 now,
                 floor,
             };
-            for action in actions {
+            for (action, picture) in actions.iter().zip(&pictures) {
                 if let Some(change) = RuntimeChange::from_action(action, self.doc.model.engine()) {
                     changes.push(change);
                 }
                 if matches!(action, Action::PlayheadChanged { .. }) {
                     self.doc.primes_dirty = true;
                 }
-                self.doc.voices.apply(action, &mut env, &mut fx);
+                if !picture {
+                    self.doc.voices.apply(action, &mut env, &mut fx);
+                }
             }
         }
+        for (action, picture) in actions.iter().zip(&pictures) {
+            if *picture {
+                self.picture_action(action, &mut fx);
+            }
+        }
+        self.end_pictures(actions);
         for action in actions {
             match action {
                 Action::SetArmed { cue, armed: value } => {

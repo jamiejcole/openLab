@@ -118,6 +118,11 @@ pub enum StageEvent {
         level: LinkLevel,
         message: String,
     },
+    /// A Video cue's picture could not be opened, decoded or drawn; it is gone from its stage.
+    PictureFailed {
+        picture: u64,
+        reason: String,
+    },
     /// Test support: a probe's answer.
     #[cfg(feature = "test-support")]
     Probed {
@@ -144,6 +149,8 @@ pub struct StageHost {
 
 enum Order {
     Stages(Vec<StageOutput>),
+    /// A picture message or the clock: written as it is to the running stage host.
+    Picture(ToStage),
     #[cfg(feature = "test-support")]
     Send(ToStage),
     Quit,
@@ -162,6 +169,13 @@ impl StageHost {
     /// Sets the stages the stage host shows (every open workspace's), replacing the last set.
     pub fn set_stages(&self, stages: Vec<StageOutput>) {
         let _ = self.commands.send(Order::Stages(stages));
+    }
+
+    /// Sends a Video cue picture message or the clock (`load`, `play`, `pause`, `stop`,
+    /// `unload`, `clock`) to the running stage host; with none running it is dropped (the
+    /// engine sends its pictures again when one starts).
+    pub fn picture(&self, message: ToStage) {
+        let _ = self.commands.send(Order::Picture(message));
     }
 
     /// Test support: sends `message` as it is.
@@ -265,6 +279,13 @@ impl Supervisor {
                     }
                     #[cfg(feature = "test-support")]
                     Ok(Order::Send(message)) => self.write(&message),
+                    // Only once it has its stages: the engine sends every picture again when
+                    // a stage host starts.
+                    Ok(Order::Picture(message)) => {
+                        if self.running.as_ref().is_some_and(|r| r.hello) {
+                            self.write(&message);
+                        }
+                    }
                     Ok(Order::Quit) | Err(_) => {
                         self.quit();
                         return;
@@ -427,6 +448,9 @@ impl Supervisor {
                 return;
             }
             FromStage::StageStatus { stage, state } => StageEvent::Status { stage, state },
+            FromStage::PictureFailed { picture, reason } => {
+                StageEvent::PictureFailed { picture, reason }
+            }
             FromStage::Log { .. } if r.logs >= MAX_LOGS_PER_SECOND => return,
             FromStage::Log { level, message } => {
                 r.logs += 1;

@@ -2533,6 +2533,7 @@ impl Control {
             );
         }
         let mut closed = self.docs.remove(index);
+        self.eng.drop_doc_pictures(doc);
         self.docs_changed();
         // Dated after the stops the panic sent (at `now` too): the slots go silent as the
         // voices on them end.

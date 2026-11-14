@@ -15,6 +15,7 @@
 
 mod displays;
 mod gpu;
+mod media;
 mod probe;
 #[cfg(feature = "test-support")]
 mod testmedia;
@@ -74,6 +75,10 @@ pub fn run(args: Vec<String>) -> ExitCode {
 pub struct Mac {
     gpu: Result<Gpu, String>,
     windows: Option<Windows>,
+    /// Video cues' pictures, by the engine's id.
+    media: HashMap<u64, media::Source>,
+    /// Pictures that failed to decode while drawn, not yet reported.
+    failed: Vec<(u64, String)>,
     /// The displays last read, with their CoreGraphics ids.
     found: Vec<Found>,
     /// Test support: displays that stand in for real ones, drawn offscreen only.
@@ -139,7 +144,10 @@ impl Platform for Mac {
             .layer
             .nextDrawable()
             .ok_or("no drawable for the display's window")?;
-        let cb = gpu.draw(&drawable.texture(), layers)?;
+        let (media, failed) = (&mut self.media, &mut self.failed);
+        let cb = gpu.draw(&drawable.texture(), layers, &mut |c| {
+            frame_of(media, failed, c)
+        })?;
         let d: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(&*drawable);
         cb.presentDrawable(d);
         cb.commit();
@@ -171,7 +179,45 @@ impl Platform for Mac {
         points: &[[f32; 2]],
     ) -> Result<Vec<[u8; 4]>, String> {
         let gpu = self.gpu.as_mut().map_err(|e| e.clone())?;
-        gpu.probe(size, layers, points)
+        let (media, failed) = (&mut self.media, &mut self.failed);
+        gpu.probe(size, layers, points, &mut |c| frame_of(media, failed, c))
+    }
+
+    fn open_picture(&mut self, picture: u64, file: &str, still: bool) -> Result<(), String> {
+        let gpu = self.gpu.as_ref().map_err(|e| e.clone())?;
+        let source = media::Source::open(gpu.device(), file, still)?;
+        self.media.insert(picture, source);
+        Ok(())
+    }
+
+    fn close_picture(&mut self, picture: u64) {
+        self.media.remove(&picture);
+    }
+
+    fn take_picture_failures(&mut self) -> Vec<(u64, String)> {
+        std::mem::take(&mut self.failed)
+    }
+
+    fn live(&self) -> bool {
+        self.windows.is_some()
+    }
+}
+
+/// A cue picture's texture at its position, from `media`; a decode failure is noted in
+/// `failed` (the host reports it and drops the picture) and nothing is drawn for it.
+fn frame_of(
+    media: &mut HashMap<u64, media::Source>,
+    failed: &mut Vec<(u64, String)>,
+    cue: &crate::host::CuePicture,
+) -> Option<(gpu::Texture, (u32, u32))> {
+    let source = media.get_mut(&cue.picture)?;
+    match source.frame(cue.position) {
+        Ok((texture, size)) => Some((texture.clone(), size)),
+        Err(why) => {
+            media.remove(&cue.picture);
+            failed.push((cue.picture, why));
+            None
+        }
     }
 }
 
@@ -307,6 +353,8 @@ fn windowed() -> ExitCode {
             mtm,
             open: HashMap::new(),
         }),
+        media: HashMap::new(),
+        failed: Vec::new(),
         found: Vec::new(),
         #[cfg(feature = "test-support")]
         virtual_displays: None,
@@ -319,6 +367,13 @@ fn windowed() -> ExitCode {
     if std::thread::Builder::new()
         .name("openlab-stage-reader".into())
         .spawn(read_engine)
+        .is_err()
+    {
+        return ExitCode::FAILURE;
+    }
+    if std::thread::Builder::new()
+        .name("openlab-stage-frames".into())
+        .spawn(frames)
         .is_err()
     {
         return ExitCode::FAILURE;
@@ -349,6 +404,35 @@ fn read_engine() {
                 level: LinkLevel::Warn,
                 message: warning,
             }]),
+        }
+    }
+}
+
+/// How often playing pictures are drawn again.
+const FRAME_EVERY: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// One redraw queued on the main thread at a time.
+static REDRAW_QUEUED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The frame loop: asks the main thread to draw playing pictures again, about 60 times a
+/// second, never queueing a draw behind one not yet done (a slow draw skips frames).
+fn frames() {
+    use std::sync::atomic::Ordering;
+    loop {
+        std::thread::sleep(FRAME_EVERY);
+        if !REDRAW_QUEUED.swap(true, Ordering::AcqRel) {
+            DispatchQueue::main().exec_async(|| {
+                REDRAW_QUEUED.store(false, Ordering::Release);
+                let mut out = Vec::new();
+                HOST.with(|h| {
+                    if let Some(host) = h.borrow_mut().as_mut()
+                        && host.playing()
+                    {
+                        host.redraw(&mut out);
+                    }
+                });
+                send(out);
+            });
         }
     }
 }
@@ -427,6 +511,8 @@ fn offscreen(displays: Vec<Display>) -> ExitCode {
     let mut host = Host::new(Mac {
         gpu: Gpu::new(),
         windows: None,
+        media: HashMap::new(),
+        failed: Vec::new(),
         found: Vec::new(),
         virtual_displays: Some(displays),
     });

@@ -29,6 +29,12 @@ pub const MAX_TEXT_BYTES: usize = 512;
 pub const MAX_LINK_STAGES: usize = MAX_STAGES * 8;
 /// Most points one probe reads.
 pub const MAX_PROBE_POINTS: usize = 64;
+/// Longest media file path a `load` carries, in bytes.
+pub const MAX_PATH_BYTES: usize = 4096;
+/// Most pictures (Video cues' runs) the stage host holds at once: far more than any show plays.
+pub const MAX_PICTURES: usize = 256;
+/// Highest sample rate a `clock` may name (the engine's own limit).
+pub const MAX_CLOCK_RATE: u32 = 384_000;
 
 /// A message from the engine to the stage host.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -42,6 +48,28 @@ pub enum ToStage {
     Ping { seq: u64 },
     /// Close every window and exit.
     Quit,
+    /// The engine's sample clock: `sample` is now, at `rate` samples a second. Every picture's
+    /// position follows it; the stage host moves it on by its own clock between messages.
+    Clock { sample: u64, rate: u32 },
+    /// Opens `file` (a video, or a still with `still`) for `picture` (one Video cue run's
+    /// picture, an id of the engine's) on `stage`, held at `offset` seconds and not drawn
+    /// until it plays. Replaces a picture of the same id.
+    Load {
+        picture: u64,
+        stage: StageId,
+        file: String,
+        still: bool,
+        offset: f64,
+    },
+    /// The picture plays from sample `at` (engine clock), `offset` seconds into the file then;
+    /// a picture not loaded is ignored.
+    Play { picture: u64, at: u64, offset: f64 },
+    /// The picture holds the frame at `offset` seconds from sample `at`.
+    Pause { picture: u64, at: u64, offset: f64 },
+    /// The picture fades out over `fade` samples from sample `at` (0: gone on `at`), then goes.
+    Stop { picture: u64, at: u64, fade: u64 },
+    /// The picture goes now.
+    Unload { picture: u64 },
     /// Test support: draw the test card for `frame` on `stage` (a 16-bit frame-number barcode
     /// across the top tenth, then four coloured quadrants), until the stages change.
     #[cfg(feature = "test-support")]
@@ -113,6 +141,11 @@ pub enum FromStage {
     Log {
         level: LinkLevel,
         message: String,
+    },
+    /// A picture could not be opened, decoded or drawn: it is gone from its stage.
+    PictureFailed {
+        picture: u64,
+        reason: String,
     },
     /// Test support: the answer to `probe`: the frame number read from the barcode, if the
     /// stage shows one, and the colour (RGBA, 0-255) at each point asked for.
@@ -267,8 +300,27 @@ fn check_points(points: &[[f32; 2]]) -> Result<(), LinkError> {
     Ok(())
 }
 
+/// A position in a file, in seconds: finite, 0 to 24 h.
+fn offset_ok(offset: f64) -> bool {
+    offset.is_finite() && (0.0..=crate::MAX_TIME).contains(&offset)
+}
+
 fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
     match message {
+        ToStage::Clock { rate, .. } if *rate == 0 || *rate > MAX_CLOCK_RATE => {
+            Err(LinkError::Invalid("clock rate out of range"))
+        }
+        ToStage::Load { file, offset, .. }
+            if file.is_empty()
+                || file.len() > MAX_PATH_BYTES
+                || file.chars().any(char::is_control)
+                || !offset_ok(*offset) =>
+        {
+            Err(LinkError::Invalid("bad picture file or offset"))
+        }
+        ToStage::Play { offset, .. } | ToStage::Pause { offset, .. } if !offset_ok(*offset) => {
+            Err(LinkError::Invalid("picture offset out of range"))
+        }
         ToStage::Stages { stages } => {
             if stages.len() > MAX_LINK_STAGES {
                 return Err(LinkError::Invalid("too many stages"));
@@ -314,6 +366,9 @@ fn check_from_stage(message: &FromStage) -> Result<(), LinkError> {
         },
         FromStage::Log { message, .. } if !message_ok(message) => {
             Err(LinkError::Invalid("bad log message"))
+        }
+        FromStage::PictureFailed { reason, .. } if !text_ok(reason) => {
+            Err(LinkError::Invalid("bad picture failure reason"))
         }
         #[cfg(feature = "test-support")]
         FromStage::Probed { colours, .. } if colours.len() > MAX_PROBE_POINTS => {

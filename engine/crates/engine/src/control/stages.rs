@@ -164,6 +164,11 @@ impl Engine {
         }
     }
 
+    /// The stage host supervisor, if video output runs.
+    pub(super) fn stages_host(&self) -> Option<&StageHost> {
+        self.stages.host.as_ref()
+    }
+
     /// The stage host has been told about every stage and has said where each one is.
     pub(super) fn stages_settled(&self) -> bool {
         let s = &self.stages;
@@ -321,6 +326,8 @@ impl Control {
                             .to_owned(),
                     );
                 }
+                // A new stage host (after a crash too) shows the pictures that are up.
+                self.eng.resend_pictures();
             }
             StageEvent::Displays(displays) => {
                 if displays == self.eng.stages.displays {
@@ -382,6 +389,9 @@ impl Control {
                         ),
                     );
                 }
+            }
+            StageEvent::PictureFailed { picture, reason } => {
+                self.eng.picture_failed(picture, reason);
             }
             StageEvent::Log { level, message } => {
                 let level = match level {
@@ -628,16 +638,22 @@ impl Control {
                     ErrorBody::new(ErrorCode::Unsupported, "video output is not running"),
                 ),
             ),
-            (true, Some(host)) => match probe {
+            (true, Some(_)) => match probe {
                 Some(points) => {
-                    host.send(ToStage::Probe { stage, points });
+                    // Drawn at the engine's clock now.
+                    self.eng.picture_clock_now();
+                    if let Some(host) = self.eng.stages_host() {
+                        host.send(ToStage::Probe { stage, points });
+                    }
                     self.eng
                         .stages
                         .probes
                         .push((ProbeTarget::Stage(stage), id, to.clone()));
                 }
                 None => {
-                    host.send(ToStage::TestCard { stage, frame });
+                    if let Some(host) = self.eng.stages_host() {
+                        host.send(ToStage::TestCard { stage, frame });
+                    }
                     reply(to, ok(id, None));
                 }
             },
@@ -662,11 +678,14 @@ impl Control {
                     ErrorBody::new(ErrorCode::Unsupported, "video output is not running"),
                 ),
             ),
-            Some(host) => {
-                host.send(ToStage::ProbeDisplay {
-                    display: display.clone(),
-                    points,
-                });
+            Some(_) => {
+                self.eng.picture_clock_now();
+                if let Some(host) = self.eng.stages_host() {
+                    host.send(ToStage::ProbeDisplay {
+                        display: display.clone(),
+                        points,
+                    });
+                }
                 self.eng
                     .stages
                     .probes

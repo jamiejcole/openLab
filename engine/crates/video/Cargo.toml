@@ -33,11 +33,11 @@ dispatch2 = { version = "0.3.1", default-features = false, features = ["std"] }
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-quartz-core", "NSApplication", "NSColor", "NSGraphics", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFData", "CFString", "CFURL", "CFUUID"] }
-objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "libc", "CGColorSpace", "CGDataProvider", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGImage"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "libc", "CGBitmapContext", "CGColorSpace", "CGContext", "CGDataProvider", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGImage"] }
 # Video files and still images: AVFoundation reads movies, ImageIO stills (approved 2026-11-13).
-objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-media", "objc2-core-graphics", "objc2-core-video", "AVAsset", "AVAssetImageGenerator", "AVAssetTrack", "AVAssetWriter", "AVAssetWriterInput", "AVMediaFormat", "AVVideoSettings"] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-media", "objc2-core-graphics", "objc2-core-video", "AVAsset", "AVAssetImageGenerator", "AVAssetReader", "AVAssetReaderOutput", "AVAssetTrack", "AVAssetWriter", "AVAssetWriterInput", "AVMediaFormat", "AVVideoSettings"] }
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
-objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMFormatDescription", "CMTime"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-video", "CMFormatDescription", "CMSampleBuffer", "CMTime", "CMTimeRange"] }
 objc2-image-io = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-graphics", "CGImageDestination", "CGImageSource"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSGeometry", "NSString", "NSURL", "NSValue"] }
 objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLDrawable", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLTexture", "MTLTypes"] }

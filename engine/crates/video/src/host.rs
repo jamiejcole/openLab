@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, Write};
+use std::time::Instant;
 
 use openlab_core::StageId;
 use openlab_core::stage_link::{
@@ -22,13 +23,96 @@ pub enum Picture {
     TestCard(u16),
 }
 
-/// One stage as a display draws it: its pixel size and what it shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One Video cue's picture as a stage draws it: where in its file it is and how opaque.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CuePicture {
+    pub picture: u64,
+    /// Seconds into the file (a still ignores it).
+    pub position: f64,
+    /// 0 (gone) to 1.
+    pub opacity: f32,
+}
+
+/// One stage as a display draws it: its pixel size, what it shows behind its cues, and its
+/// cues' pictures, the earliest started first (so the later-started is drawn on top).
+#[derive(Clone, Debug, PartialEq)]
 pub struct Layer {
     pub stage: StageId,
     pub width: u32,
     pub height: u32,
     pub picture: Picture,
+    pub cues: Vec<CuePicture>,
+}
+
+/// Where a picture is in its run.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Run {
+    /// Loaded at `offset`, not playing yet.
+    Held { offset: f64 },
+    /// Playing from sample `at`, `offset` seconds into the file then.
+    Playing { at: u64, offset: f64 },
+    /// Holding the frame at `offset` from sample `at`.
+    Paused { at: u64, offset: f64 },
+}
+
+/// One Video cue run's picture on the stage host.
+#[derive(Clone, Debug)]
+struct Pic {
+    stage: StageId,
+    run: Run,
+    /// Where it was before its last change, for the samples before that change is due (a
+    /// pause or resume dated a little ahead of the clock).
+    before: Option<Run>,
+    /// The sample it first played on: drawn from then on.
+    since: Option<u64>,
+    /// Fading out from sample `.0` over `.1` samples, then gone.
+    stop: Option<(u64, u64)>,
+    /// When it first played, for the stacking (later on top): (sample, arrival order).
+    order: (u64, u64),
+}
+
+impl Pic {
+    fn position(run: Run, clock: u64, rate: u32) -> f64 {
+        match run {
+            Run::Held { offset } | Run::Paused { offset, .. } => offset,
+            Run::Playing { at, offset } => {
+                offset + clock.saturating_sub(at) as f64 / f64::from(rate.max(1))
+            }
+        }
+    }
+
+    /// What is drawn at sample `clock`, if anything.
+    fn at(&self, picture: u64, clock: u64, rate: u32) -> Option<CuePicture> {
+        let since = self.since?;
+        if clock < since {
+            return None;
+        }
+        let due = match self.run {
+            Run::Held { .. } => true,
+            Run::Playing { at, .. } | Run::Paused { at, .. } => clock >= at,
+        };
+        let run = if due {
+            self.run
+        } else {
+            self.before.unwrap_or(self.run)
+        };
+        let opacity = match self.stop {
+            Some((at, _)) if clock < at => 1.0,
+            Some((at, fade)) => {
+                let gone = clock - at;
+                if gone >= fade {
+                    return None;
+                }
+                1.0 - gone as f32 / fade as f32
+            }
+            None => 1.0,
+        };
+        Some(CuePicture {
+            picture,
+            position: Self::position(run, clock, rate),
+            opacity,
+        })
+    }
 }
 
 /// The windows and the drawing of one platform.
@@ -57,6 +141,29 @@ pub trait Platform {
     fn set_virtual_displays(&mut self, _displays: Vec<Display>) -> bool {
         false
     }
+    /// Opens a Video cue's file for `picture` (a video, or a still with `still`).
+    fn open_picture(&mut self, _picture: u64, _file: &str, _still: bool) -> Result<(), String> {
+        Err("this computer's openLab has no video output".into())
+    }
+    /// Lets the picture's file go.
+    fn close_picture(&mut self, _picture: u64) {}
+    /// Pictures that could not be decoded or drawn since the last call, with why.
+    fn take_picture_failures(&mut self) -> Vec<(u64, String)> {
+        Vec::new()
+    }
+    /// Whether the engine's clock runs on between its messages (windows on real displays):
+    /// offscreen, a picture is drawn exactly at the last clock the engine sent.
+    fn live(&self) -> bool {
+        false
+    }
+}
+
+/// The engine's sample clock as last told.
+#[derive(Clone, Copy, Debug)]
+struct Clock {
+    sample: u64,
+    rate: u32,
+    told: Instant,
 }
 
 /// What the host loop does after a message.
@@ -75,6 +182,11 @@ pub struct Host<P: Platform> {
     displays: Vec<Display>,
     states: HashMap<StageId, StageState>,
     pictures: HashMap<StageId, Picture>,
+    /// Video cues' pictures, by the engine's id.
+    pics: BTreeMap<u64, Pic>,
+    /// Plays seen, for the stacking order of pictures started on one sample.
+    plays: u64,
+    clock: Option<Clock>,
     /// Displays with a window up.
     presented: BTreeSet<String>,
 }
@@ -87,7 +199,169 @@ impl<P: Platform> Host<P> {
             displays: Vec::new(),
             states: HashMap::new(),
             pictures: HashMap::new(),
+            pics: BTreeMap::new(),
+            plays: 0,
+            clock: None,
             presented: BTreeSet::new(),
+        }
+    }
+
+    /// The engine's sample now, and its rate: the last clock told, moved on by this process's
+    /// own clock since when the platform is live.
+    fn now(&self) -> (u64, u32) {
+        match self.clock {
+            None => (0, 1),
+            Some(c) if self.platform.live() => {
+                let ran = c.told.elapsed().as_secs_f64() * f64::from(c.rate);
+                (c.sample.saturating_add(ran as u64), c.rate)
+            }
+            Some(c) => (c.sample, c.rate),
+        }
+    }
+
+    /// Whether any picture is up or due: the windows are drawn again as the clock moves.
+    pub fn playing(&self) -> bool {
+        !self.pics.is_empty()
+    }
+
+    /// Draws again (the clock moved) and drops pictures whose fade is over; reports any that
+    /// failed.
+    pub fn redraw(&mut self, out: &mut Vec<FromStage>) {
+        if self.pics.is_empty() {
+            return;
+        }
+        self.apply(out);
+    }
+
+    fn picture_message(&mut self, message: ToStage, out: &mut Vec<FromStage>) {
+        let (sample, _) = self.now();
+        match message {
+            ToStage::Clock { sample, rate } => {
+                // Drawn by the platform's own frame loop (or a probe), not on every clock.
+                self.clock = Some(Clock {
+                    sample,
+                    rate,
+                    told: Instant::now(),
+                });
+                return;
+            }
+            ToStage::Load {
+                picture,
+                stage,
+                file,
+                still,
+                offset,
+            } => {
+                self.drop_picture(picture);
+                if !self.stages.iter().any(|s| s.id == stage) {
+                    out.push(FromStage::PictureFailed {
+                        picture,
+                        reason: "its stage is not there".into(),
+                    });
+                } else if self.pics.len() >= openlab_core::stage_link::MAX_PICTURES {
+                    out.push(FromStage::PictureFailed {
+                        picture,
+                        reason: "too many pictures at once".into(),
+                    });
+                } else {
+                    match self.platform.open_picture(picture, &file, still) {
+                        Ok(()) => {
+                            self.pics.insert(
+                                picture,
+                                Pic {
+                                    stage,
+                                    run: Run::Held { offset },
+                                    before: None,
+                                    since: None,
+                                    stop: None,
+                                    order: (u64::MAX, 0),
+                                },
+                            );
+                        }
+                        Err(reason) => out.push(FromStage::PictureFailed {
+                            picture,
+                            reason: short(reason),
+                        }),
+                    }
+                }
+            }
+            ToStage::Play {
+                picture,
+                at,
+                offset,
+            } => {
+                self.plays += 1;
+                let plays = self.plays;
+                if let Some(p) = self.pics.get_mut(&picture) {
+                    p.before = p.since.is_some().then_some(p.run);
+                    p.run = Run::Playing { at, offset };
+                    if p.since.is_none() {
+                        p.since = Some(at);
+                        p.order = (at, plays);
+                    }
+                }
+            }
+            ToStage::Pause {
+                picture,
+                at,
+                offset,
+            } => {
+                if let Some(p) = self.pics.get_mut(&picture) {
+                    p.before = Some(p.run);
+                    p.run = Run::Paused { at, offset };
+                }
+            }
+            ToStage::Stop { picture, at, fade } => {
+                let gone = match self.pics.get_mut(&picture) {
+                    // Never shown, or a stop with no fade that is due: gone now.
+                    Some(p) if p.since.is_none() || (fade == 0 && at <= sample) => true,
+                    Some(p) => {
+                        p.stop = Some((at, fade));
+                        false
+                    }
+                    None => false,
+                };
+                if gone {
+                    self.drop_picture(picture);
+                }
+            }
+            ToStage::Unload { picture } => self.drop_picture(picture),
+            _ => return,
+        }
+        self.apply(out);
+    }
+
+    fn drop_picture(&mut self, picture: u64) {
+        if self.pics.remove(&picture).is_some() {
+            self.platform.close_picture(picture);
+        }
+    }
+
+    /// The pictures drawn on `stage` at `clock`, earliest started first.
+    fn cues_on(&self, stage: StageId, (clock, rate): (u64, u32)) -> Vec<CuePicture> {
+        let mut on: Vec<((u64, u64), CuePicture)> = self
+            .pics
+            .iter()
+            .filter(|(_, p)| p.stage == stage)
+            .filter_map(|(id, p)| Some((p.order, p.at(*id, clock, rate)?)))
+            .collect();
+        on.sort_by_key(|(order, _)| *order);
+        on.into_iter().map(|(_, c)| c).collect()
+    }
+
+    /// Drops the pictures whose fade-out is over at `clock`.
+    fn prune(&mut self, (clock, _): (u64, u32)) {
+        let done: Vec<u64> = self
+            .pics
+            .iter()
+            .filter(|(_, p)| {
+                p.stop
+                    .is_some_and(|(at, fade)| clock >= at.saturating_add(fade))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in done {
+            self.drop_picture(id);
         }
     }
 
@@ -112,6 +386,15 @@ impl<P: Platform> Host<P> {
             ToStage::Stages { stages } => {
                 self.pictures
                     .retain(|id, _| stages.iter().any(|s| s.id == *id));
+                let gone: Vec<u64> = self
+                    .pics
+                    .iter()
+                    .filter(|(_, p)| !stages.iter().any(|s| s.id == p.stage))
+                    .map(|(id, _)| *id)
+                    .collect();
+                for id in gone {
+                    self.drop_picture(id);
+                }
                 self.stages = stages;
                 // Every stage's state is reported after a new set, changed or not, so the
                 // engine knows each stage it sent has been dealt with.
@@ -146,6 +429,7 @@ impl<P: Platform> Host<P> {
                     self.displays_changed(out);
                 }
             }
+            other => self.picture_message(other, out),
         }
         Flow::Continue
     }
@@ -165,10 +449,13 @@ impl<P: Platform> Host<P> {
     /// Shows, hides or redraws each stage and reports each state that changed. The stages
     /// shown on one display are drawn in one window, bottom first by their `stack`.
     fn apply(&mut self, out: &mut Vec<FromStage>) {
+        let now = self.now();
+        self.prune(now);
         let mut states: Vec<(StageId, StageState)> = Vec::new();
         let mut on: BTreeMap<String, Vec<(u32, Layer)>> = BTreeMap::new();
         for stage in &self.stages {
             let picture = self.picture(stage.id);
+            let cues = self.cues_on(stage.id, now);
             let state = match &stage.display {
                 _ if !self.platform.video() => StageState::Failed {
                     reason: "this computer's openLab has no video output".into(),
@@ -179,11 +466,13 @@ impl<P: Platform> Host<P> {
                         display: id.clone(),
                     }
                 }
-                Some(_) if !stage.keep_black && picture == Picture::Black => StageState::Hidden,
+                Some(_) if !stage.keep_black && picture == Picture::Black && cues.is_empty() => {
+                    StageState::Hidden
+                }
                 Some(id) => {
                     on.entry(id.clone())
                         .or_default()
-                        .push((stage.stack, layer_of(stage, picture)));
+                        .push((stage.stack, layer_of(stage, picture, cues)));
                     StageState::Shown {
                         display: id.clone(),
                     }
@@ -229,6 +518,13 @@ impl<P: Platform> Host<P> {
             self.presented.remove(&id);
             self.platform.close(&id);
         }
+        for (picture, reason) in self.platform.take_picture_failures() {
+            self.drop_picture(picture);
+            out.push(FromStage::PictureFailed {
+                picture,
+                reason: short(reason),
+            });
+        }
         self.states
             .retain(|id, _| states.iter().any(|(s, _)| s == id));
         for (stage, state) in states {
@@ -261,13 +557,14 @@ impl<P: Platform> Host<P> {
     /// One stage's own picture, at its own size.
     #[cfg(feature = "test-support")]
     fn probe_stage(&mut self, id: StageId, points: &[[f32; 2]]) -> FromStage {
+        let now = self.now();
         let layer = self
             .stages
             .iter()
             .find(|s| s.id == id)
-            .map(|s| layer_of(s, self.picture(id)));
+            .map(|s| layer_of(s, self.picture(id), self.cues_on(id, now)));
         let read = match layer {
-            Some(l) => self.read((l.width, l.height), &[l], points),
+            Some(l) => self.read((l.width, l.height), std::slice::from_ref(&l), points),
             None => Err("no such stage".into()),
         };
         let (frame, colours) = read.unwrap_or_default();
@@ -281,6 +578,7 @@ impl<P: Platform> Host<P> {
     /// What display `display` shows: every stage shown on it, stacked, at its pixel size.
     #[cfg(feature = "test-support")]
     fn probe_display(&mut self, display: String, points: &[[f32; 2]]) -> FromStage {
+        let now = self.now();
         let mut layers: Vec<(u32, Layer)> = self
             .stages
             .iter()
@@ -288,7 +586,12 @@ impl<P: Platform> Host<P> {
                 s.display.as_deref() == Some(display.as_str())
                     && matches!(self.states.get(&s.id), Some(StageState::Shown { .. }))
             })
-            .map(|s| (s.stack, layer_of(s, self.picture(s.id))))
+            .map(|s| {
+                (
+                    s.stack,
+                    layer_of(s, self.picture(s.id), self.cues_on(s.id, now)),
+                )
+            })
             .collect();
         layers.sort_by_key(|(stack, _)| *stack);
         let layers: Vec<Layer> = layers.into_iter().map(|(_, l)| l).collect();
@@ -310,12 +613,30 @@ impl<P: Platform> Host<P> {
     }
 }
 
-fn layer_of(stage: &StageOutput, picture: Picture) -> Layer {
+fn layer_of(stage: &StageOutput, picture: Picture, cues: Vec<CuePicture>) -> Layer {
     Layer {
         stage: stage.id,
         width: stage.width,
         height: stage.height,
         picture,
+        cues,
+    }
+}
+
+/// A reason as the link takes it: one line, at most its text limit.
+fn short(reason: String) -> String {
+    let one: String = reason
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let mut cut = one.trim().to_owned();
+    while cut.len() > openlab_core::stage_link::MAX_TEXT_BYTES {
+        cut.pop();
+    }
+    if cut.is_empty() {
+        "the picture failed".into()
+    } else {
+        cut
     }
 }
 
