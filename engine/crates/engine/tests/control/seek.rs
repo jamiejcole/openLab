@@ -802,9 +802,29 @@ fn click_past_the_end_trim_of_a_cue_played_three_times_plays_its_other_two_passe
     let mut s = show(workspace(vec![trimmed(&path, 3)]));
     let at = start(&mut s, 1) as usize;
     s.run(1200);
-    seek(&mut s, 1, 0.9);
+    s.take_outbound();
+    let mut msgs = seek(&mut s, 1, 0.9);
     s.run(8000);
+    msgs.extend(s.take_outbound());
     assert_eq!(state(&s, 1), CueState::Idle);
+    // From the move on, the time shown and the time left make the cue's length (three passes
+    // of 0.4 s): it stands at the end of the first pass, two to come.
+    let items: Vec<(f64, f64)> = msgs
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::Progress { items, .. } => items
+                .iter()
+                .find(|i| i.cue == id(1))
+                .and_then(|i| Some((i.elapsed, i.remaining?))),
+            _ => None,
+        })
+        .collect();
+    assert!(items.len() > 4, "{items:?}");
+    for &(elapsed, left) in &items {
+        assert!((elapsed + left - 1.2).abs() < 0.01, "{items:?}");
+    }
+    assert!((items[0].0 - 0.4).abs() < 0.02, "{items:?}");
+    assert!((items[items.len() - 1].0 - 1.2).abs() < 0.05, "{items:?}");
     let ch = s.channel(0);
     let swap = jump(&ch, at);
     plays_from(&ch, swap + XFADE, swap + 3200, 800.0 + XFADE as f64);

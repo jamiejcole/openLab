@@ -67,7 +67,14 @@ pub fn cue_slices_from(
             };
             Some(Slice { plays, ..*last })
         });
-        return Ok((rest.into_iter().collect(), total_once(&top)));
+        // It stands at the end of the last slice's first pass, as a point inside a slice is in
+        // its first pass: the passes left are still to come.
+        let shown = top.last().map_or(0, |last| {
+            total_once(&top)
+                .saturating_sub(once(last))
+                .saturating_add(last.frames)
+        });
+        return Ok((rest.into_iter().collect(), shown));
     }
     let position = position.max(parts.range.start);
     let table = parts.plan(position, rate)?;
@@ -400,6 +407,14 @@ mod tests {
         assert_eq!(t[1], slice(0, 0, 200, Plays::Times(1)));
         assert_eq!(t[2].plays, Plays::Infinite);
         assert_eq!(shown, 50);
+        // Wherever the point is in a finite cue, the time shown there and what is left make
+        // the cue's length: 0..200 three times, then 200..1000 twice is 2200.
+        let m3 = [marker(0.2, 3)];
+        let finite = spec(&m3, 2);
+        for pos in [0, 50, 199, 200, 599, 999, 1000, 5000] {
+            let (t, shown) = cue_slices_from(&finite, &info(1000), rate(), pos).unwrap();
+            assert_eq!(shown + total_frames(&t).unwrap(), 2200, "{pos}");
+        }
         // Inside the loop: from the point, then the loop again for ever.
         let (t, shown) = from(300);
         assert_eq!(t[0], slice(1, 300, 200, Plays::Times(1)));
@@ -436,8 +451,14 @@ mod tests {
                 last_slice_play_count: 3,
                 ..trimmed.clone()
             };
-            let (t, _) = cue_slices_from(&thrice, &info(1000), rate(), pos).unwrap();
+            let (t, shown) = cue_slices_from(&thrice, &info(1000), rate(), pos).unwrap();
             assert_eq!(t, vec![slice(0, 100, 500, Plays::Times(2))], "{pos}");
+            // At the end of the first pass: shown and what is left make the cue's length.
+            assert_eq!(shown, 500, "{pos}");
+            assert_eq!(shown + total_frames(&t).unwrap(), 1500);
+            // Just before it, the same sum.
+            let (t, shown) = cue_slices_from(&thrice, &info(1000), rate(), 599).unwrap();
+            assert_eq!(shown + total_frames(&t).unwrap(), 1500);
             // With markers, only the last slice plays on.
             let m = [marker(0.3, 2)];
             let sliced = PlanSpec {
