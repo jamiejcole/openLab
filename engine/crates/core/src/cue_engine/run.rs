@@ -305,6 +305,9 @@ pub(super) enum Exit {
     Broken,
     /// Stopped, reset or deleted.
     Stopped,
+    /// Stopped by the loss of its output device while it played (`Slot::Lost`): a group whose
+    /// action ends with it shows paused for the loss too.
+    Lost,
 }
 
 /// A Group cue's part of its run. Its action lasts while any of its children is busy (has a

@@ -190,7 +190,13 @@ impl CueEngine {
                 if !(lost.clears_on_return && self.device_back(cue)) {
                     self.slots.insert(cue, Slot::Lost(lost));
                 }
-                cx.vacated.push((run.started_in, cx.now, Exit::Stopped));
+                // One that was playing leaves its group paused with it.
+                let exit = if lost.clears_on_return {
+                    Exit::Stopped
+                } else {
+                    Exit::Lost
+                };
+                cx.vacated.push((run.started_in, cx.now, exit));
                 self.report(cue, before, cx.now, cx);
             }
             // Being stopped with a fade, or fading out in a panic (a workspace Panic or the
@@ -280,7 +286,7 @@ impl CueEngine {
     /// counting, frozen there. `None` for a run that shows broken instead: one paused by the
     /// operator (QLab 5, measured), being stopped or panicked (it was leaving), or with nothing
     /// counting.
-    fn lost_at(&self, cue: CueId, run: &Run, now: SampleTime) -> Option<Lost> {
+    pub(super) fn lost_at(&self, cue: CueId, run: &Run, now: SampleTime) -> Option<Lost> {
         if run.paused_at.is_some() || run.stop_end.is_some() || run.panicked {
             return None;
         }
@@ -295,6 +301,17 @@ impl CueEngine {
         };
         match run.phase {
             Phase::PreWait { until } => Some(countdown(Timer::PreWait, until, run.pre_wait_total)),
+            // Without a voice (a group, a cue waiting for its probe) its time is the clock's
+            // since its action started, as `timers` counts it while it runs.
+            Phase::Action { start, end } if matches!(run.voice, Voice::None) => {
+                let at = end.map_or(now, |end| now.min(end)).max(start);
+                Some(Lost {
+                    timer: Timer::Action,
+                    elapsed: run.action_offset.saturating_add(at.saturating_sub(start)),
+                    remaining: end.map(|end| end.saturating_sub(at)),
+                    clears_on_return: false,
+                })
+            }
             Phase::Action { .. } => {
                 let elapsed = run.position(now);
                 Some(Lost {

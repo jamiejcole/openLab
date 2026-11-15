@@ -325,6 +325,18 @@ impl CueEngine {
             })
     }
 
+    /// Whether a mark a lost device left on `cue` may clear for a start: its device is back, or
+    /// it plays on no device (a group: its children refuse a start on their own).
+    pub(super) fn lost_may_clear(&self, cue: CueId) -> bool {
+        let audio = self
+            .problems
+            .model
+            .facts
+            .get(&cue)
+            .is_some_and(|f| f.audio.is_some());
+        !audio || self.device_back(cue)
+    }
+
     /// Whether the cue has static problems now (it reports `broken` while it has no runtime, and
     /// does not start).
     pub(super) fn has_problems(&self, cue: CueId) -> bool {

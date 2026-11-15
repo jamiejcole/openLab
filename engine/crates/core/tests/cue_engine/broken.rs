@@ -1563,8 +1563,15 @@ fn a_device_lost_failure_does_not_move_a_playlist_on() {
         assert!(warnings(&failed).is_empty(), "{case}");
         assert_eq!(rig.state(2), CueState::Paused);
         assert_eq!(rig.state(3), CueState::Idle);
-        // The group stopped (its child left as a stopped one); nothing it held is pending.
-        assert!(!rig.state(1).is_active(), "{case}");
+        // The group's run ended: started, it shows paused with its child (a mark only),
+        // started on its own the child leaves it idle; nothing it held is pending.
+        if on_its_own {
+            assert!(!rig.state(1).is_active(), "{case}");
+        } else {
+            assert_eq!(rig.state(1), CueState::Paused, "{case}");
+            assert!(rig.engine.is_lost(id(1)), "{case}");
+        }
+        assert_eq!(rig.engine.next_deadline(), None, "{case}");
         let stopped = rig.at(100, Input::DeviceLost);
         assert!(starts(&stopped).is_empty(), "{case}");
         let later = rig.tick(100_000);
@@ -1616,4 +1623,67 @@ fn a_device_lost_failure_fires_no_continue_of_a_plain_cue() {
         assert_eq!(rig.state(1), shown);
         assert_eq!(rig.state(2), CueState::Idle);
     }
+}
+
+#[test]
+fn a_group_whose_playing_children_its_device_lost_shows_paused_with_them() {
+    // Assumed (QLab 5 measured for cues only): a running group whose playing children the
+    // loss left paused reads paused too, its time standing still, and keeps the mark after the
+    // return until Resume All clears it; GO then plays it from its start. An idle group with a
+    // child on the lost device shows broken, as for any broken child.
+    let mut rig = Rig::new(vec![
+        cue(1, group(vec![sound(2), sound(3)])),
+        cue(4, group(vec![sound(5)])),
+    ]);
+    rig.tick(0);
+    rig.device(0, 1, mapped());
+    rig.at(
+        0,
+        Input::CueLengths {
+            lengths: vec![(id(2), Some(1000)), (id(3), Some(2000))],
+        },
+    );
+    rig.start(10, 1);
+    rig.device(20, 1, missing());
+    lose_device(&mut rig, 30, 2);
+    // One child still plays: the group plays on.
+    assert_eq!(rig.state(1), CueState::Running);
+    let last = lose_device(&mut rig, 30, 3);
+    assert_eq!(changes(&last, 1), vec![(CueState::Paused, 30)]);
+    assert!(rig.engine.is_lost(id(1)));
+    assert_eq!(
+        rig.engine.state_reason(id(1), CueState::Paused),
+        Some(BrokenReason::DeviceLost)
+    );
+    // Its time stands where the loss left it: 20 samples into its action.
+    assert_eq!(frozen(&rig, 1, 30), vec![(Timer::Action, 20, None)]);
+    assert_eq!(frozen(&rig, 1, 5000), frozen(&rig, 1, 30));
+    // The idle group is broken by its child's missing device.
+    assert_eq!(rig.state(4), CueState::Broken);
+    // Back: the marks stay; nothing plays.
+    rig.device(50, 1, mapped());
+    assert!(voice_starts(&rig.tick(100_000)).is_empty());
+    assert_eq!(rig.state(1), CueState::Paused);
+    assert_eq!(rig.state(4), CueState::Idle);
+    // Resume All clears the group and its children.
+    rig.at(100_010, Input::ResumeAll);
+    for n in [1, 2, 3] {
+        assert_eq!(rig.state(n), CueState::Idle, "{n}");
+    }
+}
+
+#[test]
+fn go_on_a_group_its_lost_device_left_paused_plays_it_from_its_start() {
+    let mut rig = Rig::new(vec![cue(1, group(vec![sound(2)]))]);
+    rig.tick(0);
+    rig.device(0, 1, mapped());
+    rig.start(10, 1);
+    rig.device(20, 1, missing());
+    lose_device(&mut rig, 30, 2);
+    assert_eq!(rig.state(1), CueState::Paused);
+    rig.device(50, 1, mapped());
+    let go = rig.start(100, 1);
+    assert_eq!(voice_starts(&go), vec![(id(2), 100)]);
+    assert_eq!(rig.state(1), CueState::Running);
+    assert_eq!(rig.state(2), CueState::Running);
 }

@@ -432,13 +432,14 @@ impl CueEngine {
     }
 
     /// Before a start or a load of `cue`: a mark left by a lost device clears once the device
-    /// is back, so the cue starts from its beginning (QLab 5). `false` while the device is
-    /// still away: the start is refused as for any cue on a missing device and the mark stays.
+    /// is back (a group's at once), so the cue starts from its beginning (QLab 5). `false` while
+    /// the device is still away: the start is refused as for any cue on a missing device and the
+    /// mark stays.
     fn clear_lost_to_start(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) -> bool {
         if !matches!(self.slots.get(&cue), Some(Slot::Lost(_))) {
             return true;
         }
-        if !self.device_back(cue) {
+        if !self.lost_may_clear(cue) {
             return false;
         }
         let before = self.state(cue);

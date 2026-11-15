@@ -9,7 +9,7 @@ use crate::cue::{ContinueMode, Cue, CueKind, FadeSpec, GroupMode};
 use crate::model::{CueId, Workspace};
 use crate::tree;
 
-use super::run::{Exit, GroupRun, Halt, Phase, PlaylistRun, Run, Slot};
+use super::run::{Exit, GroupRun, Halt, Lost, Phase, PlaylistRun, Run, Slot};
 use super::time::SampleTime;
 use super::types::EngineWarning;
 use super::{Ctx, CueEngine};
@@ -799,6 +799,25 @@ impl CueEngine {
     /// stopped, stops; otherwise its action completes.
     pub(super) fn resolve_group(&mut self, group: CueId, exit: Exit, at: SampleTime, cx: &mut Ctx) {
         let before = self.state(group);
+        // Its last busy child was a playing cue its lost device stopped: the group shows paused
+        // with it (its time standing still), as its children do, until Resume, GO or Stop
+        // clears it; its own group hears the same. It has no device of its own.
+        if exit == Exit::Lost
+            && let Some(Slot::Active(run)) = self.slots.get(&group)
+            && run.group.as_ref().is_some_and(|g| !g.stopping)
+            && matches!(run.phase, Phase::Action { .. })
+            && let Some(lost) = self.lost_at(group, run, at)
+        {
+            self.remove_slot(group, at, Exit::Lost, cx);
+            self.slots.insert(
+                group,
+                Slot::Lost(Lost {
+                    clears_on_return: false,
+                    ..lost
+                }),
+            );
+            return self.report(group, before, at, cx);
+        }
         let Some(Slot::Active(run)) = self.slots.get_mut(&group) else {
             return;
         };
@@ -809,7 +828,7 @@ impl CueEngine {
             return;
         }
         g.pending = None;
-        if g.stopping || exit == Exit::Stopped {
+        if g.stopping || matches!(exit, Exit::Stopped | Exit::Lost) {
             self.remove_slot(group, at, Exit::Stopped, cx);
             return self.report(group, before, at, cx);
         }
