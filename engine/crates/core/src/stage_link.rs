@@ -15,9 +15,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::StageId;
 use crate::video::{MAX_STAGES, side_ok};
+use crate::video_geometry::VideoGeometry;
 
 /// The link version both ends speak; a stage host answering another version is not used.
-pub const LINK_VERSION: u32 = 1;
+pub const LINK_VERSION: u32 = 2;
 /// Longest line either end accepts, newline excluded: enough for a `stages` set of
 /// [`MAX_LINK_STAGES`] stages whose display ids are all [`MAX_TEXT_BYTES`] long.
 pub const MAX_LINE_BYTES: usize = 512 * 1024;
@@ -60,6 +61,14 @@ pub enum ToStage {
         file: String,
         still: bool,
         offset: f64,
+        /// How it sits on its stage, how opaque and on which layer (VID-04).
+        geometry: VideoGeometry,
+    },
+    /// The picture's geometry changed (an edit while it is up): it is drawn so from the next
+    /// frame, its run untouched.
+    Geometry {
+        picture: u64,
+        geometry: VideoGeometry,
     },
     /// The picture plays from sample `at` (engine clock), `offset` seconds into the file then;
     /// a picture not loaded is ignored.
@@ -328,6 +337,11 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
         {
             Err(LinkError::Invalid("bad picture file or offset"))
         }
+        ToStage::Load { geometry, .. } | ToStage::Geometry { geometry, .. }
+            if !geometry.is_valid() =>
+        {
+            Err(LinkError::Invalid("picture geometry out of range"))
+        }
         ToStage::Play { offset, .. } | ToStage::Pause { offset, .. } if !offset_ok(*offset) => {
             Err(LinkError::Invalid("picture offset out of range"))
         }
@@ -474,6 +488,25 @@ mod tests {
             },
             ToStage::Ping { seq: 7 },
             ToStage::Quit,
+            ToStage::Load {
+                picture: 4,
+                stage: stage(1),
+                file: "/show/a.mov".into(),
+                still: false,
+                offset: 1.5,
+                geometry: VideoGeometry::default(),
+            },
+            ToStage::Geometry {
+                picture: 4,
+                geometry: VideoGeometry {
+                    fill_stage: false,
+                    rotation: -30.0,
+                    opacity: 0.25,
+                    layer: 0,
+                    smooth: false,
+                    ..VideoGeometry::default()
+                },
+            },
         ];
         for m in to {
             let line = encode(&m).unwrap();
@@ -536,6 +569,43 @@ mod tests {
         let line = encode(&message).unwrap();
         assert!(line.len() <= MAX_LINE_BYTES + 1, "{} bytes", line.len());
         assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), message);
+    }
+
+    /// Geometry out of range is refused on the link as everywhere else (VID-04).
+    #[test]
+    fn picture_geometry_out_of_range_is_refused() {
+        let bad = |geometry| ToStage::Geometry {
+            picture: 1,
+            geometry,
+        };
+        for geometry in [
+            VideoGeometry {
+                opacity: 1.5,
+                ..VideoGeometry::default()
+            },
+            VideoGeometry {
+                layer: 1001,
+                ..VideoGeometry::default()
+            },
+            VideoGeometry {
+                scale: crate::Pair { x: 1e6, y: 1.0 },
+                ..VideoGeometry::default()
+            },
+        ] {
+            let line = serde_json::to_string(&bad(geometry)).unwrap();
+            assert!(matches!(
+                decode_to_stage(line.as_bytes()),
+                Err(LinkError::Invalid(_))
+            ));
+        }
+        let load = concat!(
+            r#"{"type":"load","picture":1,"stage":"00000000-0000-0000-0000-000000000001","#,
+            r#""file":"/a.mov","still":false,"offset":0,"geometry":{"opacity":-1}}"#
+        );
+        assert!(matches!(
+            decode_to_stage(load.as_bytes()),
+            Err(LinkError::Invalid(_))
+        ));
     }
 
     #[test]

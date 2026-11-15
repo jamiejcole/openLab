@@ -354,6 +354,7 @@ fn video_cue(n: u128, media: Option<&Path>) -> Cue {
             media: media.map(|p| MediaRef::new(p.to_str().unwrap())),
             stage: Some(stage_id()),
             duration: None,
+            geometry: Default::default(),
         },
     )
 }
@@ -543,6 +544,7 @@ fn still_cue(n: u128, file: &Path, duration: Option<f64>) -> Cue {
             media: Some(MediaRef::new(file.to_str().unwrap())),
             stage: Some(stage_id()),
             duration,
+            geometry: Default::default(),
         },
     )
 }

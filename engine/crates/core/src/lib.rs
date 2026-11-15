@@ -29,6 +29,7 @@ pub mod stage_link;
 mod tree;
 mod validate;
 mod video;
+mod video_geometry;
 pub mod video_probe;
 
 pub use backup::*;
@@ -54,6 +55,7 @@ pub use show_file::*;
 pub use tree::descendants;
 pub use validate::*;
 pub use video::*;
+pub use video_geometry::*;
 
 /// Crate version, as set in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

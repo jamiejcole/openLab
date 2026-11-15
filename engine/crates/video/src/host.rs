@@ -7,11 +7,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, Write};
 use std::time::Instant;
 
-use openlab_core::StageId;
 use openlab_core::stage_link::{
     Display, FromStage, LINK_VERSION, Line, LinkLevel, StageOutput, StageState, ToStage,
     decode_to_stage, encode, read_line,
 };
+use openlab_core::{StageId, VideoGeometry};
 
 /// What a stage shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,8 +29,11 @@ pub struct CuePicture {
     pub picture: u64,
     /// Seconds into the file (a still ignores it).
     pub position: f64,
-    /// 0 (gone) to 1.
+    /// How far its stop's fade has gone: 1 until it stops, then down to 0 (gone). Drawn times
+    /// the geometry's opacity.
     pub opacity: f32,
+    /// Where it sits on its stage, how opaque, its layer and its sampling.
+    pub geometry: VideoGeometry,
 }
 
 /// One stage as a display draws it: its pixel size, what it shows behind its cues, and its
@@ -69,6 +72,7 @@ struct Pic {
     stop: Option<(u64, u64)>,
     /// When it first played, for the stacking (later on top): (sample, arrival order).
     order: (u64, u64),
+    geometry: VideoGeometry,
 }
 
 impl Pic {
@@ -111,6 +115,7 @@ impl Pic {
             picture,
             position: Self::position(run, clock, rate),
             opacity,
+            geometry: self.geometry,
         })
     }
 }
@@ -284,6 +289,7 @@ impl<P: Platform> Host<P> {
                 file,
                 still,
                 offset,
+                geometry,
             } => {
                 self.drop_picture(picture);
                 if !self.stages.iter().any(|s| s.id == stage) {
@@ -308,6 +314,7 @@ impl<P: Platform> Host<P> {
                                     since: None,
                                     stop: None,
                                     order: (u64::MAX, 0),
+                                    geometry,
                                 },
                             );
                         }
@@ -359,6 +366,11 @@ impl<P: Platform> Host<P> {
                 }
             }
             ToStage::Unload { picture } => self.drop_picture(picture),
+            // Drawn so from the next frame; its run (and the decoder) are untouched.
+            ToStage::Geometry { picture, geometry } => match self.pics.get_mut(&picture) {
+                Some(p) => p.geometry = geometry,
+                None => return,
+            },
             _ => return,
         }
         self.apply(out);
@@ -407,13 +419,17 @@ impl<P: Platform> Host<P> {
         }
     }
 
-    /// The pictures drawn on `stage` at `clock`, earliest started first.
+    /// The pictures drawn on `stage` at `clock`, bottom first: the lowest layer first, and on
+    /// one layer the earliest started first (QLab 5 manual p. 213).
     fn cues_on(&self, stage: StageId, (clock, rate): (u64, u32)) -> Vec<CuePicture> {
-        let mut on: Vec<((u64, u64), CuePicture)> = self
+        let mut on: Vec<((u16, u64, u64), CuePicture)> = self
             .pics
             .iter()
             .filter(|(_, p)| p.stage == stage)
-            .filter_map(|(id, p)| Some((p.order, p.at(*id, clock, rate)?)))
+            .filter_map(|(id, p)| {
+                let order = (p.geometry.layer, p.order.0, p.order.1);
+                Some((order, p.at(*id, clock, rate)?))
+            })
             .collect();
         on.sort_by_key(|(order, _)| *order);
         on.into_iter().map(|(_, c)| c).collect()
@@ -960,8 +976,27 @@ mod tests {
                 file: "clip.mov".into(),
                 still: false,
                 offset: 0.0,
+                geometry: VideoGeometry::default(),
             },
         )
+    }
+
+    fn on_layer(layer: u16) -> VideoGeometry {
+        VideoGeometry {
+            layer,
+            ..VideoGeometry::default()
+        }
+    }
+
+    fn play(host: &mut Host<Fake>, picture: u64, at: u64) {
+        send(
+            host,
+            ToStage::Play {
+                picture,
+                at,
+                offset: 0.0,
+            },
+        );
     }
 
     fn logs(out: &[FromStage]) -> Vec<(LinkLevel, String)> {
@@ -1137,6 +1172,80 @@ mod tests {
         assert_eq!(order, vec![9, 3]);
     }
 
+    /// A higher layer is drawn on top whatever the start order; on one layer the later-started
+    /// is on top (QLab 5 manual p. 213). A layer changed while both play restacks them at once.
+    #[test]
+    fn a_higher_layer_is_on_top_whatever_the_start_order() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 1, 1);
+        load(&mut h, 2, 1);
+        load(&mut h, 3, 1);
+        let geometry = |h: &mut Host<Fake>, picture, layer| {
+            send(
+                h,
+                ToStage::Geometry {
+                    picture,
+                    geometry: on_layer(layer),
+                },
+            );
+        };
+        geometry(&mut h, 1, 10);
+        geometry(&mut h, 2, 5);
+        geometry(&mut h, 3, 5);
+        play(&mut h, 1, 0);
+        play(&mut h, 2, 10);
+        play(&mut h, 3, 20);
+        clock(&mut h, 100);
+        let order = |h: &mut Host<Fake>| -> Vec<u64> { cues(h, 1).iter().map(|c| c.0).collect() };
+        assert_eq!(order(&mut h), vec![2, 3, 1]);
+        geometry(&mut h, 2, 11);
+        assert_eq!(order(&mut h), vec![3, 1, 2]);
+        // An unknown picture's geometry is ignored.
+        geometry(&mut h, 99, 0);
+        assert_eq!(order(&mut h), vec![3, 1, 2]);
+    }
+
+    /// A geometry change reaches the picture as it plays: its position in the file runs on.
+    #[test]
+    fn a_geometry_change_keeps_the_picture_running() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 1, 1);
+        play(&mut h, 1, 0);
+        clock(&mut h, 500);
+        let g = VideoGeometry {
+            opacity: 0.5,
+            fill_stage: false,
+            ..VideoGeometry::default()
+        };
+        send(
+            &mut h,
+            ToStage::Geometry {
+                picture: 1,
+                geometry: g,
+            },
+        );
+        clock(&mut h, 1000);
+        let now = h.now();
+        let drawn = h.cues_on(id(1), now);
+        assert_eq!(drawn.len(), 1);
+        assert_eq!(drawn[0].geometry, g);
+        assert_eq!(drawn[0].position, 1.0);
+    }
+
     /// A picture whose file cannot be opened, whose stage is not there, or whose stage is
     /// removed while it plays is reported failed, with a one-line reason.
     #[test]
@@ -1166,6 +1275,7 @@ mod tests {
                 file: "bad".into(),
                 still: true,
                 offset: 0.0,
+                geometry: VideoGeometry::default(),
             },
         );
         assert_eq!(failed(&out), vec![(1, "cannot open this".to_owned())]);

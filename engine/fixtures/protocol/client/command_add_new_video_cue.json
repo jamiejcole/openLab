@@ -42,7 +42,32 @@
         "type": "video",
         "media": "/Volumes/Show/Backdrop.mov",
         "stage": "00000000-0000-0000-0000-000000000001",
-        "duration": null
+        "duration": null,
+        "fill_stage": true,
+        "fill_style": "fit",
+        "translation": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0
+        },
+        "scale_locked": true,
+        "rotation": 0.0,
+        "crop": {
+          "top": 0.0,
+          "bottom": 0.0,
+          "left": 0.0,
+          "right": 0.0
+        },
+        "anchor": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "opacity": 1.0,
+        "layer": 1000,
+        "smooth": true
       }
     },
     "auto_number": true

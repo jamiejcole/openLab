@@ -40,6 +40,7 @@ fn kind(ws: &Workspace, n: u128) -> (Option<String>, Option<StageId>, Option<f64
             media,
             stage,
             duration,
+            ..
         } => (
             media.as_ref().map(|m| m.as_str().to_owned()),
             *stage,
@@ -286,4 +287,181 @@ fn relink_covers_video_cues() {
     );
     ws.apply(command).unwrap();
     assert_eq!(kind(&ws, 1).0.as_deref(), Some("found/v.mov"));
+}
+
+fn geometry(ws: &Workspace, n: u128) -> VideoGeometry {
+    match &ws.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Video { geometry, .. } => *geometry,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn fields(pairs: &[(&str, serde_json::Value)]) -> CueProperty {
+    let mut map = serde_json::Map::new();
+    for (k, v) in pairs {
+        map.insert((*k).into(), v.clone());
+    }
+    CueProperty::KindFields { value: map }
+}
+
+fn refused_value(result: Result<Inverse, CommandError>, field: &str) {
+    match result {
+        Err(CommandError::InvalidCue(issues)) => assert!(
+            issues
+                .iter()
+                .any(|i| matches!(i.kind, IssueKind::InvalidValue { field: f } if f == field)),
+            "{issues:?}"
+        ),
+        other => panic!("{field}: {other:?}"),
+    }
+}
+
+/// Geometry fields are fields of the kind (VID-04): each is set on its own, so a field another
+/// client set meanwhile is kept; undone and redone; the value it has already is no edit.
+#[test]
+fn geometry_fields_are_set_one_at_a_time_undone_and_redone() {
+    use serde_json::json;
+    let mut ws = ws();
+    assert_eq!(geometry(&ws, 1), VideoGeometry::default());
+    ws.apply(set(1, fields(&[("opacity", json!(0.5))])))
+        .unwrap();
+    let undo = ws
+        .apply(set(
+            1,
+            fields(&[
+                ("fill_stage", json!(false)),
+                ("translation", json!({"x": 10.0, "y": -20.0})),
+                ("rotation", json!(45)),
+                (
+                    "crop",
+                    json!({"top": 1, "bottom": 2, "left": 3, "right": 4}),
+                ),
+                ("layer", json!(7)),
+                ("smooth", json!(false)),
+                ("fill_style", json!("stretch")),
+            ]),
+        ))
+        .unwrap();
+    let g = geometry(&ws, 1);
+    assert_eq!(g.opacity, 0.5);
+    assert!(!g.fill_stage && !g.smooth);
+    assert_eq!(g.translation, Pair { x: 10.0, y: -20.0 });
+    assert_eq!(g.rotation, 45.0);
+    assert_eq!(g.crop.right, 4.0);
+    assert_eq!(g.layer, 7);
+    assert_eq!(g.fill_style, FillStyle::Stretch);
+    let redo = ws.apply(undo).unwrap();
+    assert_eq!(
+        geometry(&ws, 1),
+        VideoGeometry {
+            opacity: 0.5,
+            ..VideoGeometry::default()
+        }
+    );
+    ws.apply(redo).unwrap();
+    assert_eq!(geometry(&ws, 1), g);
+    let same = ws.apply(set(1, fields(&[("layer", json!(7))]))).unwrap();
+    assert_eq!(same, Command::Transaction { commands: vec![] });
+}
+
+/// Out of range is refused, field by field, and nothing changes; a value of the wrong type
+/// (a layer beyond a whole number's range, text, a crop missing an edge) is refused too.
+#[test]
+fn geometry_out_of_range_is_refused_field_by_field() {
+    use serde_json::json;
+    let mut ws = ws();
+    let before = ws.clone();
+    for (key, value, field) in [
+        ("opacity", json!(1.01), "opacity"),
+        ("opacity", json!(-0.01), "opacity"),
+        ("layer", json!(1001), "layer"),
+        ("rotation", json!(360.5), "rotation"),
+        ("scale", json!({"x": 101, "y": 1}), "scale.x"),
+        ("scale", json!({"x": 1, "y": -101}), "scale.y"),
+        ("translation", json!({"x": 0, "y": 70000}), "translation.y"),
+        ("anchor", json!({"x": -70000, "y": 0}), "anchor.x"),
+        (
+            "crop",
+            json!({"top": -1, "bottom": 0, "left": 0, "right": 0}),
+            "crop.top",
+        ),
+        (
+            "crop",
+            json!({"top": 0, "bottom": 0, "left": 0, "right": 16385}),
+            "crop.right",
+        ),
+    ] {
+        refused_value(ws.apply(set(1, fields(&[(key, value)]))), field);
+    }
+    for (key, value) in [
+        ("layer", json!(-1)),
+        ("layer", json!(70000)),
+        ("layer", json!(1.5)),
+        ("opacity", json!("half")),
+        ("fill_style", json!("zoom")),
+        ("crop", json!({"top": 1})),
+    ] {
+        assert!(
+            matches!(
+                ws.apply(set(1, fields(&[(key, value.clone())]))),
+                Err(CommandError::InvalidValue(_))
+            ),
+            "{key} {value}"
+        );
+    }
+    assert_eq!(ws, before);
+}
+
+/// Every path that creates or replaces a Video cue refuses geometry out of range.
+#[test]
+fn every_path_that_makes_a_video_cue_refuses_bad_geometry() {
+    let bad = || {
+        let mut c = cue(10, video());
+        if let CueKind::Video { geometry, .. } = &mut c.kind {
+            geometry.opacity = 2.0;
+        }
+        c
+    };
+    let at = Position {
+        list: list_id(1),
+        parent: None,
+        index: 0,
+    };
+    let mut ws = ws();
+    let before = ws.clone();
+    refused_value(
+        ws.apply(Command::AddCue {
+            at: at.clone(),
+            cue: bad(),
+            auto_number: false,
+        }),
+        "opacity",
+    );
+    refused_value(
+        ws.apply(Command::Paste {
+            at: at.clone(),
+            cues: vec![cue(11, group(vec![bad()]))],
+        }),
+        "opacity",
+    );
+    let pasted = Command::PasteClipboard {
+        at,
+        cues: vec![bad()],
+        source_dir: None,
+    }
+    .prepare(
+        &ws,
+        &MediaPaths {
+            show_dir: None,
+            style: PathStyle::Posix,
+        },
+        &mut || cue_id(500),
+    )
+    .unwrap();
+    refused_value(ws.apply(pasted), "opacity");
+    refused_value(
+        ws.apply(set(3, CueProperty::Kind { value: bad().kind })),
+        "opacity",
+    );
+    assert_eq!(ws, before);
 }

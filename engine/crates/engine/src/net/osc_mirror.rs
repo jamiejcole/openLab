@@ -1411,6 +1411,7 @@ mod tests {
             media: Some(openlab_core::MediaRef::new("a.mov")),
             stage: None,
             duration: None,
+            geometry: Default::default(),
         };
         let base = mirror(2);
         let mut workspace = base.workspace.clone();

@@ -232,6 +232,7 @@ fn kind(ws: &Workspace, p: &Pick) -> CueKind {
             media: (!p.c.is_multiple_of(11)).then(|| MediaRef::new(MEDIA[(p.b / 3) as usize % 4])),
             stage: (!p.d.is_multiple_of(5)).then(|| stage_id(1 + u128::from(p.d % 4))),
             duration: (!p.b.is_multiple_of(3)).then(|| time(p.c)),
+            geometry: Default::default(),
         },
         _ => CueKind::Network {
             destination: net_id(1),

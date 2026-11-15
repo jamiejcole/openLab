@@ -41,6 +41,7 @@ impl DocCx<'_> {
         // Not `reset`: the files are the same, so their probe results stay (a cue started
         // meanwhile must not find them pending).
         self.doc.media.sync(self.doc.model.ws());
+        self.follow_picture_geometry();
         let inputs = self.sync_workspace(false);
         self.document();
         for input in inputs {
@@ -60,6 +61,7 @@ impl DocCx<'_> {
         // The catalog's cue index follows the edit first; the changes are read through it, at
         // the cost of the edit's cues. The walk is the fallback.
         self.doc.media.sync_cues(self.doc.model.ws(), footprint);
+        self.follow_picture_geometry();
         let (upserts, deletes) =
             model_changes_indexed(self.doc.model.ws(), footprint, self.doc.media.index())
                 .unwrap_or_else(|| {
