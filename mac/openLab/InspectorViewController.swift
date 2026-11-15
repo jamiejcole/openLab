@@ -88,6 +88,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     var onEditPatch: ((ModelID) -> Void)?
     /// A Video cue's rows of the I/O tab.
     let videoIO = VideoIOControls()
+    let geometry = GeometryControls()
     var outputPatchIDs: [ModelID] = []
     var outputPatchNames: [String] = []
     let networkMessageField = NSTextField()
@@ -209,6 +210,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// drag not yet committed is given up.
     func endGestures() {
         timeLoops.waveform.endDrag()
+        geometry.thumbnail.endDrag()
         audioLevels.endGesture()
         fadeLevels.endGesture()
         gestureHold(false)
@@ -456,9 +458,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let devamp = devampTab(row: row, column: column)
         let network = networkTab(row: row, column: column)
         let io = ioTab(row: row, column: column)
+        let geometryItem = geometryTab()
         buildLevelsTabs()
         buildTimeLoopsTab()
-        for i in [item, triggers, devamp, network, io]
+        for i in [item, triggers, devamp, network, io, geometryItem]
             + [modeItem, loadTimeItem, levelsItem, curveItem, fadeLevelsItem, timeLoopsItem].compactMap({ $0 })
         {
             if let id = i.identifier as? String { tabItems[id] = i }
@@ -872,6 +875,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         renderDevamp(cue)
         renderNetwork(cue, model: model)
         renderIO(cue, model: model)
+        renderGeometry(cueForEdit ?? cue, model: model)
         renderLevels(cueForEdit ?? cue, model: model)
         renderTimeLoops(cueForEdit ?? cue)
         updatePreviewButton()
@@ -935,6 +939,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         fadeLevels.isLocked = isLocked
         fadeSettings.isLocked = isLocked
         timeLoops.isLocked = isLocked
+        geometry.isLocked = isLocked
         if isLocked, !stale.isEmpty { render(force: stale) }
     }
 

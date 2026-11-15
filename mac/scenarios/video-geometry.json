@@ -1,0 +1,42 @@
+{
+  "about": "A Video cue's Geometry tab (#644): fill-stage fit, fill and stretch of a movie on a tall stage and a still on a wide one; custom mode moved, scaled, turned and cropped; half opacity on layer 10 with smoothing off; the bottom layer; a thumbnail drag moving the picture (position fields follow); a value typed while the cue plays.",
+  "show": "Geometry",
+  "displays": "V1:1920x1080",
+  "media": {
+    "media/clip.mov": 4,
+    "media/still.png": 1
+  },
+  "steps": [
+    {"advance": 0.1},
+    {"select": "1"},
+    {"tab": "geometry"},
+    {"shot": "fit-tall-stage"},
+    {"select": "2"},
+    {"shot": "fill-tall-stage"},
+    {"select": "3"},
+    {"shot": "stretch-tall-stage"},
+    {"select": "4"},
+    {"shot": "fit-wide-stage"},
+    {"select": "5"},
+    {"shot": "fill-wide-stage"},
+    {"select": "6"},
+    {"shot": "custom"},
+    {"select": "7"},
+    {"shot": "opacity-layer-smooth-off"},
+    {"select": "8"},
+    {"shot": "bottom-layer"},
+    {"select": "6"},
+    {"drag": "inspector-geometry-thumbnail", "from": [0.5, 0.5], "to": [0.3, 0.7]},
+    {"shot": "custom-after-drag"},
+    {"click": "inspector-geometry-scale-lock"},
+    {"type": "inspector-geometry-scale-y", "text": "0.5"},
+    {"type": "inspector-geometry-rotation", "text": "-30"},
+    {"shot": "custom-unlocked-scale-and-rotation"},
+    {"key": "space"},
+    {"advance": 1},
+    {"select": "6"},
+    {"type": "inspector-geometry-x", "text": "-200"},
+    {"advance": 0.5},
+    {"shot": "custom-typed-while-playing"}
+  ]
+}

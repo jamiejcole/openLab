@@ -139,21 +139,7 @@ impl OscShow for Show {
         tree().iter().any(|(t, _)| *t == Target::Cue(id))
     }
     fn cue_property(&self, id: CueId, field: CueField) -> Option<Value> {
-        let key = match field {
-            CueField::Name => "name",
-            CueField::Number => "number",
-            CueField::Notes => "notes",
-            CueField::PreWait => "preWait",
-            CueField::PostWait => "postWait",
-            CueField::Duration => "duration",
-            CueField::Armed => "armed",
-            CueField::Flagged => "flagged",
-            CueField::UniqueId => "uniqueID",
-            CueField::IsLoaded => "isLoaded",
-            CueField::IsRunning => "isRunning",
-            CueField::IsPaused => "isPaused",
-            CueField::IsBroken => "isBroken",
-        };
+        let key = field.name();
         if let Some(value) = self.props.get(&(id, key)) {
             return Some(value.clone());
         }

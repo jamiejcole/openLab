@@ -37,9 +37,11 @@ use objc2_image_io::CGImageDestination;
 use crate::card;
 
 /// `--make-test-media <kind> <path> [frames fps]`: `kind` is `h264`, `hevc`, `prores` (with a
-/// frame count and rate) or `png`, `jpeg`, `tiff` (frame 0's card), or `huge-png` (a black
-/// PNG of 16384 x 8192 pixels, one bit each: small on disk, too many pixels to play). The file
-/// must not exist.
+/// frame count and rate) or `png`, `jpeg`, `tiff` (frame 0's card), `huge-png` (a black
+/// PNG of 16384 x 8192 pixels, one bit each: small on disk, too many pixels to play), or the
+/// geometry tests' PNGs: `wide-png` (400 x 100, four bands left to right: red, green, blue,
+/// yellow), `tall-png` (100 x 400, the bands top to bottom), `alpha-png` (200 x 100, left half
+/// red, right half transparent), `tiny-png` (2 x 1: red, blue). The file must not exist.
 pub fn make(args: &[String]) -> Result<(), String> {
     match args {
         [kind, path, frames, fps] => {
@@ -198,25 +200,40 @@ fn still(kind: &str, path: &Path) -> Result<(), String> {
         return huge_png(path);
     }
     let uti = match kind {
-        "png" => "public.png",
+        "png" | "wide-png" | "tall-png" | "alpha-png" | "tiny-png" => "public.png",
         "jpeg" => "public.jpeg",
         "tiff" => "public.tiff",
         _ => return Err(format!("unknown still format {kind}")),
     };
+    let (width, height, rgba) = match kind {
+        "wide-png" => bands(400, 100, false),
+        "tall-png" => bands(100, 400, true),
+        // Left half opaque red, right half transparent.
+        "alpha-png" => (
+            200,
+            100,
+            (0..100)
+                .flat_map(|_| (0..200).map(|x| if x < 100 { card::RED } else { [0; 4] }))
+                .flatten()
+                .collect(),
+        ),
+        // Two pixels: red, blue.
+        "tiny-png" => (2, 1, [card::RED, card::BLUE].concat()),
+        _ => (card::WIDTH, card::HEIGHT, card::pixels(0)),
+    };
     let text = path.to_str().ok_or("path is not Unicode")?;
     let url = CFURL::from_file_path(text).ok_or("bad path")?;
-    let rgba = card::pixels(0);
     let data = CFData::from_bytes(&rgba);
     let provider = CGDataProvider::with_cf_data(Some(&data)).ok_or("no data provider")?;
     let space = CGColorSpace::new_device_rgb().ok_or("no colour space")?;
     // SAFETY: an RGBA image over `rgba`'s bytes, written to a new file and finalised.
     unsafe {
         let image = CGImage::new(
-            card::WIDTH,
-            card::HEIGHT,
+            width,
+            height,
             8,
             32,
-            card::WIDTH * 4,
+            width * 4,
             Some(&space),
             CGBitmapInfo(CGImageAlphaInfo::PremultipliedLast.0),
             Some(&provider),
@@ -233,6 +250,22 @@ fn still(kind: &str, path: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A picture of `width` x `height` RGBA pixels in four bands, red, green, blue and yellow:
+/// left to right, or top to bottom when `down`.
+fn bands(width: usize, height: usize, down: bool) -> (usize, usize, Vec<u8>) {
+    let colours = [card::RED, card::GREEN, card::BLUE, card::YELLOW];
+    let px = (0..height)
+        .flat_map(|y| {
+            (0..width).map(move |x| {
+                let band = if down { y * 4 / height } else { x * 4 / width };
+                colours.get(band).copied().unwrap_or(card::YELLOW)
+            })
+        })
+        .flatten()
+        .collect();
+    (width, height, px)
 }
 
 /// A black one-bit grey PNG of 16384 x 8192 pixels.

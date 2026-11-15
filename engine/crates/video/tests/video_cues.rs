@@ -21,7 +21,9 @@ use openlab_core::protocol::{
     ClientMessage, Outcome, Request, ResultData, ServerMessage, TransportAction,
 };
 use openlab_core::video_probe::{ProbeReport, StillFormat, VideoCodec};
-use openlab_core::{Cue, CueKind, CueProblem, CueState, MediaRef, Stage, StageId, Workspace};
+use openlab_core::{
+    Cue, CueKind, CueProblem, CueState, MediaRef, Stage, StageId, VideoGeometry, Workspace,
+};
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
 use openlab_engine::stage::StageHostConfig;
@@ -65,7 +67,7 @@ fn fixture(kind: &str, frames_fps: Option<(u16, u16)>) -> PathBuf {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let ext = match kind {
         "h264" | "hevc" | "prores" => "mov",
-        "huge-png" => "png",
+        "huge-png" | "wide-png" | "tall-png" | "alpha-png" | "tiny-png" => "png",
         other => other,
     };
     let name = match frames_fps {
@@ -1663,4 +1665,348 @@ fn a_slow_decoder_that_keeps_decoding_keeps_its_picture_up() {
         "the slow picture was failed"
     );
     assert_eq!(s.control().pictures_live(), 1);
+}
+
+// Geometry (VID-04; QLab 5 manual pp. 212-214). The stage is 1920 x 1080; the test PNGs are
+// made by `--make-test-media` (`wide-png`, `tall-png`, `alpha-png`, `tiny-png`).
+
+const RED: [u8; 4] = [255, 0, 0, 255];
+const GREEN: [u8; 4] = [0, 255, 0, 255];
+const BLUE: [u8; 4] = [0, 0, 255, 255];
+const YELLOW: [u8; 4] = [255, 255, 0, 255];
+const BLACK: [u8; 4] = [0, 0, 0, 255];
+
+/// A still shown until stopped, with `geometry`.
+fn placed_still(n: u128, file: &Path, geometry: VideoGeometry) -> Cue {
+    let mut c = still_cue(n, file, None);
+    if let CueKind::Video { geometry: g, .. } = &mut c.kind {
+        *g = geometry;
+    }
+    c
+}
+
+/// Sets geometry fields of cue `n` as the app does (`kind_fields`), and lets the edit through;
+/// the replies.
+fn set_geometry(s: &mut OfflineShow, n: u128, fields: serde_json::Value) -> Vec<ServerMessage> {
+    let request = s.request_id();
+    let serde_json::Value::Object(value) = fields else {
+        panic!("fields are an object");
+    };
+    let replies = s.send(ClientMessage::Command {
+        id: request,
+        command: Box::new(openlab_core::Command::SetCueProperty {
+            id: id(n),
+            property: openlab_core::CueProperty::KindFields { value },
+        }),
+        coalesce: None,
+    });
+    s.run(BLOCK);
+    replies
+}
+
+fn colours(s: &mut OfflineShow, points: &[[f32; 2]]) -> Vec<[u8; 4]> {
+    probe_at(s, points).1
+}
+
+fn style(name: &str) -> serde_json::Value {
+    serde_json::json!({ "fill_style": name })
+}
+
+fn stretched(layer: u16) -> VideoGeometry {
+    VideoGeometry {
+        fill_style: openlab_core::FillStyle::Stretch,
+        layer,
+        ..VideoGeometry::default()
+    }
+}
+
+/// Fill stage: fit shows the whole picture as large as the stage allows with its shape kept
+/// (the stage's black beside it); fill covers the stage and cuts the overflow; stretch takes
+/// the stage's shape. For a wide and a tall picture.
+#[test]
+fn geometry_tab_fill_stage_fit_fill_and_stretch() {
+    let dir = tempfile::tempdir().unwrap();
+    let wide = make(dir.path(), "wide.png", "wide-png", None);
+    let tall = make(dir.path(), "tall.png", "tall-png", None);
+    let mut s = video_show(vec![
+        placed_still(1, &wide, VideoGeometry::default()),
+        placed_still(2, &tall, VideoGeometry::default()),
+    ]);
+    // Wide (4:1, bands left to right) on a 16:9 stage. Fit: 1920 x 480, rows 300 to 780.
+    start(&mut s, 1);
+    s.run(samples(0.3));
+    let pts = [[0.1, 0.1], [0.1, 0.5], [0.3, 0.5], [0.9, 0.5]];
+    assert_eq!(colours(&mut s, &pts), vec![BLACK, RED, GREEN, YELLOW]);
+    // Fill: 4320 wide from x -1200: x 0.1 falls in the second band.
+    set_geometry(&mut s, 1, style("fill"));
+    assert_eq!(colours(&mut s, &pts), vec![GREEN, GREEN, GREEN, BLUE]);
+    // Stretch: the whole picture over the whole stage.
+    set_geometry(&mut s, 1, style("stretch"));
+    assert_eq!(colours(&mut s, &pts), vec![RED, RED, GREEN, YELLOW]);
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: None,
+    });
+    // Tall (1:4, bands top to bottom). Fit: 270 x 1080 in the middle.
+    start(&mut s, 2);
+    s.run(samples(0.3));
+    let pts = [[0.1, 0.6], [0.5, 0.1], [0.5, 0.3], [0.5, 0.9]];
+    assert_eq!(colours(&mut s, &pts), vec![BLACK, RED, GREEN, YELLOW]);
+    // Fill: 7680 high from y -3300: y 0.1 falls in the second band.
+    set_geometry(&mut s, 2, style("fill"));
+    assert_eq!(colours(&mut s, &pts), vec![BLUE, GREEN, GREEN, BLUE]);
+    set_geometry(&mut s, 2, style("stretch"));
+    assert_eq!(colours(&mut s, &pts), vec![BLUE, RED, GREEN, YELLOW]);
+}
+
+/// Custom: the picture at its own pixel size in the middle of the stage; moved, scaled about
+/// its anchor, rotated, cropped.
+#[test]
+fn geometry_tab_custom_mode_with_position_scale_rotation_crop_and_anchor() {
+    let dir = tempfile::tempdir().unwrap();
+    // 400 x 100, bands of 100 px (red, green, blue, yellow): on the stage x 760 to 1160, y 490
+    // to 590.
+    let wide = make(dir.path(), "wide.png", "wide-png", None);
+    let custom = VideoGeometry {
+        fill_stage: false,
+        ..VideoGeometry::default()
+    };
+    let mut s = video_show(vec![placed_still(1, &wide, custom)]);
+    go(&mut s);
+    s.run(samples(0.3));
+    let x = |px: f32| px / 1920.0;
+    let y = |px: f32| px / 1080.0;
+    let row = |py: f32| [[x(700.0), y(py)], [x(810.0), y(py)], [x(1110.0), y(py)]];
+    assert_eq!(colours(&mut s, &row(540.0)), vec![BLACK, RED, YELLOW]);
+    assert_eq!(colours(&mut s, &[[0.5, y(470.0)]]), vec![BLACK]);
+    // Moved 500 px right and 200 up.
+    set_geometry(
+        &mut s,
+        1,
+        serde_json::json!({"translation": {"x": 500, "y": 200}}),
+    );
+    assert_eq!(
+        colours(&mut s, &[[x(810.0), y(540.0)], [x(1310.0), y(340.0)]]),
+        vec![BLACK, RED]
+    );
+    // Scaled 2 x about the middle: 800 x 200, x 560 to 1360, y 440 to 640.
+    set_geometry(
+        &mut s,
+        1,
+        serde_json::json!({"translation": {"x": 0, "y": 0}, "scale": {"x": 2, "y": 2}}),
+    );
+    assert_eq!(
+        colours(&mut s, &[[x(600.0), y(460.0)], [x(1340.0), y(620.0)]]),
+        vec![RED, YELLOW]
+    );
+    // Half a turn: yellow now on the left.
+    set_geometry(
+        &mut s,
+        1,
+        serde_json::json!({"scale": {"x": 1, "y": 1}, "rotation": 180}),
+    );
+    assert_eq!(colours(&mut s, &row(540.0)), vec![BLACK, YELLOW, RED]);
+    // A quarter turn about the middle of its left end: it stands up from there.
+    set_geometry(
+        &mut s,
+        1,
+        serde_json::json!({"rotation": 90, "anchor": {"x": -200, "y": 0}}),
+    );
+    assert_eq!(
+        colours(
+            &mut s,
+            &[
+                [x(760.0), y(530.0)],
+                [x(760.0), y(200.0)],
+                [x(1000.0), y(540.0)]
+            ]
+        ),
+        vec![RED, YELLOW, BLACK]
+    );
+    // 100 px cropped off the left: the red band goes, the rest stays where it was.
+    set_geometry(
+        &mut s,
+        1,
+        serde_json::json!({"rotation": 0, "anchor": {"x": 0, "y": 0},
+            "crop": {"top": 0, "bottom": 0, "left": 100, "right": 0}}),
+    );
+    assert_eq!(
+        colours(&mut s, &[[x(810.0), y(540.0)], [x(900.0), y(540.0)]]),
+        vec![BLACK, GREEN]
+    );
+}
+
+/// A value changed while the cue plays reaches the stage at once, and the picture runs on
+/// from where it was: it is not restarted.
+#[test]
+fn geometry_value_changed_while_the_cue_plays_follows_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = movie!(dir.path(), "a.mov", (100, 25));
+    let mut s = video_show(vec![video_cue(1, Some(&a))]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(1.0));
+    on_stage(&mut s, "playing");
+    // Moved off the stage: nothing there.
+    set_geometry(
+        &mut s,
+        1,
+        serde_json::json!({"fill_stage": false, "translation": {"x": 5000, "y": 0}}),
+    );
+    assert_eq!(shown(&mut s), None, "moved off the stage at once");
+    expect_state(&s, 1, CueState::Running, "still playing");
+    // Back to filling the stage: the frame due now, not the first.
+    run_to(&mut s, at + samples(2.0));
+    set_geometry(&mut s, 1, serde_json::json!({"fill_stage": true}));
+    let played = (s.now() - at) as f64 / f64::from(RATE);
+    let frame = on_stage(&mut s, "back on the stage");
+    assert!(
+        frame.abs_diff(frame_at(played)) <= 1,
+        "{frame}: the frame at {played} s, not restarted"
+    );
+}
+
+/// Opacity: at 100 % a picture's transparent pixels show what is below; at 50 % its opaque
+/// pixels are mixed half over it; at 0 % it is not seen.
+#[test]
+fn geometry_opacity_blends_and_keeps_transparent_pixels_transparent() {
+    let dir = tempfile::tempdir().unwrap();
+    let card = make(dir.path(), "card.png", "png", None);
+    let alpha = make(dir.path(), "alpha.png", "alpha-png", None);
+    let mut s = video_show(vec![
+        placed_still(1, &card, stretched(1)),
+        placed_still(2, &alpha, stretched(2)),
+    ]);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(samples(0.3));
+    // Bottom left: the red half over the card's blue; bottom right: transparent, the card's
+    // yellow.
+    let pts = [[0.25, 0.8], [0.75, 0.8]];
+    assert_eq!(colours(&mut s, &pts), vec![RED, YELLOW]);
+    set_geometry(&mut s, 2, serde_json::json!({"opacity": 0.5}));
+    let read = colours(&mut s, &pts);
+    let [r, g, b, _] = read[0];
+    assert!(
+        (120..=135).contains(&r) && g < 5 && (120..=135).contains(&b),
+        "half red over blue: {read:?}"
+    );
+    assert_eq!(read[1], YELLOW);
+    set_geometry(&mut s, 2, serde_json::json!({"opacity": 0}));
+    assert_eq!(colours(&mut s, &pts), vec![BLUE, YELLOW]);
+}
+
+/// Layer: the higher layer is on top whatever the start order; on one layer the later-started
+/// is on top (QLab 5 manual p. 213).
+#[test]
+fn geometry_layer_higher_on_top_and_on_one_layer_the_later_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let card = make(dir.path(), "card.png", "png", None);
+    let wide = make(dir.path(), "wide.png", "wide-png", None);
+    // At (0.3, 0.5) the card is red, the wide picture green.
+    let point = [[0.3, 0.5]];
+    let mut s = video_show(vec![
+        placed_still(1, &card, stretched(10)),
+        placed_still(2, &wide, stretched(5)),
+    ]);
+    start(&mut s, 1);
+    s.run(samples(0.2));
+    start(&mut s, 2);
+    s.run(samples(0.2));
+    assert_eq!(
+        colours(&mut s, &point),
+        vec![RED],
+        "layer 10 over layer 5 started later"
+    );
+    set_geometry(&mut s, 2, serde_json::json!({"layer": 10}));
+    assert_eq!(
+        colours(&mut s, &point),
+        vec![GREEN],
+        "same layer: the later-started"
+    );
+    set_geometry(&mut s, 1, serde_json::json!({"layer": 11}));
+    assert_eq!(colours(&mut s, &point), vec![RED], "raised while playing");
+}
+
+/// The smooth box off: a picture scaled up keeps hard pixel edges; on, its edges blend.
+#[test]
+fn geometry_smooth_off_keeps_hard_pixel_edges() {
+    let dir = tempfile::tempdir().unwrap();
+    let tiny = make(dir.path(), "tiny.png", "tiny-png", None);
+    let hard = VideoGeometry {
+        smooth: false,
+        ..stretched(1)
+    };
+    let mut s = video_show(vec![placed_still(1, &tiny, hard)]);
+    go(&mut s);
+    s.run(samples(0.3));
+    let pts = [[0.45, 0.5], [0.55, 0.5]];
+    assert_eq!(colours(&mut s, &pts), vec![RED, BLUE]);
+    set_geometry(&mut s, 1, serde_json::json!({"smooth": true}));
+    let read = colours(&mut s, &pts);
+    assert!(read[0][2] > 0 && read[1][0] > 0, "blended: {read:?}");
+}
+
+/// A geometry value out of range sent by a client is refused, the workspace keeps what it
+/// had and the stage what it showed.
+#[test]
+fn geometry_values_outside_their_ranges_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let card = make(dir.path(), "card.png", "png", None);
+    let mut s = video_show(vec![still_cue(1, &card, None)]);
+    go(&mut s);
+    s.run(samples(0.3));
+    let before = s.control().workspace().clone();
+    for fields in [
+        serde_json::json!({"opacity": 1.5}),
+        serde_json::json!({"layer": 1001}),
+        serde_json::json!({"crop": {"top": -1, "bottom": 0, "left": 0, "right": 0}}),
+        serde_json::json!({"rotation": 400}),
+    ] {
+        let replies = set_geometry(&mut s, 1, fields.clone());
+        assert!(
+            replies.iter().any(|m| matches!(
+                m,
+                ServerMessage::Result {
+                    outcome: Outcome::Error(e),
+                    ..
+                } if e.code == openlab_core::protocol::ErrorCode::CommandRefused
+            )),
+            "{fields} refused: {replies:?}"
+        );
+    }
+    assert_eq!(s.control().workspace(), &before);
+    assert_eq!(colours(&mut s, &[[0.25, 0.3]]), vec![RED]);
+}
+
+/// A geometry edited while the picture is up is kept when the stage host is relaunched: the
+/// picture comes back placed as last edited, not as it was loaded.
+#[test]
+fn geometry_edited_while_up_survives_a_stage_host_relaunch() {
+    let dir = tempfile::tempdir().unwrap();
+    let wide = make(dir.path(), "wide.png", "wide-png", None);
+    let mut s = video_show(vec![placed_still(1, &wide, stretched(1))]);
+    go(&mut s);
+    s.run(samples(0.3));
+    let pts = [[0.1, 0.5], [0.9, 0.5]];
+    assert_eq!(colours(&mut s, &pts), vec![RED, YELLOW]);
+    set_geometry(
+        &mut s,
+        1,
+        serde_json::json!({"rotation": 180, "fill_stage": false}),
+    );
+    let pid = s.control().stage_host_pid().unwrap();
+    let killed = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
+    s.settle_stages();
+    s.run(samples(0.5));
+    let x = |px: f32| px / 1920.0;
+    // Custom, half a turn: 400 x 100 in the middle, yellow on the left.
+    assert_eq!(
+        colours(&mut s, &[[x(810.0), 0.5], [x(1110.0), 0.5], [0.1, 0.5]]),
+        vec![YELLOW, RED, BLACK]
+    );
 }
