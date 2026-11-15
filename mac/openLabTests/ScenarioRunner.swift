@@ -938,6 +938,7 @@ final class ScenarioRunner {
         case .scroll(let id, _, _, _, _, _): return "scroll \(id)"
         case .magnify(let id, _, _): return "magnify \(id)"
         case .advance(let s): return "advance \(s)"
+        case .device(let lose): return "device \(lose ? "lose" : "restore")"
         case .resize(let s): return "resize \(Int(s.width))x\(Int(s.height))"
         case .tab(let t): return "tab \(t)"
         case .focus(let w): return "focus \(w)"

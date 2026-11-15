@@ -5310,7 +5310,7 @@ final class DeviceLossRowTests: XCTestCase {
 
     /// The demo show's list, groups open, with Intro playing for 0.4 s.
     private func playing() async throws -> H {
-        let h = try await H(rig: try await Rig.open("Demo", on: engine), collapsed: false)
+        let h = try await H(collapsed: false, rig: try await Rig.open("Demo", on: engine))
         guard case .success = await h.store.transport(.start(cue: H.intro)) else {
             XCTFail("start")
             return h
@@ -5355,7 +5355,9 @@ final class DeviceLossRowTests: XCTestCase {
         XCTAssertEqual(time(h, H.intro), shown)
         XCTAssertEqual(try XCTUnwrap(h.store.progress[H.intro]?.elapsed), elapsed, accuracy: 0.001)
         // The Warnings list says the device was lost: the notice and the cue's own row.
-        XCTAssertTrue(h.store.warnings.contains { $0.json["code"]?.stringValue == "device_lost" })
+        let notice = try XCTUnwrap(h.store.runtimeWarnings.first { $0.json["code"]?.stringValue == "device_lost" })
+        XCTAssertTrue(
+            WarningRows.make(store: h.store).contains { $0.cue == nil && $0.title == ProblemText.warning(notice, label: { _ in "" }) })
         let row = try XCTUnwrap(WarningRows.make(store: h.store).first { $0.cue == H.intro })
         XCTAssertEqual(row.detail, loc("paused.device_lost"))
     }
@@ -5388,7 +5390,7 @@ final class DeviceLossRowTests: XCTestCase {
         XCTAssertEqual(h.store.progress[H.intro]?.elapsed, before)
         XCTAssertEqual(try mark(h, H.intro).accessibilityLabel(), loc("cue.state.paused"))
         await assertEventually { h.store.problems[H.door] == nil }
-        XCTAssertNil(h.store.cueStates[H.door])
+        XCTAssertEqual(h.store.cueStates[H.door]?.state ?? .idle, .idle)
         XCTAssertTrue(try mark(h, H.door).isHidden, "idle: no mark")
     }
 
@@ -5399,7 +5401,7 @@ final class DeviceLossRowTests: XCTestCase {
         await assertEventually { h.store.cueStates[H.intro]?.state == .paused }
         guard case .success = await h.store.transport(.resumeAll) else { return XCTFail("resume_all") }
         try await h.rig.advance(0.5)
-        await assertEventually { h.store.cueStates[H.intro] == nil }
+        await assertEventually { (h.store.cueStates[H.intro]?.state ?? .idle) == .idle }
         XCTAssertNil(h.store.progress[H.intro], "it does not play on")
         XCTAssertTrue(try mark(h, H.intro).isHidden, "idle: no mark")
         XCTAssertEqual(time(h, H.intro), "00:01.00", "the duration again")
@@ -5416,6 +5418,43 @@ final class DeviceLossRowTests: XCTestCase {
         XCTAssertEqual(try mark(h, H.intro).accessibilityLabel(), loc("cue.state.running"))
         let elapsed = try XCTUnwrap(h.store.progress[H.intro]?.elapsed)
         XCTAssertLessThan(elapsed, 0.2, "from its start, not from where the loss stopped it")
+    }
+
+    /// The pre-wait case as the app shows it (fading and post-wait, and two devices, are proven on
+    /// the engine): a pre-waiting cue reads paused with its countdown frozen, is idle again by
+    /// itself once the device is back, and never fires; a cue the operator had paused reads broken.
+    func testPreWaitingPostWaitingFadingAndAlreadyPausedCuesOnTheLostDeviceShowWhatQLabShows() async throws {
+        let h = try await H(collapsed: false, rig: try await Rig.open("Demo", on: engine))
+        guard case .success = await h.store.send(command: .setProperty(H.intro, .preWait(2))) else {
+            return XCTFail("pre-wait")
+        }
+        guard case .success = await h.store.transport(.start(cue: H.rain)) else { return XCTFail("start rain") }
+        try await h.rig.advance(0.2)
+        guard case .success = await h.store.transport(.pause(cue: H.rain)) else { return XCTFail("pause rain") }
+        guard case .success = await h.store.transport(.start(cue: H.intro)) else { return XCTFail("start intro") }
+        try await h.rig.advance(0.5)
+        await assertEventually { h.store.cueStates[H.intro]?.state == .preWaiting }
+        await assertEventually { h.store.cueStates[H.rain]?.state == .paused }
+        try await lose(h)
+        await assertEventually { h.store.cueStates[H.intro]?.state == .paused }
+        XCTAssertEqual(h.store.cueStates[H.intro]?.reason, .deviceLost)
+        XCTAssertEqual(try mark(h, H.intro).accessibilityLabel(), loc("cue.state.paused"))
+        await assertEventually { h.store.cueStates[H.rain]?.state == .broken }
+        XCTAssertEqual(try mark(h, H.rain).accessibilityLabel(), loc("cue.state.broken"))
+        // The countdown stands where the loss stopped it.
+        let frozen = try XCTUnwrap(h.cell("preWait", H.intro)?.label.stringValue)
+        XCTAssertNotEqual(frozen, CueTime.format(2), "the countdown, not the pre-wait setting")
+        try await h.rig.advance(1)
+        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, frozen)
+        // Back: idle by itself, the countdown gone, and the cue never plays.
+        try await restore(h)
+        await assertEventually { (h.store.cueStates[H.intro]?.state ?? .idle) == .idle }
+        XCTAssertTrue(try mark(h, H.intro).isHidden, "idle: no mark")
+        XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, CueTime.format(2))
+        try await h.rig.advance(3)
+        XCTAssertEqual(
+            h.store.cueStates[H.intro]?.state ?? .idle, .idle, "the pre-wait left over from before the loss never fires")
+        XCTAssertNil(h.store.progress[H.intro])
     }
 
     func testInShowModeTheSameMarksShowAndNoAlert() async throws {
