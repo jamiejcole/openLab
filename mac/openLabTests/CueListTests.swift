@@ -5177,6 +5177,8 @@ final class CueListDrawingTests: XCTestCase {
         try await h.rig.advance(0.1)
         await assertEventually { (try? self.drawnMark(h, H.intro, 1))?.icon == .statePaused }
         XCTAssertEqual(try drawnMark(h, H.intro, 1)?.colour, MarkColour.caution, "paused is yellow")
+        XCTAssertEqual(
+            h.cell("duration", H.intro)?.progress.progress?.colour, MarkColour.caution, "its time bar the same yellow")
         // Selected and focused: every mark of the row in the selection's text colour; back when deselected.
         h.vc.selectAsUser([H.intro])
         await assertEventually { h.vc.selectedIDs() == [H.intro] }
@@ -5924,7 +5926,7 @@ final class DeviceLossRowTests: XCTestCase {
         XCTAssertLessThan(try XCTUnwrap(CueTime.parse(shown)), 2, shown)
         let fill = try XCTUnwrap(h.cell("duration", H.rain)?.progress.progress, "the bar stays")
         XCTAssertGreaterThan(fill.fraction, 0)
-        XCTAssertEqual(fill.colour, .systemYellow)
+        XCTAssertEqual(fill.colour, MarkColour.caution)
         try await h.rig.advance(1)
         XCTAssertEqual(time(h, H.rain), shown, "standing still")
         XCTAssertEqual(h.cell("duration", H.rain)?.progress.progress?.fraction, fill.fraction)

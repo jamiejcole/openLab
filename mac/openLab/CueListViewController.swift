@@ -1849,7 +1849,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private func durationProgress(_ node: CueNode) -> (fraction: Double, colour: NSColor)? {
         guard let p = store.progress[node.id] else { return nil }
         let paused = displayState(node.id).state == .paused
-        let colour: NSColor = paused ? .systemYellow : .systemGreen
+        let colour: NSColor = paused ? MarkColour.caution : .systemGreen
         guard let left = p.remaining else {
             return loopPass(node, p).map { ($0.gone / $0.length, colour) }
         }
