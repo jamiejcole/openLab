@@ -555,6 +555,10 @@ struct Doc {
     resend_document: bool,
     resend_warnings: bool,
     last_progress: Option<SampleTime>,
+    /// Where the voices of cues a lost device left paused stood when it went (`progress`'s
+    /// values): their time is shown as a paused voice's, the loop pass and file position
+    /// included. Kept while the cue shows the mark.
+    lost_progress: Vec<(CueId, u64, Option<u64>, Option<u64>)>,
     meters_live: bool,
     /// Waveforms read for `waveform` requests (AUD-14) and reads under way.
     waveforms: waveforms::Waveforms,
@@ -1114,6 +1118,7 @@ impl Doc {
             resend_document: false,
             resend_warnings: false,
             last_progress: None,
+            lost_progress: Vec::new(),
             meters_live: false,
             waveforms: waveforms::Waveforms::default(),
             show_mode: false,

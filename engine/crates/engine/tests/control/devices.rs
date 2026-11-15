@@ -657,6 +657,64 @@ fn go_on_a_cue_its_lost_device_left_paused_plays_it_from_its_start_once_back() {
     );
 }
 
+/// The full progress items reported for cue `n`, as `(elapsed, remaining, position)`.
+fn items_of(msgs: &[ServerMessage], n: u128) -> Vec<(f64, Option<f64>, Option<f64>)> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            ServerMessage::Progress { items, .. } => Some(items),
+            _ => None,
+        })
+        .flatten()
+        .filter(|i| i.cue == id(n))
+        .map(|i| (i.elapsed, i.remaining, i.position))
+        .collect()
+}
+
+/// A 500-frame file looping for ever, played 1700 frames, then paused by the operator or by
+/// the loss of its device: what is reported for it.
+fn stood_after(lost: bool) -> Vec<(f64, Option<f64>, Option<f64>)> {
+    let mut c = audio(1, &wav(&ramp(500)), 0);
+    if let CueKind::Audio {
+        last_slice_play_count,
+        ..
+    } = &mut c.kind
+    {
+        *last_slice_play_count = 0;
+    }
+    let mut s = device_show(workspace(vec![c]));
+    s.run(BLOCK * 2);
+    go(&mut s);
+    s.run(1700);
+    s.take_outbound();
+    if lost {
+        lose(&mut s);
+    } else {
+        s.transport(TransportAction::Pause { cue: id(1) });
+        s.run(BLOCK * 8);
+    }
+    items_of(&s.take_outbound(), 1)
+}
+
+/// A looping cue its lost device left paused shows its time as an operator's pause shows it:
+/// the position in the pass it was on, with the same elapsed and remaining.
+#[test]
+fn a_looping_cue_its_lost_device_left_paused_shows_its_place_in_the_loop() {
+    let lost = stood_after(true);
+    let paused = stood_after(false);
+    let (Some(&(le, lr, lp)), Some(&(pe, pr, pp))) = (lost.last(), paused.last()) else {
+        panic!("{lost:?} {paused:?}");
+    };
+    let block = BLOCK as f64 / f64::from(RATE);
+    let p = lp.expect("a position");
+    assert!(p < 500.0 / f64::from(RATE), "{lost:?}");
+    assert!(
+        (p - pp.expect("a position")).abs() <= block * 2.0,
+        "{lost:?} {paused:?}"
+    );
+    assert!((le - pe).abs() <= block * 2.0, "{lost:?} {paused:?}");
+    assert_eq!(lr.is_some(), pr.is_some(), "{lost:?} {paused:?}");
+}
+
 #[test]
 fn a_cue_playing_when_the_device_goes_stops_and_stays_stopped_after_3_s() {
     lost_cue_stays_stopped(Duration::from_secs(3));

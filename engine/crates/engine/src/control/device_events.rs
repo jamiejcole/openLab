@@ -571,6 +571,7 @@ impl DocCx<'_> {
         }
         runs.sort();
         let failed = runs.len();
+        let stood = self.doc.voices.progress(self.eng.rendered());
         for (cue, run) in runs {
             self.feed(
                 Input::ActionFailed {
@@ -580,6 +581,12 @@ impl DocCx<'_> {
                 },
                 now,
             );
+        }
+        for item in stood {
+            if self.doc.model.engine().is_lost(item.0) {
+                self.doc.lost_progress.retain(|(cue, ..)| *cue != item.0);
+                self.doc.lost_progress.push(item);
+            }
         }
         // A cue the loss left paused shows the time it stopped at now: with no device
         // rendering, progress would otherwise not be due until the device is back, and the
