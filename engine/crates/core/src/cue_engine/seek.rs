@@ -158,8 +158,14 @@ impl CueEngine {
         if run.run != run_id || run.is_broken() || run.stop_end.is_some() {
             return;
         }
-        let (Phase::Action { start, .. }, Voice::Started { at: started, from, first }) =
-            (run.phase, run.voice)
+        let (
+            Phase::Action { start, .. },
+            Voice::Started {
+                at: started,
+                from,
+                first,
+            },
+        ) = (run.phase, run.voice)
         else {
             return;
         };

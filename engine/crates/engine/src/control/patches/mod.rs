@@ -154,7 +154,11 @@ impl Patches {
         }
         let mut commands = Vec::new();
         let mut changed = Vec::new();
-        let mut given = self.allocate(&mut d, ws, &resolved, busy, &mut commands);
+        let names: HashMap<OutputKey, &str> = playable
+            .iter()
+            .map(|(i, k)| (*k, i.name.as_str()))
+            .collect();
+        let mut given = self.allocate(&mut d, ws, &resolved, &names, busy, &mut commands);
         d.outputs.clear();
         let mut seen = HashMap::new();
         for patch in &ws.patches {
@@ -292,12 +296,28 @@ impl Patches {
         d: &mut DocSlots,
         ws: &Workspace,
         resolved: &HashMap<PatchId, (PatchResolution, Option<OutputKey>)>,
+        names: &HashMap<OutputKey, &str>,
         busy: &BTreeSet<u16>,
         commands: &mut Vec<(OutputKey, CommandKind)>,
     ) -> Vec<u16> {
         let live: HashMap<PatchId, usize> =
             ws.patches.iter().map(|p| (p.id, p.outputs.len())).collect();
         let target = |patch: &PatchId| resolved.get(patch).and_then(|(_, o)| *o);
+        // Whether the patch is meant for another device than output `on` (a slot's), also
+        // when that device cannot play yet (still opening, unusable, gone): a voice on the slot
+        // must then keep the slot's routing where it is until it moves or ends.
+        let elsewhere = |patch: &PatchId, on: Option<OutputKey>| {
+            let meant = match resolved.get(patch).map(|(r, _)| r) {
+                Some(
+                    PatchResolution::Mapped { device, .. }
+                    | PatchResolution::DeviceMissing { device }
+                    | PatchResolution::ChannelsMissing { device, .. },
+                ) => Some(device.as_str()),
+                _ => None,
+            };
+            let on = on.and_then(|k| names.get(&k).copied());
+            matches!((meant, on), (Some(m), Some(o)) if m != o)
+        };
         // A slot leaves its patch when the patch is gone, or resized or moved to another device
         // while a voice plays through it (the voice keeps the layout and device it started
         // with; later starts get the new ones). With no voice on the slot the change is made in
@@ -306,7 +326,7 @@ impl Patches {
         let mut moving = Vec::new();
         for (&patch, (slot, outputs)) in &mut d.slots {
             let here = self.slot_out.get(usize::from(*slot)).copied();
-            let moved = target(&patch).is_some_and(|t| Some(t) != here);
+            let moved = target(&patch).is_some_and(|t| Some(t) != here) || elsewhere(&patch, here);
             match live.get(&patch) {
                 Some(&n) if n == *outputs && !moved => {}
                 Some(&n) if !busy.contains(slot) => {
@@ -347,7 +367,8 @@ impl Patches {
             .map(|(&s, h)| (s, h.patch, h.outputs))
             .collect();
         for (slot, patch, outputs) in retired {
-            let same_device = target(&patch).is_none_or(|t| self.slot_output(slot) == Some(t));
+            let same_device = target(&patch).is_none_or(|t| self.slot_output(slot) == Some(t))
+                && !elsewhere(&patch, self.slot_output(slot));
             if live.get(&patch) == Some(&outputs) && same_device && !d.slots.contains_key(&patch) {
                 d.retired.remove(&slot);
                 d.slots.insert(patch, (slot, outputs));

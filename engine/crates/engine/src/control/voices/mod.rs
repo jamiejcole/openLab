@@ -61,6 +61,9 @@ pub struct Env<'a> {
     pub cue_outputs: usize,
     /// The scheduling time of the call.
     pub now: SampleTime,
+    /// The commit window: a voice start dated before `now + window` is in it; one later waits
+    /// (a later stop must be able to reach it).
+    pub window: SampleTime,
     /// During a device outage: the sample the mixer renders first when it is back. Stops are
     /// dated there (see [`Voices::stop_date`]).
     pub floor: Option<SampleTime>,
@@ -167,6 +170,10 @@ pub struct VoiceRec {
     swap_after: SampleTime,
     /// How the voice it `replaces` fades out when the seek is let go of before it swaps.
     release_fade: Fade,
+    /// Made by a move to another device (`Action::RelocateVoice`): it goes on from where the
+    /// voice it moves from is, so it shows that voice's elapsed time (`shown`, set when it is
+    /// made) and starts on its planned sample, not before it is in the commit window.
+    relocated: bool,
 }
 
 /// A cue's seeks prepare at most one stream per this many seconds: a burst of seeks (a stuck
@@ -182,6 +189,11 @@ pub const SEEK_CROSSFADE: f64 = 0.01;
 /// the old voice playing on meanwhile; after it the move is made anyway and plays once the disk
 /// has caught up (an underrun, silence, rather than a sound that never moves).
 pub const SEEK_PRIME_WAIT: f64 = 0.25;
+
+/// How far ahead a move to another device swaps the voices: the old device plays on meanwhile,
+/// so the new one's stream can be read and primed from the point where the sound then is, and
+/// the two crossfade in step. Short enough to be heard as at once.
+pub const MOVE_LEAD: f64 = 0.1;
 
 /// Where a voice's stream starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -500,6 +512,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         retired: false,
         swap_after: 0,
         release_fade: Fade::NONE,
+        relocated: false,
     }
 }
 

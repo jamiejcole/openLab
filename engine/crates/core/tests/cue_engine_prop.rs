@@ -1084,7 +1084,8 @@ impl Sim {
                             },
                         ));
                     } else {
-                        self.errors.push(format!("relocation of unknown voice {from:?}"));
+                        self.errors
+                            .push(format!("relocation of unknown voice {from:?}"));
                     }
                 }
                 Action::SeekVoice { run, from, at, .. } => {
@@ -2474,7 +2475,7 @@ impl Run {
             },
             // Its patch was put on another device while it plays (or a stale report of that).
             33 => match self.engine.run_of(target) {
-                Some(run) if s.b % 4 != 0 => Input::DeviceMoved { cue: target, run },
+                Some(run) if !s.b.is_multiple_of(4) => Input::DeviceMoved { cue: target, run },
                 _ => Input::DeviceMoved {
                     cue: target,
                     run: RunId(u64::from(s.b)),

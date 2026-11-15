@@ -72,6 +72,12 @@ Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
 - The moved voice is given every level Fade cues hold or move (`Ramp` 0 frames at the value, then the rest of a moving ramp) and its duck (`DuckVoice`), and a pending devamp is sent again (a paused one gets it on its resume). Paused stays paused; the resume plays from the point (offset 0).
 - A burst costs core one fresh id per seek and no chain budget; the binary coalesces.
 
+### Moving to another device (`DeviceMoved`, AUD-07)
+`Input::DeviceMoved { cue, run }` (from the binary: the run's patch now plays on another output device; `seek.rs` `device_moved`) moves the sound there in step, as QLab 5 does (skill `qlab-behaviour` Q450).
+- Only a run in its action with a started voice, not broken and not stopping with a fade (`stop_end`: it ends where it is); a stale run id, a pre-wait (its start plays on the patch's device then) or a post-wait after the sound changes nothing.
+- `RelocateVoice { run: fresh, from, at: commit(now), position }` re-keys the run like a seek (feedback for `from` is stale). Playing: `position = Run::position(at)` and the voice counts on from there (`Voice::Started { at, from: position }`), its end unknown until the binary's `ActionLength` for the fresh run, still counted from the action's start; an auto-follow fires once. Paused: `position` is where it froze, `Voice::Started` is kept and the resume plays on from there.
+- As for a seek, the moved voice is given the Fade cues' levels and its duck (`regive_levels`) and a pending devamp is sent again. Timers, post-wait, continues and the group are untouched.
+
 ## Operations (CUE-05)
 Voice actions apply to armed Audio cues only. Group operations also reach descendants.
 

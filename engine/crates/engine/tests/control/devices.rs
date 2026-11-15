@@ -3204,36 +3204,33 @@ fn map_b(s: &mut DeviceShow, device: &str) {
     );
 }
 
-/// A device no patch maps to any more closes once the cue still playing on it ends; unplugged
-/// then, it raises no warning, no error and no reopen attempts.
+/// A device no patch maps to any more closes once nothing plays on it (a cue playing there
+/// moves to its patch's new device at once); unplugged then, it raises no warning, no error and
+/// no reopen attempts.
 #[test]
 fn a_device_no_patch_uses_closes_and_its_unplugging_raises_nothing() {
-    let b = wav(&dc(800, 0.5));
+    let b = wav(&dc(4000, 0.5));
     let mut s = two_device_show(vec![audio_b(2, &b, 0)]);
     start(&mut s, 2);
     s.run(BLOCK * 2);
     map_b(&mut s, DEV_NAME);
-    s.run(BLOCK * 2);
-    // The cue on it plays to its end there first.
-    assert!(s.control().output_up(DEV2_NAME));
-    s.run(1200);
-    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    s.run(BLOCK * 20);
+    // The cue moved to the primary (fading in over the crossfade) and plays on there.
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    assert_eq!(heard(&s.channel(0)).last(), Some(&0.5));
     s.settle_devices();
     assert!(
         !s.control().output_up(DEV2_NAME),
         "the unused device stayed open"
     );
-    // A playing cue does not move to its patch's new device: it played on to its end where it
-    // started, and the primary heard none of it.
-    assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
-    assert_eq!(
-        s.device_channel(DEV2, 0)
-            .iter()
-            .filter(|&&x| x != 0.0)
-            .count(),
-        800
-    );
-    assert!(heard(&s.channel(0)).is_empty());
+    let on_two = s
+        .device_channel(DEV2, 0)
+        .iter()
+        .filter(|&&x| x != 0.0)
+        .count();
+    assert!(on_two < 4000, "it played its whole file on the old device");
+    s.run(4000);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
     s.take_outbound();
     s.fake.unplug(DEV2, true);
     s.wait_wall(Duration::from_secs(1), 2);
@@ -3729,4 +3726,391 @@ fn a_duck_from_a_cue_on_a_lost_device_comes_off_the_other_devices_cue() {
         "{}",
         ch[ch.len() - 1]
     );
+}
+
+/// The messages of the runtime notices with `code`, in order.
+fn notice_messages(msgs: &[ServerMessage], code: &str) -> Vec<String> {
+    warnings(msgs)
+        .into_iter()
+        .filter_map(|w| match w {
+            WireWarning::Notice {
+                code: c, message, ..
+            } if c == code => Some(message),
+            _ => None,
+        })
+        .collect()
+}
+
+// AUD-07: a playing cue follows its patch to another device at once (QLab 5, measured by the
+// owner 2026-11-14).
+
+/// Puts `patch` on `device`, outputs 1 and 2; the request must be accepted.
+fn map_patch(s: &mut DeviceShow, patch: openlab_core::PatchId, device: &str) {
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::SetPatchMapping {
+            patch,
+            mapping: Some(PatchMapping {
+                device: device.into(),
+                channels: vec![0, 1],
+            }),
+        },
+    });
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+}
+
+/// What both devices played on channel 0, sample by sample on the master clock (the primary's
+/// count): the second device's capture is shifted by the samples it opened after the first.
+fn on_both(s: &DeviceShow) -> Vec<(f32, f32)> {
+    let one = s.device_channel(DEV, 0);
+    let two = s.device_channel(DEV2, 0);
+    let shift = one.len() - two.len();
+    (0..one.len())
+        .map(|t| {
+            let b = t.checked_sub(shift).map_or(0.0, |i| two[i]);
+            (one[t], b)
+        })
+        .collect()
+}
+
+/// Checks the cue's file (`ramp(frames)`, sample `i` heard as `(i + 1) / 2^20`) was heard in
+/// step from its first sample to its last across the two devices: on every sample the two add
+/// up to the file's next sample (no gap, no repeat, no level step), and the move crossfaded
+/// over at most `crossfade` samples where both sounded. Returns the first sample the second
+/// device played.
+fn assert_heard_in_step(s: &DeviceShow, frames: usize, crossfade: usize) -> usize {
+    let both = on_both(s);
+    let first = both
+        .iter()
+        .position(|&(a, b)| a != 0.0 || b != 0.0)
+        .expect("the cue played");
+    let unit = 1.0 / 1_048_576.0;
+    for (i, &(a, b)) in both[first..first + frames].iter().enumerate() {
+        let want = (i + 1) as f32 * unit;
+        assert!(
+            (a + b - want).abs() < 2.0 * unit,
+            "sample {i} of the file: {a} + {b}, want {want}"
+        );
+    }
+    assert!(
+        both[first + frames..]
+            .iter()
+            .all(|&(a, b)| a == 0.0 && b == 0.0),
+        "sound after the file's end"
+    );
+    let overlap = both.iter().filter(|&&(a, b)| a != 0.0 && b != 0.0).count();
+    assert!(
+        overlap > 0 && overlap <= crossfade,
+        "crossfade of {overlap}"
+    );
+    both.iter()
+        .position(|&(_, b)| b != 0.0)
+        .expect("heard on the second device")
+}
+
+#[test]
+fn a_cue_plays_on_a_patch_whose_device_is_changed_and_is_heard_on_the_new_device_at_once_in_step() {
+    let frames = 6000;
+    let a = wav(&ramp(frames));
+    let mut s = two_device_show(vec![audio(1, &a, 0)]);
+    start(&mut s, 1);
+    s.run(BLOCK * 20);
+    let moved_at = s.rendered() as usize;
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    // Still playing, still counting, on the same run of time.
+    let mut last = 0.0;
+    for _ in 0..6 {
+        s.run(BLOCK * 8);
+        let p = progress_of(&s.take_outbound(), 1);
+        if let Some(&(elapsed, _)) = p.last() {
+            assert!(elapsed >= last, "the row's time went back: {p:?}");
+            last = elapsed;
+        }
+        assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    }
+    s.run(frames as u64);
+    let crossfade = (f64::from(RATE) * 0.01) as usize;
+    let switched = assert_heard_in_step(&s, frames, crossfade);
+    // At once: within the move's lead and one block of the request.
+    let lead = (f64::from(RATE) * 0.1) as usize;
+    assert!(
+        switched >= moved_at && switched <= moved_at + lead + 2 * BLOCK as usize,
+        "moved at {moved_at}, heard there from {switched}"
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_cue_put_on_a_patch_on_another_device_moves_there_at_once_in_step() {
+    let frames = 4000;
+    let a = wav(&ramp(frames));
+    let mut s = two_device_show(vec![audio(1, &a, 0)]);
+    start(&mut s, 1);
+    s.run(BLOCK * 10);
+    let mut kind = s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .kind
+        .clone();
+    if let CueKind::Audio { patch, .. } = &mut kind {
+        *patch = patch_b();
+    }
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Command {
+        id: rid,
+        command: Box::new(openlab_core::Command::SetCueProperty {
+            id: id(1),
+            property: openlab_core::CueProperty::Kind { value: kind },
+        }),
+        coalesce: None,
+    });
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+    s.run(frames as u64);
+    let crossfade = (f64::from(RATE) * 0.01) as usize;
+    assert_heard_in_step(&s, frames, crossfade);
+}
+
+#[test]
+fn the_same_while_the_cue_is_paused_it_resumes_on_the_new_device() {
+    let frames = 4000;
+    let a = wav(&ramp(frames));
+    let mut s = two_device_show(vec![audio(1, &a, 0)]);
+    start(&mut s, 1);
+    s.run(BLOCK * 10);
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK * 4);
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    let heard_two = |s: &DeviceShow| heard(&s.device_channel(DEV2, 0)).len();
+    assert_eq!(heard_two(&s), 0, "a paused cue sounded on the new device");
+    s.transport(TransportAction::Resume { cue: id(1) });
+    s.run(frames as u64);
+    // The file in order, every sample once: the first device up to the pause, the second from
+    // there on (each pause and resume declicks over a few samples).
+    let one: Vec<f32> = s.device_channel(DEV, 0);
+    let two: Vec<f32> = s.device_channel(DEV2, 0);
+    let unit = 1.0 / 1_048_576.0;
+    let index = |v: f32| (v / unit).round() as i64 - 1;
+    let last_one = one.iter().rev().find(|&&v| v != 0.0).copied().unwrap();
+    let first_two = two.iter().find(|&&v| v != 0.0).copied().unwrap();
+    // Within the declicks' few samples of each other, and the second device plays to the end.
+    assert!(
+        (index(first_two) - index(last_one)).abs() < 64,
+        "{} then {}",
+        index(last_one),
+        index(first_two)
+    );
+    assert_eq!(
+        index(*two.iter().rev().find(|&&v| v != 0.0).unwrap()),
+        frames as i64 - 1
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+}
+
+#[test]
+fn the_same_while_the_cue_is_fading_the_fade_carries_on_on_the_new_device() {
+    let a = wav(&dc(16_000, 0.5));
+    let fade = cue(
+        3,
+        CueKind::Fade {
+            target: Some(id(1)),
+            duration: secs(16_000),
+            curve: openlab_core::FadeCurve::Linear,
+            levels: openlab_core::FadeLevels {
+                master_db: Some(-40.0),
+                output_db: vec![],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: false,
+            mode: Default::default(),
+        },
+    );
+    let mut s = two_device_show(vec![audio(1, &a, 0), fade]);
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    start(&mut s, 3);
+    s.run(BLOCK * 20);
+    let before = s.channel(0);
+    let level = before[before.len() - 1];
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(BLOCK * 40);
+    let both = on_both(&s);
+    // The level never steps up across the move, and keeps falling on the new device.
+    let sum: Vec<f32> = both.iter().map(|&(a, b)| a + b).collect();
+    let from = before.len() - 1;
+    for w in sum[from..].windows(2) {
+        assert!(
+            w[1] <= w[0] + 1e-4,
+            "level stepped up: {} -> {}",
+            w[0],
+            w[1]
+        );
+    }
+    let two = s.device_channel(DEV2, 0);
+    let now = two[two.len() - 1];
+    assert!(now > 0.0 && now < level, "{level} then {now}");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Fading);
+}
+
+#[test]
+fn the_same_while_the_cue_is_looping_it_loops_on_the_new_device() {
+    let frames = 800;
+    let a = wav(&ramp(frames));
+    let mut looping = audio(1, &a, 0);
+    if let CueKind::Audio {
+        last_slice_play_count,
+        ..
+    } = &mut looping.kind
+    {
+        *last_slice_play_count = 0;
+    }
+    let mut s = two_device_show(vec![looping]);
+    start(&mut s, 1);
+    s.run(frames as u64 * 2 + 300);
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(frames as u64 * 4);
+    // Every sample on the master clock is the loop's next one: in step across the move, and
+    // round the loop again on the new device.
+    let both = on_both(&s);
+    let first = both
+        .iter()
+        .position(|&(a, b)| a != 0.0 || b != 0.0)
+        .unwrap();
+    let unit = 1.0 / 1_048_576.0;
+    for (i, &(a, b)) in both[first..].iter().enumerate() {
+        let want = ((i % frames) + 1) as f32 * unit;
+        assert!(
+            (a + b - want).abs() < 2.0 * unit,
+            "sample {i}: {a} + {b}, want {want}"
+        );
+    }
+    let two = s.device_channel(DEV2, 0);
+    assert!(two.iter().filter(|&&v| v != 0.0).count() > frames * 2);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+}
+
+#[test]
+fn the_new_device_is_missing_or_cannot_be_used_and_the_cue_stops_as_for_a_lost_device_with_the_reason()
+ {
+    // A device that cannot run at the primary's rate cannot be used: the cue moved to it
+    // stops, shows paused (time frozen) as on a lost device, and a notice says why.
+    let a = wav(&dc(20_000, 0.5));
+    let mut odd = listed(DEV2, DEV2_NAME, 2);
+    for c in &mut odd.configs {
+        c.min_rate = RATE * 2;
+        c.max_rate = RATE * 2;
+    }
+    let mut s = two_patch_show(
+        vec![audio(1, &a, 0)],
+        DEV_NAME,
+        vec![listed(DEV, DEV_NAME, 2), odd],
+    );
+    start(&mut s, 1);
+    s.run(BLOCK * 10);
+    s.take_outbound();
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.settle_devices();
+    s.run(BLOCK * 4);
+    let msgs = s.take_outbound();
+    assert!(paused_device_lost(&msgs, 1), "{msgs:?}");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    let notes = notice_messages(&msgs, "device_lost");
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains(DEV2_NAME) && n.contains("cannot be used") && n.contains("Hz")),
+        "{notes:?}"
+    );
+    assert!(notice_devices(&msgs).contains(&Some(DEV2_NAME.to_owned())));
+    // Nothing sounds any more, and nothing comes back.
+    let len = s.channel(0).len();
+    s.run(BLOCK * 20);
+    assert!(heard(&s.channel(0)[len..]).is_empty());
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_cue_whose_new_device_is_unplugged_before_it_opens_stops_as_for_a_lost_device() {
+    let a = wav(&dc(20_000, 0.5));
+    let mut s = two_patch_show(
+        vec![audio(1, &a, 0)],
+        DEV_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+    );
+    start(&mut s, 1);
+    s.run(BLOCK * 10);
+    // Its open hangs; the cue plays on where it is meanwhile.
+    s.fake.close_gate();
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    let len = s.channel(0).len();
+    assert_eq!(heard(&s.channel(0)[len - BLOCK as usize..]), vec![0.5]);
+    s.take_outbound();
+    s.fake.unplug(DEV2, false);
+    s.fake.open_gate();
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.run(BLOCK * 2);
+    let msgs = s.take_outbound();
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    let notes = notice_messages(&msgs, "device_lost");
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains(DEV2_NAME) && n.contains("not connected")),
+        "{notes:?}"
+    );
+    let len = s.channel(0).len();
+    s.run(BLOCK * 10);
+    assert!(heard(&s.channel(0)[len..]).is_empty());
+}
+
+#[test]
+fn a_playing_cue_moved_to_another_device_auto_follows_once_at_its_end() {
+    let a = wav(&ramp(3000));
+    let b = wav(&dc(400, 0.5));
+    let mut first = audio(1, &a, 0);
+    first.continue_mode = ContinueMode::AutoFollow;
+    let mut s = two_device_show(vec![first, audio(2, &b, 0)]);
+    start(&mut s, 1);
+    s.run(BLOCK * 10);
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    let mut msgs = Vec::new();
+    for _ in 0..80 {
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+    }
+    let starts = states(&msgs, id(2))
+        .iter()
+        .filter(|(st, _)| *st == WireCueState::Running)
+        .count();
+    assert_eq!(starts, 1, "{:?}", states(&msgs, id(2)));
+    // Cue 2 begins on the sample after cue 1's last, on the new device.
+    let two = s.device_channel(DEV2, 0);
+    let last_ramp = two.iter().rposition(|&v| v != 0.0 && v != 0.5).unwrap();
+    let first_dc = two.iter().position(|&v| v == 0.5).unwrap();
+    assert_eq!(first_dc, last_ramp + 1);
 }

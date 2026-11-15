@@ -271,7 +271,7 @@ final class WorkspaceSettingsModel: ObservableObject {
 
     /// Puts `row` on `device`, output i on device output `channels[i]` (default: the first
     /// outputs); nil `device` clears it (the engine pauses the cues playing through the patch, as
-    /// QLab does). A cue that plays on keeps its device; the next start plays on the new one.
+    /// QLab does). A cue playing through the patch moves to the new device at once.
     func setMapping(_ row: PatchRow, device: String?, channels: [UInt32]? = nil) async {
         // The popup fires its action when the same device is picked again; that must not reset
         // the routing the show was built with to the first outputs.
