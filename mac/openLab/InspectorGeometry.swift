@@ -175,7 +175,9 @@ final class GeometryThumbnail: NSView {
         dragFrom = (convert(event.locationInWindow, from: nil), geometry.translation)
     }
 
-    override func mouseDragged(with event: NSEvent) { drag(to: convert(event.locationInWindow, from: nil), ended: false) }
+    override func mouseDragged(with event: NSEvent) {
+        drag(to: convert(event.locationInWindow, from: nil), ended: false)
+    }
 
     override func mouseUp(with event: NSEvent) { drag(to: convert(event.locationInWindow, from: nil), ended: true) }
 
@@ -264,7 +266,8 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
         b.bezelStyle = .inline
         b.isBordered = false
         b.image = NSImage(
-            systemSymbolName: "arrow.counterclockwise", accessibilityDescription: loc("inspector.geometry.reset.\(what)"))
+            systemSymbolName: "arrow.counterclockwise",
+            accessibilityDescription: loc("inspector.geometry.reset.\(what)"))
         b.imagePosition = .imageOnly
         b.toolTip = loc("inspector.geometry.reset.\(what)")
         b.setAX("inspector-geometry-\(what)-reset", label: loc("inspector.geometry.reset.\(what)"))
@@ -332,14 +335,16 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
         smoothCheck.state = g.smooth ? .on : .off
         scaleLock.state = g.scaleLocked ? .on : .off
         scaleLock.image = NSImage(
-            systemSymbolName: g.scaleLocked ? "lock" : "lock.open", accessibilityDescription: loc("inspector.geometry.scaleLock"))
-        let texts: [(NSTextField, String)] = [
-            (layerField, Self.layerText(g.layer)), (opacityField, Self.number(g.opacity * 100)),
-            (xField, Self.number(g.translation.x)), (yField, Self.number(g.translation.y)),
-            (scaleXField, Self.number(g.scale.x)), (scaleYField, Self.number(g.scale.y)),
-            (rotationField, Self.number(g.rotation)), (anchorXField, Self.number(g.anchor.x)),
-            (anchorYField, Self.number(g.anchor.y)),
-        ] + zip(cropFields, g.crop.map(Self.number)).map { ($0, $1) }
+            systemSymbolName: g.scaleLocked ? "lock" : "lock.open",
+            accessibilityDescription: loc("inspector.geometry.scaleLock"))
+        let texts: [(NSTextField, String)] =
+            [
+                (layerField, Self.layerText(g.layer)), (opacityField, Self.number(g.opacity * 100)),
+                (xField, Self.number(g.translation.x)), (yField, Self.number(g.translation.y)),
+                (scaleXField, Self.number(g.scale.x)), (scaleYField, Self.number(g.scale.y)),
+                (rotationField, Self.number(g.rotation)), (anchorXField, Self.number(g.anchor.x)),
+                (anchorYField, Self.number(g.anchor.y)),
+            ] + zip(cropFields, g.crop.map(Self.number)).map { ($0, $1) }
         for (f, text) in texts where f !== typing && f.stringValue != text { f.stringValue = text }
         for r in customRows { r.isHidden = g.fillStage }
         styleRow?.isHidden = !g.fillStage
@@ -491,7 +496,9 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
         var g = shown
         g.translation = moved
         render(g, stage: thumbnail.stage, picture: thumbnail.picture)
-        onEdit?(["translation": VideoGeometry.pairJSON(moved)], "geometry:drag:\(InspectorViewController.launchToken):\(drags)")
+        onEdit?(
+            ["translation": VideoGeometry.pairJSON(moved)],
+            "geometry:drag:\(InspectorViewController.launchToken):\(drags)")
         if ended { drags += 1 }
     }
 }
@@ -601,5 +608,8 @@ extension InspectorViewController {
             guard cue.kindType == "video" else { return nil }
             return .setProperty(cue.id, .kindFields(fields))
         }
+        // Shown with the edit before the engine answers, so the next field typed (y after x)
+        // builds on it, not on the value the model still holds.
+        if let cue = cueForEdit, let model = store.model { renderGeometry(cue, model: model) }
     }
 }

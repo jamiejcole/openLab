@@ -17,14 +17,15 @@ extension VideoCueTests {
 
     static let red: [UInt8] = [255, 0, 0, 255]
     static let green: [UInt8] = [0, 255, 0, 255]
-    static let black: [UInt8] = [0, 0, 0, 255]
 
     var g: GeometryControls { wc.inspector.geometry }
 
     /// The frame and colours `stage` shows at `points` (fractions from its top left).
     func probe(_ stage: ModelID, _ points: [[Double]]) async -> (UInt16?, [[UInt8]]) {
         guard
-            case .success(let ok) = await store.client.send({ .request(id: $0, .stageProbe(stage: stage, points: points)) }),
+            case .success(let ok) = await store.client.send({
+                .request(id: $0, .stageProbe(stage: stage, points: points))
+            }),
             case .stageProbe(let frame, let colours)? = ok.data
         else { return (nil, []) }
         return (frame, colours)
@@ -44,6 +45,31 @@ extension VideoCueTests {
     }
 
     func kind(_ n: Int) -> JSONValue? { store.model?.cue(Self.geometryCue(n))?.raw["kind"] }
+
+    /// A pair field (`translation`, `scale`, `anchor`) of cue `n`, whatever JSON number form it has.
+    func pair(_ n: Int, _ key: String) -> CGPoint? {
+        guard let x = kind(n)?[key]?["x"]?.doubleValue, let y = kind(n)?[key]?["y"]?.doubleValue else { return nil }
+        return CGPoint(x: x, y: y)
+    }
+
+    /// The colours read, each named by the test card colour it is near (a movie's encode moves
+    /// them a little): "red", "green", "blue", "yellow", "black", else "other".
+    func named(_ colours: [[UInt8]]) -> [String] {
+        colours.map { c in
+            guard c.count >= 3 else { return "other" }
+            let (r, g, b) = (Int(c[0]), Int(c[1]), Int(c[2]))
+            let hi = { (v: Int) in v > 200 }
+            let lo = { (v: Int) in v < 40 }
+            switch (hi(r), hi(g), hi(b), lo(r), lo(g), lo(b)) {
+            case (true, _, _, _, true, true): return "red"
+            case (_, true, _, true, _, true): return "green"
+            case (_, _, true, true, true, _): return "blue"
+            case (true, true, _, _, _, true): return "yellow"
+            case (_, _, _, true, true, true): return "black"
+            default: return "other"
+            }
+        }
+    }
 
     func choose(_ popup: NSPopUpButton, _ index: Int) {
         popup.selectItem(at: index)
@@ -66,17 +92,17 @@ extension VideoCueTests {
         try await play(0.3)
         let pts: [[Double]] = [[0.25, 0.2], [0.25, 0.45]]
         var seen = await probe(Self.tallStage, pts)
-        XCTAssertEqual(seen.1, [Self.black, Self.red], "fit: bars above and below")
+        XCTAssertEqual(named(seen.1), ["black", "red"], "fit: bars above and below")
         XCTAssertNil(seen.0, "fit: the barcode is not at the stage's top")
         choose(g.stylePopup, 1)
         await soon("fill") { self.kind(1)?["fill_style"]?.stringValue == "fill" }
         seen = await probe(Self.tallStage, pts)
-        XCTAssertEqual(seen.1, [Self.red, Self.red], "fill: the stage covered")
+        XCTAssertEqual(named(seen.1), ["red", "red"], "fill: the stage covered")
         XCTAssertEqual(g.stylePopup.titleOfSelectedItem, loc("inspector.geometry.style.fill"))
         choose(g.stylePopup, 2)
         await soon("stretch") { self.kind(1)?["fill_style"]?.stringValue == "stretch" }
         seen = await probe(Self.tallStage, pts)
-        XCTAssertEqual(seen.1, [Self.red, Self.red])
+        XCTAssertEqual(named(seen.1), ["red", "red"])
         XCTAssertNotNil(seen.0, "stretch: the whole card on the stage, its barcode across the top")
     }
 
@@ -105,10 +131,10 @@ extension VideoCueTests {
         try await perform(.startSelected, on: Self.geometryCue(1))
         try await play(0.3)
         let shown = await colours(Self.tallStage, [[0.43, 0.49], [0.25, 0.45]])
-        XCTAssertEqual(shown, [Self.red, Self.black], "its own 288 x 160 pixels in the middle")
+        XCTAssertEqual(named(shown), ["red", "black"], "its own 288 x 160 pixels in the middle")
         // Locked: a typed scale sets both; a reset puts it back.
         try typeInto(g.scaleXField, "2")
-        await soon("scale 2 x 2") { self.kind(1)?["scale"] == .object(["x": .double(2), "y": .double(2)]) }
+        await soon("scale 2 x 2") { self.pair(1, "scale") == CGPoint(x: 2, y: 2) }
         XCTAssertEqual(g.scaleYField.stringValue, "2")
         try typeInto(g.rotationField, "30")
         await soon("turned") { self.kind(1)?["rotation"]?.doubleValue == 30 }
@@ -126,11 +152,11 @@ extension VideoCueTests {
         try await play(1)
         let point: [[Double]] = [[0.25, 0.45]]
         let before = await colours(Self.tallStage, point)
-        XCTAssertEqual(before, [Self.red])
+        XCTAssertEqual(named(before), ["red"])
         try typeInto(g.opacityField, "0")
-        await soon("gone from the stage at once") { await self.colours(Self.tallStage, point) == [Self.black] }
+        await soon("gone from the stage at once") { await self.named(self.colours(Self.tallStage, point)) == ["black"] }
         try typeInto(g.opacityField, "100")
-        await soon("back") { await self.colours(Self.tallStage, point) == [Self.red] }
+        await soon("back") { await self.named(self.colours(Self.tallStage, point)) == ["red"] }
         let frame = await shownFrame(Self.tallStage)
         XCTAssertEqual(Double(frame ?? 0), 25, accuracy: 3, "a second in: it played on, not restarted")
         XCTAssertEqual(status(Self.geometryCue(3)), loc("cue.state.running"))
@@ -160,12 +186,12 @@ extension VideoCueTests {
         XCTAssertEqual(g.yField.stringValue, "90")
         t.mouseUp(with: event(.leftMouseUp, 100 * k, 60 * k))
         await soon("dropped there") {
-            self.kind(6)?["translation"] == .object(["x": .double(420), "y": .double(60)])
+            self.pair(6, "translation") == CGPoint(x: 420, y: 60)
         }
         XCTAssertEqual(g.xField.stringValue, "420")
         await wc.editor.undo()
         await soon("one undo takes the whole drag back") {
-            self.kind(6)?["translation"] == .object(["x": .double(320), "y": .double(120)])
+            self.pair(6, "translation") == CGPoint(x: 320, y: 120)
         }
         await soon { self.g.xField.stringValue == "320" }
     }
@@ -200,7 +226,7 @@ extension VideoCueTests {
         try typeInto(g.xField, "480")
         try typeInto(g.yField, "0")
         await soon("placed") {
-            self.kind(6)?["translation"] == .object(["x": .double(480), "y": .double(0)])
+            self.pair(6, "translation") == CGPoint(x: 480, y: 0)
                 && self.kind(6)?["rotation"]?.doubleValue == 0 && self.kind(6)?["anchor"]?["x"]?.doubleValue == 0
         }
         // At this point cue 6 (layer top) shows its red, cue 8 (layer bottom, stretched) its green.
@@ -210,13 +236,13 @@ extension VideoCueTests {
         try await perform(.startSelected, on: Self.geometryCue(8))
         try await play(0.2)
         let shown = await colours(Self.mainStage, point)
-        XCTAssertEqual(shown, [Self.red], "the top layer over the bottom one started later")
+        XCTAssertEqual(named(shown), ["red"], "the top layer over the bottom one started later")
         try await showGeometry(of: 8, opened: true)
         XCTAssertEqual(g.layerField.stringValue, loc("inspector.geometry.layer.bottom"))
         try typeInto(g.layerField, loc("inspector.geometry.layer.top"))
         await soon("cue 8 on the top layer") { self.kind(8)?["layer"]?.doubleValue == 1000 }
         await soon("same layer: the later-started on top") {
-            await self.colours(Self.mainStage, point) == [Self.green]
+            await self.named(self.colours(Self.mainStage, point)) == ["green"]
         }
     }
 
