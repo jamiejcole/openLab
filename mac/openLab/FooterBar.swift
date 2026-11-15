@@ -253,7 +253,11 @@ final class FooterBar: NSView {
         // Stale status (no connection) is not shown as an override either.
         overrideBadge.isHidden = !(connected && status?.networkOutputDisabled == true)
         statusButton.title = p.summary
-        statusButton.image = p.icon.image(p.summary, compact: true)
+        let image = p.icon.image(p.summary, compact: true)
+        // All well: only the mark is green; the words keep the plain text colour.
+        statusButton.image =
+            p.icon == .statusNormal
+            ? TimeHeaderCell.tinted(image, .systemGreen, size: image.size, description: p.summary) : image
         statusButton.contentTintColor = p.level == .alarm ? .systemRed : p.level == .warning ? .systemOrange : nil
         statusButton.font = .systemFont(ofSize: 12, weight: p.level == .normal ? .regular : .semibold)
         statusButton.setAccessibilityLabel(p.summary)

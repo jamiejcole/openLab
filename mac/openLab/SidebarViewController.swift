@@ -130,7 +130,7 @@ final class WarningCell: NSTableCellView {
     init() {
         super.init(frame: .zero)
         identifier = NSUserInterfaceItemIdentifier("warning")
-        marker.contentTintColor = .systemOrange
+        marker.contentTintColor = .systemYellow
         title.font = Self.titleFont
         title.lineBreakMode = .byTruncatingTail
         detail.font = Self.detailFont
@@ -225,8 +225,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         (AX.transportPanic, .transportPanic, "transport.panic"),
     ]
 
-    /// The transport symbols' point size: most of the 44 pt button's height, with a margin.
-    static let transportSymbolSize: CGFloat = 18
+    /// The transport icons' side, the size Panic All's own picture is drawn at: well inside the 44 pt button.
+    static let transportIconSize: CGFloat = 20
 
     static var icons: [Icon] { transport.map(\.icon) + [.activeCuePause, .activeCueResume, .activeCuePanic] }
 
@@ -331,16 +331,16 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         strip.spacing = 6
         for entry in Self.transport {
             let name = loc(entry.key)
-            let button = NSButton(
-                image: entry.icon.image(name), target: nil, action: nil)
+            let image = entry.icon.image(name)
+            // A vector drawing, so it stays sharp at the strip's size.
+            image.size = NSSize(width: Self.transportIconSize, height: Self.transportIconSize)
+            let button = NSButton(image: image, target: nil, action: nil)
             button.setAX(entry.id, label: name)
             button.toolTip = name
             // A square bezel is drawn at the button's full height (a textured-rounded one stays
             // about 24 pt tall), so the strip is made of large buttons the glyph fills.
             button.bezelStyle = .regularSquare
             button.imageScaling = .scaleNone
-            button.symbolConfiguration = NSImage.SymbolConfiguration(
-                pointSize: Self.transportSymbolSize, weight: .regular)
             button.heightAnchor.constraint(equalToConstant: 44).isActive = true
             transportButtons[entry.id] = button
             strip.addArrangedSubview(button)

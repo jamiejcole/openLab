@@ -2,9 +2,10 @@
 
 import AppKit
 
-/// How one cue state looks in the list. Every state has its own symbol, so state never rests on
-/// colour alone (UI-04); `tint` only adds to it. Idle shows no symbol (it is the common state of
-/// a 2,000-cue list) but still has an accessibility label.
+/// How one cue state looks in the list. Every state the list marks has its own symbol, so state never rests on
+/// colour alone (UI-04); `tint` only adds to it. Idle shows no symbol (it is the common state of a 2,000-cue
+/// list) but still has an accessibility label. A cue in its pre-wait or post-wait shows the running mark, as
+/// QLab has no mark of its own for a wait; its label still names the wait.
 struct CueStateStyle: Equatable {
     var icon: Icon?
     var labelKey: String
@@ -15,19 +16,17 @@ struct CueStateStyle: Equatable {
     static func style(for state: WireCueState) -> CueStateStyle {
         switch state {
         case .idle: return CueStateStyle(icon: nil, labelKey: "cue.state.idle", tint: nil)
-        case .loaded:
-            return CueStateStyle(icon: .stateLoaded, labelKey: "cue.state.loaded", tint: .systemBlue)
+        case .loaded: return CueStateStyle(icon: .stateLoaded, labelKey: "cue.state.loaded", tint: .systemYellow)
         case .preWaiting:
-            return CueStateStyle(icon: .statePreWaiting, labelKey: "cue.state.preWaiting", tint: .systemOrange)
+            return CueStateStyle(icon: .stateRunning, labelKey: "cue.state.preWaiting", tint: .systemGreen)
         case .running: return CueStateStyle(icon: .stateRunning, labelKey: "cue.state.running", tint: .systemGreen)
         case .paused: return CueStateStyle(icon: .statePaused, labelKey: "cue.state.paused", tint: .systemYellow)
         case .postWaiting:
-            return CueStateStyle(icon: .statePostWaiting, labelKey: "cue.state.postWaiting", tint: .systemOrange)
-        case .fading: return CueStateStyle(icon: .stateFading, labelKey: "cue.state.fading", tint: .systemGreen)
-        case .stopping: return CueStateStyle(icon: .stateStopping, labelKey: "cue.state.stopping", tint: .systemRed)
-        case .broken:
-            return CueStateStyle(
-                icon: .stateBroken, labelKey: "cue.state.broken", tint: .systemRed)
+            return CueStateStyle(icon: .stateRunning, labelKey: "cue.state.postWaiting", tint: .systemGreen)
+        case .fading: return CueStateStyle(icon: .stateFading, labelKey: "cue.state.fading", tint: .systemYellow)
+        case .stopping:
+            return CueStateStyle(icon: .stateStopping, labelKey: "cue.state.stopping", tint: .systemYellow)
+        case .broken: return CueStateStyle(icon: .stateBroken, labelKey: "cue.state.broken", tint: .systemRed)
         }
     }
 

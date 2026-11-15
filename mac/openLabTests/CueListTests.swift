@@ -548,8 +548,10 @@ final class CueListTests: XCTestCase {
 
     // MARK: State icons (UI-04)
 
-    func testEveryStateHasALabelAndEveryNonIdleStateItsOwnSymbol() {
-        var symbols = Set<String>()
+    /// Each state the list marks has its own drawing; a cue in its pre-wait or post-wait shows the running mark
+    /// (QLab has no mark for a wait), its label still naming the wait.
+    func testEveryStateHasALabelAndEachMarkedStateItsOwnDrawing() {
+        var drawings = Set<String>()
         for state in WireCueState.allCases {
             let style = CueStateStyle.style(for: state)
             XCTAssertNotEqual(style.label, style.labelKey, "\(state) has no label string")
@@ -560,7 +562,12 @@ final class CueListTests: XCTestCase {
             }
             let icon = try? XCTUnwrap(style.icon, "\(state)")
             XCTAssertEqual(icon?.resolvesToSymbol, true, "\(state)")
-            XCTAssertTrue(symbols.insert(icon?.symbol ?? "").inserted, "\(state) shares a symbol")
+            XCTAssertNil(icon?.symbol, "\(state) is drawn, not a symbol")
+            if state == .preWaiting || state == .postWaiting {
+                XCTAssertEqual(icon, .stateRunning, "\(state) shows the running mark")
+                continue
+            }
+            XCTAssertTrue(drawings.insert(icon?.drawing ?? "").inserted, "\(state) shares a drawing")
         }
         XCTAssertEqual(
             Set(WireCueState.allCases.map { CueStateStyle.style(for: $0).label }).count, WireCueState.allCases.count)
@@ -660,28 +667,27 @@ final class CueListTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(h.cell("status", H.fade)).images[0].isHidden)
     }
 
-    func testPlayheadInsideACollapsedGroupMarksTheGroup() async throws {
+    /// Flow (#698): a closed group whose child holds the playhead shows no small playhead on its row, as QLab.
+    func testAClosedGroupWhoseChildHoldsThePlayheadShowsNoSmallPlayhead() async throws {
         let h = try await H()
         try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.rain)"}"#)
-        XCTAssertTrue(h.vc.isPlayheadInside(H.group))
         XCTAssertFalse(h.vc.isPlayheadRow(H.group))
-        let mark = try XCTUnwrap(h.cell("status", H.group)).images[0]
-        XCTAssertFalse(mark.isHidden)
-        XCTAssertEqual(mark.accessibilityLabel(), loc("cue.playhead.inside"))
+        XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[0].isHidden, "no mark on the closed group")
+        let row = try XCTUnwrap(h.spy.rowView(atRow: h.spy.row(forItem: h.vc.node(H.group)), makeIfNecessary: true))
+        XCTAssertFalse(try XCTUnwrap(row as? CueRowView).isPlayhead, "and no pointer")
         // The child itself is the playhead row once the group opens.
         h.spy.expandItem(try XCTUnwrap(h.vc.node(H.group)))
         XCTAssertEqual(try XCTUnwrap(h.cell("status", H.rain)).images[0].accessibilityLabel(), loc("cue.playhead"))
-        // Leaving the group clears the group's mark.
-        try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.intro)"}"#)
-        XCTAssertFalse(h.vc.isPlayheadInside(H.group))
-        XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[0].isHidden)
+        XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[0].isHidden, "the open group has none either")
     }
 
     func testPlayheadPastTheEndMarksNothing() async throws {
         let h = try await H()
         try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":null}"#)
         XCTAssertFalse(h.vc.isPlayheadRow(H.fade))
-        for id in [H.intro, H.fade, H.group] { XCTAssertFalse(h.vc.isPlayheadInside(id)) }
+        for id in [H.intro, H.fade, H.group] {
+            XCTAssertTrue(try XCTUnwrap(h.cell("status", id)).images[0].isHidden, "\(id)")
+        }
     }
 
     private func sentPlayheads(_ h: H) -> [ModelID?] {
@@ -1093,23 +1099,18 @@ final class CueListTests: XCTestCase {
 
     // MARK: Playhead marker across model changes
 
-    func testGroupLosesItsPlayheadMarkerWhenThePlayheadCueMovesOut() async throws {
+    /// The playhead cue moved out of a closed group, and another moved into it: the group's row never shows a
+    /// playhead mark, and the moved-out cue's own row has the playhead.
+    func testAPlayheadCueMovedOutOfOrIntoAClosedGroupNeverMarksTheGroup() async throws {
         let h = try await H()
         try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.rain)"}"#)
-        XCTAssertFalse(try XCTUnwrap(h.cell("status", H.group)).images[0].isHidden)
         try h.change(upserts: [try H.upsertJSON(h.cue(H.rain.raw, "Rain"), index: 0)], deletes: [H.rain])
-        XCTAssertFalse(h.vc.isPlayheadInside(H.group))
         XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[0].isHidden)
-    }
-
-    func testGroupGainsAPlayheadMarkerWhenThePlayheadCueMovesIn() async throws {
-        let h = try await H()
+        XCTAssertEqual(try XCTUnwrap(h.cell("status", H.rain)).images[0].accessibilityLabel(), loc("cue.playhead"))
         try h.runtime(#"{"type":"playhead","list":"\#(H.list)","cue":"\#(H.intro)"}"#)
-        XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[0].isHidden)
         try h.change(
             upserts: [try H.upsertJSON(h.cue(H.intro.raw, "Intro"), parent: H.group, index: 0)], deletes: [H.intro])
-        XCTAssertTrue(h.vc.isPlayheadInside(H.group))
-        XCTAssertFalse(try XCTUnwrap(h.cell("status", H.group)).images[0].isHidden)
+        XCTAssertTrue(try XCTUnwrap(h.cell("status", H.group)).images[0].isHidden)
     }
 
     // MARK: Outline equals the store after any sequence of changes
@@ -5065,9 +5066,9 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(try darkPixels(h, "status", H.intro).count(Self.pointerWhite), 0, "Intro has no pointer")
     }
 
-    /// Flow (#696): the same for rows inside groups (indented), the playhead-inside-a-closed-group mark,
-    /// and a row with both the playhead and a flag.
-    func testIndentedRowsTheInsideMarkAndAFlaggedPlayheadRowKeepTheSameSlots() async throws {
+    /// Flow (#696): the same for rows inside groups (indented), a closed group around the playhead (no playhead
+    /// mark there since #698), and a row with both the playhead and a flag.
+    func testIndentedRowsAClosedGroupAndAFlaggedPlayheadRowKeepTheSameSlots() async throws {
         let h = try await demo()
         let introType = try XCTUnwrap(try mark(h, H.intro, 4))
         h.vc.selectAsUser([H.rain])
@@ -5087,13 +5088,10 @@ final class CueListDrawingTests: XCTestCase {
             ).minX
         }
         XCTAssertGreaterThan(nameX(H.rain), nameX(H.intro), "the child row is indented (in the Name column)")
-        // Closed, the group shows the inside mark in the playhead's room and the hollow flag in the flag's.
+        // Closed, the group shows nothing in the playhead's room and the hollow flag in the flag's.
         h.spy.collapseItem(try XCTUnwrap(h.vc.node(H.group)))
-        await assertEventually { (try? self.mark(h, H.group, 0)) != nil }
-        let inside = try XCTUnwrap(try mark(h, H.group, 0))
-        let stateSlot = CueCell.statusSlots[1].x
-        let cellX = h.spy.frameOfCell(atColumn: 0, row: h.spy.row(forItem: h.vc.node(H.group))).minX
-        XCTAssertLessThanOrEqual(inside.maxX, cellX + stateSlot, "the inside mark stays in the playhead's room")
+        await assertEventually { (try? self.mark(h, H.group, 3)) != nil }
+        XCTAssertNil(try mark(h, H.group, 0), "no playhead mark on the closed group")
         XCTAssertEqual(try XCTUnwrap(try mark(h, H.group, 3)).minX, flag.minX, "the hollow flag lines up")
         XCTAssertEqual(try XCTUnwrap(try mark(h, H.group, 4)).minX, introType.minX, "the group's type icon")
     }
@@ -5136,6 +5134,88 @@ final class CueListDrawingTests: XCTestCase {
             XCTAssertEqual(selected.count(Self.red), 0, "no red on the selection (dark \(dark))")
             XCTAssertGreaterThan(selected.count(Self.pointerWhite), 8, "white on the selection (dark \(dark))")
         }
+    }
+
+    private func drawnMark(_ h: H, _ id: ModelID, _ i: Int) throws -> (icon: Icon, colour: NSColor)? {
+        try XCTUnwrap(h.cell("status", id), "\(id) has a row").drawnMark(i)
+    }
+
+    /// Flow (#698): a broken cue's status mark is the red X; the warning triangle is for warnings only.
+    func testABrokenCuesStatusMarkIsTheRedXAndTheTriangleIsForWarningsOnly() async throws {
+        let h = try await demo()
+        let broken = try XCTUnwrap(try drawnMark(h, H.radio, 1), "Radio shows its broken mark")
+        XCTAssertEqual(broken.icon, .stateBroken)
+        XCTAssertEqual(broken.colour, .systemRed)
+        XCTAssertEqual(Icon.stateBroken.drawing, "state-broken")
+        XCTAssertEqual(try XCTUnwrap(h.cell("status", H.radio)).images[1].accessibilityLabel(), loc("cue.state.broken"))
+        for state in WireCueState.allCases {
+            XCTAssertNotEqual(CueStateStyle.style(for: state).icon, .warningMarker, "\(state) is not a warning")
+        }
+    }
+
+    /// Flow (#698): the approved state colours (running green; paused, loaded, fading, stopping yellow; broken
+    /// red; flagged orange; preview blue), and a selected row's marks in the selection's text colour.
+    func testStateColoursAsApprovedAndASelectedRowsMarksTakeTheSelectionsTextColour() async throws {
+        let colours: [WireCueState: NSColor] = [
+            .loaded: .systemYellow, .preWaiting: .systemGreen, .running: .systemGreen, .paused: .systemYellow,
+            .postWaiting: .systemGreen, .fading: .systemYellow, .stopping: .systemYellow, .broken: .systemRed,
+        ]
+        for (state, colour) in colours { XCTAssertEqual(CueStateStyle.style(for: state).tint, colour, "\(state)") }
+        let h = try await demo()
+        XCTAssertEqual(try drawnMark(h, H.rain, 3)?.icon, .flagged)
+        XCTAssertEqual(try drawnMark(h, H.rain, 3)?.colour, .systemOrange, "flagged is orange")
+        guard case .success = await h.store.transport(.preview(cue: H.rain)) else { return XCTFail("preview") }
+        try await h.rig.advance(0.2)
+        await assertEventually { (try? self.drawnMark(h, H.rain, 2))?.icon == .preview }
+        XCTAssertEqual(try drawnMark(h, H.rain, 2)?.colour, .systemBlue, "preview is blue")
+        guard case .success = await h.store.transport(.stopPreview(cue: H.rain)) else { return XCTFail("stop") }
+        guard case .success = await h.store.transport(.start(cue: H.intro)) else { return XCTFail("start") }
+        try await h.rig.advance(0.2)
+        await assertEventually { (try? self.drawnMark(h, H.intro, 1))?.icon == .stateRunning }
+        XCTAssertEqual(try drawnMark(h, H.intro, 1)?.colour, .systemGreen, "running is green")
+        guard case .success = await h.store.transport(.pause(cue: H.intro)) else { return XCTFail("pause") }
+        try await h.rig.advance(0.1)
+        await assertEventually { (try? self.drawnMark(h, H.intro, 1))?.icon == .statePaused }
+        XCTAssertEqual(try drawnMark(h, H.intro, 1)?.colour, .systemYellow, "paused is yellow")
+        // Selected and focused: every mark of the row in the selection's text colour; back when deselected.
+        h.vc.selectAsUser([H.intro])
+        await assertEventually { h.vc.selectedIDs() == [H.intro] }
+        emphasize(h)
+        XCTAssertEqual(try drawnMark(h, H.intro, 1)?.colour, .alternateSelectedControlTextColor)
+        h.vc.selectAsUser([H.radio])
+        await assertEventually { h.vc.selectedIDs() == [H.radio] }
+        emphasize(h)
+        XCTAssertEqual(try drawnMark(h, H.radio, 1)?.colour, .alternateSelectedControlTextColor)
+        XCTAssertEqual(try drawnMark(h, H.intro, 1)?.colour, .systemYellow, "paused again once not selected")
+    }
+
+    /// Flow (#698): a cue in its pre-wait shows the running mark (QLab has no mark for a wait); its label still
+    /// says it is waiting.
+    func testACueInItsPreWaitShowsTheRunningMark() async throws {
+        let h = try await demo()
+        guard case .success = await h.store.send(command: .setProperty(H.intro, .preWait(5))) else {
+            return XCTFail("pre-wait")
+        }
+        guard case .success = await h.store.transport(.start(cue: H.intro)) else { return XCTFail("start") }
+        try await h.rig.advance(0.5)
+        await assertEventually { h.store.cueStates[H.intro]?.state == .preWaiting }
+        let mark = try XCTUnwrap(try drawnMark(h, H.intro, 1), "a waiting cue shows a mark")
+        XCTAssertEqual(mark.icon, .stateRunning)
+        XCTAssertEqual(mark.colour, .systemGreen)
+        XCTAssertEqual(
+            try XCTUnwrap(h.cell("status", H.intro)).images[1].accessibilityLabel(), loc("cue.state.preWaiting"))
+    }
+
+    /// Flow (#698): the time columns' header toggles use the right chevron while counting up and the left one
+    /// while counting down, and a click on the header turns it.
+    func testTheTimeColumnsHeaderTogglesUseTheRightAndLeftChevrons() async throws {
+        let h = try await demo()
+        let cell = try XCTUnwrap(try column(h, "duration").headerCell as? TimeHeaderCell)
+        XCTAssertEqual(cell.shown, .full)
+        XCTAssertEqual(TimeHeaderCell.icon(cell.shown).drawing, "time-toggle", "right: counting up")
+        try pressHeader(h, at: headerRect(h, "duration").midX)
+        XCTAssertEqual(cell.shown, .remaining)
+        XCTAssertEqual(TimeHeaderCell.icon(cell.shown).drawing, "time-toggle-up", "left: counting down")
     }
 
     /// Flow (#696): at the least column width, light and dark, Show Mode: nothing in the first column is
@@ -5420,7 +5500,7 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(drawnMask(f), drawnMask(try pixels(h, "target", H.intro)), "the same glyph")
         XCTAssertEqual(f.count(Self.drawn), middle(f).count(Self.drawn), "centred, and all the cell holds")
         XCTAssertEqual(f.region.width, 60, accuracy: 1, "the column's default width")
-        XCTAssertNotEqual(Icon.targetFile.symbol, Icon.fieldChoose.symbol)
+        XCTAssertNotEqual(Icon.targetFile.drawing, Icon.fieldChoose.drawing)
         // Cues that take no target: nothing.
         for id in [H.group, memo] {
             let cell = try XCTUnwrap(h.cell("target", id))
