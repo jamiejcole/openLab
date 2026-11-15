@@ -15,7 +15,9 @@ use std::ops::ControlFlow;
 use openlab_core::protocol::{
     Delete, DocumentState, RuntimeChange, Snapshot, Upsert, WireCueState,
 };
-use openlab_core::{Cue, CueId, CueKind, CueList, CueListId, OscAccess, Workspace, WorkspaceId};
+use openlab_core::{
+    Cue, CueId, CueKind, CueList, CueListId, FillStyle, OscAccess, Workspace, WorkspaceId,
+};
 use serde_json::{Value, json};
 
 use crate::osc::{CueField, OscShow, Target, upper};
@@ -591,6 +593,28 @@ impl OscShow for MirrorShow<'_> {
             CueField::IsRunning => json!(is_running(state)),
             CueField::IsPaused => json!(state == Some(WireCueState::Paused)),
             CueField::IsBroken => json!(state == Some(WireCueState::Broken)),
+            geometry => {
+                let CueKind::Video { geometry: g, .. } = &cue.kind else {
+                    return None;
+                };
+                match geometry {
+                    CueField::Opacity => json!(g.opacity),
+                    CueField::Layer => json!(g.layer),
+                    CueField::FillStage => json!(g.fill_stage),
+                    CueField::FillStyle => json!(match g.fill_style {
+                        FillStyle::Fit => 0,
+                        FillStyle::Fill => 1,
+                        FillStyle::Stretch => 2,
+                    }),
+                    CueField::Smooth => json!(g.smooth),
+                    CueField::PreserveAspectRatio => json!(g.scale_locked),
+                    CueField::CropTop => json!(g.crop.top),
+                    CueField::CropBottom => json!(g.crop.bottom),
+                    CueField::CropLeft => json!(g.crop.left),
+                    CueField::CropRight => json!(g.crop.right),
+                    _ => return None,
+                }
+            }
         })
     }
 
@@ -600,6 +624,16 @@ impl OscShow for MirrorShow<'_> {
         };
         match field {
             CueField::Duration => matches!(cue.kind, CueKind::Wait { .. } | CueKind::Fade { .. }),
+            CueField::Opacity
+            | CueField::Layer
+            | CueField::FillStage
+            | CueField::FillStyle
+            | CueField::Smooth
+            | CueField::PreserveAspectRatio
+            | CueField::CropTop
+            | CueField::CropBottom
+            | CueField::CropLeft
+            | CueField::CropRight => matches!(cue.kind, CueKind::Video { .. }),
             _ => true,
         }
     }
@@ -1411,6 +1445,7 @@ mod tests {
             media: Some(openlab_core::MediaRef::new("a.mov")),
             stage: None,
             duration: None,
+            geometry: Default::default(),
         };
         let base = mirror(2);
         let mut workspace = base.workspace.clone();

@@ -536,6 +536,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             media: Some(MediaRef::new("/Volumes/Show/Backdrop.mov")),
             stage: Some(openlab_core::StageId(uuid::Uuid::from_u128(1))),
             duration: None,
+            geometry: Default::default(),
         },
     );
     video.number = None;

@@ -3240,3 +3240,113 @@ async fn held_input_is_bounded_and_goes_once_the_copy_is_in() {
     })
     .await;
 }
+
+/// Flow: an OSC client sets and reads a Video cue's geometry (VID-04) by number: opacity,
+/// layer, fill stage and style, smoothing, the scale lock and each crop edge. A value out of
+/// range or of the wrong type, or a geometry field on a cue that is not a Video cue, gets an
+/// error reply and changes nothing.
+#[tokio::test]
+async fn an_osc_client_sets_and_reads_a_video_cues_geometry_and_out_of_range_is_refused() {
+    let video = CueKind::Video {
+        media: None,
+        stage: None,
+        duration: None,
+        geometry: Default::default(),
+    };
+    let ws = workspace(vec![cue(1, video), cue(2, CueKind::Memo)]);
+    let real = RealLoop::start(ws.clone()).await;
+    real.send(msg("/updates", vec![OscType::Int(1)])).await;
+    let updated = format!("/update/workspace/{}/cue_id/{}", ws_id(), id(1));
+    let write = async |number: &str, field: &str, arg: OscType| {
+        real.send(msg(&format!("/cue/{number}/{field}"), vec![arg]))
+            .await;
+    };
+    assert_eq!(real.read("1", "opacity").await["data"], json!(1.0));
+    assert_eq!(real.read("1", "layer").await["data"], json!(1000));
+    for (field, arg, read) in [
+        ("opacity", OscType::Float(0.25), json!(0.25)),
+        ("layer", OscType::Int(7), json!(7)),
+        ("fillStage", OscType::Bool(false), json!(false)),
+        ("fillStyle", OscType::Int(2), json!(2)),
+        ("smooth", OscType::Int(0), json!(false)),
+        ("preserveAspectRatio", OscType::Bool(false), json!(false)),
+        ("cropTop", OscType::Int(4), json!(4.0)),
+        ("cropRight", OscType::Double(2.5), json!(2.5)),
+    ] {
+        write("1", field, arg).await;
+        real.recv_at(&updated).await;
+        assert_eq!(real.read("1", field).await["data"], read, "{field}");
+    }
+    // One crop edge leaves the others as they were.
+    assert_eq!(real.read("1", "cropTop").await["data"], json!(4.0));
+    assert_eq!(real.read("1", "cropLeft").await["data"], json!(0.0));
+    for (number, field, arg) in [
+        ("1", "opacity", OscType::Float(1.5)),
+        ("1", "opacity", OscType::Float(-0.1)),
+        ("1", "layer", OscType::Int(1001)),
+        ("1", "layer", OscType::Float(2.5)),
+        ("1", "fillStyle", OscType::Int(3)),
+        ("1", "cropLeft", OscType::Int(-1)),
+        ("1", "cropLeft", OscType::Int(16_385)),
+        ("1", "smooth", OscType::String("yes".into())),
+        ("2", "opacity", OscType::Float(0.5)),
+    ] {
+        write(number, field, arg.clone()).await;
+        let reply = body(&real.recv_at(&format!("/reply/cue/{number}/{field}")).await);
+        assert_eq!(reply["status"], json!("error"), "{number} {field} {arg:?}");
+    }
+    assert_eq!(real.read("1", "opacity").await["data"], json!(0.25));
+    assert_eq!(real.read("1", "layer").await["data"], json!(7));
+    assert_eq!(real.read("1", "cropLeft").await["data"], json!(0.0));
+    assert_eq!(real.read("2", "opacity").await["status"], json!("error"));
+    real.stop();
+}
+
+/// Two crop edges sent back to back, or in one bundle, both hold: each message changes its
+/// edge alone, whatever the OSC copy of the show holds when the second arrives.
+#[tokio::test]
+async fn crop_edges_sent_back_to_back_or_in_one_bundle_both_hold() {
+    let video = CueKind::Video {
+        media: None,
+        stage: None,
+        duration: None,
+        geometry: Default::default(),
+    };
+    let ws = workspace(vec![cue(1, video)]);
+    let real = RealLoop::start(ws.clone()).await;
+    real.send(msg("/updates", vec![OscType::Int(1)])).await;
+    let updated = format!("/update/workspace/{}/cue_id/{}", ws_id(), id(1));
+    real.send(msg("/cue/1/cropTop", vec![OscType::Int(4)]))
+        .await;
+    real.send(msg("/cue/1/cropLeft", vec![OscType::Int(3)]))
+        .await;
+    real.recv_at(&updated).await;
+    real.recv_at(&updated).await;
+    assert_eq!(real.read("1", "cropTop").await["data"], json!(4.0));
+    assert_eq!(real.read("1", "cropLeft").await["data"], json!(3.0));
+    let bundle = rosc::OscPacket::Bundle(rosc::OscBundle {
+        timetag: rosc::OscTime {
+            seconds: 0,
+            fractional: 1,
+        },
+        content: vec![
+            rosc::OscPacket::Message(msg("/cue/1/cropBottom", vec![OscType::Int(2)])),
+            rosc::OscPacket::Message(msg("/cue/1/cropRight", vec![OscType::Int(1)])),
+        ],
+    });
+    real.client
+        .send_to(&rosc::encoder::encode(&bundle).unwrap(), real.target)
+        .await
+        .unwrap();
+    real.recv_at(&updated).await;
+    real.recv_at(&updated).await;
+    for (edge, value) in [
+        ("cropTop", 4.0),
+        ("cropBottom", 2.0),
+        ("cropLeft", 3.0),
+        ("cropRight", 1.0),
+    ] {
+        assert_eq!(real.read("1", edge).await["data"], json!(value), "{edge}");
+    }
+    real.stop();
+}

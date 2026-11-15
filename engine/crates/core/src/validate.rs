@@ -941,9 +941,15 @@ impl Checker {
                 self.time_in(id, "load_to_time", load_to_time, -MAX_TIME, MAX_TIME);
             }
             CueKind::Wait { duration } => self.time(id, "duration", duration),
-            CueKind::Video { duration, .. } => {
+            CueKind::Video {
+                duration, geometry, ..
+            } => {
                 if let Some(d) = duration {
                     self.time(id, "duration", d);
+                }
+                // Beyond its range: at its end (not finite: its default), with a warning each.
+                for field in geometry.repair() {
+                    self.warn(id, IssueKind::InvalidValue { field });
                 }
             }
             CueKind::Network { address, args, .. } => {

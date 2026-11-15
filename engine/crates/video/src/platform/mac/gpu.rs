@@ -13,11 +13,15 @@ use objc2_metal::{
     MTLBlendFactor, MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
     MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat,
     MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLSize, MTLStoreAction, MTLTexture,
-    MTLTextureDescriptor, MTLTextureUsage,
+    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLScissorRect, MTLSize, MTLStoreAction,
+    MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
 };
 #[cfg(feature = "test-support")]
 use objc2_metal::{MTLBlitCommandEncoder, MTLBuffer, MTLResourceOptions, MTLStorageMode};
+
+#[cfg(all(test, feature = "test-support"))]
+use openlab_core::VideoGeometry;
+use openlab_core::{Quad, quad};
 
 use crate::host::{CuePicture, Layer, Picture};
 
@@ -28,27 +32,95 @@ pub type Texture = Retained<ProtocolObject<dyn MTLTexture>>;
 /// picture's position, or `None` (not drawn; the source has noted why).
 pub type Pictures<'a> = dyn FnMut(&CuePicture) -> Option<(Texture, (u32, u32))> + 'a;
 
-/// One quad covering `rect` (x0, y0, x1, y1 in normalised device coordinates), sampling its
-/// texture with nearest-neighbour filtering, at opacity `tint.a` over what is below.
+/// One quad: four corners (top left, top right, bottom left, bottom right; normalised device
+/// coordinates) and the texture coordinates at each, sampled smooth or nearest-neighbour. The
+/// texture's pixels are premultiplied by their alpha (as decoded), so the whole colour is
+/// scaled by the opacity and blended "over": a pixel the file leaves transparent stays so.
 const SHADER: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
-struct Quad { float4 rect; float4 tint; };
+struct Quad { float2 pos[4]; float2 uv[4]; float opacity; float smooth; float2 pad; };
 struct V { float4 pos [[position]]; float2 uv; };
 vertex V quad_vertex(uint vid [[vertex_id]], constant Quad& q [[buffer(0)]]) {
-    float2 corner = float2(vid & 1, vid >> 1);
     V o;
-    o.pos = float4(mix(q.rect.xy, q.rect.zw, corner), 0, 1);
-    o.uv = float2(corner.x, 1 - corner.y);
+    o.pos = float4(q.pos[vid], 0, 1);
+    o.uv = q.uv[vid];
     return o;
 }
 fragment float4 quad_fragment(V in [[stage_in]], texture2d<float> tex [[texture(0)]],
                               constant Quad& q [[buffer(0)]]) {
-    constexpr sampler s(filter::nearest, address::clamp_to_edge);
-    float4 c = tex.sample(s, in.uv);
-    return float4(c.rgb, q.tint.a);
+    constexpr sampler nearest(filter::nearest, address::clamp_to_edge);
+    constexpr sampler linear(filter::linear, address::clamp_to_edge);
+    float4 c = q.smooth > 0.5 ? tex.sample(linear, in.uv) : tex.sample(nearest, in.uv);
+    return c * q.opacity;
 }
 "#;
+
+/// The bytes of the shader's `Quad`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct QuadBytes {
+    pos: [[f32; 2]; 4],
+    uv: [[f32; 2]; 4],
+    opacity: f32,
+    smooth: f32,
+    pad: [f32; 2],
+}
+
+impl QuadBytes {
+    /// A rect (x0, y0, x1, y1 in normalised device coordinates) showing a whole texture.
+    fn rect(r: [f32; 4], opacity: f32, smooth: bool) -> Self {
+        Self {
+            pos: [[r[0], r[3]], [r[2], r[3]], [r[0], r[1]], [r[2], r[1]]],
+            uv: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
+            opacity,
+            smooth: if smooth { 1.0 } else { 0.0 },
+            pad: [0.0; 2],
+        }
+    }
+
+    /// `quad` (stage pixels from the top left, y down) on a stage of `size` that sits at
+    /// `stage` in normalised device coordinates.
+    fn placed(quad: &Quad, size: (u32, u32), stage: [f32; 4], opacity: f32, smooth: bool) -> Self {
+        let (w, h) = (f64::from(size.0.max(1)), f64::from(size.1.max(1)));
+        let (x0, y0, x1, y1) = (
+            f64::from(stage[0]),
+            f64::from(stage[1]),
+            f64::from(stage[2]),
+            f64::from(stage[3]),
+        );
+        let ndc = |[x, y]: [f64; 2]| {
+            [
+                (x0 + x / w * (x1 - x0)) as f32,
+                (y1 - y / h * (y1 - y0)) as f32,
+            ]
+        };
+        let [u0, v0, u1, v1] = quad.uv.map(|v| v as f32);
+        Self {
+            pos: quad.corners.map(ndc),
+            uv: [[u0, v0], [u1, v0], [u0, v1], [u1, v1]],
+            opacity,
+            smooth: if smooth { 1.0 } else { 0.0 },
+            pad: [0.0; 2],
+        }
+    }
+}
+
+/// The pixels of a target of `size` that `ndc` (normalised device coordinates) covers, as a
+/// scissor rect: a stage's pictures never draw outside their stage.
+fn scissor(ndc: [f32; 4], (w, h): (u32, u32)) -> MTLScissorRect {
+    let (w, h) = (f64::from(w), f64::from(h));
+    let px = |v: f32, side: f64| ((f64::from(v) + 1.0) / 2.0 * side).round().clamp(0.0, side);
+    let (x0, x1) = (px(ndc[0], w), px(ndc[2], w));
+    // Device y is up; the scissor's rows count down from the top.
+    let (y0, y1) = (h - px(ndc[3], h), h - px(ndc[1], h));
+    MTLScissorRect {
+        x: x0 as usize,
+        y: y0 as usize,
+        width: (x1 - x0).max(0.0) as usize,
+        height: (y1 - y0).max(0.0) as usize,
+    }
+}
 
 /// The largest offscreen probe target, in pixels a side.
 #[cfg(feature = "test-support")]
@@ -92,9 +164,9 @@ impl Gpu {
         // SAFETY: colour attachment 0 always exists on a pipeline descriptor.
         let attachment = unsafe { desc.colorAttachments().objectAtIndexedSubscript(0) };
         attachment.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
-        // A fading picture is mixed over what is below it by its opacity.
+        // Premultiplied "over": the shader has scaled the whole colour by the opacity.
         attachment.setBlendingEnabled(true);
-        attachment.setSourceRGBBlendFactor(MTLBlendFactor::SourceAlpha);
+        attachment.setSourceRGBBlendFactor(MTLBlendFactor::One);
         attachment.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
         attachment.setSourceAlphaBlendFactor(MTLBlendFactor::One);
         attachment.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
@@ -122,8 +194,8 @@ impl Gpu {
     }
 
     /// Encodes a clear to black and then `layers` (bottom first) into `target`, each stage
-    /// fitted to the target, shape kept, and on each stage its cues' pictures (earliest started
-    /// first), each fitted to the stage at its opacity.
+    /// fitted to the target, shape kept, and on each stage its cues' pictures (bottom first),
+    /// each placed by its geometry, clipped to the stage, at its opacity.
     pub fn draw(
         &mut self,
         target: &ProtocolObject<dyn MTLTexture>,
@@ -137,15 +209,25 @@ impl Gpu {
         let mut quads = Vec::with_capacity(layers.len());
         for layer in layers {
             let stage = fit((layer.width, layer.height), size);
-            quads.push(([stage, [1.0; 4]], self.texture_for(layer.picture)?));
+            let clip = scissor(stage, size);
+            quads.push((
+                QuadBytes::rect(stage, 1.0, false),
+                self.texture_for(layer.picture)?,
+                clip,
+            ));
             for cue in &layer.cues {
                 let Some((texture, picture)) = pictures(cue) else {
                     continue;
                 };
-                let inner = within(stage, fit(picture, (layer.width, layer.height)));
+                let g = &cue.geometry;
+                let Some(quad) = quad(g, picture, (layer.width, layer.height)) else {
+                    continue;
+                };
+                let opacity = (cue.opacity * g.opacity as f32).clamp(0.0, 1.0);
                 quads.push((
-                    [inner, [1.0, 1.0, 1.0, cue.opacity.clamp(0.0, 1.0)]],
+                    QuadBytes::placed(&quad, (layer.width, layer.height), stage, opacity, g.smooth),
                     texture,
+                    clip,
                 ));
             }
         }
@@ -169,14 +251,19 @@ impl Gpu {
             .renderCommandEncoderWithDescriptor(&pass)
             .ok_or("could not create a Metal render encoder")?;
         enc.setRenderPipelineState(&self.pipeline);
-        for (rect, texture) in &quads {
-            let bytes = NonNull::from(rect).cast::<c_void>();
-            // SAFETY: `rect` is 32 bytes of plain floats matching the shader's `Quad`, alive
-            // for the call (Metal copies inline bytes); texture index 0 is the shader's `tex`;
-            // a strip of 4 vertices is the shader's quad.
+        for (quad, texture, clip) in &quads {
+            if clip.width == 0 || clip.height == 0 {
+                continue;
+            }
+            let bytes = NonNull::from(quad).cast::<c_void>();
+            // SAFETY: `quad` is `QuadBytes`, plain `repr(C)` floats laid out as the shader's
+            // `Quad` (80 bytes), alive for the call (Metal copies inline bytes); texture index 0
+            // is the shader's `tex`; a strip of 4 vertices is the shader's quad; the scissor
+            // rect lies within the target (`scissor` clamps it).
             unsafe {
-                enc.setVertexBytes_length_atIndex(bytes, size_of::<[[f32; 4]; 2]>(), 0);
-                enc.setFragmentBytes_length_atIndex(bytes, size_of::<[[f32; 4]; 2]>(), 0);
+                enc.setScissorRect(*clip);
+                enc.setVertexBytes_length_atIndex(bytes, size_of::<QuadBytes>(), 0);
+                enc.setFragmentBytes_length_atIndex(bytes, size_of::<QuadBytes>(), 0);
                 enc.setFragmentTexture_atIndex(Some(texture), 0);
                 enc.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::TriangleStrip, 0, 4);
             }
@@ -392,19 +479,6 @@ fn texture(
     Ok(texture)
 }
 
-/// `inner` (normalised to -1..1 within a rect) placed in `outer` (normalised device
-/// coordinates).
-fn within(outer: [f32; 4], inner: [f32; 4]) -> [f32; 4] {
-    let (cx, cy) = ((outer[0] + outer[2]) / 2.0, (outer[1] + outer[3]) / 2.0);
-    let (hw, hh) = ((outer[2] - outer[0]) / 2.0, (outer[3] - outer[1]) / 2.0);
-    [
-        cx + inner[0] * hw,
-        cy + inner[1] * hh,
-        cx + inner[2] * hw,
-        cy + inner[3] * hh,
-    ]
-}
-
 /// Where a stage of `stage` pixels sits in a display of `display` pixels: as large as fits,
 /// its shape kept, centred (black bars elsewhere), in normalised device coordinates.
 pub fn fit((sw, sh): (u32, u32), (dw, dh): (u32, u32)) -> [f32; 4] {
@@ -501,5 +575,138 @@ mod tests {
             read[card::CELLS..],
             [card::RED, card::GREEN, card::BLUE, card::YELLOW]
         );
+    }
+
+    /// Draws stage-sized pictures over black on a stage of `stage` in a target of `target`,
+    /// and reads `points` (fractions of the target).
+    #[cfg(feature = "test-support")]
+    fn draw_pictures(
+        stage: (u32, u32),
+        target: (u32, u32),
+        cues: &[(Vec<u8>, (u32, u32), VideoGeometry)],
+        points: &[[f32; 2]],
+    ) -> Vec<[u8; 4]> {
+        let mut gpu = Gpu::new().unwrap();
+        let textures: Vec<Texture> = cues
+            .iter()
+            .map(|(px, (w, h), _)| {
+                texture(gpu.device(), *w as usize, *h as usize, &mut px.clone()).unwrap()
+            })
+            .collect();
+        let layer = Layer {
+            stage: openlab_core::StageId(uuid::Uuid::nil()),
+            width: stage.0,
+            height: stage.1,
+            picture: Picture::Black,
+            cues: cues
+                .iter()
+                .enumerate()
+                .map(|(i, (_, _, geometry))| CuePicture {
+                    picture: i as u64,
+                    position: 0.0,
+                    opacity: 1.0,
+                    geometry: *geometry,
+                })
+                .collect(),
+        };
+        gpu.probe(target, &[layer], points, &mut |c| {
+            let i = c.picture as usize;
+            Some((textures[i].clone(), cues[i].1))
+        })
+        .unwrap()
+    }
+
+    /// BGRA pixels, premultiplied, from RGBA.
+    #[cfg(feature = "test-support")]
+    fn bgra(rgba: &[[u8; 4]]) -> Vec<u8> {
+        rgba.iter()
+            .flat_map(|[r, g, b, a]| [*b, *g, *r, *a])
+            .collect()
+    }
+
+    /// A pixel the file leaves transparent stays transparent at full opacity (what is below
+    /// shows through); at half opacity an opaque pixel is half over what is below (VID-04).
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn transparent_pixels_stay_transparent_and_opacity_blends_over_what_is_below() {
+        let green = (bgra(&[[0, 255, 0, 255]]), (1, 1), VideoGeometry::default());
+        let stretch = VideoGeometry {
+            fill_style: openlab_core::FillStyle::Stretch,
+            smooth: false,
+            ..VideoGeometry::default()
+        };
+        let half_clear = bgra(&[[255, 0, 0, 255], [0, 0, 0, 0]]);
+        let points = [[0.25, 0.5], [0.75, 0.5]];
+        let read = draw_pictures(
+            (64, 64),
+            (64, 64),
+            &[green.clone(), (half_clear.clone(), (2, 1), stretch)],
+            &points,
+        );
+        assert_eq!(read, vec![[255, 0, 0, 255], [0, 255, 0, 255]]);
+        let half = VideoGeometry {
+            opacity: 0.5,
+            ..stretch
+        };
+        let read = draw_pictures(
+            (64, 64),
+            (64, 64),
+            &[green, (half_clear, (2, 1), half)],
+            &points,
+        );
+        let [r, g, _, _] = read[0];
+        assert!(
+            (126..=129).contains(&r) && (126..=129).contains(&g),
+            "{read:?}"
+        );
+        assert_eq!(read[1], [0, 255, 0, 255]);
+    }
+
+    /// Smoothing off: a scaled-up picture keeps hard pixel edges; on, the edge is blended.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn smooth_off_keeps_hard_pixel_edges() {
+        let red_blue = bgra(&[[255, 0, 0, 255], [0, 0, 255, 255]]);
+        let g = |smooth| VideoGeometry {
+            fill_style: openlab_core::FillStyle::Stretch,
+            smooth,
+            ..VideoGeometry::default()
+        };
+        let near_middle = [[0.45, 0.5]];
+        let hard = draw_pictures(
+            (64, 64),
+            (64, 64),
+            &[(red_blue.clone(), (2, 1), g(false))],
+            &near_middle,
+        );
+        assert_eq!(hard, vec![[255, 0, 0, 255]]);
+        let soft = draw_pictures(
+            (64, 64),
+            (64, 64),
+            &[(red_blue, (2, 1), g(true))],
+            &near_middle,
+        );
+        let [r, _, b, _] = soft[0];
+        assert!(r < 255 && b > 0, "{soft:?}");
+    }
+
+    /// A picture that overflows its stage (fill, or moved off it) is not drawn outside the
+    /// stage's part of the display.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_picture_never_draws_outside_its_stage() {
+        let wide_red = bgra(&[[255, 0, 0, 255]; 4]);
+        let fill = VideoGeometry {
+            fill_style: openlab_core::FillStyle::Fill,
+            ..VideoGeometry::default()
+        };
+        // A square stage in a wide display: bars at the sides stay black.
+        let read = draw_pictures(
+            (100, 100),
+            (200, 100),
+            &[(wide_red, (4, 1), fill)],
+            &[[0.1, 0.5], [0.5, 0.5], [0.9, 0.5]],
+        );
+        assert_eq!(read, vec![[0, 0, 0, 255], [255, 0, 0, 255], [0, 0, 0, 255]]);
     }
 }

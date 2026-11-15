@@ -49,9 +49,9 @@ final class VideoCueTests: XCTestCase {
 
     /// Opens a fresh copy of the Video show with its media made: a 4 s H.264 movie, a PNG and a
     /// JPEG still, and a 2 s movie with a long name.
-    func openVideoShow(edit: ((URL) throws -> Void)? = nil) async throws {
+    func openVideoShow(_ show: String = "Video", edit: ((URL) throws -> Void)? = nil) async throws {
         folder = engine.folder.appendingPathComponent("video-\(UUID().uuidString)", isDirectory: true)
-        let source = try XCTUnwrap(TestEngine.testShows).appendingPathComponent("Video")
+        let source = try XCTUnwrap(TestEngine.testShows).appendingPathComponent(show)
         try FileManager.default.copyItem(at: source, to: folder)
         let media = folder.appendingPathComponent("media", isDirectory: true)
         try writeTestMedia(media.appendingPathComponent("clip.mov"), seconds: 4)
@@ -61,14 +61,15 @@ final class VideoCueTests: XCTestCase {
         try edit?(folder)
         guard
             case .success(let opened) = await app.session.open(
-                path: folder.appendingPathComponent("Video.openlab").path)
+                path: folder.appendingPathComponent("\(show).openlab").path)
         else { return XCTFail("open") }
         doc = opened
         try await windowUp()
         // The engine's media probes finish as background work, waited for by an advance.
         let probed = await eventually {
             try? await self.play(0)
-            return self.store.model?.cue(Self.movie) == nil || self.store.mediaDurations[Self.movie]?.picture != nil
+            let movie = show == "Video" ? Self.movie : Self.geometryMovie
+            return self.store.model?.cue(movie) == nil || self.store.mediaDurations[movie]?.picture != nil
         }
         if !probed {
             XCTFail(
@@ -767,13 +768,14 @@ final class VideoCueTests: XCTestCase {
 
     /// A Video cue's inspector has Basics, Triggers and I/O; several selected keep I/O, the stage
     /// they share shown and set on all; the row draws the Video drawing.
-    func testAVideoCueShowsBasicsTriggersAndIOTabsAndItsKindIconInTheList() async throws {
+    func testAVideoCueShowsBasicsTriggersIOAndGeometryTabsAndItsKindIconInTheList() async throws {
         try await openVideoShow()
         click(Self.movie)
         let inspector = wc.inspector
         await soon { inspector.cue?.id == Self.movie }
         XCTAssertEqual(
-            inspector.tabView.tabViewItems.compactMap { $0.identifier as? String }, ["basics", "triggers", "io"])
+            inspector.tabView.tabViewItems.compactMap { $0.identifier as? String },
+            ["basics", "triggers", "io", "geometry"])
         XCTAssertEqual(Icon.drawing(shownBy: inspector.kindIcon.image), .kindVideo)
         for id in [Self.movie, Self.still, Self.empty, Self.long] {
             XCTAssertEqual(Icon.drawing(shownBy: cueCell(id, "status")?.images[4].image), .kindVideo, "\(id)")

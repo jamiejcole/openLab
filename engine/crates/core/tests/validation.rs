@@ -278,6 +278,7 @@ fn a_video_cues_missing_stage_warns_and_none_is_quiet() {
                 media: Some(MediaRef::new("v.mov")),
                 stage,
                 duration: None,
+                geometry: Default::default(),
             },
         )
     };
@@ -306,6 +307,7 @@ fn a_video_cues_still_duration_is_clamped_like_any_time() {
                 media: Some(MediaRef::new("still.png")),
                 stage: None,
                 duration,
+                geometry: Default::default(),
             },
         )
     };
@@ -328,6 +330,74 @@ fn a_video_cues_still_duration_is_clamped_like_any_time() {
         [duration(1), duration(2), duration(3), duration(4)],
         [Some(0.0), Some(MAX_TIME), None, Some(5.0)]
     );
+}
+
+/// A show file's Video cue geometry out of range is put at the end of its range with a
+/// warning per field; geometry keys missing from the file are the defaults; a layer that is
+/// not a whole number from 0 to 65535 refuses the file as a wrong type.
+#[test]
+fn a_video_cues_geometry_out_of_range_loads_clamped_with_a_warning_each() {
+    let mut ws = workspace(vec![cue(1, video()), cue(2, video())]);
+    ws.stages = vec![Stage::new(stage_id(1), "Stage 1", 1920, 1080)];
+    let mut doc: serde_json::Value = serde_json::from_str(&show_text(&ws)).unwrap();
+    let cues = |doc: &mut serde_json::Value| -> Vec<serde_json::Value> {
+        doc["workspace"]["cue_lists"][0]["cues"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let mut list = cues(&mut doc);
+    let k = list[0]["kind"].as_object_mut().unwrap();
+    k.insert("opacity".into(), serde_json::json!(3.0));
+    k.insert("layer".into(), serde_json::json!(5000));
+    k.insert("rotation".into(), serde_json::json!(-720.0));
+    k.insert(
+        "crop".into(),
+        serde_json::json!({"top": -4, "bottom": 1e9, "left": 0, "right": 0}),
+    );
+    let k = list[1]["kind"].as_object_mut().unwrap();
+    for key in [
+        "fill_stage",
+        "translation",
+        "scale",
+        "opacity",
+        "layer",
+        "smooth",
+    ] {
+        k.remove(key);
+    }
+    doc["workspace"]["cue_lists"][0]["cues"] = serde_json::Value::Array(list.clone());
+    let loaded = load_show(&doc.to_string()).unwrap();
+    let value = |field| warning(1, IssueKind::InvalidValue { field });
+    assert_eq!(
+        loaded.warnings,
+        vec![
+            value("rotation"),
+            value("crop.top"),
+            value("crop.bottom"),
+            value("opacity"),
+            value("layer")
+        ]
+    );
+    let geometry = |n| match loaded.workspace.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Video { geometry, .. } => geometry,
+        ref other => panic!("{other:?}"),
+    };
+    let g = geometry(1);
+    assert_eq!(
+        (g.opacity, g.layer, g.rotation, g.crop.top, g.crop.bottom),
+        (1.0, MAX_CUE_LAYER, -MAX_ROTATION, 0.0, MAX_CROP)
+    );
+    assert_eq!(geometry(2), VideoGeometry::default());
+    for layer in [
+        serde_json::json!(-1),
+        serde_json::json!(65536),
+        serde_json::json!(2.5),
+    ] {
+        list[0]["kind"]["layer"] = layer;
+        doc["workspace"]["cue_lists"][0]["cues"] = serde_json::Value::Array(list.clone());
+        assert!(load_show(&doc.to_string()).is_err());
+    }
 }
 
 #[test]

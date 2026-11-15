@@ -29,7 +29,7 @@ use openlab_core::video_probe::ProbeReport;
 use super::media::Probe;
 use openlab_core::{
     Action, BrokenReason, CueId, CueKind, CueState, Input, RunId, SampleTime, StageId,
-    seconds_to_samples,
+    VideoGeometry, seconds_to_samples,
 };
 
 use super::voices::Effects;
@@ -137,6 +137,7 @@ struct Plays {
     path: String,
     still: bool,
     stage: StageId,
+    geometry: VideoGeometry,
     /// The action's length in seconds, if it has one.
     length: Option<f64>,
 }
@@ -424,6 +425,7 @@ impl DocCx<'_> {
             media: Some(media),
             stage: Some(stage),
             duration,
+            geometry,
         }) = self.cue(cue).map(|c| &c.kind)
         else {
             return Err(Refused::Failed("the cue has no file or stage"));
@@ -448,12 +450,14 @@ impl DocCx<'_> {
                 path,
                 still: false,
                 stage: *stage,
+                geometry: *geometry,
                 length: Some(d),
             },
             ProbeReport::Still { .. } => Plays {
                 path,
                 still: true,
                 stage: *stage,
+                geometry: *geometry,
                 length: *duration,
             },
             ProbeReport::Missing | ProbeReport::Unsupported { .. } => {
@@ -498,6 +502,43 @@ impl DocCx<'_> {
             index.locate(ws, cue)
         } else {
             None
+        }
+    }
+
+    /// After an edit: each of this doc's pictures whose cue's geometry changed is sent its new
+    /// geometry, so the stage follows at once without restarting the picture (VID-04). Its
+    /// `load` is kept up to date too, so a stage host that starts again draws it so. Costs
+    /// one index lookup per picture up, whatever the show's size.
+    pub(super) fn follow_picture_geometry(&mut self) {
+        let doc = self.doc.id;
+        let changed: Vec<(u64, VideoGeometry)> = self
+            .eng
+            .pictures
+            .live
+            .iter()
+            .filter(|(_, l)| l.doc == doc)
+            .filter_map(|(id, l)| {
+                let ToStage::Load { geometry: sent, .. } = &l.load else {
+                    return None;
+                };
+                match self.cue(l.cue).map(|c| &c.kind) {
+                    Some(CueKind::Video { geometry, .. }) if geometry != sent => {
+                        Some((*id, *geometry))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        for (picture, geometry) in changed {
+            let Some(live) = self.eng.pictures.live.get_mut(&picture) else {
+                continue;
+            };
+            if let ToStage::Load { geometry: sent, .. } = &mut live.load {
+                *sent = geometry;
+            }
+            if !live.held_back {
+                self.eng.picture(ToStage::Geometry { picture, geometry });
+            }
         }
     }
 
@@ -748,6 +789,7 @@ impl DocCx<'_> {
             file: plays.path,
             still: plays.still,
             offset: seconds(offset, rate).min(openlab_core::MAX_TIME),
+            geometry: plays.geometry,
         };
         let (length, still) = (plays.length, plays.still);
         self.eng.pictures.live.insert(

@@ -88,6 +88,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     var onEditPatch: ((ModelID) -> Void)?
     /// A Video cue's rows of the I/O tab.
     let videoIO = VideoIOControls()
+    let geometry = GeometryControls()
     var outputPatchIDs: [ModelID] = []
     var outputPatchNames: [String] = []
     let networkMessageField = NSTextField()
@@ -209,6 +210,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// drag not yet committed is given up.
     func endGestures() {
         timeLoops.waveform.endDrag()
+        geometry.thumbnail.endDrag()
         audioLevels.endGesture()
         fadeLevels.endGesture()
         gestureHold(false)
@@ -460,9 +462,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let devamp = devampTab(row: row, column: column)
         let network = networkTab(row: row, column: column)
         let io = ioTab(row: row, column: column)
+        let geometryItem = geometryTab()
         buildLevelsTabs()
         buildTimeLoopsTab()
-        for i in [item, triggers, devamp, network, io]
+        for i in [item, triggers, devamp, network, io, geometryItem]
             + [modeItem, loadTimeItem, levelsItem, curveItem, fadeLevelsItem, timeLoopsItem].compactMap({ $0 })
         {
             if let id = i.identifier as? String { tabItems[id] = i }
@@ -876,6 +879,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         renderDevamp(cue)
         renderNetwork(cue, model: model)
         renderIO(cue, model: model)
+        renderGeometry(cueForKindEdit ?? cue, model: model)
         renderLevels(cueForEdit ?? cue, model: model)
         renderTimeLoops(cueForEdit ?? cue)
         updatePreviewButton()
@@ -939,6 +943,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         fadeLevels.isLocked = isLocked
         fadeSettings.isLocked = isLocked
         timeLoops.isLocked = isLocked
+        geometry.isLocked = isLocked
         if isLocked, !stale.isEmpty { render(force: stale) }
     }
 
@@ -1015,7 +1020,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// kind edits start from until the engine answers (one cue's comes from `command` itself).
     func send(
         _ command: Command, cue: ModelID, key: String, revert: Set<InspectorField>, coalesce: String? = nil,
-        kinds: [ModelID: JSONValue] = [:], notes: String? = nil
+        kinds: [ModelID: JSONValue] = [:], notes: String? = nil, refusedAs: String? = nil
     ) {
         guard !isLocked else { return }
         // The selection the edit was made for: a several-cue edit's refusal shows their values again
@@ -1071,7 +1076,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                     return
                 }
                 sendFailures += 1
-                if case .engine(_, let message) = error {
+                if case .engine = error, let refusedAs {
+                    showRefusal(refusedAs)
+                } else if case .engine(_, let message) = error {
                     showRefusal(String(format: loc("inspector.refused"), message))
                 } else {
                     showRefusal(loc("inspector.failed"))
@@ -1121,7 +1128,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         if type == "kind_fields", let fields = property["value"]?.objectValue,
             let edited = cueForEdit, edited.id == cue, var kind = edited.raw["kind"]
         {
-            for (field, value) in fields { kind.set(field, value) }
+            for (field, value) in fields {
+                // A Video cue's pair or crop may carry only its changed parts (the engine merges them).
+                if VideoGeometry.partialFields.contains(field), case .object(let parts) = value,
+                    case .object(var now)? = kind[field]
+                {
+                    for (part, v) in parts { now[part] = v }
+                    kind.set(field, .object(now))
+                } else {
+                    kind.set(field, value)
+                }
+            }
             return kind
         }
         guard let type, type == "duration" || type == "load_to_time", let value = property["value"],

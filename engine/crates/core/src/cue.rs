@@ -8,6 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::media_path::file_name;
 use crate::model::{CueId, NetworkPatchId, PatchId, StageId};
+use crate::video_geometry::VideoGeometry;
 
 /// Levels at or below this are silence (−∞). The file writes this value for silence.
 pub const SILENCE_DB: f64 = -120.0;
@@ -676,6 +677,9 @@ pub enum CueKind {
         /// How long a still image shows, seconds (0 to [`MAX_TIME`]); `None` = until stopped.
         /// Not used by a video file, whose length is its own.
         duration: Option<f64>,
+        /// How its picture sits on the stage (VID-04), stored as fields of the kind.
+        #[serde(flatten)]
+        geometry: VideoGeometry,
     },
 }
 

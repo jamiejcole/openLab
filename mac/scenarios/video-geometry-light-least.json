@@ -1,0 +1,21 @@
+{
+  "about": "The Geometry tab (#644) in light appearance at the least window size (800x500): custom mode with every field, then fill-stage mode, then the inspector made narrower by a narrow window; nothing may be clipped.",
+  "show": "Geometry",
+  "appearance": "light",
+  "displays": "V1:1920x1080",
+  "media": {
+    "media/clip.mov": 4,
+    "media/still.png": 1
+  },
+  "window": {"width": 800, "height": 500},
+  "steps": [
+    {"advance": 0.1},
+    {"select": "6"},
+    {"tab": "geometry"},
+    {"shot": "custom-least"},
+    {"select": "2"},
+    {"shot": "fill-least"},
+    {"select": "7"},
+    {"shot": "opacity-least"}
+  ]
+}

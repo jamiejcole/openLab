@@ -100,6 +100,7 @@ pub fn video() -> CueKind {
         media: Some(MediaRef::new("media/v.mov")),
         stage: Some(stage_id(1)),
         duration: None,
+        geometry: Default::default(),
     }
 }
 

@@ -28,6 +28,7 @@ fn video_on(n: u128, stage: Option<StageId>) -> Cue {
             media: Some(MediaRef::new("media/v.mov")),
             stage,
             duration: None,
+            geometry: Default::default(),
         },
     )
 }

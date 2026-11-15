@@ -952,7 +952,32 @@
               "type": "video",
               "media": "Media/Backdrop.mov",
               "stage": "00000000-0000-0000-0000-000000000001",
-              "duration": null
+              "duration": null,
+              "fill_stage": true,
+              "fill_style": "fit",
+              "translation": {
+                "x": 0.0,
+                "y": 0.0
+              },
+              "scale": {
+                "x": 1.0,
+                "y": 1.0
+              },
+              "scale_locked": true,
+              "rotation": 0.0,
+              "crop": {
+                "top": 0.0,
+                "bottom": 0.0,
+                "left": 0.0,
+                "right": 0.0
+              },
+              "anchor": {
+                "x": 0.0,
+                "y": 0.0
+              },
+              "opacity": 1.0,
+              "layer": 1000,
+              "smooth": true
             }
           },
           {
@@ -989,7 +1014,32 @@
               "type": "video",
               "media": "Media/Title.png",
               "stage": "00000000-0000-0000-0000-000000000001",
-              "duration": 5.0
+              "duration": 5.0,
+              "fill_stage": false,
+              "fill_style": "fill",
+              "translation": {
+                "x": -120.0,
+                "y": 40.5
+              },
+              "scale": {
+                "x": 0.5,
+                "y": 0.75
+              },
+              "scale_locked": false,
+              "rotation": 12.5,
+              "crop": {
+                "top": 4.0,
+                "bottom": 0.0,
+                "left": 10.0,
+                "right": 2.0
+              },
+              "anchor": {
+                "x": -32.0,
+                "y": 16.0
+              },
+              "opacity": 0.8,
+              "layer": 20,
+              "smooth": false
             }
           }
         ]

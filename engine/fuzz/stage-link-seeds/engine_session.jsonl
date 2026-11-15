@@ -1,4 +1,4 @@
-{"type":"hello","version":1}
+{"type":"hello","version":2}
 {"type":"stages","stages":[{"id":"00000000-0000-0000-0000-000000000001","width":1920,"height":1080,"display":"D1","keep_black":true},{"id":"00000000-0000-0000-0000-000000000002","width":640,"height":480,"keep_black":false}]}
 {"type":"ping","seq":7}
 {"type":"test_card","stage":"00000000-0000-0000-0000-000000000001","frame":42}
@@ -7,3 +7,5 @@
 {"type":"probe_display","display":"V1","points":[[0.5,0.5]]}
 {"type":"hang"}
 {"type":"quit"}
+{"type":"load","picture":1,"stage":"00000000-0000-0000-0000-000000000001","file":"/show/a.mov","still":false,"offset":0,"geometry":{"fill_stage":false,"fill_style":"fill","translation":{"x":10,"y":-5},"scale":{"x":2,"y":2},"scale_locked":true,"rotation":45,"crop":{"top":1,"bottom":2,"left":3,"right":4},"anchor":{"x":0,"y":0},"opacity":0.5,"layer":7,"smooth":false}}
+{"type":"geometry","picture":1,"geometry":{"opacity":2,"layer":1001}}

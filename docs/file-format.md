@@ -67,6 +67,7 @@ cue, and the cue shows as broken where it cannot run.
 | A target that does not exist, targets the cue itself, or is the wrong kind of cue | Warning; the target is kept and the cue shows as broken |
 | An Audio cue's `patch` or a Network cue's `destination` does not exist | Warning; the cue shows as broken |
 | A Video cue's `stage` does not exist | Warning (`StageMissing`); kept, and the cue shows as broken. A `stage` of `null` ("none") loads quietly and the cue shows as broken |
+| A Video cue's geometry number outside its range (§5 `video`) | Warning (`InvalidValue`, the field); clamped. A `layer` that is not a whole number 0 to 65535 refuses the file (wrong type) |
 | A time below its minimum or above its maximum (24 h unless stated) | Warning; clamped |
 | A level above `+12` | Warning; set to `+12` |
 | A level below `-120` | Set to `-120` silently (same meaning) |
@@ -297,6 +298,19 @@ manual p. 209). A video's length is not stored; it comes from the file.
 | `media` | path or `null` | §4.3. A video file or a still image. `null` until a file is assigned. |
 | `stage` | stage id or `null` | The stage (§4.7) the cue is drawn on. `null` is "none": the cue shows as broken and does not play. |
 | `duration` | seconds or `null` | How long a still image shows; `null` = until the cue is stopped. Not used by a video file. Out of range: clamped with `InvalidTime`. |
+| `fill_stage` | bool | Geometry (VID-04, QLab 5 manual pp. 212-214): `true` fills the stage in `fill_style`; `false` (custom) draws the picture at its own pixel size placed by the fields below. |
+| `fill_style` | `"fit"`, `"fill"` or `"stretch"` | Fit: the whole picture as large as the stage allows, shape kept (the rest shows what is below). Fill: the stage covered, shape kept, the overflow not drawn. Stretch: the stage's shape. |
+| `translation` | `{x, y}` pixels | Custom: where the anchor is moved to from the stage's centre, y up. -65536 to 65536. |
+| `scale` | `{x, y}` | Custom: times the picture's own size, -100 to 100 (negative mirrors). |
+| `scale_locked` | bool | The app edits `scale.x` and `scale.y` together. |
+| `rotation` | degrees | Custom: anticlockwise about the anchor, -360 to 360. |
+| `crop` | `{top, bottom, left, right}` pixels | Custom: cut off each edge of the picture, 0 to 16384 each. |
+| `anchor` | `{x, y}` pixels | Custom: the point scaled and rotated about and moved by, from the picture's centre, y up. -65536 to 65536. |
+| `opacity` | 0 to 1 | 1 is opaque; the file's own transparency is kept. |
+| `layer` | whole number 0 to 1000 | Stacking among the cues on its stage: higher on top; on one layer the later-started on top. |
+| `smooth` | bool | Smooth scaling; `false` is nearest-neighbour (hard pixel edges). |
+
+A geometry key missing from a file is its default (fill stage, fit, no move, scale 1, locked, no rotation or crop, anchor at the centre, opacity 1, layer 1000, smooth). Out of range: clamped (not finite: the default) with an `InvalidValue` warning naming the field.
 
 **`network`** — sends one OSC message.
 

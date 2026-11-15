@@ -989,6 +989,7 @@ dependencies = [
  "openlab-core",
  "openlab-engine",
  "openlab-video",
+ "serde_json",
  "tempfile",
  "uuid",
 ]

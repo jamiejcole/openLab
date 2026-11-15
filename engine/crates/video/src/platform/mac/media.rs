@@ -50,7 +50,8 @@ use objc2_core_media::{CMTime, CMTimeRange};
 use objc2_core_video::{
     CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
     CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
-    CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA,
+    CVPixelBufferUnlockBaseAddress, kCVImageBufferAlphaChannelMode_StraightAlpha,
+    kCVImageBufferAlphaChannelModeKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA,
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 use objc2_image_io::CGImageSource;
@@ -520,6 +521,20 @@ fn decode(shared: &Shared, file: &str, still: bool, offset: f64, limits: Limits)
     }
 }
 
+/// Multiplies each BGRA pixel's colour by its alpha (straight to premultiplied), rounding to
+/// the nearest; an opaque pixel is left alone.
+pub fn premultiply(px: &mut [u8]) {
+    for p in px.as_chunks_mut::<4>().0 {
+        let a = u16::from(p[3]);
+        if a == 255 {
+            continue;
+        }
+        for c in &mut p[..3] {
+            *c = ((u16::from(*c) * a + 127) / 255) as u8;
+        }
+    }
+}
+
 /// Decodes a still (PNG, JPEG, TIFF) into BGRA pixels.
 fn still_frame(file: &str) -> Result<Frame, String> {
     let url = CFURL::from_file_path(file).ok_or("the path cannot be read")?;
@@ -722,7 +737,17 @@ impl Movie {
                 Some(std::slice::from_raw_parts(base, stride * h).to_vec())
             };
             CVPixelBufferUnlockBaseAddress(&image, CVPixelBufferLockFlags::ReadOnly);
-            let pixels = bytes.ok_or("a frame could not be read")?;
+            let mut pixels = bytes.ok_or("a frame could not be read")?;
+            // The stage draws premultiplied colour. A decoder that says its frame's alpha is
+            // straight (ProRes 4444, HEVC with alpha) has it multiplied in here, on this decode
+            // thread; a frame that says nothing is opaque or premultiplied already.
+            let straight = image
+                .attachment(kCVImageBufferAlphaChannelModeKey, std::ptr::null_mut())
+                .and_then(|v| v.downcast::<CFString>().ok())
+                .is_some_and(|mode| *mode == *kCVImageBufferAlphaChannelMode_StraightAlpha);
+            if straight {
+                premultiply(&mut pixels);
+            }
             if !time.is_finite() {
                 return Err("a frame has no time".into());
             }
@@ -879,6 +904,25 @@ pub mod fault {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Straight alpha to premultiplied: each colour times alpha / 255, rounded; opaque and
+    /// fully transparent pixels by hand.
+    #[test]
+    fn straight_alpha_is_premultiplied() {
+        let mut px = vec![
+            255, 128, 0, 255, // opaque: unchanged
+            255, 255, 255, 128, // half white: 128 each
+            0, 0, 255, 64, // a quarter red (BGRA): 64
+            200, 100, 50, 0, // transparent: nothing
+        ];
+        premultiply(&mut px);
+        assert_eq!(
+            px,
+            vec![
+                255, 128, 0, 255, 128, 128, 128, 128, 0, 0, 64, 64, 0, 0, 0, 0
+            ]
+        );
+    }
 
     /// A picture whose file is not there fails on its own thread, reported when polled; the
     /// main thread is never held.
