@@ -2341,3 +2341,70 @@ fn load_to_time_inside_the_range_go_starts_on_that_frame() {
     run_to(&mut s, at + samples(0.02));
     assert_eq!(on_stage(&mut s, "loaded into the second pass"), frame_at(0.62));
 }
+
+/// Trims the movie cannot play (a start trim past its end) break the cue with why, as an Audio
+/// cue's slices that cannot play do; GO plays nothing. Fixed, it plays.
+#[test]
+fn trims_past_the_movies_end_break_the_cue_with_why_until_fixed() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = video_show(vec![timed_cue(1, &movie, |t| t.start_time = 3.0)]);
+    assert!(
+        matches!(
+            problems(&s, 1).as_slice(),
+            [CueProblem::SlicesUnplayable { .. }]
+        ),
+        "{:?}",
+        problems(&s, 1)
+    );
+    go(&mut s);
+    s.run(samples(0.2));
+    assert_eq!(shown(&mut s), None, "nothing plays");
+    set_geometry(&mut s, 1, serde_json::json!({"start_time": 1.0}));
+    assert_eq!(problems(&s, 1), vec![]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(shown(&mut s), Some(25));
+}
+
+/// A stage host that starts again while a devamped loop plays is sent the plan as the devamp
+/// left it: the picture goes on into the slice after the loop, not round the loop again.
+#[test]
+fn a_devamped_loop_survives_a_stage_host_relaunch() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let devamp = cue(
+        2,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let looping = timed_cue(1, &movie, |t| {
+        t.end_time = Some(1.6);
+        t.slices = vec![openlab_core::SliceMarker {
+            time: 0.8,
+            play_count: 0,
+        }];
+    });
+    let mut s = video_show(vec![looping, devamp]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2);
+    s.run(BLOCK);
+    let pid = s.control().stage_host_pid().unwrap();
+    let ended = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(ended.success());
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
+    s.settle_stages();
+    run_to(&mut s, at + samples(1.62));
+    assert_eq!(
+        on_stage(&mut s, "after the relaunch, past the loop"),
+        frame_at(0.82)
+    );
+}

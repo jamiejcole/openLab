@@ -1220,3 +1220,55 @@ impl DocCx<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slice(index: u32, start: u64, frames: u64, plays: Passes) -> Slice {
+        Slice {
+            index,
+            start,
+            frames,
+            plays,
+        }
+    }
+
+    /// A devamp leaves the loop at the end of the pass under way: the loop's entry keeps the
+    /// passes played so far plus this one, the slices after it follow; with `stop` nothing
+    /// follows. A loop split by a start part way in (its rest of a pass, then its passes) is
+    /// left at the end of whichever play is under way, its later entry dropped.
+    #[test]
+    fn a_devamp_cuts_the_loop_after_the_pass_under_way() {
+        let table = [
+            slice(0, 0, 10, Passes::Times(1)),
+            slice(1, 10, 20, Passes::Infinite),
+            slice(2, 30, 5, Passes::Times(1)),
+        ];
+        // 10 + 2 passes + 5 into the third: leaves after the third pass, at 70.
+        let (t, leaves) = devamped(&table, 55, false).unwrap();
+        assert_eq!(leaves, 70);
+        assert_eq!(t[1].plays, Passes::Times(3));
+        assert_eq!(t[2], table[2]);
+        let (t, leaves) = devamped(&table, 55, true).unwrap();
+        assert_eq!((t.len(), leaves), (2, 70));
+        // In the bridge before the loop: it ends there, the loop still to come.
+        let (t, leaves) = devamped(&table, 3, false).unwrap();
+        assert_eq!(leaves, 10);
+        assert_eq!(t[0].plays, Passes::Times(1));
+        assert_eq!(t[1], table[1], "the loop after it is kept");
+        // A start inside the loop split it: devamped in that first part, the rest is dropped.
+        let split = [
+            slice(1, 15, 15, Passes::Times(1)),
+            slice(1, 10, 20, Passes::Infinite),
+            slice(2, 30, 5, Passes::Times(1)),
+        ];
+        let (t, leaves) = devamped(&split, 4, false).unwrap();
+        assert_eq!(leaves, 15);
+        assert_eq!(t, vec![split[0], split[2]]);
+        // Past the end of a finite table there is nothing to leave.
+        let finite = [slice(0, 0, 10, Passes::Times(2))];
+        assert!(devamped(&finite, 20, false).is_none());
+        assert!(devamped(&[], 0, false).is_none());
+    }
+}
