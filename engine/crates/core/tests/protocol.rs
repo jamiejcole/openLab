@@ -108,6 +108,7 @@ fn snapshot() -> Snapshot {
             code: "media_damaged".into(),
             message: "intro.wav has a damaged tail".into(),
             cue: Some(cue_id(10)),
+            device: None,
         }],
         media_durations: vec![CueMediaDuration {
             cue: cue_id(10),
@@ -1274,6 +1275,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                     code: "file_repaired".into(),
                     message: "duplicate cue number 3 was cleared".into(),
                     cue: None,
+                    device: None,
                 },
                 WireWarning::LateStart {
                     cue: cue_id(10),
@@ -3067,6 +3069,7 @@ fn all_warnings() -> Vec<WireWarning> {
         code: "media_damaged".into(),
         message: "intro.wav has a damaged tail".into(),
         cue: Some(c),
+        device: None,
     });
     all
 }
@@ -3417,6 +3420,7 @@ fn preshow_report_sample() -> PreshowReport {
             code: "device_lost".into(),
             message: "audio device \"Scarlett 2i2\" is lost".into(),
             cue: None,
+            device: Some("Scarlett 2i2".into()),
         }],
     }
 }
@@ -3512,6 +3516,16 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
             add(&format!("warnings_{}", tag(&w)), warnings(w));
         }
     }
+    // A device notice names its device, so a client can list one entry per device.
+    add(
+        "warnings_notice_device_lost",
+        warnings(WireWarning::Notice {
+            code: "device_lost".into(),
+            message: "audio device \"Scarlett 2i2\" is lost".into(),
+            cue: None,
+            device: Some("Scarlett 2i2".into()),
+        }),
+    );
     for (_, r) in go_table() {
         let name = format!("warnings_go_ignored_{}", tag(&r));
         add(
