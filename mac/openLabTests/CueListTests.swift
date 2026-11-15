@@ -601,7 +601,9 @@ final class CueListTests: XCTestCase {
         // The tooltip reads as the Warnings tab does: fields filled in, never a raw `{target}`.
         let tip = try XCTUnwrap(try icon(H.fade).toolTip)
         XCTAssertFalse(tip.contains("{"), tip)
-        XCTAssertTrue(tip.contains("00000000-0000-0000-0000-000000000063"), tip)
+        // Its target is in no workspace, so it has no name: words stand in, never the internal id.
+        XCTAssertTrue(tip.contains(loc("warnings.unknownItem")), tip)
+        XCTAssertFalse(tip.contains("00000000-0000-0000-0000-000000000063"), tip)
         // A problem type this build has no words for still shows its type, not nothing.
         let unknown = try ServerMessage.decode(
             #"{"type":"runtime","seq":1,"changes":[{"type":"problems","cue":"\#(H.fade)","problems":[{"type":"brand_new"}]}]}"#

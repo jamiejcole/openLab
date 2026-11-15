@@ -400,6 +400,10 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         let targetRow = NSStackView(
             views: [targetField, targetPath, targetNote, clearTargetButton, jumpTargetButton, chooseButton])
         targetRow.spacing = 6
+        // The borderless 16 pt glyph buttons sit closer to what follows them, so the row (and the
+        // inspector's least width) keeps room for the field and Choose at their least widths.
+        targetRow.setCustomSpacing(4, after: clearTargetButton)
+        targetRow.setCustomSpacing(4, after: jumpTargetButton)
         targetField.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         // A long path truncates; it must not hold the inspector, and so the window, wider.
         targetField.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)

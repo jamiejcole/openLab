@@ -257,7 +257,9 @@ class WaveformView: NSView {
     /// (not in Show Mode, nor before the file's length is known).
     @discardableResult
     func beginDrag(atX x: CGFloat, y: CGFloat = 0) -> Bool {
-        guard !isLocked, !isReading, duration != nil else { return false }
+        // A handle drags once the file's length is known, drawn waves or not: a trim never waits on
+        // the waveform read.
+        guard !isLocked, duration != nil else { return false }
         removing = false
         if fadesShown, y >= waveRect.minY, y <= waveRect.minY + Self.fadeBand {
             let di = abs(scale.x(trimStart + fadeIn) - x)
