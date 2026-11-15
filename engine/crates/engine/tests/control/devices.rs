@@ -1199,7 +1199,11 @@ fn a_timeline_group_hit_by_a_loss_ends_whole_and_nothing_starts_after_the_return
     // The child that played keeps its mark and so does the group (whichever child failed
     // last); the pre-waiting one is idle.
     for n in [1, 10] {
-        assert_eq!(s.control().engine().state(id(n)), CueState::Paused, "cue {n}");
+        assert_eq!(
+            s.control().engine().state(id(n)),
+            CueState::Paused,
+            "cue {n}"
+        );
     }
     assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
     assert!(s.channel(0)[cut..].iter().all(|&v| v == 0.0));
