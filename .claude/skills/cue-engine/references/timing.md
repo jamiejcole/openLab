@@ -63,6 +63,7 @@ Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
 
 ### Seek (load to a point of the file)
 `Seek { cue, position }` (a click in an Audio cue's waveform, `seek.rs`) names a point of the media file, not of the timeline: core cannot plan slices, so it passes `position` (seconds to device frames; NaN and negative are 0, huge saturates) and the binary keeps it inside the trims and plans from there (`cue_slices_from`), past loops included.
+- A point at or past the out point is the end of a pass of the last slice: its next pass follows if it has one (a forever loop loops on from its start), else nothing (a playing cue's action ends).
 - Not Audio, stopping (`stop_end`), post-waiting with its sound over, or a run with no voice: `LoadIgnored`. Broken (static, run time, or a lost mark while the device is away): `CueBroken`, nothing sent.
 - A preview of the cue jumps first: `SeekVoice` with a fresh preview id; it stays a preview (no `PreviewChanged`).
 - Idle or loaded: a load there (`LoadVoiceAt`, `Loaded.seek`, no pre-wait left, offset 0); starting it plays from the point with no pre-wait (a cue loaded disarmed gets its `LoadVoiceAt` at the start). A lost mark clears as for Load.
