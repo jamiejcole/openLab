@@ -227,7 +227,7 @@ final class VideoCueTests: XCTestCase {
         let cue = try XCTUnwrap(store.model?.cue(id), line: line)
         XCTAssertEqual(cue.kindType, "video", line: line)
         XCTAssertEqual(cue.raw["kind"]?["stage"]?.stringValue, stage.raw, line: line)
-        let type = try XCTUnwrap(cueCell(id, "type"), line: line).images[0]
+        let type = try XCTUnwrap(cueCell(id, "status"), line: line).images[4]
         XCTAssertEqual(Icon.drawing(shownBy: type.image), .kindVideo, line: line)
         XCTAssertEqual(type.accessibilityLabel(), loc("cue.type.video"), line: line)
         XCTAssertEqual(
@@ -776,7 +776,7 @@ final class VideoCueTests: XCTestCase {
             inspector.tabView.tabViewItems.compactMap { $0.identifier as? String }, ["basics", "triggers", "io"])
         XCTAssertEqual(Icon.drawing(shownBy: inspector.kindIcon.image), .kindVideo)
         for id in [Self.movie, Self.still, Self.empty, Self.long] {
-            XCTAssertEqual(Icon.drawing(shownBy: cueCell(id, "type")?.images[0].image), .kindVideo, "\(id)")
+            XCTAssertEqual(Icon.drawing(shownBy: cueCell(id, "status")?.images[4].image), .kindVideo, "\(id)")
         }
         XCTAssertTrue(inspector.durationField.isEnabled == false, "a movie's length is its file's")
 
