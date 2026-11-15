@@ -339,6 +339,10 @@ pub enum Request {
     /// the document worker within core's scan limits).
     Relink {
         folder: String,
+        /// Walk and report only: nothing is changed, and the result lists each match
+        /// (`matches`) for the operator to accept or reject.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        preview: bool,
     },
     ListDevices,
     /// Chooses the primary output device the engine opens at its **next start** (its clock is the
@@ -514,13 +518,13 @@ impl ClientMessage {
                 request:
                     Request::Open { path, .. }
                     | Request::SaveAs { path }
-                    | Request::Relink { folder: path },
+                    | Request::Relink { folder: path, .. },
                 ..
             } if path.is_empty() => Err(ProtocolError::OutOfRange {
                 field: "request.path",
             }),
             Self::Request {
-                request: Request::Relink { folder },
+                request: Request::Relink { folder, .. },
                 ..
             } if folder.len() > MAX_FOLDER_BYTES => Err(ProtocolError::OutOfRange {
                 field: "request.folder",
@@ -529,7 +533,7 @@ impl ClientMessage {
                 request:
                     Request::Open { path, .. }
                     | Request::SaveAs { path }
-                    | Request::Relink { folder: path },
+                    | Request::Relink { folder: path, .. },
                 ..
             } if !is_absolute(&to_portable(path, PathStyle::host())) => {
                 Err(ProtocolError::NotAbsolute {

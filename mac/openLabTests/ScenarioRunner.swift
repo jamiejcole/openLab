@@ -56,6 +56,14 @@ final class ScenarioRunner {
         /// `{"inside": id, "of": id}`: the run stops unless the first control lies wholly inside the
         /// second (a tab view: inside its content, below its tabs), as laid out now.
         case inside(id: String, of: String)
+        /// `{"set_media": "2.1", "file": "media/gone.wav"}`: the cue's file reference set as an edit
+        /// (a file that is not there leaves the cue missing it).
+        case setMedia(String, file: String)
+        /// `{"find_missing_files": ["gone.wav", "x/o.wav"], "folder": "Show Media"}`: a folder (named
+        /// `folder`, default `found`) holding a test tone at each path, searched with Tools > Find
+        /// Missing Files. The next steps and shots act on the tool's window (`focus` `sheet`: its
+        /// question, shown over it); `focus` `workspace` goes back.
+        case findMissingFiles([String], folder: String)
     }
 
     struct Scenario {
@@ -77,7 +85,7 @@ final class ScenarioRunner {
 
     static let stepKinds = [
         "select", "click", "double_click", "drag", "type", "key", "scroll", "magnify", "advance", "resize", "tab",
-        "focus", "paste_properties", "shot", "inside",
+        "focus", "paste_properties", "shot", "inside", "set_media", "find_missing_files",
     ]
 
     // MARK: Parsing
@@ -169,7 +177,8 @@ final class ScenarioRunner {
         let options: [String: Set<String>] = [
             "click": ["at", "modifiers"], "double_click": ["at", "modifiers"], "drag": ["from", "to", "modifiers"],
             "type": ["text", "enter"], "key": ["modifiers"], "scroll": ["dx", "dy", "precise", "modifiers", "at"],
-            "magnify": ["by", "at"], "paste_properties": ["tick"], "inside": ["of"],
+            "magnify": ["by", "at"], "paste_properties": ["tick"], "inside": ["of"], "set_media": ["file"],
+            "find_missing_files": ["folder"],
         ]
         let allowed = options[kind, default: []].union([kind])
         if let extra = o.keys.first(where: { !allowed.contains($0) }) {
@@ -238,6 +247,16 @@ final class ScenarioRunner {
             return .resize(try size(a[0], a[1], "resize"))
         case "tab": return .tab(try string("tab"))
         case "inside": return .inside(id: try string("inside"), of: try string("of"))
+        case "set_media": return .setMedia(try string("set_media"), file: try string("file"))
+        case "find_missing_files":
+            guard let files = o["find_missing_files"] as? [String],
+                files.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("/") && !$0.split(separator: "/").contains("..") })
+            else { throw Failure("\"find_missing_files\" must be an array of paths inside the folder") }
+            let folder = o["folder"] == nil ? "found" : try string("folder")
+            guard !folder.contains("/"), folder != "..", folder != "." else {
+                throw Failure("\"folder\" must be one folder name")
+            }
+            return .findMissingFiles(files, folder: folder)
         case "focus":
             let which = try string("focus")
             guard ["workspace", "settings", "sheet", "patch-editor", "preferences"].contains(which) else {
@@ -301,7 +320,26 @@ final class ScenarioRunner {
     private var window: NSWindow {
         // The sheet, once it has closed, gives the steps back to the workspace window.
         if let f = focused, f is PasteSheetWindow, wc.pasteSheet?.window !== f { return wc.window! }
+        // The tool's question, once answered, gives the steps back to the tool.
+        if let f = focused, let tool = wc.existingMissingFiles, f.sheetParent == nil, isChoiceSheet(f),
+            tool.choiceSheet?.window !== f
+        {
+            return tool.window!
+        }
         return focused ?? wc.window!
+    }
+
+    private func isChoiceSheet(_ w: NSWindow) -> Bool {
+        w.accessibilityIdentifier() == "missing-file-choice-sheet"
+    }
+
+    /// The window a sheet shown in `w` belongs over, and that sheet (nil: `w` is no sheet's).
+    private func sheetOver(_ w: NSWindow) -> (base: NSWindow, sheet: NSWindow?) {
+        if w is PasteSheetWindow { return (wc.window!, wc.pasteSheet?.window) }
+        if let tool = wc.existingMissingFiles, let toolWindow = tool.window {
+            if isChoiceSheet(w) || w === toolWindow { return (toolWindow, tool.choiceSheet?.window) }
+        }
+        return (w, w === wc.window ? wc.pasteSheet?.window : nil)
     }
 
     init(scenario: Scenario, out: URL) {
@@ -603,7 +641,9 @@ final class ScenarioRunner {
                 sc.render()
                 focused = w
             } else if which == "sheet" {
-                guard let sheet = wc.pasteSheet?.window else { throw Failure("no sheet is up") }
+                guard let sheet = wc.existingMissingFiles?.choiceSheet?.window ?? wc.pasteSheet?.window else {
+                    throw Failure("no sheet is up")
+                }
                 focused = sheet
             } else if which == "patch-editor" {
                 guard let editor = wc.settingsWindow.patchEditor, let w = editor.window else {
@@ -641,6 +681,33 @@ final class ScenarioRunner {
                 throw Failure("\"\(id)\" at \(frame) is not inside \"\(container)\" \(room)")
             }
             note("inside \(id) of \(container)")
+        case .setMedia(let what, let file):
+            let node = try cue(what)
+            guard case .success = await rig.store.send(command: .setProperty(node.id, .media(file))) else {
+                throw Failure("the engine refused the file")
+            }
+            // Its probe answers as device time moves.
+            for _ in 0..<5 { try await rig.advance(0.1) }
+            note("set_media \(what): \(file)")
+        case .findMissingFiles(let files, let name):
+            guard wc.canFindMissingFiles else { throw Failure("the menu item is off: no cue is missing its file") }
+            let dir = try XCTUnwrap(engine).folder.appendingPathComponent("scenario-\(UUID().uuidString)")
+                .appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            for f in files {
+                let url = dir.appendingPathComponent(f)
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try writeWAV(url, seconds: 1)
+            }
+            let tool = wc.missingFiles
+            // Never on screen: its question is drawn over it in shots.
+            tool.presentSheet = { _ in }
+            tool.window?.appearance = wc.window?.appearance
+            tool.pickFolder = { dir }
+            await tool.chooseFolderAndSearch()
+            focused = tool.window
+            note("find_missing_files in \(name): \(tool.rows.count) row(s); \(tool.summaryLabel.stringValue)")
         case .shot(let name):
             await catchUp()
             await wc.inspector.timeLoops.loading?.value
@@ -837,12 +904,12 @@ final class ScenarioRunner {
 
     /// The whole window (title bar included) at 2x, drawn offscreen.
     private func shot(to url: URL) throws {
-        // A focused sheet is shot over its workspace window, as it shows on screen.
-        let shown = window is PasteSheetWindow ? wc.window! : window
+        // A focused sheet is shot over its window, as it shows on screen.
+        let (shown, sheet) = sheetOver(window)
         guard let frame = shown.contentView?.superview else { throw Failure("the window has no frame view") }
         frame.layoutSubtreeIfNeeded()
         var rep = try renderView(frame, scale: 2, background: shown.backgroundColor)
-        if shown === wc.window, let sheet = wc.pasteSheet?.window { rep = try overlay(sheet, on: rep) }
+        if let sheet { rep = try overlay(sheet, on: rep, over: shown) }
         guard let png = rep.representation(using: .png, properties: [:]) else { throw Failure("PNG encoding failed") }
         try png.write(to: url)
     }
@@ -880,8 +947,10 @@ final class ScenarioRunner {
     }
 
     /// `sheet` drawn where AppKit puts a sheet: centred, under the window's title bar.
-    private func overlay(_ sheet: NSWindow, on rep: NSBitmapImageRep) throws -> NSBitmapImageRep {
-        sheet.appearance = wc.window?.appearance
+    private func overlay(_ sheet: NSWindow, on rep: NSBitmapImageRep, over base: NSWindow) throws
+        -> NSBitmapImageRep
+    {
+        sheet.appearance = base.appearance
         guard let frame = sheet.contentView else { throw Failure("the sheet has no content") }
         frame.layoutSubtreeIfNeeded()
         // On screen a scroll view tiles again once its document has its size (its scroller comes then).
@@ -898,7 +967,6 @@ final class ScenarioRunner {
         let top = try renderView(frame, scale: 2, background: .windowBackgroundColor)
         drawScrollers(in: frame, on: top)
         guard let context = NSGraphicsContext(bitmapImageRep: rep) else { throw Failure("no context") }
-        let base = try XCTUnwrap(wc.window)
         let titleBar = (base.frame.height - base.contentLayoutRect.height) * 2
         let x = (CGFloat(rep.pixelsWide) - CGFloat(top.pixelsWide)) / 2
         let y = CGFloat(rep.pixelsHigh) - titleBar - CGFloat(top.pixelsHigh)
@@ -927,6 +995,8 @@ final class ScenarioRunner {
         case .focus(let w): return "focus \(w)"
         case .shot(let s): return "shot \(s)"
         case .inside(let id, let of): return "inside \(id) of \(of)"
+        case .setMedia(let cue, let file): return "set_media \(cue) \(file)"
+        case .findMissingFiles(let files, _): return "find_missing_files \(files.count) file(s)"
         }
     }
 
