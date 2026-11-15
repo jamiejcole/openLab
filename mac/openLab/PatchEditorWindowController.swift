@@ -611,7 +611,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
 }
 
 /// The represented object of the system output item of a patch's device pop-up.
-final class SystemOutputChoice: NSObject {
+final class SystemOutputChoice: NSObject, Sendable {
     static let shared = SystemOutputChoice()
 }
 
