@@ -333,6 +333,30 @@ fn shown(s: &mut OfflineShow) -> Option<u16> {
     probe_at(s, &[[0.5, 0.5]]).0
 }
 
+/// The frame stage 1 shows, which the test expects there (`what`). When there is none the
+/// failure says what the engine and the stage host saw: the pictures up and open, any wait that
+/// gave up, and the end of the show log (a picture failure, a stage host restart, a probe the
+/// stage host could not draw).
+fn on_stage(s: &mut OfflineShow, what: &str) -> u16 {
+    shown(s).unwrap_or_else(|| {
+        let c = s.control();
+        let log: Vec<String> = c
+            .show_log()
+            .tail(30)
+            .iter()
+            .map(|e| format!("{:?} {:?} {}", e.level, e.kind, e.message))
+            .collect();
+        panic!(
+            "{what}: nothing on the stage at sample {}; pictures up {}, open {}, waits given up {}\n{}",
+            s.now(),
+            c.pictures_live(),
+            c.pictures_opened(),
+            s.stalls(),
+            log.join("\n")
+        )
+    })
+}
+
 /// The barcode stage 1 shows, and the colours at `points`.
 fn probe_at(s: &mut OfflineShow, points: &[[f32; 2]]) -> (Option<u16>, Vec<[u8; 4]>) {
     let id = s.request_id();
@@ -463,7 +487,7 @@ fn pause_holds_the_frame_and_resume_plays_on_from_it() {
     let paused_at = s.now();
     s.run(BLOCK);
     assert_eq!(state(&s, 1), CueState::Paused);
-    let held = shown(&mut s).expect("a frame while paused");
+    let held = on_stage(&mut s, "a frame while paused");
     let played = (paused_at - at) as f64 / f64::from(RATE);
     assert!(
         held.abs_diff(frame_at(played)) <= 1,
@@ -475,7 +499,7 @@ fn pause_holds_the_frame_and_resume_plays_on_from_it() {
     s.transport(TransportAction::Resume { cue: id(1) });
     let resumed_at = s.now();
     run_to(&mut s, resumed_at + samples(0.5));
-    let now = shown(&mut s).expect("playing again");
+    let now = on_stage(&mut s, "playing again");
     assert!(
         now >= held + 11 && now <= held + 14,
         "{now} half a second after {held}"
@@ -558,7 +582,7 @@ fn two_cues_on_one_stage_are_drawn_with_the_later_started_on_top() {
     let second = start(&mut s, 2);
     run_to(&mut s, second + samples(0.22));
     let top = (s.now() - second) as f64 / f64::from(RATE);
-    let shown_now = shown(&mut s).expect("a frame");
+    let shown_now = on_stage(&mut s, "a frame");
     assert!(
         shown_now.abs_diff(frame_at(top)) <= 1,
         "{shown_now}: cue 2's frame at {top} s is on top"
@@ -569,7 +593,7 @@ fn two_cues_on_one_stage_are_drawn_with_the_later_started_on_top() {
     });
     s.run(BLOCK);
     let below = (s.now() - first) as f64 / f64::from(RATE);
-    let shown_now = shown(&mut s).expect("cue 1 still plays");
+    let shown_now = on_stage(&mut s, "cue 1 still plays");
     assert!(
         shown_now.abs_diff(frame_at(below)) <= 1,
         "{shown_now}: cue 1's frame at {below} s"
@@ -675,7 +699,7 @@ fn a_decode_failure_mid_play_breaks_only_that_cue_with_a_notice() {
     assert!(notices(&mut s).iter().any(|c| c == "video_decode_failed"));
     assert_eq!(state(&s, 1), CueState::Running, "the other cue plays on");
     let at = (s.now() - first) as f64 / f64::from(RATE);
-    let now = shown(&mut s).expect("cue 1 still shown");
+    let now = on_stage(&mut s, "cue 1 still shown");
     assert!(now.abs_diff(frame_at(at)) <= 1, "{now} at {at} s");
 }
 
@@ -700,7 +724,7 @@ fn a_stage_host_killed_mid_play_shows_the_picture_again_when_relaunched() {
     assert_eq!(state(&s, 1), CueState::Running);
     run_to(&mut s, at + samples(2.0));
     let played = (s.now() - at) as f64 / f64::from(RATE);
-    let now = shown(&mut s).expect("the picture is back");
+    let now = on_stage(&mut s, "the picture is back");
     assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played} s");
 }
 
@@ -867,7 +891,7 @@ fn go_on_a_video_cue_whose_file_is_being_probed_waits_and_then_plays() {
     );
     run_to(&mut s, released + samples(0.5));
     let played = (s.now() - released) as f64 / f64::from(RATE);
-    let now = shown(&mut s).expect("the picture plays once its file is read");
+    let now = on_stage(&mut s, "the picture plays once its file is read");
     assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played} s");
     // Its whole length from the late start.
     run_to(&mut s, released + samples(1.9));
@@ -939,7 +963,7 @@ fn a_video_start_waiting_for_its_probe_can_be_paused_resumed_and_stopped() {
     s.transport(TransportAction::Resume { cue: id(1) });
     let resumed = s.now();
     run_to(&mut s, resumed + samples(0.5));
-    let now = shown(&mut s).expect("plays on resume");
+    let now = on_stage(&mut s, "plays on resume");
     assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
 }
 
@@ -984,7 +1008,7 @@ fn relink_finds_a_video_cues_moved_file_and_it_plays() {
     assert_eq!(problems(&s, 1), vec![]);
     let at = go(&mut s);
     run_to(&mut s, at + samples(0.5));
-    let now = shown(&mut s).expect("the relinked picture plays");
+    let now = on_stage(&mut s, "the relinked picture plays");
     assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
 }
 
@@ -998,7 +1022,7 @@ fn a_paused_picture_is_shown_again_when_the_stage_host_is_relaunched() {
     run_to(&mut s, at + samples(0.5));
     s.transport(TransportAction::Pause { cue: id(1) });
     s.run(BLOCK);
-    let held = shown(&mut s).expect("a frame while paused");
+    let held = on_stage(&mut s, "a frame while paused");
     let pid = s.control().stage_host_pid().unwrap();
     let killed = Command::new("kill")
         .args(["-9", &pid.to_string()])
@@ -1053,7 +1077,7 @@ fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
     );
     let at = start(&mut s, 1);
     run_to(&mut s, at + samples(0.5));
-    let now = shown(&mut s).expect("the other picture plays");
+    let now = on_stage(&mut s, "the other picture plays");
     assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
     assert_eq!(
         state(&s, 2),
@@ -1100,7 +1124,7 @@ fn a_picture_whose_decode_hangs_fails_alone() {
     s.take_outbound();
     run_to(&mut s, at + samples(0.5));
     // Drawing asks the hung decoder for a frame.
-    let now = shown(&mut s).expect("the good picture is drawn");
+    let now = on_stage(&mut s, "the good picture is drawn");
     assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
     assert_eq!(
         state(&s, 2),
@@ -1186,12 +1210,12 @@ fn a_picture_that_crashes_the_stage_host_as_it_opens_breaks_only_its_cue() {
     let mut pids = vec![s.control().stage_host_pid().unwrap()];
     let at = start(&mut s, 1);
     run_to(&mut s, at + samples(0.2));
-    shown(&mut s).expect("cue 1 shown");
+    on_stage(&mut s, "cue 1 shown");
     start(&mut s, 2);
     assert!(play_until_broken(&mut s, 2, &mut pids), "{pids:?}");
     stays_up(&mut s, 6.0);
     let played = (s.now() - at) as f64 / f64::from(RATE);
-    let now = shown(&mut s).expect("the good picture is back");
+    let now = on_stage(&mut s, "the good picture is back");
     assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
     assert_eq!(state(&s, 1), CueState::Running);
 }
@@ -1214,7 +1238,7 @@ fn of_two_movies_playing_only_the_one_crashing_the_stage_host_breaks() {
     assert!(play_until_broken(&mut s, 2, &mut pids), "{pids:?}");
     stays_up(&mut s, 6.0);
     let played = (s.now() - at) as f64 / f64::from(RATE);
-    let now = shown(&mut s).expect("the good picture is back");
+    let now = on_stage(&mut s, "the good picture is back");
     assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
     assert_eq!(state(&s, 1), CueState::Running);
 }
@@ -1246,7 +1270,7 @@ fn pictures_come_back_after_kills_and_after_the_pause_at_the_restart_limit() {
         assert_eq!(state(s, 1), CueState::Running, "{round}");
         assert_eq!(state(s, 2), CueState::Running, "{round}");
         let played = (s.now() - at) as f64 / f64::from(RATE);
-        let now = shown(s).expect("the movie is back");
+        let now = on_stage(s, "the movie is back");
         assert!(
             now.abs_diff(frame_at(played)) <= 1,
             "{round}: {now} at {played}"
@@ -1474,7 +1498,7 @@ fn a_slow_decoder_that_keeps_decoding_keeps_its_picture_up() {
     for step in 1..=4 {
         let played = f64::from(step) * 0.33;
         run_to(&mut s, at + samples(played));
-        let now = shown(&mut s).expect("the slow picture is drawn");
+        let now = on_stage(&mut s, "the slow picture is drawn");
         assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
         assert_eq!(state(&s, 1), CueState::Running);
     }

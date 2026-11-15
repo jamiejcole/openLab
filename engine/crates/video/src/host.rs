@@ -492,12 +492,14 @@ impl<P: Platform> Host<P> {
             }
             #[cfg(feature = "test-support")]
             ToStage::Probe { stage, points } => {
-                out.push(self.probe_stage(stage, &points));
+                let probed = self.probe_stage(stage, &points, out);
+                out.push(probed);
                 self.report_failures(out);
             }
             #[cfg(feature = "test-support")]
             ToStage::ProbeDisplay { display, points } => {
-                out.push(self.probe_display(display, &points));
+                let probed = self.probe_display(display, &points, out);
+                out.push(probed);
                 self.report_failures(out);
             }
             #[cfg(feature = "test-support")]
@@ -634,18 +636,27 @@ impl<P: Platform> Host<P> {
 
     /// One stage's own picture, at its own size.
     #[cfg(feature = "test-support")]
-    fn probe_stage(&mut self, id: StageId, points: &[[f32; 2]]) -> FromStage {
+    fn probe_stage(
+        &mut self,
+        id: StageId,
+        points: &[[f32; 2]],
+        out: &mut Vec<FromStage>,
+    ) -> FromStage {
         let now = self.now();
         let layer = self
             .stages
             .iter()
             .find(|s| s.id == id)
             .map(|s| layer_of(s, self.picture(id), self.cues_on(id, now)));
+        let cues = (
+            layer.as_ref().map_or(0, |l| l.cues.len()),
+            self.pics.values().filter(|p| p.stage == id).count(),
+        );
         let read = match layer {
             Some(l) => self.read((l.width, l.height), std::slice::from_ref(&l), points),
             None => Err("no such stage".into()),
         };
-        let (frame, colours) = read.unwrap_or_default();
+        let (frame, colours) = probe_answer(read, cues, now, out);
         FromStage::Probed {
             stage: id,
             frame,
@@ -655,7 +666,12 @@ impl<P: Platform> Host<P> {
 
     /// What display `display` shows: every stage shown on it, stacked, at its pixel size.
     #[cfg(feature = "test-support")]
-    fn probe_display(&mut self, display: String, points: &[[f32; 2]]) -> FromStage {
+    fn probe_display(
+        &mut self,
+        display: String,
+        points: &[[f32; 2]],
+        out: &mut Vec<FromStage>,
+    ) -> FromStage {
         let now = self.now();
         let mut layers: Vec<(u32, Layer)> = self
             .stages
@@ -673,6 +689,8 @@ impl<P: Platform> Host<P> {
             .collect();
         layers.sort_by_key(|(stack, _)| *stack);
         let layers: Vec<Layer> = layers.into_iter().map(|(_, l)| l).collect();
+        let due: usize = layers.iter().map(|l| l.cues.len()).sum();
+        let cues = (due, due);
         let size = self
             .displays
             .iter()
@@ -682,11 +700,44 @@ impl<P: Platform> Host<P> {
             Some(size) => self.read(size, &layers, points),
             None => Err("no such display".into()),
         };
-        let (frame, colours) = read.unwrap_or_default();
+        let (frame, colours) = probe_answer(read, cues, now, out);
         FromStage::DisplayProbed {
             display,
             frame,
             colours,
+        }
+    }
+}
+
+/// Test support: a probe's frame and colours. A probe that could not be drawn, or that read no
+/// frame with cue pictures loaded (`loaded`, of which `due` were drawn at the clock), is said
+/// in the show log, so a test that finds
+/// nothing on a stage shows why (a GPU failure, or no frame decoded at that clock).
+#[cfg(feature = "test-support")]
+fn probe_answer(
+    read: Result<(Option<u16>, Vec<[u8; 4]>), String>,
+    (due, loaded): (usize, usize),
+    (clock, rate): (u64, u32),
+    out: &mut Vec<FromStage>,
+) -> (Option<u16>, Vec<[u8; 4]>) {
+    match read {
+        Ok((None, colours)) if loaded > 0 => {
+            out.push(FromStage::Log {
+                level: LinkLevel::Info,
+                message: short(format!(
+                    "probe at sample {clock} ({rate} Hz): {loaded} picture(s) loaded, {due} due, \
+                     no frame read"
+                )),
+            });
+            (None, colours)
+        }
+        Ok(answer) => answer,
+        Err(why) => {
+            out.push(FromStage::Log {
+                level: LinkLevel::Warn,
+                message: short(format!("probe not drawn: {why}")),
+            });
+            (None, Vec::new())
         }
     }
 }
@@ -854,6 +905,9 @@ mod tests {
             _: &[Layer],
             p: &[[f32; 2]],
         ) -> Result<Vec<[u8; 4]>, String> {
+            if self.fail {
+                return Err("no GPU".into());
+            }
             Ok(vec![[0, 0, 0, 255]; p.len()])
         }
         fn live(&self) -> bool {
@@ -908,6 +962,52 @@ mod tests {
                 offset: 0.0,
             },
         )
+    }
+
+    fn logs(out: &[FromStage]) -> Vec<(LinkLevel, String)> {
+        out.iter()
+            .filter_map(|m| match m {
+                FromStage::Log { level, message } => Some((*level, message.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A probe that reads no frame with a picture loaded, or that cannot be drawn, says so in
+    /// the log, so a test that finds nothing on its stage shows why.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_probe_that_reads_nothing_says_why() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        let probe = ToStage::Probe {
+            stage: id(1),
+            points: vec![[0.5, 0.5]],
+        };
+        assert_eq!(logs(&send(&mut h, probe.clone())), vec![], "nothing loaded");
+        clock(&mut h, 1000);
+        load(&mut h, 7, 1);
+        let said = logs(&send(&mut h, probe.clone()));
+        assert!(
+            matches!(said.as_slice(), [(LinkLevel::Info, m)] if m.contains("1 picture(s) loaded, 0 due")),
+            "{said:?}"
+        );
+        h.platform_mut().fail = true;
+        let out = send(&mut h, probe);
+        assert!(
+            matches!(logs(&out).as_slice(), [(LinkLevel::Warn, m)] if m == "probe not drawn: no GPU"),
+            "{out:?}"
+        );
+        assert!(
+            out.iter()
+                .any(|m| matches!(m, FromStage::Probed { frame: None, .. })),
+            "still answered: {out:?}"
+        );
     }
 
     /// A picture is drawn from its play's sample, its position following the clock; a pause
