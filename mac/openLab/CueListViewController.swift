@@ -181,7 +181,7 @@ final class CueCell: NSTableCellView {
     /// The first column's width: the last slot and a margin. The column cannot be resized.
     static let statusWidth: CGFloat = 70
     /// The colours of the tinted images, kept so a highlighted row can draw them in its text colour.
-    private var tints: [Int: (image: NSImage, tint: NSColor, label: String)] = [:]
+    private var tints: [Int: (icon: Icon, image: NSImage, tint: NSColor, label: String)] = [:]
     let label = NSTextField(labelWithString: "")
     let progress = ProgressFillView()
     /// An Audio cue's button in the Target cell, with or without a file; clicking it calls `onChoose`.
@@ -293,7 +293,7 @@ final class CueCell: NSTableCellView {
         let image = icon.image(label, compact: true)
         // A tinted icon is drawn as a plain image in its colour, and in the selection's text colour on a
         // highlighted row (QLab draws a selected row's marks so). A clear one only keeps its slot.
-        if let tint, tint != .clear { tints[i] = (image, tint, label) }
+        if let tint, tint != .clear { tints[i] = (icon, image, tint, label) }
         view.image = tint.map { tinted(image, $0, label) } ?? image
         view.contentTintColor = nil
         view.setAccessibilityLabel(label)
@@ -301,9 +301,21 @@ final class CueCell: NSTableCellView {
     }
 
     private func tinted(_ image: NSImage, _ tint: NSColor, _ label: String) -> NSImage {
-        let colour = tint != .clear && backgroundStyle == .emphasized ? NSColor.alternateSelectedControlTextColor : tint
-        return TimeHeaderCell.tinted(image, colour, size: image.size, description: label)
+        TimeHeaderCell.tinted(image, drawnColour(tint), size: image.size, description: label)
     }
+
+    private func drawnColour(_ tint: NSColor) -> NSColor {
+        tint != .clear && backgroundStyle == .emphasized ? NSColor.alternateSelectedControlTextColor : tint
+    }
+
+    #if DEBUG
+        /// Test seam, not in a Release build: the icon of tinted mark `i` and the colour it is drawn in now; nil
+        /// for a hidden or untinted mark. A tinted copy keeps no drawing name, so a test reads it here.
+        func drawnMark(_ i: Int) -> (icon: Icon, colour: NSColor)? {
+            guard let mark = tints[i], !images[i].isHidden else { return nil }
+            return (mark.icon, drawnColour(mark.tint))
+        }
+    #endif
 
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet {
@@ -345,8 +357,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private var nodes: [ModelID: CueNode] = [:]
     /// Cues that point at a cue, so a rename refreshes their Target cell.
     private var targeters: [ModelID: Set<ModelID>] = [:]
-    /// The playhead's cue and every group around it: those groups show that it is inside.
-    private var playheadAncestors: Set<ModelID> = []
     /// Internal so a test can detach it and deliver changes in a chosen order.
     var sub: AnyCancellable?
     /// The engine's network output override (PB-10): Network cues show a red circle while it is on.
@@ -865,7 +875,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     func isPlayheadRow(_ id: ModelID) -> Bool { listID.flatMap { store.playheads[$0] } == id }
-    func isPlayheadInside(_ id: ModelID) -> Bool { playheadAncestors.contains(id) && !isPlayheadRow(id) }
 
     // MARK: Store changes
 
@@ -879,7 +888,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             applyModel(upserts: upserts, deletes: deletes)
             onModelApplied?()
         case .runtime(let cues, let heads):
-            refresh(cues, playheads: heads)
+            refresh(cues.union(heads))
             if !heads.isEmpty { playheadChanged() }
         case .progress(let ids):
             // A Wait cue's post-wait counts with its action.
@@ -905,7 +914,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         chosenList = list?.id
         seenHead = list.flatMap { store.playheads[$0.id] }
         roots = (list?.cues ?? []).map { makeNode($0, parent: nil) }
-        updatePlayheadAncestors()
         outlineView.reloadData()
         func expand(_ node: CueNode) {
             // Groups the list has not shown before open expanded.
@@ -949,7 +957,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         guard shownList()?.id == listID else { return rebuild() }
         guard let listID else { return }
         let selected = selectedIDs()
-        let oldAncestors = playheadAncestors
         var expanded = Set<ModelID>()
         batching = true
         batchTouched = []
@@ -980,7 +987,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 return rebuild()  // the engine's tree and ours disagree: resync from the store
             }
         }
-        updatePlayheadAncestors()
         for case .cue(_, _, _, let cue) in upserts { noteAncestors(cue.id) }
         for id in expanded.union(batchNewGroups.subtracting(batchCollapsed)) {
             if let n = nodes[id] { outlineView.expandItem(n) }
@@ -995,9 +1001,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             for t in targeters[id] ?? [] where pointing.insert(t).inserted { pending.append(t) }
         }
         if !pointing.isEmpty { refresh(pointing, columns: ["target", "name"]) }
-        // Groups that gained or lost the playhead show or clear their "inside" marker.
-        let flipped = oldAncestors.symmetricDifference(playheadAncestors)
-        let flagRows = flagGroups.union(flipped).filter { nodes[$0] != nil }
+        let flagRows = flagGroups.filter { nodes[$0] != nil }
         if !flagRows.isEmpty { refresh(flagRows, columns: ["status"]) }
         placeCellEditor()
     }
@@ -1103,19 +1107,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     // MARK: Runtime display
 
-    private func updatePlayheadAncestors() {
-        var set = Set<ModelID>()
-        var node = listID.flatMap { store.playheads[$0] }.flatMap { nodes[$0] }
-        while let n = node {
-            set.insert(n.id)
-            node = n.parent
-        }
-        playheadAncestors = set
-    }
-
-    /// Redraws only the rows of `ids` (and the groups around `playheads`), only `columns` of them.
-    private func refresh(_ ids: Set<ModelID>, playheads: Set<ModelID> = [], columns: [String]? = nil) {
-        if !playheads.isEmpty { updatePlayheadAncestors() }
+    /// Redraws only the rows of `ids`, only `columns` of them.
+    private func refresh(_ ids: Set<ModelID>, columns: [String]? = nil) {
         var rows = IndexSet()
         func add(_ node: CueNode) {
             let row = outlineView.row(forItem: node)
@@ -1124,13 +1117,6 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             configureRow(node, row: row)
         }
         for id in ids { if let node = nodes[id] { add(node) } }
-        for id in playheads {
-            var node = nodes[id]
-            while let n = node {
-                add(n)
-                node = n.parent
-            }
-        }
         guard !rows.isEmpty else { return }
         let all = outlineView.tableColumns
         let wanted = columns.map { ids in IndexSet(all.indices.filter { ids.contains(all[$0].identifier.rawValue) }) }
@@ -1698,12 +1684,10 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         }
         switch column {
         case "status":
+            // The row draws the pointer at its left edge; this slot keeps the room and the label. A closed group
+            // around the playhead shows nothing here, as in QLab.
             if isPlayheadRow(node.id) {
-                // The row draws the pointer at its left edge; this slot keeps the room and the label.
                 cell.setImage(0, icon: .playhead, label: loc("cue.playhead"), tint: .clear)
-            } else if isPlayheadInside(node.id) {
-                cell.setImage(
-                    0, icon: .playheadInside, label: loc("cue.playhead.inside"), tint: PlayheadStyle.colour)
             }
             let (state, detail) = displayState(node.id)
             let style = CueStateStyle.style(for: state)
@@ -1715,7 +1699,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             // A preview is outside the show, so it has its own mark next to the cue's state.
             cell.images[2].setAccessibilityIdentifier("cue-preview")
             if store.previewing.contains(node.id) {
-                cell.setImage(2, icon: .preview, label: loc("cue.previewing"), tint: .systemTeal)
+                cell.setImage(2, icon: .preview, label: loc("cue.previewing"), tint: .systemBlue)
             } else if cue.kindType == "network" && networkOutputDisabled {
                 // A Network cue's preview holds no state, so it never takes that slot for a preview mark.
                 cell.images[2].setAccessibilityIdentifier("cue-override")
@@ -1728,9 +1712,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             let mark = cell.images[2]
             switch flag {
             case .solid where mark.isHidden:
-                cell.setImage(3, icon: .flagged, label: loc("cue.flagged"), tint: .systemYellow)
+                cell.setImage(3, icon: .flagged, label: loc("cue.flagged"), tint: .systemOrange)
             case .hollow where mark.isHidden:
-                cell.setImage(3, icon: .flaggedInside, label: loc("cue.flagged.inside"), tint: .systemYellow)
+                cell.setImage(3, icon: .flaggedInside, label: loc("cue.flagged.inside"), tint: .systemOrange)
             case .solid, .hollow:
                 let flagText = loc(flag == .solid ? "cue.flagged" : "cue.flagged.inside")
                 let label = String(format: loc("cue.markWithFlag"), mark.accessibilityLabel() ?? "", flagText)
@@ -1865,7 +1849,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     private func durationProgress(_ node: CueNode) -> (fraction: Double, colour: NSColor)? {
         guard let p = store.progress[node.id] else { return nil }
         let paused = displayState(node.id).state == .paused
-        let colour: NSColor = paused ? .systemYellow : .systemGreen
+        let colour: NSColor = paused ? MarkColour.caution : .systemGreen
         guard let left = p.remaining else {
             return loopPass(node, p).map { ($0.gone / $0.length, colour) }
         }

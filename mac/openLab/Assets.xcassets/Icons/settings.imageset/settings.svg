@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><path fill="none" stroke="#000" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" d="M6.79 3.46L7.07 1.87L8.93 1.87L9.21 3.46L10.36 3.93L11.68 3.01L12.99 4.32L12.07 5.64L12.54 6.79L14.13 7.07L14.13 8.93L12.54 9.21L12.07 10.36L12.99 11.68L11.68 12.99L10.36 12.07L9.21 12.54L8.93 14.13L7.07 14.13L6.79 12.54L5.64 12.07L4.32 12.99L3.01 11.68L3.93 10.36L3.46 9.21L1.87 8.93L1.87 7.07L3.46 6.79L3.93 5.64L3.01 4.32L4.32 3.01L5.64 3.93z"/><circle fill="none" stroke="#000" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" cx="8" cy="8" r="2"/></svg>

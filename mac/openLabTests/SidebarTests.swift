@@ -113,8 +113,8 @@ final class SidebarTests: XCTestCase {
             for (id, button) in wc.sidebar.transportButtons {
                 let cell = try XCTUnwrap(button.cell as? NSButtonCell)
                 let content = cell.drawingRect(forBounds: button.bounds)
-                let config = try XCTUnwrap(button.symbolConfiguration)
-                let image = try XCTUnwrap(button.image?.withSymbolConfiguration(config))
+                let image = try XCTUnwrap(button.image)
+                XCTAssertEqual(image.size.width, SidebarViewController.transportIconSize, "\(id)")
                 XCTAssertLessThanOrEqual(image.size.height + 4, content.height, "\(id) height at \(width)")
                 XCTAssertLessThanOrEqual(image.size.width + 4, content.width, "\(id) width at \(width)")
             }

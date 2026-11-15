@@ -49,8 +49,9 @@ final class CueHeaderView: NSTableHeaderView {
     }
 }
 
-/// A time column's header: its title and a small chevron. Down means the column shows the time
-/// left, up the whole time; a click on the header switches (see `CueListViewController.toggleTimeShown`).
+/// A time column's header: its title and a small chevron. Left means the column shows the time
+/// left (counting down), right the whole time (counting up); a click on the header switches (see
+/// `CueListViewController.toggleTimeShown`).
 final class TimeHeaderCell: NSTableHeaderCell {
     var shown: TimeShown = .remaining
 
@@ -63,12 +64,14 @@ final class TimeHeaderCell: NSTableHeaderCell {
         return size
     }
 
+    /// The chevron for what the column shows: left while it counts down, right while it counts up.
+    static func icon(_ shown: TimeShown) -> Icon { shown == .remaining ? .timeToggleUp : .timeToggle }
+
     override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
         var text = cellFrame
         text.size.width = max(0, text.width - Self.chevronWidth)
         super.drawInterior(withFrame: text, in: controlView)
-        let icon: Icon = shown == .remaining ? .timeToggle : .timeToggleUp
-        let image = icon.image(
+        let image = Self.icon(shown).image(
             loc(shown == .remaining ? "cuelist.time.showFull" : "cuelist.time.showRemaining"), compact: true)
         let size = NSSize(width: 9, height: 9)
         let rect = NSRect(
