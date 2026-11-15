@@ -83,6 +83,7 @@ final class KeyMapPageTests: XCTestCase {
     override func tearDown() async throws {
         sc?.close()
         rig?.client.stop()
+        (sc, rig) = (nil, nil)
     }
 
     private func key(_ chars: String, code: UInt16 = 0, _ flags: NSEvent.ModifierFlags = []) throws -> NSEvent {

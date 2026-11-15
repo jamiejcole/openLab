@@ -665,6 +665,9 @@ final class WireTap: EngineTransport {
     /// Results are unreadable when they reach the app (a held one when it is released).
     var garbleResults = false
     var holdFlush = false
+    /// Flushes held by `holdFlush`, ended by `releaseResults` (one never ended would keep its
+    /// caller, and all it holds, for the rest of the run).
+    fileprivate var heldFlushes: [CheckedContinuation<Void, Never>] = []
     /// Hold `runtime` broadcasts (the engine's playhead moves) until `releaseResults`.
     var holdRuntime = false
     /// Hold `model_changed` broadcasts until `releaseResults`: the app's model lags behind the engine's.
@@ -695,11 +698,14 @@ final class WireTap: EngineTransport {
         connections = []
     }
 
-    /// Delivers what is held, in the order it came or (`reversed`) newest first.
+    /// Delivers what is held, in the order it came or (`reversed`) newest first, and ends held flushes.
     func releaseResults(reversed: Bool = false) {
         let all = reversed ? held.reversed() : held
         held = []
         for (c, text) in all { c.deliver(garbled(text)) }
+        let flushes = heldFlushes
+        heldFlushes = []
+        for flush in flushes { flush.resume() }
     }
 
     /// `text`, unreadable if it is a result and results are to be.
@@ -790,7 +796,8 @@ final class TapConnection: EngineConnection {
         tap.record(text, from: self)
         if tap.holdFlush {
             inner.send(text)
-            await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+            await withCheckedContinuation { tap.heldFlushes.append($0) }
+            return
         }
         await inner.sendAndFlush(text)
     }

@@ -688,6 +688,7 @@ final class CueListDurationTests: XCTestCase {
     func testPendingCellEditIsCommittedBeforeSave() async throws {
         let rig = try await Rig.open()
         let wc = WorkspaceWindowController(store: rig.store)
+        defer { wc.window?.close() }  // the refusal's sheet ends with the window
         wc.cueList.view.frame = NSRect(x: 0, y: 0, width: 1000, height: 400)
         XCTAssertTrue(wc.cueList.beginCellEdit(H.fade))
         wc.cueList.cellEditor.stringValue = "12"
