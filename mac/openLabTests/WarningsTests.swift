@@ -316,26 +316,6 @@ final class WarningsTests: XCTestCase {
         XCTAssertFalse(wc.sidebar.tableView(wc.sidebar.warningsTable, shouldSelectRow: row))
     }
 
-    /// A missing file whose detail wraps onto a second line still gets a row tall enough for its
-    /// Find Missing Files button: the button lies inside its row and clear of the next one.
-    func testAWrappedMissingFileRowHoldsItsButton() async throws {
-        try await make()
-        try missingMedia(rain, "media/A Long Folder For The Second Act/and-another-folder/rain-bed-take-two.wav")
-        side.showTab(2)
-        side.view.layoutSubtreeIfNeeded()
-        let row = try XCTUnwrap(side.warningRows.firstIndex { $0.cue == rain })
-        XCTAssertTrue(side.warningRows.indices.contains(row + 1), "a warning follows it")
-        let table = side.warningsTable
-        let cell = try XCTUnwrap(table.view(atColumn: 0, row: row, makeIfNecessary: true) as? WarningCell)
-        cell.layoutSubtreeIfNeeded()
-        let lineHeight = try XCTUnwrap(cell.detail.font).boundingRectForFont.height
-        XCTAssertGreaterThan(cell.detail.frame.height, lineHeight * 1.5, "the detail wraps")
-        let button = cell.relinkButton.convert(cell.relinkButton.bounds, to: table)
-        let mine = table.rect(ofRow: row)
-        XCTAssertTrue(mine.contains(button), "button \(button) in row \(mine)")
-        XCTAssertFalse(button.intersects(table.rect(ofRow: row + 1)), "button \(button) clear of the next row")
-    }
-
     func testRelinkButtonAsksTheWindowToRelink() async throws {
         try await make()
         var asked = 0

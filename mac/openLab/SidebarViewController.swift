@@ -110,26 +110,14 @@ final class CueListNameCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 }
 
-/// A warning row's measured height depends only on these.
-private struct WarningHeightKey: Hashable {
-    let title: String
-    let detail: String
-    let button: Bool
-    let width: CGFloat
-}
-
 /// One Warnings row: a marker symbol (so a warning is not told by colour alone), the title, the
 /// reasons below it and, for missing media, a button that opens Find Missing Files.
 final class WarningCell: NSTableCellView {
     let title = NSTextField(labelWithString: "")
     let detail = NSTextField(wrappingLabelWithString: "")
     let relinkButton = NSButton(title: loc("warnings.relink"), target: nil, action: nil)
-    private let content: NSStackView
-    private let text: NSStackView
 
     init() {
-        text = NSStackView()
-        content = NSStackView()
         super.init(frame: .zero)
         identifier = NSUserInterfaceItemIdentifier("warning")
         let marker = NSImageView(
@@ -145,33 +133,20 @@ final class WarningCell: NSTableCellView {
         relinkButton.bezelStyle = .rounded
         relinkButton.controlSize = .small
         relinkButton.setAccessibilityIdentifier(AX.warningRelink)
-        text.setViews([title, detail, relinkButton], in: .leading)
+        let text = NSStackView(views: [title, detail, relinkButton])
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 2
-        content.setViews([marker, text], in: .leading)
-        content.alignment = .top
-        content.spacing = 6
-        content.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(content)
+        let row = NSStackView(views: [marker, text])
+        row.alignment = .top
+        row.spacing = 6
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
         NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            content.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            // The detail wraps at the row's width, so the measured height is the drawn one.
-            detail.widthAnchor.constraint(equalTo: text.widthAnchor),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 4),
         ])
-    }
-
-    /// The row height that shows all of this cell's text and its button at `width`. The detail
-    /// wraps, so it is measured at that width, not counted in lines.
-    func fittingHeight(width: CGFloat) -> CGFloat {
-        frame = NSRect(x: 0, y: 0, width: width, height: 2_000)
-        layoutSubtreeIfNeeded()
-        detail.preferredMaxLayoutWidth = text.frame.width
-        needsLayout = true
-        layoutSubtreeIfNeeded()
-        return ceil(content.fittingSize.height) + 8
     }
 
     @available(*, unavailable)
@@ -207,9 +182,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     let activeTable: NSTableView
     let warningsTable: NSTableView
     let warningsCount = NSTextField(labelWithString: "")
-    /// Measures warning rows; never shown.
-    private lazy var warningSizingCell = WarningCell()
-    private var warningHeights: [WarningHeightKey: CGFloat] = [:]
 
     /// The user picked a list.
     var onSelectList: ((ModelID) -> Void)?
@@ -763,21 +735,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         if tableView === activeTable { return 64 }
         guard tableView === warningsTable, warningRows.indices.contains(row) else { return tableView.rowHeight }
         let w = warningRows[row]
-        let width = tableView.frameOfCell(atColumn: 0, row: row).width
-        let key = WarningHeightKey(title: w.title, detail: w.detail, button: w.canRelink, width: width)
-        if let known = warningHeights[key] { return known }
-        let sizing = warningSizingCell
-        fill(sizing, w)
-        let height = max(tableView.rowHeight, sizing.fittingHeight(width: width))
-        if warningHeights.count > 2_000 { warningHeights.removeAll() }
-        warningHeights[key] = height
-        return height
-    }
-
-    /// The sidebar was made narrower or wider: detail lines wrap differently.
-    func tableViewColumnDidResize(_ notification: Notification) {
-        guard (notification.object as? NSTableView) === warningsTable, !warningRows.isEmpty else { return }
-        warningsTable.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<warningRows.count))
+        let lines = w.detail.isEmpty ? 0 : w.detail.split(separator: "\n").count
+        return 26 + CGFloat(lines) * 15 + (w.canRelink ? 22 : 0)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -848,20 +807,15 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             (warningsTable.makeView(withIdentifier: NSUserInterfaceItemIdentifier("warning"), owner: nil)
                 as? WarningCell) ?? WarningCell()
         let w = warningRows[row]
-        fill(cell, w)
+        cell.title.stringValue = w.title
+        cell.detail.stringValue = w.detail
+        cell.detail.isHidden = w.detail.isEmpty
+        cell.relinkButton.isHidden = !w.canRelink
         cell.relinkButton.isEnabled = !relinkLocked
         cell.relinkButton.target = self
         cell.relinkButton.action = #selector(relinkClicked)
         cell.setAccessibilityLabel([w.title, w.detail].filter { !$0.isEmpty }.joined(separator: ". "))
         return cell
-    }
-
-    /// What decides a warning row's height (the measuring cell is filled the same way).
-    private func fill(_ cell: WarningCell, _ w: WarningRow) {
-        cell.title.stringValue = w.title
-        cell.detail.stringValue = w.detail
-        cell.detail.isHidden = w.detail.isEmpty
-        cell.relinkButton.isHidden = !w.canRelink
     }
 
     /// Row content from the store: elapsed and remaining while the engine reports progress, else the
