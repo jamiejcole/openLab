@@ -399,7 +399,9 @@ fn geometry_out_of_range_is_refused_field_by_field() {
         ("layer", json!(1.5)),
         ("opacity", json!("half")),
         ("fill_style", json!("zoom")),
-        ("crop", json!({"top": 1})),
+        ("crop", json!({"middle": 1})),
+        ("scale", json!({"z": 1})),
+        ("translation", json!(5)),
     ] {
         assert!(
             matches!(
@@ -464,4 +466,34 @@ fn every_path_that_makes_a_video_cue_refuses_bad_geometry() {
         "opacity",
     );
     assert_eq!(ws, before);
+}
+
+/// A pair or the crop may name only the parts that change: two such edits made one after the
+/// other (sent before either was answered) both hold, and undoing one puts back only its part.
+#[test]
+fn a_part_of_a_pair_or_one_crop_edge_changes_alone() {
+    use serde_json::json;
+    let mut ws = ws();
+    ws.apply(set(1, fields(&[("crop", json!({"top": 4}))])))
+        .unwrap();
+    let undo_left = ws
+        .apply(set(1, fields(&[("crop", json!({"left": 3}))])))
+        .unwrap();
+    ws.apply(set(1, fields(&[("translation", json!({"y": -7}))])))
+        .unwrap();
+    ws.apply(set(1, fields(&[("scale", json!({"x": 2}))])))
+        .unwrap();
+    let g = geometry(&ws, 1);
+    assert_eq!((g.crop.top, g.crop.left, g.crop.right), (4.0, 3.0, 0.0));
+    assert_eq!(g.translation, Pair { x: 0.0, y: -7.0 });
+    assert_eq!(g.scale, Pair { x: 2.0, y: 1.0 });
+    let before = ws.clone();
+    refused_value(
+        ws.apply(set(1, fields(&[("crop", json!({"left": -1}))]))),
+        "crop.left",
+    );
+    assert_eq!(ws, before);
+    ws.apply(undo_left).unwrap();
+    let g = geometry(&ws, 1);
+    assert_eq!((g.crop.top, g.crop.left), (4.0, 0.0));
 }

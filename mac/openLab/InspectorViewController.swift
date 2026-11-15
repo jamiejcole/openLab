@@ -875,7 +875,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         renderDevamp(cue)
         renderNetwork(cue, model: model)
         renderIO(cue, model: model)
-        renderGeometry(cueForEdit ?? cue, model: model)
+        renderGeometry(cueForKindEdit ?? cue, model: model)
         renderLevels(cueForEdit ?? cue, model: model)
         renderTimeLoops(cueForEdit ?? cue)
         updatePreviewButton()
@@ -1122,7 +1122,17 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         if type == "kind_fields", let fields = property["value"]?.objectValue,
             let edited = cueForEdit, edited.id == cue, var kind = edited.raw["kind"]
         {
-            for (field, value) in fields { kind.set(field, value) }
+            for (field, value) in fields {
+                // A Video cue's pair or crop may carry only its changed parts (the engine merges them).
+                if VideoGeometry.partialFields.contains(field), case .object(let parts) = value,
+                    case .object(var now)? = kind[field]
+                {
+                    for (part, v) in parts { now[part] = v }
+                    kind.set(field, .object(now))
+                } else {
+                    kind.set(field, value)
+                }
+            }
             return kind
         }
         guard let type, type == "duration" || type == "load_to_time", let value = property["value"],

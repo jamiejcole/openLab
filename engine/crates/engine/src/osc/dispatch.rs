@@ -972,7 +972,7 @@ fn cue_verb(show: &dyn OscShow, cue: CueId, verb: Verb, args: &[OscType], out: &
                 }
                 return;
             }
-            match set_field(show, cue, field, args).filter(|_| show.writable(cue, field)) {
+            match set_field(cue, field, args).filter(|_| show.writable(cue, field)) {
                 Some(command) => out.inputs.push(OscInput::Command(Box::new(command))),
                 None => bad(out),
             }
@@ -980,7 +980,7 @@ fn cue_verb(show: &dyn OscShow, cue: CueId, verb: Verb, args: &[OscType], out: &
     }
 }
 
-fn set_field(show: &dyn OscShow, cue: CueId, field: CueField, args: &[OscType]) -> Option<Command> {
+fn set_field(cue: CueId, field: CueField, args: &[OscType]) -> Option<Command> {
     let [arg] = args else { return None };
     let set = |property| Command::SetCueProperty { id: cue, property };
     // One field of a Video cue's kind; the engine refuses a value out of range too, but
@@ -990,23 +990,12 @@ fn set_field(show: &dyn OscShow, cue: CueId, field: CueField, args: &[OscType]) 
         fields.insert(key.to_owned(), value);
         set(CueProperty::KindFields { value: fields })
     };
-    // A crop edge: the whole crop, the other edges as they are.
+    // One crop edge alone: the engine changes that edge only, so edges sent back to back (or in
+    // one bundle) each hold, whatever this copy of the show holds yet.
     let crop = |edge: &str| -> Option<Command> {
         let value = number_arg(arg).filter(|v| (0.0..=MAX_CROP).contains(v))?;
         let mut crop = Map::new();
-        for (key, side) in [
-            ("top", CueField::CropTop),
-            ("bottom", CueField::CropBottom),
-            ("left", CueField::CropLeft),
-            ("right", CueField::CropRight),
-        ] {
-            let now = if key == edge {
-                json!(value)
-            } else {
-                show.cue_property(cue, side)?
-            };
-            crop.insert(key.to_owned(), now);
-        }
+        crop.insert(edge.to_owned(), json!(value));
         Some(kind_field("crop", Value::Object(crop)))
     };
     Some(match field {

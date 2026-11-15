@@ -3301,3 +3301,52 @@ async fn an_osc_client_sets_and_reads_a_video_cues_geometry_and_out_of_range_is_
     assert_eq!(real.read("2", "opacity").await["status"], json!("error"));
     real.stop();
 }
+
+/// Two crop edges sent back to back, or in one bundle, both hold: each message changes its
+/// edge alone, whatever the OSC copy of the show holds when the second arrives.
+#[tokio::test]
+async fn crop_edges_sent_back_to_back_or_in_one_bundle_both_hold() {
+    let video = CueKind::Video {
+        media: None,
+        stage: None,
+        duration: None,
+        geometry: Default::default(),
+    };
+    let ws = workspace(vec![cue(1, video)]);
+    let real = RealLoop::start(ws.clone()).await;
+    real.send(msg("/updates", vec![OscType::Int(1)])).await;
+    let updated = format!("/update/workspace/{}/cue_id/{}", ws_id(), id(1));
+    real.send(msg("/cue/1/cropTop", vec![OscType::Int(4)]))
+        .await;
+    real.send(msg("/cue/1/cropLeft", vec![OscType::Int(3)]))
+        .await;
+    real.recv_at(&updated).await;
+    real.recv_at(&updated).await;
+    assert_eq!(real.read("1", "cropTop").await["data"], json!(4.0));
+    assert_eq!(real.read("1", "cropLeft").await["data"], json!(3.0));
+    let bundle = rosc::OscPacket::Bundle(rosc::OscBundle {
+        timetag: rosc::OscTime {
+            seconds: 0,
+            fractional: 1,
+        },
+        content: vec![
+            rosc::OscPacket::Message(msg("/cue/1/cropBottom", vec![OscType::Int(2)])),
+            rosc::OscPacket::Message(msg("/cue/1/cropRight", vec![OscType::Int(1)])),
+        ],
+    });
+    real.client
+        .send_to(&rosc::encoder::encode(&bundle).unwrap(), real.target)
+        .await
+        .unwrap();
+    real.recv_at(&updated).await;
+    real.recv_at(&updated).await;
+    for (edge, value) in [
+        ("cropTop", 4.0),
+        ("cropBottom", 2.0),
+        ("cropLeft", 3.0),
+        ("cropRight", 1.0),
+    ] {
+        assert_eq!(real.read("1", edge).await["data"], json!(value), "{edge}");
+    }
+    real.stop();
+}

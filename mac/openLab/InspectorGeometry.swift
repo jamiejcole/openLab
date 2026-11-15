@@ -19,6 +19,9 @@ struct VideoGeometry: Equatable {
     var smooth = true
 
     static let styles = ["fit", "fill", "stretch"]
+    /// Kind fields an edit may give only some parts of: each typed part goes alone, so two typed
+    /// before the engine answers both hold (core's `merge_kind_fields`).
+    static let partialFields: Set<String> = ["translation", "scale", "anchor", "crop"]
     static let cropEdges = ["top", "bottom", "left", "right"]
 
     init() {}
@@ -96,6 +99,8 @@ final class GeometryThumbnail: NSView {
     var isLocked = false
     /// A drag moved the picture to this position (stage pixels); `ended` once at its release.
     var onDrag: ((CGPoint, _ ended: Bool) -> Void)?
+    /// A drag begins (true) or ends (false, after its last `onDrag`).
+    var onHold: ((Bool) -> Void)?
     private var dragFrom: (mouse: NSPoint, translation: CGPoint)?
 
     override var isFlipped: Bool { true }
@@ -172,7 +177,9 @@ final class GeometryThumbnail: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard canDrag else { return }
+        endDrag()
         dragFrom = (convert(event.locationInWindow, from: nil), geometry.translation)
+        onHold?(true)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -183,8 +190,10 @@ final class GeometryThumbnail: NSView {
 
     /// Moves the picture by the pointer's travel since the press (y up on the stage), whole pixels.
     func drag(to point: NSPoint, ended: Bool) {
-        guard let from = dragFrom, canDrag else {
+        guard let from = dragFrom else { return }
+        guard canDrag else {
             dragFrom = nil
+            onHold?(false)
             return
         }
         let k = pointsPerPixel
@@ -194,13 +203,16 @@ final class GeometryThumbnail: NSView {
         if ended { dragFrom = nil }
         geometry.translation = moved
         onDrag?(moved, ended)
+        if ended { onHold?(false) }
     }
 
-    /// A press whose release is lost: the drag ends where it is.
+    /// A press whose release is lost, the tab or window going, Show Mode: the drag ends where
+    /// it is (under Show Mode's lock nothing more is sent).
     func endDrag() {
         guard dragFrom != nil else { return }
         dragFrom = nil
         onDrag?(geometry.translation, true)
+        onHold?(false)
     }
 }
 
@@ -237,6 +249,11 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
     var onEdit: (([String: JSONValue], _ coalesce: String?) -> Void)?
     /// Says why a typed value was not taken.
     var onRefuse: ((String) -> Void)?
+    /// A thumbnail drag begins or ends: the inspector pins the cue it began on.
+    var onHold: ((Bool) -> Void)? {
+        get { thumbnail.onHold }
+        set { thumbnail.onHold = newValue }
+    }
     private(set) var shown = VideoGeometry()
     /// The field being typed in: a redraw leaves its text alone.
     private var typing: NSTextField?
@@ -422,24 +439,22 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
         case opacityField where v / 100 != g.opacity:
             fields["opacity"] = .double(v / 100)
         case xField where v != g.translation.x:
-            fields["translation"] = VideoGeometry.pairJSON(CGPoint(x: v, y: g.translation.y))
+            fields["translation"] = .object(["x": .double(v)])
         case yField where v != g.translation.y:
-            fields["translation"] = VideoGeometry.pairJSON(CGPoint(x: g.translation.x, y: v))
+            fields["translation"] = .object(["y": .double(v)])
         case scaleXField where v != g.scale.x || (g.scaleLocked && v != g.scale.y):
-            fields["scale"] = VideoGeometry.pairJSON(CGPoint(x: v, y: g.scaleLocked ? v : g.scale.y))
+            fields["scale"] = g.scaleLocked ? VideoGeometry.pairJSON(CGPoint(x: v, y: v)) : .object(["x": .double(v)])
         case scaleYField where v != g.scale.y || (g.scaleLocked && v != g.scale.x):
-            fields["scale"] = VideoGeometry.pairJSON(CGPoint(x: g.scaleLocked ? v : g.scale.x, y: v))
+            fields["scale"] = g.scaleLocked ? VideoGeometry.pairJSON(CGPoint(x: v, y: v)) : .object(["y": .double(v)])
         case rotationField where v != g.rotation:
             fields["rotation"] = .double(v)
         case anchorXField where v != g.anchor.x:
-            fields["anchor"] = VideoGeometry.pairJSON(CGPoint(x: v, y: g.anchor.y))
+            fields["anchor"] = .object(["x": .double(v)])
         case anchorYField where v != g.anchor.y:
-            fields["anchor"] = VideoGeometry.pairJSON(CGPoint(x: g.anchor.x, y: v))
+            fields["anchor"] = .object(["y": .double(v)])
         default:
             if let i = cropFields.firstIndex(where: { $0 === f }), v != g.crop[i] {
-                var crop = g.crop
-                crop[i] = v
-                fields["crop"] = VideoGeometry.cropJSON(crop)
+                fields["crop"] = .object([VideoGeometry.cropEdges[i]: .double(v)])
             }
         }
         if fields.isEmpty {
@@ -511,6 +526,7 @@ extension InspectorViewController {
         let g = geometry
         g.onEdit = { [weak self] fields, coalesce in self?.sendGeometry(fields, coalesce: coalesce) }
         g.onRefuse = { [weak self] message in self?.showRefusal(message) }
+        g.onHold = { [weak self] on in self?.gestureHold(on) }
         func label(_ key: String) -> NSTextField {
             let l = NSTextField(labelWithString: loc(key))
             l.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -602,14 +618,15 @@ extension InspectorViewController {
         geometry.isLocked = isLocked
     }
 
-    /// Sends geometry fields for the shown Video cue: one undo step each, a drag's moves one.
+    /// Sends geometry fields for the shown Video cue, or during a thumbnail drag the cue the drag
+    /// began on whatever is selected now: one undo step each, a drag's moves one.
     func sendGeometry(_ fields: [String: JSONValue], coalesce: String?) {
-        sendEach(key: "geometry.\(fields.keys.sorted().joined(separator: ","))", coalesce: coalesce) { cue in
-            guard cue.kindType == "video" else { return nil }
-            return .setProperty(cue.id, .kindFields(fields))
-        }
+        guard let cue = cueForKindEdit, cue.kindType == "video" else { return }
+        send(
+            .setProperty(cue.id, .kindFields(fields)), cue: cue.id,
+            key: "geometry.\(fields.keys.sorted().joined(separator: ","))", revert: [], coalesce: coalesce)
         // Shown with the edit before the engine answers, so the next field typed (y after x)
         // builds on it, not on the value the model still holds.
-        if let cue = cueForEdit, let model = store.model { renderGeometry(cue, model: model) }
+        if let cue = cueForKindEdit, let model = store.model { renderGeometry(cue, model: model) }
     }
 }

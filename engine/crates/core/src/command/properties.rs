@@ -246,6 +246,9 @@ fn blank_cue(id: CueId) -> Cue {
 }
 
 /// The cue's kind with `fields` set, every other field as it is now.
+/// Kind fields whose value is an object a `KindFields` edit may give only some parts of.
+const PARTIAL_FIELDS: [&str; 4] = ["translation", "scale", "anchor", "crop"];
+
 fn merge_kind_fields(
     id: CueId,
     kind: &CueKind,
@@ -263,6 +266,21 @@ fn merge_kind_fields(
         let Some(slot) = merged.get_mut(key) else {
             return Err(CommandError::PropertyNotApplicable(id));
         };
+        // A Video cue's pair or crop may name only the parts that change, so two edits of
+        // different parts sent before either is answered (an OSC peer's cropTop then cropLeft)
+        // both hold.
+        if PARTIAL_FIELDS.contains(&key.as_str())
+            && let (serde_json::Value::Object(now), serde_json::Value::Object(parts)) =
+                (&mut *slot, value)
+        {
+            for (part, v) in parts {
+                let Some(old) = now.get_mut(part) else {
+                    return Err(CommandError::InvalidValue("a kind field has no such part"));
+                };
+                *old = v.clone();
+            }
+            continue;
+        }
         *slot = value.clone();
     }
     serde_json::from_value(serde_json::Value::Object(merged))
