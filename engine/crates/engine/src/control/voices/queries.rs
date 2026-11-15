@@ -80,8 +80,8 @@ impl Voices {
             let Some(slot) = patches.mixer_patch(doc, *patch) else {
                 continue;
             };
-            // A voice cannot leave its device's mixer: one whose new patch plays on another
-            // device plays on where it started.
+            // A voice stays in its device's mixer: one whose new patch plays on another device
+            // is replaced by a voice there (`DocCx::follow_devices`), not moved.
             if r.slot.and_then(|s| patches.slot_output(s)) != patches.slot_output(slot) {
                 continue;
             }

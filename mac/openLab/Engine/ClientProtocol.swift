@@ -129,8 +129,6 @@ enum TransportAction: Hashable, Sendable, Codable {
     }
 }
 
-/// Where one patch plays on this machine (WS-07): the device's name as `list_devices` gives it and
-/// a 0-based device channel for each output of the patch, in order.
 /// Where a patch plays on this machine: a named device, or (`system`) the system output, the Mac's
 /// default output device whichever it is (then `device` is empty).
 struct PatchMapping: Hashable, Sendable, Codable {

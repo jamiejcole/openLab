@@ -76,7 +76,8 @@ Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
 `Input::DeviceMoved { cue, run }` (from the binary: the run's patch now plays on another output device; `seek.rs` `device_moved`) moves the sound there in step, as QLab 5 does (skill `qlab-behaviour` Q450).
 - Only a run in its action with a started voice, not broken and not stopping with a fade (`stop_end`: it ends where it is); a stale run id, a pre-wait (its start plays on the patch's device then) or a post-wait after the sound changes nothing.
 - `RelocateVoice { run: fresh, from, at: commit(now), position }` re-keys the run like a seek (feedback for `from` is stale). Playing: `position = Run::position(at)` and the voice counts on from there (`Voice::Started { at, from: position }`), its end unknown until the binary's `ActionLength` for the fresh run, still counted from the action's start; an auto-follow fires once. Paused: `position` is where it froze, `Voice::Started` is kept and the resume plays on from there.
-- As for a seek, the moved voice is given the Fade cues' levels and its duck (`regive_levels`) and a pending devamp is sent again. Timers, post-wait, continues and the group are untouched.
+- As for a seek, the moved voice is given the Fade cues' levels and its duck (`regive_levels`). Timers, post-wait, continues and the group are untouched.
+- A run with a devamp on its way (`Run::devamp`: sent and not answered, or answered and its loop not left) is not moved yet: only the audio side knows where its voice is in the loop, and a voice moved then plays the loop again. `Run::move_pending` holds the move; it is made when the voice leaves the loop (`step`) or the devamp is ignored, and goes with the run (a stop, a failure).
 
 ## Operations (CUE-05)
 Voice actions apply to armed Audio cues only. Group operations also reach descendants.
