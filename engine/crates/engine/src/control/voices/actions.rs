@@ -514,9 +514,19 @@ impl Voices {
                     r.patch = Some(*patch);
                     r.levelled = env.patches.outputs(env.doc, *patch);
                 }
+                // A move swapped in while playing takes over levels already on their way:
+                // each where it stands on the swap, then the rest of its ramp, so it ends on
+                // the sample the engine planned. Otherwise (a start held up, a resume) a
+                // queued command applies from the start, as a paused voice's does.
+                let queue = if replaces.is_some() {
+                    let initial = |t: GainTarget| initial_gain(&vs, t);
+                    caught_up(queue, at, initial)
+                } else {
+                    queue.into_iter().map(|(t, q)| (t.max(at), q)).collect()
+                };
                 fx.commands.push((at, CommandKind::StartVoice(vs)));
                 for (t, q) in queue {
-                    fx.commands.push((t.max(at), queued(id, q)));
+                    fx.commands.push((t, queued(id, q)));
                 }
                 // The engine owns the end of a finite action (`ActionLength`): it is the
                 // action's length counted from the start the engine dated, so a start held up
@@ -717,7 +727,14 @@ impl Voices {
         };
         match &mut r.phase {
             Phase::Playing => fx.commands.push((at, queued(id, cmd))),
-            Phase::Waiting { queue, .. } => queue.push((at, cmd)),
+            Phase::Waiting { queue, .. } => {
+                // A seek still waiting: the voice it moves from is what sounds until the swap,
+                // so it follows every level change too (a devamp is the moved voice's alone).
+                if let (Some(old), Queued::Ramp { .. }) = (r.replaces, cmd) {
+                    fx.commands.push((at, queued(old, cmd)));
+                }
+                queue.push((at, cmd));
+            }
             Phase::Ended => {}
         }
     }
