@@ -20,6 +20,7 @@ final class WarningsTests: XCTestCase {
     override func tearDown() async throws {
         wc?.window?.close()
         (wc, side, rig) = (nil, nil, nil)
+        ownEngine?.stop()
     }
 
     /// No engine: the demo show with a second, empty list, its Radio broken by a lost device.
@@ -405,8 +406,6 @@ final class WarningsTests: XCTestCase {
 
     /// The test's own engine: its virtual output is unplugged and plugged back in.
     private var ownEngine: TestEngine?
-
-    override func tearDown() async throws { ownEngine?.stop() }
 
     /// The demo show on an engine of the test's own, Rain's number cleared, in a window with the
     /// sidebar on the Warnings tab.
