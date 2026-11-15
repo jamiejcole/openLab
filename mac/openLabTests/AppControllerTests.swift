@@ -449,47 +449,88 @@ final class AppControllerTests: XCTestCase {
         return released
     }
 
+    /// Runs `body` to its end in an autorelease pool of its own, so what AppKit autoreleased on the
+    /// way (a window handed back from a getter, say) is let go when it returns: an async test's own
+    /// pool lasts as long as the test, and would hold every window it touched.
+    private func drained(_ body: @escaping @MainActor () async throws -> Void) {
+        autoreleasepool {
+            let done = expectation(description: "steps done")
+            Task { @MainActor in
+                do { try await body() } catch { XCTFail("\(error)") }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 120)
+        }
+    }
+
+    /// Turns the main run loop, each turn in a pool of its own, until `released` holds nothing
+    /// (at most `turns` turns of up to 10 ms); what is still held.
+    private func stillHeld(_ released: Released, turns: Int = 500) -> [String] {
+        for _ in 0..<turns where !released.held.isEmpty {
+            autoreleasepool { _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01)) }
+        }
+        return released.held
+    }
+
     /// A workspace closed the way the operator closes it (the window's close button) gives up its
-    /// window, its controller and every window it owns, again and again: each one kept would hold its
-    /// window-server surface for the rest of the session (#716). The app's window count comes back to
-    /// where it was.
-    func testAClosedWorkspaceReleasesItsWindowAndTheWindowsItOwns() async throws {
+    /// window, its controller and every window it owns (settings, a patch editor, Find Missing Files,
+    /// the pre-show check, the log, the status popover; a sheet the third time, closed by File > Close),
+    /// again and again:
+    /// each one kept would hold its window-server surface for the rest of the session (#716). The
+    /// app's window count comes back to where it was.
+    func testAClosedWorkspaceReleasesItsWindowAndTheWindowsItOwns() throws {
         let windowsBefore = NSApp.windows.count
         for round in 0..<3 {
-            let doc = try await addWorkspace()
-            let released = try await openOwnedWindows(of: doc, sheet: round == 2)
-            app.windows[doc]?.window?.performClose(nil)
-            await assertEventually { self.app.windows[doc] == nil }
-            await assertEventually("round \(round): \(released.held) still held") { released.held.isEmpty }
+            var released = Released()
+            drained { [self] in
+                let doc = try await addWorkspace()
+                released = try await openOwnedWindows(of: doc, sheet: round == 2)
+                if round == 2 {
+                    // A window with a sheet up takes no close button; the app closes it (File > Close).
+                    await app.closeWorkspace(doc)
+                } else {
+                    app.windows[doc]?.window?.performClose(nil)
+                }
+                await assertEventually { self.app.windows[doc] == nil }
+            }
+            XCTAssertEqual(stillHeld(released), [], "round \(round)")
         }
         XCTAssertEqual(NSApp.windows.count, windowsBefore, "the app's windows are back to where they started")
     }
 
-    /// Closing the workspace whose cue is playing (Intro runs in the fixture; the operator confirms)
-    /// with an edit from its window and its pre-show check still unanswered: the engine closes the doc,
-    /// which stops its cues, and the window goes with everything it owns once the answers come, which
-    /// find nothing to call back into. The engine and the app go on.
-    func testAWorkspaceClosedWhileACuePlaysWithRequestsPendingIsReleased() async throws {
-        XCTAssertEqual(app.session.stores["1"]?.cueStates[intro]?.state, .running)
-        let released = try await openOwnedWindows(of: "1")
-        engine.holdResults = true
-        do {
-            let wc = try XCTUnwrap(app.windows["1"])
+    /// Closing a workspace whose cue is playing (the operator confirms), with an edit from its window
+    /// and its pre-show check still unanswered: the engine closes the doc, which stops its cues, and the
+    /// window goes with everything it owns once the answers come, which find nothing to call back into.
+    /// The engine and the app go on.
+    func testAWorkspaceClosedWhileACuePlaysWithRequestsPendingIsReleased() throws {
+        var released = Released()
+        drained { [self] in
+            let doc = try await real.open("Demo")
+            await assertEventually { self.app.windows[doc]?.store.model != nil }
+            let store = try XCTUnwrap(app.session.stores[doc])
+            guard case .success = await store.go(list: list) else { return XCTFail("go") }
+            try await advance()
+            await assertEventually { store.cueStates[self.intro]?.state == .running }
+            released = try await openOwnedWindows(of: doc)
+            engine.holdResults = true
+            let wc = try XCTUnwrap(app.windows[doc])
             wc.masthead.onCommitNotes?(fade, "pending")
             _ = wc.showPreshowCheck()
+            await assertEventually { self.engine.heldCount == 2 }
+            engine.holdResults = false
+            alerts.saveChoices = [.dontSave]
+            wc.window?.performClose(nil)
+            await assertEventually { self.app.windows[doc] == nil }
+            XCTAssertEqual(alerts.log.first, "closePlaying")
+            XCTAssertEqual(closeMessages().map(\.doc), [doc])
+            engine.releaseResults()
         }
-        await assertEventually { self.engine.heldCount == 2 }
-        engine.holdResults = false
-        alerts.saveChoices = [.dontSave]
-        app.windows["1"]?.window?.performClose(nil)
-        await assertEventually { self.app.windows["1"] == nil }
-        XCTAssertEqual(alerts.log.first, "closePlaying")
-        XCTAssertEqual(closeMessages().map(\.doc), ["1"])
-        engine.releaseResults()
-        await assertEventually("\(released.held) still held") { released.held.isEmpty }
-        let other = try await addWorkspace()
-        try await advance()
-        XCTAssertEqual(app.windows[other]?.window?.isVisible, true, "the app goes on")
+        XCTAssertEqual(stillHeld(released), [])
+        drained { [self] in
+            try await advance()
+            XCTAssertEqual(app.windows["1"]?.window?.isVisible, true, "the other workspace goes on")
+            XCTAssertEqual(app.session.stores["1"]?.cueStates[intro]?.state, .running)
+        }
     }
 
     func testNewAndOpenAddWindowsWhileTheFirstKeepsRunning() async throws {
