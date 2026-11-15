@@ -571,6 +571,13 @@ fn caught_up(
                     .iter()
                     .find(|k| k.target == target)
                     .map_or_else(|| initial(target), |k| k.value(t));
+                // The mixer sets a voice's first cap at once (from no cap there is no step to
+                // smooth), whatever the ramp asked.
+                let fade = if target == GainTarget::DuckCap && from >= openlab_audio::MAX_GAIN {
+                    Fade::NONE
+                } else {
+                    fade
+                };
                 let track = Track {
                     target,
                     from,
@@ -833,6 +840,8 @@ mod tests {
             // An output set at once, then over by the swap.
             (110, ramp(GainTarget::CueOutput(1), 0.25, 0)),
             (120, ramp(GainTarget::CueOutput(0), 0.5, 10)),
+            // A first cap is set at once, as the mixer sets it (no ramp down from no cap).
+            (100, ramp(GainTarget::DuckCap, 4.0, 100)),
             // The duck stage halves in dB terms: from 1.0 to 0.01 over 100 from 100.
             (100, ramp(GainTarget::Duck, 0.01, 100)),
             (150, ramp(GainTarget::Master, 1.0, 0)),
@@ -840,6 +849,7 @@ mod tests {
         ];
         let out = caught_up(queue, 150, |t| match t {
             GainTarget::CueOutput(_) => 2.0,
+            GainTarget::DuckCap => openlab_audio::MAX_GAIN,
             _ => 1.0,
         });
         type Got = (SampleTime, Option<(GainTarget, f32, u64)>);
@@ -857,6 +867,7 @@ mod tests {
                 (150, Some((GainTarget::Master, 0.0, 50))),
                 (150, Some((GainTarget::CueOutput(1), 0.25, 0))),
                 (150, Some((GainTarget::CueOutput(0), 0.5, 0))),
+                (150, Some((GainTarget::DuckCap, 4.0, 0))),
                 (150, Some((GainTarget::Duck, 0.1, 0))),
                 (150, Some((GainTarget::Duck, 0.01, 50))),
                 // On the swap sample itself: kept, after.
