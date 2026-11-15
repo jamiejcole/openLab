@@ -2822,8 +2822,27 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(media(TestSnapshots.rain), "media/gone-rain.wav", "the unticked cue is left alone")
         XCTAssertEqual(toolRows(tool).map(\.cue), ["2.2  Rain"], "the relinked rows leave the list")
         XCTAssertEqual(
-            tool.summaryLabel.stringValue, String(format: loc("missingFiles.summary.relinked"), 2, 1))
+            tool.summaryLabel.stringValue, MissingFilesWindowController.relinkSummary(relinked: 2, left: 1))
         XCTAssertTrue(demo.store.logEntries.contains { $0.message == tool.summaryLabel.stringValue })
+    }
+
+    /// The Find Missing Files summaries count in words, one or many, never "cue(s)".
+    func testFindMissingFilesSummariesUseSingularAndPlural() {
+        XCTAssertEqual(
+            MissingFilesWindowController.relinkSummary(relinked: 2, left: 1),
+            "Relinked 2 cues. 1 cue is still missing a file.")
+        XCTAssertEqual(
+            MissingFilesWindowController.relinkSummary(relinked: 1, left: 3),
+            "Relinked 1 cue. 3 cues are still missing a file.")
+        XCTAssertEqual(
+            MissingFilesWindowController.relinkSummary(relinked: 3, left: 0),
+            "Relinked 3 cues. No cue is missing a file now.")
+        XCTAssertEqual(
+            MissingFilesWindowController.searchSummary(found: 1, missing: 1, truncated: false, capped: false),
+            "Found a file for 1 of 1 cue with a missing file.")
+        XCTAssertEqual(
+            MissingFilesWindowController.searchSummary(found: 2, missing: 3, truncated: false, capped: false),
+            "Found files for 2 of 3 cues with a missing file. 1 not found.")
     }
 
     /// Flow: two files of the same name found for one cue: a sheet asks which one; the one picked is

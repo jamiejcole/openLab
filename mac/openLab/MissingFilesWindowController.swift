@@ -162,11 +162,26 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     static func searchSummary(found: Int, missing: Int, truncated: Bool, capped: Bool) -> String {
-        var parts = [String(format: loc("missingFiles.summary.found"), found, missing)]
+        let foundKey = missing == 1 ? "missingFiles.summary.found.one" : "missingFiles.summary.found.many"
+        var parts = [String(format: loc(foundKey), found, missing)]
         if missing > found { parts.append(String(format: loc("missingFiles.summary.notFound"), missing - found)) }
         if truncated { parts.append(loc("missingFiles.summary.truncated")) }
         if capped { parts.append(loc("missingFiles.summary.capped")) }
         return parts.joined(separator: " ")
+    }
+
+    static func relinkSummary(relinked: Int, left: Int) -> String {
+        let done =
+            relinked == 1
+            ? loc("missingFiles.summary.relinked.one")
+            : String(format: loc("missingFiles.summary.relinked.many"), relinked)
+        let rest =
+            switch left {
+            case 0: loc("missingFiles.summary.left.none")
+            case 1: loc("missingFiles.summary.left.one")
+            default: String(format: loc("missingFiles.summary.left.many"), left)
+            }
+        return done + " " + rest
     }
 
     /// `path` from the searched folder down (the folder is shown above the list); the full path
@@ -245,7 +260,7 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
             let done = Set(ticked.map(\.cue))
             rows.removeAll { done.contains($0.cue) }
             let left = missingCues().filter { !done.contains($0.id) }.count
-            summaryLabel.stringValue = String(format: loc("missingFiles.summary.relinked"), done.count, left)
+            summaryLabel.stringValue = Self.relinkSummary(relinked: done.count, left: left)
             _ = store.receive(.log(.info, summaryLabel.stringValue))
         case .failure(let e):
             summaryLabel.stringValue = String(format: loc("missingFiles.relinkFailed"), e.detailText)
