@@ -29,9 +29,12 @@ enum ProblemText {
         if w.type == "notice" {
             let code = w.json["code"]?.stringValue ?? ""
             if let text = text(for: "warning.notice.\(code)") { return fill(text, w.json, label) }
-            // A notice only the binary knows: its own (English) message beats an opaque code. Ids
-            // in it are named as the rest of the list names them.
-            if let message = w.json["message"]?.stringValue, !message.isEmpty { return namingIDs(message, label) }
+            // A notice only the binary knows: its own (English) message beats an opaque code. The
+            // codes that quote item ids have them named as the rest of the list names them; any
+            // other text (file paths, volume names) is shown as it is, an id-shaped name included.
+            if let message = w.json["message"]?.stringValue, !message.isEmpty {
+                return idQuotingNotices.contains(code) ? namingIDs(message, label) : message
+            }
         }
         return render("warning", w.type, specific: w.json["reason"]?.stringValue, fields: w.json, label: label)
     }
@@ -93,6 +96,9 @@ enum ProblemText {
     }
 
     private static let idKeys: Set<String> = ["cue", "target", "patch", "list"]
+
+    /// Notice codes whose engine text quotes cue, list, patch or stage ids: the show file's repairs.
+    static let idQuotingNotices: Set<String> = ["load_repair"]
 
     private static let idPattern = try? NSRegularExpression(
         pattern: "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")

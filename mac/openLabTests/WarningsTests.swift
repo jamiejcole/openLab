@@ -432,11 +432,30 @@ final class WarningsTests: XCTestCase {
         }
     }
 
+    /// A media file and a volume whose names look like ids, as notices quoting paths carry them.
+    private static let uuidFile = "Media/0f8e2b7a-1c3d-4e5f-8a9b-0c1d2e3f4a5b.wav"
+    private static let uuidVolume = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+    private static let userNames = [uuidFile, uuidVolume]
+
+    /// Notices whose engine text names a file or a volume, as the engine words them.
+    private static let pathNotices: [JSONValue] = [
+        .object([
+            "type": .string("notice"), "code": .string("damaged_media"),
+            "message": .string("\(uuidFile): 2 damaged part(s); they play as silence"),
+        ]),
+        .object([
+            "type": .string("notice"), "code": .string("media_volume_not_responding"),
+            "message": .string("volume \"\(uuidVolume)\" does not answer: its files are not checked"),
+        ]),
+    ]
+
     private static let uuid = try? NSRegularExpression(
         pattern: "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
     private func assertNoID(_ text: String?, _ context: String, file: StaticString = #filePath, line: UInt = #line) {
-        guard let text, let re = Self.uuid else { return }
+        guard var text, let re = Self.uuid else { return }
+        // A file or volume the user named like an id is their name, not an internal id.
+        for name in Self.userNames { text = text.replacingOccurrences(of: name, with: "") }
         XCTAssertNil(
             re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), "\(context): \(text)", file: file,
             line: line)
@@ -489,6 +508,7 @@ final class WarningsTests: XCTestCase {
                 "type": .string("notice"), "code": .string("load_repair"),
                 "message": .string("cue \(rain.raw): target \(gone) does not exist"), "cue": .string(rain.raw),
             ]))
+        warnings += Self.pathNotices
         for id in [rain.raw, gone] {
             let ws = try warnings.map { w -> String in
                 guard case .object(var o) = w else { return try w.text() }
@@ -509,6 +529,23 @@ final class WarningsTests: XCTestCase {
             try assertListShowsNoID("warnings on \(id)")
             for row in side.warningRows { assertNoID(row.title + row.detail, "row \(row.id)") }
         }
+    }
+
+    /// A media file or volume named like an id is shown by its name, untouched; a show-file repair's
+    /// ids are named in words.
+    func testAFileOrVolumeNamedLikeAnIDIsShownAsItIs() async throws {
+        try await make()
+        let repair = JSONValue.object([
+            "type": .string("notice"), "code": .string("load_repair"),
+            "message": .string("cue \(rain.raw): target 6c1e43d2-58a1-4b7e-9f0e-1d2c3b4a5f60 does not exist"),
+        ])
+        let list = try (Self.pathNotices + [repair]).map { try $0.text() }.joined(separator: ",")
+        try receive(#"{"type":"warnings","warnings":[\#(list)]}"#)
+        let titles = side.warningRows.map(\.title)
+        XCTAssertTrue(titles.contains("\(Self.uuidFile): 2 damaged part(s); they play as silence"), "\(titles)")
+        XCTAssertTrue(titles.contains { $0.contains("volume \"\(Self.uuidVolume)\"") }, "\(titles)")
+        XCTAssertTrue(
+            titles.contains("cue 2.2  Rain: target \(loc("warnings.unknownItem")) does not exist"), "\(titles)")
     }
 
     func testGOPressedFiveTimesOnTheSameBrokenCueIsOneEntryForThatCue() async throws {

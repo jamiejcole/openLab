@@ -656,7 +656,7 @@
 "warning.target_wrong_kind.detail" = "Its target {target} is the wrong kind of cue.";
 "warning.target_not_running.detail" = "Its target {target} is not running.";
 "warning.unknown_cue.detail" = "It does not exist, so nothing was done.";
-"warning.devamp_ignored.detail" ="A Devamp that did not apply to it was ignored.";
+"warning.devamp_ignored.detail" = "A Devamp that did not apply to it was ignored.";
 "warning.go_ignored" = "GO on {list} was ignored.";
 "warning.go_ignored.chain_limit" = "GO on {list} was ignored: a chain of cues was too long.";
 "warning.go_ignored.double_go" = "GO on {list} was ignored: it came too soon after the last GO.";
