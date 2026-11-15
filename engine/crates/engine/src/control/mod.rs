@@ -1332,6 +1332,17 @@ fn notice(code: &str, message: String, cue: Option<CueId>) -> WireWarning {
         code: code.to_owned(),
         message,
         cue,
+        device: None,
+    }
+}
+
+/// A notice about the audio device named `device`.
+fn device_notice(code: &str, message: String, device: &str) -> WireWarning {
+    WireWarning::Notice {
+        code: code.to_owned(),
+        message,
+        cue: None,
+        device: Some(device.to_owned()),
     }
 }
 

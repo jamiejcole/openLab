@@ -471,6 +471,19 @@
 "warnings.stage.noDisplay" = "No display on this computer";
 "warnings.stage.missing" = "Its display is not connected";
 "warnings.stage.failed" = "Cannot be shown";
+"warnings.device" = "Audio device “%@”";
+"warnings.device.device_lost" = "Disconnected. Cues routed to it cannot play until it is reconnected. Any that were playing show paused; GO plays them from their start.";
+"warnings.device.patch_device_missing" = "Not connected, so the cues routed to it cannot play. Connect it, or choose another device for its patch in Workspace Settings, Audio.";
+"warnings.device.device_unrecoverable" = "Failed and cannot recover. Restart openLab to hear it again.";
+"warnings.device.device_stalled" = "Has stopped responding. If it stays silent, it is treated as disconnected.";
+"warnings.device.outputs_dropped" = "Has fewer outputs than this show uses, so some are not heard. Check its patches in Workspace Settings, Audio.";
+"warnings.device.patch_device_unusable" = "Listed, but openLab cannot use it, so the cues routed to it cannot play. Workspace Settings, Audio says why.";
+"warnings.device.other" = "Has a problem. Workspace Settings, Audio says more.";
+"warnings.refused.one" = "Asked to start while broken, so it did not play.";
+"warnings.refused.many" = "Asked to start %d times while broken, so it did not play.";
+"warnings.repeated" = "%@ (%d times)";
+"warnings.cueGone" = "A cue no longer in the workspace";
+"warnings.unknownItem" = "an item no longer in the workspace";
 "settings.network.add" = "New destination";
 "settings.network.note" = "Each destination is a device or program that Network cues send to.";
 "settings.network.col.name" = "Name";
@@ -576,7 +589,7 @@
 "broken.voice_rejected" = "The audio engine refused to play it.";
 "broken.stream_failed" = "Its audio stream failed while it was playing.";
 "broken.device_lost" = "The audio device was lost while it was playing.";
-"paused.device_lost" = "Stopped: the audio device was lost. Resume clears this mark; GO plays the cue from its start.";
+"paused.device_lost" = "Shows paused: its audio device was lost, and it will not play on. Resume clears the mark; GO plays it from its start.";
 "broken.decode_failed" = "Its picture could not be decoded while it was playing.";
 
 "problem.unknown" = "Unrecognised problem: {type}";
@@ -590,10 +603,10 @@
 "problem.media_unsupported" = "Media file cannot be played: {media}";
 "problem.patch_missing" = "Its audio patch, {patch}, does not exist.";
 "problem.device_unavailable" = "The audio device for patch {patch} is not available.";
-"problem.device_unavailable.mapped" = "Patch {patch} is available on {device}.";
+"problem.device_unavailable.mapped" = "Patch {patch} is available on “{device}”.";
 "problem.device_unavailable.unmapped" = "Patch {patch} is not mapped to an audio device on this Mac.";
-"problem.device_unavailable.device_missing" = "Audio device {device} (patch {patch}) is not connected.";
-"problem.device_unavailable.channels_missing" = "Audio device {device} has {available} outputs; patch {patch} needs {needed}.";
+"problem.device_unavailable.device_missing" = "Audio device “{device}” (patch {patch}) is not connected.";
+"problem.device_unavailable.channels_missing" = "Audio device “{device}” has {available} outputs; patch {patch} needs {needed}.";
 "problem.device_unavailable.output_count_mismatch" = "Patch {patch} has {outputs} outputs but its device mapping lists {mapped}.";
 "problem.network_patch_missing" = "Its network patch, {patch}, does not exist.";
 "problem.network_patch_missing.none" = "It has no network patch.";
@@ -641,6 +654,7 @@
 "warning.target_missing.detail" = "Its target {target} does not exist.";
 "warning.target_wrong_kind.detail" = "Its target {target} is the wrong kind of cue.";
 "warning.target_not_running.detail" = "Its target {target} is not running.";
+"warning.unknown_cue.detail" = "It does not exist, so nothing was done.";
 "warning.devamp_ignored.detail" = "A Devamp that did not apply to it was ignored.";
 "warning.go_ignored" = "GO on {list} was ignored.";
 "warning.go_ignored.chain_limit" = "GO on {list} was ignored: a chain of cues was too long.";

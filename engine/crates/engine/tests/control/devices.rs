@@ -129,6 +129,28 @@ fn notices(msgs: &[ServerMessage]) -> Vec<String> {
         .collect()
 }
 
+/// The devices the runtime notices name, in order.
+fn notice_devices(msgs: &[ServerMessage]) -> Vec<Option<String>> {
+    warnings(msgs)
+        .into_iter()
+        .filter_map(|w| match w {
+            WireWarning::Notice { device, .. } => Some(device),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The last workspace warnings list sent.
+fn last_warnings(msgs: &[ServerMessage]) -> Vec<WireWarning> {
+    msgs.iter()
+        .rev()
+        .find_map(|m| match m {
+            ServerMessage::Warnings { warnings } => Some(warnings.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 /// The last workspace warnings list sent, as notice codes.
 fn workspace_warnings(msgs: &[ServerMessage]) -> Option<Vec<String>> {
     msgs.iter()
@@ -235,6 +257,8 @@ fn list_devices_answers_from_the_host_list_and_follows_hot_plug() {
     assert_eq!(list_devices(&mut s), vec![]);
     let msgs = s.take_outbound();
     assert_eq!(notices(&msgs), vec!["device_lost".to_owned()]);
+    // The notice names its device, so a client can list one entry per device.
+    assert_eq!(notice_devices(&msgs), vec![Some(DEV_NAME.to_owned())]);
     assert_eq!(logs(&msgs, LogLevel::Error).len(), 1);
     // At once the patch is reported missing: the idle cue on it shows broken.
     let p = problems(&msgs, 1);
@@ -958,6 +982,13 @@ fn a_lost_device_stops_exactly_the_runs_on_it_and_breaks_the_cues_routed_to_it()
         workspace_warnings(&msgs),
         Some(vec!["device_lost".to_owned()])
     );
+    assert!(msgs.iter().any(|m| matches!(
+        m,
+        ServerMessage::Warnings { warnings } if matches!(
+            &warnings[..],
+            [WireWarning::Notice { device: Some(d), .. }] if d == DEV_NAME
+        )
+    )));
     // While the device is away, a cue routed to it does not start: broken, as a missing device.
     s.transport(TransportAction::Start { cue: id(4) });
     let msgs = s.take_outbound();
@@ -2230,13 +2261,25 @@ fn a_patch_whose_device_is_unplugged_is_warned_about_until_it_is_back() {
     let mut s = two_device_show(vec![]);
     unplug(&mut s, DEV2);
     s.wait_wall(Duration::from_secs(1), 1);
-    let texts = notice_texts(&s.take_outbound()).unwrap();
+    let msgs = s.take_outbound();
+    let texts = notice_texts(&msgs).unwrap();
     let missing: Vec<&String> = texts
         .iter()
         .filter(|(code, _)| code == "patch_device_missing")
         .map(|(_, m)| m)
         .collect();
     assert_eq!(missing.len(), 1, "{texts:?}");
+    assert_eq!(
+        last_warnings(&msgs)
+            .into_iter()
+            .find_map(|w| match w {
+                WireWarning::Notice { code, device, .. } if code == "patch_device_missing" =>
+                    device,
+                _ => None,
+            })
+            .as_deref(),
+        Some(DEV2_NAME)
+    );
     assert!(
         missing[0].contains("\"B\"") && missing[0].contains(DEV2_NAME),
         "{}",

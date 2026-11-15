@@ -229,6 +229,7 @@ impl DocCx<'_> {
                         code: code.to_owned(),
                         message,
                         cue,
+                        device: None,
                     },
                 })
                 .collect::<Vec<_>>();

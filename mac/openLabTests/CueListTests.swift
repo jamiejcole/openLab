@@ -5802,12 +5802,10 @@ final class DeviceLossRowTests: XCTestCase {
         try await h.rig.advance(1)
         XCTAssertEqual(time(h, H.intro), shown)
         XCTAssertEqual(try XCTUnwrap(h.store.progress[H.intro]?.elapsed), elapsed, accuracy: 0.001)
-        // The Warnings list says the device was lost: the notice and the cue's own row.
-        let notice = try XCTUnwrap(h.store.runtimeWarnings.first { $0.json["code"]?.stringValue == "device_lost" })
-        XCTAssertTrue(
-            WarningRows.make(store: h.store).contains {
-                $0.cue == nil && $0.title == ProblemText.warning(notice, label: { _ in "" })
-            })
+        // The Warnings list says the device was lost (one entry for it, gone now it is back) and
+        // why the cue's own row is paused.
+        XCTAssertTrue(h.store.runtimeWarnings.contains { $0.json["code"]?.stringValue == "device_lost" })
+        XCTAssertFalse(WarningRows.make(store: h.store).contains { $0.cue == nil }, "the device is back")
         let row = try XCTUnwrap(WarningRows.make(store: h.store).first { $0.cue == H.intro })
         XCTAssertEqual(row.detail, loc("paused.device_lost"))
     }
