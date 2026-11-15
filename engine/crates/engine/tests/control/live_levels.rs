@@ -1137,7 +1137,7 @@ fn a_duck_moves_evenly_in_db_and_never_steps() {
     let mut s = show(workspace(vec![
         audio(1, &path, 0),
         ducker(2, -12.0),
-        ducker(3, -12.0),
+        ducker(3, -20.0),
     ]));
     start(&mut s, 1);
     let at = start(&mut s, 2) as usize;
@@ -1148,9 +1148,179 @@ fn a_duck_moves_evenly_in_db_and_never_steps() {
     // From the sample after the start (the start itself is the file's first sample).
     let step = largest_step(&out, at + 1);
     assert!(step < LEVEL * 0.002, "a step of {step}");
+    // The deeper duck took over half way through the first one's ramp: it applies, not the sum.
     assert!(
-        (db(out[at + 2 * rate]) + 24.0).abs() < 0.5,
+        (db(out[at + 2 * rate]) + 20.0).abs() < 0.5,
         "both ducks: {}",
         db(out[at + 2 * rate])
     );
+}
+
+/// A ducking Wait cue `n`: `db` over `time` seconds while it runs `wait_s` seconds.
+fn ducking_wait(n: u128, wait_s: f64, db: f64, time: f64) -> openlab_core::Cue {
+    let mut c = cue(n, CueKind::Wait { duration: wait_s });
+    c.duck_others = openlab_core::DuckOthers {
+        enabled: true,
+        db,
+        duration: time,
+    };
+    c
+}
+
+/// Asserts `x[i]` is `want` dB below (or above) `LEVEL`, within a tenth of a dB.
+fn at_db(x: &[f32], i: usize, want: f64, what: &str) {
+    let got = 20.0 * f64::from(x[i] / LEVEL).log10();
+    assert!(
+        (got - want).abs() < 0.1,
+        "{what}: sample {i} at {got} dB, not {want}"
+    );
+}
+
+/// Issue flow: A plays; B (duck -12) starts, so A is 12 dB down after the duck time; C (duck -12)
+/// starts, and A's level does not change: the ducks do not add (CUE-07, measured in QLab 5).
+#[test]
+fn a_plays_b_ducks_12_then_c_ducks_12_and_a_does_not_change() {
+    let rate = RATE as usize;
+    let path = wav(&dc(rate * 9, LEVEL));
+    let mut s = show(workspace(vec![
+        audio(1, &path, 0),
+        ducking_wait(2, 6.0, -12.0, 1.0),
+        ducking_wait(3, 3.0, -12.0, 1.0),
+    ]));
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    let b = start(&mut s, 2) as usize;
+    s.run(u64::from(RATE) * 2);
+    let c = start(&mut s, 3) as usize;
+    s.run(u64::from(RATE) * 6);
+    let out = s.channel(0);
+    at_db(&out, b - 1, 0.0, "before B");
+    at_db(&out, b + rate / 2, -6.0, "half way down");
+    // From B's duck time to B's end, through C's start and end, one level.
+    let ducked = LEVEL * db_to_gain(-12.0);
+    let held = &out[b + rate + 10..b + 6 * rate];
+    assert!(
+        held.iter().all(|&v| (v - ducked).abs() < 1e-5),
+        "A moved while C ran (C started at {c})"
+    );
+    at_db(&out, b + 7 * rate + 10, 0.0, "after B");
+}
+
+/// Issue flow: as above with C at -20: A goes to 20 dB down over C's time; C ends, and A comes
+/// back to 12 dB down over C's time; B ends, and A comes back to full over B's. A cue started
+/// while both are on starts at the deeper level, and nothing steps when the deeper duck takes over
+/// or hands back.
+#[test]
+fn c_at_minus_20_takes_a_to_20_down_then_back_to_12_over_cs_time_then_to_full() {
+    let rate = RATE as usize;
+    let path = wav(&dc(rate * 12, LEVEL));
+    let late = wav(&dc(rate, LEVEL));
+    let mut s = show(workspace(vec![
+        audio(1, &path, 0),
+        ducking_wait(2, 8.0, -12.0, 1.0),
+        ducking_wait(3, 2.0, -20.0, 0.5),
+        audio(4, &late, 1),
+    ]));
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    let b = start(&mut s, 2) as usize;
+    s.run(u64::from(RATE) * 2);
+    let c = start(&mut s, 3) as usize;
+    s.run(u64::from(RATE));
+    let d = start(&mut s, 4) as usize;
+    s.run(u64::from(RATE) * 8);
+    let out = s.channel(0);
+    at_db(&out, c - 1, -12.0, "B alone");
+    // Evenly in dB from -12 to -20 over C's half second.
+    at_db(&out, c + rate / 4, -16.0, "half way to C's");
+    at_db(&out, c + rate / 2 + 10, -20.0, "C's");
+    // C ends 2 s after it started: back to B's over C's half second.
+    at_db(&out, c + 2 * rate + rate / 4, -16.0, "half way back");
+    at_db(&out, c + 2 * rate + rate / 2 + 10, -12.0, "B's again");
+    // B ends 8 s after it started: back to full over B's second.
+    at_db(&out, b + 8 * rate + rate / 2, -6.0, "half way to full");
+    at_db(&out, b + 9 * rate + 10, 0.0, "full");
+    let step = largest_step(&out, b - 10);
+    assert!(step < LEVEL * 0.003, "a step of {step}");
+    // Started while both duck: at C's level from its first sample.
+    let late_out = s.channel(1);
+    at_db(&late_out, d, -20.0, "a cue started during the ducks");
+    at_db(&late_out, d + 100, -20.0, "a cue started during the ducks");
+}
+
+/// Issue flow: a boost and a duck active together. A +6 dB boost is on; a -12 dB duck starts:
+/// the lower applies, so A is 12 dB down; the duck ends and A goes back up to the boost over the
+/// duck's time, never stepping.
+#[test]
+fn a_boost_and_a_duck_active_together_the_duck_applies() {
+    let rate = RATE as usize;
+    let quiet = LEVEL / 4.0;
+    let path = wav(&dc(rate * 8, quiet));
+    let mut s = show(workspace(vec![
+        audio(1, &path, 0),
+        ducking_wait(2, 6.0, 6.0, 0.5),
+        ducking_wait(3, 2.0, -12.0, 1.0),
+    ]));
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    let boost = start(&mut s, 2) as usize;
+    s.run(u64::from(RATE));
+    let duck = start(&mut s, 3) as usize;
+    s.run(u64::from(RATE) * 6);
+    let out: Vec<f32> = s.channel(0).iter().map(|v| v * 4.0).collect();
+    at_db(&out, duck - 1, 6.0, "boosted");
+    at_db(&out, duck + rate + 10, -12.0, "the duck wins");
+    at_db(
+        &out,
+        duck + 2 * rate + rate / 2,
+        -3.0,
+        "half way back to the boost",
+    );
+    at_db(&out, duck + 3 * rate + 10, 6.0, "boosted again");
+    at_db(
+        &out,
+        boost + 6 * rate + rate / 2 + 10,
+        0.0,
+        "the boost ended",
+    );
+    let step = largest_step(&out, boost - 10);
+    assert!(step < LEVEL * 0.004, "a step of {step}");
+}
+
+/// The deepest ducking cue stopped (not ending by itself): A comes back to the next deepest duck
+/// over the stopped one's time; a Panic then lets every duck go, so A's next run is at full.
+#[test]
+fn stopping_the_deepest_ducking_cue_hands_back_to_the_next_and_panic_lets_all_go() {
+    let rate = RATE as usize;
+    let path = wav(&dc(rate * 10, LEVEL));
+    let mut ws = workspace(vec![
+        audio(1, &path, 0),
+        ducking_wait(2, 8.0, -12.0, 1.0),
+        ducking_wait(3, 8.0, -20.0, 0.5),
+    ]);
+    ws.settings.panic_duration = 0.5;
+    let mut s = show(ws);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    start(&mut s, 3);
+    s.run(u64::from(RATE) * 2);
+    let stop = s.now() as usize;
+    s.transport(TransportAction::Stop {
+        cue: id(3),
+        fade_out: None,
+    });
+    s.run(u64::from(RATE));
+    let out = s.channel(0);
+    at_db(&out, stop - 1, -20.0, "both on");
+    at_db(&out, stop + rate / 4, -16.0, "half way back");
+    at_db(&out, stop + rate / 2 + 10, -12.0, "B's");
+    assert!(largest_step(&out, stop - 10) < LEVEL * 0.003);
+    s.transport(TransportAction::Panic);
+    s.run(u64::from(RATE));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    let again = start(&mut s, 1) as usize;
+    s.run(u64::from(RATE) / 2);
+    let out = s.channel(0);
+    at_db(&out, again + 10, 0.0, "the next run");
 }

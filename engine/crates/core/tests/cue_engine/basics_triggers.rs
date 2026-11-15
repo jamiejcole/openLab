@@ -920,8 +920,11 @@ fn a_cue_started_during_the_duck_starts_ducked() {
     );
 }
 
+/// Several ducks at once do not add: the lowest applies (CUE-07, measured in QLab 5). A
+/// shallower duck starting or ending under a deeper one sends nothing; the deeper one ending
+/// brings the level back to the shallower one over the deeper one's own time.
 #[test]
-fn two_ducks_at_once_add_in_db_and_come_off_one_by_one() {
+fn two_ducks_at_once_do_not_add_the_deepest_applies() {
     let mut rig = Rig::new(vec![
         sound(1),
         ducking_others(wait(2, 2.0), -6.0, 0.5),
@@ -931,15 +934,75 @@ fn two_ducks_at_once_add_in_db_and_come_off_one_by_one() {
     rig.start(0, 2);
     let out = rig.start(100, 3);
     // Each ducking cue does not duck itself; 2 is a Wait, so only 1 has a voice.
-    assert_eq!(ducks(&out), vec![(id(1), 100, gain(-16.0), 1000)]);
-    let out = rig.tick(2000);
-    assert_eq!(
-        ducks(&out),
-        vec![(id(1), 2000, gain(-10.0), 500)],
-        "2's own time"
-    );
+    assert_eq!(ducks(&out), vec![(id(1), 100, gain(-10.0), 1000)]);
+    assert!(ducks(&rig.tick(2000)).is_empty(), "the shallower one ends");
     let out = rig.tick(4100);
     assert_eq!(ducks(&out), vec![(id(1), 4100, 1.0, 1000)]);
+    // The deeper one ending first: back to the shallower one over the deeper one's time.
+    let mut rig = Rig::new(vec![
+        sound(1),
+        ducking_others(wait(2, 4.0), -6.0, 0.5),
+        ducking_others(wait(3, 2.0), -10.0, 1.0),
+    ]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    rig.start(0, 3);
+    let out = rig.tick(2000);
+    assert_eq!(ducks(&out), vec![(id(1), 2000, gain(-6.0), 1000)]);
+    let out = rig.tick(4000);
+    assert_eq!(ducks(&out), vec![(id(1), 4000, 1.0, 500)]);
+}
+
+/// A boost and a duck at once: the duck applies, as the lower of the two; of two boosts the
+/// smaller applies; the duck ending brings the boost back over the duck's time.
+#[test]
+fn a_boost_and_a_duck_active_together_the_lower_applies() {
+    let mut rig = Rig::new(vec![
+        sound(1),
+        ducking_others(wait(2, 4.0), 6.0, 0.5),
+        ducking_others(wait(3, 2.0), -12.0, 1.0),
+        ducking_others(wait(4, 1.0), 3.0, 0.25),
+    ]);
+    rig.start(0, 1);
+    let out = rig.start(0, 2);
+    assert_eq!(ducks(&out), vec![(id(1), 0, gain(6.0), 500)]);
+    let out = rig.start(100, 4);
+    assert_eq!(ducks(&out), vec![(id(1), 100, gain(3.0), 250)]);
+    let out = rig.start(200, 3);
+    assert_eq!(ducks(&out), vec![(id(1), 200, gain(-12.0), 1000)]);
+    // 4 ends under the duck: nothing changes.
+    assert!(ducks(&rig.tick(1100)).is_empty());
+    let out = rig.tick(2200);
+    assert_eq!(ducks(&out), vec![(id(1), 2200, gain(6.0), 1000)]);
+    let out = rig.tick(4000);
+    assert_eq!(ducks(&out), vec![(id(1), 4000, 1.0, 500)]);
+}
+
+/// Fifty ducking cues at once: the level is the deepest of them, not their sum; the others
+/// ending under it change nothing, and it comes back when the deepest, the last, ends.
+#[test]
+fn many_ducks_at_once_stay_at_the_deepest() {
+    let mut cues = vec![sound(1)];
+    for n in 2..52 {
+        let (db, secs) = if n == 30 { (-30.0, 3.0) } else { (-12.0, 2.0) };
+        cues.push(ducking_others(wait(n, secs), db, 1.0));
+    }
+    let mut rig = Rig::new(cues);
+    rig.start(0, 1);
+    let mut sent = Vec::new();
+    for n in 2..52 {
+        sent.extend(ducks(&rig.start(10, n)));
+    }
+    assert_eq!(
+        sent,
+        vec![
+            (id(1), 10, gain(-12.0), 1000),
+            (id(1), 10, gain(-30.0), 1000)
+        ]
+    );
+    assert!(ducks(&rig.tick(2010)).is_empty());
+    let out = rig.tick(3010);
+    assert_eq!(ducks(&out), vec![(id(1), 3010, 1.0, 1000)]);
 }
 
 #[test]
