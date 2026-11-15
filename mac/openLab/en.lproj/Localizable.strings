@@ -198,6 +198,8 @@
 "cue.playhead.inside" = "Playhead is inside this group";
 "cue.flagged" = "Flagged";
 "cue.flagged.inside" = "Contains a flagged cue";
+/* A first-column mark that holds the flag's place: the mark's own label, then the flag's. */
+"cue.markWithFlag" = "%1$@; %2$@";
 
 "cue.state.idle" = "Idle";
 "cue.state.loaded" = "Loaded";

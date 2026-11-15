@@ -5106,6 +5106,10 @@ final class CueListDrawingTests: XCTestCase {
         let preview = try XCTUnwrap(try mark(h, H.rain, 2), "the preview mark")
         XCTAssertEqual(preview, flag, "in the flag's place")
         XCTAssertNil(try mark(h, H.rain, 3), "the flag gives way")
+        let shown = try XCTUnwrap(h.cell("status", H.rain)).images[2]
+        let both = String(format: loc("cue.markWithFlag"), loc("cue.previewing"), loc("cue.flagged"))
+        XCTAssertEqual(shown.accessibilityLabel(), both, "the preview mark names the flag it hides")
+        XCTAssertEqual(shown.toolTip, both)
         guard case .success = await h.store.transport(.stopPreview(cue: H.rain)) else { return XCTFail("stop") }
         try await h.rig.advance(0.2)
         await assertEventually { !h.store.previewing.contains(H.rain) }

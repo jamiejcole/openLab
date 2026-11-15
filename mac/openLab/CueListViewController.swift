@@ -1717,12 +1717,21 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 cell.images[2].setAccessibilityIdentifier("cue-override")
                 cell.setImage(2, icon: .outputOverridden, label: loc("cue.outputOverridden"), tint: .systemRed)
             }
-            // The flag shares the preview's slot and gives way to it: the preview and the override are the
-            // passing states, and the flag shows again when they end.
-            switch cell.images[2].isHidden ? flagMarker(node, expanded: outlineView.isItemExpanded(node)) : nil {
-            case .solid: cell.setImage(3, icon: .flagged, label: loc("cue.flagged"), tint: .systemYellow)
-            case .hollow:
+            // The flag shares the preview's slot and gives way to a preview or override mark, which can be up
+            // for a long time (an override lasts until it is turned off): the mark that holds the slot then
+            // names the flag in its label and tooltip, so it is never lost.
+            let flag = flagMarker(node, expanded: outlineView.isItemExpanded(node))
+            let mark = cell.images[2]
+            switch flag {
+            case .solid where mark.isHidden:
+                cell.setImage(3, icon: .flagged, label: loc("cue.flagged"), tint: .systemYellow)
+            case .hollow where mark.isHidden:
                 cell.setImage(3, icon: .flaggedInside, label: loc("cue.flagged.inside"), tint: .systemYellow)
+            case .solid, .hollow:
+                let flagText = loc(flag == .solid ? "cue.flagged" : "cue.flagged.inside")
+                let label = String(format: loc("cue.markWithFlag"), mark.accessibilityLabel() ?? "", flagText)
+                mark.setAccessibilityLabel(label)
+                mark.toolTip = label
             case nil: break
             }
             if let style = CueKindStyle.typeStyle(kind: cue.raw["kind"]) {
