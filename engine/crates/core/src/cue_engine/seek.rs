@@ -148,14 +148,44 @@ impl CueEngine {
     /// its voice moves there at once and plays on in step, from where the run is now (a paused
     /// one from where it froze, staying paused). Timers, post-wait, continues and the end are
     /// the run's own and stay; the moved voice tells its length again. A run stopping with a
-    /// fade ends where it is; a stale, broken or not yet started run has nothing to move.
+    /// fade ends where it is; a stale, broken or not yet started run has nothing to move. A run
+    /// being devamped moves once its voice has left the loop (or the devamp was ignored).
     pub(super) fn device_moved(&mut self, cue: CueId, run_id: RunId, cx: &mut Ctx) {
+        let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
+            return;
+        };
+        if run.run != run_id || run.is_broken() || run.stop_end.is_some() {
+            return;
+        }
+        // A devamp on its way (sent and not answered, or answered and its loop not left yet):
+        // the audio side alone knows where the voice is in its loop then, and a voice moved
+        // now would play that loop again. It moves once the devamp is done with.
+        if run.devamp.is_some() {
+            run.move_pending = true;
+            return;
+        }
+        self.move_device(cue, cx);
+    }
+
+    /// A move held for a devamp (`Run::move_pending`) is made now that the devamp is done
+    /// with: the voice left its loop, or the devamp was ignored.
+    pub(super) fn move_held(&mut self, cue: CueId, cx: &mut Ctx) {
+        if let Some(Slot::Active(run)) = self.slots.get_mut(&cue)
+            && std::mem::take(&mut run.move_pending)
+            && run.devamp.is_none()
+        {
+            self.move_device(cue, cx);
+        }
+    }
+
+    /// Moves the run of `cue` to its patch's device now (see [`Self::device_moved`]).
+    fn move_device(&mut self, cue: CueId, cx: &mut Ctx) {
         let now = cx.now;
         let fresh = self.new_run();
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
         };
-        if run.run != run_id || run.is_broken() || run.stop_end.is_some() {
+        if run.is_broken() || run.stop_end.is_some() {
             return;
         }
         let (
@@ -201,18 +231,8 @@ impl CueEngine {
             at,
             position,
         });
+        // No devamp is on its way (`device_moved` holds the move until it is done with).
         regive_levels(cue, run, at, cx);
-        if run.paused_at.is_none()
-            && let Some(d) = run.devamp.as_mut()
-        {
-            d.at = None;
-            cx.out.push(Action::DevampVoice {
-                cue,
-                run: fresh,
-                at,
-                stop: d.stop,
-            });
-        }
     }
 
     /// A preview of `cue` (an audio cue's own) jumps to `position`, playing or paused.

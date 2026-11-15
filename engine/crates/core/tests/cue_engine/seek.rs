@@ -727,28 +727,10 @@ fn a_paused_cue_moved_to_another_device_stays_paused_and_resumes_from_where_it_f
 }
 
 #[test]
-fn a_fade_in_progress_and_a_pending_devamp_carry_over_to_the_moved_voice() {
-    let mut loop_cue = sound(1);
-    if let CueKind::Audio {
-        last_slice_play_count,
-        ..
-    } = &mut loop_cue.kind
-    {
-        *last_slice_play_count = 0;
-    }
-    let devamp = cue(
-        3,
-        CueKind::Devamp {
-            target: Some(cue_id(1)),
-            start_next_cue: false,
-            stop_target_when_slice_ends: false,
-            devamp_mode: Default::default(),
-        },
-    );
-    let mut rig = Rig::new(vec![loop_cue, cue(2, fade(1)), devamp]);
+fn a_fade_in_progress_carries_over_to_the_moved_voice() {
+    let mut rig = Rig::new(vec![sound(1), cue(2, fade(1))]);
     rig.start(0, 1);
     rig.start(0, 2);
-    rig.start(100, 3);
     let half = rig.level(1, LevelParam::Master, 1000).unwrap();
     let moved = rig.device_moved(1000, 1);
     let fresh = rig.run(1);
@@ -769,12 +751,89 @@ fn a_fade_in_progress_and_a_pending_devamp_carry_over_to_the_moved_voice() {
     assert_eq!(ramps.len(), 2, "{moved:?}");
     assert!((ramps[0].1 - half).abs() < 1e-6);
     assert_eq!((ramps[1].0, ramps[1].1, ramps[1].2), (1000, 0.0, 4000));
-    assert!(moved.contains(&Action::DevampVoice {
-        cue: id(1),
-        run: fresh,
-        at: 1000,
-        stop: false
-    }));
+}
+
+/// A looping cue whose Devamp cue starts the next cue as it leaves the loop.
+fn devamped_loop() -> Rig {
+    let mut loop_cue = sound(1);
+    if let CueKind::Audio {
+        last_slice_play_count,
+        ..
+    } = &mut loop_cue.kind
+    {
+        *last_slice_play_count = 0;
+    }
+    let devamp = cue(
+        3,
+        CueKind::Devamp {
+            target: Some(cue_id(1)),
+            start_next_cue: true,
+            stop_target_when_slice_ends: false,
+            devamp_mode: Default::default(),
+        },
+    );
+    let mut rig = Rig::new(vec![loop_cue, devamp, sound(4)]);
+    rig.start(0, 1);
+    rig.start(100, 3);
+    rig
+}
+
+/// Review round 1: a move while a devamp is on its way (sent, not answered; or answered and
+/// its loop not left yet) waits: the audio side alone knows where the voice is in its loop, and
+/// a voice moved then would play the loop again. Once the voice has left the loop the move is
+/// made from where it is, with no devamp sent again; the next cue starts once.
+#[test]
+fn a_move_during_a_devamp_waits_until_the_voice_has_left_its_loop() {
+    let mut rig = devamped_loop();
+    let run = rig.run(1);
+    let held = rig.device_moved(200, 1);
+    assert!(relocations(&held).is_empty(), "{held:?}");
+    assert_eq!(rig.run(1), run);
+    rig.at(
+        210,
+        Input::DevampScheduled {
+            cue: id(1),
+            run,
+            at: 900,
+        },
+    );
+    // Answered, the loop not left yet: still held.
+    let again = rig.device_moved(300, 1);
+    assert!(relocations(&again).is_empty(), "{again:?}");
+    let left = rig.tick(900);
+    let moved = relocations(&left);
+    assert_eq!(moved.len(), 1, "{left:?}");
+    assert_eq!((moved[0].1, moved[0].2), (run, 900));
+    assert!(
+        !left.iter().any(|a| matches!(a, Action::DevampVoice { .. })),
+        "{left:?}"
+    );
+    assert_eq!(starts(&left), vec![(id(4), 900)]);
+    assert!(starts(&rig.tick(2000)).is_empty());
+}
+
+/// The same, the devamp then ignored (no loop to leave): the held move is made then.
+#[test]
+fn a_move_during_a_devamp_that_is_then_ignored_is_made_then() {
+    let mut rig = devamped_loop();
+    let run = rig.run(1);
+    assert!(relocations(&rig.device_moved(200, 1)).is_empty());
+    let ignored = rig.at(250, Input::DevampIgnored { cue: id(1), run });
+    let moved = relocations(&ignored);
+    assert_eq!(moved.len(), 1, "{ignored:?}");
+    assert_eq!((moved[0].1, moved[0].2), (run, 250));
+    assert!(starts(&ignored).is_empty());
+}
+
+/// A held move is dropped with the run: a stop before the devamp is done moves nothing.
+#[test]
+fn a_move_held_for_a_devamp_is_dropped_by_a_stop() {
+    let mut rig = devamped_loop();
+    let run = rig.run(1);
+    rig.device_moved(200, 1);
+    rig.stop(300, 1);
+    let late = rig.at(350, Input::DevampIgnored { cue: id(1), run });
+    assert!(relocations(&late).is_empty(), "{late:?}");
 }
 
 #[test]

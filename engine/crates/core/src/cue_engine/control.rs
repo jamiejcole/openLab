@@ -398,6 +398,7 @@ impl CueEngine {
             && run.devamp.take().is_some()
         {
             cx.warn(EngineWarning::DevampIgnored { cue });
+            self.move_held(cue, cx);
         }
     }
 }
