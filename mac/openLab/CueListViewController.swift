@@ -165,11 +165,23 @@ final class ProgressFillView: NSView {
     }
 }
 
-/// A cell: up to four small images around one label. Status column: playhead (0), state (1),
-/// preview (2), flag (3). Type column: the cue's type icon (0). Duration column: `progress` behind
-/// the label.
+/// A cell: up to four small images around one label. The first (status) column has five images, each in
+/// a fixed slot (`statusSlots`): playhead (0), state (1), the cue's type icon (4), preview or flag (2, 3).
+/// Duration column: `progress` behind the label.
 final class CueCell: NSTableCellView {
-    let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView()]
+    let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView(), NSImageView()]
+    /// The first column's slots, left to right, as (image, x from the cell's left edge, width). Each mark
+    /// has its own place whether or not the others are shown, so every row's marks line up down the list:
+    /// the playhead's room at the row's edge (the row draws the pointer there), the state, then the type
+    /// icon beside it (as in QLab), then one slot the preview or override mark and the flag share: QLab shows
+    /// a flag in the status area, not a place of its own.
+    static let statusSlots: [(image: Int, x: CGFloat, width: CGFloat)] = [
+        (0, 0, 12), (1, 14, 16), (4, 32, 16), (2, 50, 16), (3, 50, 16),
+    ]
+    /// The first column's width: the last slot and a margin. The column cannot be resized.
+    static let statusWidth: CGFloat = 70
+    /// The colours of the tinted images, kept so a highlighted row can draw them in its text colour.
+    private var tints: [Int: (image: NSImage, tint: NSColor, label: String)] = [:]
     let label = NSTextField(labelWithString: "")
     let progress = ProgressFillView()
     /// An Audio cue's button in the Target cell, with or without a file; clicking it calls `onChoose`.
@@ -185,24 +197,38 @@ final class CueCell: NSTableCellView {
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         label.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let views: [NSView] = [images[0], label, images[1], images[2], images[3]]
-        let stack = NSStackView(views: views)
-        stack.spacing = 4
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-        // A column dragged to zero width gives the cell zero width: a required trailing inset then
-        // contradicts the stack's own minimum ("Conflicting constraints detected").
-        let trailing = stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2)
-        trailing.priority = .defaultHigh
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            trailing,
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
-        for image in images {
-            image.imageScaling = .scaleProportionallyDown
-            image.setContentHuggingPriority(.required, for: .horizontal)
-            image.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        for image in images { image.imageScaling = .scaleProportionallyDown }
+        if identifier.rawValue == "status" {
+            for slot in Self.statusSlots {
+                let image = images[slot.image]
+                image.translatesAutoresizingMaskIntoConstraints = false
+                addSubview(image)
+                NSLayoutConstraint.activate([
+                    image.leadingAnchor.constraint(equalTo: leadingAnchor, constant: slot.x),
+                    image.widthAnchor.constraint(equalToConstant: slot.width),
+                    image.heightAnchor.constraint(equalToConstant: 16),
+                    image.centerYAnchor.constraint(equalTo: centerYAnchor),
+                ])
+            }
+        } else {
+            let views: [NSView] = [images[0], label, images[1], images[2], images[3]]
+            let stack = NSStackView(views: views)
+            stack.spacing = 4
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(stack)
+            // A column dragged to zero width gives the cell zero width: a required trailing inset then
+            // contradicts the stack's own minimum ("Conflicting constraints detected").
+            let trailing = stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2)
+            trailing.priority = .defaultHigh
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+                trailing,
+                stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            ])
+            for image in images {
+                image.setContentHuggingPriority(.required, for: .horizontal)
+                image.widthAnchor.constraint(equalToConstant: 16).isActive = true
+            }
         }
         chooseButton.isBordered = false
         chooseButton.imagePosition = .imageOnly
@@ -226,8 +252,7 @@ final class CueCell: NSTableCellView {
             images[1].setAccessibilityIdentifier("cue-state")
             images[2].setAccessibilityIdentifier("cue-preview")
             images[3].setAccessibilityIdentifier("cue-flag")
-        case "type":
-            images[0].setAccessibilityIdentifier("cue-type")
+            images[4].setAccessibilityIdentifier("cue-type")
         case "continue":
             images[0].setAccessibilityIdentifier("cue-continue")
         case "target":
@@ -257,6 +282,7 @@ final class CueCell: NSTableCellView {
     /// Shows `symbol` in image `i` (hidden when nil) with an accessibility label and tooltip.
     func setImage(_ i: Int, icon: Icon?, label: String?, tint: NSColor? = nil, tooltip: String? = nil) {
         let view = images[i]
+        tints[i] = nil
         guard let icon, let label else {
             view.isHidden = true
             view.image = nil
@@ -265,12 +291,25 @@ final class CueCell: NSTableCellView {
         }
         view.isHidden = false
         let image = icon.image(label, compact: true)
-        // A tinted icon is drawn in its colour as a plain image: a template would turn white on a
-        // highlighted row, and a state must keep its colour there.
-        view.image = tint.map { TimeHeaderCell.tinted(image, $0, size: image.size, description: label) } ?? image
+        // A tinted icon is drawn as a plain image in its colour, and in the selection's text colour on a
+        // highlighted row (QLab draws a selected row's marks so). A clear one only keeps its slot.
+        if let tint, tint != .clear { tints[i] = (image, tint, label) }
+        view.image = tint.map { tinted(image, $0, label) } ?? image
         view.contentTintColor = nil
         view.setAccessibilityLabel(label)
         view.toolTip = tooltip ?? label
+    }
+
+    private func tinted(_ image: NSImage, _ tint: NSColor, _ label: String) -> NSImage {
+        let colour = tint != .clear && backgroundStyle == .emphasized ? NSColor.alternateSelectedControlTextColor : tint
+        return TimeHeaderCell.tinted(image, colour, size: image.size, description: label)
+    }
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet {
+            guard backgroundStyle != oldValue else { return }
+            for (i, mark) in tints { images[i].image = tinted(mark.image, mark.tint, mark.label) }
+        }
     }
 }
 
@@ -284,9 +323,10 @@ final class CueCell: NSTableCellView {
 final class CueListViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate,
     NSTextFieldDelegate
 {
-    /// QLab order. The first and last columns carry no title.
+    /// QLab order. The first and last columns carry no title. The first holds the playhead, the state and
+    /// the cue's type icon; it has no type column of its own.
     static let columns: [(id: String, titleKey: String?, width: CGFloat)] = [
-        ("status", nil, 80), ("type", nil, 32), ("number", "cuelist.col.number", 60), ("name", "cuelist.col.name", 280),
+        ("status", nil, CueCell.statusWidth), ("number", "cuelist.col.number", 60), ("name", "cuelist.col.name", 280),
         ("target", "cuelist.col.target", 60), ("preWait", "cuelist.col.preWait", 80),
         ("duration", "cuelist.col.duration", 120), ("postWait", "cuelist.col.postWait", 80),
         ("continue", nil, 36),
@@ -385,7 +425,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let room = inside - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
         let columns = outlineView.tableColumns
         let others = columns.filter { $0 !== name }.reduce(0) { $0 + $1.width }
-        let width = max(Self.nameMinWidth, (room - others - tableExtra(name, others: others)).rounded(.down))
+        let width = max(name.minWidth, (room - others - tableExtra(name, others: others)).rounded(.down))
         if abs(name.width - width) >= 1 { name.width = width }
     }
 
@@ -409,18 +449,35 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         for spec in Self.columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.id))
             column.title = spec.titleKey.map(loc) ?? ""
-            if spec.id == "type" { column.headerToolTip = loc("cuelist.col.type") }
             if Self.timeColumns.contains(spec.id) {
                 column.headerCell = TimeHeaderCell(textCell: column.title)
                 updateTimeHeader(column)
             }
-            column.width = spec.width
-            // The Name column takes up and gives up width with the window; the others keep theirs, so the
-            // times stay readable in a narrow window.
-            column.minWidth = spec.id == "name" ? Self.nameMinWidth : 24
-            column.resizingMask = spec.id == "name" ? [] : [.userResizingMask]
+            // No column is narrower than its header's text, so a header never truncates.
+            let least = max(24, column.headerCell.cellSize.width.rounded(.up))
+            switch spec.id {
+            case "status":
+                // The first column's marks sit in fixed slots: its width is fixed.
+                column.minWidth = spec.width
+                column.maxWidth = spec.width
+                column.resizingMask = []
+            case "name":
+                // The Name column takes up and gives up width with the window; the others keep theirs, so
+                // the times stay readable in a narrow window.
+                column.minWidth = max(Self.nameMinWidth, least)
+                column.resizingMask = []
+            default:
+                column.minWidth = least
+                column.resizingMask = [.userResizingMask]
+            }
+            column.width = max(spec.width, column.minWidth)
             outlineView.addTableColumn(column)
         }
+        // QLab's columns are resized only, never reordered, and a pressed header does not change.
+        outlineView.allowsColumnReordering = false
+        let header = CueHeaderView(frame: outlineView.headerView?.frame ?? .zero)
+        header.onClick = { [weak self] in self?.toggleTimeShown($0.identifier.rawValue) }
+        outlineView.headerView = header
         outlineView.columnAutoresizingStyle = .noColumnAutoresizing
         outlineView.outlineTableColumn = outlineView.tableColumns.first { $0.identifier.rawValue == "name" }
         outlineView.usesAlternatingRowBackgroundColors = true
@@ -1231,24 +1288,25 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
     }
 
-    /// What a file drop does, or nil to refuse it: at least one audio file, nothing in Show Mode. A
-    /// single file dropped on an audio cue's row replaces its file; anything else makes cues from
-    /// the audio files where it lands (other files in the drop are left out).
+    /// What a file drop does, or nil to refuse it: at least one sound, movie or still, nothing in
+    /// Show Mode. A single file dropped on the row of a cue of its kind (a sound on an Audio cue, a
+    /// movie or still on a Video cue) replaces that cue's file; anything else makes cues from the
+    /// media files where it lands (other files in the drop are left out).
     func fileDropPlan(_ urls: [URL], item: Any?, index: Int) -> FileDrop? {
-        let audio = CueEditor.audioExtensionFiles(urls)
-        guard !isEditLocked, !audio.isEmpty else { return nil }
+        let media = CueEditor.mediaExtensionFiles(urls)
+        guard !isEditLocked, !media.isEmpty else { return nil }
         if urls.count == 1, index == NSOutlineViewDropOnItemIndex, let node = item as? CueNode,
-            node.cue.kindType == "audio"
+            CueEditor.cueKind(forFile: urls[0])?.wireType == node.cue.kindType
         {
             return .replace(node.id, urls[0])
         }
         let target = dropTarget(item, index)
-        return .insert(audio, target.parent?.id, target.index)
+        return .insert(media, target.parent?.id, target.index)
     }
 
-    /// How many dragged files `plan` leaves out (not audio files).
+    /// How many dragged files `plan` leaves out (not media files).
     static func skipped(_ urls: [URL], _ plan: FileDrop) -> Int {
-        if case .insert(let audio, _, _) = plan { return urls.count - audio.count }
+        if case .insert(let media, _, _) = plan { return urls.count - media.count }
         return 0
     }
 
@@ -1351,7 +1409,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         }
         guard let id = selected.first else { return true }
         // A file cue's target is chosen in the file chooser, a cue target's typed as a cue number.
-        if column == "target", store.model?.cue(id)?.kindType == "audio" {
+        if column == "target", store.model?.cue(id)?.takesFile == true {
             guard !isEditLocked, onChooseFile != nil else { return true }
             // The chooser is modal: opening it inside the key monitor would nest its loop there.
             Task { @MainActor [weak self] in
@@ -1413,7 +1471,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     func beginCellEdit(_ id: ModelID, column: String = "duration") -> Bool {
         guard !isEditLocked, let field = Self.editableColumns[column], let node = nodes[id],
             outlineView.row(forItem: node) >= 0,
-            field != .duration || InspectorEdit.durationKinds.contains(node.cue.kindType),
+            field != .duration || InspectorEdit.editsDuration(node.cue, media: store.mediaDurations[id]),
             field != .target || InspectorEdit.targetKinds.contains(node.cue.kindType),
             // An auto-follow cue's post-wait is its duration, shown and not typed.
             field != .postWait || node.cue.raw["continue_mode"]?.stringValue != "auto_follow",
@@ -1423,7 +1481,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         settling += 1  // a field still shown for an earlier commit is this edit's now
         cellEditor.isEditable = true
         editingCell = (id, column)
-        cellEditor.stringValue = InspectorEdit.display(field, cue: node.cue, model: model)
+        cellEditor.stringValue = InspectorEdit.display(
+            field, cue: node.cue, model: model, media: store.mediaDurations[node.id])
         // An unnamed cue's editor starts empty, with the name it follows as a hint.
         cellEditor.placeholderString = column == "name" ? node.cue.targetDefaultName(lookup: cueLookup) : nil
         switch column {
@@ -1540,7 +1599,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             onEditedCueGone?()
             return
         }
-        guard cell.column != "duration" || InspectorEdit.durationKinds.contains(node.cue.kindType),
+        guard cell.column != "duration" || InspectorEdit.editsDuration(node.cue, media: store.mediaDurations[cell.id]),
             cell.column != "target" || InspectorEdit.targetKinds.contains(node.cue.kindType),
             let column = outlineView.tableColumns.firstIndex(where: { $0.identifier.rawValue == cell.column })
         else { return cancelCellEdit() }
@@ -1662,17 +1721,27 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 cell.images[2].setAccessibilityIdentifier("cue-override")
                 cell.setImage(2, icon: .outputOverridden, label: loc("cue.outputOverridden"), tint: .systemRed)
             }
-            switch flagMarker(node, expanded: outlineView.isItemExpanded(node)) {
-            case .solid: cell.setImage(3, icon: .flagged, label: loc("cue.flagged"), tint: .systemYellow)
-            case .hollow:
+            // The flag shares the preview's slot and gives way to a preview or override mark, which can be up
+            // for a long time (an override lasts until it is turned off): the mark that holds the slot then
+            // names the flag in its label and tooltip, so it is never lost.
+            let flag = flagMarker(node, expanded: outlineView.isItemExpanded(node))
+            let mark = cell.images[2]
+            switch flag {
+            case .solid where mark.isHidden:
+                cell.setImage(3, icon: .flagged, label: loc("cue.flagged"), tint: .systemYellow)
+            case .hollow where mark.isHidden:
                 cell.setImage(3, icon: .flaggedInside, label: loc("cue.flagged.inside"), tint: .systemYellow)
+            case .solid, .hollow:
+                let flagText = loc(flag == .solid ? "cue.flagged" : "cue.flagged.inside")
+                let label = String(format: loc("cue.markWithFlag"), mark.accessibilityLabel() ?? "", flagText)
+                mark.setAccessibilityLabel(label)
+                mark.toolTip = label
             case nil: break
             }
-        case "number": text(cue.number ?? "")
-        case "type":
             if let style = CueKindStyle.typeStyle(kind: cue.raw["kind"]) {
-                cell.setImage(0, icon: style.icon, label: style.label)
+                cell.setImage(4, icon: style.icon, label: style.label)
             }
+        case "number": text(cue.number ?? "")
         case "name":
             let kind = cue.kindType
             let shown = shownName(cue)
@@ -1683,7 +1752,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 text(shown)
             }
         case "target":
-            if cue.kindType == "audio" {
+            if cue.takesFile {
                 fillFileTargetButton(cell, cue)
             } else if InspectorEdit.targetKinds.contains(cue.kindType) {
                 let shown = targetText(cue)
@@ -1786,6 +1855,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         switch node.cue.kindType {
         case "fade", "wait": return node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0
         case "audio": return store.mediaDurations[node.id]?.shownDuration
+        case "video": return InspectorEdit.videoDuration(node.cue, media: store.mediaDurations[node.id])
         default: return nil
         }
     }

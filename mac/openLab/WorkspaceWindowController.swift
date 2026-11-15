@@ -128,7 +128,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var canFindMissingFiles: Bool { !isShowMode && !MissingFilesWindowController.missingCues(in: store).isEmpty }
     let footer = FooterBar()
     /// The audio file chosen for an Audio cue (nil: cancelled). A seam for tests.
-    var pickAudioFile: @MainActor () -> URL? = WorkspaceWindowController.audioPanel
+    var pickFile: @MainActor (NewCueKind) -> URL? = WorkspaceWindowController.filePanel
     let verticalSplit = NSSplitView()
     let horizontalSplit = NSSplitView()
     /// The preferred inspector height and sidebar width (the splits' soft constraints).
@@ -231,7 +231,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         let chooseFile: (ModelID) -> Void = { [weak self] id in
-            guard let self, let url = self.pickAudioFile() else { return }
+            guard let self, let cue = self.store.model?.cue(id), cue.takesFile,
+                let url = self.pickFile(cue.kindType == "video" ? .video : .audio)
+            else { return }
             Task { await self.editor.replaceFile(of: id, with: url) }
         }
         inspector.onChooseFile = chooseFile
@@ -819,14 +821,16 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 }
 
 extension WorkspaceWindowController {
-    /// Only the types a drop accepts (`CueEditor.audioExtensions`).
-    static func audioPanel() -> URL? {
+    /// Only the files a cue of `kind` plays, as a drop accepts them (`CueEditor.audioExtensions`,
+    /// `videoExtensions`).
+    static func filePanel(for kind: NewCueKind) -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.prompt = loc("inspector.target.choosePrompt")
-        panel.allowedContentTypes = CueEditor.audioExtensions.sorted().compactMap { UTType(filenameExtension: $0) }
+        let extensions = kind == .video ? CueEditor.videoExtensions : CueEditor.audioExtensions
+        panel.allowedContentTypes = extensions.sorted().compactMap { UTType(filenameExtension: $0) }
         return panel.runModal() == .OK ? panel.url : nil
     }
 }

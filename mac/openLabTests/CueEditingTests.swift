@@ -164,9 +164,9 @@ final class CueEditingTests: XCTestCase {
             await assertEventually("\(kind) selected") { h.vc.selectedIDs() == [new] }
             XCTAssertEqual(h.vc.node(new)?.cue.kindType, kind.wireType, "\(kind)")
             XCTAssertNotNil(h.cell("number", new), "\(kind) has a row")
-            // Its type column shows openLab's own drawing for the kind (not a text stand-in), on
+            // Its row shows openLab's own drawing for the kind (not a text stand-in), on
             // the 16-point grid and read out as the kind's name.
-            let icon = try XCTUnwrap(h.cell("type", new)).images[0]
+            let icon = try XCTUnwrap(h.cell("status", new)).images[4]
             let style = try XCTUnwrap(CueKindStyle.typeStyle(kind: h.vc.node(new)?.cue.raw["kind"]), "\(kind)")
             XCTAssertNotNil(style.icon.drawing, "\(kind)")
             XCTAssertTrue(style.icon.resolvesToSymbol, "\(kind)")
@@ -192,7 +192,7 @@ final class CueEditingTests: XCTestCase {
             }
             XCTAssertEqual(inspector.kindIcon.image?.accessibilityDescription, style.label, what)
             XCTAssertEqual(inspector.kindIcon.image?.size, NSSize(width: 16, height: 16), what)
-            let row = try XCTUnwrap(h.cell("type", id), what).images[0]
+            let row = try XCTUnwrap(h.cell("status", id), what).images[4]
             XCTAssertEqual(Icon.drawing(shownBy: row.image), style.icon, "\(what): the row shows the same")
             XCTAssertEqual(row.accessibilityLabel(), style.label, what)
         }
@@ -632,12 +632,13 @@ final class CueEditingTests: XCTestCase {
         var asked: [NewCueKind] = []
         toolbar.onAdd = { asked.append($0) }
         toolbar.add(group: 1, segment: 0)
-        toolbar.add(group: 4, segment: 10)
-        toolbar.add(group: 3, segment: 0)
-        XCTAssertEqual(asked, [.audio, .memo, .network])
+        toolbar.add(group: 5, segment: 10)
+        toolbar.add(group: 4, segment: 0)
+        toolbar.add(group: 2, segment: 0)
+        XCTAssertEqual(asked, [.audio, .memo, .network, .video])
         toolbar.isLocked = true
         toolbar.add(group: 1, segment: 0)  // even if a control were live, a locked toolbar adds nothing
-        XCTAssertEqual(asked, [.audio, .memo, .network])
+        XCTAssertEqual(asked, [.audio, .memo, .network, .video])
         // Every button adds a cue: none is there for a kind the model does not have.
         XCTAssertTrue(CueToolbarView.kinds.allSatisfy { $0.allSatisfy { $0 != nil } })
     }
@@ -650,10 +651,11 @@ final class CueEditingTests: XCTestCase {
             })
         XCTAssertEqual(keys["group"], "0")
         XCTAssertEqual(keys["audio"], "1")
+        XCTAssertEqual(keys["video"], "3")
         XCTAssertEqual(keys["fade"], "7")
         XCTAssertEqual(keys["network"], "8")
         // Types QLab gives no menu key (or that openLab alone has) stay unbound.
-        for kind in NewCueKind.allCases where ![.group, .audio, .fade, .network].contains(kind) {
+        for kind in NewCueKind.allCases where ![.group, .audio, .video, .fade, .network].contains(kind) {
             XCTAssertEqual(keys[kind.rawValue], "", "\(kind)")
         }
         let edit = MainMenu.make().edit

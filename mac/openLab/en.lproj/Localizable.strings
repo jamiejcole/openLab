@@ -58,10 +58,12 @@
 "edit.error.noPatch" = "This workspace has no audio patch, so an Audio cue cannot be added.";
 "edit.error.deleteBusy" = "A cue that is running, paused, fading or previewing cannot be deleted. Stop it first.";
 "edit.error.renumberValues" = "Enter a first number of 0 or more and an increment above 0.";
-"edit.drop.skipped.one" = "1 dropped file was not audio and was left out.";
-"edit.drop.skipped" = "%d dropped files were not audio and were left out.";
-"edit.error.dropNotAudio" = "Only audio files can be dropped here. Folders and other files were not added.";
-"edit.error.replaceBusy" = "The audio file of a cue that is running, paused or fading cannot be replaced. Stop it first.";
+"edit.drop.skipped.one" = "1 dropped file was not a sound, movie or image and was left out.";
+"edit.drop.skipped" = "%d dropped files were not sounds, movies or images and were left out.";
+"edit.error.dropNotMedia" = "Only audio, video and image files can be dropped here. Folders and other files were not added.";
+"edit.error.notAPicture" = "A Video cue plays a movie or a still image, not a sound file.";
+"edit.error.notASound" = "An Audio cue plays a sound file, not a movie or an image.";
+"edit.error.replaceBusy" = "The file of a cue that is running, paused or fading cannot be replaced. Stop it first.";
 "edit.error.refused" = "The engine refused the edit: %@";
 "edit.error.notConnected" = "The edit was not made: the engine is not connected.";
 
@@ -175,9 +177,9 @@
 "cue.type.arm" = "Arm";
 "cue.type.disarm" = "Disarm";
 "cue.type.network" = "Network";
+"cue.type.video" = "Video";
 
 "cuelist.label" = "Cue list";
-"cuelist.col.type" = "Cue type";
 "cuelist.col.number" = "Number";
 "cuelist.col.name" = "Name";
 "cuelist.col.target" = "Target";
@@ -199,6 +201,8 @@
 "cue.playhead.inside" = "Playhead is inside this group";
 "cue.flagged" = "Flagged";
 "cue.flagged.inside" = "Contains a flagged cue";
+/* A first-column mark that holds the flag's place: the mark's own label, then the flag's. */
+"cue.markWithFlag" = "%1$@; %2$@";
 
 "cue.state.idle" = "Idle";
 "cue.state.loaded" = "Loaded";
@@ -270,6 +274,7 @@
 "paste.property.secondTrigger" = "When triggered again";
 "paste.property.secondTriggerOnRelease" = "Second trigger on release";
 "paste.property.outputPatch" = "Output patch";
+"paste.property.stage" = "Stage";
 "paste.property.levels" = "Main, output and routing levels";
 "paste.property.fadeCurve" = "Curve shape";
 "paste.property.fadeMode" = "Absolute or relative";
@@ -626,6 +631,18 @@
 "warning.preview_failed.decode_failed" = "Preview of {cue} failed: its picture could not be decoded.";
 "warning.preview_failed.voice_rejected" = "Preview of {cue} failed: the audio engine refused to play it.";
 "warning.devamp_ignored" = "{cue} ignored a Devamp that did not apply to it.";
+"warning.not_in_list.detail" = "Not in list {list}, so nothing was started.";
+"warning.cue_broken.detail" = "Broken, so it was not started.";
+"warning.trigger_ignored.detail" = "A trigger was ignored: it is {state}.";
+"warning.load_ignored.detail" = "It could not be loaded.";
+"warning.late_start.detail" = "Started {late_ms} ms late.";
+"warning.chain_limit.detail" = "Stopped a chain of cues after {limit} steps.";
+"warning.cue_removed.detail" = "Removed while a trigger for it was pending.";
+"warning.no_target.detail" = "It has no target.";
+"warning.target_missing.detail" = "Its target {target} does not exist.";
+"warning.target_wrong_kind.detail" = "Its target {target} is the wrong kind of cue.";
+"warning.target_not_running.detail" = "Its target {target} is not running.";
+"warning.devamp_ignored.detail" = "A Devamp that did not apply to it was ignored.";
 "warning.go_ignored" = "GO on {list} was ignored.";
 "warning.go_ignored.chain_limit" = "GO on {list} was ignored: a chain of cues was too long.";
 "warning.go_ignored.double_go" = "GO on {list} was ignored: it came too soon after the last GO.";
@@ -801,6 +818,24 @@
 "inspector.tab.io" = "I/O";
 "inspector.io.patch" = "Output patch";
 "inspector.io.editPatch" = "Edit…";
+"inspector.io.file" = "File";
+"inspector.io.choose" = "Choose…";
+"inspector.io.noFile" = "No file";
+"inspector.io.format" = "Video format";
+"inspector.io.formatUnknown" = "Not read";
+"inspector.io.stage" = "Stage";
+"inspector.io.stageNone" = "None";
+"inspector.io.stageSize" = "Stage size";
+"inspector.io.pixels" = "%d × %d";
+"inspector.io.videoFormat" = "%@, %@, %@ fps";
+"inspector.io.stillFormat" = "%@ image, %@";
+"inspector.io.codec.h264" = "H.264";
+"inspector.io.codec.hevc" = "HEVC";
+"inspector.io.codec.prores" = "ProRes";
+"inspector.io.still.png" = "PNG";
+"inspector.io.still.jpeg" = "JPEG";
+"inspector.io.still.tiff" = "TIFF";
+"inspector.io.noVideoSound" = "Sound in video files does not play yet.";
 "levels.editPatch" = "Edit Patch";
 "inspector.network.patch" = "Patch";
 "inspector.network.message" = "Message";

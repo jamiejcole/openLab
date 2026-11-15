@@ -219,7 +219,7 @@ final class CueListTests: XCTestCase {
     func testColumnsAreQLabOrder() {
         XCTAssertEqual(
             CueListViewController.columns.map(\.id),
-            ["status", "type", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
+            ["status", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
     }
 
     /// A default name follows a chain: Fade 4 of Fade 3 of Intro. Renaming Intro redraws row 4 at once
@@ -2531,7 +2531,7 @@ final class PlayheadFlowTests: XCTestCase {
         let wav = try tempFiles(["chosen.wav"])[0]
         var picked: URL?
         var asked = 0
-        wc.pickAudioFile = {
+        wc.pickFile = { _ in
             asked += 1
             return picked
         }
@@ -2554,7 +2554,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await editWorkspace()
         let window = try XCTUnwrap(wc.window)
         var asked = 0
-        wc.pickAudioFile = {
+        wc.pickFile = { _ in
             asked += 1
             return nil
         }
@@ -4906,46 +4906,412 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(pointer.accessibilityLabel(), loc("cue.playhead"))
     }
 
-    func testHighlightedRowsKeepTheRunningColourAndThePointer() async throws {
+    /// On a highlighted row the running mark is drawn in the selection's text colour (white), and the
+    /// pointer is drawn over the highlight.
+    func testHighlightedRowsDrawTheRunningMarkWhiteAndKeepThePointer() async throws {
         let rig = try await timingRig()
         let h = try await harness(rig)
         try await go(rig)
         await assertEventually { rig.store.cueStates[self.ten]?.state == .running }
         await assertEventually { rig.store.playheads[TestSnapshots.mainList] == self.five }
+        XCTAssertGreaterThan(try slotPixels(h, ten, 1, dark: true).count(Self.green), 8, "green while not selected")
         h.spy.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         h.spy.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: true)
         try await rig.advance()
         await assertEventually { rig.store.playheads[TestSnapshots.mainList] == self.five }
         XCTAssertEqual(h.spy.selectedRowIndexes, IndexSet([0, 1]))
-        // A test process is not the active app, so AppKit draws the selection unfocused; draw it as a
-        // focused one (white-on-accent is what turns template icons white).
-        for row in 0...1 { h.spy.rowView(atRow: row, makeIfNecessary: true)?.isEmphasized = true }
-        XCTAssertGreaterThan(try darkPixels(h, "status", ten).count(Self.green), 8, "running triangle stays green")
+        emphasize(h)
+        let running = try slotPixels(h, ten, 1, dark: true)
+        XCTAssertEqual(running.count(Self.green), 0, "the running mark is not green on the highlight")
+        XCTAssertGreaterThan(running.count(Self.pointerWhite), 8, "it is white there")
         XCTAssertGreaterThan(
             try darkPixels(h, "status", five).count(Self.pointerWhite), 40, "the pointer is drawn over the highlight")
     }
 
-    func testCueTypeColumn() async throws {
-        let rig = try await timingRig()
+    // MARK: The first column's slots and the column headers
+
+    private static let red: (CGFloat, CGFloat, CGFloat) -> Bool = { r, g, b in r > 0.75 && g < 0.45 && b < 0.45 }
+
+    /// The Demo show on the real engine, its group open: Intro, its Fade, the group Act One and in it
+    /// Door slam, Rain (flagged) and Radio (its file is missing, so it is broken).
+    private func demo() async throws -> H {
+        let rig = try await Rig.open()
         let h = try await harness(rig)
-        let ids = h.spy.tableColumns.map(\.identifier.rawValue)
-        let status = try XCTUnwrap(ids.firstIndex(of: "status"))
-        XCTAssertEqual(Array(ids[status...(status + 2)]), ["status", "type", "number"])
-        for (cue, kind) in [(ten, "audio"), (five, "audio"), (memo, "memo")] {
-            let type = try XCTUnwrap(h.cell("type", cue))
-            XCTAssertFalse(type.images[0].isHidden)
-            XCTAssertEqual(type.images[0].accessibilityLabel(), CueKindStyle.kindLabel(kind))
-            let drawn = try pixels(h, "type", cue)
-            XCTAssertGreaterThan(drawn.countDifferingFromBackground(), 8, "the icon is drawn for \(kind)")
+        if let group = h.vc.node(H.group) { h.spy.expandItem(group) }
+        await assertEventually("Radio is broken") { h.vc.displayState(H.radio).state == .broken }
+        await assertEventually("the playhead is on Intro") { rig.store.playheads[TestSnapshots.mainList] == H.intro }
+        window?.layoutIfNeeded()
+        return h
+    }
+
+    /// The selection drawn as in a focused window (a test process is not the active app).
+    private func emphasize(_ h: H) {
+        for row in h.spy.selectedRowIndexes { h.spy.rowView(atRow: row, makeIfNecessary: true)?.isEmphasized = true }
+    }
+
+    /// Where image `i` of `id`'s first-column cell is drawn, in the list's coordinates; nil while hidden.
+    private func mark(_ h: H, _ id: ModelID, _ i: Int) throws -> NSRect? {
+        let cell = try XCTUnwrap(h.cell("status", id), "\(id) has a row")
+        cell.superview?.layoutSubtreeIfNeeded()
+        cell.layoutSubtreeIfNeeded()
+        let view = cell.images[i]
+        guard !view.isHidden, view.image != nil, view.superview === cell else { return nil }
+        return view.convert(view.bounds, to: h.spy)
+    }
+
+    /// The pixels `id`'s row draws where image `i` of its first-column cell is.
+    private func slotPixels(_ h: H, _ id: ModelID, _ i: Int, dark: Bool) throws -> Pixels {
+        h.spy.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        let rowView = try XCTUnwrap(h.spy.rowView(atRow: h.spy.row(forItem: h.vc.node(id)), makeIfNecessary: true))
+        rowView.layoutSubtreeIfNeeded()
+        let view = try XCTUnwrap(h.cell("status", id)).images[i]
+        let frame = view.convert(view.bounds, to: rowView)
+        let scale = max(1, rowView.window?.backingScaleFactor ?? 2)
+        let rep = try renderView(rowView, scale: scale, background: dark ? .black : .white)
+        return Pixels(
+            rep: rep, region: NSRect(x: frame.minX, y: 0, width: frame.width, height: rowView.bounds.height),
+            scale: scale)
+    }
+
+    private func column(_ h: H, _ id: String) throws -> NSTableColumn {
+        try XCTUnwrap(h.spy.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(id)), id)
+    }
+
+    private func headerRect(_ h: H, _ id: String) -> NSRect {
+        h.spy.headerView?.headerRect(ofColumn: h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier(id)))
+            ?? .zero
+    }
+
+    /// The list's header as drawn, at the window's scale.
+    private func headerPixels(_ h: H) throws -> NSBitmapImageRep {
+        let header = try XCTUnwrap(h.spy.headerView)
+        let rep = try XCTUnwrap(header.bitmapImageRepForCachingDisplay(in: header.bounds))
+        header.cacheDisplay(in: header.bounds, to: rep)
+        return rep
+    }
+
+    /// The header's drawn pixels from `x` for `width` points (header coordinates), as a comparable list.
+    private func headerSpan(_ h: H, from x: CGFloat, width: CGFloat) throws -> [UInt32] {
+        let rep = try headerPixels(h)
+        let scale = CGFloat(rep.pixelsWide) / max(1, rep.size.width)
+        var out: [UInt32] = []
+        for px in Int(x * scale)..<min(rep.pixelsWide, Int((x + width) * scale)) {
+            for py in 0..<rep.pixelsHigh {
+                guard let c = rep.colorAt(x: px, y: py)?.usingColorSpace(.sRGB) else { continue }
+                out.append(
+                    UInt32(c.redComponent * 255) << 16 | UInt32(c.greenComponent * 255) << 8
+                        | UInt32(c.blueComponent * 255))
+            }
         }
+        return out
+    }
+
+    /// A press on the list's header at `x` (header coordinates) through the header view's own mouse
+    /// handling, with real events: `during` runs while the button is down, then the mouse moves to each
+    /// of `drag` and comes up at the last.
+    private func pressHeader(_ h: H, at x: CGFloat, drag: [CGFloat] = [], during: @escaping () -> Void = {}) throws {
+        let header = try XCTUnwrap(h.spy.headerView)
+        let window = try XCTUnwrap(header.window)
+        func event(_ type: NSEvent.EventType, _ x: CGFloat) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: type, location: header.convert(NSPoint(x: x, y: header.bounds.midY), to: nil),
+                    modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        let down = try event(.leftMouseDown, x)
+        nonisolated(unsafe) let rest =
+            try drag.map { try event(.leftMouseDragged, $0) } + [event(.leftMouseUp, drag.last ?? x)]
+        nonisolated(unsafe) let work = during
+        nonisolated(unsafe) let tracked = Counter()
+        RunLoop.main.perform(inModes: [.eventTracking]) {
+            MainActor.assumeIsolated {
+                work()
+                tracked.count += 1
+                for e in rest { NSApp.postEvent(e, atStart: false) }
+            }
+        }
+        header.mouseDown(with: down)
+        XCTAssertEqual(tracked.count, 1, "the header tracked the press")
+    }
+
+    /// Flow (#696): rows with a status icon, with and without the playhead on them: every status icon is at
+    /// the same x; the playhead sits in its own room at the row's left edge and moves nothing.
+    func testRowsWithAndWithoutThePlayheadDrawEveryStatusIconAtTheSameX() async throws {
+        let h = try await demo()
+        let rows = h.visibleIDs()
+        let types = try rows.map { try XCTUnwrap(try mark(h, $0, 4), "\($0) shows its type").minX }
+        guard case .success = await h.store.go(list: TestSnapshots.mainList) else { return XCTFail("go") }
+        try await h.rig.advance(0.5)
+        await assertEventually { h.store.cueStates[H.intro]?.state == .running }
+        h.vc.selectAsUser([H.radio])
+        await assertEventually { h.store.playheads[TestSnapshots.mainList] == H.radio }
+        try await h.rig.advance()
+        let running = try XCTUnwrap(try mark(h, H.intro, 1), "Intro shows running, no playhead")
+        let broken = try XCTUnwrap(try mark(h, H.radio, 1), "Radio shows broken, with the playhead")
+        XCTAssertEqual(running.minX, broken.minX, "the status icons line up")
+        XCTAssertEqual(try XCTUnwrap(try mark(h, H.radio, 0)).width, CueCell.statusSlots[0].width)
+        for (id, x) in zip(rows, types) {
+            XCTAssertEqual(try XCTUnwrap(try mark(h, id, 4)).minX, x, "\(id)'s type icon did not move")
+        }
+        // The pointer is drawn from the row's edge and ends before the status icon. A focused selection
+        // draws its marks white, as the pointer is, so the pixels are read with the row not selected.
+        h.spy.deselectAll(nil)
+        XCTAssertEqual(h.store.playheads[TestSnapshots.mainList], H.radio, "the playhead stays")
+        let pointer = try darkPixels(h, "status", H.radio)
+        let reach = try XCTUnwrap(pointer.extent(Self.pointerWhite), "the pointer is drawn")
+        let rowX = h.spy.rect(ofRow: h.spy.row(forItem: h.vc.node(H.radio))).minX
+        XCTAssertLessThanOrEqual(reach.upperBound * Double(pointer.region.width), Double(broken.minX - rowX))
+        XCTAssertEqual(try darkPixels(h, "status", H.intro).count(Self.pointerWhite), 0, "Intro has no pointer")
+    }
+
+    /// Flow (#696): the same for rows inside groups (indented), the playhead-inside-a-closed-group mark,
+    /// and a row with both the playhead and a flag.
+    func testIndentedRowsTheInsideMarkAndAFlaggedPlayheadRowKeepTheSameSlots() async throws {
+        let h = try await demo()
+        let introType = try XCTUnwrap(try mark(h, H.intro, 4))
+        h.vc.selectAsUser([H.rain])
+        await assertEventually { h.store.playheads[TestSnapshots.mainList] == H.rain }
+        try await h.rig.advance()
+        let flag = try XCTUnwrap(try mark(h, H.rain, 3), "Rain shows its flag with the playhead on it")
+        XCTAssertNotNil(try mark(h, H.rain, 0), "and the playhead's slot")
+        XCTAssertEqual(try XCTUnwrap(try mark(h, H.rain, 4)).minX, introType.minX, "an indented row's type icon")
+        let radioCell = h.spy.frameOfCell(atColumn: 0, row: h.spy.row(forItem: h.vc.node(H.radio))).minX
+        XCTAssertEqual(
+            try XCTUnwrap(try mark(h, H.radio, 1)).minX, radioCell + CueCell.statusSlots[1].x,
+            "an indented row's status icon is in the status slot")
+        let nameX = { (id: ModelID) -> CGFloat in
+            h.spy.frameOfCell(
+                atColumn: h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier("name")),
+                row: h.spy.row(forItem: h.vc.node(id))
+            ).minX
+        }
+        XCTAssertGreaterThan(nameX(H.rain), nameX(H.intro), "the child row is indented (in the Name column)")
+        // Closed, the group shows the inside mark in the playhead's room and the hollow flag in the flag's.
+        h.spy.collapseItem(try XCTUnwrap(h.vc.node(H.group)))
+        await assertEventually { (try? self.mark(h, H.group, 0)) != nil }
+        let inside = try XCTUnwrap(try mark(h, H.group, 0))
+        let stateSlot = CueCell.statusSlots[1].x
+        let cellX = h.spy.frameOfCell(atColumn: 0, row: h.spy.row(forItem: h.vc.node(H.group))).minX
+        XCTAssertLessThanOrEqual(inside.maxX, cellX + stateSlot, "the inside mark stays in the playhead's room")
+        XCTAssertEqual(try XCTUnwrap(try mark(h, H.group, 3)).minX, flag.minX, "the hollow flag lines up")
+        XCTAssertEqual(try XCTUnwrap(try mark(h, H.group, 4)).minX, introType.minX, "the group's type icon")
+    }
+
+    /// The flag shares one slot with the preview mark, as QLab shows a flag in its status area: a flagged cue
+    /// being previewed shows the preview mark there, and its flag again once the preview ends.
+    func testAFlagGivesWayToAPreviewInItsSharedSlotAndComesBack() async throws {
+        let h = try await demo()
+        let flag = try XCTUnwrap(try mark(h, H.rain, 3), "Rain's flag")
+        guard case .success = await h.store.transport(.preview(cue: H.rain)) else { return XCTFail("preview") }
+        try await h.rig.advance(0.2)
+        await assertEventually { h.store.previewing.contains(H.rain) }
+        let preview = try XCTUnwrap(try mark(h, H.rain, 2), "the preview mark")
+        XCTAssertEqual(preview, flag, "in the flag's place")
+        XCTAssertNil(try mark(h, H.rain, 3), "the flag gives way")
+        let shown = try XCTUnwrap(h.cell("status", H.rain)).images[2]
+        let both = String(format: loc("cue.markWithFlag"), loc("cue.previewing"), loc("cue.flagged"))
+        XCTAssertEqual(shown.accessibilityLabel(), both, "the preview mark names the flag it hides")
+        XCTAssertEqual(shown.toolTip, both)
+        guard case .success = await h.store.transport(.stopPreview(cue: H.rain)) else { return XCTFail("stop") }
+        try await h.rig.advance(0.2)
+        await assertEventually { !h.store.previewing.contains(H.rain) }
+        XCTAssertNil(try mark(h, H.rain, 2))
+        XCTAssertEqual(try mark(h, H.rain, 3), flag, "the flag is back")
+    }
+
+    /// Flow (#696): a selected row's status icon is drawn in the selection's text colour (white for broken),
+    /// and in its state colour when not selected.
+    func testASelectedRowsStatusIconIsDrawnInTheSelectionColourAndInItsStateColourOtherwise() async throws {
+        let h = try await demo()
+        for dark in [true, false] {
+            h.vc.selectAsUser([H.intro])
+            await assertEventually { h.vc.selectedIDs() == [H.intro] }
+            let resting = try slotPixels(h, H.radio, 1, dark: dark)
+            XCTAssertGreaterThan(resting.count(Self.red), 8, "broken is red when not selected (dark \(dark))")
+            h.vc.selectAsUser([H.radio])
+            await assertEventually { h.vc.selectedIDs() == [H.radio] }
+            emphasize(h)
+            let selected = try slotPixels(h, H.radio, 1, dark: dark)
+            XCTAssertEqual(selected.count(Self.red), 0, "no red on the selection (dark \(dark))")
+            XCTAssertGreaterThan(selected.count(Self.pointerWhite), 8, "white on the selection (dark \(dark))")
+        }
+    }
+
+    /// Flow (#696): at the least column width, light and dark, Show Mode: nothing in the first column is
+    /// clipped and nothing overlaps the Number column.
+    func testAtTheLeastWidthLightDarkAndShowModeTheFirstColumnIsWholeAndClearOfTheNumberColumn() async throws {
+        let h = try await demo()
+        h.vc.selectAsUser([H.rain])
+        await assertEventually { h.store.playheads[TestSnapshots.mainList] == H.rain }
+        window?.setContentSize(NSSize(width: 300, height: 400))
+        window?.layoutIfNeeded()
+        for (dark, locked) in [(true, false), (false, false), (true, true), (false, true)] {
+            h.spy.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            h.vc.isEditLocked = locked
+            XCTAssertEqual(try column(h, "status").width, CueCell.statusWidth)
+            for id in h.visibleIDs() {
+                let row = h.spy.row(forItem: h.vc.node(id))
+                let cell = h.spy.frameOfCell(atColumn: 0, row: row)
+                let number = h.spy.frameOfCell(atColumn: h.spy.column(withIdentifier: .init("number")), row: row)
+                for i in CueCell.statusSlots.map(\.image) {
+                    guard let frame = try mark(h, id, i) else { continue }
+                    XCTAssertGreaterThanOrEqual(frame.minX, cell.minX, "\(id) image \(i) starts in its column")
+                    XCTAssertLessThanOrEqual(frame.maxX, cell.maxX, "\(id) image \(i) is whole in its column")
+                    XCTAssertLessThan(frame.maxX, number.minX, "\(id) image \(i) is clear of Number")
+                }
+                let label = try XCTUnwrap(h.cell("number", id)).label
+                if !label.isHidden {
+                    XCTAssertGreaterThanOrEqual(label.convert(label.bounds, to: h.spy).minX, cell.maxX, "\(id)")
+                }
+            }
+        }
+    }
+
+    /// Flow (#696): the cue-type icon has no column of its own: it is drawn in the first column, to the
+    /// right of the status icon's slot, at the same x in every row.
+    func testTheCueTypeIconIsInTheFirstColumnRightOfTheStatusSlotAtTheSameXInEveryRow() async throws {
+        let h = try await demo()
+        XCTAssertEqual(h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier("type")), -1, "no type column")
+        XCTAssertEqual(h.spy.tableColumns.first?.identifier.rawValue, "status")
+        var xs: Set<CGFloat> = []
+        for id in h.visibleIDs() {
+            let kind = try XCTUnwrap(h.vc.node(id)).cue.raw["kind"]
+            let style = try XCTUnwrap(CueKindStyle.typeStyle(kind: kind))
+            let type = try XCTUnwrap(h.cell("status", id)).images[4]
+            XCTAssertEqual(type.accessibilityLabel(), style.label)
+            let frame = try XCTUnwrap(try mark(h, id, 4), "\(id) shows its type")
+            let state = try XCTUnwrap(h.cell("status", id)).images[1]
+            XCTAssertGreaterThanOrEqual(
+                frame.minX, state.convert(state.bounds, to: h.spy).maxX, "right of the status slot")
+            xs.insert(frame.minX)
+            XCTAssertGreaterThan(try slotPixels(h, id, 4, dark: false).countDifferingFromBackground(), 8, "drawn")
+        }
+        XCTAssertEqual(xs.count, 1, "every row's type icon at one x: \(xs)")
         // The Name cell shows only the name.
-        let name = try XCTUnwrap(h.cell("name", ten))
+        let name = try XCTUnwrap(h.cell("name", H.intro))
         XCTAssertTrue(name.images.allSatisfy(\.isHidden))
         XCTAssertEqual(name.label.stringValue, "Intro")
-        // The icon sits between the status and Number columns.
-        let col = { h.spy.column(withIdentifier: NSUserInterfaceItemIdentifier($0)) }
-        XCTAssertEqual(col("type"), col("status") + 1)
-        XCTAssertEqual(col("number"), col("type") + 1)
+    }
+
+    /// Flow (#696): the first column cannot be resized by the user; its width is fixed.
+    func testTheFirstColumnCannotBeResized() async throws {
+        let h = try await demo()
+        let edge = headerRect(h, "status").maxX - 1
+        try pressHeader(h, at: edge, drag: [edge + 30, edge + 60])
+        XCTAssertEqual(try column(h, "status").width, CueCell.statusWidth, "dragged wider")
+        try pressHeader(h, at: edge, drag: [edge - 30, edge - 60])
+        XCTAssertEqual(try column(h, "status").width, CueCell.statusWidth, "dragged narrower")
+    }
+
+    /// Flow (#696): no column can be made narrower than its header's text needs; the header never truncates.
+    func testNoColumnCanBeMadeNarrowerThanItsHeadersText() async throws {
+        let h = try await demo()
+        for id in ["number", "target", "preWait", "duration", "postWait"] {
+            let col = try column(h, id)
+            // The title as drawn in a wide column: the part that must stay the same when it is narrowest.
+            col.width = 300
+            window?.layoutIfNeeded()
+            let text = col.headerCell.cellSize.width - (col.headerCell is TimeHeaderCell ? 16 : 2)
+            let wide = try headerSpan(h, from: headerRect(h, id).minX, width: text)
+            let edge = headerRect(h, id).maxX - 1
+            try pressHeader(h, at: edge, drag: [edge - 150, edge - 400])
+            window?.layoutIfNeeded()
+            XCTAssertEqual(col.width, col.minWidth, "\(id) stops at its least width")
+            XCTAssertLessThan(col.width, 300, "\(id) was made narrower")
+            XCTAssertEqual(
+                try headerSpan(h, from: headerRect(h, id).minX, width: text), wide, "\(id)'s title is drawn whole")
+        }
+        // The Name column follows the window, never below its title's width.
+        let name = try column(h, "name")
+        window?.setContentSize(NSSize(width: 300, height: 400))
+        window?.layoutIfNeeded()
+        XCTAssertEqual(name.width, name.minWidth, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(name.minWidth, name.headerCell.cellSize.width)
+    }
+
+    /// Flows (#695, #696): dragging a header's edge still resizes the column.
+    func testDraggingAHeaderEdgeStillResizesTheColumn() async throws {
+        let h = try await demo()
+        let col = try column(h, "target")
+        let was = col.width
+        let edge = headerRect(h, "target").maxX - 1
+        try pressHeader(h, at: edge, drag: [edge + 15, edge + 30])
+        XCTAssertEqual(col.width, was + 30, accuracy: 3, "the column follows the drag")
+    }
+
+    /// Flows (#695, #696): columns cannot be reordered by dragging a header (QLab only resizes them).
+    func testColumnsCannotBeReorderedByDraggingAHeader() async throws {
+        let h = try await demo()
+        let order = h.spy.tableColumns.map(\.identifier.rawValue)
+        let from = headerRect(h, "number").midX
+        let to = headerRect(h, "target").midX
+        try pressHeader(h, at: from, drag: [from + 20, (from + to) / 2, to])
+        XCTAssertEqual(h.spy.tableColumns.map(\.identifier.rawValue), order, "Number dragged onto Target")
+        let time = headerRect(h, "duration").midX
+        try pressHeader(h, at: time, drag: [time - 40, headerRect(h, "name").midX])
+        XCTAssertEqual(h.spy.tableColumns.map(\.identifier.rawValue), order, "Duration dragged onto Name")
+    }
+
+    /// Flow (#695): mouse down on a header that has no action draws it exactly as before the press: no
+    /// highlight, no bold. Nothing else changes.
+    func testMouseDownOnAHeaderWithNoActionDrawsItExactlyAsBefore() async throws {
+        let h = try await demo()
+        let selected = h.vc.selectedIDs()
+        let shown = h.vc.timeShown
+        for id in ["status", "number", "name", "target", "continue"] {
+            let before = try headerSpan(h, from: 0, width: h.spy.headerView?.bounds.width ?? 0)
+            var during: [UInt32] = []
+            try pressHeader(h, at: headerRect(h, id).midX) {
+                during = (try? self.headerSpan(h, from: 0, width: h.spy.headerView?.bounds.width ?? 0)) ?? []
+            }
+            XCTAssertFalse(during.isEmpty)
+            XCTAssertEqual(during, before, "\(id): drawn as before while pressed")
+            XCTAssertEqual(
+                try headerSpan(h, from: 0, width: h.spy.headerView?.bounds.width ?? 0), before, "\(id) after")
+        }
+        XCTAssertEqual(h.vc.selectedIDs(), selected)
+        XCTAssertEqual(h.vc.timeShown, shown)
+    }
+
+    /// Flow (#695): a header that has an action (a time column's switch between the time gone and the time
+    /// left) still works, and draws nothing pressed while the mouse is down; only its chevron changes.
+    func testATimeHeaderStillSwitchesAndShowsNoPressedLook() async throws {
+        let h = try await demo()
+        let rect = headerRect(h, "duration")
+        let title = try column(h, "duration").headerCell.cellSize.width - 16
+        let before = try headerSpan(h, from: rect.minX, width: rect.width)
+        let titleBefore = try headerSpan(h, from: rect.minX, width: title)
+        var during: [UInt32] = []
+        try pressHeader(h, at: rect.midX) {
+            during = (try? self.headerSpan(h, from: rect.minX, width: rect.width)) ?? []
+        }
+        XCTAssertEqual(during, before, "not drawn pressed")
+        XCTAssertEqual(h.vc.timeShown["duration"], .remaining, "the click switched the column")
+        XCTAssertEqual((try column(h, "duration").headerCell as? TimeHeaderCell)?.shown, .remaining)
+        XCTAssertNotEqual(try headerSpan(h, from: rect.minX, width: rect.width), before, "its chevron turned")
+        XCTAssertEqual(try headerSpan(h, from: rect.minX, width: title), titleBefore, "the title is drawn as before")
+        try pressHeader(h, at: rect.midX)
+        XCTAssertEqual(h.vc.timeShown["duration"], .full)
+        XCTAssertEqual(try headerSpan(h, from: rect.minX, width: rect.width), before, "back as it was")
+    }
+
+    /// Flow (#695): the same in light and dark.
+    func testHeadersDrawTheSameWhenPressedInLightAndDark() async throws {
+        let h = try await demo()
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            window?.appearance = NSAppearance(named: name)
+            h.spy.headerView?.appearance = NSAppearance(named: name)
+            for id in ["number", "duration"] {
+                let rect = headerRect(h, id)
+                let before = try headerSpan(h, from: rect.minX, width: rect.width)
+                var during: [UInt32] = []
+                try pressHeader(h, at: rect.midX) {
+                    during = (try? self.headerSpan(h, from: rect.minX, width: rect.width)) ?? []
+                }
+                XCTAssertEqual(during, before, "\(id) in \(name.rawValue)")
+            }
+        }
     }
 
     /// The cell's middle 18 points, where its button is.
@@ -5100,7 +5466,7 @@ final class CueListDrawingTests: XCTestCase {
         let wav = try tempFiles(["chosen.wav"])[0]
         var picked: URL?
         var asked = 0
-        wc.pickAudioFile = {
+        wc.pickFile = { _ in
             asked += 1
             return picked
         }
@@ -5178,7 +5544,7 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { !wc.inspector.clearTargetButton.isEnabled }
     }
 
-    /// Flow: a Group cue's mode is changed in the inspector, and its row's type column shows that
+    /// Flow: a Group cue's mode is changed in the inspector, and its row's type icon shows that
     /// mode's drawing, read out as the mode's name, for every mode and back to the timeline.
     func testAGroupCuesModeIsChangedItsRowIconChangesToThatModesDrawing() async throws {
         let rig = try await Rig.open()
@@ -5191,7 +5557,7 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { inspector.cueForEdit?.id == group }
         let tab = try XCTUnwrap(inspector.tabView.tabViewItems.first { $0.identifier as? String == "mode" })
         inspector.tabView.selectTabViewItem(tab)
-        func rowIcon() -> NSImageView? { h.cell("type", group)?.images[0] }
+        func rowIcon() -> NSImageView? { h.cell("status", group)?.images[4] }
         XCTAssertEqual(Icon.drawing(shownBy: rowIcon()?.image), .kindGroup)
         XCTAssertEqual(rowIcon()?.accessibilityLabel(), loc("cue.type.group.timeline"))
         let modes = InspectorViewController.groupModes.dropFirst() + ["timeline"]

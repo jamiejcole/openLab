@@ -1,0 +1,444 @@
+{
+  "format_version": 9,
+  "workspace": {
+    "id": "00000000-0000-0000-0000-0000000000f0",
+    "name": "Video",
+    "settings": {
+      "min_go_interval": 0.5,
+      "panic_duration": 3.0,
+      "autosave_interval": 30.0,
+      "osc_access": {
+        "no_passcode": {
+          "view": false,
+          "edit": false,
+          "control": false
+        },
+        "passcodes": [
+          {
+            "passcode": "1234",
+            "rights": {
+              "view": true,
+              "edit": true,
+              "control": true
+            }
+          }
+        ]
+      },
+      "output_max_db": 12.0,
+      "output_min_db": -60.0,
+      "hotkeys": {
+        "go": {
+          "key": "space",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "stop_all": null,
+        "pause_all": null,
+        "resume_all": {
+          "key": "]",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "load_selected": {
+          "key": "l",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "pause_resume_selected": {
+          "key": "p",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "start_selected": null,
+        "stop_selected": null,
+        "reset_selected": null,
+        "preview_selected": {
+          "key": "v",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "panic_selected": {
+          "key": "s",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "edit_number": {
+          "key": "n",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "edit_name": {
+          "key": "q",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "edit_notes": {
+          "key": "o",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "edit_target": {
+          "key": "t",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "edit_pre_wait": {
+          "key": "e",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "edit_duration": {
+          "key": "d",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "edit_post_wait": {
+          "key": "w",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "cycle_continue": {
+          "key": "c",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "toggle_flag": {
+          "key": "f",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        }
+      },
+      "auto_number_start": 1.0,
+      "auto_number_increment": 0.5,
+      "new_cues_auto_load": false
+    },
+    "patches": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Main PA",
+        "master_db": 0.0,
+        "outputs": [
+          {
+            "level_db": 0.0,
+            "mute": false,
+            "polarity_inverted": false
+          },
+          {
+            "level_db": -1.5,
+            "mute": false,
+            "polarity_inverted": true
+          }
+        ]
+      }
+    ],
+    "network_patches": [],
+    "stages": [
+      {
+        "id": "00000000-0000-0000-0000-0000000000f1",
+        "name": "Stage 1",
+        "width": 1920,
+        "height": 1080,
+        "keep_black": false,
+        "layer": 1
+      },
+      {
+        "id": "00000000-0000-0000-0000-0000000000f2",
+        "name": "Side screen",
+        "width": 1280,
+        "height": 720,
+        "keep_black": false,
+        "layer": 1
+      }
+    ],
+    "cue_lists": [
+      {
+        "id": "00000000-0000-0000-0000-0000000000f3",
+        "name": "Main",
+        "cues": [
+          {
+            "id": "00000000-0000-0000-0000-0000000000a1",
+            "number": "1",
+            "name": "",
+            "notes": "",
+            "color": "none",
+            "second_color": "none",
+            "flagged": false,
+            "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "hotkey_enabled": true
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
+            "kind": {
+              "type": "video",
+              "media": "media/clip.mov",
+              "stage": "00000000-0000-0000-0000-0000000000f1",
+              "duration": null
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-0000000000a2",
+            "number": "2",
+            "name": "",
+            "notes": "",
+            "color": "none",
+            "second_color": "none",
+            "flagged": false,
+            "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "hotkey_enabled": true
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
+            "kind": {
+              "type": "video",
+              "media": "media/still.png",
+              "stage": "00000000-0000-0000-0000-0000000000f1",
+              "duration": null
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-0000000000a3",
+            "number": "3",
+            "name": "",
+            "notes": "",
+            "color": "none",
+            "second_color": "none",
+            "flagged": false,
+            "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "hotkey_enabled": true
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
+            "kind": {
+              "type": "video",
+              "media": "media/card.jpg",
+              "stage": "00000000-0000-0000-0000-0000000000f1",
+              "duration": 2.0
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-0000000000a4",
+            "number": "4",
+            "name": "",
+            "notes": "",
+            "color": "none",
+            "second_color": "none",
+            "flagged": false,
+            "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "hotkey_enabled": true
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
+            "kind": {
+              "type": "video",
+              "media": null,
+              "stage": "00000000-0000-0000-0000-0000000000f1",
+              "duration": null
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-0000000000a5",
+            "number": "5",
+            "name": "",
+            "notes": "",
+            "color": "none",
+            "second_color": "none",
+            "flagged": false,
+            "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "hotkey_enabled": true
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
+            "kind": {
+              "type": "video",
+              "media": "media/A very long name for a projection clip used in the second act.mov",
+              "stage": "00000000-0000-0000-0000-0000000000f2",
+              "duration": null
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-0000000000a6",
+            "number": "6",
+            "name": "Backdrop on no stage",
+            "notes": "",
+            "color": "none",
+            "second_color": "none",
+            "flagged": false,
+            "armed": true,
+            "auto_load": false,
+            "skip_if_disarmed": false,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "hotkey_enabled": true
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "fade_and_stop_others": {
+              "enabled": false,
+              "scope": "peers",
+              "duration": 1.0
+            },
+            "duck_others": {
+              "enabled": false,
+              "db": -12.0,
+              "duration": 1.0
+            },
+            "kind": {
+              "type": "video",
+              "media": "media/still.png",
+              "stage": null,
+              "duration": null
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
