@@ -3,7 +3,7 @@
 import AppKit
 
 /// Transport commands from menu items and keys: each workspace's transport keys, GO, the
-/// selected-cue actions, Panic, Reset All, Relink Media and the show log they report failures to.
+/// selected-cue actions, Panic, Reset All, Find Missing Files and the show log they report failures to.
 extension AppController {
     // MARK: Transport commands (menu items and keys)
 

@@ -111,7 +111,7 @@ final class CueListNameCell: NSTableCellView {
 }
 
 /// One Warnings row: a marker symbol (so a warning is not told by colour alone), the title, the
-/// reasons below it and, for missing media, a Relink button.
+/// reasons below it and, for missing media, a button that opens Find Missing Files.
 final class WarningCell: NSTableCellView {
     let title = NSTextField(labelWithString: "")
     let detail = NSTextField(wrappingLabelWithString: "")
@@ -189,7 +189,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     var onCueAction: ((TransportAction) -> Void)?
     /// A warning row about a cue was chosen: show and select that cue.
     var onSelectCue: ((ModelID) -> Void)?
-    /// Relink was clicked on a row (the engine relinks by folder, so the row does not matter).
+    /// A row's Find Missing Files button was clicked (the tool searches for every missing file, so the
+    /// row does not matter).
     var onRelink: (() -> Void)?
     /// Show Mode: relinking rewrites cue media, so the row buttons are off.
     var relinkLocked = false {
