@@ -6,10 +6,13 @@
   "steps": [
     {"select": "1"},
     {"tab": "timeLoops"},
+    {"advance": 0.5},
     {"click": "time-loops-waveform", "at": [0.25, 0.5]},
     {"click": "time-loops-add-slice"},
     {"double_click": "time-loops-waveform", "at": [0.1, 0.97]},
     {"type": "time-loops-slice-count", "text": "3"},
+    {"key": "escape"},
+    {"advance": 0.5},
     {"key": "space"},
     {"select": "1"},
     {"tab": "timeLoops"},

@@ -1970,4 +1970,63 @@ extension PlayheadFlowTests {
         XCTAssertEqual(seeks, [])
         XCTAssertNil(rowMark(id))
     }
+
+    /// A cue whose file is missing never says it is being read: it says the file is missing, in a
+    /// colour that reads on the waves' background in light and dark appearance, and a click there
+    /// moves nothing.
+    func testAMissingFileSaysSoAndNeverThatItIsBeingRead() async throws {
+        let id = try await waveTones(1)[0]
+        _ = await store.setProperty(id, .media("/nonexistent-\(UUID().uuidString)/gone.wav"))
+        await assertEventually("broken: the file is missing") { self.rowMark(id) == loc("cue.state.broken") }
+        await showWaveform(id, drawn: false)
+        for _ in 0..<6 {
+            XCTAssertEqual(waveView.message, loc("timeLoops.missing"))
+            try await play(0.5)
+        }
+        XCTAssertNil(waveView.peaks)
+        clickWave(at: 0.5)
+        XCTAssertEqual(seeks, [], "nothing to load")
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            try XCTUnwrap(NSAppearance(named: name)).performAsCurrentDrawingAppearance {
+                guard let fg = WaveformView.messageColour.usingColorSpace(.sRGB),
+                    let bg = WaveformView.waveBackground.usingColorSpace(.sRGB)
+                else { return XCTFail("colours") }
+                func luminance(_ c: NSColor) -> CGFloat {
+                    0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent
+                }
+                let ratio = (luminance(fg) + 0.05) / (luminance(bg) + 0.05)
+                XCTAssertGreaterThan(ratio, 7, "the message reads on the waves in \(name.rawValue)")
+            }
+        }
+    }
+
+    /// With a section shown, the line where the cue is loaded stays drawn beside it.
+    func testTheLoadedPositionStaysDrawnBesideASection() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        clickWave(at: 12)
+        await seekRun(1)
+        dragWave(from: 18, to: 26)
+        XCTAssertNotNil(waveView.selection)
+        XCTAssertEqual(waveView.insertion ?? -1, 12, accuracy: 0.05)
+        XCTAssertTrue(try lineDrawn(at: waveX(12)), "the loaded position is still drawn")
+        let shaded = try XCTUnwrap(try shadedSpan())
+        XCTAssertEqual(shaded.lowerBound, waveX(18), accuracy: 1.5)
+        await assertEventually("loaded") { self.rowMark(id) == loc("cue.state.loaded") }
+    }
+
+    /// A press held while another cue comes into the tab (not by a click in the list) sends that
+    /// cue nothing when it is let go.
+    func testAPressHeldWhileAnotherCueIsShownMovesNeitherCue() async throws {
+        let ids = try await waveTones(2)
+        await showWaveform(ids[0])
+        pressWave(x: waveX(12))
+        wc.inspector.setSelection([ids[1]])
+        await assertEventually("the other cue is shown") { self.wc.inspector.selection == [ids[1]] }
+        waveView.mouseUp(with: waveMouse(.leftMouseUp, x: waveX(12)))
+        XCTAssertNil(waveView.insertion)
+        try await play(0.2)
+        XCTAssertEqual(seeks, [])
+        XCTAssertNil(rowMark(ids[1]))
+    }
 }

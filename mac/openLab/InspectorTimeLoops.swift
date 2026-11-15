@@ -39,7 +39,12 @@ extension InspectorViewController {
             timeLoops.isActive = false
             return
         }
-        timeLoops.show(cue: cue.id, kind: cue.raw["kind"] ?? .null, duration: store.mediaDurations[cue.id]?.file)
+        let missing = (store.problems[cue.id] ?? []).contains {
+            $0.type == "media_missing" || $0.type == "media_unsupported"
+        }
+        timeLoops.show(
+            cue: cue.id, kind: cue.raw["kind"] ?? .null, duration: store.mediaDurations[cue.id]?.file,
+            missing: missing)
         updateTimeLoopsActive()
         updateTimeLoopsProgress()
     }

@@ -171,6 +171,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     /// The file shown: its cue, reference and length.
     private var file: (cue: ModelID, media: String, duration: Double)?
     private var shownCue: ModelID?
+    /// The shown cue's file is missing or cannot be read.
+    private var missing = false
     private var kind: JSONValue = .null
     private var generation = 0
     /// The fetch under way (tests wait on it).
@@ -343,10 +345,12 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     /// The built-in fades are on while either has a length.
     var hasFades: Bool { fadeIn > 0 || fadeOut > 0 }
 
-    /// Shows an Audio cue's `kind`; `duration` is its file's length, nil while not known. A field
-    /// being typed in keeps its text.
-    func show(cue: ModelID, kind: JSONValue, duration: Double?) {
+    /// Shows an Audio cue's `kind`; `duration` is its file's length, nil while not known; `missing`:
+    /// the file is missing or cannot be read, so no length or waveform will come. A field being
+    /// typed in keeps its text.
+    func show(cue: ModelID, kind: JSONValue, duration: Double?, missing: Bool = false) {
         self.kind = kind
+        self.missing = missing
         let media = kind["media"]?.stringValue ?? ""
         let newFile = duration.flatMap { d in media.isEmpty || d <= 0 ? nil : (cue, media, d) }
         // Another cue is shown afresh even when neither file is known yet, so its first drawing says
@@ -360,6 +364,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             shownCue = cue
             waveform.insertion = nil
             waveform.selection = nil
+            // A press held on the cue shown before must not, let go, move this one.
+            waveform.endPress()
             endSliceCountEdit()
         }
         if startField.currentEditor() == nil { startField.stringValue = CueTime.format(startTime) }
@@ -380,13 +386,29 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             waveform.playhead = nil
             waveform.insertion = nil
             waveform.selection = nil
-            waveform.isReading = file != nil
+            waveform.readFailed = false
             endSliceCountEdit()
             setVisible(start: 0, end: file?.duration ?? 1)
-            waveform.message = loc(media.isEmpty ? "timeLoops.noFile" : "timeLoops.notRead")
             reload()
         }
+        showMessage()
         applyLock()
+    }
+
+    /// What the waveform says while it draws no peaks: no file, the file missing, the read failed,
+    /// or the file being read.
+    private func showMessage() {
+        let key: String
+        if (kind["media"]?.stringValue ?? "").isEmpty {
+            key = "timeLoops.noFile"
+        } else if missing {
+            key = "timeLoops.missing"
+        } else if waveform.readFailed {
+            key = "timeLoops.unavailable"
+        } else {
+            key = "timeLoops.notRead"
+        }
+        waveform.message = loc(key)
     }
 
     /// The waveform shows the cue as last shown here. While a drag is under way the view keeps its
@@ -479,7 +501,6 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         if let hit = cache[key] {
             reloadPending = false
             waveform.peaks = hit
-            waveform.isReading = false
             return
         }
         guard let loadPeaks else { return }
@@ -507,15 +528,14 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             case .success(let peaks):
                 self.remember(key, peaks)
                 self.waveform.peaks = peaks
-                self.waveform.isReading = false
             case .failure(.engine(.commandRefused, _)) where busyRetries < Self.busyRetryLimit:
                 // The engine's queue was full of reads that nobody waits for now; it drains.
                 self.ask(busyRetries: busyRetries + 1)
             case .failure:
                 // Clicks still move the cue and place the line without a drawing.
                 self.waveform.peaks = nil
-                self.waveform.isReading = false
-                self.waveform.message = loc("timeLoops.unavailable")
+                self.waveform.readFailed = true
+                self.showMessage()
             }
         }
     }

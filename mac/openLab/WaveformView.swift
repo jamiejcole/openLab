@@ -154,12 +154,20 @@ class WaveformView: NSView {
     /// The section a drag across the waves selected (file seconds, at least `minLength` long), or nil.
     var selection: ClosedRange<Double>? { didSet { needsDisplay = true } }
     var isLocked = false
-    /// The file's waveform is still being read: a press does nothing until it is drawn.
-    var isReading = false
+    /// The read of this file's waveform failed: clicks still move the cue, with nothing drawn.
+    var readFailed = false { didSet { needsDisplay = true } }
+    /// The file's waveform is still being read (its length known, its first drawing not in yet):
+    /// a press does nothing until it is drawn. Worked out from what the view has, so it ends with
+    /// the first peaks or a failed read, whichever read brought them.
+    var isReading: Bool { duration != nil && peaks == nil && !readFailed }
     /// A text shown in the middle when there is nothing to draw ("reading", why not).
     var message: String? { didSet { needsDisplay = true } }
     /// A handle moved (live, during the drag).
     var onTrimChanging: ((Handle, Double) -> Void)?
+    /// The waves' background, the same in light and dark appearance.
+    static let waveBackground = NSColor(calibratedRed: 0.02, green: 0.02, blue: 0.1, alpha: 1)
+    /// The message's colour: light, to read on `waveBackground` in either appearance.
+    static let messageColour = NSColor(calibratedWhite: 0.82, alpha: 1)
     /// A drag moved a handle: its new time (for the end, nil is the end of the file).
     var onTrimCommit: ((Handle, Double?) -> Void)?
     /// A drag moved the slice marker that was at `from` to `to`, or (nil) took it out of the view.
@@ -303,11 +311,7 @@ class WaveformView: NSView {
     /// A press away from the handles ends with the section it has, as it is: this is also how a
     /// lost release is put away, so it is no click and moves nothing.
     func endDrag() {
-        if pressAt != nil {
-            pressAt = nil
-            onDragEnded?()
-            return
-        }
+        if endPress() { return }
         guard let handle = dragging else { return }
         dragging = nil
         defer { onDragEnded?() }
@@ -366,8 +370,8 @@ class WaveformView: NSView {
         let t = Self.clampRounded(scale.seconds(min(max(x, 0), width)), 0, duration)
         let section = abs(t - from) >= Self.minLength - 1e-9 ? min(from, t)...max(from, t) : nil
         guard section != selection else { return }
+        // The position line stays: it shows where the cue is loaded, so where GO starts.
         selection = section
-        if section != nil { insertion = nil }
         onInsertion?()
     }
 
@@ -380,6 +384,16 @@ class WaveformView: NSView {
         pressAt = nil
         if section == nil { click(atX: scale.x(from)) }
         onDragEnded?()
+    }
+
+    /// Ends a press under way with no click (its release, if it comes, does nothing). Whether
+    /// there was one.
+    @discardableResult
+    func endPress() -> Bool {
+        guard pressAt != nil else { return false }
+        pressAt = nil
+        onDragEnded?()
+        return true
     }
 
     /// The most of the view's width one move past its edge scrolls.
@@ -554,7 +568,7 @@ class WaveformView: NSView {
         // visible span would land on the neighbouring views. Clipping here does the same on
         // every system, whatever the SDK default.
         NSBezierPath.clip(bounds)
-        NSColor(calibratedRed: 0.02, green: 0.02, blue: 0.1, alpha: 1).setFill()
+        Self.waveBackground.setFill()
         waveRect.fill()
         NSColor.controlBackgroundColor.setFill()
         NSRect(x: 0, y: 0, width: bounds.width, height: Self.rulerHeight).fill()
@@ -607,7 +621,7 @@ class WaveformView: NSView {
         if let message, peaks == nil {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
-                .foregroundColor: NSColor.secondaryLabelColor,
+                .foregroundColor: Self.messageColour,
             ]
             let size = message.size(withAttributes: attrs)
             message.draw(
