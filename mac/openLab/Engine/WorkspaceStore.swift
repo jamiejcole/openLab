@@ -202,8 +202,10 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
     }
     /// The autosaves loaded into this window (EngineSession keeps it up).
     var autosaveCover = AutosaveCover()
-    func relink(folder: String) async -> Result<OkBody, EngineError> {
-        await client.send { .request(id: $0, .relink(folder: folder)) }
+    /// Searches `folder` for the cues' missing files and lists what it finds; nothing is changed
+    /// (`relink` with `preview`).
+    func searchMissingFiles(in folder: String) async -> Result<OkBody, EngineError> {
+        await client.send { .request(id: $0, .relink(folder: folder, preview: true)) }
     }
     /// The newest show-log entries the engine holds (oldest first); `max` nil: all of them.
     func logTail(max: UInt32? = nil) async -> Result<

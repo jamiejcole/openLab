@@ -322,13 +322,11 @@ final class WarningsTests: XCTestCase {
         try await make()
         try runtime(#"{"type":"cue_state","cue":"\#(rain)","state":"paused","reason":"device_lost"}"#)
         let side = try XCTUnwrap(wc.sidebar)
-        let table = side.warningsTable
         let row = try XCTUnwrap(side.warningRows.firstIndex { $0.cue == rain })
         XCTAssertEqual(side.warningRows[row].detail, loc("paused.device_lost"))
         for width in [CGFloat(280), 200] {
-            table.tableColumns[0].width = width
-            let height = side.tableView(table, heightOfRow: row)
-            let cell = try XCTUnwrap(side.tableView(table, viewFor: nil, row: row) as? WarningCell)
+            let height = WarningCell.height(of: side.warningRows[row], width: width)
+            let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: row) as? WarningCell)
             cell.frame = NSRect(x: 0, y: 0, width: width, height: height)
             cell.layoutSubtreeIfNeeded()
             cell.layoutSubtreeIfNeeded()
@@ -339,8 +337,32 @@ final class WarningsTests: XCTestCase {
             ).height
             XCTAssertGreaterThan(detail.width, width / 2, "at \(width)")
             XCTAssertGreaterThan(needed, 20, "wraps at \(width)")
-            XCTAssertGreaterThanOrEqual(detail.minY, 0, "all of it inside its row at \(width)")
+            XCTAssertTrue(cell.bounds.contains(detail), "\(detail) in \(cell.bounds) at \(width)")
             XCTAssertGreaterThanOrEqual(detail.height + 1, needed, "at \(width)")
+        }
+    }
+
+    /// A missing file whose reason wraps keeps its Find Missing Files button inside its row, so the
+    /// next warning never covers it.
+    func testAWrappedMissingFileRowHoldsItsButton() async throws {
+        try await make()
+        try missingMedia(rain, "media/A Long Folder For The Second Act/and-another-folder/rain-bed-take-two.wav")
+        let side = try XCTUnwrap(wc.sidebar)
+        let row = try XCTUnwrap(side.warningRows.firstIndex { $0.cue == rain })
+        XCTAssertTrue(side.warningRows[row].canRelink)
+        for width in [CGFloat(280), 200] {
+            let height = WarningCell.height(of: side.warningRows[row], width: width)
+            let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: row) as? WarningCell)
+            cell.frame = NSRect(x: 0, y: 0, width: width, height: height)
+            cell.layoutSubtreeIfNeeded()
+            cell.layoutSubtreeIfNeeded()
+            let detail = cell.convert(cell.detail.bounds, from: cell.detail)
+            let button = cell.convert(cell.relinkButton.bounds, from: cell.relinkButton)
+            XCTAssertGreaterThan(detail.height, 20, "the reason wraps at \(width)")
+            XCTAssertFalse(button.intersects(detail), "\(button) clear of the reason \(detail) at \(width)")
+            XCTAssertTrue(cell.bounds.contains(detail), "\(detail) in \(cell.bounds) at \(width)")
+            XCTAssertTrue(cell.bounds.contains(button), "\(button) in \(cell.bounds) at \(width)")
+            XCTAssertLessThan(cell.bounds.maxY - button.maxY, 8, "no spare line under the button at \(width)")
         }
     }
 

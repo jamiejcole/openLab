@@ -92,7 +92,7 @@ struct WarningRow: Hashable {
     let cue: ModelID?
     let title: String
     let detail: String
-    /// The cue is broken by media that cannot be found: the row offers Relink.
+    /// The cue is broken by media that cannot be found: the row offers Find Missing Files.
     let canRelink: Bool
 }
 

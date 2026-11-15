@@ -250,9 +250,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @MainActor @objc func showOverrideControls(_ sender: Any?) { appController.showOverrideControls() }
     @MainActor @objc func showPreshowCheck(_ sender: Any?) { appController.frontController?.showPreshowCheck() }
 
-    @MainActor @objc func relinkMedia(_ sender: Any?) {
+    @MainActor @objc func findMissingFiles(_ sender: Any?) {
         guard let store = appController.frontController?.store else { return }
-        Task { await appController.relinkMedia(on: store) }
+        Task { await appController.findMissingFiles(on: store) }
     }
 
     @MainActor @objc func transportCommand(_ sender: NSMenuItem) {
@@ -300,11 +300,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return (appController.frontController?.canJumpToTargets ?? false) && !appController.isTextEditing()
         case #selector(revealTargetFile(_:))?:
             return appController.frontController?.cueList.canRevealSelectedTarget ?? false
+        case #selector(findMissingFiles(_:))?: return appController.frontController?.canFindMissingFiles ?? false
         case #selector(closeAllWorkspaces(_:))?: return !appController.allWindows.isEmpty
         case #selector(showFind(_:))?, #selector(findNextCue(_:))?, #selector(findPreviousCue(_:))?:
             return canEditFront  // off in Show Mode, as in QLab
         case #selector(newCue(_:))?, #selector(renumberCues(_:))?, #selector(moveCuesUp(_:))?,
-            #selector(moveCuesDown(_:))?, #selector(relinkMedia(_:))?:
+            #selector(moveCuesDown(_:))?:
             return canEditFront
         case #selector(copyCues(_:))?, #selector(cutCues(_:))?, #selector(pasteCues(_:))?:
             return anyText != nil || canEditFront

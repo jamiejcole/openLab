@@ -1127,6 +1127,7 @@ async fn a_snapshot_older_than_what_the_client_has_is_followed_by_a_fresh_one() 
             id: RequestId(2),
             request: Request::Relink {
                 folder: "/x".into(),
+                preview: false,
             },
         },
     )

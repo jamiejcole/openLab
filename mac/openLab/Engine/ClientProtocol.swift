@@ -144,7 +144,8 @@ enum Request: Hashable, Sendable, Codable {
     case discardRecovery(workspaceId: ModelID, pathHash: String? = nil, modifiedMs: Int64? = nil)
     case save
     case saveAs(path: String)
-    case relink(folder: String)
+    /// `preview`: walk and list the matches, change nothing.
+    case relink(folder: String, preview: Bool = false)
     case listDevices
     /// Chooses the primary output device the engine opens at its next start (nil: the system
     /// default). App-scope; the engine keeps its primary device for its whole run.
@@ -220,7 +221,10 @@ enum Request: Hashable, Sendable, Codable {
             return ("discard_recovery", f)
         case .save: return ("save", [])
         case .saveAs(let p): return ("save_as", [("path", p)])
-        case .relink(let folder): return ("relink", [("folder", folder)])
+        case .relink(let folder, let preview):
+            f.append(("folder", folder))
+            if preview { f.append(("preview", true)) }
+            return ("relink", f)
         case .listDevices: return ("list_devices", [])
         case .setOutputDevice(let device):
             opt(&f, "device", device)
@@ -280,7 +284,10 @@ enum Request: Hashable, Sendable, Codable {
                 modifiedMs: try c.decodeIfPresent(Int64.self, forKey: "modified_ms"))
         case "save": self = .save
         case "save_as": self = .saveAs(path: try c.decode(String.self, forKey: "path"))
-        case "relink": self = .relink(folder: try c.decode(String.self, forKey: "folder"))
+        case "relink":
+            self = .relink(
+                folder: try c.decode(String.self, forKey: "folder"),
+                preview: try c.decodeIfPresent(Bool.self, forKey: "preview") ?? false)
         case "list_devices": self = .listDevices
         case "set_output_device":
             self = .setOutputDevice(device: try c.decodeIfPresent(String.self, forKey: "device"))

@@ -221,6 +221,7 @@ fn all_requests() -> Vec<(&'static str, Request)> {
             "relink",
             Request::Relink {
                 folder: "/Volumes/Audio/Hamlet".into(),
+                preview: true,
             },
         ),
         ("list_devices", Request::ListDevices),
@@ -1424,7 +1425,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             id: rid(45),
             outcome: Outcome::Ok(OkBody {
                 revision: Some(9),
-                data: Some(ResultData::Relink {
+                data: Some(ResultData::Relink(Box::new(RelinkReport {
                     relinked: 3,
                     ambiguous: vec![AmbiguousMatch {
                         cue: cue_id(10),
@@ -1433,7 +1434,30 @@ fn fixtures() -> Vec<(String, Sample)> {
                     unmatched: vec![cue_id(11)],
                     truncated: true,
                     skipped: 2,
-                }),
+                    matches: Vec::new(),
+                    capped: false,
+                }))),
+            }),
+        }),
+    );
+    add(
+        "result_relink_preview",
+        server(ServerMessage::Result {
+            id: rid(46),
+            outcome: Outcome::Ok(OkBody {
+                revision: None,
+                data: Some(ResultData::Relink(Box::new(RelinkReport {
+                    relinked: 0,
+                    ambiguous: Vec::new(),
+                    unmatched: Vec::new(),
+                    truncated: false,
+                    skipped: 0,
+                    matches: vec![RelinkMatch {
+                        cue: cue_id(12),
+                        file: "media/rain.wav".into(),
+                    }],
+                    capped: true,
+                }))),
             }),
         }),
     );
@@ -4195,7 +4219,10 @@ fn arb_request() -> impl Strategy<Value = Request> {
             }),
         Just(Request::Save),
         arb_abs_path().prop_map(|path| Request::SaveAs { path }),
-        arb_abs_path().prop_map(|folder| Request::Relink { folder }),
+        arb_abs_path().prop_map(|folder| Request::Relink {
+            folder,
+            preview: false
+        }),
         Just(Request::ListDevices),
         any::<bool>().prop_map(|network_disabled| Request::SetOutputOverrides { network_disabled }),
         Just(Request::PreshowCheck),

@@ -3,7 +3,7 @@
 import AppKit
 
 /// Transport commands from menu items and keys: each workspace's transport keys, GO, the
-/// selected-cue actions, Panic, Reset All, Relink Media and the show log they report failures to.
+/// selected-cue actions, Panic, Reset All, Find Missing Files and the show log they report failures to.
 extension AppController {
     // MARK: Transport commands (menu items and keys)
 
@@ -254,50 +254,16 @@ extension AppController {
         _ = store.receive(.log(.error, String(format: loc("error.transportFailed"), describe(error))))
     }
 
-    /// Asks for a folder and has the engine relink missing media from it (WS-03). The outcome is
-    /// told to the operator and written to the show log; the cues that were fixed leave the
-    /// Warnings tab by themselves when the engine reports them playable.
-    func relinkMedia(on store: WorkspaceStore) async {
-        // It rewrites the workspace's media paths: an edit, locked in Show Mode (SM-01).
-        if controllers[ObjectIdentifier(store)]?.isShowMode == true {
-            NSSound.beep()
-            return
-        }
-        guard let folder = pickFolderURL() else { return }
-        switch await store.relink(folder: folder.path) {
-        case .success(let ok):
-            guard case .relink(let relinked, let ambiguous, let unmatched, _, _)? = ok.data else {
-                report(.encoding("relink result has no relink data"), on: store)
-                return
-            }
-            let message = Self.relinkSummary(relinked: relinked, ambiguous: ambiguous.count, unmatched: unmatched.count)
-            // Not modal: a relink is done while the show goes on. The summary is in the footer and
-            // the log, with one log record for every cue that still needs attention.
-            let clean = ambiguous.isEmpty && unmatched.isEmpty
-            _ = store.receive(.log(clean ? .info : .warn, message))
-            func name(_ id: ModelID) -> String {
-                store.model.flatMap { m in m.cue(id).map { WarningRows.cueTitle($0, name: m.listName($0)) } } ?? id.raw
-            }
-            for a in ambiguous {
-                let text = String(
-                    format: loc("relink.log.ambiguous"), name(a.cue), a.candidates.joined(separator: ", "))
-                _ = store.receive(.log(.warn, text))
-            }
-            for id in unmatched {
-                _ = store.receive(.log(.warn, String(format: loc("relink.log.unmatched"), name(id))))
-            }
-            controllers[ObjectIdentifier(store)]?.footer.showNotice(message)
-        case .failure(let e):
-            let message = String(format: loc("relink.failed"), describe(e))
-            raise(message, from: store)
-        }
-    }
-
-    static func relinkSummary(relinked: Int, ambiguous: Int, unmatched: Int) -> String {
-        var parts = [String(format: loc("relink.relinked"), relinked)]
-        if ambiguous > 0 { parts.append(String(format: loc("relink.ambiguous"), ambiguous)) }
-        if unmatched > 0 { parts.append(String(format: loc("relink.unmatched"), unmatched)) }
-        return parts.joined(separator: " ")
+    /// Tools > Find Missing Files (WS-03): the tool's window for `store`, and on opening it, the
+    /// folder to search. Not in Show Mode (SM-01), and not while no cue is missing its file.
+    func findMissingFiles(on store: WorkspaceStore) async {
+        guard let wc = controllers[ObjectIdentifier(store)] else { return }
+        guard wc.canFindMissingFiles else { return beep() }
+        let tool = wc.missingFiles
+        tool.pickFolder = { [weak self] in self?.pickFolderURL() }
+        let opening = tool.window?.isVisible != true
+        tool.showWindow(nil)
+        if opening { await tool.chooseFolderAndSearch() }
     }
 
     /// Opens the log window of the key workspace (the first one when none is key).
