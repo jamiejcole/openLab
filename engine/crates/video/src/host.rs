@@ -11,9 +11,7 @@ use openlab_core::stage_link::{
     Display, FromStage, LINK_VERSION, Line, LinkLevel, StageOutput, StageState, ToStage,
     decode_to_stage, encode, read_line,
 };
-use openlab_core::{
-    PictureFades, PlanPass, StageId, VideoGeometry, fade_factor, plan_point,
-};
+use openlab_core::{PictureFades, PlanPass, StageId, VideoGeometry, fade_factor, plan_point};
 
 /// What a stage shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1098,10 +1096,7 @@ mod tests {
     }
 
     fn play(host: &mut Host<Fake>, picture: u64, at: u64) {
-        send(
-            host,
-            plain_play(picture, at, 0.0),
-        );
+        send(host, plain_play(picture, at, 0.0));
     }
 
     fn logs(out: &[FromStage]) -> Vec<(LinkLevel, String)> {
@@ -1164,10 +1159,7 @@ mod tests {
         clock(&mut h, 1000);
         load(&mut h, 7, 1);
         assert_eq!(cues(&mut h, 1), vec![], "loaded is not drawn");
-        send(
-            &mut h,
-            plain_play(7, 1500, 2.0),
-        );
+        send(&mut h, plain_play(7, 1500, 2.0));
         assert_eq!(cues(&mut h, 1), vec![], "not before its sample");
         clock(&mut h, 2000);
         assert_eq!(cues(&mut h, 1), vec![(7, 2.5, 1.0)]);
@@ -1188,10 +1180,7 @@ mod tests {
         );
         clock(&mut h, 4000);
         assert_eq!(cues(&mut h, 1), vec![(7, 3.0, 1.0)]);
-        send(
-            &mut h,
-            plain_play(7, 4000, 3.0),
-        );
+        send(&mut h, plain_play(7, 4000, 3.0));
         send(
             &mut h,
             ToStage::Stop {
@@ -1321,14 +1310,8 @@ mod tests {
         clock(&mut h, 0);
         load(&mut h, 9, 1);
         load(&mut h, 3, 1);
-        send(
-            &mut h,
-            plain_play(9, 0, 0.0),
-        );
-        send(
-            &mut h,
-            plain_play(3, 100, 0.0),
-        );
+        send(&mut h, plain_play(9, 0, 0.0));
+        send(&mut h, plain_play(3, 100, 0.0));
         clock(&mut h, 200);
         let order: Vec<u64> = cues(&mut h, 1).iter().map(|c| c.0).collect();
         assert_eq!(order, vec![9, 3]);
@@ -1443,10 +1426,7 @@ mod tests {
         assert_eq!(failed(&out), vec![(1, "cannot open this".to_owned())]);
         assert_eq!(failed(&load(&mut h, 2, 9)).len(), 1, "no such stage");
         load(&mut h, 3, 1);
-        send(
-            &mut h,
-            plain_play(3, 0, 0.0),
-        );
+        send(&mut h, plain_play(3, 0, 0.0));
         let out = send(&mut h, ToStage::Stages { stages: vec![] });
         assert_eq!(failed(&out), vec![(3, "its stage was removed".to_owned())]);
         assert!(!h.playing());

@@ -555,9 +555,8 @@ fn time_and_loops_out_of_range_are_refused() {
         }
         other => panic!("{want:?}: {other:?}"),
     };
-    let edit = |ws: &mut Workspace, pairs: &[(&str, serde_json::Value)]| {
-        ws.apply(set(1, fields(pairs)))
-    };
+    let edit =
+        |ws: &mut Workspace, pairs: &[(&str, serde_json::Value)]| ws.apply(set(1, fields(pairs)));
     refused(
         edit(&mut ws, &[("start_time", json!(-1.0))]),
         IssueKind::InvalidTime {
@@ -565,7 +564,10 @@ fn time_and_loops_out_of_range_are_refused() {
         },
     );
     refused(
-        edit(&mut ws, &[("start_time", json!(5.0)), ("end_time", json!(2.0))]),
+        edit(
+            &mut ws,
+            &[("start_time", json!(5.0)), ("end_time", json!(2.0))],
+        ),
         IssueKind::InvalidEndTime,
     );
     refused(

@@ -37,9 +37,8 @@ use openlab_core::video_probe::ProbeReport;
 use super::media::Probe;
 use openlab_audio::{Plays as Passes, Slice, total_frames};
 use openlab_core::{
-    Action, BrokenReason, CueId, CueKind, CueState, HOLD_BEFORE_END, Input, PictureFades,
-    PlanPass, RunId, SampleTime, StageId, VideoGeometry, VideoTiming, plan_point,
-    seconds_to_samples,
+    Action, BrokenReason, CueId, CueKind, CueState, HOLD_BEFORE_END, Input, PictureFades, PlanPass,
+    RunId, SampleTime, StageId, VideoGeometry, VideoTiming, plan_point, seconds_to_samples,
 };
 
 use super::plan::{PlanSpec, cue_slices, picture_info, skip};
@@ -1049,7 +1048,8 @@ impl DocCx<'_> {
         let Some(id) = self.eng.pictures.find(self.doc.id, run) else {
             return fx.feedback.push(ignored);
         };
-        let hold = matches!(&self.plays(cue), Ok(Plays { movie: Some((_, t)), .. }) if t.hold_at_end);
+        let hold =
+            matches!(&self.plays(cue), Ok(Plays { movie: Some((_, t)), .. }) if t.hold_at_end);
         let Some(l) = self.eng.pictures.live.get_mut(&id) else {
             return fx.feedback.push(ignored);
         };
@@ -1101,7 +1101,10 @@ impl DocCx<'_> {
         let ends = stop || !hold;
         l.length = total.map(|t| seconds(t, rate)).filter(|_| ends);
         l.now = Some(message.clone());
-        if l.first.as_ref().is_some_and(|f| matches!(f, ToStage::Play { at, .. } if *at == plan.at)) {
+        if l.first
+            .as_ref()
+            .is_some_and(|f| matches!(f, ToStage::Play { at, .. } if *at == plan.at))
+        {
             l.first = Some(message.clone());
         }
         let held_back = l.held_back;

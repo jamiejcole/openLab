@@ -220,7 +220,10 @@ mod tests {
     fn a_trimmed_range_played_once_maps_straight_and_holds_before_its_end() {
         let plan = [pass(1.0, 2.0, 1)];
         let p = at(&plan, 0.5);
-        assert_eq!((p.position, p.left, p.next, p.ended), (1.5, 1.5, None, false));
+        assert_eq!(
+            (p.position, p.left, p.next, p.ended),
+            (1.5, 1.5, None, false)
+        );
         let end = at(&plan, 2.0);
         assert!(end.ended);
         assert!(end.position < 3.0 && end.position > 2.999);
@@ -257,7 +260,11 @@ mod tests {
         assert_eq!(plan_length(&plan), None);
         // A slice that continues elsewhere after a loop (a devamp's continuation) is a jump.
         let after = [pass(1.0, 0.5, 2), pass(1.5, 1.0, 1)];
-        assert_eq!(at(&after, 0.6).next, None, "straight on after its last pass");
+        assert_eq!(
+            at(&after, 0.6).next,
+            None,
+            "straight on after its last pass"
+        );
         let gap = [pass(2.0, 0.5, 1), pass(0.0, 1.0, 1)];
         assert_eq!(at(&gap, 0.1).next, Some(0.0));
     }

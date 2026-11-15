@@ -744,16 +744,12 @@ impl CueEngine {
         let mut changed = BTreeSet::new();
         for (cue, reason) in cues {
             // Reported against the model as it is now (the binary checks the current workspace).
-            let key = p
-                .model
-                .facts
-                .get(&cue)
-                .and_then(|f| {
-                    f.audio
-                        .as_ref()
-                        .map(|a| a.plan.clone())
-                        .or_else(|| f.video.as_ref().and_then(|v| v.plan.clone()))
-                });
+            let key = p.model.facts.get(&cue).and_then(|f| {
+                f.audio
+                    .as_ref()
+                    .map(|a| a.plan.clone())
+                    .or_else(|| f.video.as_ref().and_then(|v| v.plan.clone()))
+            });
             let differs = match (reason, key) {
                 (Some(reason), Some(key)) => {
                     let entry = (reason, key);

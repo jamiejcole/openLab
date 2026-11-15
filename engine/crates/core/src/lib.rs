@@ -30,8 +30,8 @@ mod tree;
 mod validate;
 mod video;
 mod video_geometry;
-mod video_timing;
 pub mod video_probe;
+mod video_timing;
 
 pub use backup::*;
 pub use changes::*;

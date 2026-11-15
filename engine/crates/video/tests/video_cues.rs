@@ -2094,7 +2094,11 @@ fn start_and_end_trims_go_plays_only_that_range_and_the_duration_cell_shows_its_
     run_to(&mut s, at + samples(0.5));
     assert_eq!(shown(&mut s), Some(frame_at(0.9)));
     run_to(&mut s, at + samples(0.78));
-    assert_eq!(shown(&mut s), Some(frame_at(1.18)), "the last frame before the end trim");
+    assert_eq!(
+        shown(&mut s),
+        Some(frame_at(1.18)),
+        "the last frame before the end trim"
+    );
     expect_state(&s, 1, CueState::Running, "inside the range");
     run_to(&mut s, at + samples(0.8) + BLOCK);
     expect_state(&s, 1, CueState::Idle, "the range is played");
@@ -2222,7 +2226,11 @@ fn hold_at_end_on_keeps_the_last_frame_and_the_cue_until_stopped_and_off_ends_th
     let at = start(&mut s, 1);
     run_to(&mut s, at + samples(1.2) + BLOCK);
     expect_state(&s, 1, CueState::Running, "held at its end");
-    assert_eq!(shown(&mut s), Some(29), "the last frame before the end trim");
+    assert_eq!(
+        shown(&mut s),
+        Some(29),
+        "the last frame before the end trim"
+    );
     run_to(&mut s, at + samples(10.0));
     expect_state(&s, 1, CueState::Running, "still held");
     assert_eq!(shown(&mut s), Some(29));
@@ -2244,7 +2252,7 @@ fn hold_at_end_on_keeps_the_last_frame_and_the_cue_until_stopped_and_off_ends_th
 
 /// The red of stage 1's picture at the card's top-left quadrant (the movie fills the stage).
 fn red_at(s: &mut OfflineShow) -> u8 {
-    colours(s, &[[0.25, 0.4]])[0][0]
+    colours(s, &[[0.25, 0.4]]).first().unwrap()[0]
 }
 
 /// Integrated fade in and out → opacity follows the fade lengths (the sound half waits for
@@ -2269,10 +2277,16 @@ fn integrated_fade_in_and_out_opacity_follows_the_fade_lengths() {
     let full = red_at(&mut s);
     assert!(full >= 200, "between the fades: {full}");
     let half = |got: u8| (f64::from(got) / f64::from(full) - 0.5).abs() <= 0.06;
-    assert!(half(half_in), "halfway into the fade in: {half_in} of {full}");
+    assert!(
+        half(half_in),
+        "halfway into the fade in: {half_in} of {full}"
+    );
     run_to(&mut s, at + samples(1.75));
     let half_out = red_at(&mut s);
-    assert!(half(half_out), "halfway through the fade out: {half_out} of {full}");
+    assert!(
+        half(half_out),
+        "halfway through the fade out: {half_out} of {full}"
+    );
     // A loop has no end until it is devamped: no fade out while it loops.
     let mut s = video_show(vec![timed_cue(1, &movie, |t| {
         t.fade_out = linear(0.5);
@@ -2281,7 +2295,10 @@ fn integrated_fade_in_and_out_opacity_follows_the_fade_lengths() {
     let at = go(&mut s);
     run_to(&mut s, at + samples(3.9));
     let looping = red_at(&mut s);
-    assert!(looping >= full - 10, "looping, not fading: {looping} of {full}");
+    assert!(
+        looping >= full - 10,
+        "looping, not fading: {looping} of {full}"
+    );
 }
 
 /// The tab's playhead line follows playback inside a loop: the cue's position in its file, as
@@ -2300,7 +2317,10 @@ fn the_playhead_follows_playback_inside_a_loop() {
         progress_at(&mut s, 1, at + samples(2.0)).expect("looping");
     assert!(near(elapsed, 2.0), "{elapsed}");
     assert_eq!(remaining, None, "a loop has no end");
-    assert!(near(position.unwrap(), 0.8), "two seconds in: 0.4 into the third pass, {position:?}");
+    assert!(
+        near(position.unwrap(), 0.8),
+        "two seconds in: 0.4 into the third pass, {position:?}"
+    );
     let (_, _, position) = progress_at(&mut s, 1, at + samples(2.7)).expect("looping");
     assert!(near(position.unwrap(), 0.7), "{position:?}");
 }
@@ -2339,7 +2359,10 @@ fn load_to_time_inside_the_range_go_starts_on_that_frame() {
     s.run(BLOCK);
     let at = start(&mut s, 1);
     run_to(&mut s, at + samples(0.02));
-    assert_eq!(on_stage(&mut s, "loaded into the second pass"), frame_at(0.62));
+    assert_eq!(
+        on_stage(&mut s, "loaded into the second pass"),
+        frame_at(0.62)
+    );
 }
 
 /// Trims the movie cannot play (a start trim past its end) break the cue with why, as an Audio
