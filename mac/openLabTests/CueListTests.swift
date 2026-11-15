@@ -5054,7 +5054,10 @@ final class CueListDrawingTests: XCTestCase {
         for (id, x) in zip(rows, types) {
             XCTAssertEqual(try XCTUnwrap(try mark(h, id, 4)).minX, x, "\(id)'s type icon did not move")
         }
-        // The pointer is drawn from the row's edge and ends before the status icon.
+        // The pointer is drawn from the row's edge and ends before the status icon. A focused selection
+        // draws its marks white, as the pointer is, so the pixels are read with the row not selected.
+        h.spy.deselectAll(nil)
+        XCTAssertEqual(h.store.playheads[TestSnapshots.mainList], H.radio, "the playhead stays")
         let pointer = try darkPixels(h, "status", H.radio)
         let reach = try XCTUnwrap(pointer.extent(Self.pointerWhite), "the pointer is drawn")
         let rowX = h.spy.rect(ofRow: h.spy.row(forItem: h.vc.node(H.radio))).minX
