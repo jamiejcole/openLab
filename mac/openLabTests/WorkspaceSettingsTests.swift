@@ -222,6 +222,15 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(sc.patchDevicePopups.first?.titleOfSelectedItem, device)
         let named = try await mapping(rig)
         XCTAssertEqual(named, PatchMapping(device: device, channels: [0, 1]))
+
+        // With no output device on the Mac any more, the choice says so and the row why.
+        try pick(system, in: sc.patchDevicePopups[0])
+        await assertEventually { sc.model.patches.first?.mapping?.system == true }
+        try await loseDevice(rig)
+        await assertEventually("the row says the Mac has no output") {
+            sc.patchDevicePopups.first?.titleOfSelectedItem == loc("settings.audio.systemOutputNone")
+                && sc.patchProblemLabels.first?.stringValue == loc("settings.audio.systemOutputMissing")
+        }
     }
 
     /// A device whose usable outputs are fewer than the patch's cue outputs is refused before

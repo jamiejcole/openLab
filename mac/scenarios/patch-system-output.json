@@ -1,5 +1,5 @@
 {
-  "about": "The Audio page of the workspace settings with the Demo patch on the system output (the Mac's default output, the virtual device): the row and the patch editor name it with the device it is now; then the device goes away and the row says the Mac has no output selected.",
+  "about": "The Audio page of the workspace settings with the Demo patch on the system output (the Mac's default output, the virtual device): the row and the patch editor name it with the device it is now.",
   "show": "Demo",
   "appearance": "dark",
   "settings": {
@@ -19,11 +19,6 @@
     {"click": "settings-patch-edit-1"},
     {"focus": "patch-editor"},
     {"tab": "routing"},
-    {"shot": "editor-system-output"},
-    {"focus": "settings"},
-    {"device": "lose"},
-    {"advance": 1.5},
-    {"advance": 1.5},
-    {"shot": "table-system-output-no-device"}
+    {"shot": "editor-system-output"}
   ]
 }
