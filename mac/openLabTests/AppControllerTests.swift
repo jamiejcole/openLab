@@ -411,11 +411,12 @@ final class AppControllerTests: XCTestCase {
         weak var preshow: NSWindow?
         weak var log: NSWindow?
         weak var sheet: NSWindow?
+        weak var popover: NSPopover?
         var held: [String] {
             [
                 ("controller", controller as AnyObject?), ("window", window), ("settings", settings),
                 ("patch editor", patchEditor), ("Find Missing Files", missingFiles), ("pre-show check", preshow),
-                ("log", log), ("sheet", sheet),
+                ("log", log), ("sheet", sheet), ("status popover", popover),
             ].filter { $0.1 != nil }.map(\.0)
         }
     }
@@ -431,6 +432,8 @@ final class AppControllerTests: XCTestCase {
         wc.missingFiles.showWindow(nil)
         await wc.showPreshowCheck().value
         wc.logWindow.showWindow(nil)
+        wc.footer.showStatusDetails()
+        XCTAssertEqual(wc.footer.popover?.isShown, true)
         if sheet { wc.showNotice("a refusal") }
         var released = Released()
         released.controller = wc
@@ -441,7 +444,8 @@ final class AppControllerTests: XCTestCase {
         released.preshow = wc.preshowWindow.window
         released.log = wc.existingLogWindow?.window
         released.sheet = wc.window?.attachedSheet
-        XCTAssertEqual(released.held.count, sheet ? 8 : 7, "every window is up")
+        released.popover = wc.footer.popover
+        XCTAssertEqual(released.held.count, sheet ? 9 : 8, "every window is up")
         return released
     }
 

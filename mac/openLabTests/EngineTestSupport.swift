@@ -352,22 +352,21 @@ enum TestEngineError: Error {
 
 /// Runs between tests, for every test of the bundle (it is the bundle's principal class, so XCTest
 /// makes it before the first test): closes each test's documents, stops a class's engine when its
-/// tests are done, and fails a class whose test left a window behind.
+/// tests are done, and fails when a test left a window alive. XCTest calls it on the main thread only.
 ///
 /// A window that outlives its test keeps its window-server surface, so leaked windows piled up
 /// over a test process (about 250 and 2.7 GB in the second one, #716) until the test machine's
 /// window server stalled. XCTest keeps every test case object to the end of the run, so a window
 /// in a test's property is kept unless its tearDown lets it go.
-/// XCTest calls it on the main thread only.
 @objc(OpenLabTestObserver)
 final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable {
     /// The windows that were there when the running test started.
     private var windowsBefore: Set<ObjectIdentifier> = []
-    /// The suite of the running test class: a test case's own run has stopped by the time its
-    /// windows can be checked, so a leak is reported on its class.
-    private var classSuite: XCTestSuite?
     /// Windows finished tests left alive, not yet given time to go (`checkWindows`).
     @MainActor private var suspects: [Suspect] = []
+    /// Leaks found after a test: a finished test's run takes no more failures, so they fail the
+    /// next test to start, naming the test that left the window.
+    private var leaks: [String] = []
 
     override init() {
         super.init()
@@ -377,11 +376,9 @@ final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable
         XCTestObservationCenter.shared.addTestObserver(self)
     }
 
-    func testSuiteWillStart(_ testSuite: XCTestSuite) {
-        if testSuite.tests.allSatisfy({ !($0 is XCTestSuite) }) { classSuite = testSuite }
-    }
-
     func testCaseWillStart(_ testCase: XCTestCase) {
+        for leak in leaks { testCase.record(XCTIssue(type: .assertionFailure, compactDescription: leak)) }
+        leaks = []
         MainActor.assumeIsolated { windowsBefore = Set(NSApp.windows.map(ObjectIdentifier.init)) }
     }
 
@@ -400,10 +397,9 @@ final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable
 
     func testSuiteDidFinish(_ testSuite: XCTestSuite) {
         MainActor.assumeIsolated { TestEngine.classEnded() }
-        if testSuite === classSuite { classSuite = nil }
     }
 
-    /// Fails if a window a test opened is still alive two tests after it finished. A window still
+    /// A window a test opened that is still alive two tests after it finished is a leak. A window still
     /// open is closed first (a test may leave one up; closed, nothing holds it), so what fails is a
     /// window something still holds. A reply still on its way or a task still finishing can hold a
     /// window for a moment after its test; a leak holds it for good, so it is still there later.
@@ -418,15 +414,11 @@ final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable
         }
         suspects.removeAll { $0.window == nil }
         for suspect in suspects { suspect.testsSince += 1 }
-        let leaked = suspects.filter { $0.testsSince > 2 }
-        suspects.removeAll { $0.testsSince > 2 }
-        for suspect in leaked {
+        for suspect in suspects where suspect.testsSince > 2 {
             let what = suspect.window.map { "\(type(of: $0)) \"\($0.title)\"" } ?? "a window"
-            let issue = XCTIssue(
-                type: .assertionFailure,
-                compactDescription: "\(suspect.test) left \(what) alive: it is still there two tests later")
-            classSuite?.testRun?.record(issue)
+            leaks.append("\(suspect.test) left \(what) alive: it is still there two tests later")
         }
+        suspects.removeAll { $0.testsSince > 2 }
     }
 
     /// A window a finished test left alive, held weakly.

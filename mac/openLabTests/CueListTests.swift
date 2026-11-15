@@ -1474,6 +1474,7 @@ final class PlayheadFlowTests: XCTestCase {
         NotesNoticePanel.closeAll()
         app?.closeAllWindows()
         app = nil
+        menuBarDelegate = nil
         engine?.stop()
     }
 
@@ -3266,11 +3267,15 @@ final class PlayheadFlowTests: XCTestCase {
 
     // MARK: The menu bar and the keys act on the selection at the moment they are used
 
-    private lazy var menuBar: AppDelegate = {
+    /// The menu bar's actions, on this test's app controller (let go in tearDown with the app).
+    private var menuBarDelegate: AppDelegate?
+    private var menuBar: AppDelegate {
+        if let menuBarDelegate { return menuBarDelegate }
         let delegate = AppDelegate()
         delegate.appController = app
+        menuBarDelegate = delegate
         return delegate
-    }()
+    }
 
     private func panicked() -> [ModelID] {
         wire.sent.compactMap { m -> ModelID? in

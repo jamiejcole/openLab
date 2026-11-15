@@ -710,6 +710,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         stopSavingLayout()
         inspector.endGestures()
+        // A popover still shown holds the window it points into: the window would never go.
+        footer.popover?.close()
         preshowController?.close()
         settingsController?.close()
         missingFilesController?.close()
