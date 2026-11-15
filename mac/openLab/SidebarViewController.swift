@@ -111,62 +111,103 @@ final class CueListNameCell: NSTableCellView {
 }
 
 /// One Warnings row: a marker symbol (so a warning is not told by colour alone), the title, the
-/// reasons below it and, for missing media, a button that opens Find Missing Files.
+/// reasons below it and, for missing media, a button that opens Find Missing Files. Laid out by
+/// hand from the same measurements `height(of:width:)` adds up, so the row is always as tall as
+/// what it draws, however the reasons wrap.
 final class WarningCell: NSTableCellView {
     let title = NSTextField(labelWithString: "")
     let detail = NSTextField(wrappingLabelWithString: "")
     let relinkButton = NSButton(title: loc("warnings.relink"), target: nil, action: nil)
+    private let marker = NSImageView(image: WarningCell.markerImage)
+
+    private static let markerImage = Icon.warningMarker.image(loc("warnings.marker"), compact: true)
+    private static let titleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    private static let detailFont = NSFont.systemFont(ofSize: 11)
+    private static let inset: CGFloat = 6
+    private static let top: CGFloat = 4
+    private static let spacing: CGFloat = 2
 
     init() {
         super.init(frame: .zero)
         identifier = NSUserInterfaceItemIdentifier("warning")
-        let marker = NSImageView(
-            image: Icon.warningMarker.image(loc("warnings.marker"), compact: true))
-        marker.setContentHuggingPriority(.required, for: .horizontal)
         marker.contentTintColor = .systemOrange
-        title.font = .systemFont(ofSize: 12, weight: .semibold)
+        title.font = Self.titleFont
         title.lineBreakMode = .byTruncatingTail
-        title.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        detail.font = .systemFont(ofSize: 11)
+        detail.font = Self.detailFont
         detail.textColor = .secondaryLabelColor
         detail.maximumNumberOfLines = 0
         relinkButton.bezelStyle = .rounded
         relinkButton.controlSize = .small
         relinkButton.setAccessibilityIdentifier(AX.warningRelink)
-        let text = NSStackView(views: [title, detail, relinkButton])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 2
-        let row = NSStackView(views: [marker, text])
-        row.alignment = .top
-        row.spacing = 6
-        row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-        ])
+        for v in [marker, title, detail, relinkButton] { addSubview(v) }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    override var isFlipped: Bool { true }
+
     private static let sizer: NSTextField = {
         let f = NSTextField(wrappingLabelWithString: "")
-        f.font = .systemFont(ofSize: 11)
+        f.font = detailFont
         return f
     }()
+    private static let titleHeight: CGFloat = {
+        let f = NSTextField(labelWithString: "Xg")
+        f.font = titleFont
+        return ceil(f.intrinsicContentSize.height)
+    }()
+    private static let buttonSize: NSSize = {
+        let b = NSButton(title: loc("warnings.relink"), target: nil, action: nil)
+        b.bezelStyle = .rounded
+        b.controlSize = .small
+        return b.intrinsicContentSize
+    }()
 
-    /// The height a row needs in a column `width` wide: the reasons wrap, so they are measured at
+    /// Where the title, reasons and button start, and how wide they may be, in a cell `width` wide.
+    private static func textColumn(_ width: CGFloat) -> (x: CGFloat, width: CGFloat) {
+        let x = inset + markerImage.size.width + inset
+        return (x, max(40, width - x - inset))
+    }
+
+    /// The height `text` takes wrapped in `width`, measured as the field draws it.
+    private static func detailHeight(_ text: String, width: CGFloat) -> CGFloat {
+        guard !text.isEmpty else { return 0 }
+        sizer.stringValue = text
+        return ceil(sizer.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 100_000)).height ?? 0)
+    }
+
+    /// The height a row needs in a cell `width` wide: the reasons wrap, so they are measured at
     /// the width they get beside the marker, not counted by line breaks.
     static func height(of w: WarningRow, width: CGFloat) -> CGFloat {
-        let relink: CGFloat = w.canRelink ? 22 : 0
-        guard !w.detail.isEmpty else { return 26 + relink }
-        let marker = Icon.warningMarker.image(loc("warnings.marker"), compact: true).size.width
-        sizer.stringValue = w.detail
-        sizer.preferredMaxLayoutWidth = max(40, width - 6 - 6 - marker - 6)
-        return 26 + 2 + ceil(sizer.fittingSize.height) + relink
+        let column = textColumn(width)
+        var h = top + titleHeight
+        if !w.detail.isEmpty { h += spacing + detailHeight(w.detail, width: column.width) }
+        if w.canRelink { h += spacing + buttonSize.height }
+        return ceil(max(h, top + markerImage.size.height)) + top
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        let column = Self.textColumn(bounds.width)
+        marker.frame = NSRect(origin: NSPoint(x: Self.inset, y: Self.top), size: Self.markerImage.size)
+        var y = Self.top
+        title.frame = NSRect(x: column.x, y: y, width: column.width, height: Self.titleHeight)
+        y += Self.titleHeight
+        if !detail.isHidden {
+            let h = Self.detailHeight(detail.stringValue, width: column.width)
+            detail.frame = NSRect(x: column.x, y: y + Self.spacing, width: column.width, height: h)
+            y += Self.spacing + h
+        }
+        if !relinkButton.isHidden {
+            let size = NSSize(width: min(Self.buttonSize.width, column.width), height: Self.buttonSize.height)
+            relinkButton.frame = NSRect(origin: NSPoint(x: column.x, y: y + Self.spacing), size: size)
+        }
     }
 }
 
@@ -317,6 +358,13 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         activeScroll.isHidden = true
         configure(warningsTable, id: AX.sidebarWarnings, label: loc("sidebar.warnings.label"), scroll: warningsScroll)
         warningsTable.usesAutomaticRowHeights = false
+        // The column is kept as wide as the table: rows wrap their reasons at the column's width
+        // and are as tall as that makes them, so a column left narrower than the sidebar would
+        // wrap early and stand the text in a strip.
+        warningsTable.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(warningsTableResized), name: NSView.frameDidChangeNotification,
+            object: warningsTable)
         warningsTable.target = self
         warningsTable.action = #selector(warningClicked)
         warningsScroll.isHidden = true
@@ -751,8 +799,20 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         if tableView === activeTable { return 64 }
         guard tableView === warningsTable, warningRows.indices.contains(row) else { return tableView.rowHeight }
-        return WarningCell.height(
-            of: warningRows[row], width: tableView.tableColumns.first?.width ?? tableView.bounds.width)
+        return WarningCell.height(of: warningRows[row], width: tableView.frameOfCell(atColumn: 0, row: row).width)
+    }
+
+    @objc private func warningsTableResized() {
+        guard let column = warningsTable.tableColumns.first else { return }
+        let visible = warningsTable.enclosingScrollView?.contentView.bounds.width ?? warningsTable.bounds.width
+        // A hidden or collapsed sidebar has no width to fit; it is fitted when it shows.
+        guard visible > 40 else { return }
+        let width = max(column.minWidth, visible - warningsTable.intercellSpacing.width)
+        guard abs(column.width - width) > 0.5 else { return }
+        column.width = width
+        if warningsTable.numberOfRows > 0 {
+            warningsTable.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<warningsTable.numberOfRows))
+        }
     }
 
     /// A narrower or wider sidebar wraps the reasons differently.
@@ -832,6 +892,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         cell.title.stringValue = w.title
         cell.detail.stringValue = w.detail
         cell.detail.isHidden = w.detail.isEmpty
+        cell.needsLayout = true
         cell.relinkButton.isHidden = !w.canRelink
         cell.relinkButton.isEnabled = !relinkLocked
         cell.relinkButton.target = self
