@@ -149,7 +149,7 @@ impl CueEngine {
     /// one from where it froze, staying paused). Timers, post-wait, continues and the end are
     /// the run's own and stay; the moved voice tells its length again. A run stopping with a
     /// fade ends where it is; a stale, broken or not yet started run has nothing to move. A run
-    /// being devamped moves once its voice has left the loop (or the devamp was ignored).
+    /// whose devamp is not answered yet moves once it is (scheduled or ignored).
     pub(super) fn device_moved(&mut self, cue: CueId, run_id: RunId, cx: &mut Ctx) {
         let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
             return;
@@ -157,22 +157,23 @@ impl CueEngine {
         if run.run != run_id || run.is_broken() || run.stop_end.is_some() {
             return;
         }
-        // A devamp on its way (sent and not answered, or answered and its loop not left yet):
-        // the audio side alone knows where the voice is in its loop then, and a voice moved
-        // now would play that loop again. It moves once the devamp is done with.
-        if run.devamp.is_some() {
+        // A devamp sent and not answered yet (about one block): until the audio side says
+        // where the voice leaves its loop, a voice moved now could play that loop again. It
+        // moves once the answer comes. Answered, it moves at once and the binary gives the
+        // moved voice the same leave; the deadline here stays where it is.
+        if run.devamp.is_some_and(|d| d.at.is_none()) {
             run.move_pending = true;
             return;
         }
         self.move_device(cue, cx);
     }
 
-    /// A move held for a devamp (`Run::move_pending`) is made now that the devamp is done
-    /// with: the voice left its loop, or the devamp was ignored.
+    /// A move held for a devamp (`Run::move_pending`) is made now that the devamp is answered:
+    /// scheduled (where the voice leaves its loop is known), or ignored.
     pub(super) fn move_held(&mut self, cue: CueId, cx: &mut Ctx) {
         if let Some(Slot::Active(run)) = self.slots.get_mut(&cue)
             && std::mem::take(&mut run.move_pending)
-            && run.devamp.is_none()
+            && run.devamp.is_none_or(|d| d.at.is_some())
         {
             self.move_device(cue, cx);
         }
@@ -231,7 +232,9 @@ impl CueEngine {
             at,
             position,
         });
-        // No devamp is on its way (`device_moved` holds the move until it is done with).
+        // A devamp is answered or none was sent (`device_moved` holds the move until then): an
+        // answered one keeps its leave deadline, and the binary gives the moved voice that
+        // leave from the old voice's, so nothing is sent again.
         regive_levels(cue, run, at, cx);
     }
 

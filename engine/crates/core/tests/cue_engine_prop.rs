@@ -862,8 +862,8 @@ impl Voice {
                 }
             }
             Cmd::Relocate { run } => {
-                // The same sound on another device: position and end stay, a devamp is sent
-                // again for the fresh id.
+                // The same sound on another device: position, end and a scheduled leave of its
+                // loop stay (the binary gives the moved voice the old one's devamp).
                 self.run = run;
                 if !self.started {
                     return;
@@ -872,7 +872,6 @@ impl Voice {
                     self.pos += at.saturating_sub(self.since);
                     self.since = at;
                 }
-                self.leave = None;
                 if self.told
                     && let Some(frames) = self.end_pos
                 {

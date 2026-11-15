@@ -632,7 +632,7 @@ impl CueEngine {
             Input::StartFailed { cue, run, reason } => {
                 self.action_failed(cue, run, reason, true, cx);
             }
-            Input::DevampScheduled { cue, run, at } => self.devamp_scheduled(cue, run, at),
+            Input::DevampScheduled { cue, run, at } => self.devamp_scheduled(cue, run, at, cx),
             Input::DevampIgnored { cue, run } => self.devamp_ignored(cue, run, cx),
             Input::DeviceMoved { cue, run } => self.device_moved(cue, run, cx),
             Input::Preview { cue } => self.preview(cue, cx),

@@ -778,18 +778,19 @@ fn devamped_loop() -> Rig {
     rig
 }
 
-/// Review round 1: a move while a devamp is on its way (sent, not answered; or answered and
-/// its loop not left yet) waits: the audio side alone knows where the voice is in its loop, and
-/// a voice moved then would play the loop again. Once the voice has left the loop the move is
-/// made from where it is, with no devamp sent again; the next cue starts once.
+/// Review rounds 1 and 2: a move while a devamp is sent and not yet answered waits for the
+/// answer (about one block): until then only the audio side knows where the voice is in its
+/// loop. Scheduled, the move is made at once; the leave deadline stays where the answer put it
+/// and no devamp is sent again (the binary gives the moved voice the same leave), so the next
+/// cue starts once, on the leave sample. A move once it is scheduled is made at once too.
 #[test]
-fn a_move_during_a_devamp_waits_until_the_voice_has_left_its_loop() {
+fn a_move_during_a_devamp_waits_only_for_its_answer_and_keeps_the_leave() {
     let mut rig = devamped_loop();
     let run = rig.run(1);
     let held = rig.device_moved(200, 1);
     assert!(relocations(&held).is_empty(), "{held:?}");
     assert_eq!(rig.run(1), run);
-    rig.at(
+    let answered = rig.at(
         210,
         Input::DevampScheduled {
             cue: id(1),
@@ -797,17 +798,25 @@ fn a_move_during_a_devamp_waits_until_the_voice_has_left_its_loop() {
             at: 900,
         },
     );
-    // Answered, the loop not left yet: still held.
-    let again = rig.device_moved(300, 1);
-    assert!(relocations(&again).is_empty(), "{again:?}");
-    let left = rig.tick(900);
-    let moved = relocations(&left);
-    assert_eq!(moved.len(), 1, "{left:?}");
-    assert_eq!((moved[0].1, moved[0].2), (run, 900));
+    let moved = relocations(&answered);
+    assert_eq!(moved.len(), 1, "{answered:?}");
+    assert_eq!((moved[0].1, moved[0].2), (run, 210));
     assert!(
-        !left.iter().any(|a| matches!(a, Action::DevampVoice { .. })),
-        "{left:?}"
+        !answered
+            .iter()
+            .any(|a| matches!(a, Action::DevampVoice { .. })),
+        "{answered:?}"
     );
+    assert_eq!(rig.engine.next_deadline(), Some(900));
+    // Scheduled, a later move goes at once too.
+    let again = rig.device_moved(300, 1);
+    assert_eq!(relocations(&again).len(), 1, "{again:?}");
+    assert!(
+        !again
+            .iter()
+            .any(|a| matches!(a, Action::DevampVoice { .. }))
+    );
+    let left = rig.tick(900);
     assert_eq!(starts(&left), vec![(id(4), 900)]);
     assert!(starts(&rig.tick(2000)).is_empty());
 }

@@ -327,6 +327,23 @@ impl Voices {
         };
         let elapsed = r.shown.saturating_add(here.saturating_sub(r.offset));
         let swap_after = r.swap_after;
+        // A devamp the mixer has scheduled and the voice not carried out by the swap: the new
+        // voice, in the same pass of the loop, leaves it on the same sample by a devamp of its
+        // own (the core keeps its deadline and sends nothing again).
+        let queue = if r
+            .cuts
+            .last()
+            .is_some_and(|&c| c > here.saturating_sub(r.offset))
+        {
+            vec![(
+                swap,
+                Queued::Devamp {
+                    stop: r.devamp_stop,
+                },
+            )]
+        } else {
+            Vec::new()
+        };
         r.retired = true;
         let replaces = match paused {
             Some(_) => {
@@ -354,7 +371,7 @@ impl Voices {
                     prepared: None,
                     start: Some(swap),
                     paused: paused.is_some(),
-                    queue: Vec::new(),
+                    queue,
                 },
                 offset,
                 file,

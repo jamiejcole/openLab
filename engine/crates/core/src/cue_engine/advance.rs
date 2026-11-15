@@ -74,7 +74,7 @@ impl CueEngine {
             if d.start_next {
                 self.continue_after(d.by, at, cx);
             }
-            return self.move_held(cue, cx);
+            return;
         }
         if let Phase::PreWait { until } = run.phase {
             if until <= at {
