@@ -16,9 +16,10 @@ use serde::{Deserialize, Serialize};
 use crate::model::StageId;
 use crate::video::{MAX_STAGES, side_ok};
 use crate::video_geometry::VideoGeometry;
+use crate::video_timing::{PictureFades, PlanPass, picture_run_ok};
 
 /// The link version both ends speak; a stage host answering another version is not used.
-pub const LINK_VERSION: u32 = 2;
+pub const LINK_VERSION: u32 = 3;
 /// Longest line either end accepts, newline excluded: enough for a `stages` set of
 /// [`MAX_LINK_STAGES`] stages whose display ids are all [`MAX_TEXT_BYTES`] long.
 pub const MAX_LINE_BYTES: usize = 512 * 1024;
@@ -71,10 +72,26 @@ pub enum ToStage {
         geometry: VideoGeometry,
     },
     /// The picture plays from sample `at` (engine clock), `offset` seconds into the file then;
-    /// a picture not loaded is ignored.
-    Play { picture: u64, at: u64, offset: f64 },
-    /// The picture holds the frame at `offset` seconds from sample `at`.
-    Pause { picture: u64, at: u64, offset: f64 },
+    /// a picture not loaded is ignored. With a `plan` (a movie's trims, slices and loops from
+    /// `at` on) its position follows the plan instead, held just before the end of the plan's
+    /// last pass once it is over; without one it runs on from `offset`. `action` is how far
+    /// into its cue's action it is on `at`, which the integrated `fades` are counted in.
+    Play {
+        picture: u64,
+        at: u64,
+        offset: f64,
+        action: f64,
+        plan: Vec<PlanPass>,
+        fades: PictureFades,
+    },
+    /// The picture holds the frame at `offset` seconds from sample `at`, `action` seconds into
+    /// its cue's action (its fades held there).
+    Pause {
+        picture: u64,
+        at: u64,
+        offset: f64,
+        action: f64,
+    },
     /// The picture fades out over `fade` samples from sample `at` (0: gone on `at`), then goes.
     Stop { picture: u64, at: u64, fade: u64 },
     /// The picture goes now.
@@ -345,6 +362,17 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
         ToStage::Play { offset, .. } | ToStage::Pause { offset, .. } if !offset_ok(*offset) => {
             Err(LinkError::Invalid("picture offset out of range"))
         }
+        ToStage::Play {
+            action,
+            plan,
+            fades,
+            ..
+        } if !picture_run_ok(plan, *action, fades) => {
+            Err(LinkError::Invalid("picture plan or fades out of range"))
+        }
+        ToStage::Pause { action, .. } if !offset_ok(*action) => {
+            Err(LinkError::Invalid("picture action time out of range"))
+        }
         ToStage::Stages { stages } => {
             if stages.len() > MAX_LINK_STAGES {
                 return Err(LinkError::Invalid("too many stages"));
@@ -606,6 +634,79 @@ mod tests {
             decode_to_stage(load.as_bytes()),
             Err(LinkError::Invalid(_))
         ));
+    }
+
+    /// A play with a plan and fades reads back; one out of the link's limits is refused (VID-07),
+    /// and the largest plan fits one line.
+    #[test]
+    fn a_picture_plan_reads_back_and_one_out_of_range_is_refused() {
+        let fade = crate::FadeSpec {
+            duration: 0.5,
+            curve: crate::FadeCurve::SCurve,
+        };
+        let play = |plan: Vec<PlanPass>, action: f64, end: Option<f64>| ToStage::Play {
+            picture: 2,
+            at: 480,
+            offset: 1.0,
+            action,
+            plan,
+            fades: PictureFades {
+                fade_in: fade,
+                fade_out: fade,
+                end,
+            },
+        };
+        let pass = |from, length, plays| PlanPass {
+            from,
+            length,
+            plays,
+        };
+        let good = play(vec![pass(1.0, 2.0, 0), pass(3.0, 1.0, 1)], 0.25, None);
+        let line = encode(&good).unwrap();
+        assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), good);
+        let pause = ToStage::Pause {
+            picture: 2,
+            at: 9,
+            offset: 1.5,
+            action: 3.0,
+        };
+        assert_eq!(
+            decode_to_stage(encode(&pause).unwrap().as_bytes()).unwrap(),
+            pause
+        );
+        let largest = play(
+            vec![pass(crate::MAX_TIME / 3.0, 1.0 / 3.0, u32::MAX); crate::MAX_PLAN_PASSES],
+            crate::MAX_TIME / 7.0,
+            Some(crate::MAX_TIME / 9.0),
+        );
+        let line = encode(&largest).unwrap();
+        assert_eq!(decode_to_stage(line.as_bytes()).unwrap(), largest);
+        for bad in [
+            play(vec![pass(-1.0, 2.0, 1)], 0.0, None),
+            play(vec![pass(0.0, 0.0, 1)], 0.0, None),
+            play(vec![pass(0.0, 1.0, 1)], -0.5, None),
+            play(vec![pass(0.0, 1.0, 1)], 0.0, Some(1e12)),
+            play(
+                vec![pass(0.0, 1.0, 1); crate::MAX_PLAN_PASSES + 1],
+                0.0,
+                None,
+            ),
+            ToStage::Pause {
+                picture: 2,
+                at: 9,
+                offset: 1.5,
+                action: f64::MAX,
+            },
+        ] {
+            let line = encode(&bad).unwrap();
+            assert!(
+                matches!(decode_to_stage(line.as_bytes()), Err(LinkError::Invalid(_))),
+                "{bad:?}"
+            );
+        }
+        // NaN is not JSON: a line carrying one in a plan is unreadable, never accepted.
+        let nan = r#"{"type":"play","picture":1,"at":0,"offset":0,"action":0,"plan":[{"from":NaN,"length":1,"plays":1}],"fades":{"fade_in":{"duration":0,"curve":"linear"},"fade_out":{"duration":0,"curve":"linear"},"end":null}}"#;
+        assert!(decode_to_stage(nan.as_bytes()).is_err());
     }
 
     #[test]

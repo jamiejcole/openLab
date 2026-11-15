@@ -349,7 +349,7 @@ fn a_video_cues_trims_fades_and_slices_load_checked_as_an_audio_cues() {
                 stage: None,
                 duration: None,
                 geometry: Default::default(),
-                timing,
+                timing: Box::new(timing),
             },
         )
     };
@@ -385,7 +385,7 @@ fn a_video_cues_trims_fades_and_slices_load_checked_as_an_audio_cues() {
         ]
     );
     let timing = |n| match &ws.find_cue(cue_id(n)).unwrap().kind {
-        CueKind::Video { timing, .. } => timing.clone(),
+        CueKind::Video { timing, .. } => (**timing).clone(),
         other => panic!("{other:?}"),
     };
     assert_eq!(timing(1).start_time, 0.0);
@@ -409,7 +409,7 @@ fn a_video_cues_trims_fades_and_slices_load_checked_as_an_audio_cues() {
     }
     let loaded = load_show(&doc.to_string()).unwrap();
     match &loaded.workspace.cue_lists[0].cues[0].kind {
-        CueKind::Video { timing, .. } => assert_eq!(*timing, VideoTiming::default()),
+        CueKind::Video { timing, .. } => assert_eq!(**timing, VideoTiming::default()),
         other => panic!("{other:?}"),
     }
     let again = load_show(&show_text(&ws)).unwrap();

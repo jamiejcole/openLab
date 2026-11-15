@@ -683,7 +683,7 @@ pub enum CueKind {
         geometry: VideoGeometry,
         /// Its trims, loops, fades and hold at end (VID-07), stored as fields of the kind.
         #[serde(flatten)]
-        timing: VideoTiming,
+        timing: Box<VideoTiming>,
     },
 }
 

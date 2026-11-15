@@ -500,7 +500,7 @@ fn a_part_of_a_pair_or_one_crop_edge_changes_alone() {
 
 fn timing(ws: &Workspace, n: u128) -> VideoTiming {
     match &ws.find_cue(cue_id(n)).unwrap().kind {
-        CueKind::Video { timing, .. } => timing.clone(),
+        CueKind::Video { timing, .. } => (**timing).clone(),
         other => panic!("{other:?}"),
     }
 }

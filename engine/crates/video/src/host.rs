@@ -11,7 +11,9 @@ use openlab_core::stage_link::{
     Display, FromStage, LINK_VERSION, Line, LinkLevel, StageOutput, StageState, ToStage,
     decode_to_stage, encode, read_line,
 };
-use openlab_core::{StageId, VideoGeometry};
+use openlab_core::{
+    PictureFades, PlanPass, StageId, VideoGeometry, fade_factor, plan_point,
+};
 
 /// What a stage shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,11 +31,42 @@ pub struct CuePicture {
     pub picture: u64,
     /// Seconds into the file (a still ignores it).
     pub position: f64,
-    /// How far its stop's fade has gone: 1 until it stops, then down to 0 (gone). Drawn times
-    /// the geometry's opacity.
+    /// Seconds until the pass of its plan under way ends (infinite without one).
+    pub left: f64,
+    /// Where it goes when that pass ends, when not straight on (a loop's start): the decoder
+    /// gets that frame ready while the pass ends ([`PRIME_AHEAD`] before).
+    pub next: Option<f64>,
+    /// Its plan is over: it holds its last frame.
+    pub held: bool,
+    /// Its integrated fades times how far its stop's fade has gone (1 until it stops, then
+    /// down to 0, gone). Drawn times the geometry's opacity.
     pub opacity: f32,
     /// Where it sits on its stage, how opaque, its layer and its sampling.
     pub geometry: VideoGeometry,
+}
+
+/// How long before a jump in a picture's plan (the end of a loop's pass) its decoder is told
+/// where the next pass starts, so it can have that frame ready at the seam.
+pub const PRIME_AHEAD: f64 = 1.0;
+
+impl CuePicture {
+    /// Where in its file the picture is `ahead` seconds later (a frame shown at the display's
+    /// next refresh): past the end of the pass under way, in the next pass; held when its plan
+    /// is over.
+    pub fn position_after(&self, ahead: f64) -> f64 {
+        if self.held || ahead <= 0.0 {
+            return self.position;
+        }
+        match self.next {
+            Some(next) if ahead >= self.left => next + (ahead - self.left),
+            _ => self.position + ahead,
+        }
+    }
+
+    /// The jump the decoder may get ready for now, if one is near.
+    pub fn upcoming(&self) -> Option<f64> {
+        self.next.filter(|_| self.left <= PRIME_AHEAD)
+    }
 }
 
 /// One stage as a display draws it: its pixel size, what it shows behind its cues, and its
@@ -48,14 +81,30 @@ pub struct Layer {
 }
 
 /// Where a picture is in its run.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Run {
     /// Loaded at `offset`, not playing yet.
     Held { offset: f64 },
-    /// Playing from sample `at`, `offset` seconds into the file then.
-    Playing { at: u64, offset: f64 },
-    /// Holding the frame at `offset` from sample `at`.
-    Paused { at: u64, offset: f64 },
+    /// Playing from sample `at`, `offset` seconds into the file and `action` seconds into its
+    /// cue's action then; following `plan` when it has one.
+    Playing {
+        at: u64,
+        offset: f64,
+        action: f64,
+        plan: Vec<PlanPass>,
+    },
+    /// Holding the frame at `offset` from sample `at`, `action` seconds into its cue's action.
+    Paused { at: u64, offset: f64, action: f64 },
+}
+
+/// Where a run is at a sample: its file position, the pass's time left and next jump, whether
+/// its plan is over, and how far into its cue's action it is.
+struct Place {
+    position: f64,
+    left: f64,
+    next: Option<f64>,
+    held: bool,
+    action: f64,
 }
 
 /// One Video cue run's picture on the stage host.
@@ -73,14 +122,40 @@ struct Pic {
     /// When it first played, for the stacking (later on top): (sample, arrival order).
     order: (u64, u64),
     geometry: VideoGeometry,
+    /// Its integrated fades, as its last play gave them.
+    fades: PictureFades,
 }
 
 impl Pic {
-    fn position(run: Run, clock: u64, rate: u32) -> f64 {
+    fn place(run: &Run, clock: u64, rate: u32) -> Place {
+        let still = |offset, action| Place {
+            position: offset,
+            left: f64::INFINITY,
+            next: None,
+            held: false,
+            action,
+        };
         match run {
-            Run::Held { offset } | Run::Paused { offset, .. } => offset,
-            Run::Playing { at, offset } => {
-                offset + clock.saturating_sub(at) as f64 / f64::from(rate.max(1))
+            Run::Held { offset } => still(*offset, 0.0),
+            Run::Paused { offset, action, .. } => still(*offset, *action),
+            Run::Playing {
+                at,
+                offset,
+                action,
+                plan,
+            } => {
+                let elapsed = clock.saturating_sub(*at) as f64 / f64::from(rate.max(1));
+                let action = action + elapsed;
+                match plan_point(plan, elapsed) {
+                    Some(p) => Place {
+                        position: p.position,
+                        left: p.left,
+                        next: p.next,
+                        held: p.ended,
+                        action,
+                    },
+                    None => still(offset + elapsed, action),
+                }
             }
         }
     }
@@ -96,11 +171,11 @@ impl Pic {
             Run::Playing { at, .. } | Run::Paused { at, .. } => clock >= at,
         };
         let run = if due {
-            self.run
+            &self.run
         } else {
-            self.before.unwrap_or(self.run)
+            self.before.as_ref().unwrap_or(&self.run)
         };
-        let opacity = match self.stop {
+        let stopping = match self.stop {
             Some((at, _)) if clock < at => 1.0,
             Some((at, fade)) => {
                 let gone = clock - at;
@@ -111,10 +186,15 @@ impl Pic {
             }
             None => 1.0,
         };
+        let place = Self::place(run, clock, rate);
+        let faded = fade_factor(&self.fades, place.action) as f32;
         Some(CuePicture {
             picture,
-            position: Self::position(run, clock, rate),
-            opacity,
+            position: place.position,
+            left: place.left,
+            next: place.next,
+            held: place.held,
+            opacity: stopping * faded,
             geometry: self.geometry,
         })
     }
@@ -315,6 +395,7 @@ impl<P: Platform> Host<P> {
                                     stop: None,
                                     order: (u64::MAX, 0),
                                     geometry,
+                                    fades: PictureFades::NONE,
                                 },
                             );
                         }
@@ -329,12 +410,24 @@ impl<P: Platform> Host<P> {
                 picture,
                 at,
                 offset,
+                action,
+                plan,
+                fades,
             } => {
                 self.plays += 1;
                 let plays = self.plays;
                 if let Some(p) = self.pics.get_mut(&picture) {
-                    p.before = p.since.is_some().then_some(p.run);
-                    p.run = Run::Playing { at, offset };
+                    let run = Run::Playing {
+                        at,
+                        offset,
+                        action,
+                        plan,
+                    };
+                    let was = std::mem::replace(&mut p.run, run);
+                    p.before = p.since.is_some().then_some(was);
+                    // Taken at once: a play dated ahead (a devamp's continuation) changes the
+                    // fades only where the run before it ends anyway.
+                    p.fades = fades;
                     if p.since.is_none() {
                         p.since = Some(at);
                         p.order = (at, plays);
@@ -345,10 +438,11 @@ impl<P: Platform> Host<P> {
                 picture,
                 at,
                 offset,
+                action,
             } => {
                 if let Some(p) = self.pics.get_mut(&picture) {
-                    p.before = Some(p.run);
-                    p.run = Run::Paused { at, offset };
+                    let was = std::mem::replace(&mut p.run, Run::Paused { at, offset, action });
+                    p.before = Some(was);
                 }
             }
             ToStage::Stop { picture, at, fade } => {
@@ -950,11 +1044,26 @@ mod tests {
 
     /// What stage `n` draws for its cues, by picture: position and opacity.
     fn cues(host: &mut Host<Fake>, n: u8) -> Vec<(u64, f64, f32)> {
-        let now = host.now();
-        host.cues_on(id(n), now)
+        drawn(host, n)
             .into_iter()
             .map(|c| (c.picture, c.position, c.opacity))
             .collect()
+    }
+
+    fn drawn(host: &mut Host<Fake>, n: u8) -> Vec<CuePicture> {
+        let now = host.now();
+        host.cues_on(id(n), now)
+    }
+
+    fn plain_play(picture: u64, at: u64, offset: f64) -> ToStage {
+        ToStage::Play {
+            picture,
+            at,
+            offset,
+            action: offset,
+            plan: Vec::new(),
+            fades: PictureFades::NONE,
+        }
     }
 
     fn send(host: &mut Host<Fake>, m: ToStage) -> Vec<FromStage> {
@@ -991,11 +1100,7 @@ mod tests {
     fn play(host: &mut Host<Fake>, picture: u64, at: u64) {
         send(
             host,
-            ToStage::Play {
-                picture,
-                at,
-                offset: 0.0,
-            },
+            plain_play(picture, at, 0.0),
         );
     }
 
@@ -1061,11 +1166,7 @@ mod tests {
         assert_eq!(cues(&mut h, 1), vec![], "loaded is not drawn");
         send(
             &mut h,
-            ToStage::Play {
-                picture: 7,
-                at: 1500,
-                offset: 2.0,
-            },
+            plain_play(7, 1500, 2.0),
         );
         assert_eq!(cues(&mut h, 1), vec![], "not before its sample");
         clock(&mut h, 2000);
@@ -1076,6 +1177,7 @@ mod tests {
                 picture: 7,
                 at: 2500,
                 offset: 3.0,
+                action: 3.0,
             },
         );
         clock(&mut h, 2400);
@@ -1088,11 +1190,7 @@ mod tests {
         assert_eq!(cues(&mut h, 1), vec![(7, 3.0, 1.0)]);
         send(
             &mut h,
-            ToStage::Play {
-                picture: 7,
-                at: 4000,
-                offset: 3.0,
-            },
+            plain_play(7, 4000, 3.0),
         );
         send(
             &mut h,
@@ -1114,6 +1212,78 @@ mod tests {
         );
         h.redraw(&mut Vec::new());
         assert!(!h.playing(), "gone once its fade is over");
+    }
+
+    /// A movie's plan (VID-07): the picture follows its passes (a trimmed range played twice),
+    /// says where the next pass starts as a seam nears, and holds just before the plan's end
+    /// once it is over; its integrated fades scale its opacity by its action time.
+    #[test]
+    fn a_picture_follows_its_plan_through_a_loop_fades_and_holds_at_its_end() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 7, 1);
+        let linear = |duration| openlab_core::FadeSpec {
+            duration,
+            curve: openlab_core::FadeCurve::Linear,
+        };
+        send(
+            &mut h,
+            ToStage::Play {
+                picture: 7,
+                at: 0,
+                offset: 1.0,
+                action: 0.0,
+                plan: vec![PlanPass {
+                    from: 1.0,
+                    length: 2.0,
+                    plays: 2,
+                }],
+                fades: PictureFades {
+                    fade_in: linear(1.0),
+                    fade_out: linear(1.0),
+                    end: Some(4.0),
+                },
+            },
+        );
+        let at = |h: &mut Host<Fake>, sample| {
+            clock(h, sample);
+            drawn(h, 1).first().copied().unwrap()
+        };
+        let p = at(&mut h, 500);
+        assert_eq!((p.position, p.opacity, p.held), (1.5, 0.5, false));
+        assert_eq!(p.upcoming(), None, "the seam is far");
+        let p = at(&mut h, 1990);
+        assert!((p.position - 2.99).abs() < 1e-9);
+        assert_eq!(p.upcoming(), Some(1.0), "the loop's start, primed ahead");
+        // A frame shown a refresh later is in the next pass.
+        assert!((p.position_after(0.02) - 1.01).abs() < 1e-9);
+        let p = at(&mut h, 2500);
+        assert_eq!((p.position, p.opacity), (1.5, 1.0));
+        assert_eq!(p.upcoming(), None, "the last pass jumps nowhere");
+        let p = at(&mut h, 3500);
+        assert_eq!(p.opacity, 0.5, "fading out to the end");
+        let p = at(&mut h, 9000);
+        assert!(p.held && p.position < 3.0 && p.position > 2.999);
+        assert_eq!(p.position_after(0.5), p.position, "held");
+        assert_eq!(p.opacity, 0.0, "held where its fade ended");
+        // A pause holds its action time's fade.
+        send(
+            &mut h,
+            ToStage::Pause {
+                picture: 7,
+                at: 9000,
+                offset: 1.5,
+                action: 0.25,
+            },
+        );
+        let p = at(&mut h, 9500);
+        assert_eq!((p.position, p.opacity), (1.5, 0.25));
     }
 
     /// On real displays the clock runs on between the engine's messages, but no further than
@@ -1153,19 +1323,11 @@ mod tests {
         load(&mut h, 3, 1);
         send(
             &mut h,
-            ToStage::Play {
-                picture: 9,
-                at: 0,
-                offset: 0.0,
-            },
+            plain_play(9, 0, 0.0),
         );
         send(
             &mut h,
-            ToStage::Play {
-                picture: 3,
-                at: 100,
-                offset: 0.0,
-            },
+            plain_play(3, 100, 0.0),
         );
         clock(&mut h, 200);
         let order: Vec<u64> = cues(&mut h, 1).iter().map(|c| c.0).collect();
@@ -1283,11 +1445,7 @@ mod tests {
         load(&mut h, 3, 1);
         send(
             &mut h,
-            ToStage::Play {
-                picture: 3,
-                at: 0,
-                offset: 0.0,
-            },
+            plain_play(3, 0, 0.0),
         );
         let out = send(&mut h, ToStage::Stages { stages: vec![] });
         assert_eq!(failed(&out), vec![(3, "its stage was removed".to_owned())]);

@@ -21,10 +21,19 @@
 //! cannot be stopped: it is left to end by itself, and the number of decode threads alive is
 //! capped, so a dead volume cannot use up the process.
 //!
+//! A movie that loops (a play count or an infinite loop over its trims, VID-07) jumps back at
+//! each seam. The main thread passes the jump on with the position it asks for, up to a second
+//! before the seam: the decode thread then opens a second reader at the loop's start and reads
+//! its first frame ahead (`prime`), after answering the frame asked for, and swaps it in at the
+//! seam instead of opening one then. Until the next pass's first frame is ready the frame shown
+//! stays up (the main thread never waits and never draws a picture without a frame), so a seam
+//! is never a black frame.
+//!
 //! Memory per picture: a still holds its pixels once while decoding and then one texture; a
-//! movie at most five frames of its size (two textures, the mailbox, and the decode thread's
-//! frame in hand and the one read past it), besides the platform's own decoder buffers. A
-//! picture is at most `MAX_PICTURE_PIXELS` (checked before anything of its size is allocated).
+//! movie at most six frames of its size (two textures, the mailbox, the decode thread's frame
+//! in hand, the one read past it, and a looping movie's next pass's first frame), besides the
+//! platform's own decoder buffers. A picture is at most `MAX_PICTURE_PIXELS` (checked before
+//! anything of its size is allocated).
 //!
 //! The file was probed in a process of its own before it gets here (`--probe`); a read that
 //! still fails here is reported, and the picture goes.
@@ -149,6 +158,9 @@ struct Frame {
 struct Mail {
     /// Main to decoder: the newest position wanted, numbered.
     want: Option<(u64, f64)>,
+    /// Main to decoder: where the picture jumps to when the pass it is in ends (a loop's start),
+    /// once that is near.
+    upcoming: Option<f64>,
     /// The number of the last position the decoder answered.
     answered: u64,
     /// Since when a position has been wanted and not answered.
@@ -209,6 +221,8 @@ pub struct Picture {
     front: Option<usize>,
     /// The number of the last position posted, and the position.
     asked: (u64, Option<f64>),
+    /// The last jump passed on.
+    told_upcoming: Option<f64>,
     /// How long its open and frames may take.
     limits: Limits,
     /// Test support: its file's name asks its decoder to hang, so a probe does not wait for it.
@@ -259,6 +273,7 @@ impl Picture {
             slots: [None, None],
             front: None,
             asked: (0, None),
+            told_upcoming: None,
             limits,
             hangs,
         })
@@ -292,15 +307,23 @@ impl Picture {
 
     /// The texture to draw at `position` seconds and its pixel size, if a frame has been
     /// decoded: the newest the decode thread has, uploaded when a texture is free. Asks the
-    /// decode thread for `position`. With `wait` (offscreen probes only, never on real
-    /// displays), waits within `limits` for the frame at `position` first.
+    /// decode thread for `position`, and tells it where the picture jumps next (`upcoming`, a
+    /// loop's start near the end of a pass) so it can have that frame ready. With `wait`
+    /// (offscreen probes only, never on real displays), waits within `limits` for the frame at
+    /// `position` first.
     pub fn frame(
         &mut self,
         device: &ProtocolObject<dyn MTLDevice>,
         position: f64,
+        upcoming: Option<f64>,
         wait: bool,
     ) -> Result<Option<Drawable>, String> {
         let mut mail = self.shared.lock();
+        if !self.still && upcoming != self.told_upcoming {
+            self.told_upcoming = upcoming;
+            mail.upcoming = upcoming;
+            self.shared.wake.notify_all();
+        }
         if !self.still && self.asked.1 != Some(position) {
             self.asked = (self.asked.0 + 1, Some(position));
             mail.want = Some((self.asked.0, position));
@@ -487,13 +510,21 @@ fn decode(shared: &Shared, file: &str, still: bool, offset: f64, limits: Limits)
                 }
                 match mail.want {
                     Some((n, p)) if n > mail.answered => break (n, p),
-                    _ => {
-                        mail = shared
-                            .wake
-                            .wait(mail)
-                            .unwrap_or_else(PoisonError::into_inner);
-                    }
+                    _ => {}
                 }
+                // Nothing asked: the next pass's first frame is read ahead, if a jump is near.
+                if let Some(next) = mail.upcoming
+                    && !movie.primed(next)
+                {
+                    drop(mail);
+                    movie.prime(next);
+                    mail = shared.lock();
+                    continue;
+                }
+                mail = shared
+                    .wake
+                    .wait(mail)
+                    .unwrap_or_else(PoisonError::into_inner);
             }
         };
         #[cfg(feature = "test-support")]
@@ -589,11 +620,23 @@ fn picture_size(w: usize, h: usize) -> Result<(u32, u32), String> {
     }
 }
 
+/// An asset reader and its output.
+type Reader = (Retained<AVAssetReader>, Retained<AVAssetReaderTrackOutput>);
+
+/// A second reader opened at a jump's place ahead of the jump, with its first frame read.
+struct Spare {
+    from: f64,
+    reader: Reader,
+    first: Option<Frame>,
+}
+
 /// A movie read in order on its decode thread.
 struct Movie {
     asset: Retained<AVURLAsset>,
     track: Retained<AVAssetTrack>,
-    reader: Option<(Retained<AVAssetReader>, Retained<AVAssetReaderTrackOutput>)>,
+    reader: Option<Reader>,
+    /// The next pass's reader, ready before a loop's seam.
+    spare: Option<Spare>,
     size: (u32, u32),
     /// The time of the frame last handed out, if one was.
     shown: Option<f64>,
@@ -604,9 +647,11 @@ struct Movie {
     /// The movie's length and one frame's time, in seconds, as its file says.
     length: f64,
     frame: f64,
-    /// Times reading started again (tests).
+    /// Times reading started again, and of those how many took a reader primed ahead (tests).
     #[cfg(test)]
     restarts: u32,
+    #[cfg(test)]
+    spares_taken: u32,
     /// Test support: each frame takes `fault::SLOW_FRAME` to read.
     #[cfg(feature = "test-support")]
     slow: bool,
@@ -644,6 +689,7 @@ impl Movie {
             asset,
             track,
             reader: None,
+            spare: None,
             size,
             shown: None,
             next: None,
@@ -652,12 +698,14 @@ impl Movie {
             frame: 1.0 / f64::from(fps),
             #[cfg(test)]
             restarts: 0,
+            #[cfg(test)]
+            spares_taken: 0,
             #[cfg(feature = "test-support")]
             slow: false,
         })
     }
 
-    /// Starts reading at `from` seconds.
+    /// Starts reading at `from` seconds: with the reader primed for there when there is one.
     fn restart(&mut self, from: f64) -> Result<(), String> {
         if let Some((reader, _)) = self.reader.take() {
             // SAFETY: cancelling a reader this movie owns.
@@ -669,6 +717,53 @@ impl Movie {
         {
             self.restarts += 1;
         }
+        // A reader primed at or a little before `from` (within one frame) reads on to it.
+        if let Some(spare) = self.spare.take() {
+            if from >= spare.from - self.frame && from < spare.from + SKIP_AHEAD {
+                #[cfg(test)]
+                {
+                    self.spares_taken += 1;
+                }
+                self.reader = Some(spare.reader);
+                self.next = spare.first;
+                return Ok(());
+            }
+            // SAFETY: cancelling a reader this movie owns.
+            unsafe { spare.reader.0.cancelReading() };
+        }
+        self.reader = Some(self.open_reader(from)?);
+        Ok(())
+    }
+
+    /// Whether a reader is primed at `from`.
+    fn primed(&self, from: f64) -> bool {
+        self.spare.as_ref().is_some_and(|s| s.from == from)
+    }
+
+    /// Opens a second reader at `from` and reads its first frame, for a jump there. A failure
+    /// leaves none: the jump then opens one itself, and reports what fails then.
+    fn prime(&mut self, from: f64) {
+        if let Some(old) = self.spare.take() {
+            // SAFETY: cancelling a reader this movie owns.
+            unsafe { old.reader.0.cancelReading() };
+        }
+        let Ok(reader) = self.open_reader(from) else {
+            return;
+        };
+        let Ok(first) = self.read_from(&reader) else {
+            // SAFETY: cancelling a reader this movie owns.
+            unsafe { reader.0.cancelReading() };
+            return;
+        };
+        self.spare = Some(Spare {
+            from,
+            reader,
+            first,
+        });
+    }
+
+    /// A reader of BGRA frames from `from` seconds on.
+    fn open_reader(&self, from: f64) -> Result<Reader, String> {
         // SAFETY: AVFoundation calls on the movie's own asset and track; results are checked.
         unsafe {
             let reader = AVAssetReader::assetReaderWithAsset_error(&self.asset)
@@ -691,20 +786,24 @@ impl Movie {
             if !reader.startReading() {
                 return Err(reader_error(&reader));
             }
-            self.reader = Some((reader, output));
+            Ok((reader, output))
         }
-        Ok(())
     }
 
     /// Reads the next frame; `None` at the end of the movie.
     fn read(&mut self) -> Result<Option<Frame>, String> {
+        match &self.reader {
+            Some(reader) => self.read_from(reader),
+            None => Ok(None),
+        }
+    }
+
+    /// Reads `reader`'s next frame; `None` at its end.
+    fn read_from(&self, (reader, output): &Reader) -> Result<Option<Frame>, String> {
         #[cfg(feature = "test-support")]
         if self.slow {
             fault::slow_frame();
         }
-        let Some((reader, output)) = &self.reader else {
-            return Ok(None);
-        };
         // SAFETY: reading the reader's own output; a sample buffer's image is a pixel buffer
         // of BGRA (asked for above), locked while its bytes are copied out.
         unsafe {
@@ -820,7 +919,8 @@ fn reader_error(reader: &AVAssetReader) -> String {
 
 impl Drop for Movie {
     fn drop(&mut self) {
-        if let Some((reader, _)) = self.reader.take() {
+        let spare = self.spare.take().map(|s| s.reader);
+        for (reader, _) in self.reader.take().into_iter().chain(spare) {
             // SAFETY: cancelling a reader this movie owns.
             unsafe { reader.cancelReading() };
         }
@@ -934,7 +1034,7 @@ mod tests {
         };
         let mut p = Picture::open("/nonexistent/openlab/clip.mov", false, 0.0, limits).unwrap();
         let device = objc2_metal::MTLCreateSystemDefaultDevice().unwrap();
-        let got = p.frame(&device, 0.0, true);
+        let got = p.frame(&device, 0.0, None, true);
         assert_eq!(got.err().as_deref(), Some("the file is not there"));
         assert!(matches!(p.poll(), Some(Polled::Failed(_))));
         assert_eq!(p.asked(), Some(0.0));
@@ -980,5 +1080,40 @@ mod tests {
         let f = m.frame_at(0.0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 0);
         assert_eq!(m.restarts, restarts + 1);
+    }
+
+    /// A loop's seam (VID-07): with the loop's start primed ahead, the jump back takes the
+    /// primed reader and shows the loop's first frame, with no new reader opened at the seam; a
+    /// jump somewhere else still opens one, and the primed reader is let go.
+    #[test]
+    fn a_loop_seam_takes_the_reader_primed_at_the_loops_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mov");
+        let file = path.to_str().unwrap().to_owned();
+        super::super::testmedia::make(&["h264".into(), file.clone(), "50".into(), "25".into()])
+            .unwrap();
+        let mut m = Movie::open(&file).unwrap();
+        // The loop is 0.4 to 1.2 s: near its end the decode thread primes 0.4.
+        m.frame_at(0.8, &|| {}).unwrap().unwrap();
+        let f = m.frame_at(1.15, &|| {}).unwrap().unwrap();
+        assert_eq!(number(&f), 28);
+        m.prime(0.4);
+        assert!(m.primed(0.4));
+        assert!(!m.primed(0.8));
+        let f = m.frame_at(1.19, &|| {}).unwrap().unwrap();
+        assert_eq!(number(&f), 29, "the pass plays on to its end");
+        let f = m.frame_at(0.4, &|| {}).unwrap().unwrap();
+        assert_eq!(number(&f), 10, "the next pass's first frame");
+        assert_eq!(m.spares_taken, 1);
+        assert!(!m.primed(0.4), "taken");
+        // Frames follow on from the primed reader.
+        let f = m.frame_at(0.45, &|| {}).unwrap().unwrap();
+        assert_eq!(number(&f), 11);
+        // Primed for one place, a jump elsewhere opens its own reader.
+        m.prime(0.4);
+        let f = m.frame_at(1.6, &|| {}).unwrap().unwrap();
+        assert_eq!(number(&f), 40);
+        assert_eq!(m.spares_taken, 1);
+        assert!(!m.primed(0.4), "let go");
     }
 }

@@ -604,6 +604,9 @@ mod tests {
                 .map(|(i, (_, _, geometry))| CuePicture {
                     picture: i as u64,
                     position: 0.0,
+                    left: f64::INFINITY,
+                    next: None,
+                    held: false,
                     opacity: 1.0,
                     geometry: *geometry,
                 })

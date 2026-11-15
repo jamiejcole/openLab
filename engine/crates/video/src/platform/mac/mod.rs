@@ -314,7 +314,7 @@ fn frame_of(
     wait: bool,
 ) -> Option<(gpu::Texture, (u32, u32))> {
     let source = media.get_mut(&cue.picture)?;
-    match source.frame(device, cue.position + ahead, wait) {
+    match source.frame(device, cue.position_after(ahead), cue.upcoming(), wait) {
         Ok(frame) => frame,
         Err(why) => {
             media.remove(&cue.picture);
