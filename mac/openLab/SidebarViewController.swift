@@ -151,6 +151,23 @@ final class WarningCell: NSTableCellView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    private static let sizer: NSTextField = {
+        let f = NSTextField(wrappingLabelWithString: "")
+        f.font = .systemFont(ofSize: 11)
+        return f
+    }()
+
+    /// The height a row needs in a column `width` wide: the reasons wrap, so they are measured at
+    /// the width they get beside the marker, not counted by line breaks.
+    static func height(of w: WarningRow, width: CGFloat) -> CGFloat {
+        let relink: CGFloat = w.canRelink ? 22 : 0
+        guard !w.detail.isEmpty else { return 26 + relink }
+        let marker = Icon.warningMarker.image(loc("warnings.marker"), compact: true).size.width
+        sizer.stringValue = w.detail
+        sizer.preferredMaxLayoutWidth = max(40, width - 6 - 6 - marker - 6)
+        return 26 + 2 + ceil(sizer.fittingSize.height) + relink
+    }
 }
 
 /// Collapsible right sidebar: transport strip, then QLab's tabs. "Cue Lists" picks the list the
@@ -733,9 +750,14 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         if tableView === activeTable { return 64 }
         guard tableView === warningsTable, warningRows.indices.contains(row) else { return tableView.rowHeight }
-        let w = warningRows[row]
-        let lines = w.detail.isEmpty ? 0 : w.detail.split(separator: "\n").count
-        return 26 + CGFloat(lines) * 15 + (w.canRelink ? 22 : 0)
+        return WarningCell.height(
+            of: warningRows[row], width: tableView.tableColumns.first?.width ?? tableView.bounds.width)
+    }
+
+    /// A narrower or wider sidebar wraps the reasons differently.
+    func tableViewColumnDidResize(_ notification: Notification) {
+        guard (notification.object as? NSTableView) === warningsTable, warningsTable.numberOfRows > 0 else { return }
+        warningsTable.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<warningsTable.numberOfRows))
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {

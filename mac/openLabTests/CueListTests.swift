@@ -5357,7 +5357,9 @@ final class DeviceLossRowTests: XCTestCase {
         // The Warnings list says the device was lost: the notice and the cue's own row.
         let notice = try XCTUnwrap(h.store.runtimeWarnings.first { $0.json["code"]?.stringValue == "device_lost" })
         XCTAssertTrue(
-            WarningRows.make(store: h.store).contains { $0.cue == nil && $0.title == ProblemText.warning(notice, label: { _ in "" }) })
+            WarningRows.make(store: h.store).contains {
+                $0.cue == nil && $0.title == ProblemText.warning(notice, label: { _ in "" })
+            })
         let row = try XCTUnwrap(WarningRows.make(store: h.store).first { $0.cue == H.intro })
         XCTAssertEqual(row.detail, loc("paused.device_lost"))
     }
@@ -5453,7 +5455,8 @@ final class DeviceLossRowTests: XCTestCase {
         XCTAssertEqual(h.cell("preWait", H.intro)?.label.stringValue, CueTime.format(2))
         try await h.rig.advance(3)
         XCTAssertEqual(
-            h.store.cueStates[H.intro]?.state ?? .idle, .idle, "the pre-wait left over from before the loss never fires")
+            h.store.cueStates[H.intro]?.state ?? .idle, .idle, "the pre-wait left over from before the loss never fires"
+        )
         XCTAssertNil(h.store.progress[H.intro])
     }
 
