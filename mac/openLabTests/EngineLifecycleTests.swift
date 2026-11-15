@@ -966,7 +966,7 @@ final class EngineCrashFlowTests: XCTestCase {
             _ = await eventually { !processes.isEngine(info.pid) }
         }
         runs?.endAll()
-        (app, alarm, supervisor, presenter) = (nil, nil, nil, nil)
+        (app, alarm, supervisor, presenter, delegate) = (nil, nil, nil, nil, nil)
     }
 
     private func pump(_ condition: @MainActor () -> Bool) async -> Bool {
