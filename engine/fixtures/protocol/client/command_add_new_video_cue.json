@@ -67,7 +67,20 @@
         },
         "opacity": 1.0,
         "layer": 1000,
-        "smooth": true
+        "smooth": true,
+        "start_time": 0.0,
+        "end_time": null,
+        "fade_in": {
+          "duration": 0.0,
+          "curve": "linear"
+        },
+        "fade_out": {
+          "duration": 0.0,
+          "curve": "linear"
+        },
+        "slices": [],
+        "last_slice_play_count": 1,
+        "hold_at_end": false
       }
     },
     "auto_number": true

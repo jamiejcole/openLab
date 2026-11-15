@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 
-use crate::cue::{Cue, FadeLevels, GroupMode, Hotkey};
+use crate::cue::{Cue, FadeLevels, FadeSpec, GroupMode, Hotkey};
 use crate::cue::{
     CueKind, CueLevels, LevelLimits, MAX_CHANNELS, MAX_CUE_OUTPUTS, MAX_DB, MAX_SLICE_MARKERS,
     MAX_TIME, OUTPUT_MAX_DB_RANGE, OUTPUT_MIN_DB_RANGE, OscArg, SILENCE_DB, SliceMarker,
@@ -897,29 +897,14 @@ impl Checker {
                 levels,
                 ..
             } => {
-                self.time(id, "start_time", start_time);
-                if let Some(mut end) = *end_time {
-                    if end.is_finite() && end > MAX_TIME {
-                        end = MAX_TIME;
-                        self.warn(id, IssueKind::InvalidTime { field: "end_time" });
-                    }
-                    *end_time = (end.is_finite() && end > *start_time).then_some(end);
-                    if end_time.is_none() {
-                        self.warn(id, IssueKind::InvalidEndTime);
-                    } else if slice_too_short(end - *start_time) {
-                        // Kept as close as allowed: a trim shorter than QLab's floor becomes the
-                        // floor, rather than the whole file (beyond the longest time: cleared).
-                        let floor = *start_time + MIN_SLICE_SECONDS;
-                        *end_time = (floor <= MAX_TIME).then_some(floor);
-                        match *end_time {
-                            Some(end) => self.warn(id, IssueKind::EndTimeTooShort { end }),
-                            None => self.warn(id, IssueKind::InvalidEndTime),
-                        }
-                    }
-                }
-                self.time(id, "fade_in.duration", &mut fade_in.duration);
-                self.time(id, "fade_out.duration", &mut fade_out.duration);
-                self.slices(id, slices, last_slice_play_count, *start_time, *end_time);
+                self.media_timing(
+                    id,
+                    start_time,
+                    end_time,
+                    [fade_in, fade_out],
+                    slices,
+                    last_slice_play_count,
+                );
                 let outputs = self
                     .patch_outputs
                     .get(patch)
@@ -942,11 +927,23 @@ impl Checker {
             }
             CueKind::Wait { duration } => self.time(id, "duration", duration),
             CueKind::Video {
-                duration, geometry, ..
+                duration,
+                geometry,
+                timing,
+                ..
             } => {
                 if let Some(d) = duration {
                     self.time(id, "duration", d);
                 }
+                // The same trims, slices and fades as an Audio cue's, checked the same way.
+                self.media_timing(
+                    id,
+                    &mut timing.start_time,
+                    &mut timing.end_time,
+                    [&mut timing.fade_in, &mut timing.fade_out],
+                    &mut timing.slices,
+                    &mut timing.last_slice_play_count,
+                );
                 // Beyond its range: at its end (not finite: its default), with a warning each.
                 for field in geometry.repair() {
                     self.warn(id, IssueKind::InvalidValue { field });
@@ -989,6 +986,42 @@ impl Checker {
             | CueKind::Disarm { .. }
             | CueKind::Memo => {}
         }
+    }
+
+    /// An Audio or Video cue's trims, fades and slices (file format §5): times in range, the out
+    /// point after the in point by at least [`MIN_SLICE_SECONDS`], slices inside the trims.
+    fn media_timing(
+        &mut self,
+        id: Option<CueId>,
+        start_time: &mut f64,
+        end_time: &mut Option<f64>,
+        [fade_in, fade_out]: [&mut FadeSpec; 2],
+        slices: &mut Vec<SliceMarker>,
+        last_slice_play_count: &mut u32,
+    ) {
+        self.time(id, "start_time", start_time);
+        if let Some(mut end) = *end_time {
+            if end.is_finite() && end > MAX_TIME {
+                end = MAX_TIME;
+                self.warn(id, IssueKind::InvalidTime { field: "end_time" });
+            }
+            *end_time = (end.is_finite() && end > *start_time).then_some(end);
+            if end_time.is_none() {
+                self.warn(id, IssueKind::InvalidEndTime);
+            } else if slice_too_short(end - *start_time) {
+                // Kept as close as allowed: a trim shorter than QLab's floor becomes the
+                // floor, rather than the whole file (beyond the longest time: cleared).
+                let floor = *start_time + MIN_SLICE_SECONDS;
+                *end_time = (floor <= MAX_TIME).then_some(floor);
+                match *end_time {
+                    Some(end) => self.warn(id, IssueKind::EndTimeTooShort { end }),
+                    None => self.warn(id, IssueKind::InvalidEndTime),
+                }
+            }
+        }
+        self.time(id, "fade_in.duration", &mut fade_in.duration);
+        self.time(id, "fade_out.duration", &mut fade_out.duration);
+        self.slices(id, slices, last_slice_play_count, *start_time, *end_time);
     }
 
     fn slices(
@@ -1397,14 +1430,16 @@ fn strongly_connected(successors: &[Vec<usize>]) -> Option<Vec<usize>> {
     Some(component)
 }
 
-/// Fades act on audio levels (a Group fades its children); Devamp needs slices or a playlist
-/// (which it lets finish its current child). Other control cues accept any target.
+/// Fades act on audio levels (a Group fades its children); Devamp needs slices (an Audio or
+/// Video cue's) or a playlist (which it lets finish its current child). Other control cues
+/// accept any target.
 pub(crate) fn can_target(source: &CueKind, target: &CueKind) -> bool {
     match source {
         CueKind::Fade { .. } => matches!(target, CueKind::Audio { .. } | CueKind::Group { .. }),
         CueKind::Devamp { .. } => matches!(
             target,
             CueKind::Audio { .. }
+                | CueKind::Video { .. }
                 | CueKind::Group {
                     mode: GroupMode::Playlist { .. },
                     ..

@@ -977,7 +977,25 @@
               },
               "opacity": 1.0,
               "layer": 1000,
-              "smooth": true
+              "smooth": true,
+              "start_time": 1.5,
+              "end_time": 9.0,
+              "fade_in": {
+                "duration": 0.5,
+                "curve": "s_curve"
+              },
+              "fade_out": {
+                "duration": 1.0,
+                "curve": "s_curve"
+              },
+              "slices": [
+                {
+                  "time": 4.0,
+                  "play_count": 0
+                }
+              ],
+              "last_slice_play_count": 1,
+              "hold_at_end": true
             }
           },
           {
@@ -1039,7 +1057,20 @@
               },
               "opacity": 0.8,
               "layer": 20,
-              "smooth": false
+              "smooth": false,
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 1,
+              "hold_at_end": false
             }
           }
         ]

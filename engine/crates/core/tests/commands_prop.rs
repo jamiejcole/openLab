@@ -233,6 +233,7 @@ fn kind(ws: &Workspace, p: &Pick) -> CueKind {
             stage: (!p.d.is_multiple_of(5)).then(|| stage_id(1 + u128::from(p.d % 4))),
             duration: (!p.b.is_multiple_of(3)).then(|| time(p.c)),
             geometry: Default::default(),
+            timing: Default::default(),
         },
         _ => CueKind::Network {
             destination: net_id(1),

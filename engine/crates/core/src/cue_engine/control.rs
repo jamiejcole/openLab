@@ -305,8 +305,16 @@ impl CueEngine {
             target,
         });
         let by = by.unwrap_or(target);
+        let slices = match &model.kind {
+            CueKind::Audio { slices, .. } => Some(slices),
+            // A Video cue's loops are planned as an Audio cue's (QLab 5 manual p. 214), so it
+            // devamps the same way; the binary works out where the picture leaves its loop.
+            CueKind::Video { timing, .. } => Some(&timing.slices),
+            _ => None,
+        };
         match &model.kind {
-            CueKind::Audio { slices, .. } => {
+            CueKind::Audio { .. } | CueKind::Video { .. } => {
+                let slices = slices.map_or(&[][..], Vec::as_slice);
                 let now = cx.now;
                 let Some(Slot::Active(run)) = self.slots.get_mut(&target) else {
                     return cx.warn(not_running);

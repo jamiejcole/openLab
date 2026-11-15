@@ -66,6 +66,8 @@ struct VideoFacts {
     media: Option<MediaRef>,
     stage: Option<StageId>,
     stage_exists: bool,
+    /// What the cue's slice plan is built from, as of the model.
+    plan: Option<PlanKey>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,7 +79,7 @@ struct AudioFacts {
     plan: PlanKey,
 }
 
-/// What an Audio cue's slice plan is built from (its file, trims, markers and play counts;
+/// What an Audio or Video cue's slice plan is built from (its file, trims, markers and play counts;
 /// times by their bits). A slice report holds for the cue only while this is unchanged: an edit
 /// of any of them makes the report unknown (assumed playable, like an unreported file) until the
 /// binary checks the new plan, so a fix is never refused for the old report.
@@ -92,16 +94,23 @@ struct PlanKey {
 
 impl PlanKey {
     fn of(kind: &CueKind) -> Option<Self> {
-        let CueKind::Audio {
-            media,
-            start_time,
-            end_time,
-            slices,
-            last_slice_play_count,
-            ..
-        } = kind
-        else {
-            return None;
+        let (media, start_time, end_time, slices, last_slice_play_count) = match kind {
+            CueKind::Audio {
+                media,
+                start_time,
+                end_time,
+                slices,
+                last_slice_play_count,
+                ..
+            } => (media, start_time, end_time, slices, last_slice_play_count),
+            CueKind::Video { media, timing, .. } => (
+                media,
+                &timing.start_time,
+                &timing.end_time,
+                &timing.slices,
+                &timing.last_slice_play_count,
+            ),
+            _ => return None,
         };
         Some(Self {
             media: media.clone(),
@@ -162,7 +171,7 @@ pub(super) struct Problems {
     model: ModelFacts,
     media: BTreeMap<String, MediaStatus>,
     patches: BTreeMap<PatchId, PatchResolution>,
-    /// Audio cues whose slices the binary reported unplayable, with why (`Input::SliceProblems`),
+    /// Audio and Video cues whose slices the binary reported unplayable, with why (`Input::SliceProblems`),
     /// and the plan inputs the cue had when it was reported ([`PlanKey`]): the report counts
     /// only while the cue still has them. Kept by cue id as reported, like `media`: the binary
     /// tells `None` for a cue it stops tracking (gone, another file, not probed).
@@ -728,7 +737,7 @@ impl CueEngine {
         self.refresh(cues, cx);
     }
 
-    /// Records which Audio cues' slices the binary found unplayable (and which no longer are),
+    /// Records which Audio and Video cues' slices the binary found unplayable (and which no longer are),
     /// and recomputes the problems of those cues only.
     pub(super) fn slice_problems(&mut self, cues: Vec<(CueId, Option<String>)>, cx: &mut Ctx) {
         let p = &mut self.problems;
@@ -739,14 +748,18 @@ impl CueEngine {
                 .model
                 .facts
                 .get(&cue)
-                .and_then(|f| f.audio.as_ref())
-                .map(|a| a.plan.clone());
+                .and_then(|f| {
+                    f.audio
+                        .as_ref()
+                        .map(|a| a.plan.clone())
+                        .or_else(|| f.video.as_ref().and_then(|v| v.plan.clone()))
+                });
             let differs = match (reason, key) {
                 (Some(reason), Some(key)) => {
                     let entry = (reason, key);
                     p.slices.insert(cue, entry.clone()) != Some(entry)
                 }
-                // Not an Audio cue (any more): nothing to hold the report against.
+                // Not an Audio or Video cue (any more): nothing to hold the report against.
                 (Some(_), None) | (None, _) => p.slices.remove(&cue).is_some(),
             };
             if differs {
@@ -902,8 +915,18 @@ fn combine(cue: CueId, f: &Facts, p: &Problems) -> Vec<CueProblem> {
         found.extend(n.fixed.iter().cloned());
     }
     if let Some(v) = &f.video {
-        if let Some(problem) = media_problem(v.media.as_ref(), media) {
-            found.push(problem);
+        match media_problem(v.media.as_ref(), media) {
+            Some(problem) => found.push(problem),
+            // As an Audio cue's: judged only against a file that plays.
+            None => {
+                if let Some((reason, key)) = p.slices.get(&cue)
+                    && v.plan.as_ref() == Some(key)
+                {
+                    found.push(CueProblem::SlicesUnplayable {
+                        reason: reason.clone(),
+                    });
+                }
+            }
         }
         match v.stage {
             None => found.push(CueProblem::NoStage),
@@ -1115,6 +1138,7 @@ fn facts_of<'w>(
             media: media.clone(),
             stage: *stage,
             stage_exists: stage.is_some_and(&stage_exists),
+            plan: PlanKey::of(&cue.kind),
         }),
         _ => None,
     };

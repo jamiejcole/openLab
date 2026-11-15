@@ -357,6 +357,7 @@ fn video_cue(n: u128, media: Option<&Path>) -> Cue {
             stage: Some(stage_id()),
             duration: None,
             geometry: Default::default(),
+            timing: Default::default(),
         },
     )
 }
@@ -547,6 +548,7 @@ fn still_cue(n: u128, file: &Path, duration: Option<f64>) -> Cue {
             stage: Some(stage_id()),
             duration,
             geometry: Default::default(),
+            timing: Default::default(),
         },
     )
 }

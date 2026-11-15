@@ -101,6 +101,7 @@ pub fn video() -> CueKind {
         stage: Some(stage_id(1)),
         duration: None,
         geometry: Default::default(),
+        timing: Default::default(),
     }
 }
 

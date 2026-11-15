@@ -426,6 +426,7 @@ impl DocCx<'_> {
             stage: Some(stage),
             duration,
             geometry,
+            ..
         }) = self.cue(cue).map(|c| &c.kind)
         else {
             return Err(Refused::Failed("the cue has no file or stage"));

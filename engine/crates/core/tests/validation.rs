@@ -279,6 +279,7 @@ fn a_video_cues_missing_stage_warns_and_none_is_quiet() {
                 stage,
                 duration: None,
                 geometry: Default::default(),
+                timing: Default::default(),
             },
         )
     };
@@ -308,6 +309,7 @@ fn a_video_cues_still_duration_is_clamped_like_any_time() {
                 stage: None,
                 duration,
                 geometry: Default::default(),
+                timing: Default::default(),
             },
         )
     };
@@ -330,6 +332,88 @@ fn a_video_cues_still_duration_is_clamped_like_any_time() {
         [duration(1), duration(2), duration(3), duration(4)],
         [Some(0.0), Some(MAX_TIME), None, Some(5.0)]
     );
+}
+
+/// A Video cue's trims, fades and slices (VID-07) load as an Audio cue's do: times out of
+/// range clamped, an end before the start cleared, slices outside the trims dropped, each with
+/// its warning; time-and-loops keys missing from a file are the defaults (whole file, once).
+#[test]
+fn a_video_cues_trims_fades_and_slices_load_checked_as_an_audio_cues() {
+    let timed = |n: u128, edit: &dyn Fn(&mut VideoTiming)| {
+        let mut timing = VideoTiming::default();
+        edit(&mut timing);
+        cue(
+            n,
+            CueKind::Video {
+                media: Some(MediaRef::new("v.mov")),
+                stage: None,
+                duration: None,
+                geometry: Default::default(),
+                timing,
+            },
+        )
+    };
+    let mut ws = workspace(vec![
+        timed(1, &|t| {
+            t.start_time = -2.0;
+            t.fade_in.duration = f64::NAN;
+        }),
+        timed(2, &|t| {
+            t.start_time = 4.0;
+            t.end_time = Some(3.0);
+        }),
+        timed(3, &|t| {
+            t.start_time = 1.0;
+            t.end_time = Some(1.01);
+        }),
+        timed(4, &|t| {
+            t.end_time = Some(10.0);
+            t.slices = vec![slice(12.0, 0), slice(5.0, 2)];
+            t.fade_out.duration = 1e9;
+        }),
+    ]);
+    let time = |field| IssueKind::InvalidTime { field };
+    assert_eq!(
+        repair(&mut ws),
+        vec![
+            warning(1, time("start_time")),
+            warning(1, time("fade_in.duration")),
+            warning(2, IssueKind::InvalidEndTime),
+            warning(3, IssueKind::EndTimeTooShort { end: 1.05 }),
+            warning(4, time("fade_out.duration")),
+            warning(4, IssueKind::SliceOutsideTrim { time: 12.0 }),
+        ]
+    );
+    let timing = |n| match &ws.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Video { timing, .. } => timing.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(timing(1).start_time, 0.0);
+    assert_eq!(timing(2).end_time, None);
+    assert_eq!(timing(3).end_time, Some(1.05));
+    assert_eq!(timing(4).slices, vec![slice(5.0, 2)]);
+    assert_eq!(timing(4).fade_out.duration, MAX_TIME);
+    // Missing keys are the defaults, and a saved cue reads back as it was.
+    let mut doc: serde_json::Value = serde_json::from_str(&show_text(&ws)).unwrap();
+    let kind = &mut doc["workspace"]["cue_lists"][0]["cues"][0]["kind"];
+    for key in [
+        "start_time",
+        "end_time",
+        "fade_in",
+        "fade_out",
+        "slices",
+        "last_slice_play_count",
+        "hold_at_end",
+    ] {
+        kind.as_object_mut().unwrap().remove(key);
+    }
+    let loaded = load_show(&doc.to_string()).unwrap();
+    match &loaded.workspace.cue_lists[0].cues[0].kind {
+        CueKind::Video { timing, .. } => assert_eq!(*timing, VideoTiming::default()),
+        other => panic!("{other:?}"),
+    }
+    let again = load_show(&show_text(&ws)).unwrap();
+    assert_eq!(again.workspace, ws);
 }
 
 /// A show file's Video cue geometry out of range is put at the end of its range with a

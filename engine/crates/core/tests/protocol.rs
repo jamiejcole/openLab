@@ -537,6 +537,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             stage: Some(openlab_core::StageId(uuid::Uuid::from_u128(1))),
             duration: None,
             geometry: Default::default(),
+            timing: Default::default(),
         },
     );
     video.number = None;
