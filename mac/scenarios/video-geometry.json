@@ -32,7 +32,7 @@
     {"type": "inspector-geometry-scale-y", "text": "0.5"},
     {"type": "inspector-geometry-rotation", "text": "-30"},
     {"shot": "custom-unlocked-scale-and-rotation"},
-    {"key": "space"},
+    {"click": "go-button"},
     {"advance": 1},
     {"select": "6"},
     {"type": "inspector-geometry-x", "text": "-200"},

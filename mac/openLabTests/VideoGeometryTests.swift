@@ -297,46 +297,136 @@ extension VideoCueTests {
 
     // MARK: Flow 8
 
-    /// Values outside their ranges typed in the inspector are refused with a reason and the
-    /// field shows the cue's value again; the cue is unchanged. (OSC and the show file: the
-    /// engine's tests.)
+    /// Values outside their ranges typed in the inspector are refused with a line naming the
+    /// field and its range in words (no ids, no key names) and the field shows the cue's value
+    /// again; the cue is unchanged. (OSC and the show file: the engine's tests.)
     func testValuesOutsideTheirRangesAreRefusedInTheInspector() async throws {
         try await showGeometry(of: 6)
         let before = kind(6)
-        for (field, text) in [
-            (g.opacityField, "150"), (g.layerField, "2000"), (g.cropFields[0], "-5"), (g.rotationField, "720"),
-            (g.scaleXField, "1000"),
+        let message = wc.inspector.messageLabel
+        for (field, text, says, shows) in [
+            (g.opacityField, "150", "opacity", "100"), (g.layerField, "1001", "layer", "top"),
+            (g.layerField, "2.5", "layer", "top"), (g.cropFields[0], "-5", "crop", "10"),
+            (g.rotationField, "720", "rotation", "15"), (g.scaleXField, "1000", "scale", "2"),
+            (g.xField, "99999999", "position", "320"), (g.anchorYField, "-70000", "anchor", "20"),
         ] {
-            wc.inspector.messageLabel.stringValue = ""
+            message.stringValue = ""
             try typeInto(field, text)
-            await soon("\(text) refused") { !self.wc.inspector.messageLabel.stringValue.isEmpty }
-            await soon("\(text): the field shows the cue's value") { field.stringValue != text }
+            XCTAssertEqual(message.stringValue, loc("inspector.geometry.range.\(says)"), text)
+            XCTAssertEqual(field.stringValue, shows, "\(text): the field shows the cue's value")
         }
-        wc.inspector.messageLabel.stringValue = ""
+        message.stringValue = ""
         try typeInto(g.rotationField, "a lot")
-        XCTAssertEqual(wc.inspector.messageLabel.stringValue, loc("inspector.geometry.notANumber"))
+        XCTAssertEqual(message.stringValue, loc("inspector.geometry.notANumber"))
         XCTAssertEqual(g.rotationField.stringValue, "15")
         await sync()
         XCTAssertEqual(kind(6), before, "nothing changed")
     }
 
+    /// The app's ranges are the engine's: each end is taken and just past it refused, by the real
+    /// engine, so a change to one side's range fails here.
+    func testEachGeometryRangeIsTheEnginesAtBothEnds() async throws {
+        try await showGeometry(of: 6)
+        let id = Self.geometryCue(6)
+        func takes(_ fields: [String: JSONValue]) async -> Bool {
+            if case .success = await store.send(command: .setProperty(id, .kindFields(fields))) { return true }
+            return false
+        }
+        typealias R = GeometryControls.FieldRange
+        let pairs: [(String, R)] = [
+            ("translation", GeometryControls.position), ("scale", GeometryControls.scaleRange),
+            ("anchor", GeometryControls.anchorRange),
+        ]
+        for (key, r) in pairs {
+            for (v, ok) in [
+                (r.range.lowerBound, true), (r.range.upperBound, true), (r.range.upperBound + 0.5, false),
+                (r.range.lowerBound - 0.5, false),
+            ] {
+                let taken = await takes([key: .object(["x": .double(v)])])
+                XCTAssertEqual(taken, ok, "\(key) \(v)")
+            }
+        }
+        let single: [(String, R, Double)] = [
+            ("rotation", GeometryControls.rotationRange, 1), ("opacity", GeometryControls.opacityRange, 100),
+        ]
+        for (key, r, per) in single {
+            for (v, ok) in [
+                (r.range.lowerBound, true), (r.range.upperBound, true), (r.range.upperBound + 0.5, false),
+                (r.range.lowerBound - 0.5, false),
+            ] {
+                let taken = await takes([key: .double(v / per)])
+                XCTAssertEqual(taken, ok, "\(key) \(v)")
+            }
+        }
+        let crop = GeometryControls.cropRange
+        for (v, ok) in [
+            (crop.range.lowerBound, true), (crop.range.upperBound, true), (crop.range.upperBound + 0.5, false),
+            (-0.5, false),
+        ] {
+            let taken = await takes(["crop": .object(["top": .double(v)])])
+            XCTAssertEqual(taken, ok, "crop \(v)")
+        }
+        let layer = GeometryControls.layerRange
+        for (v, ok) in [(0.0, true), (layer.range.upperBound, true), (layer.range.upperBound + 1, false)] {
+            let taken = await takes(["layer": .int(Int64(v))])
+            XCTAssertEqual(taken, ok, "layer \(v)")
+        }
+    }
+
     // MARK: Flow 9
 
-    /// A narrow inspector (the least window width): every geometry control lies whole inside the
-    /// tab, none narrower than it needs; the thumbnail gives way first.
-    func testANarrowInspectorClipsNoGeometryField() async throws {
-        try await openVideoShow("Geometry")
-        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 800, height: 500), display: false)
-        try await showGeometry(of: 6, opened: true)
+    /// Every geometry control of custom mode lies whole inside the fields' scroll view, the
+    /// scroll view and the thumbnail inside the tab, the thumbnail not empty.
+    func assertGeometryFits(_ what: String, line: UInt = #line) throws {
         let tab = try XCTUnwrap(wc.inspector.tabView.selectedTabViewItem?.view)
         tab.layoutSubtreeIfNeeded()
-        for c in g.controls where c.superview != nil && !c.isHiddenOrHasHiddenAncestor {
-            let r = c.convert(c.bounds, to: tab)
-            let id = c.accessibilityIdentifier()
-            XCTAssertTrue(r.minX >= 0 && r.maxX <= tab.bounds.width + 0.5, "\(id) inside the tab: \(r)")
-            XCTAssertGreaterThanOrEqual(r.width + 0.5, c.fittingSize.width, "\(id) not squeezed")
+        let scroll = try XCTUnwrap(g.scroll)
+        let doc = try XCTUnwrap(scroll.documentView)
+        func inside(_ r: NSRect, _ b: NSRect) -> Bool {
+            r.minX >= b.minX - 0.5 && r.maxX <= b.maxX + 0.5 && r.minY >= b.minY - 0.5 && r.maxY <= b.maxY + 0.5
         }
-        XCTAssertGreaterThan(g.thumbnail.frame.width, 0, "the thumbnail keeps some room")
-        XCTAssertLessThanOrEqual(g.thumbnail.convert(g.thumbnail.bounds, to: tab).maxX, tab.bounds.width + 0.5)
+        for c in g.controls where c.superview != nil && !c.isHiddenOrHasHiddenAncestor {
+            let r = c.convert(c.bounds, to: doc)
+            let id = c.accessibilityIdentifier()
+            XCTAssertTrue(inside(r, doc.bounds), "\(what): \(id) inside the fields: \(r)", line: line)
+            XCTAssertGreaterThanOrEqual(r.width + 0.5, c.fittingSize.width, "\(what): \(id) not squeezed", line: line)
+        }
+        for v in [scroll, g.thumbnail] as [NSView] {
+            let r = v.convert(v.bounds, to: tab)
+            XCTAssertTrue(
+                inside(r, tab.bounds), "\(what): \(v.accessibilityIdentifier()) inside the tab: \(r)", line: line)
+        }
+        XCTAssertGreaterThanOrEqual(g.thumbnail.frame.width, GeometryControls.thumbnailLeast - 0.5, what, line: line)
+        XCTAssertGreaterThan(g.thumbnail.frame.height, 0, what, line: line)
+    }
+
+    /// A narrow inspector (the least window width, the sidebar shown or not) and the least
+    /// window height: no geometry field is clipped by the panel, and the thumbnail stays, scaled
+    /// down, in custom mode.
+    func testANarrowInspectorClipsNoGeometryField() async throws {
+        try await openVideoShow("Geometry")
+        let window = try XCTUnwrap(wc.window)
+        window.setFrame(NSRect(x: 0, y: 0, width: 800, height: 500), display: false)
+        try await showGeometry(of: 6, opened: true)
+        try assertGeometryFits("least width")
+        wc.footer.toggles[.sidebar]?.performClick(nil)
+        window.layoutIfNeeded()
+        try assertGeometryFits("least width, sidebar shown")
+        window.setContentSize(NSSize(width: 400, height: 300))
+        window.layoutIfNeeded()
+        try assertGeometryFits("least size")
+    }
+
+    /// A Video cue on no stage: the thumbnail draws no stage and cannot be dragged.
+    func testACueOnNoStageShowsNoStageInTheThumbnail() async throws {
+        try await showGeometry(of: 6)
+        XCTAssertTrue(g.thumbnail.hasStage)
+        let none = wc.inspector.videoIO
+        wc.inspector.tabView.selectTabViewItem(withIdentifier: "io")
+        none.stagePopup.selectItem(at: none.stagePopup.numberOfItems - 1)
+        XCTAssertTrue(none.stagePopup.sendAction(none.stagePopup.action, to: none.stagePopup.target))
+        await soon("on no stage") { self.kind(6)?["stage"] == .null || self.kind(6)?["stage"] == nil }
+        await soon { !self.g.thumbnail.hasStage }
+        XCTAssertFalse(g.thumbnail.canDrag)
     }
 }
