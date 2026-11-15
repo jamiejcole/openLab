@@ -23,6 +23,7 @@
     {"focus": "settings"},
     {"device": "lose"},
     {"advance": 1.5},
+    {"advance": 1.5},
     {"shot": "table-system-output-no-device"}
   ]
 }

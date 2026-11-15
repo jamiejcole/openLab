@@ -93,8 +93,9 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
         model = WorkspaceSettingsModel(store: store)
         videoPane = VideoSettingsPane(store: store)
         let window = NSWindow(
-            // Wide enough by default for a device's whole name in the patch table.
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 540),
+            // Wide enough by default for a device's whole name in the patch table, also as the
+            // system output's choice names it.
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 540),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = loc("settings.title")
         window.identifier = NSUserInterfaceItemIdentifier(AX.settingsWindow)

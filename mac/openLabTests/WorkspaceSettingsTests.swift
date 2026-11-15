@@ -187,6 +187,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(popup.itemArray.filter { !$0.isSeparatorItem && $0.isEnabled }.count, 3)
 
         try pick(system, in: popup)
+        await assertEventually("the engine took it") { sc.model.patches.first?.mapping?.system == true }
         await assertEventually("the row shows the system output") {
             sc.patchDevicePopups.first?.titleOfSelectedItem == system
         }
@@ -217,7 +218,8 @@ final class WorkspaceSettingsTests: XCTestCase {
         try await rig.advance(0.2)
         XCTAssertEqual(requests(rig).count, sent, "the same choice again sends nothing")
         try pick(device, in: sc.patchDevicePopups[0])
-        await assertEventually { sc.patchDevicePopups.first?.titleOfSelectedItem == self.device }
+        await assertEventually { sc.model.patches.first?.mapping?.system == false }
+        XCTAssertEqual(sc.patchDevicePopups.first?.titleOfSelectedItem, device)
         let named = try await mapping(rig)
         XCTAssertEqual(named, PatchMapping(device: device, channels: [0, 1]))
     }
