@@ -103,7 +103,7 @@ Leaving a loop early (devamp) is the one place the ring cannot be ahead: it is F
 ## Slices, loops and devamp (AUD-11, AUD-12, CT-16)
 `plan(range, marks, plays, start)` builds a slice table in device frames: the in/out range cut at `marks`, `plays[i]` (`Times(n >= 1)` or `Infinite`) for slice `i` (empty = each once), starting at `start` inside the range.
 - A start inside a looping slice splits it into a one-play entry and an entry for the remaining plays, with the same `index`. Bad input is a `PlanError`. `total_frames` is `None` if anything loops forever.
-- The engine uses that start for a seek (`control/plan.rs` `cue_slices_from`): a click in a slice played `n` times plays the rest of that pass then `n - 1` more, in a looping slice it loops on, past a loop it is reached.
+- The engine uses that start for a seek (`control/plan.rs` `cue_slices_from`): a click in a slice played `n` times plays the rest of that pass then `n - 1` more, in a looping slice it loops on, past a loop it is reached, and a point at the out point plays the last slice's next pass, if any.
 - The same table drives the disk stream (unrolls it into the ring) and the voice (counts frames to find boundaries), so both agree exactly.
 
 **Minimum loop length.** Every play of a loop is one `LoopReached` event and one boundary for the voice, so a loop of a few frames would flood the 1024-entry event queue and keep the mixer at its boundaries.

@@ -729,3 +729,85 @@ fn a_duck_that_starts_while_a_move_waits_is_heard_at_once_and_after_the_move() {
     assert!((moved[end] - ducked).abs() < 0.002, "{}", moved[end]);
     assert!((plain[end] - ducked).abs() < 0.002, "{}", plain[end]);
 }
+
+/// Cue 1 on `path` trimmed to 0.1..0.5 s (frames 800..4000), its one slice played `count`
+/// times (0: until devamped).
+fn trimmed(path: &std::path::Path, count: u32) -> openlab_core::Cue {
+    let mut c = with_slices(audio(1, path, 0), &[], count);
+    if let CueKind::Audio {
+        start_time,
+        end_time,
+        ..
+    } = &mut c.kind
+    {
+        *start_time = 0.1;
+        *end_time = Some(0.5);
+    }
+    c
+}
+
+#[test]
+fn click_past_the_end_trim_of_a_looping_cue_while_playing_loops_on_from_its_start() {
+    let path = wav(&ramp(8000));
+    let mut s = show(workspace(vec![trimmed(&path, 0)]));
+    let at = start(&mut s, 1) as usize;
+    s.run(1200);
+    seek(&mut s, 1, 0.9);
+    s.run(8000);
+    assert_eq!(state(&s, 1), CueState::Running);
+    let ch = s.channel(0);
+    let swap = jump(&ch, at);
+    // At the end trim: the end of a pass, so the next pass, from the start trim, and on.
+    plays_from(&ch, swap + XFADE, swap + 3200, 800.0 + XFADE as f64);
+    plays_from(&ch, swap + 3200, swap + 6400, 800.0);
+}
+
+#[test]
+fn click_past_the_end_trim_of_a_paused_looping_cue_resumes_from_its_start() {
+    let path = wav(&ramp(8000));
+    let mut s = show(workspace(vec![trimmed(&path, 0)]));
+    start(&mut s, 1);
+    s.run(1200);
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(400);
+    seek(&mut s, 1, 0.9);
+    s.run(400);
+    assert_eq!(state(&s, 1), CueState::Paused);
+    let resumed = s.now() as usize;
+    s.transport(TransportAction::Resume { cue: id(1) });
+    s.run(4000);
+    assert_eq!(state(&s, 1), CueState::Running);
+    let ch = s.channel(0);
+    plays_from(&ch, resumed + XFADE, resumed + 3200, 800.0 + XFADE as f64);
+    plays_from(&ch, resumed + 3200, resumed + 3600, 800.0);
+}
+
+#[test]
+fn click_past_the_end_trim_of_an_idle_looping_cue_then_go_loops_from_its_start() {
+    let path = wav(&ramp(8000));
+    let mut s = show(workspace(vec![trimmed(&path, 0)]));
+    seek(&mut s, 1, 0.9);
+    assert_eq!(state(&s, 1), CueState::Loaded);
+    let at = start(&mut s, 1) as usize;
+    s.run(4000);
+    assert_eq!(state(&s, 1), CueState::Running);
+    let ch = s.channel(0);
+    plays_from(&ch, at, at + 3200, 800.0);
+    plays_from(&ch, at + 3200, at + 3600, 800.0);
+}
+
+#[test]
+fn click_past_the_end_trim_of_a_cue_played_three_times_plays_its_other_two_passes() {
+    let path = wav(&ramp(8000));
+    let mut s = show(workspace(vec![trimmed(&path, 3)]));
+    let at = start(&mut s, 1) as usize;
+    s.run(1200);
+    seek(&mut s, 1, 0.9);
+    s.run(8000);
+    assert_eq!(state(&s, 1), CueState::Idle);
+    let ch = s.channel(0);
+    let swap = jump(&ch, at);
+    plays_from(&ch, swap + XFADE, swap + 3200, 800.0 + XFADE as f64);
+    plays_from(&ch, swap + 3200, swap + 6400, 800.0);
+    assert_eq!(last_nonzero(&ch), Some(swap + 6399));
+}

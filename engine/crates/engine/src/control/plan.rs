@@ -44,8 +44,10 @@ pub fn cue_slices(
 /// The slice table for `spec` starting at `position`, a frame of the file at `rate` (a seek):
 /// the slices as they play from there, so the rest of a looping slice still loops, the rest of
 /// a slice played `n` times plays once and then its `n - 1` plays, and a point past a slice that
-/// loops for ever is reached. A point before the in point starts there; one at or past the out
-/// point gives an empty table (nothing to play). Also returns how far into the action the point
+/// loops for ever is reached. A point before the in point starts there. One at or past the out
+/// point stands at the out point, the end of a pass of the last slice: what follows is that
+/// slice's next pass if it has one (one looping for ever loops on from its start, one played
+/// `n` times plays its `n - 1` other passes), else nothing (an empty table). Also returns how far into the action the point
 /// is when the cue plays from the top, every slice before it played its count (one looping for
 /// ever once): the elapsed time it shows.
 pub fn cue_slices_from(
@@ -57,7 +59,15 @@ pub fn cue_slices_from(
     let parts = Parts::of(spec, info, rate);
     let top = parts.plan(parts.range.start, rate)?;
     if position >= parts.range.end {
-        return Ok((Vec::new(), total_once(&top)));
+        let rest = top.last().and_then(|last| {
+            let plays = match last.plays {
+                Plays::Infinite => Plays::Infinite,
+                Plays::Times(n @ 2..) => Plays::Times(n - 1),
+                Plays::Times(_) => return None,
+            };
+            Some(Slice { plays, ..*last })
+        });
+        return Ok((rest.into_iter().collect(), total_once(&top)));
     }
     let position = position.max(parts.range.start);
     let table = parts.plan(position, rate)?;
@@ -400,7 +410,8 @@ mod tests {
         assert_eq!(t, vec![slice(2, 700, 300, Plays::Times(1))]);
         assert_eq!(total_frames(&t), Some(300));
         assert_eq!(shown, 400 + 300 + 200);
-        // Before the in point: the in point. At or past the out point: nothing to play.
+        // Before the in point: the in point. At or past the out point: the end of a pass of
+        // the last slice, so what follows is its next pass, if any.
         let trimmed = PlanSpec {
             start_time: 0.1,
             end_time: Some(0.6),
@@ -413,6 +424,29 @@ mod tests {
             let (t, shown) = cue_slices_from(&trimmed, &info(1000), rate(), pos).unwrap();
             assert!(t.is_empty(), "{pos}");
             assert_eq!(shown, 500);
+            // Looping until devamped: it loops on from the last slice's start.
+            let looped = PlanSpec {
+                last_slice_play_count: 0,
+                ..trimmed.clone()
+            };
+            let (t, _) = cue_slices_from(&looped, &info(1000), rate(), pos).unwrap();
+            assert_eq!(t, vec![slice(0, 100, 500, Plays::Infinite)], "{pos}");
+            // Played three times: two passes are left.
+            let thrice = PlanSpec {
+                last_slice_play_count: 3,
+                ..trimmed.clone()
+            };
+            let (t, _) = cue_slices_from(&thrice, &info(1000), rate(), pos).unwrap();
+            assert_eq!(t, vec![slice(0, 100, 500, Plays::Times(2))], "{pos}");
+            // With markers, only the last slice plays on.
+            let m = [marker(0.3, 2)];
+            let sliced = PlanSpec {
+                slices: &m,
+                last_slice_play_count: 0,
+                ..trimmed.clone()
+            };
+            let (t, _) = cue_slices_from(&sliced, &info(1000), rate(), pos).unwrap();
+            assert_eq!(t, vec![slice(1, 300, 300, Plays::Infinite)], "{pos}");
         }
         // A plan the cue cannot play is refused as from the top.
         let short = [marker(0.005, 2)];
