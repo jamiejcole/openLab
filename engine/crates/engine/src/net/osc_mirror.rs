@@ -496,14 +496,17 @@ impl MirrorShow<'_> {
     }
 }
 
-/// What `/cue/{n}/duration` reports: a Wait or Fade cue's duration, an Audio cue's action length
-/// as the engine last reported it, 0 for a cue whose action is instant; `None` (an error reply)
-/// for an Audio cue whose length is unknown (not probed, missing, looping until devamped) and for
-/// a Group, whose length this copy does not work out.
+/// What `/cue/{n}/duration` reports: a Wait or Fade cue's duration, an Audio or Video cue's
+/// action length as the engine last reported it, 0 for a cue whose action is instant; `None`
+/// (an error reply) for an Audio or Video cue whose length is unknown (not probed, missing,
+/// looping until devamped, a still shown until stopped) and for a Group, whose length this copy
+/// does not work out.
 fn action_length(cue: &Cue, lengths: &HashMap<CueId, f64>) -> Option<f64> {
     match &cue.kind {
         CueKind::Wait { duration } | CueKind::Fade { duration, .. } => Some(*duration),
-        CueKind::Audio { .. } => lengths.get(&cue.id).copied(),
+        // A Video cue's: its movie's length or its still's typed duration, as the engine
+        // reports it (none while unknown, or for a still shown until stopped).
+        CueKind::Audio { .. } | CueKind::Video { .. } => lengths.get(&cue.id).copied(),
         CueKind::Group { .. } => None,
         CueKind::Memo
         | CueKind::Start { .. }
@@ -538,6 +541,7 @@ fn kind_name(kind: &CueKind) -> &'static str {
         CueKind::Wait { .. } => "Wait",
         CueKind::Memo => "Memo",
         CueKind::Network { .. } => "Network",
+        CueKind::Video { .. } => "Video",
     }
 }
 
@@ -1368,6 +1372,7 @@ mod tests {
             trimmed: duration,
             duration,
             channels: None,
+            picture: None,
         };
         let mut m = Mirror::from_snapshot(Snapshot {
             revision: 0,
@@ -1396,5 +1401,58 @@ mod tests {
         );
         assert_eq!(read(&m, 1), None, "the file went missing");
         assert_eq!(read(&m, 2), Some(json!(1.5)));
+    }
+
+    /// A Video cue's duration is its movie's length, or its still's typed duration, from the
+    /// media durations; unknown, or a still shown until stopped, is an error. Never writable.
+    #[test]
+    fn a_video_cues_duration_follows_its_media_durations() {
+        let video = CueKind::Video {
+            media: Some(openlab_core::MediaRef::new("a.mov")),
+            stage: None,
+            duration: None,
+        };
+        let base = mirror(2);
+        let mut workspace = base.workspace.clone();
+        for c in &mut workspace.cue_lists[0].cues {
+            c.kind = video.clone();
+        }
+        let media = |n, file, duration| openlab_core::protocol::CueMediaDuration {
+            cue: cue_id(n),
+            file,
+            trimmed: None,
+            duration,
+            channels: None,
+            picture: None,
+        };
+        let mut m = Mirror::from_snapshot(Snapshot {
+            revision: 0,
+            runtime_seq: 0,
+            document: base.document.clone(),
+            workspace,
+            cue_states: vec![],
+            problems: vec![],
+            group_warnings: vec![],
+            playheads: vec![],
+            previewing: vec![],
+            played: vec![],
+            warnings: vec![],
+            // A movie of 2 s; a still shown until stopped.
+            media_durations: vec![media(1, Some(2.0), Some(2.0)), media(2, None, None)],
+        });
+        let read = |m: &Mirror, n| MirrorShow(m).cue_property(cue_id(n), CueField::Duration);
+        assert_eq!(read(&m, 1), Some(json!(2.0)));
+        assert_eq!(
+            read(&m, 2),
+            None,
+            "a still shown until stopped has no length"
+        );
+        assert!(!MirrorShow(&m).writable(cue_id(1), CueField::Duration));
+        // The still is given a duration.
+        m.runtime(
+            1,
+            &[RuntimeChange::MediaDuration(media(2, None, Some(5.0)))],
+        );
+        assert_eq!(read(&m, 2), Some(json!(5.0)));
     }
 }

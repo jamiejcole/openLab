@@ -1,0 +1,31 @@
+{
+  "type": "runtime",
+  "seq": 45,
+  "changes": [
+    {
+      "type": "media_duration",
+      "cue": "00000000-0000-0000-0000-00000000000f",
+      "file": 12.5,
+      "duration": 12.5,
+      "picture": {
+        "type": "video",
+        "codec": "prores",
+        "width": 1920,
+        "height": 1080,
+        "fps": 25.0,
+        "duration": 12.5
+      }
+    },
+    {
+      "type": "media_duration",
+      "cue": "00000000-0000-0000-0000-000000000010",
+      "duration": 5.0,
+      "picture": {
+        "type": "still",
+        "format": "png",
+        "width": 3840,
+        "height": 2160
+      }
+    }
+  ]
+}

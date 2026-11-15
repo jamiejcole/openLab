@@ -684,7 +684,9 @@ impl CueEngine {
             0
         } else {
             match &cue.kind {
-                CueKind::Audio { .. } => self.lengths.get(&cue.id).copied()?,
+                CueKind::Audio { .. } | CueKind::Video { .. } => {
+                    self.lengths.get(&cue.id).copied()?
+                }
                 CueKind::Wait { duration } | CueKind::Fade { duration, .. } => {
                     cx.secs(*duration, &self.config)
                 }

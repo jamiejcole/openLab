@@ -12,15 +12,13 @@ use crate::media_path::file_name_key;
 use crate::model::{CueId, Workspace};
 use crate::validate::visit;
 
-/// Every Audio cue that has a file assigned, in cue-list order (a group before its children).
-pub fn audio_media(workspace: &Workspace) -> Vec<(CueId, MediaRef)> {
+/// Every Audio and Video cue that has a file assigned, in cue-list order (a group before its
+/// children).
+pub fn media_of_cues(workspace: &Workspace) -> Vec<(CueId, MediaRef)> {
     let mut found = Vec::new();
     for list in &workspace.cue_lists {
         visit(&list.cues, &mut |cue| {
-            if let CueKind::Audio {
-                media: Some(media), ..
-            } = &cue.kind
-            {
+            if let Some(media) = cue.kind.media() {
                 found.push((cue.id, media.clone()));
             }
         });
@@ -93,8 +91,8 @@ pub fn plan_relinks(missing: &[MissingMedia], candidates: &[MediaRef]) -> Relink
     plan
 }
 
-/// The command that points each listed Audio cue at its new file, as one undo step
-/// (command model). Cues that are gone or not Audio are skipped; applying the command to the
+/// The command that points each listed Audio or Video cue at its new file, as one undo step
+/// (command model). Cues that are gone or play no file are skipped; applying the command to the
 /// workspace it was built from cannot be refused for that reason. An empty result is an empty
 /// transaction, which `History` ignores.
 pub fn relink_command(workspace: &Workspace, relinks: &[Relink]) -> Command {
@@ -102,12 +100,12 @@ pub fn relink_command(workspace: &Workspace, relinks: &[Relink]) -> Command {
         .iter()
         .filter_map(|relink| {
             let cue = workspace.find_cue(relink.cue)?;
-            let CueKind::Audio { .. } = &cue.kind else {
-                return None;
-            };
             let mut kind = cue.kind.clone();
-            if let CueKind::Audio { media, .. } = &mut kind {
-                *media = Some(relink.new.clone());
+            match &mut kind {
+                CueKind::Audio { media, .. } | CueKind::Video { media, .. } => {
+                    *media = Some(relink.new.clone());
+                }
+                _ => return None,
             }
             Some(Command::SetCueProperty {
                 id: relink.cue,

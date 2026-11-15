@@ -23,3 +23,4 @@ mod second_trigger;
 mod seek;
 mod timers;
 mod transport;
+mod video;
