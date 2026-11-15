@@ -104,8 +104,9 @@ fn confine(message: ClientMessage, scratch: &Scratch) -> ClientMessage {
                     recovery,
                 },
                 Request::SaveAs { path: p } => Request::SaveAs { path: path(&p) },
-                Request::Relink { .. } => Request::Relink {
+                Request::Relink { preview, .. } => Request::Relink {
                     folder: scratch.0.to_string_lossy().into_owned(),
+                    preview,
                 },
                 other => other,
             };

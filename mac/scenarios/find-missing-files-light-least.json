@@ -1,0 +1,12 @@
+{
+  "about": "Find Missing Files (#640) in light appearance at the least tool size: three found, then a folder too large to search in full.",
+  "show": "find-missing-files/moved-show.openlab",
+  "appearance": "light",
+  "steps": [
+    {"find_missing_files": ["doors.wav", "owl.wav", "gunshot.wav"]},
+    {"resize": [520, 320]},
+    {"shot": "light-least"},
+    {"find_missing_files": ["a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/owl.wav"], "folder": "deep"},
+    {"shot": "light-cut-short"}
+  ]
+}

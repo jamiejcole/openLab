@@ -106,6 +106,8 @@ Control side: `relink { folder }` (bound connection, its doc; WS-03, NFR-04).
 - The stall check allows the walk's own time budget on top of `doc_timeout`. A walk stuck on a hung volume fails with `io`; its thread is abandoned and counted with the stuck document workers (`MAX_STUCK_WORKERS`: past it, requests that read are refused with `io`).
 - If the thread cannot start the request answers `internal`, changes nothing and leaves no walk counted, so the next `relink` is not refused (`ControlConfig::fail_relink_spawn`, feature `test-support` only).
 - If the doc closes during the walk the answer is `no_workspace`.
+- `preview` (Target `Relink { doc, preview }`): the same walk, slot, limits and stall check; `apply_relink` drops matches whose cue changed, as for an applied relink, then answers the matches (`list_relinks`) and changes nothing. The app's Find Missing Files sends the accepted ones back as an ordinary media-edit transaction, so they are validated and stored (`Command::prepare`) like any file edit.
+- Both kinds of answer list `matches` and `ambiguous` up to `MAX_RELINK_LIST_BYTES` of paths, whole cues only, with `capped` when cues were left out.
 
 ## No show folder
 

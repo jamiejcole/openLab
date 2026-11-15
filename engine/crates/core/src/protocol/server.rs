@@ -193,16 +193,9 @@ pub enum ResultData {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selected: Option<String>,
     },
-    Relink {
-        relinked: u64,
-        ambiguous: Vec<AmbiguousMatch>,
-        unmatched: Vec<CueId>,
-        /// A scan limit (depth, folders, files or time) ended the search early, so files beyond
-        /// it were not considered: `unmatched` may name cues whose file is in the folder.
-        truncated: bool,
-        /// Folders or entries the scan could not read, plus names that are not UTF-8.
-        skipped: u64,
-    },
+    /// Boxed, so every server message is not as large as this one (its fields sit beside `type`
+    /// on the wire all the same).
+    Relink(Box<RelinkReport>),
     /// `open` found an autosave newer than the show file and nothing was opened. Send `open`
     /// again with a `recovery` choice.
     RecoveryOffer {
@@ -615,6 +608,38 @@ pub struct AmbiguousMatch {
     pub cue: CueId,
     pub candidates: Vec<String>,
 }
+
+/// The answer to `relink`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelinkReport {
+    pub relinked: u64,
+    pub ambiguous: Vec<AmbiguousMatch>,
+    pub unmatched: Vec<CueId>,
+    /// A scan limit (depth, folders, files or time) ended the search early, so files beyond
+    /// it were not considered: `unmatched` may name cues whose file is in the folder.
+    pub truncated: bool,
+    /// Folders or entries the scan could not read, plus names that are not UTF-8.
+    pub skipped: u64,
+    /// A `preview`'s single matches, not applied. Empty when not a preview.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matches: Vec<RelinkMatch>,
+    /// `matches` and `ambiguous` stopped at [`MAX_RELINK_LIST_BYTES`] of paths: the cues left
+    /// out are in neither list (nor in `unmatched`) and are found again by the next search.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub capped: bool,
+}
+
+/// A missing file that matched exactly one file in a `relink` preview's folder. `file` is in the
+/// form the show file would store it (relative to the show's folder when inside it).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelinkMatch {
+    pub cue: CueId,
+    pub file: String,
+}
+
+/// Most bytes of paths a `relink` result lists (`matches` and `ambiguous` candidates together),
+/// so a folder of many same-named files cannot make a reply larger than a frame.
+pub const MAX_RELINK_LIST_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {
