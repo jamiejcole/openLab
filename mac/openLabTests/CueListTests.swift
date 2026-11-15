@@ -5460,6 +5460,63 @@ final class DeviceLossRowTests: XCTestCase {
         XCTAssertNil(h.store.progress[H.intro])
     }
 
+    /// A looping cue the loss left paused reads as an operator-paused one: its place in the pass it
+    /// was on, with the yellow fill standing still.
+    func testALoopingCueLeftPausedByTheLossShowsItsPlaceInTheLoopWithItsFill() async throws {
+        let h = try await H(collapsed: false, rig: try await Rig.open("Demo", on: engine))
+        guard case .success = await h.store.transport(.start(cue: H.rain)) else { return XCTFail("start") }
+        try await h.rig.advance(3.3)
+        await assertEventually { h.store.cueStates[H.rain]?.state == .running }
+        let playing = try XCTUnwrap(h.store.progress[H.rain])
+        XCTAssertNil(playing.remaining, "it loops for ever")
+        try await lose(h)
+        await assertEventually { h.store.cueStates[H.rain]?.state == .paused }
+        let p = try XCTUnwrap(h.store.progress[H.rain])
+        let position = try XCTUnwrap(p.position, "its place in the file")
+        XCTAssertLessThan(position, 2, "inside the 2 s file")
+        let shown = try XCTUnwrap(time(h, H.rain))
+        XCTAssertLessThan(try XCTUnwrap(CueTime.parse(shown)), 2, shown)
+        let fill = try XCTUnwrap(h.cell("duration", H.rain)?.progress.progress, "the bar stays")
+        XCTAssertGreaterThan(fill.fraction, 0)
+        XCTAssertEqual(fill.colour, .systemYellow)
+        try await h.rig.advance(1)
+        XCTAssertEqual(time(h, H.rain), shown, "standing still")
+        XCTAssertEqual(h.cell("duration", H.rain)?.progress.progress?.fraction, fill.fraction)
+    }
+
+    /// A running group whose playing children the loss left paused reads paused with them, keeps
+    /// the mark after the return, and Resume All clears it.
+    func testARunningGroupWhoseChildrenTheLossLeftPausedShowsPausedWithThem() async throws {
+        let h = try await H(collapsed: false, rig: try await Rig.open("Demo", on: engine))
+        guard case .success = await h.store.transport(.start(cue: H.group)) else { return XCTFail("start") }
+        try await h.rig.advance(0.5)
+        await assertEventually { h.store.cueStates[H.rain]?.state == .running }
+        try await lose(h)
+        let wc = WorkspaceWindowController(store: h.store)
+        await assertEventually { h.store.cueStates[H.group]?.state == .paused }
+        XCTAssertEqual(h.store.cueStates[H.group]?.reason, .deviceLost)
+        // Its time stands where the loss stopped it, as its children's does.
+        XCTAssertEqual(try XCTUnwrap(h.store.progress[H.group]?.elapsed), 0.5, accuracy: 0.05)
+        // The Active Cues list keeps it, and Door slam's bar shows the part it had played.
+        await assertEventually { wc.sidebar.activeCues.contains(H.group) }
+        let row = try XCTUnwrap(wc.sidebar.activeCues.firstIndex(of: H.door))
+        let cell = try XCTUnwrap(
+            wc.sidebar.activeTable.view(atColumn: 0, row: row, makeIfNecessary: true) as? ActiveCueCell)
+        let door = try XCTUnwrap(h.store.progress[H.door])
+        let played = door.elapsed / (door.elapsed + (door.remaining ?? 0))
+        XCTAssertGreaterThan(played, 0.2)
+        XCTAssertEqual(cell.bar.doubleValue, played, accuracy: 0.01)
+        XCTAssertEqual(try mark(h, H.group).accessibilityLabel(), loc("cue.state.paused"))
+        XCTAssertEqual(try mark(h, H.rain).accessibilityLabel(), loc("cue.state.paused"))
+        try await restore(h)
+        XCTAssertEqual(h.store.cueStates[H.group]?.state, .paused, "kept after the return")
+        guard case .success = await h.store.transport(.resumeAll) else { return XCTFail("resume_all") }
+        try await h.rig.advance(0.5)
+        await assertEventually { (h.store.cueStates[H.rain]?.state ?? .idle) == .idle }
+        XCTAssertNotEqual(h.store.cueStates[H.group]?.state, .paused)
+        XCTAssertNotEqual(try mark(h, H.group).accessibilityLabel(), loc("cue.state.paused"))
+    }
+
     func testInShowModeTheSameMarksShowAndNoAlert() async throws {
         let h = try await playing()
         let wc = WorkspaceWindowController(store: h.store)
