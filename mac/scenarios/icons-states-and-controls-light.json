@@ -1,0 +1,24 @@
+{
+  "about": "The light-appearance pass of icons-states-and-controls: the list's status marks (broken red X, flagged, running, paused, preview), the sidebar transport strip, Active Cues, the Warnings list, the footer and the inspector's Target field buttons.",
+  "show": "Demo",
+  "media": {"media/a.wav": 30},
+  "appearance": "light",
+  "window": {"width": 1300, "height": 820},
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"shot": "idle"},
+    {"select": "1"},
+    {"click": "inspector-preview"},
+    {"advance": 0.5},
+    {"key": "space"},
+    {"advance": 1},
+    {"select": "2.1"},
+    {"shot": "running-and-preview"},
+    {"click": "sidebar-tabs", "at": [0.5, 0.5]},
+    {"click": "active-cue-pause"},
+    {"advance": 0.5},
+    {"shot": "paused-active-cues"},
+    {"click": "sidebar-tabs", "at": [0.85, 0.5]},
+    {"shot": "warnings"}
+  ]
+}
