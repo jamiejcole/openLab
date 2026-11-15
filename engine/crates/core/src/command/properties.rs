@@ -249,7 +249,6 @@ fn blank_cue(id: CueId) -> Cue {
 const PARTIAL_FIELDS: [&str; 4] = ["translation", "scale", "anchor", "crop"];
 
 /// The cue's kind with `fields` set, every other field as it is now.
-
 fn merge_kind_fields(
     id: CueId,
     kind: &CueKind,
