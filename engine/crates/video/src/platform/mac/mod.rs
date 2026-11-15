@@ -5,8 +5,10 @@
 //! The process is an accessory app (no Dock icon, no menu bar) that never activates: its
 //! windows come up with `orderFrontRegardless`, are borderless, ignore the mouse and cannot
 //! become key, so the operator's keys stay with the openLab app. A stage's window covers its
-//! display's whole frame at screen-saver level (over that display's menu bar and Dock), joins
-//! every Space and stays out of Mission Control and window cycling. System full-screen mode is
+//! display's whole frame, joins every Space and stays out of Mission Control and window
+//! cycling. On a display without the menu bar it is at screen-saver level, over everything;
+//! on the one with the menu bar (the operator's, a laptop's only one) it is just under every
+//! app's windows, so the app stays usable over a black desktop. System full-screen mode is
 //! never used: it would need activation and a Space of its own.
 //!
 //! AppKit and the drawing live on the main thread, with the [`Host`]. A reader thread decodes
@@ -25,12 +27,14 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSScreen,
-    NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSNormalWindowLevel,
+    NSScreen, NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowLevel,
+    NSWindowStyleMask,
 };
 use objc2_core_foundation::CGSize;
 use objc2_core_graphics::{
     CGDirectDisplayID, CGDisplayChangeSummaryFlags, CGDisplayRegisterReconfigurationCallback,
+    CGMainDisplayID,
 };
 use objc2_foundation::{NSNumber, NSRect, NSString};
 use objc2_metal::{MTLCommandBuffer, MTLDrawable, MTLPixelFormat};
@@ -114,6 +118,7 @@ impl Platform for Mac {
         }
         let w = windows.open.get(&display.id).ok_or("window lost")?;
         w.window.setFrame_display(frame, false);
+        fit_level(&w.window, cg);
         w.layer.setDrawableSize(CGSize::new(
             f64::from(display.width),
             f64::from(display.height),
@@ -206,12 +211,41 @@ fn output_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSWindow> {
     window
 }
 
+/// The level of an output window on display `cg`. The display with the menu bar is the one
+/// the operator works on (a laptop has no other): there the window is just under every app's
+/// normal windows, still over the desktop and its icons, so the openLab app's windows, sheets,
+/// alerts and menus, and the menu bar and Dock, stay over a black stage. Anywhere else it is
+/// at screen-saver level, over everything. Read at every present, which every display change
+/// (a display plugged in or out, the menu bar moved) brings, so the level follows at once.
+fn level_on(cg: CGDirectDisplayID) -> NSWindowLevel {
+    if cg == CGMainDisplayID() {
+        NSNormalWindowLevel - 1
+    } else {
+        NSScreenSaverWindowLevel
+    }
+}
+
+/// Puts `window` at its level for display `cg`, touching AppKit only when it changes.
+fn fit_level(window: &NSWindow, cg: CGDirectDisplayID) {
+    let level = level_on(cg);
+    if window.level() != level {
+        window.setLevel(level);
+    }
+}
+
 /// Test support: what an output window built for the main screen's frame is, read back from
 /// AppKit. The window is never ordered front, so nothing appears on any display.
 #[cfg(feature = "test-support")]
 pub struct WindowReport {
     pub level: isize,
     pub screen_saver_level: isize,
+    /// Its level once fitted to the display with the menu bar, then to another display, then
+    /// to the menu bar's display again (the menu bar moved back).
+    pub level_on_main: isize,
+    pub level_on_other: isize,
+    pub level_back_on_main: isize,
+    pub normal_level: isize,
+    pub menu_bar_level: isize,
     pub behaviour_as_built: bool,
     pub ignores_mouse: bool,
     pub can_become_key: bool,
@@ -231,9 +265,22 @@ pub fn window_report() -> Option<WindowReport> {
     let frame = screen.frame();
     let window = output_window(mtm, frame);
     let got = window.frame();
+    let level = window.level();
+    let main = CGMainDisplayID();
+    fit_level(&window, main);
+    let level_on_main = window.level();
+    fit_level(&window, main.wrapping_add(1));
+    let level_on_other = window.level();
+    fit_level(&window, main);
+    let level_back_on_main = window.level();
     let report = WindowReport {
-        level: window.level(),
+        level,
         screen_saver_level: NSScreenSaverWindowLevel,
+        level_on_main,
+        level_on_other,
+        level_back_on_main,
+        normal_level: NSNormalWindowLevel,
+        menu_bar_level: objc2_app_kit::NSMainMenuWindowLevel,
         behaviour_as_built: window.collectionBehavior() == output_behaviour(),
         ignores_mouse: window.ignoresMouseEvents(),
         can_become_key: window.canBecomeKeyWindow(),

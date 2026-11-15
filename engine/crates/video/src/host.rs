@@ -592,6 +592,33 @@ mod tests {
         );
     }
 
+    /// A display change that leaves the list as it was (the menu bar moved to another display)
+    /// still presents every shown stage again, so its window takes the level for where the
+    /// menu bar now is at once.
+    #[test]
+    fn a_display_change_with_the_same_displays_presents_the_shown_stages_again() {
+        let mut h = host(&["D1", "D2"]);
+        let mut out = Vec::new();
+        h.handle(
+            ToStage::Hello {
+                version: LINK_VERSION,
+            },
+            &mut out,
+        );
+        h.handle(
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D1"), true), stage(2, Some("D2"), true)],
+            },
+            &mut out,
+        );
+        h.platform.shown.clear();
+        out.clear();
+        h.displays_changed(&mut out);
+        assert_eq!(h.platform.shown["D1"], [id(1)]);
+        assert_eq!(h.platform.shown["D2"], [id(2)]);
+        assert!(out.is_empty(), "nothing changed to report: {out:?}");
+    }
+
     #[test]
     fn a_stage_that_cannot_be_drawn_fails_with_the_reason_and_a_removed_stage_goes() {
         let mut h = host(&["D1"]);
