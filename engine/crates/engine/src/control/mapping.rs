@@ -9,7 +9,7 @@ use openlab_core::protocol::{DeviceEntry, ErrorBody, ErrorCode, LogLevel, Reques
 use openlab_core::{CueId, CueKind, CueState, Input, PatchId, PatchMapping, SampleTime};
 
 use super::inbox::reply;
-use super::{Control, DocCx, DocId, Engine, Flow, ReplyTx, failed, ok};
+use super::{Backend, Control, DocCx, DocId, Engine, Flow, ReplyTx, failed, ok};
 
 impl Control {
     /// `set_patch_mapping` (WS-07): sets or clears where doc `doc`'s `patch` plays on
@@ -329,7 +329,14 @@ impl DocCx<'_> {
                 .iter()
                 .find(|d| Some(d.name.as_str()) == on)
                 .map(|d| usize::try_from(d.output_channels).unwrap_or(usize::MAX))
-                .map(|have| have.min(self.eng.device_outputs.max(1)))
+                // Every device opens with as many outputs as it has, up to 64; the offline
+                // driver's one mixer has its own count.
+                .map(|have| match self.eng.outputs.primary().backend {
+                    Backend::Device(_) => have.min(openlab_audio::MAX_OUTPUT_CHANNELS),
+                    Backend::Offline => {
+                        have.min(self.eng.outputs.primary().mixer.device_outputs().max(1))
+                    }
+                })
                 // Not connected now: round the outputs the mapping already reaches.
                 .unwrap_or_else(|| {
                     old.channels

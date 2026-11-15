@@ -233,14 +233,14 @@ impl Voices {
                     return Some((r.cue, elapsed, left, old.file_frame(pos)));
                 }
                 if let Phase::Waiting {
-                    prepared: Some((p, total)),
+                    prepared: Some(p),
                     start: Some(_),
                     ..
                 } = &r.phase
                     && r.moved
                 {
-                    let at = p.slices.first().map(|s| s.start);
-                    return Some((r.cue, r.shown, *total, at));
+                    let at = p.table.first().map(|s| s.start);
+                    return Some((r.cue, r.shown, p.total, at));
                 }
                 let pos = r.position(t)?;
                 let left = r
@@ -284,12 +284,18 @@ impl Voices {
     }
 
     /// Stream handles of playing voices, with the frames each voice will have read by rendered
-    /// sample `t` (offline settling).
+    /// sample `t` (offline settling), in its stream's frames (its device's rate), rounded up.
     pub fn stream_needs(&self, t: SampleTime) -> impl Iterator<Item = (&StreamHandle, u64)> {
         self.recs.values().filter_map(move |r| {
             let h = r.stream.as_ref()?;
-            let pos = r.position(t)?;
-            Some((h, pos.saturating_sub(r.offset)))
+            let played = r.position(t)?.saturating_sub(r.offset);
+            let needed = match r.rates {
+                Some((master, local)) => {
+                    openlab_audio::frames_at_rate(played, master, local).saturating_add(1)
+                }
+                None => played,
+            };
+            Some((h, needed))
         })
     }
 
@@ -299,11 +305,10 @@ impl Voices {
             .values()
             .filter_map(|r| match &r.phase {
                 Phase::Waiting {
-                    prepared: Some((p, _)),
-                    ..
-                } => Some(&p.handle),
+                    prepared: Some(p), ..
+                } => Some(&p.stream.handle),
                 _ => None,
             })
-            .chain(self.primes.values().map(|p| &p.prepared.handle))
+            .chain(self.primes.values().map(|p| &p.ready.stream.handle))
     }
 }

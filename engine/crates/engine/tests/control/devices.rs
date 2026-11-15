@@ -26,7 +26,7 @@ use openlab_engine::control::{ControlConfig, MAX_WAIT, ManualClock};
 use openlab_engine::diag::StatusConfig;
 use std::sync::Arc;
 
-use crate::show::device::{DeviceShow, Fake, FakeLayer, listed};
+use crate::show::device::{DeviceShow, Fake, FakeLayer, listed, listed_at};
 use crate::show::*;
 use openlab_engine::control::devices::{self, DEVICE_JOB_TIMEOUT, STABLE_UP};
 
@@ -2298,15 +2298,11 @@ fn a_patch_whose_device_is_unplugged_is_warned_about_until_it_is_back() {
     );
 }
 
-/// A listed device that cannot play at the clock device's rate: the patch mapped to it is
-/// warned about with that reason (not as "not connected"), and its resolution says why.
+/// A listed device that offers no rate openLab can play at (below 8 kHz): the patch mapped to it
+/// is warned about with that reason (not as "not connected"), and its resolution says why.
 #[test]
-fn a_patch_on_a_listed_device_that_cannot_play_the_rate_says_why() {
-    let mut other = listed(DEV2, DEV2_NAME, 2);
-    for c in &mut other.configs {
-        c.min_rate = RATE * 2;
-        c.max_rate = RATE * 2;
-    }
+fn a_patch_on_a_listed_device_with_no_usable_rate_says_why() {
+    let other = listed_at(DEV2, DEV2_NAME, 2, 4_000);
     let mut s = two_patch_show(vec![], DEV2_NAME, vec![listed(DEV, DEV_NAME, 2), other]);
     s.settle_devices();
     s.tick();
@@ -2543,17 +2539,13 @@ fn a_start_on_the_second_device_lands_on_the_translated_sample() {
     assert_eq!(first_nonzero(&s.device_channel(DEV, 0)), None);
 }
 
-/// A device that cannot play at the primary's rate is not opened (once warned): the patches
+/// A device that offers no rate openLab can play at is not opened (once warned): the patches
 /// mapped to it are `device_missing` and their cues broken; the other patches play.
 #[test]
-fn a_device_that_cannot_play_at_the_primary_rate_is_not_opened() {
+fn a_device_with_no_usable_rate_is_not_opened() {
     let a = wav(&dc(200, 0.25));
     let b = wav(&dc(200, 0.5));
-    let mut other = listed(DEV2, DEV2_NAME, 2);
-    for c in &mut other.configs {
-        c.min_rate = RATE * 2;
-        c.max_rate = RATE * 2;
-    }
+    let other = listed_at(DEV2, DEV2_NAME, 2, 4_000);
     let mut s = two_patch_show(
         vec![audio(1, &a, 0), audio_b(2, &b, 0)],
         DEV2_NAME,
@@ -2564,16 +2556,17 @@ fn a_device_that_cannot_play_at_the_primary_rate_is_not_opened() {
     assert_eq!(s.control().outputs(), vec![(DEV_NAME.to_owned(), true)]);
     let warned: Vec<String> = logs(&msgs, LogLevel::Warn)
         .into_iter()
-        .filter(|m| m.contains("cannot play at"))
+        .filter(|m| m.contains("no sample rate openLab can play at"))
         .collect();
     assert_eq!(warned.len(), 1, "{warned:?}");
+    assert!(warned[0].contains(DEV2_NAME), "{warned:?}");
     assert_eq!(s.control().engine().state(id(2)), CueState::Broken);
     // Warned once, however often it is looked at again.
     s.wait_wall(Duration::from_secs(1), 2);
     assert!(
         !logs(&s.take_outbound(), LogLevel::Warn)
             .iter()
-            .any(|m| m.contains("cannot play at"))
+            .any(|m| m.contains("no sample rate"))
     );
     start(&mut s, 1);
     s.run(400);
@@ -3281,56 +3274,367 @@ fn a_closed_device_opens_again_when_a_patch_maps_to_it() {
     );
 }
 
-/// A patch mapped to channels a second device has but openLab cannot use yet (above the
-/// primary's output count) is warned about truthfully: not as a device with too few channels.
-#[test]
-fn channels_above_the_primarys_output_count_are_warned_about_truthfully() {
-    let mut ws = workspace(vec![]);
+/// Patch B mapped to `channels` of a second device (`devices[1]`), patch A on the primary
+/// (`devices[0]`, opened with all its outputs).
+fn patch_b_on(
+    devices: Vec<devices::ListedDevice>,
+    channels: Vec<u32>,
+    cues: Vec<openlab_core::Cue>,
+) -> DeviceShow {
+    let mut ws = workspace(cues);
     let mut patch = ws.patches[0].clone();
     patch.id = patch_b();
     patch.name = "B".into();
     ws.patches.push(patch);
     let mut c = device_config(&ws);
+    c.mixer_patches = 4;
+    // The primary's mixer has as many outputs as the primary has.
+    c.output_mixer = Some(openlab_audio::MixerConfig {
+        output_channels: usize::from(devices[0].max_channels()),
+        patches: 4,
+        ..mixer_config()
+    });
+    let name = devices[1].name.clone();
     c.machine
         .set_patch_mapping(
             ws.id,
             patch_b(),
             PatchMapping {
-                device: DEV2_NAME.into(),
-                channels: vec![4, 5],
+                device: name.clone(),
+                channels,
                 system: false,
             },
         )
         .unwrap();
-    let mut s = DeviceShow::new(
-        ws,
-        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 8)],
-        c,
-    );
-    s.wait_output(DEV2_NAME);
+    let mut s = DeviceShow::new(ws, devices, c);
+    s.wait_output(&name);
     s.tick();
-    let warnings: Vec<String> = s
-        .take_outbound()
+    s
+}
+
+/// The `outputs_dropped` notices of the last warnings list sent (none sent: none).
+fn outputs_dropped(s: &mut DeviceShow) -> Vec<String> {
+    s.take_outbound()
         .iter()
         .filter_map(|m| match m {
             ServerMessage::Warnings { warnings } => Some(warnings.clone()),
             _ => None,
         })
         .next_back()
-        .unwrap()
+        .unwrap_or_default()
         .into_iter()
         .filter_map(|w| match w {
             WireWarning::Notice { code, message, .. } if code == "outputs_dropped" => Some(message),
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+/// Checklist (#654, AUD-02): a second device with more outputs than the primary plays a patch
+/// mapped to its upper outputs. An 8-output interface beside a 2-output primary: patch B on its
+/// outputs 7 and 8 is heard there, on no other output of either device, with no warning; the
+/// device is reported with its 8 outputs.
+#[test]
+fn aud_02_a_second_device_with_more_outputs_than_the_primary_plays_a_patch_mapped_to_its_upper_outputs()
+ {
+    let b = wav(&dc(500, 0.5));
+    let mut cue = audio_b(2, &b, 0);
+    if let CueKind::Audio { levels, .. } = &mut cue.kind {
+        // The file into both of the patch's outputs.
+        levels.crosspoints.push(openlab_core::Crosspoint {
+            input: 0,
+            output: 1,
+            db: 0.0,
+            mute: false,
+        });
+    }
+    let mut s = patch_b_on(
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 8)],
+        vec![6, 7],
+        vec![cue],
+    );
+    assert_eq!(outputs_dropped(&mut s), Vec::<String>::new());
     assert_eq!(
-        warnings,
+        resolutions(&mut s)[1],
+        Some(WireResolution::Mapped {
+            device: DEV2_NAME.into(),
+            channels: vec![6, 7],
+        })
+    );
+    start(&mut s, 2);
+    s.run(1000);
+    for ch in 0..8 {
+        let want: Vec<f32> = if ch >= 6 { vec![0.5] } else { vec![] };
+        assert_eq!(
+            heard(&s.device_channel(DEV2, ch)),
+            want,
+            "output {}",
+            ch + 1
+        );
+    }
+    let played = |ch| {
+        s.device_channel(DEV2, ch)
+            .iter()
+            .filter(|&&x| x != 0.0)
+            .count()
+    };
+    assert_eq!((played(6), played(7)), (500, 500));
+    assert!(heard(&s.channel(0)).is_empty() && heard(&s.channel(1)).is_empty());
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+}
+
+/// Checklist (#654): the warning for a patch that needs more outputs than its device has names
+/// that device's real output count (8 here, not the primary's 2). A device with more than 64
+/// outputs is opened with 64, and a patch beyond them is told so.
+#[test]
+fn the_warning_for_a_patch_that_needs_more_outputs_than_its_device_has_names_that_devices_real_output_count()
+ {
+    let mut s = patch_b_on(
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 8)],
+        vec![8, 9],
+        vec![],
+    );
+    assert_eq!(
+        outputs_dropped(&mut s),
         vec![format!(
-            "patch \"B\" maps channel 6 of \"{DEV2_NAME}\", but openLab uses only its first 2 \
-             outputs (as many as the primary device has): its cues cannot play"
+            "patch \"B\" maps 10 channel(s) of \"{DEV2_NAME}\", which has 8: its cues cannot play"
         )]
     );
+    // A 2-output device beside an 8-output primary: the patch's warning names its 2 outputs,
+    // and the device is not said to have fewer than the show opened with (it opens with its
+    // own count, all of which play).
+    let mut s = patch_b_on(
+        vec![listed(DEV, DEV_NAME, 8), listed(DEV2, DEV2_NAME, 2)],
+        vec![2, 3],
+        vec![],
+    );
+    assert_eq!(
+        outputs_dropped(&mut s),
+        vec![format!(
+            "patch \"B\" maps 4 channel(s) of \"{DEV2_NAME}\", which has 2: its cues cannot play"
+        )]
+    );
+    let mut s = patch_b_on(
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 128)],
+        vec![64, 65],
+        vec![],
+    );
+    assert_eq!(
+        outputs_dropped(&mut s),
+        vec![format!(
+            "patch \"B\" maps channel 66 of \"{DEV2_NAME}\", but openLab uses only its first 64 \
+             outputs: its cues cannot play"
+        )]
+    );
+}
+
+/// `frames` of a cosine of `hz` at amplitude `amp`, sampled at `rate`: its first sample is
+/// `amp`, so its start is seen.
+fn cosine(frames: usize, rate: u32, hz: f64, amp: f32) -> Vec<f32> {
+    (0..frames)
+        .map(|i| {
+            let t = i as f64 / f64::from(rate);
+            amp * (2.0 * std::f64::consts::PI * hz * t).cos() as f32
+        })
+        .collect()
+}
+
+/// Frequency of a signal sampled at `rate` from its upward zero crossings (interpolated).
+fn frequency(x: &[f32], rate: u32) -> f64 {
+    let mut crossings = Vec::new();
+    for (i, w) in x.windows(2).enumerate() {
+        let (a, b) = (f64::from(w[0]), f64::from(w[1]));
+        if a < 0.0 && b >= 0.0 {
+            crossings.push(i as f64 + a / (a - b));
+        }
+    }
+    let (first, last) = (crossings[0], *crossings.last().unwrap());
+    (crossings.len() - 1) as f64 / (last - first) * f64::from(rate)
+}
+
+/// The second device's rate in the tests of a device at its own rate: 1.5 times the primary's.
+const RATE2: u32 = RATE * 3 / 2;
+
+/// Checklist (#654, AUD-02): a second device at another sample rate than the primary plays its
+/// patch's cues at the right pitch and on the right sample. The same 1 s file of 500 Hz plays on
+/// the primary (8 kHz) and, from the same GO sample, on a device that runs only at 12 kHz: there
+/// it lasts 12 000 of its frames (1 s), is still 500 Hz, matches the file sample for sample to
+/// within resampling error, and starts on the sample the master date translates to there
+/// (`local_rendered + (at - master_rendered) × 12 000 / 8 000`): the same moment as on the
+/// primary, to within a frame (the tolerance across devices is one buffer: counters read when a
+/// command is sent; here the two run in step). The device is reported at its own rate.
+#[test]
+fn aud_02_a_second_device_at_another_sample_rate_than_the_primary_plays_its_patchs_cues_at_the_right_pitch_and_on_the_right_sample()
+ {
+    let file = cosine(RATE as usize, RATE, 500.0, 0.5);
+    let path = wav(&file);
+    let clock = ManualClock::new(1_700_000_000_000);
+    let epoch = clock.clock();
+    let mut s = two_patch_show_with(
+        vec![audio(1, &path, 0), audio_b(2, &path, 0)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2)],
+        |c| {
+            c.clock = epoch;
+            c.status = Some(StatusConfig::default());
+        },
+    );
+    // The second device comes later, so the two counters differ, and runs only at 12 kHz.
+    s.run(BLOCK * 7);
+    s.fake.plug(listed_at(DEV2, DEV2_NAME, 2, RATE2));
+    s.wait_wall(Duration::from_secs(1), 1);
+    s.wait_output(DEV2_NAME);
+    s.run(BLOCK * 3);
+    let master = s.control().rendered();
+    let local = s
+        .control()
+        .output_mixer(DEV2_NAME)
+        .unwrap()
+        .samples_rendered();
+    let at = start(&mut s, 1);
+    assert_eq!(start(&mut s, 2), at, "both start on one sample");
+    s.run(u64::from(RATE) + 2_000);
+    let one = s.channel(0);
+    let two = s.device_channel(DEV2, 0);
+    // On the right sample of each device.
+    let first_one = first_nonzero(&one).unwrap();
+    let first_two = first_nonzero(&two).unwrap();
+    let ahead = (at - master) as f64 * f64::from(RATE2) / f64::from(RATE);
+    assert_eq!(first_two as u64, local + ahead.round() as u64);
+    assert_eq!(first_one as u64, at);
+    // The same moment: the second device's capture starts `shift` master samples after the
+    // primary's.
+    let shift = (master - local * u64::from(RATE) / u64::from(RATE2)) as f64;
+    let t_two = shift + first_two as f64 * f64::from(RATE) / f64::from(RATE2);
+    assert!(
+        (t_two - first_one as f64).abs() <= 1.0,
+        "{t_two} vs {first_one}"
+    );
+    // The right length: 1 s on each.
+    let last_two = last_nonzero(&two).unwrap();
+    assert_eq!(last_nonzero(&one).unwrap() - first_one + 1, RATE as usize);
+    assert!(
+        (last_two - first_two + 1).abs_diff(RATE2 as usize) <= 1,
+        "{} frames",
+        last_two - first_two + 1
+    );
+    // The right pitch, and the file's samples, on each.
+    let heard_two = &two[first_two..=last_two];
+    let f = frequency(&heard_two[100..heard_two.len() - 100], RATE2);
+    assert!((f - 500.0).abs() < 0.05, "{f} Hz");
+    let f = frequency(&one[first_one..first_one + RATE as usize], RATE);
+    assert!((f - 500.0).abs() < 0.05, "{f} Hz");
+    let want = cosine(RATE2 as usize, RATE2, 500.0, 0.5);
+    let worst = heard_two[100..heard_two.len() - 100]
+        .iter()
+        .zip(&want[100..])
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(worst < 0.01, "differs from the file by {worst}");
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    // Reported at its own rate, with its own block.
+    clock.advance(1000);
+    s.tick();
+    let status = statuses(s.take_outbound()).pop().expect("a status");
+    let two = status.outputs.iter().find(|o| o.name == DEV2_NAME).unwrap();
+    assert_eq!((two.sample_rate, two.block_frames), (RATE2, Some(96)));
+    assert_eq!(status.outputs[0].sample_rate, RATE);
+}
+
+/// A cue moved to a device at another rate (its patch's device changed while it plays) is
+/// heard there in step: what the new device plays from the swap on is the file at the point the
+/// master clock has reached, at the right pitch, and it ends when the file does.
+#[test]
+fn a_cue_moved_to_a_device_at_another_rate_goes_on_in_step_at_the_right_pitch() {
+    // 50 Hz, so a frame of misalignment shows as a small error, and 2 s long.
+    let frames = 2 * RATE as usize;
+    let file = cosine(frames, RATE, 50.0, 0.5);
+    let path = wav(&file);
+    let mut s = two_patch_show(
+        vec![audio(1, &path, 0)],
+        DEV2_NAME,
+        vec![
+            listed(DEV, DEV_NAME, 2),
+            listed_at(DEV2, DEV2_NAME, 2, RATE2),
+        ],
+    );
+    s.wait_output(DEV2_NAME);
+    let at = start(&mut s, 1);
+    s.run(BLOCK * 40);
+    let master = s.control().rendered();
+    let local = s
+        .control()
+        .output_mixer(DEV2_NAME)
+        .unwrap()
+        .samples_rendered();
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(frames as u64 + 1_000);
+    let two = s.device_channel(DEV2, 0);
+    // Master time of the second device's frame `j`.
+    let shift = master as f64 - local as f64 * f64::from(RATE) / f64::from(RATE2);
+    let master_of = |j: usize| shift + j as f64 * f64::from(RATE) / f64::from(RATE2);
+    let first = first_nonzero(&two).expect("heard on the second device");
+    let last = last_nonzero(&two).unwrap();
+    // Past the crossfade (10 ms): the file where the master clock is.
+    let worst = (first + 200..last - 100)
+        .map(|j| {
+            let t = (master_of(j) - at as f64) / f64::from(RATE);
+            let want = 0.5 * (2.0 * std::f64::consts::PI * 50.0 * t).cos();
+            (f64::from(two[j]) - want).abs()
+        })
+        .fold(0.0f64, f64::max);
+    assert!(worst < 0.02, "out of step by up to {worst}");
+    let f = frequency(&two[first + 200..last - 100], RATE2);
+    assert!((f - 50.0).abs() < 0.05, "{f} Hz");
+    // It ends where the file does, on the master clock.
+    let end = master_of(last + 1) - at as f64;
+    assert!(
+        (end - frames as f64).abs() <= 1.0,
+        "ends {end} frames after its start"
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+/// A device at another rate than the primary that is lost and comes back: the cue on it stops
+/// as on any lost device, its mixer keeps its rate, and GO plays the cue again there at the
+/// right pitch.
+#[test]
+fn a_device_at_another_rate_lost_and_back_plays_its_cue_again_at_its_rate() {
+    let file = cosine(RATE as usize, RATE, 500.0, 0.5);
+    let path = wav(&file);
+    let mut s = two_patch_show(
+        vec![audio_b(2, &path, 0)],
+        DEV2_NAME,
+        vec![
+            listed(DEV, DEV_NAME, 2),
+            listed_at(DEV2, DEV2_NAME, 2, RATE2),
+        ],
+    );
+    s.wait_output(DEV2_NAME);
+    start(&mut s, 2);
+    s.run(BLOCK * 10);
+    unplug(&mut s, DEV2);
+    s.run(BLOCK * 4);
+    let msgs = s.take_outbound();
+    assert!(paused_device_lost(&msgs, 2), "{msgs:?}");
+    s.fake.plug(listed_at(DEV2, DEV2_NAME, 2, RATE2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.wait_output(DEV2_NAME);
+    assert_eq!(
+        s.control().output_mixer(DEV2_NAME).unwrap().sample_rate(),
+        RATE2
+    );
+    let before = s.device_channel(DEV2, 0).len();
+    start(&mut s, 2);
+    s.run(u64::from(RATE) + 1_000);
+    let two = s.device_channel(DEV2, 0)[before..].to_vec();
+    let first = first_nonzero(&two).expect("plays again");
+    let last = last_nonzero(&two).unwrap();
+    assert!((last - first + 1).abs_diff(RATE2 as usize) <= 1);
+    let f = frequency(&two[first + 100..last - 100], RATE2);
+    assert!((f - 500.0).abs() < 0.05, "{f} Hz");
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
 }
 
 /// A device lost while its cue played, then left by its patch: it is closed at once (its dead
@@ -4022,14 +4326,10 @@ fn the_same_while_the_cue_is_looping_it_loops_on_the_new_device() {
 #[test]
 fn the_new_device_is_missing_or_cannot_be_used_and_the_cue_stops_as_for_a_lost_device_with_the_reason()
  {
-    // A device that cannot run at the primary's rate cannot be used: the cue moved to it
+    // A device that offers no rate openLab can play at cannot be used: the cue moved to it
     // stops, shows paused (time frozen) as on a lost device, and a notice says why.
     let a = wav(&dc(20_000, 0.5));
-    let mut odd = listed(DEV2, DEV2_NAME, 2);
-    for c in &mut odd.configs {
-        c.min_rate = RATE * 2;
-        c.max_rate = RATE * 2;
-    }
+    let odd = listed_at(DEV2, DEV2_NAME, 2, 4_000);
     let mut s = two_patch_show(
         vec![audio(1, &a, 0)],
         DEV_NAME,

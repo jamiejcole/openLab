@@ -8,6 +8,12 @@
 //! voices of a replaced engine (a new workspace) can never be mistaken for the new one's. A
 //! resume re-keys the mixer voice to a fresh `VoiceId` for the fresh `RunId`; the old id stays an
 //! alias until the voice is gone, so late events and meter entries under it still name the cue.
+//!
+//! **Units.** Every frame count kept here (offsets, tables, totals, positions, delays, cuts) is
+//! in frames of the master clock, the primary device's rate, as the cue engine counts. A voice
+//! on a device at another rate gets its stream and its mixer slice table in that device's frames
+//! ([`Ready::stream`]): the table planned here is rescaled when the stream is made, and every
+//! other frame count of its commands is converted where commands are routed to the device.
 
 use std::collections::{BTreeSet, HashMap};
 use std::num::NonZeroU32;
@@ -58,7 +64,11 @@ pub struct Env<'a> {
     pub patches: &'a Patches,
     /// Where new voice ids come from (shared by the engine, not the voice table).
     pub ids: &'a mut VoiceIds,
+    /// The master clock's rate: the frames every count here is in.
     pub rate: NonZeroU32,
+    /// Each output device's rate, by output key: a voice's stream is made at its patch's
+    /// device's.
+    pub rates: &'a [u32],
     /// The mixers' cue outputs: the widest a voice can be.
     pub cue_outputs: usize,
     /// The scheduling time of the call.
@@ -88,7 +98,7 @@ enum Phase {
     /// Not in the mixer yet. `prepared` is `None` while the file's probe has not answered;
     /// `start` is set once the engine has started it; `paused` holds it.
     Waiting {
-        prepared: Option<(PreparedStream, Option<u64>)>,
+        prepared: Option<Ready>,
         start: Option<SampleTime>,
         paused: bool,
         queue: Vec<(SampleTime, Queued)>,
@@ -187,6 +197,8 @@ pub struct VoiceRec {
     retry_at: Option<SampleTime>,
     /// Moves of its run given up so far: each retry waits twice as long as the one before.
     gave_up: u32,
+    /// The master clock's rate and its stream's (its device's), when they differ.
+    rates: Option<(u32, u32)>,
 }
 
 /// A cue's seeks prepare at most one stream per this many seconds: a burst of seeks (a stuck
@@ -246,10 +258,21 @@ fn move_plan(o: &VoiceRec, swap: SampleTime) -> Option<MovePlan> {
     })
 }
 
+/// A stream ready for a voice.
+struct Ready {
+    /// Its frames and slice table are at `rate`.
+    stream: PreparedStream,
+    /// Frames it plays, at the master clock's rate (`None`: it loops until devamped).
+    total: Option<u64>,
+    /// Its slice table at the master clock's rate (what the voice's record keeps).
+    table: Vec<Slice>,
+    /// The device rate it was made for.
+    rate: u32,
+}
+
 /// A stream made for a voice.
 struct Made {
-    prepared: PreparedStream,
-    total: Option<u64>,
+    ready: Ready,
     /// The elapsed time it shows at its start (see [`VoiceRec::shown`]).
     shown: u64,
 }
@@ -299,8 +322,7 @@ impl VoiceRec {
 
 /// A prepared stream kept ready for a cue near the playhead.
 struct Prime {
-    prepared: PreparedStream,
-    total: Option<u64>,
+    ready: Ready,
     sig: Sig,
 }
 
@@ -640,6 +662,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         swap_limit: 0,
         retry_at: None,
         gave_up: 0,
+        rates: None,
     }
 }
 
@@ -826,6 +849,20 @@ pub(super) fn cue_of<'a>(env: &Env<'a>, id: CueId) -> Option<&'a Cue> {
         .index()
         .locate(env.ws, id)
         .or_else(|| env.ws.find_cue(id))
+}
+
+/// The rate a voice of `cue` plays at: its patch's device's (the master clock's while the
+/// patch has no mixer slot).
+fn rate_for(env: &Env<'_>, cue: CueId) -> u32 {
+    let master = env.rate.get();
+    let Some(CueKind::Audio { patch, .. }) = cue_of(env, cue).map(|c| &c.kind) else {
+        return master;
+    };
+    env.patches
+        .mixer_patch(env.doc, *patch)
+        .and_then(|slot| env.patches.slot_output(slot))
+        .and_then(|key| env.rates.get(key).copied())
+        .unwrap_or(master)
 }
 
 fn sig_of(env: &Env<'_>, cue: CueId) -> Option<Sig> {

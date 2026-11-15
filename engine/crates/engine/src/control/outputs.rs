@@ -9,8 +9,14 @@
 //! **Clock.** The engine's time (the master clock) is the primary device's sample counter while
 //! that device plays, so timing on it stays sample-accurate. Another device's commands are dated
 //! by translation from one pair of counter reads: `local = local_rendered + (at -
-//! master_rendered)`; its events come back through the inverse. Every device runs at the
-//! primary's rate. Simultaneous starts on two devices land within one buffer of each other.
+//! master_rendered) × local rate / master rate`; its events come back through the inverse.
+//! Simultaneous starts on two devices land within one buffer of each other.
+//!
+//! **Rates.** Each device runs at its own rate (the primary's when it can) with its own mixer.
+//! Everything the control thread counts is in frames of the master clock (the primary's rate);
+//! a command routed to a device at another rate has its frame counts (fades, trims) converted
+//! to that device's frames here, the one place every voice command passes. A voice's stream and
+//! slice table are made at its device's rate when it is prepared.
 //! While the primary device is away and another plays, the master clock carries on from the
 //! monotonic wall clock, from the last sample the primary rendered; when it returns its counter
 //! is offset to continue from there. With no device playing, the clock stands still (nothing
@@ -100,6 +106,8 @@ pub(super) struct Outputs {
     /// device's policy clock; none for the offline driver, which never loses its device).
     wall: Option<WallClock>,
     rate: u32,
+    /// Each output's mixer rate, by key (the primary's is `rate`).
+    rates: Vec<u32>,
     /// Voices on a device other than the primary: their device and the last local sample a
     /// command of theirs was dated, so commands of one voice never go backwards. A voice not
     /// here plays on the primary.
@@ -119,8 +127,19 @@ impl Outputs {
             clock: Clock::Primary,
             wall,
             rate,
+            rates: vec![rate],
             voices: HashMap::new(),
         }
+    }
+
+    /// Each output's rate, by key: the frames of its mixer, streams and commands.
+    pub fn rates(&self) -> &[u32] {
+        &self.rates
+    }
+
+    /// Output `key`'s rate (the master clock's for an unknown key).
+    pub fn rate_of(&self, key: OutputKey) -> u32 {
+        self.rates.get(key).copied().unwrap_or(self.rate)
     }
 
     pub fn primary(&self) -> &Output {
@@ -170,6 +189,7 @@ impl Outputs {
         if self.len() >= MAX_OUTPUTS {
             return None;
         }
+        self.rates.push(output.mixer.sample_rate());
         self.others.push(output);
         Some(self.others.len())
     }
@@ -298,6 +318,8 @@ impl Outputs {
                 CommandKind::SetMaster { .. } => 0,
             };
             let local = self.local_date(key, at, master, command_voice(&kind));
+            let mut kind = kind;
+            at_rate(&mut kind, self.rate, self.rate_of(key));
             match out.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, batch)) => batch.push((local, kind)),
                 None => out.push((key, vec![(local, kind)])),
@@ -347,8 +369,10 @@ impl Outputs {
             return at;
         };
         let local_rendered = output.mixer.samples_rendered();
+        let ahead = i128::from(at) - i128::from(master);
         let mut local = if output.is_up() {
-            let shifted = i128::from(local_rendered) + i128::from(at) - i128::from(master);
+            let shifted = i128::from(local_rendered)
+                + rescale_signed(ahead, self.rate, output.mixer.sample_rate());
             u64::try_from(shifted.max(i128::from(local_rendered))).unwrap_or(local_rendered)
         } else {
             local_rendered
@@ -368,8 +392,9 @@ impl Outputs {
         let Some(output) = self.get(key) else {
             return at;
         };
-        let shifted = i128::from(self.rendered()) + i128::from(at)
-            - i128::from(output.mixer.samples_rendered());
+        let behind = i128::from(at) - i128::from(output.mixer.samples_rendered());
+        let shifted = i128::from(self.rendered())
+            + rescale_signed(behind, output.mixer.sample_rate(), self.rate);
         u64::try_from(shifted.max(0)).unwrap_or(0)
     }
 
@@ -399,6 +424,58 @@ impl Outputs {
         for o in self.iter_mut() {
             o.mixer.pump();
         }
+    }
+}
+
+/// `x` frames at rate `from` as frames at rate `to`, rounded half away from zero (a rate of 0
+/// gives 0).
+fn rescale_signed(x: i128, from: u32, to: u32) -> i128 {
+    if from == to {
+        return x;
+    }
+    if from == 0 {
+        return 0;
+    }
+    let (from, to) = (i128::from(from), i128::from(to));
+    let scaled = x.saturating_mul(to);
+    let half = from / 2;
+    if scaled >= 0 {
+        (scaled + half) / from
+    } else {
+        (scaled - half) / from
+    }
+}
+
+/// A command's frame counts (fades, trims), made in frames at rate `from` (the master clock's),
+/// as frames at rate `to` (its device's). A fade that had any length keeps at least one frame,
+/// so a ramp stays a ramp and a fading stop is not turned into a cut.
+fn at_rate(kind: &mut CommandKind, from: u32, to: u32) {
+    if from == to {
+        return;
+    }
+    let frames = |n: u64| openlab_audio::frames_at_rate(n, from, to);
+    let fade = |f: &mut openlab_audio::Fade| {
+        if f.frames > 0 {
+            f.frames = frames(f.frames).max(1);
+        }
+    };
+    match kind {
+        CommandKind::StartVoice(v) => {
+            fade(&mut v.fade_in);
+            fade(&mut v.fade_out);
+            v.skip_frames = frames(v.skip_frames);
+            v.play_frames = v.play_frames.map(frames);
+        }
+        CommandKind::StopVoice { fade: f, .. }
+        | CommandKind::Ramp { fade: f, .. }
+        | CommandKind::RampSet { fade: f, .. } => fade(f),
+        CommandKind::SetPatchRouting { .. }
+        | CommandKind::SnapPatch { .. }
+        | CommandKind::MoveVoice { .. }
+        | CommandKind::SetMaster { .. }
+        | CommandKind::Devamp { .. }
+        | CommandKind::PauseVoice { .. }
+        | CommandKind::ResumeVoice { .. } => {}
     }
 }
 

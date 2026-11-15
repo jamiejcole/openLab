@@ -273,19 +273,25 @@ impl DocCx<'_> {
             .filter_map(|p| {
                 let channels = self.eng.patches.channels(self.doc.id, p.id)?;
                 // The patch's device's meters.
-                let base = self
+                let key = self
                     .eng
                     .patches
                     .mixer_patch(self.doc.id, p.id)
                     .and_then(|slot| self.eng.patches.slot_output(slot))
-                    .unwrap_or(0)
-                    * self.eng.device_outputs;
+                    .unwrap_or(0);
+                let base = key * self.eng.device_outputs;
+                let width = self
+                    .eng
+                    .outputs
+                    .get(key)
+                    .map_or(0, |o| o.mixer.device_outputs())
+                    .min(self.eng.device_outputs);
                 let peaks = channels
                     .iter()
                     .map(|&c| {
                         usize::try_from(c)
                             .ok()
-                            .filter(|&c| c < self.eng.device_outputs)
+                            .filter(|&c| c < width)
                             .and_then(|c| self.eng.out_peaks.get(base + c))
                             .copied()
                             .unwrap_or(0.0)
