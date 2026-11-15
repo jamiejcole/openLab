@@ -138,6 +138,26 @@ final class CueOutlineView: NSOutlineView {
         super.draggingExited(sender)
         onDragExit?()
     }
+
+    // A group opens and closes at once, its disclosure triangle included. While AppKit's slide runs, a
+    // change of the columns (the window resized, the sidebar or Show Mode toggled) does not reach the
+    // rows outside the slide: their cells stayed where the old columns were, over the new ones, and
+    // a running cue's time was drawn twice.
+    override func expandItem(_ item: Any?, expandChildren: Bool) {
+        withoutAnimation { super.expandItem(item, expandChildren: expandChildren) }
+    }
+
+    override func collapseItem(_ item: Any?, collapseChildren: Bool) {
+        withoutAnimation { super.collapseItem(item, collapseChildren: collapseChildren) }
+    }
+
+    private func withoutAnimation(_ body: () -> Void) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            body()
+        }
+    }
 }
 
 /// A running cue's progress behind its Duration text: the cell filled and outlined from the left up

@@ -5982,3 +5982,203 @@ final class DeviceLossRowTests: XCTestCase {
         XCTAssertNil(wc.window?.attachedSheet, "no alert")
     }
 }
+
+/// What the list draws while its columns move (the window resized, the sidebar shown and hidden, Show
+/// Mode on and off) with cues playing, so rows are redrawn for their progress all the while, each change
+/// made just as the operator opens or closes a group with its triangle (#715); and the column header at
+/// the least window size (#718).
+@MainActor
+final class CueListColumnLayoutTests: XCTestCase {
+    typealias H = CueListHarness
+    private var wc: WorkspaceWindowController?
+    private var rig: Rig?
+
+    override func tearDown() async throws {
+        wc?.window?.close()
+        wc = nil
+        rig = nil
+    }
+
+    private var outline: NSOutlineView { wc!.cueList.outlineView }
+
+    /// The Demo show in a dark workspace window of `size`, its group open, with `cues` playing.
+    private func open(_ size: NSSize, playing cues: [ModelID] = []) async throws -> WorkspaceWindowController {
+        let rig = try await Rig.open("Demo")
+        self.rig = rig
+        let wc = WorkspaceWindowController(store: rig.store)
+        self.wc = wc
+        let window = try XCTUnwrap(wc.window)
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.setContentSize(size)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let group = try XCTUnwrap(wc.cueList.node(H.group))
+        if !outline.isItemExpanded(group) { outline.expandItem(group) }
+        for cue in cues {
+            guard case .success = await rig.store.transport(.start(cue: cue)) else {
+                XCTFail("start \(cue)")
+                return wc
+            }
+        }
+        try await rig.advance(0.2)
+        await assertEventually { cues.allSatisfy { rig.store.progress[$0] != nil } }
+        window.contentView?.layoutSubtreeIfNeeded()
+        return wc
+    }
+
+    /// A click on the group's triangle, as the operator opens or closes it.
+    private func clickTheGroupsTriangle() throws {
+        let group = try XCTUnwrap(wc?.cueList.node(H.group))
+        let row = outline.row(forItem: group)
+        let triangle = try XCTUnwrap(
+            outline.rowView(atRow: row, makeIfNecessary: true)?.subviews.compactMap { $0 as? NSButton }.first,
+            "the group's triangle")
+        let open = outline.isItemExpanded(group)
+        triangle.performClick(nil)
+        XCTAssertNotEqual(outline.isItemExpanded(group), open, "the click opened or closed the group")
+    }
+
+    /// The window drawn as the operator sees it, then each cell of each row on screen against its column:
+    /// one line for each cell that is missing, hidden or not where its column is, for a row not as wide as
+    /// the list, and for each cell left in a row that is no longer one of its columns' (it still draws).
+    private func misplacedCells() throws -> [String] {
+        let window = try XCTUnwrap(wc?.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        _ = try renderView(try XCTUnwrap(window.contentView?.superview), scale: 1)
+        let rows = outline.rows(in: outline.visibleRect)
+        var out: [String] = []
+        for row in rows.lowerBound..<rows.upperBound {
+            guard let rowView = outline.rowView(atRow: row, makeIfNecessary: false) else { continue }
+            let name = (outline.item(atRow: row) as? CueNode)?.cue.displayName ?? "row \(row)"
+            let width = outline.rect(ofRow: row).width
+            if abs(rowView.frame.width - width) > 1 {
+                out.append("\(name): the row is \(Int(rowView.frame.width)) wide, the list \(Int(width))")
+            }
+            var cells = 0
+            for column in 0..<outline.numberOfColumns {
+                let id = outline.tableColumns[column].identifier.rawValue
+                let want = outline.frameOfCell(atColumn: column, row: row)
+                guard let cell = outline.view(atColumn: column, row: row, makeIfNecessary: false), !cell.isHidden
+                else {
+                    out.append("\(name) \(id): no cell")
+                    continue
+                }
+                cells += 1
+                let at = cell.convert(cell.bounds, to: outline)
+                if abs(at.minX - want.minX) > 1 || abs(at.width - want.width) > 1 {
+                    out.append(
+                        "\(name) \(id): drawn at \(Int(at.minX))+\(Int(at.width)), "
+                            + "its column is \(Int(want.minX))+\(Int(want.width))")
+                }
+            }
+            let drawn = rowView.subviews.filter { $0 is CueCell && !$0.isHidden }.count
+            if drawn > cells { out.append("\(name): \(drawn - cells) cell(s) left over from earlier columns") }
+        }
+        return out
+    }
+
+    /// The window resized to the least size and back, the sidebar shown and hidden, Show Mode on and off,
+    /// each just as the group is opened or closed, with progress coming in after each.
+    private func throughTheChanges(scrolled: Bool) async throws {
+        let wc = try XCTUnwrap(self.wc)
+        let window = try XCTUnwrap(wc.window)
+        let wide = window.contentRect(forFrameRect: window.frame).size
+        let changes: [(String, () -> Void)] = [
+            ("the least size", { window.setContentSize(window.minSize) }),
+            ("the sidebar shown", { wc.setVisible(.sidebar, true) }),
+            ("Show Mode on", { wc.setShowMode(true) }),
+            ("the wide size again", { window.setContentSize(wide) }),
+            ("Show Mode off", { wc.setShowMode(false) }),
+            ("the sidebar hidden", { wc.setVisible(.sidebar, false) }),
+            ("the least size again", { window.setContentSize(window.minSize) }),
+            ("the wide size at last", { window.setContentSize(wide) }),
+        ]
+        for (what, change) in changes {
+            if scrolled { outline.scrollRowToVisible(outline.numberOfRows - 1) }
+            try clickTheGroupsTriangle()
+            change()
+            try await rig?.advance(0.1)
+            XCTAssertEqual(try misplacedCells(), [], "after \(what)")
+        }
+    }
+
+    func testACuePlaysWhileTheWindowIsResizedTheSidebarToggledAndShowModeSwitchedAndEveryRowsCellsSitInTheColumns()
+        async throws
+    {
+        _ = try await open(NSSize(width: 1300, height: 820), playing: [H.intro])
+        XCTAssertEqual(try misplacedCells(), [], "playing, before anything moves")
+        try await throughTheChanges(scrolled: false)
+        XCTAssertNotNil(rig?.store.progress[H.intro], "the cue played throughout")
+    }
+
+    func testSeveralCuesPlayInAScrolledListThroughTheSameChangesAndEveryRowsCellsSitInTheColumns() async throws {
+        // A short window: the list shows a few rows and is scrolled to its end.
+        _ = try await open(NSSize(width: 1300, height: 560), playing: [H.intro, H.rain])
+        outline.scrollRowToVisible(outline.numberOfRows - 1)
+        XCTAssertGreaterThan(outline.rows(in: outline.visibleRect).location, 0, "the list is scrolled")
+        XCTAssertEqual(try misplacedCells(), [], "playing, before anything moves")
+        try await throughTheChanges(scrolled: true)
+        XCTAssertNotNil(rig?.store.progress[H.intro], "both cues played throughout")
+        XCTAssertNotNil(rig?.store.progress[H.rain])
+    }
+
+    /// What the rows draw in the column header's area and in a band just above the list (the cue
+    /// toolbar's lower edge): the window drawn with the rows and without them, compared there.
+    private func rowInk() throws -> (header: Int, above: Int) {
+        let window = try XCTUnwrap(wc?.window)
+        let frameView = try XCTUnwrap(window.contentView?.superview)
+        let scroll = try XCTUnwrap(outline.enclosingScrollView)
+        let header = try XCTUnwrap(outline.headerView)
+        let rows = (0..<outline.numberOfRows).compactMap { outline.rowView(atRow: $0, makeIfNecessary: false) }
+        let shown = try renderView(frameView, scale: 1, background: .black)
+        rows.forEach { $0.isHidden = true }
+        let bare = try renderView(frameView, scale: 1, background: .black)
+        rows.forEach { $0.isHidden = false }
+        func differing(_ area: NSRect) -> Int {
+            var n = 0
+            for y in Int(area.minY)..<Int(area.maxY) {
+                let py = shown.pixelsHigh - 1 - y
+                for x in Int(area.minX)..<Int(area.maxX) {
+                    guard let p = shown.colorAt(x: x, y: py), let q = bare.colorAt(x: x, y: py) else { continue }
+                    let d =
+                        abs(p.redComponent - q.redComponent) + abs(p.greenComponent - q.greenComponent)
+                        + abs(p.blueComponent - q.blueComponent)
+                    if d > 0.05 { n += 1 }
+                }
+            }
+            return n
+        }
+        let list = scroll.convert(scroll.bounds, to: nil)
+        let above = NSRect(x: list.minX, y: list.maxY, width: list.width, height: 12)
+        return (differing(header.convert(header.bounds, to: nil)), differing(above))
+    }
+
+    func testAtTheLeastWindowSizeWithTheInspectorShownNoRowIsDrawnOverOrAboveTheColumnHeader() async throws {
+        let wc = try await open(NSSize(width: 1200, height: 800))
+        let window = try XCTUnwrap(wc.window)
+        window.setContentSize(window.minSize)
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(wc.isVisible(.inspector))
+        let scroll = try XCTUnwrap(outline.enclosingScrollView)
+        let header = try XCTUnwrap(outline.headerView)
+        // The last cue, one in the middle and the first, each with every inspector tab it has.
+        for cue in [H.radio, H.door, H.intro] {
+            wc.cueList.selectAsUser([cue])
+            for tab in wc.inspector.tabView.tabViewItems {
+                wc.inspector.tabView.selectTabViewItem(tab)
+                outline.scrollRowToVisible(outline.selectedRow)
+                window.contentView?.layoutSubtreeIfNeeded()
+                let what = "cue \(wc.cueList.node(cue)?.cue.displayName ?? "?"), tab \(tab.label)"
+                let list = scroll.convert(scroll.bounds, to: nil)
+                let head = header.convert(header.bounds, to: nil)
+                XCTAssertEqual(head.maxY, list.maxY, accuracy: 0.5, "\(what): the header is the list's top edge")
+                let ink = try rowInk()
+                XCTAssertEqual(ink.header, 0, "\(what): rows drawn through the header")
+                XCTAssertEqual(ink.above, 0, "\(what): rows drawn above the header")
+                // The selected row is whole between the header and the list's lower edge.
+                let row = outline.convert(outline.rect(ofRow: outline.selectedRow), to: nil)
+                XCTAssertLessThanOrEqual(row.maxY, head.minY + 0.5, "\(what): the selected row is below the header")
+                XCTAssertGreaterThanOrEqual(row.minY, list.minY - 0.5, "\(what): and inside the list")
+            }
+        }
+    }
+}
