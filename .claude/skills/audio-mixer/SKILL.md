@@ -86,7 +86,7 @@ The mixer renders voices into the device buffer on the audio thread. The control
 - The queue has room for every box the mixer can hold, and `pump` drains it first. If ever full, the box is leaked and counted.
 
 ## Timing (NFR-21, NFR-22)
-- `SampleTime` is a `u64` frame count at the device rate. The mixer's clock is frames rendered, published after each `process` as `samples_rendered`.
+- `SampleTime` is a `u64` frame count at the device rate (each mixer its own: `MixerController::sample_rate`). The mixer's clock is frames rendered, published after each `process` as `samples_rendered`.
 - Every command carries an absolute `at`. The mixer splits each block at command boundaries and applies a command before rendering sample `at`. A command whose `at` has passed applies at the start of the next block.
 - Commands need not arrive in time order. A scripted sequence renders identically for any block-size pattern (property test).
 
