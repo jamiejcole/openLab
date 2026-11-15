@@ -503,6 +503,116 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
     }
 }
 
+/// The gain `target` has on a voice's first sample: what `vs` starts it with (the duck stage at
+/// 1.0, its cap at the mixer's ceiling).
+fn initial_gain(vs: &VoiceStart, target: GainTarget) -> f32 {
+    let width = vs.cue_outputs.len();
+    match target {
+        GainTarget::Master => vs.gain,
+        GainTarget::Duck => 1.0,
+        GainTarget::DuckCap => openlab_audio::MAX_GAIN,
+        GainTarget::CueOutput(o) => vs.cue_outputs.get(usize::from(o)).copied().unwrap_or(0.0),
+        GainTarget::Crosspoint { input, output } => {
+            let (i, o) = (usize::from(input), usize::from(output));
+            if o >= width {
+                return 0.0;
+            }
+            vs.crosspoints
+                .get(i.saturating_mul(width).saturating_add(o))
+                .copied()
+                .unwrap_or(0.0)
+        }
+    }
+}
+
+/// One gain's ramp as the commands queued for a voice set it.
+#[derive(Clone, Copy, Debug)]
+struct Track {
+    target: GainTarget,
+    from: f32,
+    to: f32,
+    start: SampleTime,
+    fade: Fade,
+}
+
+impl Track {
+    /// The gain on sample `at`; the duck stage moves evenly in dB, as the mixer's does.
+    fn value(&self, at: SampleTime) -> f32 {
+        let pos = at.saturating_sub(self.start);
+        if pos >= self.fade.frames {
+            return self.to;
+        }
+        if self.target == GainTarget::Duck {
+            let floor = 1e-6_f64;
+            let from = f64::from(self.from).max(floor);
+            let to = f64::from(self.to).max(floor);
+            let t = pos as f64 / self.fade.frames as f64;
+            return (from * (to / from).powf(t)) as f32;
+        }
+        openlab_audio::ramp_value(self.from, self.to, pos, self.fade.frames, self.fade.curve)
+    }
+}
+
+/// The commands queued for a voice that starts on `at`, caught up with time: every gain a
+/// command before `at` set is set on `at` to where it stands then (`initial` gives a gain's
+/// value before any command), followed by the rest of a ramp still moving, so it ends on the
+/// sample it was planned to; commands from `at` on (and devamps) are kept as they are, after.
+fn caught_up(
+    queue: Vec<(SampleTime, Queued)>,
+    at: SampleTime,
+    initial: impl Fn(GainTarget) -> f32,
+) -> Vec<(SampleTime, Queued)> {
+    let mut tracks: Vec<Track> = Vec::new();
+    let mut later = Vec::new();
+    for (t, q) in queue {
+        match q {
+            Queued::Ramp { target, gain, fade } if t < at => {
+                let from = tracks
+                    .iter()
+                    .find(|k| k.target == target)
+                    .map_or_else(|| initial(target), |k| k.value(t));
+                let track = Track {
+                    target,
+                    from,
+                    to: gain,
+                    start: t,
+                    fade,
+                };
+                match tracks.iter_mut().find(|k| k.target == target) {
+                    Some(k) => *k = track,
+                    None => tracks.push(track),
+                }
+            }
+            Queued::Ramp { .. } => later.push((t, q)),
+            Queued::Devamp { .. } => later.push((t.max(at), q)),
+        }
+    }
+    let mut out = Vec::with_capacity(tracks.len() * 2 + later.len());
+    for k in &tracks {
+        out.push((
+            at,
+            Queued::Ramp {
+                target: k.target,
+                gain: k.value(at),
+                fade: Fade::NONE,
+            },
+        ));
+        let end = k.start.saturating_add(k.fade.frames);
+        if end > at && k.value(at) != k.to {
+            out.push((
+                at,
+                Queued::Ramp {
+                    target: k.target,
+                    gain: k.to,
+                    fade: Fade::new(end - at, k.fade.curve),
+                },
+            ));
+        }
+    }
+    out.extend(later);
+    out
+}
+
 fn queued(id: VoiceId, q: Queued) -> CommandKind {
     match q {
         Queued::Ramp { target, gain, fade } => CommandKind::Ramp {
@@ -706,6 +816,54 @@ mod tests {
         assert_eq!(file_frame(&t, &[500, 700], 750), None);
         assert_eq!(file_frame(&t[3..], &[10], 20), None);
         assert_eq!(file_frame(&[], &[], 0), None);
+    }
+
+    /// Commands queued while a move waited are caught up on the swap: each gain where it stands
+    /// then and the rest of its ramp, ending on its planned sample; later commands kept.
+    #[test]
+    fn queued_ramps_are_caught_up_with_the_swap() {
+        let ramp = |target, gain, frames| Queued::Ramp {
+            target,
+            gain,
+            fade: Fade::new(frames, Curve::Linear),
+        };
+        let queue = vec![
+            // Master from 1.0 to 0.0 over 100 from 100: half way on 150.
+            (100, ramp(GainTarget::Master, 0.0, 100)),
+            // An output set at once, then over by the swap.
+            (110, ramp(GainTarget::CueOutput(1), 0.25, 0)),
+            (120, ramp(GainTarget::CueOutput(0), 0.5, 10)),
+            // The duck stage halves in dB terms: from 1.0 to 0.01 over 100 from 100.
+            (100, ramp(GainTarget::Duck, 0.01, 100)),
+            (150, ramp(GainTarget::Master, 1.0, 0)),
+            (160, Queued::Devamp { stop: false }),
+        ];
+        let out = caught_up(queue, 150, |t| match t {
+            GainTarget::CueOutput(_) => 2.0,
+            _ => 1.0,
+        });
+        type Got = (SampleTime, Option<(GainTarget, f32, u64)>);
+        let got: Vec<Got> = out
+            .iter()
+            .map(|(t, q)| match q {
+                Queued::Ramp { target, gain, fade } => (*t, Some((*target, *gain, fade.frames))),
+                Queued::Devamp { .. } => (*t, None),
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (150, Some((GainTarget::Master, 0.5, 0))),
+                (150, Some((GainTarget::Master, 0.0, 50))),
+                (150, Some((GainTarget::CueOutput(1), 0.25, 0))),
+                (150, Some((GainTarget::CueOutput(0), 0.5, 0))),
+                (150, Some((GainTarget::Duck, 0.1, 0))),
+                (150, Some((GainTarget::Duck, 0.01, 50))),
+                // On the swap sample itself: kept, after.
+                (150, Some((GainTarget::Master, 1.0, 0))),
+                (160, None),
+            ]
+        );
     }
 
     fn s(index: u32, start: u64, frames: u64, plays: Plays) -> Slice {

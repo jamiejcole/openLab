@@ -559,6 +559,47 @@ fn follow_show() -> DeviceShow {
     device_show(workspace(vec![c1, audio(2, &b, 1)]))
 }
 
+/// The device goes while a click in cue 1's waveform waits for the new point's stream (its
+/// open held back): the cue gets the lost-device mark like any playing cue, nothing sounds, and
+/// neither the voice it was moving from nor the waiting stream is left behind.
+#[test]
+fn a_device_lost_while_a_click_waits_leaves_the_lost_mark_and_nothing_held() {
+    let long = wav(&dc(200_000, 0.25));
+    let ws = workspace(vec![audio(1, &long, 0)]);
+    let mut c = device_config(&ws);
+    c.prime_cues = 0;
+    c.streamer.before_open = gated_open;
+    let mut s = DeviceShow::new(ws, vec![listed(DEV, DEV_NAME, 2)], c);
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    gate(&long);
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 10.0,
+    });
+    lose(&mut s);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    assert!(s.control().engine().is_lost(id(1)));
+    // The waiting move is gone at once; the voice it moved from goes when its mixer reports.
+    assert!(
+        s.control().held_streams() <= 1,
+        "{}",
+        s.control().held_streams()
+    );
+    release(&long);
+    replug(&mut s);
+    s.run(BLOCK * 20);
+    assert!(s.control().engine().is_lost(id(1)));
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(s.control().held_streams(), 0);
+    let ch = s.channel(0);
+    let tail = &ch[ch.len() - BLOCK as usize * 10..];
+    assert!(
+        tail.iter().all(|&v| v == 0.0),
+        "nothing sounds after the loss"
+    );
+}
+
 /// The device goes while cue 1 plays and stays away `outage`. Whatever the length of the
 /// outage (QLab 5, measured): cue 1 stops at once and shows paused with its time standing still,
 /// it stays so when the device returns, its auto-follow never fires, Resume All only clears the

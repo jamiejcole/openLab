@@ -574,3 +574,158 @@ fn a_click_whose_new_point_never_opens_breaks_the_cue_instead_of_playing_late() 
     assert_eq!(last_nonzero(&s.channel(0)), Some(quiet));
     assert_eq!(state(&s, 1), CueState::Broken);
 }
+
+/// A Fade on cue 1 to -40 dB over `secs`, stopping it when done.
+fn fade_and_stop(secs: f64) -> openlab_core::Cue {
+    cue(
+        2,
+        CueKind::Fade {
+            target: Some(id(1)),
+            duration: secs,
+            curve: FadeCurve::Linear,
+            levels: openlab_core::FadeLevels {
+                master_db: Some(-40.0),
+                output_db: vec![],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: true,
+            mode: Default::default(),
+        },
+    )
+}
+
+/// What happens around a click while the new point's stream is held back (its open gated for
+/// 1200 frames, inside the 0.25 s wait): a steady tone in cue 1, `before` run first (it may
+/// start cue 2 or 3), `during` sent right after the click (or with no click: the same timeline
+/// without the seek). Returns channel 0 once cue 1 is idle.
+fn held_click(
+    others: Vec<openlab_core::Cue>,
+    click: bool,
+    before: impl FnOnce(&mut OfflineShow),
+    during: impl FnOnce(&mut OfflineShow),
+) -> Vec<f32> {
+    let tone = wav(&dc(8 * RATE as usize, 0.5));
+    let mut cues = vec![audio(1, &tone, 0)];
+    cues.extend(others);
+    let ws = workspace(cues);
+    let mut c = config(&ws);
+    c.prime_cues = 0;
+    c.streamer.before_open = gated_open;
+    let mut s = show_with(ws, c);
+    start(&mut s, 1);
+    s.run(800);
+    before(&mut s);
+    gate(&tone);
+    if click {
+        seek(&mut s, 1, 3.0);
+    }
+    during(&mut s);
+    s.run_unsettled(1200);
+    release(&tone);
+    run_until_idle(&mut s, id(1), 8 * u64::from(RATE));
+    s.run(BLOCK * 4);
+    s.channel(0)
+}
+
+/// The level a stopped voice was cut from, and the largest step between two samples: a cut
+/// above the level the fade planned there is a click.
+fn cut_and_step(ch: &[f32]) -> (f32, f32) {
+    let first = first_nonzero(ch).unwrap();
+    let last = last_nonzero(ch).unwrap();
+    // From the first sample on: the cue starts with no fade-in of its own.
+    let step = ch[first..=last + 1]
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0, f32::max);
+    (ch[last], step)
+}
+
+#[test]
+fn a_fade_fired_while_a_move_waits_is_heard_at_once_and_stops_its_target_where_planned() {
+    let run = |click| {
+        held_click(
+            vec![fade_and_stop(0.5)],
+            click,
+            |_| {},
+            |s| {
+                start(s, 2);
+            },
+        )
+    };
+    let (plain, moved) = (run(false), run(true));
+    let (want, _) = cut_and_step(&plain);
+    let (got, step) = cut_and_step(&moved);
+    // Stopped where the fade ends, at its level (0.005), not well above it.
+    assert!((got - want).abs() < 0.002, "{got} vs {want}");
+    // The fade is heard from its start: 400 frames in, both are well on their way down.
+    let at = first_nonzero(&plain).unwrap() + 800 + 400;
+    assert!(plain[at] < 0.46, "{}", plain[at]);
+    assert!(
+        (moved[at] - plain[at]).abs() < 0.005,
+        "{} {}",
+        moved[at],
+        plain[at]
+    );
+    // No click: no step beyond what a 10 ms crossfade of a 0.5 tone makes.
+    assert!(step <= 0.5 / XFADE as f32 * 2.0, "{step}");
+}
+
+#[test]
+fn a_click_during_a_running_fade_and_stop_still_stops_at_the_planned_level() {
+    let run = |click| {
+        held_click(
+            vec![fade_and_stop(1.0)],
+            click,
+            |s| {
+                start(s, 2);
+                s.run(2000);
+            },
+            |_| {},
+        )
+    };
+    let (plain, moved) = (run(false), run(true));
+    let (want, _) = cut_and_step(&plain);
+    let (got, step) = cut_and_step(&moved);
+    assert!((got - want).abs() < 0.002, "{got} vs {want}");
+    assert_eq!(last_nonzero(&moved), last_nonzero(&plain));
+    assert!(step <= 0.5 / XFADE as f32 * 2.0, "{step}");
+}
+
+#[test]
+fn a_duck_that_starts_while_a_move_waits_is_heard_at_once_and_after_the_move() {
+    let mut ducker = audio(3, &wav(&dc(8 * RATE as usize, 0.25)), 1);
+    ducker.duck_others = openlab_core::DuckOthers {
+        enabled: true,
+        db: -20.0,
+        duration: 0.05,
+    };
+    let run = |click| {
+        let tone = wav(&dc(8 * RATE as usize, 0.5));
+        let mut first = audio(1, &tone, 0);
+        first.continue_mode = ContinueMode::DoNotContinue;
+        let ws = workspace(vec![first, ducker.clone()]);
+        let mut c = config(&ws);
+        c.prime_cues = 0;
+        c.streamer.before_open = gated_open;
+        let mut s = show_with(ws, c);
+        start(&mut s, 1);
+        s.run(800);
+        gate(&tone);
+        if click {
+            seek(&mut s, 1, 3.0);
+        }
+        start(&mut s, 3);
+        s.run_unsettled(1200);
+        release(&tone);
+        s.run(2000);
+        s.channel(0)
+    };
+    let (plain, moved) = (run(false), run(true));
+    let ducked = 0.5 * 0.1;
+    // Ducked within its 50 ms while the old point still plays, and still after the move.
+    let during = first_nonzero(&plain).unwrap() + 800 + 800;
+    assert!((moved[during] - ducked).abs() < 0.002, "{}", moved[during]);
+    let end = moved.len() - 1;
+    assert!((moved[end] - ducked).abs() < 0.002, "{}", moved[end]);
+    assert!((plain[end] - ducked).abs() < 0.002, "{}", plain[end]);
+}
