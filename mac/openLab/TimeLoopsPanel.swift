@@ -349,8 +349,11 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         self.kind = kind
         let media = kind["media"]?.stringValue ?? ""
         let newFile = duration.flatMap { d in media.isEmpty || d <= 0 ? nil : (cue, media, d) }
+        // Another cue is shown afresh even when neither file is known yet, so its first drawing says
+        // that its file is being read.
         let fileChanged =
-            newFile?.0 != file?.cue || newFile?.1 != file?.media || newFile?.2 != file?.duration
+            cue != shownCue || newFile?.0 != file?.cue || newFile?.1 != file?.media
+            || newFile?.2 != file?.duration
         file = newFile
         // A position line, section or count edit belongs to the cue it was made on.
         if cue != shownCue {

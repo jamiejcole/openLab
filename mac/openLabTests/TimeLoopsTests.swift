@@ -1458,13 +1458,15 @@ extension PlayheadFlowTests {
     private func shiftO() throws { try waveKey("O", code: 31, .shift) }
     private func keyM() throws { try waveKey("m", code: 46) }
 
-    /// Space (GO) from the waveform, then a tenth of a second.
-    private func goFromWaveform() async throws {
+    /// Space (GO) from `id`'s waveform, then a tenth of a second. GO moves the selection on, so `id` is
+    /// selected again, as the operator does to see its waveform.
+    private func goFromWaveform(_ id: ModelID) async throws {
         let before = goes()
         try waveKey(" ", code: 49)
         await assertEventually("GO was sent") { self.goes() == before + 1 }
         await sync()
         try await play(0.1)
+        await showWaveform(id)
     }
 
     /// The positions the app asked cues to play from, in order.
@@ -1524,7 +1526,10 @@ extension PlayheadFlowTests {
 
     /// The span of the waves drawn with the section's light wash, or nil.
     private func shadedSpan() throws -> ClosedRange<CGFloat>? {
-        let shaded = try drawnColumns { (0.1..<0.4).contains($0.redComponent) && $0.blueComponent < 0.4 }
+        // The wash over the dark waves is a pale blue-grey: blue above red, unlike a line's edge.
+        let shaded = try drawnColumns {
+            (0.1..<0.4).contains($0.redComponent) && $0.blueComponent < 0.4 && $0.blueComponent > $0.redComponent
+        }
         guard let a = shaded.min(), let b = shaded.max() else { return nil }
         return a...b
     }
@@ -1569,7 +1574,7 @@ extension PlayheadFlowTests {
         await assertEventually("the row shows the cue loaded") { self.rowMark(id) == loc("cue.state.loaded") }
         XCTAssertTrue(wc.window?.firstResponder === waveView, "the waveform has the focus; GO still works")
         await assertEventually { self.store.playheads[self.list] == id }
-        try await goFromWaveform()
+        try await goFromWaveform(id)
         try await play(0.4)
         await playsAt(id, 12.5)
         XCTAssertEqual(rowMark(id), runningMark)
@@ -1579,7 +1584,7 @@ extension PlayheadFlowTests {
         let id = try await waveTones(1)[0]
         await showWaveform(id)
         await assertEventually { self.store.playheads[self.list] == id }
-        try await goFromWaveform()
+        try await goFromWaveform(id)
         try await play(1.9)
         await playsAt(id, 2)
         clickWave(at: 20)
@@ -1610,12 +1615,14 @@ extension PlayheadFlowTests {
         let id = try await waveTones(1)[0]
         await showWaveform(id)
         await assertEventually { self.store.playheads[self.list] == id }
-        try await goFromWaveform()
+        try await goFromWaveform(id)
         try await play(1.9)
         try waveKey("p", code: 35)
         await assertEventually("paused") { self.rowMark(id) == loc("cue.state.paused") }
         clickWave(at: 20)
         await seekRun(1)
+        // Progress goes out as device time moves; the virtual clock stands still until told.
+        try await play(0.1)
         await playsAt(id, 20, tolerance: 0.05)
         try await play(1)
         await playsAt(id, 20, tolerance: 0.05)
@@ -1636,7 +1643,7 @@ extension PlayheadFlowTests {
         XCTAssertEqual(loops.sliceMarks.first?.playCount, 0, "slice 1 loops until devamped")
         clickWave(at: 2)
         await seekRun(2)
-        try await goFromWaveform()
+        try await goFromWaveform(id)
         try await play(0.9)
         await playsAt(id, 3)
         clickWave(at: 4)
@@ -1663,7 +1670,7 @@ extension PlayheadFlowTests {
         await typeSliceCount(0, "3")
         clickWave(at: 0.5)
         await seekRun(2)
-        try await goFromWaveform()
+        try await goFromWaveform(id)
         try await play(0.9)
         clickWave(at: 6)
         await seekRun(3)
@@ -1687,7 +1694,7 @@ extension PlayheadFlowTests {
         await seekRun(1)
         await assertEventually("loaded") { self.rowMark(id) == loc("cue.state.loaded") }
         await assertEventually { self.store.playheads[self.list] == id }
-        try await goFromWaveform()
+        try await goFromWaveform(id)
         try await play(0.4)
         await playsAt(id, 5.5)
         clickWave(at: 25)
@@ -1765,6 +1772,7 @@ extension PlayheadFlowTests {
         clickWave(at: 10)
         try keyM()
         await assertEventually("a marker at 10 s") { self.waveView.sliceMarks == [10] }
+        await seekRun(1)
         let afterMarker = seeks.count
         dragWave(fromX: waveX(10), through: [waveX(11), waveX(12)])
         await assertEventually("the marker moved") { self.loops.sliceMarks.map(\.time) == [12] }
@@ -1786,7 +1794,7 @@ extension PlayheadFlowTests {
         let id = try await waveTones(1)[0]
         await showWaveform(id)
         await assertEventually { self.store.playheads[self.list] == id }
-        try await goFromWaveform()
+        try await goFromWaveform(id)
         try await play(1.9)
         dragWave(from: 20, to: 10)
         let section = try XCTUnwrap(waveView.selection, "dragged right to left")
@@ -1806,13 +1814,14 @@ extension PlayheadFlowTests {
         loops.zoom(by: 1.0 / 3, anchor: 0)
         await waveformDrawn()
         let width = waveView.bounds.width
-        dragWave(fromX: waveX(5), through: Array(repeating: width + 60, count: 20))
+        // Well past the edge, each move scrolls at most a quarter of the view.
+        dragWave(fromX: waveX(5), through: Array(repeating: width * 1.5, count: 30))
         XCTAssertEqual(loops.visible.end, 30, accuracy: 1e-9, "scrolled to the end of the file and stopped")
         XCTAssertEqual(loops.visible.end - loops.visible.start, 10, accuracy: 1e-9, "not zoomed")
         XCTAssertEqual(waveView.selection?.lowerBound ?? -1, 5, accuracy: 0.05)
         XCTAssertEqual(waveView.selection?.upperBound ?? -1, 30, accuracy: 0.001, "to the file's end")
         await waveformDrawn()
-        dragWave(fromX: waveX(25), through: Array(repeating: -60, count: 20))
+        dragWave(fromX: waveX(25), through: Array(repeating: -width / 2, count: 30))
         XCTAssertEqual(loops.visible.start, 0, accuracy: 1e-9, "back to the start and stopped")
         XCTAssertEqual(waveView.selection?.lowerBound ?? -1, 0, accuracy: 0.001)
         XCTAssertEqual(waveView.selection?.upperBound ?? -1, 25, accuracy: 0.05)
