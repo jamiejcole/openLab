@@ -167,8 +167,11 @@ final class ProtocolFixtureTests: XCTestCase {
             from: Data(try Fixtures.text("client", "request_set_patch_mapping_system_output").utf8))
         XCTAssertEqual(
             system,
-            .request(id: 65, .setPatchMapping(patch: "00000000-0000-0000-0000-000000000071",
-                mapping: .systemOutput(channels: [0, 1]))))
+            .request(
+                id: 65,
+                .setPatchMapping(
+                    patch: "00000000-0000-0000-0000-000000000071",
+                    mapping: .systemOutput(channels: [0, 1]))))
         XCTAssertTrue(try system.text().contains("\"system\":true"))
         XCTAssertFalse(try set.text().contains("system"))
     }

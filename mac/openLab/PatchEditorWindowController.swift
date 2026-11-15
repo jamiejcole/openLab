@@ -347,7 +347,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             limits: limits, main: patch.raw["master_db"]?.doubleValue ?? 0,
             levels: outputs.map { $0["level_db"]?.doubleValue ?? 0 },
             names: outputs.map { $0["name"]?.stringValue ?? "" }, name: patch.raw["name"]?.stringValue ?? "",
-            row: row, devices: model.devices, usable: row.flatMap(model.deviceName(of:)).map(model.usableChannels(of:)) ?? 0,
+            row: row, devices: model.devices,
+            usable: row.flatMap(model.deviceName(of:)).map(model.usableChannels(of:)) ?? 0,
             loaded: model.loaded)
         if let drawn, drawn == state, typedField == nil, !dragging { return }
         guard !dragging else { return }

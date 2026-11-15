@@ -108,7 +108,10 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertEqual(sc.patchDevicePopups.first?.titleOfSelectedItem, device)
         XCTAssertEqual(
             sc.patchDevicePopups.first?.itemTitles,
-            [loc("settings.audio.noDevice"), "", String(format: loc("settings.audio.systemOutput"), device), "", device])
+            [
+                loc("settings.audio.noDevice"), "", String(format: loc("settings.audio.systemOutput"), device), "",
+                device,
+            ])
         XCTAssertEqual(sc.patchEditButtons.first?.title, loc("settings.audio.edit"))
         XCTAssertFalse(try XCTUnwrap(sc.patchRemoveButtons.first).isEnabled, "the last patch cannot go")
         for control in [sc.patchAddButton, sc.maxLimitField, sc.minLimitField] + sc.patchNameFields as [NSView] {
