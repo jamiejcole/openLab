@@ -1976,8 +1976,12 @@ extension PlayheadFlowTests {
     /// moves nothing.
     func testAMissingFileSaysSoAndNeverThatItIsBeingRead() async throws {
         let id = try await waveTones(1)[0]
-        _ = await store.setProperty(id, .media("/nonexistent-\(UUID().uuidString)/gone.wav"))
-        await assertEventually("broken: the file is missing") { self.rowMark(id) == loc("cue.state.broken") }
+        let set = await store.setProperty(id, .media("/nonexistent-\(UUID().uuidString)/gone.wav"))
+        guard case .success = set else { return XCTFail("media: \(set)") }
+        await assertEventually("broken: the file is missing") {
+            try? await self.play(0.1)
+            return self.rowMark(id) == loc("cue.state.broken")
+        }
         await showWaveform(id, drawn: false)
         for _ in 0..<6 {
             XCTAssertEqual(waveView.message, loc("timeLoops.missing"))
@@ -2028,5 +2032,28 @@ extension PlayheadFlowTests {
         try await play(0.2)
         XCTAssertEqual(seeks, [])
         XCTAssertNil(rowMark(ids[1]))
+    }
+
+    /// A cue looping until devamped, clicked past its end time: the loop goes on from its start
+    /// (the click lands at the end of a pass), the cue never stops.
+    func testALoopingCueClickedPastItsEndTimeLoopsOnFromItsStart() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        await typeWaveTrims(start: nil, end: "20")
+        loops.loopRadio.performClick(nil)
+        await assertEventually("loops until devamped") { self.loops.playCount == 0 }
+        await assertEventually { self.store.playheads[self.list] == id }
+        try await goFromWaveform(id)
+        try await play(1.9)
+        await playsAt(id, 2)
+        clickWave(at: 25)
+        XCTAssertEqual(waveView.insertion ?? -1, 25, accuracy: 0.05, "the line goes where clicked")
+        await seekRun(1)
+        try await play(0.5)
+        await playsAt(id, 0.5, tolerance: 0.4)
+        XCTAssertEqual(rowMark(id), runningMark, "still playing")
+        try await play(1)
+        await playsAt(id, 1.5, tolerance: 0.4)
+        XCTAssertEqual(rowMark(id), runningMark)
     }
 }
