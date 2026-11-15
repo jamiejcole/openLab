@@ -277,8 +277,12 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
-    /// Show Mode: renaming and deleting lists change the workspace, so the list menu is off.
-    var listEditLocked = false
+    /// Show Mode: adding, renaming and deleting lists change the workspace, so New List and the
+    /// list menu are off. A stray New List mid-show would also switch the window to an empty list
+    /// where GO fires nothing. Choosing an existing list stays on.
+    var listEditLocked = false {
+        didSet { newListButton.isEnabled = !listEditLocked }
+    }
     /// Why a list edit was refused (the window shows it as a sheet).
     var onNotice: ((String) -> Void)?
 
@@ -442,7 +446,11 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// Adds an empty list after the last one and shows it. The id is the client's; the engine
     /// may refuse; then nothing changes and no list is selected.
-    @objc private func newListClicked() {
+    @objc private func newListClicked() { addList() }
+
+    /// Adds an empty list after the last and shows it once the engine accepts; nothing in Show Mode.
+    func addList() {
+        guard !listEditLocked else { return }
         let id = ModelID(UUID().uuidString.lowercased())
         let index = lists.count
         let name = String(format: loc("sidebar.newList.name"), index + 1)
