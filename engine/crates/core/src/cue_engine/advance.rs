@@ -190,6 +190,18 @@ impl CueEngine {
                         late_by: now - at,
                     });
                 }
+                // Loaded or moved by a seek: the stream starts at that point of the file. One
+                // loaded there already is used; otherwise (not loaded, or disarmed when it was)
+                // it is loaded now.
+                if let Some(position) = run.seek.take()
+                    && run.voice != Voice::Loaded
+                {
+                    cx.out.push(Action::LoadVoiceAt {
+                        cue,
+                        run: run.run,
+                        position,
+                    });
+                }
                 cx.out.push(Action::StartVoice {
                     cue,
                     run: run.run,

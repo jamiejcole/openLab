@@ -163,10 +163,10 @@ fn spec() -> impl Strategy<Value = Spec> {
 
 /// The operations a step can be, with repeats for the ones that matter most: most of the show is
 /// GO and Start, with stops, pauses and resumes in between.
-const OPS: [u8; 61] = [
+const OPS: [u8; 64] = [
     1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 0, 0, 0, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 7, 8, 9, 10, 11, 12, 12,
     13, 14, 15, 16, 17, 18, 19, 20, 21, 21, 22, 22, 23, 24, 25, 25, 26, 27, 28, 20, 4, 5, 29, 29,
-    30, 31, 31, 31, 31, 31, 31,
+    30, 31, 31, 31, 31, 31, 31, 32, 32, 32,
 ];
 
 fn step() -> impl Strategy<Value = Step> {
@@ -579,6 +579,11 @@ enum Cmd {
     Devamp {
         stop: bool,
     },
+    /// A seek: the voice plays on from the start of its moved action as `run` (its length
+    /// counted from the move).
+    Seek {
+        run: RunId,
+    },
     /// Fault injection: the voice ends early / fails.
     ForceEnd,
     ForceFail(BrokenReason),
@@ -689,7 +694,7 @@ impl Voice {
     fn drain_dead(&mut self, t: SampleTime, events: &mut Vec<(SampleTime, Input)>) {
         while self.cmds.first().is_some_and(|c| c.0 <= t) {
             let (at, _, cmd) = self.cmds.remove(0);
-            if let Cmd::Resume { run, .. } = cmd {
+            if let Cmd::Resume { run, .. } | Cmd::Seek { run } = cmd {
                 self.run = run;
                 events.push((
                     at,
@@ -849,6 +854,36 @@ impl Voice {
                     self.stop_end = Some(at + frames);
                 }
             }
+            Cmd::Seek { run } => {
+                // The moved voice: its action counts from 0 on the move (paused, it stays
+                // paused there), its whole length to come.
+                self.run = run;
+                if !self.started {
+                    return;
+                }
+                self.pos = 0;
+                self.since = at;
+                self.leave = None;
+                self.fail_pos = None;
+                self.end_pos = match self.flavor {
+                    Flavor::Loop => None,
+                    Flavor::Finite(len) | Flavor::FailsAfter { len, .. } => Some(len),
+                    Flavor::FailsAtOpen => self.end_pos,
+                };
+                if let Some(frames) = self.end_pos
+                    && self.announces()
+                {
+                    self.told = true;
+                    events.push((
+                        at,
+                        Input::ActionLength {
+                            cue: self.cue,
+                            run,
+                            frames,
+                        },
+                    ));
+                }
+            }
             Cmd::Devamp { stop } => {
                 let pos = self.pos;
                 let answer = match (self.flavor, self.leave) {
@@ -994,9 +1029,32 @@ impl Sim {
     fn apply(&mut self, actions: &[Action]) {
         for action in actions {
             match action {
-                Action::LoadVoice { cue, run, .. } => {
+                Action::LoadVoice { cue, run, .. } | Action::LoadVoiceAt { cue, run, .. } => {
                     self.known.insert(*run);
                     self.loaded.insert(*run, *cue);
+                }
+                Action::SeekVoice { run, from, at, .. } => {
+                    self.known.insert(*run);
+                    self.queue(*from, *at, Cmd::Seek { run: *run });
+                    // What comes next for the fresh id goes to the same voice (as a resume).
+                    if let Some(v) = self.voices.remove(from) {
+                        self.voices.insert(*run, v);
+                    } else if let Some(v) = self.dead.remove(from) {
+                        self.dead.insert(*run, v);
+                    } else if let Some(cue) = self.ended.remove(from) {
+                        // It ended before the move: the moved voice has nothing to play.
+                        self.ended.insert(*run, cue);
+                        self.late.push((
+                            *at,
+                            Input::ActionEnded {
+                                cue,
+                                run: *run,
+                                at: *at,
+                            },
+                        ));
+                    } else {
+                        self.errors.push(format!("seek of unknown voice {from:?}"));
+                    }
                 }
                 Action::UnloadVoice { run, .. } => {
                     if self.loaded.remove(run).is_none() {
@@ -1211,9 +1269,10 @@ fn preview_action(a: &Action) -> bool {
         | Action::PreviewStop { .. }
         | Action::PreviewChanged { .. } => true,
         // Pause All / Resume All pause and resume previews too (QLab check V4).
-        Action::PauseVoice { run, .. } | Action::ResumeVoice { run, .. } => {
-            run.0 >= PREVIEW_RUN_BASE
-        }
+        // A seek moves a preview with the show cue.
+        Action::PauseVoice { run, .. }
+        | Action::ResumeVoice { run, .. }
+        | Action::SeekVoice { run, .. } => run.0 >= PREVIEW_RUN_BASE,
         _ => false,
     }
 }
@@ -1436,6 +1495,7 @@ impl Run {
                 | Action::ResumeVoice { at, .. }
                 | Action::Ramp { at, .. }
                 | Action::DevampVoice { at, .. }
+                | Action::SeekVoice { at, .. }
                 | Action::PreviewStart { at, .. }
                 | Action::PreviewStop { at, .. } => {
                     prop_assert!(
@@ -1464,6 +1524,7 @@ impl Run {
                 Action::ResumeVoice {
                     run, paused, at, ..
                 } => Some((*paused, *run, *at)),
+                Action::SeekVoice { run, from, at, .. } => Some((*from, *run, *at)),
                 _ => None,
             };
             if let Some((before, after, at)) = timed {
@@ -2349,6 +2410,11 @@ impl Run {
                 kind = Kind::Operator { trigger: true };
                 Input::TriggerReleased { cue: target }
             }
+            // A click in the cue's waveform: move it to a point of its file.
+            32 => Input::Seek {
+                cue: target,
+                position: f64::from(s.b) / 50.0,
+            },
             _ => {
                 // Model edit: change a cue's timing and continue mode.
                 if let Some(c) = find_mut(&mut self.ws.cue_lists[0].cues, target) {

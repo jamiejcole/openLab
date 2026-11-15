@@ -11,7 +11,7 @@ Q72 | Esc while a cue-list cell is edited drops the edit (old text shows); Esc i
 Q68 | Every inspector text field: Return commits and the cue list takes focus (Space fires GO); Esc drops the text and does the same; Tab moves to the next field | manual p.36-37 for some fields; rest assumed 2026-11-04
 Q62 | Masthead notes: Return and Tab end typing (notes save, focus to the cue list); only Shift-Return types a new line; Option-Return does not | user 2026-11-04
 Q69 | Inspector Notes behave as the masthead: Return/Tab end it, Shift-Return newline; Esc drops text | user 2026-11-04 (Esc/Tab assumed)
-Q49 | Tools > Load to Time with a negative value loads that far back from the end (QLab). Not built: engine `load` takes 0 or more seconds, a negative time is refused | manual p.149, p.589 (engine follow-up needed)
+Q49 | Tools > Load to Time with a negative value loads that far back from the end (QLab). A Load cue's negative time is built (Q351, Q352); the `load` transport request still refuses a negative time (`transport.load.at`), so the menu cannot send one yet | manual p.149, p.589 (menu follow-up needed)
 
 ## Playhead, selection, typing (one policy, rows Q59-Q70)
 Q11 | Selecting several cues by hand moves the playhead to the most recently selected one | user 2026-10-29

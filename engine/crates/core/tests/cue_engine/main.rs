@@ -20,5 +20,6 @@ mod network;
 mod preview;
 mod preview_devamp_hotkey;
 mod second_trigger;
+mod seek;
 mod timers;
 mod transport;

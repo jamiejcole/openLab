@@ -191,6 +191,13 @@ pub enum TransportAction {
         cue: CueId,
         at: f64,
     },
+    /// Moves an Audio cue's playback to `position` seconds from the start of its media file
+    /// (a click in its waveform): an idle or loaded cue loads there, a playing or previewing
+    /// one jumps there and plays on, a paused one moves there and stays paused.
+    Seek {
+        cue: CueId,
+        position: f64,
+    },
     Reset {
         cue: CueId,
     },
@@ -232,6 +239,7 @@ impl TransportAction {
             | Self::Pause { cue }
             | Self::Resume { cue }
             | Self::Load { cue, .. }
+            | Self::Seek { cue, .. }
             | Self::Reset { cue }
             | Self::Preview { cue }
             | Self::StopPreview { cue: Some(cue) } => Some(*cue),
@@ -257,6 +265,7 @@ impl TransportAction {
     fn validate(&self) -> Result<(), ProtocolError> {
         match self {
             Self::Load { at, .. } => non_negative("transport.load.at", *at),
+            Self::Seek { position, .. } => non_negative("transport.seek.position", *position),
             Self::Stop {
                 fade_out: Some(fade),
                 ..

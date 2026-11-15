@@ -130,6 +130,15 @@ pub enum Input {
         cue: CueId,
         time: f64,
     },
+    /// Move an Audio cue's playback to `position` seconds from the start of its media file (a
+    /// click in its waveform): an idle or loaded cue is loaded there (GO plays from there); a
+    /// playing or previewing one jumps there and plays on; a paused one moves there and stays
+    /// paused; one in its pre-wait starts its action there at once. The binary keeps the point
+    /// inside the trims and plans the slices from it, so a point past a loop is reachable.
+    Seek {
+        cue: CueId,
+        position: f64,
+    },
     /// Return a cue to idle, clearing a runtime failure.
     Reset {
         cue: CueId,
@@ -494,6 +503,26 @@ pub enum Action {
         run: RunId,
         offset: SampleTime,
     },
+    /// Prepare the run's stream so its action starts at `position`, a frame of the cue's media
+    /// file at the device rate (its slices planned from there, loops included); the binary
+    /// keeps it inside the trims. A `StartVoice` with offset 0 for the run starts it there.
+    LoadVoiceAt {
+        cue: CueId,
+        run: RunId,
+        position: SampleTime,
+    },
+    /// Move the voice of run `from` to `position` (a file frame at the device rate, as for
+    /// `LoadVoiceAt`) from sample `at`: the voice continues as `run`, a fresh id, and feedback
+    /// for `from` is stale from now on. A playing voice crossfades into the new position once
+    /// its stream is ready; a paused one moves and stays paused (a `ResumeVoice` with
+    /// `paused: run` plays it); a voice not playing yet starts there. Previews too.
+    SeekVoice {
+        cue: CueId,
+        run: RunId,
+        from: RunId,
+        at: SampleTime,
+        position: SampleTime,
+    },
     /// Release a loaded run that never started.
     UnloadVoice {
         cue: CueId,
@@ -695,7 +724,9 @@ pub enum EngineWarning {
         cue: CueId,
         state: CueState,
     },
-    /// Load on a cue that is running (pre-waiting through stopping) does nothing.
+    /// Load on a cue that is running (pre-waiting through stopping) does nothing. Also a seek
+    /// on a cue that is not an Audio cue, that is stopping or post-waiting, or whose run plays
+    /// no voice.
     LoadIgnored {
         cue: CueId,
     },

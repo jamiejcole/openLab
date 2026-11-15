@@ -517,6 +517,8 @@ impl RuntimeChange {
                 warning: WireWarning::from_engine(warning, rate),
             },
             Action::LoadVoice { .. }
+            | Action::LoadVoiceAt { .. }
+            | Action::SeekVoice { .. }
             | Action::UnloadVoice { .. }
             | Action::StartVoice { .. }
             | Action::StopVoice { .. }
