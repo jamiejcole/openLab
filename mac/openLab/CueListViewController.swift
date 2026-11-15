@@ -439,6 +439,17 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     override func viewDidLayout() {
         super.viewDidLayout()
         fitNameColumn()
+        solidHeader()
+    }
+
+    /// The header's row is solid, so the rows scrolled up behind it never show through it: AppKit leaves
+    /// a table's header clear over a blur of the rows, and a list squeezed to one row (the least window
+    /// with the inspector shown) showed them through its titles. The header sits in a clip view of the
+    /// scroll view's own, made once the table is in it, which fills its area with the list's colour.
+    private func solidHeader() {
+        guard let clip = outlineView.headerView?.superview as? NSClipView, !clip.drawsBackground else { return }
+        clip.backgroundColor = outlineView.backgroundColor
+        clip.drawsBackground = true
     }
 
     /// The width is worked out from the scroll view's own frame, with room always kept for a vertical scroll

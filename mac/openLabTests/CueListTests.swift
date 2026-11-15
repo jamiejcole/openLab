@@ -6123,16 +6123,16 @@ final class CueListColumnLayoutTests: XCTestCase {
 
     /// What the rows draw in the column header's area and in a band just above the list (the cue
     /// toolbar's lower edge): the window drawn with the rows and without them, compared there.
-    private func rowInk() throws -> (header: Int, above: Int) {
+    private func rowInk() throws -> (header: Int, above: Int, below: Int) {
         let window = try XCTUnwrap(wc?.window)
         let frameView = try XCTUnwrap(window.contentView?.superview)
         let scroll = try XCTUnwrap(outline.enclosingScrollView)
         let header = try XCTUnwrap(outline.headerView)
         let rows = (0..<outline.numberOfRows).compactMap { outline.rowView(atRow: $0, makeIfNecessary: false) }
         let shown = try renderView(frameView, scale: 1, background: .black)
-        rows.forEach { $0.isHidden = true }
+        for row in rows { row.isHidden = true }
         let bare = try renderView(frameView, scale: 1, background: .black)
-        rows.forEach { $0.isHidden = false }
+        for row in rows { row.isHidden = false }
         func differing(_ area: NSRect) -> Int {
             var n = 0
             for y in Int(area.minY)..<Int(area.maxY) {
@@ -6149,7 +6149,9 @@ final class CueListColumnLayoutTests: XCTestCase {
         }
         let list = scroll.convert(scroll.bounds, to: nil)
         let above = NSRect(x: list.minX, y: list.maxY, width: list.width, height: 12)
-        return (differing(header.convert(header.bounds, to: nil)), differing(above))
+        let head = header.convert(header.bounds, to: nil)
+        let below = NSRect(x: list.minX, y: list.minY, width: list.width, height: head.minY - list.minY)
+        return (differing(head), differing(above), differing(below))
     }
 
     func testAtTheLeastWindowSizeWithTheInspectorShownNoRowIsDrawnOverOrAboveTheColumnHeader() async throws {
@@ -6174,6 +6176,7 @@ final class CueListColumnLayoutTests: XCTestCase {
                 let ink = try rowInk()
                 XCTAssertEqual(ink.header, 0, "\(what): rows drawn through the header")
                 XCTAssertEqual(ink.above, 0, "\(what): rows drawn above the header")
+                XCTAssertGreaterThan(ink.below, 100, "\(what): the rows are drawn below the header")
                 // The selected row is whole between the header and the list's lower edge.
                 let row = outline.convert(outline.rect(ofRow: outline.selectedRow), to: nil)
                 XCTAssertLessThanOrEqual(row.maxY, head.minY + 0.5, "\(what): the selected row is below the header")

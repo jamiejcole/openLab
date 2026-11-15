@@ -13,15 +13,6 @@ final class CueHeaderView: NSTableHeaderView {
     static let edgeInside: CGFloat = 3
     static let edgeOutside: CGFloat = 2
 
-    /// The header is solid, so the rows scrolled up behind it never show through it. AppKit leaves a
-    /// table's header clear over a blur of the rows; in a list squeezed to one row (the least window
-    /// with the inspector shown) the rows behind it were read through and over its titles.
-    override func draw(_ dirtyRect: NSRect) {
-        (tableView?.backgroundColor ?? .controlBackgroundColor).setFill()
-        dirtyRect.intersection(bounds).fill()
-        super.draw(dirtyRect)
-    }
-
     override func mouseDown(with event: NSEvent) {
         guard let table = tableView, let window else { return super.mouseDown(with: event) }
         let point = location(of: event, in: window)
