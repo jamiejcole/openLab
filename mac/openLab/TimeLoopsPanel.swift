@@ -464,15 +464,17 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
 
     private func applyLock() {
         let sliced = hasSlices
-        for c in [startField, endField] as [NSControl] { c.isEnabled = !isLocked }
+        // A still has no time line: nothing here applies to it.
+        let off = isLocked || still
+        for c in [startField, endField] as [NSControl] { c.isEnabled = !off }
         // With slices each slice has its own count (QLab: edited on the slice markers).
-        for c in [playRadio, loopRadio] as [NSControl] { c.isEnabled = !isLocked && !sliced }
-        countField.isEnabled = !isLocked && !sliced && playCount != 0
-        deleteSlicesButton.isEnabled = !isLocked && sliced
-        addSliceButton.isEnabled = !isLocked && (waveform.insertion != nil || waveform.selection != nil)
-        fadeCheck.isEnabled = !isLocked
-        fadeCurvePopup.isEnabled = !isLocked && hasFades
-        holdCheck.isEnabled = !isLocked
+        for c in [playRadio, loopRadio] as [NSControl] { c.isEnabled = !off && !sliced }
+        countField.isEnabled = !off && !sliced && playCount != 0
+        deleteSlicesButton.isEnabled = !off && sliced
+        addSliceButton.isEnabled = !off && (waveform.insertion != nil || waveform.selection != nil)
+        fadeCheck.isEnabled = !off
+        fadeCurvePopup.isEnabled = !off && hasFades
+        holdCheck.isEnabled = !off
         if isLocked { endSliceCountEdit() }
         waveform.isLocked = isLocked
         waveform.window?.invalidateCursorRects(for: waveform)
