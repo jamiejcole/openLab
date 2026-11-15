@@ -218,7 +218,11 @@ impl DocCx<'_> {
             deferred,
             notices,
             reprobe,
+            warnings,
         } = fx;
+        for message in warnings {
+            self.log(LogLevel::Warn, message);
+        }
         self.send_commands(commands);
         self.doc.deferred.extend(deferred);
         for key in reprobe {

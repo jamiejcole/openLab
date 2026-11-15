@@ -321,7 +321,21 @@ impl Voices {
             None => position.saturating_add(swap - at),
         };
         let swap_after = r.swap_after;
+        let gave_up = r.gave_up;
+        r.retry_at = None;
         r.retired = true;
+        // The run ends where the old voice would have, wherever the sound is then: its length,
+        // in the core's count, is told now for the fresh run (the core forgot it on the move),
+        // so the end and an auto-follow keep their sample even if the move is given up.
+        if paused.is_none()
+            && let Some(rest) = total_frames(&plan.table)
+        {
+            fx.feedback.push(Input::ActionLength {
+                cue,
+                run,
+                frames: counted.saturating_add(rest),
+            });
+        }
         let replaces = match paused {
             Some(_) => {
                 fx.commands.push((
@@ -353,6 +367,7 @@ impl Voices {
                 moved: true,
                 relocated: true,
                 swap_limit: swap.saturating_add(seconds_to_samples(SEEK_PRIME_WAIT, env.rate)),
+                gave_up,
                 replaces,
                 swap_after,
                 release_fade: crossfade,
@@ -729,8 +744,9 @@ impl Voices {
             .saturating_add(seconds_to_samples(MOVE_LEAD, env.rate))
             .max(planned);
         let plan = self.recs.get(&old).and_then(|o| move_plan(o, next));
-        let Some(plan) = plan.filter(|_| env.now < r.swap_limit) else {
-            return self.give_up_move(id, env.now, fx);
+        let late = env.now >= r.swap_limit;
+        let Some(plan) = plan.filter(|_| !late) else {
+            return self.give_up_move(id, late, env, fx);
         };
         // The core's count on the old swap, moved on to the new one.
         let counted = r
@@ -755,8 +771,11 @@ impl Voices {
 
     /// A move to another device that cannot be made in step: the old voice keeps the run where
     /// it plays (to its end, which it reports), with any devamp sent for the moved one; the
-    /// waiting record and its stream go. A later patch sync moves it again if it still plays.
-    fn give_up_move(&mut self, id: VoiceId, now: SampleTime, fx: &mut Effects) {
+    /// waiting record and its stream go. Given up because its stream was `late`, the move is
+    /// tried again later ([`MOVE_RETRY`], twice as long after each give-up); the first give-up
+    /// of the run is logged and told the operator.
+    fn give_up_move(&mut self, id: VoiceId, late: bool, env: &Env<'_>, fx: &mut Effects) {
+        let now = env.now;
         let Some(r) = self.remove(id) else {
             return;
         };
@@ -782,8 +801,26 @@ impl Voices {
         if let Some(o) = self.recs.get_mut(&old) {
             o.retired = false;
             o.run = r.run;
+            if late {
+                let wait = seconds_to_samples(MOVE_RETRY, env.rate) << r.gave_up.min(4);
+                o.retry_at = Some(now.saturating_add(wait));
+                o.gave_up = r.gave_up.saturating_add(1);
+            }
         }
         self.by_run.insert(r.run, old);
+        if late && r.gave_up == 0 {
+            let name = env
+                .ws
+                .find_cue(r.cue)
+                .map(|c| c.number.clone().unwrap_or_else(|| c.name.clone()))
+                .unwrap_or_default();
+            let message = format!(
+                "cue {name}: its audio file could not be read in time to move it to its patch's \
+                 new audio device; it plays on where it was and the move is tried again"
+            );
+            fx.warnings.push(message.clone());
+            fx.notices.push(("move_delayed", message, Some(r.cue)));
+        }
         for (t, q) in devamps {
             if let Queued::Devamp { stop } = q
                 && let Some(o) = self.recs.get_mut(&old)

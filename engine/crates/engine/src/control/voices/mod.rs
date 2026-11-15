@@ -44,6 +44,8 @@ pub struct Effects {
     pub notices: Vec<(&'static str, String, Option<CueId>)>,
     /// Media to probe again (a stream of it failed).
     pub reprobe: Vec<String>,
+    /// Lines for the show log at `warn`.
+    pub warnings: Vec<String>,
 }
 
 /// The environment voice actions are carried out in.
@@ -178,8 +180,13 @@ pub struct VoiceRec {
     /// `offset` or `file`.
     rest: Option<Vec<Slice>>,
     /// A move to another device whose stream is late is planned again until this sample, then
-    /// made late ([`SEEK_PRIME_WAIT`] after its first planned swap).
+    /// given up ([`SEEK_PRIME_WAIT`] after its first planned swap).
     swap_limit: SampleTime,
+    /// A move to another device given up (its stream was not ready in time) is tried again
+    /// from this sample on (`Voices::take_due_moves`).
+    retry_at: Option<SampleTime>,
+    /// Moves of its run given up so far: each retry waits twice as long as the one before.
+    gave_up: u32,
 }
 
 /// A cue's seeks prepare at most one stream per this many seconds: a burst of seeks (a stuck
@@ -200,6 +207,10 @@ pub const SEEK_PRIME_WAIT: f64 = 0.25;
 /// so the new one's stream can be read and primed from the point where the sound then is, and
 /// the two crossfade in step. Short enough to be heard as at once.
 pub const MOVE_LEAD: f64 = 0.1;
+
+/// How long after a move to another device is given up (its stream not ready in time) it is
+/// tried again; doubled after each give-up of the same run, at most 16 times this.
+pub const MOVE_RETRY: f64 = SEEK_PRIME_WAIT;
 
 /// Where a voice's stream starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -627,6 +638,8 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         relocated: false,
         rest: None,
         swap_limit: 0,
+        retry_at: None,
+        gave_up: 0,
     }
 }
 

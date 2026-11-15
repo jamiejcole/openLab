@@ -40,6 +40,19 @@ impl Voices {
         v
     }
 
+    /// Whether a move to another device given up earlier is due to be tried again (clears each
+    /// one due): the control loop then follows the patches' devices again.
+    pub fn take_due_moves(&mut self, now: SampleTime) -> bool {
+        let mut due = false;
+        for r in self.recs.values_mut() {
+            if r.retry_at.is_some_and(|t| now >= t) {
+                r.retry_at = None;
+                due = true;
+            }
+        }
+        due
+    }
+
     /// Mixer patch slots a voice in the mixer may still play through (started, paused or
     /// stopping; previews and orphans included): a slot is reused only once none does.
     pub fn slots_in_use(&self) -> BTreeSet<u16> {

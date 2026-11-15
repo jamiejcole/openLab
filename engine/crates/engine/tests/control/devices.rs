@@ -4970,7 +4970,8 @@ fn a_move_to_a_disk_that_never_answers_plays_to_the_end_where_it_is_with_bounded
 #[test]
 fn a_stop_or_panic_while_a_move_waits_to_be_tried_again_leaves_nothing() {
     for panic in [false, true] {
-        let mut m = slow_move(2600);
+        let mut m = slow_move(3400);
+        assert_eq!(m.warns().len(), 1, "the move was given up first");
         if panic {
             m.s.transport(TransportAction::Panic);
         } else {

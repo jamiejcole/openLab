@@ -355,6 +355,12 @@ impl DocCx<'_> {
         self.expire_held_pictures(now, hold, &mut fx);
         self.start_seeks(now, &mut fx);
         self.follow(fx, now);
+        // A move to another device given up on a slow disk is tried again when due.
+        if self.doc.voices.take_due_moves(now) {
+            for input in self.follow_devices(now) {
+                self.feed(input, now);
+            }
+        }
         self.reclaim_slots(now);
         self.doc.net.tick(now);
         self.note_lookup_limit();
