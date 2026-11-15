@@ -66,7 +66,7 @@ fn fixture(kind: &str, frames_fps: Option<(u16, u16)>) -> PathBuf {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let ext = match kind {
-        "h264" | "hevc" | "prores" => "mov",
+        "h264" | "hevc" | "prores" | "prores4444" => "mov",
         "huge-png" | "wide-png" | "tall-png" | "alpha-png" | "tiny-png" => "png",
         other => other,
     };
@@ -2008,5 +2008,34 @@ fn geometry_edited_while_up_survives_a_stage_host_relaunch() {
     assert_eq!(
         colours(&mut s, &[[x(810.0), 0.5], [x(1110.0), 0.5], [0.1, 0.5]]),
         vec![YELLOW, RED, BLACK]
+    );
+}
+
+/// A movie with its own alpha (ProRes 4444; the card's right half at half alpha, straight, as
+/// the file holds it) over the stage's black: the opaque half shows its colour, the half-alpha
+/// half its colour at half strength (255 x 128 / 255 = 128, by hand): not at full strength
+/// (alpha ignored) and not at a quarter (multiplied twice).
+#[test]
+fn geometry_a_movies_own_alpha_blends_once_over_what_is_below() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "alpha.mov", (25, 25), "prores4444");
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    go(&mut s);
+    s.run(samples(0.2));
+    let read = colours(&mut s, &[[0.25, 0.3], [0.75, 0.3], [0.75, 0.8]]);
+    let near = |c: [u8; 4], want: [u8; 3]| {
+        c[..3]
+            .iter()
+            .zip(want)
+            .all(|(got, want)| got.abs_diff(want) <= 6)
+    };
+    assert!(near(read[0], [255, 0, 0]), "opaque: {read:?}");
+    assert!(
+        near(read[1], [0, 128, 0]),
+        "half green over black: {read:?}"
+    );
+    assert!(
+        near(read[2], [128, 128, 0]),
+        "half yellow over black: {read:?}"
     );
 }

@@ -196,6 +196,34 @@ extension VideoCueTests {
         await soon { self.g.xField.stringValue == "320" }
     }
 
+    /// The selection moves to another Video cue in the middle of a thumbnail drag (the playhead
+    /// following a continue): every move goes to the cue the drag began on, none to the other,
+    /// and one undo takes the whole drag back on the first.
+    func testAThumbnailDragKeepsToItsCueWhenTheSelectionMovesMidDrag() async throws {
+        try await showGeometry(of: 6)
+        let t = g.thumbnail
+        let k = t.stageRect.width / 1920
+        let window = try XCTUnwrap(wc.window)
+        func event(_ type: NSEvent.EventType, _ dx: CGFloat, _ dy: CGFloat) -> NSEvent {
+            let centre = t.convert(NSPoint(x: t.bounds.midX + dx, y: t.bounds.midY + dy), to: nil)
+            return NSEvent.mouseEvent(
+                with: type, location: centre, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        let seventh = pair(7, "translation")
+        t.mouseDown(with: event(.leftMouseDown, 0, 0))
+        t.mouseDragged(with: event(.leftMouseDragged, 20 * k, 0))
+        click(Self.geometryCue(7))
+        t.mouseDragged(with: event(.leftMouseDragged, 50 * k, 0))
+        t.mouseUp(with: event(.leftMouseUp, 80 * k, 0))
+        await soon("every move on cue 6") { self.pair(6, "translation") == CGPoint(x: 400, y: 120) }
+        await sync()
+        XCTAssertEqual(pair(7, "translation"), seventh, "none on cue 7")
+        await wc.editor.undo()
+        await soon("one undo, on cue 6") { self.pair(6, "translation") == CGPoint(x: 320, y: 120) }
+        XCTAssertEqual(pair(7, "translation"), seventh)
+    }
+
     // MARK: Flow 5
 
     /// Opacity: at 50 % the picture is half over the black below it, at 100 % opaque. (A file's

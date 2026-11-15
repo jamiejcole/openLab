@@ -18,8 +18,8 @@ use objc2::runtime::AnyObject;
 use objc2_av_foundation::{
     AVAssetWriter, AVAssetWriterInput, AVAssetWriterInputPixelBufferAdaptor, AVAssetWriterStatus,
     AVFileTypeQuickTimeMovie, AVMediaTypeVideo, AVVideoCodecKey,
-    AVVideoCodecTypeAppleProRes422Proxy, AVVideoCodecTypeH264, AVVideoCodecTypeHEVC,
-    AVVideoEncoderSpecificationKey, AVVideoHeightKey, AVVideoWidthKey,
+    AVVideoCodecTypeAppleProRes422Proxy, AVVideoCodecTypeAppleProRes4444, AVVideoCodecTypeH264,
+    AVVideoCodecTypeHEVC, AVVideoEncoderSpecificationKey, AVVideoHeightKey, AVVideoWidthKey,
 };
 use objc2_core_foundation::{CFData, CFRetained, CFString, CFURL};
 use objc2_core_graphics::{
@@ -36,8 +36,9 @@ use objc2_image_io::CGImageDestination;
 
 use crate::card;
 
-/// `--make-test-media <kind> <path> [frames fps]`: `kind` is `h264`, `hevc`, `prores` (with a
-/// frame count and rate) or `png`, `jpeg`, `tiff` (frame 0's card), `huge-png` (a black
+/// `--make-test-media <kind> <path> [frames fps]`: `kind` is `h264`, `hevc`, `prores`, or
+/// `prores4444` (the card's right half below the barcode at half alpha) (with a frame count and
+/// rate) or `png`, `jpeg`, `tiff` (frame 0's card), `huge-png` (a black
 /// PNG of 16384 x 8192 pixels, one bit each: small on disk, too many pixels to play), or the
 /// geometry tests' PNGs: `wide-png` (400 x 100, four bands left to right: red, green, blue,
 /// yellow), `tall-png` (100 x 400, the bands top to bottom), `alpha-png` (200 x 100, left half
@@ -82,6 +83,7 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
             "h264" => AVVideoCodecTypeH264,
             "hevc" => AVVideoCodecTypeHEVC,
             "prores" => AVVideoCodecTypeAppleProRes422Proxy,
+            "prores4444" => AVVideoCodecTypeAppleProRes4444,
             _ => return Err(format!("unknown codec {kind}")),
         }
     }
@@ -131,7 +133,18 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
         }
         writer.startSessionAtSourceTime(CMTime::new(0, fps));
         for frame in 0..frames {
-            let buffer = pixel_buffer(&bgra(frame))?;
+            let mut px = bgra(frame);
+            // ProRes 4444 carries alpha: the card's right half below the barcode at half alpha
+            // (straight: the colour itself, as a straight-alpha file holds it).
+            if kind == "prores4444" {
+                for (i, p) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                    let (x, y) = (i % card::WIDTH, i / card::WIDTH);
+                    if x >= card::WIDTH / 2 && y >= card::HEIGHT / 10 {
+                        p[3] = 128;
+                    }
+                }
+            }
+            let buffer = pixel_buffer(&px)?;
             let mut spins = 0u32;
             while !input.isReadyForMoreMediaData() {
                 spins += 1;
