@@ -197,6 +197,8 @@ final class MainWindowTests: XCTestCase {
         size(window.minSize.width)
         XCTAssertEqual(window.frame.width, window.minSize.width, "the narrowest window")
         let visible = try XCTUnwrap(outline.enclosingScrollView).contentView.bounds
+        let lastColumn = outline.rect(ofColumn: outline.numberOfColumns - 1)
+        XCTAssertLessThanOrEqual(lastColumn.maxX, visible.maxX, "the last column is in view at the least width")
         for id in times {
             XCTAssertEqual(try column(id).width, try XCTUnwrap(widths[id]), "\(id) keeps its width")
             let header = outline.rect(ofColumn: outline.column(withIdentifier: NSUserInterfaceItemIdentifier(id)))

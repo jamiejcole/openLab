@@ -5095,6 +5095,24 @@ final class CueListDrawingTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(try mark(h, H.group, 4)).minX, introType.minX, "the group's type icon")
     }
 
+    /// The flag shares one slot with the preview mark, as QLab shows a flag in its status area: a flagged cue
+    /// being previewed shows the preview mark there, and its flag again once the preview ends.
+    func testAFlagGivesWayToAPreviewInItsSharedSlotAndComesBack() async throws {
+        let h = try await demo()
+        let flag = try XCTUnwrap(try mark(h, H.rain, 3), "Rain's flag")
+        guard case .success = await h.store.transport(.preview(cue: H.rain)) else { return XCTFail("preview") }
+        try await h.rig.advance(0.2)
+        await assertEventually { h.store.previewing.contains(H.rain) }
+        let preview = try XCTUnwrap(try mark(h, H.rain, 2), "the preview mark")
+        XCTAssertEqual(preview, flag, "in the flag's place")
+        XCTAssertNil(try mark(h, H.rain, 3), "the flag gives way")
+        guard case .success = await h.store.transport(.stopPreview(cue: H.rain)) else { return XCTFail("stop") }
+        try await h.rig.advance(0.2)
+        await assertEventually { !h.store.previewing.contains(H.rain) }
+        XCTAssertNil(try mark(h, H.rain, 2))
+        XCTAssertEqual(try mark(h, H.rain, 3), flag, "the flag is back")
+    }
+
     /// Flow (#696): a selected row's status icon is drawn in the selection's text colour (white for broken),
     /// and in its state colour when not selected.
     func testASelectedRowsStatusIconIsDrawnInTheSelectionColourAndInItsStateColourOtherwise() async throws {

@@ -166,19 +166,20 @@ final class ProgressFillView: NSView {
 }
 
 /// A cell: up to four small images around one label. The first (status) column has five images, each in
-/// a fixed slot (`statusSlots`): playhead (0), state (1), the cue's type icon (4), preview (2), flag (3).
+/// a fixed slot (`statusSlots`): playhead (0), state (1), the cue's type icon (4), preview or flag (2, 3).
 /// Duration column: `progress` behind the label.
 final class CueCell: NSTableCellView {
     let images = [NSImageView(), NSImageView(), NSImageView(), NSImageView(), NSImageView()]
     /// The first column's slots, left to right, as (image, x from the cell's left edge, width). Each mark
     /// has its own place whether or not the others are shown, so every row's marks line up down the list:
     /// the playhead's room at the row's edge (the row draws the pointer there), the state, then the type
-    /// icon beside it (as in QLab), then the preview or override mark and the flag.
+    /// icon beside it (as in QLab), then one slot the preview or override mark and the flag share: QLab shows
+    /// a flag in the status area, not a place of its own.
     static let statusSlots: [(image: Int, x: CGFloat, width: CGFloat)] = [
-        (0, 0, 12), (1, 14, 16), (4, 32, 16), (2, 50, 16), (3, 68, 16),
+        (0, 0, 12), (1, 14, 16), (4, 32, 16), (2, 50, 16), (3, 50, 16),
     ]
     /// The first column's width: the last slot and a margin. The column cannot be resized.
-    static let statusWidth: CGFloat = 88
+    static let statusWidth: CGFloat = 70
     /// The colours of the tinted images, kept so a highlighted row can draw them in its text colour.
     private var tints: [Int: (image: NSImage, tint: NSColor, label: String)] = [:]
     let label = NSTextField(labelWithString: "")
@@ -1716,7 +1717,9 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 cell.images[2].setAccessibilityIdentifier("cue-override")
                 cell.setImage(2, icon: .outputOverridden, label: loc("cue.outputOverridden"), tint: .systemRed)
             }
-            switch flagMarker(node, expanded: outlineView.isItemExpanded(node)) {
+            // The flag shares the preview's slot and gives way to it: the preview and the override are the
+            // passing states, and the flag shows again when they end.
+            switch cell.images[2].isHidden ? flagMarker(node, expanded: outlineView.isItemExpanded(node)) : nil {
             case .solid: cell.setImage(3, icon: .flagged, label: loc("cue.flagged"), tint: .systemYellow)
             case .hollow:
                 cell.setImage(3, icon: .flaggedInside, label: loc("cue.flagged.inside"), tint: .systemYellow)
