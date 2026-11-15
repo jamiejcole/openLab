@@ -14,6 +14,8 @@ impl Voices {
             .recs
             .iter()
             .filter(|(id, r)| match r.phase {
+                // A voice a seek moved from stands for no run.
+                Phase::Playing if r.retired => false,
                 Phase::Playing => on(**id, r.cue, true),
                 Phase::Waiting { start: Some(_), .. } => on(**id, r.cue, false),
                 _ => false,
@@ -164,6 +166,7 @@ impl Voices {
             .map(|(id, _)| *id)
             .collect();
         for id in expired {
+            self.fade_replaced(id, now, None, fx);
             if let Some(r) = self.remove(id) {
                 // A held start never reached the mixer: nothing played.
                 fx.feedback.push(Input::StartFailed {
@@ -182,18 +185,31 @@ impl Voices {
 
     /// Show cues playing on rendered sample `t`: position in the action, frames left, and the
     /// frame of the media file the voice is at (its slices, loops and devamps applied; `None`
-    /// without a slice table).
+    /// without a slice table). A seek waiting for its stream (or for the resume) already stands
+    /// at its point: the play line moves when the operator clicks, not when the sound does.
     pub fn progress(&self, t: SampleTime) -> Vec<(CueId, u64, Option<u64>, Option<u64>)> {
         let mut v: Vec<(CueId, u64, Option<u64>, Option<u64>)> = self
             .recs
             .values()
-            .filter(|r| !r.preview)
+            .filter(|r| !r.preview && !r.retired)
             .filter_map(|r| {
+                if let Phase::Waiting {
+                    prepared: Some((p, total)),
+                    start: Some(_),
+                    ..
+                } = &r.phase
+                    && r.moved
+                {
+                    let at = p.slices.first().map(|s| s.start);
+                    return Some((r.cue, r.shown, *total, at));
+                }
                 let pos = r.position(t)?;
                 let left = r
                     .total
                     .map(|total| r.offset.saturating_add(total).saturating_sub(pos));
-                Some((r.cue, pos, left, r.file_frame(pos)))
+                // Elapsed counts from where its start stands in the action (a seek's point).
+                let elapsed = r.shown.saturating_add(pos.saturating_sub(r.offset));
+                Some((r.cue, elapsed, left, r.file_frame(pos)))
             })
             .collect();
         v.sort_by_key(|(c, _, _, _)| *c);
@@ -210,6 +226,7 @@ impl Voices {
     /// are never reused, so they cannot be taken for the new workspace's voices.
     pub fn forget_all(&mut self) {
         self.recs.clear();
+        self.seek_gate.clear();
         self.by_run.clear();
         self.aliases.clear();
         self.primes.clear();

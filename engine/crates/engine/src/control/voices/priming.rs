@@ -18,22 +18,23 @@ impl Voices {
             let Some(r) = self.recs.get(&id) else {
                 continue;
             };
-            let (cue, run, offset, started) = (
+            let (cue, run, from, started) = (
                 r.cue,
                 r.run,
-                r.offset,
+                r.file.map_or(StartAt::Offset(r.offset), StartAt::File),
                 matches!(r.phase, Phase::Waiting { start: Some(_), .. }),
             );
             if started {
                 self.try_start(id, env, fx);
                 continue;
             }
-            match self.prepare(cue, offset, env, fx) {
-                Ok(p) => {
+            match self.prepare(cue, from, env, fx) {
+                Ok(made) => {
                     if let Some(r) = self.recs.get_mut(&id)
                         && let Phase::Waiting { prepared, .. } = &mut r.phase
                     {
-                        *prepared = Some(p);
+                        *prepared = Some((made.prepared, made.total));
+                        r.shown = made.shown;
                         // The file read now, which a relink since the record was made may
                         // have changed: a failure probes this one.
                         r.media = cue_media(env.ws, cue);
@@ -52,14 +53,14 @@ impl Voices {
         }
     }
 
-    /// Prepares the stream of `cue` from `offset` (no I/O: the disk worker opens the file).
+    /// Prepares the stream of `cue` from `from` (no I/O: the disk worker opens the file).
     pub(super) fn prepare(
         &self,
         cue: CueId,
-        offset: u64,
+        from: StartAt,
         env: &mut Env<'_>,
         fx: &mut Effects,
-    ) -> Result<(PreparedStream, Option<u64>), PrepError> {
+    ) -> Result<Made, PrepError> {
         let Some(c) = super::cue_of(env, cue) else {
             return Err(PrepError::Failed);
         };
@@ -82,7 +83,14 @@ impl Voices {
         let Some(spec) = plan_spec(&c.kind) else {
             return Err(PrepError::Failed);
         };
-        let slices = match cue_slices(&spec, &ready.probed.info, env.rate, offset) {
+        let info = &ready.probed.info;
+        let planned = match from {
+            StartAt::Offset(offset) => {
+                cue_slices(&spec, info, env.rate, offset).map(|s| (s, offset))
+            }
+            StartAt::File(frame) => cue_slices_from(&spec, info, env.rate, frame),
+        };
+        let (slices, shown) = match planned {
             Ok(s) => s,
             Err(PlanFailure::Plan(e)) => {
                 fx.notices.push((
@@ -104,7 +112,11 @@ impl Voices {
             slices,
         };
         match env.streamer.prepare(req) {
-            Ok(p) => Ok((p, total)),
+            Ok(prepared) => Ok(Made {
+                prepared,
+                total,
+                shown,
+            }),
             Err(e) => {
                 fx.notices.push((
                     "stream_failed",
@@ -161,7 +173,10 @@ impl Voices {
             }
             // A prime that cannot be made now (probe pending or failed) is tried again later.
             let mut quiet = Effects::default();
-            if let Ok((prepared, total)) = self.prepare(cue, 0, env, &mut quiet) {
+            if let Ok(Made {
+                prepared, total, ..
+            }) = self.prepare(cue, StartAt::Offset(0), env, &mut quiet)
+            {
                 made += 1;
                 self.primes.insert(
                     cue,

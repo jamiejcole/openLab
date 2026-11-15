@@ -1,0 +1,20 @@
+{
+  "about": "Light appearance, narrow window: the Time & Loops waveform zoomed in and scrolled, a click (the line at the time under the pointer, no scroll) and then a section dragged inside the zoomed view.",
+  "show": "Demo",
+  "media": {"media/a.wav": 60},
+  "appearance": "light",
+  "window": {"width": 900, "height": 700},
+  "steps": [
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 0.5},
+    {"magnify": "time-loops-waveform", "by": 3, "at": [0, 0.5]},
+    {"scroll": "time-loops-waveform", "dx": -200, "dy": 0, "precise": true},
+    {"advance": 0.5},
+    {"click": "time-loops-waveform", "at": [0.5, 0.5]},
+    {"advance": 0.2},
+    {"shot": "zoomed-clicked"},
+    {"drag": "time-loops-waveform", "from": [0.2, 0.5], "to": [0.98, 0.5]},
+    {"shot": "zoomed-section"}
+  ]
+}

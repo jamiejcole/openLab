@@ -76,6 +76,24 @@ impl DocCx<'_> {
         }
     }
 
+    /// Swaps in the seeks whose streams are ready (each tick; see `Voices::start_seeks`).
+    pub(super) fn start_seeks(&mut self, now: SampleTime, fx: &mut Effects) {
+        let floor = self.stop_floor();
+        let mut env = Env {
+            doc: self.doc.id,
+            ws: self.doc.model.ws(),
+            media: &self.doc.media,
+            streamer: &mut self.eng.streamer,
+            patches: &self.eng.patches,
+            ids: &mut self.eng.voice_ids,
+            rate: self.eng.rate,
+            cue_outputs: self.eng.cue_outputs,
+            now,
+            floor,
+        };
+        self.doc.voices.start_seeks(&mut env, fx);
+    }
+
     pub(super) fn deliver_deferred(&mut self, now: SampleTime) {
         if self.doc.deferred.is_empty() {
             return;

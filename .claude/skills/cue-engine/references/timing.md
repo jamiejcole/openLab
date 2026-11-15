@@ -61,6 +61,17 @@ Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
 - Playlist (not looping) and random: nominal span = sum of children's spans (pre-wait + action, audio from `CueLengths`) or the chosen child's span. Loaded at or past it, the action ends at once on GO (no child plays); below it the child reached loads at the remainder. Unknown or endless span clamps nothing. Random's pick counts as played in its cycle even if nothing starts.
 - Audio: offsets are passed as asked and the binary clamps. An offset at or past the plan's end (trims, slices, finite loops counted) is an empty plan: the binary reports `ActionLength { frames: offset }` (plus the delay of a held-up start) so core dates the end and a chained successor on that sample, not on a late `ActionEnded` (`late_start` warning otherwise). An infinite loop wraps (offset modulo the loop), so it is never past the end.
 
+### Seek (load to a point of the file)
+`Seek { cue, position }` (a click in an Audio cue's waveform, `seek.rs`) names a point of the media file, not of the timeline: core cannot plan slices, so it passes `position` (seconds to device frames; NaN and negative are 0, huge saturates) and the binary keeps it inside the trims and plans from there (`cue_slices_from`), past loops included.
+- A point at or past the out point is the end of a pass of the last slice: its next pass follows if it has one (a forever loop loops on from its start), else nothing (a playing cue's action ends).
+- Not Audio, stopping (`stop_end`), post-waiting with its sound over, or a run with no voice: `LoadIgnored`. Broken (static, run time, or a lost mark while the device is away): `CueBroken`, nothing sent.
+- A preview of the cue jumps first: `SeekVoice` with a fresh preview id; it stays a preview (no `PreviewChanged`).
+- Idle or loaded: a load there (`LoadVoiceAt`, `Loaded.seek`, no pre-wait left, offset 0); starting it plays from the point with no pre-wait (a cue loaded disarmed gets its `LoadVoiceAt` at the start). A lost mark clears as for Load.
+- Pre-waiting: the pre-wait ends now (`until = now`; paused: on the resume) and the action starts there in the same call (`Run::seek` taken at action start: `LoadVoiceAt`, then `StartVoice` offset 0); a stream a load to time prepared is unloaded first.
+- In its action (running, fading, paused): `SeekVoice { run: fresh, from, at: now }` re-keys the run like a resume (feedback for `from` is stale), the voice counts from 0 at the move (`Voice::Started { from: 0 }`, `action_offset` 0) and its end is unknown until the binary's `ActionLength` for the fresh run, counted from the move: an auto-follow fires once, at the moved sound's end. Timers, post-wait and continue are untouched.
+- The moved voice is given every level Fade cues hold or move (`Ramp` 0 frames at the value, then the rest of a moving ramp) and its duck (`DuckVoice`), and a pending devamp is sent again (a paused one gets it on its resume). Paused stays paused; the resume plays from the point (offset 0).
+- A burst costs core one fresh id per seek and no chain budget; the binary coalesces.
+
 ## Operations (CUE-05)
 Voice actions apply to armed Audio cues only. Group operations also reach descendants.
 
@@ -75,7 +86,7 @@ Voice actions apply to armed Audio cues only. Group operations also reach descen
 | stopping | `TriggerIgnored` | idle, hard `StopVoice` | stopping | stopping | `LoadIgnored` | idle, hard `StopVoice` |
 | broken | `CueBroken` (static problems: timing runs); a broken-and-paused cue resumes | pending auto-continue cancelled | timers freeze | timers continue | `CueBroken` | idle, continue cancelled; static problems stay |
 
-The Start column is for option `Nothing`; other options replace `TriggerIgnored`.
+The Start column is for option `Nothing`; other options replace `TriggerIgnored`. Seek is the Load column except where a running, paused or pre-waiting cue moves ("Seek" above).
 
 | From | Event | To |
 |---|---|---|

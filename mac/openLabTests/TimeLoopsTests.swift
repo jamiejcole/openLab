@@ -843,6 +843,14 @@ final class TimeLoopsTests: XCTestCase {
         type(panel.sliceCountField, count == 0 ? "\u{221E}" : String(count))
         await assertEventually { self.panel.sliceMarks.first?.playCount == count }
         await answered()
+        // The click that placed the marker loaded the cue there: a click at the start loads it from
+        // the beginning again.
+        wave.click(atX: wave.scale.x(0))
+        await assertEventually("the load at the start went out first") {
+            self.rig.wire.sent.contains {
+                if case .transport(_, .seek(_, 0)) = $0 { return true } else { return false }
+            }
+        }
         _ = await rig.store.transport(.start(cue: Self.intro))
     }
 
@@ -1352,4 +1360,758 @@ func editShow(_ url: URL, _ edit: (inout JSONValue) -> Void) throws {
     edit(&ws)
     file.set("workspace", ws)
     try file.text().write(to: url, atomically: true, encoding: .utf8)
+}
+
+// MARK: Clicks and sections in the waveform
+
+/// A click in the Time & Loops waveform moves where an Audio cue plays, and a drag selects a section
+/// (#711's flows), done as the operator does them in a workspace window on the real engine: real
+/// mouse events on the waveform view, keys through the app's key handling. What is checked is what
+/// the window shows: the position line, the shaded section, the row's state mark, the play line and
+/// the cue's times as the engine reports them, the trims and slice markers.
+extension PlayheadFlowTests {
+    private var loops: TimeLoopsPanel { wc.inspector.timeLoops }
+    private var waveView: WaveformView { loops.waveform }
+
+    /// Audio cues of a `seconds` tone each, added after the last row; probed unless `probed` is false.
+    private func waveTones(_ count: Int, seconds: Double = 30, probed: Bool = true) async throws -> [ModelID] {
+        let dir = try XCTUnwrap(try tempFiles(["x.txt"]).first).deletingLastPathComponent()
+        var urls: [URL] = []
+        for i in 0..<count {
+            let url = dir.appendingPathComponent("wave-\(UUID().uuidString)-\(i).wav")
+            try writeWAV(url, seconds: seconds)
+            urls.append(url)
+        }
+        let ids = await wc.editor.addFiles(urls, parent: nil, index: wc.cueList.roots.count)
+        XCTAssertEqual(ids.count, count)
+        if probed {
+            await assertEventually("probed") {
+                try? await self.play(0.01)
+                return ids.allSatisfy { self.store.mediaDurations[$0]?.file != nil }
+            }
+        }
+        return ids
+    }
+
+    /// `id` selected and its Time & Loops tab shown; with `drawn`, once its waveform is drawn.
+    private func showWaveform(_ id: ModelID, drawn: Bool = true) async {
+        wc.cueList.selectAsUser([id])
+        await assertEventually("the inspector shows it") { self.wc.inspector.selection == [id] }
+        wc.inspector.tabView.selectTabViewItem(withIdentifier: "timeLoops")
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(waveView.bounds.width, 300, "the waveform is laid out")
+        if drawn { await waveformDrawn() }
+    }
+
+    private func waveformDrawn() async {
+        repeat { await loops.loading?.value } while loops.reloadPending
+        await assertEventually("the waveform is drawn") {
+            self.waveView.peaks.map { $0.start == self.loops.visible.start && $0.end == self.loops.visible.end }
+                ?? false
+        }
+    }
+
+    private func waveX(_ t: Double) -> CGFloat { waveView.scale.x(t) }
+
+    private func waveMouse(_ type: NSEvent.EventType, x: CGFloat, y: CGFloat? = nil, clicks: Int = 1) -> NSEvent {
+        let p = waveView.convert(NSPoint(x: x, y: y ?? WaveformView.rulerHeight + 30), to: nil)
+        return NSEvent.mouseEvent(
+            with: type, location: p, modifierFlags: [], timestamp: 0, windowNumber: wc.window?.windowNumber ?? 0,
+            context: nil, eventNumber: 0, clickCount: clicks, pressure: 1)!
+    }
+
+    /// A press at `x` (view points; `y` from the view's top) handed to what the window has under it,
+    /// which must be the waveform.
+    private func pressWave(x: CGFloat, y: CGFloat? = nil, clicks: Int = 1) {
+        let e = waveMouse(.leftMouseDown, x: x, y: y, clicks: clicks)
+        guard let content = wc.window?.contentView,
+            let target = content.hitTest(content.convert(e.locationInWindow, from: nil))
+        else { return XCTFail("nothing under the pointer") }
+        XCTAssertTrue(target === waveView, "the press lands on the waveform, not on \(target)")
+        target.mouseDown(with: e)
+    }
+
+    private func clickWave(at t: Double) {
+        pressWave(x: waveX(t))
+        waveView.mouseUp(with: waveMouse(.leftMouseUp, x: waveX(t)))
+    }
+
+    /// A press at `fromX`, moved through each of `xs` and let go at the last (view points): the
+    /// moves and the release go to the waveform, as AppKit sends a drag to the view it began on.
+    private func dragWave(fromX: CGFloat, through xs: [CGFloat], y: CGFloat? = nil) {
+        pressWave(x: fromX, y: y)
+        for x in xs { waveView.mouseDragged(with: waveMouse(.leftMouseDragged, x: x, y: y)) }
+        waveView.mouseUp(with: waveMouse(.leftMouseUp, x: xs.last ?? fromX, y: y))
+    }
+
+    private func dragWave(from a: Double, to b: Double) {
+        dragWave(fromX: waveX(a), through: [waveX((a + b) / 2), waveX(b)])
+    }
+
+    /// A key as the app's key monitor gets it; what it passes on goes to the window.
+    private func waveKey(_ chars: String, code: UInt16, _ flags: NSEvent.ModifierFlags = []) throws {
+        let e = try key(chars, code: code, flags, windowNumber: wc.window?.windowNumber ?? 0)
+        if let passed = app.handleKeyDown(e) { wc.window?.sendEvent(passed) }
+    }
+
+    private func shiftI() throws { try waveKey("I", code: 34, .shift) }
+    private func shiftO() throws { try waveKey("O", code: 31, .shift) }
+    private func keyM() throws { try waveKey("m", code: 46) }
+
+    /// Space (GO) from `id`'s waveform, then a tenth of a second. GO moves the selection on, so `id` is
+    /// selected again, as the operator does to see its waveform.
+    private func goFromWaveform(_ id: ModelID) async throws {
+        let before = goes()
+        try waveKey(" ", code: 49)
+        await assertEventually("GO was sent") { self.goes() == before + 1 }
+        await sync()
+        try await play(0.1)
+        await showWaveform(id)
+    }
+
+    /// The positions the app asked cues to play from, in order.
+    private var seeks: [Double] {
+        wire.sent.compactMap { if case .transport(_, .seek(_, let p)) = $0 { return p } else { return nil } }
+    }
+
+    /// The `count`th seek has gone out and the engine has run it.
+    private func seekRun(_ count: Int) async {
+        await assertEventually("the seek went out") { self.seeks.count == count }
+        await sync()
+    }
+
+    /// The state mark drawn in `id`'s row, as its label; nil when it shows none.
+    private func rowMark(_ id: ModelID) -> String? {
+        let ov = wc.cueList.outlineView
+        guard let node = wc.cueList.node(id) else { return nil }
+        let col = ov.column(withIdentifier: NSUserInterfaceItemIdentifier("status"))
+        guard let cell = ov.view(atColumn: col, row: ov.row(forItem: node), makeIfNecessary: true) as? CueCell,
+            !cell.images[1].isHidden
+        else { return nil }
+        return cell.images[1].accessibilityLabel()
+    }
+
+    /// The engine reports `id` playing within `tolerance` of `expected` seconds into its file, and the
+    /// play line is drawn there.
+    private func playsAt(
+        _ id: ModelID, _ expected: Double, tolerance: Double = 0.3, file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        await assertEventually("plays at \(expected) s", file: file, line: line) {
+            guard let p = self.store.progress[id]?.position else { return false }
+            return abs(p - expected) <= tolerance
+        }
+        XCTAssertEqual(
+            waveView.playhead, store.progress[id]?.position, "the play line is drawn there", file: file, line: line)
+    }
+
+    /// The columns (view points) of the drawn waveform, along the top of the waves, whose colour
+    /// `matches`.
+    private func drawnColumns(_ matches: (NSColor) -> Bool) throws -> [CGFloat] {
+        let rep = try renderView(waveView)
+        let s = CGFloat(rep.pixelsWide) / waveView.bounds.width
+        let y = Int((WaveformView.rulerHeight + 4) * s)
+        return (0..<rep.pixelsWide).compactMap { px in
+            guard let c = rep.colorAt(x: px, y: y)?.usingColorSpace(.sRGB), matches(c) else { return nil }
+            return (CGFloat(px) + 0.5) / s
+        }
+    }
+
+    /// The white position line is drawn at `x`.
+    private func lineDrawn(at x: CGFloat) throws -> Bool {
+        try drawnColumns { min($0.redComponent, $0.greenComponent, $0.blueComponent) > 0.4 }.contains {
+            abs($0 - x) <= 1
+        }
+    }
+
+    /// The span of the waves drawn with the section's light wash, or nil.
+    private func shadedSpan() throws -> ClosedRange<CGFloat>? {
+        // The wash over the dark waves is a pale blue-grey: blue above red, unlike a line's edge.
+        let shaded = try drawnColumns {
+            (0.1..<0.4).contains($0.redComponent) && $0.blueComponent < 0.4 && $0.blueComponent > $0.redComponent
+        }
+        guard let a = shaded.min(), let b = shaded.max() else { return nil }
+        return a...b
+    }
+
+    /// The trims typed in their fields.
+    private func typeWaveTrims(start: String?, end: String?) async {
+        for (field, text) in [(loops.startField, start), (loops.endField, end)] {
+            guard let text else { continue }
+            field.stringValue = text
+            loops.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+        }
+        await assertEventually("the trims are set") { self.wc.inspector.pendingKinds.isEmpty }
+    }
+
+    /// Slice `index`'s play count typed over its drawn number after a double-click there.
+    private func typeSliceCount(_ index: Int, _ text: String) async {
+        let r = waveView.countRect(index)
+        pressWave(x: r.midX, y: r.midY, clicks: 1)
+        waveView.mouseUp(with: waveMouse(.leftMouseUp, x: r.midX, y: r.midY))
+        pressWave(x: r.midX, y: r.midY, clicks: 2)
+        waveView.mouseUp(with: waveMouse(.leftMouseUp, x: r.midX, y: r.midY, clicks: 2))
+        XCTAssertFalse(loops.sliceCountField.isHidden, "the count opens for typing")
+        loops.sliceCountField.stringValue = text
+        loops.controlTextDidEndEditing(
+            Notification(name: NSControl.textDidEndEditingNotification, object: loops.sliceCountField))
+        await assertEventually("the count is taken") { self.wc.inspector.pendingKinds.isEmpty }
+    }
+
+    private var runningMark: String { loc("cue.state.running") }
+
+    // MARK: Flows
+
+    func testIdleCueClickShowsTheLineAndTheCueLoadedAndGoPlaysFromThere() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        XCTAssertNil(rowMark(id), "idle")
+        clickWave(at: 12)
+        XCTAssertEqual(waveView.insertion ?? -1, 12, accuracy: 0.05, "the line is where the click was")
+        XCTAssertTrue(try lineDrawn(at: waveX(12)), "and drawn there")
+        await seekRun(1)
+        XCTAssertEqual(seeks.last ?? -1, 12, accuracy: 0.05)
+        await assertEventually("the row shows the cue loaded") { self.rowMark(id) == loc("cue.state.loaded") }
+        XCTAssertTrue(wc.window?.firstResponder === waveView, "the waveform has the focus; GO still works")
+        await assertEventually { self.store.playheads[self.list] == id }
+        try await goFromWaveform(id)
+        try await play(0.4)
+        await playsAt(id, 12.5)
+        XCTAssertEqual(rowMark(id), runningMark)
+    }
+
+    func testPlayingOrPreviewingCueClickJumpsThereAndPlaysOnWithItsTimesFromThere() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        await assertEventually { self.store.playheads[self.list] == id }
+        try await goFromWaveform(id)
+        try await play(1.9)
+        await playsAt(id, 2)
+        clickWave(at: 20)
+        await seekRun(1)
+        XCTAssertEqual(rowMark(id), runningMark, "no stop")
+        try await play(0.5)
+        await playsAt(id, 20.5)
+        XCTAssertEqual(rowMark(id), runningMark)
+        let times = try XCTUnwrap(store.progress[id])
+        XCTAssertEqual(times.elapsed, 20.5, accuracy: 0.3, "the elapsed time goes on from the clicked point")
+        XCTAssertEqual(times.remaining ?? -1, 9.5, accuracy: 0.3)
+        try await play(1)
+        await playsAt(id, 21.5)
+        // A preview moved by a click plays on: it is not ended.
+        _ = await store.transport(.hardStop(cue: id))
+        try await play(0.2)
+        await assertEventually("stopped") { self.rowMark(id) == nil }
+        try waveKey("v", code: 9)
+        await assertEventually("previewing") { self.store.previewing.contains(id) }
+        try await play(1)
+        clickWave(at: 15)
+        await seekRun(2)
+        try await play(1)
+        XCTAssertTrue(store.previewing.contains(id), "the preview goes on")
+    }
+
+    func testPausedCueClickMovesThePlayLineAndResumePlaysFromThere() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        await assertEventually { self.store.playheads[self.list] == id }
+        try await goFromWaveform(id)
+        try await play(1.9)
+        try waveKey("p", code: 35)
+        await assertEventually("paused") { self.rowMark(id) == loc("cue.state.paused") }
+        clickWave(at: 20)
+        await seekRun(1)
+        // Progress goes out as device time moves; the virtual clock stands still until told.
+        try await play(0.1)
+        await playsAt(id, 20, tolerance: 0.05)
+        try await play(1)
+        await playsAt(id, 20, tolerance: 0.05)
+        XCTAssertEqual(rowMark(id), loc("cue.state.paused"), "it stays paused")
+        try waveKey("p", code: 35)
+        try await play(0.5)
+        await playsAt(id, 20.5)
+        XCTAssertEqual(rowMark(id), runningMark)
+    }
+
+    func testLoopingSliceClickInALaterSliceOrInsideTheLoopPlaysFromThereAndTheLoopStillLoops() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        clickWave(at: 10)
+        try keyM()
+        await assertEventually("a marker at 10 s") { self.waveView.sliceMarks == [10] }
+        await typeSliceCount(0, "\u{221E}")
+        XCTAssertEqual(loops.sliceMarks.first?.playCount, 0, "slice 1 loops until devamped")
+        clickWave(at: 2)
+        await seekRun(2)
+        try await goFromWaveform(id)
+        try await play(0.9)
+        await playsAt(id, 3)
+        clickWave(at: 4)
+        await seekRun(3)
+        try await play(3)
+        await playsAt(id, 7)
+        try await play(5)
+        await playsAt(id, 2, tolerance: 0.4)
+        try await play(10)
+        await playsAt(id, 2, tolerance: 0.4)
+        clickWave(at: 15)
+        await seekRun(4)
+        try await play(1)
+        await playsAt(id, 16)
+        XCTAssertEqual(rowMark(id), runningMark)
+    }
+
+    func testSlicedCueClickInsideACountThreeSlicePlaysThatPassThenTwoMore() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        clickWave(at: 10)
+        try keyM()
+        await assertEventually("a marker at 10 s") { self.waveView.sliceMarks == [10] }
+        await typeSliceCount(0, "3")
+        clickWave(at: 0.5)
+        await seekRun(2)
+        try await goFromWaveform(id)
+        try await play(0.9)
+        clickWave(at: 6)
+        await seekRun(3)
+        try await play(3)
+        await playsAt(id, 9, tolerance: 0.4)
+        try await play(2)
+        await playsAt(id, 1, tolerance: 0.4)
+        try await play(10)
+        await playsAt(id, 1, tolerance: 0.4)
+        try await play(10)
+        await playsAt(id, 11, tolerance: 0.4)
+    }
+
+    func testClickInTheDimmedPartsPlacesTheLineThereAndLoadsOrJumpsToTheNearestTrim() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        await typeWaveTrims(start: "5", end: "20")
+        clickWave(at: 2)
+        XCTAssertEqual(waveView.insertion ?? -1, 2, accuracy: 0.05, "the line goes where clicked")
+        XCTAssertTrue(try lineDrawn(at: waveX(2)))
+        await seekRun(1)
+        await assertEventually("loaded") { self.rowMark(id) == loc("cue.state.loaded") }
+        await assertEventually { self.store.playheads[self.list] == id }
+        try await goFromWaveform(id)
+        try await play(0.4)
+        await playsAt(id, 5.5)
+        clickWave(at: 25)
+        XCTAssertEqual(waveView.insertion ?? -1, 25, accuracy: 0.05)
+        await seekRun(2)
+        try await play(0.5)
+        await assertEventually("nothing is left past the end time: the cue ends") { self.rowMark(id) == nil }
+    }
+
+    func testPreWaitClickEndsTheWaitAndPostWaitClickMovesOnlyTheSound() async throws {
+        let ids = try await waveTones(3)
+        let (waiting, posting, next) = (ids[0], ids[1], ids[2])
+        _ = await store.setProperty(waiting, .preWait(5))
+        _ = await store.setProperty(posting, .postWait(3))
+        _ = await store.setProperty(posting, .continueMode("auto_continue"))
+        await sync()
+        await showWaveform(waiting)
+        _ = await store.transport(.start(cue: waiting))
+        try await play(1)
+        await assertEventually("pre-waiting") { self.rowMark(waiting) == loc("cue.state.preWaiting") }
+        clickWave(at: 12)
+        await seekRun(1)
+        await assertEventually("the pre-wait ended: it plays") { self.rowMark(waiting) == self.runningMark }
+        try await play(0.5)
+        await playsAt(waiting, 12.5)
+
+        await showWaveform(posting)
+        _ = await store.transport(.start(cue: posting))
+        try await play(1)
+        clickWave(at: 20)
+        await seekRun(2)
+        try await play(0.5)
+        await playsAt(posting, 20.5)
+        try await play(1.2)
+        XCTAssertNil(rowMark(next), "the post-wait still counts from the start: not yet at 2.7 s")
+        try await play(0.5)
+        await assertEventually("the auto-continue fired at 3 s") { self.rowMark(next) == self.runningMark }
+        XCTAssertLessThan(store.progress[next]?.elapsed ?? 99, 0.5, "started once, just now")
+        XCTAssertEqual(rowMark(posting), runningMark, "its sound plays on from the clicked point")
+    }
+
+    func testZoomedAndScrolledClickOrDragUsesTheTimeUnderThePointerAndTheViewStays() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        loops.zoom(by: 1.0 / 3, anchor: 0)
+        loops.pan(bySeconds: 10)
+        await waveformDrawn()
+        let shown = loops.visible
+        XCTAssertEqual(shown.start, 10, accuracy: 1e-9)
+        XCTAssertEqual(shown.end, 20, accuracy: 1e-9)
+        clickWave(at: 15)
+        XCTAssertEqual(waveView.insertion ?? -1, 15, accuracy: 0.02)
+        await seekRun(1)
+        XCTAssertEqual(seeks.last ?? -1, 15, accuracy: 0.02)
+        await assertEventually("loaded") { self.rowMark(id) == loc("cue.state.loaded") }
+        XCTAssertTrue(loops.visible == shown, "no scroll or zoom")
+        dragWave(from: 12, to: 14)
+        let section = try XCTUnwrap(waveView.selection)
+        XCTAssertEqual(section.lowerBound, 12, accuracy: 0.02)
+        XCTAssertEqual(section.upperBound, 14, accuracy: 0.02)
+        XCTAssertTrue(loops.visible == shown, "no scroll or zoom")
+    }
+
+    func testPressOnAHandleOrACountAndDragMovesItAndNotThePlaybackNorASection() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        dragWave(fromX: waveX(0) + 1, through: [waveX(1.5), waveX(3)])
+        await assertEventually("the start moved") { self.loops.startTime == 3 }
+        dragWave(fromX: waveX(30) - 1, through: [waveX(27), waveX(25)])
+        await assertEventually("the end moved") { self.loops.endTime == 25 }
+        XCTAssertEqual(seeks, [], "nothing moved the playback")
+        XCTAssertNil(waveView.selection)
+        XCTAssertNil(waveView.insertion)
+        XCTAssertNil(rowMark(id), "not loaded")
+        clickWave(at: 10)
+        try keyM()
+        await assertEventually("a marker at 10 s") { self.waveView.sliceMarks == [10] }
+        await seekRun(1)
+        let afterMarker = seeks.count
+        dragWave(fromX: waveX(10), through: [waveX(11), waveX(12)])
+        await assertEventually("the marker moved") { self.loops.sliceMarks.map(\.time) == [12] }
+        loops.fadeCheck.performClick(nil)
+        await assertEventually("fades on") { self.loops.fadeIn == 1 }
+        let band = waveView.waveRect.minY + 2
+        dragWave(fromX: waveX(4), through: [waveX(5), waveX(6)], y: band)
+        await assertEventually("the fade-in moved") { self.loops.fadeIn == 3 }
+        let count = waveView.countRect(0)
+        dragWave(fromX: count.midX, through: [count.midX + 40], y: count.midY)
+        XCTAssertEqual(seeks.count, afterMarker, "no handle, marker, fade or count press moved the playback")
+        XCTAssertNil(waveView.selection, "nor selected a section")
+        await typeSliceCount(0, "2")
+        XCTAssertEqual(loops.sliceMarks.first?.playCount, 2, "the count is edited as before")
+        XCTAssertEqual(seeks.count, afterMarker)
+    }
+
+    func testDragAcrossTheWaveformShadesTheSectionAndDoesNotMoveThePlayback() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        await assertEventually { self.store.playheads[self.list] == id }
+        try await goFromWaveform(id)
+        try await play(1.9)
+        dragWave(from: 20, to: 10)
+        let section = try XCTUnwrap(waveView.selection, "dragged right to left")
+        XCTAssertEqual(section.lowerBound, 10, accuracy: 0.05)
+        XCTAssertEqual(section.upperBound, 20, accuracy: 0.05)
+        let shaded = try XCTUnwrap(try shadedSpan(), "the section is shaded")
+        XCTAssertEqual(shaded.lowerBound, waveX(10), accuracy: 1.5)
+        XCTAssertEqual(shaded.upperBound, waveX(20), accuracy: 1.5)
+        XCTAssertEqual(seeks, [], "a drag sends no seek")
+        try await play(0.5)
+        await playsAt(id, 2.5)
+        dragWave(from: 4, to: 8)
+        XCTAssertEqual(waveView.selection?.lowerBound ?? -1, 4, accuracy: 0.05, "left to right")
+        XCTAssertEqual(waveView.selection?.upperBound ?? -1, 8, accuracy: 0.05)
+
+        // Zoomed to the first 10 s, a drag past the right edge scrolls on and stops at the file's end.
+        loops.zoom(by: 1.0 / 3, anchor: 0)
+        await waveformDrawn()
+        let width = waveView.bounds.width
+        // Well past the edge, each move scrolls at most a quarter of the view.
+        dragWave(fromX: waveX(5), through: Array(repeating: width * 1.5, count: 30))
+        XCTAssertEqual(loops.visible.end, 30, accuracy: 1e-9, "scrolled to the end of the file and stopped")
+        XCTAssertEqual(loops.visible.end - loops.visible.start, 10, accuracy: 1e-9, "not zoomed")
+        XCTAssertEqual(waveView.selection?.lowerBound ?? -1, 5, accuracy: 0.05)
+        XCTAssertEqual(waveView.selection?.upperBound ?? -1, 30, accuracy: 0.001, "to the file's end")
+        await waveformDrawn()
+        dragWave(fromX: waveX(25), through: Array(repeating: -width / 2, count: 30))
+        XCTAssertEqual(loops.visible.start, 0, accuracy: 1e-9, "back to the start and stopped")
+        XCTAssertEqual(waveView.selection?.lowerBound ?? -1, 0, accuracy: 0.001)
+        XCTAssertEqual(waveView.selection?.upperBound ?? -1, 25, accuracy: 0.05)
+        XCTAssertEqual(seeks, [])
+        await waveformDrawn()
+    }
+
+    func testADragShorterThanFiftyMillisecondsIsAPlainClick() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        dragWave(fromX: waveX(12), through: [waveX(12.02), waveX(12.03)])
+        XCTAssertNil(waveView.selection, "too short for a section")
+        XCTAssertEqual(waveView.insertion ?? -1, 12, accuracy: 0.03)
+        await seekRun(1)
+        await assertEventually("loaded") { self.rowMark(id) == loc("cue.state.loaded") }
+    }
+
+    func testWithASectionShiftIAndShiftOCropTheCueToItEachOneUndoStep() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        dragWave(from: 8, to: 16)
+        XCTAssertNotNil(waveView.selection)
+        try shiftI()
+        await assertEventually("the start is the section's left edge") { self.loops.startTime == 8 }
+        try shiftO()
+        await assertEventually("the end is its right edge") { self.loops.endTime == 16 }
+        XCTAssertEqual(loops.startField.stringValue, CueTime.format(8))
+        XCTAssertEqual(loops.endField.stringValue, CueTime.format(16))
+        XCTAssertEqual(seeks, [], "the keys move no playback")
+        XCTAssertNil(rowMark(id))
+        await wc.editor.undo()
+        await assertEventually("one undo takes the end back") { self.loops.endTime == nil }
+        XCTAssertEqual(loops.startTime, 8)
+        await wc.editor.undo()
+        await assertEventually("the next the start") { self.loops.startTime == 0 }
+        // No section: the keys act at the clicked point.
+        clickWave(at: 5)
+        XCTAssertNil(waveView.selection)
+        try shiftI()
+        await assertEventually { self.loops.startTime == 5 }
+        clickWave(at: 25)
+        try shiftO()
+        await assertEventually { self.loops.endTime == 25 }
+    }
+
+    func testWithASectionAddSliceMarksBothEdgesButNotAnEdgeNearATrimOrMarker() async throws {
+        await showWaveform(try await waveTones(1)[0])
+        dragWave(from: 8, to: 16)
+        try keyM()
+        await assertEventually("markers on both edges") { self.loops.sliceMarks.map(\.time) == [8, 16] }
+        XCTAssertEqual(loops.sliceMarks.map(\.playCount), [1, 1], "the section between them plays once")
+        XCTAssertEqual(waveView.sliceMarks, [8, 16], "drawn")
+        await wc.editor.undo()
+        await assertEventually("one undo step for both") { self.loops.sliceMarks.isEmpty }
+        await wc.editor.redo()
+        await assertEventually { self.loops.sliceMarks.count == 2 }
+        // An edge within 0.05 s of a marker or of a trim gets none; the button does what M does.
+        dragWave(from: 16.03, to: 24)
+        XCTAssertTrue(loops.addSliceButton.isEnabled)
+        loops.addSliceButton.performClick(nil)
+        await assertEventually("only the far edge") { self.loops.sliceMarks.map(\.time) == [8, 16, 24] }
+        dragWave(from: 27, to: 30)
+        try keyM()
+        await assertEventually("not at the end trim") { self.loops.sliceMarks.map(\.time) == [8, 16, 24, 27] }
+        XCTAssertEqual(seeks, [])
+    }
+
+    func testASectionIsClearedByAClickByAnotherCueOrByANewFileAndNeverCarriesOver() async throws {
+        let ids = try await waveTones(2)
+        await showWaveform(ids[0])
+        dragWave(from: 8, to: 16)
+        XCTAssertNotNil(try shadedSpan())
+        clickWave(at: 20)
+        XCTAssertNil(waveView.selection, "a click elsewhere clears it")
+        XCTAssertNil(try shadedSpan())
+        XCTAssertEqual(waveView.insertion ?? -1, 20, accuracy: 0.05, "and places the line")
+        dragWave(from: 8, to: 16)
+        await showWaveform(ids[1])
+        XCTAssertNil(waveView.selection, "not on the other cue")
+        XCTAssertNil(waveView.insertion)
+        await showWaveform(ids[0])
+        XCTAssertNil(waveView.selection, "gone when coming back")
+        dragWave(from: 8, to: 16)
+        let other = try XCTUnwrap(try tempFiles(["x.txt"]).first).deletingLastPathComponent()
+            .appendingPathComponent("other.wav")
+        try writeWAV(other, seconds: 20)
+        _ = await store.setProperty(ids[0], .media(other.path))
+        await assertEventually("the new file is shown") {
+            try? await self.play(0.01)
+            return self.store.mediaDurations[ids[0]]?.file.map { abs($0 - 20) < 0.01 } ?? false
+        }
+        XCTAssertNil(waveView.selection, "a new file clears it")
+    }
+
+    func testFileStillBeingReadTakesNoClickAndABrokenCueGetsOnlyTheLine() async throws {
+        let id = try await waveTones(1, probed: false)[0]
+        await showWaveform(id, drawn: false)
+        XCTAssertEqual(waveView.message, loc("timeLoops.notRead"), "it says the file is being read")
+        clickWave(at: 0)
+        dragWave(fromX: 40, through: [80, 120])
+        XCTAssertNil(waveView.insertion, "a click does nothing")
+        XCTAssertNil(waveView.selection, "nor a drag")
+        XCTAssertEqual(seeks, [])
+
+        await assertEventually("probed") {
+            try? await self.play(0.01)
+            return self.store.mediaDurations[id]?.file != nil
+        }
+        await waveformDrawn()
+        guard case .success = await engine.request(.loseDevice) else { return XCTFail("lose_device") }
+        try await play(0.5)
+        await assertEventually("broken: no device") { self.rowMark(id) == loc("cue.state.broken") }
+        clickWave(at: 12)
+        XCTAssertEqual(waveView.insertion ?? -1, 12, accuracy: 0.05, "the line goes there for the keys")
+        try await play(0.5)
+        XCTAssertEqual(seeks, [], "nothing is asked to load or sound")
+        XCTAssertEqual(rowMark(id), loc("cue.state.broken"))
+    }
+
+    func testSeveralCuesHaveNoTimeLoopsTabAndShowModeTakesNoClick() async throws {
+        let ids = try await waveTones(2)
+        wc.cueList.selectAsUser(ids)
+        await assertEventually { self.wc.inspector.selection == ids }
+        XCTAssertNil(
+            wc.inspector.tabView.tabViewItems.first { ($0.identifier as? String) == "timeLoops" }, "no Time & Loops")
+        await showWaveform(ids[0])
+        wc.setShowMode(true)
+        XCTAssertFalse(wc.isVisible(.inspector), "Show Mode hides the inspector")
+        waveView.mouseDown(with: waveMouse(.leftMouseDown, x: waveX(12)))
+        waveView.mouseUp(with: waveMouse(.leftMouseUp, x: waveX(12)))
+        waveView.keyDown(with: try key("I", code: 34, .shift, windowNumber: wc.window?.windowNumber ?? 0))
+        XCTAssertNil(waveView.insertion)
+        XCTAssertEqual(seeks, [])
+        XCTAssertEqual(loops.startTime, 0)
+        XCTAssertNil(rowMark(ids[0]), "nothing moved or loaded")
+    }
+
+    /// A press whose release is lost (Show Mode, a tab switch) moves nothing.
+    func testAPressWhoseReleaseIsLostMovesNothing() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        pressWave(x: waveX(12))
+        wc.inspector.endGestures()
+        waveView.mouseUp(with: waveMouse(.leftMouseUp, x: waveX(12)))
+        XCTAssertNil(waveView.insertion)
+        XCTAssertEqual(seeks, [])
+        XCTAssertNil(rowMark(id))
+    }
+
+    /// A cue whose file is missing never says it is being read: it says the file is missing, in a
+    /// colour that reads on the waves' background in light and dark appearance, and a click there
+    /// moves nothing.
+    func testAMissingFileSaysSoAndNeverThatItIsBeingRead() async throws {
+        let id = try await waveTones(1)[0]
+        let set = await store.setProperty(id, .media("/nonexistent-\(UUID().uuidString)/gone.wav"))
+        guard case .success = set else { return XCTFail("media: \(set)") }
+        await assertEventually("broken: the file is missing") {
+            try? await self.play(0.1)
+            return self.rowMark(id) == loc("cue.state.broken")
+        }
+        await showWaveform(id, drawn: false)
+        for _ in 0..<6 {
+            XCTAssertEqual(waveView.message, loc("timeLoops.missing"))
+            try await play(0.5)
+        }
+        XCTAssertNil(waveView.peaks)
+        clickWave(at: 0.5)
+        XCTAssertEqual(seeks, [], "nothing to load")
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            try XCTUnwrap(NSAppearance(named: name)).performAsCurrentDrawingAppearance {
+                guard let fg = WaveformView.messageColour.usingColorSpace(.sRGB),
+                    let bg = WaveformView.waveBackground.usingColorSpace(.sRGB)
+                else { return XCTFail("colours") }
+                func luminance(_ c: NSColor) -> CGFloat {
+                    0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent
+                }
+                let ratio = (luminance(fg) + 0.05) / (luminance(bg) + 0.05)
+                XCTAssertGreaterThan(ratio, 7, "the message reads on the waves in \(name.rawValue)")
+            }
+        }
+    }
+
+    /// With a section shown, the line where the cue is loaded stays drawn beside it.
+    func testTheLoadedPositionStaysDrawnBesideASection() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        clickWave(at: 12)
+        await seekRun(1)
+        dragWave(from: 18, to: 26)
+        XCTAssertNotNil(waveView.selection)
+        XCTAssertEqual(waveView.insertion ?? -1, 12, accuracy: 0.05)
+        XCTAssertTrue(try lineDrawn(at: waveX(12)), "the loaded position is still drawn")
+        let shaded = try XCTUnwrap(try shadedSpan())
+        XCTAssertEqual(shaded.lowerBound, waveX(18), accuracy: 1.5)
+        await assertEventually("loaded") { self.rowMark(id) == loc("cue.state.loaded") }
+    }
+
+    /// A press held while another cue comes into the tab (not by a click in the list) sends that
+    /// cue nothing when it is let go.
+    func testAPressHeldWhileAnotherCueIsShownMovesNeitherCue() async throws {
+        let ids = try await waveTones(2)
+        await showWaveform(ids[0])
+        pressWave(x: waveX(12))
+        wc.inspector.setSelection([ids[1]])
+        await assertEventually("the other cue is shown") { self.wc.inspector.selection == [ids[1]] }
+        waveView.mouseUp(with: waveMouse(.leftMouseUp, x: waveX(12)))
+        XCTAssertNil(waveView.insertion)
+        try await play(0.2)
+        XCTAssertEqual(seeks, [])
+        XCTAssertNil(rowMark(ids[1]))
+    }
+
+    /// A cue looping until devamped, clicked past its end time: the loop goes on from its start
+    /// (the click lands at the end of a pass), the cue never stops.
+    func testALoopingCueClickedPastItsEndTimeLoopsOnFromItsStart() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        await typeWaveTrims(start: nil, end: "20")
+        loops.loopRadio.performClick(nil)
+        await assertEventually("loops until devamped") { self.loops.playCount == 0 }
+        await assertEventually { self.store.playheads[self.list] == id }
+        try await goFromWaveform(id)
+        try await play(1.9)
+        await playsAt(id, 2)
+        clickWave(at: 25)
+        XCTAssertEqual(waveView.insertion ?? -1, 25, accuracy: 0.05, "the line goes where clicked")
+        await seekRun(1)
+        try await play(0.5)
+        await playsAt(id, 0.5, tolerance: 0.4)
+        XCTAssertEqual(rowMark(id), runningMark, "still playing")
+        try await play(1)
+        await playsAt(id, 1.5, tolerance: 0.4)
+        XCTAssertEqual(rowMark(id), runningMark)
+    }
+
+    /// With a section, the position line and the play line all shown, the position line is drawn
+    /// bright and the section's edges faint, so the line is told apart by its look.
+    func testThePositionLineStandsOutFromASectionsEdges() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        clickWave(at: 12)
+        await seekRun(1)
+        dragWave(from: 18, to: 26)
+        XCTAssertGreaterThanOrEqual(
+            WaveformView.positionLine.alphaComponent - WaveformView.sectionEdge.alphaComponent, 0.5)
+        XCTAssertTrue(try lineDrawn(at: waveX(12)), "the position line is drawn bright")
+        XCTAssertFalse(try lineDrawn(at: waveX(18)), "the section's edge is not")
+        XCTAssertFalse(try lineDrawn(at: waveX(26)))
+        _ = id
+    }
+
+    /// A slice marker added at the position line is drawn over it: its green line stays seen.
+    func testASliceMarkerAtThePositionLineIsDrawnOverIt() async throws {
+        await showWaveform(try await waveTones(1)[0])
+        clickWave(at: 10)
+        try keyM()
+        await assertEventually("a marker at 10 s") { self.waveView.sliceMarks == [10] }
+        XCTAssertEqual(waveView.insertion ?? -1, 10, accuracy: 0.001, "the line is still there")
+        let green = try drawnColumns { $0.greenComponent > $0.redComponent + 0.2 && $0.greenComponent > 0.3 }
+        XCTAssertTrue(green.contains { abs($0 - self.waveX(10)) <= 1 }, "the marker's green shows")
+        XCTAssertFalse(try lineDrawn(at: waveX(10)), "not the white line over it")
+    }
+
+    /// A 20 s file sliced at 5 s, ending at 15 s, its last slice played three times (35 s in all),
+    /// clicked past its end time while in its first slice: the times shown stay within the cue's
+    /// length, elapsed and remaining adding up to it.
+    func testAClickPastTheEndTimeOfACountedLastSliceKeepsTheTimesWithinTheCue() async throws {
+        let id = try await waveTones(1, seconds: 20)[0]
+        await showWaveform(id)
+        await typeWaveTrims(start: nil, end: "15")
+        clickWave(at: 5)
+        try keyM()
+        await assertEventually("a marker at 5 s") { self.waveView.sliceMarks == [5] }
+        await typeSliceCount(1, "3")
+        XCTAssertEqual(loops.playCount, 3)
+        // Away from the start handle: loaded near the start.
+        clickWave(at: 0.5)
+        await seekRun(2)
+        await assertEventually { self.store.playheads[self.list] == id }
+        try await goFromWaveform(id)
+        try await play(0.9)
+        clickWave(at: 18)
+        await seekRun(3)
+        for _ in 0..<8 {
+            try await play(0.5)
+            let times = try XCTUnwrap(store.progress[id])
+            let remaining = try XCTUnwrap(times.remaining, "a counted cue has an end")
+            XCTAssertLessThanOrEqual(times.elapsed, 35.05, "never past the cue's length")
+            XCTAssertEqual(times.elapsed + remaining, 35, accuracy: 0.1, "elapsed and remaining add up to it")
+        }
+        XCTAssertEqual(rowMark(id), runningMark)
+    }
 }

@@ -10,6 +10,7 @@ extension InspectorViewController {
         timeLoops.onChange = { [weak self] change in self?.sendTimeLoops(change) }
         timeLoops.onHold = { [weak self] in self?.gestureHold($0) }
         timeLoops.onInvalid = { [weak self] key in self?.showRefusal(loc(key)) }
+        timeLoops.onSeek = { [weak self] cue, position in self?.seek(cue, to: position) }
         timeLoops.loadPeaks = { [weak self] cue, start, end, buckets in
             guard let self else { return .failure(.notConnected) }
             return await self.store.waveform(cue: cue, start: start, end: end, buckets: buckets)
@@ -38,7 +39,12 @@ extension InspectorViewController {
             timeLoops.isActive = false
             return
         }
-        timeLoops.show(cue: cue.id, kind: cue.raw["kind"] ?? .null, duration: store.mediaDurations[cue.id]?.file)
+        let missing = (store.problems[cue.id] ?? []).contains {
+            $0.type == "media_missing" || $0.type == "media_unsupported"
+        }
+        timeLoops.show(
+            cue: cue.id, kind: cue.raw["kind"] ?? .null, duration: store.mediaDurations[cue.id]?.file,
+            missing: missing)
         updateTimeLoopsActive()
         updateTimeLoopsProgress()
     }
@@ -58,6 +64,21 @@ extension InspectorViewController {
     func updateTimeLoopsProgress() {
         guard let cue, cue.kindType == "audio" else { return }
         timeLoops.showProgress(position: store.progress[cue.id]?.position)
+    }
+
+    /// A click in the waveform: the cue plays on (or is loaded, or its pre-wait ends) from
+    /// `position` seconds into its file; the engine keeps it inside the trims. A broken cue gets
+    /// only the line: nothing would load or sound. A refusal goes to the show log, as a transport
+    /// key's does.
+    func seek(_ id: ModelID, to position: Double) {
+        guard !isLocked, position.isFinite, position >= 0, store.model?.cue(id)?.kindType == "audio" else { return }
+        let problems = store.problems[id] ?? []
+        guard (store.cueStates[id]?.state ?? (problems.isEmpty ? .idle : .broken)) != .broken else { return }
+        Task { [store] in
+            if case .failure(let e) = await store.transport(.seek(cue: id, position: position)) {
+                _ = store.receive(.log(.warn, String(format: loc("error.transportFailed"), EngineSession.describe(e))))
+            }
+        }
     }
 
     /// Sends `change` made to the cue as the model has it plus any edit not yet answered
