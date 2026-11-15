@@ -1,0 +1,20 @@
+{
+  "about": "Find Missing Files (#640): fourteen cues moved with their show, found in a folder with a long name; the list scrolls under its fixed header; then the least window size, light and dark; a folder too deep to search in full.",
+  "show": "find-missing-files/moved-show.openlab",
+  "steps": [
+    {"find_missing_files": [
+      "preshow-music.wav", "house-to-half.wav", "doors.wav", "thunder-roll.wav", "rain-bed.wav", "wind-gusts.wav",
+      "church-bell.wav", "phone-ring.wav", "radio-static.wav", "car-arrives.wav", "gunshot.wav", "owl.wav",
+      "clock-chimes.wav", "Sound Design Archive 2024 Final Revision/Act Two Transitions And Underscore/curtain-music.wav"
+    ], "folder": "Show Media Delivered By The Sound Department For The Spring Season Final Final"},
+    {"shot": "many-top"},
+    {"scroll": "missing-files-scroll", "dy": -400},
+    {"shot": "many-scrolled"},
+    {"resize": [520, 320]},
+    {"shot": "many-least-size"},
+    {"find_missing_files": [
+      "a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/owl.wav", "doors.wav"
+    ], "folder": "deep"},
+    {"shot": "cut-short-least-size"}
+  ]
+}

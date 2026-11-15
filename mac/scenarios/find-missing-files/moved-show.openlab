@@ -1,0 +1,824 @@
+{
+  "format_version": 7,
+  "workspace": {
+    "id": "00000000-0000-0000-0000-0000000006d1",
+    "name": "Moved Show",
+    "settings": {
+      "min_go_interval": 0.0,
+      "panic_duration": 0.5,
+      "autosave_interval": 30.0,
+      "osc_access": {
+        "no_passcode": {
+          "view": true,
+          "edit": true,
+          "control": true
+        },
+        "passcodes": []
+      },
+      "master_db": 0.0,
+      "hotkeys": {
+        "go": {
+          "key": "space",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "stop_all": null,
+        "pause_all": {
+          "key": "[",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "resume_all": {
+          "key": "]",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "load_selected": {
+          "key": "l",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "pause_resume_selected": {
+          "key": "p",
+          "modifiers": {
+            "shift": false,
+            "control": false,
+            "alt": false,
+            "command": false
+          }
+        },
+        "start_selected": null,
+        "stop_selected": null,
+        "reset_selected": null
+      },
+      "auto_number_start": 1.0,
+      "auto_number_increment": 1.0
+    },
+    "patches": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Main",
+        "master_db": 0.0,
+        "outputs": [
+          {
+            "level_db": 0.0,
+            "mute": false,
+            "polarity_inverted": false
+          },
+          {
+            "level_db": 0.0,
+            "mute": false,
+            "polarity_inverted": false
+          }
+        ]
+      }
+    ],
+    "network_patches": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Desk",
+        "host": "127.0.0.1",
+        "port": 53000,
+        "protocol": "udp"
+      }
+    ],
+    "cue_lists": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Main",
+        "cues": [
+          {
+            "id": "00000000-0000-0000-0000-000000000601",
+            "number": "1",
+            "name": "Preshow music",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/preshow-music.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000602",
+            "number": "2",
+            "name": "House to half",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/house-to-half.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000603",
+            "number": "3",
+            "name": "Doors",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/doors.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000604",
+            "number": "4",
+            "name": "Thunder roll",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/thunder-roll.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000605",
+            "number": "5",
+            "name": "Rain bed",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/rain-bed.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000606",
+            "number": "6",
+            "name": "Wind gusts",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/wind-gusts.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000607",
+            "number": "7",
+            "name": "Church bell",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/church-bell.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000608",
+            "number": "8",
+            "name": "Phone ring",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/phone-ring.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000609",
+            "number": "9",
+            "name": "Radio static",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/radio-static.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000060a",
+            "number": "10",
+            "name": "Car arrives",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/car-arrives.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000060b",
+            "number": "11",
+            "name": "Gunshot",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/gunshot.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000060c",
+            "number": "12",
+            "name": "Owl",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/owl.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000060d",
+            "number": "13",
+            "name": "Clock chimes",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/clock-chimes.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          },
+          {
+            "id": "00000000-0000-0000-0000-00000000060e",
+            "number": "14",
+            "name": "Curtain music",
+            "notes": "",
+            "color": "none",
+            "flagged": false,
+            "armed": true,
+            "pre_wait": 0.0,
+            "post_wait": 0.0,
+            "continue_mode": "do_not_continue",
+            "triggers": {
+              "hotkey": null,
+              "osc": null
+            },
+            "second_trigger": "nothing",
+            "second_trigger_on_release": false,
+            "kind": {
+              "type": "audio",
+              "media": "media/curtain-music.wav",
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "start_time": 0.0,
+              "end_time": null,
+              "fade_in": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "fade_out": {
+                "duration": 0.0,
+                "curve": "linear"
+              },
+              "slices": [],
+              "last_slice_play_count": 0,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "preload": false
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

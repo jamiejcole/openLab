@@ -243,6 +243,7 @@ fn relink_of_a_missing_folder_is_refused_and_snapshot_answers() {
         id: id1,
         request: Request::Relink {
             folder: "/no/such/openlab-folder".into(),
+            preview: false,
         },
     });
     assert!(matches!(result(&r), Outcome::Error(e) if e.code == ErrorCode::NotFound));

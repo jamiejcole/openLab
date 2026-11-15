@@ -85,7 +85,8 @@ final class FooterBar: NSView {
     /// The warnings button was used: open the sidebar on the Warnings tab.
     var onWarnings: (() -> Void)?
     private(set) var presentation = StatusPresentation.make(nil)
-    /// A result the operator asked for that needs no answer (a relink); clears after a while (`noticeLifetime`) unless replaced.
+    /// A note that needs no answer (an edit refused, a crash note); clears after a while
+    /// (`noticeLifetime`) unless replaced.
     let noticeLabel = NSTextField(labelWithString: "")
     /// "12 cues in 2 lists", from the model (QLab's footer centre).
     let countLabel = NSTextField(labelWithString: "")

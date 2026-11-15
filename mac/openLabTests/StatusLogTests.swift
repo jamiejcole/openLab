@@ -427,7 +427,7 @@ final class StatusLogTests: XCTestCase {
         XCTAssertEqual(log.note.stringValue, String(format: loc("log.dropped"), 7))
     }
 
-    /// App-made notes (relink results, key warnings, the edits-lost line) are local rows: shown
+    /// App-made notes (Find Missing Files results, key warnings, the edits-lost line) are local rows: shown
     /// where they happened, kept over a tail re-read and a new run; the engine's own `log`
     /// notices are not (they are records, shown from `log_entry`).
     func testAppNotesShowAndSurviveARereadAndANewRun() async throws {
@@ -488,7 +488,5 @@ final class StatusLogTests: XCTestCase {
     func testWindowMenuOpensTheLog() {
         let window = MainMenu.make().windows
         XCTAssertTrue(window.items.contains { $0.action == #selector(AppDelegate.showLog(_:)) })
-        let file = MainMenu.make().bar.items.compactMap(\.submenu).first { $0.title == "File" }
-        XCTAssertTrue(file?.items.contains { $0.action == #selector(AppDelegate.relinkMedia(_:)) } == true)
     }
 }
