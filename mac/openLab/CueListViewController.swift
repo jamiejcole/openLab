@@ -1231,24 +1231,25 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         return info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
     }
 
-    /// What a file drop does, or nil to refuse it: at least one audio file, nothing in Show Mode. A
-    /// single file dropped on an audio cue's row replaces its file; anything else makes cues from
-    /// the audio files where it lands (other files in the drop are left out).
+    /// What a file drop does, or nil to refuse it: at least one sound, movie or still, nothing in
+    /// Show Mode. A single file dropped on the row of a cue of its kind (a sound on an Audio cue, a
+    /// movie or still on a Video cue) replaces that cue's file; anything else makes cues from the
+    /// media files where it lands (other files in the drop are left out).
     func fileDropPlan(_ urls: [URL], item: Any?, index: Int) -> FileDrop? {
-        let audio = CueEditor.audioExtensionFiles(urls)
-        guard !isEditLocked, !audio.isEmpty else { return nil }
+        let media = CueEditor.mediaExtensionFiles(urls)
+        guard !isEditLocked, !media.isEmpty else { return nil }
         if urls.count == 1, index == NSOutlineViewDropOnItemIndex, let node = item as? CueNode,
-            node.cue.kindType == "audio"
+            CueEditor.cueKind(forFile: urls[0])?.wireType == node.cue.kindType
         {
             return .replace(node.id, urls[0])
         }
         let target = dropTarget(item, index)
-        return .insert(audio, target.parent?.id, target.index)
+        return .insert(media, target.parent?.id, target.index)
     }
 
-    /// How many dragged files `plan` leaves out (not audio files).
+    /// How many dragged files `plan` leaves out (not media files).
     static func skipped(_ urls: [URL], _ plan: FileDrop) -> Int {
-        if case .insert(let audio, _, _) = plan { return urls.count - audio.count }
+        if case .insert(let media, _, _) = plan { return urls.count - media.count }
         return 0
     }
 
@@ -1351,7 +1352,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         }
         guard let id = selected.first else { return true }
         // A file cue's target is chosen in the file chooser, a cue target's typed as a cue number.
-        if column == "target", store.model?.cue(id)?.kindType == "audio" {
+        if column == "target", store.model?.cue(id)?.takesFile == true {
             guard !isEditLocked, onChooseFile != nil else { return true }
             // The chooser is modal: opening it inside the key monitor would nest its loop there.
             Task { @MainActor [weak self] in
@@ -1413,7 +1414,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     func beginCellEdit(_ id: ModelID, column: String = "duration") -> Bool {
         guard !isEditLocked, let field = Self.editableColumns[column], let node = nodes[id],
             outlineView.row(forItem: node) >= 0,
-            field != .duration || InspectorEdit.durationKinds.contains(node.cue.kindType),
+            field != .duration || InspectorEdit.editsDuration(node.cue, media: store.mediaDurations[id]),
             field != .target || InspectorEdit.targetKinds.contains(node.cue.kindType),
             // An auto-follow cue's post-wait is its duration, shown and not typed.
             field != .postWait || node.cue.raw["continue_mode"]?.stringValue != "auto_follow",
@@ -1423,7 +1424,8 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         settling += 1  // a field still shown for an earlier commit is this edit's now
         cellEditor.isEditable = true
         editingCell = (id, column)
-        cellEditor.stringValue = InspectorEdit.display(field, cue: node.cue, model: model)
+        cellEditor.stringValue = InspectorEdit.display(
+            field, cue: node.cue, model: model, media: store.mediaDurations[node.id])
         // An unnamed cue's editor starts empty, with the name it follows as a hint.
         cellEditor.placeholderString = column == "name" ? node.cue.targetDefaultName(lookup: cueLookup) : nil
         switch column {
@@ -1540,7 +1542,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
             onEditedCueGone?()
             return
         }
-        guard cell.column != "duration" || InspectorEdit.durationKinds.contains(node.cue.kindType),
+        guard cell.column != "duration" || InspectorEdit.editsDuration(node.cue, media: store.mediaDurations[cell.id]),
             cell.column != "target" || InspectorEdit.targetKinds.contains(node.cue.kindType),
             let column = outlineView.tableColumns.firstIndex(where: { $0.identifier.rawValue == cell.column })
         else { return cancelCellEdit() }
@@ -1683,7 +1685,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
                 text(shown)
             }
         case "target":
-            if cue.kindType == "audio" {
+            if cue.takesFile {
                 fillFileTargetButton(cell, cue)
             } else if InspectorEdit.targetKinds.contains(cue.kindType) {
                 let shown = targetText(cue)
@@ -1786,6 +1788,7 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         switch node.cue.kindType {
         case "fade", "wait": return node.cue.raw["kind"]?["duration"]?.doubleValue ?? 0
         case "audio": return store.mediaDurations[node.id]?.shownDuration
+        case "video": return InspectorEdit.videoDuration(node.cue, media: store.mediaDurations[node.id])
         default: return nil
         }
     }

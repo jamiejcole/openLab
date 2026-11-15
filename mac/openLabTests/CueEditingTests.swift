@@ -632,12 +632,13 @@ final class CueEditingTests: XCTestCase {
         var asked: [NewCueKind] = []
         toolbar.onAdd = { asked.append($0) }
         toolbar.add(group: 1, segment: 0)
-        toolbar.add(group: 4, segment: 10)
-        toolbar.add(group: 3, segment: 0)
-        XCTAssertEqual(asked, [.audio, .memo, .network])
+        toolbar.add(group: 5, segment: 10)
+        toolbar.add(group: 4, segment: 0)
+        toolbar.add(group: 2, segment: 0)
+        XCTAssertEqual(asked, [.audio, .memo, .network, .video])
         toolbar.isLocked = true
         toolbar.add(group: 1, segment: 0)  // even if a control were live, a locked toolbar adds nothing
-        XCTAssertEqual(asked, [.audio, .memo, .network])
+        XCTAssertEqual(asked, [.audio, .memo, .network, .video])
         // Every button adds a cue: none is there for a kind the model does not have.
         XCTAssertTrue(CueToolbarView.kinds.allSatisfy { $0.allSatisfy { $0 != nil } })
     }
@@ -650,10 +651,11 @@ final class CueEditingTests: XCTestCase {
             })
         XCTAssertEqual(keys["group"], "0")
         XCTAssertEqual(keys["audio"], "1")
+        XCTAssertEqual(keys["video"], "3")
         XCTAssertEqual(keys["fade"], "7")
         XCTAssertEqual(keys["network"], "8")
         // Types QLab gives no menu key (or that openLab alone has) stay unbound.
-        for kind in NewCueKind.allCases where ![.group, .audio, .fade, .network].contains(kind) {
+        for kind in NewCueKind.allCases where ![.group, .audio, .video, .fade, .network].contains(kind) {
             XCTAssertEqual(keys[kind.rawValue], "", "\(kind)")
         }
         let edit = MainMenu.make().edit

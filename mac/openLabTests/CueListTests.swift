@@ -2531,7 +2531,7 @@ final class PlayheadFlowTests: XCTestCase {
         let wav = try tempFiles(["chosen.wav"])[0]
         var picked: URL?
         var asked = 0
-        wc.pickAudioFile = {
+        wc.pickFile = { _ in
             asked += 1
             return picked
         }
@@ -2554,7 +2554,7 @@ final class PlayheadFlowTests: XCTestCase {
         try await editWorkspace()
         let window = try XCTUnwrap(wc.window)
         var asked = 0
-        wc.pickAudioFile = {
+        wc.pickFile = { _ in
             asked += 1
             return nil
         }
@@ -5100,7 +5100,7 @@ final class CueListDrawingTests: XCTestCase {
         let wav = try tempFiles(["chosen.wav"])[0]
         var picked: URL?
         var asked = 0
-        wc.pickAudioFile = {
+        wc.pickFile = { _ in
             asked += 1
             return picked
         }

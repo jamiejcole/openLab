@@ -25,7 +25,8 @@ extension WorkspaceWindowController {
             let model = store.model
         else { return NSSound.beep() }
         let targets = cues.compactMap { model.cue($0) }
-        let offered = PasteProperty.offered(from: source, to: targets)
+        let offered = PasteProperty.offered(
+            from: source, to: targets, media: store.mediaDurations, model: model)
         guard !targets.isEmpty, !offered.isEmpty else { return NSSound.beep() }
         let name = [source.number, source.displayName].compactMap { $0 }.filter { !$0.isEmpty }
             .joined(separator: " \u{00B7} ")

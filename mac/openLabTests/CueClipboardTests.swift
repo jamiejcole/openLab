@@ -50,7 +50,7 @@ final class CueClipboardTests: XCTestCase {
         }
         XCTAssertEqual(log.sent, 0)
         XCTAssertEqual(log.notices.count, 5)
-        XCTAssertEqual(log.notices.first, loc("edit.error.dropNotAudio"))
+        XCTAssertEqual(log.notices.first, loc("edit.error.dropNotMedia"))
         XCTAssertEqual(h.vc.roots.count, before)
     }
 
@@ -83,7 +83,8 @@ final class CueClipboardTests: XCTestCase {
         XCTAssertEqual(CueListViewController.skipped(mixed, folderPlan), 1)
         XCTAssertNil(h.vc.fileDropPlan([mixed[1]], item: nil, index: 0))
         XCTAssertEqual(
-            String(format: loc("edit.drop.skipped.one"), 1), "1 dropped file was not audio and was left out.")
+            String(format: loc("edit.drop.skipped.one"), 1),
+            "1 dropped file was not a sound, movie or image and was left out.")
         let ids = await editor.addFiles([files[0], files[2]], parent: nil, index: 0, skipped: 1)
         XCTAssertEqual(ids.count, 2)
         XCTAssertEqual(log.notices, [String(format: loc("edit.drop.skipped.one"), 1)])
@@ -95,7 +96,7 @@ final class CueClipboardTests: XCTestCase {
         let wc = WorkspaceWindowController(store: rig.store)
         wc.cueList.view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
         let wav = try tempFiles(["chosen.wav"])[0]
-        wc.pickAudioFile = { wav }
+        wc.pickFile = { _ in wav }
         // The door cue is idle (a running cue refuses a new file).
         let audio = try XCTUnwrap(wc.cueList.node(H.door)?.id)
         wc.cueList.selectAsUser([audio])
@@ -106,7 +107,7 @@ final class CueClipboardTests: XCTestCase {
         }
         // A cancelled panel sends nothing; Show Mode disables the button.
         let log = CueEditingTests.SendLog(rig)
-        wc.pickAudioFile = { nil }
+        wc.pickFile = { _ in nil }
         wc.inspector.chooseButton.performClick(nil)
         for _ in 0..<50 { await Task.yield() }
         XCTAssertEqual(log.sent, 0)

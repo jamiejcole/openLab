@@ -1,0 +1,29 @@
+{
+  "about": "Video cues (#643), light, at the least window size (800x500): the list with cue 4 broken (no file), the I/O tab of a movie and of the cue with no file, a still playing, three Video cues selected.",
+  "show": "Video",
+  "appearance": "light",
+  "displays": "V1:1920x1080",
+  "media": {
+    "media/clip.mov": 4,
+    "media/still.png": 1,
+    "media/card.jpg": 1,
+    "media/A very long name for a projection clip used in the second act.mov": 2
+  },
+  "window": {"width": 800, "height": 500},
+  "steps": [
+    {"advance": 0.1},
+    {"shot": "list"},
+    {"select": "1"},
+    {"tab": "io"},
+    {"shot": "io-movie"},
+    {"select": "4"},
+    {"shot": "io-no-file"},
+    {"select": "2"},
+    {"key": "space"},
+    {"advance": 2},
+    {"select": "2"},
+    {"shot": "still-playing"},
+    {"select": ["1", "2", "5"]},
+    {"shot": "three-selected"}
+  ]
+}

@@ -17,7 +17,7 @@ import os
 enum Icon: CaseIterable {
     // Cue kinds (the toolbar and the cue list's type column).
     case kindAudio, kindGroup, kindMemo, kindWait, kindFade, kindStart, kindStop, kindPause, kindLoad
-    case kindReset, kindDevamp, kindGoTo, kindArm, kindDisarm, kindNetwork
+    case kindReset, kindDevamp, kindGoTo, kindArm, kindDisarm, kindNetwork, kindVideo
     // A Group cue's icon follows its mode (the timeline mode uses `kindGroup`).
     case kindGroupPlaylist, kindGroupEnter, kindGroupNext, kindGroupRandom
     // Cue states (UI-04: each non-idle state has its own shape).
@@ -72,6 +72,7 @@ enum Icon: CaseIterable {
         case .kindArm: return "kind-arm"
         case .kindDisarm: return "kind-disarm"
         case .kindNetwork: return "kind-network"
+        case .kindVideo: return "kind-video"
         case .kindGroupPlaylist: return "kind-group-playlist"
         case .kindGroupEnter: return "kind-group-enter"
         case .kindGroupNext: return "kind-group-next"
@@ -86,7 +87,7 @@ enum Icon: CaseIterable {
     var entry: Entry? {
         switch self {
         case .kindAudio, .kindGroup, .kindMemo, .kindWait, .kindFade, .kindStart, .kindStop, .kindPause, .kindLoad,
-            .kindReset, .kindDevamp, .kindGoTo, .kindArm, .kindDisarm, .kindNetwork, .kindGroupPlaylist,
+            .kindReset, .kindDevamp, .kindGoTo, .kindArm, .kindDisarm, .kindNetwork, .kindVideo, .kindGroupPlaylist,
             .kindGroupEnter, .kindGroupNext, .kindGroupRandom, .colourLocked, .colourUnlocked:
             return nil
         case .stateLoaded: return Self.row("arrow.down.circle.fill")

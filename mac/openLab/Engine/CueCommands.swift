@@ -5,7 +5,7 @@ import Foundation
 /// The cue kinds the toolbar and Cues menu can add (the model's kinds that need no choice first;
 /// Audio takes the first audio patch and Network the first network patch).
 enum NewCueKind: String, CaseIterable, Sendable {
-    case audio, group, memo, wait, fade, start, stop, pause, load, reset, devamp, goto, arm, disarm, network
+    case audio, video, group, memo, wait, fade, start, stop, pause, load, reset, devamp, goto, arm, disarm, network
 
     var titleKey: String { "cue.type.\(rawValue)" }
 
@@ -18,7 +18,9 @@ enum NewCueKind: String, CaseIterable, Sendable {
     /// flow through crosspoint (1,1)). Core's crosspoints are sparse, so a cue sent with none plays
     /// silent. A mono file plays on output 1 alone; inputs beyond the file's channels are ignored by
     /// the mixer. The engine plays this exact message in its tests (client/command_add_new_audio_cue).
-    func kindJSON(patch: ModelObject?, networkPatch: ModelObject? = nil) -> JSONValue? {
+    /// A Video cue starts on `stage` (the caller gives the workspace's first stage: QLab 5 p. 212
+    /// names no default), with no file and no duration; with no stage it has none and shows broken.
+    func kindJSON(patch: ModelObject?, networkPatch: ModelObject? = nil, stage: ModelID? = nil) -> JSONValue? {
         let fade = JSONValue.object(["duration": .double(0), "curve": .string("linear")])
         var fields: [String: JSONValue] = ["type": .string(wireType)]
         switch self {
@@ -38,6 +40,10 @@ enum NewCueKind: String, CaseIterable, Sendable {
                 ]),
                 "preload": .bool(false),
             ]) { a, _ in a }
+        case .video:
+            fields.merge(["media": .null, "stage": stage.map { .string($0.raw) } ?? .null, "duration": .null]) {
+                a, _ in a
+            }
         case .group:
             fields.merge(["mode": .object(["type": .string("timeline")]), "children": .array([])]) { a, _ in a }
         case .memo: break
@@ -72,9 +78,10 @@ enum NewCueKind: String, CaseIterable, Sendable {
     /// A whole new cue (no number: `auto_number` gives it one).
     /// `target`: the cue a new cue that takes a target starts with.
     func cueJSON(
-        id: ModelID, patch: ModelObject?, networkPatch: ModelObject? = nil, target: ModelID? = nil
+        id: ModelID, patch: ModelObject?, networkPatch: ModelObject? = nil, target: ModelID? = nil,
+        stage: ModelID? = nil
     ) -> JSONValue? {
-        guard var kind = kindJSON(patch: patch, networkPatch: networkPatch) else { return nil }
+        guard var kind = kindJSON(patch: patch, networkPatch: networkPatch, stage: stage) else { return nil }
         if let target, case .object(var fields) = kind, fields["target"] != nil {
             fields["target"] = .string(target.raw)
             kind = .object(fields)
