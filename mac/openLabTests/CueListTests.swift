@@ -5157,8 +5157,8 @@ final class CueListDrawingTests: XCTestCase {
     /// red; flagged orange; preview blue), and a selected row's marks in the selection's text colour.
     func testStateColoursAsApprovedAndASelectedRowsMarksTakeTheSelectionsTextColour() async throws {
         let colours: [WireCueState: NSColor] = [
-            .loaded: .systemYellow, .preWaiting: .systemGreen, .running: .systemGreen, .paused: .systemYellow,
-            .postWaiting: .systemGreen, .fading: .systemYellow, .stopping: .systemYellow, .broken: .systemRed,
+            .loaded: MarkColour.caution, .preWaiting: .systemGreen, .running: .systemGreen, .paused: MarkColour.caution,
+            .postWaiting: .systemGreen, .fading: MarkColour.caution, .stopping: MarkColour.caution, .broken: .systemRed,
         ]
         for (state, colour) in colours { XCTAssertEqual(CueStateStyle.style(for: state).tint, colour, "\(state)") }
         let h = try await demo()
@@ -5176,7 +5176,7 @@ final class CueListDrawingTests: XCTestCase {
         guard case .success = await h.store.transport(.pause(cue: H.intro)) else { return XCTFail("pause") }
         try await h.rig.advance(0.1)
         await assertEventually { (try? self.drawnMark(h, H.intro, 1))?.icon == .statePaused }
-        XCTAssertEqual(try drawnMark(h, H.intro, 1)?.colour, .systemYellow, "paused is yellow")
+        XCTAssertEqual(try drawnMark(h, H.intro, 1)?.colour, MarkColour.caution, "paused is yellow")
         // Selected and focused: every mark of the row in the selection's text colour; back when deselected.
         h.vc.selectAsUser([H.intro])
         await assertEventually { h.vc.selectedIDs() == [H.intro] }
@@ -5186,7 +5186,7 @@ final class CueListDrawingTests: XCTestCase {
         await assertEventually { h.vc.selectedIDs() == [H.radio] }
         emphasize(h)
         XCTAssertEqual(try drawnMark(h, H.radio, 1)?.colour, .alternateSelectedControlTextColor)
-        XCTAssertEqual(try drawnMark(h, H.intro, 1)?.colour, .systemYellow, "paused again once not selected")
+        XCTAssertEqual(try drawnMark(h, H.intro, 1)?.colour, MarkColour.caution, "paused again once not selected")
     }
 
     /// Flow (#698): a cue in its pre-wait shows the running mark (QLab has no mark for a wait); its label still

@@ -130,7 +130,7 @@ final class WarningCell: NSTableCellView {
     init() {
         super.init(frame: .zero)
         identifier = NSUserInterfaceItemIdentifier("warning")
-        marker.contentTintColor = .systemYellow
+        marker.contentTintColor = MarkColour.caution
         title.font = Self.titleFont
         title.lineBreakMode = .byTruncatingTail
         detail.font = Self.detailFont

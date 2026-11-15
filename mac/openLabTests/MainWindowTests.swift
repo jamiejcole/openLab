@@ -359,6 +359,7 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(IconLookup.drawingName(of: footer.statusButton.image), "status-waiting")
         footer.showWarnings(count: 2)
         XCTAssertEqual(IconLookup.drawingName(of: footer.warningsButton.image), "status-warning")
+        XCTAssertEqual(footer.warningsButton.contentTintColor, MarkColour.caution, "yellow, as in the list")
         let inspector = wc.inspector
         inspector.loadViewIfNeeded()
         XCTAssertEqual(IconLookup.drawingName(of: inspector.clearTargetButton.image), "field-clear")
@@ -373,6 +374,21 @@ final class MainWindowTests: XCTestCase {
         XCTAssertNil(IconLookup.drawingName(of: panic), "Panic All keeps its own picture")
         XCTAssertEqual(panic.accessibilityDescription, loc("transport.panic"))
         XCTAssertEqual(IconLookup.drawingName(of: ActiveCueCell().panicButton.image), "active-cue-panic")
+        // Each drawing is shown at the 16 points it is drawn on, never scaled down until its shapes run together.
+        wc.cueList.selectAsUser([TestSnapshots.fade])
+        await assertEventually { !inspector.jumpTargetButton.isHidden }
+        wc.window?.layoutIfNeeded()
+        let buttons: [(String, NSButton)] =
+            [
+                ("clear", inspector.clearTargetButton), ("jump", inspector.jumpTargetButton),
+                ("settings", footer.settingsButton),
+            ] + footer.toggles.map { ("\($0.key)", $0.value) }
+        for (name, button) in buttons {
+            let cell = try XCTUnwrap(button.cell as? NSButtonCell, name)
+            let drawn = cell.imageRect(forBounds: button.bounds).size
+            XCTAssertGreaterThanOrEqual(drawn.width, 16, "\(name) drawn \(drawn)")
+            XCTAssertGreaterThanOrEqual(drawn.height, 16, "\(name) drawn \(drawn)")
+        }
     }
 
     func testEveryDottedStringLiteralInSourcesIsLocalised() throws {

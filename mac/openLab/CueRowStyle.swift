@@ -16,16 +16,16 @@ struct CueStateStyle: Equatable {
     static func style(for state: WireCueState) -> CueStateStyle {
         switch state {
         case .idle: return CueStateStyle(icon: nil, labelKey: "cue.state.idle", tint: nil)
-        case .loaded: return CueStateStyle(icon: .stateLoaded, labelKey: "cue.state.loaded", tint: .systemYellow)
+        case .loaded: return CueStateStyle(icon: .stateLoaded, labelKey: "cue.state.loaded", tint: MarkColour.caution)
         case .preWaiting:
             return CueStateStyle(icon: .stateRunning, labelKey: "cue.state.preWaiting", tint: .systemGreen)
         case .running: return CueStateStyle(icon: .stateRunning, labelKey: "cue.state.running", tint: .systemGreen)
-        case .paused: return CueStateStyle(icon: .statePaused, labelKey: "cue.state.paused", tint: .systemYellow)
+        case .paused: return CueStateStyle(icon: .statePaused, labelKey: "cue.state.paused", tint: MarkColour.caution)
         case .postWaiting:
             return CueStateStyle(icon: .stateRunning, labelKey: "cue.state.postWaiting", tint: .systemGreen)
-        case .fading: return CueStateStyle(icon: .stateFading, labelKey: "cue.state.fading", tint: .systemYellow)
+        case .fading: return CueStateStyle(icon: .stateFading, labelKey: "cue.state.fading", tint: MarkColour.caution)
         case .stopping:
-            return CueStateStyle(icon: .stateStopping, labelKey: "cue.state.stopping", tint: .systemYellow)
+            return CueStateStyle(icon: .stateStopping, labelKey: "cue.state.stopping", tint: MarkColour.caution)
         case .broken: return CueStateStyle(icon: .stateBroken, labelKey: "cue.state.broken", tint: .systemRed)
         }
     }
@@ -60,6 +60,15 @@ enum RowPattern: Equatable {
 enum PlayheadStyle {
     static let colour = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .white : NSColor(white: 0.15, alpha: 1)
+    }
+}
+
+/// The yellow of every caution mark (paused, loaded, fading, stopping, a warning): the system yellow on a dark
+/// list, a deeper golden yellow on a light one, where the system yellow is too pale to read on white.
+enum MarkColour {
+    static let caution = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? .systemYellow : NSColor(srgbRed: 0.72, green: 0.53, blue: 0, alpha: 1)
     }
 }
 

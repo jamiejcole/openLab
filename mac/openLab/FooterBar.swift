@@ -206,7 +206,7 @@ final class FooterBar: NSView {
         // not the only signal (the number is text), and VoiceOver reads the full words.
         warningsButton.title = String(count)
         warningsButton.image = Icon.statusWarning.image(text, compact: true)
-        warningsButton.contentTintColor = .systemOrange
+        warningsButton.contentTintColor = MarkColour.caution
         warningsButton.font = .systemFont(ofSize: 12, weight: .semibold)
         warningsButton.setAccessibilityLabel(text)
     }
@@ -258,7 +258,7 @@ final class FooterBar: NSView {
         statusButton.image =
             p.icon == .statusNormal
             ? TimeHeaderCell.tinted(image, .systemGreen, size: image.size, description: p.summary) : image
-        statusButton.contentTintColor = p.level == .alarm ? .systemRed : p.level == .warning ? .systemOrange : nil
+        statusButton.contentTintColor = p.level == .alarm ? .systemRed : p.level == .warning ? MarkColour.caution : nil
         statusButton.font = .systemFont(ofSize: 12, weight: p.level == .normal ? .regular : .semibold)
         statusButton.setAccessibilityLabel(p.summary)
         statusButton.toolTip = loc("status.tooltip")
