@@ -24,7 +24,7 @@ use openlab_core::{
 
 use super::media::{MediaCatalog, Probe};
 use super::patches::Patches;
-use super::plan::{PlanFailure, PlanSpec, cue_slices};
+use super::plan::{PlanFailure, PlanSpec, cue_slices, cue_slices_from};
 use super::voice_ids::VoiceIds;
 
 /// Most ids kept for the next meter read (meters are read at 30 Hz, so this is never reached in
@@ -149,6 +149,55 @@ pub struct VoiceRec {
     /// Its cue outputs below this have their levels; those from here on were silenced at its
     /// start, beyond the outputs of the patch it started on ([`voice_start`]).
     levelled: usize,
+    /// It starts at this frame of the file (a seek, or a load there), not at `offset` (then 0).
+    file: Option<u64>,
+    /// The elapsed time it shows on its start: `offset`, or for a start at a file frame, how far
+    /// into the action that frame is when the cue plays from the top.
+    shown: u64,
+    /// Made by a seek: it waits for its stream to be primed (at most [`SEEK_PRIME_WAIT`]) so
+    /// the move crossfades rather than drops out, and fades in over [`SEEK_CROSSFADE`].
+    moved: bool,
+    /// The voice a seek moves from, playing on until this one starts and then fading out.
+    replaces: Option<VoiceId>,
+    /// Moved elsewhere by a seek: it is fading out (or going) and stands for no run; its end
+    /// is reported to no one.
+    retired: bool,
+    /// A seek of this voice swaps no earlier than this sample: one crossfade at a time, so a
+    /// burst of seeks never has more than two of the cue's voices sounding.
+    swap_after: SampleTime,
+    /// How the voice it `replaces` fades out when the seek is let go of before it swaps.
+    release_fade: Fade,
+}
+
+/// A cue's seeks prepare at most one stream per this many seconds: a burst of seeks (a stuck
+/// key, a hostile client) replaces the one waiting instead of opening a stream each, so it can
+/// never use up the streamer's open-stream limit or its memory.
+pub const SEEK_PREPARE_INTERVAL: f64 = 0.05;
+
+/// How long a seek's crossfade lasts: the voice it moves from fades out while the moved one
+/// fades in, linear both, so the jump does not click.
+pub const SEEK_CROSSFADE: f64 = 0.01;
+
+/// The longest a seek of a playing voice waits for its stream at the new point to be primed,
+/// the old voice playing on meanwhile; after it the move is made anyway and plays once the disk
+/// has caught up (an underrun, silence, rather than a sound that never moves).
+pub const SEEK_PRIME_WAIT: f64 = 0.25;
+
+/// Where a voice's stream starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartAt {
+    /// Device frames into the action, loops unrolled (a start, a load to time).
+    Offset(u64),
+    /// A frame of the file at the device rate (a seek).
+    File(u64),
+}
+
+/// A stream made for a voice.
+struct Made {
+    prepared: PreparedStream,
+    total: Option<u64>,
+    /// The elapsed time it shows at its start (see [`VoiceRec::shown`]).
+    shown: u64,
 }
 
 impl VoiceRec {
@@ -157,16 +206,18 @@ impl VoiceRec {
     /// engine skips the cue (QLab P5/G2); else `ActionFailed`. A loaded voice that was
     /// never started stays `ActionFailed` (the cue is loaded, not playing).
     fn failure(&self, reason: BrokenReason) -> Input {
-        let unplayed = match &self.phase {
-            Phase::Waiting { start, .. } => start.is_some(),
-            // `frames_written` counts frames the disk worker put in the ring, not frames the
-            // mixer played: frames in the ring are about to sound (or have), so a failure after
-            // any was written is taken as during play. A prime fills the ring before the start,
-            // but a prime whose stream failed is dropped every tick (`poll_streams`) and is never
-            // handed to a start, so it cannot make an unplayed start look played.
-            Phase::Playing => self.stream.as_ref().is_none_or(|h| h.frames_written() == 0),
-            Phase::Ended => false,
-        };
+        // A voice moved by a seek is the cue's sound going on: it played before.
+        let unplayed = !self.moved
+            && match &self.phase {
+                Phase::Waiting { start, .. } => start.is_some(),
+                // `frames_written` counts frames the disk worker put in the ring, not frames the
+                // mixer played: frames in the ring are about to sound (or have), so a failure after
+                // any was written is taken as during play. A prime fills the ring before the start,
+                // but a prime whose stream failed is dropped every tick (`poll_streams`) and is never
+                // handed to a start, so it cannot make an unplayed start look played.
+                Phase::Playing => self.stream.as_ref().is_none_or(|h| h.frames_written() == 0),
+                Phase::Ended => false,
+            };
         failure(self.cue, self.run, reason, unplayed)
     }
 
@@ -216,6 +267,9 @@ pub struct Voices {
     /// Ids that left since the last voice-meter read, and their cue: the read reports them once
     /// more.
     gone: Vec<(VoiceId, CueId)>,
+    /// Per cue, the sample before which a seek (or a load at a point of the file) prepares no
+    /// stream ([`SEEK_PREPARE_INTERVAL`]).
+    seek_gate: HashMap<CueId, SampleTime>,
     /// A show cue's record left since the last [`Voices::take_freed`]: a priming pass skips a
     /// cue that still has one, so the one after it is gone may prime the cue again.
     freed: bool,
@@ -439,6 +493,13 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         former: Vec::new(),
         moves: 0,
         levelled: 0,
+        file: None,
+        shown: 0,
+        moved: false,
+        replaces: None,
+        retired: false,
+        swap_after: 0,
+        release_fade: Fade::NONE,
     }
 }
 
@@ -547,6 +608,17 @@ fn frames(spec: &FadeSpec, rate: NonZeroU32) -> Fade {
     )
 }
 
+/// How a voice fades in on its first frames.
+#[derive(Clone, Copy, Debug)]
+enum FadeIn {
+    /// The cue's own fade-in: a start from the top.
+    Cue,
+    /// None: a start part way in (load to time) begins past the fade-in.
+    None,
+    /// A seek's crossfade, the voice it moves from fading out meanwhile.
+    Crossfade(Fade),
+}
+
 /// The mixer start of `cue`'s voice `id` on `prepared`, routed and levelled as the model says
 /// now: master, cue outputs (those beyond the patch's outputs are silent), crosspoints, fades.
 fn voice_start(
@@ -554,13 +626,13 @@ fn voice_start(
     cue: CueId,
     prepared: PreparedStream,
     id: VoiceId,
-    offset: u64,
+    fade_in: FadeIn,
 ) -> Option<(Box<VoiceStart>, StreamHandle)> {
     let c = env.ws.find_cue(cue)?;
     let CueKind::Audio {
         patch,
         levels,
-        fade_in,
+        fade_in: cue_fade_in,
         fade_out,
         ..
     } = &c.kind
@@ -590,11 +662,10 @@ fn voice_start(
             vs.set_crosspoint(input, output, db_to_gain(xp.db));
         }
     }
-    // A start part way in (load to time) begins past the fade-in.
-    vs.fade_in = if offset == 0 {
-        frames(fade_in, env.rate)
-    } else {
-        Fade::NONE
+    vs.fade_in = match fade_in {
+        FadeIn::Cue => frames(cue_fade_in, env.rate),
+        FadeIn::None => Fade::NONE,
+        FadeIn::Crossfade(fade) => fade,
     };
     vs.fade_out = frames(fade_out, env.rate);
     Some((Box::new(vs), handle))

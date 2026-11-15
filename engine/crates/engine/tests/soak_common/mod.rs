@@ -682,6 +682,12 @@ impl<D: Driver> Soak<D> {
                 let cue = self.cue_of();
                 self.transport("reset", TransportAction::Reset { cue });
             }
+            66..=67 if self.rng.chance(33) => {
+                // A click in a cue's waveform: loaded or moved there, whatever it is doing.
+                let cue = self.cue_of();
+                let position = self.rng.below(100) as f64 / 100.0;
+                self.transport("seek", TransportAction::Seek { cue, position });
+            }
             66..=67 => {
                 // Half the loads are 0.5 s in, which is past the end of the short clips: such a
                 // cue sits loaded at its end and finishes on its start sample, its successor

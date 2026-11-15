@@ -98,13 +98,11 @@ fn idle_cue_click_loads_at_the_point_and_go_plays_from_there() {
             .iter()
             .any(|a| matches!(a, Action::UnloadVoice { .. }))
     );
-    assert!(again.iter().any(|a| matches!(
-        a,
-        Action::LoadVoiceAt {
-            position: 750,
-            ..
-        }
-    )));
+    assert!(
+        again
+            .iter()
+            .any(|a| matches!(a, Action::LoadVoiceAt { position: 750, .. }))
+    );
     assert_eq!(rig.state(1), CueState::Loaded);
 }
 
@@ -277,13 +275,11 @@ fn a_click_in_a_paused_pre_wait_starts_the_point_on_the_resume() {
     assert_eq!(rig.state(1), CueState::Paused);
     let resumed = rig.resume(900, 1);
     assert_eq!(voice_starts(&resumed), vec![(id(1), 900)]);
-    assert!(resumed.iter().any(|a| matches!(
-        a,
-        Action::LoadVoiceAt {
-            position: 500,
-            ..
-        }
-    )));
+    assert!(
+        resumed
+            .iter()
+            .any(|a| matches!(a, Action::LoadVoiceAt { position: 500, .. }))
+    );
 }
 
 #[test]
@@ -435,13 +431,10 @@ fn a_cue_its_lost_device_left_paused_loads_nothing_while_the_device_is_away() {
         },
     );
     let back = rig.seek(60, 1, 0.5);
-    assert!(back.iter().any(|a| matches!(
-        a,
-        Action::LoadVoiceAt {
-            position: 500,
-            ..
-        }
-    )));
+    assert!(
+        back.iter()
+            .any(|a| matches!(a, Action::LoadVoiceAt { position: 500, .. }))
+    );
     assert_eq!(rig.state(1), CueState::Loaded);
 }
 
@@ -581,9 +574,10 @@ fn previewing_cue_click_jumps_the_preview_and_does_not_end_it() {
     assert!(fresh.0 >= PREVIEW_RUN_BASE);
     assert!(seeks(&moved).contains(&(fresh, old, 300, 2000)));
     assert!(
-        !moved
-            .iter()
-            .any(|a| matches!(a, Action::PreviewChanged { .. } | Action::PreviewStop { .. })),
+        !moved.iter().any(|a| matches!(
+            a,
+            Action::PreviewChanged { .. } | Action::PreviewStop { .. }
+        )),
         "{moved:?}"
     );
     assert!(rig.engine.is_previewing(id(1)));
