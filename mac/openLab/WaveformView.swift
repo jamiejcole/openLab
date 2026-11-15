@@ -159,7 +159,14 @@ class WaveformView: NSView {
     /// The file's waveform is still being read (its length known, its first drawing not in yet):
     /// a press does nothing until it is drawn. Worked out from what the view has, so it ends with
     /// the first peaks or a failed read, whichever read brought them.
-    var isReading: Bool { duration != nil && peaks == nil && !readFailed }
+    var isReading: Bool { duration != nil && peaks == nil && !readFailed && !silent }
+    /// The file has no sound to draw (a movie): no waves, no message; the ruler, trims, slices,
+    /// fades and lines are drawn over the empty background, and presses work at once.
+    var silent = false {
+        didSet {
+            if silent != oldValue { needsDisplay = true }
+        }
+    }
     /// A text shown in the middle when there is nothing to draw ("reading", why not).
     var message: String? { didSet { needsDisplay = true } }
     /// A handle moved (live, during the drag).
@@ -626,7 +633,7 @@ class WaveformView: NSView {
             NSColor.systemYellow.setFill()
             NSRect(x: scale.x(playhead) - 0.5, y: wave.minY, width: 1, height: wave.height).fill()
         }
-        if let message, peaks == nil {
+        if let message, peaks == nil, !(silent && duration != nil) {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
                 .foregroundColor: Self.messageColour,

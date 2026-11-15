@@ -86,6 +86,7 @@ enum AX {
     static let timeLoopsSliceCount = "time-loops-slice-count"
     static let timeLoopsFades = "time-loops-fades"
     static let timeLoopsFadeCurve = "time-loops-fade-curve"
+    static let timeLoopsHoldAtEnd = "time-loops-hold-at-end"
     static let sidebar = "sidebar"
     static let sidebarTabs = "sidebar-tabs"
     static let sidebarList = "sidebar-list"

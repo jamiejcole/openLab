@@ -14,7 +14,7 @@ enum InspectorTabs {
         case "load": return common + ["loadTime"]
         case "devamp": return common + ["devamp"]
         case "network": return common + ["network"]
-        case "video": return common + ["io", "geometry"]
+        case "video": return common + ["io", "geometry", "timeLoops"]
         default: return common
         }
     }
