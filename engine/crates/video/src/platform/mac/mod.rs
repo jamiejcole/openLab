@@ -123,7 +123,7 @@ impl Platform for Mac {
             f64::from(display.width),
             f64::from(display.height),
         ));
-        w.window.orderFrontRegardless();
+        order_front(&w.window);
         let drawable = w
             .layer
             .nextDrawable()
@@ -233,6 +233,59 @@ fn fit_level(window: &NSWindow, cg: CGDirectDisplayID) {
     }
 }
 
+/// Orders an output window front, without making it key or activating the stage host.
+fn order_front(window: &NSWindow) {
+    #[cfg(feature = "test-support")]
+    {
+        ORDERED_FRONT_AT.with(|l| l.borrow_mut().push(window.level()));
+        if NEVER_ORDER_FRONT.with(std::cell::Cell::get) {
+            return;
+        }
+    }
+    window.orderFrontRegardless();
+}
+
+#[cfg(feature = "test-support")]
+thread_local! {
+    /// Test support: the level of each output window as it was ordered front.
+    static ORDERED_FRONT_AT: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
+    /// Test support: set, output windows are presented but never really ordered front, so a
+    /// test shows nothing on the machine's displays even when it fails.
+    static NEVER_ORDER_FRONT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test support: a stage presented through the shipped `present` on the display with the menu
+/// bar, never ordered front: the levels its window had as it was ordered front, and its level
+/// after. `None` without a GPU or a display with the menu bar.
+#[cfg(feature = "test-support")]
+fn presented_on_main(mtm: MainThreadMarker) -> Option<(Vec<isize>, isize)> {
+    let mut mac = Mac {
+        gpu: Gpu::new(),
+        windows: Some(Windows {
+            mtm,
+            open: HashMap::new(),
+        }),
+        found: Vec::new(),
+        virtual_displays: None,
+    };
+    mac.displays();
+    let main = CGMainDisplayID();
+    let display = mac.found.iter().find(|f| f.cg == main)?.display.clone();
+    NEVER_ORDER_FRONT.with(|n| n.set(true));
+    ORDERED_FRONT_AT.with(|l| l.borrow_mut().clear());
+    // A drawable may not come for a window never on screen; the order front comes before it.
+    let _ = mac.present(&display, &[]);
+    let after = mac
+        .windows
+        .as_ref()
+        .and_then(|w| w.open.get(&display.id))
+        .map(|w| w.window.level());
+    mac.close(&display.id);
+    NEVER_ORDER_FRONT.with(|n| n.set(false));
+    let at = ORDERED_FRONT_AT.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    Some((at, after?))
+}
+
 /// Test support: what an output window built for the main screen's frame is, read back from
 /// AppKit. The window is never ordered front, so nothing appears on any display.
 #[cfg(feature = "test-support")]
@@ -245,6 +298,9 @@ pub struct WindowReport {
     pub level_on_other: isize,
     pub level_back_on_main: isize,
     pub normal_level: isize,
+    /// A stage presented on the menu bar's display through the shipped path (never really
+    /// ordered front): its window's level each time it was ordered front, and after.
+    pub presented_on_main: Option<(Vec<isize>, isize)>,
     pub menu_bar_level: isize,
     pub behaviour_as_built: bool,
     pub ignores_mouse: bool,
@@ -280,6 +336,7 @@ pub fn window_report() -> Option<WindowReport> {
         level_on_other,
         level_back_on_main,
         normal_level: NSNormalWindowLevel,
+        presented_on_main: presented_on_main(mtm),
         menu_bar_level: objc2_app_kit::NSMainMenuWindowLevel,
         behaviour_as_built: window.collectionBehavior() == output_behaviour(),
         ignores_mouse: window.ignoresMouseEvents(),

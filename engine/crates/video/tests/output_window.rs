@@ -8,8 +8,9 @@
 
 //! The shipped output window as AppKit holds it (macOS): built exactly as the stage host builds
 //! one for a stage, for the main screen's frame, then fitted to the display with the menu bar
-//! and to another, and never ordered front, so nothing appears on any display. Its own `main` (harness = false), because AppKit windows are made on the main
-//! thread.
+//! and to another; and one presented through the stage host's own present on the menu bar's
+//! display. None is ordered front, so nothing appears on any display. Its own `main`
+//! (harness = false), because AppKit windows are made on the main thread.
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -52,6 +53,18 @@ fn main() {
         r.behaviour_as_built,
         "every Space, stationary, out of cycling"
     );
+    // The shipped present on the menu bar's display: the window is already under the app's
+    // windows when it is ordered front, never over them for a moment.
+    let (at_order_front, after) = r
+        .presented_on_main
+        .clone()
+        .expect("a stage presented on the display with the menu bar");
+    assert_eq!(
+        at_order_front,
+        [r.normal_level - 1],
+        "present orders the window front once, already under the app's windows"
+    );
+    assert_eq!(after, r.normal_level - 1, "and leaves it there");
     assert!(r.ignores_mouse, "ignores the mouse");
     assert!(
         !r.can_become_key,
