@@ -125,7 +125,11 @@ impl CueEngine {
         self.with_ducks_held(cx, |e, cx| {
             for tree in Self::trees(cx) {
                 for cue in tree.into_iter().rev() {
-                    if matches!(e.slots.get(&cue), Some(Slot::Active(_))) {
+                    // Children come first: a group whose child the loss left paused shows
+                    // paused with it rather than stopped.
+                    if matches!(e.slots.get(&cue), Some(Slot::Active(_)))
+                        && !e.end_group_as_lost(cue, cx.now, cx)
+                    {
                         e.stop_one(cue, None, cx);
                     }
                 }

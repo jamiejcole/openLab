@@ -572,6 +572,11 @@ impl DocCx<'_> {
         runs.sort();
         let failed = runs.len();
         let stood = self.doc.voices.progress(self.eng.rendered());
+        // A mark cleared since the last report pass leaves no old time for a new loss to show.
+        let engine = self.doc.model.engine();
+        self.doc
+            .lost_progress
+            .retain(|(cue, ..)| engine.is_lost(*cue));
         for (cue, run) in runs {
             self.feed(
                 Input::ActionFailed {

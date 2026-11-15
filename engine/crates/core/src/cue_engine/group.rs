@@ -785,38 +785,74 @@ impl CueEngine {
         if exit == Exit::Broken {
             g.failed = true;
         }
+        // Whichever child leaves last: a group paused by the operator is not marked (its
+        // children were not playing), as a paused cue on the lost device shows broken.
+        let paused = run.paused_at.is_some();
+        if exit == Exit::Lost && !paused {
+            g.lost = true;
+        }
         if !matches!(run.phase, Phase::Action { .. }) || any_busy {
             return;
         }
-        if run.paused_at.is_some() {
-            g.pending = Some(exit);
+        if paused {
+            g.pending = Some(if exit == Exit::Lost {
+                Exit::Stopped
+            } else {
+                exit
+            });
             return;
         }
         self.resolve_group(group, exit, at, cx);
+    }
+
+    /// Ends `group`'s run as paused by the loss of a device (`Slot::Lost`, its time frozen on
+    /// `at`) when it is in its action, not on its way out, and a child it started is still left
+    /// paused by the loss; tells the group around it so. Returns whether it did. The same
+    /// whichever child left last or what stopped the others (QLab row Q397).
+    pub(super) fn end_group_as_lost(&mut self, group: CueId, at: SampleTime, cx: &mut Ctx) -> bool {
+        let Some(Slot::Active(run)) = self.slots.get(&group) else {
+            return false;
+        };
+        let marked = run.group.as_ref().is_some_and(|g| g.lost && !g.stopping);
+        if !marked
+            || !matches!(run.phase, Phase::Action { .. })
+            || !self.inside(group, cx).iter().any(|c| self.is_lost(*c))
+        {
+            return false;
+        }
+        let Some(lost) = self.lost_at(group, run, at) else {
+            return false;
+        };
+        let parent = run.started_in;
+        let before = self.state(group);
+        self.remove_slot(group, at, Exit::Lost, cx);
+        self.slots.insert(
+            group,
+            Slot::Lost(Lost {
+                clears_on_return: false,
+                ..lost
+            }),
+        );
+        // Its group may end before it hears of this (a last-device loss stops every run at once).
+        if let Some(Slot::Active(Run {
+            group: Some(g),
+            paused_at: None,
+            ..
+        })) = parent.and_then(|p| self.slots.get_mut(&p))
+        {
+            g.lost = true;
+        }
+        self.report(group, before, at, cx);
+        true
     }
 
     /// No child of the group is busy any more: a stopping group, or one whose last child was
     /// stopped, stops; otherwise its action completes.
     pub(super) fn resolve_group(&mut self, group: CueId, exit: Exit, at: SampleTime, cx: &mut Ctx) {
         let before = self.state(group);
-        // Its last busy child was a playing cue its lost device stopped: the group shows paused
-        // with it (its time standing still), as its children do, until Resume, GO or Stop
-        // clears it; its own group hears the same. It has no device of its own.
-        if exit == Exit::Lost
-            && let Some(Slot::Active(run)) = self.slots.get(&group)
-            && run.group.as_ref().is_some_and(|g| !g.stopping)
-            && matches!(run.phase, Phase::Action { .. })
-            && let Some(lost) = self.lost_at(group, run, at)
-        {
-            self.remove_slot(group, at, Exit::Lost, cx);
-            self.slots.insert(
-                group,
-                Slot::Lost(Lost {
-                    clears_on_return: false,
-                    ..lost
-                }),
-            );
-            return self.report(group, before, at, cx);
+        // A child it started was left paused by a lost device: it shows paused with it.
+        if matches!(exit, Exit::Stopped | Exit::Lost) && self.end_group_as_lost(group, at, cx) {
+            return;
         }
         let Some(Slot::Active(run)) = self.slots.get_mut(&group) else {
             return;

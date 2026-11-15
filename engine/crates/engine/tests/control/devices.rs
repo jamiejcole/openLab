@@ -1196,11 +1196,12 @@ fn a_timeline_group_hit_by_a_loss_ends_whole_and_nothing_starts_after_the_return
     s.wait_wall(Duration::from_secs(3), 4);
     replug(&mut s);
     s.run(4000);
-    // The child that played keeps its mark; the pre-waiting one and the group are idle.
-    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
-    for n in [2, 10] {
-        assert_eq!(s.control().engine().state(id(n)), CueState::Idle, "cue {n}");
+    // The child that played keeps its mark and so does the group (whichever child failed
+    // last); the pre-waiting one is idle.
+    for n in [1, 10] {
+        assert_eq!(s.control().engine().state(id(n)), CueState::Paused, "cue {n}");
     }
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
     assert!(s.channel(0)[cut..].iter().all(|&v| v == 0.0));
     assert!(s.channel(1)[cut..].iter().all(|&v| v == 0.0));
     assert_eq!(s.control().live_voices(), 0);

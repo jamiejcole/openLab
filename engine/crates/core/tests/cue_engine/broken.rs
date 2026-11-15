@@ -1687,3 +1687,66 @@ fn go_on_a_group_its_lost_device_left_paused_plays_it_from_its_start() {
     assert_eq!(rig.state(1), CueState::Running);
     assert_eq!(rig.state(2), CueState::Running);
 }
+
+/// A running group {1: playing, 2: counting its pre-wait}, both on the lost device, their
+/// failures fed in `order`.
+fn group_lost_in_order(order: [u128; 2]) -> Rig {
+    let mut rig = Rig::new(vec![cue(
+        10,
+        group(vec![
+            sound(1),
+            timed(sound(2), 5.0, 0.0, ContinueMode::DoNotContinue),
+        ]),
+    )]);
+    rig.tick(0);
+    rig.device(0, 1, mapped());
+    rig.start(10, 10);
+    rig.device(20, 1, missing());
+    for n in order {
+        lose_device(&mut rig, 30, n);
+    }
+    rig
+}
+
+#[test]
+fn a_running_group_shows_paused_for_the_loss_whichever_child_fails_last() {
+    for order in [[1, 2], [2, 1]] {
+        let rig = group_lost_in_order(order);
+        assert_eq!(rig.state(10), CueState::Paused, "{order:?}");
+        assert!(rig.engine.is_lost(id(10)), "{order:?}");
+        assert_eq!(rig.state(1), CueState::Paused, "{order:?}");
+        assert_eq!(rig.state(2), CueState::Paused, "{order:?}");
+    }
+}
+
+#[test]
+fn a_running_group_with_a_wait_child_shows_paused_when_the_last_device_goes() {
+    let mut rig = Rig::new(vec![cue(10, group(vec![sound(1), wait(2, 100.0)]))]);
+    rig.tick(0);
+    rig.device(0, 1, mapped());
+    rig.start(10, 10);
+    rig.device(20, 1, missing());
+    lose_device(&mut rig, 30, 1);
+    assert_eq!(rig.state(10), CueState::Running, "the Wait still runs");
+    rig.at(30, Input::DeviceLost);
+    assert_eq!(rig.state(10), CueState::Paused);
+    assert!(rig.engine.is_lost(id(10)));
+    assert_eq!(rig.state(2), CueState::Idle);
+    assert_eq!(rig.engine.next_deadline(), None);
+}
+
+#[test]
+fn a_group_paused_by_the_operator_is_not_marked_when_a_child_resumed_alone_is_lost() {
+    let mut rig = Rig::new(vec![cue(10, group(vec![sound(1)]))]);
+    rig.tick(0);
+    rig.device(0, 1, mapped());
+    rig.start(10, 10);
+    rig.at(20, Input::Pause { cue: id(10) });
+    rig.at(30, Input::Resume { cue: id(1) });
+    rig.device(40, 1, missing());
+    lose_device(&mut rig, 40, 1);
+    assert_eq!(rig.state(1), CueState::Paused);
+    rig.at(50, Input::Resume { cue: id(10) });
+    assert!(!rig.engine.is_lost(id(10)));
+    assert_ne!(rig.state(10), CueState::Paused);
+}

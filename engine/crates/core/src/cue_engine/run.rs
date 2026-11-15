@@ -305,8 +305,8 @@ pub(super) enum Exit {
     Broken,
     /// Stopped, reset or deleted.
     Stopped,
-    /// Stopped by the loss of its output device while it played (`Slot::Lost`): a group whose
-    /// action ends with it shows paused for the loss too.
+    /// Stopped by the loss of its output device while it played (`Slot::Lost`): its group
+    /// shows paused for the loss too when its action ends (`GroupRun::lost`).
     Lost,
 }
 
@@ -316,6 +316,9 @@ pub(super) enum Exit {
 pub(super) struct GroupRun {
     /// Stopping with a fade: ends when its last busy child has stopped.
     pub stopping: bool,
+    /// A child it started was left paused by the loss of its device (`Exit::Lost`) while the
+    /// group was not paused: when its action ends for the loss, the group shows paused too.
+    pub lost: bool,
     /// A child broke at run time during this run, so the group does not auto-follow.
     pub failed: bool,
     /// A Devamp cue asked this playlist to finish its current child and then complete: the
