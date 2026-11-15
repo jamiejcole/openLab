@@ -114,7 +114,12 @@ fn decodes_reliably(kind: &str) -> bool {
         "{kind}: {said} {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let ok = said == "software" || !virtual_machine();
+    let vm = virtual_machine();
+    let ok = said == "software" || !vm;
+    record(&format!(
+        "decoder {kind}: {said}{}",
+        if vm { ", in a virtual machine" } else { "" }
+    ));
     found.push((kind.to_owned(), ok));
     ok
 }
@@ -139,7 +144,8 @@ fn play_codec() -> Option<&'static str> {
 
 /// `movie!(dir, name, (frames, fps))` makes a movie for a test to play in [`play_codec`];
 /// `movie!(dir, name, (frames, fps), kind)` in codec `kind`. When no such codec decodes
-/// reliably here, the test reports a skip and ends (it never passes without saying so).
+/// reliably here, the test records a skip and ends ([`skipped`]), or fails where skips are
+/// not recorded.
 macro_rules! movie {
     ($dir:expr, $name:expr, $frames_fps:expr) => {
         match play_codec() {
@@ -159,10 +165,36 @@ macro_rules! movie {
     };
 }
 
-/// Says a test was skipped and why (on its output, which a failing or `--nocapture` run shows).
-#[allow(clippy::print_stderr)] // a skip must be seen in the test output
+/// The file a test run's skips (and what this machine decodes with) are recorded in, set by
+/// `scripts/rust-checks.sh test`, which prints it after the run, passing or not.
+const SKIPS_ENV: &str = "OPENLAB_TEST_SKIPS";
+
+/// Records a skip of the running test and why, in the file [`SKIPS_ENV`] names. Without that
+/// file a test that cannot run here fails: a skip happens only where it is reported.
 fn skipped(why: &str) {
-    eprintln!("skipped: {why}");
+    let test = std::thread::current()
+        .name()
+        .unwrap_or("a video_cues test")
+        .to_owned();
+    if !record(&format!("skip {test}: {why}")) {
+        panic!("{why} (set {SKIPS_ENV} to record this as a skip)");
+    }
+}
+
+/// Appends `line` to the file [`SKIPS_ENV`] names; `false` when none is set.
+fn record(line: &str) -> bool {
+    use std::io::Write;
+    let Some(file) = std::env::var_os(SKIPS_ENV) else {
+        return false;
+    };
+    let mut out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+        .unwrap();
+    // One write per line: tests running at once never mix their lines.
+    out.write_all(format!("{line}\n").as_bytes()).unwrap();
+    true
 }
 
 fn probe(path: &Path) -> Result<ProbeReport, MediaError> {
