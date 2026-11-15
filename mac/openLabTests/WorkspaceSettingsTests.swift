@@ -780,7 +780,9 @@ final class WorkspaceSettingsTests: XCTestCase {
         await assertEventually { sc.model.patches.first?.mapping?.system == true }
         let editor = try await edit(in: sc)
         XCTAssertEqual(editor.devicePopup.titleOfSelectedItem, system)
-        sc.close()
+        // The settings window closed by its title bar's button: the editor stays open.
+        sc.window?.close()
+        XCTAssertNotNil(editor.window?.isVisible == true || !sc.presentsEditors ? editor : nil)
         try await loseDevice(rig)
         await assertEventually("the editor shows the device gone") {
             editor.devicePopup.titleOfSelectedItem == loc("settings.audio.systemOutputNone")

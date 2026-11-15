@@ -149,8 +149,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         devicePopup.target = self
         devicePopup.action = #selector(deviceChosen)
         // Wide enough for its longest choice (up to its most, below) in every state, also when
-        // the window first lays it out with a device away; it gives way only to the window's size.
-        devicePopup.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        // the window first lays it out with a device away; it gives way to the window's size
+        // (just below the priority a window keeps its size at).
+        devicePopup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(490), for: .horizontal)
         devicePopup.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         devicePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
         func titled(_ title: String, _ control: NSView) -> NSStackView {
