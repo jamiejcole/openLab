@@ -2084,4 +2084,34 @@ extension PlayheadFlowTests {
         XCTAssertTrue(green.contains { abs($0 - self.waveX(10)) <= 1 }, "the marker's green shows")
         XCTAssertFalse(try lineDrawn(at: waveX(10)), "not the white line over it")
     }
+
+    /// A 20 s file sliced at 5 s, ending at 15 s, its last slice played three times (35 s in all),
+    /// clicked past its end time while in its first slice: the times shown stay within the cue's
+    /// length, elapsed and remaining adding up to it.
+    func testAClickPastTheEndTimeOfACountedLastSliceKeepsTheTimesWithinTheCue() async throws {
+        let id = try await waveTones(1, seconds: 20)[0]
+        await showWaveform(id)
+        await typeWaveTrims(start: nil, end: "15")
+        clickWave(at: 5)
+        try keyM()
+        await assertEventually("a marker at 5 s") { self.waveView.sliceMarks == [5] }
+        await typeSliceCount(1, "3")
+        XCTAssertEqual(loops.playCount, 3)
+        // Away from the start handle: loaded near the start.
+        clickWave(at: 0.5)
+        await seekRun(2)
+        await assertEventually { self.store.playheads[self.list] == id }
+        try await goFromWaveform(id)
+        try await play(0.9)
+        clickWave(at: 18)
+        await seekRun(3)
+        for _ in 0..<8 {
+            try await play(0.5)
+            let times = try XCTUnwrap(store.progress[id])
+            let remaining = try XCTUnwrap(times.remaining, "a counted cue has an end")
+            XCTAssertLessThanOrEqual(times.elapsed, 35.05, "never past the cue's length")
+            XCTAssertEqual(times.elapsed + remaining, 35, accuracy: 0.1, "elapsed and remaining add up to it")
+        }
+        XCTAssertEqual(rowMark(id), runningMark)
+    }
 }
