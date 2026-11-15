@@ -535,9 +535,16 @@ final class ScenarioRunner {
             // work run inside this async step, which aborts the process (out-of-order task
             // deallocation). Its clip view is moved instead, by the wheel's distance as it would be.
             // A view that does not handle the wheel itself (a scroll view's document, such as the patch
-            // editor's matrix) passes it to its scroll view: that one is moved the same way.
+            // editor's matrix) passes it to its scroll view: that one is moved the same way. So does a
+            // table, the cue list: its handler is AppKit's, which only hands the wheel to its scroll view.
             let wheel = #selector(NSResponder.scrollWheel(with:))
-            let ownWheel = Swift.type(of: view).instanceMethod(for: wheel) != NSView.instanceMethod(for: wheel)
+            var handler: AnyClass = Swift.type(of: view)
+            while let up = class_getSuperclass(handler),
+                class_getMethodImplementation(up, wheel) == class_getMethodImplementation(handler, wheel)
+            {
+                handler = up
+            }
+            let ownWheel = Bundle(for: handler) != Bundle(for: NSView.self)
             if let scroll = (view as? NSScrollView) ?? (ownWheel ? nil : view.enclosingScrollView) {
                 let clip = scroll.contentView
                 let factor: CGFloat = precise ? 1 : 10
@@ -1050,6 +1057,27 @@ final class ScenarioShotTests: XCTestCase {
             let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
             XCTFail("\(error)\n\(log)")
         }
+    }
+
+    /// A scroll step over the cue list scrolls it as the wheel does: rows further down come into view.
+    func testAScrollStepOverTheCueListScrollsIt() async throws {
+        let runner = ScenarioRunner(
+            scenario: try scenario(
+                """
+                {"show": "Demo", "window": {"width": 900, "height": 400},
+                 "steps": [{"shot": "top"}, {"scroll": "cue-list", "dy": -400, "at": [0.5, 0.05]}, {"shot": "scrolled"}]}
+                """), out: out)
+        do { try await runner.run() } catch {
+            let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
+            return XCTFail("\(error)\n\(log)")
+        }
+        let log = try String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)
+        let line = try XCTUnwrap(log.split(separator: "\n").first { $0.hasPrefix("scrolled cue-list to y ") }, log)
+        let y = try XCTUnwrap(Int(line.dropFirst("scrolled cue-list to y ".count)), String(line))
+        XCTAssertGreaterThan(y, 0, "the first rows went out of view: \(log)")
+        let shots = try runner.written.map { try Data(contentsOf: $0) }
+        XCTAssertEqual(shots.count, 2, log)
+        XCTAssertNotEqual(shots.first, shots.last, "the list shows other rows after the scroll")
     }
 
     func testAnUnknownIdentifierFailsListingTheIdentifiersShown() async throws {

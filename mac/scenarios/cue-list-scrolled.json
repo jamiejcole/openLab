@@ -1,0 +1,10 @@
+{
+  "about": "The cue list in a short window, scrolled down with the mouse wheel: the rows further down come into view under the column headers.",
+  "show": "Demo",
+  "window": {"width": 900, "height": 400},
+  "steps": [
+    {"shot": "top"},
+    {"scroll": "cue-list", "dy": -400, "at": [0.5, 0.05]},
+    {"shot": "scrolled"}
+  ]
+}
