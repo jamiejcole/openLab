@@ -377,6 +377,17 @@ final class WarningsTests: XCTestCase {
         }
     }
 
+    /// A selected row's reasons are drawn in the selection's text colour, not the faint grey.
+    func testASelectedRowsReasonsTakeTheSelectionsTextColour() async throws {
+        try await make()
+        let row = try XCTUnwrap(side.warningRows.firstIndex { $0.cue == radio })
+        let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: row) as? WarningCell)
+        cell.backgroundStyle = .emphasized
+        XCTAssertEqual(cell.detail.textColor, .alternateSelectedControlTextColor)
+        cell.backgroundStyle = .normal
+        XCTAssertEqual(cell.detail.textColor, .secondaryLabelColor)
+    }
+
     func testRelinkButtonAsksTheWindowToRelink() async throws {
         try await make()
         var asked = 0

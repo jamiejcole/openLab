@@ -473,7 +473,7 @@
 "warnings.stage.missing" = "Its display is not connected";
 "warnings.stage.failed" = "Cannot be shown";
 "warnings.device" = "Audio device “%@”";
-"warnings.device.device_lost" = "Disconnected. The cues routed to it were stopped and cannot play. Reconnect it; a stopped cue then plays again from its start with GO.";
+"warnings.device.device_lost" = "Disconnected. Cues routed to it cannot play until it is reconnected. Any that were playing show paused; GO plays them from their start.";
 "warnings.device.patch_device_missing" = "Not connected, so the cues routed to it cannot play. Connect it, or choose another device for its patch in Workspace Settings, Audio.";
 "warnings.device.device_unrecoverable" = "Failed and cannot recover. Restart openLab to hear it again.";
 "warnings.device.device_stalled" = "Has stopped responding. If it stays silent, it is treated as disconnected.";
@@ -590,7 +590,7 @@
 "broken.voice_rejected" = "The audio engine refused to play it.";
 "broken.stream_failed" = "Its audio stream failed while it was playing.";
 "broken.device_lost" = "The audio device was lost while it was playing.";
-"paused.device_lost" = "Stopped: the audio device was lost. Resume clears this mark; GO plays the cue from its start.";
+"paused.device_lost" = "Shows paused: its audio device was lost, and it will not play on. Resume clears the mark; GO plays it from its start.";
 "broken.decode_failed" = "Its picture could not be decoded while it was playing.";
 
 "problem.unknown" = "Unrecognised problem: {type}";
@@ -604,10 +604,10 @@
 "problem.media_unsupported" = "Media file cannot be played: {media}";
 "problem.patch_missing" = "Its audio patch, {patch}, does not exist.";
 "problem.device_unavailable" = "The audio device for patch {patch} is not available.";
-"problem.device_unavailable.mapped" = "Patch {patch} is available on {device}.";
+"problem.device_unavailable.mapped" = "Patch {patch} is available on “{device}”.";
 "problem.device_unavailable.unmapped" = "Patch {patch} is not mapped to an audio device on this Mac.";
-"problem.device_unavailable.device_missing" = "Audio device {device} (patch {patch}) is not connected.";
-"problem.device_unavailable.channels_missing" = "Audio device {device} has {available} outputs; patch {patch} needs {needed}.";
+"problem.device_unavailable.device_missing" = "Audio device “{device}” (patch {patch}) is not connected.";
+"problem.device_unavailable.channels_missing" = "Audio device “{device}” has {available} outputs; patch {patch} needs {needed}.";
 "problem.device_unavailable.output_count_mismatch" = "Patch {patch} has {outputs} outputs but its device mapping lists {mapped}.";
 "problem.network_patch_missing" = "Its network patch, {patch}, does not exist.";
 "problem.network_patch_missing.none" = "It has no network patch.";

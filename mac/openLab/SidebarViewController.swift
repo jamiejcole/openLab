@@ -147,6 +147,15 @@ final class WarningCell: NSTableCellView {
 
     override var isFlipped: Bool { true }
 
+    /// On a selected row (the accent fill) the reasons take the selection's text colour, as the
+    /// title does; the secondary grey would be faint on the accent.
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet {
+            detail.textColor =
+                backgroundStyle == .emphasized ? .alternateSelectedControlTextColor : .secondaryLabelColor
+        }
+    }
+
     private static let sizer: NSTextField = {
         let f = NSTextField(wrappingLabelWithString: "")
         f.font = detailFont
