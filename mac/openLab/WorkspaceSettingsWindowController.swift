@@ -86,8 +86,6 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     /// A popup's menu is open: rebuilding its items would close it under the operator's hand.
     private var menuOpen = false
     /// A read of the engine's patch resolutions under way (a device came or went).
-    private var rereading: Task<Void, Never>?
-    private var rereadAgain = false
 
     init(store: WorkspaceStore) {
         model = WorkspaceSettingsModel(store: store)
@@ -223,22 +221,10 @@ final class WorkspaceSettingsWindowController: NSWindowController, NSTextFieldDe
     }
 
     /// Reads devices and resolutions again once (only while the window shows: closed, it reads
-    /// them when presented).
+    /// them when presented); the table is drawn from the model's sinks.
     private func rereadSoon() {
         guard window?.isVisible == true else { return }
-        // One read at a time; a change during it is read again after it.
-        guard rereading == nil else {
-            rereadAgain = true
-            return
-        }
-        rereading = Task {
-            repeat {
-                rereadAgain = false
-                await model.refresh()
-            } while rereadAgain
-            rereading = nil
-            render()
-        }
+        model.rereadSoon()
     }
 
     // MARK: Building

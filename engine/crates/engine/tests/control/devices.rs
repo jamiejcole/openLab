@@ -4339,6 +4339,25 @@ fn a_cue_on_the_system_output_whose_default_goes_away_stops_as_for_a_lost_device
     assert!(paused_device_lost(&msgs, 2), "{msgs:?}");
     assert_eq!(s.control().engine().state(id(2)), CueState::Paused);
     assert!(heard(&s.channel(0)).is_empty());
+    // The patch's warning says no output device is selected, as the settings table does; it
+    // is not an entry for a device named "system output".
+    s.wait_wall(Duration::from_millis(1100), 2);
+    s.tick();
+    let texts = notice_texts(&s.take_outbound()).unwrap();
+    assert!(
+        texts
+            .iter()
+            .any(|(code, m)| code == "patch_no_system_output"
+                && m.contains("\"B\"")
+                && m.contains("no output device selected")),
+        "{texts:?}"
+    );
+    assert!(
+        !texts
+            .iter()
+            .any(|(_, m)| m.contains("audio device \"system output\"")),
+        "{texts:?}"
+    );
 }
 
 /// A looping cue (2,000-frame ramp, looping until devamped) is devamped 1,300 frames into its

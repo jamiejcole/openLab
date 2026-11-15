@@ -9,7 +9,7 @@ use openlab_core::protocol::{
 };
 use openlab_core::{
     BrokenReason, CueId, CueKind, CueState, DeviceInfo, Input, MAX_BUFFER_FRAMES,
-    MIN_BUFFER_FRAMES, PatchResolution, RunId, SampleTime,
+    MIN_BUFFER_FRAMES, PatchResolution, RunId, SYSTEM_OUTPUT, SampleTime,
 };
 
 use super::devices::{Device, DeviceAnswer, DeviceEvent, OutputKey};
@@ -765,9 +765,14 @@ impl DocCx<'_> {
                 Some(why) => format!("cannot be used ({why})"),
                 None => "is not connected".to_owned(),
             };
+            let place = if device == SYSTEM_OUTPUT {
+                "the system output, with no output device selected on the Mac,".to_owned()
+            } else {
+                format!("audio device \"{device}\", which {state},")
+            };
             let text = format!(
-                "{n} cue(s) playing on a patch moved to audio device \"{device}\", which \
-                 {state}, stopped; they start again from the beginning with GO once it plays"
+                "{n} cue(s) playing on a patch moved to {place} stopped; they start again from \
+                 the beginning with GO once it plays"
             );
             self.eng.log_device(LogLevel::Error, text.clone());
             self.runtime(vec![RuntimeChange::Warning {
@@ -875,6 +880,27 @@ impl DocCx<'_> {
                             patch.name
                         ),
                         device,
+                    ));
+                }
+                // On the system output with no output device selected: no device to name, so
+                // not a device's entry (the settings table words it the same).
+                Some(PatchResolution::DeviceMissing { device })
+                    if device == SYSTEM_OUTPUT
+                        && self
+                            .eng
+                            .config
+                            .machine
+                            .patch_entry(ws_id, patch.id)
+                            .is_some_and(|m| m.system) =>
+                {
+                    list.push(notice(
+                        "patch_no_system_output",
+                        format!(
+                            "patch \"{}\" is on the system output, but the Mac has no output \
+                             device selected: its cues cannot play",
+                            patch.name
+                        ),
+                        None,
                     ));
                 }
                 Some(PatchResolution::DeviceMissing { device })

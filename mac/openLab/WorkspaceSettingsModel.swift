@@ -55,6 +55,26 @@ final class WorkspaceSettingsModel: ObservableObject {
 
     // MARK: Reading
 
+    private var rereading: Task<Void, Never>?
+    private var rereadAgain = false
+
+    /// Reads devices and resolutions again once, for a window showing them after a device was
+    /// lost, came back or opened. One read at a time; a change during it is read again after it.
+    /// What was read is published, and every window drawn from this model follows it.
+    func rereadSoon() {
+        guard rereading == nil else {
+            rereadAgain = true
+            return
+        }
+        rereading = Task {
+            repeat {
+                rereadAgain = false
+                await refresh()
+            } while rereadAgain
+            rereading = nil
+        }
+    }
+
     /// Reads the device list and the patch mappings again.
     func refresh() async {
         switch await store.listDevices() {

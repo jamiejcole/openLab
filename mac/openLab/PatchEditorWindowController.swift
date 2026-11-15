@@ -14,7 +14,9 @@ import Combine
 /// model, and an edit goes to the engine (which puts a level within the workspace volume limits);
 /// what comes back is what is shown.
 @MainActor
-final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate, NSTabViewDelegate {
+final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate, NSTabViewDelegate,
+    NSWindowDelegate
+{
     let model: WorkspaceSettingsModel
     var store: WorkspaceStore { model.store }
     let patchID: ModelID
@@ -72,6 +74,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         var loaded: Bool
     }
     private var drawn: Drawn?
+    /// Shown (or read for a window drawn elsewhere) and not closed since: it follows the devices.
+    private var isOpen = false
 
     static let minSize = NSSize(width: 520, height: 460)
 
@@ -94,6 +98,16 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         subs.append(model.$patches.sink(receiveValue: later))
         subs.append(model.$devices.sink(receiveValue: later))
         subs.append(model.$message.sink { [weak self] text in self?.messageLabel.stringValue = text ?? "" })
+        // A device lost, back or opened changes the device and the problem it shows: read again
+        // while it is open, whether or not the settings window is (as the table does).
+        let reread: (Any) -> Void = { [weak self] _ in
+            guard let self, self.isOpen else { return }
+            self.model.rereadSoon()
+        }
+        subs.append(store.$warnings.removeDuplicates().dropFirst().sink(receiveValue: reread))
+        subs.append(
+            store.$status.map { $0?.outputs.map(\.state) }.removeDuplicates().dropFirst().sink(receiveValue: reread))
+        window.delegate = self
         render()
     }
 
@@ -109,8 +123,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         reread()
     }
 
-    /// Reads the devices and routing again, then draws them.
+    /// Reads the devices and routing again, then draws them (it is open from now until closed).
     func reread() {
+        isOpen = true
         editing = Task {
             await model.refresh()
             drawn = nil
@@ -133,7 +148,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         devicePopup.setAX(AX.patchEditorDevice, label: loc("patchEditor.device"))
         devicePopup.target = self
         devicePopup.action = #selector(deviceChosen)
-        devicePopup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        // Wide enough for its longest choice (up to its most, below) in every state, also when
+        // the window first lays it out with a device away; it gives way only to the window's size.
+        devicePopup.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         devicePopup.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         devicePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
         func titled(_ title: String, _ control: NSView) -> NSStackView {
@@ -598,6 +615,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     }
 
     @objc private func doneClicked() { window?.close() }
+
+    /// Closed: it no longer follows the devices until it is shown again.
+    func windowWillClose(_ notification: Notification) { isOpen = false }
 
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         window?.contentView?.layoutSubtreeIfNeeded()

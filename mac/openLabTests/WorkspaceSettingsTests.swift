@@ -770,6 +770,48 @@ final class WorkspaceSettingsTests: XCTestCase {
             "no rename sent")
     }
 
+    /// ui-qa D1: an open patch editor follows the device being lost and coming back by itself,
+    /// also with the settings window closed: its pop-up, its problem line and its routing say
+    /// what the device is now, never what it was one change earlier.
+    func testAnOpenEditorFollowsItsDeviceLostAndBackWithTheSettingsWindowClosed() async throws {
+        let (rig, sc) = try await open()
+        let system = String(format: loc("settings.audio.systemOutput"), device)
+        try pick(system, in: try XCTUnwrap(sc.patchDevicePopups.first))
+        await assertEventually { sc.model.patches.first?.mapping?.system == true }
+        let editor = try await edit(in: sc)
+        XCTAssertEqual(editor.devicePopup.titleOfSelectedItem, system)
+        sc.close()
+        try await loseDevice(rig)
+        await assertEventually("the editor shows the device gone") {
+            editor.devicePopup.titleOfSelectedItem == loc("settings.audio.systemOutputNone")
+                && editor.problemLabel.stringValue == loc("settings.audio.systemOutputMissing")
+                && editor.matrix.usable == 0
+        }
+        guard case .success = await engine.request(.restoreDevice) else { return XCTFail("restore_device") }
+        try await rig.advance(1.5)
+        await assertEventually("the editor shows the device back") {
+            editor.devicePopup.titleOfSelectedItem == system && editor.problemLabel.stringValue.isEmpty
+                && editor.matrix.usable == 2
+        }
+    }
+
+    /// ui-qa D2: an editor opened for the first time while its device is away shows its device
+    /// pop-up's whole title at the editor's default width.
+    func testAnEditorFirstOpenedWhileItsDeviceIsAwayShowsTheWholeDeviceTitle() async throws {
+        let (rig, sc) = try await open()
+        let system = String(format: loc("settings.audio.systemOutput"), device)
+        try pick(system, in: try XCTUnwrap(sc.patchDevicePopups.first))
+        await assertEventually { sc.model.patches.first?.mapping?.system == true }
+        try await loseDevice(rig)
+        await assertEventually { sc.model.devices.isEmpty }
+        let editor = try await edit(in: sc)
+        let popup = editor.devicePopup
+        editor.window?.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(popup.titleOfSelectedItem, loc("settings.audio.systemOutputNone"))
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(popup.cell).cellSize.width, popup.bounds.width + 0.5, "the title is cut")
+    }
+
     /// Without a device the matrix takes no clicks and says why.
     func testWithNoDeviceTheMatrixIsOffAndSaysWhy() async throws {
         let (rig, sc) = try await open()
