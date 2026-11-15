@@ -10,6 +10,10 @@ import Foundation
 enum ProblemText {
     typealias Label = (ModelID) -> String
 
+    /// What the engine resolves a patch on the system output to when the Mac has no output
+    /// device selected (`docs/protocol.md`, `list_patch_mappings`).
+    static let systemOutputName = "system output"
+
     static func problem(_ p: WireProblem, label: Label) -> String {
         var fields = p.json
         // The resolution of a device problem is a variant of its own: its fields join the problem's.
@@ -17,6 +21,11 @@ enum ProblemText {
         if let r = p.json["resolution"], case .object(let o) = r {
             specific = r["type"]?.stringValue
             for (k, v) in o where k != "type" { fields[k] = v }
+            // A patch on the system output with no output device selected names no device: it
+            // says so, as the settings table does.
+            if specific == "device_missing", r["device"]?.stringValue == systemOutputName {
+                specific = "system_output_missing"
+            }
         }
         // The inspector's "no patch" choice is the nil id: say so instead of naming an id.
         if p.type == "network_patch_missing", p.json["patch"]?.stringValue == ModelID.unpatched.raw {

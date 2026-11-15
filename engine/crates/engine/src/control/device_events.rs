@@ -896,7 +896,7 @@ impl DocCx<'_> {
                     list.push(notice(
                         "patch_no_system_output",
                         format!(
-                            "patch \"{}\" is on the system output, but the Mac has no output \
+                            "Patch \"{}\" is on the system output, but the Mac has no output \
                              device selected: its cues cannot play",
                             patch.name
                         ),

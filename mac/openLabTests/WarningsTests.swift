@@ -114,6 +114,21 @@ final class WarningsTests: XCTestCase {
         XCTAssertTrue(ProblemText.problem(target, label: { _ in "2.1  Door slam" }).contains("2.1  Door slam"))
     }
 
+    /// ui-qa D3: a cue on a patch on the system output with no output device selected on the Mac
+    /// says that, as the settings table does, not that a device named "system output" is missing.
+    func testACueOnTheSystemOutputWithNoDeviceSaysTheMacHasNoOutputSelected() throws {
+        let p = try JSONDecoder().decode(
+            WireProblem.self,
+            from: Data(
+                #"{"type":"device_unavailable","patch":"00000000-0000-0000-0000-000000000001","resolution":{"type":"device_missing","device":"system output"}}"#
+                    .utf8))
+        let text = ProblemText.problem(p, label: { _ in "Main" })
+        XCTAssertEqual(
+            text,
+            loc("problem.device_unavailable.system_output_missing").replacingOccurrences(of: "{patch}", with: "Main"))
+        XCTAssertFalse(text.contains("“system output”"), text)
+    }
+
     /// An older engine may still send the removed `unsupported` warning: the message
     /// decodes and the row reads as an unrecognised warning.
     func testLegacyUnsupportedWarningDecodesAsUnknown() throws {

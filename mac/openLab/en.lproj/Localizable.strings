@@ -609,6 +609,7 @@
 "problem.device_unavailable.mapped" = "Patch {patch} is available on “{device}”.";
 "problem.device_unavailable.unmapped" = "Patch {patch} is not mapped to an audio device on this Mac.";
 "problem.device_unavailable.device_missing" = "Audio device “{device}” (patch {patch}) is not connected.";
+"problem.device_unavailable.system_output_missing" = "The Mac has no output device selected (patch {patch}, on the system output).";
 "problem.device_unavailable.channels_missing" = "Audio device “{device}” has {available} outputs; patch {patch} needs {needed}.";
 "problem.device_unavailable.output_count_mismatch" = "Patch {patch} has {outputs} outputs but its device mapping lists {mapped}.";
 "problem.network_patch_missing" = "Its network patch, {patch}, does not exist.";
