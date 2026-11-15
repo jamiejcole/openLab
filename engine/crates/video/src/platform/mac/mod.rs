@@ -65,6 +65,21 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
         },
         #[cfg(feature = "test-support")]
+        [flag, path] if flag == "--test-decoder" => {
+            use std::io::Write;
+            match testmedia::uses_hardware_decoder(path) {
+                Ok(hardware) => {
+                    let said = if hardware { "hardware" } else { "software" };
+                    let _ = writeln!(std::io::stdout().lock(), "{said}");
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    let _ = writeln!(std::io::stderr().lock(), "{why}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        #[cfg(feature = "test-support")]
         [flag, list] if flag == "--virtual-displays" => match virtual_displays(list) {
             Some(displays) => offscreen(displays, media::LIMITS),
             None => ExitCode::from(super::USAGE_EXIT),

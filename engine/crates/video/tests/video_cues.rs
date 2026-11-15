@@ -91,6 +91,80 @@ fn fixture(kind: &str, frames_fps: Option<(u16, u16)>) -> PathBuf {
     path
 }
 
+/// Whether a movie of codec `kind` is decoded reliably here, so a test may count on its
+/// frames being drawn: by a software decoder (as the stage host's `--test-decoder` finds
+/// VideoToolbox picks for it), or by the video hardware of a machine that is not virtual. A
+/// virtual machine's paravirtual video decoder has failed and stalled good movies on CI.
+fn decodes_reliably(kind: &str) -> bool {
+    static FOUND: std::sync::Mutex<Vec<(String, bool)>> = std::sync::Mutex::new(Vec::new());
+    let mut found = FOUND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, ok)) = found.iter().find(|(k, _)| k == kind) {
+        return *ok;
+    }
+    let out = Command::new(STAGE_HOST)
+        .arg("--test-decoder")
+        .arg(fixture(kind, Some((10, 25))))
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    assert!(
+        out.status.success() && (said == "software" || said == "hardware"),
+        "{kind}: {said} {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ok = said == "software" || !virtual_machine();
+    found.push((kind.to_owned(), ok));
+    ok
+}
+
+/// Whether this Mac runs under a hypervisor.
+fn virtual_machine() -> bool {
+    let out = Command::new("sysctl")
+        .args(["-n", "kern.hv_vmm_present"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "no kern.hv_vmm_present");
+    String::from_utf8_lossy(&out.stdout).trim() == "1"
+}
+
+/// The codec for a movie a test plays and draws: H.264 where it decodes reliably
+/// ([`decodes_reliably`]), else the first of ProRes and HEVC that does.
+fn play_codec() -> Option<&'static str> {
+    ["h264", "prores", "hevc"]
+        .into_iter()
+        .find(|kind| decodes_reliably(kind))
+}
+
+/// `movie!(dir, name, (frames, fps))` makes a movie for a test to play in [`play_codec`];
+/// `movie!(dir, name, (frames, fps), kind)` in codec `kind`. When no such codec decodes
+/// reliably here, the test reports a skip and ends (it never passes without saying so).
+macro_rules! movie {
+    ($dir:expr, $name:expr, $frames_fps:expr) => {
+        match play_codec() {
+            Some(kind) => make($dir, $name, kind, Some($frames_fps)),
+            None => return skipped("no codec decodes reliably on this machine"),
+        }
+    };
+    ($dir:expr, $name:expr, $frames_fps:expr, $kind:expr) => {
+        if decodes_reliably($kind) {
+            make($dir, $name, $kind, Some($frames_fps))
+        } else {
+            return skipped(concat!(
+                $kind,
+                " decodes in this virtual machine's video hardware"
+            ));
+        }
+    };
+}
+
+/// Says a test was skipped and why (on its output, which a failing or `--nocapture` run shows).
+#[allow(clippy::print_stderr)] // a skip must be seen in the test output
+fn skipped(why: &str) {
+    eprintln!("skipped: {why}");
+}
+
 fn probe(path: &Path) -> Result<ProbeReport, MediaError> {
     probe_file(Path::new(STAGE_HOST), path, LIMIT)
 }
@@ -369,27 +443,39 @@ fn shown(s: &mut OfflineShow) -> Option<u16> {
 }
 
 /// The frame stage 1 shows, which the test expects there (`what`). When there is none the
-/// failure says what the engine and the stage host saw: the pictures up and open, any wait that
+/// failure says what the engine and the stage host saw ([`seen`]).
+fn on_stage(s: &mut OfflineShow, what: &str) -> u16 {
+    shown(s).unwrap_or_else(|| panic!("{what}: nothing on the stage\n{}", seen(s)))
+}
+
+/// Checks that cue `n` is in state `want`; when not, the failure says what the engine and the
+/// stage host saw (as [`on_stage`]).
+fn expect_state(s: &OfflineShow, n: u128, want: CueState, what: &str) {
+    let got = state(s, n);
+    if got != want {
+        panic!("{what}: cue {n} is {got:?}, not {want:?}\n{}", seen(s));
+    }
+}
+
+/// What the engine and the stage host saw: the sample, the pictures up and open, any wait that
 /// gave up, and the end of the show log (a picture failure, a stage host restart, a probe the
 /// stage host could not draw).
-fn on_stage(s: &mut OfflineShow, what: &str) -> u16 {
-    shown(s).unwrap_or_else(|| {
-        let c = s.control();
-        let log: Vec<String> = c
-            .show_log()
-            .tail(30)
-            .iter()
-            .map(|e| format!("{:?} {:?} {}", e.level, e.kind, e.message))
-            .collect();
-        panic!(
-            "{what}: nothing on the stage at sample {}; pictures up {}, open {}, waits given up {}\n{}",
-            s.now(),
-            c.pictures_live(),
-            c.pictures_opened(),
-            s.stalls(),
-            log.join("\n")
-        )
-    })
+fn seen(s: &OfflineShow) -> String {
+    let c = s.control();
+    let log: Vec<String> = c
+        .show_log()
+        .tail(30)
+        .iter()
+        .map(|e| format!("{:?} {:?} {}", e.level, e.kind, e.message))
+        .collect();
+    format!(
+        "at sample {}; pictures up {}, open {}, waits given up {}\n{}",
+        s.now(),
+        c.pictures_live(),
+        c.pictures_opened(),
+        s.stalls(),
+        log.join("\n")
+    )
 }
 
 /// The barcode stage 1 shows, and the colours at `points`.
@@ -455,14 +541,14 @@ fn a_still_shows_from_go_until_the_cue_is_stopped() {
     assert_eq!(shown(&mut s), Some(0));
     // Much later it is still up: a still has no end of its own.
     s.run(samples(5.0));
-    assert_eq!(state(&s, 1), CueState::Running);
+    expect_state(&s, 1, CueState::Running, "");
     assert_eq!(shown(&mut s), Some(0));
     s.transport(TransportAction::Stop {
         cue: id(1),
         fade_out: None,
     });
     s.run(BLOCK);
-    assert_eq!(state(&s, 1), CueState::Idle);
+    expect_state(&s, 1, CueState::Idle, "");
     assert_eq!(shown(&mut s), None, "gone once stopped");
 }
 
@@ -474,10 +560,10 @@ fn a_still_with_a_duration_ends_after_it() {
     let mut s = video_show(vec![still_cue(1, &png, Some(1.0))]);
     go(&mut s);
     s.run(samples(0.9));
-    assert_eq!(state(&s, 1), CueState::Running);
+    expect_state(&s, 1, CueState::Running, "");
     assert_eq!(shown(&mut s), Some(0));
     s.run(samples(0.2));
-    assert_eq!(state(&s, 1), CueState::Idle);
+    expect_state(&s, 1, CueState::Idle, "");
     assert_eq!(shown(&mut s), None);
 }
 
@@ -486,7 +572,7 @@ fn a_still_with_a_duration_ends_after_it() {
 #[test]
 fn go_plays_the_movie_from_its_first_frame_in_step_and_ends_at_its_last() {
     let dir = tempfile::tempdir().unwrap();
-    let movie = make(dir.path(), "clip.mov", "h264", Some((50, 25)));
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
     let mut s = video_show(vec![video_cue(1, Some(&movie))]);
     let at = go(&mut s);
     // The frame shown is the one whose time the clock has reached.
@@ -499,7 +585,7 @@ fn go_plays_the_movie_from_its_first_frame_in_step_and_ends_at_its_last() {
     }
     // Two seconds long: idle (and the stage clear) once the clock passes its end.
     run_to(&mut s, at + samples(2.0) + BLOCK);
-    assert_eq!(state(&s, 1), CueState::Idle);
+    expect_state(&s, 1, CueState::Idle, "");
     assert_eq!(shown(&mut s), None);
     assert_eq!(s.control().pictures_live(), 0);
 }
@@ -514,14 +600,14 @@ fn frame_at(played: f64) -> u16 {
 #[test]
 fn pause_holds_the_frame_and_resume_plays_on_from_it() {
     let dir = tempfile::tempdir().unwrap();
-    let movie = make(dir.path(), "clip.mov", "prores", Some((50, 25)));
+    let movie = movie!(dir.path(), "clip.mov", (50, 25), "prores");
     let mut s = video_show(vec![video_cue(1, Some(&movie))]);
     let at = go(&mut s);
     run_to(&mut s, at + samples(0.81));
     s.transport(TransportAction::Pause { cue: id(1) });
     let paused_at = s.now();
     s.run(BLOCK);
-    assert_eq!(state(&s, 1), CueState::Paused);
+    expect_state(&s, 1, CueState::Paused, "");
     let held = on_stage(&mut s, "a frame while paused");
     let played = (paused_at - at) as f64 / f64::from(RATE);
     assert!(
@@ -542,9 +628,9 @@ fn pause_holds_the_frame_and_resume_plays_on_from_it() {
     // Two seconds of play in all: still running just before, idle just after.
     let end = at + samples(2.0) + (resumed_at - paused_at);
     run_to(&mut s, end - samples(0.1));
-    assert_eq!(state(&s, 1), CueState::Running);
+    expect_state(&s, 1, CueState::Running, "");
     run_to(&mut s, end + samples(0.1));
-    assert_eq!(state(&s, 1), CueState::Idle);
+    expect_state(&s, 1, CueState::Idle, "");
     assert_eq!(shown(&mut s), None);
 }
 
@@ -553,21 +639,21 @@ fn pause_holds_the_frame_and_resume_plays_on_from_it() {
 #[test]
 fn load_to_time_starts_the_picture_there() {
     let dir = tempfile::tempdir().unwrap();
-    let movie = make(dir.path(), "clip.mov", "hevc", Some((50, 25)));
+    let movie = movie!(dir.path(), "clip.mov", (50, 25), "hevc");
     let mut s = video_show(vec![video_cue(1, Some(&movie))]);
     s.transport(TransportAction::Load {
         cue: id(1),
         at: 1.0,
     });
     s.run(BLOCK);
-    assert_eq!(state(&s, 1), CueState::Loaded);
+    expect_state(&s, 1, CueState::Loaded, "");
     assert_eq!(shown(&mut s), None, "a loaded picture is not shown");
     let at = go(&mut s);
     run_to(&mut s, at + samples(0.02));
     assert_eq!(shown(&mut s), Some(25));
     // It has a second left.
     run_to(&mut s, at + samples(1.1));
-    assert_eq!(state(&s, 1), CueState::Idle);
+    expect_state(&s, 1, CueState::Idle, "");
 
     s.transport(TransportAction::Load {
         cue: id(1),
@@ -584,7 +670,7 @@ fn load_to_time_starts_the_picture_there() {
 #[test]
 fn a_load_cue_with_a_negative_time_counts_back_from_the_movies_end() {
     let dir = tempfile::tempdir().unwrap();
-    let movie = make(dir.path(), "clip.mov", "hevc", Some((50, 25)));
+    let movie = movie!(dir.path(), "clip.mov", (50, 25), "hevc");
     let load = cue(
         2,
         CueKind::Load {
@@ -595,13 +681,13 @@ fn a_load_cue_with_a_negative_time_counts_back_from_the_movies_end() {
     let mut s = video_show(vec![video_cue(1, Some(&movie)), load]);
     start(&mut s, 2);
     s.run(BLOCK);
-    assert_eq!(state(&s, 1), CueState::Loaded);
+    expect_state(&s, 1, CueState::Loaded, "");
     let at = start(&mut s, 1);
     run_to(&mut s, at + samples(0.02));
     // 2 s of movie, from half a second before its end: 1.52 s in now.
     assert_eq!(shown(&mut s), Some(frame_at(1.52)));
     run_to(&mut s, at + samples(0.6));
-    assert_eq!(state(&s, 1), CueState::Idle, "half a second left");
+    expect_state(&s, 1, CueState::Idle, "half a second left");
 }
 
 /// Two Video cues on one stage are both drawn, the later-started on top: stopping the top one
@@ -609,8 +695,8 @@ fn a_load_cue_with_a_negative_time_counts_back_from_the_movies_end() {
 #[test]
 fn two_cues_on_one_stage_are_drawn_with_the_later_started_on_top() {
     let dir = tempfile::tempdir().unwrap();
-    let a = make(dir.path(), "a.mov", "h264", Some((100, 25)));
-    let b = make(dir.path(), "b.mov", "prores", Some((100, 25)));
+    let a = movie!(dir.path(), "a.mov", (100, 25));
+    let b = movie!(dir.path(), "b.mov", (100, 25), "prores");
     let mut s = video_show(vec![video_cue(1, Some(&a)), video_cue(2, Some(&b))]);
     let first = start(&mut s, 1);
     run_to(&mut s, first + samples(1.0));
@@ -633,7 +719,7 @@ fn two_cues_on_one_stage_are_drawn_with_the_later_started_on_top() {
         shown_now.abs_diff(frame_at(below)) <= 1,
         "{shown_now}: cue 1's frame at {below} s"
     );
-    assert_eq!(state(&s, 1), CueState::Running);
+    expect_state(&s, 1, CueState::Running, "");
 }
 
 /// Panic fades the picture out over the panic time and then stops the cue: halfway, the
@@ -655,7 +741,7 @@ fn panic_fades_the_picture_over_the_panic_time() {
     let half = probe_at(&mut s, &red).1[0];
     assert!((100..=160).contains(&half[0]) && half[1] < 10, "{half:?}");
     run_to(&mut s, at + samples(1.1));
-    assert_eq!(state(&s, 1), CueState::Idle);
+    expect_state(&s, 1, CueState::Idle, "");
     assert_eq!(probe_at(&mut s, &red).1, vec![[0, 0, 0, 255]]);
 }
 
@@ -700,8 +786,8 @@ fn notices(s: &mut OfflineShow) -> Vec<String> {
 fn a_decode_failure_mid_play_breaks_only_that_cue_with_a_notice() {
     let dir = tempfile::tempdir().unwrap();
     // ProRes: every frame is whole in itself, so a cut removes the frames after it.
-    let doomed = make(dir.path(), "doomed.mov", "prores", Some((250, 25)));
-    let fine = make(dir.path(), "fine.mov", "h264", Some((250, 25)));
+    let doomed = movie!(dir.path(), "doomed.mov", (250, 25), "prores");
+    let fine = movie!(dir.path(), "fine.mov", (250, 25));
     // Cut short at a fifth: the index (at the start in the test movies) still promises
     // every frame, so the file probes as playable, but the frames past there are not in it.
     let mut bytes = std::fs::read(&doomed).unwrap();
@@ -732,7 +818,7 @@ fn a_decode_failure_mid_play_breaks_only_that_cue_with_a_notice() {
         Some(openlab_core::BrokenReason::DecodeFailed)
     );
     assert!(notices(&mut s).iter().any(|c| c == "video_decode_failed"));
-    assert_eq!(state(&s, 1), CueState::Running, "the other cue plays on");
+    expect_state(&s, 1, CueState::Running, "the other cue plays on");
     let at = (s.now() - first) as f64 / f64::from(RATE);
     let now = on_stage(&mut s, "cue 1 still shown");
     assert!(now.abs_diff(frame_at(at)) <= 1, "{now} at {at} s");
@@ -743,7 +829,7 @@ fn a_decode_failure_mid_play_breaks_only_that_cue_with_a_notice() {
 #[test]
 fn a_stage_host_killed_mid_play_shows_the_picture_again_when_relaunched() {
     let dir = tempfile::tempdir().unwrap();
-    let movie = make(dir.path(), "clip.mov", "h264", Some((250, 25)));
+    let movie = movie!(dir.path(), "clip.mov", (250, 25));
     let mut s = video_show(vec![video_cue(1, Some(&movie))]);
     let at = go(&mut s);
     run_to(&mut s, at + samples(0.5));
@@ -756,7 +842,7 @@ fn a_stage_host_killed_mid_play_shows_the_picture_again_when_relaunched() {
     assert!(killed.success());
     assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
     s.settle_stages();
-    assert_eq!(state(&s, 1), CueState::Running);
+    expect_state(&s, 1, CueState::Running, "");
     run_to(&mut s, at + samples(2.0));
     let played = (s.now() - at) as f64 / f64::from(RATE);
     let now = on_stage(&mut s, "the picture is back");
@@ -893,8 +979,8 @@ fn set_media(s: &mut OfflineShow, n: u128, file: &Path) {
 #[test]
 fn go_on_a_video_cue_whose_file_is_being_probed_waits_and_then_plays() {
     let dir = tempfile::tempdir().unwrap();
-    let a = make(dir.path(), "a.mov", "h264", Some((50, 25)));
-    let b = make(dir.path(), "b.mov", "h264", Some((50, 25)));
+    let a = movie!(dir.path(), "a.mov", (50, 25));
+    let b = movie!(dir.path(), "b.mov", (50, 25));
     let gif = dir.path().join("bad.gif");
     std::fs::write(&gif, b"GIF89a\x01\x00\x01\x00\x00\x00\x00;").unwrap();
     let mut s = gated_video_show(vec![video_cue(1, Some(&a)), video_cue(2, Some(&a))]);
@@ -906,8 +992,8 @@ fn go_on_a_video_cue_whose_file_is_being_probed_waits_and_then_plays() {
     let at = go(&mut s);
     start(&mut s, 2);
     s.run(samples(1.0));
-    assert_eq!(state(&s, 1), CueState::Running, "waits, not broken");
-    assert_eq!(state(&s, 2), CueState::Running);
+    expect_state(&s, 1, CueState::Running, "waits, not broken");
+    expect_state(&s, 2, CueState::Running, "");
     assert!(notices(&mut s).iter().any(|c| c == "probe_wait"));
     assert_eq!(
         shown(&mut s),
@@ -918,7 +1004,7 @@ fn go_on_a_video_cue_whose_file_is_being_probed_waits_and_then_plays() {
     release_probe(&gif);
     s.settle_media();
     let released = s.now();
-    assert_eq!(state(&s, 1), CueState::Running);
+    expect_state(&s, 1, CueState::Running, "");
     assert_eq!(
         state(&s, 2),
         CueState::Broken,
@@ -930,9 +1016,9 @@ fn go_on_a_video_cue_whose_file_is_being_probed_waits_and_then_plays() {
     assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played} s");
     // Its whole length from the late start.
     run_to(&mut s, released + samples(1.9));
-    assert_eq!(state(&s, 1), CueState::Running);
+    expect_state(&s, 1, CueState::Running, "");
     run_to(&mut s, released + samples(2.1));
-    assert_eq!(state(&s, 1), CueState::Idle);
+    expect_state(&s, 1, CueState::Idle, "");
     assert!(s.now() > at);
 }
 
@@ -941,17 +1027,17 @@ fn go_on_a_video_cue_whose_file_is_being_probed_waits_and_then_plays() {
 #[test]
 fn a_video_start_held_by_its_probe_fails_after_the_hold_limit() {
     let dir = tempfile::tempdir().unwrap();
-    let a = make(dir.path(), "a.mov", "h264", Some((50, 25)));
-    let b = make(dir.path(), "b.mov", "h264", Some((50, 25)));
+    let a = movie!(dir.path(), "a.mov", (50, 25));
+    let b = movie!(dir.path(), "b.mov", (50, 25));
     let mut s = gated_video_show(vec![video_cue(1, Some(&a))]);
     GATED.lock().unwrap().push(b.clone());
     set_media(&mut s, 1, &b);
     let at = go(&mut s);
     run_to(&mut s, at + samples(4.9));
-    assert_eq!(state(&s, 1), CueState::Running);
+    expect_state(&s, 1, CueState::Running, "");
     s.take_outbound();
     run_to(&mut s, at + samples(5.1));
-    assert_eq!(state(&s, 1), CueState::Broken);
+    expect_state(&s, 1, CueState::Broken, "");
     assert!(notices(&mut s).iter().any(|c| c == "probe_timeout"));
     release_probe(&b);
     s.settle_media();
@@ -967,9 +1053,9 @@ fn a_video_start_held_by_its_probe_fails_after_the_hold_limit() {
 #[test]
 fn a_video_start_waiting_for_its_probe_can_be_paused_resumed_and_stopped() {
     let dir = tempfile::tempdir().unwrap();
-    let a = make(dir.path(), "a.mov", "h264", Some((50, 25)));
-    let b = make(dir.path(), "b.mov", "h264", Some((50, 25)));
-    let c = make(dir.path(), "c.mov", "h264", Some((50, 25)));
+    let a = movie!(dir.path(), "a.mov", (50, 25));
+    let b = movie!(dir.path(), "b.mov", (50, 25));
+    let c = movie!(dir.path(), "c.mov", (50, 25));
     let mut s = gated_video_show(vec![video_cue(1, Some(&a)), video_cue(2, Some(&a))]);
     GATED.lock().unwrap().extend([b.clone(), c.clone()]);
     set_media(&mut s, 1, &b);
@@ -983,8 +1069,8 @@ fn a_video_start_waiting_for_its_probe_can_be_paused_resumed_and_stopped() {
         fade_out: None,
     });
     s.run(BLOCK);
-    assert_eq!(state(&s, 1), CueState::Paused);
-    assert_eq!(state(&s, 2), CueState::Idle);
+    expect_state(&s, 1, CueState::Paused, "");
+    expect_state(&s, 2, CueState::Idle, "");
     release_probe(&b);
     release_probe(&c);
     s.settle_media();
@@ -1009,7 +1095,7 @@ fn relink_finds_a_video_cues_moved_file_and_it_plays() {
     let dir = tempfile::tempdir().unwrap();
     let lib = dir.path().join("lib");
     std::fs::create_dir_all(&lib).unwrap();
-    let moved = make(&lib, "clip.mov", "h264", Some((50, 25)));
+    let moved = movie!(&lib, "clip.mov", (50, 25));
     let gone = dir.path().join("gone").join("clip.mov");
     let mut s = video_show(vec![video_cue(1, Some(&gone))]);
     assert!(matches!(
@@ -1051,7 +1137,7 @@ fn relink_finds_a_video_cues_moved_file_and_it_plays() {
 #[test]
 fn a_paused_picture_is_shown_again_when_the_stage_host_is_relaunched() {
     let dir = tempfile::tempdir().unwrap();
-    let movie = make(dir.path(), "clip.mov", "h264", Some((250, 25)));
+    let movie = movie!(dir.path(), "clip.mov", (250, 25));
     let mut s = video_show(vec![video_cue(1, Some(&movie))]);
     let at = go(&mut s);
     run_to(&mut s, at + samples(0.5));
@@ -1067,7 +1153,7 @@ fn a_paused_picture_is_shown_again_when_the_stage_host_is_relaunched() {
     assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
     s.settle_stages();
     s.run(samples(1.0));
-    assert_eq!(state(&s, 1), CueState::Paused);
+    expect_state(&s, 1, CueState::Paused, "");
     assert_eq!(shown(&mut s), Some(held), "the held frame is back");
 }
 
@@ -1095,7 +1181,7 @@ fn wait_broken(s: &mut OfflineShow, n: u128) -> bool {
 #[test]
 fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
     let dir = tempfile::tempdir().unwrap();
-    let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
+    let good = movie!(dir.path(), "good.mov", (250, 25));
     let hung = faulty(dir.path(), &good, "openlab-test-hang-open");
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
     let mut s = video_show_args(ws, &HAND_LIMITS);
@@ -1133,7 +1219,7 @@ fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
             .any(|(c, t)| c == "video_decode_failed" && t.contains("to open")),
         "{texts:?}"
     );
-    assert_eq!(state(&s, 1), CueState::Running, "the other cue plays on");
+    expect_state(&s, 1, CueState::Running, "the other cue plays on");
     assert_eq!(
         s.control().stage_host_pid(),
         Some(pid),
@@ -1146,7 +1232,7 @@ fn a_picture_whose_open_hangs_fails_alone_and_the_stage_host_answers() {
 #[test]
 fn a_picture_whose_decode_hangs_fails_alone() {
     let dir = tempfile::tempdir().unwrap();
-    let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
+    let good = movie!(dir.path(), "good.mov", (250, 25));
     let hung = faulty(dir.path(), &good, "openlab-test-hang-decode");
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&hung))]);
     let mut s = video_show_args(ws, &HAND_LIMITS);
@@ -1176,7 +1262,7 @@ fn a_picture_whose_decode_hangs_fails_alone() {
             .any(|(c, t)| c == "video_decode_failed" && t.contains("to decode")),
         "{texts:?}"
     );
-    assert_eq!(state(&s, 1), CueState::Running);
+    expect_state(&s, 1, CueState::Running, "");
     assert_eq!(s.control().stage_host_pid(), Some(pid));
 }
 
@@ -1238,7 +1324,7 @@ fn stays_up(s: &mut OfflineShow, seconds: f64) {
 #[test]
 fn a_picture_that_crashes_the_stage_host_as_it_opens_breaks_only_its_cue() {
     let dir = tempfile::tempdir().unwrap();
-    let good = make(dir.path(), "good.mov", "h264", Some((500, 25)));
+    let good = movie!(dir.path(), "good.mov", (500, 25));
     let bomb = faulty(dir.path(), &good, "openlab-test-crash-open");
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
     let mut s = video_show_of(ws);
@@ -1252,7 +1338,7 @@ fn a_picture_that_crashes_the_stage_host_as_it_opens_breaks_only_its_cue() {
     let played = (s.now() - at) as f64 / f64::from(RATE);
     let now = on_stage(&mut s, "the good picture is back");
     assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
-    assert_eq!(state(&s, 1), CueState::Running);
+    expect_state(&s, 1, CueState::Running, "");
 }
 
 /// A movie that crashes the stage host decoding a frame after its open, while a good movie
@@ -1261,7 +1347,7 @@ fn a_picture_that_crashes_the_stage_host_as_it_opens_breaks_only_its_cue() {
 #[test]
 fn of_two_movies_playing_only_the_one_crashing_the_stage_host_breaks() {
     let dir = tempfile::tempdir().unwrap();
-    let good = make(dir.path(), "good.mov", "h264", Some((500, 25)));
+    let good = movie!(dir.path(), "good.mov", (500, 25));
     let bomb = faulty(dir.path(), &good, "openlab-test-crash-decode");
     let ws = workspace(vec![video_cue(1, Some(&good)), video_cue(2, Some(&bomb))]);
     let mut s = video_show_of(ws);
@@ -1275,7 +1361,7 @@ fn of_two_movies_playing_only_the_one_crashing_the_stage_host_breaks() {
     let played = (s.now() - at) as f64 / f64::from(RATE);
     let now = on_stage(&mut s, "the good picture is back");
     assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
-    assert_eq!(state(&s, 1), CueState::Running);
+    expect_state(&s, 1, CueState::Running, "");
 }
 
 /// A stage host killed from outside, or by the supervisor for not answering, has not crashed:
@@ -1285,7 +1371,7 @@ fn of_two_movies_playing_only_the_one_crashing_the_stage_host_breaks() {
 #[test]
 fn pictures_come_back_after_kills_and_after_the_pause_at_the_restart_limit() {
     let dir = tempfile::tempdir().unwrap();
-    let movie = make(dir.path(), "clip.mov", "h264", Some((1500, 25)));
+    let movie = movie!(dir.path(), "clip.mov", (1500, 25));
     let png = make(dir.path(), "card.png", "png", None);
     let ws = workspace(vec![still_cue(1, &png, None), video_cue(2, Some(&movie))]);
     let hand = HandClock::new();
@@ -1302,8 +1388,8 @@ fn pictures_come_back_after_kills_and_after_the_pause_at_the_restart_limit() {
     let back = |s: &mut OfflineShow, round: &str| {
         s.settle_stages();
         s.run(samples(0.5));
-        assert_eq!(state(s, 1), CueState::Running, "{round}");
-        assert_eq!(state(s, 2), CueState::Running, "{round}");
+        expect_state(s, 1, CueState::Running, "{round}");
+        expect_state(s, 2, CueState::Running, "{round}");
         let played = (s.now() - at) as f64 / f64::from(RATE);
         let now = on_stage(s, "the movie is back");
         assert!(
@@ -1335,7 +1421,7 @@ fn pictures_come_back_after_kills_and_after_the_pause_at_the_restart_limit() {
     assert!(s.wait_for(|c| c.stage_host_pid().is_none_or(|p| p != pid)));
     s.run(samples(0.5));
     assert_eq!(s.control().stage_host_pid(), None, "paused, not restarted");
-    assert_eq!(state(&s, 2), CueState::Running);
+    expect_state(&s, 2, CueState::Running, "");
     assert_eq!(s.control().pictures_live(), 2);
     // After the retry time it starts again, with the pictures.
     hand.advance(&mut s, 31);
@@ -1351,7 +1437,7 @@ fn pictures_come_back_after_kills_and_after_the_pause_at_the_restart_limit() {
 #[test]
 fn a_picture_that_crashes_the_stage_host_twice_is_not_sent_a_third_time() {
     let dir = tempfile::tempdir().unwrap();
-    let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
+    let good = movie!(dir.path(), "good.mov", (250, 25));
     let bomb = faulty(dir.path(), &good, "openlab-test-crash-decode");
     let mut s = video_show(vec![video_cue(1, Some(&bomb)), video_cue(2, Some(&good))]);
     let mut pids = vec![s.control().stage_host_pid().unwrap()];
@@ -1366,7 +1452,7 @@ fn a_picture_that_crashes_the_stage_host_twice_is_not_sent_a_third_time() {
         probe_through_crashes(&mut s, &mut pids);
         s.run(BLOCK);
     }
-    assert_eq!(state(&s, 1), CueState::Broken, "{pids:?}");
+    expect_state(&s, 1, CueState::Broken, "{pids:?}");
     assert_eq!(
         pids.len(),
         3,
@@ -1467,7 +1553,7 @@ fn progress_at(
 #[test]
 fn clients_are_told_a_video_cues_progress_playing_paused_resumed_and_loaded_to_time() {
     let dir = tempfile::tempdir().unwrap();
-    let movie = make(dir.path(), "clip.mov", "h264", Some((100, 25)));
+    let movie = movie!(dir.path(), "clip.mov", (100, 25));
     let png = make(dir.path(), "card.png", "png", None);
     let mut s = video_show(vec![video_cue(1, Some(&movie)), still_cue(2, &png, None)]);
     let at = start(&mut s, 1);
@@ -1519,7 +1605,7 @@ fn clients_are_told_a_video_cues_progress_playing_paused_resumed_and_loaded_to_t
 #[test]
 fn a_slow_decoder_that_keeps_decoding_keeps_its_picture_up() {
     let dir = tempfile::tempdir().unwrap();
-    let good = make(dir.path(), "good.mov", "h264", Some((250, 25)));
+    let good = movie!(dir.path(), "good.mov", (250, 25));
     let slow = faulty(dir.path(), &good, "openlab-test-slow-decode");
     let ws = workspace(vec![video_cue(1, Some(&slow))]);
     // Each slow frame moves the media clock on 400 ms, a catch-up of a third of a second
@@ -1535,7 +1621,7 @@ fn a_slow_decoder_that_keeps_decoding_keeps_its_picture_up() {
         run_to(&mut s, at + samples(played));
         let now = on_stage(&mut s, "the slow picture is drawn");
         assert!(now.abs_diff(frame_at(played)) <= 1, "{now} at {played}");
-        assert_eq!(state(&s, 1), CueState::Running);
+        expect_state(&s, 1, CueState::Running, "");
     }
     assert!(
         !notices(&mut s).iter().any(|c| c == "video_decode_failed"),
