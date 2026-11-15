@@ -533,3 +533,42 @@ fn a_stop_with_a_fade_while_the_move_waits_fades_the_old_point() {
     assert!(ch[from + 900..].iter().all(|&v| v == 0.0));
     assert_eq!(state(&s, 1), CueState::Idle);
 }
+
+/// A click whose new point is on a volume that hangs: the old point plays on for the wait
+/// (0.25 s), then the move is made anyway, silent; the stream start limit then breaks the cue
+/// rather than letting it play late if the volume ever answers.
+#[test]
+fn a_click_whose_new_point_never_opens_breaks_the_cue_instead_of_playing_late() {
+    let path = wav(&dc(10 * RATE as usize, 0.5));
+    let ws = workspace(vec![audio(1, &path, 0)]);
+    let mut c = config(&ws);
+    c.prime_cues = 0;
+    c.streamer.before_open = gated_open;
+    let mut s = show_with(ws, c);
+    start(&mut s, 1);
+    s.run(800);
+    gate(&path);
+    let clicked = s.now() as usize;
+    seek(&mut s, 1, 2.0);
+    s.run_unsettled(u64::from(RATE));
+    let ch = s.channel(0);
+    // The old point played on through the wait, then the move faded it out.
+    let wait = RATE as usize / 4;
+    assert!(
+        ch[clicked..clicked + wait - BLOCK as usize]
+            .iter()
+            .all(|&v| v == 0.5)
+    );
+    let quiet = last_nonzero(&ch).unwrap();
+    assert!(
+        quiet < clicked + wait + 3 * BLOCK as usize + XFADE,
+        "{quiet}"
+    );
+    assert_eq!(state(&s, 1), CueState::Running);
+    s.run_unsettled(5 * u64::from(RATE));
+    assert_eq!(state(&s, 1), CueState::Broken);
+    release(&path);
+    s.run(BLOCK * 8);
+    assert_eq!(last_nonzero(&s.channel(0)), Some(quiet));
+    assert_eq!(state(&s, 1), CueState::Broken);
+}
