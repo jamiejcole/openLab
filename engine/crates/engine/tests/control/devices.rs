@@ -4340,3 +4340,83 @@ fn a_cue_on_the_system_output_whose_default_goes_away_stops_as_for_a_lost_device
     assert_eq!(s.control().engine().state(id(2)), CueState::Paused);
     assert!(heard(&s.channel(0)).is_empty());
 }
+
+/// A looping cue (2,000-frame ramp, looping until devamped) is devamped 1,300 frames into its
+/// third pass, its Devamp cue starting cue 2 when it leaves the loop; its patch moves to "Fake 2"
+/// `move_after` frames after the devamp, before (or after) the mixer has said where it leaves.
+/// Returns the ramp samples heard in order and whether any was out of step, and how many
+/// times cue 2 started.
+fn devamp_then_move(move_after: u64) -> (usize, Vec<(usize, f32, f32)>, usize) {
+    let frames = 2000;
+    let a = wav(&ramp(frames));
+    let b = wav(&dc(2000, 0.5));
+    let mut looping = audio(1, &a, 0);
+    if let CueKind::Audio {
+        last_slice_play_count,
+        ..
+    } = &mut looping.kind
+    {
+        *last_slice_play_count = 0;
+    }
+    let devamp = cue(
+        3,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: true,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = two_device_show(vec![looping, devamp, audio(2, &b, 0)]);
+    start(&mut s, 1);
+    let t0 = s.rendered();
+    s.run(frames as u64 * 2 - (s.rendered() - t0) + 1300);
+    start(&mut s, 3);
+    s.run(move_after);
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    let mut msgs = Vec::new();
+    for _ in 0..200 {
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+    }
+    let starts = states(&msgs, id(2))
+        .iter()
+        .filter(|(st, _)| *st == WireCueState::Running)
+        .count();
+    let both = on_both(&s);
+    let unit = 1.0 / 1_048_576.0;
+    let first = both
+        .iter()
+        .position(|&(a, b)| a != 0.0 || b != 0.0)
+        .unwrap();
+    let (mut bad, mut i) = (Vec::new(), 0usize);
+    for (t, &(x, y)) in both[first..].iter().enumerate() {
+        let v = x + y;
+        if v == 0.5 || v == 0.0 {
+            continue;
+        }
+        let want = ((i % frames) + 1) as f32 * unit;
+        if (v - want).abs() >= 2.0 * unit {
+            bad.push((t, v / unit, want / unit));
+        }
+        i += 1;
+    }
+    (i, bad, starts)
+}
+
+/// Review round 1, H1: a move that comes while a devamp is on its way (sent, not yet answered,
+/// or answered and not yet left) waits until the voice has left its loop; the loop is heard
+/// exactly three times in all, never a fourth time on the new device, and cue 2 starts once.
+#[test]
+fn a_cue_moved_to_another_device_while_it_is_being_devamped_leaves_its_loop_once() {
+    for move_after in [0, BLOCK, 2 * BLOCK, 400, 600] {
+        let (heard, bad, starts) = devamp_then_move(move_after);
+        assert_eq!(heard, 6000, "moved {move_after} frames after the devamp");
+        assert!(
+            bad.is_empty(),
+            "moved {move_after} after: {:?}",
+            &bad[..bad.len().min(5)]
+        );
+        assert_eq!(starts, 1, "moved {move_after} after");
+    }
+}
