@@ -2056,4 +2056,32 @@ extension PlayheadFlowTests {
         await playsAt(id, 1.5, tolerance: 0.4)
         XCTAssertEqual(rowMark(id), runningMark)
     }
+
+    /// With a section, the position line and the play line all shown, the position line is drawn
+    /// bright and the section's edges faint, so the line is told apart by its look.
+    func testThePositionLineStandsOutFromASectionsEdges() async throws {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        clickWave(at: 12)
+        await seekRun(1)
+        dragWave(from: 18, to: 26)
+        XCTAssertGreaterThanOrEqual(
+            WaveformView.positionLine.alphaComponent - WaveformView.sectionEdge.alphaComponent, 0.5)
+        XCTAssertTrue(try lineDrawn(at: waveX(12)), "the position line is drawn bright")
+        XCTAssertFalse(try lineDrawn(at: waveX(18)), "the section's edge is not")
+        XCTAssertFalse(try lineDrawn(at: waveX(26)))
+        _ = id
+    }
+
+    /// A slice marker added at the position line is drawn over it: its green line stays seen.
+    func testASliceMarkerAtThePositionLineIsDrawnOverIt() async throws {
+        await showWaveform(try await waveTones(1)[0])
+        clickWave(at: 10)
+        try keyM()
+        await assertEventually("a marker at 10 s") { self.waveView.sliceMarks == [10] }
+        XCTAssertEqual(waveView.insertion ?? -1, 10, accuracy: 0.001, "the line is still there")
+        let green = try drawnColumns { $0.greenComponent > $0.redComponent + 0.2 && $0.greenComponent > 0.3 }
+        XCTAssertTrue(green.contains { abs($0 - self.waveX(10)) <= 1 }, "the marker's green shows")
+        XCTAssertFalse(try lineDrawn(at: waveX(10)), "not the white line over it")
+    }
 }

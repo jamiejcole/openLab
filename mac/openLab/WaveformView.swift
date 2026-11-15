@@ -168,6 +168,10 @@ class WaveformView: NSView {
     static let waveBackground = NSColor(calibratedRed: 0.02, green: 0.02, blue: 0.1, alpha: 1)
     /// The message's colour: light, to read on `waveBackground` in either appearance.
     static let messageColour = NSColor(calibratedWhite: 0.82, alpha: 1)
+    /// The position line, and the selected section's wash and faint edges (all over the waves).
+    static let positionLine = NSColor.white.withAlphaComponent(0.8)
+    static let sectionWash = NSColor.white.withAlphaComponent(0.18)
+    static let sectionEdge = NSColor.white.withAlphaComponent(0.22)
     /// A drag moved a handle: its new time (for the end, nil is the end of the file).
     var onTrimCommit: ((Handle, Double?) -> Void)?
     /// A drag moved the slice marker that was at `from` to `to`, or (nil) took it out of the view.
@@ -596,23 +600,25 @@ class WaveformView: NSView {
             let b = scale.x(endTime)
             NSRect(x: 0, y: wave.minY, width: max(0, a), height: wave.height).fill()
             NSRect(x: b, y: wave.minY, width: max(0, bounds.width - b), height: wave.height).fill()
-            drawHandle(at: a, start: true)
-            drawHandle(at: b, start: false)
             if let selection {
-                // The section: a light wash across the waves, with its edges drawn.
+                // The section: a light wash across the waves with faint edges, so the brighter
+                // position line stands out against them.
                 let a = scale.x(selection.lowerBound)
                 let b = scale.x(selection.upperBound)
-                NSColor.white.withAlphaComponent(0.18).setFill()
+                Self.sectionWash.setFill()
                 NSRect(x: a, y: wave.minY, width: max(1, b - a), height: wave.height).fill()
-                NSColor.white.withAlphaComponent(0.6).setFill()
+                Self.sectionEdge.setFill()
                 for x in [a, b] { NSRect(x: x - 0.5, y: wave.minY, width: 1, height: wave.height).fill() }
             }
-            drawSlices()
-            if fadesShown { drawFades() }
+            // Under the handles and markers: a marker placed where the line is stays seen.
             if let insertion {
-                NSColor.white.withAlphaComponent(0.7).setFill()
+                Self.positionLine.setFill()
                 NSRect(x: scale.x(insertion) - 0.5, y: wave.minY, width: 1, height: wave.height).fill()
             }
+            drawHandle(at: a, start: true)
+            drawHandle(at: b, start: false)
+            drawSlices()
+            if fadesShown { drawFades() }
         }
         if let playhead {
             NSColor.systemYellow.setFill()
