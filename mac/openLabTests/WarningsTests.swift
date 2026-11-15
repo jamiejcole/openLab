@@ -316,6 +316,34 @@ final class WarningsTests: XCTestCase {
         XCTAssertFalse(wc.sidebar.tableView(wc.sidebar.warningsTable, shouldSelectRow: row))
     }
 
+    /// A reason too long for one line (a cue its lost device left paused) wraps, and its row is tall
+    /// enough to show all of it, at the sidebar's width and at a narrower one.
+    func testAReasonThatWrapsGetsARowTallEnoughForAllOfIt() async throws {
+        try await make()
+        try runtime(#"{"type":"cue_state","cue":"\#(rain)","state":"paused","reason":"device_lost"}"#)
+        let side = try XCTUnwrap(wc.sidebar)
+        let table = side.warningsTable
+        let row = try XCTUnwrap(side.warningRows.firstIndex { $0.cue == rain })
+        XCTAssertEqual(side.warningRows[row].detail, loc("paused.device_lost"))
+        for width in [CGFloat(280), 200] {
+            table.tableColumns[0].width = width
+            let height = side.tableView(table, heightOfRow: row)
+            let cell = try XCTUnwrap(side.tableView(table, viewFor: nil, row: row) as? WarningCell)
+            cell.frame = NSRect(x: 0, y: 0, width: width, height: height)
+            cell.layoutSubtreeIfNeeded()
+            cell.layoutSubtreeIfNeeded()
+            let detail = cell.convert(cell.detail.bounds, from: cell.detail)
+            let needed = cell.detail.attributedStringValue.boundingRect(
+                with: NSSize(width: detail.width - 4, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
+            ).height
+            XCTAssertGreaterThan(detail.width, width / 2, "at \(width)")
+            XCTAssertGreaterThan(needed, 20, "wraps at \(width)")
+            XCTAssertGreaterThanOrEqual(detail.minY, 0, "all of it inside its row at \(width)")
+            XCTAssertGreaterThanOrEqual(detail.height + 1, needed, "at \(width)")
+        }
+    }
+
     func testRelinkButtonAsksTheWindowToRelink() async throws {
         try await make()
         var asked = 0
