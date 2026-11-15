@@ -194,7 +194,7 @@ fn command(s: &mut OfflineShow, command: Command) -> Vec<ServerMessage> {
 }
 
 fn first_audio_ids(ws: &openlab_core::Workspace, n: usize) -> Vec<openlab_core::CueId> {
-    openlab_core::audio_media(ws)
+    openlab_core::media_of_cues(ws)
         .into_iter()
         .map(|(id, _)| id)
         .take(n)
@@ -260,7 +260,7 @@ fn the_generated_workspace_is_a_realistic_two_thousand_cues() {
     let n = count(&ws.cue_lists[0].cues);
     assert!(n >= 2_000, "{n} cues");
     assert_eq!(
-        openlab_core::audio_media(&ws).len(),
+        openlab_core::media_of_cues(&ws).len(),
         (GROUPS * PER_GROUP + TOP_AUDIO) as usize
     );
     // It is a valid show: it survives a save and a load unchanged.

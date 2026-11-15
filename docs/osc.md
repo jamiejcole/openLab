@@ -208,7 +208,7 @@ needs View; changing needs Edit (notes: View).
 | `/cue/{number}/number` | string, int or float | an empty string clears the number; a number in use is refused |
 | `/cue/{number}/preWait` | seconds, 0 to 86400 | |
 | `/cue/{number}/postWait` | seconds, 0 to 86400 | a Wait cue's post-wait is its duration: reading or changing one is the other |
-| `/cue/{number}/duration` | seconds, 0 to 86400 | changes only a Wait or Fade cue's duration. Reads a Wait or Fade cue's duration, an Audio cue's length (an `error` while it is not known, or when it loops until devamped), 0 for a cue that acts at once; a Group answers `error` |
+| `/cue/{number}/duration` | seconds, 0 to 86400 | changes only a Wait or Fade cue's duration. Reads a Wait or Fade cue's duration, an Audio cue's length (an `error` while it is not known, or when it loops until devamped), a Video cue's length (its movie's, or a still's duration; an `error` while it is not known, or for a still shown until stopped), 0 for a cue that acts at once; a Group answers `error` |
 | `/cue/{number}/armed` | 1 or 0, or true or false | |
 | `/cue/{number}/flagged` | 1 or 0, or true or false | |
 | `/cue/{number}/uniqueID` | read only | the cue's unique id, for `/cue_id/` |

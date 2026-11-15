@@ -92,6 +92,9 @@ enum Job {
         key: String,
         ticket: u64,
         path: PathBuf,
+        /// A Video cue's file: probed by a throwaway stage host process
+        /// ([`crate::stage_probe`]), never decoded in the engine.
+        picture: bool,
     },
     Preload {
         doc: DocId,

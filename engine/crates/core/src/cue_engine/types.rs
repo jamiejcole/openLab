@@ -7,7 +7,7 @@ use std::num::NonZeroU32;
 use std::fmt;
 
 use crate::cue::{FadeCurve, FadeSpec, MediaRef, OscArg};
-use crate::model::{CueId, CueListId, NetworkPatchId, PatchId};
+use crate::model::{CueId, CueListId, NetworkPatchId, PatchId, StageId};
 use crate::settings::PatchResolution;
 
 use super::level::LevelParam;
@@ -185,10 +185,11 @@ pub enum Input {
         run: RunId,
         frames: SampleTime,
     },
-    /// From the binary: the nominal action length of Audio cues in samples (their plan from the
-    /// top, as `ActionLength` would give it at a start with no offset), `None` when it is not
-    /// known (not probed, no playable plan) or the cue loops forever. Sent for every Audio cue
-    /// whose length changed (edit, probe answer, a newly opened workspace), and `None` for a cue
+    /// From the binary: the nominal action length of Audio and Video cues in samples (an Audio
+    /// cue's plan from the top, as `ActionLength` would give it at a start with no offset; a
+    /// movie's length or a still's duration), `None` when it is not known (not probed, no
+    /// playable plan, a still shown until stopped) or the cue loops forever. Sent for every
+    /// such cue whose length changed (edit, probe answer, a newly opened workspace), and `None` for a cue
     /// that went away. The core cannot plan audio, so it uses these for a playlist that halts on
     /// a broken child (timing its auto-follow, QLab check Q2), for a playlist's or random
     /// group's nominal span at a load to time, and for a Load cue's negative time (counted back
@@ -325,8 +326,14 @@ pub enum CueProblem {
     },
     /// A Fade cue that sets no level to fade (QLab: "No parameters set to fade").
     NothingToFade,
-    /// An Audio cue with no media file.
+    /// An Audio or Video cue with no media file.
     NoMedia,
+    /// A Video cue whose stage is "none" (QLab 5 manual p. 209: a Video cue must have a stage).
+    NoStage,
+    /// A Video cue's stage is not in the workspace.
+    StageMissing {
+        stage: StageId,
+    },
     MediaMissing {
         media: MediaRef,
     },
@@ -378,6 +385,8 @@ impl fmt::Display for CueProblem {
             }
             Self::NothingToFade => write!(f, "no levels set to fade"),
             Self::NoMedia => write!(f, "no media file"),
+            Self::NoStage => write!(f, "no stage"),
+            Self::StageMissing { stage } => write!(f, "stage {} does not exist", stage.0),
             Self::MediaMissing { media } => write!(f, "media file {} not found", media.as_str()),
             Self::MediaUnsupported { media, reason } => {
                 write!(
@@ -464,6 +473,9 @@ pub enum BrokenReason {
     StreamFailed,
     /// The output device went away.
     DeviceLost,
+    /// A Video cue's picture could not be decoded or drawn (a file damaged past its probe, a
+    /// decoder that gave up): only that cue stops.
+    DecodeFailed,
 }
 
 /// A fade-out applied by a stop.

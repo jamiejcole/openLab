@@ -199,6 +199,23 @@ final class ProtocolFixtureTests: XCTestCase {
                 CueMediaDuration(
                     cue: "00000000-0000-0000-0000-00000000000b", file: nil, trimmed: nil, duration: nil, channels: nil),
             ])
+        // A Video cue's lengths come with its file's format.
+        guard
+            case .runtime(_, let video) = try ServerMessage.decode(
+                try Fixtures.text("server", "runtime_media_duration_video"))
+        else { return XCTFail("video") }
+        let pictures: [PictureFormat?] = video.compactMap {
+            if case .mediaDuration(let d) = $0 { return d.picture }
+            return nil
+        }
+        XCTAssertEqual(
+            pictures,
+            [
+                PictureFormat(
+                    type: "video", codec: "prores", format: nil, width: 1920, height: 1080, fps: 25, duration: 12.5),
+                PictureFormat(
+                    type: "still", codec: nil, format: "png", width: 3840, height: 2160, fps: nil, duration: nil),
+            ])
         // A snapshot without the field (none known) still decodes.
         var bare = try Fixtures.json("server", "snapshot")
         bare["snapshot"]?["media_durations"] = nil

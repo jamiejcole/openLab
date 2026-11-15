@@ -22,3 +22,4 @@ mod preview_devamp_hotkey;
 mod second_trigger;
 mod timers;
 mod transport;
+mod video;

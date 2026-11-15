@@ -72,7 +72,8 @@ impl Voices {
         let key = media.as_str();
         match env.media.get(key) {
             None | Some(Probe::Pending) => return Err(PrepError::Pending),
-            Some(Probe::Failed) => return Err(PrepError::Failed),
+            // A file probed as a picture (a Video cue uses it too) has no audio plan here.
+            Some(Probe::Failed | Probe::Picture(_)) => return Err(PrepError::Failed),
             Some(Probe::Ready(_)) => {}
         }
         let Some((ready, source)) = env.media.media(key) else {

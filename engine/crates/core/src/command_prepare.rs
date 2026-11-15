@@ -57,6 +57,9 @@ impl MediaPaths<'_> {
         walk_mut(cues, &mut |cue| {
             if let CueKind::Audio {
                 media: Some(media), ..
+            }
+            | CueKind::Video {
+                media: Some(media), ..
             } = &mut cue.kind
             {
                 let text = normalize_nfc(&to_portable(media.as_str(), self.style));
@@ -73,6 +76,9 @@ impl MediaPaths<'_> {
 
     fn store_kind(&self, kind: &mut CueKind) {
         if let CueKind::Audio {
+            media: Some(media), ..
+        }
+        | CueKind::Video {
             media: Some(media), ..
         } = kind
         {

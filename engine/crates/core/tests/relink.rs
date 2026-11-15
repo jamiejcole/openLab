@@ -43,7 +43,7 @@ fn relink(n: u128, path: &str) -> Relink {
 }
 
 #[test]
-fn audio_media_lists_nested_cues_and_skips_empty() {
+fn media_of_cues_lists_nested_cues_and_skips_empty() {
     let mut empty = audio();
     if let CueKind::Audio { media, .. } = &mut empty {
         *media = None;
@@ -53,7 +53,7 @@ fn audio_media_lists_nested_cues_and_skips_empty() {
         cue(2, group(vec![with_media(3, "b.wav"), cue(4, empty)])),
         cue(5, CueKind::Memo),
     ]);
-    let found: Vec<_> = audio_media(&ws)
+    let found: Vec<_> = media_of_cues(&ws)
         .into_iter()
         .map(|(id, m)| (id, m.as_str().to_owned()))
         .collect();
