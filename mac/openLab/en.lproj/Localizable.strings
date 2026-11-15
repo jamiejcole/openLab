@@ -478,6 +478,8 @@
 "warnings.device.device_stalled" = "Has stopped responding. If it stays silent, it is treated as disconnected.";
 "warnings.device.outputs_dropped" = "Has fewer outputs than this show uses, so some are not heard. Check its patches in Workspace Settings, Audio.";
 "warnings.device.patch_device_unusable" = "Listed, but openLab cannot use it, so the cues routed to it cannot play. Workspace Settings, Audio says why.";
+"warnings.systemOutputNone" = "The Mac has no output device selected, so the cues on patches set to the system output cannot play. Choose an output in the Mac’s Sound settings, or another device for those patches in Workspace Settings, Audio.";
+"warning.notice.move_delayed" = "Its audio file could not be read in time to move it to its patch’s new audio device. It plays on where it was; the move is tried again.";
 "warnings.device.other" = "Has a problem. Workspace Settings, Audio says more.";
 "warnings.refused.one" = "Asked to start while broken, so it did not play.";
 "warnings.refused.many" = "Asked to start %d times while broken, so it did not play.";

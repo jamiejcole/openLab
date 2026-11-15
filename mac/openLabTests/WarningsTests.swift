@@ -656,6 +656,50 @@ final class WarningsTests: XCTestCase {
         XCTAssertGreaterThan(WarningCell.height(of: row, width: 220), WarningCell.height(of: row, width: 600))
     }
 
+    /// A patch on the system output with no output device selected on the Mac is one entry like a
+    /// device's: a short title (the choice as the patch pop-up names it), the reason on the line
+    /// under it; two such patches are still one entry. The cell draws both lines whole.
+    func testTheSystemOutputWithNoDeviceIsOneEntryWithATitleAndAReason() async throws {
+        try await make()
+        try receive(
+            #"{"type":"warnings","warnings":[{"type":"notice","code":"patch_no_system_output","message":"Patch \"Main\" is on the system output"},"#
+                + #"{"type":"notice","code":"patch_no_system_output","message":"Patch \"Side\" is on the system output"}]}"#
+        )
+        let rows = side.warningRows.filter { $0.cue == nil }
+        XCTAssertEqual(rows.count, 1, "\(rows)")
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.title, loc("settings.audio.systemOutputNone"))
+        XCTAssertEqual(row.detail, loc("warnings.systemOutputNone"))
+        XCTAssertFalse(row.title.contains("\""), row.title)
+        let index = try XCTUnwrap(side.warningRows.firstIndex { $0.id == row.id })
+        side.warningsTable.reloadData()
+        let width = side.warningsTable.bounds.width
+        let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: index) as? WarningCell)
+        cell.frame = NSRect(x: 0, y: 0, width: width, height: WarningCell.height(of: row, width: width))
+        cell.layoutSubtreeIfNeeded()
+        XCTAssertEqual(cell.title.stringValue, row.title)
+        XCTAssertEqual(cell.detail.stringValue, row.detail)
+        for field in [cell.title, cell.detail] {
+            let frame = cell.convert(field.bounds, from: field)
+            let needed = field.attributedStringValue.boundingRect(
+                with: NSSize(width: frame.width - 4, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
+            ).height
+            XCTAssertGreaterThanOrEqual(frame.height + 1, needed, "\(field.stringValue)")
+            XCTAssertTrue(cell.bounds.contains(frame), "\(frame) in \(cell.bounds)")
+        }
+    }
+
+    /// A device move that has to wait for its file shows on the cue's own entry, in our words.
+    func testADelayedMoveShowsOnTheCuesEntry() throws {
+        let w = try JSONDecoder().decode(
+            WireWarning.self,
+            from: Data(
+                #"{"type":"notice","code":"move_delayed","message":"cue 1: engine words","cue":"00000000-0000-0000-0000-00000000000a"}"#
+                    .utf8))
+        XCTAssertEqual(ProblemText.warningDetail(w, label: { $0.raw }), loc("warning.notice.move_delayed"))
+    }
+
     func testTheCountInTheFooterMatchesTheEntriesShown() async throws {
         try await openWithoutRainsNumber()
         try await device(lose: true)

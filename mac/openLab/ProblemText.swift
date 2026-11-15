@@ -194,6 +194,16 @@ enum WarningRows {
         for (prefix, w) in notices {
             // Told on the broken cue's own entry, or past: the cue plays again.
             if w.type == "cue_broken" { continue }
+            // The system output with no output device selected: one entry, as a device's, titled
+            // as the patch pop-up names that choice, the reason under it in our words.
+            if w.type == "notice", w.json["code"]?.stringValue == "patch_no_system_output" {
+                let key = "s:system-output"
+                if latest[key] == nil {
+                    order.append(key)
+                    latest[key] = (w, 1)
+                }
+                continue
+            }
             if w.type == "notice", let device = w.json["device"]?.stringValue {
                 let code = w.json["code"]?.stringValue ?? ""
                 if prefix == "r", code == "device_lost" { continue }
@@ -216,6 +226,11 @@ enum WarningRows {
         for key in order {
             if let device = devices[key] {
                 rows.append(deviceRow(key: key, name: device.name, codes: device.codes))
+            } else if key == "s:system-output" {
+                rows.append(
+                    WarningRow(
+                        id: key, cue: nil, title: loc("settings.audio.systemOutputNone"),
+                        detail: loc("warnings.systemOutputNone"), canRelink: false))
             } else if let (w, count) = latest[key] {
                 rows.append(warningRow(key: key, w, count: count, model: model, label: label))
             }
