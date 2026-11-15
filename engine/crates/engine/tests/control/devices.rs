@@ -4828,3 +4828,161 @@ fn a_move_whose_stream_never_comes_in_time_is_given_up_and_the_cue_plays_on_wher
     assert_eq!(s.control().live_voices(), 0);
     assert!(s.control().held_streams() <= 1);
 }
+
+/// Every stream open asked for, by file (for counting a test's own file's opens).
+static OPENED: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// [`gated_open`] that also notes the file.
+fn counted_open(path: &std::path::Path) {
+    OPENED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(path.to_path_buf());
+    gated_open(path);
+}
+
+fn opens_of(path: &std::path::Path) -> usize {
+    OPENED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter(|p| p.as_path() == path)
+        .count()
+}
+
+/// A 16,000-frame ramp (cue 1, on patch A, auto-following into cue 2 on patch B channel 2)
+/// moved to "Fake 2" 1,000 frames in, its new stream's open held `held` frames.
+struct SlowMove {
+    s: DeviceShow,
+    path: std::path::PathBuf,
+    started: usize,
+    msgs: Vec<ServerMessage>,
+}
+
+fn slow_move(held: u64) -> SlowMove {
+    let a = wav(&ramp(16_000));
+    let b = wav(&dc(400, 0.5));
+    let mut first = audio(1, &a, 0);
+    first.continue_mode = ContinueMode::AutoFollow;
+    let mut s = two_patch_show_with(
+        vec![first, audio_b(2, &b, 1)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        |c| c.streamer.before_open = counted_open,
+    );
+    s.wait_output(DEV2_NAME);
+    s.take_outbound();
+    let started = start(&mut s, 1) as usize;
+    s.run(1000);
+    gate(&a);
+    s.slow_disk = true;
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    let mut msgs = Vec::new();
+    for _ in 0..held.div_ceil(BLOCK) {
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+    }
+    SlowMove {
+        s,
+        path: a,
+        started,
+        msgs,
+    }
+}
+
+impl SlowMove {
+    fn release_and_run(&mut self, frames: u64) {
+        release(&self.path);
+        self.s.slow_disk = false;
+        for _ in 0..frames.div_ceil(BLOCK) {
+            self.s.run(BLOCK);
+            self.msgs.extend(self.s.take_outbound());
+        }
+    }
+
+    /// Every sample of the ramp heard once, in step, on one device or the other.
+    fn assert_in_step(&self) {
+        let both = on_both(&self.s);
+        let unit = 1.0 / 1_048_576.0;
+        let from = self.started;
+        for (i, &(a, b)) in both[from..from + 16_000].iter().enumerate() {
+            let want = (i + 1) as f32 * unit;
+            assert!(
+                (a + b - want).abs() < 2.0 * unit,
+                "sample {i}: {a} + {b}, want {want}"
+            );
+        }
+    }
+
+    /// Where cue 2 started, from cue 1's start.
+    fn next_at(&self) -> Option<usize> {
+        let shift = self.s.channel(0).len() - self.s.device_channel(DEV2, 0).len();
+        self.s
+            .device_channel(DEV2, 1)
+            .iter()
+            .position(|&v| v != 0.0)
+            .map(|p| p + shift - self.started)
+    }
+
+    fn warns(&self) -> Vec<String> {
+        logs(&self.msgs, LogLevel::Warn)
+            .into_iter()
+            .filter(|m| m.contains("cue 1"))
+            .collect()
+    }
+}
+
+/// Fix check 2: a move given up on a slow disk is tried again once the disk answers: the cue
+/// is heard on the new device, every sample once and in step; its auto-follow starts cue 2 on
+/// the sample it ends; one warn line says the move waits.
+#[test]
+fn a_move_given_up_on_a_slow_disk_is_tried_again_and_its_auto_follow_stays_on_its_sample() {
+    let mut m = slow_move(3200);
+    m.release_and_run(16_000);
+    m.assert_in_step();
+    let two = m.s.device_channel(DEV2, 0);
+    assert!(
+        two.iter().any(|&v| v != 0.0),
+        "never heard on the new device"
+    );
+    assert_eq!(m.next_at(), Some(16_000));
+    assert_eq!(m.warns().len(), 1, "{:?}", m.warns());
+    assert_eq!(m.s.control().live_voices(), 0);
+}
+
+/// Fix check 2: a disk that never answers: the cue plays to its end on its old device, every
+/// sample once; the move is tried again a bounded number of times (each try opens one stream at
+/// most a few times), and one warn line is written, not one per try.
+#[test]
+fn a_move_to_a_disk_that_never_answers_plays_to_the_end_where_it_is_with_bounded_retries() {
+    let mut m = slow_move(17_000);
+    let opens = opens_of(&m.path);
+    m.release_and_run(2000);
+    m.assert_in_step();
+    assert_eq!(m.next_at(), Some(16_000));
+    assert!((2..=12).contains(&opens), "{opens} stream opens in 2 s");
+    assert_eq!(m.warns().len(), 1, "{:?}", m.warns());
+    assert_eq!(m.s.control().live_voices(), 0);
+}
+
+/// Fix check 2: a stop, or a panic, while a given-up move waits to be tried again: no voice is
+/// left and nothing is moved later.
+#[test]
+fn a_stop_or_panic_while_a_move_waits_to_be_tried_again_leaves_nothing() {
+    for panic in [false, true] {
+        let mut m = slow_move(2600);
+        if panic {
+            m.s.transport(TransportAction::Panic);
+        } else {
+            m.s.transport(TransportAction::Stop {
+                cue: id(1),
+                fade_out: None,
+            });
+        }
+        let before = m.s.device_channel(DEV2, 0).len();
+        m.release_and_run(4000);
+        assert!(heard(&m.s.device_channel(DEV2, 0)[before..]).is_empty());
+        assert_eq!(m.s.control().live_voices(), 0);
+        assert_eq!(m.s.control().engine().state(id(1)), CueState::Idle);
+    }
+}
