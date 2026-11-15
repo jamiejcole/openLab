@@ -187,15 +187,21 @@ extension AppController {
         }
     }
 
-    /// `op`'s result, or nil if it has not finished within `timeout`.
+    /// `op`'s result, or nil if it has not finished within `timeout`. The timer holds only the gate,
+    /// never this controller, and is cancelled once `op` answers: a timer outliving the close kept
+    /// the controller, and with it every workspace window it had made, until it ran out.
     private func bounded<T: Sendable>(_ op: @escaping @MainActor () async -> T) async -> T? {
         let gate = Gate<T>()
+        let (scheduler, timeout) = (scheduler, timeout)
         return await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
             gate.cont = cont
-            Task { @MainActor in gate.finish(await op()) }
-            Task { @MainActor in
+            let timer = Task { @MainActor in
                 try? await scheduler.sleep(seconds: timeout)
                 gate.finish(nil)
+            }
+            Task { @MainActor in
+                gate.finish(await op())
+                timer.cancel()
             }
         }
     }

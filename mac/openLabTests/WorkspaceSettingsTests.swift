@@ -25,6 +25,7 @@ final class WorkspaceSettingsTests: XCTestCase {
     private func open(edit: ((URL) throws -> Void)? = nil) async throws -> (Rig, WorkspaceSettingsWindowController) {
         let rig = try await Rig.open("Demo", on: engine, edit: edit)
         let sc = WorkspaceSettingsWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in sc.close() }
         await sc.present().value
         sc.tabs.selectTabViewItem(withIdentifier: "audio")
         return (rig, sc)

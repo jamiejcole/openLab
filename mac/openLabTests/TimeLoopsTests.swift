@@ -53,8 +53,9 @@ final class TimeLoopsTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        window?.orderOut(nil)
+        window?.close()
         rig?.client.stop()
+        (window, vc, rig) = (nil, nil, nil)
     }
 
     /// Selects Intro and shows its tab, the waveform at least 625 points wide (10 points a second or more).

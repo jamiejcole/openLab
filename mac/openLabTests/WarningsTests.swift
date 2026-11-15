@@ -17,6 +17,11 @@ final class WarningsTests: XCTestCase {
     private var wc: WorkspaceWindowController!
     private var side: SidebarViewController!
 
+    override func tearDown() async throws {
+        wc?.window?.close()
+        (wc, side, rig) = (nil, nil, nil)
+    }
+
     /// No engine: the demo show with a second, empty list, its Radio broken by a lost device.
     private func make() async throws {
         var snap = try TestSnapshots.show()

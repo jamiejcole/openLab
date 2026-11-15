@@ -85,6 +85,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.openlab.openLabTests
+        INFOPLIST_KEY_NSPrincipalClass: OpenLabTestObserver
         # XCTest itself requires macOS 14; the app stays at 12.0.
         MACOSX_DEPLOYMENT_TARGET: "14.0"
   openLabUITests:

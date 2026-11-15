@@ -27,6 +27,7 @@ final class VideoSettingsTests: XCTestCase {
     {
         let rig = try await openShow(stages: stages, on: engine)
         let sc = WorkspaceSettingsWindowController(store: rig.store)
+        addTeardownBlock { @MainActor in sc.close() }
         await sc.present().value
         return (rig, sc)
     }

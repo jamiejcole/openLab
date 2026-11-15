@@ -126,6 +126,7 @@ extension AppController {
     func closeAllWindows() {
         for wc in controllers.values { wc.window?.close() }
         launcher.window?.close()
+        overrides.panel?.close()
     }
 
     // MARK: Front-window routing

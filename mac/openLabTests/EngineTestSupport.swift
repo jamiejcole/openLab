@@ -192,7 +192,6 @@ final class TestEngine {
     private var openedThisTest: [ModelID] = []
 
     private static var current: TestEngine?
-    private static var observing = false
 
     private init(folder: URL, process: Process, stdin: Pipe, info: EngineConnectionInfo, app: EngineClient) {
         self.folder = folder
@@ -206,10 +205,6 @@ final class TestEngine {
     static func shared() async throws -> TestEngine {
         if let current, current.process.isRunning { return current }
         current?.stop()
-        if !observing {
-            observing = true
-            XCTestObservationCenter.shared.addTestObserver(EngineTestObserver())
-        }
         let engine = try await start()
         current = engine
         return engine
@@ -350,14 +345,57 @@ final class TestEngine {
     fileprivate static func classEnded() { current?.stop() }
 }
 
+enum TraceProbe {
+    nonisolated(unsafe) static var traced: Set<String> = []
+    nonisolated(unsafe) static var weak: [Weak] = []
+    final class Weak { weak var w: NSWindow?; init(_ w: NSWindow) { self.w = w } }
+    static func report(_ when: String) {
+        FileHandle.standardError.write(Data("PROBE \(when): \(weak.filter { $0.w != nil }.count)/\(weak.count) still alive\n".utf8))
+    }
+}
+
 enum TestEngineError: Error {
     case notConnected
     case refused(String)
 }
 
-/// Closes each test's documents and stops a class's engine when its tests are done.
-private final class EngineTestObserver: NSObject, XCTestObservation {
+/// Runs between tests, for every test of the bundle (it is the bundle's principal class, so XCTest
+/// makes it before the first test): closes each test's documents, stops a class's engine when its
+/// tests are done, and fails a class whose test left a window behind.
+///
+/// A window that outlives its test keeps its window-server surface, so leaked windows piled up
+/// over a test process (about 250 and 2.7 GB in the second one, #716) until the test machine's
+/// window server stalled. XCTest keeps every test case object to the end of the run, so a window
+/// in a test's property is kept unless its tearDown lets it go.
+/// XCTest calls it on the main thread only.
+@objc(OpenLabTestObserver)
+final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable {
+    /// The windows that were there when the running test started.
+    private var windowsBefore: Set<ObjectIdentifier> = []
+    /// The suite of the running test class: a test case's own run has stopped by the time its
+    /// windows can be checked, so a leak is reported on its class.
+    private var classSuite: XCTestSuite?
+
+    override init() {
+        super.init()
+        // Window open and close animations hold their window until they end, and in a test host
+        // that is not on screen they can hold it for many tests: a closed window would look leaked.
+        UserDefaults.standard.register(defaults: ["NSAutomaticWindowAnimationsEnabled": false])
+        XCTestObservationCenter.shared.addTestObserver(self)
+    }
+
+    func testSuiteWillStart(_ testSuite: XCTestSuite) {
+        TraceProbe.report("suite start \(testSuite.name)")
+        if testSuite.tests.allSatisfy({ !($0 is XCTestSuite) }) { classSuite = testSuite }
+    }
+
+    func testCaseWillStart(_ testCase: XCTestCase) {
+        TraceProbe.report("next test start")
+        MainActor.assumeIsolated { windowsBefore = Set(NSApp.windows.map(ObjectIdentifier.init)) }
+    }
+
     func testCaseDidFinish(_ testCase: XCTestCase) {
+        let name = testCase.name
         MainActor.assumeIsolated {
             let done = XCTestExpectation(description: "documents closed")
             Task { @MainActor in
@@ -365,11 +403,44 @@ private final class EngineTestObserver: NSObject, XCTestObservation {
                 done.fulfill()
             }
             _ = XCTWaiter().wait(for: [done], timeout: 20)
+            checkWindows(after: name)
         }
     }
 
     func testSuiteDidFinish(_ testSuite: XCTestSuite) {
+        TraceProbe.report("suite end")
         MainActor.assumeIsolated { TestEngine.classEnded() }
+        if testSuite === classSuite { classSuite = nil }
+    }
+
+    /// Fails the class if a window the test opened is still there once the closes and releases its
+    /// tearDown queued have run. A window still open is closed, so one leak does not run on into
+    /// the next test.
+    @MainActor private func checkWindows(after test: String) {
+        for _ in 0..<3 { RunLoop.current.run(mode: .default, before: Date()) }
+        var left: [String] = []
+        for window in NSApp.windows where !windowsBefore.contains(ObjectIdentifier(window)) {
+            left.append("\(type(of: window)) \"\(window.title)\"\(window.isVisible ? " (open)" : "")")
+            if window.isVisible { window.close() }
+        }
+        TraceProbe.weak += NSApp.windows.filter { !windowsBefore.contains(ObjectIdentifier($0)) }.map(TraceProbe.Weak.init)
+        guard !left.isEmpty else { return }
+        let cls = String(test.dropFirst(2).prefix { $0 != " " })
+        if ProcessInfo.processInfo.environment["NOPE"] != nil, !TraceProbe.traced.contains(cls), let target = NSApp.windows.first(where: { !windowsBefore.contains(ObjectIdentifier($0)) && $0 is WorkspaceWindow }) {
+            TraceProbe.traced.insert(cls)
+            let addr = String(format: "0x%lx", unsafeBitCast(target, to: Int.self))
+            let out = "/private/tmp/claude-501/-Users-jamie-openLab/eca60a95-1f0a-4087-a249-407e5ed3ddb1/scratchpad/716/t2-\(cls).txt"
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            p.arguments = ["-c", "/usr/bin/leaks --traceTree=\(addr) \(getpid()) > \(out) 2>&1"]
+            try? p.run()
+            p.waitUntilExit()
+        }
+        let issue = XCTIssue(
+            type: .assertionFailure,
+            compactDescription: "\(test) left \(left.count) window(s) alive: \(left.joined(separator: ", "))")
+        classSuite?.testRun?.record(issue)
+        FileHandle.standardError.write(Data("window check: \(issue.compactDescription)\n".utf8))
     }
 }
 

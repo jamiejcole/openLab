@@ -56,7 +56,8 @@ final class MeterTests: XCTestCase {
     override func tearDown() async throws {
         MeterView.defaultWindowIsCovered = Self.shippedCoverCheck
         view?.removeFromSuperview()
-        window?.orderOut(nil)
+        window?.close()
+        (window, view, bank, ticker) = (nil, nil, nil, nil)
     }
 
     private func push(_ peaks: [Float], cue: ModelID = intro) {

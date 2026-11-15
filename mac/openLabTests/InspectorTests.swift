@@ -157,8 +157,9 @@ final class InspectorTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        window?.orderOut(nil)
+        window?.close()
         rig?.client.stop()
+        (window, vc, rig, store) = (nil, nil, nil, nil)
     }
 
     private var commands: [JSONValue] {
