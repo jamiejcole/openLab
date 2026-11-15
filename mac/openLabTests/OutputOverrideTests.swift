@@ -197,7 +197,12 @@ final class OutputOverrideTests: XCTestCase {
         try assertBadgeOnScreen(wc)
         XCTAssertEqual(wc.footer.overrideBadge.layer?.backgroundColor, NSColor.systemRed.cgColor)
         // A focused selection draws its marks white, so the colour is read on a row that is not selected.
-        wc.cueList.outlineView.deselectAll(nil)
+        let outline = wc.cueList.outlineView
+        let row = outline.row(forItem: wc.cueList.node(net))
+        outline.selectRowIndexes([row], byExtendingSelection: false)
+        outline.rowView(atRow: row, makeIfNecessary: true)?.isEmphasized = true
+        XCTAssertFalse(try drawsRed(XCTUnwrap(overrideMarkView(net, in: wc)?.image)), "white on a focused selection")
+        outline.deselectAll(nil)
         XCTAssertTrue(try drawsRed(XCTUnwrap(overrideMarkView(net, in: wc)?.image)), "the mark is drawn red")
     }
 
