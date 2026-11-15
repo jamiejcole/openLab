@@ -174,6 +174,9 @@ pub struct VoiceRec {
     /// voice it moves from is, so it shows that voice's elapsed time (`shown`, set when it is
     /// made) and starts on its planned sample, not before it is in the commit window.
     relocated: bool,
+    /// The table a move to another device plays ([`move_plan`]), instead of one planned from
+    /// `offset` or `file`.
+    rest: Option<Vec<Slice>>,
     /// A move to another device whose stream is late is planned again until this sample, then
     /// made late ([`SEEK_PRIME_WAIT`] after its first planned swap).
     swap_limit: SampleTime,
@@ -199,12 +202,37 @@ pub const SEEK_PRIME_WAIT: f64 = 0.25;
 pub const MOVE_LEAD: f64 = 0.1;
 
 /// Where a voice's stream starts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum StartAt {
     /// Device frames into the action, loops unrolled (a start, a load to time).
     Offset(u64),
     /// A frame of the file at the device rate (a seek).
     File(u64),
+    /// This slice table: what the voice a move to another device replaces still had to play.
+    Table(Vec<Slice>),
+}
+
+/// A move to another device planned for one swap sample: the table the new voice plays (what
+/// the old one still has to play from then), where in the action that is, and the elapsed time
+/// it shows there.
+struct MovePlan {
+    table: Vec<Slice>,
+    offset: u64,
+    shown: u64,
+}
+
+/// Plans the move of voice `o` to another device on sample `swap` from its own state there:
+/// its position, its table, the devamp cuts it has been given and whether the latest stops it.
+/// `None` when it has nothing left to play by then (it ended, or will have).
+fn move_plan(o: &VoiceRec, swap: SampleTime) -> Option<MovePlan> {
+    let here = o.position(swap.max(o.start_at)).unwrap_or(o.offset);
+    let played = here.saturating_sub(o.offset);
+    let table = rest_of_table(&o.table, &o.cuts, o.devamp_stop, played)?;
+    Some(MovePlan {
+        table,
+        offset: here,
+        shown: o.shown.saturating_add(played),
+    })
 }
 
 /// A stream made for a voice.
@@ -234,6 +262,15 @@ impl VoiceRec {
                 Phase::Ended => false,
             };
         failure(self.cue, self.run, reason, unplayed)
+    }
+
+    /// Where its stream starts, as planned for it.
+    fn plan_of(&self) -> StartAt {
+        match (&self.rest, self.file) {
+            (Some(table), _) => StartAt::Table(table.clone()),
+            (None, Some(frame)) => StartAt::File(frame),
+            (None, None) => StartAt::Offset(self.offset),
+        }
     }
 
     /// Position in the action on rendered sample `t`, while playing.
@@ -440,6 +477,78 @@ pub fn file_frame(table: &[Slice], cuts: &[u64], played: u64) -> Option<u64> {
     Some(s.start.saturating_add(within.checked_rem(s.frames)?))
 }
 
+/// What a voice playing `table` from its start still has to play after `played` frames, as a
+/// table of its own (`cuts` and `stop` as for [`file_frame`]): the rest of the pass it is in,
+/// the passes of that slice still to come and every entry after it. A devamp cut still ahead
+/// ends that slice's plays there (it cuts on the end of a pass) and goes on with the entry after
+/// the slice, or nothing for a devamp stop. `None` once nothing is left: past a finite table's
+/// end, or past a devamp stop.
+pub fn rest_of_table(table: &[Slice], cuts: &[u64], stop: bool, played: u64) -> Option<Vec<Slice>> {
+    // The first entry after the slice of entry `k` (a slice split by a start offset is two).
+    let after = |k: usize| -> Option<usize> {
+        let index = table.get(k)?.index;
+        Some(
+            table
+                .iter()
+                .enumerate()
+                .skip(k + 1)
+                .find(|(_, s)| s.index != index)
+                .map_or(table.len(), |(n, _)| n),
+        )
+    };
+    let (mut entry, mut from) = (0usize, 0u64);
+    for &cut in cuts.iter().take_while(|&&c| c <= played) {
+        if stop {
+            return None;
+        }
+        let (k, _) = walk(table, entry, (cut - from).checked_sub(1)?)?;
+        entry = after(k)?;
+        from = cut;
+    }
+    let (k, within) = walk(table, entry, played - from)?;
+    let s = table.get(k)?;
+    let pass = within.checked_div(s.frames)?;
+    let at = within.checked_rem(s.frames)?;
+    let mut rest = vec![Slice {
+        start: s.start.saturating_add(at),
+        frames: s.frames - at,
+        plays: Plays::Times(1),
+        ..*s
+    }];
+    match cuts.iter().find(|&&c| c > played) {
+        Some(&cut) => {
+            // Whole passes of the slice before the cut (it cuts on the end of a pass).
+            let to_cut = (cut - from).saturating_sub(played - from);
+            let full = to_cut.saturating_sub(s.frames - at) / s.frames;
+            if let Ok(n @ 1..) = u32::try_from(full) {
+                rest.push(Slice {
+                    plays: Plays::Times(n),
+                    ..*s
+                });
+            }
+            if !stop {
+                rest.extend(table.get(after(k)?..)?.iter().copied());
+            }
+        }
+        None => {
+            match s.plays {
+                Plays::Infinite => rest.push(*s),
+                Plays::Times(n) => {
+                    let left = u64::from(n).saturating_sub(pass).saturating_sub(1);
+                    if let Ok(left @ 1..) = u32::try_from(left) {
+                        rest.push(Slice {
+                            plays: Plays::Times(left),
+                            ..*s
+                        });
+                    }
+                }
+            }
+            rest.extend(table.get(k + 1..)?.iter().copied());
+        }
+    }
+    Some(rest)
+}
+
 /// Frames the table plays after the loop entry whose play ends on frame `played` (counted from
 /// the table's start), skipping the rest of that slice (its later plays and, for a slice split
 /// by a start offset, its second entry). `None` if what follows loops for ever.
@@ -516,6 +625,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         swap_after: 0,
         release_fade: Fade::NONE,
         relocated: false,
+        rest: None,
         swap_limit: 0,
     }
 }
@@ -840,6 +950,65 @@ mod tests {
         assert_eq!(file_frame(&t, &[500, 700], 750), None);
         assert_eq!(file_frame(&t[3..], &[10], 20), None);
         assert_eq!(file_frame(&[], &[], 0), None);
+    }
+
+    /// What a voice still has to play, for a move to another device: the rest of its pass, the
+    /// passes to come and what follows; a devamp cut ahead ends the loop on its pass and goes on
+    /// after the slice (nothing for a stop); nothing past the end or past a devamp stop.
+    #[test]
+    fn rest_of_table_follows_passes_cuts_and_stops() {
+        let s = |index, start, frames, plays| Slice {
+            index,
+            start,
+            frames,
+            plays,
+        };
+        // Slice 0 (0..100) three times, slice 1 (100..200) for ever, slice 2 (200..250) twice.
+        let t = [
+            s(0, 0, 100, Plays::Times(3)),
+            s(1, 100, 100, Plays::Infinite),
+            s(2, 200, 50, Plays::Times(2)),
+        ];
+        // 30 into slice 0's second pass: 70 more of it, one more pass, then the rest.
+        assert_eq!(
+            rest_of_table(&t, &[], false, 130),
+            Some(vec![
+                s(0, 30, 70, Plays::Times(1)),
+                s(0, 0, 100, Plays::Times(1)),
+                t[1],
+                t[2]
+            ])
+        );
+        // In the loop with a devamp cut at the end of its pass after next: this pass's rest,
+        // one whole pass, then slice 2 (none of it for a stop).
+        let cut = 300 + 300;
+        assert_eq!(
+            rest_of_table(&t, &[cut], false, 420),
+            Some(vec![
+                s(1, 120, 80, Plays::Times(1)),
+                s(1, 100, 100, Plays::Times(1)),
+                t[2]
+            ])
+        );
+        assert_eq!(
+            rest_of_table(&t, &[cut], true, 420),
+            Some(vec![
+                s(1, 120, 80, Plays::Times(1)),
+                s(1, 100, 100, Plays::Times(1))
+            ])
+        );
+        // Past the cut: slice 2 from where the voice is in it, its second pass to come.
+        assert_eq!(
+            rest_of_table(&t, &[cut], false, cut + 10),
+            Some(vec![
+                s(2, 210, 40, Plays::Times(1)),
+                s(2, 200, 50, Plays::Times(1))
+            ])
+        );
+        // Past a devamp stop, or past the end of the table: nothing.
+        assert_eq!(rest_of_table(&t, &[cut], true, cut), None);
+        assert_eq!(rest_of_table(&t, &[cut], false, cut + 100), None);
+        assert_eq!(rest_of_table(&[], &[], false, 0), None);
     }
 
     /// Commands queued while a move waited are caught up on the swap: each gain where it stands

@@ -4766,7 +4766,65 @@ fn a_seek_between_the_devamps_answer_and_the_swap_plays_from_the_point_and_leave
             position: 0.1,
         });
     });
-    assert_eq!(h.runs.last(), Some(&(801, 4000)), "{h:?}");
+    // From the point clicked (frame 800, the 10 ms crossfade in from it aside) to the end.
+    let (from, to) = *h.runs.last().unwrap();
+    assert!((801..=881).contains(&from) && to == 4000, "{h:?}");
     assert_eq!(h.next_starts, 1, "{h:?}");
     assert_eq!((h.state, h.live), (CueState::Idle, 0), "{h:?}");
+}
+
+/// Fix check 1: a new stream still not ready 0.25 s after the first planned swap (a disk far
+/// too slow): the move is given up and the cue plays on, in step, on its old device (until a
+/// later patch sync moves it again); nothing is played twice and nothing is left behind.
+#[test]
+fn a_move_whose_stream_never_comes_in_time_is_given_up_and_the_cue_plays_on_where_it_is() {
+    let frames = 8000;
+    let a = wav(&ramp(frames));
+    let mut s = two_patch_show_with(
+        vec![audio(1, &a, 0)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        |c| c.streamer.before_open = gated_open,
+    );
+    s.wait_output(DEV2_NAME);
+    let started = start(&mut s, 1) as usize;
+    s.run(BLOCK * 10);
+    gate(&a);
+    s.slow_disk = true;
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(3000);
+    release(&a);
+    s.slow_disk = false;
+    s.run(frames as u64);
+    // Every sample once, in step, on whichever device (a later patch sync may move it again
+    // once the disk answers, in step as any move).
+    let both = on_both(&s);
+    let unit = 1.0 / 1_048_576.0;
+    for (i, &(a, b)) in both[started..started + frames].iter().enumerate() {
+        let want = (i + 1) as f32 * unit;
+        assert!(
+            (a + b - want).abs() < 2.0 * unit,
+            "sample {i}: {a} + {b}, want {want}"
+        );
+    }
+    assert!(
+        both[started + frames..]
+            .iter()
+            .all(|&(a, b)| a == 0.0 && b == 0.0)
+    );
+    // Nothing reached the new device while the move was given up.
+    let shift = s.channel(0).len() - s.device_channel(DEV2, 0).len();
+    let first_two = s
+        .device_channel(DEV2, 0)
+        .iter()
+        .position(|&v| v != 0.0)
+        .map(|p| p + shift);
+    assert!(
+        first_two.is_none_or(|p| p > started + 10 * BLOCK as usize + 2000),
+        "moved late: {first_two:?}"
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    // No voice left; the only stream held is the cue's prime for its next GO.
+    assert_eq!(s.control().live_voices(), 0);
+    assert!(s.control().held_streams() <= 1);
 }

@@ -703,6 +703,12 @@ impl DeviceShow {
     fn settle_streams(&mut self, frames: u64) {
         let end = self.rendered() + frames;
         for (handle, needed) in self.control.stream_needs(end) {
+            // A devamp cut a voice published is seen by its disk worker on its next poll, in
+            // real time; a render faster than that must wait for it, as the offline driver does.
+            assert!(
+                matches!(handle.wait_cut_seen(WAIT), Ok(true) | Err(_)),
+                "a disk worker never saw a devamp"
+            );
             assert!(
                 matches!(handle.wait_written(needed, WAIT), Ok(true) | Err(_)),
                 "a disk worker stalled"

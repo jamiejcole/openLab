@@ -7,10 +7,10 @@ impl Voices {
     pub fn apply(&mut self, action: &Action, env: &mut Env<'_>, fx: &mut Effects) {
         match *action {
             Action::LoadVoice { cue, run, offset } => {
-                self.load(cue, run, StartAt::Offset(offset), env, fx);
+                self.load(cue, run, offset, None, env, fx);
             }
             Action::LoadVoiceAt { cue, run, position } => {
-                self.load(cue, run, StartAt::File(position), env, fx);
+                self.load(cue, run, 0, Some(position), env, fx);
             }
             Action::SeekVoice {
                 cue,
@@ -95,13 +95,19 @@ impl Voices {
         }
     }
 
-    fn load(&mut self, cue: CueId, run: RunId, from: StartAt, env: &mut Env<'_>, fx: &mut Effects) {
+    /// Loads run `run` of `cue` `offset` frames into its action, or at frame `file` of its
+    /// file (a seek; `offset` 0).
+    fn load(
+        &mut self,
+        cue: CueId,
+        run: RunId,
+        offset: u64,
+        file: Option<u64>,
+        env: &mut Env<'_>,
+        fx: &mut Effects,
+    ) {
         self.release(run);
         let id = env.ids.next(env.doc);
-        let (offset, file) = match from {
-            StartAt::Offset(offset) => (offset, None),
-            StartAt::File(frame) => (0, Some(frame)),
-        };
         self.insert(
             id,
             VoiceRec {
@@ -131,7 +137,7 @@ impl Voices {
     fn prepare_loaded(&mut self, id: VoiceId, env: &mut Env<'_>, fx: &mut Effects) {
         let Some(r) = self.recs.get(&id) else { return };
         let (cue, run) = (r.cue, r.run);
-        let from = r.file.map_or(StartAt::Offset(r.offset), StartAt::File);
+        let from = r.plan_of();
         if r.file.is_some() {
             self.close_seek_gate(cue, env);
         }
@@ -256,10 +262,11 @@ impl Voices {
     /// Moves the voice of run `from` to its patch's current device as run `run`
     /// (`Action::RelocateVoice`): the core's run is `position` frames into its action on `at`.
     /// A playing voice plays on on its old device until [`MOVE_LEAD`] after `at`; a voice on
-    /// the new device, its stream read from where the sound is then, starts on that sample and
-    /// the two crossfade over [`SEEK_CROSSFADE`]. A paused one is let go at once (it is
-    /// silent) and the moved one waits for the resume. One not sounding yet (a start or seek
-    /// waiting for its stream) starts on the new device anyway: it only takes the fresh run.
+    /// the new device, playing what the old one still has to play from then ([`move_plan`]),
+    /// starts on that sample and the two crossfade over [`SEEK_CROSSFADE`]. A paused one is let
+    /// go at once (it is silent) and the moved one waits for the resume. One not sounding yet
+    /// (a start or seek waiting for its stream) starts on the new device anyway: it only takes
+    /// the fresh run. One that will have ended by the swap ends where it is.
     #[allow(clippy::too_many_arguments)]
     fn relocate(
         &mut self,
@@ -299,7 +306,13 @@ impl Voices {
             Some(p) => p.max(r.start_at),
             None => at.saturating_add(lead).max(r.start_at),
         };
-        let here = r.position(swap).unwrap_or(r.offset);
+        let Some(plan) = move_plan(r, swap) else {
+            // Nothing left to play by then: it ends where it is, as the run's.
+            r.run = run;
+            self.by_run.remove(&from);
+            self.by_run.insert(run, old);
+            return;
+        };
         // The core counts the run `position` frames in on `at` (its count runs ahead of the
         // voice's by any delay the voice's start had); the moved voice's length is told in the
         // core's count.
@@ -307,43 +320,7 @@ impl Voices {
             Some(_) => position,
             None => position.saturating_add(swap - at),
         };
-        // From the frame of the file the sound is at when the voice left loops by devamps or
-        // started at a point of the file (its table is then not the action's from `offset`);
-        // else from the same point of the action, so loop counts carry on.
-        let from_file = r.file.is_some() || !r.cuts.is_empty();
-        let start_from = if from_file {
-            match r.file_frame(here) {
-                Some(frame) => StartAt::File(frame),
-                // At or past its end (a devamp stop leaving now): it ends where it is.
-                None => {
-                    r.run = run;
-                    self.by_run.remove(&from);
-                    self.by_run.insert(run, old);
-                    return;
-                }
-            }
-        } else {
-            StartAt::Offset(here)
-        };
-        let elapsed = r.shown.saturating_add(here.saturating_sub(r.offset));
         let swap_after = r.swap_after;
-        // A devamp the mixer has scheduled and the voice not carried out by the swap: the new
-        // voice, in the same pass of the loop, leaves it on the same sample by a devamp of its
-        // own (the core keeps its deadline and sends nothing again).
-        let queue = if r
-            .cuts
-            .last()
-            .is_some_and(|&c| c > here.saturating_sub(r.offset))
-        {
-            vec![(
-                swap,
-                Queued::Devamp {
-                    stop: r.devamp_stop,
-                },
-            )]
-        } else {
-            Vec::new()
-        };
         r.retired = true;
         let replaces = match paused {
             Some(_) => {
@@ -359,10 +336,6 @@ impl Voices {
             None => Some(old),
         };
         self.by_run.remove(&from);
-        let (offset, file) = match start_from {
-            StartAt::Offset(o) => (o, None),
-            StartAt::File(f) => (0, Some(f)),
-        };
         let id = env.ids.next(env.doc);
         self.insert(
             id,
@@ -371,12 +344,12 @@ impl Voices {
                     prepared: None,
                     start: Some(swap),
                     paused: paused.is_some(),
-                    queue,
+                    queue: Vec::new(),
                 },
-                offset,
-                file,
-                shown: elapsed,
-                delay: counted.saturating_sub(offset),
+                offset: plan.offset,
+                rest: Some(plan.table),
+                shown: plan.shown,
+                delay: counted.saturating_sub(plan.offset),
                 moved: true,
                 relocated: true,
                 swap_limit: swap.saturating_add(seconds_to_samples(SEEK_PRIME_WAIT, env.rate)),
@@ -414,7 +387,7 @@ impl Voices {
         if paused {
             // A failure is reported when it resumes (`try_start` prepares again then).
             let cue = r.cue;
-            let from = r.file.map_or(StartAt::Offset(r.offset), StartAt::File);
+            let from = r.plan_of();
             self.close_seek_gate(cue, env);
             let made = self.prepare(cue, from, env, &mut Effects::default());
             if let (Ok(made), Some(r)) = (made, self.recs.get_mut(&id))
@@ -507,7 +480,7 @@ impl Voices {
     pub(super) fn try_start(&mut self, id: VoiceId, env: &mut Env<'_>, fx: &mut Effects) {
         let Some(r) = self.recs.get(&id) else { return };
         let (cue, run, offset) = (r.cue, r.run, r.offset);
-        let from = r.file.map_or(StartAt::Offset(offset), StartAt::File);
+        let from = r.plan_of();
         let Phase::Waiting {
             prepared,
             start: Some(start),
@@ -607,8 +580,8 @@ impl Voices {
                 // Its stream not ready by then: started late it would play again what the old
                 // device has just played. The swap moves on by a lead instead, from where the
                 // sound will be then, until `swap_limit`; after it, it is made late.
-                if !primed && r.replaces.is_some() && env.now < r.swap_limit {
-                    return self.replan_move(id, env);
+                if !primed && r.replaces.is_some() {
+                    return self.replan_move(id, env, fx);
                 }
             } else {
                 let limit = start.saturating_add(seconds_to_samples(SEEK_PRIME_WAIT, env.rate));
@@ -732,9 +705,11 @@ impl Voices {
     }
 
     /// A move to another device whose stream is not primed by its swap (a slow disk): the swap
-    /// moves on to [`MOVE_LEAD`] from now, the stream prepared again from where the sound will
-    /// be then (the old voice plays on meanwhile), so the two still meet in step.
-    fn replan_move(&mut self, id: VoiceId, env: &Env<'_>) {
+    /// moves on to [`MOVE_LEAD`] from now, planned afresh from what the old voice still has to
+    /// play then ([`move_plan`]), the old voice playing on meanwhile, so the two still meet in
+    /// step. If the old voice has nothing left by then, or the stream is still not ready by
+    /// `swap_limit`, the move is given up ([`Self::give_up_move`]).
+    fn replan_move(&mut self, id: VoiceId, env: &Env<'_>, fx: &mut Effects) {
         let Some(r) = self.recs.get(&id) else {
             return;
         };
@@ -749,25 +724,14 @@ impl Voices {
             return;
         };
         let planned = *planned;
-        let Some(o) = self.recs.get(&old) else {
-            return;
-        };
         let next = env
             .now
             .saturating_add(seconds_to_samples(MOVE_LEAD, env.rate))
             .max(planned);
-        // Where the sound is on the new swap, by the voice playing it, as `relocate` plans.
-        let here = o.position(next).unwrap_or(o.offset);
-        let (offset, file) = if o.file.is_some() || !o.cuts.is_empty() {
-            match o.file_frame(here) {
-                Some(frame) => (0, Some(frame)),
-                // It ends before then: the swap is not planned again, and is made late.
-                None => return,
-            }
-        } else {
-            (here, None)
+        let plan = self.recs.get(&old).and_then(|o| move_plan(o, next));
+        let Some(plan) = plan.filter(|_| env.now < r.swap_limit) else {
+            return self.give_up_move(id, env.now, fx);
         };
-        let shown = o.shown.saturating_add(here.saturating_sub(o.offset));
         // The core's count on the old swap, moved on to the new one.
         let counted = r
             .offset
@@ -783,10 +747,51 @@ impl Voices {
             *start = Some(next);
             *prepared = None;
         }
-        r.offset = offset;
-        r.file = file;
-        r.shown = shown;
-        r.delay = counted.saturating_sub(offset);
+        r.offset = plan.offset;
+        r.rest = Some(plan.table);
+        r.shown = plan.shown;
+        r.delay = counted.saturating_sub(plan.offset);
+    }
+
+    /// A move to another device that cannot be made in step: the old voice keeps the run where
+    /// it plays (to its end, which it reports), with any devamp sent for the moved one; the
+    /// waiting record and its stream go. A later patch sync moves it again if it still plays.
+    fn give_up_move(&mut self, id: VoiceId, now: SampleTime, fx: &mut Effects) {
+        let Some(r) = self.remove(id) else {
+            return;
+        };
+        let devamps = match r.phase {
+            Phase::Waiting { queue, .. } => queue
+                .into_iter()
+                .filter(|(_, q)| matches!(q, Queued::Devamp { .. }))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let Some(old) = r.replaces.filter(|o| self.recs.contains_key(o)) else {
+            // The old voice is gone too: its run ended with it.
+            fx.deferred.push((
+                now,
+                Input::ActionEnded {
+                    cue: r.cue,
+                    run: r.run,
+                    at: now,
+                },
+            ));
+            return;
+        };
+        if let Some(o) = self.recs.get_mut(&old) {
+            o.retired = false;
+            o.run = r.run;
+        }
+        self.by_run.insert(r.run, old);
+        for (t, q) in devamps {
+            if let Queued::Devamp { stop } = q
+                && let Some(o) = self.recs.get_mut(&old)
+            {
+                o.devamp_stop = stop;
+            }
+            fx.commands.push((t.max(now), queued(old, q)));
+        }
     }
 
     /// Lets go of the voice a seek waiting in record `id` was to replace: it fades out over the
@@ -851,6 +856,14 @@ impl Voices {
             return;
         };
         let date = self.stop_date(id, at, floor);
+        // A move to another device still waiting: what its voice will play from the pause.
+        let plan_at_pause = self
+            .recs
+            .get(&id)
+            .filter(|r| r.relocated)
+            .and_then(|r| r.replaces)
+            .and_then(|o| self.recs.get(&o))
+            .and_then(|o| move_plan(o, date));
         // A seek still waiting: the voice it was to replace fades out (as a pause declicks);
         // the moved voice waits for the resume.
         self.fade_replaced(id, date, floor, fx);
@@ -884,24 +897,22 @@ impl Voices {
                 ..
             } => {
                 *paused = true;
-                // A move to another device was to take over later, from where the sound would
-                // be then: it resumes from where the pause stops it instead (its stream is
-                // read again on the resume).
+                // A move to another device was to take over later; it takes over where the
+                // pause stops the sound instead (planned again from then; its stream is read
+                // again on the resume).
                 if r.relocated
                     && let Some(s) = *start
                     && s > date
+                    && let Some(plan) = plan_at_pause
                 {
                     let back = s - date;
+                    let counted = r.offset.saturating_add(r.delay).saturating_sub(back);
                     *start = Some(date);
                     *prepared = None;
-                    match r.file.as_mut() {
-                        Some(f) => {
-                            *f = f.saturating_sub(back);
-                            r.delay = r.delay.saturating_sub(back);
-                        }
-                        None => r.offset = r.offset.saturating_sub(back),
-                    }
-                    r.shown = r.shown.saturating_sub(back);
+                    r.offset = plan.offset;
+                    r.rest = Some(plan.table);
+                    r.shown = plan.shown;
+                    r.delay = counted.saturating_sub(plan.offset);
                 }
             }
             Phase::Ended => {}

@@ -78,7 +78,7 @@ Started at `S`, pre-wait `P`, post-wait `W`: action starts at `A = S + P`.
 - `RelocateVoice { run: fresh, from, at: commit(now), position }` re-keys the run like a seek (feedback for `from` is stale). Playing: `position = Run::position(at)` and the voice counts on from there (`Voice::Started { at, from: position }`), its end unknown until the binary's `ActionLength` for the fresh run, still counted from the action's start; an auto-follow fires once. Paused: `position` is where it froze, `Voice::Started` is kept and the resume plays on from there.
 - As for a seek, the moved voice is given the Fade cues' levels and its duck (`regive_levels`). Timers, post-wait, continues and the group are untouched.
 - A run whose devamp is sent and not answered (`DevampWait.at` is `None`, about one block) is not moved yet: only the audio side knows where its voice is in the loop, and a voice moved then could play the loop again. `Run::move_pending` holds the move; `DevampScheduled` or `DevampIgnored` makes it, and it goes with the run (a stop, a failure).
-- A run whose devamp is scheduled moves at once; its leave deadline (and the Devamp cue's next cue) stays where the answer put it and no devamp is sent again: the binary gives the moved voice the same leave.
+- A run whose devamp is scheduled moves at once; its leave deadline (and the Devamp cue's next cue) stays where the answer put it and no devamp is sent again: the binary plans the moved voice to leave on the same sample (its table ends the loop there).
 
 ## Operations (CUE-05)
 Voice actions apply to armed Audio cues only. Group operations also reach descendants.
