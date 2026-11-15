@@ -3012,8 +3012,14 @@ final class AppControllerTests: XCTestCase {
         engine.garbleResults = false
         XCTAssertTrue(
             tool.summaryLabel.stringValue.hasPrefix(
-                String(format: loc("missingFiles.failed"), "").trimmingCharacters(in: .whitespaces)),
+                String(format: loc("missingFiles.relinkFailed"), "").trimmingCharacters(in: .whitespaces)),
             tool.summaryLabel.stringValue)
+        XCTAssertNotEqual(
+            loc("missingFiles.relinkFailed"), "missingFiles.relinkFailed", "the message is in the strings")
+        XCTAssertFalse(
+            tool.summaryLabel.stringValue.hasPrefix(
+                String(format: loc("missingFiles.failed"), "").trimmingCharacters(in: .whitespaces)),
+            "a failed relink is not called a failed search")
         XCTAssertEqual(toolRows(tool).map(\.cue), ["2.3  Radio"])
         XCTAssertTrue(tool.relinkButton.isEnabled, "it can be tried again")
         XCTAssertTrue(alerts.errors.isEmpty, "not modal")

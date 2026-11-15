@@ -771,6 +771,7 @@
 "missingFiles.found.change" = "Change…";
 "missingFiles.searching" = "Searching…";
 "missingFiles.failed" = "The search failed: %@";
+"missingFiles.relinkFailed" = "Relinking the ticked cues failed: %@";
 "missingFiles.summary.found" = "Found files for %1$d of %2$d cues with a missing file.";
 "missingFiles.summary.notFound" = "%d not found.";
 "missingFiles.summary.truncated" = "The folder was too large to search in full, so the search stopped early: choose a smaller folder to look further.";

@@ -248,7 +248,7 @@ final class MissingFilesWindowController: NSWindowController, NSWindowDelegate, 
             summaryLabel.stringValue = String(format: loc("missingFiles.summary.relinked"), done.count, left)
             _ = store.receive(.log(.info, summaryLabel.stringValue))
         case .failure(let e):
-            summaryLabel.stringValue = String(format: loc("missingFiles.failed"), e.detailText)
+            summaryLabel.stringValue = String(format: loc("missingFiles.relinkFailed"), e.detailText)
         }
         refresh()
     }
