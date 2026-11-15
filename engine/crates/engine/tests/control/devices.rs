@@ -576,6 +576,9 @@ fn lost_cue_stays_stopped(outage: Duration) {
     assert!(paused_device_lost(&msgs, 1));
     assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
     assert!(s.control().engine().is_lost(id(1)));
+    // The time it stopped at goes out with the loss, though no device renders: the time shown
+    // during the outage is the one shown after it.
+    let at_loss = progress_of(&msgs, 1).last().copied();
     s.wait_wall(outage, 8);
     replug(&mut s);
     s.run(BLOCK * 40);
@@ -586,6 +589,7 @@ fn lost_cue_stays_stopped(outage: Duration) {
     assert!(shown.len() > 1, "{shown:?}");
     assert!(shown.windows(2).all(|w| w[0] == w[1]), "{shown:?}");
     let (elapsed, remaining) = shown[0];
+    assert_eq!(at_loss, Some(shown[0]), "{shown:?}");
     let played = (cut - at as usize) as f64;
     assert!(
         (elapsed * f64::from(RATE) - played).abs() <= BLOCK as f64 * 2.0,
