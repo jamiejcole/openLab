@@ -366,6 +366,8 @@ final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable
     /// The suite of the running test class: a test case's own run has stopped by the time its
     /// windows can be checked, so a leak is reported on its class.
     private var classSuite: XCTestSuite?
+    /// Windows finished tests left alive, not yet given time to go (`checkWindows`).
+    @MainActor private var suspects: [Suspect] = []
 
     override init() {
         super.init()
@@ -401,23 +403,54 @@ final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable
         if testSuite === classSuite { classSuite = nil }
     }
 
-    /// Fails the class if a window the test opened is still alive once it has finished. A window still
+    /// Fails if a window a test opened is still alive two tests after it finished. A window still
     /// open is closed first (a test may leave one up; closed, nothing holds it), so what fails is a
-    /// window something still holds. Windows of system frameworks (text input, for one) are made
-    /// once for the process when a field first takes the keyboard and are not the test's.
+    /// window something still holds. A reply still on its way or a task still finishing can hold a
+    /// window for a moment after its test; a leak holds it for good, so it is still there later.
     @MainActor private func checkWindows(after test: String) {
         autoreleasepool {
             for window in NSApp.windows where isNew(window) && window.isVisible { window.close() }
+            forgetLastEvent()
         }
         for _ in 0..<3 { RunLoop.current.run(mode: .default, before: Date()) }
-        let left: [String] = autoreleasepool {
-            NSApp.windows.filter(isNew).map { "\(type(of: $0)) \"\($0.title)\"" }
+        autoreleasepool {
+            for window in NSApp.windows where isNew(window) { suspects.append(Suspect(test: test, window: window)) }
         }
-        guard !left.isEmpty else { return }
-        let issue = XCTIssue(
-            type: .assertionFailure,
-            compactDescription: "\(test) left \(left.count) window(s) alive: \(left.joined(separator: ", "))")
-        classSuite?.testRun?.record(issue)
+        suspects.removeAll { $0.window == nil }
+        for suspect in suspects { suspect.testsSince += 1 }
+        let leaked = suspects.filter { $0.testsSince > 2 }
+        suspects.removeAll { $0.testsSince > 2 }
+        for suspect in leaked {
+            let what = suspect.window.map { "\(type(of: $0)) \"\($0.title)\"" } ?? "a window"
+            let issue = XCTIssue(
+                type: .assertionFailure,
+                compactDescription: "\(suspect.test) left \(what) alive: it is still there two tests later")
+            classSuite?.testRun?.record(issue)
+        }
+    }
+
+    /// A window a finished test left alive, held weakly.
+    @MainActor private final class Suspect {
+        let test: String
+        weak var window: NSWindow?
+        var testsSince = 0
+        init(test: String, window: NSWindow) {
+            self.test = test
+            self.window = window
+        }
+    }
+
+    /// The app keeps the last event it took from its queue (`currentEvent`), and that event keeps its
+    /// window, until the next one: a test that sent a key to a window would see it held. An event of
+    /// no window takes its place.
+    @MainActor private func forgetLastEvent() {
+        guard
+            let marker = NSEvent.otherEvent(
+                with: .applicationDefined, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                context: nil, subtype: 0, data1: 0, data2: 0)
+        else { return }
+        NSApp.postEvent(marker, atStart: true)
+        _ = NSApp.nextEvent(matching: .applicationDefined, until: Date(), inMode: .default, dequeue: true)
     }
 
     /// Opened during the running test, by the app, the tests or AppKit itself.
