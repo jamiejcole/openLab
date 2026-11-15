@@ -429,4 +429,43 @@ extension VideoCueTests {
         await soon { !self.g.thumbnail.hasStage }
         XCTAssertFalse(g.thumbnail.canDrag)
     }
+
+    /// A drag far past the position's range on a small thumbnail stops at the limit: nothing
+    /// refused, no message.
+    func testADragPastThePositionRangeStopsAtTheLimit() async throws {
+        try await showGeometry(of: 6)
+        let t = g.thumbnail
+        let k = t.stageRect.width / 1920
+        let window = try XCTUnwrap(wc.window)
+        func event(_ type: NSEvent.EventType, _ dx: CGFloat) -> NSEvent {
+            let at = t.convert(NSPoint(x: t.bounds.midX + dx, y: t.bounds.midY), to: nil)
+            return NSEvent.mouseEvent(
+                with: type, location: at, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        wc.inspector.messageLabel.stringValue = ""
+        t.mouseDown(with: event(.leftMouseDown, 0))
+        t.mouseDragged(with: event(.leftMouseDragged, 100_000 * k))
+        t.mouseUp(with: event(.leftMouseUp, 200_000 * k))
+        XCTAssertEqual(g.xField.stringValue, "65536")
+        await soon("held at the limit") { self.pair(6, "translation")?.x == 65536 }
+        await sync()
+        XCTAssertEqual(wc.inspector.messageLabel.stringValue, "", "nothing refused")
+    }
+
+    /// At the least window size a field below the rows shown (Anchor) scrolls into view when it
+    /// takes the focus, as Tab gives it.
+    func testAFieldTakingTheFocusScrollsIntoViewAtTheLeastSize() async throws {
+        try await openVideoShow("Geometry")
+        let window = try XCTUnwrap(wc.window)
+        window.setContentSize(NSSize(width: 400, height: 300))
+        try await showGeometry(of: 6, opened: true)
+        let scroll = try XCTUnwrap(g.scroll)
+        let doc = try XCTUnwrap(scroll.documentView)
+        XCTAssertTrue(window.makeFirstResponder(g.anchorXField))
+        window.layoutIfNeeded()
+        let field = g.anchorXField.convert(g.anchorXField.bounds, to: doc)
+        let visible = scroll.contentView.documentVisibleRect
+        XCTAssertTrue(visible.insetBy(dx: -0.5, dy: -0.5).contains(field), "\(field) in \(visible)")
+    }
 }

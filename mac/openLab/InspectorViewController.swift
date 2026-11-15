@@ -1072,7 +1072,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                     return
                 }
                 sendFailures += 1
-                if let refusedAs {
+                if case .engine = error, let refusedAs {
                     showRefusal(refusedAs)
                 } else if case .engine(_, let message) = error {
                     showRefusal(String(format: loc("inspector.refused"), message))

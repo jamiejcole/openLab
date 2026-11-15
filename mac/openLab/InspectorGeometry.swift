@@ -90,6 +90,10 @@ struct VideoGeometry: Equatable {
     }
 }
 
+extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self { min(max(self, range.lowerBound), range.upperBound) }
+}
+
 /// The thumbnail: the stage's outline and the picture placed on it, as the stage draws it. A drag
 /// moves the picture (custom mode); the picture is drawn as its shape, never decoded here.
 final class GeometryThumbnail: NSView {
@@ -210,9 +214,13 @@ final class GeometryThumbnail: NSView {
             return
         }
         let k = pointsPerPixel
+        // Held within the position's range, so a long drag on a small thumbnail stops at the
+        // limit instead of being refused.
+        let r = GeometryControls.position.range
+        let limit = CGFloat(r.lowerBound)...CGFloat(r.upperBound)
         let moved = CGPoint(
-            x: (from.translation.x + (point.x - from.mouse.x) / k).rounded(),
-            y: (from.translation.y - (point.y - from.mouse.y) / k).rounded())
+            x: (from.translation.x + (point.x - from.mouse.x) / k).rounded().clamped(to: limit),
+            y: (from.translation.y - (point.y - from.mouse.y) / k).rounded().clamped(to: limit))
         if ended { dragFrom = nil }
         geometry.translation = moved
         onDrag?(moved, ended)
@@ -229,6 +237,16 @@ final class GeometryThumbnail: NSView {
     }
 }
 
+/// A Geometry number field: taking the focus (Tab included) scrolls it into view when the tab
+/// is too short for every row.
+final class GeometryField: NSTextField {
+    override func becomeFirstResponder() -> Bool {
+        let took = super.becomeFirstResponder()
+        if took { scrollToVisible(bounds) }
+        return took
+    }
+}
+
 /// What the Geometry tab's fields scroll over: top-down, as a form reads.
 final class GeometryFieldsView: NSView {
     override var isFlipped: Bool { true }
@@ -240,23 +258,23 @@ final class GeometryFieldsView: NSView {
 final class GeometryControls: NSObject, NSTextFieldDelegate {
     let modePopup = NSPopUpButton()
     let stylePopup = NSPopUpButton()
-    let layerField = NSTextField()
-    let opacityField = NSTextField()
+    let layerField = GeometryField()
+    let opacityField = GeometryField()
     let opacityReset = GeometryControls.resetButton("opacity")
     let smoothCheck = NSButton(checkboxWithTitle: loc("inspector.geometry.smooth"), target: nil, action: nil)
-    let xField = NSTextField()
-    let yField = NSTextField()
+    let xField = GeometryField()
+    let yField = GeometryField()
     let positionReset = GeometryControls.resetButton("position")
-    let scaleXField = NSTextField()
-    let scaleYField = NSTextField()
+    let scaleXField = GeometryField()
+    let scaleYField = GeometryField()
     let scaleLock = NSButton()
     let scaleReset = GeometryControls.resetButton("scale")
-    let rotationField = NSTextField()
+    let rotationField = GeometryField()
     let rotationReset = GeometryControls.resetButton("rotation")
-    let cropFields = VideoGeometry.cropEdges.map { _ in NSTextField() }
+    let cropFields: [NSTextField] = VideoGeometry.cropEdges.map { _ in GeometryField() }
     let cropReset = GeometryControls.resetButton("crop")
-    let anchorXField = NSTextField()
-    let anchorYField = NSTextField()
+    let anchorXField = GeometryField()
+    let anchorYField = GeometryField()
     let anchorReset = GeometryControls.resetButton("anchor")
     let thumbnail = GeometryThumbnail()
     /// The scroll view the fields sit in (set when the tab is built).
@@ -478,7 +496,8 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
     }
 
     /// Sends what `f` holds when it differs from what is shown; text that is not a number is not
-    /// sent and the shown value comes back. Ranges are the engine's to judge: a refusal says why.
+    /// sent and the shown value comes back. A value outside its field's range (`FieldRange`, the
+    /// engine's) is not sent either: the message line says the range.
     func commit(_ f: NSTextField) {
         guard !isLocked else { return }
         let text = f.stringValue.trimmingCharacters(in: .whitespaces)
