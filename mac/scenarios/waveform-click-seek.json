@@ -12,6 +12,7 @@
     {"shot": "idle-clicked-loaded"},
     {"key": "space"},
     {"select": "1"},
+    {"tab": "timeLoops"},
     {"advance": 2},
     {"shot": "playing-from-the-click"},
     {"click": "time-loops-waveform", "at": [0.75, 0.5]},
