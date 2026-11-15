@@ -2,9 +2,10 @@
 
 import AppKit
 
-/// How one cue state looks in the list. Every state has its own symbol, so state never rests on
-/// colour alone (UI-04); `tint` only adds to it. Idle shows no symbol (it is the common state of
-/// a 2,000-cue list) but still has an accessibility label.
+/// How one cue state looks in the list. Every state the list marks has its own symbol, so state never rests on
+/// colour alone (UI-04); `tint` only adds to it. Idle shows no symbol (it is the common state of a 2,000-cue
+/// list) but still has an accessibility label. A cue in its pre-wait or post-wait shows the running mark, as
+/// QLab has no mark of its own for a wait; its label still names the wait.
 struct CueStateStyle: Equatable {
     var icon: Icon?
     var labelKey: String
@@ -15,19 +16,17 @@ struct CueStateStyle: Equatable {
     static func style(for state: WireCueState) -> CueStateStyle {
         switch state {
         case .idle: return CueStateStyle(icon: nil, labelKey: "cue.state.idle", tint: nil)
-        case .loaded:
-            return CueStateStyle(icon: .stateLoaded, labelKey: "cue.state.loaded", tint: .systemBlue)
+        case .loaded: return CueStateStyle(icon: .stateLoaded, labelKey: "cue.state.loaded", tint: MarkColour.caution)
         case .preWaiting:
-            return CueStateStyle(icon: .statePreWaiting, labelKey: "cue.state.preWaiting", tint: .systemOrange)
+            return CueStateStyle(icon: .stateRunning, labelKey: "cue.state.preWaiting", tint: .systemGreen)
         case .running: return CueStateStyle(icon: .stateRunning, labelKey: "cue.state.running", tint: .systemGreen)
-        case .paused: return CueStateStyle(icon: .statePaused, labelKey: "cue.state.paused", tint: .systemYellow)
+        case .paused: return CueStateStyle(icon: .statePaused, labelKey: "cue.state.paused", tint: MarkColour.caution)
         case .postWaiting:
-            return CueStateStyle(icon: .statePostWaiting, labelKey: "cue.state.postWaiting", tint: .systemOrange)
-        case .fading: return CueStateStyle(icon: .stateFading, labelKey: "cue.state.fading", tint: .systemGreen)
-        case .stopping: return CueStateStyle(icon: .stateStopping, labelKey: "cue.state.stopping", tint: .systemRed)
-        case .broken:
-            return CueStateStyle(
-                icon: .stateBroken, labelKey: "cue.state.broken", tint: .systemRed)
+            return CueStateStyle(icon: .stateRunning, labelKey: "cue.state.postWaiting", tint: .systemGreen)
+        case .fading: return CueStateStyle(icon: .stateFading, labelKey: "cue.state.fading", tint: MarkColour.caution)
+        case .stopping:
+            return CueStateStyle(icon: .stateStopping, labelKey: "cue.state.stopping", tint: MarkColour.caution)
+        case .broken: return CueStateStyle(icon: .stateBroken, labelKey: "cue.state.broken", tint: .systemRed)
         }
     }
 
@@ -64,6 +63,15 @@ enum PlayheadStyle {
     }
 }
 
+/// The yellow of every caution mark (paused, loaded, fading, stopping, a warning): the system yellow on a dark
+/// list, a deeper golden yellow on a light one, where the system yellow is too pale to read on white.
+enum MarkColour {
+    static let caution = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? .systemYellow : NSColor(srgbRed: 0.72, green: 0.53, blue: 0, alpha: 1)
+    }
+}
+
 /// Symbols and labels for the cue kinds, colours and continue modes (cell content).
 enum CueKindStyle {
     static let kinds: [String: (icon: Icon, labelKey: String)] = [
@@ -74,7 +82,7 @@ enum CueKindStyle {
         "load": (.kindLoad, "cue.type.load"), "reset": (.kindReset, "cue.type.reset"),
         "devamp": (.kindDevamp, "cue.type.devamp"), "go_to": (.kindGoTo, "cue.type.goto"),
         "arm": (.kindArm, "cue.type.arm"), "disarm": (.kindDisarm, "cue.type.disarm"),
-        "network": (.kindNetwork, "cue.type.network"),
+        "network": (.kindNetwork, "cue.type.network"), "video": (.kindVideo, "cue.type.video"),
     ]
 
     static func kindLabel(_ type: String) -> String { kinds[type].map { loc($0.labelKey) } ?? type }

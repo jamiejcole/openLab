@@ -107,7 +107,8 @@
         {
           "type": "notice",
           "code": "device_lost",
-          "message": "audio device \"Scarlett 2i2\" is lost"
+          "message": "audio device \"Scarlett 2i2\" is lost",
+          "device": "Scarlett 2i2"
         }
       ]
     }

@@ -40,6 +40,9 @@ enum TransportAction: Hashable, Sendable, Codable {
     case pause(cue: ModelID)
     case resume(cue: ModelID)
     case load(cue: ModelID, at: Double)
+    /// Moves an Audio cue to `position` seconds into its media file (a click in its waveform): an idle
+    /// or loaded cue loads there, a playing or previewing one jumps there, a paused one moves there.
+    case seek(cue: ModelID, position: Double)
     case reset(cue: ModelID)
     case triggerReleased(cue: ModelID)
     case preview(cue: ModelID)
@@ -72,6 +75,7 @@ enum TransportAction: Hashable, Sendable, Codable {
         case .pause(let c): return ("pause", [("cue", c)])
         case .resume(let c): return ("resume", [("cue", c)])
         case .load(let c, let at): return ("load", [("cue", c), ("at", at)])
+        case .seek(let c, let p): return ("seek", [("cue", c), ("position", p)])
         case .reset(let c): return ("reset", [("cue", c)])
         case .triggerReleased(let c): return ("trigger_released", [("cue", c)])
         case .preview(let c): return ("preview", [("cue", c)])
@@ -108,6 +112,7 @@ enum TransportAction: Hashable, Sendable, Codable {
         case "pause": self = .pause(cue: try cue())
         case "resume": self = .resume(cue: try cue())
         case "load": self = .load(cue: try cue(), at: try c.decode(Double.self, forKey: "at"))
+        case "seek": self = .seek(cue: try cue(), position: try c.decode(Double.self, forKey: "position"))
         case "reset": self = .reset(cue: try cue())
         case "trigger_released": self = .triggerReleased(cue: try cue())
         case "preview": self = .preview(cue: try cue())

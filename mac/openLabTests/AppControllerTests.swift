@@ -2956,10 +2956,12 @@ final class AppControllerTests: XCTestCase {
         }
         XCTAssertEqual(listShowsMissing(TestSnapshots.rain).map { $0.broken && $0.missingGlyph }, true)
         XCTAssertEqual(media(TestSnapshots.rain), "media/gone-rain.wav", "the unticked cue is left alone")
+        // The list can redraw from the model change before the tool has the engine's answer, so the
+        // tool's rows and summary are waited for too.
+        let summary = MissingFilesWindowController.relinkSummary(relinked: 2, left: 1)
+        await assertEventually("the tool shows the answer") { !tool.isBusy && tool.summaryLabel.stringValue == summary }
         XCTAssertEqual(toolRows(tool).map(\.cue), ["2.2  Rain"], "the relinked rows leave the list")
-        XCTAssertEqual(
-            tool.summaryLabel.stringValue, MissingFilesWindowController.relinkSummary(relinked: 2, left: 1))
-        XCTAssertTrue(demo.store.logEntries.contains { $0.message == tool.summaryLabel.stringValue })
+        XCTAssertTrue(demo.store.logEntries.contains { $0.message == summary })
     }
 
     /// The Find Missing Files summaries count in words, one or many, never "cue(s)".

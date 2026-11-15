@@ -1,0 +1,15 @@
+{
+  "about": "The cue list's first column in light appearance at the narrowest window, in Edit Mode then Show Mode: nothing in the first column is clipped and nothing overlaps the Number column; every header's title is whole.",
+  "show": "Demo",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 800, "height": 640},
+  "appearance": "light",
+  "steps": [
+    {"select": "2.3"},
+    {"shot": "light-narrow-selected-broken"},
+    {"select": "2.2"},
+    {"shot": "light-narrow-flagged-playhead"},
+    {"click": "mode-switch", "at": [0.75, 0.5]},
+    {"shot": "light-narrow-show-mode"}
+  ]
+}

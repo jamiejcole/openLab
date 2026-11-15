@@ -74,7 +74,8 @@ final class ScenarioRunner {
         /// scenario file), opened where it is and never saved.
         /// `"new"`: a new untitled workspace, as File > New makes it.
         var show: String
-        /// `{"media/a.wav": 60}`: test tones of that many seconds written into the test show's copy first.
+        /// `{"media/a.wav": 60}`: media of that many seconds written into the test show's copy first,
+        /// by extension: a test tone, a movie (`.mov`, `.mp4`) or a still (`.png`, `.jpg`, `.tiff`).
         var media: [(path: String, seconds: Double)] = []
         var size = CGSize(width: 1200, height: 800)
         var dark = true
@@ -430,7 +431,7 @@ final class ScenarioRunner {
             } else {
                 let media = scenario.media
                 doc = try await engine.open(scenario.show) { copy in
-                    for m in media { try writeWAV(copy.appendingPathComponent(m.path), seconds: m.seconds) }
+                    for m in media { try writeTestMedia(copy.appendingPathComponent(m.path), seconds: m.seconds) }
                 }
             }
         } catch {
@@ -917,6 +918,8 @@ final class ScenarioRunner {
         guard editing || window.makeFirstResponder(view) else { throw Failure("it does not take the keyboard focus") }
         if let field = window.firstResponder as? NSTextView {
             field.selectAll(nil)
+            // An empty text empties the field, as Delete over the selection does.
+            if text.isEmpty { field.deleteBackward(nil) }
         }
         for ch in text {
             let event = try keyEvent(String(ch), code: 0, [])
@@ -1178,7 +1181,8 @@ final class ScenarioShotTests: XCTestCase {
 
     func testAMissingShowFailsNamingTheTestShows() async throws {
         let message = try await failure(of: #"{"show": "Nope", "steps": []}"#)
-        XCTAssertTrue(message.contains("show \"Nope\" not found: test shows are Demo, Second, Targets, Three"), message)
+        XCTAssertTrue(
+            message.contains("show \"Nope\" not found: test shows are Demo, Second, Targets, Three, Video"), message)
         let path = try await failure(of: #"{"show": "gone/x.openlab", "steps": []}"#)
         XCTAssertTrue(path.contains("show not found: no file at \(out.path)/gone/x.openlab"), path)
     }

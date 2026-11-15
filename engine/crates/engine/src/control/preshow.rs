@@ -199,7 +199,9 @@ fn is_info(w: &WireWarning) -> bool {
 /// Sort key of a system warning: its code, its cue, then its text.
 fn notice_key(w: &WireWarning) -> (&str, Option<CueId>, &str) {
     match w {
-        WireWarning::Notice { code, message, cue } => (code, *cue, message),
+        WireWarning::Notice {
+            code, message, cue, ..
+        } => (code, *cue, message),
         _ => ("", None, ""),
     }
 }

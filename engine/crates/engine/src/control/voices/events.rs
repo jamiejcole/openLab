@@ -116,6 +116,12 @@ impl Voices {
             return;
         };
         let (cue, run) = (r.cue, r.run);
+        // A voice a seek moved from: its run is the moved voice's now, so how it ended is no
+        // one's concern.
+        if r.retired {
+            self.remove(id);
+            return;
+        }
         // The mixer dropped the voice because its render kept panicking: the cue breaks, also
         // when a resume that re-keyed it is still on its way.
         let faulted = reason == FinishReason::Faulted;

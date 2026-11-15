@@ -95,7 +95,7 @@ impl CueEngine {
             self.as_of(at, cx, |e, cx| e.stop_tree(cue, None, cx));
         }
         let before = self.state(cue);
-        let (run, split, voice) = match self.slots.get(&cue) {
+        let (run, split, voice, seek) = match self.slots.get(&cue) {
             Some(Slot::Broken(_) | Slot::Lost(_)) => {
                 return cx.warn(EngineWarning::CueBroken { cue });
             }
@@ -124,10 +124,11 @@ impl CueEngine {
                 } else {
                     Voice::None
                 },
+                loaded.seek,
             ),
             None => {
                 let pre_wait = cx.secs(model.pre_wait, &self.config);
-                (self.new_run(), (pre_wait, 0, pre_wait), Voice::None)
+                (self.new_run(), (pre_wait, 0, pre_wait), Voice::None, None)
             }
         };
         let (pre_wait_left, action_offset, pre_wait_total) = split;
@@ -143,6 +144,7 @@ impl CueEngine {
         self.continued.remove(&cue);
         let mut new = Run::new(run, seq, Phase::PreWait { until }, group);
         new.action_offset = action_offset;
+        new.seek = seek;
         new.pre_wait_total = pre_wait_total;
         new.voice = voice;
         new.started = at;
@@ -426,6 +428,7 @@ impl CueEngine {
                 action_offset,
                 pre_wait_total: pre_wait,
                 voice,
+                seek: None,
             }),
         );
         self.report(cue, before, cx.now, cx);
@@ -435,7 +438,7 @@ impl CueEngine {
     /// is back (a group's at once), so the cue starts from its beginning (QLab 5). `false` while
     /// the device is still away: the start is refused as for any cue on a missing device and the
     /// mark stays.
-    fn clear_lost_to_start(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) -> bool {
+    pub(super) fn clear_lost_to_start(&mut self, cue: CueId, at: SampleTime, cx: &mut Ctx) -> bool {
         if !matches!(self.slots.get(&cue), Some(Slot::Lost(_))) {
             return true;
         }

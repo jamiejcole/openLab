@@ -15,7 +15,7 @@ use openlab_core::{
 use super::devices::{Device, DeviceAnswer, DeviceEvent, OutputKey};
 use super::outputs::Output;
 use super::voices::Effects;
-use super::{Backend, Control, DocCx, Engine, notice};
+use super::{Backend, Control, DocCx, Engine, device_notice, notice};
 
 impl Control {
     pub(super) fn poll_device(&mut self) {
@@ -217,7 +217,7 @@ impl Control {
         self.each_doc(|cx| {
             let n = counts.next().unwrap_or(0);
             cx.runtime(vec![RuntimeChange::Warning {
-                warning: notice("device_lost", text(n), None),
+                warning: device_notice("device_lost", text(n), name),
             }]);
         });
     }
@@ -651,32 +651,32 @@ impl DocCx<'_> {
             };
             let name = &output.name;
             if let Some(why) = d.unrecoverable() {
-                list.push(notice(
+                list.push(device_notice(
                     "device_unrecoverable",
                     format!(
                         "audio device \"{name}\": {why}; sound cannot come back: restart \
                          openLab"
                     ),
-                    None,
+                    name,
                 ));
             } else if d.is_down() && d.has_opened() && !d.is_resuming() {
-                list.push(notice(
+                list.push(device_notice(
                     "device_lost",
                     format!(
                         "audio device \"{name}\" is lost: the cues that played on it were \
                          stopped, and cues on it cannot start; reconnecting"
                     ),
-                    None,
+                    name,
                 ));
             }
             if d.is_stalled() && !d.is_down() {
-                list.push(notice(
+                list.push(device_notice(
                     "device_stalled",
                     format!(
                         "audio device \"{name}\" has stopped calling back: it is treated as \
                          lost if it stays silent"
                     ),
-                    None,
+                    name,
                 ));
             }
             if d.list_stuck() {
@@ -689,7 +689,7 @@ impl DocCx<'_> {
                 ));
             }
             if d.info().outputs_dropped && !d.is_down() && d.has_opened() {
-                list.push(notice(
+                list.push(device_notice(
                     "outputs_dropped",
                     format!(
                         "audio device \"{name}\" has {} output channel(s), fewer than the {} \
@@ -697,7 +697,7 @@ impl DocCx<'_> {
                         d.info().channels,
                         self.eng.device_outputs
                     ),
-                    None,
+                    name,
                 ));
             }
         }
@@ -710,27 +710,27 @@ impl DocCx<'_> {
                     if self.eng.unusable.contains_key(device) =>
                 {
                     let why = self.eng.unusable.get(device).cloned().unwrap_or_default();
-                    list.push(notice(
+                    list.push(device_notice(
                         "patch_device_unusable",
                         format!(
                             "patch \"{}\": audio device \"{device}\" cannot be used: {why}: its \
                              cues cannot play",
                             patch.name
                         ),
-                        None,
+                        device,
                     ));
                 }
                 Some(PatchResolution::DeviceMissing { device })
                     if !self.eng.device_list().iter().any(|d| &d.name == device) =>
                 {
-                    list.push(notice(
+                    list.push(device_notice(
                         "patch_device_missing",
                         format!(
                             "patch \"{}\": audio device \"{device}\" is not connected: its cues \
                              cannot play",
                             patch.name
                         ),
-                        None,
+                        device,
                     ));
                 }
                 // The operator chose no device for it (a patch never mapped gets the default).
@@ -781,7 +781,7 @@ impl DocCx<'_> {
                         patch.name
                     )
                 };
-                list.push(notice("outputs_dropped", message, None));
+                list.push(device_notice("outputs_dropped", message, device));
             }
         }
         for &id in self.eng.patches.exhausted(self.doc.id) {

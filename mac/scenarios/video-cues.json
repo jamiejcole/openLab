@@ -1,0 +1,46 @@
+{
+  "about": "Video cues (#643): the list with a movie, two stills, one with no file and one with a long name; the I/O tab of a movie, a still, the cue with no file; GO and the row counting up; paused; stage none; two Video cues selected; the least window size.",
+  "show": "Video",
+  "displays": "V1:1920x1080",
+  "media": {
+    "media/clip.mov": 4,
+    "media/still.png": 1,
+    "media/card.jpg": 1,
+    "media/A very long name for a projection clip used in the second act.mov": 2
+  },
+  "window": {
+    "width": 1200,
+    "height": 800
+  },
+  "steps": [
+    {"advance": 0.1},
+    {"shot": "list"},
+    {"select": "1"},
+    {"tab": "io"},
+    {"shot": "io-movie"},
+    {"select": "2"},
+    {"shot": "io-still"},
+    {"select": "4"},
+    {"shot": "io-no-file"},
+    {"select": "5"},
+    {"shot": "io-long-name"},
+    {"select": "1"},
+    {"tab": "basics"},
+    {"shot": "basics-movie"},
+    {"key": "space"},
+    {"advance": 1.5},
+    {"select": "1"},
+    {"shot": "playing"},
+    {"key": "p"},
+    {"advance": 0.5},
+    {"shot": "paused"},
+    {"key": "escape"},
+    {"advance": 4},
+    {"select": ["1", "2"]},
+    {"tab": "io"},
+    {"shot": "two-selected"},
+    {"resize": [800, 500]},
+    {"select": "5"},
+    {"shot": "least-size"}
+  ]
+}

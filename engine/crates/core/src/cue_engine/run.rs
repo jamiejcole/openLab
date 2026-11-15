@@ -63,8 +63,11 @@ pub(super) struct Loaded {
     pub action_offset: SampleTime,
     /// The whole pre-wait at load, so its countdown shows how much of it the load skipped.
     pub pre_wait_total: SampleTime,
-    /// A `LoadVoice` was sent for this run.
+    /// A `LoadVoice` (or `LoadVoiceAt`) was sent for this run.
     pub voice: bool,
+    /// Loaded by a seek: the action starts at this file frame (device rate), not at
+    /// `action_offset`, which is then 0.
+    pub seek: Option<SampleTime>,
 }
 
 /// Where the cue is between its start and its action's end.
@@ -108,6 +111,9 @@ pub(super) struct Run {
     pub phase: Phase,
     /// Samples into the action it starts from (load-to-time past the pre-wait).
     pub action_offset: SampleTime,
+    /// The action starts at this file frame (device rate) instead: loaded by a seek, or seeked
+    /// in its pre-wait. Taken when the voice starts.
+    pub seek: Option<SampleTime>,
     /// The whole pre-wait (also the part a load to time skipped), for its countdown
     /// (`CueEngine::timers`).
     pub pre_wait_total: SampleTime,
@@ -370,6 +376,7 @@ impl Run {
             seq,
             phase,
             action_offset: 0,
+            seek: None,
             pre_wait_total: 0,
             post_wait: None,
             post_wait_total: 0,

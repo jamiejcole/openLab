@@ -1,0 +1,11 @@
+{
+  "about": "Show Mode locks list editing: New List and New Cart are drawn off (a press on a disabled control is refused by the runner); back in Edit Mode New List is on again.",
+  "show": "Demo",
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"shot": "edit-mode"},
+    {"click": "mode-switch", "at": [0.75, 0.5]},
+    {"advance": 0.2},
+    {"shot": "show-mode"}
+  ]
+}

@@ -113,9 +113,9 @@ final class CueListNameCell: NSTableCellView {
 /// One Warnings row: a marker symbol (so a warning is not told by colour alone), the title, the
 /// reasons below it and, for missing media, a button that opens Find Missing Files. Laid out by
 /// hand from the same measurements `height(of:width:)` adds up, so the row is always as tall as
-/// what it draws, however the reasons wrap.
+/// what it draws, however the title and the reasons wrap: no warning is ever cut off.
 final class WarningCell: NSTableCellView {
-    let title = NSTextField(labelWithString: "")
+    let title = NSTextField(wrappingLabelWithString: "")
     let detail = NSTextField(wrappingLabelWithString: "")
     let relinkButton = NSButton(title: loc("warnings.relink"), target: nil, action: nil)
     private let marker = NSImageView(image: WarningCell.markerImage)
@@ -130,9 +130,9 @@ final class WarningCell: NSTableCellView {
     init() {
         super.init(frame: .zero)
         identifier = NSUserInterfaceItemIdentifier("warning")
-        marker.contentTintColor = .systemOrange
+        marker.contentTintColor = MarkColour.caution
         title.font = Self.titleFont
-        title.lineBreakMode = .byTruncatingTail
+        title.maximumNumberOfLines = 0
         detail.font = Self.detailFont
         detail.textColor = .secondaryLabelColor
         detail.maximumNumberOfLines = 0
@@ -147,15 +147,24 @@ final class WarningCell: NSTableCellView {
 
     override var isFlipped: Bool { true }
 
+    /// On a selected row (the accent fill) the reasons take the selection's text colour, as the
+    /// title does; the secondary grey would be faint on the accent.
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet {
+            detail.textColor =
+                backgroundStyle == .emphasized ? .alternateSelectedControlTextColor : .secondaryLabelColor
+        }
+    }
+
     private static let sizer: NSTextField = {
         let f = NSTextField(wrappingLabelWithString: "")
         f.font = detailFont
         return f
     }()
-    private static let titleHeight: CGFloat = {
-        let f = NSTextField(labelWithString: "Xg")
+    private static let titleSizer: NSTextField = {
+        let f = NSTextField(wrappingLabelWithString: "")
         f.font = titleFont
-        return ceil(f.intrinsicContentSize.height)
+        return f
     }()
     private static let buttonSize: NSSize = {
         let b = NSButton(title: loc("warnings.relink"), target: nil, action: nil)
@@ -172,16 +181,25 @@ final class WarningCell: NSTableCellView {
 
     /// The height `text` takes wrapped in `width`, measured as the field draws it.
     private static func detailHeight(_ text: String, width: CGFloat) -> CGFloat {
-        guard !text.isEmpty else { return 0 }
-        sizer.stringValue = text
-        return ceil(sizer.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 100_000)).height ?? 0)
+        wrappedHeight(text, width: width, in: sizer)
     }
 
-    /// The height a row needs in a cell `width` wide: the reasons wrap, so they are measured at
-    /// the width they get beside the marker, not counted by line breaks.
+    /// The title's height wrapped in `width`: at least one line, so an empty title keeps its place.
+    private static func titleHeight(_ text: String, width: CGFloat) -> CGFloat {
+        wrappedHeight(text.isEmpty ? " " : text, width: width, in: titleSizer)
+    }
+
+    private static func wrappedHeight(_ text: String, width: CGFloat, in field: NSTextField) -> CGFloat {
+        guard !text.isEmpty else { return 0 }
+        field.stringValue = text
+        return ceil(field.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 100_000)).height ?? 0)
+    }
+
+    /// The height a row needs in a cell `width` wide: the title and the reasons wrap, so they are
+    /// measured at the width they get beside the marker, not counted by line breaks.
     static func height(of w: WarningRow, width: CGFloat) -> CGFloat {
         let column = textColumn(width)
-        var h = top + titleHeight
+        var h = top + titleHeight(w.title, width: column.width)
         if !w.detail.isEmpty { h += spacing + detailHeight(w.detail, width: column.width) }
         if w.canRelink { h += spacing + buttonSize.height }
         return ceil(max(h, top + markerImage.size.height)) + top
@@ -197,8 +215,9 @@ final class WarningCell: NSTableCellView {
         let column = Self.textColumn(bounds.width)
         marker.frame = NSRect(origin: NSPoint(x: Self.inset, y: Self.top), size: Self.markerImage.size)
         var y = Self.top
-        title.frame = NSRect(x: column.x, y: y, width: column.width, height: Self.titleHeight)
-        y += Self.titleHeight
+        let titleHeight = Self.titleHeight(title.stringValue, width: column.width)
+        title.frame = NSRect(x: column.x, y: y, width: column.width, height: titleHeight)
+        y += titleHeight
         if !detail.isHidden {
             let h = Self.detailHeight(detail.stringValue, width: column.width)
             detail.frame = NSRect(x: column.x, y: y + Self.spacing, width: column.width, height: h)
@@ -225,8 +244,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         (AX.transportPanic, .transportPanic, "transport.panic"),
     ]
 
-    /// The transport symbols' point size: most of the 44 pt button's height, with a margin.
-    static let transportSymbolSize: CGFloat = 18
+    /// The transport icons' side, the size Panic All's own picture is drawn at: well inside the 44 pt button.
+    static let transportIconSize: CGFloat = 20
 
     static var icons: [Icon] { transport.map(\.icon) + [.activeCuePause, .activeCueResume, .activeCuePanic] }
 
@@ -258,8 +277,12 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
-    /// Show Mode: renaming and deleting lists change the workspace, so the list menu is off.
-    var listEditLocked = false
+    /// Show Mode: adding, renaming and deleting lists change the workspace, so New List and the
+    /// list menu are off. A stray New List mid-show would also switch the window to an empty list
+    /// where GO fires nothing. Choosing an existing list stays on.
+    var listEditLocked = false {
+        didSet { newListButton.isEnabled = !listEditLocked }
+    }
     /// Why a list edit was refused (the window shows it as a sheet).
     var onNotice: ((String) -> Void)?
 
@@ -331,16 +354,16 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         strip.spacing = 6
         for entry in Self.transport {
             let name = loc(entry.key)
-            let button = NSButton(
-                image: entry.icon.image(name), target: nil, action: nil)
+            let image = entry.icon.image(name)
+            // A vector drawing, so it stays sharp at the strip's size.
+            image.size = NSSize(width: Self.transportIconSize, height: Self.transportIconSize)
+            let button = NSButton(image: image, target: nil, action: nil)
             button.setAX(entry.id, label: name)
             button.toolTip = name
             // A square bezel is drawn at the button's full height (a textured-rounded one stays
             // about 24 pt tall), so the strip is made of large buttons the glyph fills.
             button.bezelStyle = .regularSquare
             button.imageScaling = .scaleNone
-            button.symbolConfiguration = NSImage.SymbolConfiguration(
-                pointSize: Self.transportSymbolSize, weight: .regular)
             button.heightAnchor.constraint(equalToConstant: 44).isActive = true
             transportButtons[entry.id] = button
             strip.addArrangedSubview(button)
@@ -423,7 +446,11 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     /// Adds an empty list after the last one and shows it. The id is the client's; the engine
     /// may refuse; then nothing changes and no list is selected.
-    @objc private func newListClicked() {
+    @objc private func newListClicked() { addList() }
+
+    /// Adds an empty list after the last and shows it once the engine accepts; nothing in Show Mode.
+    func addList() {
+        guard !listEditLocked else { return }
         let id = ModelID(UUID().uuidString.lowercased())
         let index = lists.count
         let name = String(format: loc("sidebar.newList.name"), index + 1)

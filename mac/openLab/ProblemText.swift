@@ -29,8 +29,12 @@ enum ProblemText {
         if w.type == "notice" {
             let code = w.json["code"]?.stringValue ?? ""
             if let text = text(for: "warning.notice.\(code)") { return fill(text, w.json, label) }
-            // A notice only the binary knows: its own (English) message beats an opaque code.
-            if let message = w.json["message"]?.stringValue, !message.isEmpty { return message }
+            // A notice only the binary knows: its own (English) message beats an opaque code. The
+            // codes that quote item ids have them named as the rest of the list names them; any
+            // other text (file paths, volume names) is shown as it is, an id-shaped name included.
+            if let message = w.json["message"]?.stringValue, !message.isEmpty {
+                return idQuotingNotices.contains(code) ? namingIDs(message, label) : message
+            }
         }
         return render("warning", w.type, specific: w.json["reason"]?.stringValue, fields: w.json, label: label)
     }
@@ -46,6 +50,15 @@ enum ProblemText {
         state == .paused ? pausedReason(r) : reason(r)
     }
 
+    /// A warning's words under its cue's title in the Warnings list: `warning.<type>.detail`, which
+    /// leaves the cue out (the title names it), else the whole warning.
+    static func warningDetail(_ w: WireWarning, label: Label) -> String {
+        if w.type != "notice", let template = text(for: "warning.\(w.type).detail") {
+            return fill(template, w.json, label)
+        }
+        return warning(w, label: label)
+    }
+
     private static func render(
         _ family: String, _ type: String, specific: String?, fields: JSONValue, label: Label
     ) -> String {
@@ -56,7 +69,7 @@ enum ProblemText {
     }
 
     /// nil when the strings file has no entry (NSLocalizedString would hand back the key).
-    private static func text(for key: String) -> String? {
+    static func text(for key: String) -> String? {
         let missing = "\u{1}"
         let value = NSLocalizedString(key, value: missing, comment: "")
         return value == missing ? nil : value
@@ -83,6 +96,24 @@ enum ProblemText {
     }
 
     private static let idKeys: Set<String> = ["cue", "target", "patch", "list"]
+
+    /// Notice codes whose engine text quotes cue, list, patch or stage ids: the show file's repairs.
+    static let idQuotingNotices: Set<String> = ["load_repair"]
+
+    private static let idPattern = try? NSRegularExpression(
+        pattern: "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+    /// `text` with every internal id in it replaced by what `label` names it.
+    static func namingIDs(_ text: String, _ label: Label) -> String {
+        guard let idPattern else { return text }
+        var out = text
+        let whole = NSRange(out.startIndex..., in: out)
+        for match in idPattern.matches(in: out, range: whole).reversed() {
+            guard let range = Range(match.range, in: out) else { continue }
+            out.replaceSubrange(range, with: label(ModelID(String(out[range]).lowercased())))
+        }
+        return out
+    }
 }
 
 /// One line of the Warnings tab: a broken cue (with every reason it is broken) or a notice.
@@ -100,12 +131,29 @@ enum WarningRows {
     /// The most of a stage's name a warning row shows before its reason.
     static let stageNameLength = 24
 
+    /// The most of a device's name a warning row's title shows.
+    static let deviceNameLength = 48
+
     /// Broken cues in list order first, then workspace warnings, then runtime warnings (oldest
     /// first). Groups that are only flagged for a broken child are not listed: the child is.
+    ///
+    /// The list says what is wrong, once: the engine reports every refusal and every loss (the
+    /// show log keeps each), and here repeats become one entry. A refusal to start a broken cue
+    /// is told on that cue's own entry, with how often it happened, and goes once the cue is
+    /// playable again. A warning that comes again is one entry with its latest words and a count.
+    /// A device's notices are one entry per device and problem, worded here from the notice's
+    /// code; the one sent at each loss is not listed, as the entry in force says the same.
     @MainActor
     static func make(store: WorkspaceStore) -> [WarningRow] {
         let model = store.model
         let label = labeler(model)
+        let notices = [("w", store.warnings), ("r", store.runtimeWarnings)].flatMap { prefix, list in
+            list.map { (prefix, $0) }
+        }
+        var refusals: [ModelID: Int] = [:]
+        for (_, w) in notices where w.type == "cue_broken" {
+            if let id = w.json["cue"]?.stringValue { refusals[ModelID(id), default: 0] += 1 }
+        }
         var rows: [WarningRow] = []
         func walk(_ cues: [Cue]) {
             for cue in cues {
@@ -115,6 +163,10 @@ enum WarningRows {
                 if !problems.isEmpty || reason != nil {
                     var reasons = problems.map { ProblemText.problem($0, label: label) }
                     if let reason { reasons.append(ProblemText.reason(reason, state: run?.state)) }
+                    if let n = refusals[cue.id] {
+                        reasons.append(
+                            n == 1 ? loc("warnings.refused.one") : String(format: loc("warnings.refused.many"), n))
+                    }
                     rows.append(
                         WarningRow(
                             id: "c:\(cue.id.raw)", cue: cue.id,
@@ -126,15 +178,37 @@ enum WarningRows {
             }
         }
         for list in model?.cueLists ?? [] { walk(list.cues) }
-        var seen: [String: Int] = [:]
-        for (prefix, list) in [("w", store.warnings), ("r", store.runtimeWarnings)] {
-            for w in list {
-                let key = prefix + ((try? w.json.text()) ?? w.type)
-                seen[key, default: 0] += 1
-                rows.append(
-                    WarningRow(
-                        id: "\(key)#\(seen[key] ?? 0)", cue: w.json["cue"]?.stringValue.map { ModelID($0) },
-                        title: ProblemText.warning(w, label: label), detail: "", canRelink: false))
+        // Entries by key in the order each first came, with the latest warning and how many came.
+        var order: [String] = []
+        var latest: [String: (warning: WireWarning, count: Int)] = [:]
+        var devices: [String: (name: String, codes: [String])] = [:]
+        for (prefix, w) in notices {
+            // Told on the broken cue's own entry, or past: the cue plays again.
+            if w.type == "cue_broken" { continue }
+            if w.type == "notice", let device = w.json["device"]?.stringValue {
+                let code = w.json["code"]?.stringValue ?? ""
+                if prefix == "r", code == "device_lost" { continue }
+                let key = "d:\(deviceFamily(code)):\(device)"
+                if devices[key] == nil { order.append(key) }
+                devices[key, default: (device, [])].codes.append(code)
+                continue
+            }
+            var fields = w.json
+            // A late start is the same warning however late it was: the latest lateness shows.
+            fields.set("late_ms", .null)
+            let key = prefix + ((try? fields.text()) ?? w.type)
+            if let seen = latest[key] {
+                latest[key] = (w, seen.count + 1)
+            } else {
+                order.append(key)
+                latest[key] = (w, 1)
+            }
+        }
+        for key in order {
+            if let device = devices[key] {
+                rows.append(deviceRow(key: key, name: device.name, codes: device.codes))
+            } else if let (w, count) = latest[key] {
+                rows.append(warningRow(key: key, w, count: count, model: model, label: label))
             }
         }
         for text in store.appNotices {
@@ -157,6 +231,48 @@ enum WarningRows {
         return rows
     }
 
+    /// The device problems that are one entry: a device lost and a patch whose device is not
+    /// connected say the same thing.
+    private static func deviceFamily(_ code: String) -> String {
+        code == "patch_device_missing" ? "device_lost" : code
+    }
+
+    /// One device's entry: its name as the title, what is wrong and what to do under it.
+    @MainActor
+    private static func deviceRow(key: String, name: String, codes: [String]) -> WarningRow {
+        // A lost device says more than a patch's device not being there.
+        let code = codes.contains("device_lost") ? "device_lost" : codes.first ?? ""
+        return WarningRow(
+            id: key, cue: nil,
+            title: String(
+                format: loc("warnings.device"), WorkspaceSettingsModel.middleCut(name, limit: deviceNameLength)),
+            detail: ProblemText.text(for: "warnings.device.\(code)") ?? loc("warnings.device.other"),
+            canRelink: false)
+    }
+
+    /// A workspace or runtime warning's entry, `count` the times it came.
+    private static func warningRow(
+        key: String, _ w: WireWarning, count: Int, model: WorkspaceModel?, label: ProblemText.Label
+    ) -> WarningRow {
+        func counted(_ text: String) -> String {
+            count == 1 ? text : String(format: loc("warnings.repeated"), text, count)
+        }
+        if let id = w.json["cue"]?.stringValue.map({ ModelID($0) }) {
+            // A warning about a cue reads as a broken cue's row: the cue as the title, what
+            // happened on the line under it, so a long cue name never cuts the reason off. A cue
+            // gone from the workspace is never named by its id.
+            let cue = model?.cue(id)
+            let title =
+                cue.map { cueTitle($0, name: model?.listName($0) ?? CueKindStyle.kindLabel($0.kindType)) }
+                ?? loc("warnings.cueGone")
+            return WarningRow(
+                id: key, cue: cue == nil ? nil : id, title: title,
+                detail: counted(ProblemText.warningDetail(w, label: label)), canRelink: false)
+        }
+        return WarningRow(
+            id: key, cue: nil, title: counted(ProblemText.warning(w, label: label)), detail: "", canRelink: false)
+    }
+
     /// Why a stage cannot be seen, in a few words for the Warnings list; nil for one that is fine.
     static func stageReason(_ state: StageState) -> String? {
         switch state.state {
@@ -174,7 +290,9 @@ enum WarningRows {
             let patches = (model?.patches ?? []) + (model?.networkPatches ?? [])
             if let name = patches.first(where: { $0.id == id })?.raw["name"]?.stringValue { return name }
             if let list = model?.cueLists.first(where: { $0.id == id }) { return list.name }
-            return id.raw
+            if let stage = model?.stages.first(where: { $0.id == id })?.raw["name"]?.stringValue { return stage }
+            // Never the id itself: it means nothing to the operator.
+            return loc("warnings.unknownItem")
         }
     }
 

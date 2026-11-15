@@ -23,6 +23,7 @@ mod preview;
 mod rng;
 mod run;
 mod second;
+mod seek;
 mod shape;
 mod time;
 mod timers;
@@ -594,6 +595,7 @@ impl CueEngine {
                     self.load_tree(cue, time, cx);
                 }
             }
+            Input::Seek { cue, position } => self.seek(cue, position, cx),
             Input::Reset { cue } => {
                 if self.known(cue, cx) {
                     self.reset_tree(cue, cx);

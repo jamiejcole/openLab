@@ -13,7 +13,7 @@ extension InspectorViewController {
     /// and a Fade's curve and levels (each fades its own target) are edited one cue at a time.
     static let batchKindTabs: [String: [String]] = [
         "audio": ["io", "levels"], "group": ["mode"], "load": ["loadTime"], "devamp": ["devamp"],
-        "network": ["network"],
+        "network": ["network"], "video": ["io"],
     ]
 
     /// The tabs shown for several selected cues of `kinds`.
@@ -38,7 +38,10 @@ extension InspectorViewController {
 
     /// The controls only one cue at a time can set: off while several are selected.
     var singleCueControls: [NSControl] {
-        [numberField, hotkeyField, hotkeyClear, networkSendButton, chooseButton, clearTargetButton]
+        [
+            numberField, hotkeyField, hotkeyClear, networkSendButton, chooseButton, clearTargetButton,
+            videoIO.chooseButton,
+        ]
     }
 
     // MARK: Showing several cues
@@ -69,7 +72,10 @@ extension InspectorViewController {
         renderBatchTarget(cues, kinds: kinds)
         for c in singleCueControls { c.isEnabled = false }
         let modes = cues.map { $0.raw["continue_mode"]?.stringValue ?? "do_not_continue" }
-        durationField.isEnabled = kinds.isSubset(of: InspectorEdit.durationKinds)
+        // Typed when every cue's is (Wait and Fade cues, stills).
+        durationField.isEnabled = cues.allSatisfy {
+            InspectorEdit.editsDuration($0, media: store.mediaDurations[$0.id])
+        }
         postWaitField.isEnabled = modes.contains { $0 != "auto_follow" }
         loadTimeField.isEnabled = kind == "load"
         networkMessageField.isEnabled = kind == "network"
@@ -109,6 +115,7 @@ extension InspectorViewController {
             case "group": renderBatchMode(cues, first: first)
             case "devamp": renderBatchDevamp(cues, first: first)
             case "audio": renderBatchAudio(cues, first: first, model: model)
+            case "video": renderBatchVideo(cues, first: first, model: model)
             case "network":
                 renderNetwork(first, model: model)
                 // A destination that is not a patch is the last item ("no patch"), as for one cue.
@@ -130,7 +137,7 @@ extension InspectorViewController {
     /// on a cue. Choose, clear and jump act on one cue.
     private func renderBatchTarget(_ cues: [Cue], kinds: Set<String>) {
         let cueTargets = kinds.isSubset(of: InspectorEdit.targetKinds)
-        let files = kinds == ["audio"]
+        let files = kinds == ["audio"] || kinds == ["video"]
         if targetField.isEditable != cueTargets {
             targetField.isEditable = cueTargets
             targetField.isSelectable = cueTargets
@@ -194,6 +201,32 @@ extension InspectorViewController {
         audioLevels.gangsMixed = Set(sets.map(\.gangs)).count > 1
         audioLevels.editsSeveral = true
         audioLevels.mixed = LevelSet.mixedSlots(sets, inputs: inputs, outputs: outputs)
+    }
+
+    /// The I/O tab of several Video cues: the stage they share or mixed; the file and format rows
+    /// say mixed when the cues' differ.
+    private func renderBatchVideo(_ cues: [Cue], first: Cue, model: WorkspaceModel) {
+        renderIO(first, model: model)
+        let v = videoIO
+        let stages = cues.map { $0.raw["kind"]?["stage"]?.stringValue }
+        // None is the last item; a stage that is gone shows no choice, as for one cue.
+        let known = Set(model.stages.map(\.id.raw))
+        let chosen = stages.map { s in s.map { known.contains($0) ? $0 : "\u{1}" } ?? "" }
+        // The separator matches nothing; none (the last item) matches "".
+        let choices = v.stageIDs.enumerated().map { i, id in i == v.stageIDs.count - 2 ? "\u{2}" : id?.raw ?? "" }
+        showChoice(v.stagePopup, choices, chosen, fallback: -1)
+        if Set(stages).count > 1 { v.stageSizeLabel.stringValue = "" }
+        let files = Set(cues.map { $0.raw["kind"]?["media"]?.stringValue ?? "" })
+        if files.count > 1 {
+            v.fileLabel.stringValue = loc("inspector.mixed")
+            v.fileLabel.textColor = .secondaryLabelColor
+            v.fileLabel.toolTip = nil
+        }
+        let formats = Set(cues.map { store.mediaDurations[$0.id]?.picture })
+        if formats.count > 1 {
+            v.formatLabel.stringValue = loc("inspector.mixed")
+            v.formatLabel.textColor = .secondaryLabelColor
+        }
     }
 
     // MARK: Mixed controls
@@ -302,7 +335,9 @@ extension InspectorViewController {
         }
         var commands: [Command] = []
         for cue in batchCues {
-            switch InspectorEdit.command(f, text: text, cue: cue, model: model, typed: true) {
+            switch InspectorEdit.command(
+                f, text: text, cue: cue, model: model, typed: true, media: store.mediaDurations[cue.id])
+            {
             case .failure(let r):
                 showRefusal(loc(r.messageKey))
                 render(force: [f])

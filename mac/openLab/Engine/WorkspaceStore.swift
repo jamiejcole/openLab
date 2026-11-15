@@ -580,6 +580,16 @@ final class WorkspaceStore: ObservableObject, EngineClientDelegate {
                 engineLog.notice("ignoring unknown runtime change \(type, privacy: .public)")
             }
         }
+        // A refusal to start a broken cue is past once the cue can play again: a later break
+        // counts its own refusals afresh. The show log keeps every one.
+        let playable = cues.filter { problems[$0] == nil && cueStates[$0]?.reason == nil }
+        if !playable.isEmpty {
+            let before = runtimeWarnings.count
+            runtimeWarnings.removeAll { w in
+                w.type == "cue_broken" && w.json["cue"]?.stringValue.map { playable.contains(ModelID($0)) } == true
+            }
+            if runtimeWarnings.count != before { noticed = true }
+        }
         if !cues.isEmpty || !heads.isEmpty { self.changes.send(.runtime(cues: cues, playheads: heads)) }
         if !progressEnded.isEmpty { self.changes.send(.progress(progressEnded)) }
         if !waitsEnded.isEmpty { self.changes.send(.waits(waitsEnded)) }

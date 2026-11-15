@@ -14,6 +14,7 @@ enum InspectorTabs {
         case "load": return common + ["loadTime"]
         case "devamp": return common + ["devamp"]
         case "network": return common + ["network"]
+        case "video": return common + ["io"]
         default: return common
         }
     }
@@ -114,7 +115,7 @@ extension InspectorViewController {
     /// button to clear it and one to go to it. Any other cue: a disabled field and a not-applicable note.
     func renderTarget(_ cue: Cue, model: WorkspaceModel) {
         let kind = cue.kindType
-        let isFile = kind == "audio"
+        let isFile = cue.takesFile
         let isCueTarget = InspectorEdit.targetKinds.contains(kind)
         let media = cue.raw["kind"]?["media"]?.stringValue ?? ""
         let targetID = isCueTarget ? cue.raw["kind"]?["target"]?.stringValue.map { ModelID($0) } : nil
@@ -164,10 +165,10 @@ extension InspectorViewController {
         }
     }
 
-    /// Clears the Target: an Audio cue loses its file, a control cue its target cue.
+    /// Clears the Target: an Audio or Video cue loses its file, a control cue its target cue.
     @objc func clearTargetClicked() {
         guard !isLocked, let cue = cueForEdit else { return }
-        if cue.kindType == "audio" {
+        if cue.takesFile {
             // `media` has its own property: `kind_fields` cannot name it.
             messageLabel.stringValue = ""
             send(.setProperty(cue.id, .media(nil)), cue: cue.id, key: "media", revert: [])

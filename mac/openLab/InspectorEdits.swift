@@ -24,7 +24,7 @@ enum InspectorEdit {
         /// The engine would mark the cue broken: a Fade or Devamp cannot act on that kind of cue.
         case wrongTargetKind
         case notApplicable
-        /// The cue's duration comes from its content (or it has none): only Wait and Fade cues.
+        /// The cue's duration comes from its content (or it has none): only Wait and Fade cues, and stills.
         case noEditableDuration
         /// Only Load cues have a load time.
         case noLoadTime
@@ -61,6 +61,22 @@ enum InspectorEdit {
     /// cue's comes from its file and trims, a control cue's action is instant).
     static let durationKinds: Set<String> = ["wait", "fade"]
 
+    /// Whether `cue`'s duration is typed: a Wait or Fade cue's, and a Video cue's whose file is a still
+    /// (QLab 5 p. 209: a still runs until stopped unless given a duration). A movie's comes from its
+    /// file; a Video cue whose file is not probed yet (`media` nil) is taken as a still, so a typed
+    /// duration is kept for when it is one, and the engine ignores it for a movie.
+    static func editsDuration(_ cue: Cue, media: CueMediaDuration?) -> Bool {
+        if durationKinds.contains(cue.kindType) { return true }
+        return cue.kindType == "video" && media?.picture?.type != "video"
+    }
+
+    /// A Video cue's length as the Duration column and field show it: a movie's from its file, a
+    /// still's the duration typed for it (nil: none, it shows until stopped).
+    static func videoDuration(_ cue: Cue, media: CueMediaDuration?) -> Double? {
+        if media?.picture?.type == "video" { return media?.shownDuration }
+        return cue.raw["kind"]?["duration"]?.doubleValue
+    }
+
     /// Kinds with a cue target (core's `CueKind::has_target`).
     static let targetKinds: Set<String> = [
         "fade", "start", "stop", "pause", "load", "reset", "devamp", "go_to", "arm", "disarm",
@@ -81,6 +97,7 @@ enum InspectorEdit {
         case .duration:
             // An Audio cue's length is read-only: what its file gives, as the cue list shows it.
             if cue.kindType == "audio" { return media?.shownDuration.map(CueTime.format) ?? "" }
+            if cue.kindType == "video" { return videoDuration(cue, media: media).map(CueTime.format) ?? "" }
             guard durationKinds.contains(cue.kindType) else { return "" }
             return CueTime.format(cue.raw["kind"]?["duration"]?.doubleValue ?? 0)
         case .loadTime:
@@ -107,12 +124,13 @@ enum InspectorEdit {
 
     /// The command for `text` in `field`; `.success(nil)` when it changes nothing.
     static func command(
-        _ field: InspectorField, text: String, cue: Cue, model: WorkspaceModel, typed: Bool = false
+        _ field: InspectorField, text: String, cue: Cue, model: WorkspaceModel, typed: Bool = false,
+        media: CueMediaDuration? = nil
     ) -> Result<Command?, Rejection> {
         // An empty field over a target that is gone is a target to clear only when the operator emptied it:
         // a field that was only passed through must not change the cue.
         let dangling = typed && field == .target && hasMissingTarget(cue, model: model)
-        if text == display(field, cue: cue, model: model) && !dangling { return .success(nil) }
+        if text == display(field, cue: cue, model: model, media: media) && !dangling { return .success(nil) }
         switch field {
         case .name:
             // Clearing an unnamed cue's field changes nothing: it goes on following its file.
@@ -136,7 +154,7 @@ enum InspectorEdit {
                 return .success(nil)
             }
             return .success(.setProperty(cue.id, field == .preWait ? .preWait(seconds) : .postWait(seconds)))
-        case .duration: return durationCommand(text: text, cue: cue)
+        case .duration: return durationCommand(text: text, cue: cue, media: media)
         case .loadTime:
             guard cue.kindType == "load" else { return .failure(.noLoadTime) }
             // A leading minus counts back from the target's end (QLab 5, manual pp. 680-681).
@@ -199,10 +217,28 @@ extension InspectorEdit {
         return .failure(text.contains(",") && CueTime.parse(dotted) != nil ? .decimalComma : .invalidTime)
     }
 
-    /// A Wait or Fade cue's duration from typed text, for the inspector and the cue list's Duration
-    /// column alike; `.success(nil)` when it is the duration the cue already has.
-    static func durationCommand(text: String, cue: Cue) -> Result<Command?, Rejection> {
-        guard durationKinds.contains(cue.kindType) else { return .failure(.noEditableDuration) }
+    /// A Wait or Fade cue's duration, or a still's, from typed text, for the inspector and the cue
+    /// list's Duration column alike; `.success(nil)` when it is the duration the cue already has. A
+    /// still's emptied field, or 0, clears its duration, so it shows until stopped again: a still
+    /// that ended the moment it started would only flash on the stage.
+    static func durationCommand(
+        text: String, cue: Cue, media: CueMediaDuration? = nil
+    ) -> Result<Command?, Rejection> {
+        guard editsDuration(cue, media: media) else { return .failure(.noEditableDuration) }
+        if cue.kindType == "video" {
+            let had = cue.raw["kind"]?["duration"]?.doubleValue
+            if text.trimmingCharacters(in: .whitespaces).isEmpty {
+                return .success(had == nil ? nil : .setProperty(cue.id, .kindFields(["duration": .null])))
+            }
+            switch time(text) {
+            case .failure(let r): return .failure(r)
+            case .success(let seconds):
+                let value: JSONValue = seconds > 0 ? .double(seconds) : .null
+                return .success(
+                    value == (had.map(JSONValue.double) ?? .null)
+                        ? nil : .setProperty(cue.id, .kindFields(["duration": value])))
+            }
+        }
         switch time(text) {
         case .failure(let r): return .failure(r)
         case .success(let seconds):

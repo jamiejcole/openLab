@@ -337,13 +337,17 @@ pub enum WireWarning {
         list: CueListId,
         reason: WireGoIgnored,
     },
-    /// From the binary: file repairs on load, damaged media, a failed autosave. `code` is a
-    /// stable snake_case key the UI can localise; `message` is English for logs.
+    /// From the binary: file repairs on load, damaged media, a failed autosave, device problems.
+    /// `code` is a stable snake_case key the UI can localise; `message` is English for logs.
     Notice {
         code: String,
         message: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cue: Option<CueId>,
+        /// The audio device a device notice is about, by the name the system gives it: lets a
+        /// client list one entry per device and name it in its own words.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
     },
 }
 
@@ -532,6 +536,8 @@ impl RuntimeChange {
                 warning: WireWarning::from_engine(warning, rate),
             },
             Action::LoadVoice { .. }
+            | Action::LoadVoiceAt { .. }
+            | Action::SeekVoice { .. }
             | Action::UnloadVoice { .. }
             | Action::StartVoice { .. }
             | Action::StopVoice { .. }

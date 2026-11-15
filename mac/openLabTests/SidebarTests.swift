@@ -113,8 +113,8 @@ final class SidebarTests: XCTestCase {
             for (id, button) in wc.sidebar.transportButtons {
                 let cell = try XCTUnwrap(button.cell as? NSButtonCell)
                 let content = cell.drawingRect(forBounds: button.bounds)
-                let config = try XCTUnwrap(button.symbolConfiguration)
-                let image = try XCTUnwrap(button.image?.withSymbolConfiguration(config))
+                let image = try XCTUnwrap(button.image)
+                XCTAssertEqual(image.size.width, SidebarViewController.transportIconSize, "\(id)")
                 XCTAssertLessThanOrEqual(image.size.height + 4, content.height, "\(id) height at \(width)")
                 XCTAssertLessThanOrEqual(image.size.width + 4, content.width, "\(id) width at \(width)")
             }
@@ -254,6 +254,44 @@ final class SidebarTests: XCTestCase {
         let sent = wired.wire.commands.filter { $0.json["type"]?.stringValue == "add_cue_list" }
         XCTAssertEqual(sent.count, 1)
         XCTAssertEqual(sent.first?.json["index"], .int(1))
+    }
+
+    /// Show Mode locks every way to add, rename or delete a list: New List (button and its action),
+    /// rename and delete refuse, a press adds nothing and the window stays on its list.
+    /// Choosing another existing list still works there; back in Edit Mode New List adds again.
+    func testInShowModeNoListCanBeAddedRenamedOrDeletedButListsCanStillBeChosen() async throws {
+        let wired = try await Rig.open()
+        let wc = WorkspaceWindowController(store: wired.store)
+        let side = try XCTUnwrap(wc.sidebar)
+        side.newListButton.performClick(nil)
+        await assertEventually("a second list in Edit Mode") { wired.store.model?.cueLists.count == 2 }
+        let lists = try XCTUnwrap(wired.store.model?.cueLists.map(\.id))
+        await assertEventually { wc.cueList.listID == lists[1] }
+        wc.setShowMode(true)
+        await assertEventually { side.listEditLocked }
+        XCTAssertFalse(side.newListButton.isEnabled)
+        XCTAssertFalse(side.newCartButton.isEnabled)
+        side.newListButton.performClick(nil)
+        side.addList()
+        try await wired.advance(0.2)
+        XCTAssertEqual(wired.store.model?.cueLists.map(\.id), lists, "nothing added")
+        XCTAssertEqual(wc.cueList.listID, lists[1], "the window stays on its list")
+        XCTAssertEqual(wired.wire.commands.filter { $0.json["type"]?.stringValue == "add_cue_list" }.count, 1)
+        // Rename and delete refuse too.
+        await side.rename(list: lists[0], to: "Other")
+        await side.delete(list: lists[1])
+        try await wired.advance(0.2)
+        XCTAssertEqual(wired.store.model?.cueLists.map(\.id), lists)
+        XCTAssertEqual(wired.store.model?.cueLists.first?.name, "Main")
+        // Choosing an existing list is still allowed.
+        side.listTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        XCTAssertEqual(wc.cueList.listID, lists[0])
+        // Back in Edit Mode New List adds again.
+        wc.setShowMode(false)
+        await assertEventually { !side.listEditLocked }
+        XCTAssertTrue(side.newListButton.isEnabled)
+        side.newListButton.performClick(nil)
+        await assertEventually("a third list") { wired.store.model?.cueLists.count == 3 }
     }
 
     /// The right-click menu on a list row renames and deletes it; Show Mode and an engine refusal

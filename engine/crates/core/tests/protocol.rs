@@ -108,6 +108,7 @@ fn snapshot() -> Snapshot {
             code: "media_damaged".into(),
             message: "intro.wav has a damaged tail".into(),
             cue: Some(cue_id(10)),
+            device: None,
         }],
         media_durations: vec![CueMediaDuration {
             cue: cue_id(10),
@@ -198,6 +199,13 @@ fn all_actions() -> Vec<(&'static str, TransportAction)> {
             },
         ),
         ("reset_all", TransportAction::ResetAll),
+        (
+            "seek",
+            TransportAction::Seek {
+                cue: c,
+                position: 3.5,
+            },
+        ),
     ]
 }
 
@@ -1274,6 +1282,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                     code: "file_repaired".into(),
                     message: "duplicate cue number 3 was cleared".into(),
                     cue: None,
+                    device: None,
                 },
                 WireWarning::LateStart {
                     cue: cue_id(10),
@@ -1966,6 +1975,7 @@ fn every_message_type_and_variant_has_a_fixture() {
             | TransportAction::Pause { .. }
             | TransportAction::Resume { .. }
             | TransportAction::Load { .. }
+            | TransportAction::Seek { .. }
             | TransportAction::Reset { .. }
             | TransportAction::TriggerReleased { .. }
             | TransportAction::Preview { .. }
@@ -1973,7 +1983,7 @@ fn every_message_type_and_variant_has_a_fixture() {
             | TransportAction::Batch { .. } => {}
         }
     }
-    assert_eq!(all_actions().len(), 24);
+    assert_eq!(all_actions().len(), 25);
     assert_eq!(all_requests().len(), 28);
 }
 
@@ -2162,6 +2172,28 @@ fn malformed_input_is_an_error_never_a_panic() {
             field: "transport.load.at"
         })
     );
+    // A seek's file position: before the file is refused, and so is a number that is not one
+    // (a JSON number cannot be NaN, but an encoder must not send one either).
+    assert_eq!(
+        decode_client(
+            r#"{"type":"transport","id":1,"action":{"type":"seek","cue":"00000000-0000-0000-0000-000000000001","position":-0.5}}"#
+        ),
+        Err(ProtocolError::OutOfRange {
+            field: "transport.seek.position"
+        })
+    );
+    for position in [f64::NAN, f64::INFINITY] {
+        assert!(
+            encode_client(&transport(
+                1,
+                TransportAction::Seek {
+                    cue: cue_id(1),
+                    position,
+                },
+            ))
+            .is_err()
+        );
+    }
 }
 
 /// A `batch` is refused whole when it is empty, too long, names a cue twice, carries
@@ -2293,6 +2325,10 @@ fn a_batch_is_refused_whole_unless_well_formed() {
         TransportAction::Load {
             cue: cue_id(7),
             at: 0.0,
+        },
+        TransportAction::Seek {
+            cue: cue_id(11),
+            position: 1.5,
         },
         TransportAction::Reset { cue: cue_id(8) },
         TransportAction::Preview { cue: cue_id(9) },
@@ -3067,6 +3103,7 @@ fn all_warnings() -> Vec<WireWarning> {
         code: "media_damaged".into(),
         message: "intro.wav has a damaged tail".into(),
         cue: Some(c),
+        device: None,
     });
     all
 }
@@ -3417,6 +3454,7 @@ fn preshow_report_sample() -> PreshowReport {
             code: "device_lost".into(),
             message: "audio device \"Scarlett 2i2\" is lost".into(),
             cue: None,
+            device: Some("Scarlett 2i2".into()),
         }],
     }
 }
@@ -3512,6 +3550,16 @@ fn extra_fixtures(add: &mut dyn FnMut(&str, Sample)) {
             add(&format!("warnings_{}", tag(&w)), warnings(w));
         }
     }
+    // A device notice names its device, so a client can list one entry per device.
+    add(
+        "warnings_notice_device_lost",
+        warnings(WireWarning::Notice {
+            code: "device_lost".into(),
+            message: "audio device \"Scarlett 2i2\" is lost".into(),
+            cue: None,
+            device: Some("Scarlett 2i2".into()),
+        }),
+    );
     for (_, r) in go_table() {
         let name = format!("warnings_go_ignored_{}", tag(&r));
         add(
@@ -4271,6 +4319,7 @@ fn arb_action() -> impl Strategy<Value = TransportAction> {
         arb_cue().prop_map(|cue| TransportAction::Pause { cue }),
         arb_cue().prop_map(|cue| TransportAction::Resume { cue }),
         (arb_cue(), arb_time()).prop_map(|(cue, at)| TransportAction::Load { cue, at }),
+        (arb_cue(), arb_time()).prop_map(|(cue, position)| TransportAction::Seek { cue, position }),
         arb_cue().prop_map(|cue| TransportAction::Reset { cue }),
         arb_cue().prop_map(|cue| TransportAction::TriggerReleased { cue }),
         arb_cue().prop_map(|cue| TransportAction::Preview { cue }),

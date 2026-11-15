@@ -129,6 +129,28 @@ fn notices(msgs: &[ServerMessage]) -> Vec<String> {
         .collect()
 }
 
+/// The devices the runtime notices name, in order.
+fn notice_devices(msgs: &[ServerMessage]) -> Vec<Option<String>> {
+    warnings(msgs)
+        .into_iter()
+        .filter_map(|w| match w {
+            WireWarning::Notice { device, .. } => Some(device),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The last workspace warnings list sent.
+fn last_warnings(msgs: &[ServerMessage]) -> Vec<WireWarning> {
+    msgs.iter()
+        .rev()
+        .find_map(|m| match m {
+            ServerMessage::Warnings { warnings } => Some(warnings.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 /// The last workspace warnings list sent, as notice codes.
 fn workspace_warnings(msgs: &[ServerMessage]) -> Option<Vec<String>> {
     msgs.iter()
@@ -235,6 +257,8 @@ fn list_devices_answers_from_the_host_list_and_follows_hot_plug() {
     assert_eq!(list_devices(&mut s), vec![]);
     let msgs = s.take_outbound();
     assert_eq!(notices(&msgs), vec!["device_lost".to_owned()]);
+    // The notice names its device, so a client can list one entry per device.
+    assert_eq!(notice_devices(&msgs), vec![Some(DEV_NAME.to_owned())]);
     assert_eq!(logs(&msgs, LogLevel::Error).len(), 1);
     // At once the patch is reported missing: the idle cue on it shows broken.
     let p = problems(&msgs, 1);
@@ -557,6 +581,47 @@ fn follow_show() -> DeviceShow {
     let mut c1 = audio(1, &a, 0);
     c1.continue_mode = ContinueMode::AutoFollow;
     device_show(workspace(vec![c1, audio(2, &b, 1)]))
+}
+
+/// The device goes while a click in cue 1's waveform waits for the new point's stream (its
+/// open held back): the cue gets the lost-device mark like any playing cue, nothing sounds, and
+/// neither the voice it was moving from nor the waiting stream is left behind.
+#[test]
+fn a_device_lost_while_a_click_waits_leaves_the_lost_mark_and_nothing_held() {
+    let long = wav(&dc(200_000, 0.25));
+    let ws = workspace(vec![audio(1, &long, 0)]);
+    let mut c = device_config(&ws);
+    c.prime_cues = 0;
+    c.streamer.before_open = gated_open;
+    let mut s = DeviceShow::new(ws, vec![listed(DEV, DEV_NAME, 2)], c);
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    gate(&long);
+    s.transport(TransportAction::Seek {
+        cue: id(1),
+        position: 10.0,
+    });
+    lose(&mut s);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    assert!(s.control().engine().is_lost(id(1)));
+    // The waiting move is gone at once; the voice it moved from goes when its mixer reports.
+    assert!(
+        s.control().held_streams() <= 1,
+        "{}",
+        s.control().held_streams()
+    );
+    release(&long);
+    replug(&mut s);
+    s.run(BLOCK * 20);
+    assert!(s.control().engine().is_lost(id(1)));
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(s.control().held_streams(), 0);
+    let ch = s.channel(0);
+    let tail = &ch[ch.len() - BLOCK as usize * 10..];
+    assert!(
+        tail.iter().all(|&v| v == 0.0),
+        "nothing sounds after the loss"
+    );
 }
 
 /// The device goes while cue 1 plays and stays away `outage`. Whatever the length of the
@@ -917,6 +982,13 @@ fn a_lost_device_stops_exactly_the_runs_on_it_and_breaks_the_cues_routed_to_it()
         workspace_warnings(&msgs),
         Some(vec!["device_lost".to_owned()])
     );
+    assert!(msgs.iter().any(|m| matches!(
+        m,
+        ServerMessage::Warnings { warnings } if matches!(
+            &warnings[..],
+            [WireWarning::Notice { device: Some(d), .. }] if d == DEV_NAME
+        )
+    )));
     // While the device is away, a cue routed to it does not start: broken, as a missing device.
     s.transport(TransportAction::Start { cue: id(4) });
     let msgs = s.take_outbound();
@@ -2189,13 +2261,25 @@ fn a_patch_whose_device_is_unplugged_is_warned_about_until_it_is_back() {
     let mut s = two_device_show(vec![]);
     unplug(&mut s, DEV2);
     s.wait_wall(Duration::from_secs(1), 1);
-    let texts = notice_texts(&s.take_outbound()).unwrap();
+    let msgs = s.take_outbound();
+    let texts = notice_texts(&msgs).unwrap();
     let missing: Vec<&String> = texts
         .iter()
         .filter(|(code, _)| code == "patch_device_missing")
         .map(|(_, m)| m)
         .collect();
     assert_eq!(missing.len(), 1, "{texts:?}");
+    assert_eq!(
+        last_warnings(&msgs)
+            .into_iter()
+            .find_map(|w| match w {
+                WireWarning::Notice { code, device, .. } if code == "patch_device_missing" =>
+                    device,
+                _ => None,
+            })
+            .as_deref(),
+        Some(DEV2_NAME)
+    );
     assert!(
         missing[0].contains("\"B\"") && missing[0].contains(DEV2_NAME),
         "{}",

@@ -73,6 +73,15 @@ final class ProtocolFixtureTests: XCTestCase {
             ])
     }
 
+    /// A `seek` transport (a click in a cue's waveform) decodes to its cue and file position.
+    func testSeekTransportDecodesItsCueAndPosition() throws {
+        let m = try JSONDecoder().decode(
+            ClientMessage.self, from: Data(try Fixtures.text("client", "transport_seek").utf8))
+        guard case .transport(_, .seek(let cue, let position)) = m else { return XCTFail("seek") }
+        XCTAssertEqual(cue, "00000000-0000-0000-0000-00000000000a")
+        XCTAssertEqual(position, 3.5)
+    }
+
     func testOutputDeviceAndPatchMappingMessagesDecodeFromTheirFixtures() throws {
         guard
             case .request(_, .setOutputDevice(let device)) = try JSONDecoder().decode(

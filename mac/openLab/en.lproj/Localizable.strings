@@ -58,10 +58,12 @@
 "edit.error.noPatch" = "This workspace has no audio patch, so an Audio cue cannot be added.";
 "edit.error.deleteBusy" = "A cue that is running, paused, fading or previewing cannot be deleted. Stop it first.";
 "edit.error.renumberValues" = "Enter a first number of 0 or more and an increment above 0.";
-"edit.drop.skipped.one" = "1 dropped file was not audio and was left out.";
-"edit.drop.skipped" = "%d dropped files were not audio and were left out.";
-"edit.error.dropNotAudio" = "Only audio files can be dropped here. Folders and other files were not added.";
-"edit.error.replaceBusy" = "The audio file of a cue that is running, paused or fading cannot be replaced. Stop it first.";
+"edit.drop.skipped.one" = "1 dropped file was not a sound, movie or image and was left out.";
+"edit.drop.skipped" = "%d dropped files were not sounds, movies or images and were left out.";
+"edit.error.dropNotMedia" = "Only audio, video and image files can be dropped here. Folders and other files were not added.";
+"edit.error.notAPicture" = "A Video cue plays a movie or a still image, not a sound file.";
+"edit.error.notASound" = "An Audio cue plays a sound file, not a movie or an image.";
+"edit.error.replaceBusy" = "The file of a cue that is running, paused or fading cannot be replaced. Stop it first.";
 "edit.error.refused" = "The engine refused the edit: %@";
 "edit.error.notConnected" = "The edit was not made: the engine is not connected.";
 
@@ -175,9 +177,9 @@
 "cue.type.arm" = "Arm";
 "cue.type.disarm" = "Disarm";
 "cue.type.network" = "Network";
+"cue.type.video" = "Video";
 
 "cuelist.label" = "Cue list";
-"cuelist.col.type" = "Cue type";
 "cuelist.col.number" = "Number";
 "cuelist.col.name" = "Name";
 "cuelist.col.target" = "Target";
@@ -196,9 +198,10 @@
 "cue.target.missing" = "?";
 "cuelist.target.fileMissing" = "File not found. Choose…";
 "cue.playhead" = "Playhead";
-"cue.playhead.inside" = "Playhead is inside this group";
 "cue.flagged" = "Flagged";
 "cue.flagged.inside" = "Contains a flagged cue";
+/* A first-column mark that holds the flag's place: the mark's own label, then the flag's. */
+"cue.markWithFlag" = "%1$@; %2$@";
 
 "cue.state.idle" = "Idle";
 "cue.state.loaded" = "Loaded";
@@ -270,6 +273,7 @@
 "paste.property.secondTrigger" = "When triggered again";
 "paste.property.secondTriggerOnRelease" = "Second trigger on release";
 "paste.property.outputPatch" = "Output patch";
+"paste.property.stage" = "Stage";
 "paste.property.levels" = "Main, output and routing levels";
 "paste.property.fadeCurve" = "Curve shape";
 "paste.property.fadeMode" = "Absolute or relative";
@@ -467,6 +471,19 @@
 "warnings.stage.noDisplay" = "No display on this computer";
 "warnings.stage.missing" = "Its display is not connected";
 "warnings.stage.failed" = "Cannot be shown";
+"warnings.device" = "Audio device “%@”";
+"warnings.device.device_lost" = "Disconnected. Cues routed to it cannot play until it is reconnected. Any that were playing show paused; GO plays them from their start.";
+"warnings.device.patch_device_missing" = "Not connected, so the cues routed to it cannot play. Connect it, or choose another device for its patch in Workspace Settings, Audio.";
+"warnings.device.device_unrecoverable" = "Failed and cannot recover. Restart openLab to hear it again.";
+"warnings.device.device_stalled" = "Has stopped responding. If it stays silent, it is treated as disconnected.";
+"warnings.device.outputs_dropped" = "Has fewer outputs than this show uses, so some are not heard. Check its patches in Workspace Settings, Audio.";
+"warnings.device.patch_device_unusable" = "Listed, but openLab cannot use it, so the cues routed to it cannot play. Workspace Settings, Audio says why.";
+"warnings.device.other" = "Has a problem. Workspace Settings, Audio says more.";
+"warnings.refused.one" = "Asked to start while broken, so it did not play.";
+"warnings.refused.many" = "Asked to start %d times while broken, so it did not play.";
+"warnings.repeated" = "%@ (%d times)";
+"warnings.cueGone" = "A cue no longer in the workspace";
+"warnings.unknownItem" = "an item no longer in the workspace";
 "settings.network.add" = "New destination";
 "settings.network.note" = "Each destination is a device or program that Network cues send to.";
 "settings.network.col.name" = "Name";
@@ -572,7 +589,7 @@
 "broken.voice_rejected" = "The audio engine refused to play it.";
 "broken.stream_failed" = "Its audio stream failed while it was playing.";
 "broken.device_lost" = "The audio device was lost while it was playing.";
-"paused.device_lost" = "Stopped: the audio device was lost. Resume clears this mark; GO plays the cue from its start.";
+"paused.device_lost" = "Shows paused: its audio device was lost, and it will not play on. Resume clears the mark; GO plays it from its start.";
 "broken.decode_failed" = "Its picture could not be decoded while it was playing.";
 
 "problem.unknown" = "Unrecognised problem: {type}";
@@ -586,10 +603,10 @@
 "problem.media_unsupported" = "Media file cannot be played: {media}";
 "problem.patch_missing" = "Its audio patch, {patch}, does not exist.";
 "problem.device_unavailable" = "The audio device for patch {patch} is not available.";
-"problem.device_unavailable.mapped" = "Patch {patch} is available on {device}.";
+"problem.device_unavailable.mapped" = "Patch {patch} is available on “{device}”.";
 "problem.device_unavailable.unmapped" = "Patch {patch} is not mapped to an audio device on this Mac.";
-"problem.device_unavailable.device_missing" = "Audio device {device} (patch {patch}) is not connected.";
-"problem.device_unavailable.channels_missing" = "Audio device {device} has {available} outputs; patch {patch} needs {needed}.";
+"problem.device_unavailable.device_missing" = "Audio device “{device}” (patch {patch}) is not connected.";
+"problem.device_unavailable.channels_missing" = "Audio device “{device}” has {available} outputs; patch {patch} needs {needed}.";
 "problem.device_unavailable.output_count_mismatch" = "Patch {patch} has {outputs} outputs but its device mapping lists {mapped}.";
 "problem.network_patch_missing" = "Its network patch, {patch}, does not exist.";
 "problem.network_patch_missing.none" = "It has no network patch.";
@@ -626,6 +643,19 @@
 "warning.preview_failed.decode_failed" = "Preview of {cue} failed: its picture could not be decoded.";
 "warning.preview_failed.voice_rejected" = "Preview of {cue} failed: the audio engine refused to play it.";
 "warning.devamp_ignored" = "{cue} ignored a Devamp that did not apply to it.";
+"warning.not_in_list.detail" = "Not in list {list}, so nothing was started.";
+"warning.cue_broken.detail" = "Broken, so it was not started.";
+"warning.trigger_ignored.detail" = "A trigger was ignored: it is {state}.";
+"warning.load_ignored.detail" = "It could not be loaded.";
+"warning.late_start.detail" = "Started {late_ms} ms late.";
+"warning.chain_limit.detail" = "Stopped a chain of cues after {limit} steps.";
+"warning.cue_removed.detail" = "Removed while a trigger for it was pending.";
+"warning.no_target.detail" = "It has no target.";
+"warning.target_missing.detail" = "Its target {target} does not exist.";
+"warning.target_wrong_kind.detail" = "Its target {target} is the wrong kind of cue.";
+"warning.target_not_running.detail" = "Its target {target} is not running.";
+"warning.unknown_cue.detail" = "It does not exist, so nothing was done.";
+"warning.devamp_ignored.detail" = "A Devamp that did not apply to it was ignored.";
 "warning.go_ignored" = "GO on {list} was ignored.";
 "warning.go_ignored.chain_limit" = "GO on {list} was ignored: a chain of cues was too long.";
 "warning.go_ignored.double_go" = "GO on {list} was ignored: it came too soon after the last GO.";
@@ -801,6 +831,24 @@
 "inspector.tab.io" = "I/O";
 "inspector.io.patch" = "Output patch";
 "inspector.io.editPatch" = "Edit…";
+"inspector.io.file" = "File";
+"inspector.io.choose" = "Choose…";
+"inspector.io.noFile" = "No file";
+"inspector.io.format" = "Video format";
+"inspector.io.formatUnknown" = "Not read";
+"inspector.io.stage" = "Stage";
+"inspector.io.stageNone" = "None";
+"inspector.io.stageSize" = "Stage size";
+"inspector.io.pixels" = "%d × %d";
+"inspector.io.videoFormat" = "%@, %@, %@ fps";
+"inspector.io.stillFormat" = "%@ image, %@";
+"inspector.io.codec.h264" = "H.264";
+"inspector.io.codec.hevc" = "HEVC";
+"inspector.io.codec.prores" = "ProRes";
+"inspector.io.still.png" = "PNG";
+"inspector.io.still.jpeg" = "JPEG";
+"inspector.io.still.tiff" = "TIFF";
+"inspector.io.noVideoSound" = "Sound in video files does not play yet.";
 "levels.editPatch" = "Edit Patch";
 "inspector.network.patch" = "Patch";
 "inspector.network.message" = "Message";
@@ -852,6 +900,7 @@
 "timeLoops.zoomOut" = "Zoom out";
 "timeLoops.noFile" = "No file";
 "timeLoops.notRead" = "Reading the file…";
+"timeLoops.missing" = "The file is missing or cannot be read";
 "timeLoops.unavailable" = "The waveform could not be read";
 "timeLoops.invalid.trim" = "The start must be at least 0.05 s before the end.";
 "timeLoops.invalid.count" = "Enter a whole number of times from 1 to 1000000.";

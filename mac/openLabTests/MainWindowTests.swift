@@ -163,7 +163,7 @@ final class MainWindowTests: XCTestCase {
         let outline = try controller().cueList.outlineView
         XCTAssertEqual(
             outline.tableColumns.map(\.identifier.rawValue),
-            ["status", "type", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
+            ["status", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
         XCTAssertTrue(outline.usesAlternatingRowBackgroundColors)
     }
 
@@ -197,6 +197,8 @@ final class MainWindowTests: XCTestCase {
         size(window.minSize.width)
         XCTAssertEqual(window.frame.width, window.minSize.width, "the narrowest window")
         let visible = try XCTUnwrap(outline.enclosingScrollView).contentView.bounds
+        let lastColumn = outline.rect(ofColumn: outline.numberOfColumns - 1)
+        XCTAssertLessThanOrEqual(lastColumn.maxX, visible.maxX, "the last column is in view at the least width")
         for id in times {
             XCTAssertEqual(try column(id).width, try XCTUnwrap(widths[id]), "\(id) keeps its width")
             let header = outline.rect(ofColumn: outline.column(withIdentifier: NSUserInterfaceItemIdentifier(id)))
@@ -267,51 +269,126 @@ final class MainWindowTests: XCTestCase {
         XCTAssertEqual(FooterBar.countText(cues: 0, lists: 2), "0 cues in 2 lists")
     }
 
-    func testEveryIconAndFallbackResolves() {
+    func testEveryIconResolves() {
         for icon in Icon.allCases {
-            guard let e = icon.entry else {
-                // One of openLab's own drawings: in the bundle, a template, on the 16-point grid.
-                let image = icon.image("label")
-                XCTAssertTrue(icon.resolvesToSymbol, "\(icon)")
-                XCTAssertTrue(image.isTemplate, "\(icon)")
-                XCTAssertEqual(image.size, NSSize(width: 16, height: 16), "\(icon)")
-                XCTAssertEqual(image.accessibilityDescription, "label", "\(icon)")
-                continue
-            }
-            XCTAssertNotNil(NSImage(systemSymbolName: e.symbol, accessibilityDescription: nil), "\(icon) \(e.symbol)")
             XCTAssertTrue(icon.resolvesToSymbol, "\(icon)")
-            if let fb = e.fallback {
-                XCTAssertNotNil(NSImage(systemSymbolName: fb, accessibilityDescription: nil), "\(icon) fallback \(fb)")
+            let image = icon.image("label")
+            XCTAssertEqual(image.accessibilityDescription, "label", "\(icon)")
+            XCTAssertTrue(image.isTemplate, "\(icon)")
+            if let symbol = icon.symbol {
+                XCTAssertNil(icon.drawing, "\(icon)")
+                XCTAssertNotNil(NSImage(systemSymbolName: symbol, accessibilityDescription: nil), "\(icon) \(symbol)")
+            } else if icon != .transportPanic {
+                // One of openLab's own drawings: in the bundle, a template, on the 16-point grid.
+                XCTAssertNotNil(icon.drawing, "\(icon)")
+                XCTAssertEqual(image.size, NSSize(width: 16, height: 16), "\(icon)")
+                XCTAssertEqual(IconLookup.drawingName(of: image), icon.drawing, "\(icon)")
             }
-            // Deployment target is macOS 12: a newer symbol must come with a fallback, and no row
-            // may need more than 12 without one.
-            XCTAssertLessThanOrEqual(e.minMacOS, 12, "\(icon) needs macOS \(e.minMacOS)")
-            if e.minMacOS > 10 { XCTAssertNotNil(e.fallback, "\(icon) has no fallback") }
         }
         // The call sites that expose their icons use only table rows.
         XCTAssertFalse((CueToolbarView.icons + SidebarViewController.icons + FooterBar.icons).isEmpty)
     }
 
-    func testMissingSymbolFallsBackThenShowsTheLocalisedNameAndLogsOnce() {
+    /// Flow (#698): each of the 34 approved drawings replaces its SF Symbol: the concept names its image set,
+    /// and no symbol is left in the table for it (the table's source names only the symbols still in use).
+    func testEachApprovedConceptDrawsItsOwnImageSetAndNoSymbolRemains() throws {
+        let approved: [Icon: String] = [
+            .stateRunning: "state-running", .statePaused: "state-paused", .stateLoaded: "state-loaded",
+            .stateBroken: "state-broken", .stateFading: "state-fading", .stateStopping: "state-stopping",
+            .flagged: "flagged", .flaggedInside: "flagged-inside", .warningMarker: "warning-marker",
+            .outputOverridden: "output-overridden", .preview: "preview", .continueAuto: "continue-auto",
+            .continueFollow: "continue-follow", .transportReset: "transport-reset", .transportPause: "transport-pause",
+            .transportResume: "transport-resume", .activeCuePanic: "active-cue-panic", .layoutToolbar: "layout-toolbar",
+            .layoutMasthead: "layout-masthead", .layoutInspector: "layout-inspector", .layoutSidebar: "layout-sidebar",
+            .settings: "settings", .statusNormal: "status-normal", .statusWaiting: "status-waiting",
+            .statusWarning: "status-warning", .statusAlarm: "status-alarm", .playhead: "playhead",
+            .timeToggle: "time-toggle", .timeToggleUp: "time-toggle-up", .targetFile: "target-file",
+            .fieldClear: "field-clear", .fieldChoose: "field-choose", .fieldJump: "field-jump",
+            .reservedPopOut: "reserved-pop-out",
+        ]
+        XCTAssertEqual(approved.count, 34)
+        for (icon, name) in approved {
+            XCTAssertEqual(icon.drawing, name, "\(icon)")
+            XCTAssertNil(icon.symbol, "\(icon) keeps a symbol")
+            XCTAssertEqual(IconLookup.drawingName(of: icon.image("label")), name, "\(icon) draws its image set")
+        }
+        let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("openLab/Icons.swift")
+        let text = try String(contentsOf: file, encoding: .utf8)
+        let regex = try NSRegularExpression(pattern: "\"([a-z][a-z0-9]*(?:\\.[a-z0-9]+)*)\"")
+        let symbols = Set(
+            regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { m in
+                Range(m.range(at: 1), in: text).map { String(text[$0]) }
+            }.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) != nil })
+        XCTAssertEqual(symbols, Set(Icon.allCases.compactMap(\.symbol)), "only the rows still in use name symbols")
+        XCTAssertEqual(symbols, ["pause.fill", "play.fill", "exclamationmark.triangle.fill", "trash"])
+    }
+
+    func testAMissingSymbolOrDrawingShowsTheLocalisedNameAndLogsOnce() {
         defer { IconLookup.shared.setLookup(nil) }
-        // The primary name vanishes: the fallback symbol shows.
-        IconLookup.shared.setLookup { $0 != "gearshape" }
-        XCTAssertNotNil(Icon.settings.image("Settings").accessibilityDescription)
-        XCTAssertTrue(Icon.settings.resolvesToSymbol)
-        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape"])
-        // Both vanish: a text image carrying the label, logged once per name.
         IconLookup.shared.setLookup { _ in false }
-        let text = Icon.settings.image("Settings")
-        XCTAssertEqual(text.accessibilityDescription, "Settings")
+        let text = Icon.engineAlarm.image("Alarm")
+        XCTAssertEqual(text.accessibilityDescription, "Alarm")
         XCTAssertTrue(text.isTemplate)
-        XCTAssertGreaterThan(text.size.width, Icon.settings.image("S", compact: true).size.width)
+        XCTAssertGreaterThan(text.size.width, Icon.engineAlarm.image("A", compact: true).size.width)
+        _ = Icon.engineAlarm.image("Alarm")
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["exclamationmark.triangle.fill"])
         _ = Icon.settings.image("Settings")
-        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape"])
-        _ = Icon.kindAudio.image("Audio")
-        XCTAssertEqual(IconLookup.shared.reportedNames, ["gearshape", "kind-audio"])
-        XCTAssertEqual(Icon.kindAudio.image("Audio").accessibilityDescription, "Audio")
-        XCTAssertFalse(Icon.kindAudio.resolvesToSymbol)
+        XCTAssertEqual(IconLookup.shared.reportedNames, ["exclamationmark.triangle.fill", "settings"])
+        XCTAssertEqual(Icon.settings.image("Settings").accessibilityDescription, "Settings")
         XCTAssertFalse(Icon.settings.resolvesToSymbol)
+        XCTAssertFalse(Icon.engineAlarm.resolvesToSymbol)
+    }
+
+    /// Flow (#698): the footer, the inspector's Target field buttons and the transport strip show the approved
+    /// drawings: Reset, Pause and Resume All the circle outline, Panic All its own picture, and the footer's
+    /// all-well mark green while its words keep the text colour.
+    func testTheFooterFieldButtonsAndTransportShowTheApprovedDrawings() async throws {
+        let (wc, rig) = try await demoController()
+        _ = rig
+        wc.window?.layoutIfNeeded()
+        let footer = wc.footer
+        for (area, name) in [
+            (LayoutArea.toolbar, "layout-toolbar"), (.masthead, "layout-masthead"), (.inspector, "layout-inspector"),
+            (.sidebar, "layout-sidebar"),
+        ] {
+            XCTAssertEqual(IconLookup.drawingName(of: footer.toggles[area]?.image), name, "\(area)")
+        }
+        XCTAssertEqual(IconLookup.drawingName(of: footer.settingsButton.image), "settings")
+        footer.show(status: nil, connected: true)
+        XCTAssertEqual(IconLookup.drawingName(of: footer.statusButton.image), "status-waiting")
+        footer.showWarnings(count: 2)
+        XCTAssertEqual(IconLookup.drawingName(of: footer.warningsButton.image), "status-warning")
+        XCTAssertEqual(footer.warningsButton.contentTintColor, MarkColour.caution, "yellow, as in the list")
+        let inspector = wc.inspector
+        inspector.loadViewIfNeeded()
+        XCTAssertEqual(IconLookup.drawingName(of: inspector.clearTargetButton.image), "field-clear")
+        XCTAssertEqual(IconLookup.drawingName(of: inspector.jumpTargetButton.image), "field-jump")
+        XCTAssertEqual(IconLookup.drawingName(of: inspector.chooseButton.image), "field-choose")
+        wc.sidebar.loadViewIfNeeded()
+        let strip = wc.sidebar.transportButtons
+        XCTAssertEqual(IconLookup.drawingName(of: strip[AX.transportReset]?.image), "transport-reset")
+        XCTAssertEqual(IconLookup.drawingName(of: strip[AX.transportPause]?.image), "transport-pause")
+        XCTAssertEqual(IconLookup.drawingName(of: strip[AX.transportResume]?.image), "transport-resume")
+        let panic = try XCTUnwrap(strip[AX.transportPanic]?.image)
+        XCTAssertNil(IconLookup.drawingName(of: panic), "Panic All keeps its own picture")
+        XCTAssertEqual(panic.accessibilityDescription, loc("transport.panic"))
+        XCTAssertEqual(IconLookup.drawingName(of: ActiveCueCell().panicButton.image), "active-cue-panic")
+        // Each drawing is shown at the 16 points it is drawn on, never scaled down until its shapes run together.
+        wc.cueList.selectAsUser([TestSnapshots.fade])
+        await assertEventually { !inspector.jumpTargetButton.isHidden }
+        wc.window?.layoutIfNeeded()
+        let buttons: [(String, NSButton)] =
+            [
+                ("clear", inspector.clearTargetButton), ("jump", inspector.jumpTargetButton),
+                ("settings", footer.settingsButton),
+            ] + footer.toggles.map { ("\($0.key)", $0.value) }
+        for (name, button) in buttons {
+            let cell = try XCTUnwrap(button.cell as? NSButtonCell, name)
+            let drawn = cell.imageRect(forBounds: button.bounds).size
+            XCTAssertGreaterThanOrEqual(drawn.width, 16, "\(name) drawn \(drawn)")
+            XCTAssertGreaterThanOrEqual(drawn.height, 16, "\(name) drawn \(drawn)")
+        }
     }
 
     func testEveryDottedStringLiteralInSourcesIsLocalised() throws {

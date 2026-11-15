@@ -1329,7 +1329,7 @@ final class CueTargetFlowTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: wav) }
         var asked = 0
         var picked: URL?
-        wc.pickAudioFile = {
+        wc.pickFile = { _ in
             asked += 1
             return picked
         }
@@ -1409,7 +1409,7 @@ final class CueTargetFlowTests: XCTestCase {
         let path = try XCTUnwrap(rig.store.document?.path)
         let chosen = URL(fileURLWithPath: folder).appendingPathComponent("media/b.wav")
         try FileManager.default.copyItem(atPath: folder + "/media/a.wav", toPath: chosen.path)
-        wc.pickAudioFile = { chosen }
+        wc.pickFile = { _ in chosen }
         await select(Self.intro)
         try mouseDown(2)
         await assertEventually { self.inspector.targetField.stringValue == chosen.standardizedFileURL.path }
@@ -2225,7 +2225,7 @@ final class UserTestFlowTests: XCTestCase {
         XCTAssertEqual(
             CueToolbarView.kinds.flatMap { $0 },
             [
-                .group, .audio, .fade, .network, .start, .stop, .pause, .load, .reset, .devamp, .goto, .arm,
+                .group, .audio, .video, .fade, .network, .start, .stop, .pause, .load, .reset, .devamp, .goto, .arm,
                 .disarm, .wait, .memo,
             ])
     }

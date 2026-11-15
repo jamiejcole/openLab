@@ -24,7 +24,7 @@ use openlab_core::{
 
 use super::media::{MediaCatalog, Probe};
 use super::patches::Patches;
-use super::plan::{PlanFailure, PlanSpec, cue_slices};
+use super::plan::{PlanFailure, PlanSpec, cue_slices, cue_slices_from};
 use super::voice_ids::VoiceIds;
 
 /// Most ids kept for the next meter read (meters are read at 30 Hz, so this is never reached in
@@ -149,6 +149,55 @@ pub struct VoiceRec {
     /// Its cue outputs below this have their levels; those from here on were silenced at its
     /// start, beyond the outputs of the patch it started on ([`voice_start`]).
     levelled: usize,
+    /// It starts at this frame of the file (a seek, or a load there), not at `offset` (then 0).
+    file: Option<u64>,
+    /// The elapsed time it shows on its start: `offset`, or for a start at a file frame, how far
+    /// into the action that frame is when the cue plays from the top.
+    shown: u64,
+    /// Made by a seek: it waits for its stream to be primed (at most [`SEEK_PRIME_WAIT`]) so
+    /// the move crossfades rather than drops out, and fades in over [`SEEK_CROSSFADE`].
+    moved: bool,
+    /// The voice a seek moves from, playing on until this one starts and then fading out.
+    replaces: Option<VoiceId>,
+    /// Moved elsewhere by a seek: it is fading out (or going) and stands for no run; its end
+    /// is reported to no one.
+    retired: bool,
+    /// A seek of this voice swaps no earlier than this sample: one crossfade at a time, so a
+    /// burst of seeks never has more than two of the cue's voices sounding.
+    swap_after: SampleTime,
+    /// How the voice it `replaces` fades out when the seek is let go of before it swaps.
+    release_fade: Fade,
+}
+
+/// A cue's seeks prepare at most one stream per this many seconds: a burst of seeks (a stuck
+/// key, a hostile client) replaces the one waiting instead of opening a stream each, so it can
+/// never use up the streamer's open-stream limit or its memory.
+pub const SEEK_PREPARE_INTERVAL: f64 = 0.05;
+
+/// How long a seek's crossfade lasts: the voice it moves from fades out while the moved one
+/// fades in, linear both, so the jump does not click.
+pub const SEEK_CROSSFADE: f64 = 0.01;
+
+/// The longest a seek of a playing voice waits for its stream at the new point to be primed,
+/// the old voice playing on meanwhile; after it the move is made anyway and plays once the disk
+/// has caught up (an underrun, silence, rather than a sound that never moves).
+pub const SEEK_PRIME_WAIT: f64 = 0.25;
+
+/// Where a voice's stream starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartAt {
+    /// Device frames into the action, loops unrolled (a start, a load to time).
+    Offset(u64),
+    /// A frame of the file at the device rate (a seek).
+    File(u64),
+}
+
+/// A stream made for a voice.
+struct Made {
+    prepared: PreparedStream,
+    total: Option<u64>,
+    /// The elapsed time it shows at its start (see [`VoiceRec::shown`]).
+    shown: u64,
 }
 
 impl VoiceRec {
@@ -157,16 +206,18 @@ impl VoiceRec {
     /// engine skips the cue (QLab P5/G2); else `ActionFailed`. A loaded voice that was
     /// never started stays `ActionFailed` (the cue is loaded, not playing).
     fn failure(&self, reason: BrokenReason) -> Input {
-        let unplayed = match &self.phase {
-            Phase::Waiting { start, .. } => start.is_some(),
-            // `frames_written` counts frames the disk worker put in the ring, not frames the
-            // mixer played: frames in the ring are about to sound (or have), so a failure after
-            // any was written is taken as during play. A prime fills the ring before the start,
-            // but a prime whose stream failed is dropped every tick (`poll_streams`) and is never
-            // handed to a start, so it cannot make an unplayed start look played.
-            Phase::Playing => self.stream.as_ref().is_none_or(|h| h.frames_written() == 0),
-            Phase::Ended => false,
-        };
+        // A voice moved by a seek is the cue's sound going on: it played before.
+        let unplayed = !self.moved
+            && match &self.phase {
+                Phase::Waiting { start, .. } => start.is_some(),
+                // `frames_written` counts frames the disk worker put in the ring, not frames the
+                // mixer played: frames in the ring are about to sound (or have), so a failure after
+                // any was written is taken as during play. A prime fills the ring before the start,
+                // but a prime whose stream failed is dropped every tick (`poll_streams`) and is never
+                // handed to a start, so it cannot make an unplayed start look played.
+                Phase::Playing => self.stream.as_ref().is_none_or(|h| h.frames_written() == 0),
+                Phase::Ended => false,
+            };
         failure(self.cue, self.run, reason, unplayed)
     }
 
@@ -216,6 +267,9 @@ pub struct Voices {
     /// Ids that left since the last voice-meter read, and their cue: the read reports them once
     /// more.
     gone: Vec<(VoiceId, CueId)>,
+    /// Per cue, the sample before which a seek (or a load at a point of the file) prepares no
+    /// stream ([`SEEK_PREPARE_INTERVAL`]).
+    seek_gate: HashMap<CueId, SampleTime>,
     /// A show cue's record left since the last [`Voices::take_freed`]: a priming pass skips a
     /// cue that still has one, so the one after it is gone may prime the cue again.
     freed: bool,
@@ -439,7 +493,131 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         former: Vec::new(),
         moves: 0,
         levelled: 0,
+        file: None,
+        shown: 0,
+        moved: false,
+        replaces: None,
+        retired: false,
+        swap_after: 0,
+        release_fade: Fade::NONE,
     }
+}
+
+/// The gain `target` has on a voice's first sample: what `vs` starts it with (the duck stage at
+/// 1.0, its cap at the mixer's ceiling).
+fn initial_gain(vs: &VoiceStart, target: GainTarget) -> f32 {
+    let width = vs.cue_outputs.len();
+    match target {
+        GainTarget::Master => vs.gain,
+        GainTarget::Duck => 1.0,
+        GainTarget::DuckCap => openlab_audio::MAX_GAIN,
+        GainTarget::CueOutput(o) => vs.cue_outputs.get(usize::from(o)).copied().unwrap_or(0.0),
+        GainTarget::Crosspoint { input, output } => {
+            let (i, o) = (usize::from(input), usize::from(output));
+            if o >= width {
+                return 0.0;
+            }
+            vs.crosspoints
+                .get(i.saturating_mul(width).saturating_add(o))
+                .copied()
+                .unwrap_or(0.0)
+        }
+    }
+}
+
+/// One gain's ramp as the commands queued for a voice set it.
+#[derive(Clone, Copy, Debug)]
+struct Track {
+    target: GainTarget,
+    from: f32,
+    to: f32,
+    start: SampleTime,
+    fade: Fade,
+}
+
+impl Track {
+    /// The gain on sample `at`; the duck stage moves evenly in dB, as the mixer's does.
+    fn value(&self, at: SampleTime) -> f32 {
+        let pos = at.saturating_sub(self.start);
+        if pos >= self.fade.frames {
+            return self.to;
+        }
+        if self.target == GainTarget::Duck {
+            let floor = 1e-6_f64;
+            let from = f64::from(self.from).max(floor);
+            let to = f64::from(self.to).max(floor);
+            let t = pos as f64 / self.fade.frames as f64;
+            return (from * (to / from).powf(t)) as f32;
+        }
+        openlab_audio::ramp_value(self.from, self.to, pos, self.fade.frames, self.fade.curve)
+    }
+}
+
+/// The commands queued for a voice that starts on `at`, caught up with time: every gain a
+/// command before `at` set is set on `at` to where it stands then (`initial` gives a gain's
+/// value before any command), followed by the rest of a ramp still moving, so it ends on the
+/// sample it was planned to; commands from `at` on (and devamps) are kept as they are, after.
+fn caught_up(
+    queue: Vec<(SampleTime, Queued)>,
+    at: SampleTime,
+    initial: impl Fn(GainTarget) -> f32,
+) -> Vec<(SampleTime, Queued)> {
+    let mut tracks: Vec<Track> = Vec::new();
+    let mut later = Vec::new();
+    for (t, q) in queue {
+        match q {
+            Queued::Ramp { target, gain, fade } if t < at => {
+                let from = tracks
+                    .iter()
+                    .find(|k| k.target == target)
+                    .map_or_else(|| initial(target), |k| k.value(t));
+                // The mixer sets a voice's first cap at once (from no cap there is no step to
+                // smooth), whatever the ramp asked.
+                let fade = if target == GainTarget::DuckCap && from >= openlab_audio::MAX_GAIN {
+                    Fade::NONE
+                } else {
+                    fade
+                };
+                let track = Track {
+                    target,
+                    from,
+                    to: gain,
+                    start: t,
+                    fade,
+                };
+                match tracks.iter_mut().find(|k| k.target == target) {
+                    Some(k) => *k = track,
+                    None => tracks.push(track),
+                }
+            }
+            Queued::Ramp { .. } => later.push((t, q)),
+            Queued::Devamp { .. } => later.push((t.max(at), q)),
+        }
+    }
+    let mut out = Vec::with_capacity(tracks.len() * 2 + later.len());
+    for k in &tracks {
+        out.push((
+            at,
+            Queued::Ramp {
+                target: k.target,
+                gain: k.value(at),
+                fade: Fade::NONE,
+            },
+        ));
+        let end = k.start.saturating_add(k.fade.frames);
+        if end > at && k.value(at) != k.to {
+            out.push((
+                at,
+                Queued::Ramp {
+                    target: k.target,
+                    gain: k.to,
+                    fade: Fade::new(end - at, k.fade.curve),
+                },
+            ));
+        }
+    }
+    out.extend(later);
+    out
 }
 
 fn queued(id: VoiceId, q: Queued) -> CommandKind {
@@ -547,6 +725,17 @@ fn frames(spec: &FadeSpec, rate: NonZeroU32) -> Fade {
     )
 }
 
+/// How a voice fades in on its first frames.
+#[derive(Clone, Copy, Debug)]
+enum FadeIn {
+    /// The cue's own fade-in: a start from the top.
+    Cue,
+    /// None: a start part way in (load to time) begins past the fade-in.
+    None,
+    /// A seek's crossfade, the voice it moves from fading out meanwhile.
+    Crossfade(Fade),
+}
+
 /// The mixer start of `cue`'s voice `id` on `prepared`, routed and levelled as the model says
 /// now: master, cue outputs (those beyond the patch's outputs are silent), crosspoints, fades.
 fn voice_start(
@@ -554,13 +743,13 @@ fn voice_start(
     cue: CueId,
     prepared: PreparedStream,
     id: VoiceId,
-    offset: u64,
+    fade_in: FadeIn,
 ) -> Option<(Box<VoiceStart>, StreamHandle)> {
     let c = env.ws.find_cue(cue)?;
     let CueKind::Audio {
         patch,
         levels,
-        fade_in,
+        fade_in: cue_fade_in,
         fade_out,
         ..
     } = &c.kind
@@ -590,11 +779,10 @@ fn voice_start(
             vs.set_crosspoint(input, output, db_to_gain(xp.db));
         }
     }
-    // A start part way in (load to time) begins past the fade-in.
-    vs.fade_in = if offset == 0 {
-        frames(fade_in, env.rate)
-    } else {
-        Fade::NONE
+    vs.fade_in = match fade_in {
+        FadeIn::Cue => frames(cue_fade_in, env.rate),
+        FadeIn::None => Fade::NONE,
+        FadeIn::Crossfade(fade) => fade,
     };
     vs.fade_out = frames(fade_out, env.rate);
     Some((Box::new(vs), handle))
@@ -635,6 +823,58 @@ mod tests {
         assert_eq!(file_frame(&t, &[500, 700], 750), None);
         assert_eq!(file_frame(&t[3..], &[10], 20), None);
         assert_eq!(file_frame(&[], &[], 0), None);
+    }
+
+    /// Commands queued while a move waited are caught up on the swap: each gain where it stands
+    /// then and the rest of its ramp, ending on its planned sample; later commands kept.
+    #[test]
+    fn queued_ramps_are_caught_up_with_the_swap() {
+        let ramp = |target, gain, frames| Queued::Ramp {
+            target,
+            gain,
+            fade: Fade::new(frames, Curve::Linear),
+        };
+        let queue = vec![
+            // Master from 1.0 to 0.0 over 100 from 100: half way on 150.
+            (100, ramp(GainTarget::Master, 0.0, 100)),
+            // An output set at once, then over by the swap.
+            (110, ramp(GainTarget::CueOutput(1), 0.25, 0)),
+            (120, ramp(GainTarget::CueOutput(0), 0.5, 10)),
+            // A first cap is set at once, as the mixer sets it (no ramp down from no cap).
+            (100, ramp(GainTarget::DuckCap, 4.0, 100)),
+            // The duck stage halves in dB terms: from 1.0 to 0.01 over 100 from 100.
+            (100, ramp(GainTarget::Duck, 0.01, 100)),
+            (150, ramp(GainTarget::Master, 1.0, 0)),
+            (160, Queued::Devamp { stop: false }),
+        ];
+        let out = caught_up(queue, 150, |t| match t {
+            GainTarget::CueOutput(_) => 2.0,
+            GainTarget::DuckCap => openlab_audio::MAX_GAIN,
+            _ => 1.0,
+        });
+        type Got = (SampleTime, Option<(GainTarget, f32, u64)>);
+        let got: Vec<Got> = out
+            .iter()
+            .map(|(t, q)| match q {
+                Queued::Ramp { target, gain, fade } => (*t, Some((*target, *gain, fade.frames))),
+                Queued::Devamp { .. } => (*t, None),
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (150, Some((GainTarget::Master, 0.5, 0))),
+                (150, Some((GainTarget::Master, 0.0, 50))),
+                (150, Some((GainTarget::CueOutput(1), 0.25, 0))),
+                (150, Some((GainTarget::CueOutput(0), 0.5, 0))),
+                (150, Some((GainTarget::DuckCap, 4.0, 0))),
+                (150, Some((GainTarget::Duck, 0.1, 0))),
+                (150, Some((GainTarget::Duck, 0.01, 50))),
+                // On the swap sample itself: kept, after.
+                (150, Some((GainTarget::Master, 1.0, 0))),
+                (160, None),
+            ]
+        );
     }
 
     fn s(index: u32, start: u64, frames: u64, plays: Plays) -> Slice {

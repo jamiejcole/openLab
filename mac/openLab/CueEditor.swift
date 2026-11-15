@@ -193,7 +193,8 @@ final class CueEditor {
             ? selected[0].id : nil
         guard
             let cue = kind.cueJSON(
-                id: id, patch: store.model?.patches.first, networkPatch: network, target: target)
+                id: id, patch: store.model?.patches.first, networkPatch: network, target: target,
+                stage: store.model?.stages.first?.id)
         else {
             notify(loc("edit.error.noPatch"))
             return nil
@@ -319,7 +320,7 @@ final class CueEditor {
     func setDuration(of id: ModelID, text: String) async -> Bool {
         guard await begin() else { return false }
         guard let cue = store.model?.cue(id) else { return false }
-        switch InspectorEdit.durationCommand(text: text, cue: cue) {
+        switch InspectorEdit.durationCommand(text: text, cue: cue, media: store.mediaDurations[id]) {
         case .failure(let rejection):
             notify(loc(rejection.messageKey))
             return false
@@ -356,7 +357,7 @@ final class CueEditor {
             notify(loc("cuelist.edit.cueGone"))
             return false
         }
-        switch InspectorEdit.command(field, text: text, cue: cue, model: model) {
+        switch InspectorEdit.command(field, text: text, cue: cue, model: model, media: store.mediaDurations[id]) {
         case .failure(let rejection):
             if field == .target { refuseTarget(loc(rejection.messageKey)) } else { notify(loc(rejection.messageKey)) }
             return false

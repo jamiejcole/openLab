@@ -172,6 +172,7 @@ pub fn transport_input(action: TransportAction) -> Option<Input> {
         TransportAction::Pause { cue } => Input::Pause { cue },
         TransportAction::Resume { cue } => Input::Resume { cue },
         TransportAction::Load { cue, at } => Input::Load { cue, time: at },
+        TransportAction::Seek { cue, position } => Input::Seek { cue, position },
         TransportAction::Reset { cue } => Input::Reset { cue },
         TransportAction::TriggerReleased { cue } => Input::TriggerReleased { cue },
         TransportAction::Preview { cue } => Input::Preview { cue },

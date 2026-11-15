@@ -24,6 +24,7 @@ mod preshow;
 mod progress;
 mod protocol;
 mod real_audio;
+mod seek;
 mod shutdown;
 mod timing;
 mod undo_active;
