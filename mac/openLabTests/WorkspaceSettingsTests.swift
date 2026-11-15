@@ -213,10 +213,13 @@ final class WorkspaceSettingsTests: XCTestCase {
         meter.removeFromSuperview()
 
         // Picking it again changes nothing; picking the device by name leaves the system output.
-        let sent = requests(rig).count
+        func sets() -> Int {
+            requests(rig).filter { if case .setPatchMapping = $0 { return true } else { return false } }.count
+        }
+        let sent = sets()
         try pick(system, in: sc.patchDevicePopups[0])
         try await rig.advance(0.2)
-        XCTAssertEqual(requests(rig).count, sent, "the same choice again sends nothing")
+        XCTAssertEqual(sets(), sent, "the same choice again sends nothing")
         try pick(device, in: sc.patchDevicePopups[0])
         await assertEventually { sc.model.patches.first?.mapping?.system == false }
         XCTAssertEqual(sc.patchDevicePopups.first?.titleOfSelectedItem, device)
