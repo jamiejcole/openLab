@@ -1609,3 +1609,23 @@ final class WindowLayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(count, WindowLayoutStore.limit)
     }
 }
+
+final class ToolTipDelayTests: XCTestCase {
+    /// The app (the test host) registered its own wait at launch, in the whole milliseconds AppKit reads.
+    func testTheAppRegistersItsTooltipDelayAtLaunch() {
+        let registered = UserDefaults.standard.volatileDomain(forName: UserDefaults.registrationDomain)
+        XCTAssertEqual(registered[ToolTipDelay.defaultsKey] as? Int, 650)
+        XCTAssertEqual(ToolTipDelay.seconds, 0.65)
+    }
+
+    /// Registered at launch, not set: a delay the user chose for openLab still wins. (The registration
+    /// domain is the process's, so this reads what launch registered; the test registers nothing.)
+    func testAUsersOwnTooltipDelayStillWins() throws {
+        let name = "openlab.test.tooltip.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        XCTAssertEqual(defaults.integer(forKey: ToolTipDelay.defaultsKey), 650)
+        defaults.set(100, forKey: ToolTipDelay.defaultsKey)
+        XCTAssertEqual(defaults.integer(forKey: ToolTipDelay.defaultsKey), 100)
+    }
+}

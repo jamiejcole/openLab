@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     static func main() {
+        ToolTipDelay.register()
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
