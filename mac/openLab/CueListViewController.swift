@@ -1581,11 +1581,13 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
 
     // MARK: Cell content
 
-    /// The state a cue shows: its run state, else broken when it has static problems.
+    /// The state a cue shows: its run state, else broken when it has static problems. A cue its lost
+    /// device stopped reads paused, with the loss as its detail.
     func displayState(_ id: ModelID) -> (state: WireCueState, detail: String?) {
         let run = store.cueStates[id]
         let problems = store.problems[id] ?? []
         let state = run?.state ?? (problems.isEmpty ? .idle : .broken)
+        if state == .paused, let reason = run?.reason { return (state, ProblemText.pausedReason(reason)) }
         guard state == .broken else { return (state, nil) }
         let detail = CueStateStyle.brokenDetail(
             reason: run?.reason, problems: problems, groupWarning: store.groupWarnings.contains(id),

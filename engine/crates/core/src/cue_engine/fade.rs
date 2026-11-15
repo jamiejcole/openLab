@@ -393,7 +393,7 @@ impl CueEngine {
     pub fn fade_level(&self, cue: CueId, param: LevelParam, at: SampleTime) -> Option<f32> {
         match self.slots.get(&cue)? {
             Slot::Active(run) => run.levels.get(&param).map(|l| l.value(at)),
-            Slot::Loaded(_) | Slot::Broken(_) => None,
+            Slot::Loaded(_) | Slot::Broken(_) | Slot::Lost(_) => None,
         }
     }
 }

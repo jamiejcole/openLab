@@ -572,6 +572,7 @@
 "broken.voice_rejected" = "The audio engine refused to play it.";
 "broken.stream_failed" = "Its audio stream failed while it was playing.";
 "broken.device_lost" = "The audio device was lost while it was playing.";
+"paused.device_lost" = "Stopped: the audio device was lost. Resume clears this mark; GO plays the cue from its start.";
 
 "problem.unknown" = "Unrecognised problem: {type}";
 "problem.no_target" = "No target is set.";

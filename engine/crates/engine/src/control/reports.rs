@@ -127,6 +127,10 @@ impl DocCx<'_> {
         let rendered = self.eng.rendered();
         let period = (u64::from(self.eng.rate.get()) / REPORT_HZ).max(1);
         let due = |last: Option<SampleTime>| last.is_none_or(|l| rendered >= l + period);
+        let engine = self.doc.model.engine();
+        self.doc
+            .lost_progress
+            .retain(|(cue, ..)| engine.is_lost(*cue));
         if due(self.doc.last_progress) {
             let mut items: Vec<ProgressItem> = self
                 .doc
@@ -147,12 +151,23 @@ impl DocCx<'_> {
             for t in self.doc.model.engine().timers(rendered) {
                 let elapsed = self.seconds(t.elapsed);
                 let wait = match t.timer {
+                    // A cue its lost device left paused shows its voice where it stood, as a
+                    // paused voice would.
                     Timer::Action => {
-                        items.push(ProgressItem {
-                            cue: t.cue,
-                            elapsed,
-                            remaining: t.remaining.map(|l| self.seconds(l)),
-                            position: None,
+                        let stood = self.doc.lost_progress.iter().find(|(c, ..)| *c == t.cue);
+                        items.push(match stood {
+                            Some(&(cue, pos, left, at)) => ProgressItem {
+                                cue,
+                                elapsed: self.seconds(pos),
+                                remaining: left.map(|l| self.seconds(l)),
+                                position: at.map(|f| self.seconds(f)),
+                            },
+                            None => ProgressItem {
+                                cue: t.cue,
+                                elapsed,
+                                remaining: t.remaining.map(|l| self.seconds(l)),
+                                position: None,
+                            },
                         });
                         continue;
                     }

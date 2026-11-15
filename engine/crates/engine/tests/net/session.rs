@@ -1375,15 +1375,16 @@ async fn a_stepped_engine_loses_and_gets_back_its_virtual_device_on_request() {
     .await;
 
     ok_call(&mut ws, |id| request(id, Request::LoseDevice)).await;
-    // The loss is handled before the answer: the cue that played on the device broke.
-    ws.wait("cue 1 broken", |c| c.state(1) == Some(WireCueState::Broken))
+    // The loss is handled before the answer: the cue that played on the device shows paused
+    // for the lost device (QLab 5).
+    ws.wait("cue 1 paused", |c| c.state(1) == Some(WireCueState::Paused))
         .await;
     assert!(ws.seen.iter().any(|m| matches!(
         m,
         ServerMessage::Runtime { changes, .. } if changes.iter().any(|c| matches!(
             c,
             RuntimeChange::CueState {
-                state: WireCueState::Broken,
+                state: WireCueState::Paused,
                 reason: Some(WireBrokenReason::DeviceLost),
                 ..
             }

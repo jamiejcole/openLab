@@ -9,6 +9,7 @@ use crate::model::CueId;
 
 use super::level::{Level, LevelParam, Played};
 use super::time::SampleTime;
+use super::timers::Timer;
 use super::types::{BrokenReason, CueState, RunId};
 
 /// Runtime of a cue that is not idle. Idle cues have no slot.
@@ -20,6 +21,24 @@ pub(super) enum Slot {
     Loaded(Loaded),
     Active(Run),
     Broken(BrokenReason),
+    /// Its output device was lost while it played or waited: it shows `paused` (as QLab 5
+    /// does), but owns no run, voice or stream and has nothing scheduled, so nothing of it can
+    /// sound or fire again. A resume clears it to idle; a start (once its device is back) plays
+    /// it from its beginning; a stop or reset clears it.
+    Lost(Lost),
+}
+
+/// Where a cue stood when its device was lost (`Slot::Lost`): the timer that was counting
+/// (its action, or its pre-wait or post-wait) with its elapsed time and what was left, in
+/// samples, shown frozen until the mark is cleared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Lost {
+    pub timer: Timer,
+    pub elapsed: SampleTime,
+    pub remaining: Option<SampleTime>,
+    /// It was waiting, not playing: the mark clears by itself once its device is back (QLab 5);
+    /// a cue that was playing keeps it until the operator clears it.
+    pub clears_on_return: bool,
 }
 
 impl Slot {
@@ -28,6 +47,7 @@ impl Slot {
             Self::Loaded(_) => CueState::Loaded,
             Self::Active(run) => run.state(),
             Self::Broken(_) => CueState::Broken,
+            Self::Lost(_) => CueState::Paused,
         }
     }
 }
@@ -285,6 +305,9 @@ pub(super) enum Exit {
     Broken,
     /// Stopped, reset or deleted.
     Stopped,
+    /// Stopped by the loss of its output device while it played (`Slot::Lost`): its group
+    /// shows paused for the loss too when its action ends (`GroupRun::lost`).
+    Lost,
 }
 
 /// A Group cue's part of its run. Its action lasts while any of its children is busy (has a
@@ -293,6 +316,9 @@ pub(super) enum Exit {
 pub(super) struct GroupRun {
     /// Stopping with a fade: ends when its last busy child has stopped.
     pub stopping: bool,
+    /// A child it started was left paused by the loss of its device (`Exit::Lost`) while the
+    /// group was not paused: when its action ends for the loss, the group shows paused too.
+    pub lost: bool,
     /// A child broke at run time during this run, so the group does not auto-follow.
     pub failed: bool,
     /// A Devamp cue asked this playlist to finish its current child and then complete: the

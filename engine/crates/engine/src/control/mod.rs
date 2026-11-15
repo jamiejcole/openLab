@@ -74,8 +74,8 @@ use openlab_core::protocol::{
     WireWarning,
 };
 use openlab_core::{
-    CommandError, CueEngine, CueId, CueKind, CueState, DeviceInfo, EngineConfig, EngineConfigError,
-    History, Input, MachineSettings, MediaStatus, SampleTime, Workspace,
+    CommandError, CueEngine, CueId, CueKind, DeviceInfo, EngineConfig, EngineConfigError, History,
+    Input, MachineSettings, MediaStatus, SampleTime, Workspace,
 };
 
 pub use docs::{
@@ -555,6 +555,10 @@ struct Doc {
     resend_document: bool,
     resend_warnings: bool,
     last_progress: Option<SampleTime>,
+    /// Where the voices of cues a lost device left paused stood when it went (`progress`'s
+    /// values): their time is shown as a paused voice's, the loop pass and file position
+    /// included. Kept while the cue shows the mark.
+    lost_progress: Vec<(CueId, u64, Option<u64>, Option<u64>)>,
     meters_live: bool,
     /// Waveforms read for `waveform` requests (AUD-14) and reads under way.
     waveforms: waveforms::Waveforms,
@@ -1114,6 +1118,7 @@ impl Doc {
             resend_document: false,
             resend_warnings: false,
             last_progress: None,
+            lost_progress: Vec::new(),
             meters_live: false,
             waveforms: waveforms::Waveforms::default(),
             show_mode: false,
@@ -1149,10 +1154,7 @@ impl Doc {
             .map(|(cue, state)| CueStateEntry {
                 cue,
                 state: state.into(),
-                reason: match state {
-                    CueState::Broken => self.model.engine().broken_reason(cue).map(Into::into),
-                    _ => None,
-                },
+                reason: self.model.engine().state_reason(cue, state).map(Into::into),
             })
             .collect();
         let problems = self

@@ -33,14 +33,29 @@ impl CueEngine {
     /// Every timer counting at rendered sample `at`, by cue, then pre-wait, action, post-wait.
     /// A paused run's timers stand where the pause froze them. A run that is broken (at run
     /// time or by static problems) skips its action, so only its pre-wait and post-wait show:
-    /// they keep their schedule. Loaded and idle cues have none. Allocates nothing itself.
+    /// they keep their schedule. A cue left paused by a lost device shows the timer that was counting
+    /// (an audio cue's action too: its voice is gone) frozen where the loss stopped it. Loaded and idle cues
+    /// have none. Allocates nothing itself.
     pub fn timers(&self, at: SampleTime) -> impl Iterator<Item = TimerProgress> + '_ {
         self.slots.iter().flat_map(move |(cue, slot)| {
-            let run = match slot {
-                Slot::Active(run) => Some(run),
-                Slot::Loaded(_) | Slot::Broken(_) => None,
+            let [pre, action, post] = match slot {
+                Slot::Active(run) => run_timers(*cue, run, at),
+                // Its time stands where the device loss left it.
+                Slot::Lost(lost) => {
+                    let frozen = Some(TimerProgress {
+                        cue: *cue,
+                        timer: lost.timer,
+                        elapsed: lost.elapsed,
+                        remaining: lost.remaining,
+                    });
+                    match lost.timer {
+                        Timer::PreWait => [frozen, None, None],
+                        Timer::Action => [None, frozen, None],
+                        Timer::PostWait => [None, None, frozen],
+                    }
+                }
+                Slot::Loaded(_) | Slot::Broken(_) => [None; 3],
             };
-            let [pre, action, post] = run.map_or([None; 3], |run| run_timers(*cue, run, at));
             pre.into_iter().chain(action).chain(post)
         })
     }

@@ -732,11 +732,7 @@ fn device_loss_stops_every_doc() {
     assert!(s.control().device_down());
     for doc in [da, db] {
         let engine = s.control().doc(doc).unwrap().engine();
-        assert_eq!(
-            engine.broken_reason(id(1)),
-            Some(openlab_core::BrokenReason::DeviceLost),
-            "doc {doc}"
-        );
+        assert!(engine.is_lost(id(1)), "doc {doc}");
     }
     let notices: Vec<String> = warnings(&s.take_outbound())
         .into_iter()
@@ -760,7 +756,7 @@ fn device_loss_stops_every_doc() {
     for doc in [da, db] {
         assert_eq!(
             s.control().doc(doc).unwrap().engine().state(id(1)),
-            CueState::Idle
+            CueState::Paused
         );
     }
 }

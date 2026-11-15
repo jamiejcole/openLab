@@ -42,6 +42,9 @@ final class ScenarioRunner {
         case magnify(id: String, by: CGFloat, at: CGPoint)
         /// `{"advance": 1.5}`: seconds of the engine's device time.
         case advance(Double)
+        /// `{"device": "lose"}` / `{"device": "restore"}`: the virtual output device unplugged as an
+        /// interface would be, or listed again (the engine reopens it at its next list read).
+        case device(lose: Bool)
         /// `{"resize": [width, height]}`: the window's content size in points.
         case resize(CGSize)
         /// `{"tab": "timeLoops"}`: the inspector tab with that identifier.
@@ -85,7 +88,7 @@ final class ScenarioRunner {
 
     static let stepKinds = [
         "select", "click", "double_click", "drag", "type", "key", "scroll", "magnify", "advance", "resize", "tab",
-        "focus", "paste_properties", "shot", "inside", "set_media", "find_missing_files",
+        "focus", "paste_properties", "shot", "inside", "device", "set_media", "find_missing_files",
     ]
 
     // MARK: Parsing
@@ -240,6 +243,12 @@ final class ScenarioRunner {
             let s = try number("advance")
             guard s >= 0, s <= 600 else { throw Failure("\"advance\" must be 0 to 600 seconds") }
             return .advance(s)
+        case "device":
+            switch try string("device") {
+            case "lose": return .device(lose: true)
+            case "restore": return .device(lose: false)
+            default: throw Failure("\"device\" must be \"lose\" or \"restore\"")
+            }
         case "resize":
             guard let a = o["resize"] as? [Double], a.count == 2 else {
                 throw Failure("\"resize\" must be [width, height]")
@@ -620,6 +629,13 @@ final class ScenarioRunner {
                 left -= step
             }
             note("advance \(seconds) s")
+        case .device(let lose):
+            guard let engine else { throw Failure("no engine") }
+            guard case .success = await engine.request(lose ? .loseDevice : .restoreDevice) else {
+                throw Failure("the engine refused \(lose ? "lose_device" : "restore_device")")
+            }
+            try await rig.advance(0)
+            note(lose ? "device lost" : "device restored")
         case .resize(let size):
             window.setContentSize(size)
             note("resize \(Int(size.width))x\(Int(size.height))")
@@ -997,6 +1013,7 @@ final class ScenarioRunner {
         case .scroll(let id, _, _, _, _, _): return "scroll \(id)"
         case .magnify(let id, _, _): return "magnify \(id)"
         case .advance(let s): return "advance \(s)"
+        case .device(let lose): return "device \(lose ? "lose" : "restore")"
         case .resize(let s): return "resize \(Int(s.width))x\(Int(s.height))"
         case .tab(let t): return "tab \(t)"
         case .focus(let w): return "focus \(w)"
