@@ -1016,7 +1016,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// kind edits start from until the engine answers (one cue's comes from `command` itself).
     func send(
         _ command: Command, cue: ModelID, key: String, revert: Set<InspectorField>, coalesce: String? = nil,
-        kinds: [ModelID: JSONValue] = [:], notes: String? = nil
+        kinds: [ModelID: JSONValue] = [:], notes: String? = nil, refusedAs: String? = nil
     ) {
         guard !isLocked else { return }
         // The selection the edit was made for: a several-cue edit's refusal shows their values again
@@ -1072,7 +1072,9 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                     return
                 }
                 sendFailures += 1
-                if case .engine(_, let message) = error {
+                if let refusedAs {
+                    showRefusal(refusedAs)
+                } else if case .engine(_, let message) = error {
                     showRefusal(String(format: loc("inspector.refused"), message))
                 } else {
                     showRefusal(loc("inspector.failed"))

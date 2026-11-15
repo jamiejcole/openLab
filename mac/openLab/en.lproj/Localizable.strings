@@ -872,6 +872,15 @@
 "inspector.geometry.anchor" = "Anchor";
 "inspector.geometry.thumbnail" = "The picture on its stage; drag to move it";
 "inspector.geometry.notANumber" = "That is not a number.";
+"inspector.geometry.refused" = "That value was not taken; the field shows the cue's value.";
+"inspector.geometry.noStage" = "No stage";
+"inspector.geometry.range.position" = "Position is from -65536 to 65536 pixels.";
+"inspector.geometry.range.scale" = "Scale is from -100 to 100.";
+"inspector.geometry.range.rotation" = "Rotation is from -360 to 360 degrees.";
+"inspector.geometry.range.crop" = "Crop is from 0 to 16384 pixels.";
+"inspector.geometry.range.anchor" = "Anchor is from -65536 to 65536 pixels.";
+"inspector.geometry.range.opacity" = "Opacity is from 0 to 100 %.";
+"inspector.geometry.range.layer" = "Layer is a whole number from 0 (bottom) to 1000 (top).";
 "inspector.geometry.field.layer" = "Layer";
 "inspector.geometry.field.opacity" = "Opacity, percent";
 "inspector.geometry.field.x" = "Position across, pixels";

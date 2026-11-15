@@ -96,6 +96,8 @@ final class GeometryThumbnail: NSView {
     var geometry = VideoGeometry() { didSet { needsDisplay = true } }
     var stage = CGSize(width: 1920, height: 1080) { didSet { needsDisplay = true } }
     var picture: CGSize? { didSet { needsDisplay = true } }
+    /// The cue is on a stage (false: on none, and the thumbnail says so instead of drawing one).
+    var hasStage = true { didSet { needsDisplay = true } }
     var isLocked = false
     /// A drag moved the picture to this position (stage pixels); `ended` once at its release.
     var onDrag: ((CGPoint, _ ended: Bool) -> Void)?
@@ -131,6 +133,17 @@ final class GeometryThumbnail: NSView {
         NSBezierPath.clip(bounds)
         NSColor.black.setFill()
         bounds.fill()
+        guard hasStage else {
+            let text = NSAttributedString(
+                string: loc("inspector.geometry.noStage"),
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ])
+            let size = text.size()
+            text.draw(at: NSPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2))
+            return
+        }
         let stageBox = stageRect
         NSColor(white: 0.12, alpha: 1).setFill()
         stageBox.fill()
@@ -173,7 +186,7 @@ final class GeometryThumbnail: NSView {
     }
 
     /// A drag can move the picture: custom mode, a picture to move, not locked.
-    var canDrag: Bool { !isLocked && !geometry.fillStage && pointsPerPixel > 0 }
+    var canDrag: Bool { !isLocked && hasStage && !geometry.fillStage && pointsPerPixel > 0 }
 
     override func mouseDown(with event: NSEvent) {
         guard canDrag else { return }
@@ -216,6 +229,11 @@ final class GeometryThumbnail: NSView {
     }
 }
 
+/// What the Geometry tab's fields scroll over: top-down, as a form reads.
+final class GeometryFieldsView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 /// The Geometry tab's controls. Typed values and choices go out through `onEdit` as kind fields;
 /// a thumbnail drag sends each move with one coalesce key, so a drag is one undo step.
 @MainActor
@@ -241,6 +259,10 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
     let anchorYField = NSTextField()
     let anchorReset = GeometryControls.resetButton("anchor")
     let thumbnail = GeometryThumbnail()
+    /// The scroll view the fields sit in (set when the tab is built).
+    weak var scroll: NSScrollView?
+    /// The least width the thumbnail keeps, whatever the inspector's width.
+    static let thumbnailLeast: CGFloat = 96
     /// The rows only custom mode has, and the style row only fill-stage mode has.
     var customRows: [NSGridRow] = []
     var styleRow: NSGridRow?
@@ -315,7 +337,10 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
             (scaleYField, "scale-y"), (rotationField, "rotation"), (anchorXField, "anchor-x"),
             (anchorYField, "anchor-y"),
         ]
-        for (f, id) in ids { f.setAX("inspector-geometry-\(id)", label: loc("inspector.geometry.field.\(id)")) }
+        for (f, id) in ids {
+            f.setAX("inspector-geometry-\(id)", label: loc("inspector.geometry.field.\(id)"))
+            f.toolTip = loc("inspector.geometry.field.\(id)")
+        }
         for (f, edge) in zip(cropFields, VideoGeometry.cropEdges) {
             f.setAX("inspector-geometry-crop-\(edge)", label: loc("inspector.geometry.crop.\(edge)"))
             f.toolTip = loc("inspector.geometry.crop.\(edge)")
@@ -325,7 +350,7 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
             f.alignment = .right
             f.controlSize = .small
             f.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-            f.widthAnchor.constraint(equalToConstant: 54).isActive = true
+            f.widthAnchor.constraint(equalToConstant: 50).isActive = true
             f.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
         for p in [modePopup, stylePopup] {
@@ -366,8 +391,41 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
         for r in customRows { r.isHidden = g.fillStage }
         styleRow?.isHidden = !g.fillStage
         thumbnail.stage = stage ?? CGSize(width: 1920, height: 1080)
+        thumbnail.hasStage = stage != nil
         thumbnail.picture = picture
         thumbnail.geometry = g
+    }
+
+    /// The range a field takes, as the engine enforces it (core `video_geometry.rs`; the app's
+    /// `testEachGeometryRangeIsTheEnginesAtBothEnds` sends each end and just past it to the real
+    /// engine, so the two cannot drift apart), and the line that says so when a value is not.
+    struct FieldRange {
+        let range: ClosedRange<Double>
+        let whole: Bool
+        let message: String
+
+        func allows(_ v: Double) -> Bool { range.contains(v) && (!whole || v.rounded() == v) }
+    }
+
+    static let position = FieldRange(range: -65536...65536, whole: false, message: "inspector.geometry.range.position")
+    static let scaleRange = FieldRange(range: -100...100, whole: false, message: "inspector.geometry.range.scale")
+    static let rotationRange = FieldRange(range: -360...360, whole: false, message: "inspector.geometry.range.rotation")
+    static let cropRange = FieldRange(range: 0...16384, whole: false, message: "inspector.geometry.range.crop")
+    static let anchorRange = FieldRange(range: -65536...65536, whole: false, message: "inspector.geometry.range.anchor")
+    /// In percent, as the field shows it (the engine's 0 to 1).
+    static let opacityRange = FieldRange(range: 0...100, whole: false, message: "inspector.geometry.range.opacity")
+    static let layerRange = FieldRange(range: 0...1000, whole: true, message: "inspector.geometry.range.layer")
+
+    func range(of f: NSTextField) -> FieldRange? {
+        switch f {
+        case layerField: return Self.layerRange
+        case opacityField: return Self.opacityRange
+        case xField, yField: return Self.position
+        case scaleXField, scaleYField: return Self.scaleRange
+        case rotationField: return Self.rotationRange
+        case anchorXField, anchorYField: return Self.anchorRange
+        default: return cropFields.contains { $0 === f } ? Self.cropRange : nil
+        }
     }
 
     /// A number as a field shows it: up to three decimals, trailing zeros dropped.
@@ -429,6 +487,11 @@ final class GeometryControls: NSObject, NSTextFieldDelegate {
         guard let v = value, v.isFinite else {
             // An emptied field is no change; other text is said to be no number.
             if !text.isEmpty { onRefuse?(loc("inspector.geometry.notANumber")) }
+            render(g, stage: thumbnail.stage, picture: thumbnail.picture)
+            return
+        }
+        if let range = range(of: f), !range.allows(v) {
+            onRefuse?(loc(range.message))
             render(g, stage: thumbnail.stage, picture: thumbnail.picture)
             return
         }
@@ -551,7 +614,7 @@ extension InspectorViewController {
         g.styleRow = left.row(at: 1)
         // The grid sized its value column by the narrowest view and squeezed the pop-ups and the
         // opacity line; the column is as wide as its widest control needs.
-        left.column(at: 1).width = 150
+        left.column(at: 1).width = 140
         let right = NSGridView(views: [
             [label("inspector.geometry.position"), line([g.xField, g.yField, g.positionReset])],
             [label("inspector.geometry.scale"), line([g.scaleXField, g.scaleLock, g.scaleYField, g.scaleReset])],
@@ -573,26 +636,56 @@ extension InspectorViewController {
         g.thumbnail.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .vertical)
         // Fixed-size grids side by side, the thumbnail taking what is left; a short tab clips
         // the grids at the bottom, never at the side.
+        // The fields scroll (as the Levels tab's matrix does) when the tab is shorter or narrower
+        // than they are, so none is ever drawn outside the panel; the thumbnail keeps at least
+        // `thumbnailLeast` points of the width, scaled down, and takes what the fields leave.
+        let fields = GeometryFieldsView()
+        for v in [left, right] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            fields.addSubview(v)
+        }
+        let scroll = NSScrollView()
+        scroll.setAX("inspector-geometry-scroll")
+        scroll.documentView = fields
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        g.scroll = scroll
         let content = NSView()
-        for v in [left, right, g.thumbnail] as [NSView] {
+        for v in [scroll, g.thumbnail] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(v)
         }
-        let thumbWidth = g.thumbnail.widthAnchor.constraint(greaterThanOrEqualToConstant: 160)
-        thumbWidth.priority = .defaultLow
+        fields.translatesAutoresizingMaskIntoConstraints = false
+        let clip = scroll.contentView
+        // As wide as the fields need when there is room, so the thumbnail takes the rest.
+        let fit = scroll.widthAnchor.constraint(equalTo: fields.widthAnchor)
+        fit.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            left.topAnchor.constraint(equalTo: content.topAnchor, constant: 10),
-            left.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
-            right.topAnchor.constraint(equalTo: content.topAnchor, constant: 10),
+            fields.topAnchor.constraint(equalTo: clip.topAnchor),
+            fields.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+            left.topAnchor.constraint(equalTo: fields.topAnchor, constant: 10),
+            left.leadingAnchor.constraint(equalTo: fields.leadingAnchor, constant: 12),
+            left.bottomAnchor.constraint(lessThanOrEqualTo: fields.bottomAnchor, constant: -8),
+            right.topAnchor.constraint(equalTo: fields.topAnchor, constant: 10),
             right.leadingAnchor.constraint(equalTo: left.trailingAnchor, constant: 18),
+            right.trailingAnchor.constraint(equalTo: fields.trailingAnchor),
+            right.bottomAnchor.constraint(lessThanOrEqualTo: fields.bottomAnchor, constant: -8),
+            scroll.topAnchor.constraint(equalTo: content.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            scroll.widthAnchor.constraint(lessThanOrEqualTo: fields.widthAnchor),
+            fit,
             g.thumbnail.topAnchor.constraint(equalTo: content.topAnchor, constant: 8),
             g.thumbnail.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
-            g.thumbnail.leadingAnchor.constraint(equalTo: right.trailingAnchor, constant: 16),
+            g.thumbnail.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 16),
             g.thumbnail.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-            thumbWidth,
+            g.thumbnail.widthAnchor.constraint(greaterThanOrEqualToConstant: GeometryControls.thumbnailLeast),
         ])
         for p in [g.modePopup, g.stylePopup] {
-            p.widthAnchor.constraint(greaterThanOrEqualToConstant: 124).isActive = true
+            p.widthAnchor.constraint(greaterThanOrEqualToConstant: 116).isActive = true
             p.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
         for v in [g.smoothCheck, percent] as [NSView] {
@@ -624,7 +717,8 @@ extension InspectorViewController {
         guard let cue = cueForKindEdit, cue.kindType == "video" else { return }
         send(
             .setProperty(cue.id, .kindFields(fields)), cue: cue.id,
-            key: "geometry.\(fields.keys.sorted().joined(separator: ","))", revert: [], coalesce: coalesce)
+            key: "geometry.\(fields.keys.sorted().joined(separator: ","))", revert: [], coalesce: coalesce,
+            refusedAs: loc("inspector.geometry.refused"))
         // Shown with the edit before the engine answers, so the next field typed (y after x)
         // builds on it, not on the value the model still holds.
         if let cue = cueForKindEdit, let model = store.model { renderGeometry(cue, model: model) }
