@@ -4452,3 +4452,124 @@ fn a_move_whose_stream_is_late_swaps_later_and_plays_nothing_twice() {
     assert_heard_in_step(&s, frames, crossfade);
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
 }
+
+/// A 2.5 s ramp whose first 2 s loop until devamped (a 16,000-frame loop, then a 4,000-frame
+/// tail), on patch A (`on_b`: patch B); a Devamp cue starts cue 2 (on patch B, channel 2) as it
+/// leaves the loop. Cue 1 is started, devamped 200 frames into its second pass (it leaves at
+/// the end of that pass, 32,000 frames in), and the run is past the devamp's answer.
+/// Returns the show and the master sample cue 1 started on.
+fn long_loop_devamped(on_b: bool) -> (DeviceShow, usize) {
+    let a = wav(&ramp(20_000));
+    let b = wav(&dc(400, 0.5));
+    let mut looping = if on_b {
+        audio_b(1, &a, 0)
+    } else {
+        audio(1, &a, 0)
+    };
+    if let CueKind::Audio {
+        slices,
+        last_slice_play_count,
+        ..
+    } = &mut looping.kind
+    {
+        *slices = vec![openlab_core::SliceMarker {
+            time: 2.0,
+            play_count: 0,
+        }];
+        *last_slice_play_count = 1;
+    }
+    let devamp = cue(
+        3,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: true,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = two_device_show(vec![looping, devamp, audio_b(2, &b, 1)]);
+    let started = start(&mut s, 1) as usize;
+    s.run(16_200);
+    start(&mut s, 3);
+    s.run(BLOCK * 2);
+    (s, started)
+}
+
+/// Review round 2: a cue being devamped on a long loop moves at once (QLab 5, Q450), not when
+/// it leaves the loop: heard on the new device within the move's lead, in step, the loop played
+/// exactly twice and its tail once, and cue 2 started once, on the sample the loop is left.
+#[test]
+fn a_cue_being_devamped_on_a_long_loop_moves_to_the_new_device_at_once_and_leaves_on_time() {
+    let (mut s, started) = long_loop_devamped(false);
+    let moved = s.rendered() as usize;
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    let mut msgs = Vec::new();
+    for _ in 0..300 {
+        s.run(BLOCK * 2);
+        msgs.extend(s.take_outbound());
+    }
+    let one = s.device_channel(DEV, 0);
+    let shift = one.len() - s.device_channel(DEV2, 0).len();
+    let both = on_both(&s);
+    let lead = (f64::from(RATE) * 0.1) as usize;
+    let switched = both.iter().position(|&(_, b)| b != 0.0).unwrap();
+    assert!(
+        switched <= moved + lead + 2 * BLOCK as usize,
+        "moved at {moved}, heard on the new device from {switched}"
+    );
+    assert!(
+        heard(&one[switched + 200..]).is_empty(),
+        "the old device played on"
+    );
+    let unit = 1.0 / 1_048_576.0;
+    let want = |i: usize| {
+        let k = if i < 32_000 {
+            i % 16_000
+        } else {
+            16_000 + i - 32_000
+        };
+        (k + 1) as f32 * unit
+    };
+    for (i, &(a, b)) in both[started..started + 36_000].iter().enumerate() {
+        assert!(
+            (a + b - want(i)).abs() < 2.0 * unit,
+            "sample {i}: {a} + {b}, want {}",
+            want(i)
+        );
+    }
+    assert!(
+        both[started + 36_000..]
+            .iter()
+            .all(|&(a, b)| a == 0.0 && b == 0.0)
+    );
+    let two_b = s.device_channel(DEV2, 1);
+    let next = two_b.iter().position(|&v| v != 0.0).unwrap() + shift;
+    assert_eq!(next, started + 32_000, "cue 2 starts as the loop is left");
+    let starts = states(&msgs, id(2))
+        .iter()
+        .filter(|(st, _)| *st == WireCueState::Running)
+        .count();
+    assert_eq!(starts, 1);
+}
+
+/// Review round 2: the old device lost after a cue being devamped was moved off it: the cue
+/// plays on on its new device; it is not left paused by the loss.
+#[test]
+fn a_cue_moved_off_a_device_while_being_devamped_plays_on_when_that_device_is_lost() {
+    let (mut s, _) = long_loop_devamped(true);
+    map_patch(&mut s, patch_b(), DEV_NAME);
+    s.run(4000);
+    unplug(&mut s, DEV2);
+    let before = s.channel(0).len();
+    let mut msgs = s.take_outbound();
+    for _ in 0..40 {
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+    }
+    assert!(!paused_device_lost(&msgs, 1), "{msgs:?}");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert!(
+        !heard(&s.channel(0)[before..]).is_empty(),
+        "silent on its new device"
+    );
+}
