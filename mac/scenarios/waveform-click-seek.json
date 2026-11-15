@@ -1,0 +1,26 @@
+{
+  "about": "Clicks in the Time & Loops waveform of a 60 s cue: idle (the position line and the row loaded), GO from there, a click while playing (the play line jumps), paused then clicked (the play line moves, still paused).",
+  "show": "Demo",
+  "media": {"media/a.wav": 60},
+  "window": {"width": 1200, "height": 800},
+  "steps": [
+    {"select": "1"},
+    {"tab": "timeLoops"},
+    {"advance": 0.5},
+    {"click": "time-loops-waveform", "at": [0.4, 0.5]},
+    {"advance": 0.2},
+    {"shot": "idle-clicked-loaded"},
+    {"key": "space"},
+    {"select": "1"},
+    {"advance": 2},
+    {"shot": "playing-from-the-click"},
+    {"click": "time-loops-waveform", "at": [0.75, 0.5]},
+    {"advance": 1},
+    {"shot": "playing-jumped"},
+    {"key": "p"},
+    {"advance": 0.5},
+    {"click": "time-loops-waveform", "at": [0.2, 0.5]},
+    {"advance": 0.5},
+    {"shot": "paused-moved"}
+  ]
+}

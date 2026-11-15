@@ -89,7 +89,8 @@ struct WaveformDrawing: Equatable {
 /// cue plays. Dragging a handle moves that trim, marker or fade; a trim's new time is reported as
 /// it moves, and every drag is committed once when the mouse goes up. A slice marker dragged out
 /// of the view is deleted (QLab: drag its handle out of the waveform). A click elsewhere places the
-/// insertion point that a new slice marker goes to.
+/// position line (where a new slice marker and the set-start and set-end keys go) and moves the cue's
+/// playback there; a drag elsewhere selects a section, which those keys and a new slice use instead.
 @MainActor
 class WaveformView: NSView {
     enum Handle: Equatable {
@@ -148,9 +149,13 @@ class WaveformView: NSView {
     var fadeIn: Double = 0 { didSet { needsDisplay = true } }
     var fadeOut: Double = 0 { didSet { needsDisplay = true } }
     var fadeCurve = "linear" { didSet { needsDisplay = true } }
-    /// Where a click left the insertion point (file seconds), or nil.
+    /// Where a click left the position line (file seconds), or nil.
     var insertion: Double? { didSet { needsDisplay = true } }
+    /// The section a drag across the waves selected (file seconds, at least `minLength` long), or nil.
+    var selection: ClosedRange<Double>? { didSet { needsDisplay = true } }
     var isLocked = false
+    /// The file's waveform is still being read: a press does nothing until it is drawn.
+    var isReading = false
     /// A text shown in the middle when there is nothing to draw ("reading", why not).
     var message: String? { didSet { needsDisplay = true } }
     /// A handle moved (live, during the drag).
@@ -165,8 +170,12 @@ class WaveformView: NSView {
     var onDragEnded: (() -> Void)?
     /// A drag changed the fades: the new fade-in and fade-out lengths.
     var onFadesCommit: ((Double, Double) -> Void)?
-    /// The insertion point moved.
+    /// The position line or the section changed.
     var onInsertion: (() -> Void)?
+    /// A plain click asks the cue to play from this file time.
+    var onSeek: ((Double) -> Void)?
+    /// One of the waveform's own keys was pressed while it had the focus.
+    var onEditKey: ((EditKey) -> Void)?
     /// A slice's play count was double-clicked: edit slice `index`'s count.
     var onEditCount: ((Int) -> Void)?
     /// The width changed: the peaks drawn no longer fit it.
@@ -178,6 +187,9 @@ class WaveformView: NSView {
     var onPan: ((_ fraction: Double) -> Void)?
 
     private(set) var dragging: Handle?
+    /// Where a press away from every handle went down (file seconds): a click, or the start of a
+    /// section, until the mouse goes up.
+    private(set) var pressAt: Double?
     /// The dragged slice marker is outside the view: letting go there deletes it.
     private(set) var removing = false
     /// The trims, marker and fades when the drag began: letting go there sends nothing.
@@ -233,7 +245,7 @@ class WaveformView: NSView {
     /// (not in Show Mode, nor before the file's length is known).
     @discardableResult
     func beginDrag(atX x: CGFloat, y: CGFloat = 0) -> Bool {
-        guard !isLocked, duration != nil else { return false }
+        guard !isLocked, !isReading, duration != nil else { return false }
         removing = false
         if fadesShown, y >= waveRect.minY, y <= waveRect.minY + Self.fadeBand {
             let di = abs(scale.x(trimStart + fadeIn) - x)
@@ -288,7 +300,14 @@ class WaveformView: NSView {
 
     /// Commits the drag when it moved the handle from where it was taken. An end at the file's end
     /// is no trim at all (nil), as if never set. A slice marker let go outside the view is deleted.
+    /// A press away from the handles ends with the section it has, as it is: this is also how a
+    /// lost release is put away, so it is no click and moves nothing.
     func endDrag() {
+        if pressAt != nil {
+            pressAt = nil
+            onDragEnded?()
+            return
+        }
         guard let handle = dragging else { return }
         dragging = nil
         defer { onDragEnded?() }
@@ -314,11 +333,79 @@ class WaveformView: NSView {
         }
     }
 
-    /// A click away from every handle: the insertion point goes there, inside the file.
+    /// A click away from every handle: any section goes, the position line goes there (inside the
+    /// file, trimmed-off parts too, for the keys) and the cue is asked to play from there.
     func click(atX x: CGFloat) {
-        guard !isLocked, let duration else { return }
-        insertion = Self.clampRounded(scale.seconds(x), 0, duration)
+        guard !isLocked, !isReading, let duration else { return }
+        let t = Self.clampRounded(scale.seconds(x), 0, duration)
+        selection = nil
+        insertion = t
         onInsertion?()
+        onSeek?(t)
+    }
+
+    /// A press away from every handle: a click or a section, decided as the mouse moves.
+    @discardableResult
+    func beginPress(atX x: CGFloat) -> Bool {
+        guard !isLocked, !isReading, let duration else { return false }
+        pressAt = Self.clampRounded(scale.seconds(x), 0, duration)
+        onDragBegan?()
+        return true
+    }
+
+    /// The press moved to `x`: the section between it and where it went down, once that is at
+    /// least `minLength` long (shorter is still a click). Past either edge of the view the view
+    /// scrolls that way, a step per move, and stops at the file's ends.
+    func dragSection(toX x: CGFloat) {
+        guard let from = pressAt, let duration, !isLocked else { return }
+        let width = bounds.width
+        if width > 0, x < 0 || x > width {
+            let over = Double((x < 0 ? x : x - width) / width)
+            onPan?(-min(max(over, -Self.edgeStep), Self.edgeStep))
+        }
+        let t = Self.clampRounded(scale.seconds(min(max(x, 0), width)), 0, duration)
+        let section = abs(t - from) >= Self.minLength - 1e-9 ? min(from, t)...max(from, t) : nil
+        guard section != selection else { return }
+        selection = section
+        if section != nil { insertion = nil }
+        onInsertion?()
+    }
+
+    /// The press let go at `x`: a section stays selected; anything shorter is a click where it
+    /// went down.
+    func endPress(atX x: CGFloat) {
+        guard let from = pressAt else { return }
+        dragSection(toX: x)
+        let section = selection
+        pressAt = nil
+        if section == nil { click(atX: scale.x(from)) }
+        onDragEnded?()
+    }
+
+    /// The most of the view's width one move past its edge scrolls.
+    static let edgeStep = 0.25
+
+    /// The waveform's own keys while it has the focus: Shift-I and Shift-O set the start and end
+    /// time, M adds a slice.
+    enum EditKey: Equatable {
+        case setStart, setEnd, addSlice
+    }
+
+    static func editKey(for event: NSEvent) -> EditKey? {
+        guard event.type == .keyDown else { return nil }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.capsLock, .numericPad, .function])
+        switch (event.charactersIgnoringModifiers?.lowercased(), flags) {
+        case ("i", .shift): return .setStart
+        case ("o", .shift): return .setEnd
+        case ("m", []): return .addSlice
+        default: return nil
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard let key = Self.editKey(for: event) else { return super.keyDown(with: event) }
+        if !isLocked, !event.isARepeat { onEditKey?(key) }
     }
 
     /// The slice (0-based, the last after the final marker) that plays file time `t`, or nil
@@ -341,6 +428,13 @@ class WaveformView: NSView {
         let b = index < sliceMarks.count ? sliceMarks[index] : endTime
         let mid = (max(scale.x(a), 0) + min(scale.x(b), bounds.width)) / 2
         return NSRect(x: mid - 25, y: waveRect.maxY - Self.countBand, width: 50, height: Self.countBand)
+    }
+
+    /// Whether `p` is on a slice's drawn play count: a press there is for editing the count (a
+    /// double-click), so it neither moves the cue nor starts a section.
+    func onCount(_ p: NSPoint) -> Bool {
+        guard !sliceMarks.isEmpty else { return false }
+        return (0...sliceMarks.count).contains { countRect($0).contains(p) }
     }
 
     /// The shortest stretch core keeps between the trims (`MIN_SLICE_SECONDS`).
@@ -368,17 +462,27 @@ class WaveformView: NSView {
         let p = convert(event.locationInWindow, from: nil)
         if event.clickCount == 2 {
             doubleClick(atX: p.x, y: p.y)
-        } else if !beginDrag(atX: p.x, y: p.y) {
-            click(atX: p.x)
+        } else if !beginDrag(atX: p.x, y: p.y), !onCount(p) {
+            beginPress(atX: p.x)
         }
     }
 
     override func mouseDragged(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        drag(toX: p.x, y: p.y)
+        if pressAt != nil {
+            dragSection(toX: p.x)
+        } else {
+            drag(toX: p.x, y: p.y)
+        }
     }
 
-    override func mouseUp(with event: NSEvent) { endDrag() }
+    override func mouseUp(with event: NSEvent) {
+        if pressAt != nil {
+            endPress(atX: convert(event.locationInWindow, from: nil).x)
+        } else {
+            endDrag()
+        }
+    }
 
     // MARK: Zoom and pan
 
@@ -480,6 +584,15 @@ class WaveformView: NSView {
             NSRect(x: b, y: wave.minY, width: max(0, bounds.width - b), height: wave.height).fill()
             drawHandle(at: a, start: true)
             drawHandle(at: b, start: false)
+            if let selection {
+                // The section: a light wash across the waves, with its edges drawn.
+                let a = scale.x(selection.lowerBound)
+                let b = scale.x(selection.upperBound)
+                NSColor.white.withAlphaComponent(0.18).setFill()
+                NSRect(x: a, y: wave.minY, width: max(1, b - a), height: wave.height).fill()
+                NSColor.white.withAlphaComponent(0.6).setFill()
+                for x in [a, b] { NSRect(x: x - 0.5, y: wave.minY, width: 1, height: wave.height).fill() }
+            }
             drawSlices()
             if fadesShown { drawFades() }
             if let insertion {
