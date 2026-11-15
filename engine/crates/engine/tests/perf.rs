@@ -652,6 +652,7 @@ fn map(c: &mut openlab_engine::control::ControlConfig, ws: &openlab_core::Worksp
             openlab_core::PatchMapping {
                 device: "Offline".into(),
                 channels: vec![0, 1],
+                system: false,
             },
         )
         .unwrap();

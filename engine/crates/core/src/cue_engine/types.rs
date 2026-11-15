@@ -234,6 +234,15 @@ pub enum Input {
         cue: CueId,
         run: RunId,
     },
+    /// From the binary: the patch of the run's voice now plays on another output device (its
+    /// device was changed, or the cue was put on a patch on another device). A playing run's
+    /// voice moves there at once, in step (`RelocateVoice`); a paused one moves and stays
+    /// paused. A stale run, a preview, or a run stopping with a fade (it ends where it is) is
+    /// left alone.
+    DeviceMoved {
+        cue: CueId,
+        run: RunId,
+    },
     /// Preview (audition) an audio cue from its start, outside the show (CUE-05): no pre-wait,
     /// continue, playhead or show state is involved.
     Preview {
@@ -529,6 +538,17 @@ pub enum Action {
     /// its stream is ready; a paused one moves and stays paused (a `ResumeVoice` with
     /// `paused: run` plays it); a voice not playing yet starts there. Previews too.
     SeekVoice {
+        cue: CueId,
+        run: RunId,
+        from: RunId,
+        at: SampleTime,
+        position: SampleTime,
+    },
+    /// Move the voice of run `from` to its patch's current output device from sample `at`,
+    /// `position` samples into the action (where the run is on `at`): it continues as `run`, a
+    /// fresh id, and feedback for `from` is stale from now on. Levels, ducks and a pending
+    /// devamp follow as separate actions for `run`. A paused voice moves and stays paused.
+    RelocateVoice {
         cue: CueId,
         run: RunId,
         from: RunId,

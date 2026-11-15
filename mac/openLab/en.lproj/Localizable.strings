@@ -478,6 +478,8 @@
 "warnings.device.device_stalled" = "Has stopped responding. If it stays silent, it is treated as disconnected.";
 "warnings.device.outputs_dropped" = "Has fewer outputs than this show uses, so some are not heard. Check its patches in Workspace Settings, Audio.";
 "warnings.device.patch_device_unusable" = "Listed, but openLab cannot use it, so the cues routed to it cannot play. Workspace Settings, Audio says why.";
+"warnings.systemOutputNone" = "The Mac has no output device selected, so the cues on patches set to the system output cannot play. Choose an output in the Mac’s Sound settings, or another device for those patches in Workspace Settings, Audio.";
+"warning.notice.move_delayed" = "Its audio file could not be read in time to move it to its patch’s new audio device. It plays on where it was; the move is tried again.";
 "warnings.device.other" = "Has a problem. Workspace Settings, Audio says more.";
 "warnings.refused.one" = "Asked to start while broken, so it did not play.";
 "warnings.refused.many" = "Asked to start %d times while broken, so it did not play.";
@@ -522,6 +524,9 @@
 "settings.audio.patch" = "Patch";
 "settings.audio.patchDevice" = "Device";
 "settings.audio.noDevice" = "None";
+"settings.audio.systemOutput" = "System output (%@)";
+"settings.audio.systemOutputNone" = "System output (no device)";
+"settings.audio.systemOutputMissing" = "The Mac has no output device selected, so the system output has nowhere to play.";
 "settings.audio.untitledPatch" = "Untitled patch";
 "settings.audio.tooFewChannels" = "openLab can use %3$ld outputs of %1$@ here; this patch needs %2$ld. Lower its cue outputs, or pick another device.";
 "settings.audio.problem.unmapped" = "No audio device: cues that use this patch are silent.";
@@ -606,6 +611,7 @@
 "problem.device_unavailable.mapped" = "Patch {patch} is available on “{device}”.";
 "problem.device_unavailable.unmapped" = "Patch {patch} is not mapped to an audio device on this Mac.";
 "problem.device_unavailable.device_missing" = "Audio device “{device}” (patch {patch}) is not connected.";
+"problem.device_unavailable.system_output_missing" = "The Mac has no output device selected (patch {patch}, on the system output).";
 "problem.device_unavailable.channels_missing" = "Audio device “{device}” has {available} outputs; patch {patch} needs {needed}.";
 "problem.device_unavailable.output_count_mismatch" = "Patch {patch} has {outputs} outputs but its device mapping lists {mapped}.";
 "problem.network_patch_missing" = "Its network patch, {patch}, does not exist.";

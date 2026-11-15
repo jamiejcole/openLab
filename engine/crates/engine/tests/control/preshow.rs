@@ -100,6 +100,7 @@ fn config_for(ws: &Workspace) -> ControlConfig {
             PatchMapping {
                 device: DEV_NAME.into(),
                 channels: vec![0, 1],
+                system: false,
             },
         )
         .unwrap();

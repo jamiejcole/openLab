@@ -26,6 +26,33 @@ impl Voices {
         v
     }
 
+    /// Show voices in a mixer that stand for their run (playing, paused or stopping; not one a
+    /// seek or a move to another device is replacing), sorted: those whose cue's patch now
+    /// plays on another device move there (`Input::DeviceMoved`).
+    pub fn sounding(&self) -> Vec<(VoiceId, CueId, RunId)> {
+        let mut v: Vec<(VoiceId, CueId, RunId)> = self
+            .recs
+            .iter()
+            .filter(|(_, r)| matches!(r.phase, Phase::Playing) && !r.preview && !r.retired)
+            .map(|(id, r)| (*id, r.cue, r.run))
+            .collect();
+        v.sort_by_key(|(id, ..)| id.0);
+        v
+    }
+
+    /// Whether a move to another device given up earlier is due to be tried again (clears each
+    /// one due): the control loop then follows the patches' devices again.
+    pub fn take_due_moves(&mut self, now: SampleTime) -> bool {
+        let mut due = false;
+        for r in self.recs.values_mut() {
+            if r.retry_at.is_some_and(|t| now >= t) {
+                r.retry_at = None;
+                due = true;
+            }
+        }
+        due
+    }
+
     /// Mixer patch slots a voice in the mixer may still play through (started, paused or
     /// stopping; previews and orphans included): a slot is reused only once none does.
     pub fn slots_in_use(&self) -> BTreeSet<u16> {
@@ -53,7 +80,7 @@ impl Voices {
     ) -> Vec<(SampleTime, CommandKind)> {
         let mut commands = Vec::new();
         for (&id, r) in &mut self.recs {
-            if r.preview || !matches!(r.phase, Phase::Playing) {
+            if r.preview || r.retired || !matches!(r.phase, Phase::Playing) {
                 continue;
             }
             let Some(CueKind::Audio { patch, levels, .. }) = ws.find_cue(r.cue).map(|c| &c.kind)
@@ -66,8 +93,8 @@ impl Voices {
             let Some(slot) = patches.mixer_patch(doc, *patch) else {
                 continue;
             };
-            // A voice cannot leave its device's mixer: one whose new patch plays on another
-            // device plays on where it started.
+            // A voice stays in its device's mixer: one whose new patch plays on another device
+            // is replaced by a voice there (`DocCx::follow_devices`), not moved.
             if r.slot.and_then(|s| patches.slot_output(s)) != patches.slot_output(slot) {
                 continue;
             }
@@ -193,6 +220,18 @@ impl Voices {
             .values()
             .filter(|r| !r.preview && !r.retired)
             .filter_map(|r| {
+                // A move to another device waiting for its swap: the sound is still the old
+                // voice's, and its time runs on.
+                if r.relocated
+                    && let Some(old) = r.replaces.and_then(|o| self.recs.get(&o))
+                    && let Some(pos) = old.position(t)
+                {
+                    let left = old
+                        .total
+                        .map(|total| old.offset.saturating_add(total).saturating_sub(pos));
+                    let elapsed = old.shown.saturating_add(pos.saturating_sub(old.offset));
+                    return Some((r.cue, elapsed, left, old.file_frame(pos)));
+                }
                 if let Phase::Waiting {
                     prepared: Some((p, total)),
                     start: Some(_),

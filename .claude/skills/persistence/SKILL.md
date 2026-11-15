@@ -128,6 +128,7 @@ Request shapes: `docs/protocol.md`. `new`, `open` and `open_recovery` open anoth
 }
 ```
 - `channels[i]` is the device channel (0-based) for logical output `i` of the patch.
+- `"system": true` (written only when true) puts the patch on the system output: `{"device": "", "channels": [0, 1], "system": true}`; it plays on whichever device the system's default output is (skill `devices`). An entry with `system` and a device name is dropped with a warning on load and refused by `set_patch_mapping`.
 - `buffer_frames` (AUD-21): frames per callback asked of each device by name, 16 to 1024; a device not listed gets 512. A bad entry is dropped with a warning (`load_settings`), as `set_buffer_frames` refuses it.
 - `load_settings` never fails: unreadable content gives defaults and a warning; invalid entries are dropped with a warning; `backup_keep` is clamped. Workspace and patch ids are normalised to lower-case hyphenated form. Unknown keys are ignored but kept on rewrite (`MachineSettings::extra`).
 - A file that produced warnings is first copied to `settings.json.corrupt` (`.corrupt.1`, ... a few at most) before anything overwrites it.

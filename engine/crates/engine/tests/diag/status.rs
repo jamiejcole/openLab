@@ -150,6 +150,7 @@ fn device_show(clock: &ManualClock) -> DeviceShow {
             PatchMapping {
                 device: DEV_NAME.into(),
                 channels: vec![0, 1],
+                system: false,
             },
         )
         .unwrap();

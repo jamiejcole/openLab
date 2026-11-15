@@ -1,0 +1,24 @@
+{
+  "about": "The Audio page of the workspace settings with the Demo patch on the system output (the Mac's default output, the virtual device): the row and the patch editor name it with the device it is now.",
+  "show": "Demo",
+  "appearance": "dark",
+  "settings": {
+    "settings_version": 1,
+    "workspaces": {
+      "00000000-0000-0000-0000-0000000000d1": {
+        "patches": {
+          "00000000-0000-0000-0000-000000000001": {"device": "", "channels": [0, 1], "system": true}
+        }
+      }
+    }
+  },
+  "steps": [
+    {"focus": "settings"},
+    {"tab": "audio"},
+    {"shot": "table-system-output"},
+    {"click": "settings-patch-edit-1"},
+    {"focus": "patch-editor"},
+    {"tab": "routing"},
+    {"shot": "editor-system-output"}
+  ]
+}

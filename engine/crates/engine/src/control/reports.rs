@@ -137,6 +137,9 @@ impl DocCx<'_> {
                 .voices
                 .progress(rendered)
                 .into_iter()
+                // A cue its device left paused shows where it stood (below), not the voice its
+                // stop is still ending.
+                .filter(|(cue, ..)| !self.doc.model.engine().is_lost(*cue))
                 .map(|(cue, pos, left, at)| ProgressItem {
                     cue,
                     elapsed: self.seconds(pos),
