@@ -4040,9 +4040,22 @@ fn the_new_device_is_missing_or_cannot_be_used_and_the_cue_stops_as_for_a_lost_d
     s.take_outbound();
     map_patch(&mut s, patch_id(), DEV2_NAME);
     s.settle_devices();
+    // Patches resolve again before the stopped voice's end comes back from the mixer: the cue
+    // is not stopped, or announced, a second time.
+    map_b(&mut s, DEV_NAME);
     s.run(BLOCK * 4);
     let msgs = s.take_outbound();
     assert!(paused_device_lost(&msgs, 1), "{msgs:?}");
+    assert_eq!(notice_messages(&msgs, "device_lost").len(), 1, "{msgs:?}");
+    // Its row shows one time, standing still where it stopped.
+    for m in &msgs {
+        if let ServerMessage::Progress { items, .. } = m {
+            assert!(
+                items.iter().filter(|i| i.cue == id(1)).count() <= 1,
+                "{items:?}"
+            );
+        }
+    }
     assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
     let notes = notice_messages(&msgs, "device_lost");
     assert!(
@@ -4083,11 +4096,12 @@ fn a_cue_whose_new_device_is_unplugged_before_it_opens_stops_as_for_a_lost_devic
     s.run(BLOCK * 2);
     let msgs = s.take_outbound();
     assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    // Its open failed as it went (or the list lost it first): one notice, naming it.
     let notes = notice_messages(&msgs, "device_lost");
+    assert_eq!(notes.len(), 1, "{notes:?}");
     assert!(
-        notes
-            .iter()
-            .any(|n| n.contains(DEV2_NAME) && n.contains("not connected")),
+        notes[0].contains(DEV2_NAME)
+            && (notes[0].contains("not connected") || notes[0].contains("could not be opened")),
         "{notes:?}"
     );
     let len = s.channel(0).len();

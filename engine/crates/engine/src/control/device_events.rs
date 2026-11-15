@@ -665,6 +665,11 @@ impl DocCx<'_> {
         let mut moved = Vec::new();
         let mut lost: Vec<(CueId, RunId, String, Option<String>)> = Vec::new();
         for (voice, cue, run) in self.doc.voices.sounding() {
+            // A voice whose run has ended or failed (its stop on its way) is no one's to move or
+            // stop again: it would only repeat the notice.
+            if self.doc.model.engine().run_of(cue) != Some(run) {
+                continue;
+            }
             let Some(CueKind::Audio { patch, .. }) =
                 self.doc.model.ws().find_cue(cue).map(|c| &c.kind)
             else {
