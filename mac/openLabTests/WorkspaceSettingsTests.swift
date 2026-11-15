@@ -528,10 +528,10 @@ final class WorkspaceSettingsTests: XCTestCase {
         }
         await assertEventually { editor.problemLabel.stringValue == warning }
         XCTAssertFalse(editor.problemLabel.isHidden)
-        // The status window's warnings list names the patch and the device.
+        // The status window's warnings list has one entry for the device.
+        let deviceTitle = String(format: loc("warnings.device"), device)
         let rows = WarningRows.make(store: rig.store)
-        XCTAssertTrue(
-            rows.contains { $0.title.contains("\"Main\"") && $0.title.contains(device) }, "\(rows.map(\.title))")
+        XCTAssertEqual(rows.filter { $0.title == deviceTitle }.count, 1, "\(rows.map(\.title))")
 
         // Back again: the warning goes from all three.
         guard case .success = await engine.request(.restoreDevice) else { return XCTFail("restore_device") }
@@ -539,7 +539,7 @@ final class WorkspaceSettingsTests: XCTestCase {
         await assertEventually { sc.patchProblemLabels.first?.stringValue == "" }
         await assertEventually { editor.problemLabel.stringValue == "" }
         await assertEventually {
-            !WarningRows.make(store: rig.store).contains { $0.title.contains("\"Main\"") }
+            !WarningRows.make(store: rig.store).contains { $0.title == deviceTitle }
         }
     }
 

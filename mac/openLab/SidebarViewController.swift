@@ -113,9 +113,9 @@ final class CueListNameCell: NSTableCellView {
 /// One Warnings row: a marker symbol (so a warning is not told by colour alone), the title, the
 /// reasons below it and, for missing media, a button that opens Find Missing Files. Laid out by
 /// hand from the same measurements `height(of:width:)` adds up, so the row is always as tall as
-/// what it draws, however the reasons wrap.
+/// what it draws, however the title and the reasons wrap: no warning is ever cut off.
 final class WarningCell: NSTableCellView {
-    let title = NSTextField(labelWithString: "")
+    let title = NSTextField(wrappingLabelWithString: "")
     let detail = NSTextField(wrappingLabelWithString: "")
     let relinkButton = NSButton(title: loc("warnings.relink"), target: nil, action: nil)
     private let marker = NSImageView(image: WarningCell.markerImage)
@@ -132,7 +132,7 @@ final class WarningCell: NSTableCellView {
         identifier = NSUserInterfaceItemIdentifier("warning")
         marker.contentTintColor = .systemOrange
         title.font = Self.titleFont
-        title.lineBreakMode = .byTruncatingTail
+        title.maximumNumberOfLines = 0
         detail.font = Self.detailFont
         detail.textColor = .secondaryLabelColor
         detail.maximumNumberOfLines = 0
@@ -152,10 +152,10 @@ final class WarningCell: NSTableCellView {
         f.font = detailFont
         return f
     }()
-    private static let titleHeight: CGFloat = {
-        let f = NSTextField(labelWithString: "Xg")
+    private static let titleSizer: NSTextField = {
+        let f = NSTextField(wrappingLabelWithString: "")
         f.font = titleFont
-        return ceil(f.intrinsicContentSize.height)
+        return f
     }()
     private static let buttonSize: NSSize = {
         let b = NSButton(title: loc("warnings.relink"), target: nil, action: nil)
@@ -172,16 +172,25 @@ final class WarningCell: NSTableCellView {
 
     /// The height `text` takes wrapped in `width`, measured as the field draws it.
     private static func detailHeight(_ text: String, width: CGFloat) -> CGFloat {
-        guard !text.isEmpty else { return 0 }
-        sizer.stringValue = text
-        return ceil(sizer.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 100_000)).height ?? 0)
+        wrappedHeight(text, width: width, in: sizer)
     }
 
-    /// The height a row needs in a cell `width` wide: the reasons wrap, so they are measured at
-    /// the width they get beside the marker, not counted by line breaks.
+    /// The title's height wrapped in `width`: at least one line, so an empty title keeps its place.
+    private static func titleHeight(_ text: String, width: CGFloat) -> CGFloat {
+        wrappedHeight(text.isEmpty ? " " : text, width: width, in: titleSizer)
+    }
+
+    private static func wrappedHeight(_ text: String, width: CGFloat, in field: NSTextField) -> CGFloat {
+        guard !text.isEmpty else { return 0 }
+        field.stringValue = text
+        return ceil(field.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 100_000)).height ?? 0)
+    }
+
+    /// The height a row needs in a cell `width` wide: the title and the reasons wrap, so they are
+    /// measured at the width they get beside the marker, not counted by line breaks.
     static func height(of w: WarningRow, width: CGFloat) -> CGFloat {
         let column = textColumn(width)
-        var h = top + titleHeight
+        var h = top + titleHeight(w.title, width: column.width)
         if !w.detail.isEmpty { h += spacing + detailHeight(w.detail, width: column.width) }
         if w.canRelink { h += spacing + buttonSize.height }
         return ceil(max(h, top + markerImage.size.height)) + top
@@ -197,8 +206,9 @@ final class WarningCell: NSTableCellView {
         let column = Self.textColumn(bounds.width)
         marker.frame = NSRect(origin: NSPoint(x: Self.inset, y: Self.top), size: Self.markerImage.size)
         var y = Self.top
-        title.frame = NSRect(x: column.x, y: y, width: column.width, height: Self.titleHeight)
-        y += Self.titleHeight
+        let titleHeight = Self.titleHeight(title.stringValue, width: column.width)
+        title.frame = NSRect(x: column.x, y: y, width: column.width, height: titleHeight)
+        y += titleHeight
         if !detail.isHidden {
             let h = Self.detailHeight(detail.stringValue, width: column.width)
             detail.frame = NSRect(x: column.x, y: y + Self.spacing, width: column.width, height: h)

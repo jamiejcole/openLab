@@ -1,0 +1,27 @@
+{
+  "about": "Warnings list after the output device is lost (#700): Rain has no number; GO is pressed five times on it and once on Door slam while the device is away. The list names Rain by its name, shows one entry per cue and one for the device, and the footer count matches. Then the device comes back and is lost a second time: still one entry for it.",
+  "show": "Demo",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 1300, "height": 850},
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"select": "2.2"},
+    {"type": "inspector-number", "text": ""},
+    {"device": "lose"},
+    {"advance": 1},
+    {"select": "Rain"}, {"key": "space"}, {"advance": 0.2},
+    {"select": "Rain"}, {"key": "space"}, {"advance": 0.2},
+    {"select": "Rain"}, {"key": "space"}, {"advance": 0.2},
+    {"select": "Rain"}, {"key": "space"}, {"advance": 0.2},
+    {"select": "Rain"}, {"key": "space"}, {"advance": 0.2},
+    {"select": "2.1"}, {"key": "space"}, {"advance": 0.2},
+    {"click": "sidebar-tabs", "at": [0.84, 0.5]},
+    {"shot": "lost-five-gos"},
+    {"device": "restore"},
+    {"advance": 3},
+    {"shot": "back"},
+    {"device": "lose"},
+    {"advance": 1},
+    {"shot": "lost-again"}
+  ]
+}

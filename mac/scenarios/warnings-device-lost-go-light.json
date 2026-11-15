@@ -1,0 +1,25 @@
+{
+  "about": "Light appearance, least window (#700): the output device lost, GO pressed five times on Rain (no number) and once on Door slam. One entry per cue (Rain by its name, with the count), one wrapped entry for the device, the footer count equal to the entries; the device back clears its entry and the refusals.",
+  "show": "Demo",
+  "media": {"media/a.wav": 30},
+  "appearance": "light",
+  "window": {"width": 1000, "height": 700},
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"select": "2.2"},
+    {"type": "inspector-number", "text": ""},
+    {"device": "lose"},
+    {"advance": 1},
+    {"select": "Rain"}, {"key": "space"}, {"advance": 0.2},
+    {"select": "Rain"}, {"key": "space"}, {"advance": 0.2},
+    {"select": "Rain"}, {"key": "space"}, {"advance": 0.2},
+    {"select": "Rain"}, {"key": "space"}, {"advance": 0.2},
+    {"select": "Rain"}, {"key": "space"}, {"advance": 0.2},
+    {"select": "2.1"}, {"key": "space"}, {"advance": 0.2},
+    {"click": "sidebar-tabs", "at": [0.84, 0.5]},
+    {"shot": "lost-five-gos"},
+    {"device": "restore"},
+    {"advance": 3},
+    {"shot": "back"}
+  ]
+}
