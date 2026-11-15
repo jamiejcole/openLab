@@ -219,6 +219,8 @@ fn replaced_by_kind(property: &CueProperty) -> bool {
             | CueProperty::Args { .. }
             | CueProperty::Duration { .. }
             | CueProperty::LoadToTime { .. }
+            // A Wait cue keeps it in its kind (its duration).
+            | CueProperty::PostWait { .. }
     )
 }
 

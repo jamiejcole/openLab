@@ -14,9 +14,10 @@ use std::sync::{Arc, Mutex};
 
 use common::{env, touch};
 use openlab_core::protocol::{
-    ClientMessage, ErrorCode, OkBody, Outcome, Request, RequestId, ResultData, ServerMessage,
+    ClientMessage, ErrorCode, OkBody, Outcome, RelinkReport, Request, RequestId, ResultData,
+    ServerMessage,
 };
-use openlab_core::{Command, CueProperty};
+use openlab_core::{Command, CueId, CueProperty};
 use openlab_engine::control::offline::OfflineShow;
 use openlab_engine::control::{DocHook, Inbox, ManualClock, reply_channel};
 use openlab_engine::persist::ScanLimits;
@@ -80,11 +81,20 @@ fn rig(names: &[&str]) -> Rig {
 }
 
 fn relink(r: &mut Rig) -> Vec<ServerMessage> {
+    walk(r, false)
+}
+
+/// A `relink` that only reports (`preview`).
+fn preview(r: &mut Rig) -> Vec<ServerMessage> {
+    walk(r, true)
+}
+
+fn walk(r: &mut Rig, preview: bool) -> Vec<ServerMessage> {
     let id = r.s.request_id();
     let folder = r.lib.to_string_lossy().into_owned();
     r.s.send(ClientMessage::Request {
         id,
-        request: Request::Relink { folder },
+        request: Request::Relink { folder, preview },
     })
 }
 
@@ -118,22 +128,30 @@ fn error_code(msgs: &[ServerMessage]) -> ErrorCode {
 
 /// (relinked, ambiguous, unmatched, truncated, skipped)
 fn counts(msgs: &[ServerMessage]) -> (u64, usize, usize, bool, u64) {
+    let r = report(msgs);
+    (
+        r.relinked,
+        r.ambiguous.len(),
+        r.unmatched.len(),
+        r.truncated,
+        r.skipped,
+    )
+}
+
+fn report(msgs: &[ServerMessage]) -> RelinkReport {
     match ok_body(msgs).data.clone() {
-        Some(ResultData::Relink {
-            relinked,
-            ambiguous,
-            unmatched,
-            truncated,
-            skipped,
-        }) => (
-            relinked,
-            ambiguous.len(),
-            unmatched.len(),
-            truncated,
-            skipped,
-        ),
+        Some(ResultData::Relink(report)) => *report,
         other => panic!("{other:?}"),
     }
+}
+
+/// A preview's listed matches as (cue, file).
+fn matches(msgs: &[ServerMessage]) -> Vec<(CueId, String)> {
+    report(msgs)
+        .matches
+        .into_iter()
+        .map(|m| (m.cue, m.file))
+        .collect()
 }
 
 /// A path as the show file spells it: forward slashes on every platform.
@@ -187,7 +205,10 @@ fn a_relink_reaches_the_cue_engine_without_a_signal() {
         let id = s.request_id();
         s.send(ClientMessage::Request {
             id,
-            request: Request::Relink { folder },
+            request: Request::Relink {
+                folder,
+                preview: false,
+            },
         })
     });
     assert_eq!(counts(&replies).0, 1);
@@ -208,6 +229,111 @@ fn duplicates_are_reported_ambiguous_and_not_guessed() {
 }
 
 #[test]
+fn a_preview_lists_the_matches_and_changes_nothing() {
+    let mut r = rig(&["a.wav", "b.wav", "c.wav", "d.wav"]);
+    touch(&r.lib.join("a.wav"));
+    touch(&r.lib.join("sub/b.wav"));
+    touch(&r.lib.join("x/c.wav"));
+    touch(&r.lib.join("y/c.wav"));
+    let rev = r.s.control().snapshot().revision;
+    r.s.take_outbound();
+    let replies = preview(&mut r);
+    assert_eq!(counts(&replies), (0, 1, 1, false, 0));
+    let lib = portable(&r.lib);
+    assert_eq!(
+        matches(&replies),
+        vec![
+            (id(1), format!("{lib}/a.wav")),
+            (id(2), format!("{lib}/sub/b.wav"))
+        ]
+    );
+    // Nothing changed: no revision, no edit, no undo step, every cue still points where it did.
+    assert_eq!(ok_body(&replies).revision, None);
+    assert_eq!(r.s.control().snapshot().revision, rev);
+    assert!(!r.s.control().snapshot().document.can_undo);
+    assert!(
+        !r.s.take_outbound()
+            .iter()
+            .any(|m| matches!(m, ServerMessage::ModelChanged { .. }))
+    );
+    for (n, f) in [(1, "a"), (2, "b"), (3, "c"), (4, "d")] {
+        assert_eq!(media(&r.s, n), format!("{}/{f}.wav", portable(&r.gone)));
+    }
+}
+
+/// A preview's match, sent back as an ordinary file edit, is stored exactly as `relink` stores
+/// it: relative to the show's folder when the file is inside it.
+#[test]
+fn a_previewed_match_sent_as_a_file_edit_is_stored_as_relink_stores_it() {
+    let found = |r: &Rig| r._env.show_dir().join("found/a.wav");
+    let mut applied = rig_inner(&["a.wav"], true, |_| {});
+    touch(&found(&applied));
+    applied.lib = applied._env.show_dir();
+    assert_eq!(counts(&relink(&mut applied)).0, 1);
+    assert_eq!(media(&applied.s, 1), "found/a.wav");
+
+    let mut r = rig_inner(&["a.wav"], true, |_| {});
+    touch(&found(&r));
+    r.lib = r._env.show_dir();
+    assert_eq!(
+        matches(&preview(&mut r)),
+        vec![(id(1), "found/a.wav".to_owned())]
+    );
+    let cid = r.s.request_id();
+    let replies = r.s.send(ClientMessage::Command {
+        id: cid,
+        command: Box::new(Command::SetCueProperty {
+            id: id(1),
+            property: CueProperty::Media {
+                value: Some(openlab_core::MediaRef::new(
+                    found(&r).to_string_lossy().into_owned(),
+                )),
+            },
+        }),
+        coalesce: None,
+    });
+    ok_body(&replies);
+    assert_eq!(media(&r.s, 1), media(&applied.s, 1));
+}
+
+/// A preview drops a match whose cue was edited to another file while the folder was walked,
+/// as the applying walk does.
+#[test]
+fn a_preview_leaves_out_a_cue_edited_during_the_walk() {
+    let (hook, entered, release) = hold_first_job();
+    let mut r = rig_with(&["a.wav", "b.wav"], |c| c.doc_hook = Some(hook));
+    touch(&r.lib.join("a.wav"));
+    touch(&r.lib.join("b.wav"));
+    let folder = r.lib.to_string_lossy().into_owned();
+    let (_, mut rx) = deliver(
+        &mut r,
+        Request::Relink {
+            folder,
+            preview: true,
+        },
+    );
+    entered.recv_timeout(HANG).unwrap();
+    let cid = r.s.request_id();
+    r.s.send(ClientMessage::Command {
+        id: cid,
+        command: Box::new(Command::SetCueProperty {
+            id: id(2),
+            property: CueProperty::Media {
+                value: Some(openlab_core::MediaRef::new(
+                    r.lib.join("other.wav").to_string_lossy().into_owned(),
+                )),
+            },
+        }),
+        coalesce: None,
+    });
+    release.send(()).unwrap();
+    let answer = tick_until_answer(&mut r, &mut rx);
+    let listed = matches(std::slice::from_ref(&answer));
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].0, id(1));
+}
+
+#[test]
 fn each_scan_limit_is_reported_as_truncated() {
     type Tweak = fn(&mut ScanLimits);
     let cases: [(&str, Tweak); 4] = [
@@ -216,7 +342,7 @@ fn each_scan_limit_is_reported_as_truncated() {
         ("folders", |l| l.max_dirs = 2),
         ("time", |l| l.max_duration = std::time::Duration::ZERO),
     ];
-    for (name, tweak) in cases {
+    for ((name, tweak), mode) in cases.into_iter().flat_map(|c| [(c, false), (c, true)]) {
         let mut r = rig_with(&["a.wav"], |c| tweak(&mut c.relink_limits));
         for f in ["f1", "f2", "f3"] {
             touch(&r.lib.join(f));
@@ -225,11 +351,13 @@ fn each_scan_limit_is_reported_as_truncated() {
         for d in ["d1", "d2", "d3"] {
             fs::create_dir_all(r.lib.join(d)).unwrap();
         }
-        let replies = relink(&mut r);
+        // A preview walks with the same limits.
+        let replies = walk(&mut r, mode);
         let (relinked, _, unmatched, truncated, _) = counts(&replies);
-        assert!(truncated, "{name}");
+        assert!(truncated, "{name} preview {mode}");
         // The file past the limit was not considered, so it is reported as not found.
-        assert_eq!((relinked, unmatched), (0, 1), "{name}");
+        assert_eq!((relinked, unmatched), (0, 1), "{name} preview {mode}");
+        assert!(matches(&replies).is_empty(), "{name} preview {mode}");
     }
 }
 
@@ -249,6 +377,7 @@ fn a_missing_folder_or_a_file_is_refused_without_changes() {
         id: id1,
         request: Request::Relink {
             folder: gone.to_string_lossy().into_owned(),
+            preview: false,
         },
     });
     assert_eq!(error_code(&replies), ErrorCode::NotFound);
@@ -258,6 +387,7 @@ fn a_missing_folder_or_a_file_is_refused_without_changes() {
         id: id2,
         request: Request::Relink {
             folder: r.lib.join("file").to_string_lossy().into_owned(),
+            preview: false,
         },
     });
     assert_eq!(error_code(&replies), ErrorCode::BadRequest);
@@ -335,7 +465,13 @@ fn a_slow_folder_does_not_block_the_control_thread_and_a_stalled_walk_times_out(
     });
     touch(&r.lib.join("a.wav"));
     let folder = r.lib.to_string_lossy().into_owned();
-    let (_, mut rx) = deliver(&mut r, Request::Relink { folder });
+    let (_, mut rx) = deliver(
+        &mut r,
+        Request::Relink {
+            folder,
+            preview: false,
+        },
+    );
     entered.recv_timeout(HANG).unwrap();
     // The worker is stuck in the folder; the control thread still edits and plays.
     let cid = r.s.request_id();
@@ -380,7 +516,13 @@ fn a_slow_walk_holds_up_no_open_or_scan_and_applies_when_it_returns() {
     let mut r = rig_with(&["a.wav"], |c| c.doc_hook = Some(hook));
     touch(&r.lib.join("a.wav"));
     let folder = r.lib.to_string_lossy().into_owned();
-    let (_, mut rx) = deliver(&mut r, Request::Relink { folder });
+    let (_, mut rx) = deliver(
+        &mut r,
+        Request::Relink {
+            folder,
+            preview: false,
+        },
+    );
     entered.recv_timeout(HANG).unwrap();
     // The walk has a slot and a thread of its own: a recovery scan (like an `open`) is not
     // refused or held up behind it; only a second relink waits its turn.
@@ -411,7 +553,13 @@ fn a_slow_walk_holds_up_no_open_or_scan_and_applies_when_it_returns() {
         other => panic!("{other:?}"),
     }
     let folder = r.lib.to_string_lossy().into_owned();
-    let (_, mut second) = deliver(&mut r, Request::Relink { folder });
+    let (_, mut second) = deliver(
+        &mut r,
+        Request::Relink {
+            folder,
+            preview: false,
+        },
+    );
     assert!(matches!(
         second.try_recv().unwrap(),
         ServerMessage::Result { outcome: Outcome::Error(ref e), .. } if e.code == ErrorCode::CommandRefused
@@ -428,7 +576,13 @@ fn an_edit_made_during_the_walk_is_not_overwritten() {
     touch(&r.lib.join("a.wav"));
     touch(&r.lib.join("b.wav"));
     let folder = r.lib.to_string_lossy().into_owned();
-    let (_, mut rx) = deliver(&mut r, Request::Relink { folder });
+    let (_, mut rx) = deliver(
+        &mut r,
+        Request::Relink {
+            folder,
+            preview: false,
+        },
+    );
     entered.recv_timeout(HANG).unwrap();
     // The operator points cue 1 elsewhere while the folder is walked.
     let chosen = portable(&r.lib.join("elsewhere/chose.wav"));
@@ -468,7 +622,13 @@ fn a_doc_closed_during_the_walk_answers_no_workspace() {
     let (hook, entered, release) = hold_first_job();
     let mut r = rig_with(&["a.wav"], |c| c.doc_hook = Some(hook));
     let folder = r.lib.to_string_lossy().into_owned();
-    let (_, mut rx) = deliver(&mut r, Request::Relink { folder });
+    let (_, mut rx) = deliver(
+        &mut r,
+        Request::Relink {
+            folder,
+            preview: false,
+        },
+    );
     entered.recv_timeout(HANG).unwrap();
     let doc = r.s.control().doc_ids()[0];
     r.s.control_mut().close_doc(doc, true).unwrap();
@@ -530,7 +690,13 @@ fn save_works_while_a_relink_walk_is_pending_and_saves_the_model_as_it_is() {
     let mut r = rig_inner(&["a.wav"], true, |c| c.doc_hook = Some(hook));
     touch(&r.lib.join("a.wav"));
     let folder = r.lib.to_string_lossy().into_owned();
-    let (_, mut walk) = deliver(&mut r, Request::Relink { folder });
+    let (_, mut walk) = deliver(
+        &mut r,
+        Request::Relink {
+            folder,
+            preview: false,
+        },
+    );
     entered.recv_timeout(HANG).unwrap();
     let gone_ref = media(&r.s, 1);
     let (_, mut save) = deliver(&mut r, Request::Save);
@@ -592,6 +758,7 @@ fn playing_cue_span(relink_midway: bool) -> (usize, usize) {
             id: request_id,
             request: Request::Relink {
                 folder: lib.to_string_lossy().into_owned(),
+                preview: false,
             },
         });
         assert_eq!(counts(&msgs).0, 1);

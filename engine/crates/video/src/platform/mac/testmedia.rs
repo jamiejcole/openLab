@@ -4,7 +4,9 @@
 //! test needs a checked-in movie. Every frame is the test card ([`crate::card`]) for its own
 //! frame number: a test that reads a stage back knows which frame of the file is shown.
 //!
-//! Movies are written with AVFoundation's own encoders (H.264, HEVC, ProRes 422 Proxy); stills
+//! Movies are written with AVFoundation's own software encoders (H.264, HEVC, ProRes 422 Proxy:
+//! the hardware encoder is turned off, so making a test file never depends on a machine's
+//! video hardware, which a virtual machine shares and can fail under load); stills
 //! with ImageIO (PNG, JPEG, TIFF). A codec this Mac cannot encode fails the command, and the
 //! test that wanted it fails: it never passes without the file.
 
@@ -17,13 +19,13 @@ use objc2_av_foundation::{
     AVAssetWriter, AVAssetWriterInput, AVAssetWriterInputPixelBufferAdaptor, AVAssetWriterStatus,
     AVFileTypeQuickTimeMovie, AVMediaTypeVideo, AVVideoCodecKey,
     AVVideoCodecTypeAppleProRes422Proxy, AVVideoCodecTypeH264, AVVideoCodecTypeHEVC,
-    AVVideoHeightKey, AVVideoWidthKey,
+    AVVideoEncoderSpecificationKey, AVVideoHeightKey, AVVideoWidthKey,
 };
 use objc2_core_foundation::{CFData, CFRetained, CFString, CFURL};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
 };
-use objc2_core_media::CMTime;
+use objc2_core_media::{CMFormatDescription, CMTime};
 use objc2_core_video::{
     CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
     CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
@@ -89,14 +91,28 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
         let file_type = AVFileTypeQuickTimeMovie.ok_or("file type missing")?;
         let writer = AVAssetWriter::assetWriterWithURL_fileType_error(&url, file_type)
             .map_err(|e| e.localizedDescription().to_string())?;
-        let keys: [&NSString; 3] = [
+        // VideoToolbox's encoder specification key (its string value): false means hardware
+        // encode is never used.
+        let no_hardware = NSDictionary::from_slices(
+            &[&*NSString::from_str(
+                "EnableHardwareAcceleratedVideoEncoder",
+            )],
+            &[&*NSNumber::new_bool(false)],
+        );
+        let keys: [&NSString; 4] = [
             AVVideoCodecKey.ok_or("key missing")?,
             AVVideoWidthKey.ok_or("key missing")?,
             AVVideoHeightKey.ok_or("key missing")?,
+            AVVideoEncoderSpecificationKey.ok_or("key missing")?,
         ];
         let width = NSNumber::new_usize(card::WIDTH);
         let height = NSNumber::new_usize(card::HEIGHT);
-        let values: [&AnyObject; 3] = [codec.as_ref(), width.as_ref(), height.as_ref()];
+        let values: [&AnyObject; 4] = [
+            codec.as_ref(),
+            width.as_ref(),
+            height.as_ref(),
+            no_hardware.as_ref(),
+        ];
         let settings = NSDictionary::from_slices(&keys, &values);
         let media = AVMediaTypeVideo.ok_or("media type missing")?;
         let input = AVAssetWriterInput::assetWriterInputWithMediaType_outputSettings(
@@ -254,4 +270,107 @@ fn huge_png(path: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[link(name = "VideoToolbox", kind = "framework")]
+unsafe extern "C" {
+    fn VTDecompressionSessionCreate(
+        allocator: *const std::ffi::c_void,
+        format: *const CMFormatDescription,
+        decoder_specification: *const std::ffi::c_void,
+        image_buffer_attributes: *const std::ffi::c_void,
+        output_callback: *const std::ffi::c_void,
+        session_out: *mut *mut std::ffi::c_void,
+    ) -> i32;
+    fn VTSessionCopyProperty(
+        session: *mut std::ffi::c_void,
+        key: *const std::ffi::c_void,
+        allocator: *const std::ffi::c_void,
+        value_out: *mut *const std::ffi::c_void,
+    ) -> i32;
+    fn VTDecompressionSessionInvalidate(session: *mut std::ffi::c_void);
+    static kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder:
+        *const std::ffi::c_void;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFBooleanGetValue(boolean: *const std::ffi::c_void) -> u8;
+    fn CFRelease(object: *const std::ffi::c_void);
+}
+
+/// `--test-decoder <movie>`: whether VideoToolbox, asked with its default decoder
+/// specification, picks a hardware decoder for the movie's first video track: `Ok(true)`
+/// hardware, `Ok(false)` software. The stage host's reader takes no decoder specification, so
+/// this is taken as what it gets. Tests use it to tell whether a movie's frames depend on a
+/// machine's video hardware.
+pub fn uses_hardware_decoder(path: &str) -> Result<bool, String> {
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    // SAFETY: a file URL and no options.
+    let asset = unsafe { objc2_av_foundation::AVURLAsset::URLAssetWithURL_options(&url, None) };
+    // SAFETY: the media type constant is a framework static that is always set.
+    let video = unsafe { AVMediaTypeVideo }.ok_or("media type missing")?;
+    #[allow(deprecated)]
+    // SAFETY: loads the tracks synchronously; this process does nothing else meanwhile.
+    let tracks = unsafe { asset.tracksWithMediaType(video) };
+    let track = tracks.firstObject().ok_or("no video track")?;
+    // SAFETY: an asset track's format descriptions are CMFormatDescriptions.
+    let descriptions = unsafe { track.formatDescriptions() };
+    let first = descriptions.firstObject().ok_or("no format")?;
+    let format: *const CMFormatDescription = Retained::as_ptr(&first).cast();
+    let mut session: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: a format description kept alive by `first`, default allocator, specification
+    // and attributes, no callback (nothing is decoded); the session is checked before use.
+    let status = unsafe {
+        VTDecompressionSessionCreate(
+            std::ptr::null(),
+            format,
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            &mut session,
+        )
+    };
+    if status != 0 || session.is_null() {
+        return Err(format!("no decoder for it (status {status})"));
+    }
+    let mut value: *const std::ffi::c_void = std::ptr::null();
+    // SAFETY: a live session we own, a framework key constant, and an out pointer; the value
+    // (a CFBoolean, or none when the decoder does not say) is released after reading.
+    let hardware = unsafe {
+        let read = VTSessionCopyProperty(
+            session,
+            kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
+            std::ptr::null(),
+            &mut value,
+        );
+        let hardware = read == 0 && !value.is_null() && CFBooleanGetValue(value) != 0;
+        if !value.is_null() {
+            CFRelease(value);
+        }
+        VTDecompressionSessionInvalidate(session);
+        CFRelease(session);
+        hardware
+    };
+    Ok(hardware)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The decoder query answers for a movie (hardware or software, whichever this Mac picks)
+    /// and refuses a file with no video track.
+    #[test]
+    fn the_decoder_query_answers_for_a_movie_and_refuses_a_still() {
+        let dir = tempfile::tempdir().unwrap();
+        let movie = dir.path().join("clip.mov");
+        let still = dir.path().join("card.png");
+        let arg = |p: &Path| p.to_str().unwrap().to_owned();
+        make(&["h264".into(), arg(&movie), "5".into(), "25".into()]).unwrap();
+        make(&["png".into(), arg(&still)]).unwrap();
+        assert!(uses_hardware_decoder(&arg(&movie)).is_ok());
+        assert!(uses_hardware_decoder(&arg(&still)).is_err());
+        assert!(uses_hardware_decoder(&arg(&dir.path().join("gone.mov"))).is_err());
+    }
 }

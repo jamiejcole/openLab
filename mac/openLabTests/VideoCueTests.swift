@@ -565,8 +565,8 @@ final class VideoCueTests: XCTestCase {
 
     // MARK: Flow 5: missing file, relink, Show Mode
 
-    /// A movie that goes missing shows the missing-file mark and reason; Relink finds it in a folder
-    /// and the cue plays again.
+    /// A movie that goes missing shows the missing-file mark and reason; Find Missing Files lists
+    /// it, finds it in a folder, relinks it, and the cue plays again.
     func testAMissingVideoFileShowsTheMarkAndReasonAndRelinkFindsIt() async throws {
         try await openVideoShow()
         let file = folder.appendingPathComponent("media/clip.mov")
@@ -579,8 +579,18 @@ final class VideoCueTests: XCTestCase {
                 && (self.store.problems[Self.movie] ?? []).contains { $0.type == "media_missing" }
         }
         XCTAssertTrue(missingMark(Self.movie), "the Target column's missing mark")
+        XCTAssertEqual(MissingFilesWindowController.missingCues(in: store).map(\.id), [Self.movie])
         app.pickFolderURL = { moved }
-        await app.relinkMedia(on: store)
+        let tool = wc.missingFiles
+        tool.presentSheet = { _ in }
+        await app.findMissingFiles(on: store)
+        XCTAssertEqual(tool.rows.map(\.cue), [Self.movie], "the Video cue is listed")
+        XCTAssertEqual(tool.rows.first?.ticked, true)
+        XCTAssertEqual(
+            tool.rows.first?.chosen.map { URL(fileURLWithPath: $0).standardizedFileURL.path },
+            moved.appendingPathComponent("clip.mov").standardizedFileURL.path)
+        await tool.relink()
+        tool.close()
         await soon("relinked") {
             self.store.model?.cue(Self.movie)?.raw["kind"]?["media"]?.stringValue?.hasSuffix("clip.mov") == true
                 && self.status(Self.movie) == nil

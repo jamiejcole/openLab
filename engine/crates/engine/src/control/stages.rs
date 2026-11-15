@@ -714,6 +714,24 @@ impl Control {
         }
     }
 
+    /// Test support: moves the stage host's media clock on by `ms` (one started with
+    /// `--media-clock-by-hand`).
+    #[cfg(feature = "test-support")]
+    pub fn advance_stage_media_clock(&self, ms: u64) {
+        if let Some(host) = &self.eng.stages.host {
+            host.send(openlab_core::stage_link::ToStage::AdvanceMediaClock { ms });
+        }
+    }
+
+    /// Test support: the stage host supervisor looks at its clock again (a test moved it by
+    /// hand).
+    #[cfg(feature = "test-support")]
+    pub fn wake_stage_supervisor(&self) {
+        if let Some(host) = &self.eng.stages.host {
+            host.wake();
+        }
+    }
+
     /// Test support: a stage host on virtual displays now has `displays`, as if displays were
     /// plugged in or unplugged.
     #[cfg(feature = "test-support")]

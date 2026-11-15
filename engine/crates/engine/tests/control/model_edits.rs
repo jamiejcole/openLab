@@ -1295,7 +1295,7 @@ fn duration_and_load_time_edits_go_through_the_engine_and_undo() {
     for (n, bad, field) in [
         (1, CueProperty::Duration { value: -1.0 }, "duration"),
         (1, CueProperty::Duration { value: 1e9 }, "duration"),
-        (2, CueProperty::LoadToTime { value: -0.5 }, "load_to_time"),
+        (2, CueProperty::LoadToTime { value: -1e9 }, "load_to_time"),
     ] {
         let message = refusal(&send(&mut s, set(n, bad), None)).expect("refused");
         assert!(message.contains(field), "{message}");

@@ -87,7 +87,8 @@ impl CueEngine {
     /// QLab 5 does: its action ends at the new length from its start, or at once if it is past
     /// that already (on the resume, if paused). A Fade keeps its rate: its ramps go on as
     /// planned and it lets go of its levels at the new end, where its curve has got to
-    /// (`fade_finish`). One look per running Wait or Fade.
+    /// (`fade_finish`). A Wait cue's pending auto-continue moves to the new end, its post-wait
+    /// being its duration. One look per running Wait or Fade.
     pub(super) fn follow_duration_edits(&mut self, cx: &mut Ctx) {
         let ws = cx.ws;
         let tree = self.problems.tree();
@@ -112,10 +113,9 @@ impl CueEngine {
             } else {
                 tree.locate(ws, *id)
             };
-            let duration = match cue.map(|c| &c.kind) {
-                Some(CueKind::Wait { duration } | CueKind::Fade { duration, .. }) => {
-                    cx.secs(*duration, &self.config)
-                }
+            let (duration, wait) = match cue.map(|c| &c.kind) {
+                Some(CueKind::Wait { duration }) => (cx.secs(*duration, &self.config), true),
+                Some(CueKind::Fade { duration, .. }) => (cx.secs(*duration, &self.config), false),
                 _ => continue,
             };
             if duration == old {
@@ -132,6 +132,11 @@ impl CueEngine {
                 start,
                 end: Some(end),
             };
+            // A Wait cue's post-wait is its duration, so a pending auto-continue moves with it.
+            if wait {
+                run.post_wait = run.post_wait.map(|_| end);
+                run.post_wait_total = duration;
+            }
             if let Some(fade) = run.fade.as_mut() {
                 fade.retimed = true;
             }

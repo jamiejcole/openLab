@@ -69,7 +69,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             inspector.onTransport = onCueAction
         }
     }
-    /// Relink missing media was asked for (Warnings row or File menu).
+    /// Find Missing Files was asked for from a Warnings row.
     var onRelink: (() -> Void)? {
         didSet { sidebar.onRelink = onRelink }
     }
@@ -114,6 +114,18 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         settingsController = sc
         return sc
     }
+    private var missingFilesController: MissingFilesWindowController?
+    /// The Find Missing Files window if it was ever made.
+    var existingMissingFiles: MissingFilesWindowController? { missingFilesController }
+    /// The Find Missing Files window, made on first use. It closes with this window.
+    var missingFiles: MissingFilesWindowController {
+        if let mc = missingFilesController { return mc }
+        let mc = MissingFilesWindowController(store: store, title: workspaceName)
+        missingFilesController = mc
+        return mc
+    }
+    /// Tools > Find Missing Files can be chosen: Edit Mode and a cue whose file is missing.
+    var canFindMissingFiles: Bool { !isShowMode && !MissingFilesWindowController.missingCues(in: store).isEmpty }
     let footer = FooterBar()
     /// The audio file chosen for an Audio cue (nil: cancelled). A seam for tests.
     var pickFile: @MainActor (NewCueKind) -> URL? = WorkspaceWindowController.filePanel
@@ -383,6 +395,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         if on { closeFind() }
         // Show Mode leaves no sheet up that could change the show: a paste under way is cancelled.
         if on { pasteSheet?.cancel() }
+        // Find Missing Files is an edit-time tool: Show Mode puts it away.
+        missingFilesController?.showModeChanged(on)
         isShowMode = on
         inspector.isLocked = on
         masthead.isLocked = on
@@ -576,6 +590,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshTitle() {
         window?.title = isShowMode ? String(format: loc("window.main.title.showMode"), workspaceName) : workspaceName
+        missingFilesController?.retitle(workspaceName)
     }
 
     /// The footer's cue count follows the model (adds, deletes, a new snapshot).
@@ -699,6 +714,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         inspector.endGestures()
         preshowController?.close()
         settingsController?.close()
+        missingFilesController?.close()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {

@@ -11,7 +11,9 @@
 #                    and checks no test-only feature (test-support, fault-injection) is in the shipped
 #                    engine's dependency graph, so test seams never compile into a release build
 #   clippy-windows   the same lints for the Windows target (needs `rustup target add x86_64-pc-windows-gnu`)
-#   test             the workspace tests, every failure listed
+#   test             the workspace tests, every failure listed, then every test skipped (a test that
+#                    cannot run on this machine records why in $OPENLAB_TEST_SKIPS; without that
+#                    variable it fails instead) and what the machine reported, passing or not
 #   test-release     the same, optimised (debug-only checks off)
 #   fuzz-lint        fmt and clippy for engine/fuzz, which is outside the workspace
 set -euo pipefail
@@ -38,6 +40,21 @@ shipped_features() {
   fi
 }
 
+# Runs the workspace tests with skips recorded, then prints them (and the decoders the video tests
+# found) as one block, also when the tests pass, and exits with the tests' status.
+tests() {
+  local skips status=0
+  mkdir -p target/tmp
+  skips="$PWD/target/tmp/openlab-test-skips.txt"
+  : > "$skips"
+  OPENLAB_TEST_SKIPS="$skips" cargo test "$@" --workspace --locked --no-fail-fast || status=$?
+  echo "== machine, as the tests found it:"
+  grep '^decoder ' "$skips" | sed 's/^/   /' || echo "   (nothing reported)"
+  echo "== SKIPPED $(grep -c '^skip ' "$skips" || true) test(s):"
+  grep '^skip ' "$skips" | sed 's/^skip /   /' || true
+  return "$status"
+}
+
 case "${1:-}" in
   fmt) cargo fmt --all --check ;;
   clippy)
@@ -49,14 +66,14 @@ case "${1:-}" in
     lints --target x86_64-pc-windows-gnu --all-targets
     lints --target x86_64-pc-windows-gnu --lib --bins
     ;;
-  test) cargo test --workspace --locked --no-fail-fast ;;
+  test) tests ;;
   fuzz-lint)
     # The fuzz crate is outside the workspace, so the modes above never see it.
     cd fuzz
     cargo fmt --check
     cargo clippy --locked -- -D warnings
     ;;
-  test-release) cargo test --release --workspace --locked --no-fail-fast ;;
+  test-release) tests --release ;;
   *)
     echo "usage: scripts/rust-checks.sh fmt|clippy|clippy-windows|fuzz-lint|test|test-release" >&2
     exit 2

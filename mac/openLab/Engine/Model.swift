@@ -50,6 +50,10 @@ struct Cue: Hashable, Sendable, Decodable {
     var kindType: String { raw["kind"]?["type"]?.stringValue ?? "" }
     /// An Audio or Video cue: its target is a file (`media`), not a cue.
     var takesFile: Bool { kindType == "audio" || kindType == "video" }
+    /// The post-wait the cue runs with: a Wait cue's is its duration (core's `effective_post_wait`).
+    var postWait: Double {
+        kindType == "wait" ? raw["kind"]?["duration"]?.doubleValue ?? 0 : raw["post_wait"]?.doubleValue ?? 0
+    }
 
     /// The name to show (core's `display_name`): the user's name if set, else an Audio or Video
     /// cue's file name with its extension (last `/` component, as stored), else empty. Editing

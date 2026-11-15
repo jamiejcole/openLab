@@ -34,7 +34,7 @@ use openlab_engine::net::{
 };
 use openlab_engine::osc::{SlipDecoder, SlipEvent, decode_packet, encode_message, slip_encode};
 use rosc::{OscMessage, OscType};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Notify;
 
@@ -1381,66 +1381,193 @@ async fn a_host_at_its_cap_with_idle_connections_still_gets_a_new_one_served() {
         .await;
 }
 
-#[tokio::test]
-async fn go_over_the_wire_starts_the_cue_in_the_real_control_loop() {
-    let ws = test_workspace();
-    let (ctl, _mixer) = Mixer::new(show::mixer_config()).unwrap();
-    let (inbox_tx, inbox) = crossbeam_channel::unbounded();
-    let (out_tx, outbound) = outbound_channel(OUTBOUND_CAPACITY);
-    let control = Control::new(
-        ws.clone(),
-        ctl,
-        Backend::Offline,
-        show::config(&ws),
-        inbox_tx.clone(),
-        out_tx,
-    )
-    .unwrap();
-    let worker = thread::spawn(move || runner::run(control, &inbox));
-    let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let server = WsServer::start(
-        inbox_tx.clone(),
-        outbound,
-        ServerConfig {
-            osc: Some(OscConfig {
-                bind: Ipv4Addr::LOCALHOST.into(),
-                port: 0,
-                reply_port: client.local_addr().unwrap().port(),
-                ..OscConfig::default()
-            }),
-            ..ServerConfig::default()
-        },
-    )
-    .unwrap();
-    let target = SocketAddr::from((Ipv4Addr::LOCALHOST, server.osc_ports().unwrap().udp));
-    let send = async |m: OscMessage| {
-        client
-            .send_to(&encode_message(&m).unwrap(), target)
+/// The real control loop and the real listeners, with one UDP client.
+struct RealLoop {
+    inbox: Sender<Inbox>,
+    worker: Option<thread::JoinHandle<()>>,
+    server: Option<WsServer>,
+    client: UdpSocket,
+    target: SocketAddr,
+    _mixer: Mixer,
+}
+
+impl RealLoop {
+    async fn start(ws: Workspace) -> Self {
+        let (ctl, mixer) = Mixer::new(show::mixer_config()).unwrap();
+        let (inbox_tx, inbox) = crossbeam_channel::unbounded();
+        let (out_tx, outbound) = outbound_channel(OUTBOUND_CAPACITY);
+        let control = Control::new(
+            ws.clone(),
+            ctl,
+            Backend::Offline,
+            show::config(&ws),
+            inbox_tx.clone(),
+            out_tx,
+        )
+        .unwrap();
+        let worker = thread::spawn(move || runner::run(control, &inbox));
+        let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let server = WsServer::start(
+            inbox_tx.clone(),
+            outbound,
+            ServerConfig {
+                osc: Some(OscConfig {
+                    bind: Ipv4Addr::LOCALHOST.into(),
+                    port: 0,
+                    reply_port: client.local_addr().unwrap().port(),
+                    ..OscConfig::default()
+                }),
+                ..ServerConfig::default()
+            },
+        )
+        .unwrap();
+        let target = SocketAddr::from((Ipv4Addr::LOCALHOST, server.osc_ports().unwrap().udp));
+        Self {
+            inbox: inbox_tx,
+            worker: Some(worker),
+            server: Some(server),
+            client,
+            target,
+            _mixer: mixer,
+        }
+    }
+
+    async fn send(&self, m: OscMessage) {
+        self.client
+            .send_to(&encode_message(&m).unwrap(), self.target)
             .await
             .unwrap();
-    };
-    let recv = async || {
+    }
+
+    async fn recv(&self) -> OscMessage {
         let mut buf = vec![0u8; 70_000];
-        let (n, _) = guard("a UDP message", client.recv_from(&mut buf))
+        let (n, _) = guard("a UDP message", self.client.recv_from(&mut buf))
             .await
             .unwrap();
         decode_packet(&buf[..n]).unwrap().remove(0)
-    };
-    send(msg("/updates", vec![OscType::Int(1)])).await;
-    send(msg("/version", vec![])).await;
-    assert_eq!(recv().await.addr, "/reply/version");
-    send(msg("/go", vec![])).await;
+    }
+
+    /// The next message whose address is `addr`, passing over the others.
+    async fn recv_at(&self, addr: &str) -> OscMessage {
+        loop {
+            let m = self.recv().await;
+            if m.addr == addr {
+                return m;
+            }
+        }
+    }
+
+    /// Reads `/cue/{number}/{field}` and returns the reply's JSON.
+    async fn read(&self, number: &str, field: &str) -> Value {
+        let addr = format!("/cue/{number}/{field}");
+        self.send(msg(&addr, vec![])).await;
+        body(&self.recv_at(&format!("/reply{addr}")).await)
+    }
+
+    fn stop(mut self) {
+        let _ = self.inbox.send(Inbox::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            worker.join().unwrap();
+        }
+        if let Some(server) = self.server.take() {
+            server.stop();
+        }
+    }
+}
+
+#[tokio::test]
+async fn go_over_the_wire_starts_the_cue_in_the_real_control_loop() {
+    let ws = test_workspace();
+    let real = RealLoop::start(ws.clone()).await;
+    real.send(msg("/updates", vec![OscType::Int(1)])).await;
+    real.send(msg("/version", vec![])).await;
+    assert_eq!(real.recv().await.addr, "/reply/version");
+    real.send(msg("/go", vec![])).await;
     // The cue ran (a state update for it) and the playhead moved to the next cue.
     let (mut started, mut moved) = (false, false);
     let ws_id = ws.id.to_string().to_uppercase();
     while !(started && moved) {
-        let m = recv().await;
+        let m = real.recv().await;
         started |= m.addr == format!("/update/workspace/{ws_id}/cue_id/{}", id(1));
         moved |= m.addr.ends_with("/playbackPosition") && m.args == vec![text(&id(2).to_string())];
     }
-    let _ = inbox_tx.send(Inbox::Shutdown);
-    worker.join().unwrap();
-    server.stop();
+    real.stop();
+}
+
+/// Flow: an OSC client sets and reads a Wait or Fade cue's duration by number (a Load cue's
+/// load time has no OSC address, as in QLab 5). Each write reaches the engine, which announces the cue to `/updates` subscribers
+/// (what a remote's list redraws from) and to every client of the hub (the OSC copy the read
+/// answers from is fed like the app's); the read reply carries the new value. A value out of
+/// range, or a field the cue's kind has not, gets an error reply and changes nothing.
+#[tokio::test]
+async fn an_osc_client_sets_and_reads_a_duration_by_number() {
+    let fade = CueKind::Fade {
+        target: Some(id(1)),
+        duration: 5.0,
+        curve: openlab_core::FadeCurve::Linear,
+        levels: openlab_core::FadeLevels {
+            master_db: Some(-6.0),
+            output_db: vec![],
+            crosspoints: vec![],
+        },
+        stop_target_when_done: false,
+        mode: Default::default(),
+    };
+    let ws = workspace(vec![
+        cue(1, CueKind::Wait { duration: 2.0 }),
+        cue(2, fade),
+        cue(
+            3,
+            CueKind::Load {
+                target: Some(id(1)),
+                load_to_time: 0.0,
+            },
+        ),
+        cue(4, CueKind::Memo),
+    ]);
+    let real = RealLoop::start(ws.clone()).await;
+    real.send(msg("/updates", vec![OscType::Int(1)])).await;
+    let updated = |n: u128| format!("/update/workspace/{}/cue_id/{}", ws_id(), id(n));
+    let write = async |number: &str, field: &str, arg: OscType| {
+        real.send(msg(&format!("/cue/{number}/{field}"), vec![arg]))
+            .await;
+    };
+
+    assert_eq!(real.read("1", "duration").await["data"], json!(2.0));
+    write("1", "duration", OscType::Float(3.5)).await;
+    real.recv_at(&updated(1)).await;
+    let reply = real.read("1", "duration").await;
+    assert_eq!(
+        (&reply["status"], &reply["data"]),
+        (&json!("ok"), &json!(3.5))
+    );
+    // A Wait cue's post-wait is its duration: read and written as one.
+    assert_eq!(real.read("1", "postWait").await["data"], json!(3.5));
+    write("1", "postWait", OscType::Int(6)).await;
+    real.recv_at(&updated(1)).await;
+    assert_eq!(real.read("1", "duration").await["data"], json!(6.0));
+
+    write("2", "duration", OscType::Double(1.25)).await;
+    real.recv_at(&updated(2)).await;
+    assert_eq!(real.read("2", "duration").await["data"], json!(1.25));
+
+    // Out of range, or not the cue's kind: an error reply, nothing changes.
+    for (number, field, arg) in [
+        ("1", "duration", OscType::Float(-1.0)),
+        ("1", "duration", OscType::Double(86_400.5)),
+        ("3", "duration", OscType::Int(4)),
+        ("4", "duration", OscType::Int(4)),
+        // QLab 5 has no OSC address for a Load cue's time, so neither does openLab.
+        ("3", "loadTime", OscType::Int(4)),
+    ] {
+        write(number, field, arg.clone()).await;
+        let reply = body(&real.recv_at(&format!("/reply/cue/{number}/{field}")).await);
+        assert_eq!(reply["status"], json!("error"), "{number} {field} {arg:?}");
+    }
+    assert_eq!(real.read("1", "duration").await["data"], json!(6.0));
+    let reply = real.read("3", "loadTime").await;
+    assert_eq!(reply["status"], json!("error"));
+    real.stop();
 }
 
 #[tokio::test]

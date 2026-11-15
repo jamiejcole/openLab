@@ -324,6 +324,30 @@ final class WarningsTests: XCTestCase {
         XCTAssertFalse(wc.sidebar.tableView(wc.sidebar.warningsTable, shouldSelectRow: row))
     }
 
+    /// A missing file whose reason wraps keeps its Find Missing Files button inside its row, so the
+    /// next warning never covers it.
+    func testAWrappedMissingFileRowHoldsItsButton() async throws {
+        try await make()
+        try missingMedia(rain, "media/A Long Folder For The Second Act/and-another-folder/rain-bed-take-two.wav")
+        let side = try XCTUnwrap(wc.sidebar)
+        let row = try XCTUnwrap(side.warningRows.firstIndex { $0.cue == rain })
+        XCTAssertTrue(side.warningRows[row].canRelink)
+        for width in [CGFloat(280), 200] {
+            let height = WarningCell.height(of: side.warningRows[row], width: width)
+            let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: row) as? WarningCell)
+            cell.frame = NSRect(x: 0, y: 0, width: width, height: height)
+            cell.layoutSubtreeIfNeeded()
+            cell.layoutSubtreeIfNeeded()
+            let detail = cell.convert(cell.detail.bounds, from: cell.detail)
+            let button = cell.convert(cell.relinkButton.bounds, from: cell.relinkButton)
+            XCTAssertGreaterThan(detail.height, 20, "the reason wraps at \(width)")
+            XCTAssertFalse(button.intersects(detail), "\(button) clear of the reason \(detail) at \(width)")
+            XCTAssertTrue(cell.bounds.contains(detail), "\(detail) in \(cell.bounds) at \(width)")
+            XCTAssertTrue(cell.bounds.contains(button), "\(button) in \(cell.bounds) at \(width)")
+            XCTAssertLessThan(cell.bounds.maxY - button.maxY, 8, "no spare line under the button at \(width)")
+        }
+    }
+
     func testRelinkButtonAsksTheWindowToRelink() async throws {
         try await make()
         var asked = 0

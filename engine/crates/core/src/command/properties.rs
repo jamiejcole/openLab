@@ -43,7 +43,7 @@ impl CueProperty {
                 value: cue.pre_wait,
             },
             Self::PostWait { .. } => Self::PostWait {
-                value: cue.post_wait,
+                value: cue.effective_post_wait(),
             },
             Self::ContinueMode { .. } => Self::ContinueMode {
                 value: cue.continue_mode,
@@ -138,7 +138,11 @@ impl CueProperty {
             Self::AutoLoad { value } => cue.auto_load = *value,
             Self::SkipIfDisarmed { value } => cue.skip_if_disarmed = *value,
             Self::PreWait { value } => cue.pre_wait = *value,
-            Self::PostWait { value } => cue.post_wait = *value,
+            // A Wait cue's post-wait is its duration (QLab 5): setting it sets the duration.
+            Self::PostWait { value } => match &mut cue.kind {
+                CueKind::Wait { duration } => *duration = *value,
+                _ => cue.post_wait = *value,
+            },
             Self::ContinueMode { value } => cue.continue_mode = *value,
             Self::Triggers { value } => cue.triggers.clone_from(value),
             Self::SecondTrigger { value } => cue.second_trigger = *value,

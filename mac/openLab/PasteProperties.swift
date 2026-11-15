@@ -133,7 +133,7 @@ enum PasteProperty: String, CaseIterable {
         case .name: return set(.name(source.name))
         case .notes: return set(.notes(raw["notes"]?.stringValue ?? ""))
         case .preWait: return set(.preWait(raw["pre_wait"]?.doubleValue ?? 0))
-        case .postWait: return set(.postWait(raw["post_wait"]?.doubleValue ?? 0))
+        case .postWait: return set(.postWait(source.postWait))
         case .duration:
             // A still's "until stopped" (no duration) goes over as itself, never as 0.
             if cue.kindType == "video" { return set(.kindFields(["duration": kind["duration"] ?? .null])) }

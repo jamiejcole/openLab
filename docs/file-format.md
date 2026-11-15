@@ -211,7 +211,7 @@ At most 64 stages; a file with more keeps the first 64 with a warning (`TooManyS
 | `auto_load` | bool | Optional (absent: `false`). The cue is loaded when the cue before it at its level (passing over skipped cues) starts. Semantics: skill `cue-engine`. |
 | `skip_if_disarmed` | bool | Optional (absent: `false`). While the cue is disarmed it is passed over as if it were not in the list: GO, continues and groups go to the cue after it and its own continue never fires. No effect on an armed cue. |
 | `pre_wait` | seconds | Delay between the cue being triggered and its action starting. |
-| `post_wait` | seconds | Delay used by `auto_continue` before the next cue, counted from the start of the action. Ignored otherwise. |
+| `post_wait` | seconds | Delay used by `auto_continue` before the next cue, counted from the start of the action. Ignored otherwise, and on a Wait cue, whose post-wait is its `duration`. |
 | `continue_mode` | `"do_not_continue"` \| `"auto_continue"` \| `"auto_follow"` | `auto_continue`: start the next cue `post_wait` after this one's action starts (after its pre-wait). `auto_follow`: start the next cue when this one's action finishes. Semantics: skill `cue-engine`. |
 | `triggers` | object | `hotkey`: `null` or `{"key", "modifiers"}`; `hotkey_enabled` (bool, optional, absent: `true`): whether the hotkey starts the cue; off keeps the key. A cue has no OSC address of its own (OSC starts it by number or id); an `osc` key from an older file is ignored. |
 | `second_trigger` | `"nothing"` \| `"panic"` \| `"stop"` \| `"hard_stop"` \| `"hard_stop_and_restart"` \| `"devamp"` \| `"play_next"` \| `"play_previous"` | What a trigger does while the cue is already active; semantics in skill `cue-engine`. `play_next`/`play_previous` are for Playlist groups only. |
@@ -278,7 +278,7 @@ Option on macOS).
 | `start` | `target` | Starts the target. |
 | `stop` | `target`, `fade_out` (fade spec) | Stops the target, fading it out first when `fade_out.duration` > 0. |
 | `pause` | `target` | Pauses the target. |
-| `load` | `target`, `load_to_time` (seconds) | Loads the target, cued to `load_to_time`. |
+| `load` | `target`, `load_to_time` (seconds, -86400 to 86400) | Loads the target, cued to `load_to_time`. A negative time counts back from the target's end (pre-wait and action); further back than its start, or with no known end, it loads to the start. |
 | `reset` | `target` | Returns the target to its saved state. |
 | `devamp` | `target`, `start_next_cue` (bool), `stop_target_when_slice_ends` (bool), `devamp_mode` (`"current_slice"` \| `"looping_cue"`) | Leaves the target's loop at the end of the pass; semantics in skill `cue-engine`. Target must be an Audio cue or a Playlist group. |
 | `go_to` | `target`, `then_go` (bool) | Moves the playhead to the target; `then_go` also fires GO. |

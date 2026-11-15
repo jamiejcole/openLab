@@ -936,7 +936,10 @@ impl Checker {
             CueKind::Stop { fade_out, .. } => {
                 self.time(id, "fade_out.duration", &mut fade_out.duration);
             }
-            CueKind::Load { load_to_time, .. } => self.time(id, "load_to_time", load_to_time),
+            // Negative: that long before the end of the target (QLab 5, manual pp. 680-681).
+            CueKind::Load { load_to_time, .. } => {
+                self.time_in(id, "load_to_time", load_to_time, -MAX_TIME, MAX_TIME);
+            }
             CueKind::Wait { duration } => self.time(id, "duration", duration),
             CueKind::Video { duration, .. } => {
                 if let Some(d) = duration {

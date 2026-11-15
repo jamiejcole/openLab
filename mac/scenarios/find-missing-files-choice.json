@@ -1,0 +1,17 @@
+{
+  "about": "Find Missing Files (#640, flow 2): two files named o.wav found for Radio; the sheet asks which one; the second is used. Light appearance.",
+  "show": "Demo",
+  "appearance": "light",
+  "steps": [
+    {"find_missing_files": ["x/o.wav", "y/o.wav"]},
+    {"focus": "sheet"},
+    {"shot": "choice-sheet"},
+    {"click": "missing-file-choice-list", "at": [0.5, 0.1]},
+    {"click": "missing-file-choice-use"},
+    {"shot": "tool-after-choice"},
+    {"find_missing_files": ["x/o.wav", "y/o.wav"], "folder": "again"},
+    {"focus": "sheet"},
+    {"click": "missing-file-choice-skip"},
+    {"shot": "tool-after-skip"}
+  ]
+}

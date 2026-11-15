@@ -33,8 +33,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossbeam_channel::Sender;
 use openlab_audio::{CommandKind, Fade};
 use openlab_core::protocol::{
-    ErrorBody, ErrorCode, LogKind, LogLevel, MAX_FOLDER_BYTES, OkBody, Outcome, RecoveryChoice,
-    RecoveryEntryInfo, Request, RequestId, ResultData, ServerMessage, WireWarning,
+    AmbiguousMatch, ErrorBody, ErrorCode, LogKind, LogLevel, MAX_FOLDER_BYTES,
+    MAX_RELINK_LIST_BYTES, OkBody, Outcome, RecoveryChoice, RecoveryEntryInfo, RelinkMatch,
+    RelinkReport, Request, RequestId, ResultData, ServerMessage, WireWarning,
 };
 use openlab_core::{
     Action, CueEngine, CueListId, EngineConfig, History, Input, LoadedShow, MAX_SHOW_FILE_BYTES,
@@ -42,7 +43,7 @@ use openlab_core::{
     decide_recovery, is_absolute, load_show, media_of_cues, portable_ref, recovery_show_path,
     relink_command,
 };
-use openlab_core::{Command, CommandError, CueId, MediaPaths, RelinkPlan};
+use openlab_core::{AmbiguousRelink, Command, CommandError, CueId, MediaPaths, RelinkPlan};
 
 use super::checks::{NoProbes, PlanChecks};
 use super::inbox::reply;
@@ -415,8 +416,9 @@ enum Target {
     Engine,
     /// A doc to add ([`Control::open_doc`]).
     New,
-    /// The `relink` of a doc: applied to it when the walk is done, if it is still open.
-    Relink(DocId),
+    /// The `relink` of a doc: applied to it when the walk is done, if it is still open; a
+    /// `preview` is only reported.
+    Relink { doc: DocId, preview: bool },
 }
 
 /// What the request being worked on by the document worker is.
@@ -1089,6 +1091,51 @@ fn relink_scan(
     }
 }
 
+/// What a `relink` result lists: the matches and the ambiguous cues' candidates, in cue order,
+/// until their paths reach [`MAX_RELINK_LIST_BYTES`] (a cue is listed whole or not at all).
+struct Listed {
+    matches: Vec<RelinkMatch>,
+    ambiguous: Vec<AmbiguousMatch>,
+    capped: bool,
+}
+
+fn list_relinks(matches: &[Relink], ambiguous: &[AmbiguousRelink]) -> Listed {
+    let mut listed = Listed {
+        matches: Vec::new(),
+        ambiguous: Vec::new(),
+        capped: false,
+    };
+    let mut budget = MAX_RELINK_LIST_BYTES;
+    let mut take = |bytes: usize| match budget.checked_sub(bytes) {
+        Some(left) => {
+            budget = left;
+            true
+        }
+        None => false,
+    };
+    for m in matches {
+        if !take(m.new.as_str().len()) {
+            listed.capped = true;
+            break;
+        }
+        listed.matches.push(RelinkMatch {
+            cue: m.cue,
+            file: m.new.as_str().to_owned(),
+        });
+    }
+    for a in ambiguous {
+        if listed.capped || !take(a.candidates.iter().map(|c| c.as_str().len()).sum()) {
+            listed.capped = true;
+            break;
+        }
+        listed.ambiguous.push(AmbiguousMatch {
+            cue: a.cue,
+            candidates: a.candidates.iter().map(|c| c.as_str().to_owned()).collect(),
+        });
+    }
+    listed
+}
+
 fn scan(ticket: u64, dirs: Option<&AppDirs>) -> DocAnswer {
     let entries = dirs
         .map(|dirs| scan_recovery(dirs, MAX_RECOVERY_ENTRIES).entries)
@@ -1286,8 +1333,8 @@ impl DocCx<'_> {
 
     /// Applies a folder walk's matches as one undo step, to the cues that still have the
     /// reference the walk started from, and answers with the counts and whether a limit ended
-    /// the walk early.
-    fn apply_relink(&mut self, found: RelinkFound, id: RequestId, to: &ReplyTx) {
+    /// the walk early. A `preview` changes nothing and lists the matches instead.
+    fn apply_relink(&mut self, found: RelinkFound, preview: bool, id: RequestId, to: &ReplyTx) {
         let RelinkFound {
             plan,
             before,
@@ -1295,41 +1342,46 @@ impl DocCx<'_> {
             skipped,
         } = found;
         let current = media_of_cues(self.doc.model.ws());
+        let unchanged = |cue: CueId| {
+            fn media_of(list: &[(CueId, MediaRef)], cue: CueId) -> Option<&MediaRef> {
+                list.iter().find(|(c, _)| *c == cue).map(|(_, r)| r)
+            }
+            media_of(&before, cue).is_some() && media_of(&before, cue) == media_of(&current, cue)
+        };
         let relinks: Vec<Relink> = plan
             .matches
             .into_iter()
-            .filter(|m| {
-                fn media_of(list: &[(CueId, MediaRef)], cue: CueId) -> Option<&MediaRef> {
-                    list.iter().find(|(c, _)| *c == cue).map(|(_, r)| r)
-                }
-                media_of(&before, m.cue).is_some()
-                    && media_of(&before, m.cue) == media_of(&current, m.cue)
-            })
+            .filter(|m| unchanged(m.cue))
             .collect();
-        let relinked = relinks.len() as u64;
-        let now = self.now();
-        let command = relink_command(self.doc.model.ws(), &relinks);
-        let footprint = command.footprint();
-        let mut edit = self.doc.model.edit();
-        let result = self.doc.history.execute(&mut edit, command);
-        edit.ended(&footprint, &result);
-        let revision = match result {
-            Ok(true) => {
-                self.edited(now, &footprint);
-                self.log(
-                    LogLevel::Info,
-                    format!(
-                        "relinked {relinked} cue(s){}",
-                        if truncated { " (search cut short)" } else { "" }
-                    ),
-                );
-                Some(self.doc.revision)
-            }
-            Ok(false) => Some(self.doc.revision),
-            Err(e) => {
-                self.partly_changed(now, &e);
-                fail(to, id, ErrorCode::CommandRefused, e.to_string());
-                return;
+        let listed = list_relinks(if preview { &relinks } else { &[] }, &plan.ambiguous);
+        let (relinked, revision) = if preview {
+            (0, None)
+        } else {
+            let relinked = relinks.len() as u64;
+            let now = self.now();
+            let command = relink_command(self.doc.model.ws(), &relinks);
+            let footprint = command.footprint();
+            let mut edit = self.doc.model.edit();
+            let result = self.doc.history.execute(&mut edit, command);
+            edit.ended(&footprint, &result);
+            match result {
+                Ok(true) => {
+                    self.edited(now, &footprint);
+                    self.log(
+                        LogLevel::Info,
+                        format!(
+                            "relinked {relinked} cue(s){}",
+                            if truncated { " (search cut short)" } else { "" }
+                        ),
+                    );
+                    (relinked, Some(self.doc.revision))
+                }
+                Ok(false) => (relinked, Some(self.doc.revision)),
+                Err(e) => {
+                    self.partly_changed(now, &e);
+                    fail(to, id, ErrorCode::CommandRefused, e.to_string());
+                    return;
+                }
             }
         };
         reply(
@@ -1338,24 +1390,15 @@ impl DocCx<'_> {
                 id,
                 outcome: Outcome::Ok(OkBody {
                     revision,
-                    data: Some(ResultData::Relink {
+                    data: Some(ResultData::Relink(Box::new(RelinkReport {
                         relinked,
-                        ambiguous: plan
-                            .ambiguous
-                            .into_iter()
-                            .map(|a| openlab_core::protocol::AmbiguousMatch {
-                                cue: a.cue,
-                                candidates: a
-                                    .candidates
-                                    .iter()
-                                    .map(|c| c.as_str().to_owned())
-                                    .collect(),
-                            })
-                            .collect(),
+                        ambiguous: listed.ambiguous,
                         unmatched: plan.unmatched,
                         truncated,
                         skipped: skipped as u64,
-                    }),
+                        matches: listed.matches,
+                        capped: listed.capped,
+                    }))),
                 }),
             },
         );
@@ -2209,7 +2252,14 @@ impl Control {
     /// nothing but this answer: `open`, `scan_recovery` and saves go on meanwhile. The matches
     /// are applied as one undoable edit when the walk is done ([`Self::relinked`]). Refused
     /// (`command_refused`) while another relink is walking.
-    pub(super) fn relink(&mut self, doc: DocId, id: RequestId, folder: String, to: &ReplyTx) {
+    pub(super) fn relink(
+        &mut self,
+        doc: DocId,
+        id: RequestId,
+        folder: String,
+        preview: bool,
+        to: &ReplyTx,
+    ) {
         if !self.eng.relink_gate(id, to) {
             return;
         }
@@ -2222,7 +2272,9 @@ impl Control {
             d.show_path.as_deref().and_then(folder_of),
         );
         let limits = self.eng.config.relink_limits;
-        let mut pending = self.eng.new_pending(Target::Relink(doc), id, to);
+        let mut pending = self
+            .eng
+            .new_pending(Target::Relink { doc, preview }, id, to);
         pending.extra_ms = i64::try_from(limits.max_duration.as_millis()).unwrap_or(i64::MAX);
         let job = RelinkJob {
             ticket: pending.ticket,
@@ -2244,9 +2296,16 @@ impl Control {
     }
 
     /// The walk is done: apply what it found to the doc, if it is still open.
-    fn relinked(&mut self, doc: DocId, found: RelinkFound, id: RequestId, to: &ReplyTx) {
+    fn relinked(
+        &mut self,
+        doc: DocId,
+        found: RelinkFound,
+        preview: bool,
+        id: RequestId,
+        to: &ReplyTx,
+    ) {
         match self.cx_of(doc) {
-            Some(mut cx) => cx.apply_relink(found, id, to),
+            Some(mut cx) => cx.apply_relink(found, preview, id, to),
             None => fail(to, id, ErrorCode::NoWorkspace, "the workspace was closed"),
         }
     }
@@ -2319,8 +2378,8 @@ impl Control {
             }
             (Target::Engine, DocAnswer::Discarded { .. }) => reply(to, ok(id, None)),
             (Target::New, DocAnswer::Built { parts, .. }) => self.install_new(*parts, id, to),
-            (Target::Relink(doc), DocAnswer::Relinked { found, .. }) => {
-                self.relinked(doc, *found, id, to);
+            (Target::Relink { doc, preview }, DocAnswer::Relinked { found, .. }) => {
+                self.relinked(doc, *found, preview, id, to);
             }
             (
                 Target::New,
@@ -2813,6 +2872,42 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A relink result lists whole cues until their paths reach the byte cap, and says it
+    /// stopped: a folder of many same-named files cannot make a reply bigger than a frame.
+    #[test]
+    fn a_relink_list_stops_at_its_byte_cap_and_says_so() {
+        let path = |n: u128| MediaRef::new(format!("/{n:0>4095}"));
+        let cue = |n: u128| CueId(uuid::Uuid::from_u128(n));
+        let per_cue = 8;
+        let fit = MAX_RELINK_LIST_BYTES / (4096 * per_cue);
+        let matches: Vec<Relink> = (0..per_cue as u128)
+            .map(|n| Relink {
+                cue: cue(n),
+                new: path(n),
+            })
+            .collect();
+        let ambiguous: Vec<AmbiguousRelink> = (0..fit as u128 + 5)
+            .map(|n| AmbiguousRelink {
+                cue: cue(1000 + n),
+                candidates: (0..per_cue as u128).map(path).collect(),
+            })
+            .collect();
+        let listed = list_relinks(&matches, &ambiguous);
+        assert!(listed.capped);
+        assert_eq!(listed.matches.len(), per_cue);
+        // The matches took one cue's worth of the budget.
+        assert_eq!(listed.ambiguous.len(), fit - 1);
+        assert!(
+            listed
+                .ambiguous
+                .iter()
+                .all(|a| a.candidates.len() == per_cue)
+        );
+        let small = list_relinks(&matches, &ambiguous[..2]);
+        assert!(!small.capped);
+        assert_eq!((small.matches.len(), small.ambiguous.len()), (per_cue, 2));
+    }
 
     /// A walk that finishes as its timeout passes is counted stuck by exactly one side, and
     /// taken back by its thread when the stall check won: both orders leave the count at zero.

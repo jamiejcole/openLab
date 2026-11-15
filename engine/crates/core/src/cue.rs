@@ -192,6 +192,16 @@ impl Cue {
         !armed && self.skip_if_disarmed
     }
 
+    /// The post-wait the cue runs with: a Wait cue's is its duration, whatever `post_wait`
+    /// holds (QLab 5, manual p. 688; measured in 5.6.5), so an auto-continue after a Wait cue
+    /// fires when the wait ends.
+    pub fn effective_post_wait(&self) -> f64 {
+        match &self.kind {
+            CueKind::Wait { duration } => *duration,
+            _ => self.post_wait,
+        }
+    }
+
     /// Child cues of a Group; empty for every other kind.
     pub fn children(&self) -> &[Cue] {
         match &self.kind {
@@ -619,6 +629,9 @@ pub enum CueKind {
     },
     Load {
         target: Option<CueId>,
+        /// Seconds into the target's timeline (pre-wait, then action), `-MAX_TIME` to
+        /// [`MAX_TIME`]. Negative: that long before the target's end, or its start when the
+        /// target is shorter or its length is unknown.
         load_to_time: f64,
     },
     Reset {

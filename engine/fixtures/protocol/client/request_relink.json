@@ -3,6 +3,7 @@
   "id": 44,
   "request": {
     "type": "relink",
-    "folder": "/Volumes/Audio/Hamlet"
+    "folder": "/Volumes/Audio/Hamlet",
+    "preview": true
   }
 }

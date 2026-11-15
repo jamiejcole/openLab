@@ -360,6 +360,7 @@
 "inspector.target.noFile" = "No file yet: double-click here or use the folder button";
 "inspector.target.choosePrompt" = "Choose";
 "inspector.invalid.time" = "Enter a time as mm:ss.sss, from 0 to 24 hours.";
+"inspector.invalid.loadTime" = "Enter a time as mm:ss.sss, up to 24 hours; put a minus in front to count back from the target's end.";
 "inspector.invalid.decimalComma" = "Use a full stop for decimals, as in 1.5.";
 "inspector.invalid.duplicateNumber" = "Another cue already has that number.";
 "inspector.invalid.unknownTarget" = "No cue has that number.";
@@ -368,7 +369,6 @@
 "inspector.invalid.notApplicable" = "This cue has no target.";
 "inspector.invalid.noDuration" = "This cue's duration cannot be edited: only Wait and Fade cues have one to set.";
 "inspector.invalid.noLoadTime" = "Only a Load cue has a load time.";
-"inspector.invalid.negativeLoadTime" = "Loading to a time before the end is not supported yet: enter a time from the start.";
 "inspector.invalid.noMessage" = "Only a Network cue has a message.";
 "inspector.invalid.networkMessage" = "The arguments cannot be read: put text with spaces in double quotes, and use \\T or \\F for true or false.";
 "inspector.invalid.level" = "Enter a level in dB, from -inf to +12.";
@@ -571,7 +571,7 @@
 "warnings.one" = "1 warning";
 "warnings.many" = "%d warnings";
 "warnings.marker" = "Warning";
-"warnings.relink" = "Relink Media…";
+"warnings.relink" = "Find Missing Files…";
 
 "broken.voice_rejected" = "The audio engine refused to play it.";
 "broken.stream_failed" = "Its audio stream failed while it was playing.";
@@ -730,24 +730,17 @@
 "preshow.network.missing" = "Cues use this destination, but the workspace does not have it.";
 "preshow.network.notChecked" = "%@: not checked (reachability is not tested).";
 
-/* Relink missing media (WS-03) */
+/* Recover autosaves; Find Missing Files folder panel (WS-03) */
 "menu.file.recover" = "Recover Autosaves…";
 "recover.none" = "There are no autosaves to recover.";
 "error.discardAutosaveFailed" = "The autosave could not be deleted: %@";
 "error.recoverFailed" = "The autosaves could not be listed: %@";
-"menu.file.relink" = "Relink Missing Media…";
 "relink.panel.message" = "Choose the folder that holds the missing media. Sub-folders are searched.";
-"relink.panel.prompt" = "Relink";
-"relink.relinked" = "Relinked %d cue(s).";
-"relink.ambiguous" = "%d had more than one match and were left alone.";
-"relink.unmatched" = "%d could not be found.";
-"relink.failed" = "Relinking media failed: %@";
+"relink.panel.prompt" = "Search";
 
 "status.offline" = "Engine offline";
 "status.offline.detail" = "The engine is not connected. Status is unknown until it reconnects.";
 "status.dropouts" = "Dropouts %d";
-"relink.log.ambiguous" = "More than one match for %@; left alone. Candidates: %@";
-"relink.log.unmatched" = "No match found for %@.";
 
 "window.main.title.showMode" = "%@ (Show Mode)";
 "showMode.error.engine" = "The engine could not be told about Show Mode (%@). It is told again when it reconnects; until then the Mac may sleep.";
@@ -782,6 +775,36 @@
 "menu.tools.loadToTime.title" = "Load to Time";
 "menu.tools.loadToTime.ok" = "Load";
 "menu.tools.revealTarget" = "Reveal Target File in Finder";
+"menu.tools.findMissingFiles" = "Find Missing Files…";
+
+/* Find Missing Files (WS-03) */
+"missingFiles.title" = "Find Missing Files — %@";
+"missingFiles.intro" = "Choose a folder to search, sub-folders included, for the files your cues cannot find. Tick the files to use, then Relink.";
+"missingFiles.chooseFolder" = "Choose Folder…";
+"missingFiles.relink" = "Relink";
+"missingFiles.close" = "Close";
+"missingFiles.column.use" = "Use";
+"missingFiles.column.cue" = "Cue";
+"missingFiles.column.found" = "File found";
+"missingFiles.found.several" = "%d files with this name";
+"missingFiles.found.pick" = "Choose…";
+"missingFiles.found.change" = "Change…";
+"missingFiles.searching" = "Searching…";
+"missingFiles.failed" = "The search failed: %@";
+"missingFiles.relinkFailed" = "Relinking the ticked cues failed: %@";
+"missingFiles.summary.found.one" = "Found a file for %1$d of 1 cue with a missing file.";
+"missingFiles.summary.found.many" = "Found files for %1$d of %2$d cues with a missing file.";
+"missingFiles.summary.notFound" = "%d not found.";
+"missingFiles.summary.truncated" = "The folder was too large to search in full, so the search stopped early: choose a smaller folder to look further.";
+"missingFiles.summary.capped" = "Not every match fits in the list: relink these, then search again for the rest.";
+"missingFiles.summary.relinked.one" = "Relinked 1 cue.";
+"missingFiles.summary.relinked.many" = "Relinked %d cues.";
+"missingFiles.summary.left.none" = "No cue is missing a file now.";
+"missingFiles.summary.left.one" = "1 cue is still missing a file.";
+"missingFiles.summary.left.many" = "%d cues are still missing a file.";
+"missingFiles.choice.question" = "%1$@: %2$d files named “%3$@” were found. Which one should the cue use?";
+"missingFiles.choice.use" = "Use This File";
+"missingFiles.choice.skip" = "Skip";
 "menu.tools.jumpToTargets" = "Jump to Targets of Selected Cues";
 "menu.window.launcher" = "Launcher Window";
 

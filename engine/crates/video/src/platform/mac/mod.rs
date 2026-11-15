@@ -65,14 +65,34 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
         },
         #[cfg(feature = "test-support")]
+        [flag, path] if flag == "--test-decoder" => {
+            use std::io::Write;
+            match testmedia::uses_hardware_decoder(path) {
+                Ok(hardware) => {
+                    let said = if hardware { "hardware" } else { "software" };
+                    let _ = writeln!(std::io::stdout().lock(), "{said}");
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    let _ = writeln!(std::io::stderr().lock(), "{why}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        #[cfg(feature = "test-support")]
         [flag, list] if flag == "--virtual-displays" => match virtual_displays(list) {
             Some(displays) => offscreen(displays, media::LIMITS),
             None => ExitCode::from(super::USAGE_EXIT),
         },
         #[cfg(feature = "test-support")]
-        [flag, list, limits_flag, limits]
-            if flag == "--virtual-displays" && limits_flag == "--media-limits" =>
+        [flag, list, limits_flag, limits, rest @ ..]
+            if flag == "--virtual-displays"
+                && limits_flag == "--media-limits"
+                && (rest.is_empty() || rest == ["--media-clock-by-hand"]) =>
         {
+            if !rest.is_empty() {
+                media::fault::use_hand_clock();
+            }
             match (virtual_displays(list), media_limits(limits)) {
                 (Some(displays), Some(limits)) => offscreen(displays, limits),
                 _ => ExitCode::from(super::USAGE_EXIT),
@@ -90,8 +110,10 @@ pub struct Mac {
     media: HashMap<u64, media::Picture>,
     /// Pictures that failed while drawn, not yet reported.
     failed: Vec<(u64, String)>,
-    /// How long a picture's open and frames may take.
-    limits: media::Limits,
+    /// Test support: the limits on the open and frames of a file a fault switch names
+    /// (`limits_of`).
+    #[cfg(feature = "test-support")]
+    fault_limits: media::Limits,
     /// The displays last read, with their CoreGraphics ids.
     found: Vec<Found>,
     /// Test support: displays that stand in for real ones, drawn offscreen only.
@@ -164,7 +186,7 @@ impl Platform for Mac {
             drawn.push(c.picture);
             // Shown at the next refresh: the frame due then.
             let ahead = media::FRAME_AHEAD;
-            frame_of(&device, media, failed, c, ahead, None)
+            frame_of(&device, media, failed, c, ahead, false)
         })?;
         for picture in drawn {
             if let Some(p) = self.media.get_mut(&picture) {
@@ -181,6 +203,11 @@ impl Platform for Mac {
         if let Some(w) = self.windows.as_mut().and_then(|w| w.open.remove(display)) {
             w.window.close();
         }
+    }
+
+    #[cfg(feature = "test-support")]
+    fn advance_media_clock(&mut self, ms: u64) {
+        media::fault::advance(ms);
     }
 
     #[cfg(feature = "test-support")]
@@ -203,11 +230,11 @@ impl Platform for Mac {
     ) -> Result<Vec<[u8; 4]>, String> {
         let gpu = self.gpu.as_mut().map_err(|e| e.clone())?;
         let device = gpu.device_owned();
-        let (media, failed, limits) = (&mut self.media, &mut self.failed, self.limits);
+        let (media, failed) = (&mut self.media, &mut self.failed);
         // Offscreen, a probe shows the frame at the clock exactly: it waits (within the
         // limits) for each picture's decode thread. Never on real displays.
         gpu.probe(size, layers, points, &mut |c| {
-            frame_of(&device, media, failed, c, 0.0, Some(limits))
+            frame_of(&device, media, failed, c, 0.0, true)
         })
     }
 
@@ -219,7 +246,7 @@ impl Platform for Mac {
         offset: f64,
     ) -> Result<(), String> {
         self.gpu.as_ref().map_err(|e| e.clone())?;
-        let source = media::Picture::open(file, still, offset)?;
+        let source = media::Picture::open(file, still, offset, self.limits_of(file))?;
         self.media.insert(picture, source);
         Ok(())
     }
@@ -233,10 +260,9 @@ impl Platform for Mac {
             .into_iter()
             .map(|(p, why)| PictureEvent::Failed(p, why))
             .collect();
-        let limits = self.limits;
         let mut gone = Vec::new();
         for (id, picture) in &mut self.media {
-            match picture.poll(limits) {
+            match picture.poll() {
                 Some(media::Polled::Opened) => events.push(PictureEvent::Opened(*id)),
                 Some(media::Polled::Failed(why)) => {
                     gone.push(*id);
@@ -257,6 +283,20 @@ impl Platform for Mac {
     }
 }
 
+impl Mac {
+    /// The limits on `file`'s open and frames: the shipped ones, or (test support) the shorter
+    /// ones a test gave for the files whose names ask for a fault, so a hung test file fails
+    /// quickly while a good file is never failed by a slow machine.
+    fn limits_of(&self, file: &str) -> media::Limits {
+        #[cfg(feature = "test-support")]
+        if media::fault::named(file) {
+            return self.fault_limits;
+        }
+        let _ = file;
+        media::LIMITS
+    }
+}
+
 /// A cue picture's texture at its position (plus `ahead` seconds), from `media`, if a frame is
 /// ready; a failure is noted in `failed` (the host reports it and drops the picture) and
 /// nothing is drawn for it. With `wait`, waits for the frame (offscreen probes).
@@ -266,7 +306,7 @@ fn frame_of(
     failed: &mut Vec<(u64, String)>,
     cue: &crate::host::CuePicture,
     ahead: f64,
-    wait: Option<media::Limits>,
+    wait: bool,
 ) -> Option<(gpu::Texture, (u32, u32))> {
     let source = media.get_mut(&cue.picture)?;
     match source.frame(device, cue.position + ahead, wait) {
@@ -413,7 +453,8 @@ fn windowed() -> ExitCode {
         }),
         media: HashMap::new(),
         failed: Vec::new(),
-        limits: media::LIMITS,
+        #[cfg(feature = "test-support")]
+        fault_limits: media::LIMITS,
         found: Vec::new(),
         #[cfg(feature = "test-support")]
         virtual_displays: None,
@@ -584,7 +625,7 @@ fn offscreen(displays: Vec<Display>, limits: media::Limits) -> ExitCode {
         windows: None,
         media: HashMap::new(),
         failed: Vec::new(),
-        limits,
+        fault_limits: limits,
         found: Vec::new(),
         virtual_displays: Some(displays),
     });

@@ -51,7 +51,8 @@ Select a cue and use the inspector under the list.
 - A Fade does nothing until one of its levels is switched on, on its Levels tab.
 
 A red triangle in the list marks a cue that cannot run as it stands: a missing file, no target, nothing to fade.
-The Warnings tab of the sidebar says why, and **File > Relink Missing Media…** finds files that have moved.
+The Warnings tab of the sidebar says why, and **Tools > Find Missing Files…** (or the button on a missing file's warning) searches a folder for files
+that have moved.
 
 Undo and Redo cover every edit.
 
@@ -85,7 +86,8 @@ back.
 
 openLab listens for OSC and uses QLab 5's address space where the feature exists, so existing remotes and control
 surfaces set up for QLab can drive it. Passcodes and what each may do (view, edit, control) are set in
-**Workspace Settings > OSC**.
+**Workspace Settings > OSC**. The [OSC reference](osc.md) lists every address openLab answers, how to connect,
+and where it differs from QLab 5.
 
 ## Where things are kept
 

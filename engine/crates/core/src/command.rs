@@ -91,6 +91,7 @@ pub enum CueProperty {
     PreWait {
         value: f64,
     },
+    /// A Wait cue's post-wait is its duration: on a Wait cue this sets the duration.
     PostWait {
         value: f64,
     },
@@ -162,12 +163,13 @@ pub enum CueProperty {
         value: Vec<OscArg>,
     },
     /// Only for Wait and Fade cues: how long the action lasts, in seconds (CUE-02, CT-20, CT-10).
-    /// Finite, from 0 to `MAX_TIME`. A running cue keeps the end it had when its action started.
+    /// Finite, from 0 to `MAX_TIME`. A running Wait or Fade takes the new duration from its start.
     Duration {
         value: f64,
     },
-    /// Only for Load cues: the time it loads its target to, in seconds (CT-14). Finite, from 0 to
-    /// `MAX_TIME`; read when the Load cue's action starts.
+    /// Only for Load cues: the time it loads its target to, in seconds (CT-14). Finite, from
+    /// `-MAX_TIME` to `MAX_TIME` (negative: that long before the target's end); read when the
+    /// Load cue's action starts.
     LoadToTime {
         value: f64,
     },

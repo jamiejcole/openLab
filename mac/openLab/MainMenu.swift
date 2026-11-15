@@ -91,8 +91,6 @@ enum MainMenu {
                 recentItem,
                 item("menu.file.recover", #selector(AppDelegate.recoverAutosaves(_:))),
                 .separator(),
-                item("menu.file.relink", #selector(AppDelegate.relinkMedia(_:))),
-                .separator(),
                 item("menu.file.workspaceSettings", #selector(AppDelegate.showWorkspaceSettings(_:)), ","),
                 .separator(),
                 item("menu.file.close", #selector(NSWindow.performClose(_:)), "w"),
@@ -193,7 +191,8 @@ enum MainMenu {
     }
 
     /// QLab's Tools menu, the parts openLab has: Load to Time (Cmd-T), Renumber (Cmd-R), Delete
-    /// Numbers (Cmd-D), Reveal Target File in Finder.
+    /// Numbers (Cmd-D), Reveal Target File in Finder, Find Missing Files (after Reveal, as QLab
+    /// places its file search).
     private static func toolsMenu() -> NSMenu {
         menu(
             "menu.tools",
@@ -203,6 +202,7 @@ enum MainMenu {
                 item("menu.cues.deleteNumbers", #selector(AppDelegate.deleteNumbers(_:)), "d"),
                 .separator(),
                 item("menu.tools.revealTarget", #selector(AppDelegate.revealTargetFile(_:))),
+                item("menu.tools.findMissingFiles", #selector(AppDelegate.findMissingFiles(_:))),
                 jumpToTargetsItem(),
             ])
     }

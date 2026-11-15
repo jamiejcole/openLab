@@ -17,17 +17,17 @@ use std::time::Duration;
 
 use openlab_core::protocol::{ClientMessage, RequestId, TransportAction};
 use openlab_core::{
-    Command, CueId, CueListId, CueProperty, NumberAssignment, OscAccess, OscPasscode, OscRight,
-    OscRights, WorkspaceId,
+    Command, CueId, CueListId, CueProperty, MAX_TIME, NumberAssignment, OscAccess, OscPasscode,
+    OscRight, OscRights, WorkspaceId,
 };
 use openlab_engine::osc::{
-    CueField, CuePattern, DecodeError, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW, LOCKOUT, MATCH_BUDGET,
-    MAX_ARRAY_DEPTH, MAX_BAD_PASSCODES, MAX_BUNDLE_DEPTH, MAX_FRAME_BYTES, MAX_KNOWN_IPS,
-    MAX_MATCH_CHARS, MAX_MATCHES, MAX_MESSAGES_PER_PACKET, MAX_PACKET_BYTES, MAX_PEERS,
-    MAX_REPLIES_PER_CALL, MAX_REPLY_BYTES_PER_CALL, MAX_REPLY_JSON_BYTES, MAX_UDP_DATAGRAM_BYTES,
-    Osc, OscInput, OscShow, Outcome, Peer, Reply, SINGLE_DOC, Sessions, SlipDecoder, SlipEvent,
-    Target, UDP_IDLE, decode_packet, encode_message, parse_address, reply_message, slip_encode,
-    upper,
+    Address, CUE_VERBS, CueField, CuePattern, DecodeError, GLOBAL_MAX_FAILURES, GLOBAL_WINDOW,
+    LOCKOUT, MATCH_BUDGET, MAX_ARRAY_DEPTH, MAX_BAD_PASSCODES, MAX_BUNDLE_DEPTH, MAX_FRAME_BYTES,
+    MAX_KNOWN_IPS, MAX_MATCH_CHARS, MAX_MATCHES, MAX_MESSAGES_PER_PACKET, MAX_PACKET_BYTES,
+    MAX_PEERS, MAX_REPLIES_PER_CALL, MAX_REPLY_BYTES_PER_CALL, MAX_REPLY_JSON_BYTES,
+    MAX_UDP_DATAGRAM_BYTES, Osc, OscInput, OscShow, Outcome, Peer, Reply, SHAPES, SINGLE_DOC,
+    Sessions, SlipDecoder, SlipEvent, Target, UDP_IDLE, WORDS, decode_packet, encode_message,
+    parse_address, reply_message, slip_encode, upper,
 };
 use proptest::prelude::*;
 use rosc::{OscMessage, OscPacket, OscTime, OscType};
@@ -145,6 +145,7 @@ impl OscShow for Show {
             CueField::Notes => "notes",
             CueField::PreWait => "preWait",
             CueField::PostWait => "postWait",
+            CueField::Duration => "duration",
             CueField::Armed => "armed",
             CueField::Flagged => "flagged",
             CueField::UniqueId => "uniqueID",
@@ -441,6 +442,16 @@ fn cue_properties_are_set_with_commands() {
             set(CueProperty::PostWait { value: 0.25 }),
         ),
         (
+            "duration",
+            OscType::Float(2.5),
+            set(CueProperty::Duration { value: 2.5 }),
+        ),
+        (
+            "duration",
+            OscType::Double(MAX_TIME),
+            set(CueProperty::Duration { value: MAX_TIME }),
+        ),
+        (
             "armed",
             OscType::Int(0),
             set(CueProperty::Armed { value: false }),
@@ -499,6 +510,13 @@ fn bad_property_arguments_get_an_error_reply_and_no_input() {
         ("/cue/1/name", vec![OscType::Int(3)]),
         ("/cue/1/name", vec![s("a"), s("b")]),
         ("/cue/1/preWait", vec![OscType::Float(-1.0)]),
+        ("/cue/1/preWait", vec![OscType::Double(MAX_TIME + 0.5)]),
+        ("/cue/1/postWait", vec![OscType::Double(MAX_TIME + 0.5)]),
+        ("/cue/1/duration", vec![OscType::Float(-0.5)]),
+        ("/cue/1/duration", vec![OscType::Double(MAX_TIME + 0.5)]),
+        ("/cue/1/duration", vec![OscType::Double(f64::NAN)]),
+        ("/cue/1/duration", vec![s("3")]),
+        ("/cue/1/duration", vec![OscType::Int(1), OscType::Int(2)]),
         ("/cue/1/preWait", vec![OscType::Float(f32::NAN)]),
         ("/cue/1/preWait", vec![OscType::Double(f64::INFINITY)]),
         ("/cue/1/armed", vec![OscType::Int(2)]),
@@ -513,7 +531,7 @@ fn bad_property_arguments_get_an_error_reply_and_no_input() {
         assert_eq!(out.replies.len(), 1, "{addr} {args:?}");
         assert_eq!(reply_json(&out.replies[0])["status"], "error");
     }
-    assert_eq!(osc.stats().rejected, 10);
+    assert_eq!(osc.stats().rejected, 17);
 }
 
 #[test]
@@ -566,7 +584,7 @@ fn unknown_cues_and_missing_list_are_error_replies() {
         "/cue/zzz*/start",
         "/cue/[a-c]/start",
         "/cue/{x,y}/start",
-        // No such property on the pseudo-cues, and no action on them.
+        // Nothing running and no playhead: the pseudo-cues reach nothing.
         "/cue/active/name",
         "/cue/selected/name",
         "/cue/playhead/start",
@@ -2306,6 +2324,47 @@ fn selected_and_playhead_are_the_cue_at_the_active_lists_playhead() {
     assert_eq!(reply_json(&out.replies[0])["data"], "20");
 }
 
+/// QLab 5.6.5 (measured): `/cue/selected/start` starts the playhead cue and `/cue/active/stop`
+/// stops every running cue; a write through `/cue/active/` reaches every running cue.
+#[test]
+fn actions_and_writes_go_through_selected_playhead_and_active() {
+    let mut show = Show::open();
+    let mut osc = quiet_osc();
+    show.playheads.insert(LIST, CUE_1);
+    assert_eq!(
+        one_input(&mut osc, &show, "/cue/selected/start", vec![]),
+        transport(TransportAction::Start { cue: CUE_1 })
+    );
+    assert_eq!(
+        one_input(&mut osc, &show, "/cue/playhead/hardStop", vec![]),
+        transport(TransportAction::HardStop { cue: CUE_1 })
+    );
+    show.running = vec![CUE_1, CUE_20];
+    let out = send(&mut osc, &show, udp(), T0, &msg("/cue/active/stop", vec![]));
+    assert_eq!(
+        out.inputs,
+        vec![
+            transport(TransportAction::Stop {
+                cue: CUE_1,
+                fade_out: None
+            }),
+            transport(TransportAction::Stop {
+                cue: CUE_20,
+                fade_out: None
+            }),
+        ]
+    );
+    assert!(out.replies.is_empty());
+    let out = send(
+        &mut osc,
+        &show,
+        udp(),
+        T0,
+        &msg("/cue/active/duration", vec![OscType::Float(4.0)]),
+    );
+    assert_eq!(out.inputs.len(), 2);
+}
+
 #[test]
 fn active_answers_once_per_running_cue_and_errors_when_nothing_runs() {
     let mut show = Show::open();
@@ -3576,6 +3635,7 @@ fn classified() -> Vec<(OscMessage, OscRight)> {
         // View: reads, and writing notes.
         (msg("/cue/1/name", vec![]), View),
         (msg("/cue/1/preWait", vec![]), View),
+        (msg("/cue/1/duration", vec![]), View),
         (msg("/cue/selected/name", vec![]), View),
         (msg("/cue/*/name", vec![]), View),
         (msg(&format!("{cue}/name"), vec![]), View),
@@ -3591,6 +3651,7 @@ fn classified() -> Vec<(OscMessage, OscRight)> {
         (msg("/cue/1/number", vec![s("9")]), Edit),
         (msg("/cue/1/preWait", vec![OscType::Float(2.0)]), Edit),
         (msg("/cue/1/postWait", vec![OscType::Float(2.0)]), Edit),
+        (msg("/cue/1/duration", vec![OscType::Float(2.0)]), Edit),
         (msg("/cue/1/armed", vec![OscType::Int(0)]), Edit),
         (msg("/cue/1/flagged", vec![OscType::Int(1)]), Edit),
         (msg("/cue/*/name", vec![s("All")]), Edit),
@@ -3619,6 +3680,8 @@ fn classified() -> Vec<(OscMessage, OscRight)> {
         (msg("/cue/1/reset", vec![]), Control),
         (msg("/cue/1/preview", vec![]), Control),
         (msg("/cue/*/start", vec![]), Control),
+        (msg("/cue/selected/start", vec![]), Control),
+        (msg("/cue/active/stop", vec![]), Control),
         (msg(&format!("{cue}/start"), vec![]), Control),
         // Nothing answers to this; it is classed with transport.
         (msg("/no/such/thing", vec![]), Control),
@@ -4256,4 +4319,92 @@ fn a_connected_peer_cannot_search_the_table_for_more_rights() {
     assert!(!allowed(&mut osc, &show, udp(), &msg("/go", vec![])));
     // It is still connected, with its own rights.
     assert!(osc.is_connected(udp()));
+}
+
+/// Every address OSC answers has its own row in the user's OSC reference (a table row whose first
+/// cell is the address): the one-word addresses and cue verbs from the tables the parser reads,
+/// and the rows for each longer shape it answers. A shape the parser gains without rows here
+/// fails too.
+#[test]
+fn every_address_osc_answers_is_in_the_user_reference() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/osc.md");
+    let doc = std::fs::read_to_string(&path).unwrap();
+    let rows: Vec<&str> = doc
+        .lines()
+        .filter_map(|line| line.strip_prefix("| `"))
+        .filter_map(|cell| cell.split_once("` |").map(|(address, _)| address))
+        .collect();
+    // The rows each shape of more than one part needs, and an address of that shape.
+    let shape_rows: &[((&str, usize), &[&str], &str)] = &[
+        (
+            ("playhead", 2),
+            &["/playhead/next", "/playhead/previous", "/playhead/{number}"],
+            "/playhead/next",
+        ),
+        (
+            ("select", 2),
+            &["/select/next", "/select/previous", "/select/{number}"],
+            "/select/5",
+        ),
+        (
+            ("cue", 3),
+            &[
+                "/cue/{number}/...",
+                "/cue/selected/...",
+                "/cue/playhead/...",
+                "/cue/active/...",
+            ],
+            "/cue/selected/name",
+        ),
+        (
+            ("cue_id", 3),
+            &["/cue_id/{id}/..."],
+            "/cue_id/00000000-0000-0000-0000-000000000001/name",
+        ),
+    ];
+    let mut shapes: Vec<(&str, usize)> = shape_rows.iter().map(|(shape, _, _)| *shape).collect();
+    shapes.sort_unstable();
+    let mut answered = SHAPES.to_vec();
+    answered.sort_unstable();
+    assert_eq!(
+        shapes, answered,
+        "a shape the parser answers has no rows here"
+    );
+    let mut wanted: Vec<String> = WORDS.iter().map(|(word, _)| format!("/{word}")).collect();
+    wanted.extend(
+        CUE_VERBS
+            .iter()
+            .map(|v| format!("/cue/{{number}}/{}", v.name())),
+    );
+    wanted.push("/workspace/{id}/connect".to_owned());
+    for (_, needed, example) in shape_rows {
+        wanted.extend(needed.iter().map(|row| (*row).to_owned()));
+        let parsed = parse_address(example).unwrap();
+        assert!(
+            !matches!(parsed.address, Address::Other(_) | Address::Pattern(_)),
+            "{example}"
+        );
+    }
+    let missing: Vec<&String> = wanted
+        .iter()
+        .filter(|a| !rows.contains(&a.as_str()))
+        .collect();
+    assert!(missing.is_empty(), "no row in docs/osc.md for: {missing:?}");
+    // Each one-word address and verb is answered: parsed, not unknown.
+    for address in WORDS
+        .iter()
+        .map(|(word, _)| format!("/{word}"))
+        .chain(CUE_VERBS.iter().map(|v| format!("/cue/1/{}", v.name())))
+    {
+        let parsed = parse_address(&address).unwrap();
+        assert!(
+            !matches!(parsed.address, Address::Other(_) | Address::Pattern(_)),
+            "{address}"
+        );
+    }
+    // Longer addresses outside the shapes are not answered.
+    for address in ["/playhead/1/x", "/cue/1", "/cue_id/x", "/foo/bar"] {
+        let parsed = parse_address(address).unwrap();
+        assert!(matches!(parsed.address, Address::Other(_)), "{address}");
+    }
 }
