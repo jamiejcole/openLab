@@ -413,7 +413,8 @@ fn millis(samples: SampleTime, rate: NonZeroU32) -> u64 {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeChange {
     /// `reason` is set when `state` is `broken` because of a run-time failure (not for static
-    /// problems, which come as `problems`).
+    /// problems, which come as `problems`), and `device_lost` when `state` is `paused` because
+    /// the cue's output device was lost while it played (nothing to resume).
     CueState {
         cue: CueId,
         state: WireCueState,
@@ -490,8 +491,8 @@ pub struct CueMediaDuration {
 impl RuntimeChange {
     /// The change an engine action stands for, or `None` for actions that are for the mixer
     /// (voices, ramps) or the model (`SetArmed`). Call it after `handle` with the engine that
-    /// returned the actions: a `StateChanged` to `Broken` takes its `reason` from
-    /// `CueEngine::broken_reason`, which is `None` for a cue broken by static problems (those
+    /// returned the actions: a `StateChanged` takes its `reason` from
+    /// `CueEngine::state_reason`, which is `None` for a cue broken by static problems (those
     /// come as `problems`) and for a cue that has been reset since.
     pub fn from_action(action: &Action, engine: &CueEngine) -> Option<Self> {
         let rate = engine.config().sample_rate();
@@ -499,10 +500,7 @@ impl RuntimeChange {
             Action::StateChanged { cue, state, .. } => Self::CueState {
                 cue: *cue,
                 state: (*state).into(),
-                reason: match state {
-                    CueState::Broken => engine.broken_reason(*cue).map(Into::into),
-                    _ => None,
-                },
+                reason: engine.state_reason(*cue, *state).map(Into::into),
             },
             Action::PlayheadChanged { list, cue } => Self::Playhead {
                 list: *list,

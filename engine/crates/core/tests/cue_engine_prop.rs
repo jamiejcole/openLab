@@ -1947,15 +1947,31 @@ impl Run {
                     id
                 ),
                 // A playlist child that failed while paused shows `paused` until the resume and
-                // owns no voice meanwhile (A failure while paused, QLab 5.5.3).
+                // owns no voice meanwhile (A failure while paused, QLab 5.5.3). So does a cue
+                // its lost device left paused (it owns nothing at all).
                 CueState::Paused if run.is_none() => prop_assert!(
-                    self.engine.is_paused(*id)
-                        && self.engine.broken_reason(*id).is_some()
-                        && self.held_in_playlist.contains(id),
+                    self.engine.is_lost(*id)
+                        || (self.engine.is_paused(*id)
+                            && self.engine.broken_reason(*id).is_some()
+                            && self.held_in_playlist.contains(id)),
                     "paused cue {} has no runtime and did not break while paused in a playlist",
                     id
                 ),
                 _ => prop_assert!(run.is_some(), "{:?} cue {} has no runtime", state, id),
+            }
+            // A cue its lost device left paused has no live voice: every voice of its is gone or
+            // has its stop on the way.
+            if self.engine.is_lost(*id) {
+                prop_assert_eq!(state, CueState::Paused);
+                prop_assert!(
+                    !self.sim.voices.values().any(|v| v.cue == *id
+                        && !v.preview
+                        && !v.dead
+                        && !v.has_pending_stop()
+                        && v.stop_end.is_none()),
+                    "cue {} paused by a lost device has a live voice",
+                    id
+                );
             }
             if let Some(run) = run {
                 prop_assert!(run.0 < PREVIEW_RUN_BASE);
@@ -2321,6 +2337,9 @@ impl Run {
                         .find_cue(id)
                         .is_some_and(|c| matches!(c.kind, CueKind::Group { .. }));
                     match st {
+                        CueState::Paused if self.engine.is_lost(id) => {
+                            self.lost.push("left paused");
+                        }
                         CueState::Paused => self.lost.push("paused"),
                         st if is_group && st.is_active() => self.lost.push("group"),
                         _ => {}
@@ -2391,7 +2410,24 @@ impl Run {
                 .is_none_or(|d| d > self.horizon());
         let from = self.engine.playhead(list);
         let start = self.raw.len();
+        let device_lost = matches!(input, Input::DeviceLost);
         self.call(input, kind)?;
+        // Nothing scheduled before the loss of the last device fires after it: no run is left
+        // with a pending wait or continue (a cue it left paused included).
+        if device_lost {
+            prop_assert!(
+                self.engine.next_deadline().is_none(),
+                "a deadline survived the device loss"
+            );
+            for (id, state) in self.engine.cue_states() {
+                prop_assert!(
+                    !state.is_active() || self.engine.is_lost(id),
+                    "cue {} {:?} after the device loss",
+                    id,
+                    state
+                );
+            }
+        }
         // Stepping enters only "start first and enter" groups, or a group the playhead was
         // already inside (Playhead).
         if stepping && let Some(to) = self.engine.playhead(list) {
@@ -3184,8 +3220,9 @@ fn the_generator_reaches_what_the_rules_are_about() {
             *seen.entry(name).or_default() += 1;
         }
     }
-    // DeviceLost reaches running groups, paused runs and broken runs with a continue pending.
-    for what in ["group", "paused", "broken run"] {
+    // DeviceLost reaches running groups, paused runs, broken runs with a continue pending and
+    // cues an earlier failure of their voice for the device left paused.
+    for what in ["group", "paused", "broken run", "left paused"] {
         let n = lost.iter().filter(|l| **l == what).count();
         assert!(n >= 10, "DeviceLost found {what} only {n} times");
     }

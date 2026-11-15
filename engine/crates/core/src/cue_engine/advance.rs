@@ -50,7 +50,7 @@ impl CueEngine {
                     .next_deadline()
                     .filter(|d| *d <= horizon)
                     .map(|d| (d, run.seq, *id)),
-                Slot::Loaded(_) | Slot::Broken(_) => None,
+                Slot::Loaded(_) | Slot::Broken(_) | Slot::Lost(_) => None,
             })
             .min()
             .map(|(d, _, id)| (id, d))

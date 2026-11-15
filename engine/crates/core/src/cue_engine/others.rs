@@ -30,7 +30,7 @@ pub(super) struct Duck {
     frames: SampleTime,
 }
 
-/// The duck stage gain a voice plays at under `db` of ducks and boosts in all: silence at or
+/// The duck stage gain a voice plays at under the duck or boost `db` that applies: silence at or
 /// below [`SILENCE_DB`]; a boost only as far as keeps its master fader at the workspace maximum
 /// (`master` is the loudest its master is at or moving to, linear), so no boost takes a fader
 /// past what the workspace allows.
@@ -52,6 +52,14 @@ fn duck_gain(db: f64, master: f32, limits: LevelLimits) -> f32 {
         db
     };
     db_to_gain(db)
+}
+
+/// What several ducks and boosts in force at once come to, in dB: they do not add, the lowest
+/// applies (measured in QLab 5: a second -12 dB duck beside a -12 dB one changes nothing; a
+/// -20 dB one takes the level to -20). So a duck wins over any boost, and of two boosts the
+/// smaller applies. `None` when there is none.
+fn combined_db(dbs: impl Iterator<Item = f64>) -> Option<f64> {
+    dbs.filter(|d| !d.is_nan()).reduce(f64::min)
 }
 
 /// The loudest the run's master fader is at or moving to (linear): what its voice was given,
@@ -197,8 +205,8 @@ impl CueEngine {
         self.apply_ducks(now, frames, cx);
     }
 
-    /// The duck gain the voice of `cue` should play at: the sum of the ducks of the other cues of
-    /// its list, as `duck_gain` puts it.
+    /// The duck gain the voice of `cue` should play at, from the ducks of the other cues of its
+    /// list (`combined_db`), as `duck_gain` puts it.
     fn duck_for(
         &self,
         cue: CueId,
@@ -207,11 +215,13 @@ impl CueEngine {
         run: &Run,
         limits: LevelLimits,
     ) -> f32 {
-        let db: f64 = ducks
-            .iter()
-            .filter(|(l, own, _)| *l == list && !own.contains(&cue))
-            .map(|(_, _, db)| db)
-            .sum();
+        let db = combined_db(
+            ducks
+                .iter()
+                .filter(|(l, own, _)| *l == list && !own.contains(&cue))
+                .map(|(_, _, db)| *db),
+        )
+        .unwrap_or(0.0);
         duck_gain(db, master_of(run), limits)
     }
 
@@ -333,8 +343,9 @@ impl CueEngine {
                 continue;
             }
             match slot {
-                // A loaded cue is unloaded at once (QLab 5.6.5, measured).
-                Slot::Loaded(_) => {}
+                // A loaded cue is unloaded at once (QLab 5.6.5, measured); a cue left paused by
+                // a lost device is cleared, as a paused cue is stopped.
+                Slot::Loaded(_) | Slot::Lost(_) => {}
                 Slot::Active(run) => {
                     if run.stop_end.is_some() || run.is_group_stopping() || run.panicked {
                         continue;

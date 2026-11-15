@@ -6,8 +6,9 @@ use crate::cue::{CueKind, GroupMode};
 use crate::model::{CueId, Workspace};
 
 use super::group;
-use super::run::{BrokePaused, DevampWait, Exit, Phase, Slot, Voice};
+use super::run::{BrokePaused, DevampWait, Exit, Lost, Phase, Run, Slot, Voice};
 use super::time::SampleTime;
+use super::timers::Timer;
 use super::types::{BrokenReason, RunId};
 use super::{Ctx, CueEngine, release};
 
@@ -161,7 +162,7 @@ impl CueEngine {
                         && matches!(run.phase, Phase::Action { .. }))
             }
             Some(Slot::Loaded(loaded)) => loaded.run == run_id && !group,
-            Some(Slot::Broken(_)) | None => false,
+            Some(Slot::Broken(_) | Slot::Lost(_)) | None => false,
         };
         if !current {
             return;
@@ -173,6 +174,31 @@ impl CueEngine {
         };
         release(cue, &old, cx);
         match old {
+            // Its device went away while it played or waited (QLab 5, measured: playing in its
+            // action, fading, or counting its pre-wait; its post-wait assumed like the
+            // pre-wait), and was not paused or on its way out (a voice that could not start,
+            // `StartFailed`, never played: broken): it shows paused with its time
+            // standing still. It keeps nothing else: its voice is released above and its
+            // pre-wait, post-wait and follow are gone, so nothing of it sounds or fires when the
+            // device returns. Its group hears a stop, as for any device loss.
+            Slot::Active(run)
+                if reason == BrokenReason::DeviceLost
+                    && !unplayed
+                    && let Some(lost) = self.lost_at(cue, &run, cx.now) =>
+            {
+                // A wait whose device is back already has nothing to show.
+                if !(lost.clears_on_return && self.device_back(cue)) {
+                    self.slots.insert(cue, Slot::Lost(lost));
+                }
+                // One that was playing leaves its group paused with it.
+                let exit = if lost.clears_on_return {
+                    Exit::Stopped
+                } else {
+                    Exit::Lost
+                };
+                cx.vacated.push((run.started_in, cx.now, exit));
+                self.report(cue, before, cx.now, cx);
+            }
             // Being stopped with a fade, or fading out in a panic (a workspace Panic or the
             // cue's own): it was leaving anyway and the failure only ends that early. It ends as
             // its stop would have, but broken so the failure shows: its group hears a stop, and
@@ -249,10 +275,58 @@ impl CueEngine {
                 // A playlist moves on past a child that broke (unless it halted).
                 self.child_action_done(cue, seq, started_in, cx.now, cx);
             }
-            Slot::Loaded(_) | Slot::Broken(_) => {
+            Slot::Loaded(_) | Slot::Broken(_) | Slot::Lost(_) => {
                 self.slots.insert(cue, Slot::Broken(reason));
                 self.report(cue, before, cx.now, cx);
             }
+        }
+    }
+
+    /// What a run whose device is lost on `now` shows (`Slot::Lost`): the timer that was
+    /// counting, frozen there. `None` for a run that shows broken instead: one paused by the
+    /// operator (QLab 5, measured), being stopped or panicked (it was leaving), or with nothing
+    /// counting.
+    pub(super) fn lost_at(&self, cue: CueId, run: &Run, now: SampleTime) -> Option<Lost> {
+        if run.paused_at.is_some() || run.stop_end.is_some() || run.panicked {
+            return None;
+        }
+        let countdown = |timer, until: SampleTime, total: SampleTime| {
+            let remaining = until.saturating_sub(now).min(total);
+            Lost {
+                timer,
+                elapsed: total.saturating_sub(remaining),
+                remaining: Some(remaining),
+                clears_on_return: true,
+            }
+        };
+        match run.phase {
+            Phase::PreWait { until } => Some(countdown(Timer::PreWait, until, run.pre_wait_total)),
+            // Without a voice (a group, a cue waiting for its probe) its time is the clock's
+            // since its action started, as `timers` counts it while it runs.
+            Phase::Action { start, end } if matches!(run.voice, Voice::None) => {
+                let at = end.map_or(now, |end| now.min(end)).max(start);
+                Some(Lost {
+                    timer: Timer::Action,
+                    elapsed: run.action_offset.saturating_add(at.saturating_sub(start)),
+                    remaining: end.map(|end| end.saturating_sub(at)),
+                    clears_on_return: false,
+                })
+            }
+            Phase::Action { .. } => {
+                let elapsed = run.position(now);
+                Some(Lost {
+                    timer: Timer::Action,
+                    elapsed,
+                    remaining: run
+                        .length
+                        .or_else(|| self.lengths.get(&cue).copied())
+                        .map(|length| length.saturating_sub(elapsed)),
+                    clears_on_return: false,
+                })
+            }
+            Phase::Done => run
+                .post_wait
+                .map(|until| countdown(Timer::PostWait, until, run.post_wait_total)),
         }
     }
 }

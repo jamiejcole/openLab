@@ -42,6 +42,9 @@ final class ScenarioRunner {
         case magnify(id: String, by: CGFloat, at: CGPoint)
         /// `{"advance": 1.5}`: seconds of the engine's device time.
         case advance(Double)
+        /// `{"device": "lose"}` / `{"device": "restore"}`: the virtual output device unplugged as an
+        /// interface would be, or listed again (the engine reopens it at its next list read).
+        case device(lose: Bool)
         /// `{"resize": [width, height]}`: the window's content size in points.
         case resize(CGSize)
         /// `{"tab": "timeLoops"}`: the inspector tab with that identifier.
@@ -85,7 +88,7 @@ final class ScenarioRunner {
 
     static let stepKinds = [
         "select", "click", "double_click", "drag", "type", "key", "scroll", "magnify", "advance", "resize", "tab",
-        "focus", "paste_properties", "shot", "inside", "set_media", "find_missing_files",
+        "focus", "paste_properties", "shot", "inside", "device", "set_media", "find_missing_files",
     ]
 
     // MARK: Parsing
@@ -240,6 +243,12 @@ final class ScenarioRunner {
             let s = try number("advance")
             guard s >= 0, s <= 600 else { throw Failure("\"advance\" must be 0 to 600 seconds") }
             return .advance(s)
+        case "device":
+            switch try string("device") {
+            case "lose": return .device(lose: true)
+            case "restore": return .device(lose: false)
+            default: throw Failure("\"device\" must be \"lose\" or \"restore\"")
+            }
         case "resize":
             guard let a = o["resize"] as? [Double], a.count == 2 else {
                 throw Failure("\"resize\" must be [width, height]")
@@ -573,9 +582,16 @@ final class ScenarioRunner {
             // work run inside this async step, which aborts the process (out-of-order task
             // deallocation). Its clip view is moved instead, by the wheel's distance as it would be.
             // A view that does not handle the wheel itself (a scroll view's document, such as the patch
-            // editor's matrix) passes it to its scroll view: that one is moved the same way.
+            // editor's matrix) passes it to its scroll view: that one is moved the same way. So does a
+            // table, the cue list: its handler is AppKit's, which only hands the wheel to its scroll view.
             let wheel = #selector(NSResponder.scrollWheel(with:))
-            let ownWheel = Swift.type(of: view).instanceMethod(for: wheel) != NSView.instanceMethod(for: wheel)
+            var handler: AnyClass = Swift.type(of: view)
+            while let up = class_getSuperclass(handler),
+                class_getMethodImplementation(up, wheel) == class_getMethodImplementation(handler, wheel)
+            {
+                handler = up
+            }
+            let ownWheel = Bundle(for: handler) != Bundle(for: NSView.self)
             if let scroll = (view as? NSScrollView) ?? (ownWheel ? nil : view.enclosingScrollView) {
                 let clip = scroll.contentView
                 let factor: CGFloat = precise ? 1 : 10
@@ -613,6 +629,13 @@ final class ScenarioRunner {
                 left -= step
             }
             note("advance \(seconds) s")
+        case .device(let lose):
+            guard let engine else { throw Failure("no engine") }
+            guard case .success = await engine.request(lose ? .loseDevice : .restoreDevice) else {
+                throw Failure("the engine refused \(lose ? "lose_device" : "restore_device")")
+            }
+            try await rig.advance(0)
+            note(lose ? "device lost" : "device restored")
         case .resize(let size):
             window.setContentSize(size)
             note("resize \(Int(size.width))x\(Int(size.height))")
@@ -990,6 +1013,7 @@ final class ScenarioRunner {
         case .scroll(let id, _, _, _, _, _): return "scroll \(id)"
         case .magnify(let id, _, _): return "magnify \(id)"
         case .advance(let s): return "advance \(s)"
+        case .device(let lose): return "device \(lose ? "lose" : "restore")"
         case .resize(let s): return "resize \(Int(s.width))x\(Int(s.height))"
         case .tab(let t): return "tab \(t)"
         case .focus(let w): return "focus \(w)"
@@ -1120,6 +1144,27 @@ final class ScenarioShotTests: XCTestCase {
             let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
             XCTFail("\(error)\n\(log)")
         }
+    }
+
+    /// A scroll step over the cue list scrolls it as the wheel does: rows further down come into view.
+    func testAScrollStepOverTheCueListScrollsIt() async throws {
+        let runner = ScenarioRunner(
+            scenario: try scenario(
+                """
+                {"show": "Demo", "window": {"width": 900, "height": 400},
+                 "steps": [{"shot": "top"}, {"scroll": "cue-list", "dy": -400, "at": [0.5, 0.05]}, {"shot": "scrolled"}]}
+                """), out: out)
+        do { try await runner.run() } catch {
+            let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
+            return XCTFail("\(error)\n\(log)")
+        }
+        let log = try String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)
+        let line = try XCTUnwrap(log.split(separator: "\n").first { $0.hasPrefix("scrolled cue-list to y ") }, log)
+        let y = try XCTUnwrap(Int(line.dropFirst("scrolled cue-list to y ".count)), String(line))
+        XCTAssertGreaterThan(y, 0, "the first rows went out of view: \(log)")
+        let shots = try runner.written.map { try Data(contentsOf: $0) }
+        XCTAssertEqual(shots.count, 2, log)
+        XCTAssertNotEqual(shots.first, shots.last, "the list shows other rows after the scroll")
     }
 
     func testAnUnknownIdentifierFailsListingTheIdentifiersShown() async throws {

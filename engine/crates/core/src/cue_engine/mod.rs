@@ -399,7 +399,7 @@ impl CueEngine {
             .values()
             .filter_map(|slot| match slot {
                 Slot::Active(run) => run.next_deadline(),
-                Slot::Loaded(_) | Slot::Broken(_) => None,
+                Slot::Loaded(_) | Slot::Broken(_) | Slot::Lost(_) => None,
             })
             .min()
     }
@@ -483,8 +483,25 @@ impl CueEngine {
         match self.slots.get(&cue)? {
             Slot::Broken(reason) => Some(*reason),
             Slot::Active(run) => run.broken,
-            Slot::Loaded(_) => None,
+            Slot::Loaded(_) | Slot::Lost(_) => None,
         }
+    }
+
+    /// Why a cue shows `state`, as the clients get it: the run-time failure of a broken cue
+    /// (`broken_reason`), and `DeviceLost` for a cue its device's loss left paused. `None`
+    /// otherwise (static problems come as `problems`).
+    pub fn state_reason(&self, cue: CueId, state: CueState) -> Option<BrokenReason> {
+        match state {
+            CueState::Broken => self.broken_reason(cue),
+            CueState::Paused => self.is_lost(cue).then_some(BrokenReason::DeviceLost),
+            _ => None,
+        }
+    }
+
+    /// Whether the cue shows paused because its output device was lost while it played: it
+    /// owns no run or voice, and only a resume, stop, reset or new start clears it.
+    pub fn is_lost(&self, cue: CueId) -> bool {
+        matches!(self.slots.get(&cue), Some(Slot::Lost(_)))
     }
 
     /// The run of a cue that is loaded or running. A broken cue (at run time, or started broken)
@@ -493,7 +510,7 @@ impl CueEngine {
         match self.slots.get(&cue)? {
             Slot::Loaded(loaded) => Some(loaded.run),
             Slot::Active(run) if !run.is_broken() => Some(run.run),
-            Slot::Active(_) | Slot::Broken(_) => None,
+            Slot::Active(_) | Slot::Broken(_) | Slot::Lost(_) => None,
         }
     }
 
@@ -672,7 +689,7 @@ fn release(cue: CueId, slot: &Slot, cx: &mut Ctx) {
             Voice::Loaded => cx.out.push(Action::UnloadVoice { cue, run: run.run }),
             Voice::None => {}
         },
-        Slot::Loaded(_) | Slot::Broken(_) => {}
+        Slot::Loaded(_) | Slot::Broken(_) | Slot::Lost(_) => {}
     }
 }
 

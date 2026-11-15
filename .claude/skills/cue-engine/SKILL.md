@@ -39,7 +39,7 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 - A cue whose voice fails before any audio (`StartFailed`) was only skipped: its auto-follow fires on the failure sample. It reports `broken` while the continue is pending; Stop or Reset cancels it. Its voice is released at once.
 - Applies to single cues and to children of timeline, random and start-first groups. A group whose run saw a child break at run time does not auto-follow; its auto-continue still fires.
 - A playlist whose current child breaks while playing halts and keeps the group's auto-follow instead (`references/groups-playhead.md`). A broken child met by a playlist is skipped and the group still follows out.
-- `device_lost` ends the run as a stop, with no continues at all (`references/panic-transport.md`).
+- `device_lost` ends the run as a stop, with no continues at all (`references/panic-transport.md`). A cue that played or waited is then shown `paused` but owns nothing (`Slot::Lost`, `references/timing.md` Broken state).
 
 ## Paused show starts nothing (single home)
 - Failure while paused (`ActionFailed`/`StartFailed`, not `device_lost`): the voice is lost at once; a skipped cue's auto-follow and a playlist's next child are held to the resume. A Devamp's next cue is cancelled, not held.
@@ -65,6 +65,7 @@ Pure, deterministic core: `CueEngine::handle(&workspace, input, now) -> Vec<Acti
 ## Reviewer checklist
 - Does a new start path charge the chain budget and respect rule 1?
 - Does a new "ends" path respect rule 2 and the paused hold?
+- Does a new path that matches on `Slot` treat `Slot::Lost` as owning nothing (no voice, no deadline, cleared by resume, stop and reset)?
 - Is every new command for a voice dated no earlier than the run's last committed command?
 - Does anything new read the clock or I/O in core, or iterate a hash map?
 - Does a new input name a cue/run pair and ignore stale runs?

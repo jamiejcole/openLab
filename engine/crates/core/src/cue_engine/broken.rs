@@ -31,7 +31,7 @@ use crate::network::{HostKind, check_endpoint, check_message};
 use crate::settings::PatchResolution;
 use crate::validate::can_target;
 
-use super::run::Slot;
+use super::run::{Lost, Slot};
 use super::types::{Action, BrokenReason, CueProblem, MediaStatus};
 use super::{Ctx, CueEngine};
 
@@ -334,6 +334,18 @@ impl CueEngine {
                         Some(PatchResolution::Mapped { .. })
                     )
             })
+    }
+
+    /// Whether a mark a lost device left on `cue` may clear for a start: its device is back, or
+    /// it plays on no device (a group: its children refuse a start on their own).
+    pub(super) fn lost_may_clear(&self, cue: CueId) -> bool {
+        let audio = self
+            .problems
+            .model
+            .facts
+            .get(&cue)
+            .is_some_and(|f| f.audio.is_some());
+        !audio || self.device_back(cue)
     }
 
     /// Whether the cue has static problems now (it reports `broken` while it has no runtime, and
@@ -749,16 +761,28 @@ impl CueEngine {
     /// state is reported until it ends.
     fn refresh(&mut self, cues: BTreeSet<CueId>, cx: &mut Ctx) {
         for cue in cues {
-            // A cue broken by a lost device can play again once its patch is mapped again.
-            if matches!(
+            // A cue broken by a lost device can play again once its patch is mapped again, and
+            // one whose wait the loss froze is idle again (QLab 5); one that was playing keeps
+            // its paused mark until the operator clears it.
+            let cleared = if matches!(
                 self.slots.get(&cue),
-                Some(Slot::Broken(BrokenReason::DeviceLost))
+                Some(
+                    Slot::Broken(BrokenReason::DeviceLost)
+                        | Slot::Lost(Lost {
+                            clears_on_return: true,
+                            ..
+                        })
+                )
             ) && self.device_back(cue)
             {
+                // Reported once the problems below are up to date, so the cue does not show
+                // broken for a moment on the stale ones.
                 let before = self.state(cue);
                 self.slots.remove(&cue);
-                self.report(cue, before, cx.now, cx);
-            }
+                Some(before)
+            } else {
+                None
+            };
             let p = &mut self.problems;
             p.checks = p.checks.saturating_add(1);
             let new = p
@@ -776,10 +800,13 @@ impl CueEngine {
             };
             // What is shown follows from the stored problems, so nothing else changes either.
             if self.problems(cue) == shown_now {
+                if let Some(before) = cleared {
+                    self.report(cue, before, cx.now, cx);
+                }
                 continue;
             }
             let was_shown = !self.problems(cue).is_empty();
-            let before = self.state(cue);
+            let before = cleared.unwrap_or_else(|| self.state(cue));
             let p = &mut self.problems;
             if new.is_empty() {
                 p.current.remove(&cue);

@@ -160,6 +160,37 @@ fn broken_device_lost(msgs: &[ServerMessage], n: u128) -> bool {
     states(msgs, id(n)).contains(&(WireCueState::Broken, Some(WireBrokenReason::DeviceLost)))
 }
 
+/// Whether cue `n` was reported paused by the loss of its device (it played or waited on it).
+fn paused_device_lost(msgs: &[ServerMessage], n: u128) -> bool {
+    states(msgs, id(n)).contains(&(WireCueState::Paused, Some(WireBrokenReason::DeviceLost)))
+}
+
+/// The progress items reported for cue `n`, as `(elapsed, remaining)` in seconds.
+fn progress_of(msgs: &[ServerMessage], n: u128) -> Vec<(f64, Option<f64>)> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            ServerMessage::Progress { items, .. } => Some(items),
+            _ => None,
+        })
+        .flatten()
+        .filter(|i| i.cue == id(n))
+        .map(|i| (i.elapsed, i.remaining))
+        .collect()
+}
+
+/// The pre-wait countdowns reported for cue `n`, as `(elapsed, remaining)` in seconds.
+fn pre_waits_of(msgs: &[ServerMessage], n: u128) -> Vec<(f64, f64)> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            ServerMessage::Progress { waits, .. } => Some(waits),
+            _ => None,
+        })
+        .flatten()
+        .filter(|w| w.cue == id(n) && w.wait == openlab_core::protocol::WireWait::PreWait)
+        .map(|w| (w.elapsed, w.remaining))
+        .collect()
+}
+
 /// Unplugs the device (reported lost) and lets the loop see it and close the stream.
 fn lose(s: &mut DeviceShow) {
     s.fake.unplug(DEV, true);
@@ -529,8 +560,9 @@ fn follow_show() -> DeviceShow {
 }
 
 /// The device goes while cue 1 plays and stays away `outage`. Whatever the length of the
-/// outage: cue 1 stops at once and does not come back, its auto-follow never fires, Resume All
-/// does nothing, and GO plays it from its start.
+/// outage (QLab 5, measured): cue 1 stops at once and shows paused with its time standing still,
+/// it stays so when the device returns, its auto-follow never fires, Resume All only clears the
+/// mark, and GO plays it from its start.
 fn lost_cue_stays_stopped(outage: Duration) {
     let mut s = follow_show();
     s.run(BLOCK * 2);
@@ -539,22 +571,46 @@ fn lost_cue_stays_stopped(outage: Duration) {
     let cut = s.rendered() as usize;
     s.take_outbound();
     lose(&mut s);
-    // At once: a run-time break, voice released, nothing left to play.
+    // At once: shown paused for the lost device, voice released, nothing left to play.
     let msgs = s.take_outbound();
-    assert!(broken_device_lost(&msgs, 1));
-    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
-    s.transport(TransportAction::ResumeAll);
-    assert_eq!(s.control().engine().state(id(1)), CueState::Broken);
-
+    assert!(paused_device_lost(&msgs, 1));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    assert!(s.control().engine().is_lost(id(1)));
+    // The time it stopped at goes out with the loss, though no device renders: the time shown
+    // during the outage is the one shown after it.
+    let at_loss = progress_of(&msgs, 1).last().copied();
     s.wait_wall(outage, 8);
     replug(&mut s);
-    s.run(BLOCK * 4);
-    // The patch maps again: the cue is idle (the break clears), nothing resumed.
-    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    s.run(BLOCK * 40);
+    // Back: still paused, its time standing where the loss left it (sample time stood still
+    // while no device played, and runs on now); nothing resumed, the follow-on cue idle.
+    let msgs = s.take_outbound();
+    let shown = progress_of(&msgs, 1);
+    assert!(shown.len() > 1, "{shown:?}");
+    assert!(shown.windows(2).all(|w| w[0] == w[1]), "{shown:?}");
+    let (elapsed, remaining) = shown[0];
+    assert_eq!(at_loss, Some(shown[0]), "{shown:?}");
+    let played = (cut - at as usize) as f64;
+    assert!(
+        (elapsed * f64::from(RATE) - played).abs() <= BLOCK as f64 * 2.0,
+        "{elapsed} s for {played} frames"
+    );
+    assert!(remaining.is_some_and(|r| r > 0.0), "{remaining:?}");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    assert!(
+        states(&msgs, id(1)).is_empty(),
+        "{:?}",
+        states(&msgs, id(1))
+    );
     assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    // Resume All only clears the mark.
     s.transport(TransportAction::ResumeAll);
     s.run(BLOCK * 4);
     assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(
+        states(&s.take_outbound(), id(1)),
+        vec![(WireCueState::Idle, None)]
+    );
     // Not one sample after the cut, and the follow-on cue never started, though its time
     // came (the show runs past the end of cue 1's file).
     s.run(4000);
@@ -576,6 +632,89 @@ fn lost_cue_stays_stopped(outage: Duration) {
     assert_eq!(first_nonzero(&s.channel(1)), Some(at2 as usize + 3000));
 }
 
+/// GO on the paused-looking cue once the device is back plays it from its start without a
+/// Resume first (QLab 5, measured).
+#[test]
+fn go_on_a_cue_its_lost_device_left_paused_plays_it_from_its_start_once_back() {
+    let mut s = follow_show();
+    s.run(BLOCK * 2);
+    go(&mut s);
+    s.run(640);
+    lose(&mut s);
+    // While away GO on it is refused as broken and the mark stays.
+    s.take_outbound();
+    start(&mut s, 1);
+    assert!(warnings(&s.take_outbound()).contains(&WireWarning::CueBroken { cue: id(1) }));
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    replug(&mut s);
+    s.run(BLOCK * 2);
+    let at = start(&mut s, 1);
+    s.run(1200);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert_eq!(
+        s.channel(0)[at as usize..at as usize + 1000],
+        ramp(1000)[..]
+    );
+}
+
+/// The full progress items reported for cue `n`, as `(elapsed, remaining, position)`.
+fn items_of(msgs: &[ServerMessage], n: u128) -> Vec<(f64, Option<f64>, Option<f64>)> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            ServerMessage::Progress { items, .. } => Some(items),
+            _ => None,
+        })
+        .flatten()
+        .filter(|i| i.cue == id(n))
+        .map(|i| (i.elapsed, i.remaining, i.position))
+        .collect()
+}
+
+/// A 500-frame file looping for ever, played 1700 frames, then paused by the operator or by
+/// the loss of its device: what is reported for it.
+fn stood_after(lost: bool) -> Vec<(f64, Option<f64>, Option<f64>)> {
+    let mut c = audio(1, &wav(&ramp(500)), 0);
+    if let CueKind::Audio {
+        last_slice_play_count,
+        ..
+    } = &mut c.kind
+    {
+        *last_slice_play_count = 0;
+    }
+    let mut s = device_show(workspace(vec![c]));
+    s.run(BLOCK * 2);
+    go(&mut s);
+    s.run(1700);
+    s.take_outbound();
+    if lost {
+        lose(&mut s);
+    } else {
+        s.transport(TransportAction::Pause { cue: id(1) });
+        s.run(BLOCK * 8);
+    }
+    items_of(&s.take_outbound(), 1)
+}
+
+/// A looping cue its lost device left paused shows its time as an operator's pause shows it:
+/// the position in the pass it was on, with the same elapsed and remaining.
+#[test]
+fn a_looping_cue_its_lost_device_left_paused_shows_its_place_in_the_loop() {
+    let lost = stood_after(true);
+    let paused = stood_after(false);
+    let (Some(&(le, lr, lp)), Some(&(pe, pr, pp))) = (lost.last(), paused.last()) else {
+        panic!("{lost:?} {paused:?}");
+    };
+    let block = BLOCK as f64 / f64::from(RATE);
+    let p = lp.expect("a position");
+    assert!(p < 500.0 / f64::from(RATE), "{lost:?}");
+    assert!(
+        (p - pp.expect("a position")).abs() <= block * 2.0,
+        "{lost:?} {paused:?}"
+    );
+    assert!((le - pe).abs() <= block * 2.0, "{lost:?} {paused:?}");
+    assert_eq!(lr.is_some(), pr.is_some(), "{lost:?} {paused:?}");
+}
+
 #[test]
 fn a_cue_playing_when_the_device_goes_stops_and_stays_stopped_after_3_s() {
     lost_cue_stays_stopped(Duration::from_secs(3));
@@ -584,6 +723,153 @@ fn a_cue_playing_when_the_device_goes_stops_and_stays_stopped_after_3_s() {
 #[test]
 fn a_cue_playing_when_the_device_goes_stops_and_stays_stopped_after_20_s() {
     lost_cue_stays_stopped(Duration::from_secs(20));
+}
+
+/// Every state a cue on the lost device can be in, as QLab 5 shows it (measured: playing,
+/// fading as playing, pre-waiting, paused by the operator, idle, loaded; a post-wait assumed
+/// like a pre-wait): playing and fading cues show paused and keep the mark after the return; a
+/// pre-wait and a post-wait show paused with their countdown frozen and are idle again by
+/// themselves on the return; a paused, a loaded and an idle cue show broken while the device
+/// is away and are idle once it is back. Nothing sounds or fires after the loss.
+#[test]
+fn each_state_on_a_lost_device_shows_as_qlab_shows_it() {
+    let long = wav(&dc(40_000, 0.25));
+    let short = wav(&dc(200, 0.5));
+    let mut pre = audio(3, &long, 0);
+    pre.pre_wait = secs(4000);
+    // Its action ends at 200 frames; its auto-continue counts on to 3000.
+    let mut post = audio(4, &short, 1);
+    post.continue_mode = ContinueMode::AutoContinue;
+    post.post_wait = secs(3000);
+    let mut fade = cue(
+        8,
+        CueKind::Fade {
+            target: Some(id(2)),
+            duration: secs(20_000),
+            curve: openlab_core::FadeCurve::Linear,
+            levels: openlab_core::FadeLevels {
+                master_db: Some(-40.0),
+                output_db: vec![],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: false,
+            mode: Default::default(),
+        },
+    );
+    fade.continue_mode = ContinueMode::DoNotContinue;
+    let mut s = device_show(workspace(vec![
+        audio(1, &long, 0),
+        audio(2, &long, 1),
+        pre,
+        post,
+        cue(5, CueKind::Memo),
+        audio(6, &long, 0),
+        audio(7, &long, 1),
+        fade,
+        audio(9, &long, 0),
+    ]));
+    s.run(BLOCK * 2);
+    for n in [1, 2, 3, 4, 6] {
+        start(&mut s, n);
+    }
+    start(&mut s, 8);
+    s.transport(TransportAction::Load {
+        cue: id(7),
+        at: 0.0,
+    });
+    s.run(BLOCK * 8);
+    s.transport(TransportAction::Pause { cue: id(6) });
+    s.run(BLOCK * 2);
+    let engine = s.control().engine();
+    assert_eq!(engine.state(id(1)), CueState::Running);
+    assert_eq!(engine.state(id(2)), CueState::Fading);
+    assert_eq!(engine.state(id(3)), CueState::PreWaiting);
+    assert_eq!(engine.state(id(4)), CueState::PostWaiting);
+    assert_eq!(engine.state(id(6)), CueState::Paused);
+    assert_eq!(engine.state(id(7)), CueState::Loaded);
+    s.take_outbound();
+    let cut = s.rendered() as usize;
+    lose(&mut s);
+    let msgs = s.take_outbound();
+    for n in [1, 2, 3, 4] {
+        assert!(
+            paused_device_lost(&msgs, n),
+            "cue {n}: {:?}",
+            states(&msgs, id(n))
+        );
+    }
+    assert!(broken_device_lost(&msgs, 6), "{:?}", states(&msgs, id(6)));
+    assert_eq!(
+        states(&msgs, id(7)).last(),
+        Some(&(WireCueState::Broken, None))
+    );
+    assert_eq!(states(&msgs, id(9)), vec![(WireCueState::Broken, None)]);
+    // The Fade cue and the memo are not on a device; the Fade (as every wait) stops with the
+    // last device that played.
+    assert_ne!(s.control().engine().state(id(8)), CueState::Fading);
+    assert_eq!(s.control().engine().state(id(5)), CueState::Idle);
+    // Nothing scheduled is left.
+    assert_eq!(s.control().engine().next_deadline(), None);
+    s.wait_wall(Duration::from_secs(5), 4);
+    replug(&mut s);
+    s.run(BLOCK * 40);
+    let msgs = s.take_outbound();
+    // The pre-wait's countdown was frozen and is gone now.
+    assert!(
+        pre_waits_of(&msgs, 3).is_empty(),
+        "{:?}",
+        pre_waits_of(&msgs, 3)
+    );
+    let engine = s.control().engine();
+    for n in [1, 2] {
+        assert_eq!(engine.state(id(n)), CueState::Paused, "cue {n}");
+    }
+    for n in [3, 4, 5, 6, 7, 9] {
+        assert_eq!(engine.state(id(n)), CueState::Idle, "cue {n}");
+    }
+    // Past every deadline set before the loss: nothing sounds or starts.
+    s.run(8000);
+    for ch in 0..2 {
+        assert!(
+            s.channel(ch)[cut..].iter().all(|&v| v == 0.0),
+            "channel {ch}"
+        );
+    }
+    assert_eq!(s.control().engine().state(id(5)), CueState::Idle);
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(s.control_mut().mixer_voice_count(), 0);
+}
+
+/// While the device is away a waiting cue's countdown shows frozen where the loss left it.
+#[test]
+fn a_pre_wait_on_a_lost_device_shows_its_countdown_frozen() {
+    let long = wav(&dc(40_000, 0.25));
+    let mut pre = audio(3, &long, 0);
+    pre.pre_wait = secs(40_000);
+    // A second device keeps sample time running while the first is away.
+    let mut s = two_device_show(vec![pre, audio_b(4, &long, 0)]);
+    start(&mut s, 4);
+    start(&mut s, 3);
+    s.run(BLOCK * 8);
+    let at = s.rendered();
+    unplug(&mut s, DEV);
+    s.take_outbound();
+    for _ in 0..40 {
+        s.play(BLOCK);
+    }
+    let shown = pre_waits_of(&s.take_outbound(), 3);
+    assert!(shown.len() > 1, "{shown:?}");
+    assert!(shown.windows(2).all(|w| w[0] == w[1]), "{shown:?}");
+    assert!(
+        s.control().rendered() > at + BLOCK * 20,
+        "sample time ran on"
+    );
+    assert_eq!(s.control().engine().state(id(3)), CueState::Paused);
+    assert_eq!(s.control().engine().state(id(4)), CueState::Running);
+    // Back: idle by itself, and it never fires.
+    s.fake.plug(listed(DEV, DEV_NAME, 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    assert_eq!(s.control().engine().state(id(3)), CueState::Idle);
 }
 
 #[test]
@@ -609,18 +895,18 @@ fn a_lost_device_stops_exactly_the_runs_on_it_and_breaks_the_cues_routed_to_it()
     let cut = s.rendered();
     lose(&mut s);
     let msgs = s.take_outbound();
-    assert!(broken_device_lost(&msgs, 1));
-    assert!(broken_device_lost(&msgs, 2));
-    // The pre-waiting cue is routed to the device too: it ends with the others (no voice yet).
-    assert!(broken_device_lost(&msgs, 3));
+    // The playing cues show paused for the lost device (QLab 5).
+    assert!(paused_device_lost(&msgs, 1));
+    assert!(paused_device_lost(&msgs, 2));
+    // The pre-waiting cue is routed to the device too: it shows paused with its countdown
+    // frozen (no voice yet).
+    assert!(paused_device_lost(&msgs, 3));
     // The idle cue routed to the device has no run: it shows broken for the missing device (a
     // static problem, no reason).
     assert_eq!(states(&msgs, id(4)), vec![(WireCueState::Broken, None)]);
     for n in [1, 2, 3] {
-        assert_eq!(
-            s.control().engine().broken_reason(id(n)),
-            Some(openlab_core::BrokenReason::DeviceLost)
-        );
+        assert!(s.control().engine().is_lost(id(n)), "cue {n}");
+        assert_eq!(s.control().engine().run_of(id(n)), None, "cue {n}");
     }
     assert!(
         logs(&msgs, LogLevel::Error)
@@ -638,13 +924,18 @@ fn a_lost_device_stops_exactly_the_runs_on_it_and_breaks_the_cues_routed_to_it()
 
     replug(&mut s);
     let msgs = s.take_outbound();
-    // Back: the cues un-break (idle); nothing they played resumes.
-    for n in [1, 2, 3, 4] {
+    // Back: the waiting and the idle cues are idle again; the cues that played keep their
+    // paused mark; nothing they played resumes.
+    for n in [3, 4] {
         assert_eq!(
             states(&msgs, id(n)).last(),
             Some(&(WireCueState::Idle, None)),
             "cue {n}"
         );
+    }
+    for n in [1, 2] {
+        assert!(states(&msgs, id(n)).is_empty(), "cue {n}");
+        assert_eq!(s.control().engine().state(id(n)), CueState::Paused);
     }
     s.run(BLOCK * 2);
     assert_eq!(s.control().live_voices(), 0, "the failed voices are freed");
@@ -806,7 +1097,7 @@ fn a_mixer_the_host_still_holds_is_polled_until_it_comes_back_and_nothing_resume
     assert!(!s.control().device_down());
     s.run(2400);
     assert!(s.channel(0)[cut..].iter().all(|&v| v == 0.0));
-    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
 }
 
 #[test]
@@ -836,7 +1127,7 @@ fn a_device_that_keeps_dropping_out_leaks_no_voices_or_streams() {
         // Each time the cue plays on the device when it goes, and is gone with it.
         s.take_outbound();
         lose(&mut s);
-        assert!(broken_device_lost(&s.take_outbound(), 1), "outage {outage}");
+        assert!(paused_device_lost(&s.take_outbound(), 1), "outage {outage}");
         s.wait_wall(Duration::from_secs(1), 2);
         replug(&mut s);
         s.run(BLOCK * 6);
@@ -847,7 +1138,7 @@ fn a_device_that_keeps_dropping_out_leaks_no_voices_or_streams() {
             s.control().primed().len(),
             "outage {outage}"
         );
-        assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+        assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
         start(&mut s, 1);
         s.run(BLOCK * 2);
         assert_eq!(s.control().engine().state(id(1)), CueState::Running);
@@ -871,7 +1162,7 @@ fn a_post_wait_armed_before_the_loss_does_not_fire_after_it() {
     // Sample time resumes: the post-wait (2000 frames from the start) would have fallen here.
     s.run(6000);
     assert_eq!(first_nonzero(&s.channel(1)), None, "cue 2 never started");
-    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
     assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
     // GO on cue 1 again auto-continues once, from its own post-wait.
     let at = start(&mut s, 1);
@@ -899,13 +1190,22 @@ fn a_timeline_group_hit_by_a_loss_ends_whole_and_nothing_starts_after_the_return
     assert_eq!(s.control().engine().state(id(2)), CueState::PreWaiting);
     let cut = s.rendered() as usize;
     lose(&mut s);
-    assert!(broken_device_lost(&s.take_outbound(), 2));
+    let msgs = s.take_outbound();
+    assert!(paused_device_lost(&msgs, 1));
+    assert!(paused_device_lost(&msgs, 2));
     s.wait_wall(Duration::from_secs(3), 4);
     replug(&mut s);
     s.run(4000);
-    for n in [1, 2, 10] {
-        assert_eq!(s.control().engine().state(id(n)), CueState::Idle, "cue {n}");
+    // The child that played keeps its mark and so does the group (whichever child failed
+    // last); the pre-waiting one is idle.
+    for n in [1, 10] {
+        assert_eq!(
+            s.control().engine().state(id(n)),
+            CueState::Paused,
+            "cue {n}"
+        );
     }
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
     assert!(s.channel(0)[cut..].iter().all(|&v| v == 0.0));
     assert!(s.channel(1)[cut..].iter().all(|&v| v == 0.0));
     assert_eq!(s.control().live_voices(), 0);
@@ -930,8 +1230,10 @@ fn nothing_starts_after_the_return(mut s: DeviceShow, cues: &[u128]) {
     }
     for &n in cues {
         let state = s.control().engine().state(id(n));
+        // A cue that played keeps the paused mark its lost device left (it owns nothing).
         assert!(
-            matches!(state, CueState::Idle),
+            state == CueState::Idle
+                || (state == CueState::Paused && s.control().engine().is_lost(id(n))),
             "cue {n} is {state:?} after the return"
         );
     }
@@ -1071,7 +1373,7 @@ fn a_silent_stream_is_warned_about_at_500_ms_and_lost_as_stalled_at_3_s() {
     );
     let msgs = s.take_outbound();
     // As an unplug: the cue stops at once, a log and the device_lost notice go out.
-    assert!(broken_device_lost(&msgs, 1));
+    assert!(paused_device_lost(&msgs, 1));
     assert!(
         logs(&msgs, LogLevel::Error)
             .iter()
@@ -1142,9 +1444,9 @@ fn a_stalled_device_is_reopened_and_a_cue_plays_again_on_go() {
     assert!(!s.control().device_down(), "the stream was not reopened");
     assert_eq!(s.fake.opens(), opens + 1);
     s.run(BLOCK * 2);
-    // Voices released, cues un-break; nothing resumed by itself.
+    // Voices released; nothing resumed by itself (the cue keeps its paused mark).
     assert_eq!(s.control().live_voices(), 0);
-    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
     let at = start(&mut s, 1);
     s.run(BLOCK * 4);
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
@@ -2271,9 +2573,9 @@ fn losing_the_second_device_stops_only_its_cues() {
     let msgs = s.take_outbound();
     assert!(!s.control().output_up(DEV2_NAME));
     assert!(!s.control().device_down());
-    assert!(broken_device_lost(&msgs, 2));
-    assert!(!broken_device_lost(&msgs, 1));
-    assert!(!broken_device_lost(&msgs, 3));
+    assert!(paused_device_lost(&msgs, 2));
+    assert!(states(&msgs, id(1)).is_empty());
+    assert!(states(&msgs, id(3)).is_empty());
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     assert_eq!(s.control().engine().state(id(3)), CueState::PreWaiting);
     assert_eq!(notices(&msgs), vec!["device_lost".to_owned()]);
@@ -2300,7 +2602,8 @@ fn losing_the_second_device_stops_only_its_cues() {
     s.fake.plug(listed(DEV2, DEV2_NAME, 2));
     s.wait_wall(Duration::from_secs(1), 2);
     s.wait_output(DEV2_NAME);
-    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    // Its cue keeps its paused mark until it is cleared (QLab 5); nothing resumed.
+    assert_eq!(s.control().engine().state(id(2)), CueState::Paused);
     // Its patch's gains come back over the de-zipper.
     s.run(400);
     let before = s.device_channel(DEV2, 0).len();
@@ -2331,8 +2634,8 @@ fn losing_the_primary_with_a_second_device_up_keeps_the_rest_of_the_show_running
     let msgs = s.take_outbound();
     assert!(s.control().device_down());
     assert!(s.control().clock_on_wall());
-    assert!(broken_device_lost(&msgs, 1));
-    assert!(!broken_device_lost(&msgs, 2));
+    assert!(paused_device_lost(&msgs, 1));
+    assert!(states(&msgs, id(2)).is_empty());
     assert_eq!(s.control().engine().state(id(2)), CueState::Running);
     assert_eq!(s.control().engine().state(id(3)), CueState::PreWaiting);
     // Time goes on: the pre-wait runs out and cue 3 plays on the second device.
@@ -2369,8 +2672,8 @@ fn losing_the_primary_with_a_second_device_up_keeps_the_rest_of_the_show_running
         clock.windows(2).all(|w| w[0] <= w[1]),
         "the clock went back: {clock:?}"
     );
-    // Cue 1 plays again from GO.
-    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    // Cue 1 plays again from GO (it showed paused until then).
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
     let before = s.channel(0).len();
     start(&mut s, 1);
     s.run(600);
@@ -2597,7 +2900,7 @@ fn a_device_that_cannot_reopen_at_its_new_size_is_lost() {
     s.settle_devices();
     let msgs = s.take_outbound();
     assert!(!s.control().output_up(DEV2_NAME));
-    assert!(broken_device_lost(&msgs, 2));
+    assert!(paused_device_lost(&msgs, 2));
     assert_eq!(s.control().engine().state(id(1)), CueState::Running);
     assert!(!s.control().device_down());
 }
@@ -2697,7 +3000,7 @@ fn a_primary_hung_in_a_buffer_size_change_is_lost_and_the_show_runs_on() {
     let after = (
         s.control().rendered(),
         s.control().engine().state(id(1)),
-        s.control().engine().broken_reason(id(1)),
+        s.control().engine().is_lost(id(1)),
         s.control().engine().state(id(3)),
     );
     let heard3 = heard(&s.device_channel(DEV2, 1)[dev2_before..]);
@@ -2707,8 +3010,8 @@ fn a_primary_hung_in_a_buffer_size_change_is_lost_and_the_show_runs_on() {
         "the master clock ran on: {at} -> {}",
         after.0
     );
-    assert_eq!(after.1, CueState::Broken);
-    assert_eq!(after.2, Some(openlab_core::BrokenReason::DeviceLost));
+    assert_eq!(after.1, CueState::Paused);
+    assert!(after.2);
     assert_ne!(
         after.3,
         CueState::PreWaiting,
@@ -2742,7 +3045,7 @@ fn a_second_device_hung_in_a_buffer_size_change_is_lost_alone() {
     let msgs = s.take_outbound();
     let states = (
         s.control().engine().state(id(1)),
-        s.control().engine().broken_reason(id(2)),
+        s.control().engine().is_lost(id(2)),
     );
     // Reported to the app as needing a restart; the primary plays on.
     let outputs: Vec<OutputState> = s
@@ -2753,12 +3056,12 @@ fn a_second_device_hung_in_a_buffer_size_change_is_lost_alone() {
         .collect();
     s.fake.open_gate();
     assert!(
-        broken_device_lost(&msgs, 2),
+        paused_device_lost(&msgs, 2),
         "{:?}",
         logs(&msgs, LogLevel::Error)
     );
     assert_eq!(states.0, CueState::Running);
-    assert_eq!(states.1, Some(openlab_core::BrokenReason::DeviceLost));
+    assert!(states.1);
     assert!(!s.control().device_down());
     assert_eq!(outputs, vec![OutputState::Up, OutputState::Failed]);
 }
@@ -2782,13 +3085,13 @@ fn the_sole_device_hung_in_a_buffer_size_change_is_lost_like_any_sole_device() {
     }
     let msgs = s.take_outbound();
     let states = (
-        s.control().engine().broken_reason(id(1)),
+        s.control().engine().is_lost(id(1)),
         s.control().engine().state(id(3)),
         s.control().device_down(),
     );
     s.fake.open_gate();
-    assert!(broken_device_lost(&msgs, 1));
-    assert_eq!(states.0, Some(openlab_core::BrokenReason::DeviceLost));
+    assert!(paused_device_lost(&msgs, 1));
+    assert!(states.0);
     assert_ne!(states.1, CueState::PreWaiting, "the wait was not cancelled");
     assert!(states.2, "the device counts as away");
 }
@@ -2953,7 +3256,7 @@ fn a_lost_device_its_patch_moved_away_from_is_closed_and_forgets_its_voices() {
     start(&mut s, 2);
     s.run(BLOCK * 4);
     unplug(&mut s, DEV2);
-    assert!(broken_device_lost(&s.take_outbound(), 2));
+    assert!(paused_device_lost(&s.take_outbound(), 2));
     map_b(&mut s, DEV_NAME);
     s.run(BLOCK * 4);
     let msgs = s.take_outbound();

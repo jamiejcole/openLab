@@ -330,6 +330,8 @@ pub fn fresh_path(ext: &str) -> PathBuf {
 fn process_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
+        // Cargo makes it when it builds the tests, not when it runs them: it may since be gone.
+        std::fs::create_dir_all(env!("CARGO_TARGET_TMPDIR")).unwrap();
         let dir = tempfile::Builder::new()
             .prefix(&format!("control-{}-", std::process::id()))
             .tempdir_in(env!("CARGO_TARGET_TMPDIR"))

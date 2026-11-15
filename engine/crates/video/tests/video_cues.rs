@@ -1139,6 +1139,7 @@ fn relink_finds_a_video_cues_moved_file_and_it_plays() {
         id: id_,
         request: Request::Relink {
             folder: lib.to_str().unwrap().into(),
+            preview: false,
         },
     });
     let relinked = replies.iter().find_map(|m| match m {
@@ -1146,7 +1147,7 @@ fn relink_finds_a_video_cues_moved_file_and_it_plays() {
             outcome: Outcome::Ok(body),
             ..
         } => match &body.data {
-            Some(ResultData::Relink { relinked, .. }) => Some(*relinked),
+            Some(ResultData::Relink(report)) => Some(report.relinked),
             _ => None,
         },
         _ => None,

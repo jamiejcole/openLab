@@ -37,6 +37,15 @@ enum ProblemText {
 
     static func reason(_ r: WireBrokenReason) -> String { loc("broken.\(r.rawValue)") }
 
+    /// Why a cue reads `paused` with a reason: its output device was lost while it played or
+    /// waited, so there is nothing to resume.
+    static func pausedReason(_ r: WireBrokenReason) -> String { loc("paused.\(r.rawValue)") }
+
+    /// A run-time reason as the cue's state calls for it.
+    static func reason(_ r: WireBrokenReason, state: WireCueState?) -> String {
+        state == .paused ? pausedReason(r) : reason(r)
+    }
+
     private static func render(
         _ family: String, _ type: String, specific: String?, fields: JSONValue, label: Label
     ) -> String {
@@ -101,10 +110,11 @@ enum WarningRows {
         func walk(_ cues: [Cue]) {
             for cue in cues {
                 let problems = store.problems[cue.id] ?? []
-                let reason = store.cueStates[cue.id]?.reason
+                let run = store.cueStates[cue.id]
+                let reason = run?.reason
                 if !problems.isEmpty || reason != nil {
                     var reasons = problems.map { ProblemText.problem($0, label: label) }
-                    if let reason { reasons.append(ProblemText.reason(reason)) }
+                    if let reason { reasons.append(ProblemText.reason(reason, state: run?.state)) }
                     rows.append(
                         WarningRow(
                             id: "c:\(cue.id.raw)", cue: cue.id,

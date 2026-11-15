@@ -571,6 +571,12 @@ impl DocCx<'_> {
         }
         runs.sort();
         let failed = runs.len();
+        let stood = self.doc.voices.progress(self.eng.rendered());
+        // A mark cleared since the last report pass leaves no old time for a new loss to show.
+        let engine = self.doc.model.engine();
+        self.doc
+            .lost_progress
+            .retain(|(cue, ..)| engine.is_lost(*cue));
         for (cue, run) in runs {
             self.feed(
                 Input::ActionFailed {
@@ -581,6 +587,16 @@ impl DocCx<'_> {
                 now,
             );
         }
+        for item in stood {
+            if self.doc.model.engine().is_lost(item.0) {
+                self.doc.lost_progress.retain(|(cue, ..)| *cue != item.0);
+                self.doc.lost_progress.push(item);
+            }
+        }
+        // A cue the loss left paused shows the time it stopped at now: with no device
+        // rendering, progress would otherwise not be due until the device is back, and the
+        // operator would see the time jump on the return.
+        self.doc.last_progress = None;
         if last {
             // Nothing else scheduled before the loss may fire after the return: every other
             // active run (memo, Wait, control, Fade, group; broken runs with a pending

@@ -157,7 +157,7 @@ fn run_of_is_none_for_every_kind_of_broken_cue() {
         Input::ActionFailed {
             cue: id(1),
             run,
-            reason: BrokenReason::DeviceLost,
+            reason: BrokenReason::StreamFailed,
         },
     );
     assert_eq!(rig.engine.state(id(1)), CueState::Broken);

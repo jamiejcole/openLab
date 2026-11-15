@@ -957,6 +957,10 @@ final class GestureEvent: NSEvent {
     override var scrollingDeltaY: CGFloat { delta.y }
     override var hasPreciseScrollingDeltas: Bool { precise }
     override var modifierFlags: NSEvent.ModifierFlags { flags }
+    // One wheel step outside any trackpad gesture: AppKit's tables and scroll views read these, and
+    // NSEvent's own getters assert on an event the window server did not make.
+    override var phase: NSEvent.Phase { [] }
+    override var momentumPhase: NSEvent.Phase { [] }
 }
 
 /// The texts shown in a sheet (an alert's message).

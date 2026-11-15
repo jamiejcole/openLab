@@ -1,0 +1,29 @@
+{
+  "about": "The output device lost while Intro plays (#694): its row shows the paused mark with its time standing still, the idle audio cues routed to the device show broken; the Warnings tab lists the loss. Reconnected: Intro keeps its mark, the others are idle again. Resume All clears the mark; GO plays Intro from its start.",
+  "show": "Demo",
+  "media": {"media/a.wav": 30},
+  "window": {"width": 1300, "height": 850},
+  "steps": [
+    {"click": "toggle-sidebar"},
+    {"select": "1"},
+    {"key": "space"},
+    {"advance": 3},
+    {"shot": "playing"},
+    {"device": "lose"},
+    {"advance": 1},
+    {"select": "2.1"},
+    {"shot": "lost"},
+    {"click": "sidebar-tabs", "at": [0.84, 0.5]},
+    {"shot": "lost-warnings"},
+    {"device": "restore"},
+    {"advance": 3},
+    {"shot": "back"},
+    {"key": "]"},
+    {"advance": 0.5},
+    {"shot": "cleared"},
+    {"select": "1"},
+    {"key": "space"},
+    {"advance": 1},
+    {"shot": "go-from-start"}
+  ]
+}
