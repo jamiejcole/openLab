@@ -4,7 +4,9 @@
 //! test needs a checked-in movie. Every frame is the test card ([`crate::card`]) for its own
 //! frame number: a test that reads a stage back knows which frame of the file is shown.
 //!
-//! Movies are written with AVFoundation's own encoders (H.264, HEVC, ProRes 422 Proxy); stills
+//! Movies are written with AVFoundation's own software encoders (H.264, HEVC, ProRes 422 Proxy:
+//! the hardware encoder is turned off, so making a test file never depends on a machine's
+//! video hardware, which a virtual machine shares and can fail under load); stills
 //! with ImageIO (PNG, JPEG, TIFF). A codec this Mac cannot encode fails the command, and the
 //! test that wanted it fails: it never passes without the file.
 
@@ -17,7 +19,7 @@ use objc2_av_foundation::{
     AVAssetWriter, AVAssetWriterInput, AVAssetWriterInputPixelBufferAdaptor, AVAssetWriterStatus,
     AVFileTypeQuickTimeMovie, AVMediaTypeVideo, AVVideoCodecKey,
     AVVideoCodecTypeAppleProRes422Proxy, AVVideoCodecTypeH264, AVVideoCodecTypeHEVC,
-    AVVideoHeightKey, AVVideoWidthKey,
+    AVVideoEncoderSpecificationKey, AVVideoHeightKey, AVVideoWidthKey,
 };
 use objc2_core_foundation::{CFData, CFRetained, CFString, CFURL};
 use objc2_core_graphics::{
@@ -89,14 +91,28 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
         let file_type = AVFileTypeQuickTimeMovie.ok_or("file type missing")?;
         let writer = AVAssetWriter::assetWriterWithURL_fileType_error(&url, file_type)
             .map_err(|e| e.localizedDescription().to_string())?;
-        let keys: [&NSString; 3] = [
+        // VideoToolbox's encoder specification key (its string value): false means hardware
+        // encode is never used.
+        let no_hardware = NSDictionary::from_slices(
+            &[&*NSString::from_str(
+                "EnableHardwareAcceleratedVideoEncoder",
+            )],
+            &[&*NSNumber::new_bool(false)],
+        );
+        let keys: [&NSString; 4] = [
             AVVideoCodecKey.ok_or("key missing")?,
             AVVideoWidthKey.ok_or("key missing")?,
             AVVideoHeightKey.ok_or("key missing")?,
+            AVVideoEncoderSpecificationKey.ok_or("key missing")?,
         ];
         let width = NSNumber::new_usize(card::WIDTH);
         let height = NSNumber::new_usize(card::HEIGHT);
-        let values: [&AnyObject; 3] = [codec.as_ref(), width.as_ref(), height.as_ref()];
+        let values: [&AnyObject; 4] = [
+            codec.as_ref(),
+            width.as_ref(),
+            height.as_ref(),
+            no_hardware.as_ref(),
+        ];
         let settings = NSDictionary::from_slices(&keys, &values);
         let media = AVMediaTypeVideo.ok_or("media type missing")?;
         let input = AVAssetWriterInput::assetWriterInputWithMediaType_outputSettings(

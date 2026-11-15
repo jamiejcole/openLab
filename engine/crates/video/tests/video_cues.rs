@@ -38,10 +38,44 @@ fn stage_id() -> StageId {
     StageId(Uuid::from_u128(0x5_0001))
 }
 
-/// Makes `name` in `dir` with the stage host: a movie of `frames` frames at `fps` for a codec,
-/// or frame 0's card as a still.
+/// Makes `name` in `dir`: a movie of `frames` frames at `fps` for a codec, or frame 0's card as
+/// a still. Each kind of file is made once per test run by the stage host (`--make-test-media`)
+/// and copied for each test, which may then move, damage or replace its copy.
 fn make(dir: &Path, name: &str, kind: &str, frames_fps: Option<(u16, u16)>) -> PathBuf {
     let path = dir.join(name);
+    std::fs::copy(fixture(kind, frames_fps), &path).unwrap();
+    path
+}
+
+/// The run's one copy of a test file, made on first use. Made one at a time, so tests running
+/// at once never encode together.
+fn fixture(kind: &str, frames_fps: Option<(u16, u16)>) -> PathBuf {
+    static MADE: std::sync::OnceLock<std::sync::Mutex<(PathBuf, Vec<PathBuf>)>> =
+        std::sync::OnceLock::new();
+    let made = MADE.get_or_init(|| {
+        // Under the target's own temporary directory, one per test process: kept for the run.
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("video-cues-media-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::sync::Mutex::new((dir, Vec::new()))
+    });
+    let mut made = made
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let ext = match kind {
+        "h264" | "hevc" | "prores" => "mov",
+        "huge-png" => "png",
+        other => other,
+    };
+    let name = match frames_fps {
+        Some((frames, fps)) => format!("{kind}-{frames}-{fps}.{ext}"),
+        None => format!("{kind}.{ext}"),
+    };
+    let path = made.0.join(name);
+    if made.1.contains(&path) {
+        return path;
+    }
     let mut command = Command::new(STAGE_HOST);
     command.arg("--make-test-media").arg(kind).arg(&path);
     if let Some((frames, fps)) = frames_fps {
@@ -53,6 +87,7 @@ fn make(dir: &Path, name: &str, kind: &str, frames_fps: Option<(u16, u16)>) -> P
         "{kind}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    made.1.push(path.clone());
     path
 }
 

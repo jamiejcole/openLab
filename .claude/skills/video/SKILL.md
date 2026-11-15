@@ -53,7 +53,8 @@ Probing Video cues' files and playing their pictures on stages in step with the 
   - HAP (`Hap1`, `Hap5`, `HapY`, ...) is reported unsupported: no decoder for it is built yet (no HAP encoder here to test one with).
 - Anything else is `unsupported` with a reason naming the codec or format.
 - The media catalog tracks a Video cue's file like an Audio cue's (`media_use` gives its kind; `Entry::picture`; `Probe::Picture`; `ProbeAnswer::Pictured`), so missing-file marks, the media watch, the stalled-volume gate and relink all apply unchanged. A file used by an Audio and a Video cue is probed as the kind that asked first (the other cue cannot play it; audio from video files is issue #645).
-- Tests: `tests/video_cues.rs` makes media with the test-support `--make-test-media` (AVFoundation encoders, ImageIO; frames are the test card for their own number).
+- Tests: `tests/video_cues.rs` makes media with the test-support `--make-test-media` (AVFoundation's software encoders, hardware encode off; ImageIO; frames are the test card for their own number).
+  - Each kind of file is made once per test process (`fixture`, one at a time) and copied into each test's folder: a CI virtual machine's paravirtual video hardware failed encodes and decodes intermittently while several tests ran.
   - It probes every codec and still format, damaged and seeded-mutated files (bounded by the probe limit), and Video cues on the real engine (probe problems, the media watch).
   - The probe line is fuzzed with the link (`fuzz/src/stage_link_input.rs`, seeds `fuzz/stage-link-seeds/probe_reports.jsonl`).
   - HAP files cannot be made here (no encoder), so HAP is unsupported for now.
