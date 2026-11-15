@@ -1,0 +1,18 @@
+{
+  "about": "Find Missing Files (#640, flow 1): three cues missing their files, a folder searched, the matches listed ticked, one unticked, Relink; then the cue list.",
+  "show": "Demo",
+  "steps": [
+    {"set_media": "2.1", "file": "media/gone-door.wav"},
+    {"set_media": "2.2", "file": "media/gone-rain.wav"},
+    {"shot": "list-three-missing"},
+    {"find_missing_files": ["gone-door.wav", "deep/er/gone-rain.wav", "o.wav"]},
+    {"shot": "tool-three-found"},
+    {"click": "missing-files-use-1"},
+    {"shot": "tool-rain-unticked"},
+    {"click": "missing-files-relink"},
+    {"advance": 0.5},
+    {"shot": "tool-after-relink"},
+    {"focus": "workspace"},
+    {"shot": "list-after-relink"}
+  ]
+}
