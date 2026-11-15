@@ -198,6 +198,39 @@ pub fn total_frames(slices: &[Slice]) -> Option<u64> {
     })
 }
 
+/// `frames` at rate `from` as frames at rate `to`, rounded to the nearest (saturating; a rate
+/// of 0 gives 0). Equal rates give `frames` itself.
+pub fn frames_at_rate(frames: u64, from: u32, to: u32) -> u64 {
+    if from == to {
+        return frames;
+    }
+    crate::decode::scale_round(frames, to, from)
+}
+
+/// `slices`, planned in frames at rate `from`, as the same table in frames at rate `to`, for a
+/// file `total` frames long at `to`: a voice on a device at another rate than the one its plan
+/// was made at plays this, so its stream and voice agree on its own grid. Each entry's start
+/// and end are rounded to the nearest frame (one entry ends where the next it was contiguous
+/// with starts, so nothing is lost or played twice between them), kept inside `total` and at
+/// least one frame long. Indices and play counts are kept. Equal rates give the table as it is.
+pub fn rescale(slices: &[Slice], from: u32, to: u32, total: u64) -> Vec<Slice> {
+    if from == to {
+        return slices.to_vec();
+    }
+    slices
+        .iter()
+        .map(|s| {
+            let end = frames_at_rate(s.start.saturating_add(s.frames), from, to).min(total);
+            let start = frames_at_rate(s.start, from, to).min(end.saturating_sub(1));
+            Slice {
+                start,
+                frames: end.saturating_sub(start).max(1),
+                ..*s
+            }
+        })
+        .collect()
+}
+
 const NONE: u64 = u64::MAX;
 /// Set in a published cut when the voice plays the target's exit buffer at the boundary.
 const USES_EXIT: u64 = 1 << 63;
@@ -295,6 +328,60 @@ impl StreamLink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A table planned at 48 kHz played at 44.1 kHz: each entry's bounds land on the nearest
+    /// frame at 44.1 kHz, contiguous entries stay contiguous, play counts and indices are kept,
+    /// and the whole is as long in time as before (to within a frame per entry).
+    #[test]
+    fn a_table_rescaled_to_another_rate_keeps_its_bounds_in_time() {
+        let t = [
+            s(0, 4_800, 43_200, Plays::Times(1)),
+            s(0, 0, 48_000, Plays::Infinite),
+            s(1, 48_000, 24_000, Plays::Times(3)),
+        ];
+        let r = rescale(&t, 48_000, 44_100, 72_000 * 441 / 480);
+        assert_eq!(
+            r,
+            vec![
+                s(0, 4_410, 39_690, Plays::Times(1)),
+                s(0, 0, 44_100, Plays::Infinite),
+                s(1, 44_100, 22_050, Plays::Times(3)),
+            ]
+        );
+        // Bounds that fall between frames round to the nearest, and the next entry starts
+        // where the one before it ends.
+        let t = [
+            s(0, 0, 1_001, Plays::Times(1)),
+            s(1, 1_001, 999, Plays::Times(1)),
+        ];
+        let r = rescale(&t, 48_000, 44_100, 1_838);
+        assert_eq!(r[0].start + r[0].frames, r[1].start);
+        assert_eq!((r[0].frames, r[1].start + r[1].frames), (920, 1_838));
+        // Equal rates: the table as it is.
+        assert_eq!(rescale(&t, 48_000, 48_000, 0), t.to_vec());
+    }
+
+    /// A rescaled table never reaches past the file's end at the new rate, and no entry is
+    /// empty, so the stream and the voice accept it; a 0 rate cannot divide by zero.
+    #[test]
+    fn a_rescaled_table_stays_inside_the_file_and_has_no_empty_entry() {
+        // The end rounds up past the file's length at the new rate: clamped to it.
+        let t = [s(0, 0, 1_000, Plays::Times(1))];
+        assert_eq!(
+            rescale(&t, 8_000, 11_025, 1_377),
+            vec![s(0, 0, 1_377, Plays::Times(1))]
+        );
+        // A one-frame entry at a much lower rate is still one frame long.
+        let t = [s(0, 0, 1, Plays::Times(1)), s(1, 1, 1, Plays::Times(1))];
+        let r = rescale(&t, 48_000, 8_000, 1);
+        assert!(
+            r.iter().all(|e| e.frames == 1 && e.start + e.frames <= 1),
+            "{r:?}"
+        );
+        assert_eq!(frames_at_rate(10, 0, 48_000), 0);
+        assert_eq!(frames_at_rate(10, 48_000, 0), 0);
+        assert_eq!(frames_at_rate(u64::MAX, 8_000, 384_000), u64::MAX);
+    }
 
     fn s(index: u32, start: u64, frames: u64, plays: Plays) -> Slice {
         Slice {

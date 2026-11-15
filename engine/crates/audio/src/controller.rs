@@ -45,6 +45,7 @@ pub struct MixerController {
     shared: Arc<Shared>,
     cue_outputs: usize,
     device_outputs: usize,
+    sample_rate: u32,
     lookahead: u64,
     /// Batches waiting on the control thread, keyed by `(earliest at, first send order)`; a
     /// batch is released whole or not at all.
@@ -62,6 +63,7 @@ impl MixerController {
         shared: Arc<Shared>,
         cue_outputs: usize,
         device_outputs: usize,
+        sample_rate: u32,
         lookahead: u64,
     ) -> Self {
         MixerController {
@@ -72,6 +74,7 @@ impl MixerController {
             shared,
             cue_outputs,
             device_outputs,
+            sample_rate,
             lookahead,
             held: BTreeMap::new(),
             held_commands: 0,
@@ -88,6 +91,12 @@ impl MixerController {
     /// The mixer's device outputs: the columns of every patch matrix.
     pub fn device_outputs(&self) -> usize {
         self.device_outputs
+    }
+
+    /// The rate the mixer renders at ([`crate::MixerConfig::sample_rate`]): every frame count
+    /// and sample date sent to it is in frames at this rate.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
     }
 
     /// Schedules a command for sample `at`. Never drops it: if it is beyond the lookahead or the

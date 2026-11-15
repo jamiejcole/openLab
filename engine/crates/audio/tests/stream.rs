@@ -815,6 +815,60 @@ fn resampled_stream_has_exact_length_and_frequency() {
     assert!((f - 1000.0).abs() < 0.05, "{f} Hz");
 }
 
+/// AUD-02: a streamer configured for 48 kHz streams a voice for a device at 44.1 kHz
+/// (`prepare_at`) from a table planned at 48 kHz and rescaled: the stream has the file's length
+/// at 44.1 kHz, plays its trims there, and a 1 kHz sine is still 1 kHz on that device.
+#[test]
+fn a_stream_prepared_for_another_rate_plays_the_rescaled_plan_at_the_right_pitch() {
+    let path = temp_file(
+        "other-rate.wav",
+        &wav(&sine(48_000, 48_000, 1000.0, 0.5), 1, 48_000, Pcm::F32),
+    );
+    let info = probe(&path).unwrap().info;
+    let (from, to) = (SR, 44_100);
+    let total = info.frames_at(to);
+    assert_eq!(total, 44_100);
+    // Trimmed to 0.1 s .. 0.9 s at 48 kHz: 0.8 s, which is 35 280 frames at 44.1 kHz.
+    let planned = plan(4_800..43_200, &[], &[], 4_800).unwrap();
+    let slices = openlab_audio::rescale(&planned, from, to, total);
+    assert_eq!((slices[0].start, slices[0].frames), (4_410, 35_280));
+    let cfg = openlab_audio::MixerConfig {
+        sample_rate: to,
+        ..config(1)
+    };
+    let (mut ctl, mut r) = setup(cfg);
+    let mut d = streamer(100);
+    let p = d
+        .prepare_at(
+            StreamRequest {
+                media: Media::Path(path),
+                info,
+                seeking: Seeking::Direct,
+                slices,
+            },
+            to,
+        )
+        .unwrap();
+    assert!(p.handle.wait_primed(FAILSAFE).unwrap());
+    let (mut v, h) = p.into_voice(VoiceId(1), ctl.cue_outputs());
+    v.set_crosspoint(0, 0, 1.0);
+    send_start(&mut ctl, 0, v);
+    let out = render_synced(&mut r, &mut ctl, &h, 40_000, 0);
+    assert!(events(&mut ctl).contains(&finished(35_280, FinishReason::OutPoint)));
+    assert!(out[35_280..].iter().all(|&s| s == 0.0));
+    let f = frequency(&out[1_000..34_000], to);
+    assert!((f - 1000.0).abs() < 0.05, "{f} Hz");
+    // A rate of 0 is refused, not divided by.
+    let (media, info) = marker_file("other-rate-zero.wav", 100);
+    let req = StreamRequest {
+        media,
+        info,
+        seeking: Seeking::Direct,
+        slices: plan(0..100, &[], &[], 0).unwrap(),
+    };
+    assert!(matches!(d.prepare_at(req, 0), Err(MediaError::Worker)));
+}
+
 /// Every format streams from a seek point exactly as a full decode has it there.
 #[test]
 fn every_format_streams_from_a_seek_point_like_a_full_decode() {
