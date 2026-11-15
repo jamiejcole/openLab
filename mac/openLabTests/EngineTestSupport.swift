@@ -447,11 +447,16 @@ final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable
 
     /// Opened during the running test, by the app, the tests or AppKit itself.
     @MainActor private func isNew(_ window: NSWindow) -> Bool {
-        guard !windowsBefore.contains(ObjectIdentifier(window)) else { return false }
-        let owner = Bundle(for: type(of: window))
-        return owner == Bundle.main || owner == Bundle(for: EngineTestObserver.self)
-            || owner == Bundle(for: NSWindow.self)
+        !windowsBefore.contains(ObjectIdentifier(window)) && isAppWindow(window)
     }
+}
+
+/// A window of the app, the tests or AppKit itself. Windows of other system frameworks (text input
+/// and its completion list) are made once for the process when a field first takes the keyboard.
+@MainActor
+func isAppWindow(_ window: NSWindow) -> Bool {
+    let owner = Bundle(for: type(of: window))
+    return owner == Bundle.main || owner == Bundle(for: EngineTestObserver.self) || owner == Bundle(for: NSWindow.self)
 }
 
 /// Engine runs, one after another, in one Application Support folder: the bundled engine on its

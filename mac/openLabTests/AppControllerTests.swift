@@ -479,7 +479,7 @@ final class AppControllerTests: XCTestCase {
     /// each one kept would hold its window-server surface for the rest of the session (#716). The
     /// app's window count comes back to where it was.
     func testAClosedWorkspaceReleasesItsWindowAndTheWindowsItOwns() throws {
-        let windowsBefore = NSApp.windows.count
+        let windowsBefore = Set(NSApp.windows.map(ObjectIdentifier.init))
         for round in 0..<3 {
             var released = Released()
             drained { [self] in
@@ -495,7 +495,11 @@ final class AppControllerTests: XCTestCase {
             }
             XCTAssertEqual(stillHeld(released), [], "round \(round)")
         }
-        XCTAssertEqual(NSApp.windows.count, windowsBefore, "the app's windows are back to where they started")
+        let added = autoreleasepool {
+            NSApp.windows.filter { !windowsBefore.contains(ObjectIdentifier($0)) && isAppWindow($0) }
+                .map { "\(type(of: $0))" }
+        }
+        XCTAssertEqual(added, [], "the app's windows are back to where they started")
     }
 
     /// Closing a workspace whose cue is playing (the operator confirms), with an edit from its window

@@ -710,8 +710,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         stopSavingLayout()
         inspector.endGestures()
-        // A popover still shown holds the window it points into: the window would never go.
+        // A popover still shown or a sheet still up holds the window: it would never go. A sheet ends
+        // as its Cancel would (the app closes a workspace with one up, at Close or when the engine
+        // closes the doc).
         footer.popover?.close()
+        if let window, let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
+        pasteSheet = nil
         preshowController?.close()
         settingsController?.close()
         missingFilesController?.close()
