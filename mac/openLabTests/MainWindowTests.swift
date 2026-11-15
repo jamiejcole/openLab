@@ -163,7 +163,7 @@ final class MainWindowTests: XCTestCase {
         let outline = try controller().cueList.outlineView
         XCTAssertEqual(
             outline.tableColumns.map(\.identifier.rawValue),
-            ["status", "type", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
+            ["status", "number", "name", "target", "preWait", "duration", "postWait", "continue"])
         XCTAssertTrue(outline.usesAlternatingRowBackgroundColors)
     }
 

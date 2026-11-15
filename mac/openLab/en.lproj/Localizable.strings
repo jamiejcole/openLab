@@ -177,7 +177,6 @@
 "cue.type.network" = "Network";
 
 "cuelist.label" = "Cue list";
-"cuelist.col.type" = "Cue type";
 "cuelist.col.number" = "Number";
 "cuelist.col.name" = "Name";
 "cuelist.col.target" = "Target";
