@@ -18,7 +18,7 @@ Two layers. **Mechanism** is in `openlab-audio`: `negotiate.rs` (pure), `output.
 - **A stall is a loss only in the second stage** (or through the intermittent window rule). A one-stage 500 ms loss turns a recoverable dropout into a stopped show with every cue broken. A false positive costs the whole show; a late true positive costs seconds of an already silent show.
 - **Only silence the supervisor actually watched counts.** A frozen process, a starved control thread or a sleeping Mac is never a stall.
 - **The control thread never calls the device layer** and a GO never waits for a device (list, open, close run on device threads).
-- **The stream never follows the system default**, and the engine never switches device while running.
+- **The stream never follows the system default**, and the engine never switches a stream's device while running. A patch on the system output follows it by moving its cues to another stream (below).
 - **The mixer is never lost**: not on a failed open, not on a close, not on a hung device (it is handed back, or the failure is reported as unrecoverable).
 - **The audio callback allocates, locks and logs nothing.** The error callback is one or two atomic writes.
 
@@ -156,6 +156,11 @@ Decided from measuring QLab 5; there is no grace period and no exact-sample resu
 - Mixer stage faults are each device's: its mixer's disabled units are its own (a rebuild clears only them), and with several devices their logs and warnings name the device.
 - Engine load, xruns and underruns are summed or the worst over every device. `status.device` is the primary; `status.outputs` lists every output opened since start with its state (`Output::state`: up, opening, lost, reconfiguring, closed when parked, failed when unrecoverable), rate, channels and buffer (0 and none before its first open), and which is the primary.
 - `list_devices` marks each listed device the engine has an output on with that state and the primary, matched by host id (two interfaces can share a name); `list_patch_mappings` gives each patch's current resolution (`Patches::resolution`).
+
+## System output (QLab 5 manual p. 7)
+- A patch mapping with `system` plays on the device the last list read marks `is_default` (`Engine::system_output`; none for the offline driver): `PatchMapping::device_for` gives the device name every user of a mapping goes by (resolution, which devices to open, a loss's cues, refits).
+- The operator changing the system's output shows as a list change: patches resolve again, that device opens as another output if it is not open, and a cue playing on the patch moves there at once (`follow_devices`, skill `engine-control` reference `patch-slots`). The old device is parked once nothing plays on it. No default output: the patch is `device_missing` with device `system output` and a cue playing on it stops as on a lost device.
+- The primary is unaffected: it stays the device opened at start. A patch naming a device never follows the default.
 
 ## Default patch mapping
 
