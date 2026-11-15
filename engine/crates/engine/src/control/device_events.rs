@@ -279,15 +279,20 @@ impl Control {
             return;
         };
         let listed = primary.listed().to_vec();
+        let system = self.eng.system_output();
         let mut wanted: Vec<String> = Vec::new();
         for doc in &self.docs {
             let ws = doc.model.ws();
             for patch in &ws.patches {
-                if let Some(m) = self.eng.config.machine.patch_entry(ws.id, patch.id)
-                    && !m.device.is_empty()
-                    && !wanted.contains(&m.device)
+                if let Some(name) = self
+                    .eng
+                    .config
+                    .machine
+                    .patch_entry(ws.id, patch.id)
+                    .and_then(|m| m.device_for(system.as_deref()))
+                    && !wanted.iter().any(|w| w == name)
                 {
-                    wanted.push(m.device.clone());
+                    wanted.push(name.to_owned());
                 }
             }
         }
@@ -767,16 +772,20 @@ impl DocCx<'_> {
         self.doc.warnings_dirty = true;
     }
 
-    /// Whether audio cue `cue`'s patch is mapped to device `name` on this machine.
+    /// Whether audio cue `cue`'s patch is mapped to device `name` on this machine (by name, or
+    /// on the system output while `name` is the default output device).
     fn cue_on_device(&self, cue: CueId, name: &str) -> bool {
         let ws = self.doc.model.ws();
+        let system = self.eng.system_output();
         match ws.find_cue(cue).map(|c| &c.kind) {
-            Some(CueKind::Audio { patch, .. }) => self
-                .eng
-                .config
-                .machine
-                .patch_entry(ws.id, *patch)
-                .is_some_and(|m| m.device == name),
+            Some(CueKind::Audio { patch, .. }) => {
+                self.eng
+                    .config
+                    .machine
+                    .patch_entry(ws.id, *patch)
+                    .and_then(|m| m.device_for(system.as_deref()))
+                    == Some(name)
+            }
             _ => false,
         }
     }
@@ -883,7 +892,7 @@ impl DocCx<'_> {
                         .config
                         .machine
                         .patch_entry(ws_id, patch.id)
-                        .is_some_and(|m| m.device.is_empty()) =>
+                        .is_some_and(|m| m.is_none()) =>
                 {
                     list.push(notice(
                         "patch_no_device",
@@ -984,6 +993,16 @@ impl Engine {
             );
             self.log_device(LogLevel::Warn, message);
         }
+    }
+
+    /// The device the system's default output is now, by the last list read (the system output
+    /// of a patch plays there); `None` when the list marks none, and for the offline driver.
+    pub(super) fn system_output(&self) -> Option<String> {
+        let d = self.outputs.primary().backend.device()?;
+        d.listed()
+            .iter()
+            .find(|l| l.is_default)
+            .map(|l| l.name.clone())
     }
 
     /// The output devices for a `list_devices` request.

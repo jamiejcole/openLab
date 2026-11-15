@@ -347,7 +347,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             limits: limits, main: patch.raw["master_db"]?.doubleValue ?? 0,
             levels: outputs.map { $0["level_db"]?.doubleValue ?? 0 },
             names: outputs.map { $0["name"]?.stringValue ?? "" }, name: patch.raw["name"]?.stringValue ?? "",
-            row: row, devices: model.devices, usable: row?.mapping.map { model.usableChannels(of: $0.device) } ?? 0,
+            row: row, devices: model.devices, usable: row.flatMap(model.deviceName(of:)).map(model.usableChannels(of:)) ?? 0,
             loaded: model.loaded)
         if let drawn, drawn == state, typedField == nil, !dragging { return }
         guard !dragging else { return }
@@ -379,7 +379,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         for (i, db) in state.levels.enumerated() { set(outputFields[i], LevelText.format(db), enabled: editable) }
 
         // The matrix: one row per cue output, one column per device output.
-        let device = row?.mapping?.device
+        let device = row.flatMap(model.deviceName(of:))
         let channels = device.map(model.channelCount(of:)) ?? 0
         let maxRoute = row?.mapping?.channels.map { Int($0) + 1 }.max() ?? 0
         matrix.rowLabels = state.names.enumerated().map { i, name in name.isEmpty ? "\(i + 1)" : "\(i + 1)  \(name)" }
@@ -547,8 +547,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
 
     @objc private func deviceChosen() {
         guard let row else { return }
-        let name = devicePopup.selectedItem?.representedObject as? String
-        edit { [self] in await model.setMapping(row, device: name) }
+        let choice = devicePopup.selectedItem?.representedObject
+        edit { [self] in await model.choose(choice, for: row) }
     }
 
     private func route(_ output: Int, to column: Int) {
@@ -609,20 +609,53 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     }
 }
 
+/// The represented object of the system output item of a patch's device pop-up.
+final class SystemOutputChoice: NSObject {
+    static let shared = SystemOutputChoice()
+}
+
 extension WorkspaceSettingsModel {
-    /// The device choices of a patch, as the table and the patch editor show them: none, then every
-    /// listed device, and the device the patch names when that is not connected now.
+    /// The device choices of a patch, as the table and the patch editor show them (as QLab 5 lists
+    /// them, settings surface `settings.audio.audio-outputs`): none, then the system output with
+    /// the device it is now, then every listed device, and the device the patch names when that is
+    /// not connected now.
     func fillDevicePopupItems(_ popup: NSPopUpButton, for row: PatchRow) {
         popup.removeAllItems()
+        popup.autoenablesItems = false
         popup.addItem(withTitle: loc("settings.audio.noDevice"))
         popup.lastItem?.representedObject = nil
+        popup.menu?.addItem(.separator())
+        popup.addItem(withTitle: systemOutputTitle)
+        popup.lastItem?.representedObject = SystemOutputChoice.shared
+        popup.menu?.addItem(.separator())
         for name in deviceChoices(for: row) {
             let listed = devices.contains { $0.name == name }
             popup.addItem(withTitle: listed ? name : String(format: loc("settings.audio.notConnected"), name))
             popup.lastItem?.representedObject = name
         }
-        let current = popup.itemArray.firstIndex { ($0.representedObject as? String) == row.mapping?.device }
+        let current: Int?
+        if row.mapping?.system == true {
+            current = popup.itemArray.firstIndex { $0.representedObject is SystemOutputChoice }
+        } else {
+            current = popup.itemArray.firstIndex { ($0.representedObject as? String) == row.mapping?.device }
+        }
         popup.selectItem(at: current ?? 0)
+    }
+
+    /// The system output item: the device the Mac's output is now, or that there is none.
+    var systemOutputTitle: String {
+        guard let device = systemOutputDevice else { return loc("settings.audio.systemOutputNone") }
+        return String(format: loc("settings.audio.systemOutput"), device.name)
+    }
+
+    /// Carries out a pick in a patch's device pop-up: none clears it, the system output item puts
+    /// it on the system output, a name on that device.
+    func choose(_ choice: Any?, for row: PatchRow) async {
+        if choice is SystemOutputChoice {
+            await setSystemOutput(row)
+        } else {
+            await setMapping(row, device: choice as? String)
+        }
     }
 
     func problemText(_ problem: PatchProblem) -> String {
@@ -637,6 +670,7 @@ extension WorkspaceSettingsModel {
         case .channelsMissing(let device, let needed, let available):
             return String(format: loc("settings.audio.problem.channelsMissing"), device, available, needed)
         case .outputCountMismatch: return loc("settings.audio.problem.outputCount")
+        case .systemOutputMissing: return loc("settings.audio.systemOutputMissing")
         }
     }
 }

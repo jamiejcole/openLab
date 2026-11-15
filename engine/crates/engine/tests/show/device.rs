@@ -119,6 +119,14 @@ impl Fake {
         self.state.lock().unwrap().devices.push(device);
     }
 
+    /// The system's default output becomes device `id` (none: no device is the default), as
+    /// when the operator picks another output in the system's sound settings.
+    pub fn set_default(&self, id: Option<&str>) {
+        for d in &mut self.state.lock().unwrap().devices {
+            d.is_default = Some(d.id.as_str()) == id;
+        }
+    }
+
     /// Unplugs a device: it leaves the list. If it is the open one, its callbacks stop and,
     /// with `report`, the host reports it lost (some hosts just stop calling back).
     pub fn unplug(&self, id: &str, report: bool) {

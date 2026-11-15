@@ -105,6 +105,7 @@ impl DocCx<'_> {
             self.doc.model.ws(),
             &self.eng.config.machine,
             &self.eng.playable,
+            self.eng.system_output().as_deref(),
             &busy,
         );
         let now = self.now();

@@ -368,6 +368,7 @@ fn two_patch_show_with(
             PatchMapping {
                 device: "Offline".into(),
                 channels: vec![1],
+                system: false,
             },
         )
         .unwrap();
@@ -434,6 +435,7 @@ fn moved_to_four_outputs(levels_of: impl FnOnce(&mut CueLevels)) -> f32 {
                 PatchMapping {
                     device: "Offline".into(),
                     channels: vec![1; 4],
+                    system: false,
                 },
             )
             .unwrap();
@@ -489,6 +491,7 @@ fn a_playing_cue_moved_to_a_wider_patch_is_heard_on_its_later_outputs() {
                 PatchMapping {
                     device: "Offline".into(),
                     channels: vec![1; 100],
+                    system: false,
                 },
             )
             .unwrap();

@@ -131,9 +131,41 @@ enum TransportAction: Hashable, Sendable, Codable {
 
 /// Where one patch plays on this machine (WS-07): the device's name as `list_devices` gives it and
 /// a 0-based device channel for each output of the patch, in order.
+/// Where a patch plays on this machine: a named device, or (`system`) the system output, the Mac's
+/// default output device whichever it is (then `device` is empty).
 struct PatchMapping: Hashable, Sendable, Codable {
     var device: String
     var channels: [UInt32]
+    var system: Bool = false
+
+    init(device: String, channels: [UInt32]) {
+        self.device = device
+        self.channels = channels
+    }
+
+    /// On the system output, output i on channel `channels[i]`.
+    static func systemOutput(channels: [UInt32]) -> PatchMapping {
+        var m = PatchMapping(device: "", channels: channels)
+        m.system = true
+        return m
+    }
+
+    private enum CodingKeys: String, CodingKey { case device, channels, system }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        device = try c.decode(String.self, forKey: .device)
+        channels = try c.decode([UInt32].self, forKey: .channels)
+        system = try c.decodeIfPresent(Bool.self, forKey: .system) ?? false
+    }
+
+    /// `system` is sent only when set, as the engine writes it.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(device, forKey: .device)
+        try c.encode(channels, forKey: .channels)
+        if system { try c.encode(true, forKey: .system) }
+    }
 }
 
 enum RecoveryChoice: String, Hashable, Sendable, Codable { case restore, ignore }

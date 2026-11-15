@@ -522,6 +522,9 @@
 "settings.audio.patch" = "Patch";
 "settings.audio.patchDevice" = "Device";
 "settings.audio.noDevice" = "None";
+"settings.audio.systemOutput" = "System output (%@)";
+"settings.audio.systemOutputNone" = "System output (no device)";
+"settings.audio.systemOutputMissing" = "The Mac has no output device selected, so the system output has nowhere to play.";
 "settings.audio.untitledPatch" = "Untitled patch";
 "settings.audio.tooFewChannels" = "openLab can use %3$ld outputs of %1$@ here; this patch needs %2$ld. Lower its cue outputs, or pick another device.";
 "settings.audio.problem.unmapped" = "No audio device: cues that use this patch are silent.";

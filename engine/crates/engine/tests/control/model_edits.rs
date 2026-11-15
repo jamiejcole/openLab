@@ -279,6 +279,7 @@ fn roomy_playing_show(mixer_patches: usize) -> OfflineShow {
                 PatchMapping {
                     device: "Offline".into(),
                     channels,
+                    system: false,
                 },
             )
             .unwrap();

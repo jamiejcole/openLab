@@ -45,6 +45,7 @@ fn device_config(ws: &Workspace) -> ControlConfig {
             PatchMapping {
                 device: DEV_NAME.into(),
                 channels: vec![0, 1],
+                system: false,
             },
         )
         .unwrap();
@@ -2202,6 +2203,7 @@ fn two_patch_show_with(
             PatchMapping {
                 device: b.into(),
                 channels: vec![0, 1],
+                system: false,
             },
         )
         .unwrap();
@@ -2954,6 +2956,7 @@ fn a_device_opens_at_the_buffer_size_set_for_it() {
             PatchMapping {
                 device: DEV2_NAME.into(),
                 channels: vec![0, 1],
+                system: false,
             },
         )
         .unwrap();
@@ -3010,6 +3013,7 @@ fn changing_patch_bs_device_leaves_patch_as_cue_playing_and_moves_bs_next_cue() 
             mapping: Some(PatchMapping {
                 device: DEV2_NAME.into(),
                 channels: vec![0, 1],
+                system: false,
             }),
         },
     });
@@ -3189,6 +3193,7 @@ fn map_b(s: &mut DeviceShow, device: &str) {
             mapping: Some(PatchMapping {
                 device: device.into(),
                 channels: vec![0, 1],
+                system: false,
             }),
         },
     });
@@ -3293,6 +3298,7 @@ fn channels_above_the_primarys_output_count_are_warned_about_truthfully() {
             PatchMapping {
                 device: DEV2_NAME.into(),
                 channels: vec![4, 5],
+                system: false,
             },
         )
         .unwrap();
@@ -3754,6 +3760,7 @@ fn map_patch(s: &mut DeviceShow, patch: openlab_core::PatchId, device: &str) {
             mapping: Some(PatchMapping {
                 device: device.into(),
                 channels: vec![0, 1],
+                system: false,
             }),
         },
     });
@@ -4113,4 +4120,209 @@ fn a_playing_cue_moved_to_another_device_auto_follows_once_at_its_end() {
     let last_ramp = two.iter().rposition(|&v| v != 0.0 && v != 0.5).unwrap();
     let first_dc = two.iter().position(|&v| v == 0.5).unwrap();
     assert_eq!(first_dc, last_ramp + 1);
+}
+
+// A patch on the system output (QLab 5 manual p. 7): it plays on whichever device the Mac's
+// default output is, and follows it when the operator changes it.
+
+/// Sends `set_patch_mapping` for `patch` and returns the result's outcome.
+fn set_mapping(
+    s: &mut DeviceShow,
+    patch: openlab_core::PatchId,
+    mapping: PatchMapping,
+) -> Result<(), ErrorCode> {
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::SetPatchMapping {
+            patch,
+            mapping: Some(mapping),
+        },
+    });
+    let outcome = replies
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::Result { outcome, .. } => Some(outcome.clone()),
+            _ => None,
+        })
+        .expect("a result");
+    match outcome {
+        Outcome::Ok(_) => Ok(()),
+        Outcome::Error(e) => Err(e.code),
+    }
+}
+
+/// Patch A on "Fake 1" (the primary, not the default output); patch B, empty of cues so far,
+/// on "Fake 2", the default output; then patch B is put on the system output.
+fn system_output_show(cues: Vec<openlab_core::Cue>) -> DeviceShow {
+    let mut two = listed(DEV2, DEV2_NAME, 2);
+    two.is_default = true;
+    let mut s = two_patch_show(cues, DEV2_NAME, vec![listed(DEV, DEV_NAME, 2), two]);
+    s.wait_output(DEV2_NAME);
+    assert_eq!(
+        set_mapping(&mut s, patch_b(), PatchMapping::system_output(vec![0, 1])),
+        Ok(())
+    );
+    s.settle_devices();
+    s.take_outbound();
+    s
+}
+
+/// The default output becomes device `id`, and the engine's list read sees it.
+fn change_system_output(s: &mut DeviceShow, id: &str) {
+    s.fake.set_default(Some(id));
+    s.wait_wall(Duration::from_millis(1100), 2);
+    s.settle_devices();
+}
+
+#[test]
+fn the_device_list_of_a_patch_has_a_system_output_entry_and_choosing_it_plays_on_the_macs_current_output()
+ {
+    let b = wav(&dc(400, 0.5));
+    let mut s = system_output_show(vec![audio_b(2, &b, 0)]);
+    let entries = list_patch_mappings(&mut s);
+    let b_entry = entries.iter().find(|e| e.patch == patch_b()).unwrap();
+    assert_eq!(
+        b_entry.mapping,
+        Some(PatchMapping::system_output(vec![0, 1]))
+    );
+    assert!(
+        matches!(
+            &b_entry.resolution,
+            Some(WireResolution::Mapped { device, .. }) if device == DEV2_NAME
+        ),
+        "{b_entry:?}"
+    );
+    start(&mut s, 2);
+    s.run(600);
+    assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
+    assert!(heard(&s.channel(0)).is_empty());
+}
+
+#[test]
+fn the_macs_output_is_changed_while_no_cue_plays_and_the_next_cue_on_that_patch_plays_on_the_new_device()
+ {
+    let b = wav(&dc(400, 0.5));
+    let mut s = system_output_show(vec![audio_b(2, &b, 0)]);
+    change_system_output(&mut s, DEV);
+    let entries = list_patch_mappings(&mut s);
+    assert!(
+        entries.iter().any(|e| e.patch == patch_b()
+            && matches!(&e.resolution, Some(WireResolution::Mapped { device, .. }) if device == DEV_NAME)),
+        "{entries:?}"
+    );
+    let before = (s.channel(0).len(), s.device_channel(DEV2, 0).len());
+    start(&mut s, 2);
+    s.run(600);
+    assert_eq!(heard(&s.channel(0)[before.0..]), vec![0.5]);
+    let two = s.device_channel(DEV2, 0);
+    assert!(heard(&two[before.1.min(two.len())..]).is_empty());
+}
+
+#[test]
+fn the_macs_output_is_changed_while_a_cue_plays_on_that_patch_and_it_follows_at_once() {
+    let frames = 12_000;
+    let b = wav(&ramp(frames));
+    let mut s = system_output_show(vec![audio_b(2, &b, 0)]);
+    start(&mut s, 2);
+    s.run(BLOCK * 10);
+    // Both devices are captured from here on alike until "Fake 2", no longer used, closes.
+    let shift = s.channel(0).len() - s.device_channel(DEV2, 0).len();
+    change_system_output(&mut s, DEV);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    s.run(frames as u64 + 2000);
+    // Heard in step from its first sample to its last, first on "Fake 2", then on "Fake 1".
+    let one = s.device_channel(DEV, 0);
+    let two = s.device_channel(DEV2, 0);
+    let both: Vec<f32> = (0..one.len())
+        .map(|t| {
+            one[t]
+                + t.checked_sub(shift)
+                    .and_then(|i| two.get(i))
+                    .copied()
+                    .unwrap_or(0.0)
+        })
+        .collect();
+    let first = both.iter().position(|&v| v != 0.0).unwrap();
+    let unit = 1.0 / 1_048_576.0;
+    for (i, &v) in both[first..first + frames].iter().enumerate() {
+        let want = (i + 1) as f32 * unit;
+        assert!(
+            (v - want).abs() < 2.0 * unit,
+            "sample {i}: {v}, want {want}"
+        );
+    }
+    assert!(heard(&one).len() > 1, "never moved to the new default");
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_patch_that_names_a_device_is_unaffected_by_the_system_output_changing() {
+    let b = wav(&dc(20_000, 0.5));
+    let mut two = listed(DEV2, DEV2_NAME, 2);
+    two.is_default = true;
+    let mut s = two_patch_show(
+        vec![audio_b(2, &b, 0)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), two],
+    );
+    s.wait_output(DEV2_NAME);
+    start(&mut s, 2);
+    s.run(BLOCK * 10);
+    change_system_output(&mut s, DEV);
+    s.run(BLOCK * 20);
+    // It plays on where it is, every sample, and nothing reaches the new default.
+    let ch = s.device_channel(DEV2, 0);
+    let first = first_nonzero(&ch).unwrap();
+    assert!(ch[first..].iter().all(|&v| v == 0.5), "it dropped out");
+    assert!(heard(&s.channel(0)).is_empty());
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+}
+
+#[test]
+fn a_system_output_mapping_naming_a_device_or_with_no_default_output_is_refused() {
+    let mut s = two_patch_show(
+        vec![],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+    );
+    s.wait_output(DEV2_NAME);
+    let before = list_patch_mappings(&mut s);
+    // No device is the default output.
+    assert_eq!(
+        set_mapping(&mut s, patch_b(), PatchMapping::system_output(vec![0, 1])),
+        Err(ErrorCode::NotFound)
+    );
+    s.fake.set_default(Some(DEV2));
+    s.wait_wall(Duration::from_millis(1100), 2);
+    let mut named = PatchMapping::system_output(vec![0, 1]);
+    named.device = DEV_NAME.into();
+    assert_eq!(
+        set_mapping(&mut s, patch_b(), named),
+        Err(ErrorCode::BadRequest)
+    );
+    // Channels the default output does not have.
+    assert_eq!(
+        set_mapping(&mut s, patch_b(), PatchMapping::system_output(vec![0, 5])),
+        Err(ErrorCode::BadRequest)
+    );
+    assert_eq!(list_patch_mappings(&mut s), before);
+}
+
+#[test]
+fn a_cue_on_the_system_output_whose_default_goes_away_stops_as_for_a_lost_device() {
+    let b = wav(&dc(20_000, 0.5));
+    let mut s = system_output_show(vec![audio_b(2, &b, 0)]);
+    start(&mut s, 2);
+    s.run(BLOCK * 10);
+    s.take_outbound();
+    // The default output is unplugged; the system names no other.
+    s.fake.set_default(None);
+    unplug(&mut s, DEV2);
+    s.run(BLOCK * 4);
+    let msgs = s.take_outbound();
+    assert!(paused_device_lost(&msgs, 2), "{msgs:?}");
+    assert_eq!(s.control().engine().state(id(2)), CueState::Paused);
+    assert!(heard(&s.channel(0)).is_empty());
 }

@@ -1,0 +1,16 @@
+{
+  "type": "request",
+  "id": 65,
+  "request": {
+    "type": "set_patch_mapping",
+    "patch": "00000000-0000-0000-0000-000000000071",
+    "mapping": {
+      "device": "",
+      "channels": [
+        0,
+        1
+      ],
+      "system": true
+    }
+  }
+}

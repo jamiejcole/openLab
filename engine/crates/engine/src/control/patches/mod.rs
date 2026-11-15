@@ -125,7 +125,7 @@ impl Patches {
     }
 
     /// Follows doc `doc`'s patches and the devices that play (`playable`: each with its
-    /// output). `busy`: the slots a voice of that doc in a mixer may still play through
+    /// output); a patch on the system output plays on `system`, the default output device now. `busy`: the slots a voice of that doc in a mixer may still play through
     /// (`Voices::slots_in_use`; no other doc's voice can be on its slots). Returns the mixer
     /// commands, each for its output, that bring the matrices up to date, and the patches whose
     /// resolution changed (for `Input::PatchStatus`).
@@ -135,6 +135,7 @@ impl Patches {
         ws: &Workspace,
         settings: &MachineSettings,
         playable: &[(DeviceInfo, OutputKey)],
+        system: Option<&str>,
         busy: &BTreeSet<u16>,
     ) -> (PatchCommands, Vec<(PatchId, PatchResolution)>) {
         let devices: Vec<DeviceInfo> = playable.iter().map(|(d, _)| d.clone()).collect();
@@ -142,7 +143,7 @@ impl Patches {
         // Resolved first: a slot follows its patch's device.
         let mut resolved: HashMap<PatchId, (PatchResolution, Option<OutputKey>)> = HashMap::new();
         for patch in &ws.patches {
-            let r = self.resolve(settings, ws, patch, &devices);
+            let r = self.resolve(settings, ws, patch, &devices, system);
             let out = match &r {
                 PatchResolution::Mapped { device, .. } => playable
                     .iter()
@@ -353,11 +354,15 @@ impl Patches {
             d.retired.insert(slot, holder);
         }
         let zero = vec![0.0; self.cells()];
+        let mut given = Vec::new();
         for (slot, to) in moving {
             self.diff(slot, &zero, commands);
             if let Some(o) = self.slot_out.get_mut(usize::from(slot)) {
                 *o = to;
             }
+            // Nothing plays through it: on its new device it takes its gains at once, as a slot
+            // just handed out does, so a cue started there at once is not faded in.
+            given.push(slot);
         }
         // A retired slot goes back to its patch when that has the same id, size and device again
         // (an undo) and no slot; else it is zeroed and freed once no voice uses it.
@@ -383,7 +388,6 @@ impl Patches {
         }
         // New patches, in list order, take the least recently freed slots.
         d.exhausted.clear();
-        let mut given = Vec::new();
         for patch in &ws.patches {
             if d.slots.contains_key(&patch.id) {
                 continue;
@@ -456,8 +460,9 @@ impl Patches {
         ws: &Workspace,
         patch: &OutputPatch,
         devices: &[DeviceInfo],
+        system: Option<&str>,
     ) -> PatchResolution {
-        let r = resolve_patch(settings, ws.id, patch, devices);
+        let r = resolve_patch(settings, ws.id, patch, devices, system);
         // The mixer was opened with fewer outputs than the device has: what is beyond them
         // cannot be heard.
         if let PatchResolution::Mapped { device, channels } = &r {

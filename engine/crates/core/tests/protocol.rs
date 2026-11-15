@@ -267,6 +267,7 @@ fn all_requests() -> Vec<(&'static str, Request)> {
                 mapping: Some(PatchMapping {
                     device: "Scarlett 18i20".into(),
                     channels: vec![2, 3],
+                    system: false,
                 }),
             },
         ),
@@ -363,6 +364,13 @@ fn request_variants() -> Vec<(&'static str, Request)> {
             Request::SetPatchMapping {
                 patch: PatchId(uuid::Uuid::from_u128(0x70)),
                 mapping: None,
+            },
+        ),
+        (
+            "set_patch_mapping_system_output",
+            Request::SetPatchMapping {
+                patch: PatchId(uuid::Uuid::from_u128(0x71)),
+                mapping: Some(PatchMapping::system_output(vec![0, 1])),
             },
         ),
     ]
@@ -1401,6 +1409,7 @@ fn fixtures() -> Vec<(String, Sample)> {
                             mapping: Some(PatchMapping {
                                 device: "Scarlett 2i2".into(),
                                 channels: vec![0, 1],
+                                system: false,
                             }),
                             resolution: Some(WireResolution::Mapped {
                                 device: "Scarlett 2i2".into(),
@@ -1413,10 +1422,19 @@ fn fixtures() -> Vec<(String, Sample)> {
                             resolution: Some(WireResolution::Unmapped),
                         },
                         PatchMappingEntry {
+                            patch: PatchId(uuid::Uuid::from_u128(0x73)),
+                            mapping: Some(PatchMapping::system_output(vec![0, 1])),
+                            resolution: Some(WireResolution::Mapped {
+                                device: "MacBook Pro Speakers".into(),
+                                channels: vec![0, 1],
+                            }),
+                        },
+                        PatchMappingEntry {
                             patch: PatchId(uuid::Uuid::from_u128(0x72)),
                             mapping: Some(PatchMapping {
                                 device: "MOTU 828".into(),
                                 channels: vec![2, 3],
+                                system: false,
                             }),
                             resolution: Some(WireResolution::DeviceMissing {
                                 device: "MOTU 828".into(),
@@ -4406,7 +4424,11 @@ fn arb_request() -> impl Strategy<Value = Request> {
         )
             .prop_map(|(patch, mapping)| Request::SetPatchMapping {
                 patch: PatchId(uuid::Uuid::from_u128(patch)),
-                mapping: mapping.map(|(device, channels)| PatchMapping { device, channels }),
+                mapping: mapping.map(|(device, channels)| PatchMapping {
+                    device,
+                    channels,
+                    system: false,
+                }),
             }),
         proptest::option::of(0u32..2000).prop_map(|max| Request::LogTail { max }),
         Just(Request::Snapshot),
