@@ -56,6 +56,7 @@ pub struct MixerController {
 }
 
 impl MixerController {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         commands: Producer<Command>,
         events: Consumer<Event>,

@@ -1124,3 +1124,18 @@ pub(super) fn master_block(frames: u64, local: u32, master: u32) -> u64 {
     let (l, m) = (u128::from(local), u128::from(master));
     u64::try_from((u128::from(frames) * m).div_ceil(l)).unwrap_or(u64::MAX)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::master_block;
+
+    /// The lookahead in master frames is never shorter than a device's block at its own rate.
+    #[test]
+    fn a_device_block_at_another_rate_is_rounded_up_in_master_frames() {
+        assert_eq!(master_block(512, 48_000, 48_000), 512);
+        assert_eq!(master_block(512, 44_100, 48_000), 558);
+        assert_eq!(master_block(96, 12_000, 8_000), 64);
+        assert_eq!(master_block(97, 12_000, 8_000), 65);
+        assert_eq!(master_block(512, 0, 48_000), 512);
+    }
+}

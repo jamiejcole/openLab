@@ -510,3 +510,96 @@ fn event_date(e: &mut Event) -> Option<&mut SampleTime> {
         | Event::StageFaulted { at, .. } => Some(at),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use openlab_audio::{Curve, Fade, Mixer, MixerConfig, VoiceStart};
+
+    use super::*;
+
+    fn output(name: &str, rate: u32) -> Output {
+        let (mixer, _) = Mixer::new(MixerConfig {
+            sample_rate: rate,
+            ..MixerConfig::default()
+        })
+        .unwrap();
+        Output {
+            name: name.into(),
+            mixer,
+            backend: Backend::Offline,
+        }
+    }
+
+    fn start(voice: u64, patch: u16) -> CommandKind {
+        let (_, rx) = rtrb::RingBuffer::new(4);
+        let mut v = VoiceStart::new(VoiceId(voice), rx, 1, 1);
+        v.patch = patch;
+        v.fade_in = Fade::new(480, Curve::Linear);
+        v.fade_out = Fade::new(1, Curve::Linear);
+        CommandKind::StartVoice(Box::new(v))
+    }
+
+    /// A voice on a device at another rate: its commands are dated `(at - master) × local /
+    /// master` after that device's counter and their fades are as long in time there (at least
+    /// a frame, so a fade is never turned into a cut); the primary's are left alone; the
+    /// device's events come back through the inverse.
+    #[test]
+    fn commands_for_a_device_at_another_rate_are_dated_and_timed_at_its_rate() {
+        let mut o = Outputs::new(output("one", 48_000), 48_000);
+        assert_eq!(o.add(output("two", 44_100)), Some(1));
+        assert_eq!(o.rates(), &[48_000, 44_100]);
+        let fade = |frames| Fade::new(frames, Curve::Linear);
+        let routed = o.route(
+            vec![
+                (4_800, start(1, 1)),
+                (
+                    9_600,
+                    CommandKind::StopVoice {
+                        voice: VoiceId(1),
+                        fade: fade(480),
+                    },
+                ),
+                (
+                    9_600,
+                    CommandKind::Ramp {
+                        voice: VoiceId(1),
+                        target: openlab_audio::GainTarget::Master,
+                        gain: 0.5,
+                        fade: fade(1),
+                    },
+                ),
+                (4_800, start(2, 0)),
+            ],
+            |patch| Some(OutputKey::from(patch)),
+        );
+        let (one, two) = (&routed[1], &routed[0]);
+        assert_eq!(two.0, 1);
+        let dates: Vec<SampleTime> = two.1.iter().map(|(at, _)| *at).collect();
+        assert_eq!(dates, vec![4_410, 8_820, 8_820]);
+        let CommandKind::StartVoice(v) = &two.1[0].1 else {
+            panic!()
+        };
+        assert_eq!((v.fade_in.frames, v.fade_out.frames), (441, 1));
+        assert!(matches!(two.1[1].1, CommandKind::StopVoice { fade, .. } if fade.frames == 441));
+        assert!(matches!(two.1[2].1, CommandKind::Ramp { fade, .. } if fade.frames == 1));
+        // The primary's: as sent.
+        assert_eq!(one.0, 0);
+        let CommandKind::StartVoice(v) = &one.1[0].1 else {
+            panic!()
+        };
+        assert_eq!((one.1[0].0, v.fade_in.frames), (4_800, 480));
+        assert_eq!(o.output_of(VoiceId(1)), 1);
+        // The inverse: the device's sample 4 410 is master sample 4 800.
+        assert_eq!(o.master_date(1, 4_410), 4_800);
+        assert_eq!(o.master_date(1, 0), 0);
+    }
+
+    #[test]
+    fn signed_rescaling_rounds_half_away_from_zero() {
+        assert_eq!(rescale_signed(3, 2, 3), 5);
+        assert_eq!(rescale_signed(-3, 2, 3), -5);
+        assert_eq!(rescale_signed(-1, 48_000, 44_100), -1);
+        assert_eq!(rescale_signed(7, 0, 44_100), 0);
+        assert_eq!(rescale_signed(i128::MAX, 1, 2), i128::MAX);
+    }
+}
