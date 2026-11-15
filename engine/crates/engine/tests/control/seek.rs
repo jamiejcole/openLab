@@ -437,10 +437,12 @@ fn a_burst_of_clicks_never_piles_up_streams_or_voices() {
             "{}",
             s.control().live_voices()
         );
+        // The streams the loop holds (the disk workers let go of a dropped one on their own
+        // time): the playing one, one fading out, one waiting.
         assert!(
-            s.control().open_streams() <= 4,
+            s.control().held_streams() <= 3,
             "{}",
-            s.control().open_streams()
+            s.control().held_streams()
         );
     }
     let msgs = s.take_outbound();
