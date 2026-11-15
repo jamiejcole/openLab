@@ -144,6 +144,71 @@ impl CueEngine {
         }
     }
 
+    /// The patch of `cue`'s run `run_id` now plays on another device (`Input::DeviceMoved`):
+    /// its voice moves there at once and plays on in step, from where the run is now (a paused
+    /// one from where it froze, staying paused). Timers, post-wait, continues and the end are
+    /// the run's own and stay; the moved voice tells its length again. A run stopping with a
+    /// fade ends where it is; a stale, broken or not yet started run has nothing to move.
+    pub(super) fn device_moved(&mut self, cue: CueId, run_id: RunId, cx: &mut Ctx) {
+        let now = cx.now;
+        let fresh = self.new_run();
+        let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
+            return;
+        };
+        if run.run != run_id || run.is_broken() || run.stop_end.is_some() {
+            return;
+        }
+        let (Phase::Action { start, .. }, Voice::Started { at: started, from, first }) =
+            (run.phase, run.voice)
+        else {
+            return;
+        };
+        let at = run.commit(now);
+        let from_run = run.run;
+        run.run = fresh;
+        let position = match run.paused_at {
+            // Paused: the position stands where it froze; the resume plays on from there.
+            Some(paused) => {
+                run.voice = Voice::Started {
+                    at: started,
+                    from,
+                    first,
+                };
+                run.position(paused)
+            }
+            None => {
+                let position = run.position(at);
+                run.voice = Voice::Started {
+                    at,
+                    from: position,
+                    first: at,
+                };
+                run.length = None;
+                run.phase = Phase::Action { start, end: None };
+                position
+            }
+        };
+        cx.out.push(Action::RelocateVoice {
+            cue,
+            run: fresh,
+            from: from_run,
+            at,
+            position,
+        });
+        regive_levels(cue, run, at, cx);
+        if run.paused_at.is_none()
+            && let Some(d) = run.devamp.as_mut()
+        {
+            d.at = None;
+            cx.out.push(Action::DevampVoice {
+                cue,
+                run: fresh,
+                at,
+                stop: d.stop,
+            });
+        }
+    }
+
     /// A preview of `cue` (an audio cue's own) jumps to `position`, playing or paused.
     fn seek_preview(&mut self, cue: CueId, position: SampleTime, cx: &mut Ctx) {
         if !self.previews.contains_key(&cue) {

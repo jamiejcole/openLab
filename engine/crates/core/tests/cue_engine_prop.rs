@@ -166,7 +166,7 @@ fn spec() -> impl Strategy<Value = Spec> {
 const OPS: [u8; 64] = [
     1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 0, 0, 0, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 7, 8, 9, 10, 11, 12, 12,
     13, 14, 15, 16, 17, 18, 19, 20, 21, 21, 22, 22, 23, 24, 25, 25, 26, 27, 28, 20, 4, 5, 29, 29,
-    30, 31, 31, 31, 31, 31, 31, 32, 32, 32,
+    30, 31, 31, 31, 31, 31, 33, 32, 32, 32,
 ];
 
 fn step() -> impl Strategy<Value = Step> {
@@ -586,6 +586,11 @@ enum Cmd {
     Seek {
         run: RunId,
     },
+    /// A move to another device: the voice plays on in step as `run` (its length, counted from
+    /// the action's start, told again).
+    Relocate {
+        run: RunId,
+    },
     /// Fault injection: the voice ends early / fails.
     ForceEnd,
     ForceFail(BrokenReason),
@@ -696,7 +701,7 @@ impl Voice {
     fn drain_dead(&mut self, t: SampleTime, events: &mut Vec<(SampleTime, Input)>) {
         while self.cmds.first().is_some_and(|c| c.0 <= t) {
             let (at, _, cmd) = self.cmds.remove(0);
-            if let Cmd::Resume { run, .. } | Cmd::Seek { run } = cmd {
+            if let Cmd::Resume { run, .. } | Cmd::Seek { run } | Cmd::Relocate { run } = cmd {
                 self.run = run;
                 events.push((
                     at,
@@ -854,6 +859,31 @@ impl Voice {
                     self.dead = true;
                 } else {
                     self.stop_end = Some(at + frames);
+                }
+            }
+            Cmd::Relocate { run } => {
+                // The same sound on another device: position and end stay, a devamp is sent
+                // again for the fresh id.
+                self.run = run;
+                if !self.started {
+                    return;
+                }
+                if self.playing {
+                    self.pos += at.saturating_sub(self.since);
+                    self.since = at;
+                }
+                self.leave = None;
+                if self.told
+                    && let Some(frames) = self.end_pos
+                {
+                    events.push((
+                        at,
+                        Input::ActionLength {
+                            cue: self.cue,
+                            run,
+                            frames,
+                        },
+                    ));
                 }
             }
             Cmd::Seek { run } => {
@@ -1034,6 +1064,28 @@ impl Sim {
                 Action::LoadVoice { cue, run, .. } | Action::LoadVoiceAt { cue, run, .. } => {
                     self.known.insert(*run);
                     self.loaded.insert(*run, *cue);
+                }
+                Action::RelocateVoice { run, from, at, .. } => {
+                    self.known.insert(*run);
+                    self.queue(*from, *at, Cmd::Relocate { run: *run });
+                    if let Some(v) = self.voices.remove(from) {
+                        self.voices.insert(*run, v);
+                    } else if let Some(v) = self.dead.remove(from) {
+                        self.dead.insert(*run, v);
+                    } else if let Some(cue) = self.ended.remove(from) {
+                        // It ended before the move (its end on its way): nothing to move.
+                        self.ended.insert(*run, cue);
+                        self.late.push((
+                            *at,
+                            Input::ActionEnded {
+                                cue,
+                                run: *run,
+                                at: *at,
+                            },
+                        ));
+                    } else {
+                        self.errors.push(format!("relocation of unknown voice {from:?}"));
+                    }
                 }
                 Action::SeekVoice { run, from, at, .. } => {
                     self.known.insert(*run);
@@ -1499,6 +1551,7 @@ impl Run {
                 | Action::Ramp { at, .. }
                 | Action::DevampVoice { at, .. }
                 | Action::SeekVoice { at, .. }
+                | Action::RelocateVoice { at, .. }
                 | Action::PreviewStart { at, .. }
                 | Action::PreviewStop { at, .. } => {
                     prop_assert!(
@@ -1527,7 +1580,8 @@ impl Run {
                 Action::ResumeVoice {
                     run, paused, at, ..
                 } => Some((*paused, *run, *at)),
-                Action::SeekVoice { run, from, at, .. } => Some((*from, *run, *at)),
+                Action::SeekVoice { run, from, at, .. }
+                | Action::RelocateVoice { run, from, at, .. } => Some((*from, *run, *at)),
                 _ => None,
             };
             if let Some((before, after, at)) = timed {
@@ -2417,6 +2471,14 @@ impl Run {
             32 => Input::Seek {
                 cue: target,
                 position: f64::from(s.b) / 50.0,
+            },
+            // Its patch was put on another device while it plays (or a stale report of that).
+            33 => match self.engine.run_of(target) {
+                Some(run) if s.b % 4 != 0 => Input::DeviceMoved { cue: target, run },
+                _ => Input::DeviceMoved {
+                    cue: target,
+                    run: RunId(u64::from(s.b)),
+                },
             },
             _ => {
                 // Model edit: change a cue's timing and continue mode.

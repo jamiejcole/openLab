@@ -634,6 +634,7 @@ impl CueEngine {
             }
             Input::DevampScheduled { cue, run, at } => self.devamp_scheduled(cue, run, at),
             Input::DevampIgnored { cue, run } => self.devamp_ignored(cue, run, cx),
+            Input::DeviceMoved { cue, run } => self.device_moved(cue, run, cx),
             Input::Preview { cue } => self.preview(cue, cx),
             Input::StopPreview { cue } => self.stop_previews(cue, false, cx),
             Input::Panic => self.panic(cx),
