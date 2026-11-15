@@ -383,6 +383,9 @@ final class ScenarioRunner {
         MeterView.countsWindowsOffScreen = false
         if let shippedCovered { MeterView.defaultWindowIsCovered = shippedCovered }
         wc?.window?.close()
+        // The window's buttons hold the app controller, which holds the window: let both go.
+        app?.controllers = [:]
+        (wc, app) = (nil, nil)
         engine?.stop()
         try? (log.joined(separator: "\n") + "\n").write(
             to: out.appendingPathComponent("steps.log"), atomically: true, encoding: .utf8)

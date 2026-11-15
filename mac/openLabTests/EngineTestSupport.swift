@@ -345,15 +345,6 @@ final class TestEngine {
     fileprivate static func classEnded() { current?.stop() }
 }
 
-enum TraceProbe {
-    nonisolated(unsafe) static var traced: Set<String> = []
-    nonisolated(unsafe) static var weak: [Weak] = []
-    final class Weak { weak var w: NSWindow?; init(_ w: NSWindow) { self.w = w } }
-    static func report(_ when: String) {
-        FileHandle.standardError.write(Data("PROBE \(when): \(weak.filter { $0.w != nil }.count)/\(weak.count) still alive\n".utf8))
-    }
-}
-
 enum TestEngineError: Error {
     case notConnected
     case refused(String)
@@ -385,12 +376,10 @@ final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable
     }
 
     func testSuiteWillStart(_ testSuite: XCTestSuite) {
-        TraceProbe.report("suite start \(testSuite.name)")
         if testSuite.tests.allSatisfy({ !($0 is XCTestSuite) }) { classSuite = testSuite }
     }
 
     func testCaseWillStart(_ testCase: XCTestCase) {
-        TraceProbe.report("next test start")
         MainActor.assumeIsolated { windowsBefore = Set(NSApp.windows.map(ObjectIdentifier.init)) }
     }
 
@@ -408,39 +397,35 @@ final class EngineTestObserver: NSObject, XCTestObservation, @unchecked Sendable
     }
 
     func testSuiteDidFinish(_ testSuite: XCTestSuite) {
-        TraceProbe.report("suite end")
         MainActor.assumeIsolated { TestEngine.classEnded() }
         if testSuite === classSuite { classSuite = nil }
     }
 
-    /// Fails the class if a window the test opened is still there once the closes and releases its
-    /// tearDown queued have run. A window still open is closed, so one leak does not run on into
-    /// the next test.
+    /// Fails the class if a window the test opened is still alive once it has finished. A window still
+    /// open is closed first (a test may leave one up; closed, nothing holds it), so what fails is a
+    /// window something still holds. Windows of system frameworks (text input, for one) are made
+    /// once for the process when a field first takes the keyboard and are not the test's.
     @MainActor private func checkWindows(after test: String) {
+        autoreleasepool {
+            for window in NSApp.windows where isNew(window) && window.isVisible { window.close() }
+        }
         for _ in 0..<3 { RunLoop.current.run(mode: .default, before: Date()) }
-        var left: [String] = []
-        for window in NSApp.windows where !windowsBefore.contains(ObjectIdentifier(window)) {
-            left.append("\(type(of: window)) \"\(window.title)\"\(window.isVisible ? " (open)" : "")")
-            if window.isVisible { window.close() }
+        let left: [String] = autoreleasepool {
+            NSApp.windows.filter(isNew).map { "\(type(of: $0)) \"\($0.title)\"" }
         }
-        TraceProbe.weak += NSApp.windows.filter { !windowsBefore.contains(ObjectIdentifier($0)) }.map(TraceProbe.Weak.init)
         guard !left.isEmpty else { return }
-        let cls = String(test.dropFirst(2).prefix { $0 != " " })
-        if ProcessInfo.processInfo.environment["NOPE"] != nil, !TraceProbe.traced.contains(cls), let target = NSApp.windows.first(where: { !windowsBefore.contains(ObjectIdentifier($0)) && $0 is WorkspaceWindow }) {
-            TraceProbe.traced.insert(cls)
-            let addr = String(format: "0x%lx", unsafeBitCast(target, to: Int.self))
-            let out = "/private/tmp/claude-501/-Users-jamie-openLab/eca60a95-1f0a-4087-a249-407e5ed3ddb1/scratchpad/716/t2-\(cls).txt"
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/bin/sh")
-            p.arguments = ["-c", "/usr/bin/leaks --traceTree=\(addr) \(getpid()) > \(out) 2>&1"]
-            try? p.run()
-            p.waitUntilExit()
-        }
         let issue = XCTIssue(
             type: .assertionFailure,
             compactDescription: "\(test) left \(left.count) window(s) alive: \(left.joined(separator: ", "))")
         classSuite?.testRun?.record(issue)
-        FileHandle.standardError.write(Data("window check: \(issue.compactDescription)\n".utf8))
+    }
+
+    /// Opened during the running test, by the app, the tests or AppKit itself.
+    @MainActor private func isNew(_ window: NSWindow) -> Bool {
+        guard !windowsBefore.contains(ObjectIdentifier(window)) else { return false }
+        let owner = Bundle(for: type(of: window))
+        return owner == Bundle.main || owner == Bundle(for: EngineTestObserver.self)
+            || owner == Bundle(for: NSWindow.self)
     }
 }
 
