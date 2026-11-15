@@ -362,6 +362,7 @@ impl Voices {
                 delay: counted.saturating_sub(offset),
                 moved: true,
                 relocated: true,
+                swap_limit: swap.saturating_add(seconds_to_samples(SEEK_PRIME_WAIT, env.rate)),
                 replaces,
                 swap_after,
                 release_fade: crossfade,
@@ -579,14 +580,26 @@ impl Voices {
                 ..
             } = &r.phase
         {
-            let limit = start.saturating_add(seconds_to_samples(SEEK_PRIME_WAIT, env.rate));
-            let ready = p.handle.is_primed() || env.now >= limit;
-            if !ready || env.now < r.swap_after {
-                return;
+            let primed = p.handle.is_primed();
+            if r.relocated {
+                // A move to another device swaps on its planned sample, sent once that is in the
+                // commit window (a stop or pause decided before then reaches the old voice).
+                if start >= env.now.saturating_add(env.window) {
+                    return;
+                }
+                // Its stream not ready by then: started late it would play again what the old
+                // device has just played. The swap moves on by a lead instead, from where the
+                // sound will be then, until `swap_limit`; after it, it is made late.
+                if !primed && r.replaces.is_some() && env.now < r.swap_limit {
+                    return self.replan_move(id, env);
+                }
+            } else {
+                let limit = start.saturating_add(seconds_to_samples(SEEK_PRIME_WAIT, env.rate));
+                if !primed && env.now < limit {
+                    return;
+                }
             }
-            // A move to another device swaps on its planned sample, sent once that is in the
-            // commit window (a stop or pause decided before then reaches the old voice).
-            if r.relocated && start >= env.now.saturating_add(env.window) {
+            if env.now < r.swap_after {
                 return;
             }
         }
@@ -699,6 +712,64 @@ impl Voices {
                 }
             }
         }
+    }
+
+    /// A move to another device whose stream is not primed by its swap (a slow disk): the swap
+    /// moves on to [`MOVE_LEAD`] from now, the stream prepared again from where the sound will
+    /// be then (the old voice plays on meanwhile), so the two still meet in step.
+    fn replan_move(&mut self, id: VoiceId, env: &Env<'_>) {
+        let Some(r) = self.recs.get(&id) else {
+            return;
+        };
+        let (
+            Phase::Waiting {
+                start: Some(planned),
+                ..
+            },
+            Some(old),
+        ) = (&r.phase, r.replaces)
+        else {
+            return;
+        };
+        let planned = *planned;
+        let Some(o) = self.recs.get(&old) else {
+            return;
+        };
+        let next = env
+            .now
+            .saturating_add(seconds_to_samples(MOVE_LEAD, env.rate))
+            .max(planned);
+        // Where the sound is on the new swap, by the voice playing it, as `relocate` plans.
+        let here = o.position(next).unwrap_or(o.offset);
+        let (offset, file) = if o.file.is_some() || !o.cuts.is_empty() {
+            match o.file_frame(here) {
+                Some(frame) => (0, Some(frame)),
+                // It ends before then: the swap is not planned again, and is made late.
+                None => return,
+            }
+        } else {
+            (here, None)
+        };
+        let shown = o.shown.saturating_add(here.saturating_sub(o.offset));
+        // The core's count on the old swap, moved on to the new one.
+        let counted = r
+            .offset
+            .saturating_add(r.delay)
+            .saturating_add(next - planned);
+        let Some(r) = self.recs.get_mut(&id) else {
+            return;
+        };
+        if let Phase::Waiting {
+            prepared, start, ..
+        } = &mut r.phase
+        {
+            *start = Some(next);
+            *prepared = None;
+        }
+        r.offset = offset;
+        r.file = file;
+        r.shown = shown;
+        r.delay = counted.saturating_sub(offset);
     }
 
     /// Lets go of the voice a seek waiting in record `id` was to replace: it fades out over the

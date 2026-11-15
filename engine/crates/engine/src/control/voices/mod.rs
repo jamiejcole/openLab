@@ -174,6 +174,9 @@ pub struct VoiceRec {
     /// voice it moves from is, so it shows that voice's elapsed time (`shown`, set when it is
     /// made) and starts on its planned sample, not before it is in the commit window.
     relocated: bool,
+    /// A move to another device whose stream is late is planned again until this sample, then
+    /// made late ([`SEEK_PRIME_WAIT`] after its first planned swap).
+    swap_limit: SampleTime,
 }
 
 /// A cue's seeks prepare at most one stream per this many seconds: a burst of seeks (a stuck
@@ -513,6 +516,7 @@ fn rec(cue: CueId, run: RunId, preview: bool) -> VoiceRec {
         swap_after: 0,
         release_fade: Fade::NONE,
         relocated: false,
+        swap_limit: 0,
     }
 }
 

@@ -444,6 +444,9 @@ pub struct DeviceShow {
     /// Captured audio per device, per channel.
     captures: Vec<(String, Vec<Vec<f32>>)>,
     next_id: u64,
+    /// Streams prepared but not playing are not waited for before a callback: a slow disk,
+    /// whose stream a move to another device cannot have by its swap.
+    pub slow_disk: bool,
 }
 
 impl DeviceShow {
@@ -506,6 +509,7 @@ impl DeviceShow {
             primary,
             captures: Vec::new(),
             next_id: 0,
+            slow_disk: false,
         };
         show.settle_media();
         show
@@ -703,6 +707,9 @@ impl DeviceShow {
                 matches!(handle.wait_written(needed, WAIT), Ok(true) | Err(_)),
                 "a disk worker stalled"
             );
+        }
+        if self.slow_disk {
+            return;
         }
         for handle in self.control.prepared_streams() {
             assert!(

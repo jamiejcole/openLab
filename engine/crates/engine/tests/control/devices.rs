@@ -4420,3 +4420,35 @@ fn a_cue_moved_to_another_device_while_it_is_being_devamped_leaves_its_loop_once
         assert_eq!(starts, 1, "moved {move_after} after");
     }
 }
+
+/// Review round 1: the new device's stream is not ready by the planned swap (a slow disk holds
+/// its open 0.15 s): the old device plays on and the swap is planned again from where the sound
+/// will be then, so nothing is played twice; the file is heard once, in step.
+#[test]
+fn a_move_whose_stream_is_late_swaps_later_and_plays_nothing_twice() {
+    let frames = 8000;
+    let a = wav(&ramp(frames));
+    let mut s = two_patch_show_with(
+        vec![audio(1, &a, 0)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        |c| c.streamer.before_open = gated_open,
+    );
+    s.wait_output(DEV2_NAME);
+    start(&mut s, 1);
+    s.run(BLOCK * 10);
+    gate(&a);
+    s.slow_disk = true;
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(1200);
+    assert!(
+        heard(&s.device_channel(DEV2, 0)).is_empty(),
+        "swapped before its stream could be read"
+    );
+    release(&a);
+    s.slow_disk = false;
+    s.run(frames as u64);
+    let crossfade = (f64::from(RATE) * 0.01) as usize;
+    assert_heard_in_step(&s, frames, crossfade);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+}
