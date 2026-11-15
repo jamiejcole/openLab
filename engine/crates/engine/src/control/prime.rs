@@ -328,7 +328,7 @@ mod tests {
     fn example() -> (Workspace, Cue) {
         let text = include_str!("../../../../fixtures/show/v1-example.openlab");
         let mut ws = load_show(text).unwrap().workspace;
-        let id = openlab_core::audio_media(&ws)[0].0;
+        let id = openlab_core::media_of_cues(&ws)[0].0;
         let template = ws.find_cue(id).unwrap().clone();
         for list in &mut ws.cue_lists {
             list.cues.clear();

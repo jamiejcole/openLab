@@ -89,6 +89,7 @@ fn lengths(cue: u128, file: f64, trimmed: f64, duration: Option<f64>) -> CueMedi
         trimmed: Some(trimmed),
         duration,
         channels: Some(1),
+        picture: None,
     }
 }
 
@@ -99,6 +100,7 @@ fn unknown(cue: u128) -> CueMediaDuration {
         trimmed: None,
         duration: None,
         channels: None,
+        picture: None,
     }
 }
 

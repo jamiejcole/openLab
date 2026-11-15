@@ -11,6 +11,7 @@ pub mod osc;
 pub mod persist;
 pub mod platform;
 pub mod stage;
+pub mod stage_probe;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 

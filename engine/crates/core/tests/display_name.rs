@@ -18,6 +18,9 @@ struct Fixture {
 struct Case {
     label: String,
     audio: bool,
+    /// A Video cue instead (absent: false).
+    #[serde(default)]
+    video: bool,
     name: String,
     media: Option<String>,
     expected: String,
@@ -29,7 +32,13 @@ fn fixture_cases() {
         serde_json::from_str(include_str!("../../../fixtures/display_name.json")).unwrap();
     assert!(fixture.cases.len() >= 6);
     for case in fixture.cases {
-        let kind = if case.audio {
+        let kind = if case.video {
+            CueKind::Video {
+                media: case.media.as_deref().map(MediaRef::new),
+                stage: None,
+                duration: None,
+            }
+        } else if case.audio {
             let mut kind = audio();
             if let CueKind::Audio { media, .. } = &mut kind {
                 *media = case.media.as_deref().map(MediaRef::new);

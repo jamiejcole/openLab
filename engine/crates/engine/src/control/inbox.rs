@@ -84,6 +84,12 @@ pub enum ProbeAnswer {
         ticket: u64,
         result: Result<Arc<Preloaded>, MediaError>,
     },
+    /// A Video cue's file: what the stage host's probe found (`Ok` is a video or a still).
+    Pictured {
+        key: String,
+        ticket: u64,
+        result: Result<(PathBuf, openlab_core::video_probe::ProbeReport), MediaError>,
+    },
 }
 
 /// One broadcast and the doc it is about: `doc: None` is the engine's own (`log`, `log_entry`,

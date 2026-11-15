@@ -587,3 +587,56 @@ pub fn statuses(msgs: Vec<ServerMessage>) -> Vec<openlab_core::protocol::SystemS
         })
         .collect()
 }
+
+/// The stage host supervisor's clock, moved by hand: its pings, answer times and restart counts
+/// see only the time a test gives them, never how fast the machine runs.
+pub struct HandClock {
+    ms: std::sync::Arc<AtomicU64>,
+    pings: std::sync::Arc<AtomicU64>,
+}
+
+impl HandClock {
+    pub fn new() -> Self {
+        Self {
+            ms: std::sync::Arc::new(AtomicU64::new(0)),
+            pings: std::sync::Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Runs `host`'s supervisor on this clock, counting its pings.
+    pub fn drive(&self, host: &mut openlab_engine::stage::StageHostConfig) {
+        let base = std::time::Instant::now();
+        let ms = std::sync::Arc::clone(&self.ms);
+        host.clock = openlab_engine::stage::StageClock::from_fn(move || {
+            base + std::time::Duration::from_millis(ms.load(Ordering::SeqCst))
+        });
+        host.pings_sent = Some(std::sync::Arc::clone(&self.pings));
+    }
+
+    /// Moves the clock on by `seconds` and has the supervisor look at it.
+    pub fn advance(&self, s: &mut OfflineShow, seconds: u64) {
+        self.ms.fetch_add(seconds * 1000, Ordering::SeqCst);
+        s.control().wake_stage_supervisor();
+    }
+
+    /// Pings the supervisor has sent.
+    pub fn pings(&self) -> u64 {
+        self.pings.load(Ordering::SeqCst)
+    }
+
+    /// Hangs the stage host and moves the clock until the supervisor kills it as not answering:
+    /// a ping goes out (waited for), then its answer time passes. Returns the hung one's pid.
+    pub fn hang_until_killed(&self, s: &mut OfflineShow, answer_within: u64) -> u32 {
+        let pid = s.control().stage_host_pid().expect("a stage host runs");
+        s.control_mut().hang_stage_host();
+        let sent = self.pings();
+        self.advance(s, 1);
+        assert!(s.wait_for(|_| self.pings() > sent), "no ping went out");
+        self.advance(s, answer_within + 1);
+        assert!(
+            s.wait_for(|c| c.stage_host_pid().is_none_or(|p| p != pid)),
+            "the hung stage host was not killed"
+        );
+        pid
+    }
+}
