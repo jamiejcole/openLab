@@ -76,8 +76,8 @@ cue, and the cue shows as broken where it cannot run.
 | `output_max_db` or `output_min_db` outside its range | Warning; clamped into it |
 | An OSC `float` argument too large for 32 bits | Warning; set to `0` |
 | A Network cue's `address` is not a valid OSC address, or its arguments are too many or too large (skill `osc`) | Kept; the cue shows as broken until it is edited |
-| An Audio cue's `end_time` not after its `start_time` | Warning; `end_time` cleared (play to end) |
-| An Audio cue's `end_time` less than 50 ms after its `start_time` (`MIN_SLICE_SECONDS`) | Warning; `end_time` moved to `start_time` + 50 ms (QLab 5's shortest trim) |
+| An Audio or Video cue's `end_time` not after its `start_time` | Warning; `end_time` cleared (play to end) |
+| An Audio or Video cue's `end_time` less than 50 ms after its `start_time` (`MIN_SLICE_SECONDS`) | Warning; `end_time` moved to `start_time` + 50 ms (QLab 5's shortest trim) |
 | Slice markers out of order | Warning; sorted |
 | A slice marker at or before `start_time`, or at or after `end_time` | Warning; removed |
 | Two slice markers at the same time | Warning; the second is removed |
@@ -281,7 +281,7 @@ Option on macOS).
 | `pause` | `target` | Pauses the target. |
 | `load` | `target`, `load_to_time` (seconds, -86400 to 86400) | Loads the target, cued to `load_to_time`. A negative time counts back from the target's end (pre-wait and action); further back than its start, or with no known end, it loads to the start. |
 | `reset` | `target` | Returns the target to its saved state. |
-| `devamp` | `target`, `start_next_cue` (bool), `stop_target_when_slice_ends` (bool), `devamp_mode` (`"current_slice"` \| `"looping_cue"`) | Leaves the target's loop at the end of the pass; semantics in skill `cue-engine`. Target must be an Audio cue or a Playlist group. |
+| `devamp` | `target`, `start_next_cue` (bool), `stop_target_when_slice_ends` (bool), `devamp_mode` (`"current_slice"` \| `"looping_cue"`) | Leaves the target's loop at the end of the pass; semantics in skill `cue-engine`. Target must be an Audio cue, a Video cue or a Playlist group. |
 | `go_to` | `target`, `then_go` (bool) | Moves the playhead to the target; `then_go` also fires GO. |
 | `arm` | `target` | Arms the target. |
 | `disarm` | `target` | Disarms the target. |
@@ -309,8 +309,10 @@ manual p. 209). A video's length is not stored; it comes from the file.
 | `opacity` | 0 to 1 | 1 is opaque; the file's own transparency is kept. |
 | `layer` | whole number 0 to 1000 | Stacking among the cues on its stage: higher on top; on one layer the later-started on top. |
 | `smooth` | bool | Smooth scaling; `false` is nearest-neighbour (hard pixel edges). |
+| `start_time`, `end_time`, `fade_in`, `fade_out`, `slices`, `last_slice_play_count` | as `audio` | Time and loops (VID-07, QLab 5 manual p. 214), stored, loaded and checked exactly as an Audio cue's fields of the same names (trims, slice markers, play counts, `0` looping until devamped). Used by a video file; a still ignores them. The fades are of the picture's opacity: in from the action's start, out to its end (none while it loops for ever). |
+| `hold_at_end` | bool | At the last frame the picture stays up and the cue stays active until it is stopped; `false`: the cue ends there and its picture leaves the stage. |
 
-A geometry key missing from a file is its default (fill stage, fit, no move, scale 1, locked, no rotation or crop, anchor at the centre, opacity 1, layer 1000, smooth). Out of range: clamped (not finite: the default) with an `InvalidValue` warning naming the field.
+A geometry key missing from a file is its default (fill stage, fit, no move, scale 1, locked, no rotation or crop, anchor at the centre, opacity 1, layer 1000, smooth). Out of range: clamped (not finite: the default) with an `InvalidValue` warning naming the field. A time-and-loops key missing from a file is its default (no trims, no fades or slices, played once, not held); out of range they warn and are repaired as an Audio cue's (§3).
 
 **`network`** — sends one OSC message.
 

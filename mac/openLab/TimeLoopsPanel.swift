@@ -2,12 +2,14 @@
 
 import AppKit
 
-/// The time and loops tab of an Audio cue (AUD-10, AUD-11, AUD-12, AUD-14; QLab surface
-/// `inspector.audio.time-loops`): start and end trim fields and how many times the cue plays on
-/// the left, the file's waveform with draggable trims, slice markers and fades filling the rest,
-/// and under it the slice buttons, the built-in fade switch with its curve, and zoom. Edits are
-/// reported as `Change`s; the inspector turns them into model commands. Peaks come from the engine
-/// (`waveform` request) and are kept per file and zoom.
+/// The time and loops tab of an Audio or Video cue (AUD-10, AUD-11, AUD-12, AUD-14, VID-07; QLab
+/// surfaces `inspector.audio.time-loops`, `inspector.video.time-loops`): start and end trim fields
+/// and how many times the cue plays on the left, the file's waveform with draggable trims, slice
+/// markers and fades filling the rest, and under it the slice buttons, the built-in fade switch
+/// with its curve, a Video cue's hold-at-end box, and zoom. A file with no sound the engine can
+/// read (every movie until sound from video files is built) shows the time ruler alone, its
+/// trims, slices and fades over it. Edits are reported as `Change`s; the inspector turns them into
+/// model commands. Peaks come from the engine (`waveform` request) and are kept per file and zoom.
 @MainActor
 final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     enum Change: Equatable {
@@ -29,6 +31,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         case sliceCount(Double, Int)
         /// Built-in fade lengths (0: none) and the one curve of both; nil keeps what the cue has.
         case fades(fadeIn: Double?, fadeOut: Double?, curve: String?)
+        /// A Video cue's last frame stays up (and the cue active) until it is stopped.
+        case holdAtEnd(Bool)
     }
 
     /// A slice marker: where it is in the file, and the play count of the slice it ends (0: until
@@ -63,6 +67,9 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             return kind
         case .playCount(let n):
             kind.set("last_slice_play_count", .int(Int64(n)))
+            return kind
+        case .holdAtEnd(let on):
+            kind.set("hold_at_end", .bool(on))
             return kind
         case .addSlice(let t): return apply(.addSlices([t]), to: kind)
         case .addSlices(let times):
@@ -138,6 +145,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     let deleteSlicesButton = NSButton(title: loc("timeLoops.deleteSlices"), target: nil, action: nil)
     let addSliceButton = NSButton(title: loc("timeLoops.addSlice"), target: nil, action: nil)
     let fadeCheck = NSButton(checkboxWithTitle: loc("timeLoops.fades"), target: nil, action: nil)
+    /// A Video cue's hold at end; hidden for an Audio cue.
+    let holdCheck = NSButton(checkboxWithTitle: loc("timeLoops.holdAtEnd"), target: nil, action: nil)
     let fadeCurvePopup = NSPopUpButton()
     /// Edits one slice's play count in place, over its number on the waveform.
     let sliceCountField = NSTextField()
@@ -173,6 +182,10 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     private var shownCue: ModelID?
     /// The shown cue's file is missing or cannot be read.
     private var missing = false
+    /// The shown cue's file has no sound to draw: its time ruler alone, no peaks asked for.
+    private(set) var silent = false
+    /// The shown cue is a Video cue showing a still: it has no time line.
+    private var still = false
     private var kind: JSONValue = .null
     private var generation = 0
     /// The fetch under way (tests wait on it).
@@ -195,6 +208,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         deleteSlicesButton.setAX(AX.timeLoopsDeleteSlices)
         addSliceButton.setAX(AX.timeLoopsAddSlice)
         fadeCheck.setAX(AX.timeLoopsFades)
+        holdCheck.setAX(AX.timeLoopsHoldAtEnd)
+        holdCheck.isHidden = true
         fadeCurvePopup.setAX(AX.timeLoopsFadeCurve)
         sliceCountField.setAX(AX.timeLoopsSliceCount)
         for f in [startField, endField, countField, sliceCountField] {
@@ -211,7 +226,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         }
         for (b, action) in [
             (deleteSlicesButton, #selector(deleteSlices)), (addSliceButton, #selector(addSlice)),
-            (fadeCheck, #selector(fadeToggled)),
+            (fadeCheck, #selector(fadeToggled)), (holdCheck, #selector(holdToggled)),
         ] {
             b.target = self
             b.action = action
@@ -307,7 +322,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         let strip = NSStackView(views: [
-            deleteSlicesButton, addSliceButton, fadeCheck, fadeCurvePopup, spacer, zoomOutButton, zoomInButton,
+            deleteSlicesButton, addSliceButton, fadeCheck, fadeCurvePopup, holdCheck, spacer, zoomOutButton,
+            zoomInButton,
         ])
         strip.spacing = 4
         waveform.translatesAutoresizingMaskIntoConstraints = false
@@ -344,13 +360,25 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     var fadeCurve: String { kind["fade_in"]?["curve"]?.stringValue ?? "linear" }
     /// The built-in fades are on while either has a length.
     var hasFades: Bool { fadeIn > 0 || fadeOut > 0 }
+    var holdsAtEnd: Bool { kind["hold_at_end"] == .bool(true) }
 
-    /// Shows an Audio cue's `kind`; `duration` is its file's length, nil while not known; `missing`:
-    /// the file is missing or cannot be read, so no length or waveform will come. A field being
-    /// typed in keeps its text.
-    func show(cue: ModelID, kind: JSONValue, duration: Double?, missing: Bool = false) {
+    /// What the shown cue's file is, for its timeline: a sound file (a waveform), a movie (no sound
+    /// to draw: the ruler alone, and the hold-at-end box), or a still (no time line at all).
+    enum Media {
+        case sound, movie, still
+    }
+
+    /// Shows an Audio or Video cue's `kind`; `duration` is its file's length, nil while not known;
+    /// `missing`: the file is missing or cannot be read, so no length or waveform will come. A field
+    /// being typed in keeps its text.
+    func show(cue: ModelID, kind: JSONValue, duration: Double?, missing: Bool = false, media: Media = .sound) {
         self.kind = kind
         self.missing = missing
+        silent = media != .sound
+        still = media == .still
+        holdCheck.isHidden = media == .sound
+        holdCheck.state = holdsAtEnd ? .on : .off
+        waveform.silent = silent
         let media = kind["media"]?.stringValue ?? ""
         let newFile = duration.flatMap { d in media.isEmpty || d <= 0 ? nil : (cue, media, d) }
         // Another cue is shown afresh even when neither file is known yet, so its first drawing says
@@ -401,6 +429,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         let key: String
         if (kind["media"]?.stringValue ?? "").isEmpty {
             key = "timeLoops.noFile"
+        } else if still {
+            key = "timeLoops.still"
         } else if missing {
             key = "timeLoops.missing"
         } else if waveform.readFailed {
@@ -434,14 +464,17 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
 
     private func applyLock() {
         let sliced = hasSlices
-        for c in [startField, endField] as [NSControl] { c.isEnabled = !isLocked }
+        // A still has no time line: nothing here applies to it.
+        let off = isLocked || still
+        for c in [startField, endField] as [NSControl] { c.isEnabled = !off }
         // With slices each slice has its own count (QLab: edited on the slice markers).
-        for c in [playRadio, loopRadio] as [NSControl] { c.isEnabled = !isLocked && !sliced }
-        countField.isEnabled = !isLocked && !sliced && playCount != 0
-        deleteSlicesButton.isEnabled = !isLocked && sliced
-        addSliceButton.isEnabled = !isLocked && (waveform.insertion != nil || waveform.selection != nil)
-        fadeCheck.isEnabled = !isLocked
-        fadeCurvePopup.isEnabled = !isLocked && hasFades
+        for c in [playRadio, loopRadio] as [NSControl] { c.isEnabled = !off && !sliced }
+        countField.isEnabled = !off && !sliced && playCount != 0
+        deleteSlicesButton.isEnabled = !off && sliced
+        addSliceButton.isEnabled = !off && (waveform.insertion != nil || waveform.selection != nil)
+        fadeCheck.isEnabled = !off
+        fadeCurvePopup.isEnabled = !off && hasFades
+        holdCheck.isEnabled = !off
         if isLocked { endSliceCountEdit() }
         waveform.isLocked = isLocked
         waveform.window?.invalidateCursorRects(for: waveform)
@@ -492,7 +525,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     private func ask(busyRetries: Int) {
         // Whatever read is out is for something no longer asked for, even when nothing is asked now.
         generation += 1
-        guard let file, isActive, !isLocked else { return }
+        // A file with no sound has no peaks to ask for: its ruler is drawn as it is.
+        guard let file, isActive, !isLocked, !silent else { return }
         let (a, b) = visible
         let scaleFactor = waveform.window?.backingScaleFactor ?? 2
         let width = Int(waveform.bounds.width * scaleFactor)
@@ -647,6 +681,15 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         }
         // The cue as shown (the inspector shows it again with the edit).
         fadeCheck.state = hasFades ? .on : .off
+    }
+
+    /// A Video cue's hold at end, on or off.
+    @objc private func holdToggled() {
+        guard !isLocked else { return }
+        let on = holdCheck.state == .on
+        if on != holdsAtEnd { onChange?(.holdAtEnd(on)) }
+        // The cue as shown (the inspector shows it again with the edit).
+        holdCheck.state = holdsAtEnd ? .on : .off
     }
 
     @objc private func fadeCurveChanged() {

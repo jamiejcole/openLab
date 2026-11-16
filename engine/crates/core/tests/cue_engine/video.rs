@@ -29,6 +29,7 @@ fn video_on(n: u128, stage: Option<StageId>) -> Cue {
             stage,
             duration: None,
             geometry: Default::default(),
+            timing: Default::default(),
         },
     )
 }
@@ -236,4 +237,79 @@ fn a_decode_failure_breaks_only_that_video_cue() {
     );
     assert_eq!(rig.state(1), CueState::Broken);
     assert_eq!(rig.state(2), CueState::Running);
+}
+
+/// A Devamp cue may target a Video cue (VID-07: its loops are an Audio cue's): the devamp goes
+/// to the picture's voice, and once the binary says where it leaves the loop the cue after the
+/// Devamp cue starts on that sample.
+#[test]
+fn a_devamp_cue_devamps_a_looping_video_cue_and_starts_the_next_cue_at_the_loop_end() {
+    let devamp = cue(
+        2,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: true,
+            stop_target_when_slice_ends: false,
+            devamp_mode: DevampMode::CurrentSlice,
+        },
+    );
+    let mut rig = rig(vec![
+        video_on(1, Some(stage_id(1))),
+        devamp,
+        memo(3),
+        memo(4),
+    ]);
+    assert!(rig.problems(2).is_empty(), "{:?}", rig.problems(2));
+    rig.start(0, 1);
+    rig.set_playhead(0, 2);
+    let go = rig.go(100);
+    assert!(
+        go.iter().any(|a| matches!(
+            a,
+            Action::DevampVoice {
+                at: 100,
+                stop: false,
+                ..
+            }
+        )),
+        "{go:?}"
+    );
+    let run = rig.run(1);
+    rig.at(
+        150,
+        Input::DevampScheduled {
+            cue: id(1),
+            run,
+            at: 2000,
+        },
+    );
+    assert!(starts(&rig.tick(1999)).is_empty());
+    assert_eq!(starts(&rig.tick(2000)), vec![(id(3), 2000)]);
+    assert_eq!(rig.state(1), CueState::Running);
+}
+
+/// A Video cue whose trims and slices the binary cannot plan for its file shows broken with
+/// why, as an Audio cue does, until the plan can be played again.
+#[test]
+fn a_video_cue_whose_slices_cannot_play_is_broken_until_fixed() {
+    let mut rig = rig(vec![video_on(1, Some(stage_id(1)))]);
+    rig.at(
+        1,
+        Input::SliceProblems {
+            cues: vec![(id(1), Some("a looping slice is too short".into()))],
+        },
+    );
+    assert_eq!(
+        rig.problems(1),
+        vec![CueProblem::SlicesUnplayable {
+            reason: "a looping slice is too short".into()
+        }]
+    );
+    // An edit of the trims makes the report stale: the binary checks the new plan.
+    if let CueKind::Video { timing, .. } = &mut rig.find_mut(1).kind {
+        timing.start_time = 0.5;
+    }
+    rig.engine.model_changed();
+    rig.tick(2);
+    assert!(rig.problems(1).is_empty());
 }

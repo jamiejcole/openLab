@@ -38,6 +38,7 @@ fn fixture_cases() {
                 stage: None,
                 duration: None,
                 geometry: Default::default(),
+                timing: Default::default(),
             }
         } else if case.audio {
             let mut kind = audio();

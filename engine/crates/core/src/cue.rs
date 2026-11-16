@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::media_path::file_name;
 use crate::model::{CueId, NetworkPatchId, PatchId, StageId};
 use crate::video_geometry::VideoGeometry;
+use crate::video_timing::VideoTiming;
 
 /// Levels at or below this are silence (−∞). The file writes this value for silence.
 pub const SILENCE_DB: f64 = -120.0;
@@ -680,6 +681,9 @@ pub enum CueKind {
         /// How its picture sits on the stage (VID-04), stored as fields of the kind.
         #[serde(flatten)]
         geometry: VideoGeometry,
+        /// Its trims, loops, fades and hold at end (VID-07), stored as fields of the kind.
+        #[serde(flatten)]
+        timing: Box<VideoTiming>,
     },
 }
 

@@ -31,20 +31,26 @@ extension InspectorViewController {
         timeLoopsItem = item
     }
 
-    /// Fills the tab (third after Basics and Triggers, see `InspectorTabs`) for an Audio cue.
+    /// Fills the tab (see `InspectorTabs`) for an Audio or Video cue. A movie's has no waveform (the
+    /// engine reads no sound from video files yet: #645): its ruler alone, with the hold-at-end box.
     func renderTimeLoops(_ cue: Cue) {
         guard timeLoopsItem != nil else { return }
-        let audio = cue.kindType == "audio"
-        guard audio else {
+        guard Self.timeLoopsKinds.contains(cue.kindType) else {
             timeLoops.isActive = false
             return
         }
         let missing = (store.problems[cue.id] ?? []).contains {
             $0.type == "media_missing" || $0.type == "media_unsupported"
         }
+        let media: TimeLoopsPanel.Media
+        switch (cue.kindType, store.mediaDurations[cue.id]?.picture?.type) {
+        case ("audio", _): media = .sound
+        case (_, "still"): media = .still
+        default: media = .movie
+        }
         timeLoops.show(
             cue: cue.id, kind: cue.raw["kind"] ?? .null, duration: store.mediaDurations[cue.id]?.file,
-            missing: missing)
+            missing: missing, media: media)
         updateTimeLoopsActive()
         updateTimeLoopsProgress()
     }
@@ -60,9 +66,13 @@ extension InspectorViewController {
         updateTimeLoopsActive()
     }
 
-    /// The playhead line follows the selected cue's progress.
+    /// The kinds with a time and loops tab.
+    static let timeLoopsKinds: Set<String> = ["audio", "video"]
+
+    /// The playhead line follows the selected cue's progress (inside a loop, the loop's pass: the
+    /// engine sends where in the file the cue is).
     func updateTimeLoopsProgress() {
-        guard let cue, cue.kindType == "audio" else { return }
+        guard let cue, Self.timeLoopsKinds.contains(cue.kindType) else { return }
         timeLoops.showProgress(position: store.progress[cue.id]?.position)
     }
 
@@ -85,6 +95,6 @@ extension InspectorViewController {
     /// (`cueForEdit`), then shows that at once, so the next edit and the waveform build on it.
     func sendTimeLoops(_ change: TimeLoopsPanel.Change) {
         sendKind({ TimeLoopsPanel.apply(change, to: $0) }, key: "timeLoops")
-        if let cue = cueForEdit, cue.kindType == "audio" { renderTimeLoops(cue) }
+        if let cue = cueForEdit, Self.timeLoopsKinds.contains(cue.kindType) { renderTimeLoops(cue) }
     }
 }

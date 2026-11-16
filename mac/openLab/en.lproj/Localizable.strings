@@ -965,6 +965,8 @@
 "timeLoops.addSlice" = "New Slice";
 "timeLoops.deleteSlices" = "Clear Slices";
 "timeLoops.fades" = "Built-in fades";
+"timeLoops.holdAtEnd" = "Keep last frame";
+"timeLoops.still" = "A still image has no timeline";
 "timeLoops.invalid.slice" = "Click in the waveform at least 0.05 s from the trims and from other slice markers, then add the slice.";
 "timeLoops.invalid.tooManySlices" = "A cue can have at most 254 slice markers.";
 "timeLoops.invalid.sliceCount" = "Enter a whole number of plays from 1 to 1000000, or a letter to loop until devamped.";

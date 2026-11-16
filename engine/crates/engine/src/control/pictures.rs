@@ -11,6 +11,14 @@
 //! (`ActionLength`), so the cue ends on its last frame's sample. When the cue's action is over
 //! (it ends, stops, breaks or is reset) its picture goes.
 //!
+//! A movie's trims, slices and play counts (VID-07) are planned as an Audio cue's are (the same
+//! slice table, `cue_slices`) and sent with each play as the passes the stage host follows, so
+//! a loop's seam is the stage host's to show without a gap. A devamp is worked out here from
+//! that table: the pass under way is the loop's last, the plan is sent again from the same
+//! start with that loop cut there, and the cue engine is told where (`DevampScheduled`) and the
+//! new length. With hold at end the cue is told no length: it stays active on its last frame
+//! until it is stopped. The integrated fades go with each play for the stage host to draw.
+//!
 //! A GO on a Video cue whose file's probe has not answered yet (just after the show opened, or
 //! the file was changed, relinked or came back) waits for it, as an Audio cue's does: nothing
 //! is sent to the stage host until the answer, the cue starts late (`cold_start`) when it
@@ -27,10 +35,13 @@ use openlab_core::stage_link::ToStage;
 use openlab_core::video_probe::ProbeReport;
 
 use super::media::Probe;
+use openlab_audio::{Plays as Passes, Slice, total_frames};
 use openlab_core::{
-    Action, BrokenReason, CueId, CueKind, CueState, Input, RunId, SampleTime, StageId,
-    VideoGeometry, seconds_to_samples,
+    Action, BrokenReason, CueId, CueKind, CueState, Input, PictureFades, PlanPass, RunId,
+    SampleTime, StageId, VideoGeometry, VideoTiming, plan_point, seconds_to_samples,
 };
+
+use super::plan::{PlanSpec, cue_slices, picture_info};
 
 use super::voices::Effects;
 use super::{DocCx, DocId, Engine};
@@ -59,9 +70,11 @@ struct Live {
     /// Where it is, for progress: playing from sample `.0` (`Some`), or held (`None`), at `.1`
     /// seconds into its action then; `None` until it first plays.
     motion: Option<(Option<SampleTime>, f64)>,
-    /// Its action's length in seconds (a video's, a still's typed duration), if it has one.
+    /// Its action's length in seconds (a video's, a still's typed duration), if it ends.
     length: Option<f64>,
     still: bool,
+    /// A movie's plan as its last play sent it, for its position, pause and devamp.
+    plan: Option<RunPlan>,
     /// How many stage host crashes it was decoding at (or still opening) within
     /// `SUSPECT_WINDOW_S`, and when the first of them was.
     suspected: u32,
@@ -71,6 +84,37 @@ struct Live {
     /// Sent again alone from the hold-back on this sample: a crash before
     /// `PROBATION_S` has passed is its doing.
     trial: Option<SampleTime>,
+}
+
+/// A movie run's plan (engine samples, from the top of its action). `top` is the plan the run
+/// started with, cut by each devamp whose loop it has left since: a resume plays on with it,
+/// as a paused Audio voice keeps the plan it was given, whatever was edited since. `table` is
+/// what its last play sent (`top`, or `top` cut by the devamp in `devamp`),
+/// from sample `at`, `into` samples into the table then; `late` is how much later than the
+/// engine dated the run's start the picture began (a start held by its probe), in the action's
+/// time but not the picture's.
+struct RunPlan {
+    top: Vec<Slice>,
+    table: Vec<Slice>,
+    at: SampleTime,
+    into: SampleTime,
+    late: SampleTime,
+    passes: Vec<PlanPass>,
+    /// The last devamp of it: its stop, and the sample it leaves the loop on. Pending until
+    /// the picture is there, carried out from then on.
+    devamp: Option<(bool, SampleTime)>,
+}
+
+impl RunPlan {
+    /// The run's plan with no devamp pending, `elapsed` samples into the table: a devamp whose
+    /// loop the picture has left by then stays cut (taken at the boundary, as an Audio voice
+    /// takes its own); one it has not reached is dropped.
+    fn settled(&self, elapsed: SampleTime) -> &[Slice] {
+        let left = self.devamp.is_some_and(|(_, leaves)| {
+            elapsed >= self.into.saturating_add(leaves.saturating_sub(self.at))
+        });
+        if left { &self.table } else { &self.top }
+    }
 }
 
 /// Crashes this far apart count as one run of crashes for the pictures decoding at them.
@@ -138,8 +182,83 @@ struct Plays {
     still: bool,
     stage: StageId,
     geometry: VideoGeometry,
-    /// The action's length in seconds, if it has one.
+    /// The action's length in seconds, if it has one (a still's typed duration; a movie's is
+    /// its plan's).
     length: Option<f64>,
+    /// A movie's own length in seconds, and its time and loops.
+    movie: Option<(f64, VideoTiming)>,
+}
+
+/// A movie's plan at `rate` from the top of its action, and the action's length (`None` if it
+/// loops for ever).
+fn movie_table(
+    file: f64,
+    timing: &VideoTiming,
+    rate: std::num::NonZeroU32,
+) -> Result<(Vec<Slice>, Option<SampleTime>), &'static str> {
+    let spec = PlanSpec {
+        start_time: timing.start_time,
+        end_time: timing.end_time,
+        slices: &timing.slices,
+        last_slice_play_count: timing.last_slice_play_count,
+    };
+    let top = cue_slices(&spec, &picture_info(file, rate), rate, 0)
+        .map_err(|_| "its trims and loops cannot be played")?;
+    let total = total_frames(&top);
+    Ok((top, total))
+}
+
+/// The passes the stage host follows for `table`.
+fn passes(table: &[Slice], rate: u32) -> Vec<PlanPass> {
+    table
+        .iter()
+        .map(|s| PlanPass {
+            from: seconds(s.start, rate),
+            length: seconds(s.frames, rate),
+            plays: match s.plays {
+                Passes::Times(n) => n,
+                Passes::Infinite => 0,
+            },
+        })
+        .collect()
+}
+
+/// Where in the file a movie following `passes` is `into` seconds into them: past their end,
+/// just before the end of the last pass (the frame it holds), never further on.
+fn position_in(passes: &[PlanPass], into: f64) -> f64 {
+    plan_point(passes, into).map_or(0.0, |p| p.position)
+}
+
+/// Where a devamp at `elapsed` samples into `table` leaves its loop: the table with the pass
+/// under way the last of its slice (and the slice's later entries dropped, or everything after
+/// with `stop`), and the samples into the table it leaves on. `None` when the table has ended
+/// there or a play count would not fit.
+fn devamped(table: &[Slice], elapsed: SampleTime, stop: bool) -> Option<(Vec<Slice>, SampleTime)> {
+    let mut start = 0u64;
+    for (i, s) in table.iter().enumerate() {
+        let whole = match s.plays {
+            Passes::Times(n) => s.frames.saturating_mul(u64::from(n)),
+            Passes::Infinite => u64::MAX,
+        };
+        let into = elapsed.saturating_sub(start);
+        if into < whole && s.frames > 0 {
+            let pass = into / s.frames;
+            let leaves = start.saturating_add((pass + 1).saturating_mul(s.frames));
+            let mut out: Vec<Slice> = table.get(..i).unwrap_or_default().to_vec();
+            out.push(Slice {
+                plays: Passes::Times(u32::try_from(pass + 1).ok()?),
+                ..*s
+            });
+            if !stop {
+                // The rest of this slice's plays (a loop split by a start part way in) are
+                // left; the slices after it play as planned.
+                out.extend(table.iter().skip(i + 1).skip_while(|n| n.index == s.index));
+            }
+            return Some((out, leaves));
+        }
+        start = start.saturating_add(whole);
+    }
+    None
 }
 
 impl Engine {
@@ -402,7 +521,12 @@ impl Engine {
                     None => elapsed,
                 };
                 let remaining = l.length.map(|length| (length - elapsed).max(0.0));
-                let position = (!l.still).then_some(elapsed);
+                // A movie's place in its file: where its plan is (inside a loop, the loop's
+                // pass), held on its last frame once the plan is over.
+                let position = match &l.plan {
+                    Some(p) => Some(position_in(&p.passes, elapsed)),
+                    None => (!l.still).then_some(elapsed),
+                };
                 Some((l.cue, elapsed, remaining, position))
             })
             .collect()
@@ -426,6 +550,7 @@ impl DocCx<'_> {
             stage: Some(stage),
             duration,
             geometry,
+            timing,
         }) = self.cue(cue).map(|c| &c.kind)
         else {
             return Err(Refused::Failed("the cue has no file or stage"));
@@ -451,7 +576,8 @@ impl DocCx<'_> {
                 still: false,
                 stage: *stage,
                 geometry: *geometry,
-                length: Some(d),
+                length: None,
+                movie: Some((d, (**timing).clone())),
             },
             ProbeReport::Still { .. } => Plays {
                 path,
@@ -459,6 +585,7 @@ impl DocCx<'_> {
                 stage: *stage,
                 geometry: *geometry,
                 length: *duration,
+                movie: None,
             },
             ProbeReport::Missing | ProbeReport::Unsupported { .. } => {
                 return Err(Refused::Failed("its file cannot be played"));
@@ -580,6 +707,15 @@ impl DocCx<'_> {
                     h.start = Some((at, offset));
                     return self.hold_start(cue, run, fx);
                 }
+                // A picture loaded on a file that has changed since (relinked, replaced, or
+                // probed again) is let go and loaded afresh, waiting for the probe if need be.
+                let loaded = self.eng.pictures.find(doc, run);
+                if let Some(id) = loaded
+                    && !self.still_plays(id, cue)
+                {
+                    self.eng.pictures.live.remove(&id);
+                    self.eng.picture(ToStage::Unload { picture: id });
+                }
                 let loaded = self.eng.pictures.find(doc, run).is_some();
                 if !loaded {
                     match self.load_picture(cue, run, offset) {
@@ -601,7 +737,7 @@ impl DocCx<'_> {
                         }
                     }
                 }
-                self.play_picture(cue, run, at, offset, 0, fx);
+                self.play_picture(cue, run, at, offset, 0, true, fx);
             }
             Action::ResumeVoice {
                 cue,
@@ -622,7 +758,7 @@ impl DocCx<'_> {
                 if let Some(l) = self.eng.pictures.live.get_mut(&id) {
                     l.run = run;
                 }
-                self.play_picture(cue, run, at, offset, 0, fx);
+                self.play_picture(cue, run, at, offset, 0, false, fx);
             }
             Action::PauseVoice {
                 run, at, offset, ..
@@ -634,15 +770,29 @@ impl DocCx<'_> {
                     return;
                 }
                 if let Some(id) = self.eng.pictures.find(doc, run) {
+                    // A movie holds where its plan is then; a still has no position.
+                    let late = self
+                        .eng
+                        .pictures
+                        .live
+                        .get(&id)
+                        .and_then(|l| l.plan.as_ref())
+                        .map_or(0, |p| p.late);
+                    // The picture's own time: the action's less a late start.
+                    let own = seconds(offset.saturating_sub(late), rate);
+                    let at_file = self.eng.pictures.live.get(&id).map_or(own, |l| {
+                        l.plan.as_ref().map_or(own, |p| position_in(&p.passes, own))
+                    });
                     let message = ToStage::Pause {
                         picture: id,
                         at,
-                        offset: seconds(offset, rate),
+                        offset: at_file.min(openlab_core::MAX_TIME),
+                        action: own.min(openlab_core::MAX_TIME),
                     };
                     if let Some(l) = self.eng.pictures.live.get_mut(&id) {
                         l.now = Some(message.clone());
                         // Held at the frame it pauses on.
-                        l.motion = Some((None, seconds(offset, rate)));
+                        l.motion = Some((None, own));
                     }
                     self.eng.picture(message);
                 }
@@ -667,9 +817,8 @@ impl DocCx<'_> {
                     self.eng.picture(ToStage::Unload { picture: id });
                 }
             }
-            // A picture has no loop to leave.
-            Action::DevampVoice { cue, run, .. } => {
-                fx.feedback.push(Input::DevampIgnored { cue, run });
+            Action::DevampVoice { cue, run, at, stop } => {
+                self.devamp_picture(cue, run, at, stop, fx);
             }
             // Levels and ducks act on sound; a picture has none (yet: #645).
             _ => {}
@@ -730,7 +879,7 @@ impl DocCx<'_> {
             }
             if let (Some((at, offset)), false) = (h.start, h.paused) {
                 let late = now.saturating_sub(at);
-                self.play_picture(h.cue, h.run, at.max(now), offset, late, &mut fx);
+                self.play_picture(h.cue, h.run, at.max(now), offset, late, true, &mut fx);
                 if h.since.is_some() {
                     fx.notices.push((
                         "cold_start",
@@ -781,6 +930,15 @@ impl DocCx<'_> {
     fn load_picture(&mut self, cue: CueId, run: RunId, offset: SampleTime) -> Result<(), Refused> {
         let plays = self.plays(cue)?;
         let rate = self.eng.rate.get();
+        // A movie opens on the frame its plan is at there (inside its trims and loops).
+        let at_file = match &plays.movie {
+            Some((file, timing)) => {
+                let (top, _) =
+                    movie_table(*file, timing, self.eng.rate).map_err(Refused::Failed)?;
+                position_in(&passes(&top, rate), seconds(offset, rate))
+            }
+            None => seconds(offset, rate),
+        };
         self.eng.pictures.next += 1;
         let id = self.eng.pictures.next;
         let load = ToStage::Load {
@@ -788,7 +946,7 @@ impl DocCx<'_> {
             stage: plays.stage,
             file: plays.path,
             still: plays.still,
-            offset: seconds(offset, rate).min(openlab_core::MAX_TIME),
+            offset: at_file.min(openlab_core::MAX_TIME),
             geometry: plays.geometry,
         };
         let (length, still) = (plays.length, plays.still);
@@ -810,15 +968,31 @@ impl DocCx<'_> {
                 motion: None,
                 length,
                 still,
+                plan: None,
             },
         );
         self.eng.picture(load);
         Ok(())
     }
 
+    /// Whether picture `id` is still of what `cue` plays now: the same file, probed and
+    /// playable (a file changed since it was loaded is not).
+    fn still_plays(&self, id: u64, cue: CueId) -> bool {
+        let loaded = match self.eng.pictures.live.get(&id).map(|l| &l.load) {
+            Some(ToStage::Load { file, .. }) => file.as_str(),
+            _ => return false,
+        };
+        matches!(self.plays(cue), Ok(p) if p.path == loaded)
+    }
+
     /// Plays the run's picture from sample `at`, `offset` into its action; `late` is how much
     /// later than the engine dated it the start is (a start held by its probe), counted into
-    /// the action's length.
+    /// the action's length. A movie follows its plan (trims, slices and loops) from `offset`
+    /// with its integrated fades: a `fresh` start plans it from the model, a resume plays on
+    /// with the run's plan as its last devamp left it. With hold at end the cue is told no length. Never
+    /// silent: a cue whose file is no longer playable fails, one whose file is being probed
+    /// again waits for the answer as a start does.
+    #[allow(clippy::too_many_arguments)]
     fn play_picture(
         &mut self,
         cue: CueId,
@@ -826,6 +1000,7 @@ impl DocCx<'_> {
         at: SampleTime,
         offset: SampleTime,
         late: SampleTime,
+        fresh: bool,
         fx: &mut Effects,
     ) {
         let doc = self.doc.id;
@@ -833,27 +1008,212 @@ impl DocCx<'_> {
         let Some(id) = self.eng.pictures.find(doc, run) else {
             return;
         };
+        let plays = match self.plays(cue) {
+            Ok(p) => p,
+            Err(Refused::Pending) => {
+                // Probed again (its file changed or came back): it waits, unseen, and starts
+                // from its head when the answer comes, as a start held by its probe does.
+                self.eng.pictures.live.remove(&id);
+                self.eng.picture(ToStage::Unload { picture: id });
+                self.eng.pictures.held.push(Held {
+                    doc,
+                    cue,
+                    run,
+                    offset,
+                    start: Some((at, offset)),
+                    since: None,
+                    paused: false,
+                });
+                return self.hold_start(cue, run, fx);
+            }
+            Err(Refused::Failed(why)) => return self.picture_refused(cue, run, why, fresh, fx),
+        };
+        let action = seconds(offset, rate).min(openlab_core::MAX_TIME);
+        // (the file position then, the plan, the fades, the action's end in the picture's time
+        // if it ends, and whether the cue is told that end)
+        let (position, plan, fades, length, ends) = match &plays.movie {
+            Some((file, timing)) => {
+                let kept = if fresh {
+                    None
+                } else {
+                    self.eng
+                        .pictures
+                        .live
+                        .get(&id)
+                        .and_then(|l| l.plan.as_ref())
+                };
+                // A resume keeps a devamp already carried out; one still pending is dropped,
+                // for the cue engine to ask again.
+                let (top, late) = match kept {
+                    Some(p) => (p.settled(offset.saturating_sub(p.late)).to_vec(), p.late),
+                    None => match movie_table(*file, timing, self.eng.rate) {
+                        Ok((top, _)) => (top, late),
+                        Err(why) => return self.picture_refused(cue, run, why, fresh, fx),
+                    },
+                };
+                let total = total_frames(&top);
+                // A fresh start plays from its head at `offset`; a resume is dated in the
+                // action's time, which runs `late` ahead of the picture's.
+                let into = if fresh {
+                    offset
+                } else {
+                    offset.saturating_sub(late)
+                };
+                let sent = passes(&top, rate);
+                let position = position_in(&sent, seconds(into, rate));
+                let end = total.map(|t| seconds(t, rate));
+                let fades = PictureFades {
+                    fade_in: timing.fade_in,
+                    fade_out: timing.fade_out,
+                    end: end.map(|e| e.min(openlab_core::MAX_TIME)),
+                };
+                let plan = RunPlan {
+                    table: top.clone(),
+                    top,
+                    at,
+                    into,
+                    late,
+                    passes: sent,
+                    devamp: None,
+                };
+                let ends = !timing.hold_at_end;
+                (position, Some(plan), fades, end, ends)
+            }
+            None => (action, None, PictureFades::NONE, plays.length, true),
+        };
+        // The picture's own time at `at` (a still has no plan: its action time).
+        let into = plan.as_ref().map_or(action, |p| seconds(p.into, rate));
         let message = ToStage::Play {
             picture: id,
             at,
-            offset: seconds(offset, rate).min(openlab_core::MAX_TIME),
+            offset: position.min(openlab_core::MAX_TIME),
+            action: into.min(openlab_core::MAX_TIME),
+            plan: plan.as_ref().map(|p| p.passes.clone()).unwrap_or_default(),
+            into: into.min(openlab_core::MAX_TIME),
+            fades,
         };
+        let late = plan.as_ref().map_or(late, |p| p.late);
         if let Some(l) = self.eng.pictures.live.get_mut(&id) {
             l.now = Some(message.clone());
-            l.motion = Some((Some(at), seconds(offset, rate)));
+            l.motion = Some((Some(at), into));
+            l.length = length.filter(|_| ends);
+            l.plan = plan;
             if l.first.is_none() {
                 l.first = Some(message.clone());
             }
         }
         self.eng.picture_clock(true);
         self.eng.picture(message);
-        // The action's length from its start: a video's own, a still's duration.
-        if let Ok(Plays {
-            length: Some(length),
-            ..
-        }) = self.plays(cue)
-        {
+        // The action's length from its start: a movie's plan, a still's duration; none while
+        // it loops for ever or holds its last frame. A late start is counted in.
+        if let (Some(length), true) = (length, ends) {
             let frames = seconds_to_samples(length, self.eng.rate).saturating_add(late);
+            fx.feedback.push(Input::ActionLength { cue, run, frames });
+        }
+    }
+
+    /// A devamp of a movie run's picture (CT-16, VID-07): the loop under way at `at` is left at
+    /// the end of its pass, as an Audio cue's voice leaves it. The plan is sent again from the
+    /// same start with that pass the loop's last (and, with `stop`, nothing after it: the
+    /// picture stops there), so what plays before the seam is unchanged. Said again for the
+    /// same devamp while it is pending; once the picture has left that loop the devamp is done
+    /// and a later one is of the loop under way then. A different one while one is pending, a
+    /// still, a paused picture, or a plan already over is ignored, as the mixer ignores it.
+    fn devamp_picture(
+        &mut self,
+        cue: CueId,
+        run: RunId,
+        at: SampleTime,
+        stop: bool,
+        fx: &mut Effects,
+    ) {
+        let rate = self.eng.rate.get();
+        let ignored = Input::DevampIgnored { cue, run };
+        let Some(id) = self.eng.pictures.find(self.doc.id, run) else {
+            return fx.feedback.push(ignored);
+        };
+        let hold =
+            matches!(&self.plays(cue), Ok(Plays { movie: Some((_, t)), .. }) if t.hold_at_end);
+        let Some(l) = self.eng.pictures.live.get_mut(&id) else {
+            return fx.feedback.push(ignored);
+        };
+        let playing = matches!(l.motion, Some((Some(_), _)));
+        let Some(plan) = l.plan.as_mut().filter(|_| playing) else {
+            return fx.feedback.push(ignored);
+        };
+        // Samples into the table: where the plan was at its play, and since.
+        let elapsed = plan.into.saturating_add(at.saturating_sub(plan.at));
+        match plan.devamp {
+            // Its loop is left: that devamp is done, and this one is of what plays now.
+            Some((_, leaves)) if at >= leaves => {
+                plan.top = plan.table.clone();
+                plan.devamp = None;
+            }
+            Some((same, leaves)) if same == stop => {
+                return fx.feedback.push(Input::DevampScheduled {
+                    cue,
+                    run,
+                    at: leaves,
+                });
+            }
+            Some(_) => return fx.feedback.push(ignored),
+            None => {}
+        }
+        let Some((table, leaves)) = devamped(&plan.table, elapsed, stop) else {
+            return fx.feedback.push(ignored);
+        };
+        let leaves_at = plan.at.saturating_add(leaves.saturating_sub(plan.into));
+        plan.devamp = Some((stop, leaves_at));
+        plan.passes = passes(&table, rate);
+        // The picture's end, in its own time and in the action's (a late start counted in).
+        let end = total_frames(&table);
+        let total = end.map(|t| t.saturating_add(plan.late));
+        plan.table = table;
+        let Some(ToStage::Play {
+            offset,
+            action,
+            fades,
+            into,
+            ..
+        }) = l.now.clone()
+        else {
+            return fx.feedback.push(ignored);
+        };
+        let fades = PictureFades {
+            end: end.map(|t| seconds(t, rate).min(openlab_core::MAX_TIME)),
+            ..fades
+        };
+        let message = ToStage::Play {
+            picture: id,
+            at: plan.at,
+            offset,
+            action,
+            plan: plan.passes.clone(),
+            into,
+            fades,
+        };
+        let ends = stop || !hold;
+        l.length = total.map(|t| seconds(t, rate)).filter(|_| ends);
+        l.now = Some(message.clone());
+        if l.first
+            .as_ref()
+            .is_some_and(|f| matches!(f, ToStage::Play { at, .. } if *at == plan.at))
+        {
+            l.first = Some(message.clone());
+        }
+        let held_back = l.held_back;
+        if !held_back {
+            self.eng.picture(message);
+        }
+        if stop {
+            self.stop_picture(id, leaves_at, 0);
+        }
+        fx.feedback.push(Input::DevampScheduled {
+            cue,
+            run,
+            at: leaves_at,
+        });
+        if let (Some(frames), true) = (total, ends) {
             fx.feedback.push(Input::ActionLength { cue, run, frames });
         }
     }
@@ -955,5 +1315,57 @@ impl DocCx<'_> {
             });
             self.follow(fx, now);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slice(index: u32, start: u64, frames: u64, plays: Passes) -> Slice {
+        Slice {
+            index,
+            start,
+            frames,
+            plays,
+        }
+    }
+
+    /// A devamp leaves the loop at the end of the pass under way: the loop's entry keeps the
+    /// passes played so far plus this one, the slices after it follow; with `stop` nothing
+    /// follows. A loop split by a start part way in (its rest of a pass, then its passes) is
+    /// left at the end of whichever play is under way, its later entry dropped.
+    #[test]
+    fn a_devamp_cuts_the_loop_after_the_pass_under_way() {
+        let table = [
+            slice(0, 0, 10, Passes::Times(1)),
+            slice(1, 10, 20, Passes::Infinite),
+            slice(2, 30, 5, Passes::Times(1)),
+        ];
+        // 10 + 2 passes + 5 into the third: leaves after the third pass, at 70.
+        let (t, leaves) = devamped(&table, 55, false).unwrap();
+        assert_eq!(leaves, 70);
+        assert_eq!(t[1].plays, Passes::Times(3));
+        assert_eq!(t[2], table[2]);
+        let (t, leaves) = devamped(&table, 55, true).unwrap();
+        assert_eq!((t.len(), leaves), (2, 70));
+        // In the bridge before the loop: it ends there, the loop still to come.
+        let (t, leaves) = devamped(&table, 3, false).unwrap();
+        assert_eq!(leaves, 10);
+        assert_eq!(t[0].plays, Passes::Times(1));
+        assert_eq!(t[1], table[1], "the loop after it is kept");
+        // A start inside the loop split it: devamped in that first part, the rest is dropped.
+        let split = [
+            slice(1, 15, 15, Passes::Times(1)),
+            slice(1, 10, 20, Passes::Infinite),
+            slice(2, 30, 5, Passes::Times(1)),
+        ];
+        let (t, leaves) = devamped(&split, 4, false).unwrap();
+        assert_eq!(leaves, 15);
+        assert_eq!(t, vec![split[0], split[2]]);
+        // Past the end of a finite table there is nothing to leave.
+        let finite = [slice(0, 0, 10, Passes::Times(2))];
+        assert!(devamped(&finite, 20, false).is_none());
+        assert!(devamped(&[], 0, false).is_none());
     }
 }

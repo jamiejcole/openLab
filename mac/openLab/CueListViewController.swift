@@ -1861,8 +1861,17 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     /// For a cue with no end whose voice is inside a slice: how far into the slice it is, and the
     /// slice's length.
     private func loopPass(_ node: CueNode, _ p: ProgressItem) -> (gone: Double, length: Double)? {
-        guard p.remaining == nil, let position = p.position, node.cue.kindType == "audio" else { return nil }
+        guard p.remaining == nil, let position = p.position else { return nil }
         let kind = node.cue.raw["kind"] ?? .null
+        switch node.cue.kindType {
+        case "audio": break
+        // A Video cue's loops are an Audio cue's; one held on its last frame has no end either,
+        // but is in no pass: it counts up.
+        case "video":
+            let counts = [kind["last_slice_play_count"]] + (kind["slices"]?.arrayValue ?? []).map { $0["play_count"] }
+            guard counts.contains(where: { $0?.doubleValue == 0 }) else { return nil }
+        default: return nil
+        }
         let start = kind["start_time"]?.doubleValue ?? 0
         let end = kind["end_time"]?.doubleValue ?? store.mediaDurations[node.id]?.file ?? position
         let marks = (kind["slices"]?.arrayValue ?? []).compactMap { $0["time"]?.doubleValue }.sorted()

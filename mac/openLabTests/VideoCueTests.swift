@@ -766,16 +766,16 @@ final class VideoCueTests: XCTestCase {
 
     // MARK: Flow 6: tabs and icon
 
-    /// A Video cue's inspector has Basics, Triggers and I/O; several selected keep I/O, the stage
+    /// A Video cue's inspector has Basics, Triggers, I/O, Geometry and Time & Loops; several selected keep I/O, the stage
     /// they share shown and set on all; the row draws the Video drawing.
-    func testAVideoCueShowsBasicsTriggersIOAndGeometryTabsAndItsKindIconInTheList() async throws {
+    func testAVideoCueShowsBasicsTriggersIOGeometryAndTimeLoopsTabsAndItsKindIconInTheList() async throws {
         try await openVideoShow()
         click(Self.movie)
         let inspector = wc.inspector
         await soon { inspector.cue?.id == Self.movie }
         XCTAssertEqual(
             inspector.tabView.tabViewItems.compactMap { $0.identifier as? String },
-            ["basics", "triggers", "io", "geometry"])
+            ["basics", "triggers", "io", "geometry", "timeLoops"])
         XCTAssertEqual(Icon.drawing(shownBy: inspector.kindIcon.image), .kindVideo)
         for id in [Self.movie, Self.still, Self.empty, Self.long] {
             XCTAssertEqual(Icon.drawing(shownBy: cueCell(id, "status")?.images[4].image), .kindVideo, "\(id)")
@@ -798,5 +798,189 @@ final class VideoCueTests: XCTestCase {
         }
         wc.cueList.selectAsUser([Self.movie, Self.timedStill])
         await soon("stages that differ read as mixed") { v.stagePopup.titleOfSelectedItem == loc("inspector.mixed") }
+    }
+
+    // MARK: Time & Loops (#646, VID-07; QLab 5 manual p. 214)
+
+    /// The movie's Time & Loops tab, shown.
+    func timeLoopsTab() async throws -> TimeLoopsPanel {
+        click(Self.movie)
+        let inspector = wc.inspector
+        await soon { inspector.cue?.id == Self.movie }
+        let item = try XCTUnwrap(inspector.tabView.tabViewItems.first { $0.identifier as? String == "timeLoops" })
+        inspector.tabView.selectTabViewItem(item)
+        return inspector.timeLoops
+    }
+
+    /// The movie's kind field `key` once the engine has it.
+    func movieField(_ key: String) -> JSONValue? { store.model?.cue(Self.movie)?.raw["kind"]?[key] }
+
+    /// Start and end trims → GO plays only that range, and the Duration cell shows its length.
+    func testStartAndEndTrimsGOPlaysOnlyThatRangeAndTheDurationCellShowsItsLength() async throws {
+        try await openVideoShow()
+        let panel = try await timeLoopsTab()
+        try typeInto(panel.startField, "1")
+        try typeInto(panel.endField, "3")
+        await soon("the Duration cell shows the range's length") { self.duration(Self.movie) == 2 }
+        try await go()
+        let first = await shownFrame()
+        XCTAssertEqual(Double(first ?? 0), 25, accuracy: 1, "from the start trim's frame")
+        try await play(1.9)
+        XCTAssertEqual(status(Self.movie), loc("cue.state.running"))
+        let late = await shownFrame()
+        XCTAssertEqual(Double(late ?? 0), 72, accuracy: 2, "before the end trim")
+        try await play(0.2)
+        await soon("ended at the end trim") { self.status(Self.movie) == nil }
+        let after = await shownFrame()
+        XCTAssertNil(after, "the stage is black again")
+    }
+
+    /// A play count above one, and infinite loop → the range repeats without a black frame at the
+    /// seam (a Devamp cue ending the loop is the engine's test of the same name).
+    func testAPlayCountAboveOneAndInfiniteLoopRepeatTheRangeWithoutABlackFrameAtTheSeam() async throws {
+        try await openVideoShow()
+        let panel = try await timeLoopsTab()
+        try typeInto(panel.endField, "2")
+        try typeInto(panel.countField, "2")
+        await soon("two passes of 2 s") { self.duration(Self.movie) == 4 }
+        try await go()
+        try await play(1.98)
+        let end = await shownFrame()
+        try await play(0.04)
+        let seam = await shownFrame()
+        XCTAssertEqual(end, 49, "the pass's last frame")
+        XCTAssertEqual(seam, 0, "then the range's first: no black frame between")
+        try await play(2.1)
+        await soon("ended after two passes") { self.status(Self.movie) == nil }
+
+        // GO moved the selection on: the movie's tab again.
+        _ = try await timeLoopsTab()
+        panel.loopRadio.state = .on
+        _ = panel.loopRadio.target?.perform(panel.loopRadio.action, with: panel.loopRadio)
+        await soon("looping") { self.movieField("last_slice_play_count") == .int(0) }
+        await soon("the Duration cell shows one pass") { self.duration(Self.movie) == 2 }
+        click(Self.movie)
+        try await go()
+        try await play(9.02)
+        XCTAssertEqual(status(Self.movie), loc("cue.state.running"), "it loops on")
+        let looped = await shownFrame()
+        XCTAssertEqual(Double(looped ?? 99), 25, accuracy: 1, "a second into its fifth pass")
+        // The Duration cell counts inside the pass, its bar half full, as an Audio cue's loop.
+        await soon("progress in the pass") { self.store.progress[Self.movie]?.position != nil }
+        XCTAssertEqual(duration(Self.movie) ?? -1, 1.02, accuracy: 0.1, "time into the pass")
+        let bar = cueCell(Self.movie, "duration")?.progress.progress?.fraction
+        XCTAssertEqual(bar ?? -1, 0.51, accuracy: 0.05, "the bar shows the place in the pass")
+    }
+
+    /// "Hold at end" on → at the last frame the picture stays and the cue stays active until
+    /// stopped; off → the cue ends and its picture leaves the stage.
+    func testHoldAtEndOnKeepsTheLastFrameUntilStoppedAndOffEndsTheCue() async throws {
+        try await openVideoShow()
+        let panel = try await timeLoopsTab()
+        XCTAssertFalse(panel.holdCheck.isHidden, "a Video cue has the box")
+        XCTAssertEqual(panel.holdCheck.state, .off, "off for a new cue")
+        panel.holdCheck.state = .on
+        _ = panel.holdCheck.target?.perform(panel.holdCheck.action, with: panel.holdCheck)
+        await soon("held at end") { self.movieField("hold_at_end") == .bool(true) }
+        XCTAssertEqual(panel.holdCheck.state, .on)
+        try await go()
+        try await play(6)
+        XCTAssertEqual(status(Self.movie), loc("cue.state.running"), "still active past its end")
+        let held = await shownFrame()
+        XCTAssertEqual(held, 99, "on its last frame")
+        try await perform(.stopSelected, on: Self.movie)
+        await soon("stopped") { self.status(Self.movie) == nil }
+        let gone = await shownFrame()
+        XCTAssertNil(gone)
+
+        _ = try await timeLoopsTab()
+        panel.holdCheck.state = .off
+        _ = panel.holdCheck.target?.perform(panel.holdCheck.action, with: panel.holdCheck)
+        await soon("not held") { self.movieField("hold_at_end") == .bool(false) }
+        click(Self.movie)
+        try await go()
+        try await play(4.1)
+        await soon("ended at its last frame") { self.status(Self.movie) == nil }
+        let after = await shownFrame()
+        XCTAssertNil(after, "its picture left the stage")
+    }
+
+    /// Integrated fade in and out → opacity follows the fade lengths: the box sets both fades, the
+    /// tab draws them over the ruler, and the picture is half faded halfway into the fade in.
+    func testIntegratedFadeInAndOutOpacityFollowsTheFadeLengths() async throws {
+        try await openVideoShow()
+        let panel = try await timeLoopsTab()
+        panel.fadeCheck.state = .on
+        _ = panel.fadeCheck.target?.perform(panel.fadeCheck.action, with: panel.fadeCheck)
+        await soon("fades on") { (self.movieField("fade_in")?["duration"]?.doubleValue ?? 0) > 0 }
+        let fadeIn = try XCTUnwrap(movieField("fade_in")?["duration"]?.doubleValue)
+        XCTAssertTrue(panel.waveform.fadesShown, "drawn on the timeline")
+        try await go()
+        try await play(fadeIn / 2)
+        let half = try await red()
+        try await play(2 - fadeIn / 2)
+        let full = try await red()
+        XCTAssertGreaterThan(full, 200, "between the fades")
+        XCTAssertEqual(Double(half) / Double(full), 0.5, accuracy: 0.08, "halfway into the fade in")
+    }
+
+    /// The red the stage shows in the test card's top-left quadrant.
+    func red() async throws -> UInt8 {
+        guard
+            case .success(let ok) = await store.client.send({
+                .request(id: $0, .stageProbe(stage: Self.stage, points: [[0.25, 0.4]]))
+            }),
+            case .stageProbe(_, let colours)? = ok.data
+        else { throw XCTSkip("no probe answer") }
+        return try XCTUnwrap(colours.first?.first)
+    }
+
+    /// The tab's timeline: a movie with no sound draws the time ruler alone (no waveform asked
+    /// for, no "reading" message, presses work at once); the playhead line follows playback inside
+    /// a loop (the file position, not the time since GO).
+    func testTheTimelineShowsARulerForAFileWithoutSoundAndThePlayheadFollowsPlaybackInsideALoop() async throws {
+        try await openVideoShow()
+        let panel = try await timeLoopsTab()
+        await soon("the file's length") { panel.waveform.duration == 4 }
+        XCTAssertTrue(panel.silent, "no sound to draw")
+        XCTAssertFalse(panel.waveform.isReading, "nothing is being read")
+        XCTAssertNil(panel.waveform.peaks)
+        try typeInto(panel.startField, "1")
+        try typeInto(panel.endField, "3")
+        panel.loopRadio.state = .on
+        _ = panel.loopRadio.target?.perform(panel.loopRadio.action, with: panel.loopRadio)
+        await soon("looping") { self.movieField("last_slice_play_count") == .int(0) }
+        click(Self.movie)
+        try await go()
+        try await play(3.5)
+        // GO moved the selection on: the movie shown again.
+        _ = try await timeLoopsTab()
+        await soon("the playhead is in the second pass") {
+            abs((panel.waveform.playhead ?? 0) - 2.5) < 0.1
+        }
+        // A still has no timeline: said so, every control off.
+        click(Self.still)
+        await soon("the still shown") { panel.waveform.message == loc("timeLoops.still") }
+        XCTAssertFalse(panel.startField.isEnabled)
+        XCTAssertFalse(panel.holdCheck.isEnabled)
+        XCTAssertFalse(panel.fadeCheck.isEnabled)
+    }
+
+    /// Load to time inside the range → GO starts on that frame (counted from the start trim).
+    func testLoadToTimeInsideTheRangeGOStartsOnThatFrame() async throws {
+        try await openVideoShow()
+        let panel = try await timeLoopsTab()
+        try typeInto(panel.startField, "1")
+        try typeInto(panel.endField, "3")
+        await soon { self.duration(Self.movie) == 2 }
+        try await perform(.loadSelected, on: Self.movie)
+        XCTAssertNil(wc.applyLoadTime("0.5", to: Self.movie))
+        await sync()
+        try await play(0)
+        await soon("loaded") { self.status(Self.movie) == loc("cue.state.loaded") }
+        try await perform(.startSelected, on: Self.movie)
+        await soon { self.status(Self.movie) == loc("cue.state.running") }
+        let first = await shownFrame()
+        XCTAssertEqual(Double(first ?? 0), 37, accuracy: 1, "1.5 s into the file")
     }
 }

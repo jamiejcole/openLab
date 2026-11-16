@@ -357,6 +357,7 @@ fn video_cue(n: u128, media: Option<&Path>) -> Cue {
             stage: Some(stage_id()),
             duration: None,
             geometry: Default::default(),
+            timing: Default::default(),
         },
     )
 }
@@ -556,6 +557,7 @@ fn still_cue(n: u128, file: &Path, duration: Option<f64>) -> Cue {
             stage: Some(stage_id()),
             duration,
             geometry: Default::default(),
+            timing: Default::default(),
         },
     )
 }
@@ -2047,4 +2049,694 @@ fn geometry_a_movies_own_alpha_blends_once_over_what_is_below() {
         near(read[2], [128, 128, 0]),
         "half yellow over black: {read:?}"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Time and loops (VID-07; QLab 5 manual p. 214): the flows of issue #646. The movies are 25 fps
+// test cards, so the barcode read back is the frame's number in the file.
+
+/// A movie cue with its time and loops set by `edit`.
+fn timed_cue(n: u128, movie: &Path, edit: impl Fn(&mut openlab_core::VideoTiming)) -> Cue {
+    let mut c = video_cue(n, Some(movie));
+    if let CueKind::Video { timing, .. } = &mut c.kind {
+        edit(timing);
+    }
+    c
+}
+
+/// The lengths clients are told for cue `n` (the Duration column's): (trimmed pass, duration).
+fn told_lengths(s: &OfflineShow, n: u128) -> (Option<f64>, Option<f64>) {
+    let told = s.control().snapshot().media_durations;
+    let m = told
+        .iter()
+        .find(|m| m.cue == id(n))
+        .expect("the movie's lengths");
+    (m.trimmed, m.duration)
+}
+
+/// The frames stage 1 shows from `from` to `to` seconds after `at`, every `step` seconds: a
+/// stage that shows no frame at any of them (a black frame) fails the test there.
+fn frames_between(s: &mut OfflineShow, at: u64, from: f64, to: f64, step: f64) -> Vec<u16> {
+    let mut out = Vec::new();
+    let mut t = from;
+    while t <= to + 1e-9 {
+        run_to(s, at + samples(t));
+        out.push(on_stage(s, &format!("{t} s after GO")));
+        t += step;
+    }
+    out
+}
+
+/// Start and end trims → GO plays only that range, and the Duration cell shows its length.
+#[test]
+fn start_and_end_trims_go_plays_only_that_range_and_the_duration_cell_shows_its_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = video_show(vec![timed_cue(1, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.2);
+    })]);
+    assert_eq!(told_lengths(&s, 1), (Some(0.8), Some(0.8)));
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(shown(&mut s), Some(10), "the start trim's frame first");
+    run_to(&mut s, at + samples(0.5));
+    assert_eq!(shown(&mut s), Some(frame_at(0.9)));
+    run_to(&mut s, at + samples(0.78));
+    assert_eq!(
+        shown(&mut s),
+        Some(frame_at(1.18)),
+        "the last frame before the end trim"
+    );
+    expect_state(&s, 1, CueState::Running, "inside the range");
+    run_to(&mut s, at + samples(0.8) + BLOCK);
+    expect_state(&s, 1, CueState::Idle, "the range is played");
+    assert_eq!(shown(&mut s), None);
+    // An edit of the trims is told at once: the Duration cell follows.
+    set_geometry(&mut s, 1, serde_json::json!({"end_time": 1.6}));
+    assert_eq!(told_lengths(&s, 1), (Some(1.2), Some(1.2)));
+}
+
+/// A play count above one, and infinite loop → the range repeats without a black frame at the
+/// seam; a Devamp cue ends the loop at the end of the pass.
+#[test]
+fn a_play_count_and_infinite_loop_repeat_the_range_without_a_black_frame_and_a_devamp_cue_ends_the_loop_at_the_end_of_the_pass()
+ {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    // Played three times: 0.4 to 1.2 s of the file, three passes, then the cue ends.
+    let mut s = video_show(vec![timed_cue(1, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.2);
+        t.last_slice_play_count = 3;
+    })]);
+    assert_eq!(told_lengths(&s, 1), (Some(0.8), Some(2.4)));
+    let at = go(&mut s);
+    // Across the first seam a frame is up at every look: the pass's last frames, then the
+    // range's first again.
+    let seam = frames_between(&mut s, at, 0.74, 0.90, 0.04);
+    assert_eq!(seam, vec![28, 29, 10, 11, 12], "across the seam");
+    run_to(&mut s, at + samples(1.6) + samples(0.02));
+    assert_eq!(shown(&mut s), Some(10), "the third pass");
+    run_to(&mut s, at + samples(2.4) - samples(0.05));
+    expect_state(&s, 1, CueState::Running, "in the third pass");
+    run_to(&mut s, at + samples(2.4) + BLOCK);
+    expect_state(&s, 1, CueState::Idle, "three passes played");
+    assert_eq!(shown(&mut s), None);
+
+    // Infinite loop over 0.4 to 0.8 s, then 0.8 to 1.2 s once; a Devamp cue leaves the loop at
+    // the end of the pass under way and the movie plays on into the next slice.
+    let devamp = cue(
+        2,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let looping = timed_cue(1, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.2);
+        t.slices = vec![openlab_core::SliceMarker {
+            time: 0.8,
+            play_count: 0,
+        }];
+        t.last_slice_play_count = 1;
+    });
+    let mut s = video_show(vec![looping, devamp]);
+    assert_eq!(told_lengths(&s, 1), (Some(0.8), None), "loops for ever");
+    let at = start(&mut s, 1);
+    // Many passes later it still loops, with a frame up across each seam.
+    let seam = frames_between(&mut s, at, 4.34, 4.46, 0.04);
+    assert_eq!(seam, vec![18, 19, 10, 11], "a seam ten passes in");
+    expect_state(&s, 1, CueState::Running, "looping");
+    // The Devamp cue a tenth of a second into a pass: the pass plays out, then the next slice.
+    run_to(&mut s, at + samples(4.5));
+    start(&mut s, 2);
+    run_to(&mut s, at + samples(4.78));
+    assert_eq!(shown(&mut s), Some(19), "the pass under way plays out");
+    run_to(&mut s, at + samples(4.82));
+    assert_eq!(shown(&mut s), Some(20), "into the slice after the loop");
+    run_to(&mut s, at + samples(5.18));
+    assert_eq!(shown(&mut s), Some(29));
+    expect_state(&s, 1, CueState::Running, "in the last slice");
+    run_to(&mut s, at + samples(5.2) + BLOCK);
+    expect_state(&s, 1, CueState::Idle, "the cue ends after the last slice");
+    assert_eq!(shown(&mut s), None);
+}
+
+/// A Devamp cue set to stop the target when the slice ends: the loop's pass plays out and the
+/// cue ends there, its picture gone.
+#[test]
+fn a_devamp_that_stops_its_target_ends_the_video_cue_at_the_end_of_the_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let devamp = cue(
+        2,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: true,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let looping = timed_cue(1, &movie, |t| {
+        t.end_time = Some(0.8);
+        t.last_slice_play_count = 0;
+    });
+    let mut s = video_show(vec![looping, devamp]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2);
+    run_to(&mut s, at + samples(1.58));
+    assert_eq!(shown(&mut s), Some(19), "the second pass plays out");
+    run_to(&mut s, at + samples(1.6) + BLOCK);
+    expect_state(&s, 1, CueState::Idle, "stopped at the end of the pass");
+    assert_eq!(shown(&mut s), None);
+}
+
+/// "Hold at end" on → at the last frame the picture stays and the cue stays active until
+/// stopped; off → the cue ends and its picture leaves the stage.
+#[test]
+fn hold_at_end_on_keeps_the_last_frame_and_the_cue_until_stopped_and_off_ends_the_cue_and_clears_the_stage()
+ {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = video_show(vec![
+        timed_cue(1, &movie, |t| {
+            t.end_time = Some(1.2);
+            t.hold_at_end = true;
+        }),
+        timed_cue(2, &movie, |t| t.end_time = Some(1.2)),
+    ]);
+    // The Duration cell still shows the movie's played length.
+    assert_eq!(told_lengths(&s, 1), (Some(1.2), Some(1.2)));
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.2) + BLOCK);
+    expect_state(&s, 1, CueState::Running, "held at its end");
+    assert_eq!(
+        shown(&mut s),
+        Some(29),
+        "the last frame before the end trim"
+    );
+    run_to(&mut s, at + samples(10.0));
+    expect_state(&s, 1, CueState::Running, "still held");
+    assert_eq!(shown(&mut s), Some(29));
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: None,
+    });
+    s.run(BLOCK);
+    expect_state(&s, 1, CueState::Idle, "stopped");
+    assert_eq!(shown(&mut s), None, "gone once stopped");
+
+    let at = start(&mut s, 2);
+    run_to(&mut s, at + samples(1.18));
+    assert_eq!(shown(&mut s), Some(29));
+    run_to(&mut s, at + samples(1.2) + BLOCK);
+    expect_state(&s, 2, CueState::Idle, "hold off: it ends");
+    assert_eq!(shown(&mut s), None, "and its picture leaves the stage");
+}
+
+/// The red of stage 1's picture at the card's top-left quadrant (the movie fills the stage).
+fn red_at(s: &mut OfflineShow) -> u8 {
+    colours(s, &[[0.25, 0.4]]).first().unwrap()[0]
+}
+
+/// Integrated fade in and out → opacity follows the fade lengths (the sound half waits for
+/// sound from video files, #645).
+#[test]
+fn integrated_fade_in_and_out_opacity_follows_the_fade_lengths() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let linear = |duration| openlab_core::FadeSpec {
+        duration,
+        curve: openlab_core::FadeCurve::Linear,
+    };
+    let mut s = video_show(vec![timed_cue(1, &movie, |t| {
+        t.fade_in = linear(0.5);
+        t.fade_out = linear(0.5);
+    })]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.25));
+    let half_in = red_at(&mut s);
+    run_to(&mut s, at + samples(1.0));
+    // The encoder's red, at full opacity between the fades.
+    let full = red_at(&mut s);
+    assert!(full >= 200, "between the fades: {full}");
+    let half = |got: u8| (f64::from(got) / f64::from(full) - 0.5).abs() <= 0.06;
+    assert!(
+        half(half_in),
+        "halfway into the fade in: {half_in} of {full}"
+    );
+    run_to(&mut s, at + samples(1.75));
+    let half_out = red_at(&mut s);
+    assert!(
+        half(half_out),
+        "halfway through the fade out: {half_out} of {full}"
+    );
+    // A loop has no end until it is devamped: no fade out while it loops.
+    let mut s = video_show(vec![timed_cue(1, &movie, |t| {
+        t.fade_out = linear(0.5);
+        t.last_slice_play_count = 0;
+    })]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(3.9));
+    let looping = red_at(&mut s);
+    assert!(
+        looping >= full - 10,
+        "looping, not fading: {looping} of {full}"
+    );
+}
+
+/// The tab's playhead line follows playback inside a loop: the cue's position in its file, as
+/// clients are told it, is the loop's pass, not time since GO; held at the last frame.
+#[test]
+fn the_playhead_follows_playback_inside_a_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = video_show(vec![timed_cue(1, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.2);
+        t.last_slice_play_count = 0;
+    })]);
+    let at = start(&mut s, 1);
+    let (elapsed, remaining, position) =
+        progress_at(&mut s, 1, at + samples(2.0)).expect("looping");
+    assert!(near(elapsed, 2.0), "{elapsed}");
+    assert_eq!(remaining, None, "a loop has no end");
+    assert!(
+        near(position.unwrap(), 0.8),
+        "two seconds in: 0.4 into the third pass, {position:?}"
+    );
+    let (_, _, position) = progress_at(&mut s, 1, at + samples(2.7)).expect("looping");
+    assert!(near(position.unwrap(), 0.7), "{position:?}");
+}
+
+/// Load to time inside the range → GO starts on that frame (the time counted in the cue's
+/// action: from the start trim, through its passes).
+#[test]
+fn load_to_time_inside_the_range_go_starts_on_that_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = video_show(vec![timed_cue(1, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.2);
+        t.last_slice_play_count = 2;
+    })]);
+    // 0.5 s into the action: 0.9 s into the file.
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: 0.5,
+    });
+    s.run(BLOCK);
+    expect_state(&s, 1, CueState::Loaded, "");
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(shown(&mut s), Some(frame_at(0.92)), "that frame first");
+    // 1.1 s left of the action (two passes of 0.8 s): through the seam into the second pass.
+    run_to(&mut s, at + samples(0.32));
+    assert_eq!(shown(&mut s), Some(10), "the second pass");
+    run_to(&mut s, at + samples(1.1) + BLOCK);
+    expect_state(&s, 1, CueState::Idle, "the rest of the action played");
+    // Into the second pass: 1.0 s into the action is 0.6 s into the file's second pass.
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: 1.0,
+    });
+    s.run(BLOCK);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(
+        on_stage(&mut s, "loaded into the second pass"),
+        frame_at(0.62)
+    );
+}
+
+/// Trims the movie cannot play (a start trim past its end) break the cue with why, as an Audio
+/// cue's slices that cannot play do; GO plays nothing. Fixed, it plays.
+#[test]
+fn trims_past_the_movies_end_break_the_cue_with_why_until_fixed() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = video_show(vec![timed_cue(1, &movie, |t| t.start_time = 3.0)]);
+    assert!(
+        matches!(
+            problems(&s, 1).as_slice(),
+            [CueProblem::SlicesUnplayable { .. }]
+        ),
+        "{:?}",
+        problems(&s, 1)
+    );
+    go(&mut s);
+    s.run(samples(0.2));
+    assert_eq!(shown(&mut s), None, "nothing plays");
+    set_geometry(&mut s, 1, serde_json::json!({"start_time": 1.0}));
+    assert_eq!(problems(&s, 1), vec![]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.02));
+    assert_eq!(shown(&mut s), Some(25));
+}
+
+/// A stage host that starts again while a devamped loop plays is sent the plan as the devamp
+/// left it: the picture goes on into the slice after the loop, not round the loop again.
+#[test]
+fn a_devamped_loop_survives_a_stage_host_relaunch() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let devamp = cue(
+        2,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let looping = timed_cue(1, &movie, |t| {
+        t.end_time = Some(1.6);
+        t.slices = vec![openlab_core::SliceMarker {
+            time: 0.8,
+            play_count: 0,
+        }];
+    });
+    let mut s = video_show(vec![looping, devamp]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2);
+    s.run(BLOCK);
+    let pid = s.control().stage_host_pid().unwrap();
+    let ended = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(ended.success());
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
+    s.settle_stages();
+    run_to(&mut s, at + samples(1.62));
+    assert_eq!(
+        on_stage(&mut s, "after the relaunch, past the loop"),
+        frame_at(0.82)
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Review round 1 of #646.
+
+/// A movie held at its end (or played past it) never runs on into the file past its end trim:
+/// pause and resume, Pause All and Resume All, and a load past the end then GO all hold the
+/// range's last frame with hold at end on; with it off the cue ends and its picture leaves.
+#[test]
+fn a_held_movie_never_plays_past_its_end_trim_after_pause_resume_or_a_load_past_its_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let held = |n| {
+        timed_cue(n, &movie, |t| {
+            t.start_time = 0.4;
+            t.end_time = Some(1.2);
+            t.hold_at_end = true;
+        })
+    };
+    let ends = timed_cue(3, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.2);
+    });
+    let mut s = video_show(vec![held(1), held(2), ends]);
+    // Held, then paused and resumed: still the range's last frame, however long after.
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.2));
+    assert_eq!(shown(&mut s), Some(29), "held at its end");
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(samples(0.2));
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let r = s.now();
+    for later in [0.4, 0.8, 2.0] {
+        run_to(&mut s, r + samples(later));
+        assert_eq!(shown(&mut s), Some(29), "{later} s after the resume");
+    }
+    expect_state(&s, 1, CueState::Running, "held");
+    // Pause All and Resume All, the same.
+    s.transport(TransportAction::PauseAll);
+    s.run(samples(0.2));
+    s.transport(TransportAction::ResumeAll);
+    let r = s.now();
+    run_to(&mut s, r + samples(0.6));
+    assert_eq!(shown(&mut s), Some(29), "after Resume All");
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: None,
+    });
+    s.run(BLOCK);
+    assert_eq!(shown(&mut s), None);
+    // Loaded past its end, then GO: the range's last frame, held.
+    s.transport(TransportAction::Load {
+        cue: id(2),
+        at: 1.5,
+    });
+    s.run(BLOCK);
+    let at = start(&mut s, 2);
+    for later in [0.02, 0.5, 1.0] {
+        run_to(&mut s, at + samples(later));
+        assert_eq!(
+            shown(&mut s),
+            Some(29),
+            "{later} s after GO, loaded past the end"
+        );
+    }
+    expect_state(&s, 2, CueState::Running, "held");
+    s.transport(TransportAction::Stop {
+        cue: id(2),
+        fade_out: None,
+    });
+    s.run(BLOCK);
+    // Without hold at end: loaded past its end, GO ends it at once and shows nothing.
+    s.transport(TransportAction::Load {
+        cue: id(3),
+        at: 1.5,
+    });
+    s.run(BLOCK);
+    let at = start(&mut s, 3);
+    run_to(&mut s, at + samples(0.3));
+    expect_state(&s, 3, CueState::Idle, "nothing left to play");
+    assert_eq!(shown(&mut s), None);
+}
+
+/// GO on a loaded Video cue whose file was changed while loaded (its new file still being
+/// probed) waits for the probe as a fresh start does: once the file is known to play, the new
+/// file plays from its head and the cue ends at its end; a file that does not play breaks it.
+/// Never running with nothing on the stage for ever.
+#[test]
+fn go_on_a_loaded_video_cue_whose_file_is_probed_again_plays_it_or_breaks_once_answered() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = movie!(dir.path(), "a.mov", (50, 25));
+    let b = movie!(dir.path(), "b.mov", (25, 25));
+    let gif = dir.path().join("bad.gif");
+    std::fs::write(&gif, b"GIF89a\x01\x00\x01\x00\x00\x00\x00;").unwrap();
+    let mut s = gated_video_show(vec![video_cue(1, Some(&a)), video_cue(2, Some(&a))]);
+    for n in [1, 2] {
+        s.transport(TransportAction::Load {
+            cue: id(n),
+            at: 0.0,
+        });
+    }
+    s.run(BLOCK);
+    expect_state(&s, 1, CueState::Loaded, "");
+    GATED.lock().unwrap().extend([b.clone(), gif.clone()]);
+    set_media(&mut s, 1, &b);
+    set_media(&mut s, 2, &gif);
+    s.run(BLOCK);
+    start(&mut s, 1);
+    start(&mut s, 2);
+    s.run(samples(0.5));
+    assert_eq!(shown(&mut s), None, "the old file is not played");
+    release_probe(&b);
+    release_probe(&gif);
+    s.settle_media();
+    let released = s.now();
+    expect_state(
+        &s,
+        2,
+        CueState::Broken,
+        "a file that does not play breaks it",
+    );
+    run_to(&mut s, released + samples(0.5));
+    let now = on_stage(&mut s, "the new file plays once read");
+    assert!(now.abs_diff(frame_at(0.5)) <= 1, "{now}");
+    // The new file is one second long: the cue ends then.
+    run_to(&mut s, released + samples(1.1));
+    expect_state(&s, 1, CueState::Idle, "ended at the new file's end");
+    assert_eq!(shown(&mut s), None);
+}
+
+/// The shortest loop allowed (50 ms: at 25 fps frame 10, then 10 ms of frame 11), a loop of
+/// two whole frames and one of three go round: looked at every block (8 ms) for a while, each
+/// shows all its frames and keeps coming back to its first. A seam steps back by a frame or
+/// less here, which must not be held as a clock correction.
+#[test]
+fn the_shortest_loops_jump_back_at_each_seam() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    for (end, frames) in [
+        (0.45, vec![10u16, 11]),
+        (0.48, vec![10, 11]),
+        (0.52, vec![10, 11, 12]),
+    ] {
+        let mut s = video_show(vec![timed_cue(1, &movie, |t| {
+            t.start_time = 0.4;
+            t.end_time = Some(end);
+            t.last_slice_play_count = 0;
+        })]);
+        let at = start(&mut s, 1);
+        run_to(&mut s, at + samples(0.5));
+        let mut seen = Vec::new();
+        for _ in 0..60 {
+            s.run(BLOCK);
+            seen.push(on_stage(&mut s, "looping"));
+        }
+        let mut shown: Vec<u16> = seen.clone();
+        shown.sort_unstable();
+        shown.dedup();
+        assert_eq!(shown, frames, "a loop to {end} s: {seen:?}");
+        let rounds = seen.windows(2).filter(|w| w[1] == 10 && w[0] != 10).count();
+        assert!(rounds >= 4, "a loop to {end} s goes round: {seen:?}");
+    }
+}
+
+/// Trims edited while the cue is paused take effect at its next start, not at the resume: the
+/// run plays on with the plan it started with, as a paused Audio cue's voice does.
+#[test]
+fn a_resume_plays_on_with_the_plan_the_run_started_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = video_show(vec![timed_cue(1, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.2);
+    })]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.3));
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK);
+    let paused = s.now();
+    set_geometry(&mut s, 1, serde_json::json!({"end_time": 1.8}));
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    let end = at + samples(0.8) + (resumed - paused);
+    run_to(&mut s, end - samples(0.02));
+    assert_eq!(shown(&mut s), Some(29), "the old end trim's last frame");
+    run_to(&mut s, end + BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended at the old end trim");
+    // The next start plays the new range.
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.3));
+    assert_eq!(shown(&mut s), Some(frame_at(1.7)));
+}
+
+/// A Devamp cue of cue 1 that lets it play on.
+fn devamp_cue(n: u128) -> Cue {
+    cue(
+        n,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    )
+}
+
+/// A devamp is done once the picture has left its loop: the next one in the same run is of the
+/// loop under way then, not an echo of the first.
+#[test]
+fn a_second_devamp_in_the_same_run_leaves_the_second_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    // File 0.0 to 0.4 s for ever, 0.4 to 0.8 s for ever, then 0.8 to 1.2 s once.
+    let looping = timed_cue(1, &movie, |t| {
+        t.end_time = Some(1.2);
+        t.slices = vec![
+            openlab_core::SliceMarker {
+                time: 0.4,
+                play_count: 0,
+            },
+            openlab_core::SliceMarker {
+                time: 0.8,
+                play_count: 0,
+            },
+        ];
+        t.last_slice_play_count = 1;
+    });
+    let mut s = video_show(vec![looping, devamp_cue(2), devamp_cue(3)]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2); // the first loop is left at 1.2 s
+    run_to(&mut s, at + samples(1.3));
+    assert_eq!(shown(&mut s), Some(frame_at(0.5)), "in the second loop");
+    run_to(&mut s, at + samples(1.7));
+    start(&mut s, 3); // its pass under way is 1.6 to 2.0 s
+    run_to(&mut s, at + samples(2.1));
+    assert_eq!(shown(&mut s), Some(frame_at(0.9)), "in the last slice");
+    run_to(&mut s, at + samples(2.6));
+    expect_state(&s, 1, CueState::Idle, "the last slice played out");
+    assert_eq!(shown(&mut s), None);
+}
+
+/// A devamp not yet carried out when its target pauses is asked again at the resume.
+#[test]
+fn a_devamp_pending_at_a_pause_leaves_the_loop_after_the_resume() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let looping = timed_cue(1, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.2);
+        t.slices = vec![openlab_core::SliceMarker {
+            time: 0.8,
+            play_count: 0,
+        }];
+        t.last_slice_play_count = 1;
+    });
+    let mut s = video_show(vec![looping, devamp_cue(2)]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2); // the loop is left at 1.2 s
+    run_to(&mut s, at + samples(1.1));
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(samples(0.2));
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    // 0.1 s of the pass is left, then the slice after the loop (file 0.8 s on).
+    run_to(&mut s, resumed + samples(0.2));
+    assert_eq!(shown(&mut s), Some(frame_at(0.9)));
+}
+
+/// A devamp carried out stays carried out over a pause: the resume plays on in the slice after
+/// the loop, to the end the cue was told.
+#[test]
+fn a_resume_in_the_slice_after_a_devamped_loop_plays_on_and_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let looping = timed_cue(1, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.6);
+        t.slices = vec![openlab_core::SliceMarker {
+            time: 0.8,
+            play_count: 0,
+        }];
+        t.last_slice_play_count = 1;
+    });
+    let mut s = video_show(vec![looping, devamp_cue(2)]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2); // the loop is left at 1.2 s, the action ends at 2.0 s
+    run_to(&mut s, at + samples(1.42));
+    assert_eq!(shown(&mut s), Some(frame_at(1.02)), "in the slice after");
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(samples(0.2));
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.2));
+    assert_eq!(shown(&mut s), Some(frame_at(1.22)), "plays on from there");
+    run_to(&mut s, resumed + samples(0.7));
+    expect_state(&s, 1, CueState::Idle, "ended where the devamp put its end");
+    assert_eq!(shown(&mut s), None);
 }

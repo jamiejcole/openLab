@@ -497,3 +497,112 @@ fn a_part_of_a_pair_or_one_crop_edge_changes_alone() {
     let g = geometry(&ws, 1);
     assert_eq!((g.crop.top, g.crop.left), (4.0, 0.0));
 }
+
+fn timing(ws: &Workspace, n: u128) -> VideoTiming {
+    match &ws.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Video { timing, .. } => (**timing).clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A Video cue's trims, play count, slices, fades and hold at end (VID-07) are fields of its
+/// kind under the Audio cue's names: each is set on its own, undone and redone.
+#[test]
+fn time_and_loops_fields_are_set_undone_and_redone() {
+    use serde_json::json;
+    let mut ws = ws();
+    let undo = ws
+        .apply(set(
+            1,
+            fields(&[
+                ("start_time", json!(1.0)),
+                ("end_time", json!(3.0)),
+                ("last_slice_play_count", json!(0)),
+                ("slices", json!([{"time": 2.0, "play_count": 2}])),
+                ("fade_in", json!({"duration": 0.5, "curve": "s_curve"})),
+                ("hold_at_end", json!(true)),
+            ]),
+        ))
+        .unwrap();
+    let t = timing(&ws, 1);
+    assert_eq!((t.start_time, t.end_time), (1.0, Some(3.0)));
+    assert_eq!(t.last_slice_play_count, 0);
+    assert_eq!(
+        t.slices,
+        vec![SliceMarker {
+            time: 2.0,
+            play_count: 2
+        }]
+    );
+    assert_eq!(t.fade_in.curve, FadeCurve::SCurve);
+    assert!(t.hold_at_end);
+    let redo = ws.apply(undo).unwrap();
+    assert_eq!(timing(&ws, 1), VideoTiming::default());
+    ws.apply(redo).unwrap();
+    assert_eq!(timing(&ws, 1), t);
+}
+
+/// Trims, fades and slices out of range are refused on every edit path as an Audio cue's are,
+/// and nothing changes.
+#[test]
+fn time_and_loops_out_of_range_are_refused() {
+    use serde_json::json;
+    let mut ws = ws();
+    let before = ws.clone();
+    let refused = |result: Result<Inverse, CommandError>, want: IssueKind| match result {
+        Err(CommandError::InvalidCue(issues)) => {
+            assert!(issues.iter().any(|i| i.kind == want), "{issues:?}");
+        }
+        other => panic!("{want:?}: {other:?}"),
+    };
+    let edit =
+        |ws: &mut Workspace, pairs: &[(&str, serde_json::Value)]| ws.apply(set(1, fields(pairs)));
+    refused(
+        edit(&mut ws, &[("start_time", json!(-1.0))]),
+        IssueKind::InvalidTime {
+            field: "start_time",
+        },
+    );
+    refused(
+        edit(
+            &mut ws,
+            &[("start_time", json!(5.0)), ("end_time", json!(2.0))],
+        ),
+        IssueKind::InvalidEndTime,
+    );
+    refused(
+        edit(
+            &mut ws,
+            &[("fade_out", json!({"duration": 1e9, "curve": "linear"}))],
+        ),
+        IssueKind::InvalidTime {
+            field: "fade_out.duration",
+        },
+    );
+    refused(
+        edit(
+            &mut ws,
+            &[
+                ("end_time", json!(4.0)),
+                ("slices", json!([{"time": 6.0, "play_count": 1}])),
+            ],
+        ),
+        IssueKind::SliceOutsideTrim { time: 6.0 },
+    );
+    assert!(matches!(
+        edit(&mut ws, &[("hold_at_end", json!("yes"))]),
+        Err(CommandError::InvalidValue(_))
+    ));
+    // A whole new kind (a paste, a kind change) is judged the same way.
+    let mut bad = video();
+    if let CueKind::Video { timing, .. } = &mut bad {
+        timing.start_time = f64::INFINITY;
+    }
+    refused(
+        ws.apply(set(3, CueProperty::Kind { value: bad })),
+        IssueKind::InvalidTime {
+            field: "start_time",
+        },
+    );
+    assert_eq!(ws, before);
+}

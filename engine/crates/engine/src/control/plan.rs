@@ -19,6 +19,18 @@ pub struct PlanSpec<'a> {
     pub last_slice_play_count: u32,
 }
 
+/// A movie of `seconds` (a Video cue's file, from its probe) as media at `rate`, so its trims,
+/// slices and loops are planned exactly as an Audio cue's on the engine's clock.
+pub fn picture_info(seconds: f64, rate: NonZeroU32) -> MediaInfo {
+    let frames = seconds_to_samples(seconds, rate);
+    MediaInfo {
+        channels: 1,
+        sample_rate: rate.get(),
+        frames,
+        duration: std::time::Duration::try_from_secs_f64(seconds).unwrap_or_default(),
+    }
+}
+
 /// Why a cue has no playable plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlanFailure {
