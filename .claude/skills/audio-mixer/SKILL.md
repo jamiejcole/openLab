@@ -109,6 +109,8 @@ The mixer renders voices into the device buffer on the audio thread. The control
 
 **Underrun** (source short and not ended): missing frames are silence, counted in `underrun_frames`; one `Event::Underrun { at }` per episode, at the first missing frame. Missing frames are not skipped: the voice resumes where it left off, so fades stay aligned with the audio. The first block read in full after an episode sends `Event::UnderrunEnded { at, frames }`: from `at` the voice plays on `frames` later than planned (a Video cue's picture follows it).
 
+If the event queue is full, `UnderrunEnded` is sent again each block until taken (`Outbox::try_emit`, one drop counted), with what the voice missed since added; one never taken before the voice ends is lost.
+
 ## Pause and resume
 `PauseVoice { voice }` on sample P and `ResumeVoice { voice, new_id }` on sample R keep the voice, its ring and all state. The resumed voice plays what the unpaused one would have, shifted by R - P, and every later event (`VoiceFinished` included) is R - P later. This is tested sample for sample for ring-fed, streamed, resampled, preloaded and looping voices.
 - **Position.** On P the voice stops consuming; on R it continues from that frame. The resampler runs on the disk thread ahead of the ring, so a pause cannot disturb it. While paused the disk thread keeps the ring full as usual, so a paused voice never blocks a worker and a pause of any length resumes without underrun.

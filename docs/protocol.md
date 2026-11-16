@@ -161,7 +161,7 @@ Sent to connections bound to the doc whose cues it reports, only while something
 - `summary.total` = `broken_cues + system`. Media, patches and destinations are causes of broken cues and are not added again; `patches` counts only used patches with no device and `network` only `missing` destinations.
 - `broken_cues` in workspace order, with the same `problem` objects as `runtime`. A disarmed cue is listed only for problems of its own; a group is not listed for a broken child.
 - `media`: by path, `missing` or `unsupported`, with the cues using it.
-- `patches`: patches with no device to play on, then patches cues name that the workspace lacks. A patch no cue uses is listed but not counted and not a failure.
+- `patches`: patches with no device to play on, then patches cues name that the workspace lacks. A patch no cue uses is listed but not counted and not a failure. A Video cue whose file is known to have no sound (a still, a silent movie) is not a user of the patch it names.
 - `network`: destinations Network cues use: `missing` (a problem) or `not_checked` (exists; **reachability is not probed**: neither problem nor pass, `ok` stays true).
 - `system`: the `warnings` list (device lost or stalled, damaged media, preload problems, unplayable slices, `audio_track_missing`: a Video cue's stored audio track is not in its movie and the first plays), sorted by `code`, cue, message. Any entry makes `ok` false except `preload_over_budget` (streamed and plays).
 

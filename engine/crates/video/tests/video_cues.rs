@@ -2861,6 +2861,16 @@ fn in_step(s: &mut OfflineShow, rate: u32, fps: f64, what: &str) -> f64 {
     sound
 }
 
+/// `movie` as an old QuickTime file, written to `to`: its `ftyp` box made a `free` one, so the
+/// file has no file-type box and every offset in it stays right.
+fn without_file_type(movie: &Path, to: &Path) -> PathBuf {
+    let mut bytes = std::fs::read(movie).unwrap();
+    assert_eq!(&bytes[4..8], b"ftyp");
+    bytes[4..8].copy_from_slice(b"free");
+    std::fs::write(to, &bytes).unwrap();
+    to.to_path_buf()
+}
+
 /// The audio decoder reads a movie's sound tracks: PCM and AAC, each track's format, and its
 /// samples where the file has them (AAC without its encoder's priming).
 #[test]
@@ -2894,6 +2904,14 @@ fn a_movies_sound_tracks_are_probed_with_their_format() {
         assert!((rise - 0.25).abs() < slack, "track {track}: {rise}");
     }
     assert!(openlab_audio::probe_movie(&dir.path().join("gone.mov")).is_err());
+    // An old QuickTime file has no file-type box: its tracks are read all the same.
+    let old = without_file_type(&two, &dir.path().join("old.mov"));
+    let tracks = openlab_audio::probe_movie(&old).unwrap();
+    let frames: Vec<u64> = (tracks.iter())
+        .map(|t| t.probed.as_ref().unwrap().info.frames)
+        .collect();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[1], 96_000);
     // Fitted to a movie's length a track reads as exactly that long: silence after its own
     // end, or cut short.
     let fitted = |frames: u64| {
@@ -3934,6 +3952,29 @@ fn the_audio_device_is_lost_mid_cue() {
     );
     assert!(s.control().engine().is_lost(id(2)));
     assert_eq!(s.control().pictures_live(), 2, "B's picture left the stage");
+    // B's time stands still where it stopped, as a paused cue's; A's runs on.
+    let elapsed = |s: &mut show::device::DeviceShow, n: u128| -> Vec<f64> {
+        let sent = s.take_outbound().into_iter().filter_map(|m| match m {
+            ServerMessage::Progress { items, .. } => Some(items),
+            _ => None,
+        });
+        let of_cue = sent.flatten().filter(|i| i.cue == id(n));
+        of_cue.map(|i| i.elapsed).collect()
+    };
+    s.take_outbound();
+    s.run(samples(0.2));
+    let then = elapsed(&mut s, 2);
+    s.run(samples(0.3));
+    let later = elapsed(&mut s, 2);
+    let stood = then.last().copied().expect("B's time is told");
+    assert!(stood > 0.3 && stood < 0.8, "B stopped {stood} s in");
+    assert!(
+        later.iter().all(|e| *e == stood),
+        "B's time moved on from {stood}: {later:?}"
+    );
+    s.run(samples(0.1));
+    let a = elapsed(&mut s, 1);
+    assert!(a.last().is_some_and(|e| *e > 1.0), "A's time: {a:?}");
     assert_eq!(state(&s, 1), CueState::Running);
     assert_eq!(state(&s, 3), CueState::Running);
     assert!(sounding(&s, "fake:1"), "A's sound plays on");
@@ -4276,4 +4317,138 @@ fn a_devamp_stop_asked_while_the_sound_is_starved_ends_both_after_the_whole_pass
         0.798,
         "the last sound heard is the pass's end",
     );
+}
+
+/// The pre-show check's patches with no device, as (cues listed on each, patches counted as
+/// problems).
+fn preshow_patches(s: &mut OfflineShow) -> (Vec<Vec<openlab_core::CueId>>, u64) {
+    let request = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: request,
+        request: Request::PreshowCheck,
+    });
+    let report = replies
+        .into_iter()
+        .find_map(|m| match m {
+            ServerMessage::Result {
+                outcome: Outcome::Ok(body),
+                ..
+            } => match body.data {
+                Some(ResultData::PreshowCheck(report)) => Some(report),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("a pre-show report");
+    let cues = report.patches.iter().map(|p| p.cues.clone()).collect();
+    (cues, report.summary.patches)
+}
+
+/// A patch's device is cleared while a silent movie, a still and a movie with sound play, all
+/// naming that patch: only the cue that sounds on it pauses (with its picture held); the
+/// pictures with nothing to hear play on. The pre-show check lists the patch with the
+/// sounding cue alone, and a patch only silent pictures name is no problem of the show.
+#[test]
+fn clearing_a_patchs_device_leaves_stills_and_silent_movies_playing() {
+    let dir = tempfile::tempdir().unwrap();
+    let quiet = movie!(dir.path(), "quiet.mov", (250, 25));
+    let loud = sound_movie!(dir.path(), "loud.mov", (250, 25), "pcm:2:48000");
+    let png = make(dir.path(), "card.png", "png", None);
+    let mut still = still_cue(2, &png, None);
+    if let CueKind::Video { sound, .. } = &mut still.kind {
+        sound.patch = Some(patch_id());
+    }
+    let clear = |s: &mut OfflineShow| {
+        let request = s.request_id();
+        s.send(ClientMessage::Request {
+            id: request,
+            request: Request::SetPatchMapping {
+                patch: patch_id(),
+                mapping: None,
+            },
+        });
+    };
+    let cues = vec![sounding_cue(1, &quiet), still, sounding_cue(3, &loud)];
+    let mut s = video_show(cues.clone());
+    for n in 1..=3 {
+        start(&mut s, n);
+    }
+    s.run(samples(0.5));
+    clear(&mut s);
+    s.run(samples(0.3));
+    expect_state(&s, 1, CueState::Running, "a silent movie");
+    expect_state(&s, 2, CueState::Running, "a still");
+    expect_state(&s, 3, CueState::Paused, "a movie that sounds on the patch");
+    assert_eq!(s.control().pictures_live(), 3);
+    assert_eq!(problems(&s, 1), vec![]);
+    assert_eq!(problems(&s, 2), vec![]);
+    assert_eq!(preshow_patches(&mut s), (vec![vec![id(3)]], 1));
+
+    // With silent pictures alone the patch is listed, with no cue on it, and not counted.
+    let mut s = video_show(cues.into_iter().take(2).collect());
+    clear(&mut s);
+    s.run(BLOCK);
+    assert_eq!(preshow_patches(&mut s), (vec![vec![]], 0));
+}
+
+/// A Video cue with sound and hold at end stays up when the report of its voice's end was
+/// lost (the control thread held off while other cues' events fill the mixer's queue): the
+/// voice's end is made up for, but the cue's end is its picture's to tell.
+#[test]
+fn a_held_video_cue_stays_up_when_its_voices_end_report_is_lost() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (250, 25), "pcm:2:48000");
+    let looping = wav(&dc(800, 0.25));
+    let mut cues: Vec<Cue> = (11..=20)
+        .map(|n| with_slices(audio(n, &looping, 0), &[(secs(400), 0)], 1))
+        .collect();
+    cues.push(timed_sounding_cue(2, &movie, |t| {
+        t.end_time = Some(9.0);
+        t.hold_at_end = true;
+    }));
+    let mut s = video_show(cues);
+    for n in 11..=20 {
+        start(&mut s, n);
+    }
+    let at = start(&mut s, 2);
+    s.run(BLOCK * 12);
+    let until = at + samples(9.3);
+    let now = s.rendered();
+    s.render_only(until - now);
+    assert!(s.control().mixer().dropped_events() > 0);
+    s.run(samples(1.0));
+    expect_state(&s, 2, CueState::Running, "held at its end");
+    assert_eq!(shown(&mut s), Some(224));
+    assert_eq!(s.control().live_voices(), 10, "its own voice is gone");
+}
+
+/// An old QuickTime movie (no file-type box) with sound has no problem, and plays picture
+/// and sound in step from a load to time (a seek in the track) to its end.
+#[test]
+fn an_old_quicktime_movie_without_a_file_type_box_plays_its_sound() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (75, 25), "pcm:2:48000");
+    let old = without_file_type(&movie, &dir.path().join("old.mov"));
+    let mut s = video_show(vec![sounding_cue(1, &old)]);
+    assert_eq!(problems(&s, 1), vec![]);
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    let sound = in_step(&mut s, RATE, 25.0, "from the top");
+    assert!((sound - 0.5).abs() < 0.02, "{sound}");
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: None,
+    });
+    s.run(BLOCK * 2);
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: 2.0,
+    });
+    s.run(BLOCK);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.5));
+    let sound = in_step(&mut s, RATE, 25.0, "from a load to time");
+    assert!((sound - 2.5).abs() < 0.02, "{sound}");
+    run_to(&mut s, at + samples(1.0) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "");
 }
