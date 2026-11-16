@@ -100,10 +100,13 @@ final class ProtocolFixtureTests: XCTestCase {
         guard case .result(_, .ok(let ok)) = try ServerMessage.decode(mappingsText),
             case .patchMappings(let entries)? = ok.data
         else { return XCTFail("patch_mappings") }
-        XCTAssertEqual(entries.count, 3)
+        XCTAssertEqual(entries.count, 4)
         XCTAssertEqual(entries[0].mapping, PatchMapping(device: "Scarlett 2i2", channels: [0, 1]))
         XCTAssertNil(entries[1].mapping)
-        XCTAssertEqual(entries.map { $0.resolution?.type }, ["mapped", "unmapped", "device_missing"])
+        // #685: a patch on the system output, resolved to the device that is now.
+        XCTAssertEqual(entries[2].mapping, .systemOutput(channels: [0, 1]))
+        XCTAssertEqual(entries[2].resolution?.json["device"]?.stringValue, "MacBook Pro Speakers")
+        XCTAssertEqual(entries.map { $0.resolution?.type }, ["mapped", "unmapped", "mapped", "device_missing"])
     }
 
     /// VID-01: the display list, the stage mappings and the stage display choice decode from their
@@ -158,6 +161,19 @@ final class ProtocolFixtureTests: XCTestCase {
         XCTAssertNil(cleared)
         // A clear is sent as an explicit null, as the fixture has it.
         XCTAssertTrue(try clear.text().contains("\"mapping\":null"))
+        // #685: the system output is sent as the fixture has it; a named device sends no `system`.
+        let system = try JSONDecoder().decode(
+            ClientMessage.self,
+            from: Data(try Fixtures.text("client", "request_set_patch_mapping_system_output").utf8))
+        XCTAssertEqual(
+            system,
+            .request(
+                id: 65,
+                .setPatchMapping(
+                    patch: "00000000-0000-0000-0000-000000000071",
+                    mapping: .systemOutput(channels: [0, 1]))))
+        XCTAssertTrue(try system.text().contains("\"system\":true"))
+        XCTAssertFalse(try set.text().contains("system"))
     }
 
     /// AUD-14: the `waveform` request is sent as the fixture has it and its answer decodes.

@@ -21,7 +21,7 @@ impl Voices {
             let (cue, run, from, started) = (
                 r.cue,
                 r.run,
-                r.file.map_or(StartAt::Offset(r.offset), StartAt::File),
+                r.plan_of(),
                 matches!(r.phase, Phase::Waiting { start: Some(_), .. }),
             );
             if started {
@@ -89,6 +89,7 @@ impl Voices {
                 cue_slices(&spec, info, env.rate, offset).map(|s| (s, offset))
             }
             StartAt::File(frame) => cue_slices_from(&spec, info, env.rate, frame),
+            StartAt::Table(table) => Ok((table, 0)),
         };
         let (slices, shown) = match planned {
             Ok(s) => s,

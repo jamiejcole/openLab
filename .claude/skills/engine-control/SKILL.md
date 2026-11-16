@@ -14,7 +14,7 @@ description: "Load when changing or reviewing the engine control thread, engine/
 - **Every workspace edit reaches the cue engine** (only through `DocModel::edit()`; a forgotten signal must not compile). A refused or no-op command changes and broadcasts nothing.
 - Exactly one `result` per command/transport/undo/redo/request, and `model_changed` goes out before it.
 - `VoiceId`s are engine-wide and never reused; each has an owning doc. A voice event no open doc owns is dropped.
-- A patch slot is never handed out while a voice may play through it, and no edit re-routes or silences a voice that is sounding (except a playing cue's own patch change, which follows by crossfade).
+- A patch slot is never handed out while a voice may play through it, and no edit re-routes or silences a voice that is sounding (except a playing cue's own patch change, which follows by crossfade, and its patch moving to another device, which moves it there in step by a crossfade between two voices).
 - A start that will never play fails (`StartFailed`: cue skipped, auto-follow fires) rather than showing as running with no sound.
 - No feedback is handed to the cue engine before the sample it reports (`now > at`).
 - A lost mixer event must never leave a cue running for ever (reconciliation).
@@ -84,6 +84,7 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 | `UnloadVoice` | stream dropped |
 | `StartVoice { run, at, offset }` | loaded stream, else the cue's primed one (offset 0 only), else a fresh `prepare`; `VoiceStart` with the model's levels; then `ActionLength` (below) |
 | `StopVoice { at, fade }` | mixer `StopVoice` with the curve; record goes with `VoiceFinished` |
+| `RelocateVoice` | the voice moves to its patch's current device: a new voice there from where the sound is, crossfading `MOVE_LEAD` later (reference `patch-slots`) |
 | `PauseVoice` | native mixer pause (position and ring kept) |
 | `ResumeVoice { run, paused, at }` | mixer resume re-keys the voice to a fresh id for the fresh run |
 | `Ramp` | mixer `Ramp`, or one `RampSet` for a run of ramps of one voice with the same date and fade; no gangs (Fade and level-edit values are already per output). Fade cues and level edits on a playing cue are carried out alike |

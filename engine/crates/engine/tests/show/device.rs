@@ -119,6 +119,14 @@ impl Fake {
         self.state.lock().unwrap().devices.push(device);
     }
 
+    /// The system's default output becomes device `id` (none: no device is the default), as
+    /// when the operator picks another output in the system's sound settings.
+    pub fn set_default(&self, id: Option<&str>) {
+        for d in &mut self.state.lock().unwrap().devices {
+            d.is_default = Some(d.id.as_str()) == id;
+        }
+    }
+
     /// Unplugs a device: it leaves the list. If it is the open one, its callbacks stop and,
     /// with `report`, the host reports it lost (some hosts just stop calling back).
     pub fn unplug(&self, id: &str, report: bool) {
@@ -436,6 +444,9 @@ pub struct DeviceShow {
     /// Captured audio per device, per channel.
     captures: Vec<(String, Vec<Vec<f32>>)>,
     next_id: u64,
+    /// Streams prepared but not playing are not waited for before a callback: a slow disk,
+    /// whose stream a move to another device cannot have by its swap.
+    pub slow_disk: bool,
 }
 
 impl DeviceShow {
@@ -498,6 +509,7 @@ impl DeviceShow {
             primary,
             captures: Vec::new(),
             next_id: 0,
+            slow_disk: false,
         };
         show.settle_media();
         show
@@ -691,10 +703,19 @@ impl DeviceShow {
     fn settle_streams(&mut self, frames: u64) {
         let end = self.rendered() + frames;
         for (handle, needed) in self.control.stream_needs(end) {
+            // A devamp cut a voice published is seen by its disk worker on its next poll, in
+            // real time; a render faster than that must wait for it, as the offline driver does.
+            assert!(
+                matches!(handle.wait_cut_seen(WAIT), Ok(true) | Err(_)),
+                "a disk worker never saw a devamp"
+            );
             assert!(
                 matches!(handle.wait_written(needed, WAIT), Ok(true) | Err(_)),
                 "a disk worker stalled"
             );
+        }
+        if self.slow_disk {
+            return;
         }
         for handle in self.control.prepared_streams() {
             assert!(

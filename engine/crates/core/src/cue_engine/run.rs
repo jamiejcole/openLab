@@ -172,6 +172,10 @@ pub(super) struct Run {
     pub given: Option<Given>,
     /// Audio cues: a devamp sent for its voice and not yet carried out.
     pub devamp: Option<DevampWait>,
+    /// Its patch moved to another device while a devamp sent was not answered yet
+    /// (`Input::DeviceMoved`): the voice moves once it is (scheduled or ignored), so the loop it
+    /// is leaving is not played again on the new device.
+    pub move_pending: bool,
     /// Fade cues, from their action start: what the fade is doing.
     pub fade: Option<FadeRun>,
     /// Wait and Fade cues in their action: the duration (samples) the action is timed by, so
@@ -399,6 +403,7 @@ impl Run {
             faders: BTreeSet::new(),
             given: None,
             devamp: None,
+            move_pending: false,
             fade: None,
             duration: None,
             duck: DuckLevel::NONE,

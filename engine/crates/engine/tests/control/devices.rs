@@ -45,6 +45,7 @@ fn device_config(ws: &Workspace) -> ControlConfig {
             PatchMapping {
                 device: DEV_NAME.into(),
                 channels: vec![0, 1],
+                system: false,
             },
         )
         .unwrap();
@@ -2202,6 +2203,7 @@ fn two_patch_show_with(
             PatchMapping {
                 device: b.into(),
                 channels: vec![0, 1],
+                system: false,
             },
         )
         .unwrap();
@@ -2954,6 +2956,7 @@ fn a_device_opens_at_the_buffer_size_set_for_it() {
             PatchMapping {
                 device: DEV2_NAME.into(),
                 channels: vec![0, 1],
+                system: false,
             },
         )
         .unwrap();
@@ -3010,6 +3013,7 @@ fn changing_patch_bs_device_leaves_patch_as_cue_playing_and_moves_bs_next_cue() 
             mapping: Some(PatchMapping {
                 device: DEV2_NAME.into(),
                 channels: vec![0, 1],
+                system: false,
             }),
         },
     });
@@ -3189,6 +3193,7 @@ fn map_b(s: &mut DeviceShow, device: &str) {
             mapping: Some(PatchMapping {
                 device: device.into(),
                 channels: vec![0, 1],
+                system: false,
             }),
         },
     });
@@ -3204,36 +3209,33 @@ fn map_b(s: &mut DeviceShow, device: &str) {
     );
 }
 
-/// A device no patch maps to any more closes once the cue still playing on it ends; unplugged
-/// then, it raises no warning, no error and no reopen attempts.
+/// A device no patch maps to any more closes once nothing plays on it (a cue playing there
+/// moves to its patch's new device at once); unplugged then, it raises no warning, no error and
+/// no reopen attempts.
 #[test]
 fn a_device_no_patch_uses_closes_and_its_unplugging_raises_nothing() {
-    let b = wav(&dc(800, 0.5));
+    let b = wav(&dc(4000, 0.5));
     let mut s = two_device_show(vec![audio_b(2, &b, 0)]);
     start(&mut s, 2);
     s.run(BLOCK * 2);
     map_b(&mut s, DEV_NAME);
-    s.run(BLOCK * 2);
-    // The cue on it plays to its end there first.
-    assert!(s.control().output_up(DEV2_NAME));
-    s.run(1200);
-    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    s.run(BLOCK * 20);
+    // The cue moved to the primary (fading in over the crossfade) and plays on there.
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    assert_eq!(heard(&s.channel(0)).last(), Some(&0.5));
     s.settle_devices();
     assert!(
         !s.control().output_up(DEV2_NAME),
         "the unused device stayed open"
     );
-    // A playing cue does not move to its patch's new device: it played on to its end where it
-    // started, and the primary heard none of it.
-    assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
-    assert_eq!(
-        s.device_channel(DEV2, 0)
-            .iter()
-            .filter(|&&x| x != 0.0)
-            .count(),
-        800
-    );
-    assert!(heard(&s.channel(0)).is_empty());
+    let on_two = s
+        .device_channel(DEV2, 0)
+        .iter()
+        .filter(|&&x| x != 0.0)
+        .count();
+    assert!(on_two < 4000, "it played its whole file on the old device");
+    s.run(4000);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
     s.take_outbound();
     s.fake.unplug(DEV2, true);
     s.wait_wall(Duration::from_secs(1), 2);
@@ -3296,6 +3298,7 @@ fn channels_above_the_primarys_output_count_are_warned_about_truthfully() {
             PatchMapping {
                 device: DEV2_NAME.into(),
                 channels: vec![4, 5],
+                system: false,
             },
         )
         .unwrap();
@@ -3729,4 +3732,1277 @@ fn a_duck_from_a_cue_on_a_lost_device_comes_off_the_other_devices_cue() {
         "{}",
         ch[ch.len() - 1]
     );
+}
+
+/// The messages of the runtime notices with `code`, in order.
+fn notice_messages(msgs: &[ServerMessage], code: &str) -> Vec<String> {
+    warnings(msgs)
+        .into_iter()
+        .filter_map(|w| match w {
+            WireWarning::Notice {
+                code: c, message, ..
+            } if c == code => Some(message),
+            _ => None,
+        })
+        .collect()
+}
+
+// AUD-07: a playing cue follows its patch to another device at once (QLab 5, measured by the
+// owner 2026-11-14).
+
+/// Puts `patch` on `device`, outputs 1 and 2; the request must be accepted.
+fn map_patch(s: &mut DeviceShow, patch: openlab_core::PatchId, device: &str) {
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::SetPatchMapping {
+            patch,
+            mapping: Some(PatchMapping {
+                device: device.into(),
+                channels: vec![0, 1],
+                system: false,
+            }),
+        },
+    });
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+}
+
+/// What both devices played on channel 0, sample by sample on the master clock (the primary's
+/// count): the second device's capture is shifted by the samples it opened after the first.
+fn on_both(s: &DeviceShow) -> Vec<(f32, f32)> {
+    let one = s.device_channel(DEV, 0);
+    let two = s.device_channel(DEV2, 0);
+    let shift = one.len() - two.len();
+    (0..one.len())
+        .map(|t| {
+            let b = t.checked_sub(shift).map_or(0.0, |i| two[i]);
+            (one[t], b)
+        })
+        .collect()
+}
+
+/// Checks the cue's file (`ramp(frames)`, sample `i` heard as `(i + 1) / 2^20`) was heard in
+/// step from its first sample to its last across the two devices: on every sample the two add
+/// up to the file's next sample (no gap, no repeat, no level step), and the move crossfaded
+/// over at most `crossfade` samples where both sounded. Returns the first sample the second
+/// device played.
+fn assert_heard_in_step(s: &DeviceShow, frames: usize, crossfade: usize) -> usize {
+    let both = on_both(s);
+    let first = both
+        .iter()
+        .position(|&(a, b)| a != 0.0 || b != 0.0)
+        .expect("the cue played");
+    let unit = 1.0 / 1_048_576.0;
+    for (i, &(a, b)) in both[first..first + frames].iter().enumerate() {
+        let want = (i + 1) as f32 * unit;
+        assert!(
+            (a + b - want).abs() < 2.0 * unit,
+            "sample {i} of the file: {a} + {b}, want {want}"
+        );
+    }
+    assert!(
+        both[first + frames..]
+            .iter()
+            .all(|&(a, b)| a == 0.0 && b == 0.0),
+        "sound after the file's end"
+    );
+    let overlap = both.iter().filter(|&&(a, b)| a != 0.0 && b != 0.0).count();
+    assert!(
+        overlap > 0 && overlap <= crossfade,
+        "crossfade of {overlap}"
+    );
+    both.iter()
+        .position(|&(_, b)| b != 0.0)
+        .expect("heard on the second device")
+}
+
+#[test]
+fn a_cue_plays_on_a_patch_whose_device_is_changed_and_is_heard_on_the_new_device_at_once_in_step() {
+    let frames = 6000;
+    let a = wav(&ramp(frames));
+    let mut s = two_device_show(vec![audio(1, &a, 0)]);
+    start(&mut s, 1);
+    s.run(BLOCK * 20);
+    let moved_at = s.rendered() as usize;
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    // Still playing, still counting, on the same run of time.
+    let mut last = 0.0;
+    for _ in 0..6 {
+        s.run(BLOCK * 8);
+        let p = progress_of(&s.take_outbound(), 1);
+        if let Some(&(elapsed, _)) = p.last() {
+            assert!(elapsed >= last, "the row's time went back: {p:?}");
+            last = elapsed;
+        }
+        assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    }
+    s.run(frames as u64);
+    let crossfade = (f64::from(RATE) * 0.01) as usize;
+    let switched = assert_heard_in_step(&s, frames, crossfade);
+    // At once: within the move's lead and one block of the request.
+    let lead = (f64::from(RATE) * 0.1) as usize;
+    assert!(
+        switched >= moved_at && switched <= moved_at + lead + 2 * BLOCK as usize,
+        "moved at {moved_at}, heard there from {switched}"
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_cue_put_on_a_patch_on_another_device_moves_there_at_once_in_step() {
+    let frames = 4000;
+    let a = wav(&ramp(frames));
+    let mut s = two_device_show(vec![audio(1, &a, 0)]);
+    start(&mut s, 1);
+    s.run(BLOCK * 10);
+    let mut kind = s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .kind
+        .clone();
+    if let CueKind::Audio { patch, .. } = &mut kind {
+        *patch = patch_b();
+    }
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Command {
+        id: rid,
+        command: Box::new(openlab_core::Command::SetCueProperty {
+            id: id(1),
+            property: openlab_core::CueProperty::Kind { value: kind },
+        }),
+        coalesce: None,
+    });
+    assert!(
+        replies.iter().any(|m| matches!(
+            m,
+            ServerMessage::Result {
+                outcome: Outcome::Ok(_),
+                ..
+            }
+        )),
+        "{replies:?}"
+    );
+    s.run(frames as u64);
+    let crossfade = (f64::from(RATE) * 0.01) as usize;
+    assert_heard_in_step(&s, frames, crossfade);
+}
+
+#[test]
+fn the_same_while_the_cue_is_paused_it_resumes_on_the_new_device() {
+    let frames = 4000;
+    let a = wav(&ramp(frames));
+    let mut s = two_device_show(vec![audio(1, &a, 0)]);
+    start(&mut s, 1);
+    s.run(BLOCK * 10);
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(BLOCK * 4);
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(BLOCK * 8);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    let heard_two = |s: &DeviceShow| heard(&s.device_channel(DEV2, 0)).len();
+    assert_eq!(heard_two(&s), 0, "a paused cue sounded on the new device");
+    s.transport(TransportAction::Resume { cue: id(1) });
+    s.run(frames as u64);
+    // The file in order, every sample once: the first device up to the pause, the second from
+    // there on (each pause and resume declicks over a few samples).
+    let one: Vec<f32> = s.device_channel(DEV, 0);
+    let two: Vec<f32> = s.device_channel(DEV2, 0);
+    let unit = 1.0 / 1_048_576.0;
+    let index = |v: f32| (v / unit).round() as i64 - 1;
+    let last_one = one.iter().rev().find(|&&v| v != 0.0).copied().unwrap();
+    let first_two = two.iter().find(|&&v| v != 0.0).copied().unwrap();
+    // Within the declicks' few samples of each other, and the second device plays to the end.
+    assert!(
+        (index(first_two) - index(last_one)).abs() < 64,
+        "{} then {}",
+        index(last_one),
+        index(first_two)
+    );
+    assert_eq!(
+        index(*two.iter().rev().find(|&&v| v != 0.0).unwrap()),
+        frames as i64 - 1
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+}
+
+#[test]
+fn the_same_while_the_cue_is_fading_the_fade_carries_on_on_the_new_device() {
+    let a = wav(&dc(16_000, 0.5));
+    let fade = cue(
+        3,
+        CueKind::Fade {
+            target: Some(id(1)),
+            duration: secs(16_000),
+            curve: openlab_core::FadeCurve::Linear,
+            levels: openlab_core::FadeLevels {
+                master_db: Some(-40.0),
+                output_db: vec![],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: false,
+            mode: Default::default(),
+        },
+    );
+    let mut s = two_device_show(vec![audio(1, &a, 0), fade]);
+    start(&mut s, 1);
+    s.run(BLOCK * 4);
+    start(&mut s, 3);
+    s.run(BLOCK * 20);
+    let before = s.channel(0);
+    let level = before[before.len() - 1];
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(BLOCK * 40);
+    let both = on_both(&s);
+    // The level never steps up across the move, and keeps falling on the new device.
+    let sum: Vec<f32> = both.iter().map(|&(a, b)| a + b).collect();
+    let from = before.len() - 1;
+    for w in sum[from..].windows(2) {
+        assert!(
+            w[1] <= w[0] + 1e-4,
+            "level stepped up: {} -> {}",
+            w[0],
+            w[1]
+        );
+    }
+    let two = s.device_channel(DEV2, 0);
+    let now = two[two.len() - 1];
+    assert!(now > 0.0 && now < level, "{level} then {now}");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Fading);
+}
+
+#[test]
+fn the_same_while_the_cue_is_looping_it_loops_on_the_new_device() {
+    let frames = 800;
+    let a = wav(&ramp(frames));
+    let mut looping = audio(1, &a, 0);
+    if let CueKind::Audio {
+        last_slice_play_count,
+        ..
+    } = &mut looping.kind
+    {
+        *last_slice_play_count = 0;
+    }
+    let mut s = two_device_show(vec![looping]);
+    start(&mut s, 1);
+    s.run(frames as u64 * 2 + 300);
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(frames as u64 * 4);
+    // Every sample on the master clock is the loop's next one: in step across the move, and
+    // round the loop again on the new device.
+    let both = on_both(&s);
+    let first = both
+        .iter()
+        .position(|&(a, b)| a != 0.0 || b != 0.0)
+        .unwrap();
+    let unit = 1.0 / 1_048_576.0;
+    for (i, &(a, b)) in both[first..].iter().enumerate() {
+        let want = ((i % frames) + 1) as f32 * unit;
+        assert!(
+            (a + b - want).abs() < 2.0 * unit,
+            "sample {i}: {a} + {b}, want {want}"
+        );
+    }
+    let two = s.device_channel(DEV2, 0);
+    assert!(two.iter().filter(|&&v| v != 0.0).count() > frames * 2);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+}
+
+#[test]
+fn the_new_device_is_missing_or_cannot_be_used_and_the_cue_stops_as_for_a_lost_device_with_the_reason()
+ {
+    // A device that cannot run at the primary's rate cannot be used: the cue moved to it
+    // stops, shows paused (time frozen) as on a lost device, and a notice says why.
+    let a = wav(&dc(20_000, 0.5));
+    let mut odd = listed(DEV2, DEV2_NAME, 2);
+    for c in &mut odd.configs {
+        c.min_rate = RATE * 2;
+        c.max_rate = RATE * 2;
+    }
+    let mut s = two_patch_show(
+        vec![audio(1, &a, 0)],
+        DEV_NAME,
+        vec![listed(DEV, DEV_NAME, 2), odd],
+    );
+    start(&mut s, 1);
+    s.run(BLOCK * 10);
+    s.take_outbound();
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.settle_devices();
+    // Patches resolve again before the stopped voice's end comes back from the mixer: the cue
+    // is not stopped, or announced, a second time.
+    map_b(&mut s, DEV_NAME);
+    s.run(BLOCK * 4);
+    let msgs = s.take_outbound();
+    assert!(paused_device_lost(&msgs, 1), "{msgs:?}");
+    assert_eq!(notice_messages(&msgs, "device_lost").len(), 1, "{msgs:?}");
+    // Its row shows one time, standing still where it stopped.
+    for m in &msgs {
+        if let ServerMessage::Progress { items, .. } = m {
+            assert!(
+                items.iter().filter(|i| i.cue == id(1)).count() <= 1,
+                "{items:?}"
+            );
+        }
+    }
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    let notes = notice_messages(&msgs, "device_lost");
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains(DEV2_NAME) && n.contains("cannot be used") && n.contains("Hz")),
+        "{notes:?}"
+    );
+    assert!(notice_devices(&msgs).contains(&Some(DEV2_NAME.to_owned())));
+    // Nothing sounds any more, and nothing comes back.
+    let len = s.channel(0).len();
+    s.run(BLOCK * 20);
+    assert!(heard(&s.channel(0)[len..]).is_empty());
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_cue_whose_new_device_is_unplugged_before_it_opens_stops_as_for_a_lost_device() {
+    let a = wav(&dc(20_000, 0.5));
+    let mut s = two_patch_show(
+        vec![audio(1, &a, 0)],
+        DEV_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+    );
+    start(&mut s, 1);
+    s.run(BLOCK * 10);
+    // Its open hangs; the cue plays on where it is meanwhile.
+    s.fake.close_gate();
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    let len = s.channel(0).len();
+    assert_eq!(heard(&s.channel(0)[len - BLOCK as usize..]), vec![0.5]);
+    s.take_outbound();
+    s.fake.unplug(DEV2, false);
+    s.fake.open_gate();
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.run(BLOCK * 2);
+    let msgs = s.take_outbound();
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    // Its open failed as it went (or the list lost it first): one notice, naming it.
+    let notes = notice_messages(&msgs, "device_lost");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].contains(DEV2_NAME)
+            && (notes[0].contains("not connected") || notes[0].contains("could not be opened")),
+        "{notes:?}"
+    );
+    let len = s.channel(0).len();
+    s.run(BLOCK * 10);
+    assert!(heard(&s.channel(0)[len..]).is_empty());
+}
+
+#[test]
+fn a_playing_cue_moved_to_another_device_auto_follows_once_at_its_end() {
+    let a = wav(&ramp(3000));
+    let b = wav(&dc(400, 0.5));
+    let mut first = audio(1, &a, 0);
+    first.continue_mode = ContinueMode::AutoFollow;
+    let mut s = two_device_show(vec![first, audio(2, &b, 0)]);
+    start(&mut s, 1);
+    s.run(BLOCK * 10);
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    let mut msgs = Vec::new();
+    for _ in 0..80 {
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+    }
+    let starts = states(&msgs, id(2))
+        .iter()
+        .filter(|(st, _)| *st == WireCueState::Running)
+        .count();
+    assert_eq!(starts, 1, "{:?}", states(&msgs, id(2)));
+    // Cue 2 begins on the sample after cue 1's last, on the new device.
+    let two = s.device_channel(DEV2, 0);
+    let last_ramp = two.iter().rposition(|&v| v != 0.0 && v != 0.5).unwrap();
+    let first_dc = two.iter().position(|&v| v == 0.5).unwrap();
+    assert_eq!(first_dc, last_ramp + 1);
+}
+
+// A patch on the system output (QLab 5 manual p. 7): it plays on whichever device the Mac's
+// default output is, and follows it when the operator changes it.
+
+/// Sends `set_patch_mapping` for `patch` and returns the result's outcome.
+fn set_mapping(
+    s: &mut DeviceShow,
+    patch: openlab_core::PatchId,
+    mapping: PatchMapping,
+) -> Result<(), ErrorCode> {
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::SetPatchMapping {
+            patch,
+            mapping: Some(mapping),
+        },
+    });
+    let outcome = replies
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::Result { outcome, .. } => Some(outcome.clone()),
+            _ => None,
+        })
+        .expect("a result");
+    match outcome {
+        Outcome::Ok(_) => Ok(()),
+        Outcome::Error(e) => Err(e.code),
+    }
+}
+
+/// Patch A on "Fake 1" (the primary, not the default output); patch B, empty of cues so far,
+/// on "Fake 2", the default output; then patch B is put on the system output.
+fn system_output_show(cues: Vec<openlab_core::Cue>) -> DeviceShow {
+    let mut two = listed(DEV2, DEV2_NAME, 2);
+    two.is_default = true;
+    let mut s = two_patch_show(cues, DEV2_NAME, vec![listed(DEV, DEV_NAME, 2), two]);
+    s.wait_output(DEV2_NAME);
+    assert_eq!(
+        set_mapping(&mut s, patch_b(), PatchMapping::system_output(vec![0, 1])),
+        Ok(())
+    );
+    s.settle_devices();
+    s.take_outbound();
+    s
+}
+
+/// The default output becomes device `id`, and the engine's list read sees it.
+fn change_system_output(s: &mut DeviceShow, id: &str) {
+    s.fake.set_default(Some(id));
+    s.wait_wall(Duration::from_millis(1100), 2);
+    s.settle_devices();
+}
+
+#[test]
+fn the_device_list_of_a_patch_has_a_system_output_entry_and_choosing_it_plays_on_the_macs_current_output()
+ {
+    let b = wav(&dc(400, 0.5));
+    let mut s = system_output_show(vec![audio_b(2, &b, 0)]);
+    let entries = list_patch_mappings(&mut s);
+    let b_entry = entries.iter().find(|e| e.patch == patch_b()).unwrap();
+    assert_eq!(
+        b_entry.mapping,
+        Some(PatchMapping::system_output(vec![0, 1]))
+    );
+    assert!(
+        matches!(
+            &b_entry.resolution,
+            Some(WireResolution::Mapped { device, .. }) if device == DEV2_NAME
+        ),
+        "{b_entry:?}"
+    );
+    start(&mut s, 2);
+    s.run(600);
+    assert_eq!(heard(&s.device_channel(DEV2, 0)), vec![0.5]);
+    assert!(heard(&s.channel(0)).is_empty());
+}
+
+#[test]
+fn the_macs_output_is_changed_while_no_cue_plays_and_the_next_cue_on_that_patch_plays_on_the_new_device()
+ {
+    let b = wav(&dc(400, 0.5));
+    let mut s = system_output_show(vec![audio_b(2, &b, 0)]);
+    change_system_output(&mut s, DEV);
+    let entries = list_patch_mappings(&mut s);
+    assert!(
+        entries.iter().any(|e| e.patch == patch_b()
+            && matches!(&e.resolution, Some(WireResolution::Mapped { device, .. }) if device == DEV_NAME)),
+        "{entries:?}"
+    );
+    let before = (s.channel(0).len(), s.device_channel(DEV2, 0).len());
+    start(&mut s, 2);
+    s.run(600);
+    assert_eq!(heard(&s.channel(0)[before.0..]), vec![0.5]);
+    let two = s.device_channel(DEV2, 0);
+    assert!(heard(&two[before.1.min(two.len())..]).is_empty());
+}
+
+#[test]
+fn the_macs_output_is_changed_while_a_cue_plays_on_that_patch_and_it_follows_at_once() {
+    let frames = 12_000;
+    let b = wav(&ramp(frames));
+    let mut s = system_output_show(vec![audio_b(2, &b, 0)]);
+    start(&mut s, 2);
+    s.run(BLOCK * 10);
+    // Both devices are captured from here on alike until "Fake 2", no longer used, closes.
+    let shift = s.channel(0).len() - s.device_channel(DEV2, 0).len();
+    change_system_output(&mut s, DEV);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+    s.run(frames as u64 + 2000);
+    // Heard in step from its first sample to its last, first on "Fake 2", then on "Fake 1".
+    let one = s.device_channel(DEV, 0);
+    let two = s.device_channel(DEV2, 0);
+    let both: Vec<f32> = (0..one.len())
+        .map(|t| {
+            one[t]
+                + t.checked_sub(shift)
+                    .and_then(|i| two.get(i))
+                    .copied()
+                    .unwrap_or(0.0)
+        })
+        .collect();
+    let first = both.iter().position(|&v| v != 0.0).unwrap();
+    let unit = 1.0 / 1_048_576.0;
+    for (i, &v) in both[first..first + frames].iter().enumerate() {
+        let want = (i + 1) as f32 * unit;
+        assert!(
+            (v - want).abs() < 2.0 * unit,
+            "sample {i}: {v}, want {want}"
+        );
+    }
+    assert!(heard(&one).len() > 1, "never moved to the new default");
+    assert_eq!(s.control().engine().state(id(2)), CueState::Idle);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_patch_that_names_a_device_is_unaffected_by_the_system_output_changing() {
+    let b = wav(&dc(20_000, 0.5));
+    let mut two = listed(DEV2, DEV2_NAME, 2);
+    two.is_default = true;
+    let mut s = two_patch_show(
+        vec![audio_b(2, &b, 0)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), two],
+    );
+    s.wait_output(DEV2_NAME);
+    start(&mut s, 2);
+    s.run(BLOCK * 10);
+    change_system_output(&mut s, DEV);
+    s.run(BLOCK * 20);
+    // It plays on where it is, every sample, and nothing reaches the new default.
+    let ch = s.device_channel(DEV2, 0);
+    let first = first_nonzero(&ch).unwrap();
+    assert!(ch[first..].iter().all(|&v| v == 0.5), "it dropped out");
+    assert!(heard(&s.channel(0)).is_empty());
+    assert_eq!(s.control().engine().state(id(2)), CueState::Running);
+}
+
+#[test]
+fn a_system_output_mapping_naming_a_device_or_with_no_default_output_is_refused() {
+    let mut s = two_patch_show(
+        vec![],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+    );
+    s.wait_output(DEV2_NAME);
+    let before = list_patch_mappings(&mut s);
+    // No device is the default output.
+    assert_eq!(
+        set_mapping(&mut s, patch_b(), PatchMapping::system_output(vec![0, 1])),
+        Err(ErrorCode::NotFound)
+    );
+    s.fake.set_default(Some(DEV2));
+    s.wait_wall(Duration::from_millis(1100), 2);
+    let mut named = PatchMapping::system_output(vec![0, 1]);
+    named.device = DEV_NAME.into();
+    assert_eq!(
+        set_mapping(&mut s, patch_b(), named),
+        Err(ErrorCode::BadRequest)
+    );
+    // Channels the default output does not have.
+    assert_eq!(
+        set_mapping(&mut s, patch_b(), PatchMapping::system_output(vec![0, 5])),
+        Err(ErrorCode::BadRequest)
+    );
+    assert_eq!(list_patch_mappings(&mut s), before);
+}
+
+#[test]
+fn a_cue_on_the_system_output_whose_default_goes_away_stops_as_for_a_lost_device() {
+    let b = wav(&dc(20_000, 0.5));
+    let mut s = system_output_show(vec![audio_b(2, &b, 0)]);
+    start(&mut s, 2);
+    s.run(BLOCK * 10);
+    s.take_outbound();
+    // The default output is unplugged; the system names no other.
+    s.fake.set_default(None);
+    unplug(&mut s, DEV2);
+    s.run(BLOCK * 4);
+    let msgs = s.take_outbound();
+    assert!(paused_device_lost(&msgs, 2), "{msgs:?}");
+    assert_eq!(s.control().engine().state(id(2)), CueState::Paused);
+    assert!(heard(&s.channel(0)).is_empty());
+    // The patch's warning says no output device is selected, as the settings table does; it
+    // is not an entry for a device named "system output".
+    s.wait_wall(Duration::from_millis(1100), 2);
+    s.tick();
+    let texts = notice_texts(&s.take_outbound()).unwrap();
+    assert!(
+        texts
+            .iter()
+            .any(|(code, m)| code == "patch_no_system_output"
+                && m.contains("\"B\"")
+                && m.contains("no output device selected")),
+        "{texts:?}"
+    );
+    assert!(
+        !texts
+            .iter()
+            .any(|(_, m)| m.contains("audio device \"system output\"")),
+        "{texts:?}"
+    );
+}
+
+/// A looping cue (2,000-frame ramp, looping until devamped) is devamped 1,300 frames into its
+/// third pass, its Devamp cue starting cue 2 when it leaves the loop; its patch moves to "Fake 2"
+/// `move_after` frames after the devamp, before (or after) the mixer has said where it leaves.
+/// Returns the ramp samples heard in order and whether any was out of step, and how many
+/// times cue 2 started.
+fn devamp_then_move(move_after: u64) -> (usize, Vec<(usize, f32, f32)>, usize) {
+    let frames = 2000;
+    let a = wav(&ramp(frames));
+    let b = wav(&dc(2000, 0.5));
+    let mut looping = audio(1, &a, 0);
+    if let CueKind::Audio {
+        last_slice_play_count,
+        ..
+    } = &mut looping.kind
+    {
+        *last_slice_play_count = 0;
+    }
+    let devamp = cue(
+        3,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: true,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = two_device_show(vec![looping, devamp, audio(2, &b, 0)]);
+    start(&mut s, 1);
+    let t0 = s.rendered();
+    s.run(frames as u64 * 2 - (s.rendered() - t0) + 1300);
+    start(&mut s, 3);
+    s.run(move_after);
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    let mut msgs = Vec::new();
+    for _ in 0..200 {
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+    }
+    let starts = states(&msgs, id(2))
+        .iter()
+        .filter(|(st, _)| *st == WireCueState::Running)
+        .count();
+    let both = on_both(&s);
+    let unit = 1.0 / 1_048_576.0;
+    let first = both
+        .iter()
+        .position(|&(a, b)| a != 0.0 || b != 0.0)
+        .unwrap();
+    let (mut bad, mut i) = (Vec::new(), 0usize);
+    for (t, &(x, y)) in both[first..].iter().enumerate() {
+        let v = x + y;
+        if v == 0.5 || v == 0.0 {
+            continue;
+        }
+        let want = ((i % frames) + 1) as f32 * unit;
+        if (v - want).abs() >= 2.0 * unit {
+            bad.push((t, v / unit, want / unit));
+        }
+        i += 1;
+    }
+    (i, bad, starts)
+}
+
+/// Review round 1, H1: a move that comes while a devamp is on its way (sent, not yet answered,
+/// or answered and not yet left) waits until the voice has left its loop; the loop is heard
+/// exactly three times in all, never a fourth time on the new device, and cue 2 starts once.
+#[test]
+fn a_cue_moved_to_another_device_while_it_is_being_devamped_leaves_its_loop_once() {
+    for move_after in [0, BLOCK, 2 * BLOCK, 400, 600] {
+        let (heard, bad, starts) = devamp_then_move(move_after);
+        assert_eq!(heard, 6000, "moved {move_after} frames after the devamp");
+        assert!(
+            bad.is_empty(),
+            "moved {move_after} after: {:?}",
+            &bad[..bad.len().min(5)]
+        );
+        assert_eq!(starts, 1, "moved {move_after} after");
+    }
+}
+
+/// Review round 1: the new device's stream is not ready by the planned swap (a slow disk holds
+/// its open 0.15 s): the old device plays on and the swap is planned again from where the sound
+/// will be then, so nothing is played twice; the file is heard once, in step.
+#[test]
+fn a_move_whose_stream_is_late_swaps_later_and_plays_nothing_twice() {
+    let frames = 8000;
+    let a = wav(&ramp(frames));
+    let mut s = two_patch_show_with(
+        vec![audio(1, &a, 0)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        |c| c.streamer.before_open = gated_open,
+    );
+    s.wait_output(DEV2_NAME);
+    start(&mut s, 1);
+    s.run(BLOCK * 10);
+    gate(&a);
+    s.slow_disk = true;
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(1200);
+    assert!(
+        heard(&s.device_channel(DEV2, 0)).is_empty(),
+        "swapped before its stream could be read"
+    );
+    release(&a);
+    s.slow_disk = false;
+    s.run(frames as u64);
+    let crossfade = (f64::from(RATE) * 0.01) as usize;
+    assert_heard_in_step(&s, frames, crossfade);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+}
+
+/// A 2.5 s ramp whose first 2 s loop until devamped (a 16,000-frame loop, then a 4,000-frame
+/// tail), on patch A (`on_b`: patch B); a Devamp cue starts cue 2 (on patch B, channel 2) as it
+/// leaves the loop. Cue 1 is started, devamped 200 frames into its second pass (it leaves at
+/// the end of that pass, 32,000 frames in), and the run is past the devamp's answer.
+/// Returns the show and the master sample cue 1 started on.
+fn long_loop_devamped(on_b: bool) -> (DeviceShow, usize) {
+    let a = wav(&ramp(20_000));
+    let b = wav(&dc(400, 0.5));
+    let mut looping = if on_b {
+        audio_b(1, &a, 0)
+    } else {
+        audio(1, &a, 0)
+    };
+    if let CueKind::Audio {
+        slices,
+        last_slice_play_count,
+        ..
+    } = &mut looping.kind
+    {
+        *slices = vec![openlab_core::SliceMarker {
+            time: 2.0,
+            play_count: 0,
+        }];
+        *last_slice_play_count = 1;
+    }
+    let devamp = cue(
+        3,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: true,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = two_device_show(vec![looping, devamp, audio_b(2, &b, 1)]);
+    let started = start(&mut s, 1) as usize;
+    s.run(16_200);
+    start(&mut s, 3);
+    s.run(BLOCK * 2);
+    (s, started)
+}
+
+/// Review round 2: a cue being devamped on a long loop moves at once (QLab 5, Q450), not when
+/// it leaves the loop: heard on the new device within the move's lead, in step, the loop played
+/// exactly twice and its tail once, and cue 2 started once, on the sample the loop is left.
+#[test]
+fn a_cue_being_devamped_on_a_long_loop_moves_to_the_new_device_at_once_and_leaves_on_time() {
+    let (mut s, started) = long_loop_devamped(false);
+    let moved = s.rendered() as usize;
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    let mut msgs = Vec::new();
+    for _ in 0..300 {
+        s.run(BLOCK * 2);
+        msgs.extend(s.take_outbound());
+    }
+    let one = s.device_channel(DEV, 0);
+    let shift = one.len() - s.device_channel(DEV2, 0).len();
+    let both = on_both(&s);
+    let lead = (f64::from(RATE) * 0.1) as usize;
+    let switched = both.iter().position(|&(_, b)| b != 0.0).unwrap();
+    assert!(
+        switched <= moved + lead + 2 * BLOCK as usize,
+        "moved at {moved}, heard on the new device from {switched}"
+    );
+    assert!(
+        heard(&one[switched + 200..]).is_empty(),
+        "the old device played on"
+    );
+    let unit = 1.0 / 1_048_576.0;
+    let want = |i: usize| {
+        let k = if i < 32_000 {
+            i % 16_000
+        } else {
+            16_000 + i - 32_000
+        };
+        (k + 1) as f32 * unit
+    };
+    for (i, &(a, b)) in both[started..started + 36_000].iter().enumerate() {
+        assert!(
+            (a + b - want(i)).abs() < 2.0 * unit,
+            "sample {i}: {a} + {b}, want {}",
+            want(i)
+        );
+    }
+    assert!(
+        both[started + 36_000..]
+            .iter()
+            .all(|&(a, b)| a == 0.0 && b == 0.0)
+    );
+    let two_b = s.device_channel(DEV2, 1);
+    let next = two_b.iter().position(|&v| v != 0.0).unwrap() + shift;
+    assert_eq!(next, started + 32_000, "cue 2 starts as the loop is left");
+    let starts = states(&msgs, id(2))
+        .iter()
+        .filter(|(st, _)| *st == WireCueState::Running)
+        .count();
+    assert_eq!(starts, 1);
+}
+
+/// Review round 2: the old device lost after a cue being devamped was moved off it: the cue
+/// plays on on its new device; it is not left paused by the loss.
+#[test]
+fn a_cue_moved_off_a_device_while_being_devamped_plays_on_when_that_device_is_lost() {
+    let (mut s, _) = long_loop_devamped(true);
+    map_patch(&mut s, patch_b(), DEV_NAME);
+    s.run(4000);
+    unplug(&mut s, DEV2);
+    let before = s.channel(0).len();
+    let mut msgs = s.take_outbound();
+    for _ in 0..40 {
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+    }
+    assert!(!paused_device_lost(&msgs, 1), "{msgs:?}");
+    assert_eq!(s.control().engine().state(id(1)), CueState::Running);
+    assert!(
+        !heard(&s.channel(0)[before..]).is_empty(),
+        "silent on its new device"
+    );
+}
+
+/// Runs of consecutive values in `seq` (each `(first, last)`).
+fn runs_of(seq: &[u32]) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < seq.len() {
+        let mut j = i;
+        while j + 1 < seq.len() && seq[j + 1] == seq[j] + 1 {
+            j += 1;
+        }
+        out.push((seq[i], seq[j]));
+        i = j + 1;
+    }
+    out
+}
+
+/// What a moved devamped cue was heard as.
+#[derive(Debug, PartialEq)]
+struct Heard {
+    /// The ramp's sample numbers (from 1) heard, in runs, both devices together.
+    runs: Vec<(u32, u32)>,
+    /// The last sample anything of cue 1 was heard, from its start.
+    last: Option<i64>,
+    /// Where cue 2 (the Devamp cue's next cue) started, from cue 1's start, and how often.
+    next: Option<usize>,
+    next_starts: usize,
+    state: CueState,
+    live: usize,
+}
+
+/// A 4,000-frame ramp whose first 2,000 frames loop until devamped and whose 2,000-frame tail
+/// plays `tail` times; devamped (stopping it there with `stop`) 200 frames into its second pass,
+/// so it leaves at 4,000 frames in, and the Devamp cue starts cue 2 there. Its patch moves to
+/// "Fake 2" `move_after` frames after the devamp; with `slow` the new stream's open is held
+/// that many frames (a slow disk). `mid` runs right after the move.
+fn devamped_move(
+    move_after: u64,
+    stop: bool,
+    tail: u32,
+    slow: u64,
+    mid: impl FnOnce(&mut DeviceShow),
+) -> Heard {
+    let a = wav(&ramp(4000));
+    let b = wav(&dc(200, 0.5));
+    let mut looping = audio(1, &a, 0);
+    if let CueKind::Audio {
+        slices,
+        last_slice_play_count,
+        ..
+    } = &mut looping.kind
+    {
+        *slices = vec![openlab_core::SliceMarker {
+            time: 0.25,
+            play_count: 0,
+        }];
+        *last_slice_play_count = tail;
+    }
+    let devamp = cue(
+        3,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: true,
+            stop_target_when_slice_ends: stop,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = two_patch_show_with(
+        vec![looping, devamp, audio_b(2, &b, 1)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        |c| c.streamer.before_open = gated_open,
+    );
+    s.wait_output(DEV2_NAME);
+    s.take_outbound();
+    let started = start(&mut s, 1) as usize;
+    let t0 = s.rendered() as usize;
+    s.run((started + 2200 - t0) as u64);
+    start(&mut s, 3);
+    s.run(move_after);
+    if slow > 0 {
+        gate(&a);
+        s.slow_disk = true;
+    }
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    mid(&mut s);
+    if slow > 0 {
+        s.run(slow);
+        release(&a);
+        s.slow_disk = false;
+    }
+    let mut msgs = Vec::new();
+    for _ in 0..250 {
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+    }
+    let both = on_both(&s);
+    let unit = 1.0 / 1_048_576.0;
+    let seq: Vec<u32> = both
+        .iter()
+        .map(|&(x, y)| ((x + y) / unit).round() as u32)
+        .filter(|&v| v != 0)
+        .collect();
+    let one = s.device_channel(DEV, 0);
+    let shift = one.len() - s.device_channel(DEV2, 0).len();
+    let two_b = s.device_channel(DEV2, 1);
+    Heard {
+        runs: runs_of(&seq),
+        last: both
+            .iter()
+            .rposition(|&(a, b)| a != 0.0 || b != 0.0)
+            .map(|p| p as i64 - started as i64),
+        next: two_b
+            .iter()
+            .position(|&v| v != 0.0)
+            .map(|p| p + shift - started),
+        next_starts: states(&msgs, id(2))
+            .iter()
+            .filter(|(st, _)| *st == WireCueState::Running)
+            .count(),
+        state: s.control().engine().state(id(1)),
+        live: s.control().live_voices(),
+    }
+}
+
+/// Heard as wanted: the loop twice, then (unless stopped) the tail `tail` times, every sample
+/// once and in time, cue 2 started once on the leave sample, and nothing left playing.
+fn assert_devamped_in_step(h: &Heard, stop: bool, tail: u32, what: &str) {
+    let mut runs = vec![(1, 2000)];
+    let mut last = 3999;
+    if stop {
+        runs.push((1, 2000));
+    } else {
+        runs.push((1, 4000));
+        for _ in 1..tail {
+            runs.push((2001, 4000));
+        }
+        last = 3999 + 2000 * i64::from(tail);
+    }
+    assert_eq!(h.runs, runs, "{what}: {h:?}");
+    assert_eq!(h.last, Some(last), "{what}: {h:?}");
+    assert_eq!((h.next, h.next_starts), (Some(4000), 1), "{what}: {h:?}");
+    assert_eq!((h.state, h.live), (CueState::Idle, 0), "{what}: {h:?}");
+}
+
+/// Fix check 1: a devamp that stops the cue, a move, a slow disk: the swap planned again falls
+/// after the cue has ended, so the move is dropped; nothing of it plays after its end.
+#[test]
+fn a_move_of_a_cue_a_devamp_stops_whose_stream_is_late_plays_nothing_after_its_end() {
+    for move_after in [64, 600] {
+        let h = devamped_move(move_after, true, 1, 1500, |_| {});
+        assert_devamped_in_step(&h, true, 1, &format!("moved {move_after} after"));
+    }
+}
+
+/// Fix check 1: a tail played twice after the loop, a move, a slow disk: the swap planned
+/// again after the leave plays the tail's both passes (no devamp used up on the tail).
+#[test]
+fn a_move_whose_stream_is_late_past_the_leave_plays_the_tail_its_full_count() {
+    for move_after in [64, 600] {
+        let h = devamped_move(move_after, false, 2, 1500, |_| {});
+        assert_devamped_in_step(&h, false, 2, &format!("moved {move_after} after"));
+    }
+}
+
+/// Fix check 1: the same show, a fast disk, three times: every render the same, no gap.
+#[test]
+fn a_devamped_move_renders_the_same_every_time() {
+    for n in 0..3 {
+        let h = devamped_move(64, false, 2, 0, |_| {});
+        assert_devamped_in_step(&h, false, 2, &format!("render {n}"));
+    }
+}
+
+/// A slow disk sweeping the re-planned swap across the leave (before, on and after it).
+#[test]
+fn a_re_planned_swap_on_either_side_of_the_leave_plays_every_sample_once() {
+    for move_after in (900..1100).step_by(16) {
+        let h = devamped_move(move_after, false, 1, 900, |_| {});
+        assert_devamped_in_step(&h, false, 1, &format!("moved {move_after} after"));
+    }
+}
+
+/// A click in the waveform between the devamp's answer and the move's swap: the seek takes
+/// the move's place (on the new device) from the point clicked inside the loop, and leaves the
+/// loop at the end of that pass; cue 2 starts once.
+#[test]
+fn a_seek_between_the_devamps_answer_and_the_swap_plays_from_the_point_and_leaves_the_loop() {
+    let h = devamped_move(64, false, 1, 0, |s| {
+        s.transport(TransportAction::Seek {
+            cue: id(1),
+            position: 0.1,
+        });
+    });
+    // From the point clicked (frame 800, the 10 ms crossfade in from it aside) to the end.
+    let (from, to) = *h.runs.last().unwrap();
+    assert!((801..=881).contains(&from) && to == 4000, "{h:?}");
+    assert_eq!(h.next_starts, 1, "{h:?}");
+    assert_eq!((h.state, h.live), (CueState::Idle, 0), "{h:?}");
+}
+
+/// Fix check 1: a new stream still not ready 0.25 s after the first planned swap (a disk far
+/// too slow): the move is given up and the cue plays on, in step, on its old device (until a
+/// later patch sync moves it again); nothing is played twice and nothing is left behind.
+#[test]
+fn a_move_whose_stream_never_comes_in_time_is_given_up_and_the_cue_plays_on_where_it_is() {
+    let frames = 8000;
+    let a = wav(&ramp(frames));
+    let mut s = two_patch_show_with(
+        vec![audio(1, &a, 0)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        |c| c.streamer.before_open = gated_open,
+    );
+    s.wait_output(DEV2_NAME);
+    let started = start(&mut s, 1) as usize;
+    s.run(BLOCK * 10);
+    gate(&a);
+    s.slow_disk = true;
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.run(3000);
+    release(&a);
+    s.slow_disk = false;
+    s.run(frames as u64);
+    // Every sample once, in step, on whichever device (a later patch sync may move it again
+    // once the disk answers, in step as any move).
+    let both = on_both(&s);
+    let unit = 1.0 / 1_048_576.0;
+    for (i, &(a, b)) in both[started..started + frames].iter().enumerate() {
+        let want = (i + 1) as f32 * unit;
+        assert!(
+            (a + b - want).abs() < 2.0 * unit,
+            "sample {i}: {a} + {b}, want {want}"
+        );
+    }
+    assert!(
+        both[started + frames..]
+            .iter()
+            .all(|&(a, b)| a == 0.0 && b == 0.0)
+    );
+    // Nothing reached the new device while the move was given up.
+    let shift = s.channel(0).len() - s.device_channel(DEV2, 0).len();
+    let first_two = s
+        .device_channel(DEV2, 0)
+        .iter()
+        .position(|&v| v != 0.0)
+        .map(|p| p + shift);
+    assert!(
+        first_two.is_none_or(|p| p > started + 10 * BLOCK as usize + 2000),
+        "moved late: {first_two:?}"
+    );
+    assert_eq!(s.control().engine().state(id(1)), CueState::Idle);
+    // No voice left; the only stream held is the cue's prime for its next GO.
+    assert_eq!(s.control().live_voices(), 0);
+    assert!(s.control().held_streams() <= 1);
+}
+
+/// Every stream open asked for, by file (for counting a test's own file's opens).
+static OPENED: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// [`gated_open`] that also notes the file.
+fn counted_open(path: &std::path::Path) {
+    OPENED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(path.to_path_buf());
+    gated_open(path);
+}
+
+fn opens_of(path: &std::path::Path) -> usize {
+    OPENED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter(|p| p.as_path() == path)
+        .count()
+}
+
+/// A 16,000-frame ramp (cue 1, on patch A, auto-following into cue 2 on patch B channel 2)
+/// moved to "Fake 2" 1,000 frames in, its new stream's open held `held` frames.
+struct SlowMove {
+    s: DeviceShow,
+    path: std::path::PathBuf,
+    started: usize,
+    msgs: Vec<ServerMessage>,
+}
+
+fn slow_move(held: u64) -> SlowMove {
+    let a = wav(&ramp(16_000));
+    let b = wav(&dc(400, 0.5));
+    let mut first = audio(1, &a, 0);
+    first.continue_mode = ContinueMode::AutoFollow;
+    let mut s = two_patch_show_with(
+        vec![first, audio_b(2, &b, 1)],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+        |c| c.streamer.before_open = counted_open,
+    );
+    s.wait_output(DEV2_NAME);
+    s.take_outbound();
+    let started = start(&mut s, 1) as usize;
+    s.run(1000);
+    gate(&a);
+    s.slow_disk = true;
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    let mut msgs = Vec::new();
+    for _ in 0..held.div_ceil(BLOCK) {
+        s.run(BLOCK);
+        msgs.extend(s.take_outbound());
+    }
+    SlowMove {
+        s,
+        path: a,
+        started,
+        msgs,
+    }
+}
+
+impl SlowMove {
+    fn release_and_run(&mut self, frames: u64) {
+        release(&self.path);
+        self.s.slow_disk = false;
+        for _ in 0..frames.div_ceil(BLOCK) {
+            self.s.run(BLOCK);
+            self.msgs.extend(self.s.take_outbound());
+        }
+    }
+
+    /// Every sample of the ramp heard once, in step, on one device or the other.
+    fn assert_in_step(&self) {
+        let both = on_both(&self.s);
+        let unit = 1.0 / 1_048_576.0;
+        let from = self.started;
+        for (i, &(a, b)) in both[from..from + 16_000].iter().enumerate() {
+            let want = (i + 1) as f32 * unit;
+            assert!(
+                (a + b - want).abs() < 2.0 * unit,
+                "sample {i}: {a} + {b}, want {want}"
+            );
+        }
+    }
+
+    /// Where cue 2 started, from cue 1's start.
+    fn next_at(&self) -> Option<usize> {
+        let shift = self.s.channel(0).len() - self.s.device_channel(DEV2, 0).len();
+        self.s
+            .device_channel(DEV2, 1)
+            .iter()
+            .position(|&v| v != 0.0)
+            .map(|p| p + shift - self.started)
+    }
+
+    fn warns(&self) -> Vec<String> {
+        logs(&self.msgs, LogLevel::Warn)
+            .into_iter()
+            .filter(|m| m.contains("cue 1"))
+            .collect()
+    }
+}
+
+/// Fix check 2: a move given up on a slow disk is tried again once the disk answers: the cue
+/// is heard on the new device, every sample once and in step; its auto-follow starts cue 2 on
+/// the sample it ends; one warn line says the move waits.
+#[test]
+fn a_move_given_up_on_a_slow_disk_is_tried_again_and_its_auto_follow_stays_on_its_sample() {
+    let mut m = slow_move(3200);
+    m.release_and_run(16_000);
+    m.assert_in_step();
+    let two = m.s.device_channel(DEV2, 0);
+    assert!(
+        two.iter().any(|&v| v != 0.0),
+        "never heard on the new device"
+    );
+    assert_eq!(m.next_at(), Some(16_000));
+    assert_eq!(m.warns().len(), 1, "{:?}", m.warns());
+    assert_eq!(m.s.control().live_voices(), 0);
+}
+
+/// Fix check 2: a disk that never answers: the cue plays to its end on its old device, every
+/// sample once; the move is tried again a bounded number of times (each try opens one stream at
+/// most a few times), and one warn line is written, not one per try.
+#[test]
+fn a_move_to_a_disk_that_never_answers_plays_to_the_end_where_it_is_with_bounded_retries() {
+    let mut m = slow_move(17_000);
+    let opens = opens_of(&m.path);
+    m.release_and_run(2000);
+    m.assert_in_step();
+    assert_eq!(m.next_at(), Some(16_000));
+    assert!((2..=12).contains(&opens), "{opens} stream opens in 2 s");
+    assert_eq!(m.warns().len(), 1, "{:?}", m.warns());
+    assert_eq!(m.s.control().live_voices(), 0);
+}
+
+/// Fix check 2: a stop, or a panic, while a given-up move waits to be tried again: no voice is
+/// left and nothing is moved later.
+#[test]
+fn a_stop_or_panic_while_a_move_waits_to_be_tried_again_leaves_nothing() {
+    for panic in [false, true] {
+        let mut m = slow_move(3400);
+        assert_eq!(m.warns().len(), 1, "the move was given up first");
+        if panic {
+            m.s.transport(TransportAction::Panic);
+        } else {
+            m.s.transport(TransportAction::Stop {
+                cue: id(1),
+                fade_out: None,
+            });
+        }
+        let before = m.s.device_channel(DEV2, 0).len();
+        m.release_and_run(4000);
+        assert!(heard(&m.s.device_channel(DEV2, 0)[before..]).is_empty());
+        assert_eq!(m.s.control().live_voices(), 0);
+        assert_eq!(m.s.control().engine().state(id(1)), CueState::Idle);
+    }
 }

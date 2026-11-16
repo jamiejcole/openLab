@@ -144,6 +144,100 @@ impl CueEngine {
         }
     }
 
+    /// The patch of `cue`'s run `run_id` now plays on another device (`Input::DeviceMoved`):
+    /// its voice moves there at once and plays on in step, from where the run is now (a paused
+    /// one from where it froze, staying paused). Timers, post-wait, continues and the end are
+    /// the run's own and stay; the moved voice tells its length again. A run stopping with a
+    /// fade ends where it is; a stale, broken or not yet started run has nothing to move. A run
+    /// whose devamp is not answered yet moves once it is (scheduled or ignored).
+    pub(super) fn device_moved(&mut self, cue: CueId, run_id: RunId, cx: &mut Ctx) {
+        let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
+            return;
+        };
+        if run.run != run_id || run.is_broken() || run.stop_end.is_some() {
+            return;
+        }
+        // A devamp sent and not answered yet (about one block): until the audio side says
+        // where the voice leaves its loop, a voice moved now could play that loop again. It
+        // moves once the answer comes. Answered, it moves at once and the binary gives the
+        // moved voice the same leave; the deadline here stays where it is.
+        if run.devamp.is_some_and(|d| d.at.is_none()) {
+            run.move_pending = true;
+            return;
+        }
+        self.move_device(cue, cx);
+    }
+
+    /// A move held for a devamp (`Run::move_pending`) is made now that the devamp is answered:
+    /// scheduled (where the voice leaves its loop is known), or ignored.
+    pub(super) fn move_held(&mut self, cue: CueId, cx: &mut Ctx) {
+        if let Some(Slot::Active(run)) = self.slots.get_mut(&cue)
+            && std::mem::take(&mut run.move_pending)
+            && run.devamp.is_none_or(|d| d.at.is_some())
+        {
+            self.move_device(cue, cx);
+        }
+    }
+
+    /// Moves the run of `cue` to its patch's device now (see [`Self::device_moved`]).
+    fn move_device(&mut self, cue: CueId, cx: &mut Ctx) {
+        let now = cx.now;
+        let fresh = self.new_run();
+        let Some(Slot::Active(run)) = self.slots.get_mut(&cue) else {
+            return;
+        };
+        if run.is_broken() || run.stop_end.is_some() {
+            return;
+        }
+        let (
+            Phase::Action { start, .. },
+            Voice::Started {
+                at: started,
+                from,
+                first,
+            },
+        ) = (run.phase, run.voice)
+        else {
+            return;
+        };
+        let at = run.commit(now);
+        let from_run = run.run;
+        run.run = fresh;
+        let position = match run.paused_at {
+            // Paused: the position stands where it froze; the resume plays on from there.
+            Some(paused) => {
+                run.voice = Voice::Started {
+                    at: started,
+                    from,
+                    first,
+                };
+                run.position(paused)
+            }
+            None => {
+                let position = run.position(at);
+                run.voice = Voice::Started {
+                    at,
+                    from: position,
+                    first: at,
+                };
+                run.length = None;
+                run.phase = Phase::Action { start, end: None };
+                position
+            }
+        };
+        cx.out.push(Action::RelocateVoice {
+            cue,
+            run: fresh,
+            from: from_run,
+            at,
+            position,
+        });
+        // A devamp is answered or none was sent (`device_moved` holds the move until then): an
+        // answered one keeps its leave deadline, and the binary gives the moved voice that
+        // leave from the old voice's, so nothing is sent again.
+        regive_levels(cue, run, at, cx);
+    }
+
     /// A preview of `cue` (an audio cue's own) jumps to `position`, playing or paused.
     fn seek_preview(&mut self, cue: CueId, position: SampleTime, cx: &mut Ctx) {
         if !self.previews.contains_key(&cue) {

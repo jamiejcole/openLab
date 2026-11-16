@@ -64,10 +64,27 @@ fn mapping_refusal(
     outputs: usize,
     devices: &[DeviceEntry],
 ) -> Option<ErrorBody> {
-    let Some(device) = devices.iter().find(|d| d.name == mapping.device) else {
+    let device = if mapping.system {
+        // The system output is no device of its own: its channels are checked against the
+        // device it is now.
+        if !mapping.device.is_empty() {
+            return Some(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "a mapping on the system output names no device",
+            ));
+        }
+        devices.iter().find(|d| d.is_default)
+    } else {
+        devices.iter().find(|d| d.name == mapping.device)
+    };
+    let Some(device) = device else {
         return Some(ErrorBody::new(
             ErrorCode::NotFound,
-            format!("no output device named \"{}\"", mapping.device),
+            if mapping.system {
+                "the system has no default output device".to_owned()
+            } else {
+                format!("no output device named \"{}\"", mapping.device)
+            },
         ));
     };
     if mapping.channels.len() != outputs {
@@ -93,6 +110,15 @@ fn mapping_refusal(
         ));
     }
     None
+}
+
+/// How the log names where `mapping` plays.
+fn mapping_device_text(mapping: &PatchMapping) -> String {
+    if mapping.system {
+        "the system output".to_owned()
+    } else {
+        mapping.device.clone()
+    }
 }
 
 impl DocCx<'_> {
@@ -143,7 +169,7 @@ impl DocCx<'_> {
                 }
                 let text = format!(
                     "patch '{name}' mapped to {} {}",
-                    mapping.device,
+                    mapping_device_text(&mapping),
                     channels_text(&mapping.channels)
                 );
                 self.eng
@@ -234,6 +260,7 @@ impl DocCx<'_> {
             let mapping = PatchMapping {
                 device: device.name.clone(),
                 channels,
+                system: false,
             };
             match self.eng.config.machine.set_patch_mapping(
                 self.doc.model.ws().id,
@@ -286,19 +313,21 @@ impl DocCx<'_> {
         let ws = self.doc.model.ws();
         let mut fitted: Vec<(PatchId, String, PatchMapping)> = Vec::new();
         let mut devices = None;
+        let system = self.eng.system_output();
         for patch in &ws.patches {
             let Some(old) = self.eng.config.machine.patch_entry(ws.id, patch.id) else {
                 continue;
             };
             let wanted = patch.outputs.len();
-            if old.device.is_empty() || old.channels.len() == wanted {
+            if old.is_none() || old.channels.len() == wanted {
                 continue;
             }
             // Listed only when an entry needs it: the list is built on each call.
             let list = devices.get_or_insert_with(|| self.eng.device_list());
+            let on = old.device_for(system.as_deref());
             let usable = list
                 .iter()
-                .find(|d| d.name == old.device)
+                .find(|d| Some(d.name.as_str()) == on)
                 .map(|d| usize::try_from(d.output_channels).unwrap_or(usize::MAX))
                 .map(|have| have.min(self.eng.device_outputs.max(1)))
                 // Not connected now: round the outputs the mapping already reaches.
@@ -323,6 +352,7 @@ impl DocCx<'_> {
                 PatchMapping {
                     device: old.device.clone(),
                     channels,
+                    system: old.system,
                 },
             ));
         }
@@ -335,7 +365,7 @@ impl DocCx<'_> {
             let text = format!(
                 "patch '{name}' now has {} cue outputs: mapped to {} {}",
                 mapping.channels.len(),
-                mapping.device,
+                mapping_device_text(&mapping),
                 channels_text(&mapping.channels)
             );
             match self

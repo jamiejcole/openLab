@@ -136,6 +136,7 @@ impl DocCx<'_> {
             rate: self.eng.rate,
             cue_outputs: self.eng.cue_outputs,
             now,
+            window: self.eng.block,
             floor,
         };
         let cut = self.doc.voices.prime(&wanted, cap, burst, &mut env);

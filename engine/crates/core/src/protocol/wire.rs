@@ -538,6 +538,7 @@ impl RuntimeChange {
             Action::LoadVoice { .. }
             | Action::LoadVoiceAt { .. }
             | Action::SeekVoice { .. }
+            | Action::RelocateVoice { .. }
             | Action::UnloadVoice { .. }
             | Action::StartVoice { .. }
             | Action::StopVoice { .. }

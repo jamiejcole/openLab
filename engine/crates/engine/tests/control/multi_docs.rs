@@ -43,6 +43,7 @@ fn map_all(c: &mut ControlConfig, wss: &[&Workspace]) {
                 PatchMapping {
                     device: "Offline".into(),
                     channels: vec![0, 1],
+                    system: false,
                 },
             )
             .unwrap();
@@ -714,6 +715,7 @@ fn device_loss_stops_every_doc() {
                 PatchMapping {
                     device: DEV_NAME.into(),
                     channels: vec![0, 1],
+                    system: false,
                 },
             )
             .unwrap();

@@ -30,6 +30,25 @@
           }
         },
         {
+          "patch": "00000000-0000-0000-0000-000000000073",
+          "mapping": {
+            "device": "",
+            "channels": [
+              0,
+              1
+            ],
+            "system": true
+          },
+          "resolution": {
+            "type": "mapped",
+            "device": "MacBook Pro Speakers",
+            "channels": [
+              0,
+              1
+            ]
+          }
+        },
+        {
           "patch": "00000000-0000-0000-0000-000000000072",
           "mapping": {
             "device": "MOTU 828",

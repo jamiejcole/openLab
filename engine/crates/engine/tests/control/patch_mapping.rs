@@ -49,6 +49,7 @@ fn mapping(device: &str, channels: &[u32]) -> PatchMapping {
     PatchMapping {
         device: device.into(),
         channels: channels.to_vec(),
+        system: false,
     }
 }
 

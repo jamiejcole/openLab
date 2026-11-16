@@ -18,7 +18,7 @@ Two layers. **Mechanism** is in `openlab-audio`: `negotiate.rs` (pure), `output.
 - **A stall is a loss only in the second stage** (or through the intermittent window rule). A one-stage 500 ms loss turns a recoverable dropout into a stopped show with every cue broken. A false positive costs the whole show; a late true positive costs seconds of an already silent show.
 - **Only silence the supervisor actually watched counts.** A frozen process, a starved control thread or a sleeping Mac is never a stall.
 - **The control thread never calls the device layer** and a GO never waits for a device (list, open, close run on device threads).
-- **The stream never follows the system default**, and the engine never switches device while running.
+- **The stream never follows the system default**, and the engine never switches a stream's device while running. A patch on the system output follows it by moving its cues to another stream (below).
 - **The mixer is never lost**: not on a failed open, not on a close, not on a hung device (it is handed back, or the failure is reported as unrecoverable).
 - **The audio callback allocates, locks and logs nothing.** The error callback is one or two atomic writes.
 
@@ -145,7 +145,8 @@ Decided from measuring QLab 5; there is no grace period and no exact-sample resu
 - A patch set to no device gets `patch_no_device`. Each goes when its cause does.
 - **Closing.** A device no patch of any open doc maps to any more is parked (`Device::park`) once no voice plays on it (a device that is away is parked at once: its voices were stopped at the loss, and their records are settled as ended, so none is kept and nothing of them sounds if it returns).
   A parked device's stream closes, and it is not watched, reopened or reported lost, so unplugging it raises nothing. A patch mapped to it again unparks it: it opens again at once (with the reopen backoff if that fails, without a `device_lost` warning meanwhile).
-- **Routing.** Slot numbers are shared by every mixer; a slot's gains go to the mixer of its patch's device (`Patches::slot_output`). A voice plays in the mixer of its start's slot (`Outputs::route`); every later command of it goes there. A voice never moves between mixers: a cue whose patch moves to another device plays on where it started.
+- **Routing.** Slot numbers are shared by every mixer; a slot's gains go to the mixer of its patch's device (`Patches::slot_output`). A voice plays in the mixer of its start's slot (`Outputs::route`); every later command of it goes there.
+- A voice never moves between mixers: a cue whose patch moves to another device moves there by a new voice on that device's mixer that takes over in step, crossfading (`RelocateVoice`, skill `engine-control` reference `patch-slots`); the old device's voice ends there and the control thread frees it. Each device keeps its own clock: the two voices are dated in master time and each lands on its own device's sample for it.
 - **Clock.** The primary's sample counter is the master clock while it plays. Another device's commands, and the primary's while it is away, are dated `local_rendered + (at - master_rendered)` from the counters read when they are sent, never before what that device has rendered and never before an earlier command of the same voice; its events come back through the inverse. Starts on two devices land within one buffer of each other and then drift (as QLab).
 - **Primary away, another device playing:** the master clock runs on the primary's wall clock from the last sample it rendered; when it returns its counter is offset to go on from there. With no device playing it stands still. It never goes back (`Outputs::follow_clock`).
 - **Buffer size change** (`Device::set_buffer`): a device that plays closes and opens again at once at the new size with its mixer as it was (voices and its counter carry on after the gap; `DeviceEvent::Reconfigured`, not an outage). The other devices are untouched.
@@ -156,6 +157,11 @@ Decided from measuring QLab 5; there is no grace period and no exact-sample resu
 - Mixer stage faults are each device's: its mixer's disabled units are its own (a rebuild clears only them), and with several devices their logs and warnings name the device.
 - Engine load, xruns and underruns are summed or the worst over every device. `status.device` is the primary; `status.outputs` lists every output opened since start with its state (`Output::state`: up, opening, lost, reconfiguring, closed when parked, failed when unrecoverable), rate, channels and buffer (0 and none before its first open), and which is the primary.
 - `list_devices` marks each listed device the engine has an output on with that state and the primary, matched by host id (two interfaces can share a name); `list_patch_mappings` gives each patch's current resolution (`Patches::resolution`).
+
+## System output (QLab 5 manual p. 7)
+- A patch mapping with `system` plays on the device the last list read marks `is_default` (`Engine::system_output`; none for the offline driver): `PatchMapping::device_for` gives the device name every user of a mapping goes by (resolution, which devices to open, a loss's cues, refits).
+- The operator changing the system's output shows as a list change: patches resolve again, that device opens as another output if it is not open, and a cue playing on the patch moves there at once (`follow_devices`, skill `engine-control` reference `patch-slots`). The old device is parked once nothing plays on it. No default output: the patch is `device_missing` with device `system output` and a cue playing on it stops as on a lost device.
+- The primary is unaffected: it stays the device opened at start. A patch naming a device never follows the default.
 
 ## Default patch mapping
 

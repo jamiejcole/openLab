@@ -631,3 +631,289 @@ fn hostile_positions_are_taken_as_the_file_start_or_its_far_end() {
         );
     }
 }
+
+// ----- a playing cue follows its patch to another device (AUD-07) -----
+
+impl Rig {
+    fn device_moved(&mut self, now: SampleTime, n: u128) -> Vec<Action> {
+        let run = self.run(n);
+        self.at(now, Input::DeviceMoved { cue: id(n), run })
+    }
+}
+
+/// The `RelocateVoice` actions: `(run, from, at, position)`.
+fn relocations(actions: &[Action]) -> Vec<(RunId, RunId, SampleTime, SampleTime)> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::RelocateVoice {
+                run,
+                from,
+                at,
+                position,
+                ..
+            } => Some((*run, *from, *at, *position)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_playing_cue_moved_to_another_device_plays_on_in_step_and_follows_once() {
+    let mut rig = Rig::new(vec![timed(sound(1), 0.0, 0.0, AF), sound(2)]);
+    rig.start(0, 1);
+    let old = rig.run(1);
+    rig.at(
+        0,
+        Input::ActionLength {
+            cue: id(1),
+            run: old,
+            frames: 1000,
+        },
+    );
+    let moved = rig.device_moved(400, 1);
+    let fresh = rig.run(1);
+    // Where it is now, no restart, no stop and no state change.
+    assert_eq!(relocations(&moved), vec![(fresh, old, 400, 400)]);
+    assert_eq!(stops_or_starts(&moved), 0, "{moved:?}");
+    assert!(changes(&moved, 1).is_empty(), "{moved:?}");
+    assert_eq!(rig.state(1), CueState::Running);
+    // The moved voice tells its length counted from the action's start, as before.
+    rig.at(
+        410,
+        Input::ActionLength {
+            cue: id(1),
+            run: fresh,
+            frames: 1000,
+        },
+    );
+    assert_eq!(rig.engine.next_deadline(), Some(1000));
+    assert_eq!(starts(&rig.tick(1000)), vec![(id(2), 1000)]);
+    // The old voice's end on the old device starts nothing again.
+    let stale = rig.at(
+        1001,
+        Input::ActionEnded {
+            cue: id(1),
+            run: old,
+            at: 1000,
+        },
+    );
+    assert!(starts(&stale).is_empty(), "{stale:?}");
+    assert!(starts(&rig.tick(1500)).is_empty());
+}
+
+#[test]
+fn a_paused_cue_moved_to_another_device_stays_paused_and_resumes_from_where_it_froze() {
+    let mut rig = Rig::new(vec![sound(1)]);
+    rig.start(0, 1);
+    rig.pause(300, 1);
+    let old = rig.run(1);
+    let moved = rig.device_moved(500, 1);
+    let fresh = rig.run(1);
+    assert_eq!(relocations(&moved), vec![(fresh, old, 500, 300)]);
+    assert_eq!(rig.state(1), CueState::Paused);
+    let resumed = rig.resume(800, 1);
+    let resume = resumed
+        .iter()
+        .find_map(|a| match a {
+            Action::ResumeVoice {
+                paused, at, offset, ..
+            } => Some((*paused, *at, *offset)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(resume, (fresh, 800, 300));
+    assert_eq!(rig.state(1), CueState::Running);
+}
+
+#[test]
+fn a_fade_in_progress_carries_over_to_the_moved_voice() {
+    let mut rig = Rig::new(vec![sound(1), cue(2, fade(1))]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    let half = rig.level(1, LevelParam::Master, 1000).unwrap();
+    let moved = rig.device_moved(1000, 1);
+    let fresh = rig.run(1);
+    let ramps: Vec<(SampleTime, f32, SampleTime)> = moved
+        .iter()
+        .filter_map(|a| match a {
+            Action::Ramp {
+                run,
+                param: LevelParam::Master,
+                at,
+                gain,
+                frames,
+                ..
+            } if *run == fresh => Some((*at, *gain, *frames)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ramps.len(), 2, "{moved:?}");
+    assert!((ramps[0].1 - half).abs() < 1e-6);
+    assert_eq!((ramps[1].0, ramps[1].1, ramps[1].2), (1000, 0.0, 4000));
+}
+
+/// A looping cue whose Devamp cue starts the next cue as it leaves the loop.
+fn devamped_loop() -> Rig {
+    let mut loop_cue = sound(1);
+    if let CueKind::Audio {
+        last_slice_play_count,
+        ..
+    } = &mut loop_cue.kind
+    {
+        *last_slice_play_count = 0;
+    }
+    let devamp = cue(
+        3,
+        CueKind::Devamp {
+            target: Some(cue_id(1)),
+            start_next_cue: true,
+            stop_target_when_slice_ends: false,
+            devamp_mode: Default::default(),
+        },
+    );
+    let mut rig = Rig::new(vec![loop_cue, devamp, sound(4)]);
+    rig.start(0, 1);
+    rig.start(100, 3);
+    rig
+}
+
+/// Review rounds 1 and 2: a move while a devamp is sent and not yet answered waits for the
+/// answer (about one block): until then only the audio side knows where the voice is in its
+/// loop. Scheduled, the move is made at once; the leave deadline stays where the answer put it
+/// and no devamp is sent again (the binary gives the moved voice the same leave), so the next
+/// cue starts once, on the leave sample. A move once it is scheduled is made at once too.
+#[test]
+fn a_move_during_a_devamp_waits_only_for_its_answer_and_keeps_the_leave() {
+    let mut rig = devamped_loop();
+    let run = rig.run(1);
+    let held = rig.device_moved(200, 1);
+    assert!(relocations(&held).is_empty(), "{held:?}");
+    assert_eq!(rig.run(1), run);
+    let answered = rig.at(
+        210,
+        Input::DevampScheduled {
+            cue: id(1),
+            run,
+            at: 900,
+        },
+    );
+    let moved = relocations(&answered);
+    assert_eq!(moved.len(), 1, "{answered:?}");
+    assert_eq!((moved[0].1, moved[0].2), (run, 210));
+    assert!(
+        !answered
+            .iter()
+            .any(|a| matches!(a, Action::DevampVoice { .. })),
+        "{answered:?}"
+    );
+    assert_eq!(rig.engine.next_deadline(), Some(900));
+    // Scheduled, a later move goes at once too.
+    let again = rig.device_moved(300, 1);
+    assert_eq!(relocations(&again).len(), 1, "{again:?}");
+    assert!(
+        !again
+            .iter()
+            .any(|a| matches!(a, Action::DevampVoice { .. }))
+    );
+    let left = rig.tick(900);
+    assert_eq!(starts(&left), vec![(id(4), 900)]);
+    assert!(starts(&rig.tick(2000)).is_empty());
+}
+
+/// The same, the devamp then ignored (no loop to leave): the held move is made then.
+#[test]
+fn a_move_during_a_devamp_that_is_then_ignored_is_made_then() {
+    let mut rig = devamped_loop();
+    let run = rig.run(1);
+    assert!(relocations(&rig.device_moved(200, 1)).is_empty());
+    let ignored = rig.at(250, Input::DevampIgnored { cue: id(1), run });
+    let moved = relocations(&ignored);
+    assert_eq!(moved.len(), 1, "{ignored:?}");
+    assert_eq!((moved[0].1, moved[0].2), (run, 250));
+    assert!(starts(&ignored).is_empty());
+}
+
+/// A held move is dropped with the run: a stop before the devamp is done moves nothing.
+#[test]
+fn a_move_held_for_a_devamp_is_dropped_by_a_stop() {
+    let mut rig = devamped_loop();
+    let run = rig.run(1);
+    rig.device_moved(200, 1);
+    rig.stop(300, 1);
+    let late = rig.at(350, Input::DevampIgnored { cue: id(1), run });
+    assert!(relocations(&late).is_empty(), "{late:?}");
+}
+
+#[test]
+fn a_ducked_cue_moved_to_another_device_stays_ducked() {
+    let mut ducker = timed(sound(2), 0.0, 0.0, DNC);
+    ducker.duck_others = DuckOthers {
+        enabled: true,
+        db: -12.0,
+        duration: 1.0,
+    };
+    let mut rig = Rig::new(vec![sound(1), ducker]);
+    rig.start(0, 1);
+    rig.start(0, 2);
+    let moved = rig.device_moved(2000, 1);
+    let fresh = rig.run(1);
+    assert!(
+        moved.iter().any(|a| matches!(
+            a,
+            Action::DuckVoice { run, gain, frames: 0, .. }
+                if *run == fresh && (*gain - level_db(-12.0)).abs() < 1e-4
+        )),
+        "{moved:?}"
+    );
+}
+
+#[test]
+fn a_device_move_of_a_stale_stopping_or_waiting_run_does_nothing() {
+    let mut rig = Rig::new(vec![timed(sound(1), 2.0, 0.0, DNC), sound(2)]);
+    // In its pre-wait: nothing plays yet (its start plays on the patch's device then).
+    rig.start(0, 1);
+    assert!(relocations(&rig.device_moved(100, 1)).is_empty());
+    // A stale report names a run the cue no longer has.
+    rig.start(0, 2);
+    let stale = rig.at(
+        200,
+        Input::DeviceMoved {
+            cue: id(2),
+            run: RunId(9999),
+        },
+    );
+    assert!(relocations(&stale).is_empty(), "{stale:?}");
+    // Stopping with a fade: it ends where it is.
+    rig.at(
+        300,
+        Input::Stop {
+            cue: id(2),
+            fade_out: Some(FadeSpec {
+                duration: 1.0,
+                curve: FadeCurve::Linear,
+            }),
+        },
+    );
+    assert!(relocations(&rig.device_moved(400, 2)).is_empty());
+}
+
+#[test]
+fn a_group_child_moved_to_another_device_leaves_its_siblings_alone() {
+    let mut rig = Rig::new(vec![cue(10, group(vec![sound(1), sound(2)]))]);
+    rig.start(0, 10);
+    let sibling = rig.run(2);
+    let moved = rig.device_moved(300, 1);
+    assert!(
+        moved.iter().all(|a| match a {
+            Action::RelocateVoice { cue, .. }
+            | Action::Ramp { cue, .. }
+            | Action::DuckVoice { cue, .. } => *cue == id(1),
+            Action::StateChanged { .. } => false,
+            _ => true,
+        }),
+        "{moved:?}"
+    );
+    assert_eq!(rig.run(2), sibling);
+    assert_eq!(rig.state(10), CueState::Running);
+}

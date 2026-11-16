@@ -47,6 +47,7 @@ fn mapped(ws: &Workspace, channel: impl Fn(u128) -> u32) -> MachineSettings {
             PatchMapping {
                 device: "Dev".into(),
                 channels: (0..p.outputs.len()).map(|_| channel(n)).collect(),
+                system: false,
             },
         )
         .unwrap();
@@ -116,6 +117,7 @@ fn settings(ws: &Workspace, channels: Vec<u32>) -> MachineSettings {
         PatchMapping {
             device: "Dev".into(),
             channels,
+            system: false,
         },
     )
     .unwrap();
@@ -154,7 +156,14 @@ fn a_mapped_patch_routes_its_outputs_with_level_mute_and_polarity() {
         out(0.0, true, false),
     ]);
     let mut p = Patches::new(2, 4, 4);
-    let (cmds, changed) = p.sync(D0, &ws, &settings(&ws, vec![3, 0, 1]), &device(4), &idle());
+    let (cmds, changed) = p.sync(
+        D0,
+        &ws,
+        &settings(&ws, vec![3, 0, 1]),
+        &device(4),
+        None,
+        &idle(),
+    );
     assert_eq!(changed.len(), 1);
     assert!(matches!(changed[0].1, PatchResolution::Mapped { .. }));
     assert_eq!(p.mixer_patch(D0, pid()), Some(0));
@@ -174,7 +183,14 @@ fn a_mapped_patch_routes_its_outputs_with_level_mute_and_polarity() {
             .any(|(_, c)| matches!(c, CommandKind::SetMaster { .. }))
     );
     // Nothing changed: nothing sent, nothing reported.
-    let (again, changed) = p.sync(D0, &ws, &settings(&ws, vec![3, 0, 1]), &device(4), &idle());
+    let (again, changed) = p.sync(
+        D0,
+        &ws,
+        &settings(&ws, vec![3, 0, 1]),
+        &device(4),
+        None,
+        &idle(),
+    );
     assert!(again.is_empty());
     assert!(changed.is_empty());
 }
@@ -183,11 +199,25 @@ fn a_mapped_patch_routes_its_outputs_with_level_mute_and_polarity() {
 fn unmapped_and_short_devices_are_reported_and_silent() {
     let ws = ws_with(vec![out(0.0, false, false); 2]);
     let mut p = Patches::new(1, 2, 2);
-    let (cmds, changed) = p.sync(D0, &ws, &MachineSettings::default(), &device(2), &idle());
+    let (cmds, changed) = p.sync(
+        D0,
+        &ws,
+        &MachineSettings::default(),
+        &device(2),
+        None,
+        &idle(),
+    );
     assert_eq!(changed, vec![(pid(), PatchResolution::Unmapped)]);
     assert!(routes(&cmds).iter().all(|r| r.3 == 0.0));
     // The device has 8 channels but the mixer only 2 outputs.
-    let (_, changed) = p.sync(D0, &ws, &settings(&ws, vec![0, 7]), &device(8), &idle());
+    let (_, changed) = p.sync(
+        D0,
+        &ws,
+        &settings(&ws, vec![0, 7]),
+        &device(8),
+        None,
+        &idle(),
+    );
     assert!(matches!(
         changed[0].1,
         PatchResolution::ChannelsMissing {
@@ -205,7 +235,7 @@ fn patches_beyond_the_mixer_are_unmapped() {
     second.id = PatchId(Uuid::from_u128(8));
     ws.patches.push(second);
     let mut p = Patches::new(1, 1, 1);
-    let (_, changed) = p.sync(D0, &ws, &settings(&ws, vec![0]), &device(1), &idle());
+    let (_, changed) = p.sync(D0, &ws, &settings(&ws, vec![0]), &device(1), None, &idle());
     assert_eq!(p.mixer_patch(D0, PatchId(Uuid::from_u128(8))), None);
     assert!(changed.contains(&(PatchId(Uuid::from_u128(8)), PatchResolution::Unmapped)));
 }
@@ -214,7 +244,14 @@ fn patches_beyond_the_mixer_are_unmapped() {
 fn a_faulted_slot_gets_its_gains_again_and_a_disabled_one_is_never_reused_until_a_rebuild() {
     let ws = ws_with(vec![out(0.0, false, false); 2]);
     let mut p = Patches::new(2, 4, 4);
-    let (cmds, _) = p.sync(D0, &ws, &settings(&ws, vec![3, 1]), &device(4), &idle());
+    let (cmds, _) = p.sync(
+        D0,
+        &ws,
+        &settings(&ws, vec![3, 1]),
+        &device(4),
+        None,
+        &idle(),
+    );
     assert_eq!(p.owner(0), Some((D0, pid())));
     assert_eq!(p.owner(1), None);
     // Reset to silence: the mapped gains, nothing else.
@@ -232,7 +269,14 @@ fn a_faulted_slot_gets_its_gains_again_and_a_disabled_one_is_never_reused_until_
     // when the doc closes.
     p.quarantine(0, 0);
     assert_eq!(p.owner(0), None);
-    let (cmds, _) = p.sync(D0, &ws, &settings(&ws, vec![3, 1]), &device(4), &idle());
+    let (cmds, _) = p.sync(
+        D0,
+        &ws,
+        &settings(&ws, vec![3, 1]),
+        &device(4),
+        None,
+        &idle(),
+    );
     assert_eq!(p.mixer_patch(D0, pid()), Some(1));
     assert!(touched(&cmds).contains(&1));
     assert!(!touched(&cmds).contains(&0));
@@ -254,7 +298,7 @@ fn slots_follow_patch_ids_not_list_positions() {
     let mut p = Patches::new(4, 4, 4);
     let ws = ws_of(&[10, 11, 12]);
     let chan = |n: u128| (n - 10) as u32;
-    p.sync(D0, &ws, &mapped(&ws, chan), &device(4), &idle());
+    p.sync(D0, &ws, &mapped(&ws, chan), &device(4), None, &idle());
     assert_eq!(
         [slot(&p, 10), slot(&p, 11), slot(&p, 12)],
         [Some(0), Some(1), Some(2)]
@@ -262,7 +306,7 @@ fn slots_follow_patch_ids_not_list_positions() {
     let before = p.sent.clone();
     // Move the last to the front, remove the first, insert a new one before the others.
     let ws = ws_of(&[13, 12, 11]);
-    let (cmds, _) = p.sync(D0, &ws, &mapped(&ws, chan), &device(4), &idle());
+    let (cmds, _) = p.sync(D0, &ws, &mapped(&ws, chan), &device(4), None, &idle());
     assert_eq!(slot(&p, 11), Some(1));
     assert_eq!(slot(&p, 12), Some(2));
     assert_eq!(slot(&p, 10), None);
@@ -281,12 +325,12 @@ fn a_removed_patch_keeps_its_routing_while_a_voice_uses_its_slot() {
     let mut p = Patches::new(2, 2, 2);
     let ws = ws_of(&[10, 11]);
     let s = mapped(&ws, |n| (n - 10) as u32);
-    p.sync(D0, &ws, &s, &device(2), &idle());
+    p.sync(D0, &ws, &s, &device(2), None, &idle());
     let routed = p.sent[&(0, 0)].clone();
     // Patch 10 goes while a voice plays through its slot 0; patch 12 arrives.
     let ws2 = ws_of(&[11, 12]);
     let s2 = mapped(&ws2, |_| 1);
-    let (cmds, changed) = p.sync(D0, &ws2, &s2, &device(2), &busy(&[0]));
+    let (cmds, changed) = p.sync(D0, &ws2, &s2, &device(2), None, &busy(&[0]));
     assert!(
         !touched(&cmds).contains(&0),
         "the retired slot is left as it was"
@@ -300,7 +344,7 @@ fn a_removed_patch_keeps_its_routing_while_a_voice_uses_its_slot() {
     assert!(changed.contains(&(id(12), PatchResolution::Unmapped)));
     // The voice ends: the slot is zeroed, freed and given to the waiting patch.
     assert!(p.reclaimable(D0, &idle()));
-    let (cmds, changed) = p.sync(D0, &ws2, &s2, &device(2), &idle());
+    let (cmds, changed) = p.sync(D0, &ws2, &s2, &device(2), None, &idle());
     assert!(!p.has_retired(D0));
     assert_eq!(slot(&p, 12), Some(0));
     assert!(p.exhausted(D0).is_empty());
@@ -318,12 +362,12 @@ fn a_removed_patch_that_comes_back_takes_its_retired_slot_again() {
     let mut p = Patches::new(3, 2, 2);
     let ws = ws_of(&[10, 11]);
     let s = mapped(&ws, |n| (n - 10) as u32);
-    p.sync(D0, &ws, &s, &device(2), &idle());
+    p.sync(D0, &ws, &s, &device(2), None, &idle());
     let ws_without = ws_of(&[11]);
-    p.sync(D0, &ws_without, &s, &device(2), &busy(&[0]));
+    p.sync(D0, &ws_without, &s, &device(2), None, &busy(&[0]));
     assert_eq!(slot(&p, 10), None);
     // Undo while the voice still plays: the same slot, nothing re-sent.
-    let (cmds, _) = p.sync(D0, &ws, &s, &device(2), &busy(&[0]));
+    let (cmds, _) = p.sync(D0, &ws, &s, &device(2), None, &busy(&[0]));
     assert_eq!(slot(&p, 10), Some(0));
     assert!(!p.has_retired(D0));
     assert!(!touched(&cmds).contains(&0));
@@ -334,13 +378,13 @@ fn a_resize_under_a_playing_voice_moves_the_patch_and_freezes_the_old_slot() {
     let mut p = Patches::new(3, 4, 4);
     let mut ws = ws_of(&[10]);
     let s = mapped(&ws, |_| 1);
-    p.sync(D0, &ws, &s, &device(4), &idle());
+    p.sync(D0, &ws, &s, &device(4), None, &idle());
     assert_eq!(slot(&p, 10), Some(0));
     let routed = p.sent[&(0, 0)].clone();
     // Two outputs now, while a voice plays through slot 0.
     ws.patches[0].outputs.push(out(0.0, false, false));
     let s2 = mapped(&ws, |_| 1);
-    let (cmds, changed) = p.sync(D0, &ws, &s2, &device(4), &busy(&[0]));
+    let (cmds, changed) = p.sync(D0, &ws, &s2, &device(4), None, &busy(&[0]));
     assert_eq!(slot(&p, 10), Some(1), "later starts get the new layout");
     assert_eq!(p.outputs(D0, id(10)), 2);
     assert_eq!(
@@ -354,14 +398,14 @@ fn a_resize_under_a_playing_voice_moves_the_patch_and_freezes_the_old_slot() {
         [(_, PatchResolution::Mapped { channels, .. })] if channels == &[1, 1]
     ));
     // The voice ends: slot 0 is silenced and freed.
-    let (cmds, _) = p.sync(D0, &ws, &s2, &device(4), &idle());
+    let (cmds, _) = p.sync(D0, &ws, &s2, &device(4), None, &idle());
     assert!(touched(&cmds).contains(&0));
     assert!(p.sent[&(0, 0)].iter().all(|&g| g == 0.0));
     assert_eq!(slot(&p, 10), Some(1));
     // A resize with no voice on the slot is made in place.
     ws.patches[0].outputs.pop();
     let s3 = mapped(&ws, |_| 1);
-    p.sync(D0, &ws, &s3, &device(4), &idle());
+    p.sync(D0, &ws, &s3, &device(4), None, &idle());
     assert_eq!(slot(&p, 10), Some(1));
     assert!(!p.has_retired(D0));
 }
@@ -376,6 +420,7 @@ fn a_resize_retired_slot_follows_the_mapping_and_keeps_outputs_the_patch_lost() 
             PatchMapping {
                 device: "Dev".into(),
                 channels,
+                system: false,
             },
         )
         .unwrap();
@@ -384,18 +429,25 @@ fn a_resize_retired_slot_follows_the_mapping_and_keeps_outputs_the_patch_lost() 
     let mut p = Patches::new(3, 4, 4);
     let mut ws = ws_of(&[10]);
     ws.patches[0].outputs.push(out(-6.0, false, false));
-    p.sync(D0, &ws, &map(&ws, vec![1, 2]), &device(4), &idle());
+    p.sync(D0, &ws, &map(&ws, vec![1, 2]), &device(4), None, &idle());
     let lost_row = p.sent[&(0, 0)][4..8].to_vec();
     assert_eq!(lost_row, vec![0.0, 0.0, db_to_gain(-6.0), 0.0]);
     // One output now, remapped to device output 3, while a voice plays on slot 0.
     ws.patches[0].outputs.pop();
-    p.sync(D0, &ws, &map(&ws, vec![3]), &device(4), &busy(&[0]));
+    p.sync(D0, &ws, &map(&ws, vec![3]), &device(4), None, &busy(&[0]));
     assert_eq!(slot(&p, 10), Some(1));
     // Output 1 follows the new mapping; output 2, gone from the patch, keeps its gain.
     assert_eq!(&p.sent[&(0, 0)][0..4], &[0.0, 0.0, 0.0, 1.0]);
     assert_eq!(&p.sent[&(0, 0)][4..8], lost_row.as_slice());
     // A mapping that no longer fits: the channels it had when it was retired.
-    p.sync(D0, &ws, &map(&ws, vec![3, 0]), &device(4), &busy(&[0]));
+    p.sync(
+        D0,
+        &ws,
+        &map(&ws, vec![3, 0]),
+        &device(4),
+        None,
+        &busy(&[0]),
+    );
     assert_eq!(&p.sent[&(0, 0)][0..4], &[0.0, 1.0, 0.0, 0.0]);
     assert_eq!(&p.sent[&(0, 0)][4..8], lost_row.as_slice());
 }
@@ -405,18 +457,18 @@ fn more_patches_than_slots_are_unmapped_with_no_panic_until_one_frees() {
     let mut p = Patches::new(1, 1, 1);
     let ws = ws_of(&[10, 11, 12]);
     let s = mapped(&ws, |_| 0);
-    let (_, changed) = p.sync(D0, &ws, &s, &device(1), &idle());
+    let (_, changed) = p.sync(D0, &ws, &s, &device(1), None, &idle());
     assert_eq!(p.capacity(), 1);
     assert_eq!(p.exhausted(D0), &[id(11), id(12)]);
     assert!(changed.contains(&(id(11), PatchResolution::Unmapped)));
     assert!(changed.contains(&(id(12), PatchResolution::Unmapped)));
     let ws = ws_of(&[11, 12]);
-    p.sync(D0, &ws, &s, &device(1), &idle());
+    p.sync(D0, &ws, &s, &device(1), None, &idle());
     assert_eq!(slot(&p, 11), Some(0));
     assert_eq!(p.exhausted(D0), &[id(12)]);
     // A mixer with no slots at all is no panic either.
     let mut none = Patches::new(0, 1, 1);
-    let (cmds, changed) = none.sync(D0, &ws, &s, &device(1), &idle());
+    let (cmds, changed) = none.sync(D0, &ws, &s, &device(1), None, &idle());
     assert!(
         cmds.iter()
             .all(|(_, c)| !matches!(c, CommandKind::SetPatchRouting { .. }))
@@ -429,7 +481,7 @@ fn the_matrix_gains_are_patch_master_times_output_level() {
     let ws = ws_with(vec![out(-3.0, false, false), out(-1.5, false, true)]);
     let s = settings(&ws, vec![0, 1]);
     let mut p = Patches::new(1, 2, 2);
-    p.sync(D0, &ws, &s, &device(2), &idle());
+    p.sync(D0, &ws, &s, &device(2), None, &idle());
     // Bit for bit patch master × level, with polarity.
     let pm = db_to_gain(-6.0);
     assert_eq!(
@@ -451,13 +503,13 @@ fn slots_are_keyed_by_doc_and_patch_and_a_closed_docs_go_back() {
     // Two docs with the same patch id (a copy of a show) get a slot each.
     let ws = ws_of(&[10]);
     let s = mapped(&ws, |_| 0);
-    p.sync(D0, &ws, &s, &device(2), &idle());
-    p.sync(D1, &ws, &s, &device(2), &idle());
+    p.sync(D0, &ws, &s, &device(2), None, &idle());
+    p.sync(D1, &ws, &s, &device(2), None, &idle());
     assert_eq!(p.mixer_patch(D0, id(10)), Some(0));
     assert_eq!(p.mixer_patch(D1, id(10)), Some(1));
     assert_eq!(p.free_slots(), 0);
     // A third finds none: unmapped, said so in its own list only.
-    let (_, changed) = p.sync(D2, &ws, &s, &device(2), &idle());
+    let (_, changed) = p.sync(D2, &ws, &s, &device(2), None, &idle());
     assert_eq!(changed, vec![(id(10), PatchResolution::Unmapped)]);
     assert_eq!(p.exhausted(D2), &[id(10)]);
     assert!(p.exhausted(D0).is_empty());
@@ -469,7 +521,7 @@ fn slots_are_keyed_by_doc_and_patch_and_a_closed_docs_go_back() {
     assert!(p.sent[&(0, 0)].iter().all(|&g| g == 0.0));
     assert!(p.take_freed());
     assert_eq!(p.mixer_patch(D0, id(10)), None);
-    p.sync(D2, &ws, &s, &device(2), &idle());
+    p.sync(D2, &ws, &s, &device(2), None, &idle());
     assert_eq!(p.mixer_patch(D2, id(10)), Some(0));
     assert!(p.exhausted(D2).is_empty());
     // The other doc's slot was never touched.
@@ -510,6 +562,7 @@ fn on_device(ws: &Workspace, device: &str, channels: Vec<u32>) -> MachineSetting
         PatchMapping {
             device: device.into(),
             channels,
+            system: false,
         },
     )
     .unwrap();
@@ -528,6 +581,7 @@ fn a_slot_follows_its_patch_to_another_device_unless_a_voice_plays_through_it() 
         &ws,
         &on_device(&ws, "Dev", vec![0, 1]),
         &two_devices(2),
+        None,
         &idle(),
     );
     let slot = p.mixer_patch(D0, pid()).unwrap();
@@ -539,6 +593,7 @@ fn a_slot_follows_its_patch_to_another_device_unless_a_voice_plays_through_it() 
         &ws,
         &on_device(&ws, "Two", vec![0, 1]),
         &two_devices(2),
+        None,
         &idle(),
     );
     assert_eq!(changed.len(), 1);
@@ -560,6 +615,7 @@ fn a_slot_follows_its_patch_to_another_device_unless_a_voice_plays_through_it() 
         &ws,
         &on_device(&ws, "Dev", vec![0, 1]),
         &two_devices(2),
+        None,
         &busy(&[slot]),
     );
     let fresh = p.mixer_patch(D0, pid()).unwrap();
@@ -573,6 +629,7 @@ fn a_slot_follows_its_patch_to_another_device_unless_a_voice_plays_through_it() 
         &ws,
         &on_device(&ws, "Dev", vec![0, 1]),
         &two_devices(2),
+        None,
         &idle(),
     );
     assert!(!p.has_retired(D0));

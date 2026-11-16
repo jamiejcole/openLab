@@ -217,6 +217,7 @@ pub fn config_at(ws: &Workspace, rate: u32, block: u64) -> ControlConfig {
             PatchMapping {
                 device: "Offline".into(),
                 channels: vec![0, 1],
+                system: false,
             },
         )
         .unwrap();

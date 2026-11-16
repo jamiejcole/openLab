@@ -120,6 +120,21 @@ final class WarningsTests: XCTestCase {
         XCTAssertTrue(ProblemText.problem(target, label: { _ in "2.1  Door slam" }).contains("2.1  Door slam"))
     }
 
+    /// ui-qa D3: a cue on a patch on the system output with no output device selected on the Mac
+    /// says that, as the settings table does, not that a device named "system output" is missing.
+    func testACueOnTheSystemOutputWithNoDeviceSaysTheMacHasNoOutputSelected() throws {
+        let p = try JSONDecoder().decode(
+            WireProblem.self,
+            from: Data(
+                #"{"type":"device_unavailable","patch":"00000000-0000-0000-0000-000000000001","resolution":{"type":"device_missing","device":"system output"}}"#
+                    .utf8))
+        let text = ProblemText.problem(p, label: { _ in "Main" })
+        XCTAssertEqual(
+            text,
+            loc("problem.device_unavailable.system_output_missing").replacingOccurrences(of: "{patch}", with: "Main"))
+        XCTAssertFalse(text.contains("“system output”"), text)
+    }
+
     /// An older engine may still send the removed `unsupported` warning: the message
     /// decodes and the row reads as an unrecognised warning.
     func testLegacyUnsupportedWarningDecodesAsUnknown() throws {
@@ -643,6 +658,50 @@ final class WarningsTests: XCTestCase {
         XCTAssertLessThan(row.title.count, name.count)
         XCTAssertEqual(row.detail, loc("warnings.device.device_lost"))
         XCTAssertGreaterThan(WarningCell.height(of: row, width: 220), WarningCell.height(of: row, width: 600))
+    }
+
+    /// A patch on the system output with no output device selected on the Mac is one entry like a
+    /// device's: a short title (the choice as the patch pop-up names it), the reason on the line
+    /// under it; two such patches are still one entry. The cell draws both lines whole.
+    func testTheSystemOutputWithNoDeviceIsOneEntryWithATitleAndAReason() async throws {
+        try await make()
+        try receive(
+            #"{"type":"warnings","warnings":[{"type":"notice","code":"patch_no_system_output","message":"Patch \"Main\" is on the system output"},"#
+                + #"{"type":"notice","code":"patch_no_system_output","message":"Patch \"Side\" is on the system output"}]}"#
+        )
+        let rows = side.warningRows.filter { $0.cue == nil }
+        XCTAssertEqual(rows.count, 1, "\(rows)")
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.title, loc("settings.audio.systemOutputNone"))
+        XCTAssertEqual(row.detail, loc("warnings.systemOutputNone"))
+        XCTAssertFalse(row.title.contains("\""), row.title)
+        let index = try XCTUnwrap(side.warningRows.firstIndex { $0.id == row.id })
+        side.warningsTable.reloadData()
+        let width = side.warningsTable.bounds.width
+        let cell = try XCTUnwrap(side.tableView(side.warningsTable, viewFor: nil, row: index) as? WarningCell)
+        cell.frame = NSRect(x: 0, y: 0, width: width, height: WarningCell.height(of: row, width: width))
+        cell.layoutSubtreeIfNeeded()
+        XCTAssertEqual(cell.title.stringValue, row.title)
+        XCTAssertEqual(cell.detail.stringValue, row.detail)
+        for field in [cell.title, cell.detail] {
+            let frame = cell.convert(field.bounds, from: field)
+            let needed = field.attributedStringValue.boundingRect(
+                with: NSSize(width: frame.width - 4, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
+            ).height
+            XCTAssertGreaterThanOrEqual(frame.height + 1, needed, "\(field.stringValue)")
+            XCTAssertTrue(cell.bounds.contains(frame), "\(frame) in \(cell.bounds)")
+        }
+    }
+
+    /// A device move that has to wait for its file shows on the cue's own entry, in our words.
+    func testADelayedMoveShowsOnTheCuesEntry() throws {
+        let w = try JSONDecoder().decode(
+            WireWarning.self,
+            from: Data(
+                #"{"type":"notice","code":"move_delayed","message":"cue 1: engine words","cue":"00000000-0000-0000-0000-00000000000a"}"#
+                    .utf8))
+        XCTAssertEqual(ProblemText.warningDetail(w, label: { $0.raw }), loc("warning.notice.move_delayed"))
     }
 
     func testTheCountInTheFooterMatchesTheEntriesShown() async throws {

@@ -1181,8 +1181,9 @@ final class ScenarioShotTests: XCTestCase {
 
     func testAMissingShowFailsNamingTheTestShows() async throws {
         let message = try await failure(of: #"{"show": "Nope", "steps": []}"#)
-        XCTAssertTrue(
-            message.contains("show \"Nope\" not found: test shows are Demo, Second, Targets, Three, Video"), message)
+        // The list is every show in TestShows; a new show must not break this test.
+        XCTAssertTrue(message.contains("show \"Nope\" not found: test shows are Demo, "), message)
+        XCTAssertTrue(message.contains("Three"), message)
         let path = try await failure(of: #"{"show": "gone/x.openlab", "steps": []}"#)
         XCTAssertTrue(path.contains("show not found: no file at \(out.path)/gone/x.openlab"), path)
     }
