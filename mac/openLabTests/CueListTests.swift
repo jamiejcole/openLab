@@ -6229,50 +6229,74 @@ final class CueListColumnLayoutTests: XCTestCase {
     /// The columns wider than the list (the least width with the sidebar shown) and the list scrolled
     /// sideways with the wheel: the header moves with the rows, each title over its column. Widened until
     /// the columns fit, the list is back at its left edge (the playhead's pointer whole) with no scroller.
+    /// Seen with scroll bars that show only while scrolling and with ones that always show (a Mac with a
+    /// mouse), whichever this Mac has.
     func testAListScrolledSidewaysKeepsItsTitlesOverTheirColumnsAndComesBackToItsEdgeOnceTheyFit()
         async throws
     {
-        let wc = try await open(NSSize(width: 1200, height: 800))
-        let window = try XCTUnwrap(wc.window)
-        let scroll = try XCTUnwrap(outline.enclosingScrollView)
-        let header = try XCTUnwrap(outline.headerView)
-        window.setContentSize(window.minSize)
-        wc.setVisible(.sidebar, true)
-        window.contentView?.layoutSubtreeIfNeeded()
-        func titlesOverColumns(_ what: String) {
-            for column in 0..<outline.numberOfColumns {
-                let cells = outline.convert(outline.rect(ofColumn: column), to: nil)
-                let title = header.convert(header.headerRect(ofColumn: column), to: nil)
-                XCTAssertEqual(title.minX, cells.minX, accuracy: 0.5, "\(what): column \(column)'s title")
+        for style in [NSScroller.Style.overlay, .legacy] {
+            self.wc?.window?.close()
+            let wc = try await open(NSSize(width: 1200, height: 800))
+            let bars = style == .legacy ? "scroll bars always shown" : "scroll bars shown while scrolling"
+            let window = try XCTUnwrap(wc.window)
+            let scroll = try XCTUnwrap(outline.enclosingScrollView)
+            let header = try XCTUnwrap(outline.headerView)
+            scroll.scrollerStyle = style
+            window.setContentSize(window.minSize)
+            wc.setVisible(.sidebar, true)
+            window.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertEqual(scroll.scrollerStyle, style, bars)
+            func titlesOverColumns(_ what: String) {
+                for column in 0..<outline.numberOfColumns {
+                    let cells = outline.convert(outline.rect(ofColumn: column), to: nil)
+                    let title = header.convert(header.headerRect(ofColumn: column), to: nil)
+                    XCTAssertEqual(
+                        title.minX, cells.minX, accuracy: 0.5, "\(bars), \(what): column \(column)'s title")
+                }
             }
-        }
-        func wheel(_ dx: Int32) throws {
-            let event = try XCTUnwrap(
-                CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: dx, wheel3: 0)
+            func wheel(_ dx: Int32) throws {
+                let event = try XCTUnwrap(
+                    CGEvent(
+                        scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: dx, wheel3: 0
+                    )
                     .flatMap { NSEvent(cgEvent: $0) })
-            scroll.scrollWheel(with: event)
-            window.contentView?.layoutSubtreeIfNeeded()
+                scroll.scrollWheel(with: event)
+                window.contentView?.layoutSubtreeIfNeeded()
+            }
+            // How far the columns reach past the list the operator sees. A scroll bar that always shows
+            // stands over the right edge of the list's area, and the columns scroll clear of it: the list
+            // seen ends at the bar, not at the area's edge.
+            func overflow() -> CGFloat {
+                let area = scroll.contentView.frame
+                var seen = area.width
+                if style == .legacy, let bar = scroll.verticalScroller, !bar.isHidden, bar.frame.intersects(area) {
+                    seen = bar.frame.minX - area.minX
+                }
+                return max(0, outline.frame.width - seen)
+            }
+            XCTAssertTrue(scroll.hasHorizontalScroller, "\(bars): the columns are wider than the list")
+            try wheel(-60)
+            XCTAssertEqual(scroll.contentView.bounds.minX, 60, accuracy: 0.5, "\(bars): scrolled sideways")
+            titlesOverColumns("scrolled 60 points")
+            try wheel(-2000)
+            XCTAssertGreaterThan(scroll.contentView.bounds.minX, 60, "\(bars): scrolled to the far right")
+            titlesOverColumns("scrolled to the far right")
+            // Wider step by step: the last column stays at the list's right edge, neither pulled away from
+            // it nor left under the scroll bar, and the list is at its left edge once the columns fit.
+            var width = window.minSize.width
+            while scroll.hasHorizontalScroller, width < 1600 {
+                width += 25
+                window.setContentSize(NSSize(width: width, height: window.minSize.height))
+                window.contentView?.layoutSubtreeIfNeeded()
+                XCTAssertEqual(
+                    scroll.contentView.bounds.minX, overflow(), accuracy: 0.5,
+                    "\(bars), at \(width): scrolled by what the columns overflow the list")
+                titlesOverColumns("at width \(width)")
+            }
+            XCTAssertFalse(scroll.hasHorizontalScroller, "\(bars): the columns fit at \(width)")
+            XCTAssertEqual(overflow(), 0, "\(bars): no column reaches past the list")
+            XCTAssertEqual(scroll.contentView.bounds.minX, 0, "\(bars): the list is back at its left edge")
+            XCTAssertEqual(header.superview?.bounds.minX ?? -1, 0, "\(bars): and its header")
         }
-        XCTAssertTrue(scroll.hasHorizontalScroller, "the columns are wider than the list")
-        try wheel(-60)
-        XCTAssertEqual(scroll.contentView.bounds.minX, 60, accuracy: 0.5, "scrolled sideways")
-        titlesOverColumns("scrolled 60 points")
-        try wheel(-2000)
-        XCTAssertGreaterThan(scroll.contentView.bounds.minX, 60, "scrolled to the far right")
-        titlesOverColumns("scrolled to the far right")
-        // Wider step by step: the offset never passes what the columns overflow by, and is none once they fit.
-        var width = window.minSize.width
-        while scroll.hasHorizontalScroller, width < 1600 {
-            width += 25
-            window.setContentSize(NSSize(width: width, height: window.minSize.height))
-            window.contentView?.layoutSubtreeIfNeeded()
-            let over = max(0, outline.frame.width - scroll.contentView.bounds.width)
-            XCTAssertLessThanOrEqual(
-                scroll.contentView.bounds.minX, over + 0.5, "at \(width): no more than the overflow")
-            titlesOverColumns("at width \(width)")
-        }
-        XCTAssertFalse(scroll.hasHorizontalScroller, "the columns fit at \(width)")
-        XCTAssertEqual(scroll.contentView.bounds.minX, 0, "the list is back at its left edge")
-        XCTAssertEqual(header.superview?.bounds.minX ?? -1, 0, "and its header")
     }
 }
