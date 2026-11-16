@@ -842,7 +842,7 @@ final class TimeLoopsTests: XCTestCase {
         await addSlice(at: 10, expect: 1)
         panel.editSliceCount(0)
         type(panel.sliceCountField, count == 0 ? "\u{221E}" : String(count))
-        await assertEventually { self.panel.sliceMarks.first?.playCount == count }
+        await assertEventually { self.panel.sliceMarks.first?.playCount == SlicePlay(integerLiteral: count) }
         await answered()
         // The click that placed the marker loaded the cue there: a click at the start loads it from
         // the beginning again.
@@ -1088,6 +1088,18 @@ final class TimeLoopsTests: XCTestCase {
         XCTAssertEqual(slices(TimeLoopsPanel.apply(.removeSlice(10), to: base)), [[20, 1]])
         XCTAssertEqual(slices(TimeLoopsPanel.apply(.sliceCount(20, 0), to: base)), [[10, 1], [20, 0]])
         XCTAssertEqual(TimeLoopsPanel.apply(.sliceCount(30, 2), to: base), base)
+        // A skipped slice and one looping until devamped are written apart and read back apart.
+        let skipped = TimeLoopsPanel.apply(
+            .playCount(.endless), to: TimeLoopsPanel.apply(.sliceCount(10, .skip), to: base))
+        XCTAssertEqual(skipped["slices"]?.arrayValue?.map { $0["play_count"] }, [.string("skip"), .int(1)])
+        XCTAssertEqual(skipped["last_slice_play_count"], .int(0))
+        XCTAssertEqual(TimeLoopsPanel.marks(of: skipped).map(\.playCount), [.skip, .times(1)])
+        XCTAssertEqual(SlicePlay(json: skipped["last_slice_play_count"]), .endless)
+        for bad in [JSONValue.string("loop"), .int(-1), .double(1.5), .null, .bool(true)] {
+            XCTAssertNil(SlicePlay(json: bad), "\(bad)")
+        }
+        XCTAssertEqual(
+            ["3", "0", "x", "\u{221E}"].map(SlicePlay.init(typed:)), [.times(3), .skip, .endless, .endless])
         let faded = TimeLoopsPanel.apply(.fades(fadeIn: 2, fadeOut: nil, curve: "s_curve"), to: base)
         XCTAssertEqual(faded["fade_in"]?["duration"]?.doubleValue, 2)
         XCTAssertEqual(faded["fade_out"]?["duration"]?.doubleValue, 0, "the fade-out is kept")
@@ -1128,11 +1140,22 @@ final class TimeLoopsTests: XCTestCase {
         await assertEventually { self.wave.sliceCounts == [4, 0] }
         panel.editSliceCount(1)
         XCTAssertEqual(panel.sliceCountField.stringValue, "\u{221E}")
-        let sent = kinds.count
+        // 0 skips the slice: stored apart from the loop's 0, and offered back as 0.
         panel.editSliceCount(0)
         type(panel.sliceCountField, "0")
-        XCTAssertEqual(vc.messageLabel.stringValue, loc("timeLoops.invalid.sliceCount"))
-        XCTAssertEqual(kinds.count, sent)
+        await assertEventually { self.kinds.last?["slices"]?.arrayValue?.first?["play_count"] == .string("skip") }
+        await assertEventually { self.wave.sliceCounts == [.skip, .endless] }
+        panel.editSliceCount(0)
+        XCTAssertEqual(panel.sliceCountField.stringValue, "0")
+        await answered()
+        let sent = kinds.count
+        for bad in ["-1", "1.5", "1000001", "?", ""] {
+            panel.editSliceCount(0)
+            vc.messageLabel.stringValue = ""
+            type(panel.sliceCountField, bad)
+            XCTAssertEqual(vc.messageLabel.stringValue, loc("timeLoops.invalid.sliceCount"), bad)
+        }
+        XCTAssertEqual(kinds.count, sent, "a value that is no count changes nothing")
         wave.doubleClick(atX: wave.scale.x(5), y: wave.waveRect.midY)
         XCTAssertNil(panel.editingSlice, "only on the counts along the bottom")
     }
@@ -2113,6 +2136,231 @@ extension PlayheadFlowTests {
             XCTAssertLessThanOrEqual(times.elapsed, 35.05, "never past the cue's length")
             XCTAssertEqual(times.elapsed + remaining, 35, accuracy: 0.1, "elapsed and remaining add up to it")
         }
+        XCTAssertEqual(rowMark(id), runningMark)
+    }
+}
+
+// MARK: Skipped and endless slices
+
+/// A slice's play count of 0 skips it and a letter loops it without end, as the operator sets them
+/// on the waveform in a workspace window on the real engine. What is checked is what the window
+/// shows: the count drawn on the slice, the dark tint over a skipped one, the cue's time and state
+/// in its row, the Warnings list, and where the play line is as the engine plays.
+extension PlayheadFlowTests {
+    /// A 30 s tone cut at 10 s and 20 s into three slices, each played once, shown in its tab.
+    private func threeSlices() async throws -> ModelID {
+        let id = try await waveTones(1)[0]
+        await showWaveform(id)
+        loops.onChange?(.addSlices([10, 20]))
+        await assertEventually("two markers") { self.waveView.sliceMarks == [10, 20] }
+        XCTAssertEqual(waveView.sliceCounts, [1, 1, 1])
+        await assertEventually { self.store.playheads[self.list] == id }
+        return id
+    }
+
+    /// How bright the top of the waves is drawn at file time `t` (0 black to 1 white).
+    private func brightness(at t: Double) throws -> CGFloat {
+        let rep = try renderView(waveView)
+        let s = CGFloat(rep.pixelsWide) / waveView.bounds.width
+        let c = try XCTUnwrap(
+            rep.colorAt(x: Int(waveX(t) * s), y: Int((WaveformView.rulerHeight + 4) * s))?.usingColorSpace(.sRGB))
+        return (c.redComponent + c.greenComponent + c.blueComponent) / 3
+    }
+
+    /// The reasons the Warnings list gives for `id`.
+    private func warned(_ id: ModelID) -> [String] {
+        WarningRows.make(store: store).filter { $0.cue == id }.map(\.detail)
+    }
+
+    func testACountOfZeroSkipsTheSlice() async throws {
+        let id = try await threeSlices()
+        XCTAssertEqual(cell(id, "duration"), CueTime.running(30))
+        let plain = try brightness(at: 15)
+        await typeSliceCount(1, "0")
+        // Its count reads 0 and it is drawn darker than its neighbours, over its whole span.
+        XCTAssertEqual(waveView.sliceCounts, [1, .skip, 1])
+        XCTAssertEqual(SlicePlay.skip.label, "0")
+        let dark = try XCTUnwrap(waveView.skippedRects().first)
+        XCTAssertEqual(waveView.skippedRects().count, 1)
+        XCTAssertEqual(dark.minX, waveX(10), accuracy: 0.5)
+        XCTAssertEqual(dark.maxX, waveX(20), accuracy: 0.5)
+        XCTAssertLessThan(try brightness(at: 15), plain - 0.02, "the skipped slice is darker than it was")
+        XCTAssertLessThan(try brightness(at: 15), try brightness(at: 5) - 0.02, "and than the slice before it")
+        XCTAssertEqual(try brightness(at: 25), try brightness(at: 5), accuracy: 0.01, "its neighbours are not")
+        // The cue's time in the list is the first plus the third slice.
+        await assertEventually("20 s in the list") { self.cell(id, "duration") == CueTime.running(20) }
+        XCTAssertNil(rowMark(id), "idle, not broken")
+        // Playing: the play line goes from the end of the first slice to the start of the third.
+        try await goFromWaveform(id)
+        try await play(9.4)
+        await playsAt(id, 9.5)
+        XCTAssertEqual(waveView.skippedRects(), [dark], "drawn the same while it plays")
+        try await play(1)
+        await playsAt(id, 20.5)
+        let times = try XCTUnwrap(store.progress[id])
+        XCTAssertEqual(times.elapsed, 10.5, accuracy: 0.3, "the skipped slice takes no time")
+        XCTAssertEqual(times.remaining ?? -1, 9.5, accuracy: 0.3)
+        // Paused: the same picture, the line standing in the third slice.
+        try waveKey("p", code: 35)
+        await assertEventually("paused") { self.rowMark(id) == loc("cue.state.paused") }
+        try await play(0.5)
+        await playsAt(id, 20.5, tolerance: 0.4)
+        XCTAssertEqual(waveView.skippedRects(), [dark])
+        XCTAssertEqual(waveView.sliceCounts, [1, .skip, 1])
+        try waveKey("p", code: 35)
+        try await play(9.8)
+        await assertEventually("it ends after 20 s of sound") { self.rowMark(id) == nil }
+    }
+
+    func testALetterLoopsTheSliceWithoutEnd() async throws {
+        let id = try await threeSlices()
+        await typeSliceCount(0, "x")
+        XCTAssertEqual(waveView.sliceCounts, [.endless, 1, 1])
+        XCTAssertEqual(SlicePlay.endless.label, "\u{221E}", "the endless mark is drawn")
+        XCTAssertEqual(waveView.skippedRects(), [], "a looping slice is not dark")
+        // The list shows one pass, as for any cue that loops without end.
+        await assertEventually("one pass in the list") { self.cell(id, "duration") == CueTime.running(30) }
+        try await goFromWaveform(id)
+        try await play(11.9)
+        await playsAt(id, 2, tolerance: 0.4)
+        try await play(10)
+        await playsAt(id, 2, tolerance: 0.4)
+        XCTAssertEqual(rowMark(id), runningMark, "it loops until devamped or stopped")
+        XCTAssertNil(store.progress[id]?.remaining, "no end to count down to")
+        _ = await store.transport(.hardStop(cue: id))
+        try await play(0.2)
+        await assertEventually("stopped") { self.rowMark(id) == nil }
+        // A number again: it plays that many times.
+        await showWaveform(id)
+        await typeSliceCount(0, "2")
+        XCTAssertEqual(waveView.sliceCounts, [2, 1, 1])
+        await assertEventually("40 s in the list") { self.cell(id, "duration") == CueTime.running(40) }
+        // Neither a number below 0 nor a sign is a count: refused, the slice as it was.
+        await typeSliceCount(0, "-1")
+        XCTAssertEqual(waveView.sliceCounts, [2, 1, 1])
+        await typeSliceCount(0, "?")
+        XCTAssertEqual(waveView.sliceCounts, [2, 1, 1])
+    }
+
+    func testTheFirstAndTheLastSliceCanBeSkipped() async throws {
+        let id = try await threeSlices()
+        await typeSliceCount(0, "0")
+        await typeSliceCount(2, "0")
+        XCTAssertEqual(waveView.sliceCounts, [.skip, 1, .skip])
+        XCTAssertEqual(waveView.skippedRects().count, 2)
+        await assertEventually("10 s in the list") { self.cell(id, "duration") == CueTime.running(10) }
+        // GO starts at the second slice's start.
+        try await goFromWaveform(id)
+        try await play(0.4)
+        await playsAt(id, 10.5)
+        XCTAssertEqual(store.progress[id]?.elapsed ?? -1, 0.5, accuracy: 0.3)
+        // And the cue ends at the last slice's start.
+        try await play(9.0)
+        await playsAt(id, 19.5, tolerance: 0.4)
+        try await play(0.8)
+        await assertEventually("ended where the last slice starts") { self.rowMark(id) == nil }
+        XCTAssertNil(store.progress[id])
+    }
+
+    func testEverySliceZeroBreaksTheCue() async throws {
+        let id = try await threeSlices()
+        let next = try await waveTones(1)[0]
+        await showWaveform(id)
+        for i in 0..<3 { await typeSliceCount(i, "0") }
+        XCTAssertEqual(waveView.sliceCounts, [.skip, .skip, .skip])
+        await assertEventually("broken in the list") { self.rowMark(id) == loc("cue.state.broken") }
+        XCTAssertEqual(warned(id), [loc("problem.nothing_plays")], "the Warnings list says no part of the file plays")
+        // GO does not start it, and the playhead moves on as for any broken cue.
+        await assertEventually { self.store.playheads[self.list] == id }
+        let before = goes()
+        try waveKey(" ", code: 49)
+        await assertEventually("GO was sent") { self.goes() == before + 1 }
+        try await play(0.5)
+        XCTAssertEqual(rowMark(id), loc("cue.state.broken"), "it did not start")
+        XCTAssertNil(store.progress[id])
+        await assertEventually("the playhead moved on") { self.store.playheads[self.list] == next }
+        // One count above 0 clears it.
+        await showWaveform(id)
+        await typeSliceCount(1, "1")
+        await assertEventually("mended") { self.rowMark(id) == nil }
+        XCTAssertEqual(warned(id), [])
+        await assertEventually("10 s in the list") { self.cell(id, "duration") == CueTime.running(10) }
+    }
+
+    func testChangesWhileTheCuePlays() async throws {
+        let id = try await threeSlices()
+        try await goFromWaveform(id)
+        try await play(1.9)
+        await playsAt(id, 2)
+        let plain = try brightness(at: 15)
+        // The count and the tint are the new ones at once; the cue plays on as it started.
+        await typeSliceCount(1, "0")
+        XCTAssertEqual(waveView.sliceCounts, [1, .skip, 1])
+        XCTAssertEqual(waveView.skippedRects().count, 1)
+        XCTAssertLessThan(try brightness(at: 15), plain - 0.02, "the tint is drawn while it plays")
+        XCTAssertEqual(rowMark(id), runningMark)
+        XCTAssertEqual(seeks, [], "the edit moved nothing")
+        try await play(10)
+        await playsAt(id, 12, tolerance: 0.4)
+        XCTAssertEqual(store.progress[id]?.elapsed ?? -1, 12, accuracy: 0.4, "the slice now dark is still heard")
+        // Every count 0 while it sounds: still running, not broken, until it has stopped.
+        await typeSliceCount(0, "0")
+        await typeSliceCount(2, "0")
+        XCTAssertEqual(waveView.sliceCounts, [.skip, .skip, .skip])
+        XCTAssertEqual(waveView.skippedRects().count, 3)
+        try await play(1)
+        await playsAt(id, 13, tolerance: 0.4)
+        XCTAssertEqual(rowMark(id), runningMark, "not broken while it sounds")
+        _ = await store.transport(.hardStop(cue: id))
+        try await play(0.2)
+        await assertEventually("broken once stopped") { self.rowMark(id) == loc("cue.state.broken") }
+        XCTAssertEqual(warned(id), [loc("problem.nothing_plays")])
+        // The next start plays the new plan: only the last slice.
+        await showWaveform(id)
+        await typeSliceCount(2, "1")
+        await assertEventually("mended") { self.rowMark(id) == nil }
+        _ = await store.transport(.start(cue: id))
+        try await play(0.5)
+        await showWaveform(id)
+        await playsAt(id, 20.5, tolerance: 0.4)
+    }
+
+    /// Undo of a count set to 0 puts back the count and the drawing; redo skips the slice again.
+    func testUndoRestoresASkippedSlicesCountAndDrawing() async throws {
+        let id = try await threeSlices()
+        await typeSliceCount(0, "3")
+        await typeSliceCount(0, "0")
+        XCTAssertEqual(waveView.sliceCounts, [.skip, 1, 1])
+        XCTAssertEqual(waveView.skippedRects().count, 1)
+        await wc.editor.undo()
+        await assertEventually("the count is back") { self.waveView.sliceCounts == [3, 1, 1] }
+        XCTAssertEqual(waveView.skippedRects(), [])
+        await assertEventually("50 s in the list") { self.cell(id, "duration") == CueTime.running(50) }
+        await wc.editor.redo()
+        await assertEventually("skipped again") { self.waveView.sliceCounts == [.skip, 1, 1] }
+        XCTAssertEqual(waveView.skippedRects().count, 1)
+    }
+
+    func testAClickInsideASkippedSliceLoadsToTheStartOfTheNextSliceThatPlays() async throws {
+        let id = try await threeSlices()
+        await typeSliceCount(1, "0")
+        clickWave(at: 14)
+        XCTAssertEqual(waveView.insertion ?? -1, 14, accuracy: 0.05, "the line goes where clicked")
+        await seekRun(1)
+        await assertEventually("the row shows the cue loaded") { self.rowMark(id) == loc("cue.state.loaded") }
+        try await goFromWaveform(id)
+        try await play(0.4)
+        await playsAt(id, 20.5)
+        XCTAssertEqual(store.progress[id]?.elapsed ?? -1, 10.5, accuracy: 0.3, "the first slice counts as played")
+        // Playing in the first slice, a click in the dark slice jumps to the third: it is never heard.
+        clickWave(at: 2)
+        await seekRun(2)
+        try await play(1)
+        await playsAt(id, 3, tolerance: 0.4)
+        clickWave(at: 17)
+        await seekRun(3)
+        try await play(1)
+        await playsAt(id, 21, tolerance: 0.4)
         XCTAssertEqual(rowMark(id), runningMark)
     }
 }

@@ -79,7 +79,7 @@ pub fn audio() -> CueKind {
         fade_in: no_fade(),
         fade_out: no_fade(),
         slices: vec![],
-        last_slice_play_count: 1,
+        last_slice_play_count: 1.into(),
         levels: CueLevels {
             master_db: 0.0,
             outputs: vec![out(0.0), out(0.0)],

@@ -216,10 +216,10 @@ pub enum Input {
     /// From the binary: Audio cues whose trims, slice markers and play counts cannot be played
     /// with their probed file (`Some(why)`, e.g. a looping slice too short) or can again
     /// (`None`), each sent when it changes (an edit, a probe answer, a cue gone). The core cannot
-    /// plan audio; a cue told `Some` has [`CueProblem::SlicesUnplayable`] while it has a file and
-    /// no media problem.
+    /// plan audio; a cue told `Some` has the problem [`SliceProblem::problem`] gives while it
+    /// has a file and no media problem.
     SliceProblems {
-        cues: Vec<(CueId, Option<String>)>,
+        cues: Vec<(CueId, Option<SliceProblem>)>,
     },
     /// Feedback (`DevampScheduled`): the devamp sent for this run's voice was accepted; the voice
     /// leaves its loop on sample `at`.
@@ -395,9 +395,34 @@ pub enum CueProblem {
     SlicesUnplayable {
         reason: String,
     },
+    /// Every slice of an Audio or Video cue's file inside its trims is skipped, so no part of
+    /// the file plays (QLab 5 manual pp. 184-185: at least one slice needs a count above zero).
+    NothingPlays,
     /// It was triggered while it had problems, which have been fixed since; the run it started
     /// (its timing, without its action) has not ended yet. Gone when that run ends.
     StartedBroken,
+}
+
+/// Why the binary could not plan a cue's slices against its probed file
+/// ([`Input::SliceProblems`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SliceProblem {
+    /// Every slice inside the trims is skipped.
+    NothingPlays,
+    /// The trims, markers and counts do not fit the file. `reason` is English, for the log.
+    Unplayable { reason: String },
+}
+
+impl SliceProblem {
+    /// The cue problem this is shown as.
+    pub fn problem(&self) -> CueProblem {
+        match self {
+            Self::NothingPlays => CueProblem::NothingPlays,
+            Self::Unplayable { reason } => CueProblem::SlicesUnplayable {
+                reason: reason.clone(),
+            },
+        }
+    }
 }
 
 impl fmt::Display for CueProblem {
@@ -461,6 +486,7 @@ impl fmt::Display for CueProblem {
             Self::SlicesUnplayable { reason } => {
                 write!(f, "its slices cannot be played: {reason}")
             }
+            Self::NothingPlays => write!(f, "every slice is skipped, so no part of its file plays"),
         }
     }
 }

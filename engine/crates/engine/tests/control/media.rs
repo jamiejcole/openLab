@@ -1501,7 +1501,7 @@ fn the_cue_engine_is_told_each_audio_cues_nominal_length_as_it_changes() {
                 ..
             } = k
             {
-                *last_slice_play_count = count;
+                *last_slice_play_count = count.into();
             }
         });
         assert_eq!(length(&s, 1), expected, "play count {count}");

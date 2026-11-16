@@ -26,12 +26,12 @@ use std::sync::Arc;
 use openlab_audio::total_frames;
 use openlab_core::protocol::{AudioTrackFormat, CueMediaDuration};
 use openlab_core::{
-    Cue, CueId, CueKind, MAX_CHANNELS, SampleTime, SliceMarker, VideoTiming, Workspace,
-    seconds_to_samples,
+    Cue, CueId, CueKind, MAX_CHANNELS, PlayCount, SampleTime, SliceMarker, SliceProblem,
+    VideoTiming, Workspace, seconds_to_samples,
 };
 
 use super::media::{MediaCatalog, PictureReady, PlanChanges, Ready};
-use super::plan::{PlanFailure, PlanSpec, cue_slices, picture_info};
+use super::plan::{PlanSpec, cue_slices, picture_info};
 use openlab_core::video_probe::ProbeReport;
 
 /// Where the checks find a file's probe: the doc's catalog, or [`NoProbes`] for a workspace
@@ -89,7 +89,7 @@ struct PictureLengths {
 impl Picture {
     /// Its lengths, or why its plan cannot be played. A movie is planned as an Audio cue is,
     /// on its file's length; a still's action is its typed duration.
-    fn lengths(&self, rate: NonZeroU32) -> Result<PictureLengths, String> {
+    fn lengths(&self, rate: NonZeroU32) -> Result<PictureLengths, SliceProblem> {
         let none = PictureLengths {
             action: None,
             pass: None,
@@ -104,7 +104,7 @@ impl Picture {
                     last_slice_play_count: t.last_slice_play_count,
                 };
                 let table = cue_slices(&spec, &picture_info(*duration, rate), rate, 0)
-                    .map_err(|PlanFailure::Plan(e)| e.to_string())?;
+                    .map_err(|e| e.problem())?;
                 Ok(PictureLengths {
                     action: total_frames(&table),
                     pass: Some(table.iter().fold(0u64, |a, s| a.saturating_add(s.frames))),
@@ -125,9 +125,9 @@ struct Entry {
     probe: Arc<Ready>,
     start: u64,
     end: Option<u64>,
-    marks: Vec<(u64, u32)>,
-    last: u32,
-    error: Option<String>,
+    marks: Vec<(u64, PlayCount)>,
+    last: PlayCount,
+    error: Option<SliceProblem>,
     /// The action's length from the top; `None` if it loops forever or has no plan.
     length: Option<u64>,
     /// One pass of the trimmed range (every slice once); `None` if there is no plan.
@@ -163,7 +163,7 @@ pub struct PlanChecks {
     /// The cues of `cues` on each file, for a probe change.
     by_key: HashMap<String, BTreeSet<CueId>>,
     /// The cues whose slices cannot be played, with why.
-    errors: BTreeMap<CueId, String>,
+    errors: BTreeMap<CueId, SliceProblem>,
     /// The rate the checks were made at.
     rate: Option<NonZeroU32>,
     builds: u64,
@@ -176,7 +176,7 @@ pub struct PlanChecks {
     /// The media lengths clients were last told (`take_changes`), for the snapshot.
     sent: BTreeMap<CueId, CueMediaDuration>,
     /// The slice problems the cue engine was last told (`take_changes`).
-    told_errors: BTreeMap<CueId, String>,
+    told_errors: BTreeMap<CueId, SliceProblem>,
     /// Cues whose plan was rebuilt or dropped since then, so the change costs what it touched.
     stale: BTreeSet<CueId>,
 }
@@ -189,7 +189,7 @@ impl PlanChecks {
         ws: &Workspace,
         media: &mut MediaCatalog,
         rate: NonZeroU32,
-    ) -> &BTreeMap<CueId, String> {
+    ) -> &BTreeMap<CueId, SliceProblem> {
         let changes = media.take_plan_changes();
         if changes.all || self.rate != Some(rate) || media.index().has_duplicates() {
             return self.check_all(ws, media, rate);
@@ -235,7 +235,7 @@ impl PlanChecks {
         ws: &Workspace,
         media: &impl Probes,
         rate: NonZeroU32,
-    ) -> &BTreeMap<CueId, String> {
+    ) -> &BTreeMap<CueId, SliceProblem> {
         self.walks += 1;
         if self.rate != Some(rate) {
             // Every plan depends on the rate.
@@ -345,7 +345,7 @@ impl PlanChecks {
                         total_frames(&table),
                         Some(table.iter().fold(0u64, |a, s| a.saturating_add(s.frames))),
                     ),
-                    Err(PlanFailure::Plan(e)) => (Some(e.to_string()), None, None),
+                    Err(e) => (Some(e.problem()), None, None),
                 };
                 tracked.entry = Some(Entry {
                     probe: Arc::clone(ready),
@@ -489,7 +489,7 @@ impl PlanChecks {
         &mut self,
         id: CueId,
         p: Picture,
-        error: Option<String>,
+        error: Option<SliceProblem>,
         rate: Option<NonZeroU32>,
         out: &mut CheckChanges,
     ) {
@@ -571,7 +571,7 @@ impl PlanChecks {
 /// What [`PlanChecks::take_changes`] found.
 #[derive(Debug, Default)]
 pub struct CheckChanges {
-    pub slices: Vec<(CueId, Option<String>)>,
+    pub slices: Vec<(CueId, Option<SliceProblem>)>,
     pub lengths: Vec<(CueId, Option<SampleTime>)>,
     /// One pass of the trimmed range for the cue engine (`Input::CuePassLengths`), told like
     /// `lengths`.
@@ -648,7 +648,7 @@ fn each_cue<'a>(cues: &'a [Cue], f: &mut impl FnMut(&'a Cue)) {
     openlab_core::descendants(cues).for_each(f);
 }
 
-fn marks(slices: &[SliceMarker]) -> Vec<(u64, u32)> {
+fn marks(slices: &[SliceMarker]) -> Vec<(u64, PlayCount)> {
     slices
         .iter()
         .map(|m| (m.time.to_bits(), m.play_count))

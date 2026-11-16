@@ -139,10 +139,10 @@ class WaveformView: NSView {
             }
         }
     }
-    /// Slice markers (file seconds, increasing) and each slice's play count, one more than the
-    /// markers (0 = until devamped). While a marker is dragged the view keeps its own copy.
+    /// Slice markers (file seconds, increasing) and how each slice plays, one more than the
+    /// markers. While a marker is dragged the view keeps its own copy.
     var sliceMarks: [Double] = [] { didSet { needsDisplay = true } }
-    var sliceCounts: [Int] = [] { didSet { needsDisplay = true } }
+    var sliceCounts: [SlicePlay] = [] { didSet { needsDisplay = true } }
     /// The built-in fades (seconds from the start trim and back from the end trim) and their curve
     /// (core's `FadeCurve` name); drawn and draggable only while `fadesShown`.
     var fadesShown = false { didSet { needsDisplay = true } }
@@ -609,6 +609,10 @@ class WaveformView: NSView {
             let b = scale.x(endTime)
             NSRect(x: 0, y: wave.minY, width: max(0, a), height: wave.height).fill()
             NSRect(x: b, y: wave.minY, width: max(0, bounds.width - b), height: wave.height).fill()
+            // A skipped slice is darker than the slices that play, less so than what the trims
+            // leave out.
+            Self.skippedTint.setFill()
+            for r in skippedRects() { r.fill() }
             if let selection {
                 // The section: a light wash across the waves with faint edges, so the brighter
                 // position line stands out against them.
@@ -644,8 +648,24 @@ class WaveformView: NSView {
         }
     }
 
+    /// The dark tint over a slice that is skipped.
+    static let skippedTint = NSColor.black.withAlphaComponent(0.4)
+
+    /// The part of the waves each skipped slice covers (a cue without markers is one slice).
+    func skippedRects() -> [NSRect] {
+        guard duration != nil else { return [] }
+        let wave = waveRect
+        let edges = [trimStart] + sliceMarks + [endTime]
+        return sliceCounts.enumerated().compactMap { i, count in
+            guard count == .skip, i + 1 < edges.count else { return nil }
+            let a = scale.x(edges[i])
+            let b = scale.x(edges[i + 1])
+            return b > a ? NSRect(x: a, y: wave.minY, width: b - a, height: wave.height) : nil
+        }
+    }
+
     /// Each marker as a green line with a handle in the ruler (the one being dragged out, not at
-    /// all), and each slice's play count along the bottom (∞: until devamped).
+    /// all), and each slice's play count along the bottom (∞: until devamped, 0: skipped).
     private func drawSlices() {
         guard !sliceMarks.isEmpty else { return }
         let wave = waveRect
@@ -660,8 +680,7 @@ class WaveformView: NSView {
             .foregroundColor: NSColor.systemGreen,
         ]
         for i in 0...sliceMarks.count {
-            let count = sliceCounts.indices.contains(i) ? sliceCounts[i] : 1
-            let text = count == 0 ? "\u{221E}" : String(count)
+            let text = (sliceCounts.indices.contains(i) ? sliceCounts[i] : 1).label
             let r = countRect(i)
             let size = text.size(withAttributes: attrs)
             text.draw(at: NSPoint(x: r.midX - size.width / 2, y: r.midY - size.height / 2), withAttributes: attrs)

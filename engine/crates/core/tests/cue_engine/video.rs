@@ -297,7 +297,12 @@ fn a_video_cue_whose_slices_cannot_play_is_broken_until_fixed() {
     rig.at(
         1,
         Input::SliceProblems {
-            cues: vec![(id(1), Some("a looping slice is too short".into()))],
+            cues: vec![(
+                id(1),
+                Some(SliceProblem::Unplayable {
+                    reason: "a looping slice is too short".into(),
+                }),
+            )],
         },
     );
     assert_eq!(

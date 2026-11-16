@@ -1386,7 +1386,7 @@ mod tests {
             fade_in: no_fade,
             fade_out: no_fade,
             slices: vec![],
-            last_slice_play_count: 1,
+            last_slice_play_count: 1.into(),
             levels: openlab_core::CueLevels {
                 master_db: 0.0,
                 outputs: vec![],

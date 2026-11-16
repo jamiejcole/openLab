@@ -121,6 +121,50 @@ fn unsupported_media_is_broken_with_its_reason() {
     assert_eq!(changes(&forget, 1), vec![(CueState::Idle, 10)]);
 }
 
+/// The binary reports an Audio cue every slice of which is skipped: the cue is broken before
+/// any GO with a problem of its own, a start plays nothing, and a slice that plays again
+/// (reported, or the edit alone) clears it.
+#[test]
+fn a_cue_whose_slices_are_all_skipped_is_broken_with_its_own_problem() {
+    let mut rig = Rig::new(vec![sound(1), sound(2)]);
+    let told = |problem: Option<SliceProblem>| Input::SliceProblems {
+        cues: vec![(id(1), problem)],
+    };
+    let broken = rig.at(100, told(Some(SliceProblem::NothingPlays)));
+    let problem = vec![CueProblem::NothingPlays];
+    assert_eq!(problem_reports(&broken), vec![(id(1), problem.clone())]);
+    assert_eq!(changes(&broken, 1), vec![(CueState::Broken, 100)]);
+    assert_eq!(
+        problem[0].to_string(),
+        "every slice is skipped, so no part of its file plays"
+    );
+    assert!(voice_starts(&rig.start(120, 1)).is_empty());
+    assert_eq!(rig.state(2), CueState::Idle);
+    // A report of another kind replaces it; the first again brings it back.
+    let other = SliceProblem::Unplayable {
+        reason: "a looping slice is too short".into(),
+    };
+    rig.at(130, told(Some(other.clone())));
+    assert_eq!(rig.problems(1), vec![other.problem()]);
+    rig.at(140, told(Some(SliceProblem::NothingPlays)));
+    assert_eq!(rig.problems(1), problem);
+    // An edit of a play count drops the report at once: a GO in the same burst plays.
+    if let CueKind::Audio {
+        last_slice_play_count,
+        ..
+    } = &mut rig.find_mut(1).kind
+    {
+        *last_slice_play_count = PlayCount::Skip;
+    }
+    rig.tick(150);
+    assert!(rig.problems(1).is_empty());
+    rig.at(160, told(Some(SliceProblem::NothingPlays)));
+    assert_eq!(rig.problems(1), problem);
+    let fixed = rig.at(200, told(None));
+    assert_eq!(problem_reports(&fixed), vec![(id(1), vec![])]);
+    assert_eq!(voice_starts(&rig.start(300, 1)), vec![(id(1), 300)]);
+}
+
 /// The binary reports an Audio cue whose slices cannot be played with its probed file (a
 /// looping slice too short): the cue is broken before any GO, a GO skips it, and it is fixed
 /// when the binary says so. A media problem takes its place while the file cannot be played.
@@ -128,7 +172,12 @@ fn unsupported_media_is_broken_with_its_reason() {
 fn unplayable_slices_break_the_cue_until_the_binary_clears_them() {
     let mut rig = Rig::new(vec![sound(1), sound(2)]);
     let slices = |cue: u128, reason: Option<&str>| Input::SliceProblems {
-        cues: vec![(id(cue), reason.map(str::to_owned))],
+        cues: vec![(
+            id(cue),
+            reason.map(|reason| SliceProblem::Unplayable {
+                reason: reason.to_owned(),
+            }),
+        )],
     };
     let broken = rig.at(100, slices(1, Some("a looping slice is too short")));
     let problem = vec![CueProblem::SlicesUnplayable {
@@ -172,7 +221,7 @@ fn unplayable_slices_break_the_cue_until_the_binary_clears_them() {
     if let CueKind::Audio { slices, .. } = &mut rig.find_mut(2).kind {
         slices.push(SliceMarker {
             time: 0.5,
-            play_count: 1,
+            play_count: 1.into(),
         });
     }
     assert_eq!(voice_starts(&rig.start(420, 2)), vec![(id(2), 420)]);

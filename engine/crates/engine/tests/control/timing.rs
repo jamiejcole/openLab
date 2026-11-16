@@ -578,7 +578,7 @@ fn a_load_cue_with_a_negative_time_plays_an_audio_target_from_before_its_end() {
             ..
         } = &mut target.kind
         {
-            *last_slice_play_count = play_count;
+            *last_slice_play_count = play_count.into();
         }
         let load = cue(
             1,

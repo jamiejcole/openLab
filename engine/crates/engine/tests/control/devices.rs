@@ -745,7 +745,7 @@ fn stood_after(lost: bool) -> Vec<(f64, Option<f64>, Option<f64>)> {
         ..
     } = &mut c.kind
     {
-        *last_slice_play_count = 0;
+        *last_slice_play_count = 0.into();
     }
     let mut s = device_show(workspace(vec![c]));
     s.run(BLOCK * 2);
@@ -4296,7 +4296,7 @@ fn the_same_while_the_cue_is_looping_it_loops_on_the_new_device() {
         ..
     } = &mut looping.kind
     {
-        *last_slice_play_count = 0;
+        *last_slice_play_count = 0.into();
     }
     let mut s = two_device_show(vec![looping]);
     start(&mut s, 1);
@@ -4739,7 +4739,7 @@ fn devamp_then_move(move_after: u64) -> (usize, Vec<(usize, f32, f32)>, usize) {
         ..
     } = &mut looping.kind
     {
-        *last_slice_play_count = 0;
+        *last_slice_play_count = 0.into();
     }
     let devamp = cue(
         3,
@@ -4857,9 +4857,9 @@ fn long_loop_devamped(on_b: bool) -> (DeviceShow, usize) {
     {
         *slices = vec![openlab_core::SliceMarker {
             time: 2.0,
-            play_count: 0,
+            play_count: 0.into(),
         }];
-        *last_slice_play_count = 1;
+        *last_slice_play_count = 1.into();
     }
     let devamp = cue(
         3,
@@ -5009,9 +5009,9 @@ fn devamped_move(
     {
         *slices = vec![openlab_core::SliceMarker {
             time: 0.25,
-            play_count: 0,
+            play_count: 0.into(),
         }];
-        *last_slice_play_count = tail;
+        *last_slice_play_count = tail.into();
     }
     let devamp = cue(
         3,
@@ -5240,6 +5240,11 @@ struct SlowMove {
     path: std::path::PathBuf,
     started: usize,
     msgs: Vec<ServerMessage>,
+    /// Tries of the move while its open was held: the times the control thread made a voice
+    /// for the new device beside the one that plays (its own count of live voices, read after
+    /// every block, so it follows the sample clock alone). The opener threads' count of opens
+    /// cannot say this: a try cancelled before an opener got to it opens nothing.
+    tries: usize,
 }
 
 fn slow_move(held: u64) -> SlowMove {
@@ -5259,17 +5264,24 @@ fn slow_move(held: u64) -> SlowMove {
     s.run(1000);
     gate(&a);
     s.slow_disk = true;
+    let (mut tries, mut voices) = (0, s.control().live_voices());
     map_patch(&mut s, patch_id(), DEV2_NAME);
     let mut msgs = Vec::new();
     for _ in 0..held.div_ceil(BLOCK) {
         s.run(BLOCK);
         msgs.extend(s.take_outbound());
+        let now = s.control().live_voices();
+        if now > voices {
+            tries += 1;
+        }
+        voices = now;
     }
     SlowMove {
         s,
         path: a,
         started,
         msgs,
+        tries,
     }
 }
 
@@ -5343,7 +5355,10 @@ fn a_move_to_a_disk_that_never_answers_plays_to_the_end_where_it_is_with_bounded
     m.release_and_run(2000);
     m.assert_in_step();
     assert_eq!(m.next_at(), Some(16_000));
-    assert!((2..=12).contains(&opens), "{opens} stream opens in 2 s");
+    // Tried again, as the control thread counts its tries; and never more opens than a few a
+    // try (an upper bound only: a try given up before an opener took it opens nothing).
+    assert!((2..=12).contains(&m.tries), "{} tries in 2 s", m.tries);
+    assert!(opens <= 12, "{opens} stream opens in 2 s");
     assert_eq!(m.warns().len(), 1, "{:?}", m.warns());
     assert_eq!(m.s.control().live_voices(), 0);
 }
@@ -5408,7 +5423,7 @@ fn a_loop_played_a_thousand_times_on_a_device_at_another_rate_auto_follows_on_it
             ..
         } = &mut first.kind
         {
-            *last_slice_play_count = 1000;
+            *last_slice_play_count = 1000.into();
         }
         let mut s = two_patch_show(
             vec![first, audio(2, &b, 1)],
@@ -5449,7 +5464,7 @@ fn a_loop_devamped_after_many_passes_on_a_device_at_another_rate_leaves_on_time_
             ..
         } = &mut looping.kind
         {
-            *last_slice_play_count = 0;
+            *last_slice_play_count = 0.into();
         }
         let devamp = cue(
             3,
@@ -5525,7 +5540,7 @@ fn a_cue_looping_many_passes_on_a_device_at_another_rate_moves_in_step() {
             ..
         } = &mut looping.kind
         {
-            *last_slice_play_count = 0;
+            *last_slice_play_count = 0.into();
         }
         let mut s = two_patch_show(
             vec![looping],

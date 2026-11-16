@@ -34,7 +34,7 @@ use openlab_core::{
 
 use super::media::{MediaCatalog, Probe};
 use super::patches::Patches;
-use super::plan::{PlanFailure, PlanSpec, cue_slices, cue_slices_from};
+use super::plan::{PlanSpec, cue_slices, cue_slices_from};
 use super::voice_ids::VoiceIds;
 
 /// Most ids kept for the next meter read (meters are read at 30 Hz, so this is never reached in
@@ -392,8 +392,8 @@ struct Sig {
     preloaded: bool,
     start: u64,
     end: Option<u64>,
-    marks: Vec<(u64, u32)>,
-    last: u32,
+    marks: Vec<(u64, openlab_core::PlayCount)>,
+    last: openlab_core::PlayCount,
 }
 
 #[derive(Default)]

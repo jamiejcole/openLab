@@ -3,6 +3,7 @@
 //! Cues and their kinds. Times are seconds (f64), levels are dB (f64).
 
 use std::borrow::Cow;
+use std::num::NonZeroU32;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -456,12 +457,97 @@ impl<'de> Deserialize<'de> for MediaRef {
     }
 }
 
-/// End of a slice. The slice that ends here plays `play_count` times; 0 = loop until devamped.
+/// How a slice plays (QLab 5 manual p. 179: a number of times, without end, or not at all).
+///
+/// Stored as a number for a count, the number 0 for [`PlayCount::Endless`] and the string
+/// `"skip"` for [`PlayCount::Skip`] (docs/file-format.md §5.3). The stored 0 is not the 0 a user
+/// types for a skipped slice: it is what "loop until devamped" was written as before a slice
+/// could be skipped, so those shows still mean what they meant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PlayCount {
+    /// Plays this many times in a row.
+    Times(NonZeroU32),
+    /// Loops until devamped or stopped.
+    Endless,
+    /// Not played: playback goes from the end of the slice before it straight to the start of
+    /// the next slice that plays.
+    Skip,
+}
+
+impl PlayCount {
+    /// Played once: a new slice's count.
+    pub const ONCE: Self = Self::Times(NonZeroU32::MIN);
+
+    /// The count a stored number means: 0 is [`PlayCount::Endless`].
+    pub fn from_stored(n: u32) -> Self {
+        NonZeroU32::new(n).map_or(Self::Endless, Self::Times)
+    }
+}
+
+impl From<u32> for PlayCount {
+    /// As [`PlayCount::from_stored`].
+    fn from(n: u32) -> Self {
+        Self::from_stored(n)
+    }
+}
+
+/// What a skipped slice's play count is stored as.
+const STORED_SKIP: &str = "skip";
+
+impl Serialize for PlayCount {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Times(n) => serializer.serialize_u32(n.get()),
+            Self::Endless => serializer.serialize_u32(0),
+            Self::Skip => serializer.serialize_str(STORED_SKIP),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PlayCount {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Stored;
+        impl serde::de::Visitor<'_> for Stored {
+            type Value = PlayCount;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    "a whole number from 0 to {} or \"{STORED_SKIP}\"",
+                    u32::MAX
+                )
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, n: u64) -> Result<PlayCount, E> {
+                u32::try_from(n)
+                    .map(PlayCount::from_stored)
+                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Unsigned(n), &self))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, n: i64) -> Result<PlayCount, E> {
+                u64::try_from(n)
+                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Signed(n), &self))
+                    .and_then(|n| self.visit_u64(n))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<PlayCount, E> {
+                if s == STORED_SKIP {
+                    Ok(PlayCount::Skip)
+                } else {
+                    Err(E::invalid_value(serde::de::Unexpected::Str(s), &self))
+                }
+            }
+        }
+        deserializer.deserialize_any(Stored)
+    }
+}
+
+/// End of a slice. The slice that ends here plays as `play_count` says.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SliceMarker {
     /// Seconds from the start of the file.
     pub time: f64,
-    pub play_count: u32,
+    pub play_count: PlayCount,
 }
 
 /// A routing-matrix crosspoint: file channel `input` → cue output `output`, both 0-based.
@@ -599,8 +685,8 @@ pub enum CueKind {
         fade_in: FadeSpec,
         fade_out: FadeSpec,
         slices: Vec<SliceMarker>,
-        /// Play count of the slice after the last marker; 0 = loop until devamped.
-        last_slice_play_count: u32,
+        /// How the slice after the last marker plays.
+        last_slice_play_count: PlayCount,
         levels: CueLevels,
         /// Decode the whole file into memory when loaded (AUD-05).
         preload: bool,

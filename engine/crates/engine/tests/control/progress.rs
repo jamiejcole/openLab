@@ -279,6 +279,50 @@ fn a_looping_slice_reports_file_positions_inside_the_slice_on_every_pass() {
     }
 }
 
+/// A skipped slice is never where the cue is: the reported file position (the play line in the
+/// waveform) goes from the end of the slice before it to the start of the one after, and is
+/// where the audio is.
+#[test]
+fn the_file_position_jumps_over_a_skipped_slice() {
+    // 2400 frames cut at 800 and 1600, the middle slice skipped.
+    let path = wav(&ramp(2400));
+    let c = with_counts(
+        audio(1, &path, 0),
+        &[
+            (secs(800), openlab_core::PlayCount::ONCE),
+            (secs(1600), openlab_core::PlayCount::Skip),
+        ],
+        openlab_core::PlayCount::ONCE,
+    );
+    let mut s = show(workspace(vec![c]));
+    s.take_outbound();
+    start(&mut s, 1);
+    s.run(2400);
+    let msgs = s.take_outbound();
+    let ch = s.channel(0);
+    let first = first_nonzero(&ch).unwrap();
+    let pos = item_positions(&msgs, 1);
+    assert!(pos.len() >= 4, "{pos:?}");
+    assert!(
+        pos.iter()
+            .all(|(_, p)| !(800.0..1600.0).contains(&frames_of(*p))),
+        "never inside the skipped slice: {pos:?}"
+    );
+    assert!(pos.iter().any(|(_, p)| frames_of(*p) < 800.0), "{pos:?}");
+    assert!(pos.iter().any(|(_, p)| frames_of(*p) >= 1600.0), "{pos:?}");
+    for &(elapsed, p) in &pos {
+        if let Some(heard) = heard_frame(&ch, first, elapsed) {
+            assert!(
+                (heard - frames_of(p)).abs() <= 1.0,
+                "{elapsed}: {heard} vs {}",
+                frames_of(p)
+            );
+        }
+    }
+    // What is left is counted on what plays: 1600 frames in all.
+    assert_eq!(last_nonzero(&ch), Some(first + 1599));
+}
+
 fn devamp_cue(n: u128, target: u128, stop: bool) -> openlab_core::Cue {
     cue(
         n,

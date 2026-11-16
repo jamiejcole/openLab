@@ -10,14 +10,80 @@ import AppKit
 /// read (every movie until sound from video files is built) shows the time ruler alone, its
 /// trims, slices and fades over it. Edits are reported as `Change`s; the inspector turns them into
 /// model commands. Peaks come from the engine (`waveform` request) and are kept per file and zoom.
+/// How a slice plays (QLab 5 manual p. 179): a number of times, until devamped, or not at all.
+enum SlicePlay: Equatable, ExpressibleByIntegerLiteral {
+    case times(Int)
+    /// Loops until devamped or stopped.
+    case endless
+    /// Not played: the cue goes from the slice before it straight to the next that plays.
+    case skip
+
+    /// The most plays a count field takes.
+    static let most = 1_000_000
+
+    /// As stored (docs/file-format.md §5): a number of plays, the number 0 for until devamped,
+    /// the text "skip" for a skipped slice. Anything else is no play count.
+    init?(json: JSONValue?) {
+        if json?.stringValue == "skip" {
+            self = .skip
+        } else if let n = json?.doubleValue, n >= 0, n == n.rounded(), n <= Double(UInt32.max) {
+            self = n == 0 ? .endless : .times(Int(n))
+        } else {
+            return nil
+        }
+    }
+
+    /// A stored number: 0 is until devamped.
+    init(integerLiteral value: Int) {
+        self = value == 0 ? .endless : .times(value)
+    }
+
+    /// What a user typed for a slice: a whole number of plays, 0 to skip it, a letter (or the
+    /// endless mark) to loop it until devamped. Anything else is refused.
+    init?(typed text: String) {
+        if let n = Int(text) {
+            guard (0...Self.most).contains(n) else { return nil }
+            self = n == 0 ? .skip : .times(n)
+        } else if text == Self.endlessMark || text.first?.isLetter == true {
+            self = .endless
+        } else {
+            return nil
+        }
+    }
+
+    static let endlessMark = "\u{221E}"
+
+    var json: JSONValue {
+        switch self {
+        case .times(let n): return .int(Int64(n))
+        case .endless: return .int(0)
+        case .skip: return .string("skip")
+        }
+    }
+
+    /// As drawn on the slice and offered for editing: the number, 0 for a skipped slice, the
+    /// endless mark.
+    var label: String {
+        switch self {
+        case .times(let n): return String(n)
+        case .endless: return Self.endlessMark
+        case .skip: return "0"
+        }
+    }
+
+    /// As the play-count field of a cue without slices shows it (Loop is the switch beside it,
+    /// so an endless cue shows the 1 it would play with the switch off).
+    var fieldText: String { self == .endless ? "1" : label }
+}
+
 @MainActor
 final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     enum Change: Equatable {
         case start(Double)
         /// nil: the end of the file.
         case end(Double?)
-        /// 0: loop until devamped (infinite). With slices, the last slice's count.
-        case playCount(Int)
+        /// How the cue plays; with slices, how the last slice does.
+        case playCount(SlicePlay)
         /// A new marker; the slice before it plays once.
         case addSlice(Double)
         /// New markers, one edit (a section's two edges); each fits as `addSlice` does.
@@ -28,18 +94,17 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         case removeSlice(Double)
         case clearSlices
         /// The play count of the slice the marker at this time ends.
-        case sliceCount(Double, Int)
+        case sliceCount(Double, SlicePlay)
         /// Built-in fade lengths (0: none) and the one curve of both; nil keeps what the cue has.
         case fades(fadeIn: Double?, fadeOut: Double?, curve: String?)
         /// A Video cue's last frame stays up (and the cue active) until it is stopped.
         case holdAtEnd(Bool)
     }
 
-    /// A slice marker: where it is in the file, and the play count of the slice it ends (0: until
-    /// devamped).
+    /// A slice marker: where it is in the file, and how the slice it ends plays.
     struct SliceMark: Equatable {
         var time: Double
-        var playCount: Int
+        var playCount: SlicePlay
     }
 
     /// `kind` with `change` made to it. The inspector applies it to the cue as the model has it
@@ -66,7 +131,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
             kind.set("end_time", e.map { .double($0) } ?? .null)
             return kind
         case .playCount(let n):
-            kind.set("last_slice_play_count", .int(Int64(n)))
+            kind.set("last_slice_play_count", n.json)
             return kind
         case .holdAtEnd(let on):
             kind.set("hold_at_end", .bool(on))
@@ -105,14 +170,14 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         }
         kind.set(
             "slices",
-            .array(marks.map { .object(["time": .double($0.time), "play_count": .int(Int64($0.playCount))]) }))
+            .array(marks.map { .object(["time": .double($0.time), "play_count": $0.playCount.json]) }))
         return kind
     }
 
     static func marks(of kind: JSONValue) -> [SliceMark] {
         (kind["slices"]?.arrayValue ?? []).compactMap { m in
-            guard let t = m["time"]?.doubleValue, let n = m["play_count"]?.doubleValue else { return nil }
-            return SliceMark(time: t, playCount: Int(n))
+            guard let t = m["time"]?.doubleValue, let n = SlicePlay(json: m["play_count"]) else { return nil }
+            return SliceMark(time: t, playCount: n)
         }
     }
 
@@ -126,7 +191,6 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     }
 
     static let cacheLimit = 16
-    static let maxPlayCount = 1_000_000
     /// The audio engine plays at most 256 slices, one more when a start part way in splits a loop
     /// (`MAX_SLICES`): more markers would leave a cue that cannot play.
     static let maxSliceMarks = 254
@@ -352,7 +416,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
 
     var startTime: Double { kind["start_time"]?.doubleValue ?? 0 }
     var endTime: Double? { kind["end_time"]?.doubleValue }
-    var playCount: Int { Int(kind["last_slice_play_count"]?.doubleValue ?? 1) }
+    var playCount: SlicePlay { SlicePlay(json: kind["last_slice_play_count"]) ?? 1 }
     var hasSlices: Bool { !sliceMarks.isEmpty }
     var sliceMarks: [SliceMark] { Self.marks(of: kind) }
     var fadeIn: Double { kind["fade_in"]?["duration"]?.doubleValue ?? 0 }
@@ -410,8 +474,8 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         if endField.currentEditor() == nil {
             endField.stringValue = (endTime ?? duration).map(CueTime.format) ?? ""
         }
-        let looping = playCount == 0
-        if countField.currentEditor() == nil { countField.stringValue = String(max(1, looping ? 1 : playCount)) }
+        let looping = playCount == .endless
+        if countField.currentEditor() == nil { countField.stringValue = playCount.fieldText }
         playRadio.state = looping ? .off : .on
         loopRadio.state = looping ? .on : .off
         slicesNote.isHidden = !hasSlices
@@ -479,7 +543,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         for c in [startField, endField] as [NSControl] { c.isEnabled = !off }
         // With slices each slice has its own count (QLab: edited on the slice markers).
         for c in [playRadio, loopRadio] as [NSControl] { c.isEnabled = !off && !sliced }
-        countField.isEnabled = !off && !sliced && playCount != 0
+        countField.isEnabled = !off && !sliced && playCount != .endless
         deleteSlicesButton.isEnabled = !off && sliced
         addSliceButton.isEnabled = !off && (waveform.insertion != nil || waveform.selection != nil)
         fadeCheck.isEnabled = !off
@@ -719,7 +783,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         editingSlice = index
         editingMark = index < marks.count ? marks[index].time : nil
         let count = index < marks.count ? marks[index].playCount : playCount
-        sliceCountField.stringValue = count == 0 ? "\u{221E}" : String(count)
+        sliceCountField.stringValue = count.label
         sliceCountField.frame = waveform.countRect(index)
         sliceCountField.isHidden = false
         waveform.window?.makeFirstResponder(sliceCountField)
@@ -732,21 +796,14 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         sliceCountField.isHidden = true
     }
 
-    /// A slice's typed play count: a whole number of plays, or a letter (or ∞) to loop until
-    /// devamped, as QLab takes one. 0 is refused: openLab cannot skip a slice. The slice is the one
-    /// the marker found when the edit began ends, wherever it is now.
+    /// A slice's typed play count, as QLab takes one: a whole number of plays, 0 to skip the
+    /// slice, or a letter (or ∞) to loop until devamped. The slice is the one the marker found
+    /// when the edit began ends, wherever it is now.
     private func commitSliceCount(_ text: String) {
         guard editingSlice != nil else { return }
         let mark = editingMark
         endSliceCountEdit()
-        let n: Int
-        if let typed = Int(text), (1...Self.maxPlayCount).contains(typed) {
-            n = typed
-        } else if text == "\u{221E}" || text.first?.isLetter == true {
-            n = 0
-        } else {
-            return refuseSlice("timeLoops.invalid.sliceCount")
-        }
+        guard let n = SlicePlay(typed: text) else { return refuseSlice("timeLoops.invalid.sliceCount") }
         if let mark {
             onChange?(.sliceCount(mark, n))
         } else if n != playCount {
@@ -766,10 +823,10 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         let text = field.stringValue.trimmingCharacters(in: .whitespaces)
         if field === sliceCountField { return commitSliceCount(text) }
         if field === countField {
-            guard let n = Int(text), (1...Self.maxPlayCount).contains(n) else {
+            guard let n = Int(text), (1...SlicePlay.most).contains(n) else {
                 return refuse(field, "timeLoops.invalid.count")
             }
-            if n != playCount { onChange?(.playCount(n)) }
+            if .times(n) != playCount { onChange?(.playCount(.times(n))) }
             return
         }
         if field === endField, text.isEmpty {
@@ -796,16 +853,16 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         } else if field === endField {
             field.stringValue = (endTime ?? file?.duration).map(CueTime.format) ?? ""
         } else {
-            field.stringValue = String(max(1, playCount))
+            field.stringValue = playCount.fieldText
         }
     }
 
     @objc private func radioChanged(_ sender: NSButton) {
         guard !isLocked, !hasSlices else { return }
         if sender === loopRadio {
-            if playCount != 0 { onChange?(.playCount(0)) }
-        } else if playCount == 0 {
-            onChange?(.playCount(max(1, Int(countField.stringValue) ?? 1)))
+            if playCount != .endless { onChange?(.playCount(.endless)) }
+        } else if playCount == .endless {
+            onChange?(.playCount(.times(max(1, Int(countField.stringValue) ?? 1))))
         }
     }
 }

@@ -2156,7 +2156,7 @@ fn a_play_count_and_infinite_loop_repeat_the_range_without_a_black_frame_and_a_d
     let mut s = video_show(vec![timed_cue(1, &movie, |t| {
         t.start_time = 0.4;
         t.end_time = Some(1.2);
-        t.last_slice_play_count = 3;
+        t.last_slice_play_count = 3.into();
     })]);
     assert_eq!(told_lengths(&s, 1), (Some(0.8), Some(2.4)));
     let at = go(&mut s);
@@ -2188,9 +2188,9 @@ fn a_play_count_and_infinite_loop_repeat_the_range_without_a_black_frame_and_a_d
         t.end_time = Some(1.2);
         t.slices = vec![openlab_core::SliceMarker {
             time: 0.8,
-            play_count: 0,
+            play_count: 0.into(),
         }];
-        t.last_slice_play_count = 1;
+        t.last_slice_play_count = 1.into();
     });
     let mut s = video_show(vec![looping, devamp]);
     assert_eq!(told_lengths(&s, 1), (Some(0.8), None), "loops for ever");
@@ -2231,7 +2231,7 @@ fn a_devamp_that_stops_its_target_ends_the_video_cue_at_the_end_of_the_pass() {
     );
     let looping = timed_cue(1, &movie, |t| {
         t.end_time = Some(0.8);
-        t.last_slice_play_count = 0;
+        t.last_slice_play_count = 0.into();
     });
     let mut s = video_show(vec![looping, devamp]);
     let at = start(&mut s, 1);
@@ -2327,7 +2327,7 @@ fn integrated_fade_in_and_out_opacity_follows_the_fade_lengths() {
     // A loop has no end until it is devamped: no fade out while it loops.
     let mut s = video_show(vec![timed_cue(1, &movie, |t| {
         t.fade_out = linear(0.5);
-        t.last_slice_play_count = 0;
+        t.last_slice_play_count = 0.into();
     })]);
     let at = go(&mut s);
     run_to(&mut s, at + samples(3.9));
@@ -2347,7 +2347,7 @@ fn the_playhead_follows_playback_inside_a_loop() {
     let mut s = video_show(vec![timed_cue(1, &movie, |t| {
         t.start_time = 0.4;
         t.end_time = Some(1.2);
-        t.last_slice_play_count = 0;
+        t.last_slice_play_count = 0.into();
     })]);
     let at = start(&mut s, 1);
     let (elapsed, remaining, position) =
@@ -2371,7 +2371,7 @@ fn load_to_time_inside_the_range_go_starts_on_that_frame() {
     let mut s = video_show(vec![timed_cue(1, &movie, |t| {
         t.start_time = 0.4;
         t.end_time = Some(1.2);
-        t.last_slice_play_count = 2;
+        t.last_slice_play_count = 2.into();
     })]);
     // 0.5 s into the action: 0.9 s into the file.
     s.transport(TransportAction::Load {
@@ -2400,6 +2400,58 @@ fn load_to_time_inside_the_range_go_starts_on_that_frame() {
         on_stage(&mut s, "loaded into the second pass"),
         frame_at(0.62)
     );
+}
+
+/// A slice with a count of 0 is skipped, as an Audio cue's: the picture goes from the end of
+/// the slice before it to the start of the next that plays with no black frame, the Duration
+/// cell counts only what plays, and a movie every slice of which is skipped is broken with its
+/// own problem until one plays.
+#[test]
+fn a_skipped_slice_is_jumped_over_without_a_black_frame_and_all_skipped_breaks_the_cue() {
+    use openlab_core::{PlayCount, SliceMarker};
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    // 0–0.4 s once, 0.4–1.2 s skipped, 1.2–2 s once.
+    let marks = |middle| {
+        vec![
+            SliceMarker {
+                time: 0.4,
+                play_count: PlayCount::ONCE,
+            },
+            SliceMarker {
+                time: 1.2,
+                play_count: middle,
+            },
+        ]
+    };
+    let mut s = video_show(vec![timed_cue(1, &movie, |t| {
+        t.slices = marks(PlayCount::Skip);
+    })]);
+    assert_eq!(told_lengths(&s, 1), (Some(1.2), Some(1.2)));
+    let at = go(&mut s);
+    let seen = frames_between(&mut s, at, 0.02, 1.14, 0.04);
+    assert!(
+        seen.iter()
+            .all(|f| !(frame_at(0.44)..frame_at(1.16)).contains(f)),
+        "no frame of the skipped slice: {seen:?}"
+    );
+    // 0.30 s and 0.62 s after GO (the 8th and 16th looks).
+    assert_eq!(seen[7], frame_at(0.3), "in the first slice: {seen:?}");
+    assert_eq!(seen[15], frame_at(1.42), "in the last slice: {seen:?}");
+    run_to(&mut s, at + samples(1.2) + BLOCK);
+    expect_state(&s, 1, CueState::Idle, "what plays is played");
+
+    let mut s = video_show(vec![timed_cue(1, &movie, |t| {
+        t.slices = marks(PlayCount::Skip);
+        t.slices[0].play_count = PlayCount::Skip;
+        t.last_slice_play_count = PlayCount::Skip;
+    })]);
+    assert_eq!(problems(&s, 1), vec![CueProblem::NothingPlays]);
+    go(&mut s);
+    s.run(samples(0.2));
+    assert_eq!(shown(&mut s), None, "nothing plays");
+    set_geometry(&mut s, 1, serde_json::json!({"last_slice_play_count": 1}));
+    assert_eq!(problems(&s, 1), vec![]);
 }
 
 /// Trims the movie cannot play (a start trim past its end) break the cue with why, as an Audio
@@ -2446,7 +2498,7 @@ fn a_devamped_loop_survives_a_stage_host_relaunch() {
         t.end_time = Some(1.6);
         t.slices = vec![openlab_core::SliceMarker {
             time: 0.8,
-            play_count: 0,
+            play_count: 0.into(),
         }];
     });
     let mut s = video_show(vec![looping, devamp]);
@@ -2613,7 +2665,7 @@ fn the_shortest_loops_jump_back_at_each_seam() {
         let mut s = video_show(vec![timed_cue(1, &movie, |t| {
             t.start_time = 0.4;
             t.end_time = Some(end);
-            t.last_slice_play_count = 0;
+            t.last_slice_play_count = 0.into();
         })]);
         let at = start(&mut s, 1);
         run_to(&mut s, at + samples(0.5));
@@ -2685,14 +2737,14 @@ fn a_second_devamp_in_the_same_run_leaves_the_second_loop() {
         t.slices = vec![
             openlab_core::SliceMarker {
                 time: 0.4,
-                play_count: 0,
+                play_count: 0.into(),
             },
             openlab_core::SliceMarker {
                 time: 0.8,
-                play_count: 0,
+                play_count: 0.into(),
             },
         ];
-        t.last_slice_play_count = 1;
+        t.last_slice_play_count = 1.into();
     });
     let mut s = video_show(vec![looping, devamp_cue(2), devamp_cue(3)]);
     let at = start(&mut s, 1);
@@ -2719,9 +2771,9 @@ fn a_devamp_pending_at_a_pause_leaves_the_loop_after_the_resume() {
         t.end_time = Some(1.2);
         t.slices = vec![openlab_core::SliceMarker {
             time: 0.8,
-            play_count: 0,
+            play_count: 0.into(),
         }];
-        t.last_slice_play_count = 1;
+        t.last_slice_play_count = 1.into();
     });
     let mut s = video_show(vec![looping, devamp_cue(2)]);
     let at = start(&mut s, 1);
@@ -2748,9 +2800,9 @@ fn a_resume_in_the_slice_after_a_devamped_loop_plays_on_and_ends() {
         t.end_time = Some(1.6);
         t.slices = vec![openlab_core::SliceMarker {
             time: 0.8,
-            play_count: 0,
+            play_count: 0.into(),
         }];
-        t.last_slice_play_count = 1;
+        t.last_slice_play_count = 1.into();
     });
     let mut s = video_show(vec![looping, devamp_cue(2)]);
     let at = start(&mut s, 1);
@@ -3096,7 +3148,7 @@ fn each_loop_seam_and_a_devamp_keep_picture_and_sound_together() {
         let mut s = video_show(vec![timed_sounding_cue(1, &movie, |t| {
             t.start_time = start_time;
             t.end_time = Some(end_time);
-            t.last_slice_play_count = 3;
+            t.last_slice_play_count = 3.into();
         })]);
         let at = go(&mut s);
         let pass = samples(end_time) - samples(start_time);
@@ -3135,7 +3187,7 @@ fn each_loop_seam_and_a_devamp_keep_picture_and_sound_together() {
         t.end_time = Some(1.2);
         t.slices = vec![openlab_core::SliceMarker {
             time: 0.8,
-            play_count: 0,
+            play_count: 0.into(),
         }];
     });
     let mut s = video_show(vec![looping, devamp]);
@@ -3156,6 +3208,90 @@ fn each_loop_seam_and_a_devamp_keep_picture_and_sound_together() {
     assert_eq!(shown(&mut s), None);
     s.run(samples(0.1));
     assert!(silent(&s, end + 8, s.rendered()));
+    assert_eq!(s.stalls(), 0);
+}
+
+/// A movie with sound and a skipped slice: sound and picture go over it on the same sample,
+/// nothing of it heard or shown; a devamp of the loop before it goes on to the slice after it
+/// for both; and a load to a time counts only what plays, for both (a Video cue takes no seek
+/// to a point of its file, so no point inside the skipped slice can be asked for).
+#[test]
+fn a_skipped_slice_keeps_picture_and_sound_together_played_devamped_and_loaded() {
+    use openlab_core::{PlayCount, SliceMarker};
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (50, 25), "pcm:2:48000");
+    // 0–0.4 s as `first` says, 0.4–1.2 s skipped, 1.2–2 s once.
+    let sliced = |n: u128, first: PlayCount| {
+        timed_sounding_cue(n, &movie, move |t| {
+            t.slices = vec![
+                SliceMarker {
+                    time: 0.4,
+                    play_count: first,
+                },
+                SliceMarker {
+                    time: 1.2,
+                    play_count: PlayCount::Skip,
+                },
+            ];
+        })
+    };
+    let mut s = video_show(vec![sliced(1, PlayCount::ONCE)]);
+    assert_eq!(told_lengths(&s, 1), (Some(1.2), Some(1.2)));
+    let at = go(&mut s);
+    let seam = at + samples(0.4);
+    run_to(&mut s, seam - samples(0.1));
+    in_step(&mut s, RATE, 25.0, "before the skipped slice");
+    run_to(&mut s, seam + samples(0.1));
+    let sound = in_step(&mut s, RATE, 25.0, "after the skipped slice");
+    assert!((sound - 1.3).abs() < 0.01, "{sound}");
+    sound_is(&s, seam - 16, 0.398, "the end of the first slice");
+    sound_is(&s, seam + 16, 1.202, "the start of the last slice");
+    let end = at + samples(1.2);
+    run_to(&mut s, end + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "what plays is played");
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(0.1));
+    assert!(silent(&s, end + 8, s.rendered()));
+
+    // A load to 0.6 s of the action is 0.2 s into the last slice.
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: 0.6,
+    });
+    s.run(BLOCK);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.1));
+    sound_is(
+        &s,
+        at + 40,
+        1.4 + 40.0 / f64::from(RATE),
+        "loaded to a time",
+    );
+    in_step(&mut s, RATE, 25.0, "after a load to time");
+    run_to(&mut s, at + samples(0.6) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "");
+
+    // The first slice loops until devamped: the devamp goes over the skipped slice.
+    let mut s = video_show(vec![sliced(1, PlayCount::Endless), devamp_cue(2)]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.9));
+    in_step(&mut s, RATE, 25.0, "in the third pass");
+    start(&mut s, 2);
+    let leaves = at + samples(1.2);
+    run_to(&mut s, leaves + samples(0.2));
+    sound_is(&s, leaves - 16, 0.398, "the end of the last pass");
+    sound_is(
+        &s,
+        leaves + 16,
+        1.202,
+        "into the slice after the skipped one",
+    );
+    let sound = in_step(&mut s, RATE, 25.0, "after the devamp");
+    assert!((sound - 1.4).abs() < 0.01, "{sound}");
+    let end = at + samples(2.0);
+    run_to(&mut s, end + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended after the last slice");
+    assert_eq!(shown(&mut s), None);
     assert_eq!(s.stalls(), 0);
 }
 
@@ -4328,7 +4464,7 @@ fn a_devamp_stop_asked_while_the_sound_is_starved_ends_both_after_the_whole_pass
         t.end_time = Some(1.2);
         t.slices = vec![openlab_core::SliceMarker {
             time: 0.8,
-            play_count: 0,
+            play_count: 0.into(),
         }];
     });
     let stop = cue(

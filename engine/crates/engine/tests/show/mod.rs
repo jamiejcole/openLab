@@ -16,8 +16,8 @@ use openlab_core::protocol::{
 use openlab_core::{
     ContinueMode, Crosspoint, Cue, CueColor, CueId, CueKind, CueLevels, CueList, CueListId,
     CueOutput, DeviceInfo, FadeCurve, FadeSpec, MachineSettings, MediaRef, OutputPatch, PatchId,
-    PatchMapping, PatchOutput, SecondTrigger, SliceMarker, TransportHotkeys, Triggers, Workspace,
-    WorkspaceId, WorkspaceSettings,
+    PatchMapping, PatchOutput, PlayCount, SecondTrigger, SliceMarker, TransportHotkeys, Triggers,
+    Workspace, WorkspaceId, WorkspaceSettings,
 };
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
@@ -95,7 +95,7 @@ pub fn audio(n: u128, path: &Path, out: u32) -> Cue {
                 curve: FadeCurve::Linear,
             },
             slices: vec![],
-            last_slice_play_count: 1,
+            last_slice_play_count: 1.into(),
             levels: CueLevels {
                 master_db: 0.0,
                 outputs: vec![
@@ -118,8 +118,14 @@ pub fn audio(n: u128, path: &Path, out: u32) -> Cue {
     )
 }
 
-/// Sets an audio cue's slice markers.
-pub fn with_slices(mut c: Cue, markers: &[(f64, u32)], last: u32) -> Cue {
+/// Sets an audio cue's slice markers; a count is a stored number (0: until devamped).
+pub fn with_slices(c: Cue, markers: &[(f64, u32)], last: u32) -> Cue {
+    let markers: Vec<(f64, PlayCount)> = markers.iter().map(|&(t, n)| (t, n.into())).collect();
+    with_counts(c, &markers, last.into())
+}
+
+/// Sets an audio cue's slice markers and how each slice plays.
+pub fn with_counts(mut c: Cue, markers: &[(f64, PlayCount)], last: PlayCount) -> Cue {
     if let CueKind::Audio {
         slices,
         last_slice_play_count,

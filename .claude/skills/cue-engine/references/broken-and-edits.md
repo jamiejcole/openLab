@@ -8,6 +8,7 @@ Problems are found before a cue is triggered (NFR-07), so the operator sees them
 - `nothing_to_fade`: Fade with no level set (`fade-levels.md`).
 - `no_media`: Audio with no file. `media_missing`, `media_unsupported`: from `Input::MediaStatus`.
 - `slices_unplayable { reason }`: from `Input::SliceProblems` (trims, markers or play counts cannot be played with the probed file: a looping slice under 50 ms, a start trim past the end). Not shown while the cue has no file or a media problem.
+- `nothing_plays`: from `Input::SliceProblems` too (`SliceProblem::NothingPlays`): every slice inside the trims is skipped, so no part of the file plays (QLab 5 manual pp. 184-185). Shown and cleared as `slices_unplayable` is; a still Video cue (which ignores its time and loops) never has it.
 - `no_patch`: a Video cue whose file has sound (`Input::MediaSound`) with its patch "none"; its `patch_missing` and `device_unavailable` likewise only while its file has sound.
 - `patch_missing`: model. `device_unavailable { patch, resolution }`: `Input::PatchStatus` with any resolution but `mapped`.
 - `network_patch_missing`, `network_host_invalid`, `network_message_invalid`: Network cues, from the model via `check_endpoint` / `check_message` (limits: skill `osc`).
@@ -20,7 +21,7 @@ Problems are found before a cue is triggered (NFR-07), so the operator sees them
 
 ## Inputs
 - `MediaStatus { media, status }`: `available`, `missing`, `unsupported { reason }`, `unknown` (forgets the report: assumed playable). Keyed by `MediaRef` as stored, so every Audio cue on a reference shares it. `PatchStatus { patch, resolution }` uses `resolve_patch`'s `PatchResolution`. `Availability` carries many of both in one call.
-- `SliceProblems { cues: [(cue, reason?)] }`: the binary planned the slices against the probe (core cannot plan audio); `reason` set = unplayable, absent = playable or no longer planned.
+- `SliceProblems { cues: [(cue, problem?)] }`: the binary planned the slices against the probe (core cannot plan audio); a `SliceProblem` (`Unplayable { reason }` or `NothingPlays`) = cannot play, absent = playable or no longer planned.
 - A slice report is kept with the cue's plan inputs at that moment (file, trims, markers, play counts) and counts only while the cue still has them: an edit of any makes the slices unknown (assumed playable) until the binary reports the new plan, so a GO right after a fix is never refused for the old report.
 - Nothing reported = no problem: the engine cannot know a file is missing until told. When to send each: skill `engine-control`. A binary playing an unmapped patch on a default device sends the `mapped` resolution it uses.
 

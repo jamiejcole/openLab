@@ -1723,8 +1723,15 @@ fn status_input(ws: &Workspace, p: &Pick) -> Input {
         11 => Input::SliceProblems {
             cues: vec![(
                 choose(&ids, p.b).unwrap_or(cue_id(1)),
-                (!p.d.is_multiple_of(3))
-                    .then(|| ["too short", "bad marks"][p.d as usize % 2].into()),
+                (!p.d.is_multiple_of(3)).then(|| {
+                    if p.d.is_multiple_of(2) {
+                        SliceProblem::NothingPlays
+                    } else {
+                        SliceProblem::Unplayable {
+                            reason: "too short".into(),
+                        }
+                    }
+                }),
             )],
         },
         _ => Input::Tick,

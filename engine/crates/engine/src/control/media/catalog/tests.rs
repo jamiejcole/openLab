@@ -947,7 +947,7 @@ fn a_preload_answer_that_arrives_after_its_release_is_ignored() {
 // ----- slice-plan checks followed from the catalog's notes -----
 
 use crate::control::checks::PlanChecks;
-use openlab_core::SliceMarker;
+use openlab_core::{PlayCount, SliceMarker, SliceProblem};
 use std::num::NonZeroU32;
 
 const PLAN_RATE: NonZeroU32 = NonZeroU32::new(48_000).unwrap();
@@ -974,10 +974,10 @@ fn plan_edit(ws: &Workspace, rng: &mut Rng) -> Option<Command> {
             0 => vec![],
             n => vec![SliceMarker {
                 time: 0.3,
-                play_count: u32::try_from(n).unwrap(),
+                play_count: [PlayCount::Skip, PlayCount::ONCE][n - 1],
             }],
         };
-        *last_slice_play_count = [1, 2][rng.below(2)];
+        *last_slice_play_count = [1.into(), 2.into(), PlayCount::Skip][rng.below(3)];
     }
     Some(Command::SetCueProperty {
         id: cue.id,
@@ -1005,9 +1005,9 @@ fn plan_checks_following_changes_equal_a_full_walk() {
         let (mut ws, mut history, mut next) = (base.clone(), History::new(), 20_000u128);
         cat.sync(&ws);
         let mut checks = PlanChecks::default();
-        let mut last: std::collections::BTreeMap<CueId, String> = Default::default();
+        let mut last: std::collections::BTreeMap<CueId, SliceProblem> = Default::default();
         // What the cue engine has been told (`take_changes().slices`), applied in order.
-        let mut told: std::collections::BTreeMap<CueId, String> = Default::default();
+        let mut told: std::collections::BTreeMap<CueId, SliceProblem> = Default::default();
         for step in 0..80 {
             let footprint = match rng.below(12) {
                 0 => history

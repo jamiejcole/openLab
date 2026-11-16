@@ -15,7 +15,7 @@ use std::hash::Hash;
 use crate::cue::{Cue, FadeLevels, FadeSpec, GroupMode, Hotkey};
 use crate::cue::{
     CueKind, CueLevels, LevelLimits, MAX_CHANNELS, MAX_CUE_OUTPUTS, MAX_DB, MAX_SLICE_MARKERS,
-    MAX_TIME, OUTPUT_MAX_DB_RANGE, OUTPUT_MIN_DB_RANGE, OscArg, SILENCE_DB, SliceMarker,
+    MAX_TIME, OUTPUT_MAX_DB_RANGE, OUTPUT_MIN_DB_RANGE, OscArg, PlayCount, SILENCE_DB, SliceMarker,
 };
 use crate::limits::{fade_holds_levels, group_ids};
 use crate::model::{
@@ -1003,7 +1003,7 @@ impl Checker {
         end_time: &mut Option<f64>,
         [fade_in, fade_out]: [&mut FadeSpec; 2],
         slices: &mut Vec<SliceMarker>,
-        last_slice_play_count: &mut u32,
+        last_slice_play_count: &mut PlayCount,
     ) {
         self.time(id, "start_time", start_time);
         if let Some(mut end) = *end_time {
@@ -1034,7 +1034,7 @@ impl Checker {
         &mut self,
         id: Option<CueId>,
         slices: &mut Vec<SliceMarker>,
-        last_play_count: &mut u32,
+        last_play_count: &mut PlayCount,
         start: f64,
         end: Option<f64>,
     ) {
