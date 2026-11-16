@@ -14,6 +14,7 @@ use openlab_core::{
 
 use super::devices::{Device, DeviceAnswer, DeviceEvent, OutputKey};
 use super::outputs::Output;
+use super::transport::Scope;
 use super::voices::Effects;
 use super::{Backend, Control, DocCx, Engine, device_notice, notice};
 
@@ -580,11 +581,13 @@ impl DocCx<'_> {
     /// [`Control::device_lost`]): the patches on it are reported missing (loaded cues on them
     /// unload, starts are refused as broken, idle cues show broken), every audio run with a
     /// voice on it, or whose patch is on it, ends at once with `ActionFailed { device_lost }`
-    /// (hard stop, no fade; the voice and its stream are released, auto-follow never fires),
-    /// and every voice the doc has in that device's mixer is stopped, so nothing sounds, or
-    /// resumes, when the device returns. When it was the `last` device that played, every
-    /// audio run fails and every other active run stops too (`Input::DeviceLost`): nothing
-    /// scheduled before the loss may fire after it. Returns the runs stopped.
+    /// (hard stop, no fade; the voice and its stream are released, auto-follow never fires;
+    /// a voice of such a cue the engine no longer owns is stopped on whichever device it
+    /// plays), and every voice the doc has in that device's mixer is stopped, so nothing
+    /// sounds, or resumes, when the device returns. When it was the `last` device that
+    /// played, every audio run fails and every other active run stops too
+    /// (`Input::DeviceLost`): nothing scheduled before the loss may fire after it. Returns the
+    /// runs stopped.
     fn device_lost(&mut self, key: OutputKey, name: &str, last: bool) -> usize {
         let now = self.now();
         for input in self.sync_patches(false) {
@@ -641,6 +644,9 @@ impl DocCx<'_> {
                 },
                 now,
             );
+            // The end of its sound the engine no longer owns (`fail_on_unplayable`), when it
+            // plays on another device than the lost one: the cue was moved here from there.
+            self.silence_orphans(Scope::Cue(cue), now);
         }
         for item in stood {
             if self.doc.model.engine().is_lost(item.0) {
@@ -753,7 +759,8 @@ impl DocCx<'_> {
 
     /// Runs whose voice was to move to a device that is not connected or cannot be used stop
     /// as on a lost device (`ActionFailed { device_lost }`: a hard stop, the cue shows paused
-    /// with its time frozen), with a `device_lost` notice and log naming the device and why.
+    /// with its time frozen, and any voice of its the engine no longer owns is stopped too),
+    /// with a `device_lost` notice and log naming the device and why.
     fn fail_on_unplayable(
         &mut self,
         lost: Vec<(CueId, RunId, String, Option<String>)>,
@@ -774,6 +781,10 @@ impl DocCx<'_> {
                 },
                 now,
             );
+            // The engine ends an action whose length it knows up to a block ahead: a cue in
+            // its post-wait can still have the end of its sound playing, on a device that is
+            // still there, which the engine has no voice left to stop for.
+            self.silence_orphans(Scope::Cue(cue), now);
             match devices.iter_mut().find(|(d, ..)| *d == device) {
                 Some((.., n)) => *n += 1,
                 None => devices.push((device, why, 1)),
