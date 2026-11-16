@@ -230,17 +230,25 @@ fn underrun_outputs_silence_reports_and_recovers() {
     );
     assert_eq!(ctl.underrun_frames(), 200);
 
-    // The disk thread catches up: playback resumes, then a new episode is reported.
+    // The disk thread catches up: playback resumes (the episode's end says by how much the
+    // voice is late), then a new episode is reported.
     tx.push_entire_slice(&[1.0; 100]).unwrap();
     no_alloc(|| r.render_into(&mut out, &[64]));
     assert!(out[..100].iter().all(|s| *s == 1.0));
     assert!(out[100..].iter().all(|s| *s == 0.0));
     assert_eq!(
         events(&mut ctl),
-        [Event::Underrun {
-            voice: VoiceId(1),
-            at: 400
-        }]
+        [
+            Event::UnderrunEnded {
+                voice: VoiceId(1),
+                at: 300,
+                frames: 200
+            },
+            Event::Underrun {
+                voice: VoiceId(1),
+                at: 400
+            }
+        ]
     );
 
     // End of stream: the voice finishes cleanly and its start comes back.

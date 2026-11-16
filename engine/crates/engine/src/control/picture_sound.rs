@@ -150,7 +150,12 @@ impl DocCx<'_> {
             {
                 continue;
             }
-            let current = self.doc.model.engine().run_of(cue);
+            let engine = self.doc.model.engine();
+            let over = matches!(
+                engine.state(cue),
+                CueState::Idle | CueState::PostWaiting | CueState::Broken
+            );
+            let current = engine.run_of(cue).filter(|_| !over);
             for (voice, of, run) in self.doc.voices.sounding() {
                 if of == cue && Some(run) != current {
                     commands.push((

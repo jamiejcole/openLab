@@ -1352,12 +1352,21 @@ impl DocCx<'_> {
             }
             let doc = self.doc.id;
             self.eng.pictures.held.retain(|h| !(lost && h.doc == doc && h.cue == cue));
+            // The run the cue has now, if its action is under way again.
+            let engine = self.doc.model.engine();
+            let over = matches!(
+                engine.state(cue),
+                CueState::Idle | CueState::PostWaiting | CueState::Broken
+            );
+            let current = engine.run_of(cue).filter(|_| !over);
             let ids: Vec<u64> = self
                 .eng
                 .pictures
                 .live
                 .iter()
                 .filter(|(_, l)| l.doc == doc && l.cue == cue && l.ends.is_none())
+                // Not the picture of a run the cue started since (a GO in its panic fade).
+                .filter(|(_, l)| lost || current != Some(l.run))
                 .map(|(id, _)| *id)
                 .collect();
             for id in ids {

@@ -4,10 +4,11 @@ Problems are found before a cue is triggered (NFR-07), so the operator sees them
 
 ## Problems (`CueProblem`, in this order)
 - `no_target`, `target_missing`, `target_self`: targeting cues (Fade, Start, Stop, Pause, Load, Reset, Devamp, GoTo, Arm, Disarm). Model.
-- `target_wrong_kind`: Fade needs Audio or Group; Devamp needs Audio or a playlist group. Same rule as load-time validation.
+- `target_wrong_kind`: Fade needs Audio, Video or Group; Devamp needs Audio or a playlist group. Same rule as load-time validation.
 - `nothing_to_fade`: Fade with no level set (`fade-levels.md`).
 - `no_media`: Audio with no file. `media_missing`, `media_unsupported`: from `Input::MediaStatus`.
 - `slices_unplayable { reason }`: from `Input::SliceProblems` (trims, markers or play counts cannot be played with the probed file: a looping slice under 50 ms, a start trim past the end). Not shown while the cue has no file or a media problem.
+- `no_patch`: a Video cue whose file has sound (`Input::MediaSound`) with its patch "none"; its `patch_missing` and `device_unavailable` likewise only while its file has sound.
 - `patch_missing`: model. `device_unavailable { patch, resolution }`: `Input::PatchStatus` with any resolution but `mapped`.
 - `network_patch_missing`, `network_host_invalid`, `network_message_invalid`: Network cues, from the model via `check_endpoint` / `check_message` (limits: skill `osc`).
 - `started_broken`: shown alone while a cue triggered with problems, fixed since, still has that run pending.
