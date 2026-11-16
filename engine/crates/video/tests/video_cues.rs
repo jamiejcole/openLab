@@ -2865,8 +2865,9 @@ fn in_step(s: &mut OfflineShow, rate: u32, fps: f64, what: &str) -> f64 {
 /// file has no file-type box and every offset in it stays right.
 fn without_file_type(movie: &Path, to: &Path) -> PathBuf {
     let mut bytes = std::fs::read(movie).unwrap();
-    assert_eq!(&bytes[4..8], b"ftyp");
-    bytes[4..8].copy_from_slice(b"free");
+    let kind = bytes.get_mut(4..8).expect("a first box");
+    assert_eq!(kind, b"ftyp");
+    kind.copy_from_slice(b"free");
     std::fs::write(to, &bytes).unwrap();
     to.to_path_buf()
 }
