@@ -43,6 +43,7 @@ out[d]       = dev[d] * global_master(t)
 **MoveVoice**
 - For the de-zipper time the voice plays into both patches, crossfading linearly old to new, so neither set of outputs clicks and the two always add up to the voice.
 - A voice not heard yet (moved on its start sample, or paused past its declick tail) moves at once.
+- A voice moved while its pause tail still sounds crossfades the tail; the move is over on the first sample after the last tail (`MoveEnded` there), whatever the block sizes, so a later resume plays on the new patch only.
 - A move requested during a crossfade waits for it and starts with the next segment rendered (at most a block later; latest wins).
 - Ignored for an unknown voice, a patch out of range, or the patch the voice is on.
 - Each move taken is counted (out-of-range patch included). `MoveEnded { voice, at, moves }` reports the voice settled on one patch once no crossfade is left: at once for a move with no crossfade, else from the end of the segment its last crossfade ends in, and not while another move waits.

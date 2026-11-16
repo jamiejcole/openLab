@@ -195,11 +195,12 @@ fn render_moving(
     if let Some(b) = move_bus.get_mut(..width * block) {
         clear(b, block, len);
     }
-    if v.paused.is_some() {
-        render_tail(v, len, t0, block, move_bus, s, outbox);
+    let tail = if v.paused.is_some() {
+        Some(render_tail(v, len, t0, block, move_bus, s, outbox))
     } else {
         render_voice(v, len, t0, block, move_bus, s, outbox);
-    }
+        None
+    };
     for (k, leaving) in [(m.from, true), (v.patch, false)] {
         let Some(p) = patches.get_mut(k) else {
             continue;
@@ -217,10 +218,21 @@ fn render_moving(
             }
         }
     }
-    v.advance_move(len);
+    // A paused voice whose last tail ended in this segment has nothing left to crossfade: the
+    // move is over on that sample, wherever the segment ends.
+    let played = match tail {
+        Some(sounded) if v.tail_over() => {
+            v.advance_move(usize::MAX);
+            sounded
+        }
+        _ => {
+            v.advance_move(len);
+            len
+        }
+    };
     // A voice that ended meanwhile was reported finished instead.
     if v.moving.is_none() && v.is_active() {
-        let at = t0.saturating_add(len as u64);
+        let at = t0.saturating_add(played as u64);
         let (voice, moves) = (v.id, v.moves);
         outbox.emit(Event::MoveEnded { voice, at, moves });
     }
@@ -427,7 +439,7 @@ fn render_voice(
 /// without consuming them, at the gains it had when it paused (none of them advance), times the
 /// falling declick ramp and the integrated fade envelope those frames would have had; and what
 /// is left of the tails earlier resumes cut short. A voice stopped meanwhile ends with the last
-/// of them.
+/// of them. Returns the frames of this segment a tail sounded on.
 fn render_tail(
     v: &mut Voice,
     len: usize,
@@ -436,8 +448,8 @@ fn render_tail(
     bus: &mut [f32],
     s: &mut Scratch,
     outbox: &mut Outbox,
-) {
-    let Some(p) = v.paused else { return };
+) -> usize {
+    let Some(p) = v.paused else { return 0 };
     let n = usize::try_from(p.len.saturating_sub(p.done))
         .unwrap_or(usize::MAX)
         .min(len);
@@ -460,15 +472,17 @@ fn render_tail(
     {
         vg.fill(g);
         mix_frozen(v, true, xn, xn, block, bus, s);
-        v.xdone += xn;
     }
+    v.xdone += xn;
     if let Some(p) = v.paused.as_mut() {
         p.done += n as u64;
     }
+    let sounded = n.max(xn);
     if p.stopped && v.tail_over() {
-        let at = t0.saturating_add(n.max(xn) as u64);
+        let at = t0.saturating_add(sounded as u64);
         v.finish(at, FinishReason::Stopped, outbox);
     }
+    sounded
 }
 
 /// Mixes `got` frames of a paused voice into its outputs at the gains it paused with (none of
