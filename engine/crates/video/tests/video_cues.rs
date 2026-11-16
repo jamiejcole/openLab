@@ -2244,6 +2244,143 @@ fn a_devamp_that_stops_its_target_ends_the_video_cue_at_the_end_of_the_pass() {
     assert_eq!(shown(&mut s), None);
 }
 
+/// Cue 1 loops file 0 to 0.8 s for ever; Devamp cue 2 stops it at the end of the pass under
+/// way, and with `start_next` starts cue 3 (a long Wait) then.
+fn devamp_stop_show(movie: &Path, start_next: bool) -> OfflineShow {
+    let looping = timed_cue(1, movie, |t| {
+        t.end_time = Some(0.8);
+        t.last_slice_play_count = 0.into();
+    });
+    let devamp = cue(
+        2,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: start_next,
+            stop_target_when_slice_ends: true,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let wait = cue(3, CueKind::Wait { duration: 5.0 });
+    video_show(vec![looping, devamp, wait])
+}
+
+/// Paused while a devamp that stops it is pending, and kept paused past the sample the pass
+/// would have ended on: the frame stays and the cue stays paused. The resume plays the rest
+/// of the pass, the picture leaves when it ends, the cue ends then, and the Devamp cue starts
+/// the next cue then.
+#[test]
+fn a_pause_past_a_pending_devamp_stop_holds_the_frame_and_the_resume_plays_the_pass_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = devamp_stop_show(&movie, true);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2); // the pass under way ends at 1.6 s
+    run_to(&mut s, at + samples(1.1));
+    s.transport(TransportAction::Pause { cue: id(1) });
+    let paused = s.now();
+    s.run(BLOCK);
+    let held = on_stage(&mut s, "the frame held");
+    let into_pass = (paused - at) as f64 / f64::from(RATE) - 0.8;
+    assert!(held.abs_diff(frame_at(into_pass)) <= 1, "{held} held");
+    run_to(&mut s, at + samples(2.4));
+    expect_state(
+        &s,
+        1,
+        CueState::Paused,
+        "paused past the pass's planned end",
+    );
+    assert_eq!(shown(&mut s), Some(held), "the frame stays while paused");
+    expect_state(&s, 3, CueState::Idle, "the loop is not left yet");
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    let leaves = at + samples(1.6) + (resumed - paused);
+    run_to(&mut s, resumed + samples(0.2));
+    expect_state(&s, 1, CueState::Running, "after the resume");
+    let now = on_stage(&mut s, "playing on after the resume");
+    assert!(now.abs_diff(frame_at(into_pass + 0.2)) <= 1, "{now}");
+    run_to(&mut s, leaves - samples(0.05));
+    let now = on_stage(&mut s, "the end of the pass");
+    assert!(now.abs_diff(frame_at(0.75)) <= 1, "{now}");
+    expect_state(&s, 3, CueState::Idle, "the loop is not left yet");
+    run_to(&mut s, leaves + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "stopped at the end of the pass");
+    assert_eq!(shown(&mut s), None);
+    assert_eq!(s.control().pictures_live(), 0);
+    expect_state(&s, 3, CueState::Running, "started as the loop was left");
+}
+
+/// A short pause before a pending devamp stop is reached moves the end of the pass by the
+/// time paused: the pass plays out whole and the cue ends with its picture.
+#[test]
+fn a_short_pause_before_a_pending_devamp_stop_moves_the_end_by_the_time_paused() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let mut s = devamp_stop_show(&movie, false);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2); // the pass under way ends at 1.6 s
+    run_to(&mut s, at + samples(1.1));
+    s.transport(TransportAction::Pause { cue: id(1) });
+    let paused = s.now();
+    s.run(samples(0.2));
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    let leaves = at + samples(1.6) + (resumed - paused);
+    run_to(&mut s, at + samples(1.65));
+    expect_state(
+        &s,
+        1,
+        CueState::Running,
+        "past the planned end, before the moved one",
+    );
+    on_stage(&mut s, "past the planned end, before the moved one");
+    run_to(&mut s, leaves - samples(0.05));
+    let now = on_stage(&mut s, "the end of the pass");
+    assert!(now.abs_diff(frame_at(0.75)) <= 1, "{now}");
+    run_to(&mut s, leaves + 2 * BLOCK);
+    expect_state(
+        &s,
+        1,
+        CueState::Idle,
+        "stopped at the moved end of the pass",
+    );
+    assert_eq!(shown(&mut s), None);
+    assert_eq!(s.control().pictures_live(), 0);
+}
+
+/// With hold at end on, a devamp that stops the cue still ends it, and its picture, at the
+/// end of the pass.
+#[test]
+fn a_devamp_stop_ends_a_hold_at_end_cue_and_its_picture_with_the_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let looping = timed_cue(1, &movie, |t| {
+        t.end_time = Some(0.8);
+        t.last_slice_play_count = 0.into();
+        t.hold_at_end = true;
+    });
+    let devamp = cue(
+        2,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: true,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = video_show(vec![looping, devamp]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2); // the pass under way ends at 1.6 s
+    run_to(&mut s, at + samples(1.58));
+    assert_eq!(shown(&mut s), Some(19), "the pass plays out");
+    run_to(&mut s, at + samples(1.6) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "stopped at the end of the pass");
+    assert_eq!(shown(&mut s), None);
+    assert_eq!(s.control().pictures_live(), 0);
+}
+
 /// "Hold at end" on → at the last frame the picture stays and the cue stays active until
 /// stopped; off → the cue ends and its picture leaves the stage.
 #[test]
@@ -3209,6 +3346,108 @@ fn each_loop_seam_and_a_devamp_keep_picture_and_sound_together() {
     s.run(samples(0.1));
     assert!(silent(&s, end + 8, s.rendered()));
     assert_eq!(s.stalls(), 0);
+}
+
+/// A pause while a devamp that stops the cue is pending, kept past the pass's planned end:
+/// picture and sound both hold, both play the rest of the pass after the resume, and both end
+/// on the pass's moved end.
+#[test]
+fn a_pause_with_a_pending_devamp_stop_keeps_picture_and_sound_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (50, 25), "pcm:2:48000");
+    let looping = timed_sounding_cue(1, &movie, |t| {
+        t.end_time = Some(0.8);
+        t.last_slice_play_count = 0.into();
+    });
+    let devamp = cue(
+        2,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: true,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = video_show(vec![looping, devamp]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2); // the pass under way ends at 1.6 s
+    run_to(&mut s, at + samples(1.1));
+    s.transport(TransportAction::Pause { cue: id(1) });
+    let paused = s.now();
+    run_to(&mut s, at + samples(2.0));
+    expect_state(
+        &s,
+        1,
+        CueState::Paused,
+        "paused past the pass's planned end",
+    );
+    on_stage(&mut s, "the frame held");
+    assert!(silent(&s, paused + samples(0.01), s.rendered()));
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    let leaves = at + samples(1.6) + (resumed - paused);
+    run_to(&mut s, resumed + samples(0.2));
+    in_step(&mut s, RATE, 25.0, "after the resume");
+    run_to(&mut s, leaves - samples(0.05));
+    let sound = in_step(&mut s, RATE, 25.0, "the end of the pass");
+    assert!((sound - 0.75).abs() < 0.01, "the sound at {sound} s");
+    run_to(&mut s, leaves + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "both ended at the end of the pass");
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(0.1));
+    assert!(silent(&s, leaves + 8, s.rendered()));
+    assert_eq!(s.stalls(), 0);
+}
+
+/// A stop with a fade longer than what is left of the pass, while a devamp that stops the cue
+/// is pending: the picture leaves at the end of the pass, with its sound, not after the fade.
+#[test]
+fn a_stop_fading_past_a_pending_devamp_stop_ends_the_picture_with_the_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (50, 25), "pcm:2:48000");
+    let looping = timed_sounding_cue(1, &movie, |t| {
+        t.end_time = Some(0.8);
+        t.last_slice_play_count = 0.into();
+    });
+    let devamp = cue(
+        2,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: true,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = video_show(vec![looping, devamp]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2); // the pass under way ends at 1.6 s
+    run_to(&mut s, at + samples(1.1));
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: Some(openlab_core::FadeSpec {
+            duration: 10.0,
+            curve: openlab_core::FadeCurve::Linear,
+        }),
+    });
+    run_to(&mut s, at + samples(1.5));
+    on_stage(&mut s, "fading, before the end of the pass");
+    assert!(
+        !silent(&s, at + samples(1.4), s.rendered()),
+        "the sound fades"
+    );
+    let leaves = at + samples(1.6);
+    run_to(&mut s, leaves + 2 * BLOCK);
+    assert_eq!(shown(&mut s), None, "gone at the end of the pass");
+    assert_eq!(s.control().pictures_live(), 0);
+    assert!(
+        silent(&s, leaves + 8, s.rendered()),
+        "the sound ended there"
+    );
+    run_to(&mut s, at + samples(11.1) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "after the fade");
+    assert_eq!(s.control().pictures_live(), 0);
 }
 
 /// A movie with sound and a skipped slice: sound and picture go over it on the same sample,
