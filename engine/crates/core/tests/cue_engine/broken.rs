@@ -1626,6 +1626,38 @@ fn a_device_lost_failure_fires_no_continue_of_a_plain_cue() {
 }
 
 #[test]
+fn a_device_lost_in_the_last_samples_of_a_sound_ended_ahead_finds_no_voice_to_stop() {
+    // With lookahead the engine carries out a known end up to the window ahead: the cue is in
+    // its post-wait while its sound's last samples still play. A device lost then leaves the
+    // cue paused with its post-wait standing still and cancelled; the engine owns no voice by
+    // then, so it sends no stop (a command for the voice would come after its end was
+    // committed) and the binary stops what still sounds.
+    let mut rig = Rig::with_lookahead(vec![timed(sound(1), 0.0, 1.0, AC), sound(2)], 301);
+    rig.device(0, 1, mapped());
+    rig.start(0, 1);
+    let run = rig.run(1);
+    let (cue, frames) = (id(1), 300);
+    let told = rig.at(0, Input::ActionLength { cue, run, frames });
+    assert_eq!(changes(&told, 1), vec![(CueState::PostWaiting, 300)]);
+    rig.device(5, 1, missing());
+    let failed = lose_device(&mut rig, 5, 1);
+    assert_eq!(changes(&failed, 1), vec![(CueState::Paused, 5)]);
+    assert!(rig.engine.is_lost(id(1)));
+    assert_eq!(rig.engine.run_of(id(1)), None);
+    assert!(voice_stops(&failed).is_empty(), "{failed:?}");
+    assert_eq!(
+        frozen(&rig, 1, 5),
+        vec![(Timer::PostWait, 5, Some(995))],
+        "its post-wait stands still"
+    );
+    // Nothing it scheduled comes after the loss, and the mixer's end report is stale.
+    let ended = rig.at(300, Input::ActionEnded { cue, run, at: 300 });
+    let later = rig.tick(5_000);
+    assert!(starts(&ended).is_empty() && starts(&later).is_empty());
+    assert_eq!(rig.state(1), CueState::Paused);
+}
+
+#[test]
 fn a_group_whose_playing_children_its_device_lost_shows_paused_with_them() {
     // Assumed (QLab 5 measured for cues only): a running group whose playing children the
     // loss left paused reads paused too, its time standing still, and keeps the mark after the

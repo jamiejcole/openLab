@@ -2075,15 +2075,19 @@ impl Run {
                 _ => prop_assert!(run.is_some(), "{:?} cue {} has no runtime", state, id),
             }
             // A cue its lost device left paused has no live voice: every voice of its is gone or
-            // has its stop on the way.
+            // has its stop on the way. (Or plays out an end the engine carried out ahead, inside
+            // the window, before the loss: the cue was in its post-wait by then and had no voice
+            // left to stop, as for the leak rule below. The binary stops such a tail itself.)
             if self.engine.is_lost(*id) {
                 prop_assert_eq!(state, CueState::Paused);
+                let horizon = self.horizon();
                 prop_assert!(
                     !self.sim.voices.values().any(|v| v.cue == *id
                         && !v.preview
                         && !v.dead
                         && !v.has_pending_stop()
-                        && v.stop_end.is_none()),
+                        && v.stop_end.is_none()
+                        && !(v.told && v.over_by(horizon))),
                     "cue {} paused by a lost device has a live voice",
                     id
                 );
