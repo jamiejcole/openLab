@@ -2287,6 +2287,44 @@ extension PlayheadFlowTests {
         await assertEventually("10 s in the list") { self.cell(id, "duration") == CueTime.running(10) }
     }
 
+    func testChangesWhileTheCuePlays() async throws {
+        let id = try await threeSlices()
+        try await goFromWaveform(id)
+        try await play(1.9)
+        await playsAt(id, 2)
+        let plain = try brightness(at: 15)
+        // The count and the tint are the new ones at once; the cue plays on as it started.
+        await typeSliceCount(1, "0")
+        XCTAssertEqual(waveView.sliceCounts, [1, .skip, 1])
+        XCTAssertEqual(waveView.skippedRects().count, 1)
+        XCTAssertLessThan(try brightness(at: 15), plain - 0.02, "the tint is drawn while it plays")
+        XCTAssertEqual(rowMark(id), runningMark)
+        XCTAssertEqual(seeks, [], "the edit moved nothing")
+        try await play(10)
+        await playsAt(id, 12, tolerance: 0.4)
+        XCTAssertEqual(store.progress[id]?.elapsed ?? -1, 12, accuracy: 0.4, "the slice now dark is still heard")
+        // Every count 0 while it sounds: still running, not broken, until it has stopped.
+        await typeSliceCount(0, "0")
+        await typeSliceCount(2, "0")
+        XCTAssertEqual(waveView.sliceCounts, [.skip, .skip, .skip])
+        XCTAssertEqual(waveView.skippedRects().count, 3)
+        try await play(1)
+        await playsAt(id, 13, tolerance: 0.4)
+        XCTAssertEqual(rowMark(id), runningMark, "not broken while it sounds")
+        _ = await store.transport(.hardStop(cue: id))
+        try await play(0.2)
+        await assertEventually("broken once stopped") { self.rowMark(id) == loc("cue.state.broken") }
+        XCTAssertEqual(warned(id), [loc("problem.nothing_plays")])
+        // The next start plays the new plan: only the last slice.
+        await showWaveform(id)
+        await typeSliceCount(2, "1")
+        await assertEventually("mended") { self.rowMark(id) == nil }
+        _ = await store.transport(.start(cue: id))
+        try await play(0.5)
+        await showWaveform(id)
+        await playsAt(id, 20.5, tolerance: 0.4)
+    }
+
     /// Undo of a count set to 0 puts back the count and the drawing; redo skips the slice again.
     func testUndoRestoresASkippedSlicesCountAndDrawing() async throws {
         let id = try await threeSlices()

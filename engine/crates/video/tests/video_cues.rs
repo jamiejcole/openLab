@@ -3211,6 +3211,90 @@ fn each_loop_seam_and_a_devamp_keep_picture_and_sound_together() {
     assert_eq!(s.stalls(), 0);
 }
 
+/// A movie with sound and a skipped slice: sound and picture go over it on the same sample,
+/// nothing of it heard or shown; a devamp of the loop before it goes on to the slice after it
+/// for both; and a load to a time counts only what plays, for both (a Video cue takes no seek
+/// to a point of its file, so no point inside the skipped slice can be asked for).
+#[test]
+fn a_skipped_slice_keeps_picture_and_sound_together_played_devamped_and_loaded() {
+    use openlab_core::{PlayCount, SliceMarker};
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (50, 25), "pcm:2:48000");
+    // 0–0.4 s as `first` says, 0.4–1.2 s skipped, 1.2–2 s once.
+    let sliced = |n: u128, first: PlayCount| {
+        timed_sounding_cue(n, &movie, move |t| {
+            t.slices = vec![
+                SliceMarker {
+                    time: 0.4,
+                    play_count: first,
+                },
+                SliceMarker {
+                    time: 1.2,
+                    play_count: PlayCount::Skip,
+                },
+            ];
+        })
+    };
+    let mut s = video_show(vec![sliced(1, PlayCount::ONCE)]);
+    assert_eq!(told_lengths(&s, 1), (Some(1.2), Some(1.2)));
+    let at = go(&mut s);
+    let seam = at + samples(0.4);
+    run_to(&mut s, seam - samples(0.1));
+    in_step(&mut s, RATE, 25.0, "before the skipped slice");
+    run_to(&mut s, seam + samples(0.1));
+    let sound = in_step(&mut s, RATE, 25.0, "after the skipped slice");
+    assert!((sound - 1.3).abs() < 0.01, "{sound}");
+    sound_is(&s, seam - 16, 0.398, "the end of the first slice");
+    sound_is(&s, seam + 16, 1.202, "the start of the last slice");
+    let end = at + samples(1.2);
+    run_to(&mut s, end + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "what plays is played");
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(0.1));
+    assert!(silent(&s, end + 8, s.rendered()));
+
+    // A load to 0.6 s of the action is 0.2 s into the last slice.
+    s.transport(TransportAction::Load {
+        cue: id(1),
+        at: 0.6,
+    });
+    s.run(BLOCK);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.1));
+    sound_is(
+        &s,
+        at + 40,
+        1.4 + 40.0 / f64::from(RATE),
+        "loaded to a time",
+    );
+    in_step(&mut s, RATE, 25.0, "after a load to time");
+    run_to(&mut s, at + samples(0.6) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "");
+
+    // The first slice loops until devamped: the devamp goes over the skipped slice.
+    let mut s = video_show(vec![sliced(1, PlayCount::Endless), devamp_cue(2)]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.9));
+    in_step(&mut s, RATE, 25.0, "in the third pass");
+    start(&mut s, 2);
+    let leaves = at + samples(1.2);
+    run_to(&mut s, leaves + samples(0.2));
+    sound_is(&s, leaves - 16, 0.398, "the end of the last pass");
+    sound_is(
+        &s,
+        leaves + 16,
+        1.202,
+        "into the slice after the skipped one",
+    );
+    let sound = in_step(&mut s, RATE, 25.0, "after the devamp");
+    assert!((sound - 1.4).abs() < 0.01, "{sound}");
+    let end = at + samples(2.0);
+    run_to(&mut s, end + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "ended after the last slice");
+    assert_eq!(shown(&mut s), None);
+    assert_eq!(s.stalls(), 0);
+}
+
 /// A Video cue's integrated fades shape its sound as an Audio cue's: half way into a linear
 /// fade in and half way through the fade out the sound is at half its level, full between
 /// them, while the picture's opacity follows the same fades.

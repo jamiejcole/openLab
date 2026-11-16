@@ -1213,11 +1213,12 @@ fn a_skipped_slice_is_joined_without_a_click_when_the_file_is_resampled() {
     assert_eq!(s.stalls(), 0);
 }
 
-/// A play count changed while the cue plays does not touch the voice that is sounding: it plays
-/// on, sample for sample, with the plan it started with (every slice skipped included: the cue
-/// is not cut off). The new counts are for the next start.
+/// Flow: changes while the cue plays. A play count changed while the cue plays does not touch
+/// the voice that is sounding: it plays on, sample for sample, with the plan it started with,
+/// every slice skipped included (the cue is running, not broken, until it has stopped). The next
+/// start plays the new plan.
 #[test]
-fn a_count_changed_while_the_cue_plays_leaves_the_sound_under_way_as_it_was() {
+fn changes_while_the_cue_plays() {
     let c = three_slices(10, [ONCE, ONCE, ONCE], false);
     let mut s = app_show(std::slice::from_ref(&c), R48);
     let at = go_app(&mut s);
@@ -1226,17 +1227,32 @@ fn a_count_changed_while_the_cue_plays_leaves_the_sound_under_way_as_it_was() {
     s.run(12_000);
     set_counts(&mut s, 10, [SKIP, SKIP, SKIP]);
     assert_eq!(state(&s, 10), CueState::Running, "it plays on");
-    s.run(12_000);
-    set_counts(&mut s, 10, [SKIP, ONCE, SKIP]);
-    s.run(2 * u64::from(R48));
+    s.run(3 * u64::from(R48));
     assert_plays(
         &s,
         at,
         std::slice::from_ref(&(0..96_000)),
         "the run under way",
     );
-    assert_eq!(state(&s, 10), CueState::Idle);
+    // Stopped, it shows what the edit made of it: no part of it plays.
+    assert_eq!(state(&s, 10), CueState::Broken);
+    assert_eq!(
+        s.control().engine().problems(id(10)),
+        [openlab_core::CueProblem::NothingPlays]
+    );
     assert_eq!(s.stalls(), 0);
+    // An edit to a plan that plays, then a start: the new plan is heard.
+    set_counts(&mut s, 10, [SKIP, ONCE, SKIP]);
+    s.run(B);
+    assert_eq!(state(&s, 10), CueState::Idle);
+    let at = crate::show::start(&mut s, 10) as usize;
+    s.run(u64::from(R48));
+    assert_plays(
+        &s,
+        at,
+        std::slice::from_ref(&(24_000..48_000)),
+        "the next start",
+    );
 }
 
 /// Flow: the first and the last slice can be skipped. GO starts at the second slice's first

@@ -460,7 +460,7 @@ impl<'de> Deserialize<'de> for MediaRef {
 /// How a slice plays (QLab 5 manual p. 179: a number of times, without end, or not at all).
 ///
 /// Stored as a number for a count, the number 0 for [`PlayCount::Endless`] and the string
-/// `"skip"` for [`PlayCount::Skip`] (docs/file-format.md §5.1). The stored 0 is not the 0 a user
+/// `"skip"` for [`PlayCount::Skip`] (docs/file-format.md §5.3). The stored 0 is not the 0 a user
 /// types for a skipped slice: it is what "loop until devamped" was written as before a slice
 /// could be skipped, so those shows still mean what they meant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
