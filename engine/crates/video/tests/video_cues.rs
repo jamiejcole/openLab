@@ -22,7 +22,8 @@ use openlab_core::protocol::{
 };
 use openlab_core::video_probe::{ProbeReport, StillFormat, VideoCodec};
 use openlab_core::{
-    Cue, CueKind, CueProblem, CueState, MediaRef, Stage, StageId, VideoGeometry, Workspace,
+    Crosspoint, Cue, CueKind, CueLevels, CueOutput, CueProblem, CueState, MediaRef, Stage, StageId,
+    VideoGeometry, Workspace,
 };
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
@@ -67,11 +68,13 @@ fn fixture(kind: &str, frames_fps: Option<(u16, u16)>) -> PathBuf {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let ext = match kind {
         "h264" | "hevc" | "prores" | "prores4444" => "mov",
+        // A movie with sound tracks (`h264+pcm:2:48000`).
+        with_sound if with_sound.contains('+') => "mov",
         "huge-png" | "wide-png" | "tall-png" | "alpha-png" | "tiny-png" => "png",
         other => other,
     };
     let name = match frames_fps {
-        Some((frames, fps)) => format!("{kind}-{frames}-{fps}.{ext}"),
+        Some((frames, fps)) => format!("{}-{frames}-{fps}.{ext}", kind.replace(':', "_")),
         None => format!("{kind}.{ext}"),
     };
     let path = made.0.join(name);
@@ -2623,4 +2626,152 @@ fn a_resume_plays_on_with_the_plan_the_run_started_with() {
     let at = start(&mut s, 1);
     run_to(&mut s, at + samples(1.3));
     assert_eq!(shown(&mut s), Some(frame_at(1.7)));
+}
+
+// A Video cue's sound (VID-06): its movie's audio track through the mixer, in step with its
+// picture. The test movies' sound tracks say where in the file they are (`--make-test-media`):
+// channel 0 rises from 0 to 0.5 over each second, channel 1 holds the second's number.
+
+/// A movie of `frames_fps` in [`play_codec`] with the sound tracks `sound` names
+/// (`pcm:2:48000`, `aac:2:44100+pcm:6:48000`), or `None` when no codec decodes reliably here
+/// (the test then records a skip).
+fn sound_movie(dir: &Path, name: &str, frames_fps: (u16, u16), sound: &str) -> Option<PathBuf> {
+    let kind = format!("{}+{sound}", play_codec()?);
+    Some(make(dir, name, &kind, Some(frames_fps)))
+}
+
+/// `sound_movie!(dir, name, (frames, fps), sound)`: [`sound_movie`], or the test ends skipped.
+macro_rules! sound_movie {
+    ($dir:expr, $name:expr, $frames_fps:expr, $sound:expr) => {
+        match sound_movie($dir, $name, $frames_fps, $sound) {
+            Some(movie) => movie,
+            None => return skipped("no codec decodes reliably on this machine"),
+        }
+    };
+}
+
+/// A Video cue on `movie` whose sound plays on the test patch: file channel 0 to output 0,
+/// channel 1 to output 1, every level 0 dB.
+fn sounding_cue(n: u128, movie: &Path) -> Cue {
+    let mut c = video_cue(n, Some(movie));
+    if let CueKind::Video { sound, .. } = &mut c.kind {
+        sound.patch = Some(patch_id());
+        sound.levels = straight_levels();
+    }
+    c
+}
+
+fn straight_levels() -> CueLevels {
+    let out = CueOutput {
+        db: 0.0,
+        mute: false,
+    };
+    let to = |input, output| Crosspoint {
+        input,
+        output,
+        db: 0.0,
+        mute: false,
+    };
+    CueLevels {
+        master_db: 0.0,
+        outputs: vec![out; 2],
+        crosspoints: vec![to(0, 0), to(1, 1)],
+        gangs: vec![],
+    }
+}
+
+/// Where in its file the test track heard on rendered sample `at` is, in seconds (`None`:
+/// silence there), read from the two outputs at unity.
+fn sound_at(s: &OfflineShow, at: u64) -> Option<f64> {
+    let i = usize::try_from(at).unwrap() * 2;
+    let (rise, second) = (s.audio()[i], s.audio()[i + 1]);
+    let second = (f64::from(second) * 2048.0).round() - 1.0;
+    (second >= 0.0).then(|| second + f64::from(rise) * 2.0)
+}
+
+/// Where the sound will be on the sample the stage shows now (the picture is drawn for the
+/// first sample not yet rendered, a block ahead of the last one heard), at `rate`.
+fn sound_now(s: &OfflineShow, rate: u32) -> Option<f64> {
+    let heard = s.rendered().checked_sub(1)?;
+    let ahead = (s.now() - heard) as f64 / f64::from(rate);
+    sound_at(s, heard).map(|p| p + ahead)
+}
+
+/// Picture and sound are within one frame of each other now: the frame on the stage is the
+/// one whose time the sound has reached (`fps` frames a second; the sound may be anywhere in
+/// that frame, so the two are less than a frame period apart). Returns the sound's position.
+fn in_step(s: &mut OfflineShow, rate: u32, fps: f64, what: &str) -> f64 {
+    let sound = sound_now(s, rate).unwrap_or_else(|| panic!("{what}: no sound\n{}", seen(s)));
+    let frame = f64::from(on_stage(s, what));
+    let apart = sound - frame / fps;
+    // A millisecond of slack for the resampled ramp the position is read from.
+    assert!(
+        (-0.001..1.0 / fps + 0.001).contains(&apart),
+        "{what}: frame {frame} with the sound at {sound} s ({apart} s apart)"
+    );
+    sound
+}
+
+/// The audio decoder reads a movie's sound tracks: PCM and AAC, each track's format, and its
+/// samples where the file has them (AAC without its encoder's priming).
+#[test]
+fn a_movies_sound_tracks_are_probed_with_their_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let silent = make(dir.path(), "silent.mov", "h264", Some((25, 25)));
+    assert!(openlab_audio::probe_movie(&silent).unwrap().is_empty());
+    let kind = "h264+aac:2:44100+pcm:6:48000";
+    let two = make(dir.path(), "two.mov", kind, Some((50, 25)));
+    let tracks = openlab_audio::probe_movie(&two).unwrap();
+    let found: Vec<(&str, u16, u32)> = tracks
+        .iter()
+        .map(|t| {
+            let info = t.probed.as_ref().unwrap().info;
+            (t.codec.as_str(), info.channels, info.sample_rate)
+        })
+        .collect();
+    assert_eq!(found, [("mp4a", 2, 44_100), ("lpcm", 6, 48_000)]);
+    assert_eq!(tracks[1].probed.as_ref().unwrap().info.frames, 96_000);
+    // Each track's samples are where the file has them: half a second in, channel 0 is half
+    // way up its rise, in the AAC track too (to its coding's accuracy).
+    for (track, rate, slack) in [(0u32, 44_100usize, 0.01f32), (1, 48_000, 0.0001)] {
+        let media = openlab_audio::Media::Track(openlab_audio::MovieTrack {
+            path: two.clone(),
+            track,
+            fit: None,
+        });
+        let all = openlab_audio::preload(media).unwrap();
+        let channels = usize::from(all.info().channels);
+        let rise = all.samples()[rate / 2 * channels];
+        assert!((rise - 0.25).abs() < slack, "track {track}: {rise}");
+    }
+    assert!(openlab_audio::probe_movie(&dir.path().join("gone.mov")).is_err());
+}
+
+/// Flow 1 (engine): a movie with sound on a patch → GO puts its picture on the stage and its
+/// sound on the patch's outputs, in step, and both end at the movie's end.
+#[test]
+fn a_movie_with_sound_gets_a_levels_tab_and_is_heard_on_its_patch() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (75, 25), "pcm:2:48000");
+    let mut s = video_show(vec![sounding_cue(1, &movie)]);
+    assert_eq!(problems(&s, 1), vec![]);
+    let at = go(&mut s);
+    for t in [0.1, 0.5, 1.5, 2.5, 2.9] {
+        run_to(&mut s, at + samples(t));
+        let sound = in_step(&mut s, RATE, 25.0, &format!("{t} s after GO"));
+        assert!((sound - t).abs() < 0.02, "the sound is at {sound} s, {t} s after GO");
+    }
+    // Three seconds long: picture and sound end together, once.
+    run_to(&mut s, at + samples(3.0) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "");
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(0.2));
+    let end = usize::try_from(at + samples(3.0)).unwrap();
+    let last = last_nonzero(&s.channel(1)).unwrap();
+    assert!(
+        (end - 8..end).contains(&last),
+        "the last sample heard is {last}, the movie's end {end}"
+    );
+    assert_eq!(s.control().live_voices(), 0);
+    assert_eq!(s.stalls(), 0);
 }
