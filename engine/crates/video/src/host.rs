@@ -36,6 +36,8 @@ pub struct CuePicture {
     pub next: Option<f64>,
     /// Its plan is over: it holds its last frame.
     pub held: bool,
+    /// The number of the plan's pass it is in (`PlanPoint::pass`): a new number is a seam.
+    pub pass: u64,
     /// Its integrated fades times how far its stop's fade has gone (1 until it stops, then
     /// down to 0, gone). Drawn times the geometry's opacity.
     pub opacity: f32,
@@ -61,6 +63,13 @@ impl CuePicture {
         }
     }
 
+    /// The plan's pass the picture is in `ahead` seconds later: the next once the pass under way
+    /// ends (never past a plan that is over).
+    pub fn pass_after(&self, ahead: f64) -> u64 {
+        let crosses = !self.held && ahead > 0.0 && ahead >= self.left;
+        self.pass.saturating_add(u64::from(crosses))
+    }
+
     /// The jump the decoder may get ready for now, if one is near.
     pub fn upcoming(&self) -> Option<f64> {
         self.next.filter(|_| self.left <= PRIME_AHEAD)
@@ -83,13 +92,14 @@ pub struct Layer {
 enum Run {
     /// Loaded at `offset`, not playing yet.
     Held { offset: f64 },
-    /// Playing from sample `at`, `offset` seconds into the file and `action` seconds into its
-    /// cue's action then; following `plan` when it has one.
+    /// Playing from sample `at`, `offset` seconds into the file, `action` seconds into its
+    /// cue's action and `into` seconds into `plan` then; held at `offset` without a plan.
     Playing {
         at: u64,
         offset: f64,
         action: f64,
         plan: Vec<PlanPass>,
+        into: f64,
     },
     /// Holding the frame at `offset` from sample `at`, `action` seconds into its cue's action.
     Paused { at: u64, offset: f64, action: f64 },
@@ -103,6 +113,7 @@ struct Place {
     next: Option<f64>,
     held: bool,
     action: f64,
+    pass: u64,
 }
 
 /// One Video cue run's picture on the stage host.
@@ -132,6 +143,7 @@ impl Pic {
             next: None,
             held: false,
             action,
+            pass: 0,
         };
         match run {
             Run::Held { offset } => still(*offset, 0.0),
@@ -141,18 +153,22 @@ impl Pic {
                 offset,
                 action,
                 plan,
+                into,
             } => {
                 let elapsed = clock.saturating_sub(*at) as f64 / f64::from(rate.max(1));
                 let action = action + elapsed;
-                match plan_point(plan, elapsed) {
+                match plan_point(plan, into + elapsed) {
                     Some(p) => Place {
                         position: p.position,
                         left: p.left,
                         next: p.next,
                         held: p.ended,
                         action,
+                        pass: p.pass,
                     },
-                    None => still(offset + elapsed, action),
+                    // No plan: held where it is (a still has no position; a movie never runs
+                    // on past the range it was given).
+                    None => still(*offset, action),
                 }
             }
         }
@@ -192,6 +208,7 @@ impl Pic {
             left: place.left,
             next: place.next,
             held: place.held,
+            pass: place.pass,
             opacity: stopping * faded,
             geometry: self.geometry,
         })
@@ -410,6 +427,7 @@ impl<P: Platform> Host<P> {
                 offset,
                 action,
                 plan,
+                into,
                 fades,
             } => {
                 self.plays += 1;
@@ -420,6 +438,7 @@ impl<P: Platform> Host<P> {
                         offset,
                         action,
                         plan,
+                        into,
                     };
                     let was = std::mem::replace(&mut p.run, run);
                     p.before = p.since.is_some().then_some(was);
@@ -1059,7 +1078,13 @@ mod tests {
             at,
             offset,
             action: offset,
-            plan: Vec::new(),
+            // One long pass from the offset: it runs on as the clock moves.
+            plan: vec![PlanPass {
+                from: offset,
+                length: 3600.0,
+                plays: 1,
+            }],
+            into: 0.0,
             fades: PictureFades::NONE,
         }
     }
@@ -1233,6 +1258,7 @@ mod tests {
                     length: 2.0,
                     plays: 2,
                 }],
+                into: 0.0,
                 fades: PictureFades {
                     fade_in: linear(1.0),
                     fade_out: linear(1.0),
@@ -1273,6 +1299,51 @@ mod tests {
         );
         let p = at(&mut h, 9500);
         assert_eq!((p.position, p.opacity), (1.5, 0.25));
+    }
+
+    /// A play with no plan holds at its offset: whatever sends one, a movie never runs on into
+    /// its file past the range it was given; one `into` its plan follows the plan from there.
+    #[test]
+    fn a_play_without_a_plan_holds_and_one_into_its_plan_starts_there() {
+        let mut h = host(&["D"]);
+        send(
+            &mut h,
+            ToStage::Stages {
+                stages: vec![stage(1, Some("D"), false)],
+            },
+        );
+        clock(&mut h, 0);
+        load(&mut h, 7, 1);
+        let mut empty = plain_play(7, 0, 1.16);
+        if let ToStage::Play { plan, .. } = &mut empty {
+            plan.clear();
+        }
+        send(&mut h, empty);
+        clock(&mut h, 3000);
+        assert_eq!(cues(&mut h, 1), vec![(7, 1.16, 1.0)], "held, not run on");
+        send(
+            &mut h,
+            ToStage::Play {
+                picture: 7,
+                at: 3000,
+                offset: 1.5,
+                action: 2.5,
+                plan: vec![PlanPass {
+                    from: 1.0,
+                    length: 1.0,
+                    plays: 3,
+                }],
+                into: 2.5,
+                fades: PictureFades::NONE,
+            },
+        );
+        clock(&mut h, 3200);
+        let p = drawn(&mut h, 1)[0];
+        assert!((p.position - 1.7).abs() < 1e-9, "{}", p.position);
+        assert_eq!(p.pass, 2, "its third pass");
+        clock(&mut h, 9000);
+        let p = drawn(&mut h, 1)[0];
+        assert!(p.held && p.position < 2.0 && p.position > 1.999);
     }
 
     /// On real displays the clock runs on between the engine's messages, but no further than

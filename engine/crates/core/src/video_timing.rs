@@ -98,6 +98,9 @@ pub struct PlanPoint {
     pub next: Option<f64>,
     /// Past the plan's last pass: held just before its end.
     pub ended: bool,
+    /// How many passes of the plan came before this one (every play of every entry): a new
+    /// number is a new pass, so a seam is known as one however near the frames on each side.
+    pub pass: u64,
 }
 
 /// Where `plan` is `elapsed` seconds after it starts playing. An empty plan has no position.
@@ -108,6 +111,7 @@ pub fn plan_point(plan: &[PlanPass], elapsed: f64) -> Option<PlanPoint> {
     } else {
         0.0
     };
+    let mut before = 0.0f64;
     for (i, pass) in plan.iter().enumerate() {
         let after = plan.get(i + 1).map(|p| p.from);
         let whole = match pass.plays {
@@ -128,15 +132,19 @@ pub fn plan_point(plan: &[PlanPass], elapsed: f64) -> Option<PlanPoint> {
                 left: pass.length - within,
                 next,
                 ended: false,
+                // A float-to-int cast saturates.
+                pass: (before + pass_no) as u64,
             });
         }
         left -= whole;
+        before += f64::from(pass.plays);
     }
     Some(PlanPoint {
         position: (last.end() - HOLD_BEFORE_END).max(last.from),
         left: 0.0,
         next: None,
         ended: true,
+        pass: before as u64,
     })
 }
 
@@ -242,6 +250,14 @@ mod tests {
         // On the seam: the next pass's first frame.
         assert_eq!(at(&plan, 2.0).position, 1.0);
         assert_eq!(at(&plan, 4.5).position, 1.5);
+        let passes: Vec<u64> = [0.5, 1.99, 2.0, 4.1, 9.0]
+            .map(|t| at(&plan, t).pass)
+            .to_vec();
+        assert_eq!(
+            passes,
+            vec![0, 0, 1, 2, 3],
+            "each pass numbered, the end after them"
+        );
         // The last pass goes nowhere: the plan ends.
         assert_eq!(at(&plan, 5.0).next, None);
         assert!(at(&plan, 6.0).ended);

@@ -72,16 +72,18 @@ pub enum ToStage {
         geometry: VideoGeometry,
     },
     /// The picture plays from sample `at` (engine clock), `offset` seconds into the file then;
-    /// a picture not loaded is ignored. With a `plan` (a movie's trims, slices and loops from
-    /// `at` on) its position follows the plan instead, held just before the end of the plan's
-    /// last pass once it is over; without one it runs on from `offset`. `action` is how far
-    /// into its cue's action it is on `at`, which the integrated `fades` are counted in.
+    /// a picture not loaded is ignored. A movie follows its `plan` (its trims, slices and loops
+    /// from the top of its action), `into` seconds into the plan on `at`, held just before the
+    /// end of the plan's last pass once it is over; a movie with no plan holds at `offset` (it
+    /// never runs on past its range). A still ignores both. `action` is how far into its cue's
+    /// action it is on `at`, which the integrated `fades` are counted in.
     Play {
         picture: u64,
         at: u64,
         offset: f64,
         action: f64,
         plan: Vec<PlanPass>,
+        into: f64,
         fades: PictureFades,
     },
     /// The picture holds the frame at `offset` seconds from sample `at`, `action` seconds into
@@ -366,8 +368,9 @@ fn check_to_stage(message: &ToStage) -> Result<(), LinkError> {
             action,
             plan,
             fades,
+            into,
             ..
-        } if !picture_run_ok(plan, *action, fades) => {
+        } if !picture_run_ok(plan, *action, fades) || !offset_ok(*into) => {
             Err(LinkError::Invalid("picture plan or fades out of range"))
         }
         ToStage::Pause { action, .. } if !offset_ok(*action) => {
@@ -650,6 +653,7 @@ mod tests {
             offset: 1.0,
             action,
             plan,
+            into: action,
             fades: PictureFades {
                 fade_in: fade,
                 fade_out: fade,
@@ -697,6 +701,15 @@ mod tests {
                 offset: 1.5,
                 action: f64::MAX,
             },
+            ToStage::Play {
+                picture: 2,
+                at: 9,
+                offset: 1.5,
+                action: 0.0,
+                plan: vec![pass(0.0, 1.0, 1)],
+                into: -1.0,
+                fades: PictureFades::NONE,
+            },
         ] {
             let line = encode(&bad).unwrap();
             assert!(
@@ -705,7 +718,7 @@ mod tests {
             );
         }
         // NaN is not JSON: a line carrying one in a plan is unreadable, never accepted.
-        let nan = r#"{"type":"play","picture":1,"at":0,"offset":0,"action":0,"plan":[{"from":NaN,"length":1,"plays":1}],"fades":{"fade_in":{"duration":0,"curve":"linear"},"fade_out":{"duration":0,"curve":"linear"},"end":null}}"#;
+        let nan = r#"{"type":"play","picture":1,"at":0,"offset":0,"action":0,"into":0,"plan":[{"from":NaN,"length":1,"plays":1}],"fades":{"fade_in":{"duration":0,"curve":"linear"},"fade_out":{"duration":0,"curve":"linear"},"end":null}}"#;
         assert!(decode_to_stage(nan.as_bytes()).is_err());
     }
 

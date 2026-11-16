@@ -156,8 +156,9 @@ struct Frame {
 /// What the main thread and a picture's decode thread share.
 #[derive(Default)]
 struct Mail {
-    /// Main to decoder: the newest position wanted, numbered.
-    want: Option<(u64, f64)>,
+    /// Main to decoder: the newest position wanted, numbered, and the pass of the picture's plan
+    /// it is in (a new pass is a seam: the reader starts again there however near it is).
+    want: Option<(u64, f64, u64)>,
     /// Main to decoder: where the picture jumps to when the pass it is in ends (a loop's start),
     /// once that is near.
     upcoming: Option<f64>,
@@ -220,7 +221,7 @@ pub struct Picture {
     /// The slot drawn from, once one holds a frame.
     front: Option<usize>,
     /// The number of the last position posted, and the position.
-    asked: (u64, Option<f64>),
+    asked: (u64, Option<(f64, u64)>),
     /// The last jump passed on.
     told_upcoming: Option<f64>,
     /// How long its open and frames may take.
@@ -307,7 +308,8 @@ impl Picture {
 
     /// The texture to draw at `position` seconds and its pixel size, if a frame has been
     /// decoded: the newest the decode thread has, uploaded when a texture is free. Asks the
-    /// decode thread for `position`, and tells it where the picture jumps next (`upcoming`, a
+    /// decode thread for `position` (in its plan's pass `pass`), and tells it where the picture
+    /// jumps next (`upcoming`, a
     /// loop's start near the end of a pass) so it can have that frame ready. With `wait`
     /// (offscreen probes only, never on real displays), waits within `limits` for the frame at
     /// `position` first.
@@ -315,6 +317,7 @@ impl Picture {
         &mut self,
         device: &ProtocolObject<dyn MTLDevice>,
         position: f64,
+        pass: u64,
         upcoming: Option<f64>,
         wait: bool,
     ) -> Result<Option<Drawable>, String> {
@@ -324,9 +327,9 @@ impl Picture {
             mail.upcoming = upcoming;
             self.shared.wake.notify_all();
         }
-        if !self.still && self.asked.1 != Some(position) {
-            self.asked = (self.asked.0 + 1, Some(position));
-            mail.want = Some((self.asked.0, position));
+        if !self.still && self.asked.1 != Some((position, pass)) {
+            self.asked = (self.asked.0 + 1, Some((position, pass)));
+            mail.want = Some((self.asked.0, position, pass));
             mail.waiting_since.get_or_insert_with(now);
             self.shared.wake.notify_all();
         }
@@ -431,7 +434,7 @@ impl Picture {
     /// The position last asked, for a test of what the decode thread was asked.
     #[cfg(test)]
     fn asked(&self) -> Option<f64> {
-        self.asked.1
+        self.asked.1.map(|(p, _)| p)
     }
 }
 
@@ -487,7 +490,7 @@ fn decode(shared: &Shared, file: &str, still: bool, offset: f64, limits: Limits)
         movie.slow = file.contains(fault::SLOW_DECODE);
     }
     // The open's own frame is under the open's limit, not the frames'.
-    let first = match movie.frame_at(offset, &|| {}) {
+    let first = match movie.frame_at(offset, 0, &|| {}) {
         Ok(frame) => frame,
         Err(why) => return shared.fail(why),
     };
@@ -502,14 +505,14 @@ fn decode(shared: &Shared, file: &str, still: bool, offset: f64, limits: Limits)
         shared.wake.notify_all();
     }
     loop {
-        let (asked, position) = {
+        let (asked, position, pass) = {
             let mut mail = shared.lock();
             loop {
                 if mail.closed {
                     return;
                 }
                 match mail.want {
-                    Some((n, p)) if n > mail.answered => break (n, p),
+                    Some((n, p, pass)) if n > mail.answered => break (n, p, pass),
                     _ => {}
                 }
                 // Nothing asked: the next pass's first frame is read ahead, if a jump is near.
@@ -531,7 +534,7 @@ fn decode(shared: &Shared, file: &str, still: bool, offset: f64, limits: Limits)
         fault::hang_if(shared, file, fault::HANG_DECODE);
         #[cfg(feature = "test-support")]
         fault::crash_if(file, fault::CRASH_DECODE);
-        match movie.frame_at(position, &progress) {
+        match movie.frame_at(position, pass, &progress) {
             Ok(frame) => {
                 let mut mail = shared.lock();
                 if mail.failed.is_some() {
@@ -542,7 +545,7 @@ fn decode(shared: &Shared, file: &str, still: bool, offset: f64, limits: Limits)
                 }
                 mail.answered = asked;
                 mail.waiting_since = match mail.want {
-                    Some((n, _)) if n > asked => Some(now()),
+                    Some((n, ..)) if n > asked => Some(now()),
                     _ => None,
                 };
                 shared.wake.notify_all();
@@ -637,6 +640,10 @@ struct Movie {
     reader: Option<Reader>,
     /// The next pass's reader, ready before a loop's seam.
     spare: Option<Spare>,
+    /// A place a reader could not be primed at: not tried again until another is asked for.
+    prime_failed: Option<f64>,
+    /// The plan's pass of the position last asked for.
+    pass: u64,
     size: (u32, u32),
     /// The time of the frame last handed out, if one was.
     shown: Option<f64>,
@@ -690,6 +697,8 @@ impl Movie {
             track,
             reader: None,
             spare: None,
+            prime_failed: None,
+            pass: 0,
             size,
             shown: None,
             next: None,
@@ -735,9 +744,10 @@ impl Movie {
         Ok(())
     }
 
-    /// Whether a reader is primed at `from`.
+    /// Whether a reader is primed at `from`, or priming one there already failed (the jump then
+    /// opens its own; trying again at once would only fail again, over and over).
     fn primed(&self, from: f64) -> bool {
-        self.spare.as_ref().is_some_and(|s| s.from == from)
+        self.prime_failed == Some(from) || self.spare.as_ref().is_some_and(|s| s.from == from)
     }
 
     /// Opens a second reader at `from` and reads its first frame, for a jump there. A failure
@@ -747,12 +757,15 @@ impl Movie {
             // SAFETY: cancelling a reader this movie owns.
             unsafe { old.reader.0.cancelReading() };
         }
+        self.prime_failed = None;
         let Ok(reader) = self.open_reader(from) else {
+            self.prime_failed = Some(from);
             return;
         };
         let Ok(first) = self.read_from(&reader) else {
             // SAFETY: cancelling a reader this movie owns.
             unsafe { reader.0.cancelReading() };
+            self.prime_failed = Some(from);
             return;
         };
         self.spare = Some(Spare {
@@ -861,11 +874,21 @@ impl Movie {
 
     /// The frame at `position` seconds: the last whose time is at or before it (the first
     /// frame before the first frame's time); `None` when the frame handed out last is still the
-    /// one (a step back of up to [`BACK_HOLD_FRAMES`] included).
-    fn frame_at(&mut self, position: f64, progress: &dyn Fn()) -> Result<Option<Frame>, String> {
-        let back = self
-            .shown
-            .is_some_and(|t| position < t - BACK_HOLD_FRAMES * self.frame);
+    /// one (a step back of up to [`BACK_HOLD_FRAMES`] included). A position in another `pass`
+    /// of the picture's plan that is behind the frame shown is a seam (a loop's start again):
+    /// reading starts there however small the step back, so a loop of a frame or two still
+    /// goes round.
+    fn frame_at(
+        &mut self,
+        position: f64,
+        pass: u64,
+        progress: &dyn Fn(),
+    ) -> Result<Option<Frame>, String> {
+        let seam = pass != self.pass;
+        self.pass = pass;
+        let back = self.shown.is_some_and(|t| {
+            position < t - BACK_HOLD_FRAMES * self.frame || (seam && position < t)
+        });
         let far = self.shown.is_some_and(|t| position > t + SKIP_AHEAD);
         if self.reader.is_none() || back || far {
             self.restart(position)?;
@@ -1034,7 +1057,7 @@ mod tests {
         };
         let mut p = Picture::open("/nonexistent/openlab/clip.mov", false, 0.0, limits).unwrap();
         let device = objc2_metal::MTLCreateSystemDefaultDevice().unwrap();
-        let got = p.frame(&device, 0.0, None, true);
+        let got = p.frame(&device, 0.0, 0, None, true);
         assert_eq!(got.err().as_deref(), Some("the file is not there"));
         assert!(matches!(p.poll(), Some(Polled::Failed(_))));
         assert_eq!(p.asked(), Some(0.0));
@@ -1058,26 +1081,26 @@ mod tests {
         let mut m = Movie::open(&file).unwrap();
         // The reviewer's sequence at 48 kHz: sample 1970 (41.0 ms, frame 1), then 1826 (38.0
         // ms, 3 ms back across the boundary).
-        let f = m.frame_at(1970.0 / 48_000.0, &|| {}).unwrap().unwrap();
+        let f = m.frame_at(1970.0 / 48_000.0, 0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 1);
         let restarts = m.restarts;
         assert!(
-            m.frame_at(1826.0 / 48_000.0, &|| {}).unwrap().is_none(),
+            m.frame_at(1826.0 / 48_000.0, 0, &|| {}).unwrap().is_none(),
             "held"
         );
         assert_eq!(m.restarts, restarts, "the reader was not started again");
         // Forward again: the next frame, still without a restart.
-        let f = m.frame_at(3890.0 / 48_000.0, &|| {}).unwrap().unwrap();
+        let f = m.frame_at(3890.0 / 48_000.0, 0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 2);
         assert_eq!(m.restarts, restarts);
         // Half a second or more ahead (a jump, or a decoder that fell behind) is not read frame
         // by frame: reading starts again there.
-        let f = m.frame_at(0.6, &|| {}).unwrap().unwrap();
+        let f = m.frame_at(0.6, 0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 15);
         assert_eq!(m.restarts, restarts + 1);
         let restarts = m.restarts;
         // A real jump back (load to time) reads again from there.
-        let f = m.frame_at(0.0, &|| {}).unwrap().unwrap();
+        let f = m.frame_at(0.0, 0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 0);
         assert_eq!(m.restarts, restarts + 1);
     }
@@ -1094,26 +1117,79 @@ mod tests {
             .unwrap();
         let mut m = Movie::open(&file).unwrap();
         // The loop is 0.4 to 1.2 s: near its end the decode thread primes 0.4.
-        m.frame_at(0.8, &|| {}).unwrap().unwrap();
-        let f = m.frame_at(1.15, &|| {}).unwrap().unwrap();
+        m.frame_at(0.8, 0, &|| {}).unwrap().unwrap();
+        let f = m.frame_at(1.15, 0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 28);
         m.prime(0.4);
         assert!(m.primed(0.4));
         assert!(!m.primed(0.8));
-        let f = m.frame_at(1.19, &|| {}).unwrap().unwrap();
+        let f = m.frame_at(1.19, 0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 29, "the pass plays on to its end");
-        let f = m.frame_at(0.4, &|| {}).unwrap().unwrap();
+        let f = m.frame_at(0.4, 0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 10, "the next pass's first frame");
         assert_eq!(m.spares_taken, 1);
         assert!(!m.primed(0.4), "taken");
         // Frames follow on from the primed reader.
-        let f = m.frame_at(0.45, &|| {}).unwrap().unwrap();
+        let f = m.frame_at(0.45, 0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 11);
         // Primed for one place, a jump elsewhere opens its own reader.
         m.prime(0.4);
-        let f = m.frame_at(1.6, &|| {}).unwrap().unwrap();
+        let f = m.frame_at(1.6, 0, &|| {}).unwrap().unwrap();
         assert_eq!(number(&f), 40);
         assert_eq!(m.spares_taken, 1);
         assert!(!m.primed(0.4), "let go");
+    }
+
+    /// A loop of two frames: going round, the position steps back by a frame or less, which
+    /// alone would be held as a clock correction; in a new pass of the plan it is a seam, and
+    /// the loop's first frame is shown again. In the same pass the small step back still holds.
+    #[test]
+    fn a_step_back_into_a_new_pass_is_a_seam_however_small() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mov");
+        let file = path.to_str().unwrap().to_owned();
+        super::super::testmedia::make(&["h264".into(), file.clone(), "50".into(), "25".into()])
+            .unwrap();
+        let mut m = Movie::open(&file).unwrap();
+        // A loop 0.40 to 0.48 s: frames 10 and 11.
+        assert_eq!(number(&m.frame_at(0.40, 0, &|| {}).unwrap().unwrap()), 10);
+        assert_eq!(number(&m.frame_at(0.46, 0, &|| {}).unwrap().unwrap()), 11);
+        let f = m.frame_at(0.40, 1, &|| {}).unwrap();
+        assert_eq!(f.map(|f| number(&f)), Some(10), "the next pass");
+        assert_eq!(number(&m.frame_at(0.46, 1, &|| {}).unwrap().unwrap()), 11);
+        assert!(
+            m.frame_at(0.43, 1, &|| {}).unwrap().is_none(),
+            "a small step back in one pass holds"
+        );
+        // Round again with the loop's start primed, as the decode thread does near a seam.
+        for pass in 2..5 {
+            m.prime(0.40);
+            let f = m.frame_at(0.42, pass, &|| {}).unwrap();
+            assert_eq!(f.map(|f| number(&f)), Some(10), "pass {pass}");
+            // Primed again for the next seam while this pass plays.
+            m.prime(0.40);
+            let f = m.frame_at(0.445, pass, &|| {}).unwrap();
+            assert_eq!(f.map(|f| number(&f)), Some(11), "pass {pass}");
+        }
+    }
+
+    /// Priming that failed is not tried again for the same place (the decode thread would
+    /// otherwise retry it in a busy loop until the seam); another place is. AVFoundation gives
+    /// no reader failure to provoke on a file already open (a deleted file's asset still reads),
+    /// so the failure is set as `prime` records it.
+    #[test]
+    fn a_failed_prime_is_not_retried_for_the_same_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mov");
+        let file = path.to_str().unwrap().to_owned();
+        super::super::testmedia::make(&["h264".into(), file.clone(), "50".into(), "25".into()])
+            .unwrap();
+        let mut m = Movie::open(&file).unwrap();
+        m.prime_failed = Some(0.4);
+        assert!(m.primed(0.4), "the failure is remembered for that place");
+        assert!(!m.primed(0.8), "another place is tried");
+        m.prime(0.8);
+        assert!(m.primed(0.8) && m.spare.is_some(), "primed there");
+        assert_eq!(m.prime_failed, None, "a new place forgets the old failure");
     }
 }
