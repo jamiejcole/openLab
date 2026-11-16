@@ -691,7 +691,7 @@ fn spawn(config: &StageHostConfig, events: &EventSink) -> std::io::Result<Spawne
     // Its own process group: a terminal's Ctrl-C reaches the engine, which decides.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    let mut child = command.spawn()?;
+    let mut child = crate::platform::spawn::spawn(&mut command)?;
     let (stdin, stdout, stderr) =
         match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
             (Some(i), Some(o), Some(e)) => (i, o, e),
