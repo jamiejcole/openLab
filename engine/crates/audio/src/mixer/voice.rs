@@ -800,15 +800,19 @@ impl Voice {
 
     /// Copies up to `n` frames that will play next, starting `from` frames ahead, into `to`
     /// without consuming them (an `rtrb` read chunk dropped uncommitted leaves the ring as it
-    /// was). Stops at the voice's end, at a devamp boundary and where the ring runs out; the rest
-    /// up to `n` is silence. Returns the frames copied.
+    /// was). Stops where the ring (or a loop exit's buffer) runs out and, when only counting, at
+    /// the voice's end and at a devamp boundary; the rest up to `n` is silence. Returns the
+    /// frames copied or counted.
     pub(super) fn peek(&mut self, from: u64, n: usize, to: Target) -> usize {
         let ch = self.channels;
-        // A pending devamp jumps at the end of this play; beyond it only the exit could be peeked.
-        let limit = if self.devamp.is_some() || self.exit.is_some() {
-            self.left
-        } else {
-            self.remaining().map_or(u64::MAX, |r| r.saturating_add(1))
+        let limit = match to {
+            // A tail measured when the voice paused: a devamp accepted since must not cut it
+            // short at the end of the play, so it plays the frames the ring held then.
+            Target::Input(_) => u64::MAX,
+            // A pending devamp jumps at the end of this play; beyond it only the exit could be
+            // peeked.
+            Target::Count if self.devamp.is_some() || self.exit.is_some() => self.left,
+            Target::Count => self.remaining().map_or(u64::MAX, |r| r.saturating_add(1)),
         };
         let want = usize::try_from(limit.saturating_sub(from))
             .unwrap_or(usize::MAX)

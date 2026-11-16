@@ -1155,6 +1155,38 @@ fn a_resume_inside_the_tail_keeps_the_tail_on_its_own_envelope() {
     assert_eq!(ev, vec![]);
 }
 
+/// A looping voice paused 50 frames before its loop point, so the tail runs on into the next
+/// pass, and devamped 10 frames later: the tail fades to its end as it was measured, not cut at
+/// the end of the play the devamp now stops at.
+#[test]
+fn a_devamp_inside_a_tail_that_crosses_the_loop_point_leaves_the_tail_fading() {
+    let reference = reference_step();
+    let run = |blocks: &[usize]| {
+        let slices = plan(0..300, &[100], &[Plays::Infinite, Plays::Times(1)], 0).unwrap();
+        let (mut ctl, mut r) = setup(config(1));
+        let mut v = voice(&ctl, 1, source(&vec![1.0; 20_000]), 1);
+        v.slices = slices;
+        v.fade_in = Fade::new(100, Curve::Linear);
+        send_start(&mut ctl, 0, v);
+        ctl.send(1050, pause(1));
+        ctl.send(1060, devamp(1, true));
+        let out = render(&mut r, 3000, blocks);
+        (out, sorted(events(&mut ctl)))
+    };
+    let (out, ev) = run(&[3000]);
+    for blocks in [BLOCKS, OTHER_BLOCKS] {
+        let (o, e) = run(blocks);
+        assert!(o == out, "output differs with blocks {blocks:?}");
+        assert_eq!(e, ev);
+    }
+    let (step, i) = worst_step(&out[500..]);
+    assert!(step <= reference + 1e-6, "step {step} at {}", 500 + i);
+    for j in 0..D {
+        let o = out[(1050 + j) as usize];
+        assert!(close(o, declick_out(j, D)), "tail frame {j}: {o}");
+    }
+}
+
 /// A stereo voice, its channels with different content, into different outputs at different
 /// levels, paused and resumed twice inside one tail: each output carries its own channel's tails
 /// (kept by a resume, played under a pause, kept again), the mono voice's render times its level.
