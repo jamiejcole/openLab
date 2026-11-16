@@ -204,7 +204,7 @@ extension InspectorEdit {
             return ["audio", "group"].contains(target.kindType) ? nil : .wrongTargetKind
         case "devamp":
             let playlist = target.kindType == "group" && target.raw["kind"]?["mode"]?["type"]?.stringValue == "playlist"
-            return target.kindType == "audio" || playlist ? nil : .wrongTargetKind
+            return ["audio", "video"].contains(target.kindType) || playlist ? nil : .wrongTargetKind
         default: return nil
         }
     }
