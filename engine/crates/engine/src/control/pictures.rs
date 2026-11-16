@@ -61,8 +61,11 @@ struct Live {
     /// the stacking, so a picture paused (or stopping) when the stage host starts again comes
     /// back where it was.
     first: Option<ToStage>,
-    /// Its last `play`, `pause` or `stop`, likewise.
+    /// Its last `play` or `pause`, likewise.
     now: Option<ToStage>,
+    /// Its `stop`, likewise, sent after `now`: a stop never takes the place of the play or
+    /// pause before it, so a stopping picture comes back where it was (a pause counted).
+    stop: Option<ToStage>,
     /// It is stopping: gone from the stage host after this sample.
     ends: Option<SampleTime>,
     /// The stage host said its file is open (since the load was last sent).
@@ -105,6 +108,22 @@ struct RunPlan {
     /// The last devamp of it: its stop, and the sample it leaves the loop on. Pending until
     /// the picture is there, carried out from then on.
     devamp: Option<(bool, SampleTime)>,
+}
+
+impl Live {
+    /// What a new stage host is sent for it: its load, first play, last play or pause, and
+    /// stop.
+    fn messages(&self) -> Vec<ToStage> {
+        let now = self
+            .now
+            .as_ref()
+            .filter(|n| Some(*n) != self.first.as_ref());
+        std::iter::once(self.load.clone())
+            .chain(self.first.clone())
+            .chain(now.cloned())
+            .chain(self.stop.clone())
+            .collect()
+    }
 }
 
 impl RunPlan {
@@ -317,12 +336,7 @@ impl Engine {
             .live
             .values()
             .filter(|l| !l.held_back)
-            .flat_map(|l| {
-                let now = l.now.as_ref().filter(|n| Some(*n) != l.first.as_ref());
-                std::iter::once(l.load.clone())
-                    .chain(l.first.clone())
-                    .chain(now.cloned())
-            })
+            .flat_map(Live::messages)
             .collect();
         for m in messages {
             self.picture(m);
@@ -441,11 +455,7 @@ impl Engine {
         l.held_back = false;
         l.trial = Some(now);
         l.opened = false;
-        let now_msg = l.now.as_ref().filter(|n| Some(*n) != l.first.as_ref());
-        let messages: Vec<ToStage> = std::iter::once(l.load.clone())
-            .chain(l.first.clone())
-            .chain(now_msg.cloned())
-            .collect();
+        let messages = l.messages();
         self.picture_clock(true);
         for m in messages {
             self.picture(m);
@@ -988,6 +998,7 @@ impl DocCx<'_> {
                 load: load.clone(),
                 first: None,
                 now: None,
+                stop: None,
                 ends: None,
                 opened: false,
                 suspected: 0,
@@ -1179,7 +1190,8 @@ impl DocCx<'_> {
         let Some(l) = self.eng.pictures.live.get_mut(&id) else {
             return fx.picture_says(ignored);
         };
-        let playing = matches!(l.motion, Some((Some(_), _)));
+        // A stopping picture is going whatever its plan.
+        let playing = matches!(l.motion, Some((Some(_), _))) && l.ends.is_none();
         let Some(plan) = l.plan.as_mut().filter(|_| playing) else {
             return fx.picture_says(ignored);
         };
@@ -1402,7 +1414,7 @@ impl DocCx<'_> {
                 return;
             }
             l.ends = Some(end);
-            l.now = Some(ToStage::Stop {
+            l.stop = Some(ToStage::Stop {
                 picture: id,
                 at,
                 fade: frames,

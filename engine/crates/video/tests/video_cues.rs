@@ -1233,6 +1233,76 @@ fn a_paused_picture_is_shown_again_when_the_stage_host_is_relaunched() {
     assert_eq!(shown(&mut s), Some(held), "the held frame is back");
 }
 
+/// Kills the stage host with SIGKILL and waits until its replacement has its stages.
+fn kill_stage_host(s: &mut OfflineShow) {
+    let pid = s.control().stage_host_pid().unwrap();
+    let killed = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
+    s.settle_stages();
+}
+
+/// A movie paused, resumed, then stopped with a long fade: a stage host relaunched during the
+/// fade shows the frame the cue is at (its pause counted), fading on to the stop's end.
+#[test]
+fn a_stage_host_relaunched_during_a_stop_fade_after_a_pause_shows_the_frame_the_cue_is_at() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (75, 25));
+    let mut s = video_show(vec![video_cue(1, Some(&movie))]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.3));
+    s.transport(TransportAction::Pause { cue: id(1) });
+    let paused = s.now();
+    s.run(samples(0.5));
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.2));
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: Some(openlab_core::FadeSpec {
+            duration: 3.0,
+            curve: openlab_core::FadeCurve::Linear,
+        }),
+    });
+    s.run(BLOCK);
+    kill_stage_host(&mut s);
+    run_to(&mut s, resumed + samples(0.5));
+    expect_state(&s, 1, CueState::Stopping, "fading out");
+    let played = (paused - at + s.now() - resumed) as f64 / f64::from(RATE);
+    let now = on_stage(&mut s, "after the relaunch");
+    assert!(
+        now.abs_diff(frame_at(played)) <= 1,
+        "frame {now} after {played} s of play"
+    );
+    run_to(&mut s, resumed + samples(3.2) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "the fade is over");
+    assert_eq!(shown(&mut s), None);
+    assert_eq!(s.control().pictures_live(), 0);
+}
+
+/// A movie held at its last frame (hold at end) is shown on that frame again by a relaunched
+/// stage host, and its cue stays active.
+#[test]
+fn a_stage_host_relaunched_while_a_movie_holds_its_last_frame_shows_that_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let held = timed_cue(1, &movie, |t| {
+        t.end_time = Some(1.2);
+        t.hold_at_end = true;
+    });
+    let mut s = video_show(vec![held]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.5));
+    assert_eq!(shown(&mut s), Some(29), "held at its last frame");
+    kill_stage_host(&mut s);
+    s.run(samples(0.5));
+    expect_state(&s, 1, CueState::Running, "held at its end");
+    assert_eq!(shown(&mut s), Some(29), "the last frame is back");
+}
+
 /// The stage host's media limits measured on a clock the test moves (`advance_stage_media_clock`,
 /// and each slow-decode frame), never on real time: a picture fails only when the test moves
 /// that clock past a limit, however slow the machine. The limits given apply to the files a
