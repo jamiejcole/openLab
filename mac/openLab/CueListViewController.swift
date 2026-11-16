@@ -466,8 +466,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let room = inside - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
         let columns = outlineView.tableColumns
         let others = columns.filter { $0 !== name }.reduce(0) { $0 + $1.width }
-        let width = max(name.minWidth, (room - others - tableExtra(name, others: others)).rounded(.down))
+        let left = (room - others - tableExtra(name, others: others)).rounded(.down)
+        let width = max(name.minWidth, left)
         if abs(name.width - width) >= 1 { name.width = width }
+        // The sideways scroller only while the columns are wider than the list. Where scroll bars always
+        // show, a scroller kept for nothing took 17 of the least list's 56 points, over its one row. The
+        // vertical scroller is left as it is (its room is always kept above).
+        let overflows = left < name.minWidth
+        if scroll.hasHorizontalScroller != overflows { scroll.hasHorizontalScroller = overflows }
     }
 
     private var measuredExtra: CGFloat?

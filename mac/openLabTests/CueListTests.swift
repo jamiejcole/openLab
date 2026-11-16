@@ -6184,4 +6184,45 @@ final class CueListColumnLayoutTests: XCTestCase {
             }
         }
     }
+
+    /// With scroll bars that always show (a Mac with a mouse), the list at the least window size keeps its
+    /// one row clear: no scroller lies over it while the columns fit. Once they do not (the sidebar shown
+    /// at the least width), the sideways scroller is there to reach them.
+    func testWithScrollBarsAlwaysShownNoScrollerCoversTheRowAtTheLeastWindowSize() async throws {
+        let wc = try await open(NSSize(width: 1200, height: 800))
+        let window = try XCTUnwrap(wc.window)
+        let scroll = try XCTUnwrap(outline.enclosingScrollView)
+        scroll.scrollerStyle = .legacy
+        window.setContentSize(window.minSize)
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(wc.isVisible(.inspector))
+        func shownScrollers() -> [NSScroller] {
+            scroll.subviews.compactMap { $0 as? NSScroller }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        }
+        for cue in [H.radio, H.intro] {
+            wc.cueList.selectAsUser([cue])
+            outline.scrollRowToVisible(outline.selectedRow)
+            window.contentView?.layoutSubtreeIfNeeded()
+            let row = outline.convert(outline.rect(ofRow: outline.selectedRow), to: nil)
+            let list = scroll.convert(scroll.bounds, to: nil)
+            XCTAssertGreaterThanOrEqual(row.minY, list.minY - 0.5, "the selected row is inside the list")
+            // The vertical scroller stands at the list's right edge, beside the cells: only one lying
+            // across the row (wider than tall) covers it.
+            for scroller in shownScrollers() {
+                let at = scroller.convert(scroller.bounds, to: nil)
+                let across = at.width > at.height && at.intersects(row.insetBy(dx: 0, dy: 0.5))
+                XCTAssertFalse(across, "a scroller at \(at) lies over the selected row at \(row)")
+            }
+            XCTAssertFalse(scroll.hasHorizontalScroller, "no sideways scroller while the columns fit")
+        }
+        // The columns no longer fit: the sideways scroller reaches the last one.
+        wc.setVisible(.sidebar, true)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let last = outline.rect(ofColumn: outline.numberOfColumns - 1)
+        XCTAssertGreaterThan(last.maxX, scroll.contentView.bounds.maxX, "the columns are wider than the list")
+        XCTAssertTrue(scroll.hasHorizontalScroller, "the sideways scroller is back")
+        wc.setVisible(.sidebar, false)
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertFalse(scroll.hasHorizontalScroller, "and gone again once they fit")
+    }
 }
