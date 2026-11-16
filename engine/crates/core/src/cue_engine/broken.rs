@@ -956,7 +956,10 @@ fn combine(cue: CueId, f: &Facts, p: &Problems) -> Vec<CueProblem> {
             }
         }
         // Its sound needs its patch as an Audio cue's does; a file without sound never does.
-        if v.media.as_ref().is_some_and(|m| p.sound.contains(m.as_str())) {
+        if v.media
+            .as_ref()
+            .is_some_and(|m| p.sound.contains(m.as_str()))
+        {
             match v.patch {
                 None => found.push(CueProblem::NoPatch),
                 Some(patch) if !v.patch_exists => found.push(CueProblem::PatchMissing { patch }),

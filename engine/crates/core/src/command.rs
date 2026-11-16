@@ -778,9 +778,7 @@ pub fn prepare_paste(
                 }
             }
             // A Video cue's "none" stays none; a patch this workspace lacks becomes its first.
-            CueKind::Video { sound, .. }
-                if sound.patch.is_some_and(|p| !patches.contains(&p)) =>
-            {
+            CueKind::Video { sound, .. } if sound.patch.is_some_and(|p| !patches.contains(&p)) => {
                 if let Some(first) = first_patch {
                     sound.patch = Some(first);
                 }

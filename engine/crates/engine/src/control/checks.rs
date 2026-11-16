@@ -609,7 +609,9 @@ impl Picture {
     /// The audio track the cue plays and its number: the one it chose, or the first when the
     /// movie has no such track; `None` for a file without sound.
     fn played_track(&self) -> Option<(u32, &AudioTrackFormat)> {
-        let chosen = usize::try_from(self.track).ok().and_then(|n| self.tracks.get(n));
+        let chosen = usize::try_from(self.track)
+            .ok()
+            .and_then(|n| self.tracks.get(n));
         match chosen {
             Some(t) => Some((self.track, t)),
             None => self.tracks.first().map(|t| (0, t)),

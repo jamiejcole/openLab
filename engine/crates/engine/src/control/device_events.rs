@@ -8,8 +8,8 @@ use openlab_core::protocol::{
     DeviceEntry, ErrorBody, ErrorCode, LogLevel, RuntimeChange, WireWarning,
 };
 use openlab_core::{
-    BrokenReason, CueId, CueState, DeviceInfo, Input, MAX_BUFFER_FRAMES,
-    MIN_BUFFER_FRAMES, PatchResolution, RunId, SYSTEM_OUTPUT, SampleTime,
+    BrokenReason, CueId, CueState, DeviceInfo, Input, MAX_BUFFER_FRAMES, MIN_BUFFER_FRAMES,
+    PatchResolution, RunId, SYSTEM_OUTPUT, SampleTime,
 };
 
 use super::devices::{Device, DeviceAnswer, DeviceEvent, OutputKey};

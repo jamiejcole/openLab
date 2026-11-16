@@ -759,10 +759,10 @@ fn remove_patch(
 ) -> Result<Inverse, CommandError> {
     let at = patch_index(ws, id)?;
     if !even_if_used
-        && let Some(cue) = first_cue(
-            ws,
-            |k| matches!(k, CueKind::Audio { .. } | CueKind::Video { .. }) && k.sound_patch() == Some(id),
-        )
+        && let Some(cue) = first_cue(ws, |k| {
+            matches!(k, CueKind::Audio { .. } | CueKind::Video { .. })
+                && k.sound_patch() == Some(id)
+        })
     {
         return Err(CommandError::PatchInUse { patch: id, cue });
     }

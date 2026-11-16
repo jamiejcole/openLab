@@ -314,3 +314,100 @@ fn a_video_cue_whose_slices_cannot_play_is_broken_until_fixed() {
     rig.tick(2);
     assert!(rig.problems(1).is_empty());
 }
+
+fn sounding_on(n: u128, patch: Option<PatchId>) -> Cue {
+    let mut c = video_on(n, Some(stage_id(1)));
+    if let CueKind::Video { sound, .. } = &mut c.kind {
+        sound.patch = patch;
+    }
+    c
+}
+
+fn sound(rig: &mut Rig, now: SampleTime, sounds: bool) {
+    rig.at(
+        now,
+        Input::MediaSound {
+            media: vec![(MediaRef::new("media/v.mov"), sounds)],
+        },
+    );
+}
+
+/// A Video cue needs its output patch only while its file is told to have sound: then no patch,
+/// a patch the workspace lacks and a patch with no device break it as they break an Audio cue,
+/// and it does not start; a file without sound is never broken by patches.
+#[test]
+fn a_video_cue_whose_file_has_sound_needs_its_patch() {
+    let mut rig = rig(vec![
+        sounding_on(1, None),
+        sounding_on(2, Some(patch_id(9))),
+        sounding_on(3, Some(patch_id(1))),
+    ]);
+    for n in 1..=3 {
+        assert!(rig.problems(n).is_empty(), "no sound told: cue {n}");
+    }
+    sound(&mut rig, 1, true);
+    assert_eq!(rig.problems(1), vec![CueProblem::NoPatch]);
+    assert_eq!(
+        rig.problems(2),
+        vec![CueProblem::PatchMissing { patch: patch_id(9) }]
+    );
+    assert!(rig.problems(3).is_empty());
+    assert_eq!(rig.state(1), CueState::Broken);
+    let actions = rig.at(2, Input::Start { cue: id(1) });
+    assert!(voice_starts(&actions).is_empty(), "{actions:?}");
+    // The patch loses its device: the device problem, cleared when it is back.
+    let status = |resolution| Input::PatchStatus {
+        patch: patch_id(1),
+        resolution,
+    };
+    rig.at(3, status(PatchResolution::Unmapped));
+    assert_eq!(
+        rig.problems(3),
+        vec![CueProblem::DeviceUnavailable {
+            patch: patch_id(1),
+            resolution: PatchResolution::Unmapped
+        }]
+    );
+    let mapped = PatchResolution::Mapped {
+        device: "Out".into(),
+        channels: vec![0, 1],
+    };
+    rig.at(4, status(mapped));
+    assert!(rig.problems(3).is_empty());
+    // A file without sound needs no patch.
+    sound(&mut rig, 5, false);
+    for n in 1..=3 {
+        assert!(rig.problems(n).is_empty(), "no sound: cue {n}");
+    }
+}
+
+/// A Fade cue may target a Video cue: it fades the levels of its sound as an Audio cue's.
+#[test]
+fn a_fade_cue_ramps_a_playing_video_cues_levels() {
+    let fade = cue(
+        2,
+        CueKind::Fade {
+            target: Some(id(1)),
+            duration: 1.0,
+            curve: FadeCurve::Linear,
+            levels: FadeLevels {
+                master_db: Some(-20.0),
+                output_db: vec![],
+                crosspoints: vec![],
+            },
+            stop_target_when_done: false,
+            mode: FadeMode::default(),
+        },
+    );
+    let mut rig = rig(vec![sounding_on(1, Some(patch_id(1))), fade]);
+    assert!(rig.problems(2).is_empty(), "a Video cue is a Fade's target");
+    rig.at(1, Input::Start { cue: id(1) });
+    let actions = rig.at(100, Input::Start { cue: id(2) });
+    assert!(
+        actions.iter().any(|a| matches!(
+            a,
+            Action::Ramp { cue, param: LevelParam::Master, .. } if *cue == id(1)
+        )),
+        "{actions:?}"
+    );
+}

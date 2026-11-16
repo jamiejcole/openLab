@@ -98,7 +98,7 @@ Fields and reply shapes: `Request` and `ResultData` (`client.rs`, `server.rs`). 
 - **`list_stage_mappings`** (VID-01): each of the doc's stages, workspace order: `mapping` (the display chosen on this machine: `{display, name, width, height}` as it was when chosen; absent: none) and `state` (where it is now, the stage host's `stage_status` state, section 5; absent until the stage host has said). A stage with no display or a missing one is not an error: its state says so and the show log warns.
 - **`set_stage_mapping { stage, display? }`** (VID-01): shows the doc's `stage` on `display` (an id `list_displays` gives) **on this machine**, or on none (null or absent); kept in machine settings under workspace id and stage id, not in the show file, and handed to the stage host at once. Refused with nothing changed: `not_found` (stage or display), `bad_request` (a display id empty, over 512 bytes or with control characters), `io` (settings cannot be saved).
 - **`snapshot`**: a `snapshot` (on the app connection `workspaces`), then `result`.
-- **`waveform { cue, start, end, buckets }`** (AUD-14): peaks of an Audio cue's file over `start..end` (finite, `0 <= start < end`) in `buckets` (1 to 8192) parts. `end` is clamped to the file length; fewer buckets may come back (few frames, or a size cap).
+- **`waveform { cue, start, end, buckets }`** (AUD-14): peaks of an Audio cue's file (or, for a Video cue whose movie has sound, of the audio track it plays over the movie's length; a movie without sound or a still is `unsupported`) over `start..end` (finite, `0 <= start < end`) in `buckets` (1 to 8192) parts. `end` is clamped to the file length; fewer buckets may come back (few frames, or a size cap).
   - The file is read whole once by the waveform reader (never a probe worker; one file at a time engine-wide) and cached per workspace under a byte cap, so later answers at any zoom are instant; a re-probe reads again.
   - Refused: `bad_request` (range or count out of bounds; not an Audio cue), `not_found` (no cue or no file), `unsupported` (missing, unplayable, not probed yet, or too long; ask again once `media_duration` is known), `command_refused` (too many waiting), `io` (disk stopped answering past `waveform_timeout`; repeated timeouts stop further reads until restart).
 
@@ -163,7 +163,7 @@ Sent to connections bound to the doc whose cues it reports, only while something
 - `media`: by path, `missing` or `unsupported`, with the cues using it.
 - `patches`: patches with no device to play on, then patches cues name that the workspace lacks. A patch no cue uses is listed but not counted and not a failure.
 - `network`: destinations Network cues use: `missing` (a problem) or `not_checked` (exists; **reachability is not probed**: neither problem nor pass, `ok` stays true).
-- `system`: the `warnings` list (device lost or stalled, damaged media, preload problems, unplayable slices), sorted by `code`, cue, message. Any entry makes `ok` false except `preload_over_budget` (streamed and plays).
+- `system`: the `warnings` list (device lost or stalled, damaged media, preload problems, unplayable slices, `audio_track_missing`: a Video cue's stored audio track is not in its movie and the first plays), sorted by `code`, cue, message. Any entry makes `ok` false except `preload_over_budget` (streamed and plays).
 
 ### Show log entries and status
 

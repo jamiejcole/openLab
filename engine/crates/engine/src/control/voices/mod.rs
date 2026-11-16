@@ -19,8 +19,7 @@ use openlab_audio::{
 };
 use openlab_core::{
     Action, BrokenReason, Cue, CueEngine, CueId, CueKind, CueLevels, FadeCurve, FadeSpec, Input,
-    LevelParam,
-    PatchId, RunId, SampleTime, StopFade, Workspace, db_to_gain, seconds_to_samples,
+    LevelParam, PatchId, RunId, SampleTime, StopFade, Workspace, db_to_gain, seconds_to_samples,
 };
 
 use super::media::{MediaCatalog, Probe};

@@ -572,6 +572,22 @@ pub fn preload_within(media: Media, max_bytes: u64) -> Result<Arc<Preloaded>, Me
 const SAMPLE_BYTES: u64 = std::mem::size_of::<f32>() as u64;
 
 fn decode_all(media: Media, max_bytes: u64) -> Result<Arc<Preloaded>, MediaError> {
+    // A track fitted to its movie's length is read as its stream reads it.
+    if let Media::Track(MovieTrack { fit: Some(fit), .. }) = &media {
+        let frames = fit.frames;
+        let mut src = open_source(media, Seeking::Direct)?;
+        let (ch, rate) = (src.channels().max(1), src.sample_rate());
+        let samples = read_all(src.as_mut(), Some(frames), max_bytes)?;
+        return Ok(Arc::new(Preloaded {
+            info: MediaInfo::new(
+                u16::try_from(ch).unwrap_or(0),
+                rate,
+                (samples.len() / ch) as u64,
+            ),
+            samples,
+            warnings: src.take_warnings(),
+        }));
+    }
     let mut d = match open_media(media)? {
         Opened::Sym(d) => *d,
         Opened::Pcm(mut p) => {

@@ -23,8 +23,7 @@ use openlab_core::protocol::{
 use openlab_core::video_probe::{ProbeReport, StillFormat, VideoCodec};
 use openlab_core::{
     Crosspoint, Cue, CueKind, CueLevels, CueOutput, CueProblem, CueState, MediaRef, PatchId, Stage,
-    StageId,
-    VideoGeometry, Workspace,
+    StageId, VideoGeometry, Workspace,
 };
 use openlab_engine::control::ControlConfig;
 use openlab_engine::control::offline::OfflineShow;
@@ -393,7 +392,19 @@ fn video_show_host(
 
 /// As [`video_show_host`], the engine's configuration changed by `engine` too.
 fn video_show_config(
+    ws: Workspace,
+    extra: &[&str],
+    tweak: impl FnOnce(&mut StageHostConfig),
+    engine: impl FnOnce(&mut ControlConfig),
+) -> OfflineShow {
+    video_show_rate(ws, RATE, BLOCK, extra, tweak, engine)
+}
+
+/// As [`video_show_config`], on an offline device at `rate` Hz in blocks of `block` frames.
+fn video_show_rate(
     mut ws: Workspace,
+    rate: u32,
+    block: u64,
     extra: &[&str],
     tweak: impl FnOnce(&mut StageHostConfig),
     engine: impl FnOnce(&mut ControlConfig),
@@ -401,7 +412,7 @@ fn video_show_config(
     let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
     stage.keep_black = true;
     ws.stages = vec![stage];
-    let mut c: ControlConfig = config(&ws);
+    let mut c: ControlConfig = config_at(&ws, rate, block);
     engine(&mut c);
     let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
     host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
@@ -411,7 +422,7 @@ fn video_show_config(
     host.answer_within = SLOW_MACHINE;
     tweak(&mut host);
     c.stage_host = Some(host);
-    let mut s = show_with(ws, c);
+    let mut s = OfflineShow::new(ws, mixer_config_at(rate, block), c).unwrap();
     s.settle_stages();
     // The files' probes are answered too: the tests read what they found.
     s.settle_media();
@@ -2789,7 +2800,10 @@ fn a_movie_with_sound_gets_a_levels_tab_and_is_heard_on_its_patch() {
     for t in [0.1, 0.5, 1.5, 2.5, 2.9] {
         run_to(&mut s, at + samples(t));
         let sound = in_step(&mut s, RATE, 25.0, &format!("{t} s after GO"));
-        assert!((sound - t).abs() < 0.02, "the sound is at {sound} s, {t} s after GO");
+        assert!(
+            (sound - t).abs() < 0.02,
+            "the sound is at {sound} s, {t} s after GO"
+        );
     }
     // Three seconds long: picture and sound end together, once.
     run_to(&mut s, at + samples(3.0) + 2 * BLOCK);
@@ -2807,11 +2821,7 @@ fn a_movie_with_sound_gets_a_levels_tab_and_is_heard_on_its_patch() {
 }
 
 /// A Video cue with sound and the time and loops `edit` gives it.
-fn timed_sounding_cue(
-    n: u128,
-    movie: &Path,
-    edit: impl Fn(&mut openlab_core::VideoTiming),
-) -> Cue {
+fn timed_sounding_cue(n: u128, movie: &Path, edit: impl Fn(&mut openlab_core::VideoTiming)) -> Cue {
     let mut c = sounding_cue(n, movie);
     if let CueKind::Video { timing, .. } = &mut c.kind {
         edit(timing);
@@ -2829,7 +2839,10 @@ fn silent(s: &OfflineShow, from: u64, to: u64) -> bool {
 /// millisecond.
 fn sound_is(s: &OfflineShow, at: u64, want: f64, what: &str) {
     let got = sound_at(s, at).unwrap_or_else(|| panic!("{what}: silence"));
-    assert!((got - want).abs() < 0.0005, "{what}: the sound is at {got} s, not {want} s");
+    assert!(
+        (got - want).abs() < 0.0005,
+        "{what}: the sound is at {got} s, not {want} s"
+    );
 }
 
 /// Flow 8 (a), (b), (d): pause holds the frame and stops the sound, resume goes on from the
@@ -2863,7 +2876,10 @@ fn pause_resume_load_to_time_and_a_loop_seam_keep_them_together() {
     run_to(&mut s, resumed + samples(0.5));
     let sound = in_step(&mut s, RATE, 25.0, "after the resume");
     let played = (s.now() - at - (resumed - paused)) as f64 / f64::from(RATE);
-    assert!((sound - played).abs() < 0.002, "{sound} s after {played} s of play");
+    assert!(
+        (sound - played).abs() < 0.002,
+        "{sound} s after {played} s of play"
+    );
     // Both end when the rest has played.
     let end = at + samples(4.0) + (resumed - paused);
     run_to(&mut s, end + 2 * BLOCK);
@@ -2893,7 +2909,10 @@ fn pause_resume_load_to_time_and_a_loop_seam_keep_them_together() {
     run_to(&mut s, at + samples(3.0));
     expect_state(&s, 2, CueState::Running, "held at its end");
     assert_eq!(shown(&mut s), Some(29));
-    assert!(silent(&s, at + samples(1.2), s.rendered()), "no sound after the end");
+    assert!(
+        silent(&s, at + samples(1.2), s.rendered()),
+        "no sound after the end"
+    );
     assert_eq!(s.control().live_voices(), 0);
     s.transport(TransportAction::Stop {
         cue: id(2),
@@ -2991,15 +3010,26 @@ fn go_while_the_probe_is_pending_starts_picture_and_sound_late_together() {
     let at = go(&mut s);
     s.run(samples(0.5));
     expect_state(&s, 1, CueState::Running, "waits for its probe");
-    assert!(silent(&s, at, s.rendered()), "no sound before the file is read");
+    assert!(
+        silent(&s, at, s.rendered()),
+        "no sound before the file is read"
+    );
     release_probe(&movie);
     s.settle_media();
     let released = s.now();
     run_to(&mut s, released + samples(1.0));
     let sound = in_step(&mut s, RATE, 25.0, "started late");
-    assert!((sound - 1.0).abs() < 0.03, "{sound} s, a second after the late start");
+    assert!(
+        (sound - 1.0).abs() < 0.03,
+        "{sound} s, a second after the late start"
+    );
     run_to(&mut s, released + samples(3.0) + samples(0.1));
-    expect_state(&s, 1, CueState::Idle, "its whole length from the late start");
+    expect_state(
+        &s,
+        1,
+        CueState::Idle,
+        "its whole length from the late start",
+    );
 }
 
 /// Flow 9: Panic fades the sound and the picture over the panic time and both are gone at the
@@ -3022,7 +3052,10 @@ fn stop_and_panic_fade_the_sound_with_the_picture() {
     let red = red_at(&mut s);
     assert!((60..200).contains(&red), "the picture is fading: {red}");
     let level = s.audio()[usize::try_from(s.rendered() - 1).unwrap() * 2 + 1];
-    assert!(level > 0.0 && level < 2.0 / 2048.0, "the sound is fading: {level}");
+    assert!(
+        level > 0.0 && level < 2.0 / 2048.0,
+        "the sound is fading: {level}"
+    );
     run_to(&mut s, panicked + samples(0.5) + 2 * BLOCK);
     expect_state(&s, 1, CueState::Idle, "");
     assert_eq!(shown(&mut s), None);
@@ -3049,7 +3082,12 @@ fn stop_and_panic_fade_the_sound_with_the_picture() {
     run_to(&mut s, other + samples(1.0));
     expect_state(&s, 1, CueState::Idle, "");
     expect_state(&s, 2, CueState::Running, "untouched");
-    sound_is(&s, s.rendered() - 1, (s.rendered() - 1 - other) as f64 / f64::from(RATE), "cue 2");
+    sound_is(
+        &s,
+        s.rendered() - 1,
+        (s.rendered() - 1 - other) as f64 / f64::from(RATE),
+        "cue 2",
+    );
     s.transport(TransportAction::Panic);
     s.transport(TransportAction::Panic);
     let cut = s.now();
@@ -3128,7 +3166,15 @@ fn levels_and_mutes_change_the_sound_live_while_the_picture_plays_on() {
     assert!(rise == 0.0 && second > 0.0, "{rise} {second}");
     // A level above the workspace's limit is brought to it, as an Audio cue's.
     assert!(set_fields(&mut s, 1, levels(10.0, true)));
-    let stored = s.control().workspace().find_cue(id(1)).unwrap().kind.levels().unwrap().master_db;
+    let stored = s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .kind
+        .levels()
+        .unwrap()
+        .master_db;
     assert_eq!(stored, 6.0);
     // While paused an edit is heard on the resume.
     s.transport(TransportAction::Pause { cue: id(1) });
@@ -3142,7 +3188,15 @@ fn levels_and_mutes_change_the_sound_live_while_the_picture_plays_on() {
     // Undo: the levels before the last edit.
     let request = s.request_id();
     s.send(ClientMessage::Undo { id: request });
-    let stored = s.control().workspace().find_cue(id(1)).unwrap().kind.levels().unwrap().master_db;
+    let stored = s
+        .control()
+        .workspace()
+        .find_cue(id(1))
+        .unwrap()
+        .kind
+        .levels()
+        .unwrap()
+        .master_db;
     assert_eq!(stored, 6.0);
 }
 
@@ -3184,7 +3238,10 @@ fn a_fade_cue_fades_a_video_cues_sound() {
     assert!(mid > 0.0 && mid < 1.0 / 2048.0, "part way down: {mid}");
     run_to(&mut s, faded + samples(0.6));
     let (_, low) = heard(&s);
-    assert!(low * 2048.0 < 0.01, "at the global minimum the sound is gone: {low}");
+    assert!(
+        low * 2048.0 < 0.01,
+        "at the global minimum the sound is gone: {low}"
+    );
     // The picture played on at its own time, and the cue runs.
     expect_state(&s, 1, CueState::Running, "");
     let frame = on_stage(&mut s, "the picture plays on");
@@ -3266,8 +3323,15 @@ fn sound_but_nowhere_to_play_it_marks_the_cue_broken() {
         problems(&s, 3)
     );
     // A patch that is not in the workspace at all.
-    assert!(set_fields(&mut s, 3, serde_json::json!({"patch": Uuid::from_u128(99)})));
-    assert!(matches!(problems(&s, 3)[..], [CueProblem::PatchMissing { .. }]));
+    assert!(set_fields(
+        &mut s,
+        3,
+        serde_json::json!({"patch": Uuid::from_u128(99)})
+    ));
+    assert!(matches!(
+        problems(&s, 3)[..],
+        [CueProblem::PatchMissing { .. }]
+    ));
     // The workspace's patch: the mark clears and the cue plays with sound.
     assert!(set_fields(
         &mut s,
@@ -3280,7 +3344,10 @@ fn sound_but_nowhere_to_play_it_marks_the_cue_broken() {
     in_step(&mut s, RATE, 25.0, "with a patch");
     // Replacing the file by a silent one: no patch problem whatever the patch, and back.
     assert!(set_fields(&mut s, 3, serde_json::json!({"patch": null})));
-    s.transport(TransportAction::Stop { cue: id(3), fade_out: None });
+    s.transport(TransportAction::Stop {
+        cue: id(3),
+        fade_out: None,
+    });
     set_media(&mut s, 3, &quiet);
     s.settle_media();
     s.run(BLOCK);
@@ -3302,7 +3369,10 @@ fn a_starved_sound_puts_its_picture_back_so_they_stay_together() {
     gate(&movie);
     let at = go(&mut s);
     s.run_unsettled(samples(0.4));
-    assert!(silent(&s, at, s.rendered()), "nothing heard while the disk stalls");
+    assert!(
+        silent(&s, at, s.rendered()),
+        "nothing heard while the disk stalls"
+    );
     release(&movie);
     s.run(samples(0.6));
     let sound = in_step(&mut s, RATE, 25.0, "after the disk caught up");
@@ -3311,7 +3381,12 @@ fn a_starved_sound_puts_its_picture_back_so_they_stay_together() {
     // Its whole length from where the sound really began.
     let end = at + samples(4.0 + late);
     run_to(&mut s, end - samples(0.1));
-    expect_state(&s, 1, CueState::Running, "the cue lasts as long as its sound");
+    expect_state(
+        &s,
+        1,
+        CueState::Running,
+        "the cue lasts as long as its sound",
+    );
     in_step(&mut s, RATE, 25.0, "near the end");
     run_to(&mut s, end + samples(0.1));
     expect_state(&s, 1, CueState::Idle, "");
@@ -3393,7 +3468,11 @@ fn damage_met_mid_play_breaks_that_cue_and_the_others_play_on() {
     assert!(played > 5, "it played to the damage first");
     s.run(samples(0.2));
     expect_state(&s, 2, CueState::Running, "the other cue plays on");
-    assert_eq!(s.control().pictures_live(), 1, "only the other picture is up");
+    assert_eq!(
+        s.control().pictures_live(),
+        1,
+        "only the other picture is up"
+    );
     let sound = in_step(&mut s, RATE, 25.0, "the other cue, in step");
     let played = (s.now() - other) as f64 / f64::from(RATE);
     assert!((sound - played).abs() < 0.01, "{sound} s after {played} s");
@@ -3481,8 +3560,15 @@ fn a_movie_with_several_audio_tracks_plays_the_one_chosen() {
     // The second track's second-number channel is negative (the test movie's mark).
     let at = go(&mut s);
     run_to(&mut s, at + samples(0.5));
-    assert!(heard(&s).1 < 0.0, "the second track is heard: {:?}", heard(&s));
-    s.transport(TransportAction::Stop { cue: id(1), fade_out: None });
+    assert!(
+        heard(&s).1 < 0.0,
+        "the second track is heard: {:?}",
+        heard(&s)
+    );
+    s.transport(TransportAction::Stop {
+        cue: id(1),
+        fade_out: None,
+    });
     s.run(BLOCK);
     // A track the file does not have: the first plays, with a warning.
     assert!(set_fields(&mut s, 1, serde_json::json!({"audio_track": 5})));
@@ -3499,4 +3585,286 @@ fn a_movie_with_several_audio_tracks_plays_the_one_chosen() {
     s.run(samples(0.1));
     assert_eq!(told(&s), (both, Some(1), Some(6)));
     assert!(!missing(&s));
+}
+
+/// Flow 7: over a ten-minute movie whose frames carry their number and whose track says where
+/// it is, the frame on the stage and the sound in the rendered output are less than one frame
+/// period apart at every look (the start, each minute, the last second), at 24, 25, 30 and 60
+/// frames a second and with a 48 kHz track on a 44.1 kHz device; the cue ends once, the last
+/// frame and the sound's last sample together, and its length told is the movie's.
+#[test]
+fn picture_and_sound_stay_within_one_frame_of_each_other() {
+    let dir = tempfile::tempdir().unwrap();
+    // (frames a second, the track's rate, the device's rate and block)
+    let cases: [(u16, u32, u32, u64); 5] = [
+        (24, 8_000, RATE, BLOCK),
+        (25, 8_000, RATE, BLOCK),
+        (30, 8_000, RATE, BLOCK),
+        (60, 8_000, RATE, BLOCK),
+        (25, 48_000, 44_100, 512),
+    ];
+    for (fps, track, rate, block) in cases {
+        let what = format!("{fps} fps, {track} Hz on {rate} Hz");
+        let sound = format!("pcm:2:{track}");
+        let movie = sound_movie!(dir.path(), "long.mov", (fps * 600, fps), &sound);
+        let ws = workspace(vec![sounding_cue(1, &movie)]);
+        let mut s = video_show_rate(ws, rate, block, &[], |_| {}, |_| {});
+        assert_eq!(told_lengths(&s, 1), (Some(600.0), Some(600.0)), "{what}");
+        let at = go(&mut s);
+        let sample = |seconds: f64| at + (seconds * f64::from(rate)).round() as u64;
+        let mut looks = vec![0.5];
+        looks.extend((1..10).map(|minute| f64::from(minute) * 60.0 + 0.5));
+        looks.push(599.5);
+        for t in looks {
+            s.run_until(sample(t));
+            let heard = in_step(&mut s, rate, f64::from(fps), &format!("{what}, {t} s"));
+            let played = (s.now() - at) as f64 / f64::from(rate);
+            assert!(
+                (heard - played).abs() < 0.002,
+                "{what}: {heard} s after {played} s"
+            );
+        }
+        expect_state(&s, 1, CueState::Running, &what);
+        s.run_until(sample(600.0) + 2 * block);
+        expect_state(&s, 1, CueState::Idle, &what);
+        assert_eq!(shown(&mut s), None, "{what}");
+        s.run(block * 8);
+        let end = usize::try_from(sample(600.0) - at).unwrap() + usize::try_from(at).unwrap();
+        let last = last_nonzero(&s.channel(1)).unwrap();
+        let frame = usize::try_from(u64::from(rate) / u64::from(fps)).unwrap();
+        assert!(
+            last < end + 8 && last + frame > end,
+            "{what}: the last sample heard is {last}, the movie's end {end}"
+        );
+        assert_eq!(s.stalls(), 0, "{what}");
+        std::fs::remove_file(&movie).unwrap();
+    }
+}
+
+/// A show of `ws` on stand-in audio devices (the first is the primary) with the real stage
+/// host on a virtual display; `mappings` name each patch's device.
+fn device_video_show(
+    mut ws: Workspace,
+    devices: &[(&str, &str)],
+    mappings: &[(PatchId, &str)],
+) -> show::device::DeviceShow {
+    let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
+    stage.keep_black = true;
+    ws.stages = vec![stage];
+    let mut c = ControlConfig::new(RATE, BLOCK);
+    c.seed = 7;
+    c.watch.mode = openlab_engine::control::watch::WatchMode::Manual;
+    for (patch, device) in mappings {
+        let mapping = openlab_core::PatchMapping {
+            device: (*device).to_owned(),
+            channels: vec![0, 1],
+            system: false,
+        };
+        c.machine.set_patch_mapping(ws.id, *patch, mapping).unwrap();
+    }
+    c.mixer_patches = 2;
+    let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
+    host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
+    host.answer_within = SLOW_MACHINE;
+    c.stage_host = Some(host);
+    let listed = devices
+        .iter()
+        .map(|(id, name)| show::device::listed(id, name, 2))
+        .collect();
+    show::device::DeviceShow::new(ws, listed, c)
+}
+
+/// Flow 10: with Video cue A (sound on device 1), B (sound on device 2) and a silent C all
+/// playing, losing device 2 stops B as an Audio cue on it stops (shown paused, owning nothing,
+/// its picture off the stage) while A and C play on; when the device is back nothing of B
+/// resumes, its problem is gone, and a start plays it from the top. With one device, losing it
+/// stops every Video cue.
+#[test]
+fn the_audio_device_is_lost_mid_cue() {
+    let dir = tempfile::tempdir().unwrap();
+    let loud = sound_movie!(dir.path(), "loud.mov", (250, 25), "pcm:2:48000");
+    let quiet = movie!(dir.path(), "quiet.mov", (250, 25));
+    let patch_b = PatchId(Uuid::from_u128(902));
+    let mut b = sounding_cue(2, &loud);
+    if let CueKind::Video { sound, .. } = &mut b.kind {
+        sound.patch = Some(patch_b);
+    }
+    let cues = vec![sounding_cue(1, &loud), b, video_cue(3, Some(&quiet))];
+    let mut ws: Workspace = workspace(cues.clone());
+    let mut second = ws.patches[0].clone();
+    second.id = patch_b;
+    ws.patches.push(second);
+    let two = [("fake:1", "Fake 1"), ("fake:2", "Fake 2")];
+    let mut s = device_video_show(ws, &two, &[(patch_id(), "Fake 1"), (patch_b, "Fake 2")]);
+    s.wait_output("Fake 2");
+    let state = |s: &show::device::DeviceShow, n: u128| s.control().engine().state(id(n));
+    let sounding = |s: &show::device::DeviceShow, device: &str| {
+        let heard = s.device_channel(device, 1);
+        heard.iter().rev().take(64).any(|x| *x != 0.0)
+    };
+    for n in 1..=3 {
+        assert!(s.control().engine().problems(id(n)).is_empty(), "cue {n}");
+        s.transport(TransportAction::Start { cue: id(n) });
+    }
+    s.run(samples(0.5));
+    assert_eq!(s.control().pictures_live(), 3);
+    assert!(sounding(&s, "fake:1") && sounding(&s, "fake:2"));
+
+    s.fake.unplug("fake:2", true);
+    s.settle_devices();
+    s.run(samples(0.3));
+    assert_eq!(
+        state(&s, 2),
+        CueState::Paused,
+        "B stops as an Audio cue does"
+    );
+    assert!(s.control().engine().is_lost(id(2)));
+    assert_eq!(s.control().pictures_live(), 2, "B's picture left the stage");
+    assert_eq!(state(&s, 1), CueState::Running);
+    assert_eq!(state(&s, 3), CueState::Running);
+    assert!(sounding(&s, "fake:1"), "A's sound plays on");
+
+    // The device is back: nothing of B resumes; a start plays it from the top.
+    s.fake.plug(show::device::listed("fake:2", "Fake 2", 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.wait_output("Fake 2");
+    s.run(samples(0.3));
+    assert_eq!(s.control().pictures_live(), 2, "nothing resumes by itself");
+    assert_ne!(state(&s, 2), CueState::Running);
+    assert!(s.control().engine().problems(id(2)).is_empty());
+    let before = s.device_channel("fake:2", 1).len();
+    s.transport(TransportAction::Start { cue: id(2) });
+    s.run(samples(0.5));
+    assert_eq!(state(&s, 2), CueState::Running);
+    assert_eq!(s.control().pictures_live(), 3);
+    // From the top: the track's first second (its number, one over 2048) is heard.
+    let heard = s.device_channel("fake:2", 1);
+    let second = heard[before..].iter().rev().find(|x| **x != 0.0).unwrap();
+    assert!((second * 2048.0 - 1.0).abs() < 0.01, "{second}");
+
+    // One device only: losing it stops every Video cue, silent ones too.
+    let one = [("fake:1", "Fake 1")];
+    let mut s = device_video_show(workspace(cues), &one, &[(patch_id(), "Fake 1")]);
+    for n in [1, 3] {
+        s.transport(TransportAction::Start { cue: id(n) });
+    }
+    s.run(samples(0.5));
+    assert_eq!(s.control().pictures_live(), 2);
+    s.fake.unplug("fake:1", true);
+    s.settle_devices();
+    for _ in 0..8 {
+        s.tick();
+    }
+    assert_ne!(state(&s, 1), CueState::Running);
+    assert_ne!(state(&s, 3), CueState::Running);
+    // The clock stands still while no device plays; once one does, the stopped pictures are
+    // gone and nothing has started again.
+    s.fake.plug(show::device::listed("fake:1", "Fake 1", 2));
+    s.wait_wall(Duration::from_secs(1), 2);
+    s.run(samples(0.3));
+    assert_eq!(
+        s.control().pictures_live(),
+        0,
+        "every picture left the stage"
+    );
+    assert_ne!(state(&s, 1), CueState::Running);
+    assert_ne!(state(&s, 3), CueState::Running);
+}
+
+/// The waveform of a Video cue with sound is that of the audio track it plays, over the
+/// movie's length (the Time & Loops timeline draws it); a silent movie has none.
+#[test]
+fn a_video_cues_sound_has_a_waveform_and_a_silent_movie_has_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let loud = sound_movie!(dir.path(), "loud.mov", (75, 25), "pcm:2:48000");
+    let quiet = movie!(dir.path(), "quiet.mov", (50, 25));
+    let mut s = video_show(vec![sounding_cue(1, &loud), video_cue(2, Some(&quiet))]);
+    let ask = |s: &mut OfflineShow, n: u128| {
+        let (reply, rx) = openlab_engine::control::reply_channel();
+        let message = ClientMessage::Request {
+            id: s.request_id(),
+            request: Request::Waveform {
+                cue: id(n),
+                start: 0.0,
+                end: 3.0,
+                buckets: 3,
+            },
+        };
+        s.deliver(openlab_engine::control::Inbox::Client { message, reply });
+        rx
+    };
+    let mut rx = ask(&mut s, 1);
+    s.settle_media();
+    let Some(ServerMessage::Result {
+        outcome: Outcome::Ok(ok),
+        ..
+    }) = rx.try_recv().ok()
+    else {
+        panic!("no waveform");
+    };
+    let Some(ResultData::Waveform(w)) = ok.data else {
+        panic!("not a waveform");
+    };
+    assert_eq!((w.duration, w.channels.len()), (3.0, 2));
+    // Channel 0 rises to a half over each second; channel 1 holds each second's number.
+    assert!(
+        w.channels[0]
+            .max
+            .iter()
+            .all(|m| (16_000..16_500).contains(m))
+    );
+    // (a bucket's edges round outwards, so it may take in a sample of its neighbour)
+    assert_eq!((w.channels[1].min[0], w.channels[1].max[2]), (16, 48));
+    let mut rx = ask(&mut s, 2);
+    assert!(matches!(
+        rx.try_recv().ok(),
+        Some(ServerMessage::Result {
+            outcome: Outcome::Error(_),
+            ..
+        })
+    ));
+}
+
+/// Flow 9 (others): a cue that ducks others turns a playing Video cue's sound down while its
+/// picture plays on, and a cue that fades and stops others ends its picture and sound together.
+#[test]
+fn duck_others_and_fade_and_stop_others_act_on_a_video_cues_sound() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:48000");
+    let mut ducker = cue(2, CueKind::Wait { duration: 0.5 });
+    ducker.duck_others = openlab_core::DuckOthers {
+        enabled: true,
+        db: -6.0206,
+        duration: 0.1,
+    };
+    let mut stopper = cue(3, CueKind::Memo);
+    stopper.fade_and_stop_others = openlab_core::FadeAndStopOthers {
+        enabled: true,
+        scope: openlab_core::OthersScope::Peers,
+        duration: 0.2,
+    };
+    let mut s = video_show(vec![sounding_cue(1, &movie), ducker, stopper]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.5));
+    let ducked = start(&mut s, 2);
+    run_to(&mut s, ducked + samples(0.3));
+    let (_, second) = heard(&s);
+    assert!(
+        (second * 2048.0 - 0.5).abs() < 0.01,
+        "ducked by half: {second}"
+    );
+    assert_eq!(
+        on_stage(&mut s, "ducked"),
+        frame_at((s.now() - at) as f64 / f64::from(RATE))
+    );
+    // The duck ends with the cue that asked for it.
+    run_to(&mut s, ducked + samples(1.0));
+    in_step(&mut s, RATE, 25.0, "after the duck");
+    let stopped = start(&mut s, 3);
+    run_to(&mut s, stopped + samples(0.2) + 2 * BLOCK);
+    expect_state(&s, 1, CueState::Idle, "faded and stopped");
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(0.1));
+    assert!(silent(&s, stopped + samples(0.2) + BLOCK, s.rendered()));
+    assert_eq!(s.control().live_voices(), 0);
 }

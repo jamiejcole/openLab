@@ -422,7 +422,12 @@ fn movie(kind: &str, path: &Path, frames: u16, fps: i32) -> Result<(), String> {
         let total = |s: &Sound| u64::from(frames) * u64::from(s.rate) / fps as u64;
         let mut frame = 0u16;
         let mut idle = 0u32;
-        while frame < frames || sounds.iter().zip(&sound_inputs).any(|(s, (_, d))| *d < total(s)) {
+        while frame < frames
+            || sounds
+                .iter()
+                .zip(&sound_inputs)
+                .any(|(s, (_, d))| *d < total(s))
+        {
             let mut fed = false;
             if frame < frames && input.isReadyForMoreMediaData() {
                 let mut px = bgra(frame);

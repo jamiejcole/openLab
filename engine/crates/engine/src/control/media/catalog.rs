@@ -80,7 +80,8 @@ fn sound_tracks(
             let real = probed.info.frames;
             let frames = (seconds.max(0.0) * f64::from(probed.info.sample_rate)).round() as u64;
             probed.info.frames = frames;
-            probed.info.duration = std::time::Duration::try_from_secs_f64(seconds).unwrap_or_default();
+            probed.info.duration =
+                std::time::Duration::try_from_secs_f64(seconds).unwrap_or_default();
             Ok(SoundTrack {
                 codec: track.codec,
                 ready: Arc::new(Ready {

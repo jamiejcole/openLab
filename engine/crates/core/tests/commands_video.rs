@@ -606,3 +606,153 @@ fn time_and_loops_out_of_range_are_refused() {
     );
     assert_eq!(ws, before);
 }
+
+/// A Video cue with sound's patch, levels and audio track `edit` gives it.
+fn sounding(n: u128, edit: impl Fn(&mut VideoSound)) -> Cue {
+    let mut c = video_cue(n);
+    if let CueKind::Video { sound, .. } = &mut c.kind {
+        edit(sound);
+    }
+    c
+}
+
+fn sound_of(ws: &Workspace, n: u128) -> VideoSound {
+    match &ws.find_cue(cue_id(n)).unwrap().kind {
+        CueKind::Video { sound, .. } => (**sound).clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn sound_fields(value: serde_json::Value) -> CueProperty {
+    let serde_json::Value::Object(value) = value else {
+        panic!("an object");
+    };
+    CueProperty::KindFields { value }
+}
+
+/// A Video cue's sound (VID-06): its patch, levels and audio track are set, undone and saved
+/// as an Audio cue's levels are, and a level outside what a cue can hold is refused on every
+/// path that sets it (the fields, the whole kind, add, paste), changing nothing.
+#[test]
+fn a_video_cues_patch_levels_and_audio_track_are_edited_and_checked_on_every_path() {
+    let mut ws = ws();
+    let mut history = History::default();
+    let levels = |master: f64, input: u32| {
+        serde_json::json!({
+            "master_db": master,
+            "outputs": [{"db": 0.0, "mute": false}, {"db": -3.0, "mute": true}],
+            "crosspoints": [{"input": input, "output": 0, "db": 0.0, "mute": false}],
+            "gangs": []
+        })
+    };
+    let set_sound = sound_fields(serde_json::json!({
+        "patch": patch_id(1), "levels": levels(-6.0, 1), "audio_track": 2
+    }));
+    assert!(history.execute(&mut ws, set(1, set_sound)).unwrap());
+    let stored = sound_of(&ws, 1);
+    assert_eq!((stored.patch, stored.audio_track), (Some(patch_id(1)), 2));
+    assert_eq!(stored.levels.master_db, -6.0);
+    assert!(stored.levels.outputs[1].mute);
+    // Saved and loaded with the show.
+    let saved = save_show(&ws).unwrap();
+    assert_eq!(sound_of(&load_show(&saved).unwrap().workspace, 1), stored);
+    // "none" is a patch choice.
+    let none = sound_fields(serde_json::json!({"patch": null}));
+    assert!(history.execute(&mut ws, set(1, none)).unwrap());
+    assert_eq!(sound_of(&ws, 1).patch, None);
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(sound_of(&ws, 1), stored);
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(sound_of(&ws, 1), VideoSound::default());
+
+    // A level that is not a number a cue can hold, on every path.
+    let before = ws.clone();
+    let bad = || {
+        sounding(20, |s| {
+            s.levels.master_db = f64::NAN;
+        })
+    };
+    let at = Position {
+        list: list_id(1),
+        parent: None,
+        index: 0,
+    };
+    let refused = |r: Result<Inverse, CommandError>| {
+        assert!(matches!(r, Err(CommandError::InvalidCue(_))), "{r:?}");
+    };
+    refused(ws.apply(Command::AddCue {
+        at: at.clone(),
+        cue: bad(),
+        auto_number: false,
+    }));
+    refused(ws.apply(Command::Paste {
+        at,
+        cues: vec![cue(21, group(vec![bad()]))],
+    }));
+    refused(ws.apply(set(1, CueProperty::Kind { value: bad().kind })));
+    let from_no_channel = sound_fields(serde_json::json!({"levels": levels(0.0, 64)}));
+    assert!(ws.apply(set(1, from_no_channel)).is_err());
+    let negative = sound_fields(serde_json::json!({"audio_track": -1}));
+    assert!(ws.apply(set(1, negative)).is_err());
+    assert_eq!(ws, before);
+}
+
+/// A Video cue's patch counts as a use of it: the patch cannot be removed while the cue names
+/// it, and a cue pasted from a workspace with other patches takes this one's first ("none"
+/// stays none).
+#[test]
+fn a_video_cues_patch_keeps_it_from_removal_and_a_paste_repairs_it() {
+    let mut ws = workspace(vec![
+        cue(1, CueKind::Memo),
+        sounding(7, |s| s.patch = Some(patch_id(1))),
+    ]);
+    ws.stages = vec![Stage::new(stage_id(1), "Stage 1", 1920, 1080)];
+    let removed = ws.clone().apply(Command::RemovePatch {
+        id: patch_id(1),
+        even_if_used: false,
+    });
+    assert!(
+        matches!(removed, Err(CommandError::PatchInUse { cue, .. }) if cue == cue_id(7)),
+        "{removed:?}"
+    );
+    let paths = MediaPaths {
+        show_dir: None,
+        style: PathStyle::Posix,
+    };
+    let mut next = 600;
+    let Command::Paste { cues, .. } = (Command::PasteClipboard {
+        at: Position {
+            list: list_id(1),
+            parent: None,
+            index: 0,
+        },
+        cues: vec![
+            sounding(30, |s| s.patch = Some(patch_id(55))),
+            sounding(31, |s| s.patch = None),
+        ],
+        source_dir: None,
+    })
+    .prepare(&ws, &paths, &mut || {
+        next += 1;
+        cue_id(next)
+    })
+    .unwrap() else {
+        panic!()
+    };
+    assert_eq!(cues[0].kind.sound_patch(), Some(patch_id(1)));
+    assert_eq!(cues[1].kind.sound_patch(), None);
+}
+
+/// A lowered volume limit brings a Video cue's levels within it, as an Audio cue's.
+#[test]
+fn a_volume_limit_applies_to_a_video_cues_levels() {
+    let mut ws = workspace(vec![sounding(1, |s| s.levels.master_db = 6.0)]);
+    let mut limits = ws.settings.limits();
+    limits.max_db = 0.0;
+    let clamps = ws.limit_clamps(limits);
+    assert_eq!(clamps.len(), 1, "{clamps:?}");
+    for c in clamps {
+        ws.apply(c).unwrap();
+    }
+    assert_eq!(sound_of(&ws, 1).levels.master_db, 0.0);
+}

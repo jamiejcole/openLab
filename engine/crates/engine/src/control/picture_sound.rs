@@ -88,10 +88,7 @@ impl DocCx<'_> {
         };
         // A voice is made only for a movie with sound; one already there is seen through
         // whatever its cue was edited into since.
-        let makes = matches!(
-            action,
-            Action::LoadVoice { .. } | Action::StartVoice { .. }
-        );
+        let makes = matches!(action, Action::LoadVoice { .. } | Action::StartVoice { .. });
         if makes && self.sound_info(cue).is_none() {
             return;
         }

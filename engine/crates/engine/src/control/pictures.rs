@@ -189,8 +189,8 @@ fn movie_table(
         slices: &timing.slices,
         last_slice_play_count: timing.last_slice_play_count,
     };
-    let top = cue_slices(&spec, file, rate, 0)
-        .map_err(|_| "its trims and loops cannot be played")?;
+    let top =
+        cue_slices(&spec, file, rate, 0).map_err(|_| "its trims and loops cannot be played")?;
     let total = total_frames(&top);
     Ok((top, total))
 }
@@ -942,8 +942,7 @@ impl DocCx<'_> {
         // A movie opens on the frame its plan is at there (inside its trims and loops).
         let at_file = match &plays.movie {
             Some((file, timing)) => {
-                let (top, _) =
-                    movie_table(file, timing, self.eng.rate).map_err(Refused::Failed)?;
+                let (top, _) = movie_table(file, timing, self.eng.rate).map_err(Refused::Failed)?;
                 position_in(&passes(&top, rate), seconds(offset, rate))
             }
             None => seconds(offset, rate),
@@ -1264,7 +1263,9 @@ impl DocCx<'_> {
         plan.into = into;
         plan.late = plan.late.saturating_add(frames);
         // A devamp already carried out leaves its loop that much later.
-        plan.devamp = plan.devamp.map(|(stop, leaves)| (stop, leaves.saturating_add(frames)));
+        plan.devamp = plan
+            .devamp
+            .map(|(stop, leaves)| (stop, leaves.saturating_add(frames)));
         let own = seconds(into, rate).min(openlab_core::MAX_TIME);
         let message = ToStage::Play {
             picture: id,
@@ -1351,7 +1352,10 @@ impl DocCx<'_> {
                 continue;
             }
             let doc = self.doc.id;
-            self.eng.pictures.held.retain(|h| !(lost && h.doc == doc && h.cue == cue));
+            self.eng
+                .pictures
+                .held
+                .retain(|h| !(lost && h.doc == doc && h.cue == cue));
             // The run the cue has now, if its action is under way again.
             let engine = self.doc.model.engine();
             let over = matches!(
