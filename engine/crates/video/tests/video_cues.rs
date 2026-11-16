@@ -2703,11 +2703,19 @@ fn straight_levels() -> CueLevels {
     }
 }
 
+/// The two outputs' values on rendered sample `at`.
+fn outputs_at(s: &OfflineShow, at: u64) -> (f32, f32) {
+    let i = usize::try_from(at).unwrap() * 2;
+    match s.audio().get(i..i + 2) {
+        Some(&[left, right]) => (left, right),
+        _ => panic!("sample {at} is not rendered yet"),
+    }
+}
+
 /// Where in its file the test track heard on rendered sample `at` is, in seconds (`None`:
 /// silence there), read from the two outputs at unity.
 fn sound_at(s: &OfflineShow, at: u64) -> Option<f64> {
-    let i = usize::try_from(at).unwrap() * 2;
-    let (rise, second) = (s.audio()[i], s.audio()[i + 1]);
+    let (rise, second) = outputs_at(s, at);
     let second = (f64::from(second) * 2048.0).round() - 1.0;
     (second >= 0.0).then(|| second + f64::from(rise) * 2.0)
 }
@@ -2832,7 +2840,8 @@ fn timed_sounding_cue(n: u128, movie: &Path, edit: impl Fn(&mut openlab_core::Vi
 /// Whether nothing is heard on rendered samples `from..to`.
 fn silent(s: &OfflineShow, from: u64, to: u64) -> bool {
     let (from, to) = (usize::try_from(from).unwrap(), usize::try_from(to).unwrap());
-    s.audio()[from * 2..to * 2].iter().all(|x| *x == 0.0)
+    let heard = s.audio().get(from * 2..to * 2).expect("rendered samples");
+    heard.iter().all(|x| *x == 0.0)
 }
 
 /// The sound's file position `after` samples past sample `at` is `want` seconds, to half a
@@ -3127,8 +3136,7 @@ fn set_fields(s: &mut OfflineShow, n: u128, fields: serde_json::Value) -> bool {
 
 /// The two outputs' values on the last rendered sample.
 fn heard(s: &OfflineShow) -> (f32, f32) {
-    let i = usize::try_from(s.rendered() - 1).unwrap() * 2;
-    (s.audio()[i], s.audio()[i + 1])
+    outputs_at(s, s.rendered() - 1)
 }
 
 /// Flow 5: a level typed and an output muted while the cue plays (and while it is paused) are
@@ -3400,7 +3408,9 @@ fn patched(bytes: &[u8], find: &[u8], at: usize, with: &[u8]) -> Vec<u8> {
         .position(|w| w == find)
         .expect("the bytes to patch");
     let mut out = bytes.to_vec();
-    out[found + at..found + at + with.len()].copy_from_slice(with);
+    out.get_mut(found + at..found + at + with.len())
+        .expect("room for the patch")
+        .copy_from_slice(with);
     out
 }
 

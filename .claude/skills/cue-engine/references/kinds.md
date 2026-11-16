@@ -55,7 +55,8 @@ A running Wait takes an edited duration (`broken-and-edits.md`); its pending aut
 - Sending rules, limits, workers, host look-ups and "never break for an unresolved host": skill `osc`.
 
 ## Video cue (core side)
-- Its picture is a voice: GO, load, load to time, pause, resume, stop, panic and the second-trigger options emit the same voice actions as for an Audio cue (`LoadVoice`, `StartVoice`, `PauseVoice`, `ResumeVoice`, `StopVoice` with the panic fade). The binary plays a Video cue's voice on the stage host, not the mixer; level actions for it (`Ramp`, `DuckVoice`) act on the sound of its movie's audio track, when it has one (skill `video`, Sound; the levels are its `sound.levels`, read through `CueKind::levels()`).
+- Its picture is a voice: GO, load, load to time, pause, resume, stop, panic and the second-trigger options emit the same voice actions as for an Audio cue (`LoadVoice`, `StartVoice`, `PauseVoice`, `ResumeVoice`, `StopVoice` with the panic fade).
+- The binary plays a Video cue's voice on the stage host, not the mixer; level actions for it (`Ramp`, `DuckVoice`) act on the sound of its movie's audio track, when it has one (skill `video`, Sound; the levels are its `sound.levels`, read through `CueKind::levels()`).
 - Its length comes from the binary as for audio (`ActionLength`, `CueLengths`): a video file's length, a still's typed `duration`, none for a still without one (it runs until stopped).
 - Problems: `no_media`, `media_missing`, `media_unsupported` from the media status of its file (shared with Audio cues on the same file), `no_stage` when its stage is none, `stage_missing` when the stage is not in the workspace (a change to the stage ids rebuilds every cue's problems).
 - A picture that fails mid-show is `ActionFailed { decode_failed }`: only that cue breaks.
