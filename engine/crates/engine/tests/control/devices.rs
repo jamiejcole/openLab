@@ -4373,6 +4373,70 @@ fn the_new_device_is_missing_or_cannot_be_used_and_the_cue_stops_as_for_a_lost_d
 }
 
 #[test]
+fn a_cue_in_its_post_wait_moved_to_an_unusable_device_has_the_end_of_its_sound_stopped_too() {
+    // The engine ends an action whose length it knows up to a block ahead, so a cue shows
+    // post-waiting while the last samples of its sound still play. Moved to a device that
+    // cannot be used then, it shows paused as on a lost device, and that end is cut with it:
+    // nothing of a cue shown as stopped by its device goes on sounding on the old one.
+    let frames = BLOCK as usize * 6 + BLOCK as usize / 2;
+    let a = wav(&dc(frames, 0.5));
+    let mut first = audio(1, &a, 0);
+    first.continue_mode = ContinueMode::AutoContinue;
+    first.post_wait = 5.0;
+    // A device with no rate openLab can play at cannot be used.
+    let odd = listed_at(DEV2, DEV2_NAME, 2, 4_000);
+    let mut s = two_patch_show(vec![first], DEV_NAME, vec![listed(DEV, DEV_NAME, 2), odd]);
+    start(&mut s, 1);
+    for _ in 0..20 {
+        if s.control().engine().state(id(1)) == CueState::PostWaiting {
+            break;
+        }
+        s.run(BLOCK);
+    }
+    assert_eq!(s.control().engine().state(id(1)), CueState::PostWaiting);
+    assert_eq!(s.control().live_voices(), 1, "its sound is not over yet");
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    s.settle_devices();
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    s.run(BLOCK * 4);
+    let played = s.channel(0).iter().filter(|&&v| v != 0.0).count();
+    assert!(played < frames, "{played} of {frames} samples played");
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
+fn a_cue_in_its_post_wait_whose_new_device_is_lost_has_the_end_of_its_sound_stopped_too() {
+    // The same end of a sound, still on the device the cue was moved away from when the
+    // device it was moved to is lost.
+    let frames = BLOCK as usize * 6 + BLOCK as usize / 2;
+    let a = wav(&dc(frames, 0.5));
+    let mut first = audio(1, &a, 0);
+    first.continue_mode = ContinueMode::AutoContinue;
+    first.post_wait = 5.0;
+    let mut s = two_patch_show(
+        vec![first],
+        DEV2_NAME,
+        vec![listed(DEV, DEV_NAME, 2), listed(DEV2, DEV2_NAME, 2)],
+    );
+    start(&mut s, 1);
+    for _ in 0..20 {
+        if s.control().engine().state(id(1)) == CueState::PostWaiting {
+            break;
+        }
+        s.run(BLOCK);
+    }
+    assert_eq!(s.control().engine().state(id(1)), CueState::PostWaiting);
+    assert_eq!(s.control().live_voices(), 1, "its sound is not over yet");
+    map_patch(&mut s, patch_id(), DEV2_NAME);
+    unplug(&mut s, DEV2);
+    assert_eq!(s.control().engine().state(id(1)), CueState::Paused);
+    s.run(BLOCK * 4);
+    let played = s.channel(0).iter().filter(|&&v| v != 0.0).count();
+    assert!(played < frames, "{played} of {frames} samples played");
+    assert_eq!(s.control().live_voices(), 0);
+}
+
+#[test]
 fn a_cue_whose_new_device_is_unplugged_before_it_opens_stops_as_for_a_lost_device() {
     let a = wav(&dc(20_000, 0.5));
     let mut s = two_patch_show(
