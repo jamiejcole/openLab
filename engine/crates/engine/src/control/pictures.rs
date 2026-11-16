@@ -989,7 +989,7 @@ impl DocCx<'_> {
     /// later than the engine dated it the start is (a start held by its probe), counted into
     /// the action's length. A movie follows its plan (trims, slices and loops) from `offset`
     /// with its integrated fades: a `fresh` start plans it from the model, a resume plays on
-    /// with the plan the run started with. With hold at end the cue is told no length. Never
+    /// with the run's plan as its last devamp left it. With hold at end the cue is told no length. Never
     /// silent: a cue whose file is no longer playable fails, one whose file is being probed
     /// again waits for the answer as a start does.
     #[allow(clippy::too_many_arguments)]
