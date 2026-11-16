@@ -3799,10 +3799,11 @@ fn picture_and_sound_stay_within_one_frame_of_each_other_for_ten_minutes() {
 }
 
 /// A show of `ws` on stand-in audio devices (the first is the primary) with the real stage
-/// host on a virtual display; `mappings` name each patch's device.
+/// host on a virtual display, each device `(id, name, rate)`; `mappings` name each patch's
+/// device.
 fn device_video_show(
     mut ws: Workspace,
-    devices: &[(&str, &str)],
+    devices: &[(&str, &str, u32)],
     mappings: &[(PatchId, &str)],
 ) -> show::device::DeviceShow {
     let mut stage = Stage::new(stage_id(), "Stage 1", 1920, 1080);
@@ -3819,14 +3820,15 @@ fn device_video_show(
         };
         c.machine.set_patch_mapping(ws.id, *patch, mapping).unwrap();
     }
-    c.mixer_patches = 2;
+    // A patch moved to another device needs a slot there while its old one plays out.
+    c.mixer_patches = 4;
     let mut host = StageHostConfig::new(PathBuf::from(STAGE_HOST));
     host.args = vec!["--virtual-displays".into(), "V1:1920x1080".into()];
     host.answer_within = SLOW_MACHINE;
     c.stage_host = Some(host);
     let listed = devices
         .iter()
-        .map(|(id, name)| show::device::listed(id, name, 2))
+        .map(|(id, name, rate)| show::device::listed_at(id, name, 2, *rate))
         .collect();
     show::device::DeviceShow::new(ws, listed, c)
 }
@@ -3851,7 +3853,7 @@ fn the_audio_device_is_lost_mid_cue() {
     let mut second = ws.patches[0].clone();
     second.id = patch_b;
     ws.patches.push(second);
-    let two = [("fake:1", "Fake 1"), ("fake:2", "Fake 2")];
+    let two = [("fake:1", "Fake 1", RATE), ("fake:2", "Fake 2", RATE)];
     let mut s = device_video_show(ws, &two, &[(patch_id(), "Fake 1"), (patch_b, "Fake 2")]);
     s.wait_output("Fake 2");
     let state = |s: &show::device::DeviceShow, n: u128| s.control().engine().state(id(n));
@@ -3900,7 +3902,7 @@ fn the_audio_device_is_lost_mid_cue() {
     assert!((second * 2048.0 - 1.0).abs() < 0.01, "{second}");
 
     // One device only: losing it stops every Video cue, silent ones too.
-    let one = [("fake:1", "Fake 1")];
+    let one = [("fake:1", "Fake 1", RATE)];
     let mut s = device_video_show(workspace(cues), &one, &[(patch_id(), "Fake 1")]);
     for n in [1, 3] {
         s.transport(TransportAction::Start { cue: id(n) });
@@ -3926,6 +3928,148 @@ fn the_audio_device_is_lost_mid_cue() {
     );
     assert_ne!(state(&s, 1), CueState::Running);
     assert_ne!(state(&s, 3), CueState::Running);
+}
+
+/// A Video cue's sound follows its patch to another device, as an Audio cue's voice does: the
+/// patch is put on a device at another rate while the cue plays, and from the swap on the
+/// sound is heard there at the point the master clock (and so the picture's plan) has reached,
+/// at that device's rate; the picture stays up, and both end once at the movie's end. Started
+/// again with its patch on that device, it plays there in step from the top.
+#[test]
+fn a_video_cues_sound_follows_its_patch_to_another_device() {
+    const RATE2: u32 = 44_100;
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (75, 25), "pcm:2:48000");
+    let patch_b = PatchId(Uuid::from_u128(902));
+    let mut ws: Workspace = workspace(vec![sounding_cue(1, &movie)]);
+    let mut second = ws.patches[0].clone();
+    second.id = patch_b;
+    ws.patches.push(second);
+    let two = [("fake:1", "Fake 1", RATE), ("fake:2", "Fake 2", RATE2)];
+    let mut s = device_video_show(ws, &two, &[(patch_id(), "Fake 1"), (patch_b, "Fake 2")]);
+    s.wait_output("Fake 2");
+    assert!(s.control().engine().problems(id(1)).is_empty());
+    let state = |s: &show::device::DeviceShow| s.control().engine().state(id(1));
+    // The master sample device 2's frame `j` is played on, from both counters at one moment.
+    let clocks = |s: &show::device::DeviceShow| {
+        let local = s.control().output_mixer("Fake 2").unwrap();
+        let shift = s.control().rendered() as f64
+            - local.samples_rendered() as f64 * f64::from(RATE) / f64::from(RATE2);
+        move |j: usize| shift + j as f64 * f64::from(RATE) / f64::from(RATE2)
+    };
+    // Where in its file the track heard on device 2's frame `j` is (as `sound_at`).
+    let position = |s: &show::device::DeviceShow, j: usize| {
+        let rise = s.device_channel("fake:2", 0)[j];
+        let second = s.device_channel("fake:2", 1)[j];
+        (f64::from(second) * 2048.0).round() - 1.0 + f64::from(rise) * 2.0
+    };
+    // Device 2's frames `from..to` play the file where the master clock is since `at`. Looked
+    // at away from the whole seconds, where the resampled ramp and number step.
+    let in_step = |s: &show::device::DeviceShow, at: u64, from: usize, to: usize, what: &str| {
+        let master_of = clocks(s);
+        let mut looked = 0;
+        for j in (from..to).step_by(441) {
+            let played = (master_of(j) - at as f64) / f64::from(RATE);
+            if !(0.1..0.9).contains(&played.fract()) {
+                continue;
+            }
+            let heard = position(s, j);
+            assert!(
+                (heard - played).abs() < 0.001,
+                "{what}: device frame {j} plays {heard} s, {played} s after the start"
+            );
+            looked += 1;
+        }
+        assert!(looked > 30, "{what}: only {looked} looks");
+    };
+
+    let at = s.now();
+    s.transport(TransportAction::Start { cue: id(1) });
+    s.run(samples(1.0));
+    assert!(first_nonzero(&s.device_channel("fake:2", 1)).is_none());
+    let rid = s.request_id();
+    let replies = s.send(ClientMessage::Request {
+        id: rid,
+        request: Request::SetPatchMapping {
+            patch: patch_id(),
+            mapping: Some(openlab_core::PatchMapping {
+                device: "Fake 2".into(),
+                channels: vec![0, 1],
+                system: false,
+            }),
+        },
+    });
+    let accepted = |m: &ServerMessage| {
+        let ServerMessage::Result { outcome, .. } = m else {
+            return false;
+        };
+        matches!(outcome, Outcome::Ok(_))
+    };
+    assert!(replies.iter().any(accepted), "{replies:?}");
+    let swapped = s.device_channel("fake:1", 1).len();
+    s.run(samples(1.0));
+    assert_eq!(state(&s), CueState::Running);
+    assert_eq!(s.control().pictures_live(), 1, "the picture stays up");
+    let heard = s.device_channel("fake:2", 1);
+    let first = first_nonzero(&heard).expect("heard on the second device");
+    // Past the move's lead and crossfade: the first device is silent, the second in step.
+    let one = s.device_channel("fake:1", 1);
+    let last_one = last_nonzero(&one).unwrap();
+    assert!(
+        last_one < swapped + samples(0.2) as usize,
+        "the first device plays on to {last_one}, the move was at {swapped}"
+    );
+    in_step(&s, at, first + 441, heard.len(), "after the move");
+    // The moved run is still its picture's: a pause holds both, a resume plays both on.
+    s.transport(TransportAction::Pause { cue: id(1) });
+    let paused = s.now();
+    s.run(samples(0.5));
+    assert_eq!(state(&s), CueState::Paused);
+    assert_eq!(s.control().pictures_live(), 1);
+    let quiet_from = s.device_channel("fake:2", 1).len() - 4_410;
+    let heard = s.device_channel("fake:2", 1);
+    assert!(
+        heard[quiet_from..].iter().all(|x| *x == 0.0),
+        "silent while paused"
+    );
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let waited = s.now() - paused;
+    let resumed = s.device_channel("fake:2", 1).len();
+    s.run(samples(0.6));
+    assert_eq!(state(&s), CueState::Running);
+    let heard = s.device_channel("fake:2", 1);
+    in_step(
+        &s,
+        at + waited,
+        resumed + 4_410,
+        heard.len(),
+        "after the resume",
+    );
+    // Both end once, at the movie's end on the master clock.
+    s.run(samples(0.7));
+    assert_eq!(state(&s), CueState::Idle);
+    assert_eq!(s.control().pictures_live(), 0);
+    assert_eq!(s.control().live_voices(), 0);
+    let last = last_nonzero(&s.device_channel("fake:2", 1)).unwrap();
+    let end = clocks(&s)(last + 1) - (at + waited) as f64;
+    assert!(
+        (end - samples(3.0) as f64).abs() <= 2.0,
+        "the sound ends {end} frames after the start"
+    );
+
+    // From the top on the second device: in step throughout, and one end.
+    let before = s.device_channel("fake:2", 1).len();
+    let at = s.now();
+    s.transport(TransportAction::Start { cue: id(1) });
+    s.run(samples(2.5));
+    assert_eq!(state(&s), CueState::Running);
+    assert_eq!(s.control().pictures_live(), 1);
+    let heard = s.device_channel("fake:2", 1);
+    in_step(&s, at, before + 4_410, heard.len(), "started there");
+    s.run(samples(0.8));
+    assert_eq!(state(&s), CueState::Idle);
+    assert_eq!(s.control().pictures_live(), 0);
+    assert_eq!(s.control().live_voices(), 0);
 }
 
 /// The waveform of a Video cue with sound is that of the audio track it plays, over the

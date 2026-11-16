@@ -1312,6 +1312,32 @@ impl DocCx<'_> {
         }
     }
 
+    /// The run `from` of a Video cue goes on as `run`: its sound moved to the device its patch
+    /// plays on now (`Action::RelocateVoice`). The picture plays on untouched under the new
+    /// id, so what the cue engine asks of that run next finds it. A playing one tells its
+    /// length again: the cue engine dropped it for the moved voice to tell, and a Video cue's
+    /// length is its picture's to tell.
+    pub(super) fn relocate_picture(&mut self, run: RunId, from: RunId, fx: &mut Effects) {
+        let doc = self.doc.id;
+        if let Some(h) = self.eng.pictures.held_mut(doc, from) {
+            h.run = run;
+        }
+        let Some(id) = self.eng.pictures.find(doc, from) else {
+            return;
+        };
+        let Some(l) = self.eng.pictures.live.get_mut(&id) else {
+            return;
+        };
+        l.run = run;
+        let playing = matches!(l.motion, Some((Some(_), _)));
+        let total = (l.plan.as_ref())
+            .and_then(|p| total_frames(&p.table).map(|t| t.saturating_add(p.late)));
+        if let (true, Some(_), Some(frames)) = (playing, l.length, total) {
+            let cue = l.cue;
+            fx.feedback.push(Input::ActionLength { cue, run, frames });
+        }
+    }
+
     fn stop_picture(&mut self, id: u64, at: SampleTime, frames: SampleTime) {
         let end = at.saturating_add(frames);
         if let Some(l) = self.eng.pictures.live.get_mut(&id) {
