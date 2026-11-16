@@ -183,6 +183,9 @@ struct Status {
     warnings: Vec<MediaWarning>,
     /// Ring position where the latest devamp's continuation starts.
     resume: Option<u64>,
+    /// Ring position minus voice frame for what is written from here on: 0 until a devamp cut,
+    /// which leaves stale loop frames in the ring that the voice skips.
+    offset: i64,
     /// Bytes held by the loop cache and the exit buffers built so far.
     cache_bytes: usize,
     /// Frames written to the ring from the loop cache.
@@ -295,6 +298,19 @@ impl StreamHandle {
     /// Blocks until at least `frames` are written (or the stream finished).
     pub fn wait_written(&self, frames: u64, timeout: Duration) -> Result<bool, MediaError> {
         self.wait(timeout, |s| s.written >= frames || s.finished)
+    }
+
+    /// Blocks until the voice can play its first `frames` voice frames (frames of the plan
+    /// played since it started) without waiting for the disk, or the stream finished. After a
+    /// devamp cut the ring also holds the stale loop frames the voice skips, so the count of
+    /// frames written runs ahead of the voice by those: a driver that renders faster than real
+    /// time waits with this, not [`Self::wait_written`].
+    pub fn wait_fed(&self, frames: u64, timeout: Duration) -> Result<bool, MediaError> {
+        let frames = i64::try_from(frames).unwrap_or(i64::MAX);
+        self.wait(timeout, |s| {
+            i64::try_from(s.written).unwrap_or(i64::MAX) >= frames.saturating_add(s.offset)
+                || s.finished
+        })
     }
 
     fn wait(&self, timeout: Duration, done: impl Fn(&Status) -> bool) -> Result<bool, MediaError> {
@@ -1419,9 +1435,10 @@ impl Task {
         self.closure_from = self.closure_from.max(target);
         self.direct_from = self.direct_from.max(target);
         self.link.resume(vpos, self.written);
-        let written = self.written;
+        let (written, offset) = (self.written, self.offset);
         self.shared.update(|s| {
             s.resume = Some(written);
+            s.offset = offset;
             s.cuts += 1;
             s.finished = false;
         });
@@ -2170,6 +2187,53 @@ mod tests {
         assert!(matches!(t.step(), Progress::Worked));
         assert_eq!(h.wait_cut_seen(none), Ok(true));
         assert_eq!(h.cuts(), 1);
+    }
+
+    /// After a devamp cut the ring still holds the loop frames written ahead, which the voice
+    /// skips: the frames written run ahead of the voice by those. A driver that waited for the
+    /// count of frames written rendered on with the continuation still to come, and the voice
+    /// ran dry part-way through the next slice; `wait_fed` waits for the continuation itself.
+    #[test]
+    fn a_driver_waits_for_the_frames_after_a_cut_not_the_stale_ones_before_it() {
+        let pre =
+            crate::decode::Preloaded::from_samples(1, 48_000, (0..60_000).map(mark).collect());
+        let plays = [Plays::Infinite, Plays::Times(1)];
+        let slices = crate::plan(0..60_000, &[1_000], &plays, 0).unwrap();
+        let (_d, mut t, p) = hand_task(StreamerConfig::new(48_000), pre, slices);
+        let link = Arc::clone(&p.link);
+        // The loop is written far ahead of the voice, as a disk worker does.
+        while t.written < 30_000 {
+            assert!(matches!(t.step(), Progress::Worked));
+        }
+        let (mut ctl, mut r) = mixer();
+        let h = play(&mut ctl, p);
+        let none = Duration::ZERO;
+        let mut out = Vec::new();
+        render_to(&mut r, &mut out, 100, None);
+        devamp(&mut ctl, 100);
+        render_to(&mut r, &mut out, 164, None);
+        assert!(matches!(t.step(), Progress::Worked));
+        assert_eq!(h.cuts(), 1);
+        let resume = h.last_resume().unwrap();
+        assert!(resume >= 30_000, "{resume}");
+        // The voice leaves the loop on frame 1000, plays the exit buffer if it said it would,
+        // and then the continuation from the ring: 10000 frames of that.
+        let (cut, uses_exit) = link.cut_requested().unwrap();
+        let exit = if uses_exit {
+            link.exit(1).unwrap().frames as u64
+        } else {
+            0
+        };
+        let need = cut + exit + 10_000;
+        // The stale loop frames alone are more than that.
+        assert_eq!(h.wait_written(need, none), Ok(true));
+        while t.written < resume + 10_000 {
+            assert_eq!(h.wait_fed(need, none), Ok(false), "{} written", t.written);
+            assert!(matches!(t.step(), Progress::Worked));
+        }
+        assert_eq!(h.wait_fed(need, none), Ok(true));
+        // Before any cut the two agree.
+        assert_eq!(h.wait_fed(cut, none), Ok(true));
     }
 
     /// L-R5: a devamp while the voice still waits for the disk's answer to the previous cut (it

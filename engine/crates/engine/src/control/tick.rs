@@ -346,7 +346,9 @@ impl DocCx<'_> {
         // The mixer's events of this doc's voices, routed here by the engine this wake.
         let mut events = std::mem::take(&mut self.doc.events);
         for e in events.drain(..) {
-            self.doc.voices.event(e, &mut fx);
+            let model = &self.doc.model;
+            let held = |cue, run| model.holds_run(cue, run);
+            self.doc.voices.event(e, &held, &mut fx);
         }
         self.doc.events = events;
         let start_limit = seconds_to_samples(STREAM_START_LIMIT.as_secs_f64(), self.eng.rate);

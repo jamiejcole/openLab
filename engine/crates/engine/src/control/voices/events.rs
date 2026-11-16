@@ -3,10 +3,12 @@
 use super::*;
 
 impl Voices {
-    /// Turns one mixer event into feedback.
-    pub fn event(&mut self, e: Event, fx: &mut Effects) {
+    /// Turns one mixer event into feedback. `held`: as [`Self::finished`].
+    pub fn event(&mut self, e: Event, held: Held<'_>, fx: &mut Effects) {
         match e {
-            Event::VoiceFinished { voice, at, reason } => self.finished(voice, at, reason, fx),
+            Event::VoiceFinished { voice, at, reason } => {
+                self.finished(voice, at, reason, held, fx);
+            }
             Event::VoiceRejected { voice, at, .. } => {
                 let Some((id, _)) = self.resolve(voice) else {
                     return;
@@ -107,11 +109,14 @@ impl Voices {
         self.recs.get(&cur).map(|r| (r.cue, run))
     }
 
+    /// A voice the mixer no longer has. `held`: whether the cue engine still holds that run of
+    /// that cue; only then can the resume follow that an ended paused voice's record waits for.
     pub(super) fn finished(
         &mut self,
         voice: VoiceId,
         at: SampleTime,
         reason: FinishReason,
+        held: Held<'_>,
         fx: &mut Effects,
     ) {
         let Some((id, current)) = self.resolve(voice) else {
@@ -151,11 +156,14 @@ impl Voices {
         // end), so keep the record for the resume to report the end afresh. An end on the pause
         // sample left nothing to pause: the engine takes it as the end and resumes
         // nothing, so a record kept for it would stay for the session (and, for a show cue,
-        // keep the cue from being primed again).
+        // keep the cue from being primed again). So would one kept for a run the engine has
+        // dropped since the pause (its device was lost, and the voice is settled without the
+        // mixer's own report of its stop): no resume will name that run again.
         if !failed
             && let Some(p) = r.paused_at
             && at > p
             && reason != FinishReason::Stopped
+            && held(cue, run)
         {
             r.phase = Phase::Ended;
             r.stream = None;
@@ -214,14 +222,14 @@ impl Voices {
     /// A voice the mixer no longer has although no end was reported (its event was dropped):
     /// reported as ended on `at` (or failed, if its stream failed).
     /// A voice no meter read ever listed was never taken by the mixer: its lost report was a
-    /// rejection, so it fails (`voice_rejected`) rather than ends.
-    pub fn lost(&mut self, id: VoiceId, at: SampleTime, fx: &mut Effects) {
+    /// rejection, so it fails (`voice_rejected`) rather than ends. `held`: as [`Self::finished`].
+    pub fn lost(&mut self, id: VoiceId, at: SampleTime, held: Held<'_>, fx: &mut Effects) {
         let Some(r) = self.recs.get(&id) else { return };
         if !matches!(r.phase, Phase::Playing) {
             return;
         }
         if r.listed {
-            self.finished(id, at, FinishReason::EndOfStream, fx);
+            self.finished(id, at, FinishReason::EndOfStream, held, fx);
         } else if let Some(r) = self.remove(id) {
             // Never listed: the mixer never took its start, so it never played.
             fx.feedback.push(Input::StartFailed {
@@ -281,7 +289,8 @@ impl Voices {
                 fx.commands
                     .push((at, CommandKind::StopVoice { voice, fade }));
             }
-            self.finished(id, at, FinishReason::Faulted, fx);
+            // A fault fails the run whoever holds it: its record always goes.
+            self.finished(id, at, FinishReason::Faulted, &|_, _| false, fx);
         }
     }
 }

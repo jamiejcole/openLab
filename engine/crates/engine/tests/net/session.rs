@@ -153,7 +153,7 @@ fn advance(
         }
         let end = control.mixer().samples_rendered() + BLOCK;
         for (handle, needed) in control.stream_needs(end) {
-            let _ = handle.wait_written(needed, SETTLE);
+            let _ = handle.wait_fed(needed, SETTLE);
         }
         for handle in control.prepared_streams() {
             let _ = handle.wait_primed(SETTLE);

@@ -146,7 +146,8 @@ Every run segment gets its own `VoiceId` from the engine-wide `VoiceIds`; `RunId
 
 ## Offline driver
 `OfflineShow::step()` hands the inbox to control, **settles** the streams, renders one block, then ticks.
-  Settling waits (blocking, outside `tick`, with a 30 s timeout counted in `stalls()`) until every playing stream has written what the block will read and every prepared stream is primed; that makes renders exact and repeatable (a device never lets disk workers fall far behind; a faster-than-real-time render would). `settle_media()` waits for probes and started preloads; `render_only(frames)` renders with no tick (a late control thread).
+  Settling waits (blocking, outside `tick`, with a 30 s timeout counted in `stalls()`) until every playing stream has written what the block will read and every prepared stream is primed; that makes renders exact and repeatable (a device never lets disk workers fall far behind; a faster-than-real-time render would).
+  What a voice will read is counted in voice frames (`StreamHandle::wait_fed`), not frames written: after a devamp cut the ring also holds the stale loop frames the voice skips, so the written count runs ahead of the voice and waiting on it lets the voice run dry. `settle_media()` waits for probes and started preloads; `render_only(frames)` renders with no tick (a late control thread).
 
 ## Performance budgets
 Numbers are asserted in `engine/crates/engine/tests/perf.rs` (a 2,110-cue show built in the test); the CI performance gate runs the timed ones on an Intel runner. NFR-24/25 stay unticked (minimum-spec hardware is not measured).

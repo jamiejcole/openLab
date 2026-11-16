@@ -3686,6 +3686,45 @@ fn a_lost_device_its_patch_moved_away_from_is_closed_and_forgets_its_voices() {
     assert_eq!(s.control().live_voices(), 0);
 }
 
+/// The same for a cue the operator had paused before the device was lost: the loss dropped its
+/// run, so no resume can come for its paused voice and no record of it is kept. Its cue is
+/// primed again and its next GO plays from the prime, on the sample it was asked for.
+#[test]
+fn a_paused_cue_on_a_lost_device_its_patch_moved_away_from_keeps_no_voice_and_primes_again() {
+    let b = wav(&dc(40_000, 0.5));
+    let mut s = two_device_show(vec![audio_b(2, &b, 0)]);
+    start(&mut s, 2);
+    s.run(BLOCK * 4);
+    s.transport(TransportAction::Pause { cue: id(2) });
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().engine().state(id(2)), CueState::Paused);
+    unplug(&mut s, DEV2);
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().engine().run_of(id(2)), None, "the run failed");
+    map_b(&mut s, DEV_NAME);
+    s.run(BLOCK * 4);
+    assert!(
+        logs(&s.take_outbound(), LogLevel::Info)
+            .iter()
+            .any(|m| m.contains(&format!("\"{DEV2_NAME}\" closed: no patch plays on it"))),
+    );
+    assert_eq!(s.control().live_voices(), 0);
+    // Only the prime for the next GO holds a stream.
+    s.run(BLOCK * 40);
+    assert_eq!(s.control().primed(), vec![id(2)]);
+    assert_eq!(s.control().held_streams(), 1);
+    let hits = s.control().prime_hits();
+    let at = start(&mut s, 2) as usize;
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().prime_hits(), hits + 1, "GO used the prime");
+    let one = s.channel(0);
+    assert!(one[..at].iter().all(|&v| v == 0.0), "nothing before the GO");
+    assert_eq!(one[at], 0.5, "it plays on the sample of its GO");
+    s.transport(TransportAction::HardStop { cue: id(2) });
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().live_voices(), 0);
+}
+
 fn list_patch_mappings(s: &mut DeviceShow) -> Vec<PatchMappingEntry> {
     let id = s.request_id();
     let replies = s.send(ClientMessage::Request {

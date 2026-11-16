@@ -9,7 +9,8 @@
 use std::ops::{Deref, DerefMut};
 
 use openlab_core::{
-    Action, CommandError, CueEngine, EngineConfigError, Footprint, Input, SampleTime, Workspace,
+    Action, CommandError, CueEngine, CueId, EngineConfigError, Footprint, Input, RunId, SampleTime,
+    Workspace,
 };
 
 /// A doc's workspace and cue engine. Both fields are private to this module: the rest of the
@@ -35,6 +36,12 @@ impl DocModel {
 
     pub(super) fn engine(&self) -> &CueEngine {
         &self.engine
+    }
+
+    /// Whether the cue engine still holds `run` of `cue` (a show run that is not broken, or
+    /// the cue's preview): only such a run can still be resumed by name.
+    pub(super) fn holds_run(&self, cue: CueId, run: RunId) -> bool {
+        self.engine.run_of(cue) == Some(run) || self.engine.preview_run(cue) == Some(run)
     }
 
     /// [`CueEngine::handle`] on this workspace.
