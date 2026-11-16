@@ -95,12 +95,21 @@ impl Engine {
 impl DocCx<'_> {
     /// Keeps the cues near each playhead primed.
     pub(super) fn prime(&mut self, now: SampleTime) {
-        let wanted = prime_set(
+        let mut wanted = prime_set(
             self.doc.model.ws(),
             self.doc.model.engine(),
             self.doc.media.index(),
             self.eng.config.prime_cues,
         );
+        // A Video cue whose file is known to have no sound (a still, a silent movie) has
+        // nothing to prime: it takes no share of the pool from the cues that do.
+        wanted.retain(|c| {
+            let cue = self.doc.media.index().locate(self.doc.model.ws(), *c);
+            let Some(CueKind::Video { media: Some(m), .. }) = cue.map(|c| &c.kind) else {
+                return true;
+            };
+            (self.doc.media.picture(m.as_str())).is_none_or(|p| !p.sound.is_empty())
+        });
         // Their files are probed first (H2: a restart mid-show must not leave the cue at the
         // playhead behind a hundred others).
         let keys: Vec<String> = wanted

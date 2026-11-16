@@ -2948,6 +2948,20 @@ fn a_movie_with_sound_gets_a_levels_tab_and_is_heard_on_its_patch() {
     assert_eq!(s.control().prime_hits(), 1);
 }
 
+/// A Video cue's sound is kept ready as an Audio cue's is, and a Video cue with nothing to
+/// hear (a silent movie, though it has a patch) takes no place among the primed cues from one
+/// that has.
+#[test]
+fn a_silent_movie_takes_no_prime_from_a_movie_with_sound() {
+    let dir = tempfile::tempdir().unwrap();
+    let quiet = movie!(dir.path(), "quiet.mov", (50, 25));
+    let loud = sound_movie!(dir.path(), "loud.mov", (50, 25), "pcm:2:48000");
+    let ws = workspace(vec![sounding_cue(1, &quiet), sounding_cue(2, &loud)]);
+    let mut s = video_show_rate(ws, RATE, BLOCK, &[], |_| {}, |c| c.max_primes = 1);
+    s.run(BLOCK * 4);
+    assert_eq!(s.control().primed(), vec![id(2)]);
+}
+
 /// A Video cue with sound and the time and loops `edit` gives it.
 fn timed_sounding_cue(n: u128, movie: &Path, edit: impl Fn(&mut openlab_core::VideoTiming)) -> Cue {
     let mut c = sounding_cue(n, movie);
