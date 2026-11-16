@@ -666,9 +666,9 @@ impl Voices {
                 let held = r.held.take().is_some();
                 r.start_id = Some(id);
                 r.slot = Some(vs.patch);
-                if let Some(CueKind::Audio { patch, .. }) = env.ws.find_cue(cue).map(|c| &c.kind) {
-                    r.patch = Some(*patch);
-                    r.levelled = env.patches.outputs(env.doc, *patch);
+                if let Some(patch) = env.ws.find_cue(cue).and_then(|c| c.kind.sound_patch()) {
+                    r.patch = Some(patch);
+                    r.levelled = env.patches.outputs(env.doc, patch);
                 }
                 // A move swapped in while playing takes over levels already on their way:
                 // each where it stands on the swap, then the rest of its ramp, so it ends on

@@ -183,6 +183,8 @@ pub enum WireProblem {
     StageMissing {
         stage: StageId,
     },
+    /// A Video cue whose file has sound has its output patch set to "none".
+    NoPatch,
 }
 
 impl From<&CueProblem> for WireProblem {
@@ -201,6 +203,7 @@ impl From<&CueProblem> for WireProblem {
                 media: media.clone(),
                 reason: reason.clone(),
             },
+            CueProblem::NoPatch => Self::NoPatch,
             CueProblem::PatchMissing { patch } => Self::PatchMissing { patch: *patch },
             CueProblem::DeviceUnavailable { patch, resolution } => Self::DeviceUnavailable {
                 patch: *patch,

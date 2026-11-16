@@ -777,6 +777,14 @@ pub fn prepare_paste(
                     *patch = first;
                 }
             }
+            // A Video cue's "none" stays none; a patch this workspace lacks becomes its first.
+            CueKind::Video { sound, .. }
+                if sound.patch.is_some_and(|p| !patches.contains(&p)) =>
+            {
+                if let Some(first) = first_patch {
+                    sound.patch = Some(first);
+                }
+            }
             // The nil id is the inspector's deliberate "no patch": it stays, so the copy is as
             // broken (and as visibly so) as the original, not silently aimed at another device.
             CueKind::Network { destination, .. }

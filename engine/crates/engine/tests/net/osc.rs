@@ -3253,6 +3253,7 @@ async fn an_osc_client_sets_and_reads_a_video_cues_geometry_and_out_of_range_is_
         duration: None,
         geometry: Default::default(),
         timing: Default::default(),
+        sound: Default::default(),
     };
     let ws = workspace(vec![cue(1, video), cue(2, CueKind::Memo)]);
     let real = RealLoop::start(ws.clone()).await;
@@ -3313,6 +3314,7 @@ async fn crop_edges_sent_back_to_back_or_in_one_bundle_both_hold() {
         duration: None,
         geometry: Default::default(),
         timing: Default::default(),
+        sound: Default::default(),
     };
     let ws = workspace(vec![cue(1, video)]);
     let real = RealLoop::start(ws.clone()).await;

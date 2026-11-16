@@ -366,6 +366,7 @@ fn render_voice(
                 .shared
                 .underrun_frames
                 .fetch_add((live - got) as u64, Ordering::Relaxed);
+            v.missed = v.missed.saturating_add((live - got) as u64);
             if !v.underrunning {
                 v.underrunning = true;
                 outbox.emit(Event::Underrun {
@@ -376,7 +377,15 @@ fn render_voice(
             None
         }
         ReadOutcome::Full => {
+            if v.underrunning {
+                outbox.emit(Event::UnderrunEnded {
+                    voice: v.id,
+                    at: t0,
+                    frames: v.missed,
+                });
+            }
             v.underrunning = false;
+            v.missed = 0;
             None
         }
     };

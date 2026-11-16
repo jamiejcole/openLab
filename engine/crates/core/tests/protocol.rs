@@ -546,6 +546,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             duration: None,
             geometry: Default::default(),
             timing: Default::default(),
+            sound: Default::default(),
         },
     );
     video.number = None;
@@ -2862,7 +2863,7 @@ fn wire_warning_idx(w: &WireWarning) -> usize {
     }
 }
 
-const ENGINE_PROBLEM_COUNT: usize = 17;
+const ENGINE_PROBLEM_COUNT: usize = 18;
 fn engine_problem_idx(p: &CueProblem) -> usize {
     match p {
         CueProblem::NoTarget => 0,
@@ -2882,6 +2883,7 @@ fn engine_problem_idx(p: &CueProblem) -> usize {
         CueProblem::SlicesUnplayable { .. } => 14,
         CueProblem::NoStage => 15,
         CueProblem::StageMissing { .. } => 16,
+        CueProblem::NoPatch => 17,
     }
 }
 
@@ -2904,6 +2906,7 @@ fn wire_problem_idx(p: &WireProblem) -> usize {
         WireProblem::SlicesUnplayable { .. } => 14,
         WireProblem::NoStage => 15,
         WireProblem::StageMissing { .. } => 16,
+        WireProblem::NoPatch => 17,
     }
 }
 
@@ -3258,6 +3261,7 @@ fn problem_table() -> Vec<(CueProblem, WireProblem)> {
         ),
         (CueProblem::StartedBroken, WireProblem::StartedBroken),
         (CueProblem::NoStage, WireProblem::NoStage),
+        (CueProblem::NoPatch, WireProblem::NoPatch),
         (
             CueProblem::StageMissing {
                 stage: openlab_core::StageId(uuid::Uuid::from_u128(7)),

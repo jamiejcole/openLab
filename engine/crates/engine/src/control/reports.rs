@@ -140,6 +140,8 @@ impl DocCx<'_> {
                 // A cue its device left paused shows where it stood (below), not the voice its
                 // stop is still ending.
                 .filter(|(cue, ..)| !self.doc.model.engine().is_lost(*cue))
+                // A Video cue's sound is where its picture is, reported below.
+                .filter(|(cue, ..)| !self.is_video(*cue))
                 .map(|(cue, pos, left, at)| ProgressItem {
                     cue,
                     elapsed: self.seconds(pos),

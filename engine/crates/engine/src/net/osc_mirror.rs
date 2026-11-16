@@ -1447,6 +1447,7 @@ mod tests {
             duration: None,
             geometry: Default::default(),
             timing: Default::default(),
+            sound: Default::default(),
         };
         let base = mirror(2);
         let mut workspace = base.workspace.clone();

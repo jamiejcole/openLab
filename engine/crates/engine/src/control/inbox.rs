@@ -89,6 +89,8 @@ pub enum ProbeAnswer {
         key: String,
         ticket: u64,
         result: Result<(PathBuf, openlab_core::video_probe::ProbeReport), MediaError>,
+        /// A video's sound tracks as the audio decoder probed them (none: no sound).
+        sound: Vec<openlab_audio::MovieSound>,
     },
 }
 

@@ -303,7 +303,7 @@ pub(super) fn fade_targets(
     target: &CueKind,
     limits: Option<LevelLimits>,
 ) -> Vec<(LevelParam, f32)> {
-    let CueKind::Audio { levels, .. } = target else {
+    let Some(levels) = target.levels() else {
         return Vec::new();
     };
     let outputs = levels.outputs.len();

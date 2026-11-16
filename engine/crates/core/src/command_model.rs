@@ -761,7 +761,7 @@ fn remove_patch(
     if !even_if_used
         && let Some(cue) = first_cue(
             ws,
-            |k| matches!(k, CueKind::Audio { patch, .. } if *patch == id),
+            |k| matches!(k, CueKind::Audio { .. } | CueKind::Video { .. }) && k.sound_patch() == Some(id),
         )
     {
         return Err(CommandError::PatchInUse { patch: id, cue });

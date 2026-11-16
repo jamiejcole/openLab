@@ -47,6 +47,12 @@ impl DocCx<'_> {
         self.doc.pending_media.extend(unresolved);
         if !self.doc.pending_media.is_empty() {
             let media = std::mem::take(&mut self.doc.pending_media);
+            // Which of the files are movies with sound, first: their cues need their patch.
+            let sound = media
+                .iter()
+                .map(|(file, _)| (file.clone(), self.doc.media.has_sound(file.as_str())))
+                .collect();
+            self.feed(Input::MediaSound { media: sound }, now);
             self.feed(
                 Input::Availability {
                     media,
@@ -72,6 +78,7 @@ impl DocCx<'_> {
                 floor,
             };
             self.doc.voices.media_ready(&key, &mut env, &mut fx);
+            self.quiet_sound(&mut fx);
             self.follow(fx, now);
             self.release_pictures(&key, now);
         }
@@ -177,6 +184,7 @@ impl DocCx<'_> {
             }
         }
         self.end_pictures(actions);
+        self.end_sounds(actions);
         for action in actions {
             match action {
                 Action::SetArmed { cue, armed: value } => {
@@ -219,7 +227,12 @@ impl DocCx<'_> {
             notices,
             reprobe,
             warnings,
+            late,
         } = fx;
+        let mut feedback = feedback;
+        for (run, at, frames) in late {
+            self.picture_late(run, at, frames, &mut feedback);
+        }
         for message in warnings {
             self.log(LogLevel::Warn, message);
         }

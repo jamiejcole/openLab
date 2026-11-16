@@ -38,6 +38,7 @@ mod observe;
 pub mod offline;
 mod outputs;
 mod patches;
+mod picture_sound;
 mod pictures;
 pub mod plan;
 mod preshow;

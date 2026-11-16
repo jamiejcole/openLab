@@ -234,6 +234,7 @@ fn kind(ws: &Workspace, p: &Pick) -> CueKind {
             duration: (!p.b.is_multiple_of(3)).then(|| time(p.c)),
             geometry: Default::default(),
             timing: Default::default(),
+            sound: Default::default(),
         },
         _ => CueKind::Network {
             destination: net_id(1),

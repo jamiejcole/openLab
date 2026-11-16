@@ -64,21 +64,41 @@ impl Voices {
         let Some(c) = super::cue_of(env, cue) else {
             return Err(PrepError::Failed);
         };
-        let CueKind::Audio {
-            media: Some(media), ..
-        } = &c.kind
-        else {
-            return Err(PrepError::Failed);
-        };
-        let key = media.as_str();
-        match env.media.get(key) {
-            None | Some(Probe::Pending) => return Err(PrepError::Pending),
-            // A file probed as a picture (a Video cue uses it too) has no audio plan here.
-            Some(Probe::Failed | Probe::Picture(_)) => return Err(PrepError::Failed),
-            Some(Probe::Ready(_)) => {}
-        }
-        let Some((ready, source)) = env.media.media(key) else {
-            return Err(PrepError::Pending);
+        let (ready, source) = match &c.kind {
+            CueKind::Audio {
+                media: Some(media), ..
+            } => {
+                let key = media.as_str();
+                match env.media.get(key) {
+                    None | Some(Probe::Pending) => return Err(PrepError::Pending),
+                    // A file probed as a picture (a Video cue uses it too) has no audio plan
+                    // here.
+                    Some(Probe::Failed | Probe::Picture(_)) => return Err(PrepError::Failed),
+                    Some(Probe::Ready(_)) => {}
+                }
+                let Some(found) = env.media.media(key) else {
+                    return Err(PrepError::Pending);
+                };
+                found
+            }
+            // A Video cue's sound: the audio track it chose of its movie.
+            CueKind::Video {
+                media: Some(media),
+                sound,
+                ..
+            } => {
+                let key = media.as_str();
+                match env.media.get(key) {
+                    None | Some(Probe::Pending) => return Err(PrepError::Pending),
+                    Some(Probe::Failed | Probe::Ready(_)) => return Err(PrepError::Failed),
+                    Some(Probe::Picture(_)) => {}
+                }
+                let Some(found) = env.media.sound(key, sound.audio_track) else {
+                    return Err(PrepError::Failed);
+                };
+                found
+            }
+            _ => return Err(PrepError::Failed),
         };
         let Some(spec) = plan_spec(&c.kind) else {
             return Err(PrepError::Failed);

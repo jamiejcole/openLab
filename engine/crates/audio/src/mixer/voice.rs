@@ -258,6 +258,8 @@ pub(super) struct Voice {
     /// Not yet rendered: gain sets apply without de-zipper.
     pub(super) fresh: bool,
     pub(super) underrunning: bool,
+    /// Frames missed in the underrun episode under way.
+    pub(super) missed: u64,
     /// `Some` while paused; then nothing is read and no gain advances.
     pub(super) paused: Option<Paused>,
     /// Declick gain: ramps up from the tail's level on resume, 1.0 otherwise.
@@ -328,6 +330,7 @@ impl Voice {
             input: vec![0.0; max_channels * block],
             fresh: false,
             underrunning: false,
+            missed: 0,
             paused: None,
             declick: Param::new(1.0),
             xfade: None,
@@ -462,6 +465,7 @@ impl Voice {
         meters.widen(self.slot, width);
         self.fresh = true;
         self.underrunning = false;
+        self.missed = 0;
         self.paused = None;
         self.declick.set(1.0);
         self.xfade = None;

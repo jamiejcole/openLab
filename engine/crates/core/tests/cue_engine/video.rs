@@ -30,6 +30,7 @@ fn video_on(n: u128, stage: Option<StageId>) -> Cue {
             duration: None,
             geometry: Default::default(),
             timing: Default::default(),
+            sound: Default::default(),
         },
     )
 }

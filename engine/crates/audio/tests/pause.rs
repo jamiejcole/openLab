@@ -80,6 +80,7 @@ fn event_at(e: &Event) -> u64 {
     match *e {
         Event::VoiceFinished { at, .. }
         | Event::Underrun { at, .. }
+        | Event::UnderrunEnded { at, .. }
         | Event::VoiceRejected { at, .. }
         | Event::PendingFull { at }
         | Event::LoopReached { at, .. }

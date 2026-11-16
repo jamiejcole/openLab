@@ -18,7 +18,8 @@ use openlab_audio::{
     PreparedStream, Slice, StreamHandle, StreamRequest, VoiceId, VoiceStart, total_frames,
 };
 use openlab_core::{
-    Action, BrokenReason, Cue, CueEngine, CueId, CueKind, FadeCurve, FadeSpec, Input, LevelParam,
+    Action, BrokenReason, Cue, CueEngine, CueId, CueKind, CueLevels, FadeCurve, FadeSpec, Input,
+    LevelParam,
     PatchId, RunId, SampleTime, StopFade, Workspace, db_to_gain, seconds_to_samples,
 };
 
@@ -46,6 +47,9 @@ pub struct Effects {
     pub reprobe: Vec<String>,
     /// Lines for the show log at `warn`.
     pub warnings: Vec<String>,
+    /// Voices the disk starved that play on from a sample, later than planned by that many
+    /// frames (run, sample, frames): a Video cue's picture follows its sound.
+    pub late: Vec<(RunId, SampleTime, u64)>,
 }
 
 /// The environment voice actions are carried out in.
@@ -808,13 +812,43 @@ fn plan_spec(kind: &CueKind) -> Option<PlanSpec<'_>> {
             slices,
             last_slice_play_count: *last_slice_play_count,
         }),
+        // A Video cue's sound plays its picture's plan.
+        CueKind::Video { timing, .. } => Some(PlanSpec {
+            start_time: timing.start_time,
+            end_time: timing.end_time,
+            slices: &timing.slices,
+            last_slice_play_count: timing.last_slice_play_count,
+        }),
         _ => None,
     }
 }
 
 fn cue_media(ws: &Workspace, cue: CueId) -> Option<String> {
     match &ws.find_cue(cue)?.kind {
-        CueKind::Audio { media: Some(m), .. } => Some(m.as_str().to_owned()),
+        CueKind::Audio { media: Some(m), .. } | CueKind::Video { media: Some(m), .. } => {
+            Some(m.as_str().to_owned())
+        }
+        _ => None,
+    }
+}
+
+/// What a cue's voice is routed and faded by: its patch, its levels and its integrated fades
+/// (an Audio cue's, or those of a Video cue with a patch for its sound).
+fn sound_of(kind: &CueKind) -> Option<(PatchId, &CueLevels, &FadeSpec, &FadeSpec)> {
+    match kind {
+        CueKind::Audio {
+            patch,
+            levels,
+            fade_in,
+            fade_out,
+            ..
+        } => Some((*patch, levels, fade_in, fade_out)),
+        CueKind::Video { timing, sound, .. } => Some((
+            sound.patch?,
+            &sound.levels,
+            &timing.fade_in,
+            &timing.fade_out,
+        )),
         _ => None,
     }
 }
@@ -886,18 +920,9 @@ fn voice_start(
     fade_in: FadeIn,
 ) -> Option<(Box<VoiceStart>, StreamHandle)> {
     let c = env.ws.find_cue(cue)?;
-    let CueKind::Audio {
-        patch,
-        levels,
-        fade_in: cue_fade_in,
-        fade_out,
-        ..
-    } = &c.kind
-    else {
-        return None;
-    };
-    let mixer_patch = env.patches.mixer_patch(env.doc, *patch)?;
-    let patch_outputs = env.patches.outputs(env.doc, *patch);
+    let (patch, levels, cue_fade_in, fade_out) = sound_of(&c.kind)?;
+    let mixer_patch = env.patches.mixer_patch(env.doc, patch)?;
+    let patch_outputs = env.patches.outputs(env.doc, patch);
     // As many cue outputs as the patch has (a voice costs the mixer only those); a later move
     // to a bigger patch widens it with the ramps that give the new outputs their levels.
     let width = patch_outputs.clamp(1, env.cue_outputs.max(1));

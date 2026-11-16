@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::cue::{CueKind, FadeCurve, LevelLimits};
+use crate::cue::{FadeCurve, LevelLimits};
 use crate::model::CueId;
 
 use super::level::{self, Level, LevelEdit};
@@ -53,7 +53,7 @@ impl CueEngine {
             } else {
                 tree.locate(ws, *id)
             };
-            let Some(CueKind::Audio { levels, .. }) = cue.map(|c| &c.kind) else {
+            let Some(levels) = cue.and_then(|c| c.kind.levels()) else {
                 continue;
             };
             let Some(given) = run.given.as_mut() else {
