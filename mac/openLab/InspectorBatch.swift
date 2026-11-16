@@ -200,6 +200,13 @@ extension InspectorViewController {
         showChoice(
             outputPatchPopup, outputPatchChoices, cues.map { $0.raw["kind"]?["patch"]?.stringValue ?? "" },
             fallback: -1)
+        // One patch on all of them: its output names over the columns, and Edit opens it.
+        let shared = store.model.flatMap { Self.sharedPatch(of: cues, model: $0) }
+        editPatchButton.isEnabled = !isLocked && shared != nil
+        audioLevels.hasPatch = shared != nil
+        audioLevels.matrix.outputNames =
+            shared == nil
+            ? [] : store.model.flatMap { m in cues.first.map { Self.outputNames(of: $0, model: m) } } ?? []
         followVolumeLimits()
         audioLevels.meter.source = nil
         let sets = cues.compactMap { LevelSet(kind: $0.raw["kind"] ?? .null) }

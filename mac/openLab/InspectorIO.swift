@@ -15,6 +15,8 @@ final class VideoIOControls {
     /// The sound's format: plain text for a movie with one audio track, the pop-up for one with several.
     let soundLabel = NSTextField(labelWithString: "")
     let trackPopup = NSPopUpButton()
+    /// Beside the pop-up while the stored track is not in the file: which track plays instead.
+    let trackNote = NSTextField(labelWithString: loc("inspector.io.trackMissingNote"))
     /// The titles of the track pop-up's items, as last built.
     var trackTitles: [String] = []
     /// The rows only a Video cue has (the grid's rows; hidden for an Audio cue).
@@ -47,6 +49,12 @@ final class VideoIOControls {
         soundLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         trackPopup.setAX("inspector-io-audio-track", label: loc("inspector.io.soundFormat"))
         trackPopup.isHidden = true
+        trackNote.setAX("inspector-io-audio-track-note")
+        trackNote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        trackNote.textColor = .secondaryLabelColor
+        trackNote.lineBreakMode = .byTruncatingTail
+        trackNote.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        trackNote.isHidden = true
     }
 
     /// A frame rate to three decimals, trailing zeros dropped: 25, 29.97, 23.976, 59.94.
@@ -124,7 +132,7 @@ extension InspectorViewController {
         let grid = NSGridView(views: [
             [labels[0], line([v.fileLabel, v.chooseButton])],
             [labels[1], v.formatLabel],
-            [labels[2], line([v.soundLabel, v.trackPopup])],
+            [labels[2], line([v.soundLabel, v.trackPopup, v.trackNote])],
             [labels[3], line([v.stagePopup, v.stageSizeLabel])],
             [labels[4], line([outputPatchPopup, editPatchButton])],
         ])
@@ -192,7 +200,7 @@ extension InspectorViewController {
         let chosen = outputPatchChoices.firstIndex(of: current ?? "") ?? -1
         if outputPatchPopup.indexOfSelectedItem != chosen { outputPatchPopup.selectItem(at: chosen) }
         outputPatchPopup.isEnabled = !isLocked
-        // One cue's patch: with several cues shown, or a patch that is gone or none, there is none to edit.
+        // A patch that is gone or none is not one to edit (several cues: `renderBatchSound`).
         editPatchButton.isEnabled = !isLocked && outputPatchIDs.indices.contains(chosen) && !isBatch
     }
 
@@ -238,8 +246,9 @@ extension InspectorViewController {
 
     /// The sound-format row (QLab 5 manual p. 211): one track is plain text; several are a pop-up,
     /// one numbered item per track, on the track the cue stores. A stored track the file does not
-    /// have shows the pop-up with no choice (the engine plays the first and lists a warning), so
-    /// picking a track puts it right; that holds for a file with one track too.
+    /// have (the engine plays the first and lists a warning) is the pop-up's last item, named as
+    /// missing and chosen, with a line beside it saying the first track plays; picking a track of
+    /// the file puts it right. That holds for a file with one track too.
     private func renderSoundFormat(_ cue: Cue) {
         let v = videoIO
         let tracks = store.mediaDurations[cue.id]?.audioTracks ?? []
@@ -250,15 +259,18 @@ extension InspectorViewController {
         v.trackPopup.isHidden = !several
         v.soundLabel.stringValue = tracks.first.map(VideoIOControls.soundText) ?? ""
         v.soundLabel.textColor = .labelColor
-        let titles = tracks.enumerated().map { n, t in
+        var titles = tracks.enumerated().map { n, t in
             String(format: loc("inspector.io.trackItem"), n + 1, VideoIOControls.soundText(t))
         }
+        let missing = !tracks.isEmpty && !known
+        if missing { titles.append(String(format: loc("inspector.io.trackMissing"), stored + 1)) }
+        v.trackNote.isHidden = !missing
         if titles != v.trackTitles {
             v.trackTitles = titles
             v.trackPopup.menu?.removeAllItems()
             for title in titles { v.trackPopup.menu?.addItem(NSMenuItem(title: title, action: nil, keyEquivalent: "")) }
         }
-        let chosen = known ? stored : -1
+        let chosen = known ? stored : titles.count - 1
         if v.trackPopup.indexOfSelectedItem != chosen { v.trackPopup.selectItem(at: chosen) }
         v.trackPopup.isEnabled = !isLocked && !isBatch
     }
@@ -273,9 +285,7 @@ extension InspectorViewController {
 
     /// The patch editor of the shown cue's patch (QLab 5 manual p. 189: the I/O tab's edit button).
     @objc func editPatchClicked() {
-        guard let raw = cue?.raw["kind"]?["patch"]?.stringValue, case let id = ModelID(raw),
-            store.model?.patches.contains(where: { $0.id == id }) == true
-        else { return }
+        guard let model = store.model, let id = Self.sharedPatch(of: editCues, model: model) else { return }
         onEditPatch?(id)
     }
 
@@ -307,7 +317,9 @@ extension InspectorViewController {
     /// An audio track chosen for the shown Video cue (stored as `audio_track`, counted from 0).
     @objc func audioTrackChosen() {
         let i = videoIO.trackPopup.indexOfSelectedItem
-        guard i >= 0, !isBatch else { return }
+        // The item naming a missing track is not a track to pick.
+        let tracks = cue.flatMap { store.mediaDurations[$0.id]?.audioTracks } ?? []
+        guard tracks.indices.contains(i), !isBatch else { return render() }
         sendEach(key: "audioTrack") { cue in
             guard cue.kindType == "video", Int(cue.raw["kind"]?["audio_track"]?.doubleValue ?? 0) != i else {
                 return nil

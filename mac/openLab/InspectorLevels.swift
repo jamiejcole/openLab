@@ -93,6 +93,7 @@ extension InspectorViewController {
         audioLevels.meter.bank = store.meters
         audioLevels.meter.source = audio ? .cue(cue.id) : nil
         audioLevels.matrix.outputNames = Self.outputNames(of: cue, model: model)
+        audioLevels.hasPatch = Self.sharedPatch(of: [cue], model: model) != nil
         if audio, let set {
             audioLevels.show(
                 set, inputs: Self.inputRows(of: cue, durations: store.mediaDurations),
@@ -114,6 +115,13 @@ extension InspectorViewController {
             return set.outputs.count
         }
         return outputs.count
+    }
+
+    /// The patch every one of `cues` plays through, when it is one patch the workspace has.
+    static func sharedPatch(of cues: [Cue], model: WorkspaceModel) -> ModelID? {
+        let ids = Set(cues.map { $0.raw["kind"]?["patch"]?.stringValue })
+        guard ids.count == 1, let raw = ids.first ?? nil else { return nil }
+        return model.patches.first { $0.id.raw == raw }?.id
     }
 
     /// The names of the cue outputs of the patch an Audio or Video cue plays through, or a Fade's target's.

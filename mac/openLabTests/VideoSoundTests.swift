@@ -368,6 +368,9 @@ extension VideoCueTests {
         XCTAssertTrue(warningRows(Self.movie).contains { $0.detail.contains(loc("problem.no_patch")) })
         XCTAssertEqual(inspector.outputPatchPopup.titleOfSelectedItem, loc("inspector.io.patchNone"))
         XCTAssertFalse(inspector.editPatchButton.isEnabled, "no patch to edit")
+        try await show(Self.movie, tab: "levels")
+        XCTAssertFalse(inspector.audioLevels.editPatchButton.isEnabled, "nor from the Levels tab")
+        XCTAssertTrue(inspector.audioLevels.defaultButton.isEnabled, "its levels are still edited")
         try await perform(.startSelected, on: Self.movie)
         try await play(0.5)
         XCTAssertEqual(status(Self.movie), loc("cue.state.broken"), "GO does not start it")
@@ -383,6 +386,7 @@ extension VideoCueTests {
         try await show(Self.movie, tab: "io")
         choose(inspector.outputPatchPopup, "Main PA")
         await soon("the mark clears") { self.status(Self.movie) == nil }
+        XCTAssertTrue(inspector.audioLevels.editPatchButton.isEnabled)
         XCTAssertEqual(levels(Self.movie)?.outputs.count, 2, "its levels were kept")
 
         // The patch loses its device on this machine: the Audio cue's device problem.
@@ -446,6 +450,26 @@ extension VideoCueTests {
         _ = await store.redo()
         await soon { inspector.audioLevels.matrix.inputs == 6 && v.trackPopup.indexOfSelectedItem == 1 }
 
+        // The choice is saved with the show: the file holds it, and a copy of the saved show opened
+        // afresh plays (and so shows) the second track.
+        let saved = await app.saveWorkspace(store)
+        XCTAssertTrue(saved)
+        let copy = engine.folder.appendingPathComponent("reopened-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.copyItem(at: folder, to: copy)
+        let reopened = Rig(
+            engine: engine, workspace: try await engine.open(path: copy.appendingPathComponent("Video.openlab").path))
+        let connected = await reopened.connect()
+        XCTAssertTrue(connected)
+        XCTAssertEqual(reopened.store.model?.cue(Self.movie)?.raw["kind"]?["audio_track"]?.doubleValue, 1)
+        let probed = await eventually {
+            try? await self.play(0)
+            await reopened.sync()
+            return reopened.store.mediaDurations[Self.movie]?.audioTrack == 1
+        }
+        XCTAssertTrue(probed, "the reopened show plays its second track")
+        XCTAssertEqual(reopened.store.mediaDurations[Self.movie]?.fileChannels, 6)
+        reopened.client.stop()
+
         // GO plays the second track: its sixth channel (a constant 5/64) is in no other track.
         let panel = try await show(Self.movie, tab: "levels").audioLevels
         fire(panel.silentButton)
@@ -454,6 +478,8 @@ extension VideoCueTests {
         typeLevel(panel, .cross(input: 5, output: 1), "0")
         await soon { self.levels(Self.movie)?.crosspoints[.init(input: 5, output: 1)]?.db == 0 }
         try await perform(.startSelected, on: Self.movie)
+        // Past the start, where the 44.1 kHz track's first samples ring on the 48 kHz device.
+        try await play(0.5)
         let sixth = try await loudest(.cue(Self.movie), channel: 1, over: 0.5)
         XCTAssertEqual(sixth, 5.0 / 64, accuracy: 0.01, "the second track's sixth channel is heard")
         try await perform(.stopSelected, on: Self.movie)
@@ -469,11 +495,21 @@ extension VideoCueTests {
         XCTAssertNil(status(Self.movie), "the cue is not broken")
         try await show(Self.movie, tab: "io")
         XCTAssertFalse(v.trackPopup.isHidden, "the pop-up stays, to put it right")
-        XCTAssertEqual(v.trackPopup.indexOfSelectedItem, -1, "no track of the file is the stored one")
+        let missing = String(format: loc("inspector.io.trackMissing"), 2)
+        XCTAssertEqual(v.trackPopup.itemTitles, [item(1, 2, "48"), missing])
+        XCTAssertEqual(v.trackPopup.titleOfSelectedItem, missing, "the stored track is shown, named as missing")
+        XCTAssertFalse(v.trackNote.isHidden, "a line says which track plays")
+        XCTAssertEqual(v.trackNote.stringValue, loc("inspector.io.trackMissingNote"))
         XCTAssertEqual(store.mediaDurations[Self.movie]?.audioTrack, 0, "the first track plays")
+        // Picking the missing track's own item changes nothing.
+        choose(v.trackPopup, missing)
+        await sync()
+        XCTAssertEqual(kind(Self.movie)?["audio_track"]?.doubleValue, 1)
+        XCTAssertEqual(v.trackPopup.titleOfSelectedItem, missing)
         choose(v.trackPopup, item(1, 2, "48"))
         await soon("the warning goes") { self.warningRows(Self.movie).isEmpty }
         await soon("one track: plain text") { v.trackPopup.isHidden && !v.soundLabel.isHidden }
+        XCTAssertTrue(v.trackNote.isHidden)
     }
 
     // MARK: Flow 5
@@ -1026,6 +1062,11 @@ extension VideoCueTests {
             show: { ws in
                 Self.patch(&ws, cue: 4, on: Self.mainPA, outputs: 2)
                 Self.addSidePatch(&ws)
+                guard var patches = ws["patches"]?.arrayValue, var outputs = patches.first?["outputs"]?.arrayValue
+                else { return XCTFail("the show has a patch") }
+                for (n, name) in ["Left", "Right"].enumerated() { outputs[n].set("name", .string(name)) }
+                patches[0].set("outputs", .array(outputs))
+                ws.set("patches", .array(patches))
             })
         await soon { self.store.mediaDurations[Self.long]?.hasSound == true }
         let inspector = wc.inspector
@@ -1037,6 +1078,27 @@ extension VideoCueTests {
         XCTAssertFalse(v.soundLabel.isHidden)
         XCTAssertTrue(v.trackPopup.isHidden, "a track is picked one cue at a time")
         XCTAssertEqual(inspector.outputPatchPopup.titleOfSelectedItem, "Main PA")
+        // One patch on both: its output names over the columns, and Edit (both tabs) opens it.
+        XCTAssertEqual(inspector.audioLevels.matrix.outputNames, ["Left", "Right"])
+        XCTAssertTrue(inspector.editPatchButton.isEnabled)
+        XCTAssertTrue(inspector.audioLevels.editPatchButton.isEnabled)
+        let openEditor = inspector.onEditPatch
+        var edited: [ModelID] = []
+        inspector.onEditPatch = { edited.append($0) }
+        inspector.editPatchButton.performClick(nil)
+        inspector.audioLevels.editPatchButton.performClick(nil)
+        XCTAssertEqual(edited, [Self.mainPA, Self.mainPA])
+        inspector.onEditPatch = openEditor
+        // Two patches between them: no one patch to name the columns by or to edit.
+        guard
+            case .success = await store.send(
+                command: .setProperty(Self.long, .kindFields(["patch": .string(Self.sidePatch.raw)])))
+        else { return XCTFail("patch") }
+        await soon("mixed patches") { !inspector.editPatchButton.isEnabled }
+        XCTAssertFalse(inspector.audioLevels.editPatchButton.isEnabled)
+        XCTAssertEqual(inspector.audioLevels.matrix.outputNames, [])
+        _ = await store.undo()
+        await soon { inspector.editPatchButton.isEnabled }
         typeLevel(inspector.audioLevels, .master, "-5")
         await soon("the level goes to both") {
             self.levels(Self.movie)?.master == -5 && self.levels(Self.long)?.master == -5
@@ -1100,5 +1162,42 @@ extension VideoCueTests {
         XCTAssertTrue(panel.silent)
         XCTAssertNil(panel.waveform.peaks)
         XCTAssertFalse(panel.waveform.isReading)
+    }
+
+    /// At the least window size a Video cue's Timing & Loops tab fits as an Audio cue's does: the
+    /// window keeps its width, with the sidebar shown too, and the keep-last-frame box is whole
+    /// inside the tab.
+    func testAVideoCuesTimingTabFitsTheLeastWindowAsAnAudioCuesDoes() async throws {
+        try await openSoundShow()
+        let audio = await wc.editor.add(.audio)
+        let audioID = try XCTUnwrap(audio)
+        let window = try XCTUnwrap(wc.window)
+        let inspector = wc.inspector
+        /// The window's width with `cue`'s Timing & Loops tab shown, from the least size.
+        func width(showing cue: ModelID) async throws -> CGFloat {
+            try await show(cue, tab: "io")
+            window.setFrame(NSRect(origin: .zero, size: window.minSize), display: false)
+            window.layoutIfNeeded()
+            try await show(cue, tab: "timeLoops")
+            window.layoutIfNeeded()
+            return window.frame.width
+        }
+        let least = window.minSize.width
+        let audioWidth = try await width(showing: audioID)
+        let videoWidth = try await width(showing: Self.movie)
+        XCTAssertEqual(audioWidth, least, "an Audio cue's tab fits the least window")
+        XCTAssertEqual(videoWidth, least, "and a Video cue's: the window does not grow by itself")
+        let hold = inspector.timeLoops.holdCheck
+        XCTAssertFalse(hold.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(
+            inspector.tabView.contentRect.contains(hold.convert(hold.bounds, to: inspector.tabView)),
+            "the keep-last-frame box is whole inside the tab")
+        XCTAssertGreaterThanOrEqual(hold.frame.width, hold.intrinsicContentSize.width, "and not cut")
+        // With the sidebar shown: no wider than the Audio cue's tab makes the window.
+        wc.footer.toggles[.sidebar]?.performClick(nil)
+        XCTAssertTrue(wc.isVisible(.sidebar))
+        let audioWide = try await width(showing: audioID)
+        let videoWide = try await width(showing: Self.movie)
+        XCTAssertLessThanOrEqual(videoWide, audioWide, "a Video cue's tab needs no more room than an Audio cue's")
     }
 }

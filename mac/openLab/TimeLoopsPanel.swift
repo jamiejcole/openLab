@@ -310,7 +310,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         playRow.spacing = 6
         let left = NSStackView(views: [
             row(loc("timeLoops.start"), startField), row(loc("timeLoops.end"), endField), playRow, loopRadio,
-            slicesNote,
+            holdCheck, slicesNote,
         ])
         left.orientation = .vertical
         left.alignment = .leading
@@ -321,9 +321,10 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
         left.setHuggingPriority(.defaultHigh, for: .vertical)
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        // A Video cue's keep-last-frame box is with the play count on the left: the row under the
+        // timeline is as wide for a Video cue as for an Audio cue, and fits the least window.
         let strip = NSStackView(views: [
-            deleteSlicesButton, addSliceButton, fadeCheck, fadeCurvePopup, holdCheck, spacer, zoomOutButton,
-            zoomInButton,
+            deleteSlicesButton, addSliceButton, fadeCheck, fadeCurvePopup, spacer, zoomOutButton, zoomInButton,
         ])
         strip.spacing = 4
         waveform.translatesAutoresizingMaskIntoConstraints = false

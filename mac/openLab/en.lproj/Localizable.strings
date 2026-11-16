@@ -862,6 +862,8 @@
 "inspector.io.channels.one" = "1 channel";
 "inspector.io.channels.many" = "%d channels";
 "inspector.io.trackItem" = "Track %d: %@";
+"inspector.io.trackMissing" = "Track %d (not in this file)";
+"inspector.io.trackMissingNote" = "The first track plays.";
 "inspector.io.audioCodec.mp4a" = "AAC";
 "inspector.io.audioCodec.alac" = "Apple Lossless";
 "inspector.io.audioCodec.lpcm" = "PCM";
