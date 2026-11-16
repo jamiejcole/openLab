@@ -257,9 +257,17 @@ impl Mixer {
         self.stage.enter(Stage::Idle);
         let ok = catch_unwind(AssertUnwindSafe(|| self.process(out, frames))).is_ok();
         if !ok {
+            #[cfg(test)]
+            {
+                self.unwinds += 1;
+            }
+            let blamed = match self.stage.now {
+                Stage::Voice(i) => Some(i),
+                _ => None,
+            };
             self.isolate(start, block);
             let end = start + frames.min(out.len() / self.outputs) as u64;
-            self.catch_up(end);
+            self.catch_up(end, blamed);
             // Peaks still held locally from the faulted call are dropped (its output was
             // replaced with silence). A voice that finished earlier in that call has already
             // published its own.
@@ -370,11 +378,17 @@ impl Mixer {
     /// other and with the clock, and report their events on the true samples. A source that
     /// holds fewer frames underruns as usual.
     ///
-    /// A panic while one voice plays on is caught and leaves that voice where it got to (a
-    /// block late at most): if its render is what is broken, the next block blames it.
-    fn catch_up(&mut self, end: SampleTime) {
-        for i in 0..self.voices.len() {
-            let _ = catch_unwind(AssertUnwindSafe(|| self.play_on(i, end)));
+    /// The voice at pool index `blamed`, whose render the fault hit in, is not rendered again
+    /// (it would likely panic again): it keeps the place the fault left it in, up to a block
+    /// late. A panic while another voice plays on is caught and leaves that voice where it got
+    /// to: if its render is what is broken, the next block blames it.
+    fn catch_up(&mut self, end: SampleTime, blamed: Option<usize>) {
+        for i in (0..self.voices.len()).filter(|&i| Some(i) != blamed) {
+            let _caught = catch_unwind(AssertUnwindSafe(|| self.play_on(i, end))).is_err();
+            #[cfg(test)]
+            {
+                self.unwinds += u32::from(_caught);
+            }
         }
     }
 
@@ -841,7 +855,7 @@ mod tests {
             }
             // The surviving voice plays on through a block it did not render.
             m.now += 64;
-            m.catch_up(m.now);
+            m.catch_up(m.now, None);
         });
         assert_eq!(m.voices[1].upto, m.now);
         let mut buf = [0.0; 128];
@@ -916,7 +930,7 @@ mod tests {
             }
         };
         type Arm = Box<dyn Fn(&mut MixerController, &mut Mixer)>;
-        let cases: [(&str, Arm); 5] = [
+        let cases: [(&str, Arm); 4] = [
             ("no unit to blame", Box::new(|_, m| m.panic_next = true)),
             ("a command to another voice", Box::new(ramp_at(64))),
             // The block's first 10 frames were rendered before the command.
@@ -924,10 +938,6 @@ mod tests {
             (
                 "another voice's render",
                 Box::new(|_, m| m.panic_voice = Some(VoiceId(2))),
-            ),
-            (
-                "its own render, once",
-                Box::new(|_, m| m.panic_voice = Some(VoiceId(1))),
             ),
         ];
         for (case, arm) in cases {
@@ -948,7 +958,26 @@ mod tests {
             assert_eq!(ended, [(256, FinishReason::OutPoint)], "{case}");
             assert_eq!(ctl.underrun_frames(), 0, "{case}");
             assert_eq!(ctl.faults(), 1, "{case}");
+            assert_eq!(r.mixer_mut().unwinds, 1, "{case}");
         }
+    }
+
+    /// The voice whose render faulted is not rendered a second time in that callback, even
+    /// when it would panic again: one fault is one panic. It stays a block late; the other
+    /// voice keeps the clock.
+    #[test]
+    fn the_voice_whose_render_faulted_is_not_rendered_again_in_that_block() {
+        let (mut ctl, mut r) = counting_voices(&[(1, Some(0)), (2, Some(1))], None);
+        let m = r.mixer_mut();
+        m.panic_voice = Some(VoiceId(1));
+        m.panic_advance = Some(VoiceId(1));
+        fault(&mut r);
+        let m = r.mixer_mut();
+        assert_eq!(m.unwinds, 1);
+        m.panic_voice = None;
+        assert_eq!(next_frames(&mut r), [64.0, 128.0]);
+        assert_eq!(ctl.faults(), 1);
+        assert_eq!(faulted_events(&mut ctl), []);
     }
 
     /// A panic while a voice plays on through the faulted block does not leave the guard: that
@@ -960,6 +989,7 @@ mod tests {
         m.panic_next = true;
         m.panic_advance = Some(VoiceId(1));
         fault(&mut r);
+        assert_eq!(r.mixer_mut().unwinds, 2);
         assert_eq!(next_frames(&mut r), [64.0, 128.0]);
         assert_eq!(ctl.faults(), 1);
         assert_eq!(ctl.samples_rendered(), 192);

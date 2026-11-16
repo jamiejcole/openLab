@@ -1155,6 +1155,41 @@ fn a_resume_inside_the_tail_keeps_the_tail_on_its_own_envelope() {
     assert_eq!(ev, vec![]);
 }
 
+/// A stereo voice, its channels with different content, into different outputs at different
+/// levels, paused and resumed twice inside one tail: each output carries its own channel's tails
+/// (kept by a resume, played under a pause, kept again), the mono voice's render times its level.
+#[test]
+fn tails_of_a_stereo_voice_stay_on_their_own_channels() {
+    let cmds = || {
+        vec![
+            (1000, pause(1)),
+            (1100, resume(1, 2)),
+            (1150, pause(2)),
+            (1200, resume(2, 3)),
+        ]
+    };
+    let (mono, _) = steady_voice(LEAD_IN, cmds);
+    assert!(mono[1205] > 0.1 && mono[1205] < 0.9, "tails still sounding");
+    let data: Vec<f32> = (0..20_000).flat_map(|_| [1.0, -0.6]).collect();
+    for blocks in [&[6000][..], BLOCKS] {
+        let (mut ctl, mut r) = setup(config(2));
+        let mut v = VoiceStart::new(VoiceId(1), source(&data), 2, 2);
+        v.set_crosspoint(0, 0, 1.0);
+        v.set_crosspoint(1, 1, 0.5);
+        v.fade_in = Fade::new(LEAD_IN, Curve::Linear);
+        send_start(&mut ctl, 0, v);
+        for (at, kind) in cmds() {
+            ctl.send(at, kind);
+        }
+        let out = render(&mut r, 6000, blocks);
+        for (k, (f, m)) in out.chunks(2).zip(&mono).enumerate() {
+            assert!(close(f[0], *m), "left, frame {k}: {} vs {m}", f[0]);
+            let want = -0.6 * 0.5 * m;
+            assert!(close(f[1], want), "right, frame {k}: {} vs {want}", f[1]);
+        }
+    }
+}
+
 /// However many pauses and resumes fall inside one tail, every tail they leave fades on, and a
 /// stop in the last of them ends the voice when all are silent.
 #[test]

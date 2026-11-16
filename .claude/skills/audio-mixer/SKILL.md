@@ -58,9 +58,10 @@ The mixer renders voices into the device buffer on the audio thread. The control
 | the meter flush | the block's peaks dropped; `StageFaulted { Meters }` | disabled: meters no longer published |
 | none of these (taking commands off the queue, scheduling, the copy out) | nothing more | rebuild: every patch silent, master unity, every unit enabled, `dev` cleared; `StageFaulted { Mixer }`. Voices and pending commands kept |
 
-- **A faulted block costs every voice the same frames.** The block is silent and the clock advances. Each voice notes the sample it has been rendered up to (`Voice::upto`); after the fault every voice still active plays on, unheard, from there to the block's end (`catch_up`: the normal render into buses nobody mixes), whichever stage faulted.
-  - So voices started together stay in step, every voice is on the mixer clock, and events (`VoiceFinished` included) carry their true samples. A source short of those frames underruns as usual.
-  - Each voice plays on under its own `catch_unwind`: a panic there costs nothing more, that voice stays where it got to (up to a block late), and the next block blames it if its render is what is broken.
+- **A faulted block costs every voice the same frames.** The block is silent and the clock advances. Each voice notes the sample it has been rendered up to (`Voice::upto`); after the fault every other voice still active plays on, unheard, from there to the block's end (`catch_up`: the normal render into buses nobody mixes), whichever stage faulted.
+  - So voices started together stay in step, every such voice is on the mixer clock, and events (`VoiceFinished` included) carry their true samples. A source short of those frames underruns as usual.
+  - The voice whose own render the fault hit in is not rendered again in that callback (one fault is one panic): it stays where the fault left it, up to a block late, until it ends or is dropped at the limit.
+  - Each other voice plays on under its own `catch_unwind`. A panic there is a second panic in that callback (the panic hook runs again); it is caught, that voice stays where it got to, and the next block blames it if its render is what is broken.
   - Commands dated inside the faulted block apply at the start of the next block.
 - A start that never reached the pool, or a voice that left the pool inside `finish` before being reported, is still reported as `VoiceFinished { Faulted }`.
 - `StageFaulted { stage, at, disabled }` is counted in `faulted_stages` just before it is queued.
