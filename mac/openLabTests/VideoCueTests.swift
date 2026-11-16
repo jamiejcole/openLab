@@ -865,6 +865,11 @@ final class VideoCueTests: XCTestCase {
         XCTAssertEqual(status(Self.movie), loc("cue.state.running"), "it loops on")
         let looped = await shownFrame()
         XCTAssertEqual(Double(looped ?? 99), 25, accuracy: 1, "a second into its fifth pass")
+        // The Duration cell counts inside the pass, its bar half full, as an Audio cue's loop.
+        await soon("progress in the pass") { self.store.progress[Self.movie]?.position != nil }
+        XCTAssertEqual(duration(Self.movie) ?? -1, 1.02, accuracy: 0.1, "time into the pass")
+        let bar = cueCell(Self.movie, "duration")?.progress.progress?.fraction
+        XCTAssertEqual(bar ?? -1, 0.51, accuracy: 0.05, "the bar shows the place in the pass")
     }
 
     /// "Hold at end" on → at the last frame the picture stays and the cue stays active until
