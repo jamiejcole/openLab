@@ -1697,14 +1697,14 @@ impl Run {
             self.engine.has_active_cues(),
             self.engine.cue_states().any(|(_, s)| s.is_active())
         );
-        // Only audio cues have levels to fade.
+        // Only audio cues and video cues (whose sound a Fade cue fades) have levels to fade.
         for (id, state) in self.engine.cue_states() {
             if state == CueState::Fading {
-                let audio = matches!(
+                let has_levels = matches!(
                     self.ws.find_cue(id).map(|c| &c.kind),
-                    Some(CueKind::Audio { .. })
+                    Some(CueKind::Audio { .. } | CueKind::Video { .. })
                 );
-                prop_assert!(audio, "cue {} fading", id);
+                prop_assert!(has_levels, "cue {} fading", id);
             }
         }
         // The binary applies Arm/Disarm changes to the model before the next call.
@@ -2641,7 +2641,14 @@ impl Run {
                         ) => *c == cue,
                         _ => false,
                     });
-                    prop_assert!(restarted || cut_or_broken, "{} was not restarted", cue);
+                    // A cue a Disarm cue disarmed while it played is stopped, and its fresh run
+                    // passes over its action: with no pre-wait nothing shows that it started.
+                    let disarmed = self.ws.find_cue(cue).is_some_and(|c| !c.armed);
+                    prop_assert!(
+                        restarted || cut_or_broken || disarmed,
+                        "{} was not restarted",
+                        cue
+                    );
                 }
                 SecondTrigger::Devamp | SecondTrigger::PlayNext | SecondTrigger::PlayPrevious => {
                     prop_assert!(!restarted, "{:?} restarted {}", option, cue);
