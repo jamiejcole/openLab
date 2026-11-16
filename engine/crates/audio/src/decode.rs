@@ -298,6 +298,140 @@ pub enum Media {
     Reader(Box<dyn MediaRead>, Option<String>),
     /// Already decoded into memory with [`preload`] (AUD-05).
     Preloaded(Arc<Preloaded>),
+    /// One sound track of a movie file (MP4 or QuickTime).
+    Track(MovieTrack),
+}
+
+/// One sound track of a movie file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MovieTrack {
+    pub path: PathBuf,
+    /// Which of the file's sound tracks, counted from 0 in file order.
+    pub track: u32,
+    /// Its timeline fitted to the movie's length; `None`: the track as it is.
+    pub fit: Option<Fit>,
+}
+
+/// A sound track fitted to its movie's length, in frames at the track's rate: a track of `real`
+/// frames reads as exactly `frames`, silence after its own end or cut short, so its sound keeps
+/// the picture's time through every loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fit {
+    pub real: u64,
+    pub frames: u64,
+}
+
+/// A movie file's sound track as its probe found it.
+#[derive(Debug)]
+pub struct MovieSound {
+    /// The four-character code of its sample format (`mp4a`, `lpcm`, `sowt`, ...), with
+    /// anything but printable ASCII as `?`.
+    pub codec: String,
+    /// Its probe, or why it cannot be played.
+    pub probed: Result<Probed, MediaError>,
+}
+
+/// Most sound tracks of one movie that are probed; a real file has one or a few.
+pub const MAX_MOVIE_SOUND_TRACKS: usize = 16;
+
+/// Probes every sound track of the movie at `path` (at most [`MAX_MOVIE_SOUND_TRACKS`]), in
+/// file order; empty for a movie without sound. Blocking: call from an I/O thread. Fails only
+/// when the file cannot be read at all; a track that cannot be decoded has its own error.
+pub fn probe_movie(path: &Path) -> Result<Vec<MovieSound>, MediaError> {
+    let tracks = contain(|| {
+        let mut f = open_file(path)?;
+        Ok(crate::mp4_priming::scan_movie(&mut f).sound_tracks())
+    })?;
+    Ok(tracks
+        .iter()
+        .take(MAX_MOVIE_SOUND_TRACKS)
+        .zip(0u32..)
+        .map(|(t, n)| MovieSound {
+            codec: t
+                .codec
+                .iter()
+                .map(|b| {
+                    if b.is_ascii_graphic() {
+                        char::from(*b)
+                    } else {
+                        '?'
+                    }
+                })
+                .collect(),
+            probed: probe_media(Media::Track(MovieTrack {
+                path: path.to_path_buf(),
+                track: n,
+                fit: None,
+            })),
+        })
+        .collect())
+}
+
+/// A source read as exactly `fit.frames` frames (see [`Fit`]).
+struct Fitted {
+    inner: Box<dyn FrameSource>,
+    fit: Fit,
+    pos: u64,
+    /// `inner` stands at `pos` (it is not moved for a seek past its end).
+    placed: bool,
+}
+
+impl FrameSource for Fitted {
+    fn channels(&self) -> usize {
+        self.inner.channels()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate()
+    }
+
+    fn seek(&mut self, frame: u64) -> Result<(), MediaError> {
+        self.pos = frame.min(self.fit.frames);
+        self.placed = false;
+        if self.pos < self.fit.real {
+            self.inner.seek(self.pos)?;
+            self.placed = true;
+        }
+        Ok(())
+    }
+
+    fn read(&mut self, out: &mut [f32]) -> Result<usize, MediaError> {
+        let ch = self.channels().max(1);
+        let left = self.fit.frames.saturating_sub(self.pos);
+        let want = usize::try_from(left)
+            .unwrap_or(usize::MAX)
+            .min(out.len() / ch);
+        if want == 0 {
+            return Ok(0);
+        }
+        let own = self.fit.real.saturating_sub(self.pos);
+        let mut got = 0;
+        if own > 0 && self.placed {
+            let n = usize::try_from(own).unwrap_or(usize::MAX).min(want);
+            got = self.inner.read(out.get_mut(..n * ch).unwrap_or_default())?;
+        }
+        if got == 0 {
+            // Past the track's own end (or a track that ended before its probed length):
+            // silence up to the movie's.
+            self.placed = false;
+            out.get_mut(..want * ch).unwrap_or_default().fill(0.0);
+            got = want;
+        }
+        self.pos = self.pos.saturating_add(got as u64);
+        Ok(got)
+    }
+
+    fn take_warnings(&mut self) -> Vec<MediaWarning> {
+        self.inner.take_warnings()
+    }
+
+    fn prepare(&mut self, budget: u64) -> Result<bool, MediaError> {
+        if self.placed {
+            self.inner.prepare(budget)
+        } else {
+            Ok(true)
+        }
+    }
 }
 
 impl fmt::Debug for Media {
@@ -306,6 +440,7 @@ impl fmt::Debug for Media {
             Media::Path(p) => f.debug_tuple("Path").field(p).finish(),
             Media::Reader(_, hint) => f.debug_tuple("Reader").field(hint).finish(),
             Media::Preloaded(p) => f.debug_tuple("Preloaded").field(&p.info).finish(),
+            Media::Track(t) => f.debug_tuple("Track").field(t).finish(),
         }
     }
 }
@@ -550,6 +685,26 @@ pub(crate) fn open_source(
 ) -> Result<Box<dyn FrameSource>, MediaError> {
     match media {
         Media::Preloaded(p) => Ok(Box::new(MemorySource { data: p, pos: 0 })),
+        Media::Track(MovieTrack {
+            path,
+            track,
+            fit: Some(fit),
+        }) => {
+            let inner = open_source(
+                Media::Track(MovieTrack {
+                    path,
+                    track,
+                    fit: None,
+                }),
+                seeking,
+            )?;
+            Ok(Box::new(Fitted {
+                inner,
+                fit,
+                pos: 0,
+                placed: true,
+            }))
+        }
         other => match open_media(other)? {
             Opened::Pcm(p) => Ok(Box::new(p)),
             Opened::Sym(mut d) => {
@@ -606,7 +761,9 @@ fn open_media(media: Media) -> Result<Opened, MediaError> {
                 Decoder::open(Media::Reader(inner, ext)).map(|d| Opened::Sym(Box::new(d)))
             }
         }
-        Media::Preloaded(_) => Decoder::open(media).map(|d| Opened::Sym(Box::new(d))),
+        Media::Preloaded(_) | Media::Track(_) => {
+            Decoder::open(media).map(|d| Opened::Sym(Box::new(d)))
+        }
     }
 }
 
@@ -901,6 +1058,8 @@ struct Decoder {
     /// To make a fresh decoder on every seek: symphonia's AAC `reset` leaves state behind.
     params: AudioCodecParameters,
     track: u32,
+    /// The track was chosen by its id (a movie's sound track), not as the file's default.
+    chosen: bool,
     time_base: Option<TimeBase>,
     rate: u32,
     channels: usize,
@@ -990,7 +1149,23 @@ impl Decoder {
     fn open(media: Media) -> Result<Self, MediaError> {
         let mut hint = Hint::new();
         let gapless;
+        // A movie's sound track: which of its sound tracks is read.
+        let mut movie = None;
         let source: Box<dyn MediaSource> = match media {
+            Media::Track(t) => {
+                if let Some(ext) = t.path.extension().and_then(|e| e.to_str()) {
+                    hint.with_extension(ext);
+                }
+                let mut f = open_file(&t.path)?;
+                crate::mp4_check::check_mp4_stts(&mut f)?;
+                gapless = crate::mp4_priming::scan_movie(&mut f);
+                let wanted = usize::try_from(t.track).ok();
+                let found = wanted.and_then(|n| gapless.sound_tracks().get(n).copied());
+                movie = Some(found.ok_or_else(|| {
+                    MediaError::Unsupported(format!("no sound track {}", t.track.saturating_add(1)))
+                })?);
+                Box::new(f)
+            }
             Media::Path(path) => {
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     hint.with_extension(ext);
@@ -1022,9 +1197,11 @@ impl Decoder {
         };
         let mss = MediaSourceStream::new(source, Default::default());
         let format = probe_format(&hint, mss)?;
-        let track = format
-            .default_track(TrackType::Audio)
-            .ok_or_else(|| MediaError::Unsupported("no audio track".into()))?;
+        let track = match movie {
+            None => format.default_track(TrackType::Audio),
+            Some(wanted) => format.tracks().iter().find(|t| t.id == wanted.id),
+        }
+        .ok_or_else(|| MediaError::Unsupported("no audio track".into()))?;
         let params = track
             .codec_params
             .as_ref()
@@ -1086,6 +1263,7 @@ impl Decoder {
             decoder,
             params,
             track: track_id,
+            chosen: movie.is_some(),
             time_base,
             rate,
             channels,
@@ -1775,9 +1953,13 @@ impl Decoder {
         mss.seek(SeekFrom::Start(0))
             .map_err(|e| MediaError::Io(e.to_string()))?;
         let format = probe_format(&self.hint, mss)?;
-        let same = format
-            .default_track(TrackType::Audio)
-            .is_some_and(|t| t.id == self.track);
+        let same = if self.chosen {
+            format.tracks().iter().any(|t| t.id == self.track)
+        } else {
+            format
+                .default_track(TrackType::Audio)
+                .is_some_and(|t| t.id == self.track)
+        };
         if !same {
             return Err(MediaError::Changed);
         }

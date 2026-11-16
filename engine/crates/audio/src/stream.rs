@@ -538,6 +538,7 @@ impl DiskStreamer {
                 let (reply, rx) = mpsc::channel();
                 let volume = match (&media, self.config.volume_of) {
                     (Media::Path(path), Some(volume_of)) => Some(volume_of(path)),
+                    (Media::Track(t), Some(volume_of)) => Some(volume_of(&t.path)),
                     _ => None,
                 };
                 self.opener
@@ -837,8 +838,10 @@ fn run_opener(queue: &Arc<OpenQueue>, extra: bool) {
     // The queue's lock is held only while choosing a job, never during an open.
     while let Some(job) = queue.take(extra) {
         #[cfg(any(test, feature = "test-support"))]
-        if let Media::Path(path) = &job.media {
-            (job.before_open)(path);
+        match &job.media {
+            Media::Path(path) => (job.before_open)(path),
+            Media::Track(t) => (job.before_open)(&t.path),
+            Media::Reader(..) | Media::Preloaded(_) => {}
         }
         let OpenJob {
             volume,
