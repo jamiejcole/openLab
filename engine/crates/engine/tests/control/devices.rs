@@ -5306,3 +5306,200 @@ fn a_stop_or_panic_while_a_move_waits_to_be_tried_again_leaves_nothing() {
         assert_eq!(m.s.control().engine().state(id(1)), CueState::Idle);
     }
 }
+
+/// Device rates for the loop-count tests: 1.5 times the primary's, and an awkward one near
+/// 48/44.1 of it.
+const LOOP_RATES: [u32; 2] = [RATE2, 8_711];
+
+/// Master time of the second device's capture frame `j`, from one pair of counters read
+/// together (`master`, `local`): the two run in step.
+fn master_time(master: u64, local: u64, rate: u32, j: usize) -> f64 {
+    master as f64 + (j as f64 - local as f64) * f64::from(RATE) / f64::from(rate)
+}
+
+/// Both counters, read together.
+fn counters(s: &DeviceShow) -> (u64, u64) {
+    let master = s.control().rendered();
+    let local = s
+        .control()
+        .output_mixer(DEV2_NAME)
+        .unwrap()
+        .samples_rendered();
+    (master, local)
+}
+
+/// Review round 1, M1: a 401-frame slice played 1000 times on a device at another rate (its
+/// length rounds to whole device frames, which the device repeats every pass) ends on the
+/// sample the core counts, and its auto-follow starts on it: within one master frame of the
+/// last sample heard, not hundreds of frames off.
+#[test]
+fn a_loop_played_a_thousand_times_on_a_device_at_another_rate_auto_follows_on_its_last_sample() {
+    for rate in LOOP_RATES {
+        let a = wav(&dc(401, 0.5));
+        let b = wav(&dc(400, 0.5));
+        let mut first = audio_b(1, &a, 0);
+        first.continue_mode = ContinueMode::AutoFollow;
+        if let CueKind::Audio {
+            last_slice_play_count,
+            ..
+        } = &mut first.kind
+        {
+            *last_slice_play_count = 1000;
+        }
+        let mut s = two_patch_show(
+            vec![first, audio(2, &b, 1)],
+            DEV2_NAME,
+            vec![
+                listed(DEV, DEV_NAME, 2),
+                listed_at(DEV2, DEV2_NAME, 2, rate),
+            ],
+        );
+        s.wait_output(DEV2_NAME);
+        s.run(BLOCK * 3);
+        let (master, local) = counters(&s);
+        start(&mut s, 1);
+        s.run(401 * 1000 + 4000);
+        let last = last_nonzero(&s.device_channel(DEV2, 0)).unwrap();
+        let end = master_time(master, local, rate, last + 1);
+        let next = first_nonzero(&s.channel(1)).unwrap() as f64;
+        assert!(
+            (next - end).abs() <= 1.0,
+            "{rate} Hz: the next cue starts {:.1} frames after the end",
+            next - end
+        );
+    }
+}
+
+/// Review round 1, M1: a slice looping until devamped, on a device at another rate, devamped
+/// after about a thousand passes: it leaves at the end of a pass and the cue its Devamp cue
+/// starts begins once, on that sample.
+#[test]
+fn a_loop_devamped_after_many_passes_on_a_device_at_another_rate_leaves_on_time_and_starts_the_next_once()
+ {
+    for rate in LOOP_RATES {
+        let a = wav(&dc(401, 0.5));
+        let b = wav(&dc(400, 0.25));
+        let mut looping = audio_b(1, &a, 0);
+        if let CueKind::Audio {
+            last_slice_play_count,
+            ..
+        } = &mut looping.kind
+        {
+            *last_slice_play_count = 0;
+        }
+        let devamp = cue(
+            3,
+            CueKind::Devamp {
+                target: Some(id(1)),
+                start_next_cue: true,
+                stop_target_when_slice_ends: false,
+                devamp_mode: openlab_core::DevampMode::CurrentSlice,
+            },
+        );
+        let mut s = two_patch_show(
+            vec![looping, devamp, audio(2, &b, 1)],
+            DEV2_NAME,
+            vec![
+                listed(DEV, DEV_NAME, 2),
+                listed_at(DEV2, DEV2_NAME, 2, rate),
+            ],
+        );
+        s.wait_output(DEV2_NAME);
+        s.run(BLOCK * 3);
+        let (master, local) = counters(&s);
+        start(&mut s, 1);
+        s.run(401 * 1000 + 150);
+        s.take_outbound();
+        start(&mut s, 3);
+        let mut msgs = Vec::new();
+        for _ in 0..40 {
+            s.run(BLOCK);
+            msgs.extend(s.take_outbound());
+        }
+        let two = s.device_channel(DEV2, 0);
+        let last = last_nonzero(&two).unwrap();
+        // It left at the end of a whole pass, as the device plays a pass.
+        let played = last + 1 - first_nonzero(&two).unwrap();
+        let pass = two
+            .iter()
+            .skip(first_nonzero(&two).unwrap())
+            .take_while(|&&v| v != 0.0)
+            .count();
+        assert_eq!(played, pass, "{rate} Hz: one stretch of sound");
+        // A pass on the device is the slice's 401 frames at its rate, rounded to a frame.
+        let pass_frames = openlab_audio::frames_at_rate(401, RATE, rate) as usize;
+        assert_eq!(played % pass_frames, 0, "{rate} Hz: {played} frames");
+        assert!(played / pass_frames > 900, "{rate} Hz: {played} frames");
+        // The leave is dated on the master sample nearest the device's (half a frame), and the
+        // device's counter read with the master's is a whole frame of its own (up to one more).
+        let end = master_time(master, local, rate, last + 1);
+        let next = first_nonzero(&s.channel(1)).unwrap() as f64;
+        assert!(
+            (next - end).abs() <= 1.5,
+            "{rate} Hz: the next cue starts {:.1} frames after the end",
+            next - end
+        );
+        let starts = states(&msgs, id(2))
+            .iter()
+            .filter(|(st, _)| *st == WireCueState::Running)
+            .count();
+        assert_eq!(starts, 1, "{rate} Hz");
+    }
+}
+
+/// Review round 1, M1: a cue looping on a device at another rate for 300 passes, then moved to
+/// the primary, goes on there from where its sound is: the file position heard on the primary
+/// after the swap is the one the second device had reached, within two frames.
+#[test]
+fn a_cue_looping_many_passes_on_a_device_at_another_rate_moves_in_step() {
+    for rate in LOOP_RATES {
+        let frames = 401;
+        let a = wav(&ramp(frames));
+        let mut looping = audio_b(1, &a, 0);
+        if let CueKind::Audio {
+            last_slice_play_count,
+            ..
+        } = &mut looping.kind
+        {
+            *last_slice_play_count = 0;
+        }
+        let mut s = two_patch_show(
+            vec![looping],
+            DEV2_NAME,
+            vec![
+                listed(DEV, DEV_NAME, 2),
+                listed_at(DEV2, DEV2_NAME, 2, rate),
+            ],
+        );
+        s.wait_output(DEV2_NAME);
+        s.run(BLOCK * 3);
+        let (master, local) = counters(&s);
+        start(&mut s, 1);
+        s.run(frames as u64 * 300);
+        map_patch(&mut s, patch_b(), DEV_NAME);
+        s.run(4_000);
+        let unit = 1.0 / 1_048_576.0;
+        let one = s.channel(0);
+        let two = s.device_channel(DEV2, 0);
+        let swap = first_nonzero(&one).expect("heard on the primary");
+        // The file position the second device plays, from a frame mid-pass shortly before the
+        // swap (a resampled ramp reads its position back away from the wrap).
+        let (j, q) = (0..two.len())
+            .rev()
+            .filter(|&j| master_time(master, local, rate, j) < swap as f64 - 50.0)
+            .map(|j| (j, f64::from(two[j] / unit) - 1.0))
+            .find(|&(_, q)| (100.0..300.0).contains(&q))
+            .unwrap();
+        let tj = master_time(master, local, rate, j);
+        // Past the crossfade, the primary plays the file exactly: its position read back.
+        let mut worst = 0.0f64;
+        for (t, &v) in one.iter().enumerate().skip(swap + 100).take(300) {
+            let got = f64::from(v / unit) - 1.0;
+            let want = (q + (t as f64 - tj)).rem_euclid(frames as f64);
+            let mut d = (got - want).abs();
+            d = d.min(frames as f64 - d);
+            worst = worst.max(d);
+        }
+        assert!(worst <= 2.0, "{rate} Hz: out of step by {worst:.1} frames");
+    }
+}
