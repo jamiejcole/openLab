@@ -19,7 +19,7 @@ Hold limits for a GO on an unanswered probe (`PROBE_HOLD_LIMIT`) and on a stream
 - A stuck thread is **leaked, never joined**; no code path blocks on it.
 
 ## Video cues' files
-A Video cue's file goes through the same catalog, workers, watch and relink as an Audio cue's, but its probe is a throwaway stage host process (`stage_probe::probe_file`, skill `video`), never a decode in the engine, and it is never preloaded. A probe process that does not answer within 20 s is killed and the file is reported unsupported with that reason.
+A Video cue's file goes through the same catalog, workers, watch and relink as an Audio cue's, but its probe is a throwaway stage host process (`stage_probe::probe_file`, skill `video`), never a decode in the engine, and it is never preloaded. A probe process that does not answer within 20 s is killed and the file is reported unsupported with that reason. Its answer is its first line, read without waiting for its output to end.
 
 ## Probe order and stuck workers
 - Probes go out in workspace order on a low-priority queue. Every priming pass (playhead move, edit, probe answer) puts the files of the cues it wants primed on the high-priority queue, which workers always empty first. After a restart mid-show the cue at the playhead is not behind a hundred others.

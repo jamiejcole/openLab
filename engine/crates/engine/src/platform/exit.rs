@@ -48,14 +48,19 @@ mod tests {
     fn exit_now_ends_the_process_with_its_code_and_runs_no_exit_handler() {
         // The child shares our open files until its exec: no lock may be let go meanwhile.
         let _serial = crate::diag::run_marker::tests::serialize_spawn_and_lock_release();
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
             .args([
                 "--exact",
                 "platform::exit::tests::exit_now_child",
                 "--nocapture",
             ])
             .env(CHILD, "1")
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let out = crate::platform::spawn::spawn(&mut command)
+            .unwrap()
+            .wait_with_output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(7), "{stderr}");

@@ -61,12 +61,14 @@ mod imp {
     }
 
     pub fn launch(id: &str) -> Result<(), String> {
-        let status = std::process::Command::new("/usr/bin/open")
+        let mut command = std::process::Command::new("/usr/bin/open");
+        command
             .args(open_args(id))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
+            .stderr(std::process::Stdio::null());
+        let status = crate::platform::spawn::spawn(&mut command)
+            .and_then(|mut child| child.wait())
             .map_err(|e| format!("open: {e}"))?;
         if status.success() {
             Ok(())

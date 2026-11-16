@@ -493,10 +493,18 @@ fn expect_state(s: &OfflineShow, n: u128, want: CueState, what: &str) {
 }
 
 /// What the engine and the stage host saw: the sample, the pictures up and open, any wait that
-/// gave up, and the end of the show log (a picture failure, a stage host restart, a probe the
+/// gave up, every cue's problems (a cue broken before its GO says why: what its file's probe
+/// answered) and the end of the show log (a picture failure, a stage host restart, a probe the
 /// stage host could not draw).
 fn seen(s: &OfflineShow) -> String {
     let c = s.control();
+    let problems: Vec<String> = c
+        .workspace()
+        .cues()
+        .map(|cue| (cue.id, c.engine().problems(cue.id)))
+        .filter(|(_, problems)| !problems.is_empty())
+        .map(|(cue, problems)| format!("cue {cue:?} has problems: {problems:?}"))
+        .collect();
     let log: Vec<String> = c
         .show_log()
         .tail(30)
@@ -504,11 +512,12 @@ fn seen(s: &OfflineShow) -> String {
         .map(|e| format!("{:?} {:?} {}", e.level, e.kind, e.message))
         .collect();
     format!(
-        "at sample {}; pictures up {}, open {}, waits given up {}\n{}",
+        "at sample {}; pictures up {}, open {}, waits given up {}\n{}\n{}",
         s.now(),
         c.pictures_live(),
         c.pictures_opened(),
         s.stalls(),
+        problems.join("\n"),
         log.join("\n")
     )
 }
