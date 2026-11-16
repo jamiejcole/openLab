@@ -1,0 +1,15 @@
+{
+  "about": "The least window with the inspector shown and a cue near the end of the list selected: the list is one row tall; no row is drawn through or above the column header.",
+  "show": "Video",
+  "displays": "V1:1920x1080",
+  "media": {"media/clip.mov": 4, "media/still.png": 1, "media/card.jpg": 1, "media/A very long name for a projection clip used in the second act.mov": 2},
+  "window": {"width": 800, "height": 500},
+  "steps": [
+    {"advance": 0.1},
+    {"select": "6"},
+    {"tab": "basics"},
+    {"shot": "least-basics"},
+    {"select": "1"},
+    {"shot": "least-first"}
+  ]
+}

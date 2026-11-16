@@ -603,9 +603,18 @@ final class ScenarioRunner {
                 origin.y -= dy * factor * (clip.isFlipped ? 1 : -1)
                 origin.x -= dx * factor
                 origin = clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin
-                clip.scroll(to: origin)
+                // Through the scroll view, as the wheel goes: it moves a table's header with the rows.
+                // Moving the clip view alone left the header where it was.
+                scroll.scroll(clip, to: origin)
                 scroll.reflectScrolledClipView(clip)
+                if let header = (scroll.documentView as? NSTableView)?.headerView,
+                    let held = header.superview as? NSClipView, abs(held.bounds.minX - clip.bounds.minX) > 0.5
+                {
+                    throw Failure(
+                        "the table's header stayed at x \(held.bounds.minX), its rows went to x \(clip.bounds.minX)")
+                }
                 note("scrolled \(id) to y \(Int(origin.y.rounded()))")
+                if dx != 0 { note("  sideways to x \(Int(origin.x.rounded())), its header with it") }
                 break
             }
             e.point = try windowPoint(at, in: view)
@@ -1171,6 +1180,26 @@ final class ScenarioShotTests: XCTestCase {
         let shots = try runner.written.map { try Data(contentsOf: $0) }
         XCTAssertEqual(shots.count, 2, log)
         XCTAssertNotEqual(shots.first, shots.last, "the list shows other rows after the scroll")
+    }
+
+    /// A sideways scroll step over the cue list moves its column header with the rows, as the wheel does
+    /// (the step checks the two stay together and fails otherwise).
+    func testASidewaysScrollStepMovesTheCueListsHeaderWithItsRows() async throws {
+        let runner = ScenarioRunner(
+            scenario: try scenario(
+                """
+                {"show": "Demo", "window": {"width": 800, "height": 500},
+                 "steps": [{"click": "toggle-sidebar"}, {"scroll": "cue-list", "dx": -60, "at": [0.5, 0.05]},
+                           {"shot": "sideways"}]}
+                """), out: out)
+        do { try await runner.run() } catch {
+            let log = (try? String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)) ?? ""
+            return XCTFail("\(error)\n\(log)")
+        }
+        XCTAssertEqual(runner.written.count, 1)
+        let log = try String(contentsOf: out.appendingPathComponent("steps.log"), encoding: .utf8)
+        let line = try XCTUnwrap(log.split(separator: "\n").first { $0.contains("sideways to x ") }, log)
+        XCTAssertFalse(line.contains("to x 0,"), "the list moved sideways: \(line)")
     }
 
     func testAnUnknownIdentifierFailsListingTheIdentifiersShown() async throws {
