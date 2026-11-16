@@ -1192,4 +1192,54 @@ mod tests {
         assert!(m.primed(0.8) && m.spare.is_some(), "primed there");
         assert_eq!(m.prime_failed, None, "a new place forgets the old failure");
     }
+
+    /// On a real display the frame asked for is the one due a refresh on. In the last pass that
+    /// never reaches past the end trim: the frame after the range is not shown for the last
+    /// refresh, and with hold at end the range's last frame is the one held.
+    #[test]
+    fn a_frame_asked_a_refresh_ahead_at_the_plans_end_is_never_past_the_end_trim() {
+        use crate::host::CuePicture;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mov");
+        let file = path.to_str().unwrap().to_owned();
+        super::super::testmedia::make(&["h264".into(), file.clone(), "50".into(), "25".into()])
+            .unwrap();
+        let mut m = Movie::open(&file).unwrap();
+        // File 0.4 to 1.2 s once: frames 10 to 29.
+        let plan = [openlab_core::PlanPass {
+            from: 0.4,
+            length: 0.8,
+            plays: 1,
+        }];
+        let at = |elapsed: f64| {
+            let p = openlab_core::plan_point(&plan, elapsed).unwrap();
+            CuePicture {
+                picture: 1,
+                position: p.position,
+                left: p.left,
+                next: p.next,
+                held: p.ended,
+                last: p.last,
+                pass: p.pass,
+                opacity: 1.0,
+                geometry: Default::default(),
+            }
+        };
+        // A redraw each refresh, as a display's window draws: through the plan's end (where a
+        // cue without hold at end leaves) and on into the hold.
+        let mut seen = Vec::new();
+        for refresh in 18..90 {
+            let c = at(f64::from(refresh) / 60.0);
+            let frame = m
+                .frame_at(
+                    c.position_after(FRAME_AHEAD),
+                    c.pass_after(FRAME_AHEAD),
+                    &|| {},
+                )
+                .unwrap();
+            seen.extend(frame.map(|f| number(&f)));
+        }
+        assert_eq!(seen.iter().max(), Some(&29), "nothing past the range");
+        assert_eq!(seen.last(), Some(&29), "held on the range's last frame");
+    }
 }

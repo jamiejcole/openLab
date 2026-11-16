@@ -86,9 +86,10 @@ struct Live {
     trial: Option<SampleTime>,
 }
 
-/// A movie run's plan (engine samples, from the top of its action). `top` is the plan as the
-/// run started: a resume plays on with it, as a paused Audio voice keeps the plan it was given,
-/// whatever was edited since. `table` is what its last play sent (`top`, or `top` devamped),
+/// A movie run's plan (engine samples, from the top of its action). `top` is the plan the run
+/// started with, cut by each devamp whose loop it has left since: a resume plays on with it,
+/// as a paused Audio voice keeps the plan it was given, whatever was edited since. `table` is
+/// what its last play sent (`top`, or `top` cut by the devamp in `devamp`),
 /// from sample `at`, `into` samples into the table then; `late` is how much later than the
 /// engine dated the run's start the picture began (a start held by its probe), in the action's
 /// time but not the picture's.
@@ -99,8 +100,21 @@ struct RunPlan {
     into: SampleTime,
     late: SampleTime,
     passes: Vec<PlanPass>,
-    /// A devamp carried out on it: its stop, and the sample it leaves the loop on.
+    /// The last devamp of it: its stop, and the sample it leaves the loop on. Pending until
+    /// the picture is there, carried out from then on.
     devamp: Option<(bool, SampleTime)>,
+}
+
+impl RunPlan {
+    /// The run's plan with no devamp pending, `elapsed` samples into the table: a devamp whose
+    /// loop the picture has left by then stays cut (taken at the boundary, as an Audio voice
+    /// takes its own); one it has not reached is dropped.
+    fn settled(&self, elapsed: SampleTime) -> &[Slice] {
+        let left = self.devamp.is_some_and(|(_, leaves)| {
+            elapsed >= self.into.saturating_add(leaves.saturating_sub(self.at))
+        });
+        if left { &self.table } else { &self.top }
+    }
 }
 
 /// Crashes this far apart count as one run of crashes for the pictures decoding at them.
@@ -1028,8 +1042,10 @@ impl DocCx<'_> {
                         .get(&id)
                         .and_then(|l| l.plan.as_ref())
                 };
+                // A resume keeps a devamp already carried out; one still pending is dropped,
+                // for the cue engine to ask again.
                 let (top, late) = match kept {
-                    Some(p) => (p.top.clone(), p.late),
+                    Some(p) => (p.settled(offset.saturating_sub(p.late)).to_vec(), p.late),
                     None => match movie_table(*file, timing, self.eng.rate) {
                         Ok((top, _)) => (top, late),
                         Err(why) => return self.picture_refused(cue, run, why, fresh, fx),
@@ -1100,8 +1116,9 @@ impl DocCx<'_> {
     /// the end of its pass, as an Audio cue's voice leaves it. The plan is sent again from the
     /// same start with that pass the loop's last (and, with `stop`, nothing after it: the
     /// picture stops there), so what plays before the seam is unchanged. Said again for the
-    /// same devamp; a different one while one is pending, a still, a paused picture, or a plan
-    /// already over is ignored, as the mixer ignores it.
+    /// same devamp while it is pending; once the picture has left that loop the devamp is done
+    /// and a later one is of the loop under way then. A different one while one is pending, a
+    /// still, a paused picture, or a plan already over is ignored, as the mixer ignores it.
     fn devamp_picture(
         &mut self,
         cue: CueId,
@@ -1124,7 +1141,14 @@ impl DocCx<'_> {
         let Some(plan) = l.plan.as_mut().filter(|_| playing) else {
             return fx.feedback.push(ignored);
         };
+        // Samples into the table: where the plan was at its play, and since.
+        let elapsed = plan.into.saturating_add(at.saturating_sub(plan.at));
         match plan.devamp {
+            // Its loop is left: that devamp is done, and this one is of what plays now.
+            Some((_, leaves)) if at >= leaves => {
+                plan.top = plan.table.clone();
+                plan.devamp = None;
+            }
             Some((same, leaves)) if same == stop => {
                 return fx.feedback.push(Input::DevampScheduled {
                     cue,
@@ -1135,8 +1159,6 @@ impl DocCx<'_> {
             Some(_) => return fx.feedback.push(ignored),
             None => {}
         }
-        // Samples into the table: where the plan was at its play, and since.
-        let elapsed = plan.into.saturating_add(at.saturating_sub(plan.at));
         let Some((table, leaves)) = devamped(&plan.table, elapsed, stop) else {
             return fx.feedback.push(ignored);
         };
