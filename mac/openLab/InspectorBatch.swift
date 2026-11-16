@@ -16,12 +16,14 @@ extension InspectorViewController {
         "network": ["network"], "video": ["io"],
     ]
 
-    /// The tabs shown for several selected cues of `kinds`.
-    static func batchTabs(forKinds kinds: Set<String>) -> [String] {
+    /// The tabs shown for several selected cues of `kinds`. `allSound`: every one of them has sound,
+    /// which gives Video cues the Levels tab Audio cues have.
+    static func batchTabs(forKinds kinds: Set<String>, allSound: Bool = false) -> [String] {
         let common = ["basics", "triggers"]
         guard kinds.count == 1, let kind = kinds.first else { return common }
         let own = Set(batchKindTabs[kind] ?? [])
-        return InspectorTabs.ids(forKind: kind).filter { common.contains($0) || own.contains($0) }
+        let ids = InspectorTabs.ids(forKind: kind).filter { common.contains($0) || own.contains($0) }
+        return kind == "video" && allSound ? ids + ["levels"] : ids
     }
 
     /// Several cues are selected.
@@ -85,7 +87,8 @@ extension InspectorViewController {
         for f in InspectorField.allCases { if field(f)?.isEnabled == false { field(f)?.placeholderString = nil } }
         // An empty field that is off draws like one that is on (AppKit dims only its text): it is dimmed whole.
         for f in batchDimmed { f.alphaValue = f.isEnabled ? 1 : Self.offAlpha }
-        syncTabs(Self.batchTabs(forKinds: kinds))
+        let allSound = cues.allSatisfy { $0.sounds(store.mediaDurations[$0.id]) }
+        syncTabs(Self.batchTabs(forKinds: kinds, allSound: allSound))
         showChoice(colourPopup, Self.colourItems, cues.map { $0.raw["color"]?.stringValue ?? "none" })
         let seconds = cues.map { $0.raw["second_color"]?.stringValue ?? "none" }
         showChoice(secondColourPopup, Self.colourItems, seconds)
@@ -115,7 +118,7 @@ extension InspectorViewController {
             case "group": renderBatchMode(cues, first: first)
             case "devamp": renderBatchDevamp(cues, first: first)
             case "audio": renderBatchAudio(cues, first: first, model: model)
-            case "video": renderBatchVideo(cues, first: first, model: model)
+            case "video": renderBatchVideo(cues, first: first, model: model, allSound: allSound)
             case "network":
                 renderNetwork(first, model: model)
                 // A destination that is not a patch is the last item ("no patch"), as for one cue.
@@ -183,14 +186,20 @@ extension InspectorViewController {
         showTicks(devampStopCheck, kinds.map { $0["stop_target_when_slice_ends"] == .bool(true) })
     }
 
-    /// The I/O tab's patch and the Levels tab: the first cue's levels with the levels that differ
-    /// shown as mixed, over the most file channels and outputs any of the cues has.
+    /// The I/O tab's patch and the Levels tab of several Audio cues.
     private func renderBatchAudio(_ cues: [Cue], first: Cue, model: WorkspaceModel) {
         renderIO(first, model: model)
-        let patchIDs = outputPatchIDs.map(\.raw)
-        // A patch that is gone shows no choice, as for one cue.
+        renderBatchSound(cues)
+    }
+
+    /// The output patch and the Levels tab of several cues with sound: the patch they share or
+    /// mixed, and the first cue's levels with the levels that differ shown as mixed, over the most
+    /// file channels and outputs any of the cues has. After `renderIO` of the first.
+    private func renderBatchSound(_ cues: [Cue]) {
+        // A patch that is gone shows no choice, as for one cue; a Video cue's none is the last item.
         showChoice(
-            outputPatchPopup, patchIDs, cues.map { $0.raw["kind"]?["patch"]?.stringValue ?? "" }, fallback: -1)
+            outputPatchPopup, outputPatchChoices, cues.map { $0.raw["kind"]?["patch"]?.stringValue ?? "" },
+            fallback: -1)
         followVolumeLimits()
         audioLevels.meter.source = nil
         let sets = cues.compactMap { LevelSet(kind: $0.raw["kind"] ?? .null) }
@@ -204,10 +213,29 @@ extension InspectorViewController {
     }
 
     /// The I/O tab of several Video cues: the stage they share or mixed; the file and format rows
-    /// say mixed when the cues' differ.
-    private func renderBatchVideo(_ cues: [Cue], first: Cue, model: WorkspaceModel) {
+    /// say mixed when the cues' differ. The sound format, the output patch and the Levels tab are
+    /// theirs only when every one of them has sound; the audio track is chosen one cue at a time.
+    private func renderBatchVideo(_ cues: [Cue], first: Cue, model: WorkspaceModel, allSound: Bool) {
         renderIO(first, model: model)
         let v = videoIO
+        v.soundRow?.isHidden = !allSound
+        v.patchRow?.isHidden = !allSound
+        if allSound {
+            renderBatchSound(cues)
+            // Each cue's own track, as text: the same on all of them, or mixed.
+            let played = Set(
+                cues.map { c -> AudioTrackFormat? in
+                    let m = store.mediaDurations[c.id]
+                    let tracks = m?.audioTracks ?? []
+                    return tracks.indices.contains(m?.audioTrack ?? 0) ? tracks[m?.audioTrack ?? 0] : tracks.first
+                })
+            v.soundLabel.isHidden = false
+            v.trackPopup.isHidden = true
+            v.soundLabel.stringValue =
+                played.count == 1
+                ? played.first.flatMap { $0 }.map(VideoIOControls.soundText) ?? "" : loc("inspector.mixed")
+            v.soundLabel.textColor = played.count == 1 ? .labelColor : .secondaryLabelColor
+        }
         let stages = cues.map { $0.raw["kind"]?["stage"]?.stringValue }
         // None is the last item; a stage that is gone shows no choice, as for one cue.
         let known = Set(model.stages.map(\.id.raw))

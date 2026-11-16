@@ -11,7 +11,7 @@ Design decided by the user on 2026-11-13: decode and drawing live in a third pro
 
 Built so far: stages, their per-machine display, the stage host with black output windows, its supervision by the engine, the test card read back in tests, and the Video cue's model, file format, commands and problems (`CueKind::Video { media, stage, duration }`; skills `cue-engine` (its kinds reference) and `edit-commands`).
 
-Probing Video cues' files and playing their pictures on stages in step with the engine's clock are built (below), and the app's Video cue (toolbar, drops, I/O tab; skill `mac-app`). Geometry is built (below), time and loops (below) and the sound of a movie's audio track through the mixer (below; the app's Levels tab, sound-format line and patch pop-up for it are not). Not built: HAP, effects and blend modes, Fade cues on pictures.
+Probing Video cues' files and playing their pictures on stages in step with the engine's clock are built (below), and the app's Video cue (toolbar, drops, I/O tab; skill `mac-app`). Geometry is built (below), time and loops (below) and the sound of a movie's audio track through the mixer (below; the app's Levels tab, sound-format line, track and patch pop-ups: skill `mac-app`). Not built: HAP, effects and blend modes, Fade cues on pictures.
 
 ## Must not break
 - A stage with keep-black on and its display connected shows black whenever nothing plays on it, never a frozen frame (VID-12), while the stage host runs. The desktop does show: from the engine's death until a relaunched engine's stage host is up; between a stage host crash and its relaunch (about 150 ms); and for the whole pause after repeated crashes (`retry_after`). The app-side black backstop that covers these is issue #667.

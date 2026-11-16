@@ -20,30 +20,25 @@ enum NewCueKind: String, CaseIterable, Sendable {
     /// the mixer. The engine plays this exact message in its tests (client/command_add_new_audio_cue).
     /// A Video cue starts on `stage` (the caller gives the workspace's first stage: QLab 5 p. 212
     /// names no default), with no file and no duration; with no stage it has none and shows broken.
+    /// For its movie's sound it takes `patch` and that patch's default levels as an Audio cue does;
+    /// with no patch it has none, which only matters once its file has sound.
     func kindJSON(patch: ModelObject?, networkPatch: ModelObject? = nil, stage: ModelID? = nil) -> JSONValue? {
         let fade = JSONValue.object(["duration": .double(0), "curve": .string("linear")])
         var fields: [String: JSONValue] = ["type": .string(wireType)]
         switch self {
         case .audio:
             guard let patch else { return nil }
-            let count = patch.raw["outputs"]?.arrayValue?.count ?? 0
-            let output = JSONValue.object(["db": .double(0), "mute": .bool(false)])
-            let diagonal = (0..<count).map { n -> JSONValue in
-                .object(["input": .int(Int64(n)), "output": .int(Int64(n)), "db": .double(0), "mute": .bool(false)])
-            }
             fields.merge([
                 "media": .null, "patch": .string(patch.id.raw), "start_time": .double(0), "end_time": .null,
                 "fade_in": fade, "fade_out": fade, "slices": .array([]), "last_slice_play_count": .int(1),
-                "levels": .object([
-                    "master_db": .double(0), "outputs": .array(Array(repeating: output, count: count)),
-                    "crosspoints": .array(diagonal), "gangs": .array([]),
-                ]),
-                "preload": .bool(false),
+                "levels": Self.defaultLevels(patch: patch), "preload": .bool(false),
             ]) { a, _ in a }
         case .video:
-            fields.merge(["media": .null, "stage": stage.map { .string($0.raw) } ?? .null, "duration": .null]) {
-                a, _ in a
-            }
+            fields.merge([
+                "media": .null, "stage": stage.map { .string($0.raw) } ?? .null, "duration": .null,
+                "patch": patch.map { .string($0.id.raw) } ?? .null, "levels": Self.defaultLevels(patch: patch),
+                "audio_track": .int(0),
+            ]) { a, _ in a }
         case .group:
             fields.merge(["mode": .object(["type": .string("timeline")]), "children": .array([])]) { a, _ in a }
         case .memo: break
@@ -73,6 +68,21 @@ enum NewCueKind: String, CaseIterable, Sendable {
         case .start, .pause, .reset, .arm, .disarm: fields["target"] = .null
         }
         return .object(fields)
+    }
+
+    /// A new cue's levels on `patch`: main and every cue output at 0 dB, file channel n to cue
+    /// output n at 0 dB; with no patch, the main level alone.
+    static func defaultLevels(patch: ModelObject?) -> JSONValue {
+        let count = patch?.raw["outputs"]?.arrayValue?.count ?? 0
+        let output = JSONValue.object(["db": .double(0), "mute": .bool(false)])
+        // Only the channels a file can have: a route from a later one is refused by the engine.
+        let diagonal = (0..<min(count, LevelSet.maxInputs)).map { n -> JSONValue in
+            .object(["input": .int(Int64(n)), "output": .int(Int64(n)), "db": .double(0), "mute": .bool(false)])
+        }
+        return .object([
+            "master_db": .double(0), "outputs": .array(Array(repeating: output, count: count)),
+            "crosspoints": .array(diagonal), "gangs": .array([]),
+        ])
     }
 
     /// A whole new cue (no number: `auto_number` gives it one).

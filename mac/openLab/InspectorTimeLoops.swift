@@ -31,8 +31,8 @@ extension InspectorViewController {
         timeLoopsItem = item
     }
 
-    /// Fills the tab (see `InspectorTabs`) for an Audio or Video cue. A movie's has no waveform (the
-    /// engine reads no sound from video files yet: #645): its ruler alone, with the hold-at-end box.
+    /// Fills the tab (see `InspectorTabs`) for an Audio or Video cue. A movie's has the hold-at-end
+    /// box and the waveform of the audio track it plays; one with no sound has its ruler alone.
     func renderTimeLoops(_ cue: Cue) {
         guard timeLoopsItem != nil else { return }
         guard Self.timeLoopsKinds.contains(cue.kindType) else {
@@ -42,11 +42,12 @@ extension InspectorViewController {
         let missing = (store.problems[cue.id] ?? []).contains {
             $0.type == "media_missing" || $0.type == "media_unsupported"
         }
+        let probed = store.mediaDurations[cue.id]
         let media: TimeLoopsPanel.Media
-        switch (cue.kindType, store.mediaDurations[cue.id]?.picture?.type) {
+        switch (cue.kindType, probed?.picture?.type) {
         case ("audio", _): media = .sound
         case (_, "still"): media = .still
-        default: media = .movie
+        default: media = .movie(track: probed?.hasSound == true ? probed?.audioTrack ?? 0 : nil)
         }
         timeLoops.show(
             cue: cue.id, kind: cue.raw["kind"] ?? .null, duration: store.mediaDurations[cue.id]?.file,

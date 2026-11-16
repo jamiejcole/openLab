@@ -50,6 +50,12 @@ struct Cue: Hashable, Sendable, Decodable {
     var kindType: String { raw["kind"]?["type"]?.stringValue ?? "" }
     /// An Audio or Video cue: its target is a file (`media`), not a cue.
     var takesFile: Bool { kindType == "audio" || kindType == "video" }
+    /// The cue has sound with levels and an output patch of its own: an Audio cue, or a Video cue
+    /// whose movie, as probed (`media`), has an audio track. A still, a movie without sound and a
+    /// file not probed yet have none.
+    func sounds(_ media: CueMediaDuration?) -> Bool {
+        kindType == "audio" || kindType == "video" && media?.hasSound == true
+    }
     /// The post-wait the cue runs with: a Wait cue's is its duration (core's `effective_post_wait`).
     var postWait: Double {
         kindType == "wait" ? raw["kind"]?["duration"]?.doubleValue ?? 0 : raw["post_wait"]?.doubleValue ?? 0
@@ -174,6 +180,9 @@ struct CueMediaDuration: Hashable, Sendable, Decodable {
         case audioTracks = "audio_tracks"
         case audioTrack = "audio_track"
     }
+
+    /// A Video cue's movie has an audio track.
+    var hasSound: Bool { audioTracks?.isEmpty == false }
 
     /// The length the Duration column and field show: the cue's own `duration`, or for a cue that loops
     /// until devamped (none sent) one pass through its slices, so it never reads as an unprobed file.

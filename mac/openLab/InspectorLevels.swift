@@ -2,7 +2,8 @@
 
 import AppKit
 
-/// The Levels tab of an Audio cue (AUD-06, AUD-08) and the Fade tab of a Fade cue (CT-10, AUD-09).
+/// The Levels tab of an Audio cue (AUD-06, AUD-08), of a Video cue whose movie has sound (VID-06: the
+/// same tab on the same code) and the Fade tab of a Fade cue (CT-10, AUD-09).
 /// Levels, routing, curve and stop flag are edited by sending only the kind fields the edit changed
 /// (core's `CueProperty::KindFields`); the engine merges them into the kind it has; the Fade's duration has its own `duration` property. Dragging a
 /// fader or a matrix cell sends every move with one `coalesce` key, so the whole drag is one undo step.
@@ -11,8 +12,8 @@ extension InspectorViewController {
     /// file, missing, damaged, not probed yet): stereo, or more when the routing mentions more.
     static let defaultInputs = 2
 
-    /// The matrix rows of an Audio cue: one per channel of its file as the engine probed it (AUD-06),
-    /// else the unknown-file rows above.
+    /// The matrix rows of an Audio cue: one per channel of its file as the engine probed it (AUD-06;
+    /// for a Video cue, of the audio track it plays), else the unknown-file rows above.
     static func inputRows(of cue: Cue, durations: [ModelID: CueMediaDuration]) -> Int {
         if let n = durations[cue.id]?.fileChannels { return n }
         return max(defaultInputs, LevelSet(kind: cue.raw["kind"] ?? .null)?.inputExtent ?? 0)
@@ -81,11 +82,12 @@ extension InspectorViewController {
         return box
     }
 
-    /// Fills the Levels tab of an Audio cue and the Curve and Levels tabs of a Fade cue.
+    /// Fills the Levels tab of an Audio cue or a Video cue with sound, and the Curve and Levels tabs
+    /// of a Fade cue.
     func renderLevels(_ cue: Cue, model: WorkspaceModel) {
         followVolumeLimits()
         let kind = cue.raw["kind"] ?? .null
-        let audio = cue.kindType == "audio"
+        let audio = cue.sounds(store.mediaDurations[cue.id])
         let fade = cue.kindType == "fade"
         let set = LevelSet(kind: kind)
         audioLevels.meter.bank = store.meters
@@ -103,9 +105,9 @@ extension InspectorViewController {
         }
     }
 
-    /// The cue outputs an Audio cue's Levels tab shows: as many as its patch has now (QLab 5 manual
-    /// p. 189), a level the cue has not set being silent, as the engine plays it; the cue's own when
-    /// its patch is gone.
+    /// The cue outputs the Levels tab of an Audio cue (or a Video cue) shows: as many as its patch has
+    /// now (QLab 5 manual p. 189), a level the cue has not set being silent, as the engine plays it;
+    /// the cue's own when its patch is gone or it has none.
     static func shownOutputs(of cue: Cue, _ set: LevelSet, model: WorkspaceModel) -> Int {
         let id = cue.raw["kind"]?["patch"]?.stringValue
         guard let outputs = model.patches.first(where: { $0.id.raw == id })?.raw["outputs"]?.arrayValue else {
@@ -114,7 +116,7 @@ extension InspectorViewController {
         return outputs.count
     }
 
-    /// The names of the cue outputs of the patch an Audio cue plays through, or a Fade's target's.
+    /// The names of the cue outputs of the patch an Audio or Video cue plays through, or a Fade's target's.
     static func outputNames(of cue: Cue, model: WorkspaceModel) -> [String] {
         let audio =
             cue.kindType == "fade" ? cue.raw["kind"]?["target"]?.stringValue.flatMap { model.cue(ModelID($0)) } : cue
@@ -139,7 +141,7 @@ extension InspectorViewController {
         let target = kind["target"]?.stringValue.flatMap { model.cue(ModelID($0)) }
         let extent =
             target.map { Self.levelExtent(of: $0, durations: store.mediaDurations) } ?? (inputs: 0, outputs: 0)
-        fadeLevels.canSetFromTarget = target.flatMap { Self.levels(ofAudio: $0) } != nil
+        fadeLevels.canSetFromTarget = target.flatMap { Self.levels(of: $0, durations: store.mediaDurations) } != nil
         if let set {
             let rows = max(set.inputExtent, extent.inputs, extent.inputs == 0 ? Self.defaultInputs : 0)
             if onlyIfRowsChange && rows == fadeLevels.matrix.inputs { return }
@@ -153,7 +155,7 @@ extension InspectorViewController {
     /// file's channel count. Nothing else of the tab is touched, so an edit in progress is kept.
     func refreshMatrixRows(_ cue: Cue) {
         let kind = cue.raw["kind"] ?? .null
-        if cue.kindType == "audio", let set = LevelSet(kind: kind) {
+        if cue.sounds(store.mediaDurations[cue.id]), let set = LevelSet(kind: kind) {
             let rows = Self.inputRows(of: cue, durations: store.mediaDurations)
             if rows != audioLevels.matrix.inputs, let model = store.model {
                 audioLevels.show(set, inputs: rows, outputs: Self.shownOutputs(of: cue, set, model: model))
@@ -163,12 +165,13 @@ extension InspectorViewController {
         }
     }
 
-    /// The file channels and cue outputs an Audio cue has, or the most any Audio cue inside a Group has.
+    /// The file channels and cue outputs a cue with sound has (an Audio cue, a Video cue whose movie
+    /// has sound), or the most any such cue inside a Group has.
     static func levelExtent(of cue: Cue, durations: [ModelID: CueMediaDuration]) -> (inputs: Int, outputs: Int) {
         var inputs = 0
         var outputs = 0
         func visit(_ c: Cue) {
-            if c.kindType == "audio", let s = LevelSet(kind: c.raw["kind"] ?? .null) {
+            if c.sounds(durations[c.id]), let s = LevelSet(kind: c.raw["kind"] ?? .null) {
                 inputs = max(inputs, inputRows(of: c, durations: durations))
                 outputs = max(outputs, s.outputs.count)
             }
@@ -178,9 +181,10 @@ extension InspectorViewController {
         return (inputs, outputs)
     }
 
-    /// The levels of an Audio cue (nil for any other cue).
-    static func levels(ofAudio cue: Cue) -> LevelSet? {
-        cue.kindType == "audio" ? LevelSet(kind: cue.raw["kind"] ?? .null) : nil
+    /// The levels of a cue with sound (an Audio cue, a Video cue whose movie has sound); nil for any
+    /// other cue.
+    static func levels(of cue: Cue, durations: [ModelID: CueMediaDuration]) -> LevelSet? {
+        cue.sounds(durations[cue.id]) ? LevelSet(kind: cue.raw["kind"] ?? .null) : nil
     }
 
     // MARK: Sending
@@ -228,11 +232,12 @@ extension InspectorViewController {
     }
 
     /// "Set Levels from Target" (QLab, manual p. 200): the Fade moves every level of its Audio target
-    /// to the level the target has now, so the fade starts from where the target is.
+    /// (or Video target with sound) to the level the target has now, so the fade starts from where
+    /// the target is.
     func setFadeLevelsFromTarget() {
         guard let cue = cue, let model = store.model,
             let id = cue.raw["kind"]?["target"]?.stringValue, let target = model.cue(ModelID(id)),
-            let source = Self.levels(ofAudio: target), var set = fadeLevels.levels
+            let source = Self.levels(of: target, durations: store.mediaDurations), var set = fadeLevels.levels
         else { return }
         set.master = source.master
         set.outputs = source.outputs.map { LevelSet.Output(db: $0.db) }

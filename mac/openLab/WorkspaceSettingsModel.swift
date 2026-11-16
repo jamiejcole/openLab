@@ -158,10 +158,10 @@ final class WorkspaceSettingsModel: ObservableObject {
         return String(text.prefix(head)) + "\u{2026}" + String(text.suffix(limit - 1 - head))
     }
 
-    /// The first Audio cue, in list order, that plays through `patch`.
+    /// The first Audio or Video cue, in list order, that names `patch` as its output patch.
     private static func firstCue(in cues: [Cue], on patch: ModelID) -> Cue? {
         for cue in cues {
-            if cue.kindType == "audio", cue.raw["kind"]?["patch"]?.stringValue == patch.raw { return cue }
+            if cue.takesFile, cue.raw["kind"]?["patch"]?.stringValue == patch.raw { return cue }
             if let hit = firstCue(in: cue.children, on: patch) { return hit }
         }
         return nil

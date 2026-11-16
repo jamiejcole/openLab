@@ -177,7 +177,7 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
 
     private(set) var cache: [PeaksKey: WaveformPeaks] = [:]
     private var cacheOrder: [PeaksKey] = []
-    /// The file shown: its cue, reference and length.
+    /// The file shown: its cue, reference (with the audio track played, for a movie) and length.
     private var file: (cue: ModelID, media: String, duration: Double)?
     private var shownCue: ModelID?
     /// The shown cue's file is missing or cannot be read.
@@ -362,10 +362,14 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     var hasFades: Bool { fadeIn > 0 || fadeOut > 0 }
     var holdsAtEnd: Bool { kind["hold_at_end"] == .bool(true) }
 
-    /// What the shown cue's file is, for its timeline: a sound file (a waveform), a movie (no sound
-    /// to draw: the ruler alone, and the hold-at-end box), or a still (no time line at all).
-    enum Media {
-        case sound, movie, still
+    /// What the shown cue's file is, for its timeline: a sound file (a waveform), a movie (the
+    /// hold-at-end box; the waveform of the audio track it plays, or with no sound the ruler alone),
+    /// or a still (no time line at all).
+    enum Media: Equatable {
+        case sound
+        /// `track`: the audio track the cue plays, nil for a movie with no sound.
+        case movie(track: Int?)
+        case still
     }
 
     /// Shows an Audio or Video cue's `kind`; `duration` is its file's length, nil while not known;
@@ -374,13 +378,18 @@ final class TimeLoopsPanel: NSObject, NSTextFieldDelegate {
     func show(cue: ModelID, kind: JSONValue, duration: Double?, missing: Bool = false, media: Media = .sound) {
         self.kind = kind
         self.missing = missing
-        silent = media != .sound
+        var track: Int?
+        if case .movie(let played) = media { track = played }
+        silent = media == .still || media == .movie(track: nil)
         still = media == .still
         holdCheck.isHidden = media == .sound
         holdCheck.state = holdsAtEnd ? .on : .off
         waveform.silent = silent
-        let media = kind["media"]?.stringValue ?? ""
-        let newFile = duration.flatMap { d in media.isEmpty || d <= 0 ? nil : (cue, media, d) }
+        // A movie's waveform is its audio track's: another track is another drawing.
+        let media = (kind["media"]?.stringValue ?? "") + (track.map { "\u{0}\($0)" } ?? "")
+        let newFile = duration.flatMap { d in
+            (kind["media"]?.stringValue ?? "").isEmpty || d <= 0 ? nil : (cue, media, d)
+        }
         // Another cue is shown afresh even when neither file is known yet, so its first drawing says
         // that its file is being read.
         let fileChanged =
