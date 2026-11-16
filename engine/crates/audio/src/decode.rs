@@ -405,18 +405,21 @@ impl FrameSource for Fitted {
             return Ok(0);
         }
         let own = self.fit.real.saturating_sub(self.pos);
-        let mut got = 0;
-        if own > 0 && self.placed {
+        let got = if own > 0 {
+            if !self.placed {
+                self.inner.seek(self.pos)?;
+                self.placed = true;
+            }
+            // A track that ends before its probed length ends the read here: the file has
+            // changed, which is its reader's to report, never padded over.
             let n = usize::try_from(own).unwrap_or(usize::MAX).min(want);
-            got = self.inner.read(out.get_mut(..n * ch).unwrap_or_default())?;
-        }
-        if got == 0 {
-            // Past the track's own end (or a track that ended before its probed length):
-            // silence up to the movie's.
+            self.inner.read(out.get_mut(..n * ch).unwrap_or_default())?
+        } else {
+            // Past the track's own end: silence up to the movie's.
             self.placed = false;
             out.get_mut(..want * ch).unwrap_or_default().fill(0.0);
-            got = want;
-        }
+            want
+        };
         self.pos = self.pos.saturating_add(got as u64);
         Ok(got)
     }

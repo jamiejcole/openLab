@@ -2757,6 +2757,24 @@ fn a_movies_sound_tracks_are_probed_with_their_format() {
         assert!((rise - 0.25).abs() < slack, "track {track}: {rise}");
     }
     assert!(openlab_audio::probe_movie(&dir.path().join("gone.mov")).is_err());
+    // Fitted to a movie's length a track reads as exactly that long: silence after its own
+    // end, or cut short.
+    let fitted = |frames: u64| {
+        let media = openlab_audio::Media::Track(openlab_audio::MovieTrack {
+            path: two.clone(),
+            track: 1,
+            fit: Some(openlab_audio::Fit {
+                real: 96_000,
+                frames,
+            }),
+        });
+        openlab_audio::preload(media).unwrap()
+    };
+    let longer = fitted(96_500);
+    assert_eq!(longer.samples().len(), 96_500 * 6);
+    assert!(longer.samples()[95_999 * 6 + 2] != 0.0);
+    assert!(longer.samples()[96_000 * 6..].iter().all(|x| *x == 0.0));
+    assert_eq!(fitted(48_000).samples().len(), 48_000 * 6);
 }
 
 /// Flow 1 (engine): a movie with sound on a patch → GO puts its picture on the stage and its
@@ -3271,4 +3289,214 @@ fn sound_but_nowhere_to_play_it_marks_the_cue_broken() {
     s.settle_media();
     s.run(BLOCK);
     assert_eq!(problems(&s, 3), vec![CueProblem::NoPatch]);
+}
+
+/// The sound is the clock: a voice the disk starved (its file's open stalled) plays late by
+/// what it missed, its picture is put back by as much, and the cue ends when the sound does.
+#[test]
+fn a_starved_sound_puts_its_picture_back_so_they_stay_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:48000");
+    let ws = workspace(vec![sounding_cue(1, &movie)]);
+    let mut s = video_show_config(ws, &[], |_| {}, |c| c.streamer.before_open = gated_open);
+    gate(&movie);
+    let at = go(&mut s);
+    s.run_unsettled(samples(0.4));
+    assert!(silent(&s, at, s.rendered()), "nothing heard while the disk stalls");
+    release(&movie);
+    s.run(samples(0.6));
+    let sound = in_step(&mut s, RATE, 25.0, "after the disk caught up");
+    let late = (s.now() - at) as f64 / f64::from(RATE) - sound;
+    assert!(late > 0.3, "the sound started {late} s late");
+    // Its whole length from where the sound really began.
+    let end = at + samples(4.0 + late);
+    run_to(&mut s, end - samples(0.1));
+    expect_state(&s, 1, CueState::Running, "the cue lasts as long as its sound");
+    in_step(&mut s, RATE, 25.0, "near the end");
+    run_to(&mut s, end + samples(0.1));
+    expect_state(&s, 1, CueState::Idle, "");
+    assert_eq!(shown(&mut s), None);
+}
+
+/// `bytes` with the first `find` replaced by `with` (the same length).
+fn patched(bytes: &[u8], find: &[u8], at: usize, with: &[u8]) -> Vec<u8> {
+    let found = bytes
+        .windows(find.len())
+        .position(|w| w == find)
+        .expect("the bytes to patch");
+    let mut out = bytes.to_vec();
+    out[found + at..found + at + with.len()].copy_from_slice(with);
+    out
+}
+
+/// Flow 11 (a), (c): a movie whose audio track is in a codec the engine cannot decode, or has
+/// more channels than a cue can route, breaks its cue at the probe with a reason naming the
+/// track; GO does not start it (no silent picture) and other cues play.
+#[test]
+fn a_damaged_or_unplayable_audio_track_breaks_only_that_cue() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = sound_movie!(dir.path(), "good.mov", (50, 25), "pcm:2:48000");
+    let bytes = std::fs::read(&good).unwrap();
+    // The sample description's format code, and its channel count (a 32-bit number 44 bytes
+    // after the code in a QuickTime sound description of version 2).
+    let codec = dir.path().join("codec.mov");
+    std::fs::write(&codec, patched(&bytes, b"lpcm", 0, b"zzzz")).unwrap();
+    let wide = dir.path().join("wide.mov");
+    std::fs::write(&wide, patched(&bytes, b"lpcm", 44, &65u32.to_be_bytes())).unwrap();
+    let mut s = video_show(vec![
+        sounding_cue(1, &codec),
+        sounding_cue(2, &wide),
+        sounding_cue(3, &good),
+    ]);
+    for n in [1, 2] {
+        let found = problems(&s, n);
+        assert!(
+            matches!(&found[..], [CueProblem::MediaUnsupported { reason, .. }]
+                if reason.contains("audio track 1")),
+            "cue {n}: {found:?}"
+        );
+        start(&mut s, n);
+        s.run(samples(0.2));
+        assert_ne!(state(&s, n), CueState::Running, "cue {n} does not start");
+        assert_eq!(shown(&mut s), None, "no silent picture");
+    }
+    assert_eq!(problems(&s, 3), vec![]);
+    let at = start(&mut s, 3);
+    run_to(&mut s, at + samples(0.5));
+    in_step(&mut s, RATE, 25.0, "the good cue plays");
+}
+
+/// Flow 11 (b): a movie that is damaged part-way while it plays (its file cut short under the
+/// engine) plays to the damage; then that cue alone breaks and its picture leaves the stage,
+/// while another Video cue's picture and sound go on and the stage host keeps running.
+#[test]
+fn damage_met_mid_play_breaks_that_cue_and_the_others_play_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let cut = sound_movie!(dir.path(), "cut.mov", (250, 25), "pcm:2:48000");
+    let whole = sound_movie!(dir.path(), "whole.mov", (250, 25), "pcm:2:48000");
+    let mut s = video_show(vec![sounding_cue(1, &cut), sounding_cue(2, &whole)]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.5));
+    in_step(&mut s, RATE, 25.0, "before the damage");
+    let length = std::fs::metadata(&cut).unwrap().len();
+    let file = std::fs::OpenOptions::new().write(true).open(&cut).unwrap();
+    file.set_len(length / 2).unwrap();
+    drop(file);
+    let other = start(&mut s, 2);
+    // It plays on to the damage (the movie is ten seconds long), then breaks.
+    let mut played = 0;
+    while state(&s, 1) != CueState::Broken && played < 100 {
+        s.run(samples(0.1));
+        played += 1;
+    }
+    expect_state(&s, 1, CueState::Broken, "the cut movie's cue breaks");
+    assert!(played > 5, "it played to the damage first");
+    s.run(samples(0.2));
+    expect_state(&s, 2, CueState::Running, "the other cue plays on");
+    assert_eq!(s.control().pictures_live(), 1, "only the other picture is up");
+    let sound = in_step(&mut s, RATE, 25.0, "the other cue, in step");
+    let played = (s.now() - other) as f64 / f64::from(RATE);
+    assert!((sound - played).abs() < 0.01, "{sound} s after {played} s");
+}
+
+/// Flow 11 (d): seeded-mutated movies with sound (a walk over the whole file, and one over its
+/// index at the start) each give the audio probe an answer, tracks or a reason: never a panic
+/// or a hang.
+#[test]
+fn mutated_movies_with_sound_give_the_audio_probe_an_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let kind = "h264+aac:2:44100+pcm:2:48000";
+    let good = std::fs::read(make(dir.path(), "good.mov", kind, Some((25, 25)))).unwrap();
+    let mut seed: u64 = 0x50d5;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut answers = (0, 0);
+    for round in 0..64u64 {
+        let mut bytes = good.clone();
+        // Every other round stays in the first 4 KiB, where the tracks are described.
+        let span = if round % 2 == 0 { bytes.len() } else { 4096 } as u64;
+        for _ in 0..(1 + round % 8) {
+            let at = (next() % span) as usize;
+            if let Some(b) = bytes.get_mut(at) {
+                *b = next() as u8;
+            }
+        }
+        let file = dir.path().join(format!("m{round}.mov"));
+        std::fs::write(&file, &bytes).unwrap();
+        match openlab_audio::probe_movie(&file) {
+            Ok(tracks) => {
+                answers.0 += 1;
+                // A track that probed plays to its end without a panic too.
+                for (n, t) in tracks.iter().enumerate() {
+                    if t.probed.is_ok() {
+                        let media = openlab_audio::Media::Track(openlab_audio::MovieTrack {
+                            path: file.clone(),
+                            track: n as u32,
+                            fit: None,
+                        });
+                        let _ = openlab_audio::preload(media);
+                    }
+                }
+            }
+            Err(_) => answers.1 += 1,
+        }
+    }
+    assert_eq!(answers.0 + answers.1, 64);
+}
+
+/// Flow 4 (engine): a movie with two audio tracks plays the one its cue chose, clients are told
+/// the tracks and the one played, and a choice the file does not have plays the first track
+/// with a warning.
+#[test]
+fn a_movie_with_several_audio_tracks_plays_the_one_chosen() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "two.mov", (75, 25), "pcm:2:48000+pcm:6:44100");
+    let mut second = sounding_cue(1, &movie);
+    if let CueKind::Video { sound, .. } = &mut second.kind {
+        sound.audio_track = 1;
+    }
+    let mut s = video_show(vec![second]);
+    assert_eq!(problems(&s, 1), vec![]);
+    let told = |s: &OfflineShow| {
+        let all = s.control().snapshot().media_durations;
+        let m = all.iter().find(|m| m.cue == id(1)).unwrap().clone();
+        let formats: Vec<(u16, u32)> = (m.audio_tracks.iter())
+            .map(|t| (t.channels, t.sample_rate))
+            .collect();
+        (formats, m.audio_track, m.channels)
+    };
+    let both = vec![(2, 48_000), (6, 44_100)];
+    assert_eq!(told(&s), (both.clone(), Some(1), Some(6)));
+    let missing = |s: &OfflineShow| {
+        (s.control().snapshot().warnings.iter()).any(|w| {
+            matches!(w, openlab_core::protocol::WireWarning::Notice { code, cue, .. }
+                if code == "audio_track_missing" && *cue == Some(id(1)))
+        })
+    };
+    assert!(!missing(&s));
+    // The second track's second-number channel is negative (the test movie's mark).
+    let at = go(&mut s);
+    run_to(&mut s, at + samples(0.5));
+    assert!(heard(&s).1 < 0.0, "the second track is heard: {:?}", heard(&s));
+    s.transport(TransportAction::Stop { cue: id(1), fade_out: None });
+    s.run(BLOCK);
+    // A track the file does not have: the first plays, with a warning.
+    assert!(set_fields(&mut s, 1, serde_json::json!({"audio_track": 5})));
+    s.run(samples(0.1));
+    assert_eq!(told(&s), (both.clone(), Some(0), Some(2)));
+    assert!(missing(&s), "the workspace warns");
+    assert_eq!(problems(&s, 1), vec![]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(0.5));
+    in_step(&mut s, RATE, 25.0, "the first track");
+    // Undo returns the second.
+    let request = s.request_id();
+    s.send(ClientMessage::Undo { id: request });
+    s.run(samples(0.1));
+    assert_eq!(told(&s), (both, Some(1), Some(6)));
+    assert!(!missing(&s));
 }
