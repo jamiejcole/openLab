@@ -5240,6 +5240,11 @@ struct SlowMove {
     path: std::path::PathBuf,
     started: usize,
     msgs: Vec<ServerMessage>,
+    /// Tries of the move while its open was held: the times the control thread made a voice
+    /// for the new device beside the one that plays (its own count of live voices, read after
+    /// every block, so it follows the sample clock alone). The opener threads' count of opens
+    /// cannot say this: a try cancelled before an opener got to it opens nothing.
+    tries: usize,
 }
 
 fn slow_move(held: u64) -> SlowMove {
@@ -5259,17 +5264,24 @@ fn slow_move(held: u64) -> SlowMove {
     s.run(1000);
     gate(&a);
     s.slow_disk = true;
+    let (mut tries, mut voices) = (0, s.control().live_voices());
     map_patch(&mut s, patch_id(), DEV2_NAME);
     let mut msgs = Vec::new();
     for _ in 0..held.div_ceil(BLOCK) {
         s.run(BLOCK);
         msgs.extend(s.take_outbound());
+        let now = s.control().live_voices();
+        if now > voices {
+            tries += 1;
+        }
+        voices = now;
     }
     SlowMove {
         s,
         path: a,
         started,
         msgs,
+        tries,
     }
 }
 
@@ -5343,7 +5355,10 @@ fn a_move_to_a_disk_that_never_answers_plays_to_the_end_where_it_is_with_bounded
     m.release_and_run(2000);
     m.assert_in_step();
     assert_eq!(m.next_at(), Some(16_000));
-    assert!((2..=12).contains(&opens), "{opens} stream opens in 2 s");
+    // Tried again, as the control thread counts its tries; and never more opens than a few a
+    // try (an upper bound only: a try given up before an opener took it opens nothing).
+    assert!((2..=12).contains(&m.tries), "{} tries in 2 s", m.tries);
+    assert!(opens <= 12, "{opens} stream opens in 2 s");
     assert_eq!(m.warns().len(), 1, "{:?}", m.warns());
     assert_eq!(m.s.control().live_voices(), 0);
 }
