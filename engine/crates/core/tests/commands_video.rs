@@ -756,3 +756,87 @@ fn a_volume_limit_applies_to_a_video_cues_levels() {
     }
     assert_eq!(sound_of(&ws, 1).levels.master_db, 0.0);
 }
+
+/// Gangs, Set Default Levels and Paste Cue Properties' Levels reach the engine as a cue's whole
+/// `levels` (the app works out what a gang moves): a Video cue takes them through the Audio
+/// cue's edit. A ganged drag is one undo step, levels go from a Video cue to an Audio cue and
+/// back unchanged, and gangs a cue cannot hold are refused on both kinds alike.
+#[test]
+fn ganged_default_and_pasted_levels_are_a_video_cues_as_an_audio_cues() {
+    use serde_json::json;
+    let mut ws = ws();
+    let mut history = History::default();
+    let levels = |outputs_db: f64, gangs: serde_json::Value| {
+        sound_fields(json!({"levels": {
+            "master_db": -3.0,
+            "outputs": [{"db": outputs_db, "mute": false}, {"db": outputs_db, "mute": true}],
+            "crosspoints": [
+                {"input": 0, "output": 0, "db": 0.0, "mute": false},
+                {"input": 1, "output": 1, "db": -6.0, "mute": false}],
+            "gangs": gangs}}))
+    };
+    let levels_of = |ws: &Workspace, n: u128| {
+        let kind = &ws.find_cue(cue_id(n)).unwrap().kind;
+        kind.levels().unwrap().clone()
+    };
+    // Two outputs ganged, then dragged together: every step moves both, and one undo puts
+    // the whole drag back.
+    let gang = json!([[0, 1]]);
+    assert!(
+        history
+            .execute(&mut ws, set(1, levels(0.0, gang.clone())))
+            .unwrap()
+    );
+    assert_eq!(levels_of(&ws, 1).gangs, vec![vec![0, 1]]);
+    let ganged = ws.clone();
+    for step in 1..=20 {
+        let drag = set(1, levels(-f64::from(step), gang.clone()));
+        history
+            .execute_coalescing(&mut ws, drag, Some("levels:1"))
+            .unwrap();
+    }
+    let dragged = levels_of(&ws, 1);
+    assert_eq!(
+        (dragged.outputs[0].db, dragged.outputs[1].db),
+        (-20.0, -20.0)
+    );
+    assert!(history.undo(&mut ws).unwrap());
+    assert_eq!(ws, ganged);
+    assert!(history.redo(&mut ws).unwrap());
+    // Pasted onto an Audio cue, and from it onto another Video cue: the same levels, gang,
+    // mutes and routing, and they are saved with the show.
+    let paste = |from: &CueLevels| sound_fields(json!({"levels": from}));
+    ws.apply(set(3, paste(&dragged))).unwrap();
+    assert_eq!(levels_of(&ws, 3), dragged);
+    let from_audio = levels_of(&ws, 3);
+    ws.apply(set(2, paste(&from_audio))).unwrap();
+    assert_eq!(levels_of(&ws, 2), dragged);
+    let saved = save_show(&ws).unwrap();
+    assert_eq!(levels_of(&load_show(&saved).unwrap().workspace, 2), dragged);
+    // Set to the default levels (a new Audio cue's): the gang goes with the rest.
+    let CueKind::Audio {
+        levels: default, ..
+    } = audio()
+    else {
+        panic!()
+    };
+    let undo = ws.apply(set(1, paste(&default))).unwrap();
+    assert_eq!(levels_of(&ws, 1), default);
+    ws.apply(undo).unwrap();
+    assert_eq!(levels_of(&ws, 1), dragged);
+    // Gangs a cue cannot hold (empty, an output no patch has, an output in two gangs) are
+    // refused on a Video cue as on an Audio cue, changing nothing.
+    let before = ws.clone();
+    for bad in [
+        json!([[]]),
+        json!([[0, 4096]]),
+        json!([[0, 0]]),
+        json!([[0], [0, 1]]),
+    ] {
+        for n in [1, 3] {
+            let refused = ws.apply(set(n, levels(0.0, bad.clone())));
+            assert!(refused.is_err(), "cue {n} took gangs {bad}");
+        }
+    }
+    assert_eq!(ws, before);
+}

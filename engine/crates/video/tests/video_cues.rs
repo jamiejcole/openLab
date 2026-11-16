@@ -2080,7 +2080,7 @@ fn geometry_a_movies_own_alpha_blends_once_over_what_is_below() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Time and loops (VID-07; QLab 5 manual p. 214): the flows of issue #646. The movies are 25 fps
+// Time and loops (VID-07; QLab 5 manual p. 214). The movies are 25 fps
 // test cards, so the barcode read back is the frame's number in the file.
 
 /// A movie cue with its time and loops set by `edit`.
@@ -2292,8 +2292,8 @@ fn red_at(s: &mut OfflineShow) -> u8 {
     colours(s, &[[0.25, 0.4]]).first().unwrap()[0]
 }
 
-/// Integrated fade in and out → opacity follows the fade lengths (the sound half waits for
-/// sound from video files, #645).
+/// Integrated fade in and out → opacity follows the fade lengths (the sound's half is
+/// `integrated_fades_shape_the_sound_with_the_picture`).
 #[test]
 fn integrated_fade_in_and_out_opacity_follows_the_fade_lengths() {
     let dir = tempfile::tempdir().unwrap();
@@ -2470,7 +2470,7 @@ fn a_devamped_loop_survives_a_stage_host_relaunch() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Review round 1 of #646.
+// A held movie, a file probed again, short loops and the stage host started again.
 
 /// A movie held at its end (or played past it) never runs on into the file past its end trim:
 /// pause and resume, Pause All and Resume All, and a load past the end then GO all hold the
@@ -3124,6 +3124,47 @@ fn each_loop_seam_and_a_devamp_keep_picture_and_sound_together() {
     s.run(samples(0.1));
     assert!(silent(&s, end + 8, s.rendered()));
     assert_eq!(s.stalls(), 0);
+}
+
+/// A Video cue's integrated fades shape its sound as an Audio cue's: half way into a linear
+/// fade in and half way through the fade out the sound is at half its level, full between
+/// them, while the picture's opacity follows the same fades.
+#[test]
+fn integrated_fades_shape_the_sound_with_the_picture() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (50, 25), "pcm:2:48000");
+    let linear = |duration| openlab_core::FadeSpec {
+        duration,
+        curve: openlab_core::FadeCurve::Linear,
+    };
+    let mut s = video_show(vec![timed_sounding_cue(1, &movie, |t| {
+        t.fade_in = linear(0.5);
+        t.fade_out = linear(0.5);
+    })]);
+    let at = go(&mut s);
+    // The level of the sound `t` seconds after GO: output 1 holds the second's number, one
+    // over 2048 a step, at unity.
+    let level = |s: &OfflineShow, t: f64| {
+        let (_, second) = outputs_at(s, at + samples(t));
+        f64::from(second) * 2048.0 / (t.floor() + 1.0)
+    };
+    run_to(&mut s, at + samples(1.0));
+    let full = red_at(&mut s);
+    run_to(&mut s, at + samples(1.75) + BLOCK);
+    let half_out = red_at(&mut s);
+    assert!(
+        (f64::from(half_out) / f64::from(full) - 0.5).abs() <= 0.08,
+        "the picture half way through the fade out: {half_out} of {full}"
+    );
+    run_to(&mut s, at + samples(2.0) + 2 * BLOCK);
+    for (t, want) in [(0.25, 0.5), (0.75, 1.0), (1.25, 1.0), (1.75, 0.5)] {
+        let got = level(&s, t);
+        assert!(
+            (got - want).abs() < 0.01,
+            "{t} s after GO the sound is at {got} of its level, not {want}"
+        );
+    }
+    expect_state(&s, 1, CueState::Idle, "");
 }
 
 /// Flow 8 (e): GO while the file's probe is still pending → picture and sound start late,
