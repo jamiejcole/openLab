@@ -993,19 +993,27 @@ async fn goodbye_ends_the_session_and_only_shutdown_reaches_the_control_loop() {
 
 // --- keepalive ------------------------------------------------------------------------------
 
+/// Each ping is sent when the test says so, and on the clock every one of them comes later than
+/// `dead_after` since the client was last heard (as after the engine was starved or suspended).
+/// Only pings left unanswered may count against a client, and this one answers each.
 #[tokio::test]
 async fn the_server_pings_and_a_reading_client_stays_connected() {
+    let ping = Arc::new(tokio::sync::Notify::new());
     let f = fixture_with(ServerConfig {
-        ping_interval: Duration::from_millis(40),
-        dead_after: Duration::from_millis(400),
+        ping_interval: Duration::from_nanos(1),
+        // Ten pings: more than the server can send before it reads an answer already on its
+        // socket, fewer than the test asks for.
+        dead_after: Duration::from_nanos(10),
+        ping_on: Some(ping.clone()),
         ..ServerConfig::default()
     });
     let mut c = f.client().await;
     guard("waiting for 15 pings", async {
-        let mut pings = 0;
-        while pings < 15 {
+        for _ in 0..15 {
+            ping.notify_one();
+            // Reading the next frame also writes the pong for the ping before.
             match c.next().await {
-                Some(Ok(Message::Ping(_))) => pings += 1,
+                Some(Ok(Message::Ping(_))) => {}
                 other => panic!("{other:?}"),
             }
         }
@@ -1014,6 +1022,7 @@ async fn the_server_pings_and_a_reading_client_stays_connected() {
     // Still alive: it answers requests.
     send(&mut c, &go(1)).await;
     wait_result(&mut c, 1).await;
+    assert_eq!(f.logs_with("unanswered"), 0, "{:?}", f.control.logs);
 }
 
 #[tokio::test]
@@ -1040,6 +1049,8 @@ async fn a_client_that_answers_nothing_is_dropped() {
         }
     })
     .await;
+    // The show log says why the connection went.
+    f.wait_logs("left 4 pings unanswered", 1).await;
 }
 
 #[tokio::test]

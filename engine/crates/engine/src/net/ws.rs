@@ -23,13 +23,16 @@ use openlab_core::protocol::{
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, watch};
-use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep_until, timeout, timeout_at};
+use tokio::time::{
+    Instant, Interval, MissedTickBehavior, interval_at, sleep_until, timeout, timeout_at,
+};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{WebSocketStream, accept_async_with_config};
 
 use super::NetError;
 use super::hub::{self, Broadcast, Hub, Kind};
+use super::liveness::Liveness;
 use super::osc::{self, OscConfig, OscListenerStats, OscPorts};
 use super::refusals::Refusals;
 use super::relaunch::{AppProcess, Budget, Next, Relaunch, next};
@@ -58,8 +61,14 @@ pub struct ServerConfig {
     pub hello_timeout: Duration,
     /// A `ping` is sent this often.
     pub ping_interval: Duration,
-    /// A client that has sent nothing (not even a `pong`) for this long is dead.
+    /// A client that has left the pings of this long unanswered (anything it sends answers
+    /// them, a `pong` included) is dead. Counted in pings sent, not on the clock, so the engine
+    /// being late to its own timer never counts against a client.
     pub dead_after: Duration,
+    /// Tests send each ping themselves, by notifying this, instead of on the timer: what a test
+    /// sees then follows from the order of its own steps, not from how fast the machine is.
+    #[cfg(feature = "test-support")]
+    pub ping_on: Option<Arc<tokio::sync::Notify>>,
     /// One write to a client that makes no progress for this long closes the connection.
     pub write_timeout: Duration,
     /// How long a `result` waits for the `model_changed` that precedes it.
@@ -91,6 +100,8 @@ impl Default for ServerConfig {
             hello_timeout: Duration::from_secs(5),
             ping_interval: Duration::from_secs(10),
             dead_after: Duration::from_secs(30),
+            #[cfg(feature = "test-support")]
+            ping_on: None,
             write_timeout: Duration::from_secs(10),
             revision_wait: Duration::from_secs(2),
             snapshot_wait: Duration::from_secs(60),
@@ -387,6 +398,16 @@ fn authenticate(
     }
 }
 
+/// Resolves when the next ping is due: on the timer, or when a test says so.
+#[cfg_attr(not(feature = "test-support"), allow(unused_variables))]
+async fn ping_due(ticker: &mut Interval, config: &ServerConfig) {
+    #[cfg(feature = "test-support")]
+    if let Some(on) = &config.ping_on {
+        return on.notified().await;
+    }
+    ticker.tick().await;
+}
+
 async fn serve(shared: Arc<Shared>, tcp: TcpStream, pending: OwnedSemaphorePermit) {
     let _ = tcp.set_nodelay(true);
     let authed = Arc::new(AtomicBool::new(false));
@@ -467,7 +488,7 @@ struct Conn {
     /// Results held back for their `model_changed`, in arrival order.
     held: VecDeque<Held>,
     bad_frames: u32,
-    last_heard: Instant,
+    liveness: Liveness,
     /// The client said `goodbye`: its end is no crash.
     said_goodbye: bool,
 }
@@ -490,7 +511,7 @@ async fn run(shared: Arc<Shared>, ws: Ws, doc: Option<DocId>) {
         snapshot_waits: Vec::new(),
         held: VecDeque::new(),
         bad_frames: 0,
-        last_heard: Instant::now(),
+        liveness: Liveness::new(shared.config.ping_interval, shared.config.dead_after),
         said_goodbye: false,
         shared,
     };
@@ -684,7 +705,7 @@ impl Conn {
         let config = self.shared.config.clone();
         let mut ticker = interval_at(Instant::now() + config.ping_interval, config.ping_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        self.last_heard = Instant::now();
+        self.liveness.heard();
         loop {
             let waiting = !self.snapshot_waits.is_empty();
             if !waiting && self.lagged.load(Ordering::Acquire) {
@@ -720,7 +741,7 @@ impl Conn {
                     None => return Ok(()),
                 },
                 frame = self.ws.next(), if self.inflight < MAX_INFLIGHT => {
-                    self.last_heard = Instant::now();
+                    self.liveness.heard();
                     match frame {
                         None | Some(Ok(Message::Close(_))) => return Ok(()),
                         Some(Err(e)) => {
@@ -746,10 +767,17 @@ impl Conn {
                 () = sleep_until(wait_deadline.unwrap_or_else(Instant::now)), if wait_deadline.is_some() => {
                     self.expire_waits();
                 }
-                _ = ticker.tick() => {
-                    if self.inflight < MAX_INFLIGHT
-                        && self.last_heard.elapsed() > config.dead_after
-                    {
+                () = ping_due(&mut ticker, &config) => {
+                    // A connection that is not being read cannot be heard: its pings are not
+                    // counted against it.
+                    if self.inflight < MAX_INFLIGHT && !self.liveness.ping_due() {
+                        let _ = self.shared.inbox.send(Inbox::Log {
+                            level: LogLevel::Warn,
+                            message: format!(
+                                "closed a connection that left {} pings unanswered",
+                                self.liveness.unanswered()
+                            ),
+                        });
                         return Err(Closed);
                     }
                     self.write(Message::Ping(Default::default())).await?;
