@@ -502,7 +502,9 @@ impl Control {
                 let voices = cx.eng.outputs.on_output(key, cx.doc.voices.playing_ids());
                 let mut fx = Effects::default();
                 for voice in voices {
-                    cx.doc.voices.lost(voice, at, &mut fx);
+                    let model = &cx.doc.model;
+                    let held = |cue, run| model.holds_run(cue, run);
+                    cx.doc.voices.lost(voice, at, &held, &mut fx);
                 }
                 let now = cx.now();
                 cx.follow(fx, now);

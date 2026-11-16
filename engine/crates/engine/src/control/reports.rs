@@ -330,7 +330,9 @@ impl DocCx<'_> {
             }
             let absent = self.doc.voices.mark_absent(id, !listed.contains(&id));
             if absent >= 2 && lost_events {
-                self.doc.voices.lost(id, rendered, &mut fx);
+                let model = &self.doc.model;
+                let held = |cue, run| model.holds_run(cue, run);
+                self.doc.voices.lost(id, rendered, &held, &mut fx);
             }
         }
         let now = self.now();

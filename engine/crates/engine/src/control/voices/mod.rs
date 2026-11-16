@@ -100,6 +100,10 @@ pub struct Env<'a> {
     pub floor: Option<SampleTime>,
 }
 
+/// Whether the cue engine still holds a run of a cue: a show run that is not broken, or the
+/// cue's preview.
+pub type Held<'a> = &'a dyn Fn(CueId, RunId) -> bool;
+
 /// A mixer command for a voice that is not in the mixer yet, replayed when it starts.
 #[derive(Clone, Copy, Debug)]
 enum Queued {
@@ -1245,21 +1249,29 @@ mod tests {
     }
 
     /// A voice the mixer reports ended on its pause sample is gone (the engine takes it
-    /// as the end and sends no resume); one ended after it is kept for the resume. Show cues and
+    /// as the end and sends no resume); one ended after it is kept for the resume, while the
+    /// engine still holds its run. Show cues and
     /// previews alike: a kept show-cue record would block its cue's prime.
     #[test]
     fn an_end_on_the_pause_sample_frees_the_record_and_one_after_it_keeps_it() {
         let cue = CueId(uuid::Uuid::from_u128(1));
         for preview in [false, true] {
-            for (at, kept) in [(99, false), (100, false), (101, true)] {
+            // The last: the engine dropped the run since the pause, so no resume can follow.
+            for (at, held, kept) in [
+                (99, true, false),
+                (100, true, false),
+                (101, true, true),
+                (101, false, false),
+            ] {
                 let mut v = Voices::new();
                 let run = RunId(7);
                 let mut r = rec(cue, run, preview);
                 r.paused_at = Some(100);
                 v.insert(VoiceId(1), r);
                 let mut fx = Effects::default();
-                v.finished(VoiceId(1), at, FinishReason::EndOfStream, &mut fx);
-                let case = format!("preview {preview}, end on {at}");
+                let end = FinishReason::EndOfStream;
+                v.finished(VoiceId(1), at, end, &|c, r| held && (c, r) == (cue, run), &mut fx);
+                let case = format!("preview {preview}, end on {at}, run held {held}");
                 assert_eq!(
                     fx.feedback,
                     vec![Input::ActionEnded { cue, run, at }],
@@ -1283,7 +1295,7 @@ mod tests {
             r.paused_at = paused_at;
             v.insert(VoiceId(1), r);
             let mut fx = Effects::default();
-            v.finished(VoiceId(1), 200, FinishReason::Faulted, &mut fx);
+            v.finished(VoiceId(1), 200, FinishReason::Faulted, &|_, _| true, &mut fx);
             assert!(
                 matches!(
                     fx.feedback.as_slice(),
@@ -1363,7 +1375,7 @@ mod tests {
         v.insert(VoiceId(2), rec(cue, RunId(8), false));
         v.aliases.insert(VoiceId(1), (VoiceId(2), RunId(7)));
         let mut fx = Effects::default();
-        v.finished(VoiceId(1), 200, FinishReason::Faulted, &mut fx);
+        v.finished(VoiceId(1), 200, FinishReason::Faulted, &|_, _| true, &mut fx);
         assert!(fx.deferred.is_empty(), "{:?}", fx.deferred);
         assert!(
             matches!(
