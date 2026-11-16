@@ -6,7 +6,7 @@
 //! operator's mapping is never touched.
 
 use openlab_core::protocol::{DeviceEntry, ErrorBody, ErrorCode, LogLevel, RequestId};
-use openlab_core::{CueId, CueKind, CueState, Input, PatchId, PatchMapping, SampleTime};
+use openlab_core::{CueId, CueState, Input, PatchId, PatchMapping, SampleTime};
 
 use super::inbox::reply;
 use super::{Control, DocCx, DocId, Engine, Flow, ReplyTx, failed, ok};
@@ -132,7 +132,7 @@ impl DocCx<'_> {
             .model
             .ws()
             .cues()
-            .filter(|c| matches!(&c.kind, CueKind::Audio { patch: p, .. } if *p == patch))
+            .filter(|c| c.kind.sound_patch() == Some(patch))
             .map(|c| c.id)
             .filter(|id| matches!(engine.state(*id), CueState::Running | CueState::Fading))
             .collect();

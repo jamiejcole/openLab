@@ -14,7 +14,7 @@
 //! picture is moved back by as much, so the two stay together.
 
 use openlab_audio::{CommandKind, Fade, MediaInfo};
-use openlab_core::{Action, CueId, CueKind, CueState, Input};
+use openlab_core::{Action, CueId, CueKind, CueState, Input, PatchId};
 
 use super::DocCx;
 use super::voices::{Effects, Env};
@@ -59,6 +59,17 @@ impl DocCx<'_> {
         };
         let (ready, _) = self.doc.media.sound(media.as_str(), sound.audio_track)?;
         Some(ready.probed.info)
+    }
+
+    /// The output patch `cue` sounds on: an Audio cue's, or that of a Video cue whose probed
+    /// movie has sound. A Video cue without sound is on no patch and no device.
+    pub(super) fn cue_patch(&self, cue: CueId) -> Option<PatchId> {
+        let kind = &self.doc.model.ws().find_cue(cue)?.kind;
+        match kind {
+            CueKind::Audio { patch, .. } => Some(*patch),
+            CueKind::Video { sound, .. } => sound.patch.filter(|_| self.sound_info(cue).is_some()),
+            _ => None,
+        }
     }
 
     /// Carries out a voice action of a Video cue's run on its sound, if its movie has any.

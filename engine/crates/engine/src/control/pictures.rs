@@ -1339,13 +1339,19 @@ impl DocCx<'_> {
             let Action::StateChanged { cue, state, at } = *action else {
                 continue;
             };
-            if !matches!(
-                state,
-                CueState::Idle | CueState::PostWaiting | CueState::Broken
-            ) {
+            // A cue its sound's device left (shown paused, owning nothing) loses its picture
+            // too, as an Audio cue on that device stops.
+            let lost = state == CueState::Paused && self.doc.model.engine().is_lost(cue);
+            if !lost
+                && !matches!(
+                    state,
+                    CueState::Idle | CueState::PostWaiting | CueState::Broken
+                )
+            {
                 continue;
             }
             let doc = self.doc.id;
+            self.eng.pictures.held.retain(|h| !(lost && h.doc == doc && h.cue == cue));
             let ids: Vec<u64> = self
                 .eng
                 .pictures

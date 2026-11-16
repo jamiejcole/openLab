@@ -178,6 +178,8 @@ impl DocCx<'_> {
                 }
             }
         }
+        // A Video cue's voice (one moved to another device here) reports only failures.
+        self.quiet_sound(&mut fx);
         for (action, picture) in actions.iter().zip(&pictures) {
             if *picture {
                 self.picture_action(action, &mut fx);

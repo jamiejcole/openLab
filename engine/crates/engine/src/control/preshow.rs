@@ -234,6 +234,12 @@ impl Uses {
         for c in ws.cues() {
             match &c.kind {
                 CueKind::Audio { patch, .. } => uses.patch.entry(*patch).or_default().push(c.id),
+                // A Video cue uses its patch whether or not its file has sound yet.
+                CueKind::Video { sound, .. } => {
+                    if let Some(patch) = sound.patch {
+                        uses.patch.entry(patch).or_default().push(c.id);
+                    }
+                }
                 CueKind::Network { destination, .. } => {
                     uses.network.entry(*destination).or_default().push(c.id);
                 }

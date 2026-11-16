@@ -242,11 +242,9 @@ impl DocCx<'_> {
             let Some(cue) = cue else { continue };
             // A cue's meter has one peak per output of its patch, not one per mixer cue output.
             let located = self.doc.media.index().locate(self.doc.model.ws(), cue);
-            let width = match located.map(|c| &c.kind) {
-                Some(openlab_core::CueKind::Audio { patch, .. }) => {
-                    self.eng.patches.outputs(self.doc.id, *patch).clamp(1, outs)
-                }
-                _ => outs,
+            let width = match located.and_then(|c| c.kind.sound_patch()) {
+                Some(patch) => self.eng.patches.outputs(self.doc.id, patch).clamp(1, outs),
+                None => outs,
             };
             let peaks = self
                 .eng
@@ -386,6 +384,13 @@ impl DocCx<'_> {
         self.doc
             .checks
             .check(self.doc.model.ws(), &mut self.doc.media, self.eng.rate);
+        for (cue, track) in self.doc.checks.missing_tracks() {
+            list.push(notice(
+                "audio_track_missing",
+                format!("a Video cue's file has no audio track {track}; its first track plays"),
+                Some(cue),
+            ));
+        }
         self.device_warnings(&mut list);
         self.eng.watch.watch().notices(&mut list);
         if self.eng.seen.alloc_violations > 0 {

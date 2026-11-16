@@ -80,7 +80,15 @@
         },
         "slices": [],
         "last_slice_play_count": 1,
-        "hold_at_end": false
+        "hold_at_end": false,
+        "patch": null,
+        "levels": {
+          "master_db": 0.0,
+          "outputs": [],
+          "crosspoints": [],
+          "gangs": []
+        },
+        "audio_track": 0
       }
     },
     "auto_number": true
