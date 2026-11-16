@@ -146,7 +146,7 @@ impl Voices {
                 if let Some(r) = self.recs.get_mut(&id)
                     && let Phase::Waiting { prepared, .. } = &mut r.phase
                 {
-                    *prepared = Some((made.prepared, made.total));
+                    *prepared = Some(made.ready);
                     r.shown = made.shown;
                 }
             }
@@ -330,6 +330,7 @@ impl Voices {
         if paused.is_none()
             && let Some(rest) = total_frames(&plan.table)
         {
+            let rest = Scale::new(env.rate.get(), plan.rate).master(rest);
             fx.feedback.push(Input::ActionLength {
                 cue,
                 run,
@@ -361,7 +362,7 @@ impl Voices {
                     queue: Vec::new(),
                 },
                 offset: plan.offset,
-                rest: Some(plan.table),
+                rest: Some((plan.table, plan.rate)),
                 shown: plan.shown,
                 delay: counted.saturating_sub(plan.offset),
                 moved: true,
@@ -408,7 +409,7 @@ impl Voices {
             if let (Ok(made), Some(r)) = (made, self.recs.get_mut(&id))
                 && let Phase::Waiting { prepared, .. } = &mut r.phase
             {
-                *prepared = Some((made.prepared, made.total));
+                *prepared = Some(made.ready);
                 if !r.relocated {
                     r.shown = made.shown;
                 }
@@ -493,6 +494,17 @@ impl Voices {
 
     /// Puts a waiting voice into the mixer once it has a stream and a start and is not paused.
     pub(super) fn try_start(&mut self, id: VoiceId, env: &mut Env<'_>, fx: &mut Effects) {
+        // A stream made for another device rate than its patch's device has now (the patch was
+        // moved to a device at another rate since) would play at the wrong pitch: made again.
+        let rate = self.recs.get(&id).map(|r| rate_for(env, r.cue));
+        if let Some(r) = self.recs.get_mut(&id)
+            && let Phase::Waiting { prepared, .. } = &mut r.phase
+            && prepared
+                .as_ref()
+                .is_some_and(|p| Some(p.scale.local_rate()) != rate)
+        {
+            *prepared = None;
+        }
         let Some(r) = self.recs.get(&id) else { return };
         let (cue, run, offset) = (r.cue, r.run, r.offset);
         let from = r.plan_of();
@@ -519,7 +531,7 @@ impl Voices {
                     if let Some(r) = self.recs.get_mut(&id)
                         && let Phase::Waiting { prepared, .. } = &mut r.phase
                     {
-                        *prepared = Some((made.prepared, made.total));
+                        *prepared = Some(made.ready);
                         if !r.relocated {
                             r.shown = made.shown;
                         }
@@ -581,11 +593,10 @@ impl Voices {
         if let Some(r) = self.recs.get(&id)
             && r.moved
             && let Phase::Waiting {
-                prepared: Some((p, _)),
-                ..
+                prepared: Some(p), ..
             } = &r.phase
         {
-            let primed = p.handle.is_primed();
+            let primed = p.stream.handle.is_primed();
             if r.relocated {
                 // A move to another device swaps on its planned sample, sent once that is in the
                 // commit window (a stop or pause decided before then reaches the old voice).
@@ -620,12 +631,18 @@ impl Voices {
         else {
             return;
         };
-        let (Some((prepared, total)), Some(start)) = (prepared, start) else {
+        let (Some(ready), Some(start)) = (prepared, start) else {
             return;
         };
+        let Ready {
+            stream: prepared,
+            total,
+            scale,
+        } = ready;
+        // What the mixer voice plays, at the device's rate.
+        let table = prepared.slices.clone();
         // A start the probe held up plays as soon as it can, from its head (a cold start).
         let at = start.max(env.now);
-        let table = prepared.slices.clone();
         let crossfade = Fade::new(seconds_to_samples(SEEK_CROSSFADE, env.rate), Curve::Linear);
         let fade_in = if r.moved {
             FadeIn::Crossfade(crossfade)
@@ -658,6 +675,7 @@ impl Voices {
                 r.start_at = at;
                 r.total = total;
                 r.table = table;
+                r.scale = scale;
                 // A moved voice's delay starts at the difference between the core's count and
                 // its own (`relocate`); a start held up adds the hold.
                 r.delay = r.delay.saturating_add(at - start);
@@ -764,7 +782,7 @@ impl Voices {
             *prepared = None;
         }
         r.offset = plan.offset;
-        r.rest = Some(plan.table);
+        r.rest = Some((plan.table, plan.rate));
         r.shown = plan.shown;
         r.delay = counted.saturating_sub(plan.offset);
     }
@@ -947,7 +965,7 @@ impl Voices {
                     *start = Some(date);
                     *prepared = None;
                     r.offset = plan.offset;
-                    r.rest = Some(plan.table);
+                    r.rest = Some((plan.table, plan.rate));
                     r.shown = plan.shown;
                     r.delay = counted.saturating_sub(plan.offset);
                 }

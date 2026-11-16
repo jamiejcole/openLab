@@ -134,6 +134,7 @@ impl DocCx<'_> {
             patches: &self.eng.patches,
             ids: &mut self.eng.voice_ids,
             rate: self.eng.rate,
+            rates: self.eng.outputs.rates(),
             cue_outputs: self.eng.cue_outputs,
             now,
             window: self.eng.block,

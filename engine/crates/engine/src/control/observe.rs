@@ -341,7 +341,7 @@ impl Engine {
                         )
                     }
                     None => (
-                        u32::try_from(self.device_outputs).unwrap_or(u32::MAX),
+                        u32::try_from(o.mixer.device_outputs()).unwrap_or(u32::MAX),
                         u32::try_from(self.block).ok(),
                         None,
                     ),
@@ -350,8 +350,8 @@ impl Engine {
                     name: o.name.clone(),
                     state: o.state(),
                     primary: key == 0,
-                    // Every device runs at the primary's rate.
-                    sample_rate: self.rate.get(),
+                    // Each device runs at its own rate (its mixer's).
+                    sample_rate: o.mixer.sample_rate(),
                     channels,
                     block_frames,
                     latency_ms,
@@ -378,7 +378,8 @@ impl Engine {
                 state: DeviceState::Absent,
                 sample_rate: self.rate.get(),
                 block_frames: u32::try_from(self.block).ok(),
-                channels: u32::try_from(self.device_outputs).unwrap_or(u32::MAX),
+                channels: u32::try_from(self.outputs.primary().mixer.device_outputs())
+                    .unwrap_or(u32::MAX),
                 latency_ms: None,
             },
         };

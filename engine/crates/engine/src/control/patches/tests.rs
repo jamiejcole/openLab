@@ -634,3 +634,78 @@ fn a_slot_follows_its_patch_to_another_device_unless_a_voice_plays_through_it() 
     );
     assert!(!p.has_retired(D0));
 }
+
+/// AUD-02: each device's mixer has its own width. A wider second device widens the matrices
+/// kept without changing what the first holds; a patch on it routes to its upper outputs and
+/// sends nothing for columns a mixer does not have; on the narrower device, a channel beyond
+/// its width is `channels_missing` with that device's own count.
+#[test]
+fn each_output_has_its_own_width() {
+    let ws = ws_with(vec![out(0.0, false, false), out(0.0, false, false)]);
+    let mut p = Patches::new(2, 2, 2);
+    let devices = || {
+        let mut d = two_devices(2);
+        d[1].0.output_channels = 8;
+        d
+    };
+    p.sync(
+        D0,
+        &ws,
+        &on_device(&ws, "Dev", vec![0, 1]),
+        &devices(),
+        None,
+        &idle(),
+    );
+    let on_dev = p.sent.clone();
+    p.set_width(1, 8);
+    for (k, m) in &p.sent {
+        let was = &on_dev[k];
+        // Rows of 2 widened to rows of 8, the same gains in the first two columns.
+        assert_eq!(m.len(), 2 * 8);
+        for o in 0..2 {
+            assert_eq!(&m[o * 8..o * 8 + 2], &was[o * 2..o * 2 + 2]);
+            assert!(m[o * 8 + 2..o * 8 + 8].iter().all(|&g| g == 0.0));
+        }
+    }
+    // On the 8-output device's outputs 7 and 8.
+    let (cmds, changed) = p.sync(
+        D0,
+        &ws,
+        &on_device(&ws, "Two", vec![6, 7]),
+        &devices(),
+        None,
+        &idle(),
+    );
+    assert!(matches!(changed[0].1, PatchResolution::Mapped { .. }));
+    let gains: Vec<_> = routes_on(&cmds, 1)
+        .into_iter()
+        .filter(|r| r.3 != 0.0)
+        .map(|r| (r.0, r.1, r.2))
+        .collect();
+    let slot = p.mixer_patch(D0, pid()).unwrap();
+    assert_eq!(gains, vec![(slot, 0, 6), (slot, 1, 7)]);
+    // Nothing for a column the 2-output mixer lacks.
+    assert!(routes_on(&cmds, 0).iter().all(|r| r.2 < 2), "{cmds:?}");
+    assert!(
+        p.resend_all(0)
+            .iter()
+            .all(|(_, c)| !matches!(c, CommandKind::SetPatchRouting { device_output, .. } if *device_output >= 2))
+    );
+    // Back on the 2-output device, mapped beyond it: its own count is what is missing.
+    let (_, changed) = p.sync(
+        D0,
+        &ws,
+        &on_device(&ws, "Dev", vec![2, 3]),
+        &two_devices(8),
+        None,
+        &idle(),
+    );
+    assert_eq!(
+        changed[0].1,
+        PatchResolution::ChannelsMissing {
+            device: "Dev".into(),
+            needed: 4,
+            available: 2,
+        }
+    );
+}
