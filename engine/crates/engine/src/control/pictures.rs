@@ -1264,8 +1264,10 @@ impl DocCx<'_> {
     /// The run's sound was starved by the disk and plays on from sample `at`, `frames` later
     /// than planned: its picture is put back by as much from there (the sound is the clock),
     /// and the run's end moves with them. A devamp's stop already on the stage host moves too,
-    /// so the pass under way is played whole; a picture stopping for any other reason, paused
-    /// or not yet played is left as it is.
+    /// so the pass under way is played whole. A paused picture (the pause came before this
+    /// report was read) is held that much earlier and its plan counts the lateness, so the
+    /// resume plays both on together and tells the later end. A picture stopping for any other
+    /// reason is left as it is: it ends with its sound on the stop's sample whatever the plan.
     pub(super) fn picture_late(
         &mut self,
         run: RunId,
@@ -1281,9 +1283,36 @@ impl DocCx<'_> {
             return;
         };
         let cue = l.cue;
-        let (Some(plan), Some((Some(_), _))) = (l.plan.as_mut(), l.motion) else {
+        let (Some(plan), Some((moving, held))) = (l.plan.as_mut(), l.motion) else {
             return;
         };
+        if moving.is_none() {
+            if l.ends.is_some() {
+                return;
+            }
+            // Paused: the resume plays from the action's place less `late`.
+            plan.late = plan.late.saturating_add(frames);
+            let own = seconds(
+                seconds_to_samples(held, self.eng.rate).saturating_sub(frames),
+                rate,
+            )
+            .min(openlab_core::MAX_TIME);
+            let Some(ToStage::Pause { at: since, .. }) = l.now else {
+                return;
+            };
+            let message = ToStage::Pause {
+                picture: id,
+                at: since,
+                offset: position_in(&plan.passes, own).min(openlab_core::MAX_TIME),
+                action: own,
+            };
+            l.now = Some(message.clone());
+            l.motion = Some((None, own));
+            if !l.held_back {
+                self.eng.picture(message);
+            }
+            return;
+        }
         // Stopping where a devamp leaves its loop, and not there yet.
         let devamp_stop = plan
             .devamp

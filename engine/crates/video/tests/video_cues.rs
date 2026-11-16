@@ -3595,6 +3595,55 @@ fn a_starved_sound_puts_its_picture_back_so_they_stay_together() {
     assert_eq!(shown(&mut s), None);
 }
 
+/// The sound comes back from a starved disk and the cue is paused before the engine has heard
+/// of it: the paused picture is put back to where its sound is, the resume plays both on in
+/// step, and the cue lasts until the sound has played to its end.
+#[test]
+fn a_pause_as_the_starved_sound_comes_back_still_puts_the_picture_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (100, 25), "pcm:2:48000");
+    let ws = workspace(vec![sounding_cue(1, &movie)]);
+    let mut s = video_show_config(ws, &[], |_| {}, |c| c.streamer.before_open = gated_open);
+    gate(&movie);
+    let at = go(&mut s);
+    s.run_unsettled(samples(0.4));
+    release(&movie);
+    // The block the sound comes back in is rendered, and the pause is asked before the engine
+    // reads that block's report.
+    s.render_only(BLOCK);
+    s.transport(TransportAction::Pause { cue: id(1) });
+    let paused = s.now();
+    s.run(samples(0.3));
+    expect_state(&s, 1, CueState::Paused, "");
+    let late = (paused - at) as f64 / f64::from(RATE);
+    assert!(late > 0.35, "the sound came back {late} s after GO");
+    // Held on the frame its sound had reached: the start of the movie, not 0.4 s in.
+    assert!(on_stage(&mut s, "paused") <= 1, "{:?}", shown(&mut s));
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let waited = s.now() - paused;
+    for _ in 0..5 {
+        s.run(samples(0.1));
+        in_step(&mut s, RATE, 25.0, "after the resume");
+    }
+    // The whole four seconds of sound are heard: the cue ends when they have played.
+    let end = paused + waited + samples(4.0);
+    run_to(&mut s, end - samples(0.1));
+    expect_state(&s, 1, CueState::Running, "the sound has not ended yet");
+    in_step(&mut s, RATE, 25.0, "near the end");
+    run_to(&mut s, end + samples(0.1));
+    expect_state(&s, 1, CueState::Idle, "");
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(0.1));
+    let last = last_nonzero(&s.channel(1)).unwrap() as u64;
+    // 200 samples before the last one heard the sound is that far from the movie's end
+    // (looked at clear of the resampler's tail at the very end).
+    let heard = sound_at(&s, last - 200).expect("sound near the end");
+    assert!(
+        (heard - 3.975).abs() < 0.003,
+        "the sound ends at the movie's end: {heard} s, 200 samples before its last"
+    );
+}
+
 /// `bytes` with the first `find` replaced by `with` (the same length).
 fn patched(bytes: &[u8], find: &[u8], at: usize, with: &[u8]) -> Vec<u8> {
     let found = bytes
@@ -3969,6 +4018,7 @@ fn the_audio_device_is_lost_mid_cue() {
     let later = elapsed(&mut s, 2);
     let stood = then.last().copied().expect("B's time is told");
     assert!(stood > 0.3 && stood < 0.8, "B stopped {stood} s in");
+    assert!(!later.is_empty(), "B's time is still told");
     assert!(
         later.iter().all(|e| *e == stood),
         "B's time moved on from {stood}: {later:?}"
