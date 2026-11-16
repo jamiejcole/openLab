@@ -521,10 +521,18 @@ fn expect_state(s: &OfflineShow, n: u128, want: CueState, what: &str) {
 }
 
 /// What the engine and the stage host saw: the sample, the pictures up and open, any wait that
-/// gave up, and the end of the show log (a picture failure, a stage host restart, a probe the
+/// gave up, every cue's problems (a cue broken before its GO says why: what its file's probe
+/// answered) and the end of the show log (a picture failure, a stage host restart, a probe the
 /// stage host could not draw).
 fn seen(s: &OfflineShow) -> String {
     let c = s.control();
+    let problems: Vec<String> = c
+        .workspace()
+        .cues()
+        .map(|cue| (cue.id, c.engine().problems(cue.id)))
+        .filter(|(_, problems)| !problems.is_empty())
+        .map(|(cue, problems)| format!("cue {cue:?} has problems: {problems:?}"))
+        .collect();
     let log: Vec<String> = c
         .show_log()
         .tail(30)
@@ -532,11 +540,12 @@ fn seen(s: &OfflineShow) -> String {
         .map(|e| format!("{:?} {:?} {}", e.level, e.kind, e.message))
         .collect();
     format!(
-        "at sample {}; pictures up {}, open {}, waits given up {}\n{}",
+        "at sample {}; pictures up {}, open {}, waits given up {}\n{}\n{}",
         s.now(),
         c.pictures_live(),
         c.pictures_opened(),
         s.stalls(),
+        problems.join("\n"),
         log.join("\n")
     )
 }
@@ -2649,6 +2658,115 @@ fn a_resume_plays_on_with_the_plan_the_run_started_with() {
     let at = start(&mut s, 1);
     run_to(&mut s, at + samples(1.3));
     assert_eq!(shown(&mut s), Some(frame_at(1.7)));
+}
+
+/// A Devamp cue of cue 1 that lets it play on.
+fn devamp_cue(n: u128) -> Cue {
+    cue(
+        n,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    )
+}
+
+/// A devamp is done once the picture has left its loop: the next one in the same run is of the
+/// loop under way then, not an echo of the first.
+#[test]
+fn a_second_devamp_in_the_same_run_leaves_the_second_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    // File 0.0 to 0.4 s for ever, 0.4 to 0.8 s for ever, then 0.8 to 1.2 s once.
+    let looping = timed_cue(1, &movie, |t| {
+        t.end_time = Some(1.2);
+        t.slices = vec![
+            openlab_core::SliceMarker {
+                time: 0.4,
+                play_count: 0,
+            },
+            openlab_core::SliceMarker {
+                time: 0.8,
+                play_count: 0,
+            },
+        ];
+        t.last_slice_play_count = 1;
+    });
+    let mut s = video_show(vec![looping, devamp_cue(2), devamp_cue(3)]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2); // the first loop is left at 1.2 s
+    run_to(&mut s, at + samples(1.3));
+    assert_eq!(shown(&mut s), Some(frame_at(0.5)), "in the second loop");
+    run_to(&mut s, at + samples(1.7));
+    start(&mut s, 3); // its pass under way is 1.6 to 2.0 s
+    run_to(&mut s, at + samples(2.1));
+    assert_eq!(shown(&mut s), Some(frame_at(0.9)), "in the last slice");
+    run_to(&mut s, at + samples(2.6));
+    expect_state(&s, 1, CueState::Idle, "the last slice played out");
+    assert_eq!(shown(&mut s), None);
+}
+
+/// A devamp not yet carried out when its target pauses is asked again at the resume.
+#[test]
+fn a_devamp_pending_at_a_pause_leaves_the_loop_after_the_resume() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let looping = timed_cue(1, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.2);
+        t.slices = vec![openlab_core::SliceMarker {
+            time: 0.8,
+            play_count: 0,
+        }];
+        t.last_slice_play_count = 1;
+    });
+    let mut s = video_show(vec![looping, devamp_cue(2)]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2); // the loop is left at 1.2 s
+    run_to(&mut s, at + samples(1.1));
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(samples(0.2));
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    // 0.1 s of the pass is left, then the slice after the loop (file 0.8 s on).
+    run_to(&mut s, resumed + samples(0.2));
+    assert_eq!(shown(&mut s), Some(frame_at(0.9)));
+}
+
+/// A devamp carried out stays carried out over a pause: the resume plays on in the slice after
+/// the loop, to the end the cue was told.
+#[test]
+fn a_resume_in_the_slice_after_a_devamped_loop_plays_on_and_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = movie!(dir.path(), "clip.mov", (50, 25));
+    let looping = timed_cue(1, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.6);
+        t.slices = vec![openlab_core::SliceMarker {
+            time: 0.8,
+            play_count: 0,
+        }];
+        t.last_slice_play_count = 1;
+    });
+    let mut s = video_show(vec![looping, devamp_cue(2)]);
+    let at = start(&mut s, 1);
+    run_to(&mut s, at + samples(1.0));
+    start(&mut s, 2); // the loop is left at 1.2 s, the action ends at 2.0 s
+    run_to(&mut s, at + samples(1.42));
+    assert_eq!(shown(&mut s), Some(frame_at(1.02)), "in the slice after");
+    s.transport(TransportAction::Pause { cue: id(1) });
+    s.run(samples(0.2));
+    s.transport(TransportAction::Resume { cue: id(1) });
+    let resumed = s.now();
+    run_to(&mut s, resumed + samples(0.2));
+    assert_eq!(shown(&mut s), Some(frame_at(1.22)), "plays on from there");
+    run_to(&mut s, resumed + samples(0.7));
+    expect_state(&s, 1, CueState::Idle, "ended where the devamp put its end");
+    assert_eq!(shown(&mut s), None);
 }
 
 // A Video cue's sound (VID-06): its movie's audio track through the mixer, in step with its

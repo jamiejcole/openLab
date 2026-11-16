@@ -4,7 +4,8 @@
 //! device supports, and the reopen backoff schedule (NFR-08). No cpal types here, so it builds
 //! and is tested without the `device` feature.
 
-use crate::mixer::MAX_OUTPUT_CHANNELS;
+use crate::decode::MIN_MEDIA_RATE;
+use crate::mixer::{MAX_OUTPUT_CHANNELS, MAX_SAMPLE_RATE};
 
 /// Sample formats the device layer can write. Others a device offers are skipped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -149,6 +150,51 @@ pub fn negotiate(ranges: &[ConfigRange], req: Request) -> Result<Negotiated, Neg
         buffer,
         buffer_unverified,
     })
+}
+
+/// Rates tried, in this order, for a device that cannot run at the rate asked for.
+const COMMON_RATES: [u32; 9] = [
+    48_000, 44_100, 96_000, 88_200, 192_000, 176_400, 32_000, 22_050, 16_000,
+];
+
+/// The rate and channel count to open a device at that runs beside another (AUD-02): every
+/// device has a mixer of its own, at its own rate and with its own outputs. The rate is
+/// `preferred` (the clock device's) when the device can run at it; else the first of 48, 44.1,
+/// 96, 88.2, 192, 176.4, 32, 22.05 and 16 kHz it can; else the highest rate it offers that
+/// openLab can resample to (8 kHz to 384 kHz). The channel count is the most the device offers
+/// at that rate, at most 64. [`NegotiateError::NoConfigs`] when it offers no configuration with
+/// channels, [`NegotiateError::SampleRate`] (with `preferred`) when none runs at a usable rate.
+pub fn choose_output(ranges: &[ConfigRange], preferred: u32) -> Result<(u32, u16), NegotiateError> {
+    let usable = || ranges.iter().filter(|r| r.channels > 0);
+    if usable().next().is_none() {
+        return Err(NegotiateError::NoConfigs);
+    }
+    let runs = |rate: u32| {
+        (MIN_MEDIA_RATE..=MAX_SAMPLE_RATE).contains(&rate)
+            && usable().any(|r| (r.min_rate..=r.max_rate).contains(&rate))
+    };
+    let highest = usable()
+        .filter_map(|r| {
+            let top = r.max_rate.min(MAX_SAMPLE_RATE);
+            (top >= r.min_rate.max(MIN_MEDIA_RATE)).then_some(top)
+        })
+        .max();
+    let rate = std::iter::once(preferred)
+        .chain(COMMON_RATES)
+        .find(|&r| runs(r))
+        .or(highest)
+        .ok_or(NegotiateError::SampleRate {
+            requested: preferred,
+        })?;
+    let max = u16::try_from(MAX_OUTPUT_CHANNELS).unwrap_or(u16::MAX);
+    let channels = usable()
+        .filter(|r| (r.min_rate..=r.max_rate).contains(&rate))
+        .map(|r| r.channels.min(max))
+        .max()
+        .ok_or(NegotiateError::SampleRate {
+            requested: preferred,
+        })?;
+    Ok((rate, channels))
 }
 
 /// Lower is better: exact, then the fewest extra channels, then the fewest missing ones.
@@ -373,6 +419,51 @@ mod tests {
         let n = negotiate(&r, req(48_000, 2, Some(256))).unwrap();
         assert_eq!(n.buffer, BufferChoice::Fixed(256));
         assert!(n.buffer_unverified);
+    }
+
+    /// A device beside the clock device opens at the clock's rate when it can, else at a
+    /// common rate it has, else at the highest it offers; with as many channels as it has at
+    /// that rate, at most 64.
+    #[test]
+    fn another_device_opens_at_its_own_rate_and_channel_count() {
+        let f = SampleFormat::F32;
+        // The clock's rate, with the most channels it has there.
+        let r = [range(2, 44_100, 48_000, f), range(8, 44_100, 48_000, f)];
+        assert_eq!(choose_output(&r, 48_000), Ok((48_000, 8)));
+        // Not the clock's rate: the first common rate it has, its channels at that rate.
+        let r = [range(2, 96_000, 96_000, f), range(6, 44_100, 44_100, f)];
+        assert_eq!(choose_output(&r, 48_000), Ok((44_100, 6)));
+        // No common rate: the highest it offers.
+        let r = [range(4, 11_025, 12_000, f)];
+        assert_eq!(choose_output(&r, 48_000), Ok((12_000, 4)));
+        // A range above what openLab resamples to is used at its top usable rate.
+        let r = [range(2, 300_000, 500_000, f)];
+        assert_eq!(choose_output(&r, 48_000), Ok((384_000, 2)));
+        // More than 64 channels: 64.
+        let r = [range(128, 48_000, 48_000, f)];
+        assert_eq!(choose_output(&r, 48_000), Ok((48_000, 64)));
+    }
+
+    /// A device with no usable configuration, or none at a rate openLab can play, says so.
+    #[test]
+    fn a_device_with_no_usable_rate_is_refused() {
+        let f = SampleFormat::F32;
+        assert_eq!(choose_output(&[], 48_000), Err(NegotiateError::NoConfigs));
+        assert_eq!(
+            choose_output(&[range(0, 48_000, 48_000, f)], 48_000),
+            Err(NegotiateError::NoConfigs)
+        );
+        for r in [range(2, 1_000, 4_000, f), range(2, 400_000, 500_000, f)] {
+            assert_eq!(
+                choose_output(&[r], 48_000),
+                Err(NegotiateError::SampleRate { requested: 48_000 })
+            );
+        }
+        // An inverted range runs at nothing.
+        assert_eq!(
+            choose_output(&[range(2, 48_000, 44_100, f)], 48_000),
+            Err(NegotiateError::SampleRate { requested: 48_000 })
+        );
     }
 
     #[test]

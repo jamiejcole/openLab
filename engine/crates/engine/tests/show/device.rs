@@ -35,14 +35,19 @@ const WAIT_STEPS: u32 = 1_500;
 
 /// A listed output device with `channels` channels at [`RATE`].
 pub fn listed(id: &str, name: &str, channels: u16) -> ListedDevice {
+    listed_at(id, name, channels, RATE)
+}
+
+/// A listed output device with `channels` channels that runs only at `rate`.
+pub fn listed_at(id: &str, name: &str, channels: u16, rate: u32) -> ListedDevice {
     ListedDevice {
         id: id.into(),
         name: name.into(),
         is_default: false,
         configs: vec![ConfigRange {
             channels,
-            min_rate: RATE,
-            max_rate: RATE,
+            min_rate: rate,
+            max_rate: rate,
             buffer: BufferRange::Unknown,
             format: SampleFormat::F32,
         }],
@@ -57,6 +62,21 @@ struct Live {
     reporter: ErrorReporter,
     /// The device delivers callbacks (false once it is lost).
     rendering: bool,
+    /// Its mixer's rate: a callback lasting `n` frames at [`RATE`] has `n × rate / RATE` here.
+    rate: u32,
+    /// Time it has rendered since it opened, in frames at [`RATE`].
+    elapsed: u64,
+}
+
+impl Live {
+    /// Frames at its own rate in a callback of `frames` at [`RATE`], so over many callbacks it
+    /// renders as much time as a device at [`RATE`] does, to within a frame.
+    fn frames_in(&mut self, frames: usize) -> usize {
+        let at = |t: u64| t * u64::from(self.rate) / u64::from(RATE);
+        let before = at(self.elapsed);
+        self.elapsed += frames as u64;
+        usize::try_from(at(self.elapsed) - before).unwrap()
+    }
 }
 
 #[derive(Default)]
@@ -281,7 +301,7 @@ impl Fake {
             .filter(|l| l.rendering)
             .map(|l| {
                 let ch = l.host.device_channels();
-                let mut buf = vec![0.0f32; frames * ch];
+                let mut buf = vec![0.0f32; l.frames_in(frames) * ch];
                 l.host.render(&mut buf, None);
                 (l.id.clone(), ch, buf)
             })
@@ -359,6 +379,7 @@ impl DeviceLayer for FakeLayer {
             });
         };
         let outputs = u16::try_from(mixer.output_channels()).unwrap();
+        let rate = mixer.sample_rate();
         let channels = device.max_channels();
         let (host, link) = OutputHost::new(mixer, channels);
         let rendering = !std::mem::take(&mut s.silent_next_open);
@@ -368,20 +389,23 @@ impl DeviceLayer for FakeLayer {
             host,
             reporter: link.reporter(),
             rendering,
+            rate,
+            elapsed: 0,
         });
         let block = s
             .device_blocks
             .iter()
             .rev()
             .find(|(id, _)| *id == device.id)
-            .map_or(s.block, |&(_, b)| b);
+            // As long in time as the others' (a callback renders that long on every device).
+            .map_or(s.block * rate / RATE, |&(_, b)| b);
         let info = StreamInfo {
             device_id: device.id.clone(),
             name: device.name.clone(),
             channels: outputs.min(channels),
             outputs_dropped: channels < outputs,
             block_frames: s.reported_block.unwrap_or(Some(block)),
-            sample_rate: s.reported_rate.unwrap_or(RATE),
+            sample_rate: s.reported_rate.unwrap_or(rate),
             monitor: link.monitor(),
         };
         Ok(Box::new(FakeStream {
@@ -456,7 +480,8 @@ impl DeviceShow {
         // As many patch matrices as the engine hands out slots.
         let mut mixer = mixer_config();
         mixer.patches = mixer.patches.max(config.mixer_patches);
-        config.output_mixer.get_or_insert(mixer);
+        // The primary's mixer is the one configured, if a test gives one.
+        let mixer = *config.output_mixer.get_or_insert(mixer);
         let fake = Fake::new(devices.clone());
         let (ctl, mixer) = Mixer::new(mixer).unwrap();
         let (inbox_tx, inbox) = crossbeam_channel::unbounded();

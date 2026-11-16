@@ -607,6 +607,7 @@ mod tests {
                     left: f64::INFINITY,
                     next: None,
                     held: false,
+                    last: false,
                     pass: 0,
                     opacity: 1.0,
                     geometry: *geometry,

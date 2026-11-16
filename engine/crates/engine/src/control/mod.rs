@@ -437,7 +437,8 @@ struct Engine {
     last_tick_stalled: bool,
     /// The mixers' cue outputs: the most a patch can have, the stride of a voice-meter read.
     cue_outputs: usize,
-    /// The mixers' device outputs (every device runs at the primary's channel count).
+    /// The most device outputs of any output's mixer (each device has its own count): the
+    /// stride of `out_peaks`.
     device_outputs: usize,
     seen: Seen,
     /// Mixer stage fault reports handled ([`Control::stage_faulted`]).
@@ -892,13 +893,19 @@ impl Engine {
         self.playable = playable;
     }
 
-    /// Voice-meter buffers for every output's mixer.
+    /// Voice-meter and output-meter buffers for every output's mixer.
     fn size_meters(&mut self) {
         let cap: usize = self
             .outputs
             .iter()
             .map(|(_, o)| o.mixer.voice_meter_capacity())
             .sum();
+        self.device_outputs = self
+            .outputs
+            .iter()
+            .map(|(_, o)| o.mixer.device_outputs())
+            .max()
+            .unwrap_or(1);
         self.meter_ids = vec![VoiceId(0); cap];
         self.meter_peaks = vec![0.0; cap * self.cue_outputs.max(1)];
         self.out_peaks = vec![0.0; self.device_outputs * self.outputs.len()];
@@ -921,11 +928,13 @@ impl Engine {
         n
     }
 
-    /// Reads every mixer's output meters into `out_peaks`, output `k`'s at `k * device_outputs`.
+    /// Reads every mixer's output meters into `out_peaks`, output `k`'s at `k * device_outputs`
+    /// (as many as its mixer has).
     fn read_output_meters(&mut self) {
         let n = self.device_outputs;
         for (k, o) in self.outputs.iter_mut().enumerate() {
-            if let Some(out) = self.out_peaks.get_mut(k * n..(k + 1) * n) {
+            let width = o.mixer.device_outputs().min(n);
+            if let Some(out) = self.out_peaks.get_mut(k * n..k * n + width) {
                 o.mixer.read_output_meters_into(out);
             }
         }

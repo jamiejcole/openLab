@@ -98,6 +98,8 @@ pub struct PlanPoint {
     pub next: Option<f64>,
     /// Past the plan's last pass: held just before its end.
     pub ended: bool,
+    /// No pass follows the one under way: the plan ends when it does.
+    pub last: bool,
     /// How many passes of the plan came before this one (every play of every entry): a new
     /// number is a new pass, so a seam is known as one however near the frames on each side.
     pub pass: u64,
@@ -132,6 +134,7 @@ pub fn plan_point(plan: &[PlanPass], elapsed: f64) -> Option<PlanPoint> {
                 left: pass.length - within,
                 next,
                 ended: false,
+                last: !more && after.is_none(),
                 // A float-to-int cast saturates.
                 pass: (before + pass_no) as u64,
             });
@@ -144,6 +147,7 @@ pub fn plan_point(plan: &[PlanPass], elapsed: f64) -> Option<PlanPoint> {
         left: 0.0,
         next: None,
         ended: true,
+        last: true,
         pass: before as u64,
     })
 }
@@ -260,6 +264,8 @@ mod tests {
         );
         // The last pass goes nowhere: the plan ends.
         assert_eq!(at(&plan, 5.0).next, None);
+        let last = [0.5, 3.9, 4.0, 6.0].map(|t| at(&plan, t).last);
+        assert_eq!(last, [false, false, true, true], "only the last pass is");
         assert!(at(&plan, 6.0).ended);
         assert_eq!(plan_length(&plan), Some(6.0));
     }
@@ -267,8 +273,9 @@ mod tests {
     #[test]
     fn an_infinite_loop_never_ends_and_a_slice_after_a_loop_is_a_jump() {
         let plan = [pass(0.0, 1.0, 1), pass(1.0, 0.5, 0)];
-        // Straight on from the first slice into the loop: no jump.
+        // Straight on from the first slice into the loop: no jump, and not the plan's end.
         assert_eq!(at(&plan, 0.9).next, None);
+        assert!(!at(&plan, 0.9).last && !at(&plan, 1000.25).last);
         let p = at(&plan, 1000.25);
         assert!((p.position - 1.25).abs() < 1e-9);
         assert_eq!(p.next, Some(1.0));

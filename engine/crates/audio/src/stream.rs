@@ -481,13 +481,27 @@ impl DiskStreamer {
     /// Creates the stream's ring and hands the stream to a worker. Does no I/O here; checks the
     /// slice table against `info` and the stream limit.
     pub fn prepare(&mut self, req: StreamRequest) -> Result<PreparedStream, MediaError> {
+        self.prepare_at(req, self.config.device_rate)
+    }
+
+    /// [`Self::prepare`] for a voice on a device running at `device_rate` rather than
+    /// [`StreamerConfig::device_rate`]: the file is resampled to that rate and `req.slices` are
+    /// frames at it.
+    pub fn prepare_at(
+        &mut self,
+        req: StreamRequest,
+        device_rate: u32,
+    ) -> Result<PreparedStream, MediaError> {
+        if device_rate == 0 {
+            return Err(MediaError::Worker);
+        }
         let worker = self
             .workers
             .get(self.next % self.workers.len())
             .ok_or(MediaError::Worker)?;
         self.next = self.next.wrapping_add(1);
         let wake = worker.tx.clone();
-        let (task, prepared) = self.task(req, wake)?;
+        let (task, prepared) = self.task_at(req, device_rate, wake)?;
         worker
             .tx
             .send(Msg::Add(task))
@@ -495,10 +509,21 @@ impl DiskStreamer {
         Ok(prepared)
     }
 
-    /// The task a worker runs for `req`, and the stream it fills.
+    /// [`Self::task_at`] at the configured device rate.
+    #[cfg(test)]
     fn task(
         &self,
         req: StreamRequest,
+        wake: Sender<Msg>,
+    ) -> Result<(Box<Task>, PreparedStream), MediaError> {
+        self.task_at(req, self.config.device_rate, wake)
+    }
+
+    /// The task a worker runs for `req` at `device_rate`, and the stream it fills.
+    fn task_at(
+        &self,
+        req: StreamRequest,
+        device_rate: u32,
         wake: Sender<Msg>,
     ) -> Result<(Box<Task>, PreparedStream), MediaError> {
         let StreamRequest {
@@ -507,7 +532,7 @@ impl DiskStreamer {
             seeking,
             slices,
         } = req;
-        let total = info.frames_at(self.config.device_rate);
+        let total = info.frames_at(device_rate);
         let fits = |s: &Slice| {
             s.frames > 0 && s.plays != Plays::Times(0) && s.start.saturating_add(s.frames) <= total
         };
@@ -523,8 +548,7 @@ impl DiskStreamer {
         let permit = Permit(Arc::clone(&self.open));
 
         let ch = usize::from(info.channels).max(1);
-        let ring_frames = (u64::from(self.config.device_rate) * u64::from(self.config.buffer_ms)
-            / 1000)
+        let ring_frames = (u64::from(device_rate) * u64::from(self.config.buffer_ms) / 1000)
             .max(CHUNK_FRAMES as u64);
         let ring_frames = usize::try_from(ring_frames).unwrap_or(CHUNK_FRAMES);
         let (producer, source) = RingBuffer::new(ring_frames * ch);
@@ -547,7 +571,7 @@ impl DiskStreamer {
                         media,
                         seeking: seeking.clone(),
                         info,
-                        device_rate: self.config.device_rate,
+                        device_rate,
                         shared: Arc::clone(&shared),
                         reply,
                         wake: wake.clone(),
@@ -565,7 +589,7 @@ impl DiskStreamer {
             opening,
             seeking,
             info,
-            device_rate: self.config.device_rate,
+            device_rate,
             slices: slices.clone(),
             pipe: None,
             entry: 0,
@@ -575,7 +599,7 @@ impl DiskStreamer {
             origin: (0, 0),
             offset: 0,
             exit_frames: usize::try_from(
-                u64::from(self.config.device_rate) * u64::from(self.config.exit_ms) / 1000,
+                u64::from(device_rate) * u64::from(self.config.exit_ms) / 1000,
             )
             .unwrap_or(0),
             exit_state: vec![ExitState::Unknown; entries],

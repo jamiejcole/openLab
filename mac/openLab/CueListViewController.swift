@@ -138,6 +138,26 @@ final class CueOutlineView: NSOutlineView {
         super.draggingExited(sender)
         onDragExit?()
     }
+
+    // A group opens and closes at once, its disclosure triangle included. While AppKit's slide runs, a
+    // change of the columns (the window resized, the sidebar or Show Mode toggled) does not reach the
+    // rows outside the slide: their cells stayed where the old columns were, over the new ones, and
+    // a running cue's time was drawn twice.
+    override func expandItem(_ item: Any?, expandChildren: Bool) {
+        withoutAnimation { super.expandItem(item, expandChildren: expandChildren) }
+    }
+
+    override func collapseItem(_ item: Any?, collapseChildren: Bool) {
+        withoutAnimation { super.collapseItem(item, collapseChildren: collapseChildren) }
+    }
+
+    private func withoutAnimation(_ body: () -> Void) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            body()
+        }
+    }
 }
 
 /// A running cue's progress behind its Duration text: the cell filled and outlined from the left up
@@ -419,6 +439,17 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
     override func viewDidLayout() {
         super.viewDidLayout()
         fitNameColumn()
+        solidHeader()
+    }
+
+    /// The header's row is solid, so the rows scrolled up behind it never show through it: AppKit leaves
+    /// a table's header clear over a blur of the rows, and a list squeezed to one row (the least window
+    /// with the inspector shown) showed them through its titles. The header sits in a clip view of the
+    /// scroll view's own, made once the table is in it, which fills its area with the list's colour.
+    private func solidHeader() {
+        guard let clip = outlineView.headerView?.superview as? NSClipView, !clip.drawsBackground else { return }
+        clip.backgroundColor = outlineView.backgroundColor
+        clip.drawsBackground = true
     }
 
     /// The width is worked out from the scroll view's own frame, with room always kept for a vertical scroll
@@ -435,8 +466,14 @@ final class CueListViewController: NSViewController, NSOutlineViewDataSource, NS
         let room = inside - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
         let columns = outlineView.tableColumns
         let others = columns.filter { $0 !== name }.reduce(0) { $0 + $1.width }
-        let width = max(name.minWidth, (room - others - tableExtra(name, others: others)).rounded(.down))
+        let left = (room - others - tableExtra(name, others: others)).rounded(.down)
+        let width = max(name.minWidth, left)
         if abs(name.width - width) >= 1 { name.width = width }
+        // The sideways scroller only while the columns are wider than the list. Where scroll bars always
+        // show, a scroller kept for nothing took 17 of the least list's 56 points, over its one row. The
+        // vertical scroller is left as it is (its room is always kept above).
+        let overflows = left < name.minWidth
+        if scroll.hasHorizontalScroller != overflows { scroll.hasHorizontalScroller = overflows }
     }
 
     private var measuredExtra: CGFloat?

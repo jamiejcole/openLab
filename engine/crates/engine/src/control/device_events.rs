@@ -248,9 +248,10 @@ impl Control {
     /// Opens, as outputs of their own, the listed devices patch mappings name that are not
     /// open yet (after a mapping or list change). A device opens on its own thread without
     /// holding up the loop; its patches resolve `device_missing` until it plays. It runs at the
-    /// primary's rate: a device that cannot is not opened (warned once), and its patches stay
-    /// `device_missing`. Only a device-backed engine with an output mixer configured opens
-    /// further devices.
+    /// primary's rate when it can, else at a rate of its own, with as many outputs as it has (at
+    /// most 64): its mixer is built for it. A device that offers no rate openLab can play is not
+    /// opened (warned once), and its patches stay `device_missing`. Only a device-backed engine
+    /// with an output mixer configured opens further devices.
     pub(super) fn open_outputs(&mut self) {
         if !std::mem::take(&mut self.eng.outputs_dirty) {
             return;
@@ -305,25 +306,28 @@ impl Control {
             };
             // Tried again: a reason from an earlier try no longer holds unless it is found again.
             self.eng.unusable.remove(&name);
-            let rate = mixer_config.sample_rate;
-            if !device
-                .configs
-                .iter()
-                .any(|c| (c.min_rate..=c.max_rate).contains(&rate))
+            let primary_rate = mixer_config.sample_rate;
+            let (rate, channels) = match openlab_audio::choose_output(&device.configs, primary_rate)
             {
-                self.output_warning(
-                    &name,
-                    format!(
-                        "audio device \"{name}\" cannot play at {rate} Hz, the rate of the \
-                         primary device: the patches mapped to it cannot play"
-                    ),
-                );
-                self.eng.unusable.insert(
-                    name.clone(),
-                    format!("it cannot play at {rate} Hz, the rate of the clock device"),
-                );
-                continue;
-            }
+                Ok(chosen) => chosen,
+                Err(e) => {
+                    let why = match e {
+                        openlab_audio::NegotiateError::SampleRate { .. } => {
+                            "it offers no sample rate openLab can play at (8 to 384 kHz)"
+                        }
+                        _ => "it offers no output format openLab can play",
+                    };
+                    self.output_warning(
+                        &name,
+                        format!(
+                            "audio device \"{name}\" cannot be used: {why}: the patches mapped \
+                             to it cannot play"
+                        ),
+                    );
+                    self.eng.unusable.insert(name.clone(), why.to_owned());
+                    continue;
+                }
+            };
             if self.eng.outputs.len() >= super::outputs::MAX_OUTPUTS {
                 self.output_warning(
                     &name,
@@ -342,7 +346,12 @@ impl Control {
                 );
                 continue;
             }
-            let (ctl, mixer) = match openlab_audio::Mixer::new(mixer_config) {
+            let config = openlab_audio::MixerConfig {
+                sample_rate: rate,
+                output_channels: usize::from(channels),
+                ..mixer_config
+            };
+            let (ctl, mixer) = match openlab_audio::Mixer::new(config) {
                 Ok(m) => m,
                 Err(e) => {
                     self.output_warning(
@@ -376,11 +385,23 @@ impl Control {
                         mixer: ctl,
                         backend: Backend::Device(Box::new(d)),
                     };
-                    if self.eng.outputs.add(output).is_some() {
+                    if let Some(key) = self.eng.outputs.add(output) {
+                        self.eng.patches.set_width(key, usize::from(channels));
                         self.eng.size_meters();
+                        let at = if rate == primary_rate {
+                            String::new()
+                        } else {
+                            format!(
+                                " at {rate} Hz (it cannot play at the primary device's \
+                                 {primary_rate} Hz)"
+                            )
+                        };
                         self.eng.log_device(
                             LogLevel::Info,
-                            format!("opening audio device \"{name}\" for the patches mapped to it"),
+                            format!(
+                                "opening audio device \"{name}\"{at} with {channels} outputs for \
+                                 the patches mapped to it"
+                            ),
                         );
                     }
                 }
@@ -507,12 +528,17 @@ impl Control {
     /// engine takes the new lookahead before the engine's block changes (seams note (b)); if
     /// one cannot, they all keep the old one.
     fn follow_block(&mut self) {
+        // In frames of the master clock: a device at another rate has blocks as long in time.
+        let master = self.eng.rate.get();
         let Some(b) = self
             .eng
             .outputs
             .iter()
             .filter(|(key, o)| *key == 0 || o.is_up())
-            .filter_map(|(_, o)| o.block())
+            .filter_map(|(_, o)| {
+                o.block()
+                    .map(|b| master_block(b, o.mixer.sample_rate(), master))
+            })
             .max()
             .filter(|&b| b > 0 && b != self.eng.block)
         else {
@@ -853,7 +879,7 @@ impl DocCx<'_> {
                         "audio device \"{name}\" has {} output channel(s), fewer than the {} \
                          the show was opened with: the others are not heard",
                         d.info().channels,
-                        self.eng.device_outputs
+                        output.mixer.device_outputs()
                     ),
                     name,
                 ));
@@ -938,8 +964,8 @@ impl DocCx<'_> {
                 available,
             }) = self.eng.patches.resolution(self.doc.id, patch.id)
             {
-                // The device itself may have the channels: every device's mixer has only as
-                // many outputs as the primary's (#654), so channels beyond those cannot be used.
+                // The device itself may have the channels: openLab uses at most 64 outputs of a
+                // device (the offline driver, as many as its mixer has).
                 let has = self
                     .eng
                     .device_list()
@@ -949,8 +975,7 @@ impl DocCx<'_> {
                 let message = if has >= *needed {
                     format!(
                         "patch \"{}\" maps channel {needed} of \"{device}\", but openLab uses \
-                         only its first {available} outputs (as many as the primary device \
-                         has): its cues cannot play",
+                         only its first {available} outputs: its cues cannot play",
                         patch.name
                     )
                 } else {
@@ -1083,5 +1108,30 @@ pub(super) fn playable_device(d: &Device) -> DeviceInfo {
     DeviceInfo {
         name: d.info().name.clone(),
         output_channels: u32::from(d.info().channels),
+    }
+}
+
+/// A block of `frames` at a device's rate `local` in frames of the master clock (`master`),
+/// rounded up: the lookahead must never be shorter than any device's block.
+pub(super) fn master_block(frames: u64, local: u32, master: u32) -> u64 {
+    if local == master || local == 0 {
+        return frames;
+    }
+    let (l, m) = (u128::from(local), u128::from(master));
+    u64::try_from((u128::from(frames) * m).div_ceil(l)).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::master_block;
+
+    /// The lookahead in master frames is never shorter than a device's block at its own rate.
+    #[test]
+    fn a_device_block_at_another_rate_is_rounded_up_in_master_frames() {
+        assert_eq!(master_block(512, 48_000, 48_000), 512);
+        assert_eq!(master_block(512, 44_100, 48_000), 558);
+        assert_eq!(master_block(96, 12_000, 8_000), 64);
+        assert_eq!(master_block(97, 12_000, 8_000), 65);
+        assert_eq!(master_block(512, 0, 48_000), 512);
     }
 }

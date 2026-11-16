@@ -8,7 +8,7 @@
 //! Called on a probe worker (never the control thread). The process is killed if it has not
 //! answered within the timeout, and whatever it printed is validated before it is believed.
 
-use std::io::{BufReader, Read};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -61,8 +61,7 @@ pub fn probe_file(program: &Path, file: &Path, limit: Duration) -> Result<ProbeR
         .stderr(Stdio::null());
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    let mut child = command
-        .spawn()
+    let mut child = crate::platform::spawn::spawn(&mut command)
         .map_err(|e| MediaError::Unsupported(format!("the video probe could not start ({e})")))?;
     let Some(stdout) = child.stdout.take() else {
         let _ = child.kill();
@@ -70,13 +69,17 @@ pub fn probe_file(program: &Path, file: &Path, limit: Duration) -> Result<ProbeR
         return Err(MediaError::Worker);
     };
     let (tx, rx) = crossbeam_channel::bounded(1);
-    // Reads at most one line's limit, so a flood costs nothing.
+    // Reads the answer's one line and at most a line's limit, so a flood costs nothing. It
+    // never waits for the output to end: another process holding the pipe open (a child of the
+    // probe's that outlives it) would keep a good answer back until the limit.
     let reader = std::thread::Builder::new()
         .name("openlab-picture-probe".into())
         .spawn(move || {
             let mut text = Vec::new();
             let limit = u64::try_from(MAX_PROBE_LINE_BYTES + 1).unwrap_or(u64::MAX);
-            let read = BufReader::new(stdout).take(limit).read_to_end(&mut text);
+            let read = BufReader::new(stdout)
+                .take(limit)
+                .read_until(b'\n', &mut text);
             let _ = tx.send(read.map(|_| text));
         });
     if reader.is_err() {
@@ -154,6 +157,23 @@ mod tests {
             probe_file(&program, &folder, Duration::from_secs(10)),
             Err(MediaError::NotAFile(_))
         ));
+    }
+
+    /// An answer is believed as soon as its line is there, though the probe's output has not
+    /// ended: here a process the probe left behind keeps the pipe open past the limit. (The
+    /// answer used to be read to the output's end, so a good file was "not read in time".)
+    #[test]
+    fn an_answer_is_read_though_another_process_keeps_the_output_open() {
+        let _serial = crate::diag::run_marker::tests::serialize_spawn_and_lock_release();
+        let (_dir, program, file) = stand_in(
+            r#"sleep 10 &
+echo '{"type":"video","codec":"h264","width":1920,"height":1080,"fps":25.0,"duration":2.0}'"#,
+        );
+        let report = probe_file(&program, &file, Duration::from_secs(2));
+        assert!(
+            matches!(report, Ok(ProbeReport::Video { width: 1920, .. })),
+            "{report:?}"
+        );
     }
 
     #[test]

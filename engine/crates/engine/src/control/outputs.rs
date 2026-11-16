@@ -9,8 +9,14 @@
 //! **Clock.** The engine's time (the master clock) is the primary device's sample counter while
 //! that device plays, so timing on it stays sample-accurate. Another device's commands are dated
 //! by translation from one pair of counter reads: `local = local_rendered + (at -
-//! master_rendered)`; its events come back through the inverse. Every device runs at the
-//! primary's rate. Simultaneous starts on two devices land within one buffer of each other.
+//! master_rendered) × local rate / master rate`; its events come back through the inverse.
+//! Simultaneous starts on two devices land within one buffer of each other.
+//!
+//! **Rates.** Each device runs at its own rate (the primary's when it can) with its own mixer.
+//! Everything the control thread counts is in frames of the master clock (the primary's rate);
+//! a command routed to a device at another rate has its frame counts (fades, trims) converted
+//! to that device's frames here, the one place every voice command passes. A voice's stream and
+//! slice table are made at its device's rate when it is prepared.
 //! While the primary device is away and another plays, the master clock carries on from the
 //! monotonic wall clock, from the last sample the primary rendered; when it returns its counter
 //! is offset to continue from there. With no device playing, the clock stands still (nothing
@@ -100,6 +106,8 @@ pub(super) struct Outputs {
     /// device's policy clock; none for the offline driver, which never loses its device).
     wall: Option<WallClock>,
     rate: u32,
+    /// Each output's mixer rate, by key (the primary's is `rate`).
+    rates: Vec<u32>,
     /// Voices on a device other than the primary: their device and the last local sample a
     /// command of theirs was dated, so commands of one voice never go backwards. A voice not
     /// here plays on the primary.
@@ -119,8 +127,19 @@ impl Outputs {
             clock: Clock::Primary,
             wall,
             rate,
+            rates: vec![rate],
             voices: HashMap::new(),
         }
+    }
+
+    /// Each output's rate, by key: the frames of its mixer, streams and commands.
+    pub fn rates(&self) -> &[u32] {
+        &self.rates
+    }
+
+    /// Output `key`'s rate (the master clock's for an unknown key).
+    pub fn rate_of(&self, key: OutputKey) -> u32 {
+        self.rates.get(key).copied().unwrap_or(self.rate)
     }
 
     pub fn primary(&self) -> &Output {
@@ -170,6 +189,7 @@ impl Outputs {
         if self.len() >= MAX_OUTPUTS {
             return None;
         }
+        self.rates.push(output.mixer.sample_rate());
         self.others.push(output);
         Some(self.others.len())
     }
@@ -298,6 +318,8 @@ impl Outputs {
                 CommandKind::SetMaster { .. } => 0,
             };
             let local = self.local_date(key, at, master, command_voice(&kind));
+            let mut kind = kind;
+            at_rate(&mut kind, self.rate, self.rate_of(key));
             match out.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, batch)) => batch.push((local, kind)),
                 None => out.push((key, vec![(local, kind)])),
@@ -347,8 +369,10 @@ impl Outputs {
             return at;
         };
         let local_rendered = output.mixer.samples_rendered();
+        let ahead = i128::from(at) - i128::from(master);
         let mut local = if output.is_up() {
-            let shifted = i128::from(local_rendered) + i128::from(at) - i128::from(master);
+            let shifted = i128::from(local_rendered)
+                + rescale_signed(ahead, self.rate, output.mixer.sample_rate());
             u64::try_from(shifted.max(i128::from(local_rendered))).unwrap_or(local_rendered)
         } else {
             local_rendered
@@ -368,8 +392,9 @@ impl Outputs {
         let Some(output) = self.get(key) else {
             return at;
         };
-        let shifted = i128::from(self.rendered()) + i128::from(at)
-            - i128::from(output.mixer.samples_rendered());
+        let behind = i128::from(at) - i128::from(output.mixer.samples_rendered());
+        let shifted = i128::from(self.rendered())
+            + rescale_signed(behind, output.mixer.sample_rate(), self.rate);
         u64::try_from(shifted.max(0)).unwrap_or(0)
     }
 
@@ -383,10 +408,12 @@ impl Outputs {
         while let Some(e) = output.mixer.poll_event() {
             events.push(e);
         }
+        let local = output.mixer.sample_rate();
         for e in &mut events {
             if let Some(at) = event_date(e) {
                 *at = self.master_date(key, *at);
             }
+            span_at_master(e, local, self.rate);
             if let Event::VoiceFinished { voice, .. } = e {
                 self.voices.remove(voice);
             }
@@ -399,6 +426,58 @@ impl Outputs {
         for o in self.iter_mut() {
             o.mixer.pump();
         }
+    }
+}
+
+/// `x` frames at rate `from` as frames at rate `to`, rounded half away from zero (a rate of 0
+/// gives 0).
+fn rescale_signed(x: i128, from: u32, to: u32) -> i128 {
+    if from == to {
+        return x;
+    }
+    if from == 0 {
+        return 0;
+    }
+    let (from, to) = (i128::from(from), i128::from(to));
+    let scaled = x.saturating_mul(to);
+    let half = from / 2;
+    if scaled >= 0 {
+        (scaled + half) / from
+    } else {
+        (scaled - half) / from
+    }
+}
+
+/// A command's frame counts (fades, trims), made in frames at rate `from` (the master clock's),
+/// as frames at rate `to` (its device's). A fade that had any length keeps at least one frame,
+/// so a ramp stays a ramp and a fading stop is not turned into a cut.
+fn at_rate(kind: &mut CommandKind, from: u32, to: u32) {
+    if from == to {
+        return;
+    }
+    let frames = |n: u64| openlab_audio::frames_at_rate(n, from, to);
+    let fade = |f: &mut openlab_audio::Fade| {
+        if f.frames > 0 {
+            f.frames = frames(f.frames).max(1);
+        }
+    };
+    match kind {
+        CommandKind::StartVoice(v) => {
+            fade(&mut v.fade_in);
+            fade(&mut v.fade_out);
+            v.skip_frames = frames(v.skip_frames);
+            v.play_frames = v.play_frames.map(frames);
+        }
+        CommandKind::StopVoice { fade: f, .. }
+        | CommandKind::Ramp { fade: f, .. }
+        | CommandKind::RampSet { fade: f, .. } => fade(f),
+        CommandKind::SetPatchRouting { .. }
+        | CommandKind::SnapPatch { .. }
+        | CommandKind::MoveVoice { .. }
+        | CommandKind::SetMaster { .. }
+        | CommandKind::Devamp { .. }
+        | CommandKind::PauseVoice { .. }
+        | CommandKind::ResumeVoice { .. } => {}
     }
 }
 
@@ -418,6 +497,15 @@ fn command_voice(kind: &CommandKind) -> Option<VoiceId> {
     }
 }
 
+/// An event's count of frames, counted by a mixer at `local`, as master frames: what follows
+/// it (a picture following its sound) is planned in master time.
+fn span_at_master(e: &mut Event, local: u32, master: u32) {
+    if let Event::UnderrunEnded { frames, .. } = e {
+        let scaled = rescale_signed(i128::from(*frames), local, master);
+        *frames = u64::try_from(scaled).unwrap_or(u64::MAX);
+    }
+}
+
 /// The sample an event is dated on.
 fn event_date(e: &mut Event) -> Option<&mut SampleTime> {
     match e {
@@ -432,5 +520,116 @@ fn event_date(e: &mut Event) -> Option<&mut SampleTime> {
         | Event::DevampIgnored { at, .. }
         | Event::MoveEnded { at, .. }
         | Event::StageFaulted { at, .. } => Some(at),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use openlab_audio::{Curve, Fade, Mixer, MixerConfig, VoiceStart};
+
+    use super::*;
+
+    fn output(name: &str, rate: u32) -> Output {
+        let (mixer, _) = Mixer::new(MixerConfig {
+            sample_rate: rate,
+            ..MixerConfig::default()
+        })
+        .unwrap();
+        Output {
+            name: name.into(),
+            mixer,
+            backend: Backend::Offline,
+        }
+    }
+
+    fn start(voice: u64, patch: u16) -> CommandKind {
+        let (_, rx) = rtrb::RingBuffer::new(4);
+        let mut v = VoiceStart::new(VoiceId(voice), rx, 1, 1);
+        v.patch = patch;
+        v.fade_in = Fade::new(480, Curve::Linear);
+        v.fade_out = Fade::new(1, Curve::Linear);
+        CommandKind::StartVoice(Box::new(v))
+    }
+
+    /// A voice on a device at another rate: its commands are dated `(at - master) × local /
+    /// master` after that device's counter and their fades are as long in time there (at least
+    /// a frame, so a fade is never turned into a cut); the primary's are left alone; the
+    /// device's events come back through the inverse.
+    #[test]
+    fn commands_for_a_device_at_another_rate_are_dated_and_timed_at_its_rate() {
+        let mut o = Outputs::new(output("one", 48_000), 48_000);
+        assert_eq!(o.add(output("two", 44_100)), Some(1));
+        assert_eq!(o.rates(), &[48_000, 44_100]);
+        let fade = |frames| Fade::new(frames, Curve::Linear);
+        let routed = o.route(
+            vec![
+                (4_800, start(1, 1)),
+                (
+                    9_600,
+                    CommandKind::StopVoice {
+                        voice: VoiceId(1),
+                        fade: fade(480),
+                    },
+                ),
+                (
+                    9_600,
+                    CommandKind::Ramp {
+                        voice: VoiceId(1),
+                        target: openlab_audio::GainTarget::Master,
+                        gain: 0.5,
+                        fade: fade(1),
+                    },
+                ),
+                (4_800, start(2, 0)),
+            ],
+            |patch| Some(OutputKey::from(patch)),
+        );
+        let (one, two) = (&routed[1], &routed[0]);
+        assert_eq!(two.0, 1);
+        let dates: Vec<SampleTime> = two.1.iter().map(|(at, _)| *at).collect();
+        assert_eq!(dates, vec![4_410, 8_820, 8_820]);
+        let CommandKind::StartVoice(v) = &two.1[0].1 else {
+            panic!()
+        };
+        assert_eq!((v.fade_in.frames, v.fade_out.frames), (441, 1));
+        assert!(matches!(two.1[1].1, CommandKind::StopVoice { fade, .. } if fade.frames == 441));
+        assert!(matches!(two.1[2].1, CommandKind::Ramp { fade, .. } if fade.frames == 1));
+        // The primary's: as sent.
+        assert_eq!(one.0, 0);
+        let CommandKind::StartVoice(v) = &one.1[0].1 else {
+            panic!()
+        };
+        assert_eq!((one.1[0].0, v.fade_in.frames), (4_800, 480));
+        assert_eq!(o.output_of(VoiceId(1)), 1);
+        // The inverse: the device's sample 4 410 is master sample 4 800.
+        assert_eq!(o.master_date(1, 4_410), 4_800);
+        assert_eq!(o.master_date(1, 0), 0);
+    }
+
+    /// What a voice on a device at another rate missed is told in master frames, as its date
+    /// is: the picture put back by it is planned in master time.
+    #[test]
+    fn an_underruns_length_on_a_device_at_another_rate_is_in_master_frames() {
+        let mut e = Event::UnderrunEnded {
+            voice: VoiceId(1),
+            at: 0,
+            frames: 4_410,
+        };
+        span_at_master(&mut e, 44_100, 48_000);
+        assert!(matches!(e, Event::UnderrunEnded { frames: 4_800, .. }));
+        span_at_master(&mut e, 48_000, 48_000);
+        assert!(matches!(e, Event::UnderrunEnded { frames: 4_800, .. }));
+        let mut other = Event::PendingFull { at: 7 };
+        span_at_master(&mut other, 44_100, 48_000);
+        assert!(matches!(other, Event::PendingFull { at: 7 }));
+    }
+
+    #[test]
+    fn signed_rescaling_rounds_half_away_from_zero() {
+        assert_eq!(rescale_signed(3, 2, 3), 5);
+        assert_eq!(rescale_signed(-3, 2, 3), -5);
+        assert_eq!(rescale_signed(-1, 48_000, 44_100), -1);
+        assert_eq!(rescale_signed(7, 0, 44_100), 0);
+        assert_eq!(rescale_signed(i128::MAX, 1, 2), i128::MAX);
     }
 }

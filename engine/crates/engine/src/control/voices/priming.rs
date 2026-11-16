@@ -33,7 +33,7 @@ impl Voices {
                     if let Some(r) = self.recs.get_mut(&id)
                         && let Phase::Waiting { prepared, .. } = &mut r.phase
                     {
-                        *prepared = Some((made.prepared, made.total));
+                        *prepared = Some(made.ready);
                         r.shown = made.shown;
                         // The file read now, which a relink since the record was made may
                         // have changed: a failure probes this one.
@@ -53,7 +53,9 @@ impl Voices {
         }
     }
 
-    /// Prepares the stream of `cue` from `from` (no I/O: the disk worker opens the file).
+    /// Prepares the stream of `cue` from `from` (no I/O: the disk worker opens the file), at
+    /// the rate of its patch's device: planned in frames of the master clock, the table is
+    /// rescaled to that rate for the stream and the voice.
     pub(super) fn prepare(
         &self,
         cue: CueId,
@@ -104,12 +106,17 @@ impl Voices {
             return Err(PrepError::Failed);
         };
         let info = &ready.probed.info;
+        let master = env.rate.get();
+        let mut planned_at = master;
         let planned = match from {
             StartAt::Offset(offset) => {
                 cue_slices(&spec, info, env.rate, offset).map(|s| (s, offset))
             }
             StartAt::File(frame) => cue_slices_from(&spec, info, env.rate, frame),
-            StartAt::Table(table) => Ok((table, 0)),
+            StartAt::Table(table, rate) => {
+                planned_at = rate;
+                Ok((table, 0))
+            }
         };
         let (slices, shown) = match planned {
             Ok(s) => s,
@@ -125,17 +132,23 @@ impl Voices {
         if slices.is_empty() {
             return Err(PrepError::Empty);
         }
-        let total = total_frames(&slices);
+        let rate = rate_for(env, cue);
+        // The table the voice plays, at its device's rate; the core's length is that table's.
+        let slices = openlab_audio::rescale(&slices, planned_at, rate, info.frames_at(rate));
+        let total = total_frames(&slices).map(|t| Scale::new(master, rate).master(t));
         let req = StreamRequest {
             media: source,
             info: ready.probed.info,
             seeking: ready.probed.seeking.clone(),
             slices,
         };
-        match env.streamer.prepare(req) {
-            Ok(prepared) => Ok(Made {
-                prepared,
-                total,
+        match env.streamer.prepare_at(req, rate) {
+            Ok(stream) => Ok(Made {
+                ready: Ready {
+                    stream,
+                    total,
+                    scale: Scale::new(master, rate),
+                },
                 shown,
             }),
             Err(e) => {
@@ -149,23 +162,19 @@ impl Voices {
         }
     }
 
-    /// A primed stream for a start from the top of `cue`, if one is ready and still matches.
-    pub(super) fn take_prime(
-        &mut self,
-        cue: CueId,
-        offset: u64,
-        env: &Env<'_>,
-    ) -> Option<(PreparedStream, Option<u64>)> {
+    /// A primed stream for a start from the top of `cue`, if one is ready and still matches
+    /// (the rate of its patch's device included).
+    pub(super) fn take_prime(&mut self, cue: CueId, offset: u64, env: &Env<'_>) -> Option<Ready> {
         let usable = offset == 0
-            && self
-                .primes
-                .get(&cue)
-                .is_some_and(|p| sig_of(env, cue).as_ref() == Some(&p.sig));
+            && self.primes.get(&cue).is_some_and(|p| {
+                sig_of(env, cue).as_ref() == Some(&p.sig)
+                    && p.ready.scale.local_rate() == rate_for(env, cue)
+            });
         let prime = self.primes.remove(&cue)?;
         if usable {
             self.prime_hits = self.prime_hits.saturating_add(1);
         }
-        usable.then_some((prime.prepared, prime.total))
+        usable.then_some(prime.ready)
     }
 
     /// Keeps exactly `wanted` primed (in order, most urgent first, at most `max`): new ones are
@@ -174,8 +183,11 @@ impl Voices {
     pub fn prime(&mut self, wanted: &[CueId], max: usize, burst: usize, env: &mut Env<'_>) -> bool {
         let wanted: Vec<CueId> = wanted.iter().copied().take(max).collect();
         let mut made = 0;
-        self.primes
-            .retain(|cue, p| wanted.contains(cue) && sig_of(env, *cue).as_ref() == Some(&p.sig));
+        self.primes.retain(|cue, p| {
+            wanted.contains(cue)
+                && sig_of(env, *cue).as_ref() == Some(&p.sig)
+                && p.ready.scale.local_rate() == rate_for(env, *cue)
+        });
         for cue in wanted {
             if self.primes.contains_key(&cue)
                 || self.by_run.values().any(|id| {
@@ -194,19 +206,9 @@ impl Voices {
             }
             // A prime that cannot be made now (probe pending or failed) is tried again later.
             let mut quiet = Effects::default();
-            if let Ok(Made {
-                prepared, total, ..
-            }) = self.prepare(cue, StartAt::Offset(0), env, &mut quiet)
-            {
+            if let Ok(Made { ready, .. }) = self.prepare(cue, StartAt::Offset(0), env, &mut quiet) {
                 made += 1;
-                self.primes.insert(
-                    cue,
-                    Prime {
-                        prepared,
-                        total,
-                        sig,
-                    },
-                );
+                self.primes.insert(cue, Prime { ready, sig });
             }
         }
         false
@@ -255,9 +257,8 @@ impl Voices {
             let failed = match &r.phase {
                 Phase::Playing => r.stream.as_ref().is_some_and(|h| h.error().is_some()),
                 Phase::Waiting {
-                    prepared: Some((p, _)),
-                    ..
-                } => p.handle.error().is_some(),
+                    prepared: Some(p), ..
+                } => p.stream.handle.error().is_some(),
                 _ => false,
             };
             if failed {
@@ -270,6 +271,6 @@ impl Voices {
         }
         // A prime whose stream failed is useless; the next priming pass makes it again.
         self.primes
-            .retain(|_, p| p.prepared.handle.error().is_none());
+            .retain(|_, p| p.ready.stream.handle.error().is_none());
     }
 }

@@ -22,6 +22,10 @@
 //! it is retired (the voice plays on where it started) and the patch takes a fresh slot, as for
 //! a resize. Output level, mute and polarity are in the matrix: the mixer has no other
 //! per-output setting.
+//!
+//! Each device's mixer has as many device outputs as the device has (at most 64): a slot's
+//! matrix is kept at the widest output's stride, and only the columns its output's mixer has
+//! are sent or count.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
@@ -79,8 +83,10 @@ pub struct Patches {
     bases: Vec<Vec<f32>>,
     /// Rows of every matrix: the mixers' cue outputs (the most a patch can have).
     cue_outputs: usize,
-    /// Columns of every matrix: the mixers' device outputs.
+    /// Columns of every matrix as kept here: the most device outputs of any output's mixer.
     device_outputs: usize,
+    /// Each output's mixer's device outputs, by key: the columns that exist on it.
+    widths: Vec<usize>,
     /// Slots a mixer disabled after repeated faults ([`Self::quarantine`]), with that mixer's
     /// output.
     quarantined: BTreeMap<u16, OutputKey>,
@@ -102,15 +108,63 @@ impl Patches {
             bases: vec![vec![0.0; cue_outputs * device_outputs]; count],
             cue_outputs,
             device_outputs,
+            widths: vec![device_outputs],
             quarantined: BTreeMap::new(),
             count,
         }
     }
 
-    fn identity(&self) -> Vec<f32> {
+    /// Output `out`'s mixer has `width` device outputs. A wider one than any before widens
+    /// every matrix kept (the columns added are silent: no output had them).
+    pub fn set_width(&mut self, out: OutputKey, width: usize) {
+        if self.widths.len() <= out {
+            let primary = self.width(0);
+            self.widths.resize(out + 1, primary);
+        }
+        if let Some(w) = self.widths.get_mut(out) {
+            *w = width;
+        }
+        if width > self.device_outputs {
+            let (from, to) = (self.device_outputs, width);
+            let rows = self.cue_outputs;
+            let widen = |m: &mut Vec<f32>| {
+                let mut wide = vec![0.0; rows * to];
+                for (o, row) in m.chunks(from.max(1)).enumerate().take(rows) {
+                    if let Some(dst) = wide.get_mut(o * to..o * to + row.len()) {
+                        dst.copy_from_slice(row);
+                    }
+                }
+                *m = wide;
+            };
+            self.bases.iter_mut().for_each(widen);
+            self.sent.values_mut().for_each(widen);
+            self.device_outputs = width;
+        }
+    }
+
+    /// Device outputs of output `out`'s mixer.
+    fn width(&self, out: OutputKey) -> usize {
+        self.widths
+            .get(out)
+            .or_else(|| self.widths.first())
+            .copied()
+            .unwrap_or(self.device_outputs)
+            .min(self.device_outputs)
+    }
+
+    /// The matrix a mixer of output `out` starts a slot with: cue output `k` to device output
+    /// `k`, on the columns it has.
+    fn identity(&self, out: OutputKey) -> Vec<f32> {
         let n = self.device_outputs;
+        let width = self.width(out);
         (0..self.cells())
-            .map(|i| if i / n == i % n { 1.0 } else { 0.0 })
+            .map(|i| {
+                if i / n == i % n && i % n < width {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
             .collect()
     }
 
@@ -143,13 +197,17 @@ impl Patches {
         // Resolved first: a slot follows its patch's device.
         let mut resolved: HashMap<PatchId, (PatchResolution, Option<OutputKey>)> = HashMap::new();
         for patch in &ws.patches {
-            let r = self.resolve(settings, ws, patch, &devices, system);
+            let r = resolve_patch(settings, ws.id, patch, &devices, system);
             let out = match &r {
                 PatchResolution::Mapped { device, .. } => playable
                     .iter()
                     .find(|(i, _)| &i.name == device)
                     .map(|&(_, k)| k),
                 _ => None,
+            };
+            let r = match out {
+                Some(k) => self.within(r, k),
+                None => r,
             };
             resolved.insert(patch.id, (r, out));
         }
@@ -165,7 +223,8 @@ impl Patches {
         for patch in &ws.patches {
             let resolution = match (d.slots.get(&patch.id), resolved.remove(&patch.id)) {
                 (Some(&(slot, _)), Some((r, _))) => {
-                    let base = self.matrix(patch, &r);
+                    let width = self.width(self.slot_output(slot).unwrap_or(0));
+                    let base = self.matrix(patch, &r, width);
                     self.apply(slot, base, &mut commands);
                     r
                 }
@@ -251,6 +310,7 @@ impl Patches {
         here: bool,
     ) -> Option<Vec<f32>> {
         let n = self.device_outputs;
+        let width = self.width(self.slot_output(slot).unwrap_or(0));
         let mut m = self.bases.get(usize::from(slot))?.clone();
         let channels: &[u32] = match d.resolutions.get(&patch.id) {
             Some(PatchResolution::Mapped { channels, .. }) if here => channels,
@@ -271,7 +331,7 @@ impl Patches {
             let Ok(dev) = usize::try_from(ch) else {
                 continue;
             };
-            if dev >= n {
+            if dev >= width {
                 continue;
             }
             if let Some(g) = m.get_mut(o * n + dev) {
@@ -454,33 +514,28 @@ impl Patches {
         self.docs.get(&doc)?.resolutions.get(&patch)
     }
 
-    fn resolve(
-        &self,
-        settings: &MachineSettings,
-        ws: &Workspace,
-        patch: &OutputPatch,
-        devices: &[DeviceInfo],
-        system: Option<&str>,
-    ) -> PatchResolution {
-        let r = resolve_patch(settings, ws.id, patch, devices, system);
-        // The mixer was opened with fewer outputs than the device has: what is beyond them
-        // cannot be heard.
+    /// A patch mapped to output `out`'s device, checked against the outputs that device's mixer
+    /// has: a channel beyond them cannot be heard (a device with more than 64 channels, or the
+    /// offline driver's one mixer for every configured device).
+    fn within(&self, r: PatchResolution, out: OutputKey) -> PatchResolution {
+        let width = self.width(out);
         if let PatchResolution::Mapped { device, channels } = &r {
             let needed = channels.iter().max().map_or(0, |&m| m.saturating_add(1));
-            if usize::try_from(needed).map_or(true, |n| n > self.device_outputs) {
+            if usize::try_from(needed).map_or(true, |n| n > width) {
                 return PatchResolution::ChannelsMissing {
                     device: device.clone(),
                     needed,
-                    available: u32::try_from(self.device_outputs).unwrap_or(u32::MAX),
+                    available: u32::try_from(width).unwrap_or(u32::MAX),
                 };
             }
         }
         r
     }
 
-    /// The matrix a patch should have: cue output `o` → its mapped device channel at the patch's
-    /// master × the output's level; silent when unmapped.
-    fn matrix(&self, patch: &OutputPatch, r: &PatchResolution) -> Vec<f32> {
+    /// The matrix a patch should have on a mixer with `width` device outputs: cue output `o`
+    /// → its mapped device channel at the patch's master × the output's level; silent when
+    /// unmapped.
+    fn matrix(&self, patch: &OutputPatch, r: &PatchResolution, width: usize) -> Vec<f32> {
         let n = self.device_outputs;
         let mut m = vec![0.0; self.cells()];
         let PatchResolution::Mapped { channels, .. } = r else {
@@ -489,7 +544,7 @@ impl Patches {
         let master = db_to_gain(patch.master_db);
         for (o, (out, &ch)) in patch.outputs.iter().zip(channels).enumerate() {
             let Ok(d) = usize::try_from(ch) else { continue };
-            if o >= self.cue_outputs || d >= n {
+            if o >= self.cue_outputs || d >= width {
                 continue;
             }
             if let Some(slot) = m.get_mut(o * n + d) {
@@ -505,10 +560,12 @@ impl Patches {
         let Some(out) = self.slot_output(p) else {
             return;
         };
-        let identity = self.identity();
+        let width = self.width(out);
+        let identity = self.identity(out);
         let sent = self.sent.entry((out, p)).or_insert(identity);
         for (i, (s, &w)) in sent.iter_mut().zip(want).enumerate() {
-            if s.to_bits() == w.to_bits() {
+            // A column the output's mixer does not have: nothing to send.
+            if s.to_bits() == w.to_bits() || i % n >= width {
                 continue;
             }
             let (Ok(cue_output), Ok(device_output)) = (u16::try_from(i / n), u16::try_from(i % n))
@@ -587,16 +644,17 @@ impl Patches {
     /// identity, as the mixer starts it).
     fn resend_into(&self, out: OutputKey, slot: u16, commands: &mut Vec<(OutputKey, CommandKind)>) {
         let n = self.device_outputs;
+        let width = self.width(out);
         let identity;
         let sent = match self.sent.get(&(out, slot)) {
             Some(s) => s,
             None => {
-                identity = self.identity();
+                identity = self.identity(out);
                 &identity
             }
         };
         for (i, &gain) in sent.iter().enumerate() {
-            if gain == 0.0 {
+            if gain == 0.0 || i % n >= width {
                 continue;
             }
             let (Ok(cue_output), Ok(device_output)) = (u16::try_from(i / n), u16::try_from(i % n))

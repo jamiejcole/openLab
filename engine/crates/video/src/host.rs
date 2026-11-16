@@ -11,7 +11,9 @@ use openlab_core::stage_link::{
     Display, FromStage, LINK_VERSION, Line, LinkLevel, StageOutput, StageState, ToStage,
     decode_to_stage, encode, read_line,
 };
-use openlab_core::{PictureFades, PlanPass, StageId, VideoGeometry, fade_factor, plan_point};
+use openlab_core::{
+    HOLD_BEFORE_END, PictureFades, PlanPass, StageId, VideoGeometry, fade_factor, plan_point,
+};
 
 /// What a stage shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +38,8 @@ pub struct CuePicture {
     pub next: Option<f64>,
     /// Its plan is over: it holds its last frame.
     pub held: bool,
+    /// Its plan ends with the pass under way: nothing past that pass's end is ever shown.
+    pub last: bool,
     /// The number of the plan's pass it is in (`PlanPoint::pass`): a new number is a seam.
     pub pass: u64,
     /// Its integrated fades times how far its stop's fade has gone (1 until it stops, then
@@ -52,21 +56,26 @@ pub const PRIME_AHEAD: f64 = 1.0;
 impl CuePicture {
     /// Where in its file the picture is `ahead` seconds later (a frame shown at the display's
     /// next refresh): past the end of the pass under way, in the next pass; held when its plan
-    /// is over.
+    /// is over, and where that plan will hold when it ends within `ahead` (the frame after its
+    /// range is never asked for, so it is neither flashed nor held).
     pub fn position_after(&self, ahead: f64) -> f64 {
         if self.held || ahead <= 0.0 {
             return self.position;
         }
         match self.next {
             Some(next) if ahead >= self.left => next + (ahead - self.left),
+            None if self.last => {
+                let end = self.position + self.left - HOLD_BEFORE_END;
+                (self.position + ahead).min(end).max(self.position)
+            }
             _ => self.position + ahead,
         }
     }
 
     /// The plan's pass the picture is in `ahead` seconds later: the next once the pass under way
-    /// ends (never past a plan that is over).
+    /// ends (never past a plan that is over, or about to be).
     pub fn pass_after(&self, ahead: f64) -> u64 {
-        let crosses = !self.held && ahead > 0.0 && ahead >= self.left;
+        let crosses = !self.held && !self.last && ahead > 0.0 && ahead >= self.left;
         self.pass.saturating_add(u64::from(crosses))
     }
 
@@ -112,6 +121,7 @@ struct Place {
     left: f64,
     next: Option<f64>,
     held: bool,
+    last: bool,
     action: f64,
     pass: u64,
 }
@@ -142,6 +152,7 @@ impl Pic {
             left: f64::INFINITY,
             next: None,
             held: false,
+            last: false,
             action,
             pass: 0,
         };
@@ -163,6 +174,7 @@ impl Pic {
                         left: p.left,
                         next: p.next,
                         held: p.ended,
+                        last: p.last,
                         action,
                         pass: p.pass,
                     },
@@ -208,6 +220,7 @@ impl Pic {
             left: place.left,
             next: place.next,
             held: place.held,
+            last: place.last,
             pass: place.pass,
             opacity: stopping * faded,
             geometry: self.geometry,
@@ -1278,11 +1291,18 @@ mod tests {
         assert_eq!(p.upcoming(), Some(1.0), "the loop's start, primed ahead");
         // A frame shown a refresh later is in the next pass.
         assert!((p.position_after(0.02) - 1.01).abs() < 1e-9);
+        assert_eq!(p.pass_after(0.02), p.pass + 1);
         let p = at(&mut h, 2500);
         assert_eq!((p.position, p.opacity), (1.5, 1.0));
         assert_eq!(p.upcoming(), None, "the last pass jumps nowhere");
         let p = at(&mut h, 3500);
         assert_eq!(p.opacity, 0.5, "fading out to the end");
+        // A frame shown a refresh later than the plan's end is the one it will hold there,
+        // in the same pass: nothing past the range is asked for.
+        let p = at(&mut h, 3990);
+        let ahead = p.position_after(0.02);
+        assert!(ahead > p.position && ahead < 3.0, "{ahead}");
+        assert_eq!(p.pass_after(0.02), p.pass);
         let p = at(&mut h, 9000);
         assert!(p.held && p.position < 3.0 && p.position > 2.999);
         assert_eq!(p.position_after(0.5), p.position, "held");

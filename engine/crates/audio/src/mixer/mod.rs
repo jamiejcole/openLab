@@ -640,8 +640,16 @@ impl Mixer {
             #[cfg(test)]
             panic_apply: None,
         };
-        let controller =
-            MixerController::new(cmd_tx, ev_rx, ret_rx, shared, cue_outputs, outs, lookahead);
+        let controller = MixerController::new(
+            cmd_tx,
+            ev_rx,
+            ret_rx,
+            shared,
+            cue_outputs,
+            outs,
+            sample_rate,
+            lookahead,
+        );
         Ok((controller, mixer))
     }
 

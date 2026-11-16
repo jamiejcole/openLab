@@ -8,3 +8,4 @@ pub mod exit;
 pub mod power;
 pub mod relaunch;
 pub mod signals;
+pub mod spawn;
