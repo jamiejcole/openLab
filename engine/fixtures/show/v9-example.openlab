@@ -995,7 +995,37 @@
                 }
               ],
               "last_slice_play_count": 1,
-              "hold_at_end": true
+              "hold_at_end": true,
+              "patch": "00000000-0000-0000-0000-000000000001",
+              "levels": {
+                "master_db": -3.0,
+                "outputs": [
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "db": 0.0,
+                    "mute": false
+                  }
+                ],
+                "crosspoints": [
+                  {
+                    "input": 0,
+                    "output": 0,
+                    "db": 0.0,
+                    "mute": false
+                  },
+                  {
+                    "input": 1,
+                    "output": 1,
+                    "db": -6.0,
+                    "mute": false
+                  }
+                ],
+                "gangs": []
+              },
+              "audio_track": 1
             }
           },
           {
@@ -1070,7 +1100,15 @@
               },
               "slices": [],
               "last_slice_play_count": 1,
-              "hold_at_end": false
+              "hold_at_end": false,
+              "patch": null,
+              "levels": {
+                "master_db": 0.0,
+                "outputs": [],
+                "crosspoints": [],
+                "gangs": []
+              },
+              "audio_track": 0
             }
           }
         ]

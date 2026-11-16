@@ -6,7 +6,7 @@
 //! operator's mapping is never touched.
 
 use openlab_core::protocol::{DeviceEntry, ErrorBody, ErrorCode, LogLevel, RequestId};
-use openlab_core::{CueId, CueKind, CueState, Input, PatchId, PatchMapping, SampleTime};
+use openlab_core::{CueId, CueState, Input, PatchId, PatchMapping, SampleTime};
 
 use super::inbox::reply;
 use super::{Backend, Control, DocCx, DocId, Engine, Flow, ReplyTx, failed, ok};
@@ -122,9 +122,10 @@ fn mapping_device_text(mapping: &PatchMapping) -> String {
 }
 
 impl DocCx<'_> {
-    /// The operator cleared `patch`'s device: every Audio cue playing through it (running or
-    /// fading) pauses, as QLab 5.5.3 does; mapping a device again does not resume them. A device
-    /// that disappears by itself is device loss, not this.
+    /// The operator cleared `patch`'s device: every cue playing through it (running or fading)
+    /// pauses, as QLab 5.5.3 does; mapping a device again does not resume them. A Video cue
+    /// plays through its patch only when its movie has sound: a still or a silent movie that
+    /// names the patch plays on. A device that disappears by itself is device loss, not this.
     fn pause_cues_on(&mut self, patch: PatchId, now: SampleTime) {
         let engine = self.doc.model.engine();
         let playing: Vec<CueId> = self
@@ -132,9 +133,10 @@ impl DocCx<'_> {
             .model
             .ws()
             .cues()
-            .filter(|c| matches!(&c.kind, CueKind::Audio { patch: p, .. } if *p == patch))
+            .filter(|c| c.kind.sound_patch() == Some(patch))
             .map(|c| c.id)
             .filter(|id| matches!(engine.state(*id), CueState::Running | CueState::Fading))
+            .filter(|id| self.cue_patch(*id) == Some(patch))
             .collect();
         for cue in playing {
             self.feed(Input::Pause { cue }, now);

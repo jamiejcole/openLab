@@ -55,11 +55,13 @@ A running Wait takes an edited duration (`broken-and-edits.md`); its pending aut
 - Sending rules, limits, workers, host look-ups and "never break for an unresolved host": skill `osc`.
 
 ## Video cue (core side)
-- Its picture is a voice: GO, load, load to time, pause, resume, stop, panic and the second-trigger options emit the same voice actions as for an Audio cue (`LoadVoice`, `StartVoice`, `PauseVoice`, `ResumeVoice`, `StopVoice` with the panic fade). The binary plays a Video cue's voice on the stage host, not the mixer; level actions for it (`Ramp`, `DuckVoice`) have nothing to act on until it has sound.
+- Its picture is a voice: GO, load, load to time, pause, resume, stop, panic and the second-trigger options emit the same voice actions as for an Audio cue (`LoadVoice`, `StartVoice`, `PauseVoice`, `ResumeVoice`, `StopVoice` with the panic fade).
+- The binary plays a Video cue's voice on the stage host, not the mixer; level actions for it (`Ramp`, `DuckVoice`) act on the sound of its movie's audio track, when it has one (skill `video`, Sound; the levels are its `sound.levels`, read through `CueKind::levels()`).
 - Its length comes from the binary as for audio (`ActionLength`, `CueLengths`): a video file's length, a still's typed `duration`, none for a still without one (it runs until stopped).
 - Problems: `no_media`, `media_missing`, `media_unsupported` from the media status of its file (shared with Audio cues on the same file), `no_stage` when its stage is none, `stage_missing` when the stage is not in the workspace (a change to the stage ids rebuilds every cue's problems).
 - A picture that fails mid-show is `ActionFailed { decode_failed }`: only that cue breaks.
-- Fade and Devamp cues cannot target it (`TargetWrongKind`); preview is `NotAudio`.
+- A Fade cue may target it (it fades its sound's levels as an Audio cue's; a cue without sound has no voice to fade) and so may a Devamp cue; preview is `NotAudio`.
+- Its sound's patch problems (`no_patch`, `patch_missing`, `device_unavailable`) count only while the binary has told its file has sound (`Input::MediaSound`).
 
 ## Display name
 `Cue::display_name`: the stored `name` if non-empty; else for an Audio or Video cue with media, the file name with its extension (last `/`-separated component of the stored `MediaRef`, as stored: no case or Unicode-form change; a backslash is a file-name character); else empty.

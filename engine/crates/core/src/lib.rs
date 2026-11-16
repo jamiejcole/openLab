@@ -31,6 +31,7 @@ mod validate;
 mod video;
 mod video_geometry;
 pub mod video_probe;
+mod video_sound;
 mod video_timing;
 
 pub use backup::*;
@@ -57,6 +58,7 @@ pub use tree::descendants;
 pub use validate::*;
 pub use video::*;
 pub use video_geometry::*;
+pub use video_sound::*;
 pub use video_timing::*;
 
 /// Crate version, as set in the workspace manifest.

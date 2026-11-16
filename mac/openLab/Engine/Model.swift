@@ -50,6 +50,12 @@ struct Cue: Hashable, Sendable, Decodable {
     var kindType: String { raw["kind"]?["type"]?.stringValue ?? "" }
     /// An Audio or Video cue: its target is a file (`media`), not a cue.
     var takesFile: Bool { kindType == "audio" || kindType == "video" }
+    /// The cue has sound with levels and an output patch of its own: an Audio cue, or a Video cue
+    /// whose movie, as probed (`media`), has an audio track. A still, a movie without sound and a
+    /// file not probed yet have none.
+    func sounds(_ media: CueMediaDuration?) -> Bool {
+        kindType == "audio" || kindType == "video" && media?.hasSound == true
+    }
     /// The post-wait the cue runs with: a Wait cue's is its duration (core's `effective_post_wait`).
     var postWait: Double {
         kindType == "wait" ? raw["kind"]?["duration"]?.doubleValue ?? 0 : raw["post_wait"]?.doubleValue ?? 0
@@ -163,6 +169,20 @@ struct CueMediaDuration: Hashable, Sendable, Decodable {
     let channels: Int?
     /// A Video cue's file as its probe read it (nil for an Audio cue, or not known).
     var picture: PictureFormat? = nil
+    /// The audio tracks of a Video cue's movie, in file order (nil: it has no sound, or the cue is
+    /// not a Video cue with a probed movie).
+    var audioTracks: [AudioTrackFormat]? = nil
+    /// Which of `audioTracks` the cue plays, from 0; `channels` is that track's.
+    var audioTrack: Int? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case cue, file, trimmed, duration, channels, picture
+        case audioTracks = "audio_tracks"
+        case audioTrack = "audio_track"
+    }
+
+    /// A Video cue's movie has an audio track.
+    var hasSound: Bool { audioTracks?.isEmpty == false }
 
     /// The length the Duration column and field show: the cue's own `duration`, or for a cue that loops
     /// until devamped (none sent) one pass through its slices, so it never reads as an unprobed file.
@@ -186,6 +206,19 @@ struct PictureFormat: Hashable, Sendable, Decodable {
     let height: Int
     let fps: Double?
     let duration: Double?
+}
+
+/// One audio track of a movie as the engine's probe read it: its sample format's four-character
+/// code (`mp4a`, `lpcm`, ...), channel count and sample rate.
+struct AudioTrackFormat: Hashable, Sendable, Decodable {
+    let codec: String
+    let channels: Int
+    let sampleRate: Int
+
+    enum CodingKeys: String, CodingKey {
+        case codec, channels
+        case sampleRate = "sample_rate"
+    }
 }
 
 struct CueList: Hashable, Sendable, Decodable {

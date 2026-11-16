@@ -479,6 +479,7 @@
 "warnings.device.outputs_dropped" = "Has fewer outputs than this show uses, so some are not heard. Check its patches in Workspace Settings, Audio.";
 "warnings.device.patch_device_unusable" = "Listed, but openLab cannot use it, so the cues routed to it cannot play. Workspace Settings, Audio says why.";
 "warnings.systemOutputNone" = "The Mac has no output device selected, so the cues on patches set to the system output cannot play. Choose an output in the Mac’s Sound settings, or another device for those patches in Workspace Settings, Audio.";
+"warning.notice.audio_track_missing" = "The audio track chosen for it is not in its file; the file’s first track plays.";
 "warning.notice.move_delayed" = "Its audio file could not be read in time to move it to its patch’s new audio device. It plays on where it was; the move is tried again.";
 "warnings.device.other" = "Has a problem. Workspace Settings, Audio says more.";
 "warnings.refused.one" = "Asked to start while broken, so it did not play.";
@@ -620,6 +621,7 @@
 "problem.network_message_invalid" = "The OSC message cannot be sent: {reason}.";
 "problem.slices_unplayable" = "Its slices and loops cannot be played with this file: {reason}.";
 "problem.no_stage" = "No stage is chosen.";
+"problem.no_patch" = "Its file has sound and no output patch is chosen.";
 "problem.stage_missing" = "Its stage does not exist.";
 "problem.started_broken" = "It was started while broken and has been fixed since; it runs normally next time.";
 
@@ -854,7 +856,23 @@
 "inspector.io.still.png" = "PNG";
 "inspector.io.still.jpeg" = "JPEG";
 "inspector.io.still.tiff" = "TIFF";
-"inspector.io.noVideoSound" = "Sound in video files does not play yet.";
+"inspector.io.patchNone" = "None";
+"inspector.io.soundFormat" = "Sound format";
+"inspector.io.soundFormatText" = "%@, %@, %@ kHz";
+"inspector.io.channels.one" = "1 channel";
+"inspector.io.channels.many" = "%d channels";
+"inspector.io.trackItem" = "Track %d: %@";
+"inspector.io.trackMissing" = "Track %d (not in this file)";
+"inspector.io.trackMissingNote" = "The first track plays.";
+"inspector.io.audioCodec.mp4a" = "AAC";
+"inspector.io.audioCodec.alac" = "Apple Lossless";
+"inspector.io.audioCodec.lpcm" = "PCM";
+"inspector.io.audioCodec.sowt" = "PCM";
+"inspector.io.audioCodec.twos" = "PCM";
+"inspector.io.audioCodec.in24" = "PCM";
+"inspector.io.audioCodec.in32" = "PCM";
+"inspector.io.audioCodec.fl32" = "PCM";
+"inspector.io.audioCodec.fl64" = "PCM";
 /* A Video cue's Geometry tab (VID-04) */
 "inspector.tab.geometry" = "Geometry";
 "inspector.geometry.mode" = "Placement";

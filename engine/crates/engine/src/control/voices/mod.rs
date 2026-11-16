@@ -28,8 +28,8 @@ use openlab_audio::{
     PreparedStream, Slice, StreamHandle, StreamRequest, VoiceId, VoiceStart, total_frames,
 };
 use openlab_core::{
-    Action, BrokenReason, Cue, CueEngine, CueId, CueKind, FadeCurve, FadeSpec, Input, LevelParam,
-    PatchId, RunId, SampleTime, StopFade, Workspace, db_to_gain, seconds_to_samples,
+    Action, BrokenReason, Cue, CueEngine, CueId, CueKind, CueLevels, FadeCurve, FadeSpec, Input,
+    LevelParam, PatchId, RunId, SampleTime, StopFade, Workspace, db_to_gain, seconds_to_samples,
 };
 
 use super::media::{MediaCatalog, Probe};
@@ -56,6 +56,21 @@ pub struct Effects {
     pub reprobe: Vec<String>,
     /// Lines for the show log at `warn`.
     pub warnings: Vec<String>,
+    /// Voices the disk starved that play on from a sample, later than planned by that many
+    /// frames (run, sample, frames): a Video cue's picture follows its sound.
+    pub late: Vec<(RunId, SampleTime, u64)>,
+    /// What a Video cue's picture tells of its run's length, end and devamp: handed on at once
+    /// (`None`) or once that sample has passed. Kept apart from what the voices report, so
+    /// those reports of a Video cue's voice can be dropped wherever they were made: the
+    /// picture alone tells them, once.
+    pub pictured: Vec<(Option<SampleTime>, Input)>,
+}
+
+impl Effects {
+    /// A Video cue's picture tells the cue engine `input` now.
+    pub fn picture_says(&mut self, input: Input) {
+        self.pictured.push((None, input));
+    }
 }
 
 /// The environment voice actions are carried out in.
@@ -878,13 +893,43 @@ fn plan_spec(kind: &CueKind) -> Option<PlanSpec<'_>> {
             slices,
             last_slice_play_count: *last_slice_play_count,
         }),
+        // A Video cue's sound plays its picture's plan.
+        CueKind::Video { timing, .. } => Some(PlanSpec {
+            start_time: timing.start_time,
+            end_time: timing.end_time,
+            slices: &timing.slices,
+            last_slice_play_count: timing.last_slice_play_count,
+        }),
         _ => None,
     }
 }
 
 fn cue_media(ws: &Workspace, cue: CueId) -> Option<String> {
     match &ws.find_cue(cue)?.kind {
-        CueKind::Audio { media: Some(m), .. } => Some(m.as_str().to_owned()),
+        CueKind::Audio { media: Some(m), .. } | CueKind::Video { media: Some(m), .. } => {
+            Some(m.as_str().to_owned())
+        }
+        _ => None,
+    }
+}
+
+/// What a cue's voice is routed and faded by: its patch, its levels and its integrated fades
+/// (an Audio cue's, or those of a Video cue with a patch for its sound).
+fn sound_of(kind: &CueKind) -> Option<(PatchId, &CueLevels, &FadeSpec, &FadeSpec)> {
+    match kind {
+        CueKind::Audio {
+            patch,
+            levels,
+            fade_in,
+            fade_out,
+            ..
+        } => Some((*patch, levels, fade_in, fade_out)),
+        CueKind::Video { timing, sound, .. } => Some((
+            sound.patch?,
+            &sound.levels,
+            &timing.fade_in,
+            &timing.fade_out,
+        )),
         _ => None,
     }
 }
@@ -902,11 +947,11 @@ pub(super) fn cue_of<'a>(env: &Env<'a>, id: CueId) -> Option<&'a Cue> {
 /// patch has no mixer slot).
 fn rate_for(env: &Env<'_>, cue: CueId) -> u32 {
     let master = env.rate.get();
-    let Some(CueKind::Audio { patch, .. }) = cue_of(env, cue).map(|c| &c.kind) else {
+    let Some(patch) = cue_of(env, cue).and_then(|c| c.kind.sound_patch()) else {
         return master;
     };
     env.patches
-        .mixer_patch(env.doc, *patch)
+        .mixer_patch(env.doc, patch)
         .and_then(|slot| env.patches.slot_output(slot))
         .and_then(|key| env.rates.get(key).copied())
         .unwrap_or(master)
@@ -914,31 +959,38 @@ fn rate_for(env: &Env<'_>, cue: CueId) -> u32 {
 
 fn sig_of(env: &Env<'_>, cue: CueId) -> Option<Sig> {
     let c = cue_of(env, cue)?;
-    let CueKind::Audio {
-        media: Some(media),
-        start_time,
-        end_time,
-        slices,
-        last_slice_play_count,
-        ..
-    } = &c.kind
-    else {
-        return None;
-    };
-    let Some(Probe::Ready(ready)) = env.media.get(media.as_str()) else {
-        return None;
+    let spec = plan_spec(&c.kind)?;
+    let (media, probe, preloaded) = match &c.kind {
+        CueKind::Audio {
+            media: Some(media), ..
+        } => {
+            let Some(Probe::Ready(ready)) = env.media.get(media.as_str()) else {
+                return None;
+            };
+            let preloaded = env.media.is_preloaded(media.as_str());
+            (media, Arc::as_ptr(ready) as usize, preloaded)
+        }
+        // A Video cue's sound: the probe of the audio track it plays.
+        CueKind::Video {
+            media: Some(media),
+            sound,
+            ..
+        } => {
+            let (ready, _) = env.media.sound(media.as_str(), sound.audio_track)?;
+            (media, Arc::as_ptr(&ready) as usize, false)
+        }
+        _ => return None,
     };
     Some(Sig {
         media: media.as_str().to_owned(),
-        probe: Arc::as_ptr(ready) as usize,
-        preloaded: env.media.is_preloaded(media.as_str()),
-        start: start_time.to_bits(),
-        end: end_time.map(f64::to_bits),
-        marks: slices
-            .iter()
+        probe,
+        preloaded,
+        start: spec.start_time.to_bits(),
+        end: spec.end_time.map(f64::to_bits),
+        marks: (spec.slices.iter())
             .map(|m| (m.time.to_bits(), m.play_count))
             .collect(),
-        last: *last_slice_play_count,
+        last: spec.last_slice_play_count,
     })
 }
 
@@ -970,18 +1022,9 @@ fn voice_start(
     fade_in: FadeIn,
 ) -> Option<(Box<VoiceStart>, StreamHandle)> {
     let c = env.ws.find_cue(cue)?;
-    let CueKind::Audio {
-        patch,
-        levels,
-        fade_in: cue_fade_in,
-        fade_out,
-        ..
-    } = &c.kind
-    else {
-        return None;
-    };
-    let mixer_patch = env.patches.mixer_patch(env.doc, *patch)?;
-    let patch_outputs = env.patches.outputs(env.doc, *patch);
+    let (patch, levels, cue_fade_in, fade_out) = sound_of(&c.kind)?;
+    let mixer_patch = env.patches.mixer_patch(env.doc, patch)?;
+    let patch_outputs = env.patches.outputs(env.doc, patch);
     // As many cue outputs as the patch has (a voice costs the mixer only those); a later move
     // to a bigger patch widens it with the ramps that give the new outputs their levels.
     let width = patch_outputs.clamp(1, env.cue_outputs.max(1));

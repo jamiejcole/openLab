@@ -292,6 +292,12 @@ pub enum Input {
         media: MediaRef,
         status: MediaStatus,
     },
+    /// Which Video cues' files have sound (an audio track that plays), from the binary's probe:
+    /// `true` makes the cues on that file need their output patch, as an Audio cue does;
+    /// `false` (or never told) leaves them without a patch problem whatever patches there are.
+    MediaSound {
+        media: Vec<(MediaRef, bool)>,
+    },
     /// Where an output patch can play now (`resolve_patch` against the devices present, M1-C).
     /// Every resolution but `Mapped` breaks the Audio cues on that patch.
     PatchStatus {
@@ -359,7 +365,9 @@ pub enum CueProblem {
         media: MediaRef,
         reason: String,
     },
-    /// An Audio cue's patch is not in the workspace.
+    /// A Video cue whose file has sound has its output patch set to "none".
+    NoPatch,
+    /// An Audio cue's patch (or the patch of a Video cue with sound) is not in the workspace.
     PatchMissing {
         patch: PatchId,
     },
@@ -413,6 +421,7 @@ impl fmt::Display for CueProblem {
                     media.as_str()
                 )
             }
+            Self::NoPatch => write!(f, "its file has sound and no output patch is set"),
             Self::PatchMissing { patch } => write!(f, "patch {patch} does not exist"),
             Self::DeviceUnavailable { patch, resolution } => match resolution {
                 PatchResolution::Unmapped => {

@@ -1179,12 +1179,14 @@ func makeTestMedia(_ url: URL, codec: String, frames: Int = 0, fps: Int = 25) th
 }
 
 /// A media file at `url` of `seconds`, its kind by its extension: a WAV tone, a movie at 25 fps
-/// (`.mov` H.264, `.mp4` HEVC) or a still (`.png`, `.jpg`, `.tiff`; `seconds` unused).
-func writeTestMedia(_ url: URL, seconds: Double) throws {
+/// (`.mov` H.264, `.mp4` HEVC) or a still (`.png`, `.jpg`, `.tiff`; `seconds` unused). `sound`
+/// gives a movie audio tracks: one per `+`-joined part (`pcm:2:48000`, `aac:2:44100+pcm:6:48000`).
+func writeTestMedia(_ url: URL, seconds: Double, sound: String? = nil) throws {
     let frames = max(1, Int((seconds * 25).rounded()))
+    let tracks = sound.map { "+\($0)" } ?? ""
     switch url.pathExtension.lowercased() {
-    case "mov": try makeTestMedia(url, codec: "h264", frames: frames)
-    case "mp4": try makeTestMedia(url, codec: "hevc", frames: frames)
+    case "mov": try makeTestMedia(url, codec: "h264" + tracks, frames: frames)
+    case "mp4": try makeTestMedia(url, codec: "hevc" + tracks, frames: frames)
     case "png": try makeTestMedia(url, codec: "png")
     case "jpg", "jpeg": try makeTestMedia(url, codec: "jpeg")
     case "tif", "tiff": try makeTestMedia(url, codec: "tiff")

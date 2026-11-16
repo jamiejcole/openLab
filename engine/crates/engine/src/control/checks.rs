@@ -24,7 +24,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use openlab_audio::total_frames;
-use openlab_core::protocol::CueMediaDuration;
+use openlab_core::protocol::{AudioTrackFormat, CueMediaDuration};
 use openlab_core::{
     Cue, CueId, CueKind, MAX_CHANNELS, SampleTime, SliceMarker, VideoTiming, Workspace,
     seconds_to_samples,
@@ -74,6 +74,9 @@ struct Picture {
     duration: Option<f64>,
     /// A movie's trims, slices and play counts (VID-07).
     timing: VideoTiming,
+    /// A movie's audio tracks, and the one the cue chose (VID-06).
+    tracks: Vec<AudioTrackFormat>,
+    track: u32,
 }
 
 /// A Video cue's lengths at the engine's rate: its action from the top (`None` if it loops for
@@ -270,7 +273,7 @@ impl PlanChecks {
     /// Brings what is kept about `id` in line with `cue` (`None`: gone) and its file's probe.
     fn update(&mut self, id: CueId, cue: Option<&Cue>, media: &impl Probes, rate: NonZeroU32) {
         self.examined += 1;
-        if let Some((key, duration, timing)) = cue.and_then(video_spec) {
+        if let Some((key, duration, timing, track)) = cue.and_then(video_spec) {
             if self.pictures.get(&id).is_none_or(|p| p.key != key) {
                 self.forget(id);
                 self.by_key.entry(key.to_owned()).or_default().insert(id);
@@ -280,6 +283,16 @@ impl PlanChecks {
                 report: media.picture(key).map(|p| p.report.clone()),
                 duration,
                 timing: timing.clone(),
+                tracks: media.picture(key).map_or_else(Vec::new, |p| {
+                    (p.sound.iter())
+                        .map(|t| AudioTrackFormat {
+                            codec: t.codec.clone(),
+                            channels: t.ready.probed.info.channels,
+                            sample_rate: t.ready.probed.info.sample_rate,
+                        })
+                        .collect()
+                }),
+                track,
             };
             if self.pictures.get(&id) != Some(&now) {
                 self.builds += 1;
@@ -439,6 +452,8 @@ impl PlanChecks {
                     // The probe already refuses other counts; a wrong one is dropped, not sent.
                     channels: Some(info.channels).filter(|c| (1..=MAX_CHANNELS as u16).contains(c)),
                     picture: None,
+                    audio_tracks: Vec::new(),
+                    audio_track: None,
                 }
             });
             if self.sent.get(&id) == media.as_ref() {
@@ -458,6 +473,8 @@ impl PlanChecks {
                         duration: None,
                         channels: None,
                         picture: None,
+                        audio_tracks: Vec::new(),
+                        audio_track: None,
                     });
                 }
             }
@@ -509,13 +526,25 @@ impl PlanChecks {
             },
             trimmed: in_seconds(pass),
             duration: in_seconds(length),
-            channels: None,
+            channels: p.played_track().map(|(_, t)| t.channels),
             picture: p.report.clone(),
+            audio_track: p.played_track().map(|(n, _)| n),
+            audio_tracks: p.tracks,
         };
         if self.sent.get(&id) != Some(&media) {
             self.sent.insert(id, media.clone());
             out.media.push(media);
         }
+    }
+
+    /// Video cues whose chosen audio track their movie does not have (they play its first),
+    /// with the number chosen, counted from 1.
+    pub fn missing_tracks(&self) -> Vec<(CueId, u32)> {
+        self.pictures
+            .iter()
+            .filter(|(_, p)| p.played_track().is_some_and(|(n, _)| n != p.track))
+            .map(|(id, p)| (*id, p.track.saturating_add(1)))
+            .collect()
     }
 
     /// The media lengths clients were last told, by cue id (the snapshot's `media_durations`).
@@ -561,16 +590,32 @@ fn seconds(frames: u64, rate: u32) -> Option<f64> {
     Some(u64::try_from(ms).unwrap_or(u64::MAX) as f64 / 1000.0)
 }
 
-/// The file of a Video cue with one, its still duration and its time and loops.
-fn video_spec(c: &Cue) -> Option<(&str, Option<f64>, &VideoTiming)> {
+/// The file of a Video cue with one, its still duration, its time and loops and the audio
+/// track it chose.
+fn video_spec(c: &Cue) -> Option<(&str, Option<f64>, &VideoTiming, u32)> {
     match &c.kind {
         CueKind::Video {
             media: Some(m),
             duration,
             timing,
+            sound,
             ..
-        } => Some((m.as_str(), *duration, timing)),
+        } => Some((m.as_str(), *duration, timing, sound.audio_track)),
         _ => None,
+    }
+}
+
+impl Picture {
+    /// The audio track the cue plays and its number: the one it chose, or the first when the
+    /// movie has no such track; `None` for a file without sound.
+    fn played_track(&self) -> Option<(u32, &AudioTrackFormat)> {
+        let chosen = usize::try_from(self.track)
+            .ok()
+            .and_then(|n| self.tracks.get(n));
+        match chosen {
+            Some(t) => Some((self.track, t)),
+            None => self.tracks.first().map(|t| (0, t)),
+        }
     }
 }
 

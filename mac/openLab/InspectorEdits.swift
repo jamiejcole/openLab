@@ -190,7 +190,7 @@ extension InspectorEdit {
 
     /// Why `cue` cannot act on `target`, nil when it can: the one check for every way of setting a
     /// cue target by hand (the inspector's field, the Target column, a drag). The kinds are core's
-    /// `can_target`: Fade takes Audio and Group, Devamp takes Audio and a playlist Group.
+    /// `can_target`: Fade takes Audio, Video and Group, Devamp takes Audio, Video and a playlist Group.
     static func targetRejection(of cue: Cue, target: Cue) -> Rejection? {
         if target.id == cue.id { return .selfTarget }
         return targetRejection(ofKind: cue.kindType, target: target)
@@ -201,7 +201,7 @@ extension InspectorEdit {
         guard targetKinds.contains(kind) else { return .notApplicable }
         switch kind {
         case "fade":
-            return ["audio", "group"].contains(target.kindType) ? nil : .wrongTargetKind
+            return ["audio", "video", "group"].contains(target.kindType) ? nil : .wrongTargetKind
         case "devamp":
             let playlist = target.kindType == "group" && target.raw["kind"]?["mode"]?["type"]?.stringValue == "playlist"
             return ["audio", "video"].contains(target.kindType) || playlist ? nil : .wrongTargetKind

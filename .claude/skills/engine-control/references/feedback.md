@@ -14,6 +14,7 @@ Mixer events, stream state and probe answers become cue-engine inputs. `StartFai
 | start whose stream cannot be prepared (file gone/changed, failed probe, unbuildable plan) or the mixer cannot take at once | `StartFailed` |
 | `DevampScheduled` / `DevampIgnored` | `Input::DevampScheduled { at }` / `DevampIgnored` for the run the id stands for (an old id is stale); after `DevampScheduled` for the current id send the new `ActionLength` |
 | `MoveEnded { moves }` | no feedback; when `moves` equals the `MoveVoice`s sent, the slots the voice moved off are free to reclaim |
+| `UnderrunEnded` | no feedback; a Video cue's picture is put back by the frames missed and its run's end moved (skill `video`, Sound) |
 | `Underrun` | an `underrun` notice. A starved voice does not skip what it missed, so it ends later than planned; the engine keeps the planned end (next cue on time, late tail overlaps) |
 | probe answer | `MediaStatus` in one `Availability` per tick: `available` (damaged-but-playable too; damage is a warning), `missing` (`NotFound`), else `unsupported { reason }` |
 

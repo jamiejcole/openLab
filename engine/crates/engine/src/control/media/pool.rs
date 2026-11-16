@@ -384,13 +384,29 @@ pub(super) fn worker(
                 picture: true,
                 ..
             } => {
-                let result = picture(&path).map(|p| (path, p));
+                let result = picture(&path);
+                // A movie's sound is the audio decoder's to read (the stage host plays only its
+                // picture): each of its sound tracks is probed as an audio file is. A movie that
+                // cannot be read for its sound at all counts as one track that cannot play.
+                let sound = match &result {
+                    Ok(openlab_core::video_probe::ProbeReport::Video { .. }) => {
+                        openlab_audio::probe_movie(&path).unwrap_or_else(|e| {
+                            vec![openlab_audio::MovieSound {
+                                codec: String::new(),
+                                probed: Err(e),
+                            }]
+                        })
+                    }
+                    _ => Vec::new(),
+                };
+                let result = result.map(|p| (path, p));
                 let answered = result.as_ref().err().is_none_or(volume_answered);
                 (
                     ProbeAnswer::Pictured {
                         result,
                         key,
                         ticket,
+                        sound,
                     },
                     answered,
                 )

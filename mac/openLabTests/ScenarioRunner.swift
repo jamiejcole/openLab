@@ -62,6 +62,9 @@ final class ScenarioRunner {
         /// `{"set_media": "2.1", "file": "media/gone.wav"}`: the cue's file reference set as an edit
         /// (a file that is not there leaves the cue missing it).
         case setMedia(String, file: String)
+        /// `{"choose": id, "item": "Main PA"}`: that item of a pop-up button chosen, as a pick from its
+        /// menu does (the menu itself, which needs real input, is not opened).
+        case choose(id: String, item: String)
         /// `{"find_missing_files": ["gone.wav", "x/o.wav"], "folder": "Show Media"}`: a folder (named
         /// `folder`, default `found`) holding a test tone at each path, searched with Tools > Find
         /// Missing Files. The next steps and shots act on the tool's window (`focus` `sheet`: its
@@ -76,7 +79,9 @@ final class ScenarioRunner {
         var show: String
         /// `{"media/a.wav": 60}`: media of that many seconds written into the test show's copy first,
         /// by extension: a test tone, a movie (`.mov`, `.mp4`) or a still (`.png`, `.jpg`, `.tiff`).
-        var media: [(path: String, seconds: Double)] = []
+        /// `{"media/a.mov": {"seconds": 4, "sound": "pcm:2:48000"}}`: a movie with audio tracks (one
+        /// per `+`-joined part: `pcm` or `aac`, channels, sample rate).
+        var media: [(path: String, seconds: Double, sound: String?)] = []
         var size = CGSize(width: 1200, height: 800)
         var dark = true
         /// `"V1:1920x1080,V2:1280x720"`: the engine's stage host on these virtual displays,
@@ -90,6 +95,7 @@ final class ScenarioRunner {
     static let stepKinds = [
         "select", "click", "double_click", "drag", "type", "key", "scroll", "magnify", "advance", "resize", "tab",
         "focus", "paste_properties", "shot", "inside", "device", "set_media", "find_missing_files",
+        "choose",
     ]
 
     // MARK: Parsing
@@ -117,13 +123,18 @@ final class ScenarioRunner {
             guard let m = media as? [String: Any] else { throw Failure("\"media\" must be {\"media/a.wav\": seconds}") }
             guard isTestShow(show) else { throw Failure("\"media\" is only for a test show (it writes into its copy)") }
             for (path, value) in m.sorted(by: { $0.key < $1.key }) {
-                guard let seconds = value as? Double, seconds > 0, seconds <= 600 else {
+                let made = value as? [String: Any]
+                let sound = made?["sound"] as? String
+                if let made, made.keys.contains(where: { $0 != "seconds" && $0 != "sound" }) || sound?.isEmpty == true {
+                    throw Failure("media \"\(path)\": takes {\"seconds\": n, \"sound\": \"pcm:2:48000\"}")
+                }
+                guard let seconds = (made?["seconds"] ?? value) as? Double, seconds > 0, seconds <= 600 else {
                     throw Failure("media \"\(path)\": seconds must be a number from 0 to 600")
                 }
                 guard !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else {
                     throw Failure("media \"\(path)\": must be a path inside the show's folder")
                 }
-                s.media.append((path, seconds))
+                s.media.append((path, seconds, sound))
             }
         }
         if let window = top["window"] {
@@ -182,6 +193,7 @@ final class ScenarioRunner {
             "click": ["at", "modifiers"], "double_click": ["at", "modifiers"], "drag": ["from", "to", "modifiers"],
             "type": ["text", "enter"], "key": ["modifiers"], "scroll": ["dx", "dy", "precise", "modifiers", "at"],
             "magnify": ["by", "at"], "paste_properties": ["tick"], "inside": ["of"], "set_media": ["file"],
+            "choose": ["item"],
             "find_missing_files": ["folder"],
         ]
         let allowed = options[kind, default: []].union([kind])
@@ -258,6 +270,7 @@ final class ScenarioRunner {
         case "tab": return .tab(try string("tab"))
         case "inside": return .inside(id: try string("inside"), of: try string("of"))
         case "set_media": return .setMedia(try string("set_media"), file: try string("file"))
+        case "choose": return .choose(id: try string("choose"), item: try string("item"))
         case "find_missing_files":
             guard let files = o["find_missing_files"] as? [String],
                 files.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("/") && !$0.split(separator: "/").contains("..") })
@@ -431,7 +444,9 @@ final class ScenarioRunner {
             } else {
                 let media = scenario.media
                 doc = try await engine.open(scenario.show) { copy in
-                    for m in media { try writeTestMedia(copy.appendingPathComponent(m.path), seconds: m.seconds) }
+                    for m in media {
+                        try writeTestMedia(copy.appendingPathComponent(m.path), seconds: m.seconds, sound: m.sound)
+                    }
                 }
             }
         } catch {
@@ -725,6 +740,20 @@ final class ScenarioRunner {
             // Its probe answers as device time moves.
             for _ in 0..<5 { try await rig.advance(0.1) }
             note("set_media \(what): \(file)")
+        case .choose(let id, let title):
+            await catchUp()
+            guard let popup = try control(id) as? NSPopUpButton else {
+                throw Failure("\"\(id)\" is not a pop-up button")
+            }
+            guard !popup.isHiddenOrHasHiddenAncestor else { throw Failure("\"\(id)\" is hidden") }
+            guard let item = popup.itemArray.first(where: { $0.title == title && !$0.isHidden && $0.isEnabled }) else {
+                throw Failure("\"\(id)\" has no item \"\(title)\"; it has \(popup.itemTitles.filter { !$0.isEmpty })")
+            }
+            popup.select(item)
+            guard popup.sendAction(popup.action, to: popup.target) else {
+                throw Failure("\"\(id)\" has no action to send")
+            }
+            note("choose \(id): \(title)")
         case .findMissingFiles(let files, let name):
             guard wc.canFindMissingFiles else { throw Failure("the menu item is off: no cue is missing its file") }
             let dir = try XCTUnwrap(engine).folder.appendingPathComponent("scenario-\(UUID().uuidString)")
@@ -1035,6 +1064,7 @@ final class ScenarioRunner {
         case .shot(let s): return "shot \(s)"
         case .inside(let id, let of): return "inside \(id) of \(of)"
         case .setMedia(let cue, let file): return "set_media \(cue) \(file)"
+        case .choose(let id, let item): return "choose \(id) \(item)"
         case .findMissingFiles(let files, _): return "find_missing_files \(files.count) file(s)"
         }
     }

@@ -339,6 +339,13 @@ pub enum Event {
     },
     /// Start of an underrun episode; one event per episode, frames counted in the controller.
     Underrun { voice: VoiceId, at: SampleTime },
+    /// End of an underrun episode: from sample `at` the voice plays on, `frames` later than it
+    /// would have without the episode (what it missed was silence, not skipped).
+    UnderrunEnded {
+        voice: VoiceId,
+        at: SampleTime,
+        frames: u64,
+    },
     VoiceRejected {
         voice: VoiceId,
         at: SampleTime,

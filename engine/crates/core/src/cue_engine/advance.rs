@@ -215,7 +215,7 @@ impl CueEngine {
                     first: voice_at,
                 };
                 // The binary starts the voice with the model's levels as they are now.
-                if let CueKind::Audio { levels, .. } = &model.kind {
+                if let Some(levels) = model.kind.levels() {
                     run.given = Some(run::Given {
                         model: levels.clone(),
                         played: level::played(levels),

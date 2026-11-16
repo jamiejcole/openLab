@@ -280,6 +280,7 @@ fn a_video_cues_missing_stage_warns_and_none_is_quiet() {
                 duration: None,
                 geometry: Default::default(),
                 timing: Default::default(),
+                sound: Default::default(),
             },
         )
     };
@@ -310,6 +311,7 @@ fn a_video_cues_still_duration_is_clamped_like_any_time() {
                 duration,
                 geometry: Default::default(),
                 timing: Default::default(),
+                sound: Default::default(),
             },
         )
     };
@@ -350,6 +352,7 @@ fn a_video_cues_trims_fades_and_slices_load_checked_as_an_audio_cues() {
                 duration: None,
                 geometry: Default::default(),
                 timing: Box::new(timing),
+                sound: Default::default(),
             },
         )
     };

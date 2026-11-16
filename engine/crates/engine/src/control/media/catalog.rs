@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use openlab_audio::{Media, MediaError, Preloaded, Probed};
+use openlab_audio::{Fit, Media, MediaError, MovieSound, MovieTrack, Preloaded, Probed};
 use openlab_core::video_probe::ProbeReport;
 use openlab_core::{
     Cue, CueId, CueIndex, CueKind, Footprint, IndexChange, MediaRef, MediaStatus, Workspace,
@@ -48,6 +48,50 @@ pub struct PictureReady {
     pub path: PathBuf,
     /// Always a video or a still.
     pub report: ProbeReport,
+    /// A video's sound tracks, in file order (none: no sound). Every one plays: a movie with a
+    /// track that cannot be decoded fails its probe as a whole.
+    pub sound: Vec<SoundTrack>,
+}
+
+/// One sound track of a movie, fitted to the movie's length: what a Video cue's voice plays.
+#[derive(Debug)]
+pub struct SoundTrack {
+    /// The four-character code of its sample format, for the inspector.
+    pub codec: String,
+    /// Its probe, its length the movie's.
+    pub ready: Arc<Ready>,
+    fit: Fit,
+}
+
+/// A movie's sound tracks as its voice plays them: each fitted to the movie's `seconds`. The
+/// first track that cannot be played is the error, as text for the operator.
+fn sound_tracks(
+    path: &Path,
+    seconds: f64,
+    sound: Vec<MovieSound>,
+) -> Result<Vec<SoundTrack>, String> {
+    sound
+        .into_iter()
+        .zip(1u32..)
+        .map(|(track, number)| {
+            let mut probed = track
+                .probed
+                .map_err(|e| format!("its audio track {number} cannot be played: {e}"))?;
+            let real = probed.info.frames;
+            let frames = (seconds.max(0.0) * f64::from(probed.info.sample_rate)).round() as u64;
+            probed.info.frames = frames;
+            probed.info.duration =
+                std::time::Duration::try_from_secs_f64(seconds).unwrap_or_default();
+            Ok(SoundTrack {
+                codec: track.codec,
+                ready: Arc::new(Ready {
+                    path: path.to_path_buf(),
+                    probed,
+                }),
+                fit: Fit { real, frames },
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -834,6 +878,7 @@ impl MediaCatalog {
                 key,
                 ticket,
                 result,
+                sound,
             } => {
                 let entry = self
                     .entries
@@ -841,11 +886,23 @@ impl MediaCatalog {
                     .filter(|e| e.ticket == ticket && e.asking)?;
                 entry.asking = false;
                 entry.stuck_jobs = 0;
+                // A movie whose sound cannot be played does not play its picture silently: it
+                // is unsupported as a whole, with the track's reason.
+                let result = result.and_then(|(path, report)| {
+                    let seconds = match &report {
+                        ProbeReport::Video { duration, .. } => *duration,
+                        _ => 0.0,
+                    };
+                    let sound =
+                        sound_tracks(&path, seconds, sound).map_err(MediaError::Unsupported)?;
+                    Ok(PictureReady {
+                        path,
+                        report,
+                        sound,
+                    })
+                });
                 let (probe, status) = match result {
-                    Ok((path, report)) => (
-                        Probe::Picture(Arc::new(PictureReady { path, report })),
-                        MediaStatus::Available,
-                    ),
+                    Ok(ready) => (Probe::Picture(Arc::new(ready)), MediaStatus::Available),
                     Err(e) => {
                         self.key_changes.push(KeyChange::ProbeFailed {
                             key: key.clone(),
@@ -949,6 +1006,28 @@ impl MediaCatalog {
             Probe::Picture(p) => Some(p),
             Probe::Pending | Probe::Failed | Probe::Ready(_) => None,
         }
+    }
+
+    /// What a Video cue's voice reads of the movie `key`: its sound track `track` (from 0; a
+    /// number the file does not have is its first track), fitted to the movie's length. `None`
+    /// for a file that is not a probed movie or has no sound.
+    pub fn sound(&self, key: &str, track: u32) -> Option<(Arc<Ready>, Media)> {
+        let tracks = &self.picture(key)?.sound;
+        let (number, found) = match usize::try_from(track).ok().and_then(|n| tracks.get(n)) {
+            Some(found) => (track, found),
+            None => (0, tracks.first()?),
+        };
+        let media = Media::Track(MovieTrack {
+            path: found.ready.path.clone(),
+            track: number,
+            fit: Some(found.fit),
+        });
+        Some((Arc::clone(&found.ready), media))
+    }
+
+    /// Whether the movie `key` is probed and has sound.
+    pub fn has_sound(&self, key: &str) -> bool {
+        self.picture(key).is_some_and(|p| !p.sound.is_empty())
     }
 
     /// The probe of `key`, if it is playable (what a plan is built from; no path is cloned).

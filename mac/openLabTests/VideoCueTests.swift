@@ -235,6 +235,11 @@ final class VideoCueTests: XCTestCase {
             cell(id, "name"), loc("cue.type.video"), "an unnamed cue with no file reads as its kind", line: line)
         XCTAssertEqual(cell(id, "duration"), "", line: line)
         XCTAssertFalse(brokenTip(id)?.contains(loc("problem.no_stage")) ?? true, "it has a stage", line: line)
+        // For its file's sound: the workspace's first patch and a new Audio cue's levels on it.
+        let patch = try XCTUnwrap(store.model?.patches.first, "a new workspace has an output patch", line: line)
+        XCTAssertEqual(cue.raw["kind"]?["patch"]?.stringValue, patch.id.raw, line: line)
+        XCTAssertEqual(
+            normalised(cue.raw["kind"]?["levels"]), normalised(NewCueKind.defaultLevels(patch: patch)), line: line)
     }
 
     /// A workspace with no stage: the new Video cue has none, and says so as well as its missing file.
@@ -503,9 +508,9 @@ final class VideoCueTests: XCTestCase {
 
     // MARK: Flow 4: the I/O tab
 
-    /// The I/O tab of a Video cue: its file, the format the probe read, the stage and its size, and
-    /// the audio patch off with its reason; a still shows its format; stage none breaks the cue,
-    /// which says why and does not play.
+    /// The I/O tab of a Video cue: its file, the format the probe read, the stage and its size (a
+    /// movie with no sound has no sound-format or output-patch row); a still shows its format; stage
+    /// none breaks the cue, which says why and does not play.
     func testTheIOTabShowsTheFileFormatStageAndAudioPatchAndStageNoneBreaksTheCue() async throws {
         try await openVideoShow()
         click(Self.movie)
@@ -523,10 +528,8 @@ final class VideoCueTests: XCTestCase {
         XCTAssertEqual(v.stagePopup.titleOfSelectedItem, "Stage 1")
         XCTAssertEqual(v.stageSizeLabel.stringValue, "1920 × 1080")
         XCTAssertEqual(v.stagePopup.itemTitles, ["Stage 1", "Side screen", "", loc("inspector.io.stageNone")])
-        XCTAssertFalse(inspector.outputPatchPopup.isEnabled, "no sound from video files yet")
-        XCTAssertFalse(inspector.editPatchButton.isEnabled)
-        XCTAssertFalse(v.audioNote.isHidden)
-        XCTAssertEqual(v.audioNote.stringValue, loc("inspector.io.noVideoSound"))
+        XCTAssertEqual(v.soundRow?.isHidden, true, "this movie has no sound")
+        XCTAssertEqual(v.patchRow?.isHidden, true)
         XCTAssertTrue(v.stagePopup.isEnabled)
 
         // The side screen: its size follows.
@@ -561,7 +564,8 @@ final class VideoCueTests: XCTestCase {
         await soon { inspector.cue?.id == audioID }
         XCTAssertTrue(inspector.outputPatchPopup.isEnabled)
         XCTAssertTrue(v.videoRows.allSatisfy(\.isHidden))
-        XCTAssertEqual(v.noteRow?.isHidden, true)
+        XCTAssertEqual(v.soundRow?.isHidden, true)
+        XCTAssertEqual(v.patchRow?.isHidden, false)
     }
 
     // MARK: Flow 5: missing file, relink, Show Mode
@@ -905,23 +909,44 @@ final class VideoCueTests: XCTestCase {
         XCTAssertNil(after, "its picture left the stage")
     }
 
-    /// Integrated fade in and out → opacity follows the fade lengths: the box sets both fades, the
-    /// tab draws them over the ruler, and the picture is half faded halfway into the fade in.
-    func testIntegratedFadeInAndOutOpacityFollowsTheFadeLengths() async throws {
-        try await openVideoShow()
+    /// Integrated fade in and out → opacity and sound follow the fade lengths: the box sets both
+    /// fades, the tab draws them over the timeline, and halfway into the fade in the picture is
+    /// half faded and the sound at half its level.
+    func testIntegratedFadeInAndOutOpacityAndSoundFollowTheFadeLengths() async throws {
+        try await openSoundShow()
         let panel = try await timeLoopsTab()
         panel.fadeCheck.state = .on
         _ = panel.fadeCheck.target?.perform(panel.fadeCheck.action, with: panel.fadeCheck)
         await soon("fades on") { (self.movieField("fade_in")?["duration"]?.doubleValue ?? 0) > 0 }
         let fadeIn = try XCTUnwrap(movieField("fade_in")?["duration"]?.doubleValue)
         XCTAssertTrue(panel.waveform.fadesShown, "drawn on the timeline")
-        try await go()
-        try await play(fadeIn / 2)
+        XCTAssertEqual(fadeIn, 1)
+        // The Levels tab's meter reads the sound; the test track's first channel is as loud half
+        // a second into every second of the file.
+        try await show(Self.movie, tab: "levels")
+        func soundNow() async throws -> Double {
+            store.meters.reset()
+            try await play(0.1)
+            store.meters.tick(0)
+            return Double(store.meters.level(.cue(Self.movie), channel: 0))
+        }
+        try await perform(.startSelected, on: Self.movie)
+        try await play(fadeIn / 2 - 0.1)
+        let halfSound = try await soundNow()
         let half = try await red()
-        try await play(2 - fadeIn / 2)
+        try await play(1.9)
+        let fullSound = try await soundNow()
         let full = try await red()
         XCTAssertGreaterThan(full, 200, "between the fades")
         XCTAssertEqual(Double(half) / Double(full), 0.5, accuracy: 0.08, "halfway into the fade in")
+        XCTAssertGreaterThan(fullSound, 0.2, "the sound between the fades")
+        XCTAssertEqual(halfSound / fullSound, 0.5, accuracy: 0.12, "the sound halfway into the fade in")
+        // Halfway into the fade out, both again.
+        try await play(0.9)
+        let outSound = try await soundNow()
+        let out = try await red()
+        XCTAssertEqual(Double(out) / Double(full), 0.5, accuracy: 0.1, "halfway into the fade out")
+        XCTAssertEqual(outSound / fullSound, 0.5, accuracy: 0.12, "the sound halfway into the fade out")
     }
 
     /// The red the stage shows in the test card's top-left quadrant.

@@ -102,6 +102,7 @@ pub fn video() -> CueKind {
         duration: None,
         geometry: Default::default(),
         timing: Default::default(),
+        sound: Default::default(),
     }
 }
 

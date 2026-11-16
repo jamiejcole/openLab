@@ -363,9 +363,15 @@ final class LevelsPanel: NSObject, NSTextFieldDelegate {
 
     @objc private func editPatchClicked() { onEditPatch?() }
 
+    /// The shown cues play through a patch the workspace has (one patch, when several are shown):
+    /// there is a patch for Edit Patch to open.
+    var hasPatch = true {
+        didSet { if hasPatch != oldValue { refreshStrip() } }
+    }
+
     private func refreshStrip() {
         // Opening the editor changes nothing; Show Mode keeps it shut like every other edit.
-        editPatchButton.isEnabled = !isLocked && levels != nil
+        editPatchButton.isEnabled = !isLocked && levels != nil && hasPatch
         guard let levels else {
             for c in [levelField, muteCheck, activeCheck, gangField, defaultButton, silentButton, fromTargetButton]
                 as [NSControl]

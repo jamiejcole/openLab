@@ -325,6 +325,7 @@ fn event_voice(e: &Event) -> Option<VoiceId> {
     match e {
         Event::VoiceFinished { voice, .. }
         | Event::Underrun { voice, .. }
+        | Event::UnderrunEnded { voice, .. }
         | Event::VoiceRejected { voice, .. }
         | Event::LoopReached { voice, .. }
         | Event::SliceEnded { voice, .. }

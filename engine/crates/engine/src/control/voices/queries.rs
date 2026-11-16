@@ -83,14 +83,16 @@ impl Voices {
             if r.preview || r.retired || !matches!(r.phase, Phase::Playing) {
                 continue;
             }
-            let Some(CueKind::Audio { patch, levels, .. }) = ws.find_cue(r.cue).map(|c| &c.kind)
+            let Some((patch, levels)) = ws
+                .find_cue(r.cue)
+                .and_then(|c| Some((c.kind.sound_patch()?, c.kind.levels()?)))
             else {
                 continue;
             };
-            if r.patch == Some(*patch) {
+            if r.patch == Some(patch) {
                 continue;
             }
-            let Some(slot) = patches.mixer_patch(doc, *patch) else {
+            let Some(slot) = patches.mixer_patch(doc, patch) else {
                 continue;
             };
             // A voice stays in its device's mixer: one whose new patch plays on another device
@@ -100,7 +102,7 @@ impl Voices {
             }
             // Not before the voice's own (re)start, which may still be queued in the mixer.
             let at = now.max(r.start_at).max(r.resumed_at.unwrap_or(0));
-            let outputs = patches.outputs(doc, *patch);
+            let outputs = patches.outputs(doc, patch);
             if outputs > r.levelled {
                 let faded: BTreeSet<LevelParam> = engine
                     .fade_ramps(r.cue, at)
@@ -147,7 +149,7 @@ impl Voices {
                 r.former.push(old);
             }
             r.slot = Some(slot);
-            r.patch = Some(*patch);
+            r.patch = Some(patch);
             r.moves = r.moves.wrapping_add(1);
             commands.push((
                 at,

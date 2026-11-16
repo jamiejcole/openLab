@@ -183,6 +183,8 @@ pub enum WireProblem {
     StageMissing {
         stage: StageId,
     },
+    /// A Video cue whose file has sound has its output patch set to "none".
+    NoPatch,
 }
 
 impl From<&CueProblem> for WireProblem {
@@ -201,6 +203,7 @@ impl From<&CueProblem> for WireProblem {
                 media: media.clone(),
                 reason: reason.clone(),
             },
+            CueProblem::NoPatch => Self::NoPatch,
             CueProblem::PatchMissing { patch } => Self::PatchMissing { patch: *patch },
             CueProblem::DeviceUnavailable { patch, resolution } => Self::DeviceUnavailable {
                 patch: *patch,
@@ -490,6 +493,26 @@ pub struct CueMediaDuration {
     /// `still`). Absent for an Audio cue, and with the lengths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<crate::video_probe::ProbeReport>,
+    /// The audio tracks of a Video cue's movie, in file order (VID-06). Empty (absent) for a
+    /// movie without sound, a still and an Audio cue: the cue then has no sound, no levels to
+    /// show and no need of an output patch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_tracks: Vec<AudioTrackFormat>,
+    /// Which of `audio_tracks` the cue plays, from 0: its stored `audio_track`, or 0 when the
+    /// file has no such track (a `audio_track_missing` warning says so). `channels` is that
+    /// track's. Absent with `audio_tracks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_track: Option<u32>,
+}
+
+/// One audio track of a movie as its probe read it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioTrackFormat {
+    /// The four-character code of its sample format (`mp4a`: AAC; `lpcm`, `sowt`, `twos`,
+    /// `in24`, `fl32`: PCM; `alac`), at most 4 characters of printable ASCII.
+    pub codec: String,
+    pub channels: u16,
+    pub sample_rate: u32,
 }
 
 impl RuntimeChange {

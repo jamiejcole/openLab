@@ -10,8 +10,12 @@ use std::io::{Read, Seek, SeekFrom};
 use crate::mp4_check::box_header;
 
 /// Boxes that are descended into (`meta` is a full box, handled in `level`).
-const CONTAINERS: [&[u8; 4]; 8] = [
-    b"moov", b"trak", b"mdia", b"edts", b"udta", b"meta", b"ilst", b"----",
+const CONTAINERS: [&[u8; 4]; 10] = [
+    b"moov", b"trak", b"mdia", b"minf", b"stbl", b"edts", b"udta", b"meta", b"ilst", b"----",
+];
+/// Boxes a QuickTime movie may start with instead of `ftyp` (old files have none).
+const MOVIE_STARTS: [&[u8; 4]; 7] = [
+    b"ftyp", b"moov", b"mdat", b"wide", b"free", b"skip", b"pnot",
 ];
 /// Deepest nesting followed (moov > udta > meta > ilst > ---- > data is depth 5).
 const MAX_DEPTH: usize = 6;
@@ -41,6 +45,10 @@ struct TrackEdit {
     id: u32,
     timescale: u32,
     edit: Edit,
+    /// Its media handler is sound (`hdlr` type `soun`).
+    sound: bool,
+    /// The four-character code of its first sample description (`stsd`).
+    codec: [u8; 4],
 }
 
 /// The `iTunSMPB` tag's priming field.
@@ -109,11 +117,43 @@ impl Mp4Gapless {
 /// Scans `r` (from the start; left at the start). Anything that is not understood is left out:
 /// the result then says nothing, and the file plays as symphonia decodes it.
 pub(crate) fn scan_mp4_gapless<R: Read + Seek + ?Sized>(r: &mut R) -> Mp4Gapless {
+    scan(r, false)
+}
+
+/// As [`scan_mp4_gapless`], for a movie file (MP4 or QuickTime, which may start with a box
+/// other than `ftyp`).
+pub(crate) fn scan_movie<R: Read + Seek + ?Sized>(r: &mut R) -> Mp4Gapless {
+    scan(r, true)
+}
+
+/// A sound track of a movie file: its track id and its sample format's four-character code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SoundTrack {
+    pub(crate) id: u32,
+    pub(crate) codec: [u8; 4],
+}
+
+impl Mp4Gapless {
+    /// The file's sound tracks, in file order.
+    pub(crate) fn sound_tracks(&self) -> Vec<SoundTrack> {
+        self.tracks
+            .iter()
+            .filter(|t| t.sound)
+            .map(|t| SoundTrack {
+                id: t.id,
+                codec: t.codec,
+            })
+            .collect()
+    }
+}
+
+fn scan<R: Read + Seek + ?Sized>(r: &mut R, movie: bool) -> Mp4Gapless {
     let mut scan = Scan {
         boxes: 0,
         tracks: Vec::new(),
         smpb: Smpb::Absent,
         name_is_smpb: false,
+        movie,
     };
     if let Ok(len) = r.seek(SeekFrom::End(0)) {
         scan.level(r, 0, len, 0, *b"    ");
@@ -132,6 +172,8 @@ struct Scan {
     smpb: Smpb,
     /// The `----` atom being read named itself `iTunSMPB`.
     name_is_smpb: bool,
+    /// A movie file: it may start with any of [`MOVIE_STARTS`].
+    movie: bool,
 }
 
 fn read_at<R: Read + Seek + ?Sized>(r: &mut R, pos: u64, buf: &mut [u8]) -> bool {
@@ -167,7 +209,12 @@ impl Scan {
             let Some((kind, header, box_end)) = box_header(r, pos, end) else {
                 return;
             };
-            if depth == 0 && pos == 0 && &kind != b"ftyp" {
+            let starts = if self.movie {
+                MOVIE_STARTS.iter().any(|k| **k == kind)
+            } else {
+                &kind == b"ftyp"
+            };
+            if depth == 0 && pos == 0 && !starts {
                 return;
             }
             let body = pos + header;
@@ -175,6 +222,8 @@ impl Scan {
                 (b"trak", b"tkhd") => self.tkhd(r, body, box_end),
                 (b"mdia", b"mdhd") => self.mdhd(r, body, box_end),
                 (b"edts", b"elst") => self.elst(r, body, box_end),
+                (b"mdia", b"hdlr") => self.hdlr(r, body, box_end),
+                (b"stbl", b"stsd") => self.stsd(r, body, box_end),
                 (b"----", b"name") => self.name(r, body, box_end),
                 (b"----", b"data") => self.data(r, body, box_end),
                 _ => {}
@@ -189,6 +238,8 @@ impl Scan {
                         id: 0,
                         timescale: 0,
                         edit: Edit::Absent,
+                        sound: false,
+                        codec: *b"    ",
                     });
                 }
                 // `meta` is a full box in MP4 and iTunes files (4 bytes of version and flags
@@ -229,6 +280,29 @@ impl Scan {
             return;
         };
         t.timescale = ts;
+    }
+
+    /// The media handler: version and flags, the component type, then the handler type.
+    fn hdlr<R: Read + Seek + ?Sized>(&mut self, r: &mut R, body: u64, end: u64) {
+        let mut b = [0u8; 12];
+        if body.saturating_add(b.len() as u64) > end || !read_at(r, body, &mut b) {
+            return;
+        }
+        if let Some(t) = self.tracks.last_mut() {
+            t.sound = b.get(8..) == Some(b"soun".as_slice());
+        }
+    }
+
+    /// The sample descriptions: version and flags, their count, then the first one's size and
+    /// four-character code.
+    fn stsd<R: Read + Seek + ?Sized>(&mut self, r: &mut R, body: u64, end: u64) {
+        let mut b = [0u8; 16];
+        if body.saturating_add(b.len() as u64) > end || !read_at(r, body, &mut b) {
+            return;
+        }
+        if let (Some(t), Some(code)) = (self.tracks.last_mut(), b.last_chunk::<4>()) {
+            t.codec = *code;
+        }
     }
 
     fn elst<R: Read + Seek + ?Sized>(&mut self, r: &mut R, body: u64, end: u64) {

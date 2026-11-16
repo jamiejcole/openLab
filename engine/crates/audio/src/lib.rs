@@ -25,9 +25,9 @@ mod waveform;
 
 pub use controller::{BatchTooLarge, MixerController};
 pub use decode::{
-    DEFAULT_PRELOAD_BUDGET, INDEX_SPACING, Media, MediaError, MediaInfo, MediaRead, MediaWarning,
-    Preloaded, Probed, SeekIndex, Seeking, WarningKind, preload, preload_within, probe,
-    probe_media,
+    DEFAULT_PRELOAD_BUDGET, Fit, INDEX_SPACING, MAX_MOVIE_SOUND_TRACKS, Media, MediaError,
+    MediaInfo, MediaRead, MediaWarning, MovieSound, MovieTrack, Preloaded, Probed, SeekIndex,
+    Seeking, WarningKind, preload, preload_within, probe, probe_media, probe_movie,
 };
 #[cfg(feature = "device")]
 pub use device::{

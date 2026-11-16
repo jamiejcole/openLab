@@ -66,6 +66,11 @@ impl Voices {
                     ));
                 }
             }
+            Event::UnderrunEnded { voice, at, frames } => {
+                if let Some((_, run)) = self.name(voice) {
+                    fx.late.push((run, at, frames));
+                }
+            }
             Event::MoveEnded { voice, moves, .. } => {
                 // Settled after the last move sent: no crossfade plays out of a former slot,
                 // so they can be reused. A move sent since is still on its way (the counts

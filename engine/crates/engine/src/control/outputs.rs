@@ -408,10 +408,12 @@ impl Outputs {
         while let Some(e) = output.mixer.poll_event() {
             events.push(e);
         }
+        let local = output.mixer.sample_rate();
         for e in &mut events {
             if let Some(at) = event_date(e) {
                 *at = self.master_date(key, *at);
             }
+            span_at_master(e, local, self.rate);
             if let Event::VoiceFinished { voice, .. } = e {
                 self.voices.remove(voice);
             }
@@ -495,11 +497,21 @@ fn command_voice(kind: &CommandKind) -> Option<VoiceId> {
     }
 }
 
+/// An event's count of frames, counted by a mixer at `local`, as master frames: what follows
+/// it (a picture following its sound) is planned in master time.
+fn span_at_master(e: &mut Event, local: u32, master: u32) {
+    if let Event::UnderrunEnded { frames, .. } = e {
+        let scaled = rescale_signed(i128::from(*frames), local, master);
+        *frames = u64::try_from(scaled).unwrap_or(u64::MAX);
+    }
+}
+
 /// The sample an event is dated on.
 fn event_date(e: &mut Event) -> Option<&mut SampleTime> {
     match e {
         Event::VoiceFinished { at, .. }
         | Event::Underrun { at, .. }
+        | Event::UnderrunEnded { at, .. }
         | Event::VoiceRejected { at, .. }
         | Event::PendingFull { at }
         | Event::LoopReached { at, .. }
@@ -592,6 +604,24 @@ mod tests {
         // The inverse: the device's sample 4 410 is master sample 4 800.
         assert_eq!(o.master_date(1, 4_410), 4_800);
         assert_eq!(o.master_date(1, 0), 0);
+    }
+
+    /// What a voice on a device at another rate missed is told in master frames, as its date
+    /// is: the picture put back by it is planned in master time.
+    #[test]
+    fn an_underruns_length_on_a_device_at_another_rate_is_in_master_frames() {
+        let mut e = Event::UnderrunEnded {
+            voice: VoiceId(1),
+            at: 0,
+            frames: 4_410,
+        };
+        span_at_master(&mut e, 44_100, 48_000);
+        assert!(matches!(e, Event::UnderrunEnded { frames: 4_800, .. }));
+        span_at_master(&mut e, 48_000, 48_000);
+        assert!(matches!(e, Event::UnderrunEnded { frames: 4_800, .. }));
+        let mut other = Event::PendingFull { at: 7 };
+        span_at_master(&mut other, 44_100, 48_000);
+        assert!(matches!(other, Event::PendingFull { at: 7 }));
     }
 
     #[test]

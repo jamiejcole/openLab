@@ -117,6 +117,8 @@ fn snapshot() -> Snapshot {
             duration: Some(120.0),
             channels: Some(2),
             picture: None,
+            audio_tracks: Vec::new(),
+            audio_track: None,
         }],
     }
 }
@@ -546,6 +548,7 @@ fn fixtures() -> Vec<(String, Sample)> {
             duration: None,
             geometry: Default::default(),
             timing: Default::default(),
+            sound: Default::default(),
         },
     );
     video.number = None;
@@ -1113,6 +1116,8 @@ fn fixtures() -> Vec<(String, Sample)> {
                     duration: None,
                     channels: Some(6),
                     picture: None,
+                    audio_tracks: Vec::new(),
+                    audio_track: None,
                 }),
                 RuntimeChange::MediaDuration(CueMediaDuration {
                     cue: cue_id(11),
@@ -1121,6 +1126,8 @@ fn fixtures() -> Vec<(String, Sample)> {
                     duration: None,
                     channels: None,
                     picture: None,
+                    audio_tracks: Vec::new(),
+                    audio_track: None,
                 }),
             ],
         }),
@@ -1144,6 +1151,8 @@ fn fixtures() -> Vec<(String, Sample)> {
                         fps: 25.0,
                         duration: 12.5,
                     }),
+                    audio_tracks: Vec::new(),
+                    audio_track: None,
                 }),
                 RuntimeChange::MediaDuration(CueMediaDuration {
                     cue: cue_id(16),
@@ -1156,8 +1165,45 @@ fn fixtures() -> Vec<(String, Sample)> {
                         width: 3840,
                         height: 2160,
                     }),
+                    audio_tracks: Vec::new(),
+                    audio_track: None,
                 }),
             ],
+        }),
+    );
+    // A Video cue whose movie has two audio tracks, playing the second: its channels are the
+    // rows of the cue's levels.
+    add(
+        "runtime_media_duration_video_sound",
+        server(ServerMessage::Runtime {
+            seq: 46,
+            changes: vec![RuntimeChange::MediaDuration(CueMediaDuration {
+                cue: cue_id(15),
+                file: Some(12.5),
+                trimmed: Some(12.5),
+                duration: Some(12.5),
+                channels: Some(6),
+                picture: Some(openlab_core::video_probe::ProbeReport::Video {
+                    codec: openlab_core::video_probe::VideoCodec::H264,
+                    width: 1920,
+                    height: 1080,
+                    fps: 25.0,
+                    duration: 12.5,
+                }),
+                audio_tracks: vec![
+                    openlab_core::protocol::AudioTrackFormat {
+                        codec: "mp4a".into(),
+                        channels: 2,
+                        sample_rate: 44_100,
+                    },
+                    openlab_core::protocol::AudioTrackFormat {
+                        codec: "lpcm".into(),
+                        channels: 6,
+                        sample_rate: 48_000,
+                    },
+                ],
+                audio_track: Some(1),
+            })],
         }),
     );
     add(
@@ -2862,7 +2908,7 @@ fn wire_warning_idx(w: &WireWarning) -> usize {
     }
 }
 
-const ENGINE_PROBLEM_COUNT: usize = 17;
+const ENGINE_PROBLEM_COUNT: usize = 18;
 fn engine_problem_idx(p: &CueProblem) -> usize {
     match p {
         CueProblem::NoTarget => 0,
@@ -2882,6 +2928,7 @@ fn engine_problem_idx(p: &CueProblem) -> usize {
         CueProblem::SlicesUnplayable { .. } => 14,
         CueProblem::NoStage => 15,
         CueProblem::StageMissing { .. } => 16,
+        CueProblem::NoPatch => 17,
     }
 }
 
@@ -2904,6 +2951,7 @@ fn wire_problem_idx(p: &WireProblem) -> usize {
         WireProblem::SlicesUnplayable { .. } => 14,
         WireProblem::NoStage => 15,
         WireProblem::StageMissing { .. } => 16,
+        WireProblem::NoPatch => 17,
     }
 }
 
@@ -3258,6 +3306,7 @@ fn problem_table() -> Vec<(CueProblem, WireProblem)> {
         ),
         (CueProblem::StartedBroken, WireProblem::StartedBroken),
         (CueProblem::NoStage, WireProblem::NoStage),
+        (CueProblem::NoPatch, WireProblem::NoPatch),
         (
             CueProblem::StageMissing {
                 stage: openlab_core::StageId(uuid::Uuid::from_u128(7)),

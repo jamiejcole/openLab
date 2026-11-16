@@ -1,6 +1,6 @@
 # Fade cues and live level edits
 
-Audio levels only (video fades are later). Sources: `fade.rs`, `level.rs`, `live_levels.rs`.
+Audio levels only (a picture's opacity is not faded yet). A Video cue's sound has levels as an Audio cue's and is faded, edited and limited by the same code (`CueKind::levels()`); "audio cue" below includes it. Sources: `fade.rs`, `level.rs`, `live_levels.rs`.
 
 ## Fade cues (CT-10)
 - A Fade of an audio cue is absolute unless its `mode` is `relative` (then it moves the cue's levels as a Fade of a group does, below): over its duration, with its curve, it moves the target's levels from their current values to the Fade's values.

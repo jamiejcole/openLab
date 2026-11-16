@@ -47,6 +47,12 @@ impl DocCx<'_> {
         self.doc.pending_media.extend(unresolved);
         if !self.doc.pending_media.is_empty() {
             let media = std::mem::take(&mut self.doc.pending_media);
+            // Which of the files are movies with sound, first: their cues need their patch.
+            let sound = media
+                .iter()
+                .map(|(file, _)| (file.clone(), self.doc.media.has_sound(file.as_str())))
+                .collect();
+            self.feed(Input::MediaSound { media: sound }, now);
             self.feed(
                 Input::Availability {
                     media,
@@ -174,12 +180,18 @@ impl DocCx<'_> {
                 }
             }
         }
+        for action in actions {
+            if let Action::RelocateVoice { run, from, .. } = *action {
+                self.relocate_picture(run, from, &mut fx);
+            }
+        }
         for (action, picture) in actions.iter().zip(&pictures) {
             if *picture {
                 self.picture_action(action, &mut fx);
             }
         }
         self.end_pictures(actions);
+        self.end_sounds(actions);
         for action in actions {
             match action {
                 Action::SetArmed { cue, armed: value } => {
@@ -222,7 +234,25 @@ impl DocCx<'_> {
             notices,
             reprobe,
             warnings,
+            late,
+            pictured,
         } = fx;
+        // Of a Video cue's voice only failures are passed on: its run's length, end and
+        // devamp are its picture's to tell. Dropped here, where every report of the voices
+        // passes, whichever way it was made (an event, a lost event made up for, a device
+        // closed).
+        let (mut feedback, mut deferred) = (feedback, deferred);
+        feedback.retain(|i| !self.pictures_report(i));
+        deferred.retain(|(_, i)| !self.pictures_report(i));
+        for (at, input) in pictured {
+            match at {
+                Some(at) => deferred.push((at, input)),
+                None => feedback.push(input),
+            }
+        }
+        for (run, at, frames) in late {
+            self.picture_late(run, at, frames, &mut feedback);
+        }
         for message in warnings {
             self.log(LogLevel::Warn, message);
         }

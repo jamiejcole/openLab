@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::media_path::file_name;
 use crate::model::{CueId, NetworkPatchId, PatchId, StageId};
 use crate::video_geometry::VideoGeometry;
+use crate::video_sound::VideoSound;
 use crate::video_timing::VideoTiming;
 
 /// Levels at or below this are silence (−∞). The file writes this value for silence.
@@ -507,10 +508,12 @@ impl CueKind {
             }
         };
         match self {
-            Self::Audio { levels, .. } => {
-                set(&mut levels.master_db);
-                levels.outputs.iter_mut().for_each(|o| set(&mut o.db));
-                levels.crosspoints.iter_mut().for_each(|c| set(&mut c.db));
+            Self::Audio { .. } | Self::Video { .. } => {
+                if let Some(levels) = self.levels_mut() {
+                    set(&mut levels.master_db);
+                    levels.outputs.iter_mut().for_each(|o| set(&mut o.db));
+                    levels.crosspoints.iter_mut().for_each(|c| set(&mut c.db));
+                }
             }
             Self::Fade { levels, .. } if fades => {
                 levels.master_db.iter_mut().for_each(&mut set);
@@ -684,6 +687,9 @@ pub enum CueKind {
         /// Its trims, loops, fades and hold at end (VID-07), stored as fields of the kind.
         #[serde(flatten)]
         timing: Box<VideoTiming>,
+        /// Its sound's patch, levels and audio track (VID-06), stored as fields of the kind.
+        #[serde(flatten)]
+        sound: Box<VideoSound>,
     },
 }
 
@@ -692,6 +698,35 @@ impl CueKind {
     pub fn media(&self) -> Option<&MediaRef> {
         match self {
             Self::Audio { media, .. } | Self::Video { media, .. } => media.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The levels of a cue that can sound: an Audio cue's, or a Video cue's (used when its
+    /// file has an audio track).
+    pub fn levels(&self) -> Option<&CueLevels> {
+        match self {
+            Self::Audio { levels, .. } => Some(levels),
+            Self::Video { sound, .. } => Some(&sound.levels),
+            _ => None,
+        }
+    }
+
+    /// [`Self::levels`], to change.
+    pub fn levels_mut(&mut self) -> Option<&mut CueLevels> {
+        match self {
+            Self::Audio { levels, .. } => Some(levels),
+            Self::Video { sound, .. } => Some(&mut sound.levels),
+            _ => None,
+        }
+    }
+
+    /// The output patch a cue that can sound plays on: an Audio cue's, or a Video cue's when
+    /// it has one set.
+    pub fn sound_patch(&self) -> Option<PatchId> {
+        match self {
+            Self::Audio { patch, .. } => Some(*patch),
+            Self::Video { sound, .. } => sound.patch,
             _ => None,
         }
     }

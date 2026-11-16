@@ -930,11 +930,17 @@ impl Checker {
                 duration,
                 geometry,
                 timing,
+                sound,
                 ..
             } => {
                 if let Some(d) = duration {
                     self.time(id, "duration", d);
                 }
+                // Its sound's levels, as an Audio cue's.
+                let outputs = (sound.patch)
+                    .and_then(|p| self.patch_outputs.get(&p).copied())
+                    .unwrap_or(MAX_CUE_OUTPUTS as usize);
+                self.cue_levels(id, &mut sound.levels, outputs);
                 // The same trims, slices and fades as an Audio cue's, checked the same way.
                 self.media_timing(
                     id,
@@ -1295,10 +1301,13 @@ impl Checker {
                     CueKind::Audio { patch, .. } if !patches.contains(patch) => {
                         self.warn(id, IssueKind::PatchMissing { patch: *patch });
                     }
-                    CueKind::Video {
-                        stage: Some(stage), ..
-                    } if !stages.contains(stage) => {
-                        self.warn(id, IssueKind::StageMissing { stage: *stage });
+                    CueKind::Video { stage, sound, .. } => {
+                        if let Some(stage) = stage.filter(|s| !stages.contains(s)) {
+                            self.warn(id, IssueKind::StageMissing { stage });
+                        }
+                        if let Some(patch) = sound.patch.filter(|p| !patches.contains(p)) {
+                            self.warn(id, IssueKind::PatchMissing { patch });
+                        }
                     }
                     CueKind::Network { destination, .. }
                         if !network_patches.contains(destination) =>
@@ -1435,7 +1444,10 @@ fn strongly_connected(successors: &[Vec<usize>]) -> Option<Vec<usize>> {
 /// accept any target.
 pub(crate) fn can_target(source: &CueKind, target: &CueKind) -> bool {
     match source {
-        CueKind::Fade { .. } => matches!(target, CueKind::Audio { .. } | CueKind::Group { .. }),
+        CueKind::Fade { .. } => matches!(
+            target,
+            CueKind::Audio { .. } | CueKind::Video { .. } | CueKind::Group { .. }
+        ),
         CueKind::Devamp { .. } => matches!(
             target,
             CueKind::Audio { .. }

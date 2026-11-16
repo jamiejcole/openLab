@@ -81,7 +81,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     /// The Network cue's Settings tab: its patch, message and Send. The pop-up's items follow the
     /// workspace's network patches; `networkPatchIDs[i]` is item i's patch (nil: separator, no patch).
     let networkPatchPopup = NSPopUpButton()
-    /// An Audio cue's output patch (the I/O tab), and the patches its menu lists.
+    /// The output patch of an Audio cue, or of a Video cue with sound (the I/O tab), and the patches
+    /// its menu lists.
     let outputPatchPopup = NSPopUpButton()
     let editPatchButton = NSButton(title: loc("inspector.io.editPatch"), target: nil, action: nil)
     /// Opens the patch editor of a patch (set by the window controller).
@@ -91,6 +92,8 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
     let geometry = GeometryControls()
     var outputPatchIDs: [ModelID] = []
     var outputPatchNames: [String] = []
+    /// The patch menu ends with a separator and "none" (built for a Video cue).
+    var outputPatchHasNone = false
     let networkMessageField = NSTextField()
     let networkSendButton = NSButton(title: loc("inspector.network.send"), target: nil, action: nil)
     var networkPatchIDs: [ModelID?] = []
@@ -473,7 +476,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // A zero-wide tab view lays its tab strip out at a negative width as tabs are added (AppKit logs
         // "Invalid view geometry" on macOS 27); Auto Layout sizes it for real below.
         tabView.frame = NSRect(x: 0, y: 0, width: 320, height: 240)
-        syncTabs(forKind: "")
+        syncTabs(InspectorTabs.ids(forKind: ""))
         tabView.setAX(AX.inspectorTabs)
         tabView.delegate = self
 
@@ -501,6 +504,12 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
                 MainActor.assumeIsolated {
                     self?.updatePreviewButton()
                     if let self, let cue = self.cue, cues.contains(cue.id), cue.takesFile { self.render() }
+                    // A Fade's Levels tab comes and goes with its Video target's sound.
+                    if let self, let cue = self.cue, cue.kindType == "fade",
+                        let target = cue.raw["kind"]?["target"]?.stringValue, cues.contains(ModelID(target))
+                    {
+                        self.render()
+                    }
                     // The file's length may have come (or changed): the waveform follows.
                     if let self, let cue = self.cueForEdit, cues.contains(cue.id) { self.renderTimeLoops(cue) }
                     // A probe also tells the matrix how many channels the file has.
@@ -845,7 +854,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
         // Only Wait and Fade cues, and stills, have a duration to type; others take theirs from content
         // or have none.
         durationField.isEnabled = InspectorEdit.editsDuration(cue, media: store.mediaDurations[cue.id])
-        syncTabs(forKind: kind)
+        syncTabs(InspectorTabs.ids(for: cue, model: model, media: store.mediaDurations))
         showChoice(colourPopup, Self.colourItems, [cue.raw["color"]?.stringValue ?? "none"])
         let second = cue.raw["second_color"]?.stringValue ?? "none"
         showChoice(secondColourPopup, Self.colourItems, [second])
@@ -915,7 +924,7 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             numberField, nameField, preWaitField, postWaitField, durationField, loadTimeField, targetField,
             hotkeyField, hotkeyClear, chooseButton, clearTargetButton, devampStartNextCheck, devampStopCheck,
             devampModePopup, networkPatchPopup, outputPatchPopup, editPatchButton, networkMessageField,
-            networkSendButton, videoIO.stagePopup, videoIO.chooseButton,
+            networkSendButton, videoIO.stagePopup, videoIO.chooseButton, videoIO.trackPopup,
             secondTriggerPopup, onReleaseCheck, groupModePopup, groupLoopCheck, groupShuffleCheck, colourPopup,
             continuePopup, flaggedCheck, armedCheck, secondColourCheck, secondColourPopup, autoLoadCheck, skipCheck,
             hotkeyEnableCheck, fadeOthersCheck, fadeOthersScopePopup, fadeOthersTimeField, duckCheck, duckDbField,
@@ -933,11 +942,6 @@ final class InspectorViewController: NSViewController, NSTextFieldDelegate, NSTe
             view.window?.makeFirstResponder(nil)
         }
         for c in lockedControls { c.isEnabled = !isLocked }
-        // A Video cue's audio patch stays off whatever the mode: it plays no sound yet (#645).
-        if cue?.kindType == "video" {
-            outputPatchPopup.isEnabled = false
-            editPatchButton.isEnabled = false
-        }
         notesView.isEditable = !isLocked
         audioLevels.isLocked = isLocked
         fadeLevels.isLocked = isLocked

@@ -91,9 +91,10 @@ struct LevelSet: Equatable {
     /// and "set defaults", which replace the whole matrix, drop them.
     var unread: [JSONValue] = []
 
-    /// Reads `kind.levels` of an Audio or Fade cue; nil for anything else or a malformed object.
+    /// Reads `kind.levels` of an Audio, Video or Fade cue (a Video cue's are an Audio cue's, for its
+    /// movie's sound); nil for anything else or a malformed object.
     init?(kind: JSONValue) {
-        guard let type = kind["type"]?.stringValue, type == "audio" || type == "fade",
+        guard let type = kind["type"]?.stringValue, type == "audio" || type == "video" || type == "fade",
             let levels = kind["levels"], case .object = levels
         else { return nil }
         isFade = type == "fade"

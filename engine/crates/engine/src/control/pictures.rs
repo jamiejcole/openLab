@@ -35,7 +35,7 @@ use openlab_core::stage_link::ToStage;
 use openlab_core::video_probe::ProbeReport;
 
 use super::media::Probe;
-use openlab_audio::{Plays as Passes, Slice, total_frames};
+use openlab_audio::{MediaInfo, Plays as Passes, Slice, total_frames};
 use openlab_core::{
     Action, BrokenReason, CueId, CueKind, CueState, Input, PictureFades, PlanPass, RunId,
     SampleTime, StageId, VideoGeometry, VideoTiming, plan_point, seconds_to_samples,
@@ -100,6 +100,8 @@ struct RunPlan {
     into: SampleTime,
     late: SampleTime,
     passes: Vec<PlanPass>,
+    /// The fades its last play was sent with.
+    fades: PictureFades,
     /// The last devamp of it: its stop, and the sample it leaves the loop on. Pending until
     /// the picture is there, carried out from then on.
     devamp: Option<(bool, SampleTime)>,
@@ -185,14 +187,15 @@ struct Plays {
     /// The action's length in seconds, if it has one (a still's typed duration; a movie's is
     /// its plan's).
     length: Option<f64>,
-    /// A movie's own length in seconds, and its time and loops.
-    movie: Option<(f64, VideoTiming)>,
+    /// What a movie's plan is built on (its length as media on the engine's clock, or the
+    /// probe of the audio track its sound plays), and its time and loops.
+    movie: Option<(MediaInfo, VideoTiming)>,
 }
 
 /// A movie's plan at `rate` from the top of its action, and the action's length (`None` if it
 /// loops for ever).
 fn movie_table(
-    file: f64,
+    file: &MediaInfo,
     timing: &VideoTiming,
     rate: std::num::NonZeroU32,
 ) -> Result<(Vec<Slice>, Option<SampleTime>), &'static str> {
@@ -202,8 +205,8 @@ fn movie_table(
         slices: &timing.slices,
         last_slice_play_count: timing.last_slice_play_count,
     };
-    let top = cue_slices(&spec, &picture_info(file, rate), rate, 0)
-        .map_err(|_| "its trims and loops cannot be played")?;
+    let top =
+        cue_slices(&spec, file, rate, 0).map_err(|_| "its trims and loops cannot be played")?;
     let total = total_frames(&top);
     Ok((top, total))
 }
@@ -551,6 +554,7 @@ impl DocCx<'_> {
             duration,
             geometry,
             timing,
+            ..
         }) = self.cue(cue).map(|c| &c.kind)
         else {
             return Err(Refused::Failed("the cue has no file or stage"));
@@ -577,7 +581,11 @@ impl DocCx<'_> {
                 stage: *stage,
                 geometry: *geometry,
                 length: None,
-                movie: Some((d, (**timing).clone())),
+                movie: Some((
+                    self.sound_info(cue)
+                        .unwrap_or_else(|| picture_info(d, self.eng.rate)),
+                    (**timing).clone(),
+                )),
             },
             ProbeReport::Still { .. } => Plays {
                 path,
@@ -669,6 +677,11 @@ impl DocCx<'_> {
         }
     }
 
+    /// Whether a picture of `cue` is up.
+    pub(super) fn has_picture(&self, cue: CueId) -> bool {
+        self.picture_of_cue(cue).is_some()
+    }
+
     fn picture_of_cue(&self, cue: CueId) -> Option<u64> {
         let doc = self.doc.id;
         self.eng
@@ -685,7 +698,7 @@ impl DocCx<'_> {
         let doc = self.doc.id;
         match *action {
             Action::LoadVoice { cue, run, offset } => match self.load_picture(cue, run, offset) {
-                Ok(()) => {}
+                Ok(()) => self.sound_action(action, fx),
                 Err(Refused::Pending) => self.eng.pictures.held.push(Held {
                     doc,
                     cue,
@@ -715,6 +728,7 @@ impl DocCx<'_> {
                 {
                     self.eng.pictures.live.remove(&id);
                     self.eng.picture(ToStage::Unload { picture: id });
+                    self.sound_action(&Action::UnloadVoice { cue, run }, fx);
                 }
                 let loaded = self.eng.pictures.find(doc, run).is_some();
                 if !loaded {
@@ -759,6 +773,11 @@ impl DocCx<'_> {
                     l.run = run;
                 }
                 self.play_picture(cue, run, at, offset, 0, false, fx);
+                // Its sound resumes on the same sample (a picture that could not play on has
+                // failed or waits, and its cue's end takes the sound).
+                if self.eng.pictures.find(doc, run).is_some() {
+                    self.sound_action(action, fx);
+                }
             }
             Action::PauseVoice {
                 run, at, offset, ..
@@ -795,22 +814,25 @@ impl DocCx<'_> {
                         l.motion = Some((None, own));
                     }
                     self.eng.picture(message);
+                    self.sound_action(action, fx);
                 }
             }
             Action::StopVoice {
                 cue, run, at, fade, ..
             } => {
                 let frames = fade.map_or(0, |f| f.frames);
+                self.sound_action(action, fx);
                 self.eng.pictures.take_held(doc, run);
                 if let Some(id) = self.eng.pictures.find(doc, run) {
                     self.stop_picture(id, at, frames);
                 }
                 // The stop (its fade, if any) is over on this sample, as a mixer voice's is.
                 let end = at.saturating_add(frames);
-                fx.deferred
-                    .push((end, Input::ActionEnded { cue, run, at: end }));
+                let ended = Input::ActionEnded { cue, run, at: end };
+                fx.pictured.push((Some(end), ended));
             }
             Action::UnloadVoice { run, .. } => {
+                self.sound_action(action, fx);
                 self.eng.pictures.take_held(doc, run);
                 if let Some(id) = self.eng.pictures.find(doc, run) {
                     self.eng.pictures.live.remove(&id);
@@ -819,9 +841,17 @@ impl DocCx<'_> {
             }
             Action::DevampVoice { cue, run, at, stop } => {
                 self.devamp_picture(cue, run, at, stop, fx);
+                // Its sound leaves the loop with it: only a devamp the picture carried out.
+                let carried = (self.eng.pictures.find(doc, run))
+                    .and_then(|id| self.eng.pictures.live.get(&id))
+                    .and_then(|l| l.plan.as_ref())
+                    .is_some_and(|p| matches!(p.devamp, Some((s, _)) if s == stop));
+                if carried {
+                    self.sound_action(action, fx);
+                }
             }
-            // Levels and ducks act on sound; a picture has none (yet: #645).
-            _ => {}
+            // Levels and ducks act on its sound.
+            _ => self.sound_action(action, fx),
         }
     }
 
@@ -933,8 +963,7 @@ impl DocCx<'_> {
         // A movie opens on the frame its plan is at there (inside its trims and loops).
         let at_file = match &plays.movie {
             Some((file, timing)) => {
-                let (top, _) =
-                    movie_table(*file, timing, self.eng.rate).map_err(Refused::Failed)?;
+                let (top, _) = movie_table(file, timing, self.eng.rate).map_err(Refused::Failed)?;
                 position_in(&passes(&top, rate), seconds(offset, rate))
             }
             None => seconds(offset, rate),
@@ -1015,6 +1044,7 @@ impl DocCx<'_> {
                 // from its head when the answer comes, as a start held by its probe does.
                 self.eng.pictures.live.remove(&id);
                 self.eng.picture(ToStage::Unload { picture: id });
+                self.sound_action(&Action::UnloadVoice { cue, run }, fx);
                 self.eng.pictures.held.push(Held {
                     doc,
                     cue,
@@ -1046,7 +1076,7 @@ impl DocCx<'_> {
                 // for the cue engine to ask again.
                 let (top, late) = match kept {
                     Some(p) => (p.settled(offset.saturating_sub(p.late)).to_vec(), p.late),
-                    None => match movie_table(*file, timing, self.eng.rate) {
+                    None => match movie_table(file, timing, self.eng.rate) {
                         Ok((top, _)) => (top, late),
                         Err(why) => return self.picture_refused(cue, run, why, fresh, fx),
                     },
@@ -1074,6 +1104,7 @@ impl DocCx<'_> {
                     into,
                     late,
                     passes: sent,
+                    fades,
                     devamp: None,
                 };
                 let ends = !timing.hold_at_end;
@@ -1093,6 +1124,7 @@ impl DocCx<'_> {
             fades,
         };
         let late = plan.as_ref().map_or(late, |p| p.late);
+        let plan_start = plan.as_ref().map(|p| p.into);
         if let Some(l) = self.eng.pictures.live.get_mut(&id) {
             l.now = Some(message.clone());
             l.motion = Some((Some(at), into));
@@ -1104,11 +1136,21 @@ impl DocCx<'_> {
         }
         self.eng.picture_clock(true);
         self.eng.picture(message);
+        // Its sound starts on the same sample, as far into the same plan.
+        if let (true, Some(p)) = (fresh, plan_start) {
+            let start = Action::StartVoice {
+                cue,
+                run,
+                at,
+                offset: p,
+            };
+            self.sound_action(&start, fx);
+        }
         // The action's length from its start: a movie's plan, a still's duration; none while
         // it loops for ever or holds its last frame. A late start is counted in.
         if let (Some(length), true) = (length, ends) {
             let frames = seconds_to_samples(length, self.eng.rate).saturating_add(late);
-            fx.feedback.push(Input::ActionLength { cue, run, frames });
+            fx.picture_says(Input::ActionLength { cue, run, frames });
         }
     }
 
@@ -1130,16 +1172,16 @@ impl DocCx<'_> {
         let rate = self.eng.rate.get();
         let ignored = Input::DevampIgnored { cue, run };
         let Some(id) = self.eng.pictures.find(self.doc.id, run) else {
-            return fx.feedback.push(ignored);
+            return fx.picture_says(ignored);
         };
         let hold =
             matches!(&self.plays(cue), Ok(Plays { movie: Some((_, t)), .. }) if t.hold_at_end);
         let Some(l) = self.eng.pictures.live.get_mut(&id) else {
-            return fx.feedback.push(ignored);
+            return fx.picture_says(ignored);
         };
         let playing = matches!(l.motion, Some((Some(_), _)));
         let Some(plan) = l.plan.as_mut().filter(|_| playing) else {
-            return fx.feedback.push(ignored);
+            return fx.picture_says(ignored);
         };
         // Samples into the table: where the plan was at its play, and since.
         let elapsed = plan.into.saturating_add(at.saturating_sub(plan.at));
@@ -1150,17 +1192,17 @@ impl DocCx<'_> {
                 plan.devamp = None;
             }
             Some((same, leaves)) if same == stop => {
-                return fx.feedback.push(Input::DevampScheduled {
+                return fx.picture_says(Input::DevampScheduled {
                     cue,
                     run,
                     at: leaves,
                 });
             }
-            Some(_) => return fx.feedback.push(ignored),
+            Some(_) => return fx.picture_says(ignored),
             None => {}
         }
         let Some((table, leaves)) = devamped(&plan.table, elapsed, stop) else {
-            return fx.feedback.push(ignored);
+            return fx.picture_says(ignored);
         };
         let leaves_at = plan.at.saturating_add(leaves.saturating_sub(plan.into));
         plan.devamp = Some((stop, leaves_at));
@@ -1177,12 +1219,13 @@ impl DocCx<'_> {
             ..
         }) = l.now.clone()
         else {
-            return fx.feedback.push(ignored);
+            return fx.picture_says(ignored);
         };
         let fades = PictureFades {
             end: end.map(|t| seconds(t, rate).min(openlab_core::MAX_TIME)),
             ..fades
         };
+        plan.fades = fades;
         let message = ToStage::Play {
             picture: id,
             at: plan.at,
@@ -1208,13 +1251,148 @@ impl DocCx<'_> {
         if stop {
             self.stop_picture(id, leaves_at, 0);
         }
-        fx.feedback.push(Input::DevampScheduled {
+        fx.picture_says(Input::DevampScheduled {
             cue,
             run,
             at: leaves_at,
         });
         if let (Some(frames), true) = (total, ends) {
-            fx.feedback.push(Input::ActionLength { cue, run, frames });
+            fx.picture_says(Input::ActionLength { cue, run, frames });
+        }
+    }
+
+    /// The run's sound was starved by the disk and plays on from sample `at`, `frames` later
+    /// than planned: its picture is put back by as much from there (the sound is the clock),
+    /// and the run's end moves with them. A devamp's stop already on the stage host moves too,
+    /// so the pass under way is played whole. A paused picture (the pause came before this
+    /// report was read) is held that much earlier and its plan counts the lateness, so the
+    /// resume plays both on together and tells the later end. A picture stopping for any other
+    /// reason is left as it is: it ends with its sound on the stop's sample whatever the plan.
+    pub(super) fn picture_late(
+        &mut self,
+        run: RunId,
+        at: SampleTime,
+        frames: u64,
+        feedback: &mut Vec<Input>,
+    ) {
+        let rate = self.eng.rate.get();
+        let Some(id) = self.eng.pictures.find(self.doc.id, run) else {
+            return;
+        };
+        let Some(l) = self.eng.pictures.live.get_mut(&id) else {
+            return;
+        };
+        let cue = l.cue;
+        let (Some(plan), Some((moving, held))) = (l.plan.as_mut(), l.motion) else {
+            return;
+        };
+        if moving.is_none() {
+            if l.ends.is_some() {
+                return;
+            }
+            // Paused: the resume plays from the action's place less `late`.
+            plan.late = plan.late.saturating_add(frames);
+            let own = seconds(
+                seconds_to_samples(held, self.eng.rate).saturating_sub(frames),
+                rate,
+            )
+            .min(openlab_core::MAX_TIME);
+            let Some(ToStage::Pause { at: since, .. }) = l.now else {
+                return;
+            };
+            let message = ToStage::Pause {
+                picture: id,
+                at: since,
+                offset: position_in(&plan.passes, own).min(openlab_core::MAX_TIME),
+                action: own,
+            };
+            l.now = Some(message.clone());
+            l.motion = Some((None, own));
+            if !l.held_back {
+                self.eng.picture(message);
+            }
+            return;
+        }
+        // Stopping where a devamp leaves its loop, and not there yet.
+        let devamp_stop = plan
+            .devamp
+            .is_some_and(|(stop, leaves)| stop && l.ends == Some(leaves) && at < leaves);
+        if l.ends.is_some() && !devamp_stop {
+            return;
+        }
+        let fades = plan.fades;
+        // Where the plan stands at `at`, less what the sound missed.
+        let into = plan
+            .into
+            .saturating_add(at.saturating_sub(plan.at))
+            .saturating_sub(frames);
+        plan.at = at;
+        plan.into = into;
+        plan.late = plan.late.saturating_add(frames);
+        // A devamp already carried out leaves its loop that much later.
+        plan.devamp = plan
+            .devamp
+            .map(|(stop, leaves)| (stop, leaves.saturating_add(frames)));
+        let own = seconds(into, rate).min(openlab_core::MAX_TIME);
+        let message = ToStage::Play {
+            picture: id,
+            at,
+            offset: position_in(&plan.passes, own).min(openlab_core::MAX_TIME),
+            action: own,
+            plan: plan.passes.clone(),
+            into: own,
+            fades,
+        };
+        let total = total_frames(&plan.table).map(|t| t.saturating_add(plan.late));
+        let ends = l.length.is_some();
+        l.now = Some(message.clone());
+        l.motion = Some((Some(at), own));
+        let stop = plan.devamp.filter(|_| devamp_stop).map(|(_, leaves)| {
+            let stop = ToStage::Stop {
+                picture: id,
+                at: leaves,
+                fade: 0,
+            };
+            l.ends = Some(leaves);
+            l.now = Some(stop.clone());
+            stop
+        });
+        let held_back = l.held_back;
+        if !held_back {
+            self.eng.picture_clock(true);
+            self.eng.picture(message);
+            if let Some(stop) = stop {
+                self.eng.picture(stop);
+            }
+        }
+        if let (Some(frames), true) = (total, ends) {
+            feedback.push(Input::ActionLength { cue, run, frames });
+        }
+    }
+
+    /// The run `from` of a Video cue goes on as `run`: its sound moved to the device its patch
+    /// plays on now (`Action::RelocateVoice`). The picture plays on untouched under the new
+    /// id, so what the cue engine asks of that run next finds it. A playing one tells its
+    /// length again: the cue engine dropped it for the moved voice to tell, and a Video cue's
+    /// length is its picture's to tell.
+    pub(super) fn relocate_picture(&mut self, run: RunId, from: RunId, fx: &mut Effects) {
+        let doc = self.doc.id;
+        if let Some(h) = self.eng.pictures.held_mut(doc, from) {
+            h.run = run;
+        }
+        let Some(id) = self.eng.pictures.find(doc, from) else {
+            return;
+        };
+        let Some(l) = self.eng.pictures.live.get_mut(&id) else {
+            return;
+        };
+        l.run = run;
+        let playing = matches!(l.motion, Some((Some(_), _)));
+        let total = (l.plan.as_ref())
+            .and_then(|p| total_frames(&p.table).map(|t| t.saturating_add(p.late)));
+        if let (true, Some(_), Some(frames)) = (playing, l.length, total) {
+            let cue = l.cue;
+            fx.picture_says(Input::ActionLength { cue, run, frames });
         }
     }
 
@@ -1268,19 +1446,37 @@ impl DocCx<'_> {
             let Action::StateChanged { cue, state, at } = *action else {
                 continue;
             };
-            if !matches!(
-                state,
-                CueState::Idle | CueState::PostWaiting | CueState::Broken
-            ) {
+            // A cue its sound's device left (shown paused, owning nothing) loses its picture
+            // too, as an Audio cue on that device stops.
+            let lost = state == CueState::Paused && self.doc.model.engine().is_lost(cue);
+            if !lost
+                && !matches!(
+                    state,
+                    CueState::Idle | CueState::PostWaiting | CueState::Broken
+                )
+            {
                 continue;
             }
             let doc = self.doc.id;
+            self.eng
+                .pictures
+                .held
+                .retain(|h| !(lost && h.doc == doc && h.cue == cue));
+            // The run the cue has now, if its action is under way again.
+            let engine = self.doc.model.engine();
+            let over = matches!(
+                engine.state(cue),
+                CueState::Idle | CueState::PostWaiting | CueState::Broken
+            );
+            let current = engine.run_of(cue).filter(|_| !over);
             let ids: Vec<u64> = self
                 .eng
                 .pictures
                 .live
                 .iter()
                 .filter(|(_, l)| l.doc == doc && l.cue == cue && l.ends.is_none())
+                // Not the picture of a run the cue started since (a GO in its panic fade).
+                .filter(|(_, l)| lost || current != Some(l.run))
                 .map(|(id, _)| *id)
                 .collect();
             for id in ids {

@@ -662,6 +662,7 @@ impl CueEngine {
             Input::Availability { media, patches } => {
                 self.availability(media, patches, cx);
             }
+            Input::MediaSound { media } => self.media_sound(media, cx),
             Input::DeviceLost => self.device_lost(cx),
         }
     }

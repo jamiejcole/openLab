@@ -56,12 +56,13 @@ impl CueEngine {
             || *mode == crate::cue::FadeMode::Relative;
         let limits = ws.settings.limits();
         let candidates: Vec<&Cue> = match &target_model.kind {
-            CueKind::Audio { .. } => vec![target_model],
-            // A group fades the audio cues inside it (any depth) that are playing now.
+            // A Video cue's sound fades as an Audio cue's.
+            CueKind::Audio { .. } | CueKind::Video { .. } => vec![target_model],
+            // A group fades the cues with sound inside it (any depth) that are playing now.
             CueKind::Group { .. } => group::descendants(target_model)
                 .into_iter()
                 .filter_map(|id| ws.find_cue(id))
-                .filter(|c| matches!(c.kind, CueKind::Audio { .. }))
+                .filter(|c| c.kind.levels().is_some())
                 .collect(),
             _ => return cx.warn(EngineWarning::TargetWrongKind { cue, target }),
         };
@@ -82,7 +83,7 @@ impl CueEngine {
             if !seen.insert(c.id) {
                 continue;
             }
-            let CueKind::Audio { levels: base, .. } = &c.kind else {
+            let Some(base) = c.kind.levels() else {
                 continue;
             };
             let wanted = level::fade_targets(levels, &c.kind, (!relative).then_some(limits));

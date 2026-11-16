@@ -92,7 +92,10 @@ impl Workspace {
         }
         for cue in self.cues() {
             // Not a clone of every group (and its subtree).
-            if !matches!(cue.kind, CueKind::Audio { .. } | CueKind::Fade { .. }) {
+            if !matches!(
+                cue.kind,
+                CueKind::Audio { .. } | CueKind::Video { .. } | CueKind::Fade { .. }
+            ) {
                 continue;
             }
             let mut kind = cue.kind.clone();

@@ -366,6 +366,7 @@ fn render_voice(
                 .shared
                 .underrun_frames
                 .fetch_add((live - got) as u64, Ordering::Relaxed);
+            v.missed = v.missed.saturating_add((live - got) as u64);
             if !v.underrunning {
                 v.underrunning = true;
                 outbox.emit(Event::Underrun {
@@ -376,6 +377,19 @@ fn render_voice(
             None
         }
         ReadOutcome::Full => {
+            // What the voice missed is told until the queue takes it, with what it missed
+            // since: a picture that follows this voice is put back by this count, and one
+            // lost with a full queue would leave it ahead of the sound for the rest of the run.
+            if v.missed > 0 {
+                let end = Event::UnderrunEnded {
+                    voice: v.id,
+                    at: t0,
+                    frames: v.missed,
+                };
+                if outbox.try_emit(end, v.underrunning) {
+                    v.missed = 0;
+                }
+            }
             v.underrunning = false;
             None
         }

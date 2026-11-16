@@ -8,8 +8,8 @@ use openlab_core::protocol::{
     DeviceEntry, ErrorBody, ErrorCode, LogLevel, RuntimeChange, WireWarning,
 };
 use openlab_core::{
-    BrokenReason, CueId, CueKind, CueState, DeviceInfo, Input, MAX_BUFFER_FRAMES,
-    MIN_BUFFER_FRAMES, PatchResolution, RunId, SYSTEM_OUTPUT, SampleTime,
+    BrokenReason, CueId, CueState, DeviceInfo, Input, MAX_BUFFER_FRAMES, MIN_BUFFER_FRAMES,
+    PatchResolution, RunId, SYSTEM_OUTPUT, SampleTime,
 };
 
 use super::devices::{Device, DeviceAnswer, DeviceEvent, OutputKey};
@@ -617,10 +617,7 @@ impl DocCx<'_> {
                     | CueState::Fading
                     | CueState::Stopping
             ) && let Some(run) = self.doc.model.engine().run_of(cue)
-                && matches!(
-                    self.doc.model.ws().find_cue(cue).map(|c| &c.kind),
-                    Some(CueKind::Audio { .. })
-                )
+                && self.cue_patch(cue).is_some()
                 && (last || self.cue_on_device(cue, name))
                 && !runs.contains(&(cue, run))
             {
@@ -702,11 +699,10 @@ impl DocCx<'_> {
             if self.doc.model.engine().run_of(cue) != Some(run) {
                 continue;
             }
-            let Some(CueKind::Audio { patch, .. }) =
-                self.doc.model.ws().find_cue(cue).map(|c| &c.kind)
-            else {
+            let Some(patch) = self.cue_patch(cue) else {
                 continue;
             };
+            let patch = &patch;
             let here = self.eng.outputs.output_of(voice);
             match self.eng.patches.resolution(doc, *patch) {
                 Some(PatchResolution::Mapped { .. }) => {
@@ -824,16 +820,16 @@ impl DocCx<'_> {
     fn cue_on_device(&self, cue: CueId, name: &str) -> bool {
         let ws = self.doc.model.ws();
         let system = self.eng.system_output();
-        match ws.find_cue(cue).map(|c| &c.kind) {
-            Some(CueKind::Audio { patch, .. }) => {
+        match self.cue_patch(cue) {
+            Some(patch) => {
                 self.eng
                     .config
                     .machine
-                    .patch_entry(ws.id, *patch)
+                    .patch_entry(ws.id, patch)
                     .and_then(|m| m.device_for(system.as_deref()))
                     == Some(name)
             }
-            _ => false,
+            None => false,
         }
     }
 
