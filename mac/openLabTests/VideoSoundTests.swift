@@ -214,6 +214,12 @@ extension VideoCueTests {
         XCTAssertTrue(inspector.outputPatchPopup.isEnabled, "the patch pop-up is live")
         XCTAssertEqual(inspector.outputPatchPopup.titleOfSelectedItem, "Main PA")
         XCTAssertTrue(inspector.editPatchButton.isEnabled)
+        let openEditor = inspector.onEditPatch
+        var edited: [ModelID] = []
+        inspector.onEditPatch = { edited.append($0) }
+        inspector.editPatchButton.performClick(nil)
+        XCTAssertEqual(edited, [Self.mainPA], "Edit opens the cue's patch")
+        inspector.onEditPatch = openEditor
         XCTAssertEqual(
             inspector.outputPatchPopup.itemTitles, ["Main PA", "Side fills", "", loc("inspector.io.patchNone")])
 
@@ -312,6 +318,9 @@ extension VideoCueTests {
         XCTAssertFalse(v.soundLabel.stringValue.isEmpty)
         choose(inspector.outputPatchPopup, "Main PA")
         await soon("patched") { self.status(Self.movie) == nil && self.kind(Self.movie)?["patch"] != .null }
+        // It had no levels of its own: a new cue's levels on that patch come with it.
+        XCTAssertEqual(levels(Self.movie)?.outputs.map(\.db), [0, 0])
+        XCTAssertEqual(levels(Self.movie)?.crosspoints.count, 2)
         try await show(Self.movie, tab: "levels")
         typeLevel(inspector.audioLevels, .master, "-7")
         await soon { self.levels(Self.movie)?.master == -7 }
@@ -1052,6 +1061,13 @@ extension VideoCueTests {
             case .success = await store.send(
                 command: .setProperty(Self.movie, .kindFields(["patch": .string(Self.sidePatch.raw)])))
         else { return XCTFail("patch") }
+        // A patch a Video cue names is kept, and the reason names the cue.
+        let settings = WorkspaceSettingsModel(store: store)
+        await soon { self.kind(Self.movie)?["patch"]?.stringValue == Self.sidePatch.raw }
+        let removed = await settings.removePatch(Self.sidePatch)
+        XCTAssertFalse(removed)
+        XCTAssertEqual(
+            settings.message, String(format: loc("settings.audio.patchInUse"), "Side fills", "1 clip.mov"))
         let copied = await wc.editor.copySelection(of: [Self.movie])
         XCTAssertTrue(copied)
         let before = wc.cueList.roots.count
