@@ -909,14 +909,7 @@ fn a_stage_host_killed_mid_play_shows_the_picture_again_when_relaunched() {
     let at = go(&mut s);
     run_to(&mut s, at + samples(0.5));
     assert!(shown(&mut s).is_some());
-    let pid = s.control().stage_host_pid().unwrap();
-    let killed = Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status()
-        .unwrap();
-    assert!(killed.success());
-    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
-    s.settle_stages();
+    kill_stage_host(&mut s);
     expect_state(&s, 1, CueState::Running, "");
     run_to(&mut s, at + samples(2.0));
     let played = (s.now() - at) as f64 / f64::from(RATE);
@@ -1220,14 +1213,7 @@ fn a_paused_picture_is_shown_again_when_the_stage_host_is_relaunched() {
     s.transport(TransportAction::Pause { cue: id(1) });
     s.run(BLOCK);
     let held = on_stage(&mut s, "a frame while paused");
-    let pid = s.control().stage_host_pid().unwrap();
-    let killed = Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status()
-        .unwrap();
-    assert!(killed.success());
-    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
-    s.settle_stages();
+    kill_stage_host(&mut s);
     s.run(samples(1.0));
     expect_state(&s, 1, CueState::Paused, "");
     assert_eq!(shown(&mut s), Some(held), "the held frame is back");
@@ -2103,14 +2089,7 @@ fn geometry_edited_while_up_survives_a_stage_host_relaunch() {
         1,
         serde_json::json!({"rotation": 180, "fill_stage": false}),
     );
-    let pid = s.control().stage_host_pid().unwrap();
-    let killed = Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status()
-        .unwrap();
-    assert!(killed.success());
-    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
-    s.settle_stages();
+    kill_stage_host(&mut s);
     s.run(samples(0.5));
     let x = |px: f32| px / 1920.0;
     // Custom, half a turn: 400 x 100 in the middle, yellow on the left.
@@ -2713,14 +2692,7 @@ fn a_devamped_loop_survives_a_stage_host_relaunch() {
     run_to(&mut s, at + samples(1.0));
     start(&mut s, 2);
     s.run(BLOCK);
-    let pid = s.control().stage_host_pid().unwrap();
-    let ended = Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status()
-        .unwrap();
-    assert!(ended.success());
-    assert!(s.wait_for(|c| c.stage_host_pid().is_some_and(|p| p != pid)));
-    s.settle_stages();
+    kill_stage_host(&mut s);
     run_to(&mut s, at + samples(1.62));
     assert_eq!(
         on_stage(&mut s, "after the relaunch, past the loop"),
