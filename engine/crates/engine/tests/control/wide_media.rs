@@ -96,6 +96,7 @@ fn wide_show(path: &std::path::Path, crosspoints: Vec<Crosspoint>) -> OfflineSho
             PatchMapping {
                 device: "Offline".into(),
                 channels: (0..CHANNELS as u32).collect(),
+                system: false,
             },
         )
         .unwrap();

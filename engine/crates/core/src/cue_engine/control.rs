@@ -386,13 +386,20 @@ impl CueEngine {
     }
 
     /// Feedback: the devamp of this run's voice leaves the loop on `at`.
-    pub(super) fn devamp_scheduled(&mut self, cue: CueId, run_id: RunId, at: SampleTime) {
+    pub(super) fn devamp_scheduled(
+        &mut self,
+        cue: CueId,
+        run_id: RunId,
+        at: SampleTime,
+        cx: &mut Ctx,
+    ) {
         if let Some(Slot::Active(run)) = self.slots.get_mut(&cue)
             && run.run == run_id
             && let Some(d) = run.devamp.as_mut()
             && d.at.is_none()
         {
             d.at = Some(at);
+            self.move_held(cue, cx);
         }
     }
 
@@ -406,6 +413,7 @@ impl CueEngine {
             && run.devamp.take().is_some()
         {
             cx.warn(EngineWarning::DevampIgnored { cue });
+            self.move_held(cue, cx);
         }
     }
 }

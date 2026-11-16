@@ -68,6 +68,7 @@ impl DocCx<'_> {
                 rate: self.eng.rate,
                 cue_outputs: self.eng.cue_outputs,
                 now,
+                window: self.eng.block,
                 floor,
             };
             self.doc.voices.media_ready(&key, &mut env, &mut fx);
@@ -89,6 +90,7 @@ impl DocCx<'_> {
             rate: self.eng.rate,
             cue_outputs: self.eng.cue_outputs,
             now,
+            window: self.eng.block,
             floor,
         };
         self.doc.voices.start_seeks(&mut env, fx);
@@ -154,6 +156,7 @@ impl DocCx<'_> {
                 rate: self.eng.rate,
                 cue_outputs: self.eng.cue_outputs,
                 now,
+                window: self.eng.block,
                 floor,
             };
             for (action, picture) in actions.iter().zip(&pictures) {
@@ -215,7 +218,11 @@ impl DocCx<'_> {
             deferred,
             notices,
             reprobe,
+            warnings,
         } = fx;
+        for message in warnings {
+            self.log(LogLevel::Warn, message);
+        }
         self.send_commands(commands);
         self.doc.deferred.extend(deferred);
         for key in reprobe {

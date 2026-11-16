@@ -107,6 +107,7 @@ impl DocCx<'_> {
             self.doc.model.ws(),
             &self.eng.config.machine,
             &self.eng.playable,
+            self.eng.system_output().as_deref(),
             &busy,
         );
         let now = self.now();
@@ -132,14 +133,16 @@ impl DocCx<'_> {
         } else {
             changed
         };
-        if patches.is_empty() {
-            Vec::new()
-        } else {
-            vec![Input::Availability {
+        let mut inputs = Vec::new();
+        if !patches.is_empty() {
+            inputs.push(Input::Availability {
                 media: Vec::new(),
                 patches,
-            }]
+            });
         }
+        // A voice whose patch now plays on another device follows it there.
+        inputs.extend(self.follow_devices(now));
+        inputs
     }
 }
 

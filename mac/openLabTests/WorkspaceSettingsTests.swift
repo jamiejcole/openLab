@@ -107,7 +107,12 @@ final class WorkspaceSettingsTests: XCTestCase {
         let audio = try XCTUnwrap(sc.tabs.selectedTabViewItem?.view)
         XCTAssertEqual(sc.patchNameFields.map(\.stringValue), ["Main"])
         XCTAssertEqual(sc.patchDevicePopups.first?.titleOfSelectedItem, device)
-        XCTAssertEqual(sc.patchDevicePopups.first?.itemTitles, [loc("settings.audio.noDevice"), device])
+        XCTAssertEqual(
+            sc.patchDevicePopups.first?.itemTitles,
+            [
+                loc("settings.audio.noDevice"), "", String(format: loc("settings.audio.systemOutput"), device), "",
+                device,
+            ])
         XCTAssertEqual(sc.patchEditButtons.first?.title, loc("settings.audio.edit"))
         XCTAssertFalse(try XCTUnwrap(sc.patchRemoveButtons.first).isEnabled, "the last patch cannot go")
         for control in [sc.patchAddButton, sc.maxLimitField, sc.minLimitField] + sc.patchNameFields as [NSView] {
@@ -167,6 +172,69 @@ final class WorkspaceSettingsTests: XCTestCase {
             texts(sc.window?.contentView).contains { $0.contains(loc("settings.audio.restartNeeded")) },
             "no restart notice")
         meter.removeFromSuperview()
+    }
+
+    /// #685 checklist: the device pop-up of a patch lists a system-output entry first (after none,
+    /// as QLab 5 lists it), named with the Mac's current output device; choosing it plays the
+    /// patch's cues on that device, and the row and the patch editor show the choice.
+    func testTheDevicePopUpListsASystemOutputEntryFirstAndChoosingItPlaysThePatchsCuesOnTheMacsCurrentOutputDevice()
+        async throws
+    {
+        let (rig, sc) = try await open(edit: sounding())
+        let system = String(format: loc("settings.audio.systemOutput"), device)
+        let popup = try XCTUnwrap(sc.patchDevicePopups.first)
+        let titles = popup.itemArray.filter { !$0.isSeparatorItem }.map(\.title)
+        XCTAssertEqual(titles, [loc("settings.audio.noDevice"), system, device])
+        XCTAssertEqual(popup.itemArray.filter { !$0.isSeparatorItem && $0.isEnabled }.count, 3)
+
+        try pick(system, in: popup)
+        await assertEventually("the engine took it") { sc.model.patches.first?.mapping?.system == true }
+        await assertEventually("the row shows the system output") {
+            sc.patchDevicePopups.first?.titleOfSelectedItem == system
+        }
+        let stored = try await mapping(rig)
+        XCTAssertEqual(stored, PatchMapping.systemOutput(channels: [0, 1]))
+        XCTAssertEqual(stored?.device, "")
+        XCTAssertEqual(sc.patchProblemLabels.first?.stringValue, "")
+        let editor = try await edit(in: sc)
+        XCTAssertEqual(editor.devicePopup.titleOfSelectedItem, system)
+        // The routing matrix is the device's: the system output is that device now.
+        XCTAssertEqual(editor.matrix.deviceOutputs, 2)
+
+        let meter = MeterView()
+        meter.bank = rig.store.meters
+        meter.source = .output(patch)
+        let shipped = MeterView.defaultWindowIsCovered
+        MeterView.defaultWindowIsCovered = { _, _ in false }
+        addTeardownBlock { @MainActor in MeterView.defaultWindowIsCovered = shipped }
+        sc.window?.contentView?.addSubview(meter)
+        guard case .success = await rig.store.transport(.start(cue: intro)) else { return XCTFail("start") }
+        let heard = try await peak(rig, channel: 0)
+        XCTAssertGreaterThan(heard, 0.05, "the cue is heard on the Mac's output device")
+        meter.removeFromSuperview()
+
+        // Picking it again changes nothing; picking the device by name leaves the system output.
+        func sets() -> Int {
+            requests(rig).filter { if case .setPatchMapping = $0 { return true } else { return false } }.count
+        }
+        let sent = sets()
+        try pick(system, in: sc.patchDevicePopups[0])
+        try await rig.advance(0.2)
+        XCTAssertEqual(sets(), sent, "the same choice again sends nothing")
+        try pick(device, in: sc.patchDevicePopups[0])
+        await assertEventually { sc.model.patches.first?.mapping?.system == false }
+        XCTAssertEqual(sc.patchDevicePopups.first?.titleOfSelectedItem, device)
+        let named = try await mapping(rig)
+        XCTAssertEqual(named, PatchMapping(device: device, channels: [0, 1]))
+
+        // With no output device on the Mac any more, the choice says so and the row why.
+        try pick(system, in: sc.patchDevicePopups[0])
+        await assertEventually { sc.model.patches.first?.mapping?.system == true }
+        try await loseDevice(rig)
+        await assertEventually("the row says the Mac has no output") {
+            sc.patchDevicePopups.first?.titleOfSelectedItem == loc("settings.audio.systemOutputNone")
+                && sc.patchProblemLabels.first?.stringValue == loc("settings.audio.systemOutputMissing")
+        }
     }
 
     /// A device whose usable outputs are fewer than the patch's cue outputs is refused before
@@ -701,6 +769,50 @@ final class WorkspaceSettingsTests: XCTestCase {
         XCTAssertFalse(
             commands(rig).dropFirst(sent).contains { $0["property"]?["type"]?.stringValue == "name" },
             "no rename sent")
+    }
+
+    /// ui-qa D1: an open patch editor follows the device being lost and coming back by itself,
+    /// also with the settings window closed: its pop-up, its problem line and its routing say
+    /// what the device is now, never what it was one change earlier.
+    func testAnOpenEditorFollowsItsDeviceLostAndBackWithTheSettingsWindowClosed() async throws {
+        let (rig, sc) = try await open()
+        let system = String(format: loc("settings.audio.systemOutput"), device)
+        try pick(system, in: try XCTUnwrap(sc.patchDevicePopups.first))
+        await assertEventually { sc.model.patches.first?.mapping?.system == true }
+        let editor = try await edit(in: sc)
+        XCTAssertEqual(editor.devicePopup.titleOfSelectedItem, system)
+        // The settings window closed by its title bar's button: the editor stays open.
+        sc.window?.close()
+        XCTAssertNotNil(editor.window?.isVisible == true || !sc.presentsEditors ? editor : nil)
+        try await loseDevice(rig)
+        await assertEventually("the editor shows the device gone") {
+            editor.devicePopup.titleOfSelectedItem == loc("settings.audio.systemOutputNone")
+                && editor.problemLabel.stringValue == loc("settings.audio.systemOutputMissing")
+                && editor.matrix.usable == 0
+        }
+        guard case .success = await engine.request(.restoreDevice) else { return XCTFail("restore_device") }
+        try await rig.advance(1.5)
+        await assertEventually("the editor shows the device back") {
+            editor.devicePopup.titleOfSelectedItem == system && editor.problemLabel.stringValue.isEmpty
+                && editor.matrix.usable == 2
+        }
+    }
+
+    /// ui-qa D2: an editor opened for the first time while its device is away shows its device
+    /// pop-up's whole title at the editor's default width.
+    func testAnEditorFirstOpenedWhileItsDeviceIsAwayShowsTheWholeDeviceTitle() async throws {
+        let (rig, sc) = try await open()
+        let system = String(format: loc("settings.audio.systemOutput"), device)
+        try pick(system, in: try XCTUnwrap(sc.patchDevicePopups.first))
+        await assertEventually { sc.model.patches.first?.mapping?.system == true }
+        try await loseDevice(rig)
+        await assertEventually { sc.model.devices.isEmpty }
+        let editor = try await edit(in: sc)
+        let popup = editor.devicePopup
+        editor.window?.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(popup.titleOfSelectedItem, loc("settings.audio.systemOutputNone"))
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(popup.cell).cellSize.width, popup.bounds.width + 0.5, "the title is cut")
     }
 
     /// Without a device the matrix takes no clicks and says why.

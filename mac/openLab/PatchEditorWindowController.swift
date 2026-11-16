@@ -14,7 +14,9 @@ import Combine
 /// model, and an edit goes to the engine (which puts a level within the workspace volume limits);
 /// what comes back is what is shown.
 @MainActor
-final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate, NSTabViewDelegate {
+final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate, NSTabViewDelegate,
+    NSWindowDelegate
+{
     let model: WorkspaceSettingsModel
     var store: WorkspaceStore { model.store }
     let patchID: ModelID
@@ -72,6 +74,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         var loaded: Bool
     }
     private var drawn: Drawn?
+    /// Shown (or read for a window drawn elsewhere) and not closed since: it follows the devices.
+    private var isOpen = false
 
     static let minSize = NSSize(width: 520, height: 460)
 
@@ -94,6 +98,16 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         subs.append(model.$patches.sink(receiveValue: later))
         subs.append(model.$devices.sink(receiveValue: later))
         subs.append(model.$message.sink { [weak self] text in self?.messageLabel.stringValue = text ?? "" })
+        // A device lost, back or opened changes the device and the problem it shows: read again
+        // while it is open, whether or not the settings window is (as the table does).
+        let reread: (Any) -> Void = { [weak self] _ in
+            guard let self, self.isOpen else { return }
+            self.model.rereadSoon()
+        }
+        subs.append(store.$warnings.removeDuplicates().dropFirst().sink(receiveValue: reread))
+        subs.append(
+            store.$status.map { $0?.outputs.map(\.state) }.removeDuplicates().dropFirst().sink(receiveValue: reread))
+        window.delegate = self
         render()
     }
 
@@ -109,8 +123,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         reread()
     }
 
-    /// Reads the devices and routing again, then draws them.
+    /// Reads the devices and routing again, then draws them (it is open from now until closed).
     func reread() {
+        isOpen = true
         editing = Task {
             await model.refresh()
             drawn = nil
@@ -133,7 +148,10 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         devicePopup.setAX(AX.patchEditorDevice, label: loc("patchEditor.device"))
         devicePopup.target = self
         devicePopup.action = #selector(deviceChosen)
-        devicePopup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        // Wide enough for its longest choice (up to its most, below) in every state, also when
+        // the window first lays it out with a device away; it gives way to the window's size
+        // (just below the priority a window keeps its size at).
+        devicePopup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(490), for: .horizontal)
         devicePopup.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         devicePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
         func titled(_ title: String, _ control: NSView) -> NSStackView {
@@ -347,7 +365,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
             limits: limits, main: patch.raw["master_db"]?.doubleValue ?? 0,
             levels: outputs.map { $0["level_db"]?.doubleValue ?? 0 },
             names: outputs.map { $0["name"]?.stringValue ?? "" }, name: patch.raw["name"]?.stringValue ?? "",
-            row: row, devices: model.devices, usable: row?.mapping.map { model.usableChannels(of: $0.device) } ?? 0,
+            row: row, devices: model.devices,
+            usable: row.flatMap(model.deviceName(of:)).map(model.usableChannels(of:)) ?? 0,
             loaded: model.loaded)
         if let drawn, drawn == state, typedField == nil, !dragging { return }
         guard !dragging else { return }
@@ -379,7 +398,7 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
         for (i, db) in state.levels.enumerated() { set(outputFields[i], LevelText.format(db), enabled: editable) }
 
         // The matrix: one row per cue output, one column per device output.
-        let device = row?.mapping?.device
+        let device = row.flatMap(model.deviceName(of:))
         let channels = device.map(model.channelCount(of:)) ?? 0
         let maxRoute = row?.mapping?.channels.map { Int($0) + 1 }.max() ?? 0
         matrix.rowLabels = state.names.enumerated().map { i, name in name.isEmpty ? "\(i + 1)" : "\(i + 1)  \(name)" }
@@ -547,8 +566,8 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
 
     @objc private func deviceChosen() {
         guard let row else { return }
-        let name = devicePopup.selectedItem?.representedObject as? String
-        edit { [self] in await model.setMapping(row, device: name) }
+        let choice = devicePopup.selectedItem?.representedObject
+        edit { [self] in await model.choose(choice, for: row) }
     }
 
     private func route(_ output: Int, to column: Int) {
@@ -598,6 +617,9 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
 
     @objc private func doneClicked() { window?.close() }
 
+    /// Closed: it no longer follows the devices until it is shown again.
+    func windowWillClose(_ notification: Notification) { isOpen = false }
+
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         window?.contentView?.layoutSubtreeIfNeeded()
         fitMatrixWidth()
@@ -609,20 +631,53 @@ final class PatchEditorWindowController: NSWindowController, NSTextFieldDelegate
     }
 }
 
+/// The represented object of the system output item of a patch's device pop-up.
+final class SystemOutputChoice: NSObject, Sendable {
+    static let shared = SystemOutputChoice()
+}
+
 extension WorkspaceSettingsModel {
-    /// The device choices of a patch, as the table and the patch editor show them: none, then every
-    /// listed device, and the device the patch names when that is not connected now.
+    /// The device choices of a patch, as the table and the patch editor show them (as QLab 5 lists
+    /// them, settings surface `settings.audio.audio-outputs`): none, then the system output with
+    /// the device it is now, then every listed device, and the device the patch names when that is
+    /// not connected now.
     func fillDevicePopupItems(_ popup: NSPopUpButton, for row: PatchRow) {
         popup.removeAllItems()
+        popup.autoenablesItems = false
         popup.addItem(withTitle: loc("settings.audio.noDevice"))
         popup.lastItem?.representedObject = nil
+        popup.menu?.addItem(.separator())
+        popup.addItem(withTitle: systemOutputTitle)
+        popup.lastItem?.representedObject = SystemOutputChoice.shared
+        popup.menu?.addItem(.separator())
         for name in deviceChoices(for: row) {
             let listed = devices.contains { $0.name == name }
             popup.addItem(withTitle: listed ? name : String(format: loc("settings.audio.notConnected"), name))
             popup.lastItem?.representedObject = name
         }
-        let current = popup.itemArray.firstIndex { ($0.representedObject as? String) == row.mapping?.device }
+        let current: Int?
+        if row.mapping?.system == true {
+            current = popup.itemArray.firstIndex { $0.representedObject is SystemOutputChoice }
+        } else {
+            current = popup.itemArray.firstIndex { ($0.representedObject as? String) == row.mapping?.device }
+        }
         popup.selectItem(at: current ?? 0)
+    }
+
+    /// The system output item: the device the Mac's output is now, or that there is none.
+    var systemOutputTitle: String {
+        guard let device = systemOutputDevice else { return loc("settings.audio.systemOutputNone") }
+        return String(format: loc("settings.audio.systemOutput"), device.name)
+    }
+
+    /// Carries out a pick in a patch's device pop-up: none clears it, the system output item puts
+    /// it on the system output, a name on that device.
+    func choose(_ choice: Any?, for row: PatchRow) async {
+        if choice is SystemOutputChoice {
+            await setSystemOutput(row)
+        } else {
+            await setMapping(row, device: choice as? String)
+        }
     }
 
     func problemText(_ problem: PatchProblem) -> String {
@@ -637,6 +692,7 @@ extension WorkspaceSettingsModel {
         case .channelsMissing(let device, let needed, let available):
             return String(format: loc("settings.audio.problem.channelsMissing"), device, available, needed)
         case .outputCountMismatch: return loc("settings.audio.problem.outputCount")
+        case .systemOutputMissing: return loc("settings.audio.systemOutputMissing")
         }
     }
 }

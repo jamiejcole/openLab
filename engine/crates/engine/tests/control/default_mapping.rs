@@ -176,6 +176,7 @@ fn an_existing_mapping_is_kept() {
     let kept = PatchMapping {
         device: "Other".into(),
         channels: vec![1, 0],
+        system: false,
     };
     machine
         .set_patch_mapping(ws.id, patch_id(), kept.clone())
@@ -206,6 +207,7 @@ fn a_show_with_no_mapping_on_this_machine_is_mapped() {
             PatchMapping {
                 device: "Elsewhere".into(),
                 channels: vec![6, 7],
+                system: false,
             },
         )
         .unwrap();
@@ -268,6 +270,7 @@ fn only_the_unmapped_patch_of_a_partly_mapped_workspace_is_mapped() {
     let kept = PatchMapping {
         device: "Offline".into(),
         channels: vec![3, 2],
+        system: false,
     };
     machine
         .set_patch_mapping(ws.id, patch_id(), kept.clone())

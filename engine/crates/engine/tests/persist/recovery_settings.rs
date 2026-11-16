@@ -323,6 +323,7 @@ fn settings_round_trip_through_the_file() {
             PatchMapping {
                 device: "Scarlett 18i20".into(),
                 channels: vec![4, 5],
+                system: false,
             },
         )
         .unwrap();
@@ -381,6 +382,7 @@ fn unknown_device_mapping_resolves_without_error() {
             PatchMapping {
                 device: "Gone Interface".into(),
                 channels: (0..patch.outputs.len() as u32).collect(),
+                system: false,
             },
         )
         .unwrap();
@@ -391,7 +393,7 @@ fn unknown_device_mapping_resolves_without_error() {
         output_channels: 2,
     }];
     assert_eq!(
-        resolve_patch(&loaded, ws.id, patch, &present),
+        resolve_patch(&loaded, ws.id, patch, &present, None),
         PatchResolution::DeviceMissing {
             device: "Gone Interface".into()
         }
