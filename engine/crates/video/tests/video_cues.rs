@@ -2944,6 +2944,8 @@ fn a_movie_with_sound_gets_a_levels_tab_and_is_heard_on_its_patch() {
     );
     assert_eq!(s.control().live_voices(), 0);
     assert_eq!(s.stalls(), 0);
+    // Its sound was ready before the GO, as an Audio cue's at the playhead is.
+    assert_eq!(s.control().prime_hits(), 1);
 }
 
 /// A Video cue with sound and the time and loops `edit` gives it.
@@ -3715,13 +3717,13 @@ fn a_movie_with_several_audio_tracks_plays_the_one_chosen() {
     assert!(!missing(&s));
 }
 
-/// Flow 7: over a ten-minute movie whose frames carry their number and whose track says where
-/// it is, the frame on the stage and the sound in the rendered output are less than one frame
-/// period apart at every look (the start, each minute, the last second), at 24, 25, 30 and 60
-/// frames a second and with a 48 kHz track on a 44.1 kHz device; the cue ends once, the last
-/// frame and the sound's last sample together, and its length told is the movie's.
-#[test]
-fn picture_and_sound_stay_within_one_frame_of_each_other() {
+/// Flow 7's measure over a movie `length` seconds long whose frames carry their number and
+/// whose track says where it is: the frame on the stage and the sound in the rendered output
+/// are less than one frame period apart at every look (the start, every `every` seconds, the
+/// last second), at 24, 25, 30 and 60 frames a second and with a 48 kHz track on a 44.1 kHz
+/// device; the cue ends once, the last frame and the sound's last sample together, and its
+/// length told is the movie's.
+fn in_step_throughout(length: u16, every: u16) {
     let dir = tempfile::tempdir().unwrap();
     // (frames a second, the track's rate, the device's rate and block)
     let cases: [(u16, u32, u32, u64); 5] = [
@@ -3731,18 +3733,27 @@ fn picture_and_sound_stay_within_one_frame_of_each_other() {
         (60, 8_000, RATE, BLOCK),
         (25, 48_000, 44_100, 512),
     ];
+    let seconds = f64::from(length);
     for (fps, track, rate, block) in cases {
         let what = format!("{fps} fps, {track} Hz on {rate} Hz");
         let sound = format!("pcm:2:{track}");
-        let movie = sound_movie!(dir.path(), "long.mov", (fps * 600, fps), &sound);
+        let movie = sound_movie!(dir.path(), "long.mov", (fps * length, fps), &sound);
         let ws = workspace(vec![sounding_cue(1, &movie)]);
         let mut s = video_show_rate(ws, rate, block, &[], |_| {}, |_| {});
-        assert_eq!(told_lengths(&s, 1), (Some(600.0), Some(600.0)), "{what}");
+        assert_eq!(
+            told_lengths(&s, 1),
+            (Some(seconds), Some(seconds)),
+            "{what}"
+        );
         let at = go(&mut s);
         let sample = |seconds: f64| at + (seconds * f64::from(rate)).round() as u64;
         let mut looks = vec![0.5];
-        looks.extend((1..10).map(|minute| f64::from(minute) * 60.0 + 0.5));
-        looks.push(599.5);
+        looks.extend(
+            (every..length)
+                .step_by(usize::from(every))
+                .map(|t| f64::from(t) + 0.5),
+        );
+        looks.push(seconds - 0.5);
         for t in looks {
             s.run_until(sample(t));
             let heard = in_step(&mut s, rate, f64::from(fps), &format!("{what}, {t} s"));
@@ -3753,11 +3764,11 @@ fn picture_and_sound_stay_within_one_frame_of_each_other() {
             );
         }
         expect_state(&s, 1, CueState::Running, &what);
-        s.run_until(sample(600.0) + 2 * block);
+        s.run_until(sample(seconds) + 2 * block);
         expect_state(&s, 1, CueState::Idle, &what);
         assert_eq!(shown(&mut s), None, "{what}");
         s.run(block * 8);
-        let end = usize::try_from(sample(600.0) - at).unwrap() + usize::try_from(at).unwrap();
+        let end = usize::try_from(sample(seconds)).unwrap();
         let last = last_nonzero(&s.channel(1)).unwrap();
         let frame = usize::try_from(u64::from(rate) / u64::from(fps)).unwrap();
         assert!(
@@ -3767,6 +3778,24 @@ fn picture_and_sound_stay_within_one_frame_of_each_other() {
         assert_eq!(s.stalls(), 0, "{what}");
         std::fs::remove_file(&movie).unwrap();
     }
+}
+
+/// Flow 7 over thirty seconds of movie, looked at every five; the ten-minute run is
+/// [`picture_and_sound_stay_within_one_frame_of_each_other_for_ten_minutes`].
+#[test]
+fn picture_and_sound_stay_within_one_frame_of_each_other() {
+    in_step_throughout(30, 5);
+}
+
+/// Flow 7 as written: ten minutes of movie, looked at each minute. Minutes of rendering, so
+/// not part of `cargo test`; CI runs it with the release performance gates (not on pull
+/// requests):
+///
+/// `cargo test --release -p openlab-video --test video_cues -- --ignored ten_minutes`
+#[test]
+#[ignore = "ten minutes of movie at five rates: run in release with -- --ignored"]
+fn picture_and_sound_stay_within_one_frame_of_each_other_for_ten_minutes() {
+    in_step_throughout(600, 60);
 }
 
 /// A show of `ws` on stand-in audio devices (the first is the primary) with the real stage

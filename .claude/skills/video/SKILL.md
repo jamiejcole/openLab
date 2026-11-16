@@ -138,7 +138,8 @@ Probing Video cues' files and playing their pictures on stages in step with the 
 - A cue its sound's device left (shown paused, owning nothing) loses its picture too (`end_pictures`); nothing resumes when the device returns.
 - The sound is the clock: the mixer reports the end of an underrun with what the voice missed (`Event::UnderrunEnded`), and the picture's plan is put back by as much from that sample and the run's end moved (`picture_late`). A voice on a second device whose clock drifts from the master's is not followed (no per-voice position is reported).
 - Clients: `media_durations` carries `audio_tracks`, `audio_track` (the one played) and `channels`; a stored track the file lacks plays the first and lists an `audio_track_missing` warning. Progress of a Video cue is its picture's (the voice's is left out).
-- Not built: priming a Video cue's sound before GO (its voice starts cold: an underrun at the start that the picture then follows), preload, the waveform overview and preview of a Video cue's sound.
+- A Video cue's sound is primed like an Audio cue's (skill `engine-control`, Priming): a cue near the playhead or with a hotkey has its stream ready, so a GO does not start cold; a cold start (a `StartVoice` with no prime) is an underrun at the start that the picture then follows. The `waveform` request answers for a Video cue with the audio track it plays.
+- Not built: preload and preview of a Video cue's sound.
 - Tests (`tests/video_cues.rs`; test movies with sound tracks from `--make-test-media <codec>+pcm:2:48000`, whose channels say where in the file they are): probe formats, in step from GO to the end, pause/resume, load to time, each loop seam on and off a frame boundary, devamp, hold at end, a start held by its probe, stop and panic, level edits, a Fade cue, no sound and no patch.
 
 ## Geometry (VID-04; `openlab-core` `video_geometry.rs`)

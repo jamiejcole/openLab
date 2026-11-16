@@ -947,31 +947,38 @@ fn rate_for(env: &Env<'_>, cue: CueId) -> u32 {
 
 fn sig_of(env: &Env<'_>, cue: CueId) -> Option<Sig> {
     let c = cue_of(env, cue)?;
-    let CueKind::Audio {
-        media: Some(media),
-        start_time,
-        end_time,
-        slices,
-        last_slice_play_count,
-        ..
-    } = &c.kind
-    else {
-        return None;
-    };
-    let Some(Probe::Ready(ready)) = env.media.get(media.as_str()) else {
-        return None;
+    let spec = plan_spec(&c.kind)?;
+    let (media, probe, preloaded) = match &c.kind {
+        CueKind::Audio {
+            media: Some(media), ..
+        } => {
+            let Some(Probe::Ready(ready)) = env.media.get(media.as_str()) else {
+                return None;
+            };
+            let preloaded = env.media.is_preloaded(media.as_str());
+            (media, Arc::as_ptr(ready) as usize, preloaded)
+        }
+        // A Video cue's sound: the probe of the audio track it plays.
+        CueKind::Video {
+            media: Some(media),
+            sound,
+            ..
+        } => {
+            let (ready, _) = env.media.sound(media.as_str(), sound.audio_track)?;
+            (media, Arc::as_ptr(&ready) as usize, false)
+        }
+        _ => return None,
     };
     Some(Sig {
         media: media.as_str().to_owned(),
-        probe: Arc::as_ptr(ready) as usize,
-        preloaded: env.media.is_preloaded(media.as_str()),
-        start: start_time.to_bits(),
-        end: end_time.map(f64::to_bits),
-        marks: slices
-            .iter()
+        probe,
+        preloaded,
+        start: spec.start_time.to_bits(),
+        end: spec.end_time.map(f64::to_bits),
+        marks: (spec.slices.iter())
             .map(|m| (m.time.to_bits(), m.play_count))
             .collect(),
-        last: *last_slice_play_count,
+        last: spec.last_slice_play_count,
     })
 }
 
