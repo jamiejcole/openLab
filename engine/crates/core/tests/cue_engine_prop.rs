@@ -2642,8 +2642,10 @@ impl Run {
                         _ => false,
                     });
                     // A cue a Disarm cue disarmed while it played is stopped, and its fresh run
-                    // passes over its action: with no pre-wait nothing shows that it started.
-                    let disarmed = self.ws.find_cue(cue).is_some_and(|c| !c.armed);
+                    // passes over its action: with no pre-wait nothing shows that it started,
+                    // but the run it played is gone.
+                    let disarmed = self.ws.find_cue(cue).is_some_and(|c| !c.armed)
+                        && self.engine.run_of(cue) != run;
                     prop_assert!(
                         restarted || cut_or_broken || disarmed,
                         "{} was not restarted",
