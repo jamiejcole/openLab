@@ -48,7 +48,9 @@ Each client has a bounded queue (`CLIENT_QUEUE`, 1024). The fan-out task encodes
 - A state message (`model_changed`, `runtime`, `document`, `warnings`) that does not fit, cannot be encoded, or exceeds `MAX_SERVER_FRAME_BYTES` (32 MiB) marks the client **lagged**. A lagged client is **not closed**: its queue is thrown away, broadcasts for it are skipped, and as soon as its task runs and no other snapshot is out the server asks for a fresh `snapshot` (broadcasts queued again before the request and filtered against its revision).
 - A client whose snapshot itself exceeds the cap gets `error internal` and is closed. A `result` without a revision may overtake the snapshot during a resync.
 - A client that stops reading stalls its TCP write; one write with no progress for `write_timeout` (10 s) closes the connection. Meanwhile it costs the control loop and other clients nothing.
-- Dead peers: `ping` every `ping_interval` (10 s); a connection silent (a `pong` counts) for `dead_after` (30 s) is closed.
+- Dead peers: `ping` every `ping_interval` (10 s); a connection that leaves the pings of `dead_after` (30 s: 3 pings) unanswered is closed at the next one, with a `warn` log line. Anything it sends answers them (a `pong` counts).
+- Silence is counted in pings sent (`liveness.rs`), never on the clock: a ping timer that comes late (the engine starved, suspended, or the machine asleep) sends one ping and counts one, so the engine's own lateness cannot drop a healthy client. Pings sent while the connection is not being read (64 requests in flight) are not counted.
+- A test that must not depend on the machine's speed sends each ping itself (`ServerConfig::ping_on`, `test-support` builds only).
 
 ## Tap for OSC
 The fan-out task also offers every doc's `model_changed`, `runtime`, `document`, `snapshot` and `closed`, tagged by doc, plus the `workspaces` list, to the OSC task through a bounded **tap** (`hub::Tap`). A full tap marks the OSC task lagged; it then rebuilds every copy as a lagged client would. A bind failure for the OSC ports leaves OSC off and the WebSocket server starting normally.

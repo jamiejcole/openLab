@@ -3220,13 +3220,20 @@ async fn held_input_is_bounded_and_goes_once_the_copy_is_in() {
     f.control
         .wait_for("the first snapshot request", |c| c.snapshot_requests() == 1)
         .await;
-    for _ in 0..(MAX_HELD_INPUTS * 3) {
-        f.udp_send(&msg("/go", vec![])).await;
-    }
-    f.wait_stats("held input to fill and the queue to overflow", |s| {
-        s.held_inputs == MAX_HELD_INPUTS && s.udp_dropped > 0
+    // A fixed burst can outrun a slow listener: its queue then drops most of the burst before
+    // the held list is full, and nothing is left to fill it. So send until both have happened.
+    let full = |s: &OscListenerStats| s.held_inputs == MAX_HELD_INPUTS && s.udp_dropped > 0;
+    let filled = tokio::time::timeout(GUARD, async {
+        while !full(&f.stats()) {
+            f.udp_send(&msg("/go", vec![])).await;
+        }
     })
     .await;
+    assert!(
+        filled.is_ok(),
+        "hang: held input to fill and the queue to overflow: {:?}",
+        f.stats()
+    );
     f.control.release();
     f.control
         .wait_seen("the held GOs", |seen| {

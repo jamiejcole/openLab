@@ -6,6 +6,7 @@
 //! and the outbound broadcast channel; it never touches the workspace.
 
 mod hub;
+mod liveness;
 mod osc;
 mod osc_mirror;
 mod refusals;

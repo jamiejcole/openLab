@@ -20,7 +20,8 @@ Mixer events, stream state and probe answers become cue-engine inputs. `StartFai
 
 - **No feedback before its sample**: a report dated `at` (a re-reported end on a resume sample, the end of an empty action) is held until `now > at`. Mixer events report rendered samples, so qualify at once.
 - The id a voice had before its latest resume stays an **alias** until the voice is gone (an end before the resume applied arrives under it); older ids are named for one more meter read only, so many pauses keep one alias.
-- **Orphaned tails**: after an underrun a voice can sound past the end the engine completed its cue on. Panic, Stop All, Hard Stop All, Reset All, hard stop (`stop` without fade) and Reset stop every such voice in their scope (whole show, or the cue and descendants): Panic with a fade ending on the panic's end, the others at once. A cue's own `panic_cue` leaves the tail to the cue's own end (a later Stop All or Panic cuts it).
+- **Orphaned tails**: after an underrun a voice can sound past the end the engine completed its cue on. Panic, Stop All, Hard Stop All, Reset All, hard stop (`stop` without fade) and Reset stop every such voice in their scope (whole show, or the cue and descendants): Panic with a fade ending on the panic's end, the others at once.
+  A cue failed with `device_lost` (its device lost, or its patch moved to a device that cannot play) has its tail stopped at once the same way, also in its post-wait within the block the engine completes a known end ahead. A cue's own `panic_cue` leaves the tail to the cue's own end (a later Stop All or Panic cuts it).
 - Resuming a voice that had ended is reachable only for an action whose length the engine was not told (a loop).
 
 ## Reconciliation of lost events
