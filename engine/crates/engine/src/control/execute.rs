@@ -79,7 +79,6 @@ impl DocCx<'_> {
                 floor,
             };
             self.doc.voices.media_ready(&key, &mut env, &mut fx);
-            self.quiet_sound(&mut fx);
             self.follow(fx, now);
             self.release_pictures(&key, now);
         }
@@ -181,8 +180,6 @@ impl DocCx<'_> {
                 }
             }
         }
-        // A Video cue's voice (one moved to another device here) reports only failures.
-        self.quiet_sound(&mut fx);
         for action in actions {
             if let Action::RelocateVoice { run, from, .. } = *action {
                 self.relocate_picture(run, from, &mut fx);
@@ -238,8 +235,21 @@ impl DocCx<'_> {
             reprobe,
             warnings,
             late,
+            pictured,
         } = fx;
-        let mut feedback = feedback;
+        // Of a Video cue's voice only failures are passed on: its run's length, end and
+        // devamp are its picture's to tell. Dropped here, where every report of the voices
+        // passes, whichever way it was made (an event, a lost event made up for, a device
+        // closed).
+        let (mut feedback, mut deferred) = (feedback, deferred);
+        feedback.retain(|i| !self.pictures_report(i));
+        deferred.retain(|(_, i)| !self.pictures_report(i));
+        for (at, input) in pictured {
+            match at {
+                Some(at) => deferred.push((at, input)),
+                None => feedback.push(input),
+            }
+        }
         for (run, at, frames) in late {
             self.picture_late(run, at, frames, &mut feedback);
         }

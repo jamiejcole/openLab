@@ -377,15 +377,20 @@ fn render_voice(
             None
         }
         ReadOutcome::Full => {
-            if v.underrunning {
-                outbox.emit(Event::UnderrunEnded {
+            // What the voice missed is told until the queue takes it, with what it missed
+            // since: a picture that follows this voice is put back by this count, and one
+            // lost with a full queue would leave it ahead of the sound for the rest of the run.
+            if v.missed > 0 {
+                let end = Event::UnderrunEnded {
                     voice: v.id,
                     at: t0,
                     frames: v.missed,
-                });
+                };
+                if outbox.try_emit(end, v.underrunning) {
+                    v.missed = 0;
+                }
             }
             v.underrunning = false;
-            v.missed = 0;
             None
         }
     };

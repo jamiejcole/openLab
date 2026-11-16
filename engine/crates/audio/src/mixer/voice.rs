@@ -258,7 +258,7 @@ pub(super) struct Voice {
     /// Not yet rendered: gain sets apply without de-zipper.
     pub(super) fresh: bool,
     pub(super) underrunning: bool,
-    /// Frames missed in the underrun episode under way.
+    /// Frames missed to underruns and not yet told (`Event::UnderrunEnded`).
     pub(super) missed: u64,
     /// `Some` while paused; then nothing is read and no gain advances.
     pub(super) paused: Option<Paused>,

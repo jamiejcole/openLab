@@ -84,7 +84,12 @@ impl DocCx<'_> {
             })
             .collect();
 
-        let uses = Uses::of(ws);
+        let mut uses = Uses::of(ws);
+        // A Video cue with nothing to hear does not play on the patch it names: a patch with
+        // no device is no problem of a show whose only cues on it are stills and silent movies.
+        for cues in uses.patch.values_mut() {
+            cues.retain(|c| !self.known_silent(*c));
+        }
         let mut patches = Vec::new();
         let mut used_patches = 0u64;
         for patch in &ws.patches {
@@ -234,7 +239,7 @@ impl Uses {
         for c in ws.cues() {
             match &c.kind {
                 CueKind::Audio { patch, .. } => uses.patch.entry(*patch).or_default().push(c.id),
-                // A Video cue uses its patch whether or not its file has sound yet.
+                // A Video cue's patch, whatever its file holds (the caller knows the probes).
                 CueKind::Video { sound, .. } => {
                     if let Some(patch) = sound.patch {
                         uses.patch.entry(patch).or_default().push(c.id);

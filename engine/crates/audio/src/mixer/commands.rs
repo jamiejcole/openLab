@@ -31,6 +31,16 @@ impl Outbox {
         }
     }
 
+    /// [`Self::emit`] for an event the caller sends again while the queue is full: whether it
+    /// was taken. A drop is counted when `count` (the first try), not on each try after it.
+    pub(crate) fn try_emit(&mut self, e: Event, count: bool) -> bool {
+        let taken = self.events.push(e).is_ok();
+        if !taken && count {
+            self.shared.dropped_events.fetch_add(1, Ordering::Relaxed);
+        }
+        taken
+    }
+
     pub(crate) fn give_back(&mut self, start: Box<VoiceStart>) {
         self.hand_back(Returned::Start(start));
     }

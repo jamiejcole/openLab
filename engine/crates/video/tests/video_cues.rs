@@ -4224,3 +4224,56 @@ fn duck_others_and_fade_and_stop_others_act_on_a_video_cues_sound() {
     assert!(silent(&s, stopped + samples(0.2) + BLOCK, s.rendered()));
     assert_eq!(s.control().live_voices(), 0);
 }
+/// A devamp that stops its target, asked while the sound is starved: when the disk catches up
+/// the picture is put back with its sound, and both play the pass under way to its end before
+/// the cue stops.
+#[test]
+fn a_devamp_stop_asked_while_the_sound_is_starved_ends_both_after_the_whole_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let movie = sound_movie!(dir.path(), "clip.mov", (50, 25), "pcm:2:48000");
+    let looping = timed_sounding_cue(1, &movie, |t| {
+        t.start_time = 0.4;
+        t.end_time = Some(1.2);
+        t.slices = vec![openlab_core::SliceMarker {
+            time: 0.8,
+            play_count: 0,
+        }];
+    });
+    let stop = cue(
+        2,
+        CueKind::Devamp {
+            target: Some(id(1)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: true,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let ws = workspace(vec![looping, stop]);
+    let mut s = video_show_config(ws, &[], |_| {}, |c| c.streamer.before_open = gated_open);
+    gate(&movie);
+    let at = start(&mut s, 1);
+    s.run_unsettled(samples(0.2));
+    start(&mut s, 2);
+    s.run_unsettled(samples(0.1));
+    release(&movie);
+    s.run(samples(0.25));
+    let sound = in_step(&mut s, RATE, 25.0, "after the disk caught up");
+    let late = (s.now() - at) as f64 / f64::from(RATE) - (sound - 0.4);
+    assert!(late > 0.25, "the sound started {late} s late");
+    // The pass under way ends 0.4 s after the sound really began; the cue stops there.
+    let end = at + samples(0.4 + late);
+    run_to(&mut s, end - samples(0.05));
+    expect_state(&s, 1, CueState::Running, "the pass is not over yet");
+    in_step(&mut s, RATE, 25.0, "near the end of the pass");
+    run_to(&mut s, end + samples(0.1));
+    expect_state(&s, 1, CueState::Idle, "stopped at the end of the pass");
+    assert_eq!(shown(&mut s), None);
+    s.run(samples(0.1));
+    let last = last_nonzero(&s.channel(1)).unwrap() as u64;
+    sound_is(
+        &s,
+        last - 16,
+        0.798,
+        "the last sound heard is the pass's end",
+    );
+}

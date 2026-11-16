@@ -103,13 +103,7 @@ impl DocCx<'_> {
         );
         // A Video cue whose file is known to have no sound (a still, a silent movie) has
         // nothing to prime: it takes no share of the pool from the cues that do.
-        wanted.retain(|c| {
-            let cue = self.doc.media.index().locate(self.doc.model.ws(), *c);
-            let Some(CueKind::Video { media: Some(m), .. }) = cue.map(|c| &c.kind) else {
-                return true;
-            };
-            (self.doc.media.picture(m.as_str())).is_none_or(|p| !p.sound.is_empty())
-        });
+        wanted.retain(|c| !self.known_silent(*c));
         // Their files are probed first (H2: a restart mid-show must not leave the cue at the
         // playhead behind a hundred others).
         let keys: Vec<String> = wanted

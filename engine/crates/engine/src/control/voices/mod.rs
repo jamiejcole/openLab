@@ -59,6 +59,18 @@ pub struct Effects {
     /// Voices the disk starved that play on from a sample, later than planned by that many
     /// frames (run, sample, frames): a Video cue's picture follows its sound.
     pub late: Vec<(RunId, SampleTime, u64)>,
+    /// What a Video cue's picture tells of its run's length, end and devamp: handed on at once
+    /// (`None`) or once that sample has passed. Kept apart from what the voices report, so
+    /// those reports of a Video cue's voice can be dropped wherever they were made: the
+    /// picture alone tells them, once.
+    pub pictured: Vec<(Option<SampleTime>, Input)>,
+}
+
+impl Effects {
+    /// A Video cue's picture tells the cue engine `input` now.
+    pub fn picture_says(&mut self, input: Input) {
+        self.pictured.push((None, input));
+    }
 }
 
 /// The environment voice actions are carried out in.

@@ -45,6 +45,19 @@ impl DocCx<'_> {
         self.video_kind(cue).is_some()
     }
 
+    /// Whether `cue` is a Video cue whose file is known to have nothing to hear: probed, and
+    /// a still or a movie without a sound track. Such a cue has no use for its patch, whatever
+    /// it names. One not probed yet is not known to be silent.
+    pub(super) fn known_silent(&self, cue: CueId) -> bool {
+        let Some(CueKind::Video {
+            media: Some(media), ..
+        }) = self.video_kind(cue)
+        else {
+            return false;
+        };
+        (self.doc.media.picture(media.as_str())).is_some_and(|p| p.sound.is_empty())
+    }
+
     /// The probe of the audio track a Video cue's voice plays (fitted to its movie's length),
     /// if `cue` is a Video cue whose probed movie has sound: its picture's plan is built on it,
     /// so picture and sound follow the same table to the sample.
@@ -121,13 +134,10 @@ impl DocCx<'_> {
         fx.late.append(&mut own.late);
     }
 
-    /// Drops what the voices reported about the length, end or devamp of Video cues' runs
-    /// (`fx` holds only the voices' reports): their pictures report those.
-    pub(super) fn quiet_sound(&self, fx: &mut Effects) {
-        fx.feedback
-            .retain(|i| !lifecycle(i).is_some_and(|cue| self.is_video(cue)));
-        fx.deferred
-            .retain(|(_, i)| !lifecycle(i).is_some_and(|cue| self.is_video(cue)));
+    /// Whether `input` tells the length, end or devamp of a run that a picture tells them
+    /// for: a Video cue's, or one whose picture is still up though its cue was edited since.
+    pub(super) fn pictures_report(&self, input: &Input) -> bool {
+        lifecycle(input).is_some_and(|cue| self.is_video(cue) || self.has_picture(cue))
     }
 
     /// The voices of Video cues whose action is over (`StateChanged` to idle, post-wait or
