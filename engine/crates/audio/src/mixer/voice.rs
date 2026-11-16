@@ -198,6 +198,9 @@ pub(super) struct Voice {
     skip: u64,
     /// Frames consumed after the skip.
     pub(super) pos: u64,
+    /// The mixer sample the voice has been rendered up to: behind the clock only when a faulted
+    /// block ended before the voice's turn.
+    pub(super) upto: SampleTime,
     /// Frames taken from the ring so far, skips included (the devamp link's position unit).
     ring_pos: u64,
     /// Current slice-table entry, frames left in its current play, and plays after this one
@@ -295,6 +298,7 @@ impl Voice {
             patch: 0,
             skip: 0,
             pos: 0,
+            upto: 0,
             ring_pos: 0,
             entry: 0,
             left: 0,
@@ -416,8 +420,9 @@ impl Voice {
         self.paused.is_some_and(|p| !p.stopped)
     }
 
-    /// Takes over a validated start, copying its routing into the voice's gains.
-    pub(super) fn begin(&mut self, s: Box<VoiceStart>, meters: &Meters) {
+    /// Takes over a validated start on sample `t`, copying its routing into the voice's gains.
+    pub(super) fn begin(&mut self, s: Box<VoiceStart>, t: SampleTime, meters: &Meters) {
+        self.upto = t;
         // A new epoch: peaks the previous voice left unread stay its own.
         meters.flush_voice(self.slot, self.epoch, &mut self.meter);
         meters.retire(self.slot);
@@ -744,9 +749,9 @@ impl Voice {
         }
     }
 
-    /// Resumes on sample `t` as `id` (nothing if not paused, or stopped in its tail). Everything
-    /// timed in samples (the stop fade's end) moves by the time spent paused. `scratch` holds a
-    /// block of frames; `block` is the stride of `input`.
+    /// Resumes on sample `t` as `id` (nothing if not paused; the caller leaves a voice stopped in
+    /// its tail alone). Everything timed in samples (the stop fade's end) moves by the time spent
+    /// paused. `scratch` holds a block of frames; `block` is the stride of `input`.
     pub(super) fn resume(
         &mut self,
         t: SampleTime,
@@ -756,9 +761,6 @@ impl Voice {
         scratch: &mut [f32],
         outbox: &mut Outbox,
     ) {
-        if !self.resumable() {
-            return;
-        }
         let Some(p) = self.paused.take() else {
             return;
         };

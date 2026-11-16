@@ -40,33 +40,7 @@ impl Mixer {
             if *panic_voice == Some(v.id) {
                 panic!("injected voice fault");
             }
-            // A paused voice past its declick tails contributes nothing and is not visited; a
-            // move it was making is over, there is nothing left to crossfade.
-            if v.tail_over() {
-                if v.moving.is_some() {
-                    v.advance_move(usize::MAX);
-                    let (voice, moves) = (v.id, v.moves);
-                    outbox.emit(Event::MoveEnded {
-                        voice,
-                        at: t0,
-                        moves,
-                    });
-                }
-                continue;
-            }
-            if let Some(m) = v.moving {
-                render_moving(v, m, len, t0, block, patches, move_bus, scratch, outbox);
-                continue;
-            }
-            let Some(p) = patches.get_mut(v.patch) else {
-                continue;
-            };
-            p.reach(v.width, block, len);
-            if v.paused.is_some() {
-                render_tail(v, len, t0, block, &mut p.bus, scratch, outbox);
-            } else {
-                render_voice(v, len, t0, block, &mut p.bus, scratch, outbox);
-            }
+            render_one(v, len, t0, block, patches, move_bus, scratch, outbox);
         }
         stage.enter(Stage::Idle);
 
@@ -164,6 +138,45 @@ impl Mixer {
     }
 }
 
+/// Renders `len` frames of one active voice from sample `t0` into its patch's bus (both patches
+/// of a move), and notes that it has played them.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_one(
+    v: &mut Voice,
+    len: usize,
+    t0: SampleTime,
+    block: usize,
+    patches: &mut [Patch],
+    move_bus: &mut [f32],
+    s: &mut Scratch,
+    outbox: &mut Outbox,
+) {
+    if v.tail_over() {
+        // A paused voice past its declick tails contributes nothing; a move it was making is
+        // over, there is nothing left to crossfade.
+        if v.moving.is_some() {
+            v.advance_move(usize::MAX);
+            let (voice, moves) = (v.id, v.moves);
+            outbox.emit(Event::MoveEnded {
+                voice,
+                at: t0,
+                moves,
+            });
+        }
+    } else if let Some(m) = v.moving {
+        render_moving(v, m, len, t0, block, patches, move_bus, s, outbox);
+    } else if let Some(p) = patches.get_mut(v.patch) {
+        p.reach(v.width, block, len);
+        if v.paused.is_some() {
+            render_tail(v, len, t0, block, &mut p.bus, s, outbox);
+        } else {
+            render_voice(v, len, t0, block, &mut p.bus, s, outbox);
+        }
+    }
+    // Last: a voice whose render faulted has not played these frames.
+    v.upto = t0.saturating_add(len as u64);
+}
+
 /// Renders a moving voice ([`Move`]) into `move_bus`, then shares it out: `1 - g` of it to the
 /// patch it leaves, `g` to the one it moves to.
 #[allow(clippy::too_many_arguments)]
@@ -230,6 +243,8 @@ fn render_voice(
     });
     let pos0 = v.pos;
     let (got, outcome, rem) = v.read(live, len, block, t0, outbox);
+    // The voice has moved on: a fault from here on must not make it play these frames again.
+    v.upto = t0.saturating_add(len as u64);
     let (Some(vg), Some(og), Some(tmp), Some(acc)) = (
         s.vgain.get_mut(..len),
         s.og.get_mut(..len),

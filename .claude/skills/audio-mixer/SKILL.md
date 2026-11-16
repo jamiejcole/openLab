@@ -58,6 +58,10 @@ The mixer renders voices into the device buffer on the audio thread. The control
 | the meter flush | the block's peaks dropped; `StageFaulted { Meters }` | disabled: meters no longer published |
 | none of these (taking commands off the queue, scheduling, the copy out) | nothing more | rebuild: every patch silent, master unity, every unit enabled, `dev` cleared; `StageFaulted { Mixer }`. Voices and pending commands kept |
 
+- **A faulted block costs every voice the same frames.** The block is silent and the clock advances. Each voice notes the sample it has been rendered up to (`Voice::upto`); after the fault every voice still active plays on, unheard, from there to the block's end (`catch_up`: the normal render into buses nobody mixes), whichever stage faulted.
+  - So voices started together stay in step, every voice is on the mixer clock, and events (`VoiceFinished` included) carry their true samples. A source short of those frames underruns as usual.
+  - Each voice plays on under its own `catch_unwind`: a panic there costs nothing more, that voice stays where it got to (up to a block late), and the next block blames it if its render is what is broken.
+  - Commands dated inside the faulted block apply at the start of the next block.
 - A start that never reached the pool, or a voice that left the pool inside `finish` before being reported, is still reported as `VoiceFinished { Faulted }`.
 - `StageFaulted { stage, at, disabled }` is counted in `faulted_stages` just before it is queued.
 - A disabled unit is also published as bits in preallocated atomics (`MixerController::disabled_units`: `u64` masks of patches, outputs, master, meters; cleared by a rebuild), so a report lost to a full event queue is still found.
@@ -119,7 +123,8 @@ If the event queue is full, `UnderrunEnded` is sent again each block until taken
 - **Frozen while paused.** Silence after the tail (and any kept tails, see the edge cases), reads nothing, no underrun, no events. Gain ramps, the stop fade and integrated fades freeze; the tail uses the gains the voice had on P. After the resume each ramp completes its remaining frames and a running stop fade ends R - P later.
 - **Edge cases.**
   - A voice paused on its start sample (nothing heard) gets no tail and no fade-in; it plays as if started on R.
-  - A resume during the tail (R < P+D) crossfades: the rest of the tail keeps playing while frame P fades in, so for a few ms two nearby stretches overlap. The resume copies the rest of the tail into the voice's kept-tail buffer (`xbuf`, D frames per channel) at the declick gain and integrated fade envelope its own frames have; from then on it is added to the voice's input one frame per sample and shares only the gains that move (master, duck, stop fade, cue outputs, crosspoints). On those samples the voice's own envelope multiplies its input instead of its gain.
+  - A resume during the tail (R < P+D) crossfades: the rest of the tail keeps playing while frame P fades in, so for a few ms two nearby stretches overlap.
+  - The resume copies the rest of the tail into the voice's kept-tail buffer (`xbuf`, D frames per channel) at the declick gain and integrated fade envelope its own frames have. From then on it is added to the voice's input one frame per sample and shares only the gains that move (master, duck, stop fade, cue outputs, crosspoints). On those samples the voice's own envelope multiplies its input instead of its gain.
   - Any number of pauses and resumes inside one tail: each resume adds the tail it cuts short to the kept-tail buffer, and a pause leaves the buffer playing (at the frozen gains) beside its new tail. No tail is ever cut, so the output steps by no more than the declick slopes of the tails sounding together (tested on a steady signal: one slope, 1/D, for a single tail).
   - Pause and resume on the same sample before any tail played change nothing audible.
   - Still a cut, by design: a `StopVoice` without a fade on a playing voice, kept tails included.

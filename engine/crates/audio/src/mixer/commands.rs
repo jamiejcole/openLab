@@ -355,7 +355,7 @@ impl Mixer {
         };
         let free = self.voices.iter_mut().find(|v| !v.is_active());
         match (reject, free) {
-            (None, Some(v)) => v.begin(s, &self.outbox.shared.meters),
+            (None, Some(v)) => v.begin(s, t, &self.outbox.shared.meters),
             (reason, _) => {
                 let voice = s.voice;
                 self.outbox.give_back(s);
