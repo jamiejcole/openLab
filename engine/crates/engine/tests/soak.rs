@@ -104,7 +104,7 @@ impl Driver for Offline {
         let end = self.s.rendered() + BLOCK;
         let mut stalls = 0;
         for (handle, needed) in self.s.control().stream_needs(end) {
-            if !matches!(handle.wait_written(needed, SETTLE), Ok(true) | Err(_)) {
+            if !matches!(handle.wait_fed(needed, SETTLE), Ok(true) | Err(_)) {
                 stalls += 1;
             }
         }

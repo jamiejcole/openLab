@@ -735,7 +735,7 @@ impl DeviceShow {
                 "a disk worker never saw a devamp"
             );
             assert!(
-                matches!(handle.wait_written(needed, WAIT), Ok(true) | Err(_)),
+                matches!(handle.wait_fed(needed, WAIT), Ok(true) | Err(_)),
                 "a disk worker stalled"
             );
         }

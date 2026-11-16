@@ -373,7 +373,7 @@ impl Control {
             if !matches!(handle.wait_cut_seen(timeout), Ok(true) | Err(_)) {
                 stalls += 1;
             }
-            if !matches!(handle.wait_written(needed, timeout), Ok(true) | Err(_)) {
+            if !matches!(handle.wait_fed(needed, timeout), Ok(true) | Err(_)) {
                 stalls += 1;
             }
         }
