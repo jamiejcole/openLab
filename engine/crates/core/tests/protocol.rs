@@ -647,15 +647,41 @@ fn fixtures() -> Vec<(String, Sample)> {
         *slices = vec![
             SliceMarker {
                 time: 0.5,
-                play_count: 3,
+                play_count: 3.into(),
             },
             SliceMarker {
                 time: 1.0,
-                play_count: 1,
+                play_count: 1.into(),
             },
         ];
-        *last_slice_play_count = 2;
+        *last_slice_play_count = 2.into();
     }
+    // The three ways a slice plays, as they are written: a count, 0 for "until devamped" and
+    // "skip" for a slice that is not played.
+    let mut counted = timed.clone();
+    if let CueKind::Audio { slices, .. } = &mut counted {
+        *slices = vec![
+            SliceMarker {
+                time: 0.5,
+                play_count: PlayCount::Skip,
+            },
+            SliceMarker {
+                time: 1.0,
+                play_count: PlayCount::Endless,
+            },
+        ];
+    }
+    add(
+        "command_set_slice_play_counts",
+        client(ClientMessage::Command {
+            id: rid(3),
+            command: Box::new(Command::SetCueProperty {
+                id: cue_id(10),
+                property: CueProperty::Kind { value: counted },
+            }),
+            coalesce: None,
+        }),
+    );
     add(
         "command_set_audio_timing",
         client(ClientMessage::Command {
@@ -2151,6 +2177,39 @@ fn defaults_fill_optional_fields() {
     );
 }
 
+/// A play count that is none of a number of plays, 0 or "skip" is refused when the message is
+/// decoded, on every command that carries a cue (a whole kind, an added cue, a paste): it never
+/// reaches the model as some other count.
+#[test]
+fn a_bad_play_count_is_refused_on_every_command_that_carries_a_cue() {
+    for name in [
+        "command_set_slice_play_counts",
+        "command_add_cue",
+        "command_paste_clipboard",
+    ] {
+        let path = fixture_dir().join(format!("client/{name}.json"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(decode_client(&text).is_ok(), "{name}");
+        let (last, _) = text
+            .split_once("\"last_slice_play_count\": ")
+            .unwrap_or_else(|| panic!("{name} carries no play count"));
+        let rest = &text[last.len() + "\"last_slice_play_count\": ".len()..];
+        let (_, rest) = rest.split_once(',').unwrap();
+        for (value, ok) in [
+            ("\"skip\"", true),
+            ("0", true),
+            ("-1", false),
+            ("2.5", false),
+            ("4294967296", false),
+            ("\"loop\"", false),
+            ("null", false),
+        ] {
+            let edited = format!("{last}\"last_slice_play_count\": {value},{rest}");
+            assert_eq!(decode_client(&edited).is_ok(), ok, "{name}: {value}");
+        }
+    }
+}
+
 #[test]
 fn malformed_input_is_an_error_never_a_panic() {
     let deep = format!("{}{}", "[".repeat(100_000), "]".repeat(100_000));
@@ -2908,7 +2967,7 @@ fn wire_warning_idx(w: &WireWarning) -> usize {
     }
 }
 
-const ENGINE_PROBLEM_COUNT: usize = 18;
+const ENGINE_PROBLEM_COUNT: usize = 19;
 fn engine_problem_idx(p: &CueProblem) -> usize {
     match p {
         CueProblem::NoTarget => 0,
@@ -2929,6 +2988,7 @@ fn engine_problem_idx(p: &CueProblem) -> usize {
         CueProblem::NoStage => 15,
         CueProblem::StageMissing { .. } => 16,
         CueProblem::NoPatch => 17,
+        CueProblem::NothingPlays => 18,
     }
 }
 
@@ -2952,6 +3012,7 @@ fn wire_problem_idx(p: &WireProblem) -> usize {
         WireProblem::NoStage => 15,
         WireProblem::StageMissing { .. } => 16,
         WireProblem::NoPatch => 17,
+        WireProblem::NothingPlays => 18,
     }
 }
 
@@ -3305,6 +3366,7 @@ fn problem_table() -> Vec<(CueProblem, WireProblem)> {
             },
         ),
         (CueProblem::StartedBroken, WireProblem::StartedBroken),
+        (CueProblem::NothingPlays, WireProblem::NothingPlays),
         (CueProblem::NoStage, WireProblem::NoStage),
         (CueProblem::NoPatch, WireProblem::NoPatch),
         (

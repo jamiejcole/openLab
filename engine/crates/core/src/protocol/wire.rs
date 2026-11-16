@@ -176,6 +176,8 @@ pub enum WireProblem {
     SlicesUnplayable {
         reason: String,
     },
+    /// Every slice inside the cue's trims is skipped: no part of its file plays.
+    NothingPlays,
     StartedBroken,
     /// A Video cue whose stage is "none".
     NoStage,
@@ -222,6 +224,7 @@ impl From<&CueProblem> for WireProblem {
             CueProblem::SlicesUnplayable { reason } => Self::SlicesUnplayable {
                 reason: reason.clone(),
             },
+            CueProblem::NothingPlays => Self::NothingPlays,
             CueProblem::StartedBroken => Self::StartedBroken,
             CueProblem::NoStage => Self::NoStage,
             CueProblem::StageMissing { stage } => Self::StageMissing { stage: *stage },

@@ -738,7 +738,10 @@ fn audio_parts(ws: &Workspace, n: u128) -> (CueLevels, Vec<SliceMarker>) {
 }
 
 fn slice(time: f64, play_count: u32) -> SliceMarker {
-    SliceMarker { time, play_count }
+    SliceMarker {
+        time,
+        play_count: play_count.into(),
+    }
 }
 
 #[test]
@@ -1169,7 +1172,7 @@ fn invalid_audio_times_and_levels_are_clamped() {
         fade_in.duration = f64::NAN;
         slices.push(SliceMarker {
             time: -3.0,
-            play_count: 2,
+            play_count: 2.into(),
         });
         levels.master_db = f64::NAN;
         levels.outputs = [f64::INFINITY, 20.0, -200.0, f64::NEG_INFINITY, -6.0]

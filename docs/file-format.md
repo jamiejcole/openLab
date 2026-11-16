@@ -66,6 +66,8 @@ cue, and the cue shows as broken where it cannot run.
 | An empty `number` (`""`) | Treated as `null`, no warning |
 | A target that does not exist, targets the cue itself, or is the wrong kind of cue | Warning; the target is kept and the cue shows as broken |
 | An Audio cue's `patch` or a Network cue's `destination` does not exist | Warning; the cue shows as broken |
+| A play count (§5) that is not a whole number 0 to 4294967295 or `"skip"` | Refused (wrong type) |
+| Every slice of an Audio or Video cue inside its trims has the play count `"skip"` | Loads as it is, no warning; the cue shows as broken (`nothing_plays`) once its file is read |
 | A Video cue's `stage` does not exist | Warning (`StageMissing`); kept, and the cue shows as broken. A `stage` of `null` ("none") loads quietly and the cue shows as broken |
 | A Video cue's geometry number outside its range (§5 `video`) | Warning (`InvalidValue`, the field); clamped. A `layer` that is not a whole number 0 to 65535 refuses the file (wrong type) |
 | A time below its minimum or above its maximum (24 h unless stated) | Warning; clamped |
@@ -244,13 +246,15 @@ Option on macOS).
 | `start_time` | seconds | Trim in point, from the start of the file. |
 | `end_time` | seconds or `null` | Trim out point; `null` = end of file. Must be at least 50 ms after `start_time`. |
 | `fade_in`, `fade_out` | fade spec | Fades built into the cue. |
-| `slices` | array of `{"time", "play_count"}` | Slice markers in increasing time order, seconds from the start of the file, strictly between the trim points, each slice at least 50 ms long. Each marker ends a slice; that slice plays `play_count` times. `0` = loop until devamped. |
-| `last_slice_play_count` | integer | Play count of the slice after the last marker (or of the whole file when there are none). `0` = loop until devamped. |
+| `slices` | array of `{"time", "play_count"}` | Slice markers in increasing time order, seconds from the start of the file, strictly between the trim points, each slice at least 50 ms long. Each marker ends a slice; `play_count` says how that slice plays (below). |
+| `last_slice_play_count` | play count | How the slice after the last marker plays (the whole file when there are none). |
 | `levels.master_db` | level | Cue master. |
 | `levels.outputs` | array of `{"db": level, "mute": bool}` | One per cue output, at most 128. Cue output `i` feeds output `i` of the patch; outputs beyond the patch's are silent but kept. |
 | `levels.crosspoints` | array of crosspoints | Routing matrix from file channels to cue outputs. Sparse: a crosspoint not listed is silent. Each input/output pair appears at most once. |
 | `levels.gangs` | array of arrays of cue output indices | Outputs in the same set move together when edited. An output is in at most one gang. |
 | `preload` | bool | Decode the whole file into memory when the cue loads. |
+
+**Play count** (`play_count`, `last_slice_play_count`): a whole number from 1 to 4294967295 = the slice plays that many times in a row; the number `0` = it loops until devamped or stopped; the string `"skip"` = it is not played, and playback goes from the end of the slice before it straight to the start of the next slice that plays (QLab 5 manual p. 179). The stored `0` is not the 0 a user types for a skipped slice: it is what "until devamped" has always been written as, so a show saved before slices could be skipped means what it meant. Any other value (a negative or fractional number, another string, `null`) is a model error: the file is refused (§3), and an edit carrying it is refused. A cue every slice of which inside its trims is skipped loads and saves as it is and shows broken (`nothing_plays`, docs/protocol.md).
 
 **`fade`** — moves a target's levels: an Audio cue's **to** its values (absolute), each audio cue in a Group **by** them (relative, capped at +12 dB).
 
@@ -309,7 +313,7 @@ manual p. 209). A video's length is not stored; it comes from the file.
 | `opacity` | 0 to 1 | 1 is opaque; the file's own transparency is kept. |
 | `layer` | whole number 0 to 1000 | Stacking among the cues on its stage: higher on top; on one layer the later-started on top. |
 | `smooth` | bool | Smooth scaling; `false` is nearest-neighbour (hard pixel edges). |
-| `start_time`, `end_time`, `fade_in`, `fade_out`, `slices`, `last_slice_play_count` | as `audio` | Time and loops (VID-07, QLab 5 manual p. 214), stored, loaded and checked exactly as an Audio cue's fields of the same names (trims, slice markers, play counts, `0` looping until devamped). Used by a video file; a still ignores them. The fades are of the picture's opacity: in from the action's start, out to its end (none while it loops for ever). |
+| `start_time`, `end_time`, `fade_in`, `fade_out`, `slices`, `last_slice_play_count` | as `audio` | Time and loops (VID-07, QLab 5 manual p. 214), stored, loaded and checked exactly as an Audio cue's fields of the same names (trims, slice markers, play counts). Used by a video file; a still ignores them. The fades are of the picture's opacity: in from the action's start, out to its end (none while it loops for ever). |
 | `hold_at_end` | bool | At the last frame the picture stays up and the cue stays active until it is stopped; `false`: the cue ends there and its picture leaves the stage. |
 | `patch` | patch id or `null` | Sound (VID-06, QLab 5 manual pp. 211-212): the output patch (§4.4) the movie's audio track plays on. `null` is "none". Used only when the file has an audio track: such a cue with `null`, a patch the workspace lacks or a patch with no device is broken, and a file without sound (or a still) is never broken by it. A patch the workspace lacks warns `PatchMissing` on load, as an Audio cue's. |
 | `levels` | as `audio` | The sound's levels and routing (AUD-06), stored, loaded and checked exactly as an Audio cue's `levels` (file channels are those of the chosen audio track). Kept when the file has no sound. |

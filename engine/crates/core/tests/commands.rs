@@ -345,7 +345,7 @@ fn add_refuses_bad_slices_and_hotkeys() {
     if let CueKind::Audio { slices, .. } = &mut kind {
         slices.push(SliceMarker {
             time: f64::NAN,
-            play_count: 1,
+            play_count: 1.into(),
         });
     }
     assert!(matches!(
@@ -1057,13 +1057,76 @@ fn kind_fields_keep_the_kind_fields_not_named() {
             ..
         } => {
             assert_eq!((start_time, end_time), (0.5, Some(2.0)));
-            assert_eq!(last_slice_play_count, 4);
+            assert_eq!(last_slice_play_count, 4.into());
         }
         other => panic!("{other:?}"),
     }
     ws.apply(inverse).unwrap();
     assert_eq!(ws, before, "undo restores the kind");
     assert_clean(&ws);
+}
+
+/// A play count set by an edit of the kind's fields (what the app's count field sends) is a
+/// count, until devamped or skipped; a value that is none of them is refused and the cue keeps
+/// what it had. Every slice skipped is accepted: the cue is then broken, not the edit.
+#[test]
+fn kind_fields_set_a_play_count_to_a_number_endless_or_skip_and_refuse_the_rest() {
+    let mut ws = workspace(vec![cue(1, audio())]);
+    ws.apply(set(1, fields(serde_json::json!({ "end_time": 2.0 }))))
+        .unwrap();
+    let counts = |ws: &Workspace| match kind_of(ws, 1) {
+        CueKind::Audio {
+            slices,
+            last_slice_play_count,
+            ..
+        } => (
+            slices.iter().map(|m| m.play_count).collect::<Vec<_>>(),
+            last_slice_play_count,
+        ),
+        other => panic!("{other:?}"),
+    };
+    for (stored, value) in [
+        (serde_json::json!(3), PlayCount::from_stored(3)),
+        (serde_json::json!(0), PlayCount::Endless),
+        (serde_json::json!("skip"), PlayCount::Skip),
+    ] {
+        let before = ws.clone();
+        let inverse = ws
+            .apply(set(
+                1,
+                fields(serde_json::json!({
+                    "slices": [{ "time": 1.0, "play_count": stored }],
+                    "last_slice_play_count": stored,
+                })),
+            ))
+            .unwrap();
+        assert_eq!(counts(&ws), (vec![value], value), "{stored}");
+        assert_clean(&ws);
+        ws.apply(inverse).unwrap();
+        assert_eq!(ws, before, "{stored}: undo");
+    }
+    let before = ws.clone();
+    for bad in [
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!(4_294_967_296u64),
+        serde_json::json!("loop"),
+        serde_json::Value::Null,
+    ] {
+        for edit in [
+            serde_json::json!({ "last_slice_play_count": bad }),
+            serde_json::json!({ "slices": [{ "time": 1.0, "play_count": bad }] }),
+        ] {
+            assert!(
+                matches!(
+                    refused(&mut ws, set(1, fields(edit.clone()))),
+                    CommandError::InvalidValue(_)
+                ),
+                "{edit}"
+            );
+            assert_eq!(ws, before, "{edit}");
+        }
+    }
 }
 
 #[test]

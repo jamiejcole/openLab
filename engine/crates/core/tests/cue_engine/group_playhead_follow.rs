@@ -244,9 +244,12 @@ fn sliced(start: f64, end: f64, marks: &[(f64, u32)]) -> CueKind {
         *end_time = Some(end);
         *slices = marks
             .iter()
-            .map(|&(time, play_count)| SliceMarker { time, play_count })
+            .map(|&(time, play_count)| SliceMarker {
+                time,
+                play_count: play_count.into(),
+            })
             .collect();
-        *last_slice_play_count = 1;
+        *last_slice_play_count = 1.into();
     }
     kind
 }
@@ -460,7 +463,7 @@ fn leaving_a_start_first_group_that_never_ran_stands_on_its_continue_target() {
 /// A slice marker as `(time, play count)`.
 type Mark = (f64, u32);
 
-fn audio_of(ws: &Workspace) -> (Option<f64>, Vec<(f64, u32)>, u32) {
+fn audio_of(ws: &Workspace) -> (Option<f64>, Vec<(f64, PlayCount)>, PlayCount) {
     match &ws.cue_lists[0].cues[0].kind {
         CueKind::Audio {
             end_time,
@@ -537,7 +540,8 @@ fn repair_keeps_a_short_trim_and_the_loops_it_merges() {
             )),
             "{issues:?}"
         );
-        assert_eq!(audio_of(&ws), (Some(2.0), kept, last), "{marks:?}");
+        let kept: Vec<(f64, PlayCount)> = kept.into_iter().map(|(t, n)| (t, n.into())).collect();
+        assert_eq!(audio_of(&ws), (Some(2.0), kept, last.into()), "{marks:?}");
         let text = save_show(&ws).unwrap();
         assert_eq!(load_show(&text).unwrap().workspace, ws);
         assert!(validate(&ws).is_empty(), "{marks:?}: {:?}", validate(&ws));

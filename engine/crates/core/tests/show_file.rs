@@ -714,6 +714,69 @@ fn v1_migration_overrides_hand_edited_second_trigger_keys() {
     ));
 }
 
+/// A slice's play count is stored as a number (0: until devamped) or `"skip"`, the two apart;
+/// the example holds all three and saves back to the same text. Anything else is refused as a
+/// model error, never taken for one of them.
+#[test]
+fn play_counts_are_stored_as_a_number_or_skip_and_anything_else_is_refused() {
+    for (text, value) in [
+        ("3", PlayCount::from_stored(3)),
+        ("1", PlayCount::ONCE),
+        ("0", PlayCount::Endless),
+        ("4294967295", PlayCount::from_stored(u32::MAX)),
+        ("\"skip\"", PlayCount::Skip),
+    ] {
+        assert_eq!(serde_json::to_string(&value).unwrap(), text);
+        assert_eq!(serde_json::from_str::<PlayCount>(text).unwrap(), value);
+    }
+    let loaded = load_show(EXAMPLE).unwrap().workspace;
+    let mut counts = Vec::new();
+    for list in &loaded.cue_lists {
+        walk(&list.cues, &mut |cue| match &cue.kind {
+            CueKind::Audio { slices, .. } => counts.extend(slices.iter().map(|m| m.play_count)),
+            CueKind::Video { timing, .. } => {
+                counts.extend(timing.slices.iter().map(|m| m.play_count));
+            }
+            _ => {}
+        });
+    }
+    for state in [PlayCount::ONCE, PlayCount::Endless, PlayCount::Skip] {
+        assert!(counts.contains(&state), "{state:?} in the example");
+    }
+    let skipped = "\"play_count\": \"skip\"";
+    assert!(EXAMPLE.contains(skipped));
+    assert!(save_show(&loaded).unwrap().contains(skipped));
+    for bad in [
+        "-1",
+        "1.5",
+        "1e3",
+        "4294967296",
+        "\"loop\"",
+        "\"Skip\"",
+        "\"\"",
+        "null",
+        "true",
+        "[]",
+        "{}",
+    ] {
+        assert!(serde_json::from_str::<PlayCount>(bad).is_err(), "{bad}");
+        let text = EXAMPLE.replacen(skipped, &format!("\"play_count\": {bad}"), 1);
+        assert!(
+            matches!(load_show(&text), Err(LoadError::Model(_))),
+            "{bad}"
+        );
+        let text = EXAMPLE.replacen(
+            "\"last_slice_play_count\": 1",
+            &format!("\"last_slice_play_count\": {bad}"),
+            1,
+        );
+        assert!(
+            matches!(load_show(&text), Err(LoadError::Model(_))),
+            "{bad}"
+        );
+    }
+}
+
 #[test]
 fn second_trigger_values_are_snake_case_and_unknown_ones_refused() {
     for (name, value) in [
@@ -977,6 +1040,14 @@ fn crosspoint() -> impl Strategy<Value = Crosspoint> {
     })
 }
 
+/// Any play count: a number of plays (0: until devamped) or a skipped slice.
+fn play_count() -> impl Strategy<Value = PlayCount> {
+    prop_oneof![
+        3 => any::<u32>().prop_map(PlayCount::from_stored),
+        1 => Just(PlayCount::Skip),
+    ]
+}
+
 fn audio_kind() -> impl Strategy<Value = CueKind> {
     let outputs = vec(
         (level(), any::<bool>()).prop_map(|(db, mute)| CueOutput { db, mute }),
@@ -995,7 +1066,7 @@ fn audio_kind() -> impl Strategy<Value = CueKind> {
             gangs,
         });
     let slices = vec(
-        (time(), any::<u32>()).prop_map(|(time, play_count)| SliceMarker { time, play_count }),
+        (time(), play_count()).prop_map(|(time, play_count)| SliceMarker { time, play_count }),
         0..4,
     );
     (
@@ -1005,7 +1076,7 @@ fn audio_kind() -> impl Strategy<Value = CueKind> {
         option::of(time()),
         (fade_spec(), fade_spec()),
         slices,
-        any::<u32>(),
+        play_count(),
         levels,
         any::<bool>(),
     )
@@ -1618,7 +1689,7 @@ fn a_show_with_too_many_slice_markers_loads_with_the_extras_removed() {
         *slices = (1..=MAX_SLICE_MARKERS + 1)
             .map(|i| SliceMarker {
                 time: i as f64,
-                play_count: 1,
+                play_count: 1.into(),
             })
             .collect();
     }

@@ -120,7 +120,7 @@ impl Voices {
         };
         let (slices, shown) = match planned {
             Ok(s) => s,
-            Err(PlanFailure::Plan(e)) => {
+            Err(e) => {
                 fx.notices.push((
                     "bad_plan",
                     format!("the cue's slices cannot be played: {e}"),

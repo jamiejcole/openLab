@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A Video cue's time and loops (VID-07; QLab 5 manual p. 214: as an Audio cue's, plus hold at
-//! end): start and end trims, slice markers with play counts (0 loops until devamped), the
+//! end): start and end trims, slice markers with play counts (a number of times, until devamped, or skipped), the
 //! integrated fade in and out, and whether the last frame stays up when the picture ends.
 //!
 //! Stored in the Video cue's kind (file format §5, the same field names as an Audio cue's).
@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cue::{FadeCurve, FadeSpec, MAX_TIME, SliceMarker};
+use crate::cue::{FadeCurve, FadeSpec, MAX_TIME, PlayCount, SliceMarker};
 use crate::cue_engine::curve_shape;
 
 /// A Video cue's time and loops, stored as fields of its kind; a field missing from a file is
@@ -30,8 +30,8 @@ pub struct VideoTiming {
     pub fade_out: FadeSpec,
     /// Slice markers, as an Audio cue's.
     pub slices: Vec<SliceMarker>,
-    /// Play count of the slice after the last marker; 0 = loop until devamped.
-    pub last_slice_play_count: u32,
+    /// How the slice after the last marker plays.
+    pub last_slice_play_count: PlayCount,
     /// At its last frame the picture stays up and the cue stays active until stopped; off, the
     /// cue ends there and its picture leaves the stage.
     pub hold_at_end: bool,
@@ -49,7 +49,7 @@ impl Default for VideoTiming {
             fade_in: none,
             fade_out: none,
             slices: Vec::new(),
-            last_slice_play_count: 1,
+            last_slice_play_count: PlayCount::ONCE,
             hold_at_end: false,
         }
     }

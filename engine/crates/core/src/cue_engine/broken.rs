@@ -24,7 +24,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::changes::Footprint;
-use crate::cue::{Cue, CueKind, MediaRef};
+use crate::cue::{Cue, CueKind, MediaRef, PlayCount};
 use crate::cue_index::{CueContainer, CueIndex, IndexChange, IndexDelta};
 use crate::model::{CueId, NetworkPatch, NetworkPatchId, PatchId, StageId, Workspace};
 use crate::network::{HostKind, check_endpoint, check_message};
@@ -32,7 +32,7 @@ use crate::settings::PatchResolution;
 use crate::validate::can_target;
 
 use super::run::{Lost, Slot};
-use super::types::{Action, BrokenReason, CueProblem, MediaStatus};
+use super::types::{Action, BrokenReason, CueProblem, MediaStatus, SliceProblem};
 use super::{Ctx, CueEngine};
 
 /// Shown for a cue whose problems were fixed while the run it was started broken with is still
@@ -91,8 +91,8 @@ struct PlanKey {
     media: Option<MediaRef>,
     start: u64,
     end: Option<u64>,
-    marks: Vec<(u64, u32)>,
-    last: u32,
+    marks: Vec<(u64, PlayCount)>,
+    last: PlayCount,
 }
 
 impl PlanKey {
@@ -180,7 +180,7 @@ pub(super) struct Problems {
     /// and the plan inputs the cue had when it was reported ([`PlanKey`]): the report counts
     /// only while the cue still has them. Kept by cue id as reported, like `media`: the binary
     /// tells `None` for a cue it stops tracking (gone, another file, not probed).
-    slices: BTreeMap<CueId, (String, PlanKey)>,
+    slices: BTreeMap<CueId, (SliceProblem, PlanKey)>,
     /// Every cue that has problems, with them.
     current: BTreeMap<CueId, Vec<CueProblem>>,
     /// Cues shown with [`CueProblem::StartedBroken`].
@@ -770,7 +770,11 @@ impl CueEngine {
 
     /// Records which Audio and Video cues' slices the binary found unplayable (and which no longer are),
     /// and recomputes the problems of those cues only.
-    pub(super) fn slice_problems(&mut self, cues: Vec<(CueId, Option<String>)>, cx: &mut Ctx) {
+    pub(super) fn slice_problems(
+        &mut self,
+        cues: Vec<(CueId, Option<SliceProblem>)>,
+        cx: &mut Ctx,
+    ) {
         let p = &mut self.problems;
         let mut changed = BTreeSet::new();
         for (cue, reason) in cues {
@@ -917,12 +921,10 @@ fn combine(cue: CueId, f: &Facts, p: &Problems) -> Vec<CueProblem> {
                 // Slices are planned against the file's probe: a file that is missing or
                 // cannot be played has no slices to judge.
                 Some(MediaStatus::Available | MediaStatus::Unknown) | None => {
-                    if let Some((reason, key)) = p.slices.get(&cue)
+                    if let Some((problem, key)) = p.slices.get(&cue)
                         && *key == a.plan
                     {
-                        found.push(CueProblem::SlicesUnplayable {
-                            reason: reason.clone(),
-                        });
+                        found.push(problem.problem());
                     }
                 }
             },
@@ -946,12 +948,10 @@ fn combine(cue: CueId, f: &Facts, p: &Problems) -> Vec<CueProblem> {
             Some(problem) => found.push(problem),
             // As an Audio cue's: judged only against a file that plays.
             None => {
-                if let Some((reason, key)) = p.slices.get(&cue)
+                if let Some((problem, key)) = p.slices.get(&cue)
                     && v.plan.as_ref() == Some(key)
                 {
-                    found.push(CueProblem::SlicesUnplayable {
-                        reason: reason.clone(),
-                    });
+                    found.push(problem.problem());
                 }
             }
         }

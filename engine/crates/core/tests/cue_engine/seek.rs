@@ -513,7 +513,7 @@ fn a_pending_devamp_goes_to_the_moved_voice() {
         ..
     } = &mut loop_cue.kind
     {
-        *last_slice_play_count = 0;
+        *last_slice_play_count = 0.into();
     }
     let devamp = cue(
         2,
@@ -761,7 +761,7 @@ fn devamped_loop() -> Rig {
         ..
     } = &mut loop_cue.kind
     {
-        *last_slice_play_count = 0;
+        *last_slice_play_count = 0.into();
     }
     let devamp = cue(
         3,

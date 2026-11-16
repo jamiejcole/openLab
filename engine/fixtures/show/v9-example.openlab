@@ -992,6 +992,10 @@
                 {
                   "time": 4.0,
                   "play_count": 0
+                },
+                {
+                  "time": 6.0,
+                  "play_count": "skip"
                 }
               ],
               "last_slice_play_count": 1,

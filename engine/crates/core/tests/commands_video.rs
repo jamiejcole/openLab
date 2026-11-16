@@ -526,12 +526,12 @@ fn time_and_loops_fields_are_set_undone_and_redone() {
         .unwrap();
     let t = timing(&ws, 1);
     assert_eq!((t.start_time, t.end_time), (1.0, Some(3.0)));
-    assert_eq!(t.last_slice_play_count, 0);
+    assert_eq!(t.last_slice_play_count, PlayCount::Endless);
     assert_eq!(
         t.slices,
         vec![SliceMarker {
             time: 2.0,
-            play_count: 2
+            play_count: 2.into()
         }]
     );
     assert_eq!(t.fade_in.curve, FadeCurve::SCurve);

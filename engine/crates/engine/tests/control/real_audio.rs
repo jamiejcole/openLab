@@ -22,7 +22,7 @@ use openlab_core::protocol::{
 };
 use openlab_core::{
     Command, ContinueMode, Crosspoint, Cue, CueKind, CueLevels, CueProperty, CueState, FadeCurve,
-    FadeLevels, FadeSpec, GroupMode, MediaRef, SILENCE_DB, Workspace, db_to_gain,
+    FadeLevels, FadeSpec, GroupMode, MediaRef, PlayCount, SILENCE_DB, Workspace, db_to_gain,
 };
 use openlab_engine::control::offline::OfflineShow;
 
@@ -1064,6 +1064,402 @@ fn slices_play_their_counts_sample_exact_under_the_integrated_fades() {
     );
     assert!(out[at + len..].iter().all(|&v| v == 0.0));
     assert_eq!(state(&s, 10), CueState::Idle);
+}
+
+const ONCE: PlayCount = PlayCount::ONCE;
+const SKIP: PlayCount = PlayCount::Skip;
+
+/// The file frame each output sample from `at` names, for a cue playing [`index_wav`] at full
+/// level (`None`: silence, or frame 0).
+fn frames_heard(out: &[f32], at: usize, n: usize) -> Vec<usize> {
+    out[at..at + n]
+        .iter()
+        .map(|&v| (f64::from(v) * 8_388_608.0).round() as usize)
+        .collect()
+}
+
+/// Asserts the samples from `at` are exactly the file frames of `ranges` one after another
+/// (so a join between two ranges has no gap, repeat or other sample), then silence.
+fn assert_plays(s: &OfflineShow, at: usize, ranges: &[std::ops::Range<usize>], what: &str) {
+    let want: Vec<usize> = ranges.iter().cloned().flatten().collect();
+    let out = s.channel(0);
+    let got = frames_heard(&out, at, want.len());
+    if let Some(p) = (0..want.len()).find(|&p| got[p] != want[p]) {
+        panic!(
+            "{what}: sample {p} is file frame {}, want {}",
+            got[p], want[p]
+        );
+    }
+    assert!(
+        out[at + want.len()..].iter().all(|&v| v == 0.0),
+        "{what}: silence after the last slice"
+    );
+}
+
+/// The lengths clients are told for cue `n`: one pass and the whole action, seconds.
+fn lengths_told(s: &OfflineShow, n: u128) -> (Option<f64>, Option<f64>) {
+    let all = s.control().snapshot().media_durations;
+    let d = all.iter().find(|d| d.cue == id(n)).expect("no lengths");
+    (d.trimmed, d.duration)
+}
+
+/// Two seconds of [`index_wav`] cut at 0.5 s and 1 s into three slices played as `counts`,
+/// streamed from disk or preloaded.
+fn three_slices(n: u128, counts: [PlayCount; 3], preloaded: bool) -> Cue {
+    let path = index_wav(2 * R48 as usize);
+    let mut c = with_counts(
+        audio(n, &path, 0),
+        &[(0.5, counts[0]), (1.0, counts[1])],
+        counts[2],
+    );
+    if let CueKind::Audio { preload, .. } = &mut c.kind {
+        *preload = preloaded;
+    }
+    c
+}
+
+/// The ways cue `n`'s three slices play become `counts`, by the edit the app's count field
+/// sends: the kind's `slices` and `last_slice_play_count` alone.
+fn set_counts(s: &mut OfflineShow, n: u128, counts: [PlayCount; 3]) {
+    let fields = serde_json::json!({
+        "slices": [
+            { "time": 0.5, "play_count": counts[0] },
+            { "time": 1.0, "play_count": counts[1] },
+        ],
+        "last_slice_play_count": counts[2],
+    });
+    command(
+        s,
+        &format!(
+            r#"{{"type":"set_cue_property","id":"{}","property":{{"type":"kind_fields","value":{fields}}}}}"#,
+            uuid(n)
+        ),
+    );
+}
+
+/// Flow: a count of 0 skips the slice. The sound goes from the last frame of the slice before
+/// the skipped one straight to the first frame of the slice after it, sample-exact, from disk
+/// and from memory; the cue's length is what plays.
+#[test]
+fn a_count_of_0_skips_the_slice() {
+    for preloaded in [false, true] {
+        let what = format!("preloaded {preloaded}");
+        let c = three_slices(10, [ONCE, ONCE, ONCE], preloaded);
+        let mut s = app_show(std::slice::from_ref(&c), R48);
+        assert_eq!(lengths_told(&s, 10), (Some(2.0), Some(2.0)), "{what}");
+        set_counts(&mut s, 10, [ONCE, SKIP, ONCE]);
+        assert_eq!(state(&s, 10), CueState::Idle, "{what}");
+        assert_eq!(lengths_told(&s, 10), (Some(1.5), Some(1.5)), "{what}");
+        let at = go_app(&mut s);
+        s.run(2 * u64::from(R48));
+        assert_plays(&s, at, &[0..24_000, 48_000..96_000], &what);
+        assert_eq!(state(&s, 10), CueState::Idle, "{what}");
+        assert_eq!(s.stalls(), 0, "{what}");
+    }
+}
+
+/// A skipped slice on a device at another rate than the file's (the stream resamples and seeks
+/// over the slice): the join has no click. The tone's skipped half second is a whole number of
+/// its periods, so the wave goes on unbroken: no step between two samples is bigger than the
+/// tone's own steepest, and what plays is as long as the two slices.
+#[test]
+fn a_skipped_slice_is_joined_without_a_click_when_the_file_is_resampled() {
+    let path = tone_file("skip-48.wav", R48, 1.0, false, Pcm::I24);
+    let mut c = stereo(1, &path);
+    if let CueKind::Audio {
+        slices,
+        last_slice_play_count,
+        ..
+    } = &mut c.kind
+    {
+        *slices = vec![
+            openlab_core::SliceMarker {
+                time: 0.25,
+                play_count: ONCE,
+            },
+            openlab_core::SliceMarker {
+                time: 0.75,
+                play_count: SKIP,
+            },
+        ];
+        *last_slice_play_count = ONCE;
+    }
+    let mut s = app_show(&[c], R44);
+    let at = go_app(&mut s);
+    s.run(u64::from(R44));
+    let l = s.channel(0);
+    let end = last_nonzero(&l).unwrap() + 1;
+    let len = end as i64 - at as i64;
+    assert!((len - 22_050).abs() <= 2, "played {len} frames, want 22050");
+    // 440 Hz at 0.5: at most 0.5 * 2 * pi * 440 / 44100 between two samples.
+    let steepest = 0.5 * std::f64::consts::TAU * 440.0 / f64::from(R44);
+    let join = at + 11_025;
+    for i in join - 400..join + 400 {
+        let step = f64::from(l[i + 1] - l[i]).abs();
+        assert!(
+            step <= steepest * 1.02,
+            "a step of {step} at sample {} (the join is at {join})",
+            i + 1
+        );
+    }
+    let w = join - 4410..join + 4410;
+    close(
+        media::frequency(&l[w.clone()], R44),
+        440.0,
+        0.05,
+        "Hz across the join",
+    );
+    close(rms_db(&l[w]), tone_db().0, 0.02, "dB across the join");
+    assert_eq!(s.stalls(), 0);
+}
+
+/// A play count changed while the cue plays does not touch the voice that is sounding: it plays
+/// on, sample for sample, with the plan it started with (every slice skipped included: the cue
+/// is not cut off). The new counts are for the next start.
+#[test]
+fn a_count_changed_while_the_cue_plays_leaves_the_sound_under_way_as_it_was() {
+    let c = three_slices(10, [ONCE, ONCE, ONCE], false);
+    let mut s = app_show(std::slice::from_ref(&c), R48);
+    let at = go_app(&mut s);
+    s.run(6_000);
+    set_counts(&mut s, 10, [ONCE, SKIP, ONCE]);
+    s.run(12_000);
+    set_counts(&mut s, 10, [SKIP, SKIP, SKIP]);
+    assert_eq!(state(&s, 10), CueState::Running, "it plays on");
+    s.run(12_000);
+    set_counts(&mut s, 10, [SKIP, ONCE, SKIP]);
+    s.run(2 * u64::from(R48));
+    assert_plays(
+        &s,
+        at,
+        std::slice::from_ref(&(0..96_000)),
+        "the run under way",
+    );
+    assert_eq!(state(&s, 10), CueState::Idle);
+    assert_eq!(s.stalls(), 0);
+}
+
+/// Flow: the first and the last slice can be skipped. GO starts at the second slice's first
+/// frame; the cue ends at the last slice's start, and its integrated fade-out ends there.
+#[test]
+fn the_first_and_the_last_slice_can_be_skipped() {
+    let mut c = three_slices(10, [SKIP, PlayCount::from_stored(2), SKIP], false);
+    let fout = 4_800usize;
+    if let CueKind::Audio { fade_out, .. } = &mut c.kind {
+        *fade_out = FadeSpec {
+            duration: 0.1,
+            curve: FadeCurve::Linear,
+        };
+    }
+    let mut s = app_show(std::slice::from_ref(&c), R48);
+    assert_eq!(lengths_told(&s, 10), (Some(0.5), Some(1.0)));
+    let at = go_app(&mut s);
+    s.run(2 * u64::from(R48));
+    let out = s.channel(0);
+    // 0.5–1 s twice, nothing before or after.
+    let plan: Vec<usize> = (24_000..48_000).chain(24_000..48_000).collect();
+    let len = plan.len();
+    for (p, &frame) in plan.iter().enumerate() {
+        let env = match (p + fout + 1).checked_sub(len) {
+            Some(k) => ramp(1.0, 0.0, k as f64 / fout as f64, FadeCurve::Linear),
+            None => 1.0,
+        };
+        let (got, want) = (f64::from(out[at + p]), frame as f64 / 8_388_608.0 * env);
+        if env == 1.0 {
+            assert_eq!(got * 8_388_608.0, frame as f64, "sample {p}");
+        } else {
+            assert!(
+                (got - want).abs() <= 2e-9 + 1.1e-6 * want,
+                "sample {p}: {got}, want {want}"
+            );
+        }
+    }
+    assert_eq!(
+        out[at + len - 1],
+        0.0,
+        "the fade-out ends on the last frame"
+    );
+    assert!(out[at + len..].iter().all(|&v| v == 0.0));
+    assert_eq!(state(&s, 10), CueState::Idle);
+}
+
+/// Flow: every slice 0 breaks the cue. It is broken before any GO with its own problem, GO
+/// does not start it and moves on to the next cue, and one count above 0 clears it.
+#[test]
+fn every_slice_0_breaks_the_cue() {
+    let c = three_slices(10, [ONCE, ONCE, ONCE], false);
+    let next = three_slices(11, [ONCE, ONCE, ONCE], false);
+    let mut s = app_show(&[c, next], R48);
+    s.take_outbound();
+    set_counts(&mut s, 10, [SKIP, SKIP, SKIP]);
+    assert_eq!(state(&s, 10), CueState::Broken);
+    assert_eq!(
+        s.control().engine().problems(id(10)),
+        [openlab_core::CueProblem::NothingPlays]
+    );
+    let told = |msgs: &[ServerMessage]| -> Vec<Vec<openlab_core::protocol::WireProblem>> {
+        crate::show::changes(msgs)
+            .into_iter()
+            .filter_map(|c| match c {
+                openlab_core::protocol::RuntimeChange::Problems { cue, problems }
+                    if cue == id(10) =>
+                {
+                    Some(problems)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        told(&s.take_outbound()).last(),
+        Some(&vec![openlab_core::protocol::WireProblem::NothingPlays]),
+        "clients are told why"
+    );
+    // No length to show: nothing of it plays.
+    assert_eq!(lengths_told(&s, 10), (None, None));
+    // GO passes over it: nothing sounds from it and the playhead is on the next cue.
+    let list = openlab_core::CueListId(uuid::Uuid::from_u128(900));
+    assert_eq!(s.control().engine().playhead(list), Some(id(10)));
+    go_app(&mut s);
+    s.run(u64::from(R48) / 10);
+    assert!(s.channel(0).iter().all(|&v| v == 0.0), "it made no sound");
+    assert_ne!(state(&s, 10), CueState::Running);
+    assert_eq!(s.control().engine().playhead(list), Some(id(11)));
+    assert_eq!(s.control().live_voices(), 0);
+    // One slice that plays mends it.
+    set_counts(&mut s, 10, [SKIP, SKIP, PlayCount::from_stored(1)]);
+    s.run(B);
+    assert!(s.control().engine().problems(id(10)).is_empty());
+    assert_eq!(told(&s.take_outbound()).last(), Some(&vec![]));
+    assert_eq!(lengths_told(&s, 10), (Some(1.0), Some(1.0)));
+    let at = crate::show::start(&mut s, 10) as usize;
+    s.run(2 * u64::from(R48));
+    assert_plays(&s, at, std::slice::from_ref(&(48_000..96_000)), "mended");
+}
+
+/// Flow: devamp and load to time with a skipped slice. A devamp of a looping slice whose next
+/// slice is skipped goes on, at the end of the pass, to the next slice that plays; a load to a
+/// time counts only the slices that play; and a point inside a skipped slice (a click in the
+/// waveform) loads the start of the next slice that plays.
+#[test]
+fn devamp_and_load_to_time_with_a_skipped_slice() {
+    // 0–0.5 s until devamped, 0.5–1 s skipped, 1–2 s once.
+    let vamp = three_slices(10, [PlayCount::Endless, SKIP, ONCE], false);
+    let devamp = cue(
+        11,
+        CueKind::Devamp {
+            target: Some(id(10)),
+            start_next_cue: false,
+            stop_target_when_slice_ends: false,
+            devamp_mode: openlab_core::DevampMode::CurrentSlice,
+        },
+    );
+    let mut s = app_show(&[vamp, devamp], R48);
+    let at = crate::show::start(&mut s, 10) as usize;
+    // Into the second pass of the loop, then the devamp.
+    s.run(30_000);
+    crate::show::start(&mut s, 11);
+    s.run(3 * u64::from(R48));
+    assert_plays(
+        &s,
+        at,
+        &[0..24_000, 0..24_000, 48_000..96_000],
+        "devamped past the skipped slice",
+    );
+    assert_eq!(state(&s, 10), CueState::Idle);
+
+    // 0–0.5 s once, 0.5–1 s skipped, 1–2 s once: 0.75 s into the action is 0.25 s into the
+    // last slice.
+    let c = three_slices(10, [ONCE, SKIP, ONCE], false);
+    let mut s = app_show(std::slice::from_ref(&c), R48);
+    s.transport(openlab_core::protocol::TransportAction::Load {
+        cue: id(10),
+        at: 0.75,
+    });
+    s.run(2 * B);
+    assert_eq!(state(&s, 10), CueState::Loaded);
+    let at = crate::show::start(&mut s, 10) as usize;
+    s.run(2 * u64::from(R48));
+    assert_plays(
+        &s,
+        at,
+        std::slice::from_ref(&(60_000..96_000)),
+        "loaded to 0.75 s",
+    );
+
+    // A point 0.75 s into the file is inside the skipped slice.
+    let mut s = app_show(std::slice::from_ref(&c), R48);
+    s.transport(openlab_core::protocol::TransportAction::Seek {
+        cue: id(10),
+        position: 0.75,
+    });
+    s.run(2 * B);
+    assert_eq!(state(&s, 10), CueState::Loaded);
+    let at = crate::show::start(&mut s, 10) as usize;
+    s.run(2 * u64::from(R48));
+    assert_plays(
+        &s,
+        at,
+        std::slice::from_ref(&(48_000..96_000)),
+        "a point inside the skipped slice",
+    );
+}
+
+/// Flow: save and reopen. A slice skipped and a slice looping until devamped are written apart,
+/// and the reopened show holds them as before.
+#[test]
+fn skipped_and_endless_slices_survive_save_and_reopen() {
+    let env = crate::common::env();
+    let path = env.show_path();
+    let engine = || {
+        let ws = workspace(vec![]);
+        let mut c = config_at(&ws, R48, B);
+        c.app_dirs = Some(env.dirs.clone());
+        let mut s = OfflineShow::new(ws, mixer_config_at(R48, B), c).unwrap();
+        s.settle_media();
+        s
+    };
+    let request = |s: &mut OfflineShow, kind: &str| {
+        let json = format!(
+            r#"{{"type":"request","id":{},"request":{{"type":"{kind}","path":{}}}}}"#,
+            s.request_id().0,
+            serde_json::to_string(path.to_str().unwrap()).unwrap()
+        );
+        app(s, &json)
+    };
+    let mut s = engine();
+    add(
+        &mut s,
+        &three_slices(10, [SKIP, ONCE, PlayCount::Endless], false),
+        0,
+    );
+    request(&mut s, "save_as");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let kind = &saved["workspace"]["cue_lists"][0]["cues"][0]["kind"];
+    assert_eq!(kind["slices"][0]["play_count"], "skip");
+    assert_eq!(kind["slices"][1]["play_count"], 1);
+    assert_eq!(kind["last_slice_play_count"], 0);
+
+    let mut again = engine();
+    request(&mut again, "open");
+    again.settle_media();
+    let doc = again
+        .control()
+        .doc_ids()
+        .into_iter()
+        .find(|&d| {
+            again
+                .control()
+                .doc(d)
+                .is_some_and(|d| d.workspace().find_cue(id(10)).is_some())
+        })
+        .expect("the saved show is open");
+    let reopened = again.control().doc(doc).unwrap().workspace().clone();
+    assert_eq!(
+        reopened.find_cue(id(10)).map(|c| &c.kind),
+        s.control().workspace().find_cue(id(10)).map(|c| &c.kind)
+    );
 }
 
 /// AUD-10: an integrated fade-in and fade-out set through the app follow each documented
