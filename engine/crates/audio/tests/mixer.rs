@@ -1125,6 +1125,31 @@ proptest! {
         let varied = render_script(&s, &blocks);
         prop_assert!(reference == varied, "block pattern {:?} changed the output", blocks);
     }
+
+    /// A voice moved to another patch while its pause tail sounds, and resumed after the tail:
+    /// the move is over on the sample the tail ends, so the output and the events are the same
+    /// for any block sizes.
+    #[test]
+    fn a_move_inside_a_pause_tail_is_independent_of_block_sizes(
+        pause in 300u64..1500,
+        moved_after in 0u64..240,
+        resumed_after in 241u64..900,
+        blocks in prop::collection::vec(1usize..700, 1..8),
+    ) {
+        let run = |blocks: &[usize]| {
+            let (mut ctl, mut r) = two_patches(8000);
+            ctl.send(pause, CommandKind::PauseVoice { voice: VoiceId(1) });
+            ctl.send(pause + moved_after, move_voice(1, 1));
+            let resume = CommandKind::ResumeVoice { voice: VoiceId(1), new_id: VoiceId(2) };
+            ctl.send(pause + resumed_after, resume);
+            (r.render(4000, blocks), events(&mut ctl))
+        };
+        let (out, ev) = run(&[4000]);
+        prop_assert_eq!(&ev, &vec![moved(1, pause + 240, 1)]);
+        let (o, e) = run(&blocks);
+        prop_assert!(o == out, "block pattern {:?} changed the output", blocks);
+        prop_assert_eq!(e, ev);
+    }
 }
 
 /// Ring wraps that split a frame (a capacity that is not a whole number of frames) and ones that

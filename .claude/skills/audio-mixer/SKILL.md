@@ -58,6 +58,11 @@ The mixer renders voices into the device buffer on the audio thread. The control
 | the meter flush | the block's peaks dropped; `StageFaulted { Meters }` | disabled: meters no longer published |
 | none of these (taking commands off the queue, scheduling, the copy out) | nothing more | rebuild: every patch silent, master unity, every unit enabled, `dev` cleared; `StageFaulted { Mixer }`. Voices and pending commands kept |
 
+- **A faulted block costs every voice the same frames.** The block is silent and the clock advances. Each voice notes the sample it has been rendered up to (`Voice::upto`); after the fault every other voice still active plays on, unheard, from there to the block's end (`catch_up`: the normal render into buses nobody mixes), whichever stage faulted.
+  - So voices started together stay in step, every such voice is on the mixer clock, and events (`VoiceFinished` included) carry their true samples. A source short of those frames underruns as usual.
+  - The voice whose own render the fault hit in is not rendered again in that callback (one fault is one panic): it stays where the fault left it, up to a block late, until it ends or is dropped at the limit.
+  - Each other voice plays on under its own `catch_unwind`. A panic there is a second panic in that callback (the panic hook runs again); it is caught, that voice stays where it got to, and the next block blames it if its render is what is broken.
+  - Commands dated inside the faulted block apply at the start of the next block.
 - A start that never reached the pool, or a voice that left the pool inside `finish` before being reported, is still reported as `VoiceFinished { Faulted }`.
 - `StageFaulted { stage, at, disabled }` is counted in `faulted_stages` just before it is queued.
 - A disabled unit is also published as bits in preallocated atomics (`MixerController::disabled_units`: `u64` masks of patches, outputs, master, meters; cleared by a rebuild), so a report lost to a full event queue is still found.
@@ -116,21 +121,25 @@ If the event queue is full, `UnderrunEnded` is sent again each block until taken
 - **Position.** On P the voice stops consuming; on R it continues from that frame. The resampler runs on the disk thread ahead of the ring, so a pause cannot disturb it. While paused the disk thread keeps the ring full as usual, so a paused voice never blocks a worker and a pause of any length resumes without underrun.
 - **Declick.** The pause fades out over the de-zipper length D (5 ms) on samples P..P+D-1. Those samples play the frames after the pause point, peeked from the ring without consuming (an `rtrb` read chunk dropped without commit leaves the ring unchanged), times a linear 1 to 0 ramp exactly 0 on P+D-1. If fewer than D frames can be peeked (voice end, a pending devamp's boundary, end of a loop exit's buffer, a ring holding less) the tail is that long and still reaches exactly 0 on its last frame.
 - The resume fades in over D (linear 0 to 1, exactly 1 on R+D) from frame P. Outside [P, P+D) and [R, R+D) the output equals the unpaused render shifted by R - P.
-- **Frozen while paused.** Silence after the tail, reads nothing, no underrun, no events. Gain ramps, the stop fade and integrated fades freeze; the tail uses the gains the voice had on P. After the resume each ramp completes its remaining frames and a running stop fade ends R - P later.
+- The tail's length is measured once, on P. A devamp accepted while the tail sounds does not shorten it: the tail plays on into the frames the ring held on P (the next pass of the loop), past the end of the play the voice will now leave at.
+- **Frozen while paused.** Silence after the tail (and any kept tails, see the edge cases), reads nothing, no underrun, no events. Gain ramps, the stop fade and integrated fades freeze; the tail uses the gains the voice had on P. After the resume each ramp completes its remaining frames and a running stop fade ends R - P later.
 - **Edge cases.**
   - A voice paused on its start sample (nothing heard) gets no tail and no fade-in; it plays as if started on R.
-  - A resume during the tail (R < P+D) crossfades: the rest of the tail keeps playing while frame P fades in. The waveform never jumps, but for a few ms two nearby stretches overlap, and the tail takes the resumed frames' integrated fade envelope.
-  - Pause and resume on the same sample before any tail played change nothing audible. A pause during that crossfade drops what is left of the old tail.
+  - A resume during the tail (R < P+D) crossfades: the rest of the tail keeps playing while frame P fades in, so for a few ms two nearby stretches overlap.
+  - The resume copies the rest of the tail into the voice's kept-tail buffer (`xbuf`, D frames per channel) at the declick gain and integrated fade envelope its own frames have. From then on it is added to the voice's input one frame per sample and shares only the gains that move (master, duck, stop fade, cue outputs, crosspoints). On those samples the voice's own envelope multiplies its input instead of its gain.
+  - Any number of pauses and resumes inside one tail: each resume adds the tail it cuts short to the kept-tail buffer, and a pause leaves the buffer playing (at the frozen gains) beside its new tail. No tail is ever cut, so the output steps by no more than the declick slopes of the tails sounding together (tested on a steady signal: one slope, 1/D, for a single tail).
+  - Pause and resume on the same sample before any tail played change nothing audible.
+  - Still a cut, by design: a `StopVoice` without a fade on a playing voice, kept tails included.
   - `StartVoice` then `PauseVoice` on one sample pauses the new voice; the reverse order pauses nothing (equal-time commands apply in send order).
 - **Re-keying.** The cue engine gives every resumed segment a fresh id, so resume moves the voice from `voice` to `new_id`. Commands for the old id become unknown-voice commands (ignored) and events carry `new_id`.
   - A `new_id` held by another active voice is reported `VoiceRejected { voice: new_id, reason: DuplicateId }`; the voice stays paused under its old id. Resuming as its own id is allowed.
   - The `VoiceStart` (ring and routing) goes back on the return queue exactly once, when the voice ends. The controller keeps no per-id state.
 - **Other commands while paused.**
-  - `StopVoice` ends it at once with or without a fade: `VoiceFinished { Stopped }` on the stop's sample.
+  - `StopVoice`, with or without a fade, after the tail (and every kept tail) is over ends it at once: `VoiceFinished { Stopped }` on the stop's sample. While a tail still sounds, the tail is the stop's fade: the voice ends when the last tail does, `VoiceFinished { Stopped }` on the first sample after it (P+D for a full tail), and a resume sent meanwhile is ignored.
   - `Ramp` applies and is heard from the resume (its de-zipper or fade starts there).
   - `Devamp` is accepted as for a playing voice (the disk stream may cut at once). Its answer waits for the resume, which sends exactly one `DevampScheduled { voice: new_id, at }` however many devamps came in while paused.
   - A devamp answered before the pause is not announced again by the resume (its `at` is stale); the cue engine re-sends the pending devamp for the fresh id after the resume and that repeat gets the corrected `at`.
-- **Ignored, no event:** pausing an unknown or already-paused voice; resuming a voice that is unknown or not paused (no re-key either).
+- **Ignored, no event:** pausing an unknown or already-paused voice; resuming a voice that is unknown, not paused, or stopped in its tail (no re-key either).
 - **Dating.** A `ResumeVoice` dated earlier than its `PauseVoice` applies first, to a voice not paused yet, and is ignored; the voice then stays paused, silent, under its old id until another resume.
 
 ## Reference files

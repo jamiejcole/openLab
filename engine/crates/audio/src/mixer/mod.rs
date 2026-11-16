@@ -210,7 +210,8 @@ impl VoiceStart {
 #[derive(Debug)]
 pub enum CommandKind {
     StartVoice(Box<VoiceStart>),
-    /// `fade.frames == 0` cuts at the exact sample.
+    /// `fade.frames == 0` cuts at the exact sample. A voice still fading out after a pause is
+    /// not cut by any stop: it ends when that fade does.
     StopVoice {
         voice: VoiceId,
         fade: Fade,
@@ -523,6 +524,12 @@ pub struct Mixer {
     /// Applying a command this matches panics.
     #[cfg(test)]
     pub(crate) panic_apply: Option<fn(&CommandKind) -> bool>,
+    /// Playing this voice on through a faulted block panics.
+    #[cfg(test)]
+    pub(crate) panic_advance: Option<VoiceId>,
+    /// Panics caught so far (the faulted blocks, and voices that faulted while playing on).
+    #[cfg(test)]
+    pub(crate) unwinds: u32,
 }
 
 impl Mixer {
@@ -639,6 +646,10 @@ impl Mixer {
             panic_voice: None,
             #[cfg(test)]
             panic_apply: None,
+            #[cfg(test)]
+            panic_advance: None,
+            #[cfg(test)]
+            unwinds: 0,
         };
         let controller = MixerController::new(
             cmd_tx,

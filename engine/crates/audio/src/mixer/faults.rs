@@ -6,6 +6,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use super::render::render_one;
 use super::{
     CommandKind, Event, FinishReason, MAX_OUTPUT_CHANNELS, MAX_PATCHES, Mixer, SampleTime, Voice,
     VoiceId,
@@ -256,14 +257,24 @@ impl Mixer {
         self.stage.enter(Stage::Idle);
         let ok = catch_unwind(AssertUnwindSafe(|| self.process(out, frames))).is_ok();
         if !ok {
+            #[cfg(test)]
+            {
+                self.unwinds += 1;
+            }
+            let blamed = match self.stage.now {
+                Stage::Voice(i) => Some(i),
+                _ => None,
+            };
             self.isolate(start, block);
+            let end = start + frames.min(out.len() / self.outputs) as u64;
+            self.catch_up(end, blamed);
             // Peaks still held locally from the faulted call are dropped (its output was
             // replaced with silence). A voice that finished earlier in that call has already
             // published its own.
             self.out_peak.fill(0.0);
             self.voices.iter_mut().for_each(|v| v.meter.fill(0.0));
             out.fill(0.0);
-            self.now = start + frames.min(out.len() / self.outputs) as u64;
+            self.now = end;
             self.outbox
                 .shared
                 .samples_rendered
@@ -359,6 +370,56 @@ impl Mixer {
             at,
             disabled,
         });
+    }
+
+    /// After a faulted block ending on sample `end`: every voice still active plays on, unheard,
+    /// through the frames of the block it did not render (the fault came before its turn, or
+    /// in an earlier segment), so all voices have lost the same frames, stay in step with each
+    /// other and with the clock, and report their events on the true samples. A source that
+    /// holds fewer frames underruns as usual.
+    ///
+    /// The voice at pool index `blamed`, whose render the fault hit in, is not rendered again
+    /// (it would likely panic again): it keeps the place the fault left it in, up to a block
+    /// late. A panic while another voice plays on is caught and leaves that voice where it got
+    /// to: if its render is what is broken, the next block blames it.
+    fn catch_up(&mut self, end: SampleTime, blamed: Option<usize>) {
+        for i in (0..self.voices.len()).filter(|&i| Some(i) != blamed) {
+            let _caught = catch_unwind(AssertUnwindSafe(|| self.play_on(i, end))).is_err();
+            #[cfg(test)]
+            {
+                self.unwinds += u32::from(_caught);
+            }
+        }
+    }
+
+    /// Renders the voice at pool index `i` up to sample `end` into buses nobody mixes (the next
+    /// render clears them).
+    fn play_on(&mut self, i: usize, end: SampleTime) {
+        let block = self.block;
+        let Mixer {
+            voices,
+            outbox,
+            patches,
+            move_bus,
+            scratch,
+            #[cfg(test)]
+            panic_advance,
+            ..
+        } = self;
+        let Some(v) = voices.get_mut(i) else {
+            return;
+        };
+        while v.is_active() && v.upto < end {
+            #[cfg(test)]
+            if *panic_advance == Some(v.id) {
+                panic!("injected fault while playing on");
+            }
+            let n = usize::try_from(end - v.upto)
+                .unwrap_or(usize::MAX)
+                .min(block);
+            let t0 = v.upto;
+            render_one(v, n, t0, block, patches, move_bus, scratch, outbox);
+        }
     }
 
     fn count_faulted_voice(&self) {
@@ -792,7 +853,11 @@ mod tests {
                 m.stage.now = stage;
                 m.isolate(0, block);
             }
+            // The surviving voice plays on through a block it did not render.
+            m.now += 64;
+            m.catch_up(m.now, None);
         });
+        assert_eq!(m.voices[1].upto, m.now);
         let mut buf = [0.0; 128];
         crate::no_alloc_for_tests(|| {
             for _ in 0..4 {
@@ -804,6 +869,131 @@ mod tests {
             stage_events(&mut ctl).last(),
             Some(&(FaultStage::Mixer, false))
         );
+    }
+
+    /// Voices whose source frame `k` is `k / 8192`, started together and rendered for one
+    /// 64-frame block: `(id, output)`, or no output for a voice routed nowhere.
+    fn counting_voices(
+        voices: &[(u64, Option<usize>)],
+        play_frames: Option<u64>,
+    ) -> (MixerController, OfflineRenderer) {
+        let (mut ctl, mixer) = Mixer::new(MixerConfig::default()).unwrap();
+        let count: Vec<f32> = (0..8192).map(|k| k as f32 / 8192.0).collect();
+        for &(id, out) in voices {
+            let (mut tx, rx) = RingBuffer::new(8192);
+            tx.push_entire_slice(&count).unwrap();
+            let mut v = VoiceStart::new(VoiceId(id), rx, 1, 2);
+            if let Some(out) = out {
+                v.set_crosspoint(0, out, 1.0);
+            }
+            v.play_frames = play_frames;
+            ctl.send(0, CommandKind::StartVoice(Box::new(v)));
+        }
+        let mut r = OfflineRenderer::new(mixer);
+        r.render(64, &[]);
+        (ctl, r)
+    }
+
+    /// The source frames on the two outputs in the first frame of the next 64-frame block.
+    fn next_frames(r: &mut OfflineRenderer) -> [f32; 2] {
+        let mut buf = [0.0; 128];
+        assert!(r.mixer_mut().process_guarded(&mut buf, 64));
+        [buf[0] * 8192.0, buf[1] * 8192.0]
+    }
+
+    #[test]
+    fn voices_started_together_stay_in_step_after_a_fault_in_another_voice() {
+        // Voice 2, between the two in the pool, is heard nowhere.
+        let (mut ctl, mut r) = counting_voices(&[(1, Some(0)), (2, None), (3, Some(1))], None);
+        r.mixer_mut().panic_voice = Some(VoiceId(2));
+        fault(&mut r);
+        r.mixer_mut().panic_voice = None;
+        // Both lost the faulted block's 64 frames: mixer sample 128 plays source frame 128.
+        assert_eq!(next_frames(&mut r), [128.0, 128.0]);
+        assert_eq!(ctl.faults(), 1);
+        assert_eq!(ctl.underrun_frames(), 0);
+        assert_eq!(faulted_events(&mut ctl), []);
+    }
+
+    #[test]
+    fn a_surviving_voice_is_on_the_clock_after_a_faulted_block_and_ends_on_its_true_sample() {
+        let ramp_at = |at| {
+            move |ctl: &mut MixerController, m: &mut Mixer| {
+                m.panic_apply = Some(|k| matches!(k, CommandKind::Ramp { .. }));
+                let kind = CommandKind::Ramp {
+                    voice: VoiceId(2),
+                    target: GainTarget::Master,
+                    gain: 0.5,
+                    fade: Fade::NONE,
+                };
+                ctl.send(at, kind);
+            }
+        };
+        type Arm = Box<dyn Fn(&mut MixerController, &mut Mixer)>;
+        let cases: [(&str, Arm); 4] = [
+            ("no unit to blame", Box::new(|_, m| m.panic_next = true)),
+            ("a command to another voice", Box::new(ramp_at(64))),
+            // The block's first 10 frames were rendered before the command.
+            ("a command mid-block", Box::new(ramp_at(74))),
+            (
+                "another voice's render",
+                Box::new(|_, m| m.panic_voice = Some(VoiceId(2))),
+            ),
+        ];
+        for (case, arm) in cases {
+            let (mut ctl, mut r) = counting_voices(&[(1, Some(0)), (2, Some(1))], Some(256));
+            arm(&mut ctl, r.mixer_mut());
+            fault(&mut r);
+            r.mixer_mut().panic_voice = None;
+            assert_eq!(next_frames(&mut r)[0], 128.0, "{case}");
+            play(&mut r, 4);
+            let mut ended = Vec::new();
+            while let Some(e) = ctl.poll_event() {
+                if let Event::VoiceFinished { voice, at, reason } = e
+                    && voice == VoiceId(1)
+                {
+                    ended.push((at, reason));
+                }
+            }
+            assert_eq!(ended, [(256, FinishReason::OutPoint)], "{case}");
+            assert_eq!(ctl.underrun_frames(), 0, "{case}");
+            assert_eq!(ctl.faults(), 1, "{case}");
+            assert_eq!(r.mixer_mut().unwinds, 1, "{case}");
+        }
+    }
+
+    /// The voice whose render faulted is not rendered a second time in that callback, even
+    /// when it would panic again: one fault is one panic. It stays a block late; the other
+    /// voice keeps the clock.
+    #[test]
+    fn the_voice_whose_render_faulted_is_not_rendered_again_in_that_block() {
+        let (mut ctl, mut r) = counting_voices(&[(1, Some(0)), (2, Some(1))], None);
+        let m = r.mixer_mut();
+        m.panic_voice = Some(VoiceId(1));
+        m.panic_advance = Some(VoiceId(1));
+        fault(&mut r);
+        let m = r.mixer_mut();
+        assert_eq!(m.unwinds, 1);
+        m.panic_voice = None;
+        assert_eq!(next_frames(&mut r), [64.0, 128.0]);
+        assert_eq!(ctl.faults(), 1);
+        assert_eq!(faulted_events(&mut ctl), []);
+    }
+
+    /// A panic while a voice plays on through the faulted block does not leave the guard: that
+    /// voice stays behind, the others keep the clock.
+    #[test]
+    fn a_fault_while_a_voice_plays_on_is_caught_and_the_other_voices_keep_the_clock() {
+        let (mut ctl, mut r) = counting_voices(&[(1, Some(0)), (2, Some(1))], None);
+        let m = r.mixer_mut();
+        m.panic_next = true;
+        m.panic_advance = Some(VoiceId(1));
+        fault(&mut r);
+        assert_eq!(r.mixer_mut().unwinds, 2);
+        assert_eq!(next_frames(&mut r), [64.0, 128.0]);
+        assert_eq!(ctl.faults(), 1);
+        assert_eq!(ctl.samples_rendered(), 192);
+        assert_eq!(faulted_events(&mut ctl), []);
     }
 
     #[test]

@@ -161,8 +161,13 @@ impl Mixer {
             CommandKind::StopVoice { voice, fade } => {
                 let Mixer { voices, outbox, .. } = self;
                 if let Some(v) = voices.iter_mut().find(|v| v.is_active() && v.id == voice) {
-                    // A paused voice is silent already: any stop cuts it at once.
-                    if fade.frames == 0 || v.paused.is_some() {
+                    let over = v.tail_over();
+                    if let Some(p) = v.paused.as_mut().filter(|_| !over) {
+                        // Still fading out: any stop, faded or not, ends the voice with its
+                        // tail, the fade it is already making.
+                        p.stopped = true;
+                    } else if fade.frames == 0 || v.paused.is_some() {
+                        // A paused voice past its tail is silent already.
                         v.finish(t, FinishReason::Stopped, outbox);
                     } else {
                         v.stop.ramp_to(0.0, fade.frames, fade.curve);
@@ -287,11 +292,16 @@ impl Mixer {
     }
 
     fn resume_voice(&mut self, voice: VoiceId, new_id: VoiceId, t: SampleTime) {
-        let dezip = self.dezip;
-        let Mixer { voices, outbox, .. } = self;
+        let (dezip, block) = (self.dezip, self.block);
+        let Mixer {
+            voices,
+            outbox,
+            scratch,
+            ..
+        } = self;
         let Some(k) = voices
             .iter()
-            .position(|v| v.is_active() && v.id == voice && v.paused.is_some())
+            .position(|v| v.is_active() && v.id == voice && v.resumable())
         else {
             return;
         };
@@ -308,7 +318,7 @@ impl Mixer {
             return;
         }
         if let Some(v) = voices.get_mut(k) {
-            v.resume(t, new_id, dezip, outbox);
+            v.resume(t, new_id, dezip, block, &mut scratch.vgain, outbox);
         }
     }
 
@@ -345,7 +355,7 @@ impl Mixer {
         };
         let free = self.voices.iter_mut().find(|v| !v.is_active());
         match (reject, free) {
-            (None, Some(v)) => v.begin(s, &self.outbox.shared.meters),
+            (None, Some(v)) => v.begin(s, t, &self.outbox.shared.meters),
             (reason, _) => {
                 let voice = s.voice;
                 self.outbox.give_back(s);
